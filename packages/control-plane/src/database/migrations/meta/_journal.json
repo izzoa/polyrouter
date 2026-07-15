@@ -15,6 +15,13 @@
       "when": 1784079092525,
       "tag": "0001_auth_plane",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1784113037160,
+      "tag": "0002_mushy_machine_man",
+      "breakpoints": true
     }
   ]
 }

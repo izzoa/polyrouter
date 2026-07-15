@@ -9,5 +9,5 @@ export const DRIZZLE = Symbol('polyrouter:internal:drizzle');
 /** The drizzle handle shape used internally (also matches a transaction). */
 export type Db = Pick<
   NodePgDatabase,
-  'select' | 'insert' | 'update' | 'delete' | 'transaction' | 'execute'
+  'select' | 'selectDistinctOn' | 'insert' | 'update' | 'delete' | 'transaction' | 'execute'
 >;

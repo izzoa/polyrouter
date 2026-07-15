@@ -13,9 +13,11 @@ export type {
   ModelAccessor,
   ModelInsertInput,
   ModelPatch,
+  ModelPriceInput,
   OwnedRepository,
   PersistenceFacilities,
   PersistencePort,
+  PricingCatalog,
   ProviderInsertInput,
   ProviderPatch,
   RoutingEntryAccessor,
@@ -25,6 +27,19 @@ export type {
   TierPatch,
   UsersInfra,
 } from './persistence';
+export {
+  PROVIDER_FAMILY_HOSTS,
+  canonicalModelKey,
+  deriveModelKey,
+  resolveModelPrice,
+} from './pricing/resolve';
+export type {
+  BundledPrice,
+  PriceResolutionInput,
+  PriceSnapshot,
+  PriceSource,
+} from './pricing/resolve';
+export { parseLiteLlmCatalog } from './pricing/litellm';
 export { decryptSecret, encryptSecret } from './security/encryption';
 export {
   SsrfError,

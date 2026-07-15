@@ -5,6 +5,7 @@ import type {
   routingRules,
   tiers,
   AgentRow,
+  ModelPriceRow,
   ModelRow,
   ProviderRow,
   RoutingEntryRow,
@@ -96,6 +97,34 @@ export interface UsersInfra {
   count(): Promise<number>;
 }
 
+/** A catalog price version ready to append. */
+export type ModelPriceInput = {
+  modelKey: string;
+  inputPricePer1m: number;
+  outputPricePer1m: number;
+  cacheReadPricePer1m?: number | null;
+  cacheWritePricePer1m?: number | null;
+  contextWindow?: number | null;
+  supportsTools?: boolean;
+  supportsVision?: boolean;
+  supportsReasoning?: boolean;
+  isFree?: boolean;
+  source: string;
+  validFrom: Date;
+};
+
+/** The GLOBAL (non-tenant) pricing catalog (#8, §7.7). Append-only reference
+ * data — no owner, no update/delete. The single write path is #8's locked
+ * `applyVersions`, which reads `latest` and appends via `insertVersion`. */
+export interface PricingCatalog {
+  /** The version in effect at `at` (greatest `valid_from ≤ at`), or null. */
+  priceAt(modelKey: string, at: Date): Promise<ModelPriceRow | null>;
+  latest(modelKey: string): Promise<ModelPriceRow | null>;
+  /** The current version per `model_key` (latest with `valid_from ≤ now`). */
+  listLatest(now: Date): Promise<ModelPriceRow[]>;
+  insertVersion(entry: ModelPriceInput): Promise<ModelPriceRow>;
+}
+
 /** The ONLY persistence surface exported outside the database module. By
  * construction it has no query/execute/Pool/drizzle member — unscoped SQL is
  * unwritable against it. */
@@ -107,6 +136,8 @@ export interface PersistencePort {
   models: ModelAccessor;
   routingEntries: RoutingEntryAccessor;
   users: UsersInfra;
+  /** Global pricing catalog (#8) — non-owned, append-only. */
+  pricing: PricingCatalog;
   /** Idempotent, race-safe `default`-tier provisioning (spec §5); #3 calls this at user creation. */
   ensureDefaultTier(principal: Principal): Promise<TierRow>;
 }

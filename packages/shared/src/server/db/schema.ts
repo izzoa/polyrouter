@@ -232,6 +232,44 @@ export const routingRules = pgTable(
   (t) => [index('routing_rule_owner_idx').on(t.ownerUserId)],
 );
 
+/** Global (non-tenant) effective-dated pricing/capability catalog (#8, §7.7).
+ * Append-only + monotonic: a price change is a new `valid_from` row, never an
+ * update — cost is immutable (invariant 4). Keyed by a provider-namespaced
+ * `model_key` (`"<litellm_provider>:<model>"`) so a reseller's `gpt-4o` can't
+ * inherit OpenAI's price. USD per 1M tokens (single-currency invariant). */
+export const modelPrices = pgTable(
+  'model_price',
+  {
+    id: id(),
+    modelKey: text('model_key').notNull(),
+    inputPricePer1m: doublePrecision('input_price_per_1m').notNull(),
+    outputPricePer1m: doublePrecision('output_price_per_1m').notNull(),
+    cacheReadPricePer1m: doublePrecision('cache_read_price_per_1m'),
+    cacheWritePricePer1m: doublePrecision('cache_write_price_per_1m'),
+    contextWindow: integer('context_window'),
+    supportsTools: boolean('supports_tools').default(false).notNull(),
+    supportsVision: boolean('supports_vision').default(false).notNull(),
+    supportsReasoning: boolean('supports_reasoning').default(false).notNull(),
+    isFree: boolean('is_free').default(false).notNull(),
+    source: text('source').notNull(), // bundled | refresh | manual
+    validFrom: timestamp('valid_from', { withTimezone: true }).notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('model_price_key_valid_from_unique').on(t.modelKey, t.validFrom),
+    check(
+      'model_price_nonneg',
+      sql`${t.inputPricePer1m} >= 0 AND ${t.outputPricePer1m} >= 0
+        AND (${t.cacheReadPricePer1m} IS NULL OR ${t.cacheReadPricePer1m} >= 0)
+        AND (${t.cacheWritePricePer1m} IS NULL OR ${t.cacheWritePricePer1m} >= 0)`,
+    ),
+    check(
+      'model_price_free_zero',
+      sql`NOT ${t.isFree} OR (${t.inputPricePer1m} = 0 AND ${t.outputPricePer1m} = 0)`,
+    ),
+  ],
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
 export type AccountRow = typeof accounts.$inferSelect;
@@ -241,3 +279,4 @@ export type ModelRow = typeof models.$inferSelect;
 export type TierRow = typeof tiers.$inferSelect;
 export type RoutingEntryRow = typeof routingEntries.$inferSelect;
 export type RoutingRuleRow = typeof routingRules.$inferSelect;
+export type ModelPriceRow = typeof modelPrices.$inferSelect;

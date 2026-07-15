@@ -1,7 +1,8 @@
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, lte, sql } from 'drizzle-orm';
 import {
   agents,
   models,
+  modelPrices,
   ownershipPredicate,
   providers,
   routingEntries,
@@ -11,9 +12,11 @@ import {
   type ModelAccessor,
   type ModelInsertInput,
   type ModelPatch,
+  type ModelPriceInput,
   type OwnedRepository,
   type PersistenceFacilities,
   type PersistencePort,
+  type PricingCatalog,
   type Principal,
   type RoutingEntryAccessor,
   type TierRow,
@@ -232,6 +235,60 @@ function createRoutingEntryAccessor(db: Db): RoutingEntryAccessor {
   };
 }
 
+/** Global (non-tenant) pricing catalog — append-only reads/insert; the locked
+ * write orchestration lives in #8's PricingService. */
+function createPricingCatalog(db: Db): PricingCatalog {
+  return {
+    async priceAt(modelKey, at) {
+      const rows = await db
+        .select()
+        .from(modelPrices)
+        .where(and(eq(modelPrices.modelKey, modelKey), lte(modelPrices.validFrom, at)))
+        .orderBy(desc(modelPrices.validFrom))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+    async latest(modelKey) {
+      const rows = await db
+        .select()
+        .from(modelPrices)
+        .where(eq(modelPrices.modelKey, modelKey))
+        .orderBy(desc(modelPrices.validFrom))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+    async listLatest(now) {
+      return db
+        .selectDistinctOn([modelPrices.modelKey])
+        .from(modelPrices)
+        .where(lte(modelPrices.validFrom, now))
+        .orderBy(modelPrices.modelKey, desc(modelPrices.validFrom));
+    },
+    async insertVersion(entry: ModelPriceInput) {
+      const rows = await db
+        .insert(modelPrices)
+        .values({
+          modelKey: entry.modelKey,
+          inputPricePer1m: entry.inputPricePer1m,
+          outputPricePer1m: entry.outputPricePer1m,
+          cacheReadPricePer1m: entry.cacheReadPricePer1m ?? null,
+          cacheWritePricePer1m: entry.cacheWritePricePer1m ?? null,
+          contextWindow: entry.contextWindow ?? null,
+          supportsTools: entry.supportsTools ?? false,
+          supportsVision: entry.supportsVision ?? false,
+          supportsReasoning: entry.supportsReasoning ?? false,
+          isFree: entry.isFree ?? false,
+          source: entry.source,
+          validFrom: entry.validFrom,
+        })
+        .returning();
+      const row = rows[0];
+      if (!row) throw new Error('insertVersion returned no row');
+      return row;
+    },
+  };
+}
+
 export function buildPersistencePort(db: Db): PersistencePort {
   return {
     agents: createOwnedRepository(db, agents as unknown as AnyOwnedTable),
@@ -240,6 +297,7 @@ export function buildPersistencePort(db: Db): PersistencePort {
     routingRules: createOwnedRepository(db, routingRules as unknown as AnyOwnedTable),
     models: createModelAccessor(db),
     routingEntries: createRoutingEntryAccessor(db),
+    pricing: createPricingCatalog(db),
     users: {
       async count() {
         const rows = await db.select({ value: sql<number>`count(*)::int` }).from(users);

@@ -22,6 +22,8 @@ export interface IdentityPort {
   ensureFirstAdmin(): Promise<string | null>;
   /** The current admin's id, or null. Used by localhost auto-login. */
   findAdminUserId(): Promise<string | null>;
+  /** Whether a specific user has the admin role (#8 gates global mutations). */
+  isAdmin(userId: string): Promise<boolean>;
   /** Idempotent default-tier provisioning for one user. */
   provisionDefaultTier(userId: string): Promise<void>;
   /** Advisory-locked: provision a default tier for EVERY user missing one — boot reconciliation of crashed post-commit hooks (including later users). */

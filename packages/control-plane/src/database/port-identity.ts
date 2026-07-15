@@ -58,6 +58,15 @@ export function buildIdentityPort(root: NodePgDatabase): IdentityPort {
       return rows[0]?.id ?? null;
     },
 
+    async isAdmin(userId: string): Promise<boolean> {
+      const rows = await root
+        .select({ id: users.id })
+        .from(users)
+        .where(and(eq(users.id, userId), eq(users.role, 'admin')))
+        .limit(1);
+      return rows.length > 0;
+    },
+
     async provisionDefaultTier(userId: string): Promise<void> {
       await provisionTierFor(root, userId);
     },

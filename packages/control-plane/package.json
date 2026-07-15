@@ -1,0 +1,43 @@
+{
+  "name": "@polyrouter/control-plane",
+  "version": "0.1.0",
+  "private": true,
+  "description": "polyrouter control plane: dashboard API, auth, provider/tier/rule CRUD, analytics — serves the SPA and hosts the data-plane module",
+  "type": "commonjs",
+  "scripts": {
+    "build": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && node -e \"fs.cpSync('src/database/migrations','dist/database/migrations',{recursive:true})\"",
+    "dev": "nest start --watch",
+    "start": "node dist/main.js",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "test": "jest",
+    "test:e2e": "jest --config jest-e2e.config.cjs --runInBand"
+  },
+  "dependencies": {
+    "@nestjs/common": "^11.1.28",
+    "@nestjs/core": "^11.1.28",
+    "@nestjs/platform-express": "^11.1.28",
+    "@polyrouter/data-plane": "*",
+    "@polyrouter/shared": "*",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.15.1",
+    "drizzle-orm": "^0.45.2",
+    "ioredis": "^5.11.1",
+    "pg": "^8.22.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^11.0.24",
+    "@nestjs/testing": "^11.1.28",
+    "@types/express": "^5.0.0",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^24.13.3",
+    "@types/pg": "^8.20.0",
+    "@types/supertest": "^6.0.2",
+    "drizzle-kit": "^0.31.10",
+    "jest": "^30.4.2",
+    "supertest": "^7.2.2",
+    "ts-jest": "^29.4.11"
+  }
+}

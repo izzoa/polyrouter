@@ -1,0 +1,42 @@
+# Development/test infrastructure ONLY — PostgreSQL 16 + Redis 7 for
+# `npm run dev` and the e2e suites. The self-host product compose (app +
+# postgres + redis + optional apprise) is a separate artifact owned by the
+# packaging change (TODOS.md #22).
+#
+#   docker compose -f docker-compose.dev.yml up -d
+#
+# Credentials match the config defaults registered by the database/redis
+# modules, so a clean checkout needs no env file.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: polyrouter
+      POSTGRES_PASSWORD: polyrouter
+      POSTGRES_DB: polyrouter
+    ports:
+      - '127.0.0.1:5432:5432'
+    volumes:
+      - polyrouter-dev-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U polyrouter -d polyrouter']
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - '127.0.0.1:6379:6379'
+    volumes:
+      - polyrouter-dev-redis:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  polyrouter-dev-pg:
+  polyrouter-dev-redis:

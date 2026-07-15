@@ -1,0 +1,494 @@
+/* polyrouter dashboard — token system and shared patterns ported from
+   "Polyrouter Prototype.dc.html" (Claude Design project c06afc7f…). */
+
+* {
+  box-sizing: border-box;
+}
+
+:root {
+  --accent: #4f5dff;
+  --bg: #fafafa;
+  --panel: #ffffff;
+  --border: #ececea;
+  --border2: #f1f1ef;
+  --hover: #f4f4f2;
+  --chip: #f1f1ef;
+  --text: #17181a;
+  --text2: #55575e;
+  --text3: #8a8c92;
+  --faint: #b4b6bc;
+  --green: #3bb273;
+  --green-bg: #e9f6ef;
+  --amber: #c8901a;
+  --amber-bg: #fbf3dc;
+  --red: #e5484d;
+  --red-bg: #fdecec;
+  --accent-bg: color-mix(in oklab, var(--accent) 9%, var(--panel));
+  --accent-deep: color-mix(in oklab, var(--accent) 78%, var(--text) 22%);
+  --shadow: 0 1px 3px rgba(20, 20, 25, 0.05);
+}
+
+[data-theme='dark'] {
+  --bg: #0e0f12;
+  --panel: #16171b;
+  --border: #26272d;
+  --border2: #1f2025;
+  --hover: #1c1d22;
+  --chip: #22232a;
+  --text: #f0f1f4;
+  --text2: #a6a8b0;
+  --text3: #787a82;
+  --faint: #4e5058;
+  --green: #46c482;
+  --green-bg: #12291d;
+  --amber: #e7b03c;
+  --amber-bg: #2e2712;
+  --red: #f2555a;
+  --red-bg: #391a1c;
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Geist', sans-serif;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  color: var(--accent-deep);
+  text-decoration: underline;
+}
+
+input,
+select,
+button,
+textarea {
+  font-family: inherit;
+}
+input:focus,
+select:focus {
+  border-color: var(--accent) !important;
+  outline: none;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+@keyframes slidein {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+@keyframes rowin {
+  from {
+    background: var(--accent-bg);
+  }
+  to {
+    background: transparent;
+  }
+}
+
+/* ---- shared patterns ---- */
+
+.mono {
+  font-family: 'Geist Mono', monospace;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+}
+.card {
+  padding: 16px 18px;
+}
+
+.stat-label {
+  font:
+    400 12px 'Geist',
+    sans-serif;
+  color: var(--text3);
+  margin-bottom: 8px;
+}
+.stat-value {
+  font:
+    600 26px 'Geist',
+    sans-serif;
+  letter-spacing: -0.03em;
+}
+.stat-sub {
+  font:
+    400 11.5px 'Geist',
+    sans-serif;
+  color: var(--text3);
+  margin-top: 5px;
+}
+
+.section-title {
+  font:
+    500 13px 'Geist',
+    sans-serif;
+}
+.upper-label {
+  font:
+    500 11px 'Geist',
+    sans-serif;
+  color: var(--text3);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.btn-primary {
+  padding: 7px 14px;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 7px;
+  font:
+    500 12.5px 'Geist',
+    sans-serif;
+  cursor: pointer;
+  user-select: none;
+}
+.btn-primary:hover {
+  background: var(--accent-deep);
+}
+
+.btn-ghost {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font:
+    500 11.5px 'Geist',
+    sans-serif;
+  cursor: pointer;
+  color: var(--text2);
+  user-select: none;
+}
+.btn-ghost:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.btn-ghost--amber:hover {
+  border-color: var(--amber);
+  color: var(--amber);
+}
+
+.btn-cancel {
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font:
+    500 12.5px 'Geist',
+    sans-serif;
+  cursor: pointer;
+  color: var(--text2);
+  user-select: none;
+}
+.btn-cancel:hover {
+  background: var(--hover);
+}
+
+.chip {
+  padding: 2px 8px;
+  background: var(--chip);
+  border-radius: 10px;
+  font-size: 11px;
+}
+
+.link-accent {
+  color: var(--accent);
+  cursor: pointer;
+}
+.link-accent:hover {
+  color: var(--accent-deep);
+}
+
+.icon-x {
+  color: var(--faint);
+  cursor: pointer;
+}
+.icon-x:hover {
+  color: var(--red);
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.nav-item:hover {
+  background: var(--hover);
+}
+
+.setup-card {
+  margin: 14px 10px 0;
+  padding: 9px 11px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.setup-card:hover {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
+
+.theme-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font:
+    400 12px 'Geist',
+    sans-serif;
+  color: var(--text2);
+  padding: 4px 0;
+}
+.theme-toggle:hover {
+  color: var(--text);
+}
+
+.endpoint-chip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 11px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font:
+    400 11.5px 'Geist Mono',
+    monospace;
+  color: var(--text2);
+  cursor: pointer;
+}
+.endpoint-chip:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.row-hover:hover {
+  background: var(--hover);
+}
+
+.table-head {
+  padding: 8px 18px;
+  border-bottom: 1px solid var(--border2);
+  font:
+    500 10.5px 'Geist',
+    sans-serif;
+  color: var(--text3);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  display: grid;
+  gap: 0 14px;
+}
+
+.req-row {
+  display: grid;
+  gap: 0 14px;
+  padding: 9px 18px;
+  border-bottom: 1px solid var(--border2);
+  font:
+    400 12px 'Geist',
+    sans-serif;
+  color: var(--text2);
+  align-items: center;
+  cursor: pointer;
+}
+
+.bar-track {
+  height: 5px;
+  background: var(--border2);
+  border-radius: 3px;
+}
+.bar-fill {
+  height: 100%;
+  border-radius: 3px;
+}
+
+.toggle {
+  flex: none;
+  border-radius: 9px;
+  position: relative;
+  transition: background 0.15s;
+}
+.toggle-knob {
+  position: absolute;
+  top: 2px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  transition: left 0.15s;
+}
+
+.input,
+.select {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 8px 11px;
+  font:
+    400 12.5px 'Geist',
+    sans-serif;
+  color: var(--text);
+}
+
+.field-label {
+  font:
+    500 11.5px 'Geist',
+    sans-serif;
+  color: var(--text2);
+  margin-bottom: 5px;
+}
+
+.kind-card:hover {
+  border-color: var(--accent) !important;
+}
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 10, 14, 0.28);
+  z-index: 40;
+}
+
+.drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 440px;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+  z-index: 41;
+  display: flex;
+  flex-direction: column;
+  animation: slidein 0.18s ease-out;
+  box-shadow: -12px 0 32px rgba(10, 10, 14, 0.1);
+}
+
+.drawer-close {
+  cursor: pointer;
+  color: var(--text3);
+  font-size: 16px;
+  padding: 2px 6px;
+}
+.drawer-close:hover {
+  color: var(--text);
+}
+
+.kv-box {
+  background: var(--bg);
+  border: 1px solid var(--border2);
+  border-radius: 9px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font:
+    400 11.5px 'Geist Mono',
+    monospace;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 10, 14, 0.32);
+  z-index: 50;
+  display: grid;
+  place-items: center;
+}
+.modal-card {
+  width: 480px;
+  max-width: 92vw;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 18px 50px rgba(10, 10, 14, 0.18);
+  padding: 22px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.modal-title {
+  font:
+    600 15px 'Geist',
+    sans-serif;
+  letter-spacing: -0.01em;
+}
+
+.toast {
+  position: fixed;
+  bottom: 22px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 60;
+  background: var(--text);
+  color: var(--bg);
+  padding: 9px 18px;
+  border-radius: 9px;
+  font:
+    500 12.5px 'Geist',
+    sans-serif;
+  box-shadow: 0 8px 24px rgba(10, 10, 14, 0.25);
+}
+
+.snippet-box {
+  background: var(--bg);
+  border: 1px solid var(--border2);
+  border-radius: 8px;
+  padding: 13px 15px;
+  font:
+    400 11.5px 'Geist Mono',
+    monospace;
+  color: var(--text2);
+  line-height: 1.75;
+  white-space: pre-wrap;
+}
+
+.chain-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 18px;
+  border-bottom: 1px solid var(--border2);
+  cursor: grab;
+}
+.chain-row:hover {
+  background: var(--hover);
+}
+
+.pos-badge {
+  flex: none;
+  width: 64px;
+  padding: 2px 0;
+  text-align: center;
+  border-radius: 9px;
+  font:
+    500 10.5px 'Geist',
+    sans-serif;
+}

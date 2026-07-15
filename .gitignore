@@ -1,0 +1,21 @@
+# dependencies
+node_modules/
+
+# build outputs & caches
+dist/
+.turbo/
+coverage/
+*.tsbuildinfo
+.eslintcache
+
+# logs & OS noise
+*.log
+.DS_Store
+
+# local env files (never commit secrets)
+.env
+.env.*
+!.env.example
+
+# per-user agent settings (project agent config itself is committed)
+.claude/settings.local.json

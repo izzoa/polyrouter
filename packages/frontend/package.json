@@ -1,0 +1,22 @@
+{
+  "name": "@polyrouter/frontend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "polyrouter dashboard SPA (SolidJS + Vite)",
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit -p tsconfig.json && vite build",
+    "dev": "vite",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@polyrouter/shared": "*",
+    "solid-js": "^1.9.14"
+  },
+  "devDependencies": {
+    "happy-dom": "^20.10.6",
+    "vite": "^8.1.4",
+    "vite-plugin-solid": "^2.11.12",
+    "vitest": "^4.1.10"
+  }
+}

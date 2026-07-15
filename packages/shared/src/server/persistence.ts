@@ -2,12 +2,14 @@ import type {
   agents,
   models,
   providers,
+  requestLogs,
   routingRules,
   tiers,
   AgentRow,
   ModelPriceRow,
   ModelRow,
   ProviderRow,
+  RequestLogRow,
   RoutingEntryRow,
   RoutingRuleRow,
   TierRow,
@@ -144,6 +146,23 @@ export interface PricingCatalog {
   insertVersion(entry: ModelPriceInput): Promise<ModelPriceRow>;
 }
 
+/** A request-log row ready to insert. `id` is PRE-ALLOCATED by the recorder (so
+ * a retry is idempotent); the owner is NOT here — it is forced from the
+ * principal at `insertMany`. */
+export type RequestLogInsertInput = Omit<
+  (typeof requestLogs)['$inferInsert'],
+  'ownerUserId' | 'orgId'
+> & { id: string };
+
+/** Immutable request-log audit records (#11). Written in batches per principal
+ * (owner forced from the principal — not caller input), inserted idempotently
+ * (`ON CONFLICT (id) DO NOTHING`). Reads are ownership-scoped (invariant 5). */
+export interface RequestLogAccessor {
+  insertMany(principal: Principal, rows: RequestLogInsertInput[]): Promise<void>;
+  list(principal: Principal): Promise<RequestLogRow[]>;
+  findById(principal: Principal, id: string): Promise<RequestLogRow | null>;
+}
+
 /** The ONLY persistence surface exported outside the database module. By
  * construction it has no query/execute/Pool/drizzle member — unscoped SQL is
  * unwritable against it. */
@@ -154,6 +173,7 @@ export interface PersistencePort {
   routingRules: OwnedRepository<RoutingRuleRow, RoutingRuleInsertInput, RoutingRulePatch>;
   models: ModelAccessor;
   routingEntries: RoutingEntryAccessor;
+  requestLogs: RequestLogAccessor;
   users: UsersInfra;
   /** Global pricing catalog (#8) — non-owned, append-only. */
   pricing: PricingCatalog;

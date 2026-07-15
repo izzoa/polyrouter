@@ -270,6 +270,58 @@ export const modelPrices = pgTable(
   ],
 );
 
+/** Immutable per-request metadata + cost record (#11, spec §5/§7.5/§7.7;
+ * invariant 4). `agent_id`/`provider_id`/`model_id` are DENORMALIZED plain ids
+ * (NOT foreign keys): an append-only audit row must survive — and not fail to
+ * insert on — a concurrent provider/model/agent deletion, and keep the historical
+ * id. Unit prices are SNAPSHOTTED here and cost is computed once at request time
+ * (never recomputed); `cost`/snapshots are null when the price is unknown. Token
+ * counts are UNCACHED input + output, with cache tokens separate. USD-only. No
+ * prompt/response bodies (invariant 8). */
+export const requestLogs = pgTable(
+  'request_log',
+  {
+    id: id(),
+    ownerUserId: owned.ownerUserId(),
+    orgId: owned.orgId(),
+    agentId: text('agent_id'),
+    providerId: text('provider_id'),
+    modelId: text('model_id'),
+    tierAssigned: text('tier_assigned'),
+    decisionLayer: text('decision_layer').notNull(),
+    routingReason: text('routing_reason').notNull(),
+    inputTokens: integer('input_tokens').notNull(),
+    outputTokens: integer('output_tokens').notNull(),
+    cacheReadTokens: integer('cache_read_tokens'),
+    cacheWriteTokens: integer('cache_write_tokens'),
+    inputPriceSnapshot: doublePrecision('input_price_snapshot'),
+    outputPriceSnapshot: doublePrecision('output_price_snapshot'),
+    cacheReadPriceSnapshot: doublePrecision('cache_read_price_snapshot'),
+    cacheWritePriceSnapshot: doublePrecision('cache_write_price_snapshot'),
+    priceVersionId: text('price_version_id'),
+    usageEstimated: boolean('usage_estimated').default(false).notNull(),
+    cost: doublePrecision('cost'),
+    durationMs: integer('duration_ms').notNull(),
+    status: text('status').notNull(), // success | error (fallback/escalated: #12/#13)
+    escalated: boolean('escalated').default(false).notNull(),
+    qualitySignal: doublePrecision('quality_signal'),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index('request_log_created_idx').on(t.createdAt),
+    index('request_log_owner_idx').on(t.ownerUserId),
+    index('request_log_agent_idx').on(t.agentId),
+    index('request_log_provider_idx').on(t.providerId),
+    index('request_log_model_idx').on(t.modelId),
+    check(
+      'request_log_tokens_nonneg',
+      sql`${t.inputTokens} >= 0 AND ${t.outputTokens} >= 0
+        AND (${t.cacheReadTokens} IS NULL OR ${t.cacheReadTokens} >= 0)
+        AND (${t.cacheWriteTokens} IS NULL OR ${t.cacheWriteTokens} >= 0)`,
+    ),
+  ],
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
 export type AccountRow = typeof accounts.$inferSelect;
@@ -280,3 +332,4 @@ export type TierRow = typeof tiers.$inferSelect;
 export type RoutingEntryRow = typeof routingEntries.$inferSelect;
 export type RoutingRuleRow = typeof routingRules.$inferSelect;
 export type ModelPriceRow = typeof modelPrices.$inferSelect;
+export type RequestLogRow = typeof requestLogs.$inferSelect;

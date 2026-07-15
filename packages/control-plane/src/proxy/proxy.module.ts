@@ -3,6 +3,7 @@ import { APP_FILTER } from '@nestjs/core';
 import { createProviderAdapter } from '@polyrouter/data-plane';
 import { AuthModule } from '../auth/auth.module';
 import { DatabaseModule } from '../database/database.module';
+import { RecordingModule } from '../recording/recording.module';
 import { ChatCompletionsController } from './chat-completions.controller';
 import { MessagesController } from './messages.controller';
 import { ModelsController } from './models.controller';
@@ -17,7 +18,7 @@ import { StreamDrainRegistry } from './stream-drain.registry';
  * filter is registered globally (it protocol-shapes only `/v1`).
  */
 @Module({
-  imports: [DatabaseModule, AuthModule],
+  imports: [DatabaseModule, AuthModule, RecordingModule],
   controllers: [ChatCompletionsController, MessagesController, ModelsController],
   providers: [
     ProxyService,

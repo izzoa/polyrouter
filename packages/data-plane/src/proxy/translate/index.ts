@@ -17,6 +17,7 @@ export { createAnthropicAdapter, anthropicAdapter } from './anthropic';
 export type { AnthropicAdapterOptions } from './anthropic';
 export { canonRequest, canonResponse } from './canon';
 export { sseFrames, formatSseData, formatSseEvent, fromChunks, collect } from './stream';
+export { mergePartialUsage } from './usage';
 
 /** The default (nominal, no-quirk) adapter for a protocol. */
 export function getAdapter(protocol: Protocol): ProtocolAdapter {

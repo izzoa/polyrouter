@@ -1,10 +1,12 @@
 import { and, desc, eq, inArray, lte, sql } from 'drizzle-orm';
 import {
   agents,
+  assertUserPrincipal,
   models,
   modelPrices,
   ownershipPredicate,
   providers,
+  requestLogs,
   routingEntries,
   routingRules,
   tiers,
@@ -18,6 +20,7 @@ import {
   type PersistencePort,
   type PricingCatalog,
   type Principal,
+  type RequestLogAccessor,
   type RoutingEntryAccessor,
   type TierRow,
 } from '@polyrouter/shared/server';
@@ -330,6 +333,34 @@ function createPricingCatalog(db: Db): PricingCatalog {
   };
 }
 
+/** Request-log audit records (#11). Batched idempotent inserts (owner forced
+ * from the principal); ownership-scoped reads. */
+function createRequestLogAccessor(db: Db): RequestLogAccessor {
+  return {
+    async insertMany(principal, rows) {
+      if (rows.length === 0) return;
+      assertUserPrincipal(principal);
+      const owned = rows.map((r) => ({ ...r, ownerUserId: principal.userId, orgId: null }));
+      await db.insert(requestLogs).values(owned).onConflictDoNothing({ target: requestLogs.id });
+    },
+    async list(principal) {
+      return db
+        .select()
+        .from(requestLogs)
+        .where(ownershipPredicate(requestLogs, principal))
+        .orderBy(desc(requestLogs.createdAt));
+    },
+    async findById(principal, id) {
+      const rows = await db
+        .select()
+        .from(requestLogs)
+        .where(and(eq(requestLogs.id, id), ownershipPredicate(requestLogs, principal)))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+  };
+}
+
 export function buildPersistencePort(db: Db): PersistencePort {
   return {
     agents: createOwnedRepository(db, agents as unknown as AnyOwnedTable),
@@ -338,6 +369,7 @@ export function buildPersistencePort(db: Db): PersistencePort {
     routingRules: createOwnedRepository(db, routingRules as unknown as AnyOwnedTable),
     models: createModelAccessor(db),
     routingEntries: createRoutingEntryAccessor(db),
+    requestLogs: createRequestLogAccessor(db),
     pricing: createPricingCatalog(db),
     users: {
       async count() {

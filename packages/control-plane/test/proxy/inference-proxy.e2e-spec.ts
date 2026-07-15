@@ -29,6 +29,7 @@ import {
   loadProxyRuntime,
 } from '../../src/proxy/proxy.config';
 import { ProxyService } from '../../src/proxy/proxy.service';
+import { RequestRecorder } from '../../src/recording/request-recorder';
 import { StreamDrainRegistry } from '../../src/proxy/stream-drain.registry';
 import { DatabaseModule } from '../../src/database/database.module';
 import { COMPOSE_HINT } from '../tenancy/harness';
@@ -130,6 +131,7 @@ describe('inference proxy e2e', () => {
         AgentApiKeyGuard,
         ProxyService,
         StreamDrainRegistry,
+        { provide: RequestRecorder, useValue: { record: () => undefined } }, // #10 doesn't assert logging
         { provide: PROXY_RUNTIME, useFactory: loadProxyRuntime },
         { provide: PROXY_ADAPTER_FACTORY, useValue: createProviderAdapter },
         { provide: APP_FILTER, useClass: ProxyExceptionFilter },

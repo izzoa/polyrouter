@@ -9,6 +9,7 @@ import { HealthController } from './health/health.controller';
 import { PricingModule } from './pricing/pricing.module';
 import { ProvidersModule } from './providers/providers.module';
 import { ProxyModule } from './proxy/proxy.module';
+import { RecordingModule } from './recording/recording.module';
 import { RedisModule } from './redis/redis.module';
 import { RoutingConfigModule } from './routing-config/routing-config.module';
 
@@ -22,6 +23,7 @@ import { RoutingConfigModule } from './routing-config/routing-config.module';
     PricingModule,
     RoutingConfigModule,
     ProxyModule,
+    RecordingModule,
   ],
   controllers: [HealthController, AgentsController],
   providers: [

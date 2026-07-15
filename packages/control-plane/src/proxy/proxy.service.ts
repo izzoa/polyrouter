@@ -4,6 +4,7 @@ import {
   SsrfError,
   assertUrlSafe,
   decryptSecret,
+  type ModelRow,
   type PersistencePort,
   type Principal,
   type ProviderRow,
@@ -14,11 +15,13 @@ import {
   resolveRoute,
   runBuffered,
   isRouteError,
+  type ContentBlock,
   type NormalizedRequest,
   type ProtocolAdapter,
   type ProviderAdapter,
   type ProviderKind,
   type ProviderProtocol,
+  type RouteDecision,
   type RouteEntry,
   type RoutingSnapshot,
 } from '@polyrouter/data-plane';
@@ -36,12 +39,26 @@ import {
   type ProxyAdapterFactory,
   type ProxyRuntime,
 } from './proxy.config';
+import { RequestRecorder, type RecordingContext } from '../recording/request-recorder';
 
 interface Prepared {
   adapter: ProviderAdapter;
   client: ProtocolAdapter;
   routed: NormalizedRequest;
   created: number;
+  ctx: RecordingContext;
+}
+
+/** Assistant output characters (text + tool name/args) for a usage estimate. */
+function countOutputChars(content: readonly ContentBlock[]): number {
+  let n = 0;
+  for (const b of content) {
+    if (b.type === 'text') n += b.text.length;
+    else if (b.type === 'tool_use') {
+      n += b.name.length + ('inputRaw' in b ? b.inputRaw.length : JSON.stringify(b.input).length);
+    }
+  }
+  return n;
 }
 
 /**
@@ -59,52 +76,75 @@ export class ProxyService {
     @Inject(PERSISTENCE_PORT) private readonly db: PersistencePort,
     @Inject(PROXY_RUNTIME) private readonly rt: ProxyRuntime,
     @Inject(PROXY_ADAPTER_FACTORY) private readonly factory: ProxyAdapterFactory,
+    private readonly recorder: RequestRecorder,
   ) {
     this.key = rt.key;
     this.mode = rt.mode;
   }
 
-  /** Non-streaming: returns the client-wire response body. */
+  /** Non-streaming: returns the client-wire response body; records after (#11). */
   async completion(
     principal: Principal,
     protocol: ClientProtocol,
     wireBody: unknown,
     headers: NodeJS.Dict<string | string[]>,
+    agentId: string | null,
   ): Promise<unknown> {
-    const { adapter, client, routed, created } = await this.prepare(
+    const { adapter, client, routed, created, ctx } = await this.prepare(
       principal,
       protocol,
       wireBody,
       headers,
+      agentId,
     );
     try {
-      return await runBuffered(adapter, client, routed, { created });
+      const { wire, response } = await runBuffered(adapter, client, routed, { created });
+      this.recorder.record(ctx, {
+        status: 'success',
+        ...(response.usage !== undefined ? { providerUsage: response.usage } : {}),
+        outputChars: countOutputChars(response.content),
+      });
+      return wire;
     } catch (err) {
+      this.recorder.record(ctx, { status: 'error', outputChars: 0 });
       throw toProxyError(err);
     }
   }
 
   /** Streaming: returns the client-SSE frame generator (throws a mapped
-   * ProxyError on a pre-commit failure, before any byte is written). */
+   * ProxyError on a pre-commit failure, before any byte is written); records
+   * when the stream outcome settles (#11), off the request path. */
   async stream(
     principal: Principal,
     protocol: ClientProtocol,
     wireBody: unknown,
     headers: NodeJS.Dict<string | string[]>,
     signal: AbortSignal,
+    agentId: string | null,
   ): Promise<AsyncGenerator<string>> {
-    const { adapter, client, routed, created } = await this.prepare(
+    const { adapter, client, routed, created, ctx } = await this.prepare(
       principal,
       protocol,
       wireBody,
       headers,
+      agentId,
     );
     const result = await openStream(adapter, client, routed, {
       signal,
       firstEventTimeoutMs: this.rt.firstByteTimeoutMs,
       created,
     });
-    if (result.kind === 'error') throw providerErrorToProxy(result.error);
+    if (result.kind === 'error') {
+      this.recorder.record(ctx, { status: 'error', outputChars: 0 });
+      throw providerErrorToProxy(result.error);
+    }
+    void result.outcome.then((o) =>
+      this.recorder.record(ctx, {
+        status: o.status,
+        providerUsage: o.usage,
+        outputChars: o.outputChars,
+      }),
+    );
     return result.frames;
   }
 
@@ -136,7 +176,9 @@ export class ProxyService {
     protocol: ClientProtocol,
     wireBody: unknown,
     headers: NodeJS.Dict<string | string[]>,
+    agentId: string | null,
   ): Promise<Prepared> {
+    const startedAt = Date.now();
     const client = getAdapter(protocol);
     let ir: NormalizedRequest;
     try {
@@ -144,8 +186,9 @@ export class ProxyService {
     } catch {
       throw badRequest('invalid request body');
     }
+    const requestChars = safeChars(wireBody);
 
-    const snapshot = await this.loadSnapshot(principal);
+    const { snapshot, models } = await this.loadSnapshot(principal);
     const decision = resolveRoute(snapshot, {
       modelField: ir.model,
       headers: normalizeHeaders(headers),
@@ -154,13 +197,51 @@ export class ProxyService {
 
     const provider = await this.db.providers.findById(principal, decision.providerId);
     if (!provider) throw serviceUnavailable('routing target provider is unavailable');
+    const model = models.find((m) => m.id === decision.modelId);
+    if (!model) throw serviceUnavailable('routing target model is unavailable');
     const adapter = await this.buildAdapter(provider);
 
     const routed: NormalizedRequest = { ...ir, model: decision.externalModelId };
-    return { adapter, client, routed, created: Math.floor(Date.now() / 1000) };
+    const ctx = this.buildContext(
+      principal,
+      agentId,
+      decision,
+      provider,
+      model,
+      startedAt,
+      requestChars,
+    );
+    return { adapter, client, routed, created: Math.floor(Date.now() / 1000), ctx };
   }
 
-  private async loadSnapshot(principal: Principal): Promise<RoutingSnapshot> {
+  private buildContext(
+    principal: Principal,
+    agentId: string | null,
+    decision: RouteDecision,
+    provider: ProviderRow,
+    model: ModelRow,
+    startedAt: number,
+    requestChars: number,
+  ): RecordingContext {
+    return {
+      principal,
+      agentId,
+      decision,
+      provider: { baseUrl: provider.baseUrl, kind: provider.kind },
+      model: {
+        externalModelId: model.externalModelId,
+        inputPricePer1m: model.inputPricePer1m,
+        outputPricePer1m: model.outputPricePer1m,
+        isFree: model.isFree,
+      },
+      startedAt,
+      requestChars,
+    };
+  }
+
+  private async loadSnapshot(
+    principal: Principal,
+  ): Promise<{ snapshot: RoutingSnapshot; models: ModelRow[] }> {
     const [tiers, rules, models] = await Promise.all([
       this.db.tiers.list(principal),
       this.db.routingRules.list(principal),
@@ -176,7 +257,7 @@ export class ProxyService {
         );
       }),
     );
-    return {
+    const snapshot: RoutingSnapshot = {
       tiers: tiers.map((t) => ({ id: t.id, key: t.key })),
       entriesByTierId,
       rules: rules.map((r) => ({
@@ -194,6 +275,7 @@ export class ProxyService {
         externalModelId: m.externalModelId,
       })),
     };
+    return { snapshot, models };
   }
 
   private async buildAdapter(provider: ProviderRow): Promise<ProviderAdapter> {
@@ -220,6 +302,15 @@ export class ProxyService {
       defaultMaxOutputTokens: this.rt.defaultMaxOutputTokens,
       firstByteTimeoutMs: this.rt.firstByteTimeoutMs,
     });
+  }
+}
+
+/** Rough request size for the input-token estimate; never throws. */
+function safeChars(body: unknown): number {
+  try {
+    return JSON.stringify(body)?.length ?? 0;
+  } catch {
+    return 0;
   }
 }
 

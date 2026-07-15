@@ -34,5 +34,6 @@ import {
       },
     },
   ],
+  exports: [PricingService],
 })
 export class PricingModule {}

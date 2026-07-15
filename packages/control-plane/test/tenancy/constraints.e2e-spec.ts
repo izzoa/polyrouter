@@ -1,5 +1,37 @@
-import type { ModelRow, ProviderInsertInput } from '@polyrouter/shared/server';
+import type {
+  ModelRow,
+  ProviderInsertInput,
+  RequestLogInsertInput,
+} from '@polyrouter/shared/server';
 import { TenancyHarness, type TestPrincipal } from './harness';
+
+function logRow(over: Partial<RequestLogInsertInput> = {}): RequestLogInsertInput {
+  return {
+    id: crypto.randomUUID(),
+    agentId: null,
+    providerId: null,
+    modelId: null,
+    tierAssigned: null,
+    decisionLayer: 'default',
+    routingReason: 'default tier',
+    inputTokens: 10,
+    outputTokens: 5,
+    cacheReadTokens: null,
+    cacheWriteTokens: null,
+    inputPriceSnapshot: 2.5,
+    outputPriceSnapshot: 10,
+    cacheReadPriceSnapshot: null,
+    cacheWritePriceSnapshot: null,
+    priceVersionId: 'v1',
+    usageEstimated: false,
+    cost: 0.1,
+    durationMs: 5,
+    status: 'success',
+    escalated: false,
+    qualitySignal: null,
+    ...over,
+  };
+}
 
 /** Database-enforced constraints (database-schema DoD): the §7.4 five-total
  * cap survives NULLs, races, and out-of-range positions; catalog sync is
@@ -122,6 +154,32 @@ describe('schema constraints', () => {
       [fresh.userId],
     );
     expect(rows.rows[0].n).toBe(1);
+  });
+});
+
+describe('requestLogs (#11 audit records)', () => {
+  it('inserts a batch, reads owned rows, and hides other tenants', async () => {
+    const other = await harness.createTestPrincipal('log-other');
+    const a = logRow({ status: 'success' });
+    const b = logRow({ status: 'error' });
+    await harness.port.requestLogs.insertMany(owner.principal, [a, b]);
+
+    const mine = await harness.port.requestLogs.list(owner.principal);
+    expect(mine.map((r) => r.id).sort()).toEqual([a.id, b.id].sort());
+    expect(await harness.port.requestLogs.findById(owner.principal, a.id)).not.toBeNull();
+
+    // Cross-tenant: invisible by list and by id.
+    expect(await harness.port.requestLogs.list(other.principal)).toHaveLength(0);
+    expect(await harness.port.requestLogs.findById(other.principal, a.id)).toBeNull();
+  });
+
+  it('is idempotent on re-insert of the same id (retry-safe, no double count)', async () => {
+    const fresh = await harness.createTestPrincipal('log-idem');
+    const row = logRow();
+    await harness.port.requestLogs.insertMany(fresh.principal, [row]);
+    await harness.port.requestLogs.insertMany(fresh.principal, [row]); // retry
+    const rows = await harness.port.requestLogs.list(fresh.principal);
+    expect(rows).toHaveLength(1);
   });
 });
 

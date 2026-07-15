@@ -54,6 +54,8 @@ export interface RouteDecision {
   readonly providerId: string;
   readonly modelId: string;
   readonly externalModelId: string;
+  /** The resolved tier key, or null for a directly-named model (#11 tier_assigned). */
+  readonly tierKey: string | null;
   readonly decisionLayer: DecisionLayer;
   readonly routingReason: string;
 }
@@ -74,11 +76,13 @@ function modelDecision(
   model: RouteModel,
   decisionLayer: DecisionLayer,
   routingReason: string,
+  tierKey: string | null = null,
 ): RouteDecision {
   return {
     providerId: model.providerId,
     modelId: model.id,
     externalModelId: model.externalModelId,
+    tierKey,
     decisionLayer,
     routingReason,
   };
@@ -98,7 +102,7 @@ function resolveTier(
   const model = snap.models.find((m) => m.id === primary.modelId);
   // FK guarantees the model exists; guard defensively as an unresolved target.
   if (!model) return { error: 'unresolved_target', detail: tier.key };
-  return modelDecision(model, layer, reason);
+  return modelDecision(model, layer, reason, tier.key);
 }
 
 function resolveTarget(

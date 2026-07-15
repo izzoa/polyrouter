@@ -162,6 +162,21 @@ describe('resolveRoute — auto / header / default cascade', () => {
   });
 });
 
+describe('resolveRoute — tierKey (tier_assigned producer)', () => {
+  it('is the tier key for tier paths and null for a direct model', () => {
+    expect(resolveRoute(snap(), parse('gpt-4o'))).toMatchObject({ tierKey: null }); // explicit model
+    expect(resolveRoute(snap(), parse('fast'))).toMatchObject({ tierKey: 'fast' }); // tier key
+    expect(resolveRoute(snap(), parse('auto'))).toMatchObject({ tierKey: 'default' }); // auto → default
+    expect(resolveRoute(snap(), parse('auto', { 'x-polyrouter-tier': 'fast' }))).toMatchObject({
+      tierKey: 'fast',
+    }); // header
+    const modelRule = snap({
+      rules: [rule({ headerName: 'x', headerValue: 'v', target: 'model:m_fast' })],
+    });
+    expect(resolveRoute(modelRule, parse('auto', { x: 'v' }))).toMatchObject({ tierKey: null }); // model-target rule
+  });
+});
+
 describe('resolveRoute — typed errors', () => {
   it('empty_tier when the resolved tier has no entries', () => {
     const s = snap({ entriesByTierId: new Map() });

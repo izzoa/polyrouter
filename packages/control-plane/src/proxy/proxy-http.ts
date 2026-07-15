@@ -22,13 +22,14 @@ export async function handleInference(
 ): Promise<void> {
   // Refuse ALL new inference (streaming or not) once shutdown has begun.
   if (deps.registry.isDraining()) throw serviceUnavailable('server is shutting down');
+  const agentId = (req as { agentId?: string }).agentId ?? null;
   const streaming = (body as { stream?: unknown } | null)?.stream === true;
   if (!streaming) {
-    const wire = await deps.svc.completion(principal, protocol, body, req.headers);
+    const wire = await deps.svc.completion(principal, protocol, body, req.headers, agentId);
     res.status(200).json(wire); // a completion is 200, not Nest's POST-default 201
     return;
   }
-  await pumpSse(deps, protocol, principal, body, req, res);
+  await pumpSse(deps, protocol, principal, body, req, res, agentId);
 }
 
 async function pumpSse(
@@ -38,6 +39,7 @@ async function pumpSse(
   body: unknown,
   req: Request,
   res: Response,
+  agentId: string | null,
 ): Promise<void> {
   if (deps.registry.isDraining()) throw serviceUnavailable('server is shutting down');
 
@@ -50,7 +52,7 @@ async function pumpSse(
   try {
     // Awaits the first successful event — a pre-commit failure throws here,
     // before any header is written, so the filter renders a clean HTTP error.
-    frames = await deps.svc.stream(principal, protocol, body, req.headers, abort.signal);
+    frames = await deps.svc.stream(principal, protocol, body, req.headers, abort.signal, agentId);
   } catch (err) {
     res.off('close', onClose);
     deps.registry.deregister(abort);

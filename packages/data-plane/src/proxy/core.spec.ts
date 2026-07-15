@@ -129,6 +129,58 @@ describe('openStream — commit boundary', () => {
   });
 });
 
+describe('openStream — outcome (usage capture for #11)', () => {
+  const client = getAdapter('openai');
+  const REQ = { model: 'x', messages: [], params: {} };
+
+  it('captures merged usage + output chars on a clean completion', async () => {
+    const provider = providerFrom(async function* () {
+      yield {
+        type: 'message_start',
+        id: 'm',
+        model: 'gpt-4o',
+        role: 'assistant',
+        usage: { inputTokens: 10 },
+      };
+      yield { type: 'text_delta', index: 0, text: 'hello' };
+      yield { type: 'message_delta', stopReason: 'stop', usage: { outputTokens: 7 } };
+      yield { type: 'message_stop' };
+    });
+    const res = await openStream(provider, client, REQ, OPTS);
+    if (res.kind !== 'stream') throw new Error('unreachable');
+    await collect(res.frames);
+    const o = await res.outcome;
+    expect(o.status).toBe('success');
+    expect(o.usage).toMatchObject({ inputTokens: 10, outputTokens: 7 }); // merged, not summed
+    expect(o.outputChars).toBe(5); // 'hello'
+  });
+
+  it('settles outcome as error on a mid-stream failure', async () => {
+    const provider = providerFrom(async function* () {
+      yield START;
+      yield TEXT;
+      yield { type: 'error', error: { type: 'overloaded', message: 'x' } };
+    });
+    const res = await openStream(provider, client, REQ, OPTS);
+    if (res.kind !== 'stream') throw new Error('unreachable');
+    await collect(res.frames);
+    expect((await res.outcome).status).toBe('error');
+  });
+
+  it('settles outcome as error on an immediate pre-iteration return() (client disconnect)', async () => {
+    const provider = providerFrom(async function* () {
+      yield START;
+      yield TEXT;
+      yield STOP;
+      yield END;
+    });
+    const res = await openStream(provider, client, REQ, OPTS);
+    if (res.kind !== 'stream') throw new Error('unreachable');
+    await res.frames.return(undefined); // never called next()
+    expect((await res.outcome).status).toBe('error');
+  });
+});
+
 describe('runBuffered', () => {
   it('serializes the IR response to the client wire', async () => {
     const response: NormalizedResponse = {
@@ -143,17 +195,13 @@ describe('runBuffered', () => {
       },
       () => Promise.resolve(response),
     );
-    const wire = (await runBuffered(
+    const result = await runBuffered(
       provider,
       getAdapter('openai'),
-      {
-        model: 'x',
-        messages: [],
-        params: {},
-      },
+      { model: 'x', messages: [], params: {} },
       { created: 1 },
-    )) as { object: string; choices: unknown[] };
-    expect(wire.object).toBe('chat.completion');
-    expect(wire.choices).toHaveLength(1);
+    );
+    expect((result.wire as { object: string }).object).toBe('chat.completion');
+    expect(result.response.content).toHaveLength(1); // IR exposed for #11 usage capture
   });
 });

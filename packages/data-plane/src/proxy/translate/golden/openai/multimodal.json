@@ -1,0 +1,34 @@
+{
+  "request": {
+    "model": "gpt-4o",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          { "type": "text", "text": "What is in this image?" },
+          {
+            "type": "image_url",
+            "image_url": {
+              "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+              "detail": "high"
+            }
+          }
+        ]
+      }
+    ],
+    "max_completion_tokens": 300
+  },
+  "remoteImageRequest": {
+    "model": "gpt-4o",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          { "type": "text", "text": "Describe this." },
+          { "type": "image_url", "image_url": { "url": "https://example.com/cat.png" } }
+        ]
+      }
+    ],
+    "max_completion_tokens": 300
+  }
+}

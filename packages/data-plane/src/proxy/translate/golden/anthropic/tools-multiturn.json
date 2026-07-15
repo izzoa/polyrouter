@@ -1,0 +1,68 @@
+{
+  "request": {
+    "model": "claude-sonnet-4-5",
+    "messages": [
+      { "role": "user", "content": "Weather in SF and NYC?" },
+      {
+        "role": "assistant",
+        "content": [
+          { "type": "text", "text": "Let me check both." },
+          {
+            "type": "tool_use",
+            "id": "toolu_sf",
+            "name": "get_weather",
+            "input": { "city": "SF" }
+          },
+          {
+            "type": "tool_use",
+            "id": "toolu_nyc",
+            "name": "get_weather",
+            "input": { "city": "NYC" }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          { "type": "tool_result", "tool_use_id": "toolu_sf", "content": "62F sunny" },
+          {
+            "type": "tool_result",
+            "tool_use_id": "toolu_nyc",
+            "content": "unavailable",
+            "is_error": true
+          },
+          { "type": "text", "text": "Now summarize both cities." }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [{ "type": "text", "text": "SF is 62F and sunny; NYC data was unavailable." }]
+      }
+    ],
+    "tools": [
+      {
+        "name": "get_weather",
+        "description": "Get weather for a city",
+        "input_schema": {
+          "type": "object",
+          "properties": { "city": { "type": "string" } },
+          "required": ["city"]
+        }
+      }
+    ],
+    "tool_choice": { "type": "auto" },
+    "max_tokens": 512
+  },
+  "response": {
+    "id": "msg_tools1",
+    "type": "message",
+    "role": "assistant",
+    "model": "claude-sonnet-4-5",
+    "content": [
+      { "type": "tool_use", "id": "toolu_sf", "name": "get_weather", "input": { "city": "SF" } }
+    ],
+    "stop_reason": "tool_use",
+    "stop_sequence": null,
+    "usage": { "input_tokens": 40, "output_tokens": 12 }
+  }
+}

@@ -34,7 +34,7 @@ Env var names, endpoint paths (`/v1/chat/completions`, `/v1/messages`, `/api`), 
 | 2 | `add-database-and-tenancy` | A | 1 | M | ✅ archived 2026-07-15 |
 | 3 | `add-auth-and-identity` | A | 2 | L | ✅ archived 2026-07-15 |
 | 4 | `add-ssrf-url-guard` | B | 1 | M | ✅ archived 2026-07-15 |
-| 5 | `add-protocol-translation` | B | 1 | L | ☐ |
+| 5 | `add-protocol-translation` | B | 1 | XL | ✅ archived 2026-07-15 |
 | 6 | `add-provider-adapters` | B | 2, 4, 5 | M | ☐ |
 | 7 | `add-provider-management` | B | 3, 4, 6 | M | ☐ |
 | 8 | `add-pricing-catalog` | B | 7 | M | ☐ |

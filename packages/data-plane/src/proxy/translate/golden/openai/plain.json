@@ -1,0 +1,30 @@
+{
+  "request": {
+    "model": "gpt-4o",
+    "messages": [
+      { "role": "system", "content": "You are a terse assistant." },
+      { "role": "user", "content": "What is the capital of France?" }
+    ],
+    "temperature": 0.2,
+    "max_completion_tokens": 256
+  },
+  "response": {
+    "id": "chatcmpl-abc123",
+    "object": "chat.completion",
+    "created": 1700000000,
+    "model": "gpt-4o",
+    "choices": [
+      {
+        "index": 0,
+        "message": { "role": "assistant", "content": "Paris." },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 100,
+      "completion_tokens": 5,
+      "total_tokens": 105,
+      "prompt_tokens_details": { "cached_tokens": 80 }
+    }
+  }
+}

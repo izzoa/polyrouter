@@ -1,0 +1,70 @@
+{
+  "request": {
+    "model": "gpt-4o",
+    "messages": [
+      { "role": "system", "content": "Use tools when helpful." },
+      { "role": "user", "content": "Weather in SF and NYC?" },
+      {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_sf",
+            "type": "function",
+            "function": { "name": "get_weather", "arguments": "{\"city\":\"SF\"}" }
+          },
+          {
+            "id": "call_nyc",
+            "type": "function",
+            "function": { "name": "get_weather", "arguments": "{\"city\":\"NYC\"}" }
+          }
+        ]
+      },
+      { "role": "tool", "tool_call_id": "call_sf", "content": "62F sunny" },
+      { "role": "tool", "tool_call_id": "call_nyc", "content": "48F rain" },
+      { "role": "user", "content": "Thanks, summarize." },
+      { "role": "assistant", "content": "SF is 62F and sunny; NYC is 48F and rainy." }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "get_weather",
+          "description": "Get weather for a city",
+          "parameters": {
+            "type": "object",
+            "properties": { "city": { "type": "string" } },
+            "required": ["city"]
+          }
+        }
+      }
+    ],
+    "tool_choice": "auto",
+    "parallel_tool_calls": true,
+    "max_completion_tokens": 512
+  },
+  "response": {
+    "id": "chatcmpl-tools1",
+    "object": "chat.completion",
+    "created": 1700000100,
+    "model": "gpt-4o",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": null,
+          "tool_calls": [
+            {
+              "id": "call_sf",
+              "type": "function",
+              "function": { "name": "get_weather", "arguments": "{\"city\":\"SF\"}" }
+            }
+          ]
+        },
+        "finish_reason": "tool_calls"
+      }
+    ],
+    "usage": { "prompt_tokens": 40, "completion_tokens": 12, "total_tokens": 52 }
+  }
+}

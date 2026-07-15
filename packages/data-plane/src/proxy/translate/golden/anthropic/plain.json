@@ -1,0 +1,24 @@
+{
+  "request": {
+    "model": "claude-sonnet-4-5",
+    "system": "You are a terse assistant.",
+    "messages": [{ "role": "user", "content": "What is the capital of France?" }],
+    "max_tokens": 256,
+    "temperature": 0.2
+  },
+  "response": {
+    "id": "msg_abc123",
+    "type": "message",
+    "role": "assistant",
+    "model": "claude-sonnet-4-5",
+    "content": [{ "type": "text", "text": "Paris." }],
+    "stop_reason": "end_turn",
+    "stop_sequence": null,
+    "usage": {
+      "input_tokens": 20,
+      "output_tokens": 5,
+      "cache_read_input_tokens": 80,
+      "cache_creation_input_tokens": 10
+    }
+  }
+}

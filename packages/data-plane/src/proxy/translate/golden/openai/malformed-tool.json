@@ -1,0 +1,26 @@
+{
+  "response": {
+    "id": "chatcmpl-bad",
+    "object": "chat.completion",
+    "created": 1700000200,
+    "model": "gpt-4o",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": null,
+          "tool_calls": [
+            {
+              "id": "call_bad",
+              "type": "function",
+              "function": { "name": "get_weather", "arguments": "{ \"city\": " }
+            }
+          ]
+        },
+        "finish_reason": "tool_calls"
+      }
+    ],
+    "usage": { "prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28 }
+  }
+}

@@ -1,0 +1,59 @@
+/**
+ * The protocol-adapter contract. Each adapter (OpenAI, Anthropic) is a pure
+ * transform between its wire shape and the `Normalized*` IR — no HTTP, no DB,
+ * no config, no clock. Genuine provider deviations from the nominal protocol
+ * are absorbed via `quirks`; the core stays protocol-agnostic.
+ */
+import type { NormalizedRequest, NormalizedResponse, NormalizedStreamEvent } from './ir';
+
+/**
+ * Genuine deviations from the nominal protocol (NOT nominal behavior such as
+ * OpenAI's usage-in-final-empty-chunk, which the core handles). Defaults are
+ * all "nominal"; #6 populates these per provider.
+ */
+export interface AdapterQuirks {
+  /** Provider omits `usage` entirely — tolerate it (leave IR usage undefined). */
+  readonly usageOmitted?: boolean;
+  /** Provider already returns tool-call arguments as a parsed object, not a
+   * JSON string — skip the parse step. */
+  readonly toolArgumentsAlreadyObject?: boolean;
+}
+
+/** Pure, caller-supplied context for fields a target protocol requires but the
+ * source cannot provide (e.g. OpenAI `created`). No wall-clock reads occur in
+ * this module; the proxy passes the request-time value it already holds. */
+export interface SerializationContext {
+  /** Unix seconds for OpenAI `created` when the IR lacks it. */
+  readonly created?: number;
+}
+
+/** Raised only for preconditions on OUR outbound serialization (e.g. a missing
+ * Anthropic `max_tokens` with no default) — never for untrusted model output. */
+export class SerializationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SerializationError';
+  }
+}
+
+export interface ProtocolAdapter {
+  readonly protocol: 'openai' | 'anthropic';
+
+  /** Wire request → IR. */
+  requestIn(wire: unknown): NormalizedRequest;
+  /** IR → wire request. */
+  requestOut(ir: NormalizedRequest): unknown;
+
+  /** Wire response → IR. */
+  responseIn(wire: unknown): NormalizedResponse;
+  /** IR → wire response. */
+  responseOut(ir: NormalizedResponse, ctx?: SerializationContext): unknown;
+
+  /** Upstream SSE chunks → normalized event sequence. */
+  streamParse(chunks: AsyncIterable<string>): AsyncGenerator<NormalizedStreamEvent>;
+  /** Normalized event sequence → client SSE frame strings. */
+  streamSerialize(
+    events: AsyncIterable<NormalizedStreamEvent>,
+    ctx?: SerializationContext,
+  ): AsyncGenerator<string>;
+}

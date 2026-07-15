@@ -48,7 +48,7 @@ export interface ParsedRoute {
   readonly headers: Readonly<Record<string, string | undefined>>;
 }
 
-export type DecisionLayer = 'explicit' | 'header' | 'default' | 'structural';
+export type DecisionLayer = 'explicit' | 'header' | 'default' | 'structural' | 'cascade';
 
 /** One member of a fallback chain (#12). */
 export interface RouteTarget {
@@ -170,6 +170,22 @@ export const ruleOrder = (a: RouteRule, b: RouteRule): number =>
   b.priority - a.priority ||
   a.createdAt.getTime() - b.createdAt.getTime() ||
   (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+
+/** Resolve a structural/cascade band target: the highest-priority rule of
+ * `matchType` (auto_high / auto_low), resolved to a decision — or `null` when no
+ * such rule exists or its target is unresolvable. Shared by #13 (structural) and
+ * #14 (cascade) so both select band rules with the one deterministic ordering. */
+export function resolveBandTarget(
+  snap: RoutingSnapshot,
+  matchType: string,
+  layer: DecisionLayer,
+  reason: string,
+): RouteDecision | null {
+  const rule = [...snap.rules].filter((r) => r.matchType === matchType).sort(ruleOrder)[0];
+  if (rule === undefined) return null;
+  const decision = resolveTarget(snap, rule.target, layer, reason);
+  return isRouteError(decision) ? null : decision;
+}
 
 export function resolveRoute(
   snap: RoutingSnapshot,

@@ -21,6 +21,8 @@ export type {
   ProviderInsertInput,
   ProviderPatch,
   ReplaceEntriesResult,
+  RequestAttemptAccessor,
+  RequestAttemptInsertInput,
   RequestLogAccessor,
   RequestLogInsertInput,
   RoutingEntryAccessor,

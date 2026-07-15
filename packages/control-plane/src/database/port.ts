@@ -6,6 +6,7 @@ import {
   modelPrices,
   ownershipPredicate,
   providers,
+  requestAttempts,
   requestLogs,
   routingEntries,
   routingRules,
@@ -20,6 +21,7 @@ import {
   type PersistencePort,
   type PricingCatalog,
   type Principal,
+  type RequestAttemptAccessor,
   type RequestLogAccessor,
   type RoutingEntryAccessor,
   type TierRow,
@@ -361,6 +363,32 @@ function createRequestLogAccessor(db: Db): RequestLogAccessor {
   };
 }
 
+function createRequestAttemptAccessor(db: Db): RequestAttemptAccessor {
+  return {
+    async insertMany(principal, rows) {
+      if (rows.length === 0) return;
+      assertUserPrincipal(principal);
+      const owned = rows.map((r) => ({ ...r, ownerUserId: principal.userId, orgId: null }));
+      await db
+        .insert(requestAttempts)
+        .values(owned)
+        .onConflictDoNothing({ target: requestAttempts.id });
+    },
+    async listForRequest(principal, requestLogId) {
+      return db
+        .select()
+        .from(requestAttempts)
+        .where(
+          and(
+            eq(requestAttempts.requestLogId, requestLogId),
+            ownershipPredicate(requestAttempts, principal),
+          ),
+        )
+        .orderBy(requestAttempts.attemptIndex);
+    },
+  };
+}
+
 export function buildPersistencePort(db: Db): PersistencePort {
   return {
     agents: createOwnedRepository(db, agents as unknown as AnyOwnedTable),
@@ -370,6 +398,7 @@ export function buildPersistencePort(db: Db): PersistencePort {
     models: createModelAccessor(db),
     routingEntries: createRoutingEntryAccessor(db),
     requestLogs: createRequestLogAccessor(db),
+    requestAttempts: createRequestAttemptAccessor(db),
     pricing: createPricingCatalog(db),
     users: {
       async count() {

@@ -15,6 +15,7 @@ import {
   getAdapter,
   isRouteError,
   openStreamChain,
+  replayBufferedStream,
   resolveRoute,
   runBufferedChain,
   type AttemptFailure,
@@ -22,6 +23,7 @@ import {
   type CircuitBreaker,
   type ContentBlock,
   type NormalizedRequest,
+  type NormalizedResponse,
   type ProtocolAdapter,
   type ProviderAdapter,
   type ProviderKind,
@@ -47,17 +49,41 @@ import {
 } from './proxy.config';
 import { RequestRecorder, type RecordingContext } from '../recording/request-recorder';
 import { StructuralRouter } from './structural/structural-router';
+import { CascadeRouter, type CascadePlan } from './cascade/cascade-router';
 
 /** Per-chain-member recording metadata (parallel to the attempts). */
 interface AttemptMeta {
   readonly providerId: string;
   readonly modelId: string;
+  /** The tier this member belongs to (its own — a cascade escalation chain mixes
+   * strong + default members, so provenance is per-member, #14). */
+  readonly tierKey: string | null;
   readonly providerBaseUrl: string | null;
   readonly providerKind: string;
   readonly model: Pick<
     ModelRow,
     'externalModelId' | 'inputPricePer1m' | 'outputPricePer1m' | 'isFree'
   >;
+}
+
+/** A resolved fallback chain: lazy attempts + parallel recording metadata. */
+interface Bundle {
+  readonly attempts: ChainAttempt[];
+  readonly meta: AttemptMeta[];
+}
+
+/** Cascade orchestration state (#14): the cheap chain + the escalation chain
+ * (`strong ++ default`, so a down strong tier still rescues to the reliable core). */
+interface CascadeBundle {
+  readonly cheap: Bundle;
+  readonly escalation: Bundle;
+  readonly cheapTimeoutMs: number;
+}
+
+/** The served cheap response, for a per-call ledger row when it is escalated. */
+interface CheapServed {
+  readonly response: NormalizedResponse;
+  readonly servedIndex: number;
 }
 
 interface Prepared {
@@ -71,6 +97,7 @@ interface Prepared {
   requestChars: number;
   principal: Principal;
   agentId: string | null;
+  cascade?: CascadeBundle;
 }
 
 /** Assistant output characters (text + tool name/args) for a usage estimate. */
@@ -86,10 +113,10 @@ function countOutputChars(content: readonly ContentBlock[]): number {
 }
 
 /**
- * Layer-0 proxy orchestration (#10). Loads the tenant's owned config, resolves
- * the route (data-plane engine), decrypts the provider credential (#7), builds
- * the #6 adapter, and delegates the call/translation to `ProxyCore`. The
- * controllers own the HTTP pump; this owns everything up to it.
+ * Proxy orchestration (#10 Layer 0, #13 structural, #14 cascade). Loads the
+ * tenant's owned config, resolves the route, decrypts the provider credential
+ * (#7), builds the #6 adapter, and delegates the call/translation to `ProxyCore`.
+ * The controllers own the HTTP pump; this owns everything up to it.
  */
 @Injectable()
 export class ProxyService {
@@ -103,13 +130,14 @@ export class ProxyService {
     @Inject(PROXY_BREAKER) private readonly breaker: CircuitBreaker,
     private readonly recorder: RequestRecorder,
     private readonly structural: StructuralRouter,
+    private readonly cascade: CascadeRouter,
   ) {
     this.key = rt.key;
     this.mode = rt.mode;
   }
 
-  /** Non-streaming: walk the fallback chain; return the served member's wire and
-   * record it (#11/#12). `signal` aborts the walk on client disconnect. */
+  /** Non-streaming: walk the fallback chain (or the cascade); return the served
+   * member's wire and record it (#11/#12/#14). */
   async completion(
     principal: Principal,
     protocol: ClientProtocol,
@@ -119,6 +147,8 @@ export class ProxyService {
     signal: AbortSignal,
   ): Promise<unknown> {
     const p = await this.prepare(principal, protocol, wireBody, headers, agentId);
+    if (p.cascade !== undefined) return this.cascadeCompletion(p, p.cascade, signal);
+
     const result = await runBufferedChain(
       this.breaker,
       p.attempts,
@@ -142,8 +172,8 @@ export class ProxyService {
     throw toProxyError(result.error);
   }
 
-  /** Streaming: walk the chain to the first committed member; record the served
-   * member when the stream outcome settles (a post-commit error → `status=error`). */
+  /** Streaming: walk the chain (or the cascade) to the first committed member;
+   * record when the stream outcome settles (a post-commit error → `status=error`). */
   async stream(
     principal: Principal,
     protocol: ClientProtocol,
@@ -153,6 +183,8 @@ export class ProxyService {
     agentId: string | null,
   ): Promise<AsyncGenerator<string>> {
     const p = await this.prepare(principal, protocol, wireBody, headers, agentId);
+    if (p.cascade !== undefined) return this.cascadeStream(p, p.cascade, signal);
+
     const result = await openStreamChain(this.breaker, p.attempts, p.client, p.routed, {
       signal,
       firstEventTimeoutMs: this.rt.firstByteTimeoutMs,
@@ -199,6 +231,229 @@ export class ProxyService {
     };
   }
 
+  // --- cascade (Layer 3, #14) ---
+
+  /** Buffered cascade: run the cheap tier buffered (under a deadline), gate, then
+   * deliver the cheap answer or escalate `strong ++ default`. */
+  private async cascadeCompletion(
+    p: Prepared,
+    c: CascadeBundle,
+    signal: AbortSignal,
+  ): Promise<unknown> {
+    const cheap = await runBufferedChain(
+      this.breaker,
+      c.cheap.attempts,
+      p.client,
+      p.routed,
+      { created: p.created },
+      AbortSignal.any([signal, AbortSignal.timeout(c.cheapTimeoutMs)]),
+    );
+    if (cheap.ok) {
+      const { score, escalate } = this.cascade.shouldEscalate(cheap.response);
+      if (!escalate) {
+        this.recorder.record(
+          this.servedFrom(
+            p,
+            c.cheap.meta,
+            cheap.servedIndex,
+            `cascade: cheap served`,
+            score,
+            cheap.failures,
+          ),
+          {
+            status: cheap.failures.length > 0 ? 'fallback' : 'success',
+            ...(cheap.response.usage !== undefined ? { providerUsage: cheap.response.usage } : {}),
+            outputChars: countOutputChars(cheap.response.content),
+            escalated: false,
+            qualitySignal: score,
+          },
+        );
+        return cheap.wire;
+      }
+      return this.escalateBuffered(
+        p,
+        c,
+        { response: cheap.response, servedIndex: cheap.servedIndex },
+        score,
+        signal,
+      );
+    }
+    if (signal.aborted) throw toProxyError(cheap.error); // client disconnected — do not escalate
+    return this.escalateBuffered(p, c, null, 0, signal); // cheap failed/timed out — escalate, score 0
+  }
+
+  private async escalateBuffered(
+    p: Prepared,
+    c: CascadeBundle,
+    cheapServed: CheapServed | null,
+    score: number | null,
+    signal: AbortSignal,
+  ): Promise<unknown> {
+    const result = await runBufferedChain(
+      this.breaker,
+      c.escalation.attempts,
+      p.client,
+      p.routed,
+      { created: p.created },
+      signal,
+    );
+    if (!result.ok) {
+      this.recorder.record(
+        this.servedFrom(
+          p,
+          c.escalation.meta,
+          0,
+          `cascade: escalated, all failed`,
+          score,
+          result.failures,
+        ),
+        { status: 'error', outputChars: 0, escalated: true, qualitySignal: score },
+      );
+      throw toProxyError(result.error);
+    }
+    const requestId = this.recorder.record(
+      this.servedFrom(
+        p,
+        c.escalation.meta,
+        result.servedIndex,
+        escalatedReason(c.escalation.meta, result.servedIndex),
+        score,
+        result.failures,
+      ),
+      {
+        status: result.failures.length > 0 ? 'fallback' : 'success',
+        ...(result.response.usage !== undefined ? { providerUsage: result.response.usage } : {}),
+        outputChars: countOutputChars(result.response.content),
+        escalated: true,
+        qualitySignal: score,
+      },
+    );
+    if (cheapServed !== null) this.recordCheapAttempt(p, c, requestId, cheapServed);
+    return result.wire;
+  }
+
+  /** Streaming cascade: cheap buffered → gate → replay the cheap answer or stream
+   * the escalation live. Only one tier ever reaches the client (invariant 3). */
+  private async cascadeStream(
+    p: Prepared,
+    c: CascadeBundle,
+    signal: AbortSignal,
+  ): Promise<AsyncGenerator<string>> {
+    const cheap = await runBufferedChain(
+      this.breaker,
+      c.cheap.attempts,
+      p.client,
+      p.routed,
+      { created: p.created },
+      AbortSignal.any([signal, AbortSignal.timeout(c.cheapTimeoutMs)]),
+    );
+    if (cheap.ok) {
+      const { score, escalate } = this.cascade.shouldEscalate(cheap.response);
+      const cheapServed: CheapServed = { response: cheap.response, servedIndex: cheap.servedIndex };
+      if (!escalate) {
+        const replay = await replayBufferedStream(p.client, cheap.response, { created: p.created });
+        if (replay.kind === 'stream') {
+          const ctx = this.servedFrom(
+            p,
+            c.cheap.meta,
+            cheap.servedIndex,
+            `cascade: cheap served`,
+            score,
+            cheap.failures,
+          );
+          const fellBack = cheap.failures.length > 0;
+          void replay.outcome.then((o) =>
+            this.recorder.record(ctx, {
+              status: o.status === 'error' ? 'error' : fellBack ? 'fallback' : 'success',
+              ...(cheap.response.usage !== undefined
+                ? { providerUsage: cheap.response.usage }
+                : {}),
+              outputChars: countOutputChars(cheap.response.content),
+              escalated: false,
+              qualitySignal: score,
+            }),
+          );
+          return replay.frames;
+        }
+        // replay materialization failed before any byte → safe to escalate.
+      }
+      return this.escalateStream(p, c, cheapServed, score, signal);
+    }
+    if (signal.aborted) throw providerErrorToProxy(cheap.error);
+    return this.escalateStream(p, c, null, 0, signal);
+  }
+
+  private async escalateStream(
+    p: Prepared,
+    c: CascadeBundle,
+    cheapServed: CheapServed | null,
+    score: number | null,
+    signal: AbortSignal,
+  ): Promise<AsyncGenerator<string>> {
+    const result = await openStreamChain(this.breaker, c.escalation.attempts, p.client, p.routed, {
+      signal,
+      firstEventTimeoutMs: this.rt.firstByteTimeoutMs,
+      created: p.created,
+    });
+    if (result.kind === 'error') {
+      this.recorder.record(
+        this.servedFrom(
+          p,
+          c.escalation.meta,
+          0,
+          `cascade: escalated, all failed`,
+          score,
+          result.failures,
+        ),
+        { status: 'error', outputChars: 0, escalated: true, qualitySignal: score },
+      );
+      throw providerErrorToProxy(result.error);
+    }
+    const ctx = this.servedFrom(
+      p,
+      c.escalation.meta,
+      result.servedIndex,
+      escalatedReason(c.escalation.meta, result.servedIndex),
+      score,
+      result.failures,
+    );
+    const fellBack = result.failures.length > 0;
+    void result.outcome.then((o) => {
+      const requestId = this.recorder.record(ctx, {
+        status: o.status === 'error' ? 'error' : fellBack ? 'fallback' : 'success',
+        providerUsage: o.usage,
+        outputChars: o.outputChars,
+        escalated: true,
+        qualitySignal: score,
+      });
+      if (cheapServed !== null) this.recordCheapAttempt(p, c, requestId, cheapServed);
+    });
+    return result.frames;
+  }
+
+  /** Ledger row for the superseded cheap call (its own price/usage), #14. */
+  private recordCheapAttempt(
+    p: Prepared,
+    c: CascadeBundle,
+    requestLogId: string,
+    cheapServed: CheapServed,
+  ): void {
+    const m = c.cheap.meta[cheapServed.servedIndex];
+    if (m === undefined) return;
+    this.recorder.recordAttempt(
+      requestLogId,
+      this.metaContext(p, m, `cascade: cheap attempt (escalated)`),
+      {
+        status: 'success',
+        ...(cheapServed.response.usage !== undefined
+          ? { providerUsage: cheapServed.response.usage }
+          : {}),
+        outputChars: countOutputChars(cheapServed.response.content),
+      },
+      0,
+    );
+  }
+
   // --- internals ---
 
   private async prepare(
@@ -225,19 +480,64 @@ export class ProxyService {
     });
     if (isRouteError(decision)) throw routeError(decision.error);
 
-    // Layer 1 (#13): refine an `auto` request that fell through to the default
-    // tier. Explicit models and header-selected tiers already won in Layer 0
-    // (decisionLayer !== 'default'), so they are never touched. Any failure in
-    // the structural path returns null → the Layer-0 default stands (invariant 1).
+    // Auto routing (#13/#14) refines an `auto` request that fell through to the
+    // default tier; explicit models and header tiers already won in Layer 0.
+    let cascadePlan: CascadePlan | null = null;
     if (ir.model === AUTO_ALIAS && decision.decisionLayer === 'default') {
-      const refined = await this.structural.decide(principal, agentId, ir, snapshot);
-      if (refined !== null) decision = refined;
+      const evaln = await this.structural.evaluate(principal, agentId, ir, snapshot);
+      if (evaln.kind === 'route')
+        decision = evaln.decision; // Layer 1 confident band
+      else if (evaln.kind === 'ambiguous' && this.cascade.enabled) {
+        cascadePlan = this.cascade.plan(snapshot); // Layer 3 candidate
+      }
+      // else: the Layer-0 default decision stands (invariant 1)
     }
 
-    // Build the attempt chain in the CONFIGURED order (no reorder). Provider/model
-    // metadata is loaded now (ownership-scoped, cheap); the adapter is built lazily
-    // INSIDE the breaker callback so an open/broken later member can't fail a
-    // healthy primary and an open circuit skips before any setup work.
+    const primary = await this.buildBundle(principal, decision, models);
+
+    let cascade: CascadeBundle | undefined;
+    if (cascadePlan !== null) {
+      const cheap = await this.buildBundle(principal, cascadePlan.cheap, models);
+      const strong = await this.buildBundle(principal, cascadePlan.strong, models);
+      // Escalation walks strong then the Layer-0 default (reliable-core rescue).
+      if (cheap.attempts.length > 0 && strong.attempts.length + primary.attempts.length > 0) {
+        cascade = {
+          cheap,
+          escalation: {
+            attempts: [...strong.attempts, ...primary.attempts],
+            meta: [...strong.meta, ...primary.meta],
+          },
+          cheapTimeoutMs: this.cascade.cheapTimeoutMs,
+        };
+      }
+    }
+
+    if (primary.attempts.length === 0 && cascade === undefined) {
+      throw serviceUnavailable('no usable provider for the route');
+    }
+
+    return {
+      client,
+      routed: ir, // the model is retargeted per-attempt inside the walker
+      created: Math.floor(Date.now() / 1000),
+      attempts: primary.attempts,
+      meta: primary.meta,
+      decision,
+      startedAt,
+      requestChars,
+      principal,
+      agentId,
+      ...(cascade !== undefined ? { cascade } : {}),
+    };
+  }
+
+  /** Resolve a decision's chain into lazy attempts + recording meta (owner-scoped
+   * loads; adapters built lazily inside the breaker callback, #12). */
+  private async buildBundle(
+    principal: Principal,
+    decision: RouteDecision,
+    models: ModelRow[],
+  ): Promise<Bundle> {
     const attempts: ChainAttempt[] = [];
     const meta: AttemptMeta[] = [];
     for (const t of decision.chain) {
@@ -247,6 +547,7 @@ export class ProxyService {
       meta.push({
         providerId: t.providerId,
         modelId: t.modelId,
+        tierKey: decision.tierKey,
         providerBaseUrl: provider.baseUrl,
         providerKind: provider.kind,
         model: {
@@ -262,20 +563,7 @@ export class ProxyService {
         buildAdapter: () => this.chainAdapter(provider),
       });
     }
-    if (attempts.length === 0) throw serviceUnavailable('no usable provider for the route');
-
-    return {
-      client,
-      routed: ir, // the model is retargeted per-attempt inside the walker
-      created: Math.floor(Date.now() / 1000),
-      attempts,
-      meta,
-      decision,
-      startedAt,
-      requestChars,
-      principal,
-      agentId,
-    };
+    return { attempts, meta };
   }
 
   /** Build a chain member's adapter; a setup failure (SSRF/credential/decrypt)
@@ -316,6 +604,36 @@ export class ProxyService {
       tierAssigned: p.decision.tierKey,
       decisionLayer: p.decision.decisionLayer,
       routingReason: reasonWithTrail(p.decision.routingReason, failures, p.meta),
+      provider: { baseUrl: m.providerBaseUrl, kind: m.providerKind },
+      model: m.model,
+      startedAt: p.startedAt,
+      requestChars: p.requestChars,
+    };
+  }
+
+  /** A cascade recording context for `meta[servedIndex]` (per-member tier + price),
+   * `decision_layer='cascade'`, with the score + fallback trail in the reason. */
+  private servedFrom(
+    p: Prepared,
+    meta: readonly AttemptMeta[],
+    servedIndex: number,
+    baseReason: string,
+    score: number | null,
+    failures: readonly AttemptFailure[],
+  ): RecordingContext {
+    const reason = reasonWithTrail(`${baseReason} (q=${fmtQ(score)})`, failures, meta);
+    return this.metaContext(p, meta[servedIndex]!, reason);
+  }
+
+  private metaContext(p: Prepared, m: AttemptMeta, reason: string): RecordingContext {
+    return {
+      principal: p.principal,
+      agentId: p.agentId,
+      providerId: m.providerId,
+      modelId: m.modelId,
+      tierAssigned: m.tierKey,
+      decisionLayer: 'cascade',
+      routingReason: reason,
       provider: { baseUrl: m.providerBaseUrl, kind: m.providerKind },
       model: m.model,
       startedAt: p.startedAt,
@@ -401,6 +719,16 @@ function reasonWithTrail(
     .map((f) => `${f.error.kind}@${meta[f.index]?.model.externalModelId ?? '?'}`)
     .join(', ');
   return `${reason}; fell back after: ${trail}`;
+}
+
+/** `cascade: escalated cheap→<served-tier>` (names the tier that actually served,
+ * `default` on a reliable-core rescue). */
+function escalatedReason(meta: readonly AttemptMeta[], servedIndex: number): string {
+  return `cascade: escalated cheap→${meta[servedIndex]?.tierKey ?? 'model'}`;
+}
+
+function fmtQ(score: number | null): string {
+  return score === null ? 'n/a' : score.toFixed(2);
 }
 
 /** Rough request size for the input-token estimate; never throws. */

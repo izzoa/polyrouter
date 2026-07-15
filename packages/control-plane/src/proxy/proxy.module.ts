@@ -30,6 +30,7 @@ import { ProxyService } from './proxy.service';
 import { StreamDrainRegistry } from './stream-drain.registry';
 import { StructuralBaselineStore } from './structural/structural-baseline.store';
 import { StructuralRouter } from './structural/structural-router';
+import { CascadeRouter } from './cascade/cascade-router';
 
 /** ioredis `eval` bounded by a fail-fast deadline so a slow/down Redis degrades
  * to the in-memory breaker without stalling the request (#12). */
@@ -57,6 +58,7 @@ function boundedBreakerRedis(redis: Redis): BreakerRedis {
     ProxyService,
     StreamDrainRegistry,
     StructuralRouter,
+    CascadeRouter,
     { provide: PROXY_RUNTIME, useFactory: loadProxyRuntime },
     { provide: PROXY_ADAPTER_FACTORY, useValue: createProviderAdapter },
     { provide: ROUTING_CONFIG, useFactory: loadRoutingConfig },

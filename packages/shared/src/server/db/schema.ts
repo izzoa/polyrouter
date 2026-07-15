@@ -322,6 +322,51 @@ export const requestLogs = pgTable(
   ],
 );
 
+/** Per-billable-call cost ledger for a request (#14 cascade). `request_log` is
+ * the one-per-request served summary; a `request_attempt` row records each
+ * ADDITIONAL billable upstream call (the superseded cheap attempt on a cascade
+ * escalation) at its own immutable snapshot price (invariant 4). Total request
+ * spend = `request_log.cost` + Σ `request_attempt.cost`. Owner-scoped
+ * (invariant 5); cascade-deleted with its request. No prompt/response bodies. */
+export const requestAttempts = pgTable(
+  'request_attempt',
+  {
+    id: id(),
+    requestLogId: text('request_log_id')
+      .notNull()
+      .references(() => requestLogs.id, { onDelete: 'cascade' }),
+    ownerUserId: owned.ownerUserId(),
+    orgId: owned.orgId(),
+    attemptIndex: integer('attempt_index').notNull(),
+    tierKey: text('tier_key'),
+    providerId: text('provider_id'),
+    modelId: text('model_id'),
+    inputTokens: integer('input_tokens').notNull(),
+    outputTokens: integer('output_tokens').notNull(),
+    cacheReadTokens: integer('cache_read_tokens'),
+    cacheWriteTokens: integer('cache_write_tokens'),
+    inputPriceSnapshot: doublePrecision('input_price_snapshot'),
+    outputPriceSnapshot: doublePrecision('output_price_snapshot'),
+    cacheReadPriceSnapshot: doublePrecision('cache_read_price_snapshot'),
+    cacheWritePriceSnapshot: doublePrecision('cache_write_price_snapshot'),
+    priceVersionId: text('price_version_id'),
+    usageEstimated: boolean('usage_estimated').default(false).notNull(),
+    cost: doublePrecision('cost'),
+    status: text('status').notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index('request_attempt_request_idx').on(t.requestLogId),
+    index('request_attempt_owner_idx').on(t.ownerUserId),
+    check(
+      'request_attempt_tokens_nonneg',
+      sql`${t.inputTokens} >= 0 AND ${t.outputTokens} >= 0
+        AND (${t.cacheReadTokens} IS NULL OR ${t.cacheReadTokens} >= 0)
+        AND (${t.cacheWriteTokens} IS NULL OR ${t.cacheWriteTokens} >= 0)`,
+    ),
+  ],
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
 export type AccountRow = typeof accounts.$inferSelect;
@@ -333,3 +378,4 @@ export type RoutingEntryRow = typeof routingEntries.$inferSelect;
 export type RoutingRuleRow = typeof routingRules.$inferSelect;
 export type ModelPriceRow = typeof modelPrices.$inferSelect;
 export type RequestLogRow = typeof requestLogs.$inferSelect;
+export type RequestAttemptRow = typeof requestAttempts.$inferSelect;

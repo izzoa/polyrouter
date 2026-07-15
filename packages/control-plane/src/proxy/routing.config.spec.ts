@@ -6,6 +6,8 @@ const base: RoutingEnv = {
   ROUTING_STRUCTURAL_HIGH_THRESHOLD: 0.6,
   ROUTING_STRUCTURAL_LOW_THRESHOLD: 0.25,
   ROUTING_STRUCTURAL_BASELINE_ALPHA: 0.2,
+  ROUTING_CASCADE_QUALITY_THRESHOLD: 0.5,
+  ROUTING_CASCADE_CHEAP_TIMEOUT_MS: 30_000,
 };
 
 describe('buildRoutingConfig', () => {
@@ -33,6 +35,19 @@ describe('buildRoutingConfig', () => {
   it('rejects alpha outside (0, 1]', () => {
     expect(() => buildRoutingConfig({ ...base, ROUTING_STRUCTURAL_BASELINE_ALPHA: 0 })).toThrow();
     expect(() => buildRoutingConfig({ ...base, ROUTING_STRUCTURAL_BASELINE_ALPHA: 1.5 })).toThrow();
+  });
+
+  it('cascade implies structural + surfaces the cascade config', () => {
+    const c = buildRoutingConfig({ ...base, ROUTING_AUTO_LAYERS: 'cascade' });
+    expect(c.autoLayers.has('cascade')).toBe(true);
+    expect(c.autoLayers.has('structural')).toBe(true); // implied
+    expect(c.cascade.enabled).toBe(true);
+    expect(c.cascade.qualityThreshold).toBe(0.5);
+    expect(c.cascade.cheapTimeoutMs).toBe(30_000);
+  });
+
+  it('cascade disabled when not in the layer list', () => {
+    expect(buildRoutingConfig(base).cascade.enabled).toBe(false);
   });
 });
 

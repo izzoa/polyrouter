@@ -1,0 +1,15 @@
+---
+'@polyrouter/shared': minor
+'@polyrouter/data-plane': minor
+'@polyrouter/control-plane': minor
+---
+
+Add Layer 3 cascade routing — FrugalGPT-style cheap-first with escalation, reaching the L0+L1+L3 self-host feature target (spec §7.2 Layer 3, §7.6; invariants 1, 3, 4, 9).
+
+- **Trigger on Layer 1 `ambiguous`**: `StructuralRouter.evaluate()` now returns `route | ambiguous | skip` (`decide()` kept as the #13 adapter). An ambiguous `auto` request, with `cascade` enabled and both `auto_low`/`auto_high` targets configured, runs the cascade; otherwise the Layer-0 `default` stands. Enabling `cascade` **implies** `structural` (it consumes the ambiguity signal).
+- **Cheap-first, gate, escalate** (`ProxyService` + `CascadeRouter`): the cheap tier runs **buffered under a bounded deadline** (a hung upstream still escalates; a client disconnect stops), so nothing is forwarded before the decision (invariant 3 by construction). A pure, language-neutral, tokenizer-free **binary quality score** (`evaluateQuality`: empty / error-stop / content-filter / malformed-tool-args → escalate; `tool_use`/`pause`/`length` are valid) drives escalation. On escalate, the chain is **`strong ++ default`** — a single #12 walker so a down strong tier still rescues to the reliable core (invariant 1).
+- **Streaming preserves the commit boundary**: a passing cheap answer is replayed via a new `replayBufferedStream` that **pre-materializes** the SSE from the buffered response (a serialization failure before any byte safely escalates) and bills usage from the buffered response, not client-delivery progress; an escalation streams the strong tier live. Only ever one tier reaches the client — **never a mid-stream swap**.
+- **Per-billable-call cost ledger** (invariant 4): a new **`request_attempt`** table (owner-scoped, FK → `request_log`, one migration) records the superseded cheap call at its own immutable snapshot price when a request escalates. `request_log` stays the one-per-request served summary (its `cost` + #11's immutability e2e unchanged), now carrying `escalated` + `quality_signal`. **Total spend = `request_log.cost` + Σ `request_attempt.cost`**.
+- **Gating + tunables**: `ROUTING_AUTO_LAYERS` gains `cascade`; `ROUTING_CASCADE_QUALITY_THRESHOLD` (`(0,1]`, default 0.5, so a 0 score always escalates) and `ROUTING_CASCADE_CHEAP_TIMEOUT_MS` (default 30s) in the boot fail-fast schema.
+
+Reviewed over three codex rounds (default rescue, replay commit-safety + billed-usage source, cheap-response deadline, Anthropic `block_stop` fidelity, binary scoring, tier provenance) and a maintainer decision to capture cascade spend precisely via the child ledger. Backed by pure quality/replay unit tests (both protocols), a `CascadeRouter` unit suite, and a real-Postgres/stub-upstream e2e (cheap-pass one-row, escalate + ledger cost, default rescue, cheap timeout, streaming replay + escalate no-swap, disabled → default). **This reaches the honest self-host routing target: Layer 0 + Layer 1 + Layer 3.**

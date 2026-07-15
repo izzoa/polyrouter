@@ -2,6 +2,7 @@ import type {
   agents,
   models,
   providers,
+  requestAttempts,
   requestLogs,
   routingRules,
   tiers,
@@ -9,6 +10,7 @@ import type {
   ModelPriceRow,
   ModelRow,
   ProviderRow,
+  RequestAttemptRow,
   RequestLogRow,
   RoutingEntryRow,
   RoutingRuleRow,
@@ -163,6 +165,22 @@ export interface RequestLogAccessor {
   findById(principal: Principal, id: string): Promise<RequestLogRow | null>;
 }
 
+/** A request-attempt ledger row ready to insert (id pre-allocated; owner forced
+ * from the principal at `insertMany`). Records an ADDITIONAL billable call for a
+ * request (#14 cascade) at its own immutable snapshot price. */
+export type RequestAttemptInsertInput = Omit<
+  (typeof requestAttempts)['$inferInsert'],
+  'ownerUserId' | 'orgId'
+> & { id: string };
+
+/** Per-billable-call cost ledger (#14). Written in batches per principal (owner
+ * forced from the principal), idempotent (`ON CONFLICT (id) DO NOTHING`); reads
+ * are ownership-scoped (invariant 5). */
+export interface RequestAttemptAccessor {
+  insertMany(principal: Principal, rows: RequestAttemptInsertInput[]): Promise<void>;
+  listForRequest(principal: Principal, requestLogId: string): Promise<RequestAttemptRow[]>;
+}
+
 /** The ONLY persistence surface exported outside the database module. By
  * construction it has no query/execute/Pool/drizzle member — unscoped SQL is
  * unwritable against it. */
@@ -174,6 +192,7 @@ export interface PersistencePort {
   models: ModelAccessor;
   routingEntries: RoutingEntryAccessor;
   requestLogs: RequestLogAccessor;
+  requestAttempts: RequestAttemptAccessor;
   users: UsersInfra;
   /** Global pricing catalog (#8) — non-owned, append-only. */
   pricing: PricingCatalog;

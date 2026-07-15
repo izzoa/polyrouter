@@ -26,6 +26,7 @@ import {
   type ProviderAdapter,
 } from '../providers';
 import { terminalErrorFrame } from './stream-error';
+import { responseOutputChars, responseToStreamEvents } from './cascade';
 
 export interface ProxyStreamOptions {
   readonly signal?: AbortSignal;
@@ -125,6 +126,62 @@ export async function openStream(
     opts,
   );
   return r.kind === 'error' ? { kind: 'error', error: toProviderError(r.error) } : r;
+}
+
+/**
+ * Replay a fully-buffered response as a client stream (#14 cascade pass). The SSE
+ * frames are PRE-MATERIALIZED before any byte is committed, so a synthesis /
+ * serialization failure returns `{ kind: 'failed' }` and the caller can escalate
+ * safely (a valid cheap answer never becomes a client error). Usage / outputChars
+ * come from the buffered response (the billed call), NOT client-delivery progress;
+ * the outcome carries only the delivery status (a disconnect → `error`).
+ */
+export async function replayBufferedStream(
+  client: ProtocolAdapter,
+  response: NormalizedResponse,
+  ctx: { created: number },
+): Promise<{ kind: 'failed' } | CommittedStream> {
+  let materialized: string[];
+  try {
+    materialized = [];
+    for await (const frame of client.streamSerialize(arrayGen(responseToStreamEvents(response)), {
+      created: ctx.created,
+    })) {
+      materialized.push(frame);
+    }
+  } catch {
+    return { kind: 'failed' }; // nothing committed → caller escalates
+  }
+  const usage: PartialUsage = response.usage ?? {};
+  const outputChars = responseOutputChars(response.content);
+  let settled = false;
+  let resolveOutcome!: (o: StreamOutcome) => void;
+  const outcome = new Promise<StreamOutcome>((resolve) => (resolveOutcome = resolve));
+  const settle = (status: 'success' | 'error'): void => {
+    if (settled) return;
+    settled = true;
+    resolveOutcome({ status, usage, outputChars });
+  };
+  // eslint-disable-next-line @typescript-eslint/require-await -- AsyncGenerator by contract; frames are pre-materialized
+  const inner = (async function* (): AsyncGenerator<string> {
+    for (const f of materialized) yield f;
+    settle('success');
+  })();
+  const frames = wrapWithSettle(
+    inner,
+    async () => {
+      /* nothing to abort — the source is already buffered */
+    },
+    () => settle('error'),
+  );
+  return { kind: 'stream', frames, outcome };
+}
+
+// eslint-disable-next-line @typescript-eslint/require-await -- AsyncIterable by contract for streamSerialize
+async function* arrayGen(
+  events: readonly NormalizedStreamEvent[],
+): AsyncGenerator<NormalizedStreamEvent> {
+  for (const e of events) yield e;
 }
 
 /**

@@ -30,19 +30,15 @@ const sse = (res: ServerResponse): void => {
 
 function openaiJson(res: ServerResponse, model: string): void {
   res.writeHead(200, { 'content-type': 'application/json' });
+  // `*empty*` → an empty answer (a cascade quality failure → escalate, #14).
+  const content = model.includes('empty') ? '' : 'Hello from stub';
   res.end(
     JSON.stringify({
       id: 'chatcmpl-stub',
       object: 'chat.completion',
       created: 1,
       model,
-      choices: [
-        {
-          index: 0,
-          message: { role: 'assistant', content: 'Hello from stub' },
-          finish_reason: 'stop',
-        },
-      ],
+      choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }],
       usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
     }),
   );
@@ -150,6 +146,11 @@ export async function startStubUpstream(): Promise<StubUpstream> {
       if (model.includes('srvfail')) {
         res.writeHead(500, { 'content-type': 'application/json' });
         return res.end(JSON.stringify({ error: { message: 'stub failure' } }));
+      }
+      // `*hang*` → headers then no body (tests the #14 cascade cheap-response deadline).
+      if (model.includes('hang')) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        return; // never end — the caller's deadline aborts it
       }
       if (path.endsWith('/chat/completions'))
         return stream ? openaiStream(res, model) : openaiJson(res, model);

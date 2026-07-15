@@ -3,9 +3,7 @@ import {
   canonicalizeSystem,
   classifyStructural,
   extractStructuralFeatures,
-  isRouteError,
-  resolveTarget,
-  ruleOrder,
+  resolveBandTarget,
   type NormalizedRequest,
   type RouteDecision,
   type RoutingSnapshot,
@@ -14,14 +12,21 @@ import type { Principal } from '@polyrouter/shared/server';
 import { ROUTING_CONFIG, type RoutingConfig } from '../routing.config';
 import { StructuralBaselineStore } from './structural-baseline.store';
 
+/** The outcome of Layer-1 classification. `route` = confident band with a
+ * resolvable target; `ambiguous` = classified between thresholds (the trigger
+ * for Layer 3 cascade, #14); `skip` = disabled / error / no band target. */
+export type StructuralEvaluation =
+  | { readonly kind: 'route'; readonly decision: RouteDecision }
+  | { readonly kind: 'ambiguous' }
+  | { readonly kind: 'skip' };
+
 /**
- * Layer-1 structural router (#13, spec §7.2). Orchestrates the pure engine +
- * the learned baseline and maps a confident band to a configured `auto_high` /
- * `auto_low` tier target. `decide` returns a `RouteDecision` (decision_layer
- * `'structural'`) ONLY when confident with a resolvable target; otherwise `null`
- * so the caller keeps the Layer-0 `default` decision. The whole body degrades to
- * `null` on any error — the smart path never fails or stalls a request
- * (invariant 1).
+ * Layer-1 structural router (#13, spec §7.2). Orchestrates the pure engine + the
+ * learned baseline and maps a confident band to a configured `auto_high` /
+ * `auto_low` tier target. `evaluate` exposes the band verdict (so #14 cascade can
+ * act on `ambiguous`); `decide` is the #13 adapter (`route → decision`, else
+ * `null`). Any error degrades to `skip`/`null` — the smart path never fails or
+ * stalls a request (invariant 1).
  */
 @Injectable()
 export class StructuralRouter {
@@ -39,13 +44,13 @@ export class StructuralRouter {
   // local-cache hit — no network on the hot path), but the deferred Layer 2
   // (semantic) will await a local embedding, so the interface stays async.
   // eslint-disable-next-line @typescript-eslint/require-await
-  async decide(
+  async evaluate(
     principal: Principal,
     agentId: string | null,
     ir: NormalizedRequest,
     snapshot: RoutingSnapshot,
-  ): Promise<RouteDecision | null> {
-    if (!this.enabled) return null;
+  ): Promise<StructuralEvaluation> {
+    if (!this.enabled) return { kind: 'skip' };
     try {
       const tenantId = principal.kind === 'user' ? principal.userId : principal.orgId;
       const canonical = canonicalizeSystem(ir);
@@ -77,15 +82,24 @@ export class StructuralRouter {
         /* best-effort */
       }
 
-      if (verdict.band === 'ambiguous') return null;
+      if (verdict.band === 'ambiguous') return { kind: 'ambiguous' };
       const matchType = verdict.band === 'high' ? 'auto_high' : 'auto_low';
-      const rule = snapshot.rules.filter((r) => r.matchType === matchType).sort(ruleOrder)[0];
-      if (rule === undefined) return null; // no configured band target → Layer 0 default
-
-      const decision = resolveTarget(snapshot, rule.target, 'structural', verdict.reason);
-      return isRouteError(decision) ? null : decision;
+      const decision = resolveBandTarget(snapshot, matchType, 'structural', verdict.reason);
+      // A confident band with no configured/resolvable target degrades to Layer 0.
+      return decision === null ? { kind: 'skip' } : { kind: 'route', decision };
     } catch {
-      return null; // degrade to Layer 0 — never fail or stall
+      return { kind: 'skip' }; // degrade to Layer 0 — never fail or stall
     }
+  }
+
+  /** #13 adapter: the confident-band decision, else `null` (keep Layer-0 default). */
+  async decide(
+    principal: Principal,
+    agentId: string | null,
+    ir: NormalizedRequest,
+    snapshot: RoutingSnapshot,
+  ): Promise<RouteDecision | null> {
+    const e = await this.evaluate(principal, agentId, ir, snapshot);
+    return e.kind === 'route' ? e.decision : null;
   }
 }

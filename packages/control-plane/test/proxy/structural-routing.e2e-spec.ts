@@ -40,6 +40,7 @@ import { ProxyService } from '../../src/proxy/proxy.service';
 import { StreamDrainRegistry } from '../../src/proxy/stream-drain.registry';
 import { StructuralBaselineStore } from '../../src/proxy/structural/structural-baseline.store';
 import { StructuralRouter } from '../../src/proxy/structural/structural-router';
+import { CascadeRouter } from '../../src/proxy/cascade/cascade-router';
 import { RecordingModule } from '../../src/recording/recording.module';
 import { LogWriter } from '../../src/recording/log-writer';
 import { PricingModule } from '../../src/pricing/pricing.module';
@@ -90,6 +91,7 @@ async function buildApp(): Promise<{ app: INestApplication; server: App }> {
       ProxyService,
       StreamDrainRegistry,
       StructuralRouter,
+      CascadeRouter,
       { provide: PROXY_RUNTIME, useFactory: loadProxyRuntime },
       { provide: PROXY_ADAPTER_FACTORY, useValue: createProviderAdapter },
       { provide: PROXY_BREAKER, useValue: new CircuitBreaker(new InMemoryBreakerStore()) },

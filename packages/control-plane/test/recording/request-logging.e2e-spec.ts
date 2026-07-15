@@ -36,6 +36,7 @@ import {
 import { ProxyService } from '../../src/proxy/proxy.service';
 import { StreamDrainRegistry } from '../../src/proxy/stream-drain.registry';
 import { StructuralRouter } from '../../src/proxy/structural/structural-router';
+import { CascadeRouter } from '../../src/proxy/cascade/cascade-router';
 import { RecordingModule } from '../../src/recording/recording.module';
 import { RequestRecorder, type RecordingContext } from '../../src/recording/request-recorder';
 import { LogWriter } from '../../src/recording/log-writer';
@@ -89,8 +90,9 @@ describe('request-logging e2e', () => {
         StreamDrainRegistry,
         {
           provide: StructuralRouter,
-          useValue: { enabled: false, decide: () => Promise.resolve(null) },
+          useValue: { enabled: false, evaluate: () => Promise.resolve({ kind: 'skip' }) },
         }, // #13 off here
+        { provide: CascadeRouter, useValue: { enabled: false, plan: () => null } }, // #14 off here
         { provide: PROXY_RUNTIME, useFactory: loadProxyRuntime },
         { provide: PROXY_ADAPTER_FACTORY, useValue: createProviderAdapter },
         { provide: PROXY_BREAKER, useValue: new CircuitBreaker(new InMemoryBreakerStore()) },

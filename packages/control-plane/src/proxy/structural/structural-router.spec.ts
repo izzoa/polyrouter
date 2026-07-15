@@ -15,6 +15,7 @@ function cfg(over?: Partial<RoutingConfig>): RoutingConfig {
   return {
     autoLayers: new Set(['structural']),
     structural: { high: 0.6, low: 0.25, baselineAlpha: 0.2, weights: DEFAULT_STRUCTURAL_WEIGHTS },
+    cascade: { enabled: false, qualityThreshold: 0.5, cheapTimeoutMs: 30_000 },
     ...over,
   };
 }
@@ -182,5 +183,47 @@ describe('StructuralRouter.decide', () => {
       snapshot([rule('r', 'auto_high', 'tier:premium')]),
     );
     expect(d!.routingReason).not.toContain(sentinel);
+  });
+});
+
+describe('StructuralRouter.evaluate (the #14 cascade trigger)', () => {
+  it('returns route for a confident band with a target', async () => {
+    const r = new StructuralRouter(cfg(), store());
+    const e = await r.evaluate(
+      PRINCIPAL,
+      'a1',
+      complex,
+      snapshot([rule('r', 'auto_high', 'tier:premium')]),
+    );
+    expect(e.kind).toBe('route');
+    if (e.kind === 'route') expect(e.decision.tierKey).toBe('premium');
+  });
+
+  it('returns ambiguous for a middling request (the cascade trigger)', async () => {
+    const r = new StructuralRouter(cfg(), store());
+    const e = await r.evaluate(
+      PRINCIPAL,
+      'a1',
+      middling,
+      snapshot([rule('r', 'auto_high', 'tier:premium')]),
+    );
+    expect(e.kind).toBe('ambiguous');
+  });
+
+  it('returns skip when disabled, and when a confident band has no target', async () => {
+    expect(
+      (
+        await new StructuralRouter(cfg({ autoLayers: new Set() }), store()).evaluate(
+          PRINCIPAL,
+          'a1',
+          complex,
+          snapshot([rule('r', 'auto_high', 'tier:premium')]),
+        )
+      ).kind,
+    ).toBe('skip');
+    expect(
+      (await new StructuralRouter(cfg(), store()).evaluate(PRINCIPAL, 'a1', complex, snapshot([])))
+        .kind,
+    ).toBe('skip');
   });
 });

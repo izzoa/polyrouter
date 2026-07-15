@@ -37,6 +37,7 @@ import { ProxyService } from '../../src/proxy/proxy.service';
 import { RequestRecorder } from '../../src/recording/request-recorder';
 import { StreamDrainRegistry } from '../../src/proxy/stream-drain.registry';
 import { StructuralRouter } from '../../src/proxy/structural/structural-router';
+import { CascadeRouter } from '../../src/proxy/cascade/cascade-router';
 import { DatabaseModule } from '../../src/database/database.module';
 import { COMPOSE_HINT } from '../tenancy/harness';
 import '../../src/database/database.config';
@@ -152,8 +153,9 @@ describe('inference proxy e2e', () => {
         { provide: RequestRecorder, useValue: { record: () => undefined } }, // #10 doesn't assert logging
         {
           provide: StructuralRouter,
-          useValue: { enabled: false, decide: () => Promise.resolve(null) },
+          useValue: { enabled: false, evaluate: () => Promise.resolve({ kind: 'skip' }) },
         }, // #13 off here
+        { provide: CascadeRouter, useValue: { enabled: false, plan: () => null } }, // #14 off here
         { provide: PROXY_RUNTIME, useFactory: loadProxyRuntime },
         { provide: PROXY_ADAPTER_FACTORY, useValue: createProviderAdapter },
         { provide: PROXY_BREAKER, useValue: new CircuitBreaker(new InMemoryBreakerStore()) },

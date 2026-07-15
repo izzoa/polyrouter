@@ -21,6 +21,8 @@ registerConfig(
     ROUTING_STRUCTURAL_LOW_THRESHOLD: z.coerce.number().min(0).max(1).default(0.25),
     ROUTING_STRUCTURAL_BASELINE_ALPHA: z.coerce.number().gt(0).max(1).default(0.2),
     ROUTING_STRUCTURAL_WEIGHTS: z.string().optional(),
+    ROUTING_CASCADE_QUALITY_THRESHOLD: z.coerce.number().gt(0).max(1).default(0.5),
+    ROUTING_CASCADE_CHEAP_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
   }),
 );
 
@@ -30,6 +32,8 @@ export type RoutingEnv = {
   ROUTING_STRUCTURAL_LOW_THRESHOLD: number;
   ROUTING_STRUCTURAL_BASELINE_ALPHA: number;
   ROUTING_STRUCTURAL_WEIGHTS?: string;
+  ROUTING_CASCADE_QUALITY_THRESHOLD: number;
+  ROUTING_CASCADE_CHEAP_TIMEOUT_MS: number;
 };
 
 export interface StructuralConfig {
@@ -39,10 +43,20 @@ export interface StructuralConfig {
   readonly weights: StructuralWeights;
 }
 
+export interface CascadeConfig {
+  /** Layer 3 (cascade) enabled — implies structural (the ambiguity signal). */
+  readonly enabled: boolean;
+  /** Escalate when the cheap answer's quality score is below this (0,1]. */
+  readonly qualityThreshold: number;
+  /** Bound on the buffered cheap-response drain so a hung upstream still escalates. */
+  readonly cheapTimeoutMs: number;
+}
+
 export interface RoutingConfig {
   /** Enabled smart layers (e.g. `structural`); empty = pure Layer 0. */
   readonly autoLayers: ReadonlySet<string>;
   readonly structural: StructuralConfig;
+  readonly cascade: CascadeConfig;
 }
 
 /** Parse + validate the optional weight override, merged over the built-ins and
@@ -97,6 +111,8 @@ export function buildRoutingConfig(env: RoutingEnv): RoutingConfig {
       .map((s) => s.trim().toLowerCase())
       .filter(Boolean),
   );
+  // Cascade consumes Layer 1's ambiguity signal, so enabling it implies structural.
+  if (autoLayers.has('cascade')) autoLayers.add('structural');
   const high = env.ROUTING_STRUCTURAL_HIGH_THRESHOLD;
   const low = env.ROUTING_STRUCTURAL_LOW_THRESHOLD;
   if (!(low < high)) {
@@ -115,6 +131,11 @@ export function buildRoutingConfig(env: RoutingEnv): RoutingConfig {
       low,
       baselineAlpha: alpha,
       weights: parseStructuralWeights(env.ROUTING_STRUCTURAL_WEIGHTS),
+    },
+    cascade: {
+      enabled: autoLayers.has('cascade'),
+      qualityThreshold: env.ROUTING_CASCADE_QUALITY_THRESHOLD,
+      cheapTimeoutMs: env.ROUTING_CASCADE_CHEAP_TIMEOUT_MS,
     },
   };
 }

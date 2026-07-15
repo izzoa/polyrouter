@@ -17,10 +17,7 @@ export class TiersController {
 
   @Post()
   @Header('Cache-Control', 'no-store')
-  create(
-    @CurrentPrincipal() principal: Principal,
-    @Body() dto: CreateTierDto,
-  ): Promise<SafeTier> {
+  create(@CurrentPrincipal() principal: Principal, @Body() dto: CreateTierDto): Promise<SafeTier> {
     return this.svc.createTier(principal, dto);
   }
 

@@ -17,10 +17,7 @@ export class RulesController {
 
   @Post()
   @Header('Cache-Control', 'no-store')
-  create(
-    @CurrentPrincipal() principal: Principal,
-    @Body() dto: CreateRuleDto,
-  ): Promise<SafeRule> {
+  create(@CurrentPrincipal() principal: Principal, @Body() dto: CreateRuleDto): Promise<SafeRule> {
     return this.svc.createRule(principal, dto);
   }
 

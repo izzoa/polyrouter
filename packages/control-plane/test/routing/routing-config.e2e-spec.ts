@@ -141,7 +141,9 @@ describe('routing-config e2e', () => {
 
     const put = await asA('put', entriesUrl).send({ modelIds: A.modelIds });
     expect(put.status).toBe(200);
-    expect(put.body.map((e: { position: number; modelId: string }) => e.position)).toEqual([0, 1, 2]);
+    expect(put.body.map((e: { position: number; modelId: string }) => e.position)).toEqual([
+      0, 1, 2,
+    ]);
 
     const get = await asA('get', entriesUrl);
     expect(get.body.map((e: { modelId: string }) => e.modelId)).toEqual(A.modelIds);
@@ -205,8 +207,12 @@ describe('routing-config e2e', () => {
     ).toBe(422);
     // header rule without a header_value → 422
     expect(
-      (await asA('post', '/api/routing/rules').send({ matchType: 'header', target: 'tier:default' }))
-        .status,
+      (
+        await asA('post', '/api/routing/rules').send({
+          matchType: 'header',
+          target: 'tier:default',
+        })
+      ).status,
     ).toBe(422);
     // priority out of range → 4xx (DTO bound), never a 500
     expect(
@@ -256,12 +262,17 @@ describe('routing-config e2e', () => {
       request(server)[m](path).set('x-test-user', B.userId);
 
     expect((await asB('get', `/api/routing/tiers/${aDefault}`)).status).toBe(404);
-    expect((await asB('patch', `/api/routing/tiers/${aDefault}`).send({ displayName: 'x' })).status).toBe(404);
+    expect(
+      (await asB('patch', `/api/routing/tiers/${aDefault}`).send({ displayName: 'x' })).status,
+    ).toBe(404);
     expect((await asB('delete', `/api/routing/tiers/${aDefault}`)).status).toBe(404);
     // B cannot replace entries on A's tier (tier_not_found → 404), even with B's own models.
     expect(
-      (await asB('put', `/api/routing/tiers/${aDefault}/entries`).send({ modelIds: [B.modelIds[0]] }))
-        .status,
+      (
+        await asB('put', `/api/routing/tiers/${aDefault}/entries`).send({
+          modelIds: [B.modelIds[0]],
+        })
+      ).status,
     ).toBe(404);
     // B cannot see or fetch A's rule.
     expect((await asB('get', `/api/routing/rules/${aRule.body.id}`)).status).toBe(404);

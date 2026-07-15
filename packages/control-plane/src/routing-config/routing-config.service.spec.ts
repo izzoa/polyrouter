@@ -1,8 +1,4 @@
-import {
-  ConflictException,
-  NotFoundException,
-  UnprocessableEntityException,
-} from '@nestjs/common';
+import { ConflictException, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
 import type {
   ModelRow,
   PersistencePort,
@@ -78,7 +74,10 @@ function makePort(seed: { tiers: TierRow[]; models: ModelRow[]; rules?: RoutingR
         if (tiers.some((t) => t.key === values.key)) {
           return Promise.reject(Object.assign(new Error('dup'), { code: '23505' }));
         }
-        const row = tier(values.key, { id: `t_new${++seq}`, displayName: values.displayName ?? null });
+        const row = tier(values.key, {
+          id: `t_new${++seq}`,
+          displayName: values.displayName ?? null,
+        });
         tiers.push(row);
         return Promise.resolve(row);
       },
@@ -257,9 +256,9 @@ describe('RoutingConfigService — rules', () => {
       rules: [rule({ id: 'r1', matchType: 'default', headerValue: null, target: 'tier:default' })],
     });
     // default → header without a header_value must be rejected.
-    await expect(
-      svc.updateRule(P, 'r1', { matchType: 'header' }),
-    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    await expect(svc.updateRule(P, 'r1', { matchType: 'header' })).rejects.toBeInstanceOf(
+      UnprocessableEntityException,
+    );
     // Supplying the value in the same PATCH is accepted.
     await expect(
       svc.updateRule(P, 'r1', { matchType: 'header', headerValue: 'go' }),

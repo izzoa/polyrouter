@@ -1,0 +1,15 @@
+---
+'@polyrouter/data-plane': minor
+'@polyrouter/control-plane': minor
+---
+
+Add the inference proxy core — the shippable Layer-0 product (spec §6.1/§6.3/§7.2, §14 milestone 5; invariants 1, 3, 5, 12). An external agent pointed at `base_url = <router>/v1` with an API key and `model: auto` now gets working completions, streaming and non-streaming, OpenAI- or Anthropic-shaped.
+
+- **Endpoints** on the agent-key plane: `POST /v1/chat/completions` (OpenAI wire), `POST /v1/messages` (Anthropic wire), `GET /v1/models`. The guard (#3) now accepts the key from `Authorization: Bearer` (OpenAI SDK) **or** `x-api-key` (Anthropic SDK) so both are drop-in; conflicting credential headers are a 401.
+- **Explicit routing** (`data-plane/src/routing/resolve.ts`, pure): an explicit `model` (provider-qualified `<providerId>:<ext>`, an unambiguous bare id — ambiguous ids error rather than guess — or a tier key) wins; otherwise `auto`/empty cascades through a matching custom `header` rule → the built-in `x-polyrouter-tier` header → a `default` rule → the seeded `default` tier. A resolved tier uses its position-0 primary (the fallback chain is #12). Unknown models error instead of silently defaulting; empty/unresolved tiers return the #9-defined runtime error. Rules are sorted internally (priority desc, created_at, id).
+- **Any client protocol reaches any provider protocol** via #5 translation; the IR `model` is retargeted to the resolved provider's external id.
+- **Streaming** (`data-plane/src/proxy/core.ts`): a commit-gated coordinator waits for the first *successful* event (a throw, a first-event `error`, or a bounded first-event timeout stays pre-commit → clean HTTP error); once committed, a mid-stream failure is written as a **sanitized**, protocol-correct terminal error frame (a #10-local emitter, so #5 is unmodified) and the model is never swapped. The Express pump applies `res.write`/drain backpressure raced against client disconnect, wires disconnect to an `AbortController`, and always cancels the upstream iterator.
+- **Graceful drain** (invariant 12): a stream registry drains in-flight completions in `beforeApplicationShutdown` (before HTTP disposal), refusing new inference with a 503 and aborting stragglers at a bounded deadline.
+- **Protocol-shaped errors**: a global exception filter renders every `/v1` failure — the guard's 401, resolver typed errors, and upstream `ProviderError`s — in the caller's own envelope with an exhaustive status map, never leaking the upstream body/credential.
+
+Architecture: the framework-agnostic engine (routing resolution + `ProxyCore`) lives in `data-plane`; only the Nest controllers, credential decryption, persistence access, and the Express pump live in `control-plane` — so the cloud extraction (§3.3) lifts the engine and rewrites only the pump. No schema migration; no fallback/breaker (#12), RequestLog (#11), or `auto` smart pipeline (#13/#14). Covered by pure resolver + coordinator unit tests and a real-Postgres, real-stub-upstream e2e (auth, routing, cross-protocol, streaming, mid-stream/first-event errors, empty/unknown/ambiguous, `/v1/models`, tenant isolation).

@@ -39,7 +39,7 @@ Env var names, endpoint paths (`/v1/chat/completions`, `/v1/messages`, `/api`), 
 | 7 | `add-provider-management` | B | 3, 4, 6 | L | ✅ archived 2026-07-15 |
 | 8 | `add-pricing-catalog` | B | 7 | M | ✅ archived 2026-07-15 |
 | 9 | `add-routing-config` | C | 3, 7 | S | ✅ archived 2026-07-15 |
-| 10 | `add-inference-proxy-core` | C | 3, 5, 6, 9 | L | ☐ |
+| 10 | `add-inference-proxy-core` | C | 3, 5, 6, 9 | L | ✅ archived 2026-07-15 |
 | 11 | `add-request-logging` | C | 8, 10 | M | ☐ |
 | 12 | `add-fallbacks-and-stream-safety` | C | 10, 11 | M | ☐ |
 | — | **⛔ REVIEW GATE — human review of the shippable core** | C | 10–12 | — | ☐ |

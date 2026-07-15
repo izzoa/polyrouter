@@ -29,7 +29,7 @@ export class AgentApiKeyGuard implements CanActivate {
 
   async canActivate(ctx: ExecutionContext): Promise<boolean> {
     const req = ctx.switchToHttp().getRequest<AuthedRequest>();
-    const key = this.extractBearer(req);
+    const key = this.extractKey(req);
     if (!key) throw new UnauthorizedException();
 
     const prefix = prefixOf(key);
@@ -46,7 +46,20 @@ export class AgentApiKeyGuard implements CanActivate {
     return true;
   }
 
-  private extractBearer(req: Request): string | null {
+  /** Accept the key from `Authorization: Bearer` (OpenAI SDK) or `x-api-key`
+   * (Anthropic SDK) so both are drop-in. Two credential headers that disagree
+   * are treated as no valid key (401) — a request must present one identity. */
+  private extractKey(req: Request): string | null {
+    const bearer = this.bearerToken(req);
+    const raw = req.headers['x-api-key'];
+    const xApiKey = typeof raw === 'string' && raw.length > 0 ? raw : null;
+    if (bearer !== null && xApiKey !== null) {
+      return bearer === xApiKey ? bearer : null;
+    }
+    return bearer ?? xApiKey;
+  }
+
+  private bearerToken(req: Request): string | null {
     const header = req.headers.authorization;
     if (!header) return null;
     const [scheme, token] = header.split(' ');

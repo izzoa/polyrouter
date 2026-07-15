@@ -8,6 +8,7 @@ import { DatabaseModule } from './database/database.module';
 import { HealthController } from './health/health.controller';
 import { PricingModule } from './pricing/pricing.module';
 import { ProvidersModule } from './providers/providers.module';
+import { ProxyModule } from './proxy/proxy.module';
 import { RedisModule } from './redis/redis.module';
 import { RoutingConfigModule } from './routing-config/routing-config.module';
 
@@ -20,6 +21,7 @@ import { RoutingConfigModule } from './routing-config/routing-config.module';
     ProvidersModule,
     PricingModule,
     RoutingConfigModule,
+    ProxyModule,
   ],
   controllers: [HealthController, AgentsController],
   providers: [

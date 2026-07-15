@@ -53,7 +53,9 @@ export class UpdateTierDto {
 
 export class ReplaceEntriesDto {
   @IsArray()
-  @ArrayMaxSize(MAX_MODELS_PER_TIER, { message: `a tier holds at most ${MAX_MODELS_PER_TIER} models` })
+  @ArrayMaxSize(MAX_MODELS_PER_TIER, {
+    message: `a tier holds at most ${MAX_MODELS_PER_TIER} models`,
+  })
   @IsString({ each: true })
   modelIds!: string[];
 }

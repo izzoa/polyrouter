@@ -197,9 +197,7 @@ export class RoutingConfigService {
     modelIds: string[],
   ): Promise<SafeEntry[]> {
     if (modelIds.length > MAX_MODELS_PER_TIER) {
-      throw new UnprocessableEntityException(
-        `a tier holds at most ${MAX_MODELS_PER_TIER} models`,
-      );
+      throw new UnprocessableEntityException(`a tier holds at most ${MAX_MODELS_PER_TIER} models`);
     }
     if (new Set(modelIds).size !== modelIds.length) {
       throw new UnprocessableEntityException('modelIds must not contain duplicates');
@@ -260,8 +258,7 @@ export class RoutingConfigService {
 
     // Validate the EFFECTIVE merged row so a PATCH can't leave it invalid.
     const matchType = (dto.matchType ?? existing.matchType) as RuleMatchType;
-    const headerValue =
-      dto.headerValue !== undefined ? dto.headerValue : existing.headerValue;
+    const headerValue = dto.headerValue !== undefined ? dto.headerValue : existing.headerValue;
     if (matchType === 'header' && !hasValue(headerValue)) {
       throw new UnprocessableEntityException('a header rule requires a header_value');
     }

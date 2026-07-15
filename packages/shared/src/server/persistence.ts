@@ -63,6 +63,15 @@ export interface ModelAccessor {
     providerId: string,
     values: ModelInsertInput,
   ): Promise<ModelRow | null>;
+  /** Atomic catalog upsert keyed on `(provider_id, external_model_id)`
+   * (#7's `sync-models`): insert-or-update `display_name`/`last_synced_at` in one
+   * statement so concurrent syncs and duplicate ids can't violate the unique
+   * index. Validates parent ownership in-statement; returns null if unowned. */
+  upsertForProvider(
+    principal: Principal,
+    providerId: string,
+    values: ModelInsertInput,
+  ): Promise<ModelRow | null>;
   update(principal: Principal, id: string, patch: ModelPatch): Promise<ModelRow | null>;
   remove(principal: Principal, id: string): Promise<boolean>;
 }

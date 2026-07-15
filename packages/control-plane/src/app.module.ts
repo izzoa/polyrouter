@@ -6,10 +6,11 @@ import { AuthModule } from './auth/auth.module';
 import { SessionGuard } from './auth/session.guard';
 import { DatabaseModule } from './database/database.module';
 import { HealthController } from './health/health.controller';
+import { ProvidersModule } from './providers/providers.module';
 import { RedisModule } from './redis/redis.module';
 
 @Module({
-  imports: [DatabaseModule, RedisModule, AuthModule, DataPlaneModule],
+  imports: [DatabaseModule, RedisModule, AuthModule, DataPlaneModule, ProvidersModule],
   controllers: [HealthController, AgentsController],
   providers: [
     // Global registration, but the guard itself early-returns for non-`/api`

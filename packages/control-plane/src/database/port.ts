@@ -110,6 +110,35 @@ function createModelAccessor(db: Db): ModelAccessor {
         return rows[0] ?? null;
       });
     },
+    async upsertForProvider(principal, providerId, values: ModelInsertInput) {
+      // Same transactional parent-ownership fence as createForProvider, but a
+      // single ON CONFLICT statement — concurrent syncs / duplicate ids converge
+      // instead of racing to a unique violation. Only display_name/last_synced_at
+      // are updated (never prices/capabilities — those are #8's).
+      return db.transaction(async (tx) => {
+        const parent = await tx
+          .select({ id: providers.id })
+          .from(providers)
+          .where(and(eq(providers.id, providerId), ownershipPredicate(providers, principal)))
+          .limit(1);
+        if (parent.length === 0) return null;
+        const { id: _id, providerId: _p, ...rest } = values as Record<string, unknown>;
+        const insertValues = { ...(rest as ModelInsertInput), providerId };
+        const set: Record<string, unknown> = {};
+        if ('displayName' in rest) set['displayName'] = rest['displayName'];
+        if ('lastSyncedAt' in rest) set['lastSyncedAt'] = rest['lastSyncedAt'];
+        const rows = await tx
+          .insert(models)
+          .values(insertValues)
+          .onConflictDoUpdate({
+            target: [models.providerId, models.externalModelId],
+            set:
+              Object.keys(set).length > 0 ? set : { externalModelId: insertValues.externalModelId },
+          })
+          .returning();
+        return rows[0] ?? null;
+      });
+    },
     async update(principal, id, patch: ModelPatch) {
       const clean = stripProtected(patch, ['providerId']);
       if (Object.keys(clean).length === 0) return this.findById(principal, id);

@@ -11,6 +11,7 @@ import type { BaseConfig } from '@polyrouter/shared';
 export function configureApp(
   app: INestApplication,
   config: Pick<BaseConfig, 'NODE_ENV'>,
+  dashboardOrigin?: string,
 ): INestApplication {
   app.useGlobalPipes(
     new ValidationPipe({
@@ -20,7 +21,9 @@ export function configureApp(
     }),
   );
   if (config.NODE_ENV === 'development') {
-    app.enableCors({ origin: true, credentials: true });
+    // CORS pinned to the exact dashboard origin (not reflect-any-origin), so a
+    // hostile page cannot ride the session cookie cross-origin (auth #3).
+    app.enableCors({ origin: dashboardOrigin ?? 'http://localhost:3000', credentials: true });
   }
   return app;
 }

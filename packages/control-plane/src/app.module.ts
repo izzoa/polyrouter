@@ -1,11 +1,20 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { DataPlaneModule } from '@polyrouter/data-plane';
+import { AgentsController } from './agents/agents.controller';
+import { AuthModule } from './auth/auth.module';
+import { SessionGuard } from './auth/session.guard';
 import { DatabaseModule } from './database/database.module';
 import { HealthController } from './health/health.controller';
 import { RedisModule } from './redis/redis.module';
 
 @Module({
-  imports: [DatabaseModule, RedisModule, DataPlaneModule],
-  controllers: [HealthController],
+  imports: [DatabaseModule, RedisModule, AuthModule, DataPlaneModule],
+  controllers: [HealthController, AgentsController],
+  providers: [
+    // Global registration, but the guard itself early-returns for non-`/api`
+    // paths, so `/v1` stays on the agent-key plane.
+    { provide: APP_GUARD, useClass: SessionGuard },
+  ],
 })
 export class AppModule {}

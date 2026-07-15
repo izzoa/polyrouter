@@ -2,11 +2,11 @@ import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import type { App } from 'supertest/types';
-import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/app.setup';
+import { BootstrapTestModule } from './bootstrap-module';
 
 async function createAppFor(nodeEnv: 'development' | 'production'): Promise<INestApplication> {
-  const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+  const moduleRef = await Test.createTestingModule({ imports: [BootstrapTestModule] }).compile();
   const app = configureApp(moduleRef.createNestApplication(), { NODE_ENV: nodeEnv });
   await app.init();
   return app;

@@ -111,7 +111,7 @@ function createModelAccessor(db: Db): ModelAccessor {
       });
     },
     async update(principal, id, patch: ModelPatch) {
-      const clean = stripProtected(patch as Record<string, unknown>, ['providerId']);
+      const clean = stripProtected(patch, ['providerId']);
       if (Object.keys(clean).length === 0) return this.findById(principal, id);
       const rows = await db
         .update(models)
@@ -134,13 +134,6 @@ function createModelAccessor(db: Db): ModelAccessor {
  * their tier; the linked model must also be reachable by the principal). */
 function ownedTierIds(db: Db, principal: Principal) {
   return db.select({ id: tiers.id }).from(tiers).where(ownershipPredicate(tiers, principal));
-}
-
-function ownedModelIds(db: Db, principal: Principal) {
-  return db
-    .select({ id: models.id })
-    .from(models)
-    .where(inArray(models.providerId, ownedProviderIds(db, principal)));
 }
 
 function createRoutingEntryAccessor(db: Db): RoutingEntryAccessor {

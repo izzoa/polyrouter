@@ -6,13 +6,20 @@ import {
   type OnModuleInit,
 } from '@nestjs/common';
 import { loadConfig } from '@polyrouter/shared';
-import { PERSISTENCE_FACILITIES, PERSISTENCE_PORT } from '@polyrouter/shared/server';
+import {
+  AUTH_ADAPTER_FACTORY,
+  IDENTITY_PORT,
+  PERSISTENCE_FACILITIES,
+  PERSISTENCE_PORT,
+} from '@polyrouter/shared/server';
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
 import './database.config';
+import { buildAuthAdapter } from './auth-adapter';
 import { DRIZZLE, PG_POOL } from './database.internal';
 import { runMigrations } from './migrations-runner';
 import { buildPersistenceFacilities, buildPersistencePort } from './port';
+import { buildIdentityPort } from './port-identity';
 import type { DatabaseConfig } from './database.config';
 
 /** Applies migrations during app init — before `listen()` ever runs — so a
@@ -61,9 +68,22 @@ class PoolLifecycle implements OnApplicationShutdown {
       useFactory: (db: NodePgDatabase) => buildPersistenceFacilities(db),
       inject: [DRIZZLE],
     },
+    {
+      provide: IDENTITY_PORT,
+      useFactory: (db: NodePgDatabase) => buildIdentityPort(db),
+      inject: [DRIZZLE],
+    },
+    {
+      // LAZY factory: closes over the private handle so the auth plane needs
+      // no raw handle of its own, but imports the ESM better-auth package only
+      // when actually called — non-auth consumers of this module never do.
+      provide: AUTH_ADAPTER_FACTORY,
+      useFactory: (db: NodePgDatabase) => () => buildAuthAdapter(db),
+      inject: [DRIZZLE],
+    },
     MigrationRunner,
     PoolLifecycle,
   ],
-  exports: [PERSISTENCE_PORT, PERSISTENCE_FACILITIES],
+  exports: [PERSISTENCE_PORT, PERSISTENCE_FACILITIES, IDENTITY_PORT, AUTH_ADAPTER_FACTORY],
 })
 export class DatabaseModule {}

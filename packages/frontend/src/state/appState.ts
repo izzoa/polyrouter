@@ -1,3 +1,4 @@
+import { connectionSnippet, type HarnessType } from '@polyrouter/shared';
 import { createStore, produce, type SetStoreFunction } from 'solid-js/store';
 import { BASE_URL } from '../data/catalog';
 import {
@@ -91,14 +92,9 @@ export const PROVIDER_KINDS: ProviderKindDef[] = [
   },
 ];
 
-export function snippetFor(harness: Harness, key: string): string {
-  if (harness === 'anthropic_sdk')
-    return `import anthropic\n\nclient = anthropic.Anthropic(\n    base_url="${BASE_URL.replace('/v1', '')}",\n    api_key="${key}")\n# model="auto" lets the router decide`;
-  if (harness === 'curl')
-    return `curl ${BASE_URL}/chat/completions \\\n  -H "Authorization: Bearer ${key}" \\\n  -d '{"model":"auto","messages":[...]}'`;
-  if (harness === 'openclaw')
-    return `# ~/.openclaw/config.toml\n[llm]\nbase_url = "${BASE_URL}"\napi_key  = "${key}"\nmodel    = "auto"`;
-  return `from openai import OpenAI\n\nclient = OpenAI(\n    base_url="${BASE_URL}",\n    api_key="${key}")\n# model="auto" lets the router decide`;
+/** Delegates to the canonical shared snippet builder (spec §2.1). */
+export function snippetFor(harness: HarnessType, key: string): string {
+  return connectionSnippet(harness, BASE_URL, key);
 }
 
 function initialState(): AppState {

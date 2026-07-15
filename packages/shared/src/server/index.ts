@@ -26,3 +26,10 @@ export type {
   UsersInfra,
 } from './persistence';
 export { decryptSecret, encryptSecret } from './security/encryption';
+export { AUTH_ADAPTER_FACTORY, FIRST_ADMIN_LOCK, IDENTITY_PORT } from './identity';
+export type {
+  AgentAuthAccessor,
+  AgentAuthRecord,
+  AuthAdapterFactory,
+  IdentityPort,
+} from './identity';

@@ -1,3 +1,5 @@
+import type { HarnessType } from '@polyrouter/shared';
+
 export type Page =
   | 'overview'
   | 'requests'
@@ -15,8 +17,8 @@ export type RequestFilter = 'all' | 'explicit' | 'auto' | 'fallback' | 'escalate
 export type DecisionLayer = 'explicit' | 'header' | 'structural' | 'escalated';
 export type RequestStatus = 'ok' | 'fallback';
 export type ModelTag = 'sub' | 'local' | null;
-export type Harness =
-  'openai_sdk' | 'anthropic_sdk' | 'vercel_ai_sdk' | 'langchain' | 'openclaw' | 'curl';
+/** The dashboard's harness type IS the canonical shared one (single source). */
+export type Harness = HarnessType;
 export type LimitWindow = 'day' | 'week' | 'month';
 export type LimitAction = 'alert' | 'block';
 export type ProviderKindId = 'api' | 'sub' | 'custom' | 'local';

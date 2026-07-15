@@ -23,7 +23,8 @@ const createdAt = () => timestamp('created_at', { withTimezone: true }).defaultN
 
 /** Better Auth-compatible core columns (table name `user`, text ids) so the
  * auth change points its Drizzle adapter here without a rename migration.
- * `role` is nullable for Better Auth's admin plugin (first user = admin, #3). */
+ * `role` is server-owned (Better Auth `additionalFields` input:false; first
+ * user = admin, #3). */
 export const users = pgTable(
   'user',
   {
@@ -37,6 +38,63 @@ export const users = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => [uniqueIndex('user_email_unique').on(t.email)],
+);
+
+/* ---- Better Auth 1.6 auth-plane tables (#3). Complete 1.6.23 shapes;
+ * consumed by the drizzle adapter via an explicit singular-model→plural-table
+ * map. snake_case columns. ---- */
+
+export const sessions = pgTable(
+  'session',
+  {
+    id: id(),
+    token: text('token').notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    ipAddress: text('ip_address'),
+    userAgent: text('user_agent'),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    createdAt: createdAt(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [uniqueIndex('session_token_unique').on(t.token), index('session_user_idx').on(t.userId)],
+);
+
+export const accounts = pgTable(
+  'account',
+  {
+    id: id(),
+    accountId: text('account_id').notNull(),
+    providerId: text('provider_id').notNull(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    accessToken: text('access_token'),
+    refreshToken: text('refresh_token'),
+    idToken: text('id_token'),
+    accessTokenExpiresAt: timestamp('access_token_expires_at', { withTimezone: true }),
+    refreshTokenExpiresAt: timestamp('refresh_token_expires_at', { withTimezone: true }),
+    scope: text('scope'),
+    // scrypt credential for email/password accounts — never logged.
+    password: text('password'),
+    createdAt: createdAt(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index('account_user_idx').on(t.userId)],
+);
+
+export const verifications = pgTable(
+  'verification',
+  {
+    id: id(),
+    identifier: text('identifier').notNull(),
+    value: text('value').notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    createdAt: createdAt(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index('verification_identifier_idx').on(t.identifier)],
 );
 
 /** Schema-only stub — the org/team feature is deferred (TODOS.md Deferred). */
@@ -175,6 +233,8 @@ export const routingRules = pgTable(
 );
 
 export type UserRow = typeof users.$inferSelect;
+export type SessionRow = typeof sessions.$inferSelect;
+export type AccountRow = typeof accounts.$inferSelect;
 export type AgentRow = typeof agents.$inferSelect;
 export type ProviderRow = typeof providers.$inferSelect;
 export type ModelRow = typeof models.$inferSelect;

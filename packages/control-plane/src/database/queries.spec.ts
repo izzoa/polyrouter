@@ -15,9 +15,9 @@ import {
 const db = drizzle(new Pool({ connectionString: 'postgresql://unused:unused@localhost:9/unused' }));
 const principal = userPrincipal('user-a');
 const OWNED_TABLES: [string, AnyOwnedTable][] = [
-  ['agent', agents as unknown as AnyOwnedTable],
-  ['provider', providers as unknown as AnyOwnedTable],
-  ['tier', tiers as unknown as AnyOwnedTable],
+  ['agent', agents],
+  ['provider', providers],
+  ['tier', tiers],
 ];
 
 describe('scoped query builders (tenant-isolation)', () => {

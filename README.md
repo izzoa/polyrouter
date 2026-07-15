@@ -23,6 +23,12 @@ docker compose -f docker-compose.dev.yml up -d
 npm run dev
 ```
 
+On a fresh self-hosted instance the first account you sign up becomes the admin.
+For a pre-seeded dev admin, boot with `SEED_DATA=true` (loopback-bound, non-production,
+self-hosted only) — it creates `admin@polyrouter.local` with password `changeme-dev-admin`
+(change it immediately). Auth secrets (`BETTER_AUTH_SECRET`, `API_KEY_HMAC_SECRET`,
+32-byte hex) are required for any network-reachable or production instance.
+
 Useful commands (see `CLAUDE.md` for the full set):
 
 | Command                                      | What it does                                        |

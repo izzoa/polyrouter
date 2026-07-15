@@ -37,8 +37,15 @@ interface RunningServer {
 
 async function startProdServer(nodeEnv: string | undefined): Promise<RunningServer> {
   const port = await getFreePort();
-  const env: NodeJS.ProcessEnv = { ...process.env, PORT: String(port) };
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    PORT: String(port),
+    // The real app now includes the auth plane; production requires real secrets.
+    BETTER_AUTH_SECRET: 'a'.repeat(64),
+    API_KEY_HMAC_SECRET: 'b'.repeat(64),
+  };
   delete env['NODE_ENV'];
+  delete env['SEED_DATA'];
   if (nodeEnv !== undefined) {
     env['NODE_ENV'] = nodeEnv;
   }

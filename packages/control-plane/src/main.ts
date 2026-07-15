@@ -4,6 +4,8 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import { ConfigValidationError, loadConfig, type AppConfig } from '@polyrouter/shared';
 import { AppModule } from './app.module';
 import { configureApp } from './app.setup';
+import { loadAuthConfig } from './auth/auth.config';
+import { mountAuth } from './auth/mount';
 import { configureSpa } from './spa';
 
 export async function bootstrap(): Promise<void> {
@@ -20,9 +22,12 @@ export async function bootstrap(): Promise<void> {
     throw error;
   }
 
-  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  // bodyParser off so the Better Auth handler can be mounted ahead of parsing.
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, { bodyParser: false });
   app.enableShutdownHooks();
-  configureApp(app, config);
+  const { auth } = loadAuthConfig();
+  configureApp(app, config, auth.DASHBOARD_ORIGIN);
+  mountAuth(app);
   if (config.NODE_ENV === 'production') {
     configureSpa(app);
   }

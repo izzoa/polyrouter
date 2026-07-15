@@ -11,3 +11,5 @@ export {
 export type { ConfigProblem, ConfigShape } from './config/registry';
 export { BASE_CONFIG_NAMESPACE, baseConfigSchema } from './config/base';
 export type { AppConfig, BaseConfig } from './config/base';
+export { HARNESS_TYPES, HARNESS_LABELS, connectionSnippet, isHarnessType } from './harness';
+export type { HarnessType } from './harness';

@@ -8,6 +8,13 @@
       "when": 1784071640503,
       "tag": "0000_goofy_siren",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1784079092525,
+      "tag": "0001_auth_plane",
+      "breakpoints": true
     }
   ]
 }

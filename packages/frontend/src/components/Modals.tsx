@@ -1,15 +1,7 @@
+import { HARNESS_LABELS, HARNESS_TYPES } from '@polyrouter/shared';
 import { For, Show } from 'solid-js';
 import { app, PROVIDER_KINDS, snippetFor } from '../state/appState';
 import type { Harness } from '../types';
-
-const HARNESS_OPTIONS: [Harness, string][] = [
-  ['openai_sdk', 'OpenAI SDK'],
-  ['anthropic_sdk', 'Anthropic SDK'],
-  ['vercel_ai_sdk', 'Vercel AI SDK'],
-  ['langchain', 'LangChain'],
-  ['openclaw', 'OpenClaw'],
-  ['curl', 'cURL / other'],
-];
 
 export function HarnessSelect(props: { value: Harness; onChange: (h: Harness) => void }) {
   return (
@@ -18,7 +10,7 @@ export function HarnessSelect(props: { value: Harness; onChange: (h: Harness) =>
       value={props.value}
       onChange={(e) => props.onChange(e.currentTarget.value as Harness)}
     >
-      <For each={HARNESS_OPTIONS}>{([v, label]) => <option value={v}>{label}</option>}</For>
+      <For each={HARNESS_TYPES}>{(v) => <option value={v}>{HARNESS_LABELS[v]}</option>}</For>
     </select>
   );
 }

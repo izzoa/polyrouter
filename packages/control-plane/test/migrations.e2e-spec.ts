@@ -91,7 +91,10 @@ describe('migrations on boot (database-schema)', () => {
       DATABASE_URL: freshUrl,
       PORT: String(port),
       NODE_ENV: 'production',
+      BETTER_AUTH_SECRET: 'a'.repeat(64),
+      API_KEY_HMAC_SECRET: 'b'.repeat(64),
     };
+    delete env['SEED_DATA'];
     const child = spawn(process.execPath, [builtMain], { env });
     let output = '';
     child.stdout.on('data', (d: Buffer) => (output += d.toString()));
@@ -143,7 +146,10 @@ describe('migrations on boot (database-schema)', () => {
       DATABASE_URL: 'postgresql://polyrouter:polyrouter@127.0.0.1:59999/polyrouter',
       PORT: String(port),
       NODE_ENV: 'production',
+      BETTER_AUTH_SECRET: 'a'.repeat(64),
+      API_KEY_HMAC_SECRET: 'b'.repeat(64),
     };
+    delete env['SEED_DATA'];
     const child = spawn(process.execPath, [builtMain], { env });
     let bound = false;
     const exitCode: number = await new Promise((resolve) => {

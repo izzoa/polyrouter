@@ -26,6 +26,23 @@ export type {
   UsersInfra,
 } from './persistence';
 export { decryptSecret, encryptSecret } from './security/encryption';
+export {
+  SsrfError,
+  classifyIp,
+  isBlockedIp,
+  isAddressPermitted,
+  assertUrlSafe,
+  createGuardedDispatcher,
+  guardedFetch,
+} from './security/ssrf';
+export type {
+  AllowedEndpoint,
+  GuardContext,
+  IpClass,
+  IsBlockedOptions,
+  SsrfCode,
+  UrlGuardOptions,
+} from './security/ssrf';
 export { AUTH_ADAPTER_FACTORY, FIRST_ADMIN_LOCK, IDENTITY_PORT } from './identity';
 export type {
   AgentAuthAccessor,

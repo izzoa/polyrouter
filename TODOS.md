@@ -33,7 +33,7 @@ Env var names, endpoint paths (`/v1/chat/completions`, `/v1/messages`, `/api`), 
 | P | `add-dashboard-prototype` *(out-of-band: user-directed UI port from Claude Design)* | F′ | 1 | L | ✅ archived 2026-07-14 |
 | 2 | `add-database-and-tenancy` | A | 1 | M | ✅ archived 2026-07-15 |
 | 3 | `add-auth-and-identity` | A | 2 | L | ✅ archived 2026-07-15 |
-| 4 | `add-ssrf-url-guard` | B | 1 | S | ☐ |
+| 4 | `add-ssrf-url-guard` | B | 1 | M | ✅ archived 2026-07-15 |
 | 5 | `add-protocol-translation` | B | 1 | L | ☐ |
 | 6 | `add-provider-adapters` | B | 2, 4, 5 | M | ☐ |
 | 7 | `add-provider-management` | B | 3, 4, 6 | M | ☐ |
@@ -86,8 +86,8 @@ Env var names, endpoint paths (`/v1/chat/completions`, `/v1/messages`, `/api`), 
 ### 4. `add-ssrf-url-guard`
 - **Goal:** One shared outbound-URL validation module used by every server-side fetch of a user-supplied (or env-supplied) URL.
 - **Spec:** §11.2, §8 (custom providers), §10.1 (Apprise/webhooks, `APPRISE_API_URL`); invariant 6.
-- **Scope:** resolve hostnames and **validate the resolved IP at connect time** (DNS-rebinding defense) — usable both at CRUD-validation time and at request/fetch time; block private/loopback/link-local/metadata ranges incl. IPv6; https preference; optional allowlist; **loopback exception only when `MODE=selfhosted`** (for local model servers); covers env-supplied outbound URLs (e.g. `APPRISE_API_URL`) the same as user-supplied ones.
-- **DoD (§15):** SSRF-rejection test suite — `169.254.169.254`, `localhost`, RFC1918, IPv6 equivalents, and a rebinding hostname (passes name-time check, resolves private at connect time) are all rejected; loopback accepted only under `MODE=selfhosted` for local providers.
+- **Scope:** validate HTTP(S) URLs — `assertUrlSafe` (name-time) blocks private/loopback/link-local/metadata/CGNAT/mapped/NAT64 ranges (IPv4+IPv6), requires https for remote; **`guardedFetch` re-validates every redirect hop and the actual connected socket IP** (DNS-rebinding + literal-IP + redirect defense — node agents don't protect `fetch`, so this ships an undici connector); **loopback exception derived inside the guard from structured `context: { mode, providerKind }`** (selfhosted + local only); address-bounded allowlist (`{host, cidr}`, metadata always blocked); covers `APPRISE_API_URL` and HTTP(S) webhook targets the same as user URLs. Non-HTTP Apprise schemes (`discord://`…) are #15's scheme-specific extraction + egress control.
+- **DoD (§15):** SSRF-rejection suite — `169.254.169.254`, `localhost`, RFC1918, IPv6 equivalents, mapped/NAT64, decimal/octal/hex encodings, userinfo tricks, redirect-to-private, and a **socket-path rebinding** case (name-time public, connect-time private, via a real local listener) all rejected; loopback accepted only under selfhosted/local context. (Size S→M after codex round 1 — the guarded-fetch transport.)
 
 ### 5. `add-protocol-translation`
 - **Goal:** The OpenAI ⟷ Anthropic normalization module behind the **`Normalized*` IR it owns** — **the hardest part; budget the most time here** (§6.3).

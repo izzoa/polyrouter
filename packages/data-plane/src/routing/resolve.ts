@@ -48,7 +48,7 @@ export interface ParsedRoute {
   readonly headers: Readonly<Record<string, string | undefined>>;
 }
 
-export type DecisionLayer = 'explicit' | 'header' | 'default';
+export type DecisionLayer = 'explicit' | 'header' | 'default' | 'structural';
 
 /** One member of a fallback chain (#12). */
 export interface RouteTarget {
@@ -141,7 +141,11 @@ function resolveTier(
   };
 }
 
-function resolveTarget(
+/** Resolve a structured `tier:<key>` / `model:<id>` target into a decision.
+ * Exported so Layer 1 (#13) reuses tier chain-building (§7.4) under the
+ * `'structural'` layer; a `tier:` target carries the tier's fallback chain, a
+ * `model:` target a single-element chain. */
+export function resolveTarget(
   snap: RoutingSnapshot,
   target: string,
   layer: DecisionLayer,
@@ -159,7 +163,10 @@ function resolveTarget(
   return modelDecision(model, layer, reason);
 }
 
-const ruleOrder = (a: RouteRule, b: RouteRule): number =>
+/** The single deterministic RoutingRule ordering (priority desc, then oldest,
+ * then id). Exported so Layer 1 (#13) selects its `auto_high`/`auto_low` band
+ * rule with the same tie-breaking, independent of snapshot/storage order. */
+export const ruleOrder = (a: RouteRule, b: RouteRule): number =>
   b.priority - a.priority ||
   a.createdAt.getTime() - b.createdAt.getTime() ||
   (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);

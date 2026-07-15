@@ -35,6 +35,7 @@ import {
 } from '../../src/proxy/proxy.config';
 import { ProxyService } from '../../src/proxy/proxy.service';
 import { StreamDrainRegistry } from '../../src/proxy/stream-drain.registry';
+import { StructuralRouter } from '../../src/proxy/structural/structural-router';
 import { RecordingModule } from '../../src/recording/recording.module';
 import { RequestRecorder, type RecordingContext } from '../../src/recording/request-recorder';
 import { LogWriter } from '../../src/recording/log-writer';
@@ -86,6 +87,10 @@ describe('request-logging e2e', () => {
         AgentApiKeyGuard,
         ProxyService,
         StreamDrainRegistry,
+        {
+          provide: StructuralRouter,
+          useValue: { enabled: false, decide: () => Promise.resolve(null) },
+        }, // #13 off here
         { provide: PROXY_RUNTIME, useFactory: loadProxyRuntime },
         { provide: PROXY_ADAPTER_FACTORY, useValue: createProviderAdapter },
         { provide: PROXY_BREAKER, useValue: new CircuitBreaker(new InMemoryBreakerStore()) },

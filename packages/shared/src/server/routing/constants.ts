@@ -21,6 +21,8 @@ export const MAX_MODELS_PER_TIER = 5;
  * alphanumerics / `-` / `_`. Keeps keys safe as header values and stable ids. */
 export const TIER_KEY_PATTERN = /^[a-z0-9](?:[a-z0-9_-]{0,63})$/;
 
-/** Valid `header` rule match types (spec §5). */
-export const RULE_MATCH_TYPES = ['header', 'default'] as const;
+/** Valid rule match types (spec §5, §7.2). `header`/`default` drive Layer-0
+ * resolution; `auto_high`/`auto_low` are Layer-1 structural band targets —
+ * consumed only by the structural router (#13) and inert in Layer 0. */
+export const RULE_MATCH_TYPES = ['header', 'default', 'auto_high', 'auto_low'] as const;
 export type RuleMatchType = (typeof RULE_MATCH_TYPES)[number];

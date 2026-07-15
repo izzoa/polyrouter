@@ -1,5 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import {
+  AUTO_ALIAS,
   PERSISTENCE_PORT,
   SsrfError,
   assertUrlSafe,
@@ -45,6 +46,7 @@ import {
   type ProxyRuntime,
 } from './proxy.config';
 import { RequestRecorder, type RecordingContext } from '../recording/request-recorder';
+import { StructuralRouter } from './structural/structural-router';
 
 /** Per-chain-member recording metadata (parallel to the attempts). */
 interface AttemptMeta {
@@ -100,6 +102,7 @@ export class ProxyService {
     @Inject(PROXY_ADAPTER_FACTORY) private readonly factory: ProxyAdapterFactory,
     @Inject(PROXY_BREAKER) private readonly breaker: CircuitBreaker,
     private readonly recorder: RequestRecorder,
+    private readonly structural: StructuralRouter,
   ) {
     this.key = rt.key;
     this.mode = rt.mode;
@@ -216,11 +219,20 @@ export class ProxyService {
     const requestChars = safeChars(wireBody);
 
     const { snapshot, models } = await this.loadSnapshot(principal);
-    const decision = resolveRoute(snapshot, {
+    let decision = resolveRoute(snapshot, {
       modelField: ir.model,
       headers: normalizeHeaders(headers),
     });
     if (isRouteError(decision)) throw routeError(decision.error);
+
+    // Layer 1 (#13): refine an `auto` request that fell through to the default
+    // tier. Explicit models and header-selected tiers already won in Layer 0
+    // (decisionLayer !== 'default'), so they are never touched. Any failure in
+    // the structural path returns null → the Layer-0 default stands (invariant 1).
+    if (ir.model === AUTO_ALIAS && decision.decisionLayer === 'default') {
+      const refined = await this.structural.decide(principal, agentId, ir, snapshot);
+      if (refined !== null) decision = refined;
+    }
 
     // Build the attempt chain in the CONFIGURED order (no reorder). Provider/model
     // metadata is loaded now (ownership-scoped, cheap); the adapter is built lazily

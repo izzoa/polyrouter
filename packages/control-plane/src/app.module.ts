@@ -9,6 +9,7 @@ import { HealthController } from './health/health.controller';
 import { PricingModule } from './pricing/pricing.module';
 import { ProvidersModule } from './providers/providers.module';
 import { RedisModule } from './redis/redis.module';
+import { RoutingConfigModule } from './routing-config/routing-config.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { RedisModule } from './redis/redis.module';
     DataPlaneModule,
     ProvidersModule,
     PricingModule,
+    RoutingConfigModule,
   ],
   controllers: [HealthController, AgentsController],
   providers: [

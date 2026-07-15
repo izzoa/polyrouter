@@ -77,6 +77,14 @@ export interface ModelAccessor {
   remove(principal: Principal, id: string): Promise<boolean>;
 }
 
+/** Outcome of an atomic chain replacement (#9). Distinguishes the two ownership
+ * failures so the service maps them to 404 vs 422 without leaking which tenant
+ * owns what. `unknown_models` lists exactly the ids that are not owned models. */
+export type ReplaceEntriesResult =
+  | { status: 'ok'; entries: RoutingEntryRow[] }
+  | { status: 'tier_not_found' }
+  | { status: 'unknown_models'; modelIds: string[] };
+
 /** Routing entries are owned through their tier; the linked model must also
  * be reachable by the principal. `tierId`/`modelId` are immutable — only the
  * position may change. */
@@ -89,6 +97,17 @@ export interface RoutingEntryAccessor {
   ): Promise<RoutingEntryRow | null>;
   setPosition(principal: Principal, id: string, position: number): Promise<RoutingEntryRow | null>;
   remove(principal: Principal, id: string): Promise<boolean>;
+  /** Atomically REPLACE a tier's whole ordered chain with `orderedModelIds`
+   * (positions `0..N-1`). Locks the tier row (`FOR UPDATE`) so concurrent
+   * replacements serialize instead of racing the non-deferrable
+   * `UNIQUE(tier_id,position)`. All-or-nothing: an unowned tier or any unowned
+   * model aborts with no write. Cap/dedup are the caller's precondition; the
+   * DB CHECK/UNIQUE remain the backstop. */
+  replaceForTier(
+    principal: Principal,
+    tierId: string,
+    orderedModelIds: string[],
+  ): Promise<ReplaceEntriesResult>;
 }
 
 /** Narrow identity-plane accessor for infrastructure that predates auth (#3's

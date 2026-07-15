@@ -124,3 +124,82 @@ describe('schema constraints', () => {
     expect(rows.rows[0].n).toBe(1);
   });
 });
+
+describe('routingEntries.replaceForTier (#9 atomic chain replace)', () => {
+  it('replaces atomically at positions 0..N-1 and is idempotent', async () => {
+    const tier = await harness.port.tiers.insert(owner.principal, {
+      key: `rep-${Math.random().toString(36).slice(2, 8)}`,
+    });
+    const models = await makeModels(3);
+    const ids = models.map((m) => m.id);
+    const res = await harness.port.routingEntries.replaceForTier(owner.principal, tier.id, ids);
+    expect(res.status).toBe('ok');
+    if (res.status !== 'ok') throw new Error('unreachable');
+    expect(res.entries.map((e) => e.position)).toEqual([0, 1, 2]);
+    expect(res.entries.map((e) => e.modelId)).toEqual(ids);
+
+    // Replacing with a reordered subset overwrites the whole chain.
+    const res2 = await harness.port.routingEntries.replaceForTier(owner.principal, tier.id, [
+      ids[1]!,
+      ids[0]!,
+    ]);
+    if (res2.status !== 'ok') throw new Error('expected ok');
+    expect(res2.entries.map((e) => e.modelId)).toEqual([ids[1], ids[0]]);
+    const stored = await harness.port.routingEntries.listForTier(owner.principal, tier.id);
+    expect(stored.length).toBe(2);
+  });
+
+  it('rejects an unowned/nonexistent model as a unit — no partial write', async () => {
+    const tier = await harness.port.tiers.insert(owner.principal, {
+      key: `unit-${Math.random().toString(36).slice(2, 8)}`,
+    });
+    const models = await makeModels(2);
+    const ids = models.map((m) => m.id);
+    await harness.port.routingEntries.replaceForTier(owner.principal, tier.id, ids);
+
+    const bad = await harness.port.routingEntries.replaceForTier(owner.principal, tier.id, [
+      ids[0]!,
+      'no-such-model',
+    ]);
+    expect(bad.status).toBe('unknown_models');
+    if (bad.status === 'unknown_models') expect(bad.modelIds).toEqual(['no-such-model']);
+    // The prior chain is untouched.
+    const stored = await harness.port.routingEntries.listForTier(owner.principal, tier.id);
+    expect(stored.map((e) => e.modelId).sort()).toEqual([...ids].sort());
+  });
+
+  it('returns tier_not_found for another tenant’s tier', async () => {
+    const other = await harness.createTestPrincipal('replace-other');
+    const otherTier = await harness.port.tiers.insert(other.principal, { key: 'default' });
+    const [mine] = await makeModels(1);
+    const res = await harness.port.routingEntries.replaceForTier(owner.principal, otherTier.id, [
+      mine!.id,
+    ]);
+    expect(res.status).toBe('tier_not_found');
+  });
+
+  it('serializes two concurrent replacements of the same tier (no position collision)', async () => {
+    const tier = await harness.port.tiers.insert(owner.principal, {
+      key: `conc-${Math.random().toString(36).slice(2, 8)}`,
+    });
+    const models = await makeModels(5);
+    const ids = models.map((m) => m.id);
+    const chainA = [ids[0]!, ids[1]!, ids[2]!];
+    const chainB = [ids[3]!, ids[4]!];
+    const [ra, rb] = await Promise.all([
+      harness.port.routingEntries.replaceForTier(owner.principal, tier.id, chainA),
+      harness.port.routingEntries.replaceForTier(owner.principal, tier.id, chainB),
+    ]);
+    // The FOR UPDATE tier lock serializes them: both succeed, neither hits the
+    // non-deferrable UNIQUE(tier_id, position).
+    expect(ra.status).toBe('ok');
+    expect(rb.status).toBe('ok');
+    const stored = await harness.port.routingEntries.listForTier(owner.principal, tier.id);
+    const modelIds = stored.map((e) => e.modelId);
+    // Exactly one chain won — a clean, contiguous result.
+    expect([chainA.length, chainB.length]).toContain(modelIds.length);
+    expect(stored.map((e) => e.position).sort()).toEqual(
+      Array.from({ length: modelIds.length }, (_, i) => i),
+    );
+  });
+});

@@ -20,6 +20,7 @@ export type {
   PricingCatalog,
   ProviderInsertInput,
   ProviderPatch,
+  ReplaceEntriesResult,
   RoutingEntryAccessor,
   RoutingRuleInsertInput,
   RoutingRulePatch,
@@ -40,6 +41,17 @@ export type {
   PriceSource,
 } from './pricing/resolve';
 export { parseLiteLlmCatalog } from './pricing/litellm';
+export {
+  AUTO_ALIAS,
+  DEFAULT_TIER_KEY,
+  MAX_MODELS_PER_TIER,
+  RULE_MATCH_TYPES,
+  TIER_HEADER_NAME,
+  TIER_KEY_PATTERN,
+} from './routing/constants';
+export type { RuleMatchType } from './routing/constants';
+export { formatRoutingTarget, parseRoutingTarget } from './routing/target';
+export type { RoutingTarget } from './routing/target';
 export { decryptSecret, encryptSecret } from './security/encryption';
 export {
   SsrfError,

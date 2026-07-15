@@ -1,0 +1,12 @@
+---
+'@polyrouter/shared': minor
+'@polyrouter/control-plane': minor
+---
+
+Add routing configuration — the explicit-routing data the proxy (#10) reads (spec §5, §6.2, §7.2/§7.4; invariants 1, 5). CRUD only; no routing execution.
+
+A new `/api/routing` control-plane module (session-guarded, tenant-scoped) exposes: **tier CRUD** (`/tiers`) with a validated lowercase-slug key (the `auto` alias reserved, unique-per-owner surfaced as 409), an immutable key, and a protected always-present `default` tier; the **ordered ≤5-model chain** (`/tiers/:id/entries`) whose `PUT { modelIds }` **atomically replaces the whole chain** (positions `0..N-1`) — one primitive for assign/unassign/reorder/set-primary that enforces the §7.4 cap, rejects duplicates and unowned models as a unit, and sidesteps the non-deferrable `UNIQUE(tier_id,position)` collision; and **routing-rule CRUD** (`/rules`) with a structured `tier:<key>`/`model:<id>` `target` validated at write time, a normalized lower-cased `header_name` (default `x-polyrouter-tier`), effective-merged-row validation on PATCH, a `priority` bounded to the `int4` range, and a deterministic list order (`priority` desc, then `created_at`, `id`) so #10 resolves deterministically.
+
+Backing this: a new atomic `routingEntries.replaceForTier` persistence accessor that locks the owned tier row (`FOR UPDATE`, serializing concurrent replacements) and returns a discriminated result (`ok` / `tier_not_found` / `unknown_models`) the service maps to 404/422 without leaking cross-tenant ownership; and pure shared helpers `parseRoutingTarget`/`formatRoutingTarget` plus routing constants (`DEFAULT_TIER_KEY`, `TIER_HEADER_NAME`, `AUTO_ALIAS`, `MAX_MODELS_PER_TIER`, `TIER_KEY_PATTERN`) in `@polyrouter/shared/server` — the single source of truth #10 reuses.
+
+The empty/unresolved-tier boundary is defined but not executed here: a rule may target a currently-empty tier (exposed as `[]`), and a `tier:<key>` target is late-bound (deleting the tier leaves it unresolved; recreating the key rebinds) — the request-time error is owned by the proxy (#10). No schema migration (the tables and the cap exist since #2). Covered by shared (Vitest) target/pattern tests, a control-plane service unit spec, and a real-Postgres e2e (tier/entry/rule CRUD, cap/dedupe/ownership, deterministic ordering, target persistence after deletion, and full cross-tenant isolation), plus tenancy port-level tests for `replaceForTier` (atomicity, no-partial-write, cross-tenant, and concurrent-replacement serialization).

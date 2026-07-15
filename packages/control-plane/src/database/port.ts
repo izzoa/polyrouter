@@ -232,6 +232,47 @@ function createRoutingEntryAccessor(db: Db): RoutingEntryAccessor {
         .returning({ id: routingEntries.id });
       return rows.length > 0;
     },
+    async replaceForTier(principal, tierId, orderedModelIds) {
+      return db.transaction(async (tx) => {
+        // Lock the owned tier row so concurrent replacements serialize instead
+        // of racing the non-deferrable UNIQUE(tier_id, position).
+        const tier = await tx
+          .select({ id: tiers.id })
+          .from(tiers)
+          .where(and(eq(tiers.id, tierId), ownershipPredicate(tiers, principal)))
+          .limit(1)
+          .for('update');
+        if (tier.length === 0) return { status: 'tier_not_found' as const };
+
+        // Every distinct id must be an owned model (owned through its provider).
+        const uniqueIds = [...new Set(orderedModelIds)];
+        if (uniqueIds.length > 0) {
+          const owned = await tx
+            .select({ id: models.id })
+            .from(models)
+            .where(
+              and(
+                inArray(models.id, uniqueIds),
+                inArray(models.providerId, ownedProviderIds(tx, principal)),
+              ),
+            );
+          const ownedIds = new Set(owned.map((r) => r.id));
+          const unknown = uniqueIds.filter((id) => !ownedIds.has(id));
+          if (unknown.length > 0) return { status: 'unknown_models' as const, modelIds: unknown };
+        }
+
+        // All-or-nothing replace: clear the chain, reinsert at positions 0..N-1.
+        await tx.delete(routingEntries).where(eq(routingEntries.tierId, tierId));
+        const entries =
+          orderedModelIds.length > 0
+            ? await tx
+                .insert(routingEntries)
+                .values(orderedModelIds.map((modelId, position) => ({ tierId, modelId, position })))
+                .returning()
+            : [];
+        return { status: 'ok' as const, entries };
+      });
+    },
   };
 }
 

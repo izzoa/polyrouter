@@ -45,7 +45,8 @@ Env var names, endpoint paths (`/v1/chat/completions`, `/v1/messages`, `/api`), 
 | — | **⛔ REVIEW GATE — human review of the shippable core** | C | 10–12 | — | ☐ |
 | 13 | `add-structural-routing` | D | 11 | M | ✅ archived 2026-07-15 |
 | 14 | `add-cascade-routing` | D | 12, 13 | M | ✅ archived 2026-07-15 |
-| 15 | `add-notification-channels` | E | 3, 4, 6, 11 | L | ☐ |
+| 15a | `add-notification-channels` | E | 3, 4, 6 | M | ☐ |
+| 15b | `add-notification-producers` | E | 15a, 6, 11 | M | ☐ |
 | 16 | `add-spend-limits` | E | 11, 15 | M | ☐ |
 | 17 | `add-analytics-api` | F | 11 | S | ☐ |
 | 18 | `add-dashboard-core` | F | 3, 7, 8, 9, 10 | L | ☐ |
@@ -160,11 +161,19 @@ Stop for human review of the shippable core (spec §14.5, CLAUDE.md). Do **not**
 
 ## Phase E — Limits & notifications
 
-### 15. `add-notification-channels`
-- **Goal:** Event → channel notification service with SMTP and Apprise delivery — producers included — fully async and resilient.
-- **Spec:** §5 (NotificationChannel), §10.1, §12 (SMTP/Apprise env); invariants 6, 8, 11.
-- **Scope:** **`NotificationChannel` table + migration lands here**; channel CRUD (Settings-facing API): kinds `smtp` (Nodemailer: host/port/user/pass/TLS-mode/from/to) and `apprise` (one or more Apprise URLs; POST to `APPRISE_API_URL` container preferred, CLI fallback); config **encrypted at rest**, never logged; optional env-configured **server-wide SMTP defaults** (§12) as a fallback channel; **wire Better Auth's password-reset email delivery** (the `sendResetPassword` stub #3 left) through the SMTP channel; **event producers owned here:** `provider_down` emitted on #6 circuit-breaker open, `request_failures_spike` detector over recent RequestLog (#11), optional scheduled `weekly_spend_summary` (budget events are emitted by #16); per-channel event subscriptions; **async delivery via Redis-backed queue (BullMQ)** — a slow/failing channel never blocks anything; failed sends log and continue; **dedup/rate-limit per event type per scope per window**; per-channel test-send persisting `last_test_at`/`last_test_status`; Apprise/webhook targets **and `APPRISE_API_URL`** validated by #4 (SSRF).
-- **DoD (§15):** add SMTP + Apprise channels, test-send succeeds and is recorded; a channel whose target URL resolves private/loopback/link-local/metadata is rejected, and a private-resolving `APPRISE_API_URL` is refused at boot/config (SSRF suite exercised on the notification path); duplicate synthetic events for one scope within one window deliver at most once; a dead webhook logs a failure without stalling delivery of other events; tripping the #6 breaker delivers a `provider_down`; channel secrets encrypted at rest; cross-tenant coverage.
+> **#15 was split** (delivery core is independently shippable; producers depend on more surfaces). #15a landed the async, SSRF-guarded, secret-safe delivery pipeline + channel CRUD; #15b adds the producers, the scheduler, and password-reset wiring that emit into it.
+
+### 15a. `add-notification-channels` (delivery core)
+- **Goal:** The event → channel delivery pipeline (SMTP + Apprise), fully async, deduped, failure-isolated, secret-safe — the thing producers emit into.
+- **Spec:** §5 (NotificationChannel), §10.1, §12 (SMTP/Apprise env); invariants 5, 6, 8, 11.
+- **Scope:** **`NotificationChannel` table + migration lands here**; owner-scoped channel CRUD (Settings-facing API): kinds `smtp` (Nodemailer: host/port/user/pass/TLS-mode/from/to) and `apprise` (Apprise URLs; POST to `APPRISE_API_URL`); config **encrypted at rest** (AES-GCM under `NOTIFY_CREDENTIALS_SECRET`), never logged; per-channel event subscriptions; per-channel **test-send** persisting `last_test_at`/`last_test_status` (sanitized). SSRF on **every** egress under a **mode-gated policy mirroring the local-provider exception** (metadata blocked always/never allowlistable; self-host allows the operator's own loopback/private infra; cloud blocks unless a port-bounded `NOTIFY_ALLOWED_ENDPOINTS` soft-range entry): SMTP host validated **at connect time** + transport pinned to the validated IP (SNI preserved); Apprise targets scheme-aware (fixed-service allowed; host-bearing + `?smtp=`/`?host=` overrides validated; unknown rejected); `APPRISE_API_URL` host validated in an async `NOTIFY_RUNTIME` factory (**fails boot**); cloud Apprise additionally gated on `NOTIFY_APPRISE_EGRESS_CONFIRMED`, enforced at delivery. **Async delivery via BullMQ** on dedicated fail-fast producer + worker connections; `emit` is O(1), **TTL-deduped per `(type, scope)` window**, never throws/blocks (bounded even when Redis is blackholed); structured **secret-free** `NotificationEvent` (worker renders title/body from non-secret `fields`); per-channel failure isolation; all delivery errors are **fixed sanitized codes**. New deps: **bullmq**, **nodemailer**. Event *types* + subscription plumbing for `provider_down`/`request_failures_spike`/`weekly_spend_summary` live here so #15b/#16 just call `emit`.
+- **DoD (§15):** add SMTP + Apprise channels (config encrypted at rest, not plaintext); test-send succeeds + records `success`, a refusing target records `failed:<code>`; a metadata target is rejected in every mode, a **cloud** instance rejects a private/loopback target and refuses a private-resolving `APPRISE_API_URL` at boot (self-host allows its own sidecar); duplicate synthetic `emit`s for one scope/window deliver at most once; a dead channel logs a failure without stalling a healthy one; a blackholed Redis leaves `emit` bounded; cross-tenant coverage; **canary** — a channel-config secret never reaches the Redis job store, DB status, API view, or logs.
+
+### 15b. `add-notification-producers`
+- **Goal:** Wire the real event producers + password-reset delivery into #15a's pipeline.
+- **Spec:** §5, §10.1, §12; invariants 6, 8, 11.
+- **Scope:** **event producers:** `provider_down` emitted on #6 circuit-breaker **open transition** (needs a breaker transition/open signal — #6 currently only stores state, so surface the transition), `request_failures_spike` detector over recent RequestLog (#11), optional scheduled `weekly_spend_summary` (budget events are #16); a scheduler for the periodic ones; optional env-configured **server-wide SMTP defaults** (§12) as a fallback channel; **wire Better Auth's password-reset email delivery** (the `sendResetPassword` stub #3 left) through SMTP. All emit into #15a's `emit`/event contract.
+- **DoD (§15):** tripping the #6 breaker delivers a `provider_down` (deduped per incident); a burst of failed requests delivers one `request_failures_spike` per window; the weekly summary fires on schedule; a password reset sends through SMTP; a failing channel never delays enforcement or the request path; cross-tenant coverage.
 
 ### 16. `add-spend-limits`
 - **Goal:** Budgets with atomic Redis counters — block in the request path, alert on schedule — correct across instances.

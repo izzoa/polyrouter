@@ -4,6 +4,7 @@ import {
   assertUserPrincipal,
   models,
   modelPrices,
+  notificationChannels,
   ownershipPredicate,
   providers,
   requestAttempts,
@@ -395,6 +396,10 @@ export function buildPersistencePort(db: Db): PersistencePort {
     providers: createOwnedRepository(db, providers as unknown as AnyOwnedTable),
     tiers: createOwnedRepository(db, tiers as unknown as AnyOwnedTable),
     routingRules: createOwnedRepository(db, routingRules as unknown as AnyOwnedTable),
+    notificationChannels: createOwnedRepository(
+      db,
+      notificationChannels as unknown as AnyOwnedTable,
+    ),
     models: createModelAccessor(db),
     routingEntries: createRoutingEntryAccessor(db),
     requestLogs: createRequestLogAccessor(db),

@@ -94,6 +94,7 @@ describe('migrations on boot (database-schema)', () => {
       BETTER_AUTH_SECRET: 'a'.repeat(64),
       API_KEY_HMAC_SECRET: 'b'.repeat(64),
       PROVIDER_CREDENTIAL_KEY: 'c'.repeat(64),
+      NOTIFY_CREDENTIALS_SECRET: 'd'.repeat(64),
     };
     delete env['SEED_DATA'];
     const child = spawn(process.execPath, [builtMain], { env });
@@ -150,6 +151,7 @@ describe('migrations on boot (database-schema)', () => {
       BETTER_AUTH_SECRET: 'a'.repeat(64),
       API_KEY_HMAC_SECRET: 'b'.repeat(64),
       PROVIDER_CREDENTIAL_KEY: 'c'.repeat(64),
+      NOTIFY_CREDENTIALS_SECRET: 'd'.repeat(64),
     };
     delete env['SEED_DATA'];
     const child = spawn(process.execPath, [builtMain], { env });

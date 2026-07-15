@@ -14,6 +14,8 @@ export type {
   ModelInsertInput,
   ModelPatch,
   ModelPriceInput,
+  NotificationChannelInsertInput,
+  NotificationChannelPatch,
   OwnedRepository,
   PersistenceFacilities,
   PersistencePort,
@@ -74,6 +76,13 @@ export type {
   SsrfCode,
   UrlGuardOptions,
 } from './security/ssrf';
+export { assertNetworkHostSafe } from './security/network-host';
+export type { NetworkHostOptions } from './security/network-host';
+export {
+  assertAppriseTargetSafe,
+  APPRISE_HOST_BEARING_SCHEMES,
+  APPRISE_FIXED_SERVICE_SCHEMES,
+} from './security/apprise';
 export { AUTH_ADAPTER_FACTORY, FIRST_ADMIN_LOCK, IDENTITY_PORT } from './identity';
 export type {
   AgentAuthAccessor,

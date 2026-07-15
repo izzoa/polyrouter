@@ -367,6 +367,29 @@ export const requestAttempts = pgTable(
   ],
 );
 
+/** Owner-scoped notification channels (#15a, spec §5/§10.1). `encryptedConfig`
+ * holds the whole kind-specific config (SMTP host/port/creds or Apprise URLs)
+ * AES-GCM at rest (invariant 8); never a plaintext credential. `eventsSubscribed`
+ * is a CSV of event types. The delivery layer (queue/worker) lives in the
+ * control plane. */
+export const notificationChannels = pgTable(
+  'notification_channel',
+  {
+    id: id(),
+    ownerUserId: owned.ownerUserId(),
+    orgId: owned.orgId(),
+    name: text('name').notNull(),
+    kind: text('kind').notNull(), // smtp | apprise
+    enabled: boolean('enabled').default(true).notNull(),
+    encryptedConfig: text('encrypted_config').notNull(),
+    eventsSubscribed: text('events_subscribed').notNull(),
+    lastTestAt: timestamp('last_test_at', { withTimezone: true }),
+    lastTestStatus: text('last_test_status'),
+    createdAt: createdAt(),
+  },
+  (t) => [index('notification_channel_owner_idx').on(t.ownerUserId)],
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
 export type AccountRow = typeof accounts.$inferSelect;
@@ -379,3 +402,4 @@ export type RoutingRuleRow = typeof routingRules.$inferSelect;
 export type ModelPriceRow = typeof modelPrices.$inferSelect;
 export type RequestLogRow = typeof requestLogs.$inferSelect;
 export type RequestAttemptRow = typeof requestAttempts.$inferSelect;
+export type NotificationChannelRow = typeof notificationChannels.$inferSelect;

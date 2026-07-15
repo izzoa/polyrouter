@@ -10,14 +10,11 @@ function makeRecorder(enqueue = jest.fn()): { recorder: RequestRecorder; enqueue
 const ctx = (over: Partial<RecordingContext> = {}): RecordingContext => ({
   principal: userPrincipal('u1'),
   agentId: 'a1',
-  decision: {
-    providerId: 'p1',
-    modelId: 'm1',
-    externalModelId: 'gpt-4o',
-    tierKey: 'default',
-    decisionLayer: 'default',
-    routingReason: 'default tier',
-  },
+  providerId: 'p1',
+  modelId: 'm1',
+  tierAssigned: 'default',
+  decisionLayer: 'default',
+  routingReason: 'default tier',
   provider: { baseUrl: 'https://api.openai.com/v1', kind: 'api_key' },
   model: {
     externalModelId: 'gpt-4o',

@@ -201,4 +201,20 @@ describe('withBreakerStream — truncation and stream-error classification', () 
     }
     expect((await breaker.before(PID)).decision).toBe('allow');
   });
+
+  it('an overload error trips even when the consumer abandons right after it (#12 commit gate)', async () => {
+    const store = new InMemoryBreakerStore();
+    const breaker = clockedBreaker(store, { t: 0 });
+    const overloaded: NormalizedStreamEvent[] = [
+      { type: 'message_start', id: 'm', model: 'x', role: 'assistant' },
+      { type: 'error', error: { type: 'overloaded_error', message: 'busy' } },
+    ];
+    for (let i = 0; i < cfg.threshold; i++) {
+      const it = withBreakerStream(breaker, PID, () => fromEvents(overloaded));
+      await it.next(); // message_start
+      await it.next(); // error event — the outcome must settle BEFORE we abandon
+      await it.return(undefined); // abandon (as the commit gate does on an error event)
+    }
+    expect((await breaker.before(PID)).decision).toBe('skip'); // tripped, not neutral
+  });
 });

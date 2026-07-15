@@ -1,14 +1,24 @@
 import { randomUUID } from 'node:crypto';
 import { Injectable, Logger } from '@nestjs/common';
-import { resolveUsage, type PartialUsage, type RouteDecision } from '@polyrouter/data-plane';
+import { resolveUsage, type PartialUsage } from '@polyrouter/data-plane';
 import type { ModelRow, Principal, ProviderRow } from '@polyrouter/shared/server';
 import { LogWriter, type RequestLogDraft } from './log-writer';
 
-/** Everything needed to record a request, captured by the proxy at prepare time. */
+/** The status recorded on a RequestLog. `fallback` = a later chain member served
+ * after a predecessor failed (#12). */
+export type RecordStatus = 'success' | 'error' | 'fallback';
+
+/** Everything needed to record a request, captured by the proxy for the SERVED
+ * member (which may differ from the primary when a fallback served, #12). */
 export interface RecordingContext {
   readonly principal: Principal;
   readonly agentId: string | null;
-  readonly decision: RouteDecision;
+  readonly providerId: string | null;
+  readonly modelId: string | null;
+  readonly tierAssigned: string | null;
+  readonly decisionLayer: string;
+  /** Human-readable reason, including the fallback trail (#12). */
+  readonly routingReason: string;
   readonly provider: Pick<ProviderRow, 'baseUrl' | 'kind'>;
   readonly model: Pick<
     ModelRow,
@@ -20,7 +30,7 @@ export interface RecordingContext {
 }
 
 export interface RecordOutcome {
-  readonly status: 'success' | 'error';
+  readonly status: RecordStatus;
   readonly providerUsage?: PartialUsage;
   readonly outputChars: number;
 }
@@ -47,11 +57,11 @@ export class RequestRecorder {
         id: randomUUID(),
         principal: ctx.principal,
         agentId: ctx.agentId,
-        providerId: ctx.decision.providerId,
-        modelId: ctx.decision.modelId,
-        tierAssigned: ctx.decision.tierKey,
-        decisionLayer: ctx.decision.decisionLayer,
-        routingReason: ctx.decision.routingReason,
+        providerId: ctx.providerId,
+        modelId: ctx.modelId,
+        tierAssigned: ctx.tierAssigned,
+        decisionLayer: ctx.decisionLayer,
+        routingReason: ctx.routingReason,
         durationMs: Math.max(0, Date.now() - ctx.startedAt),
         status: outcome.status,
         usage,

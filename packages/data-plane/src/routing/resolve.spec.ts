@@ -162,6 +162,33 @@ describe('resolveRoute — auto / header / default cascade', () => {
   });
 });
 
+describe('resolveRoute — chain (#12 fallback order)', () => {
+  it('a tier resolves to all entries in position order (primary first)', () => {
+    const s = snap({
+      entriesByTierId: new Map([
+        [
+          't_default',
+          [
+            { modelId: 'm_fast', position: 1 },
+            { modelId: 'm_def', position: 0 },
+          ],
+        ],
+      ]),
+    });
+    const r = resolveRoute(s, parse('auto'));
+    if (isRouteError(r)) throw new Error('unexpected error');
+    expect(r.chain.map((c) => c.modelId)).toEqual(['m_def', 'm_fast']); // position order
+    expect(r.chain[0]!.modelId).toBe(r.modelId); // chain[0] is the primary
+  });
+
+  it('an explicit model has a single-element chain', () => {
+    const r = resolveRoute(snap(), parse('gpt-4o'));
+    if (isRouteError(r)) throw new Error('unexpected error');
+    expect(r.chain).toHaveLength(1);
+    expect(r.chain[0]!.externalModelId).toBe('gpt-4o');
+  });
+});
+
 describe('resolveRoute — tierKey (tier_assigned producer)', () => {
   it('is the tier key for tier paths and null for a direct model', () => {
     expect(resolveRoute(snap(), parse('gpt-4o'))).toMatchObject({ tierKey: null }); // explicit model

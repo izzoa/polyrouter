@@ -4,6 +4,12 @@ import { loadProvidersConfig, resolveCredentialKey } from '../providers/provider
 /** DI tokens for the proxy layer. */
 export const PROXY_RUNTIME = 'polyrouter:proxy-runtime';
 export const PROXY_ADAPTER_FACTORY = 'polyrouter:proxy-adapter-factory';
+export const PROXY_BREAKER = 'polyrouter:proxy-breaker';
+
+/** Bound each breaker Redis op with a fail-fast deadline so a down/slow Redis
+ * degrades to the in-memory fallback promptly instead of stalling the hot path
+ * on ioredis retries (#12). */
+export const BREAKER_REDIS_TIMEOUT_MS = 150;
 
 export type ProxyAdapterFactory = typeof createProviderAdapter;
 

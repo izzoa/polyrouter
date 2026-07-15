@@ -146,6 +146,11 @@ export async function startStubUpstream(): Promise<StubUpstream> {
         xApiKey:
           typeof req.headers['x-api-key'] === 'string' ? req.headers['x-api-key'] : undefined,
       });
+      // `*srvfail*` → an HTTP 500 (a retryable upstream error → chain fallback).
+      if (model.includes('srvfail')) {
+        res.writeHead(500, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: { message: 'stub failure' } }));
+      }
       if (path.endsWith('/chat/completions'))
         return stream ? openaiStream(res, model) : openaiJson(res, model);
       if (path.endsWith('/v1/messages'))

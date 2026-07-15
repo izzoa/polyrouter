@@ -10,6 +10,7 @@ export type {
   RouteEntry,
   RouteRule,
   RouteModel,
+  RouteTarget,
   RouteDecision,
   RouteError,
   RouteErrorKind,

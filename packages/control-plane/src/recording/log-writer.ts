@@ -38,7 +38,7 @@ export interface RequestLogDraft {
   readonly decisionLayer: string;
   readonly routingReason: string;
   readonly durationMs: number;
-  readonly status: 'success' | 'error';
+  readonly status: 'success' | 'error' | 'fallback';
   readonly usage: ResolvedUsage;
   readonly pricing: DraftPricing;
 }

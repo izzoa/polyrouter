@@ -14,7 +14,17 @@ import {
   type NormalizedStreamEvent,
   type PartialUsage,
 } from './translate';
-import { ProviderError, classifyStreamError, type ProviderAdapter } from '../providers';
+import {
+  CallCancelledError,
+  ProviderCircuitOpenError,
+  ProviderError,
+  classifyStreamError,
+  shouldFallback,
+  withBreaker,
+  withBreakerStream,
+  type CircuitBreaker,
+  type ProviderAdapter,
+} from '../providers';
 import { terminalErrorFrame } from './stream-error';
 
 export interface ProxyStreamOptions {
@@ -38,13 +48,20 @@ export interface BufferedResult {
   readonly response: NormalizedResponse;
 }
 
+/** A committed stream (first successful event in hand). */
+interface CommittedStream {
+  readonly kind: 'stream';
+  readonly frames: AsyncGenerator<string>;
+  readonly outcome: Promise<StreamOutcome>;
+}
+
+/** Single-attempt result — the error is the RAW thrown value (or a classified
+ * ProviderError for first-event/no-output cases) so the chain can decide
+ * fallback-eligibility before mapping for the client. */
+type AttemptResult = { readonly kind: 'error'; readonly error: unknown } | CommittedStream;
+
 export type OpenStreamResult =
-  | { readonly kind: 'error'; readonly error: ProviderError }
-  | {
-      readonly kind: 'stream';
-      readonly frames: AsyncGenerator<string>;
-      readonly outcome: Promise<StreamOutcome>;
-    };
+  { readonly kind: 'error'; readonly error: ProviderError } | CommittedStream;
 
 const MID_STREAM_MESSAGE = 'the upstream model failed mid-stream';
 
@@ -95,27 +112,38 @@ function accumulate(acc: Accumulator, ev: NormalizedStreamEvent): void {
   }
 }
 
-/**
- * Commit-gated stream. Resolves BEFORE the client is committed: `{kind:'error'}`
- * if the upstream throws, times out, produces nothing, or yields an error event
- * first. Otherwise `{kind:'stream'}` with a frame generator and an `outcome`
- * promise that settles exactly once — success on a clean end, error on a
- * mid-stream failure OR a consumer `return()` (client disconnect), even before
- * the first `next()`.
- */
+/** Single provider, no fallback (#10 compat) — maps the raw error to a ProviderError. */
 export async function openStream(
   provider: ProviderAdapter,
   client: ProtocolAdapter,
   request: NormalizedRequest,
   opts: ProxyStreamOptions,
 ): Promise<OpenStreamResult> {
+  const r = await openAttemptStream(
+    (signal) => provider.chatStream(request, { signal }),
+    client,
+    opts,
+  );
+  return r.kind === 'error' ? { kind: 'error', error: toProviderError(r.error) } : r;
+}
+
+/**
+ * Commit-gate ONE attempt. Creates the AbortController first, then builds the
+ * generator with that signal (so the first-event timeout can cancel the
+ * upstream). Returns the RAW error pre-commit so the chain can classify it.
+ */
+export async function openAttemptStream(
+  streamFactory: (signal: AbortSignal) => AsyncGenerator<NormalizedStreamEvent>,
+  client: ProtocolAdapter,
+  opts: ProxyStreamOptions,
+): Promise<AttemptResult> {
   const abort = new AbortController();
   const onCallerAbort = (): void => abort.abort();
   if (opts.signal) {
     if (opts.signal.aborted) abort.abort();
     else opts.signal.addEventListener('abort', onCallerAbort, { once: true });
   }
-  const iterator = provider.chatStream(request, { signal: abort.signal })[Symbol.asyncIterator]();
+  const iterator = streamFactory(abort.signal)[Symbol.asyncIterator]();
   let cleaned = false;
   const cleanup = async (): Promise<void> => {
     if (cleaned) return;
@@ -134,7 +162,7 @@ export async function openStream(
     first = await nextWithTimeout(iterator, opts.firstEventTimeoutMs, abort);
   } catch (err) {
     await cleanup();
-    return { kind: 'error', error: toProviderError(err) };
+    return { kind: 'error', error: err }; // raw — the chain classifies eligibility
   }
   if (first.done) {
     await cleanup();
@@ -260,4 +288,146 @@ async function* replay(
     accumulate(acc, r.value);
     yield r.value;
   }
+}
+
+// --- fallback chain (#12) ---
+
+/** One member of the fallback chain. The adapter is built LAZILY and INSIDE the
+ * breaker callback (see the walkers) so an open circuit skips before any setup. */
+export interface ChainAttempt {
+  readonly providerId: string;
+  readonly externalModelId: string;
+  readonly buildAdapter: () => Promise<ProviderAdapter>;
+}
+
+export interface AttemptFailure {
+  readonly index: number;
+  readonly error: ProviderError;
+}
+
+export type BufferedChainResult =
+  | {
+      readonly ok: true;
+      readonly wire: unknown;
+      readonly response: NormalizedResponse;
+      readonly servedIndex: number;
+      readonly failures: readonly AttemptFailure[];
+    }
+  | {
+      readonly ok: false;
+      readonly error: ProviderError;
+      readonly failures: readonly AttemptFailure[];
+    };
+
+export type StreamChainResult =
+  | {
+      readonly kind: 'error';
+      readonly error: ProviderError;
+      readonly failures: readonly AttemptFailure[];
+    }
+  | (CommittedStream & {
+      readonly servedIndex: number;
+      readonly failures: readonly AttemptFailure[];
+    });
+
+/** Decide on the RAW error whether to walk to the next member. A client
+ * cancellation (gone) and a `bad_request` (caller's fault) stop; a circuit-open
+ * skip, a member build failure, and a retryable ProviderError continue. */
+export function fallbackEligible(err: unknown): boolean {
+  if (err instanceof CallCancelledError) return false;
+  if (err instanceof Error && err.name === 'AbortError') return false;
+  if (err instanceof ProviderCircuitOpenError) return true;
+  if (err instanceof ProviderError) return shouldFallback(err.kind);
+  return false; // unknown → don't retry
+}
+
+/** Walk the chain for a non-streaming request. Returns (never throws on
+ * exhaustion) so the caller can record the served member or the full failure
+ * trail. */
+export async function runBufferedChain(
+  breaker: CircuitBreaker,
+  attempts: readonly ChainAttempt[],
+  client: ProtocolAdapter,
+  request: NormalizedRequest,
+  ctx: { created: number },
+  signal: AbortSignal,
+): Promise<BufferedChainResult> {
+  const failures: AttemptFailure[] = [];
+  let lastError: ProviderError = new ProviderError('unavailable', 'no chain members');
+  for (let i = 0; i < attempts.length; i += 1) {
+    if (signal.aborted)
+      return { ok: false, error: new ProviderError('unavailable', 'cancelled'), failures };
+    const attempt = attempts[i]!;
+    const req: NormalizedRequest = { ...request, model: attempt.externalModelId };
+    try {
+      // build INSIDE the breaker callback: an open circuit skips before setup.
+      const response = await withBreaker(breaker, attempt.providerId, async () => {
+        const adapter = await attempt.buildAdapter();
+        return adapter.chat(req, { signal });
+      });
+      return {
+        ok: true,
+        wire: client.responseOut(response, { created: ctx.created }),
+        response,
+        servedIndex: i,
+        failures,
+      };
+    } catch (err) {
+      const mapped = toProviderError(err);
+      if (!fallbackEligible(err)) return { ok: false, error: mapped, failures };
+      failures.push({ index: i, error: mapped });
+      lastError = mapped;
+    }
+  }
+  return { ok: false, error: lastError, failures };
+}
+
+/** Walk the chain for a streaming request, honoring the commit boundary: retry
+ * members until the first successful event commits; a post-commit failure is
+ * the terminal frame (no swap). */
+export async function openStreamChain(
+  breaker: CircuitBreaker,
+  attempts: readonly ChainAttempt[],
+  client: ProtocolAdapter,
+  request: NormalizedRequest,
+  opts: ProxyStreamOptions,
+): Promise<StreamChainResult> {
+  const failures: AttemptFailure[] = [];
+  let lastError: ProviderError = new ProviderError('unavailable', 'no chain members');
+  for (let i = 0; i < attempts.length; i += 1) {
+    if (opts.signal?.aborted)
+      return { kind: 'error', error: new ProviderError('unavailable', 'cancelled'), failures };
+    const attempt = attempts[i]!;
+    const req: NormalizedRequest = { ...request, model: attempt.externalModelId };
+    const result = await openAttemptStream(
+      (signal) =>
+        withBreakerStream(breaker, attempt.providerId, () => buildThenStream(attempt, req, signal)),
+      client,
+      opts,
+    );
+    if (result.kind === 'stream') {
+      return {
+        kind: 'stream',
+        frames: result.frames,
+        outcome: result.outcome,
+        servedIndex: i,
+        failures,
+      };
+    }
+    const mapped = toProviderError(result.error);
+    if (!fallbackEligible(result.error)) return { kind: 'error', error: mapped, failures };
+    failures.push({ index: i, error: mapped });
+    lastError = mapped;
+  }
+  return { kind: 'error', error: lastError, failures };
+}
+
+/** Build the adapter (inside the breaker generator, after admission) then stream. */
+async function* buildThenStream(
+  attempt: ChainAttempt,
+  request: NormalizedRequest,
+  signal: AbortSignal,
+): AsyncGenerator<NormalizedStreamEvent> {
+  const adapter = await attempt.buildAdapter();
+  yield* adapter.chatStream(request, { signal });
 }

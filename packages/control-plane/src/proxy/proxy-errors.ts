@@ -3,7 +3,12 @@
  * is rendered as a fixed message in the caller's own envelope — never the raw
  * upstream body, request id, or credential.
  */
-import { ProviderError, type ProviderErrorKind, type RouteErrorKind } from '@polyrouter/data-plane';
+import {
+  ProviderCircuitOpenError,
+  ProviderError,
+  type ProviderErrorKind,
+  type RouteErrorKind,
+} from '@polyrouter/data-plane';
 
 export type ClientProtocol = 'openai' | 'anthropic';
 
@@ -110,6 +115,8 @@ export const internalError = (): ProxyError =>
 /** Any thrown value → a ProxyError (a #6 ProviderError maps to its kind). */
 export function toProxyError(err: unknown): ProxyError {
   if (err instanceof ProxyError) return err;
+  if (err instanceof ProviderCircuitOpenError)
+    return serviceUnavailable('provider temporarily unavailable');
   if (err instanceof ProviderError) return providerErrorToProxy(err);
   return internalError();
 }

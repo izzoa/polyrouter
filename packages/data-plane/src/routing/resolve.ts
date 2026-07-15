@@ -50,6 +50,13 @@ export interface ParsedRoute {
 
 export type DecisionLayer = 'explicit' | 'header' | 'default';
 
+/** One member of a fallback chain (#12). */
+export interface RouteTarget {
+  readonly providerId: string;
+  readonly modelId: string;
+  readonly externalModelId: string;
+}
+
 export interface RouteDecision {
   readonly providerId: string;
   readonly modelId: string;
@@ -58,6 +65,10 @@ export interface RouteDecision {
   readonly tierKey: string | null;
   readonly decisionLayer: DecisionLayer;
   readonly routingReason: string;
+  /** The ordered fallback chain (#12); `chain[0]` is the primary (= the fields
+   * above). A tier resolves to all its entries in position order; a direct model
+   * to a single-element chain. */
+  readonly chain: readonly RouteTarget[];
 }
 
 export type RouteErrorKind =
@@ -70,6 +81,14 @@ export interface RouteError {
 
 export function isRouteError(r: RouteDecision | RouteError): r is RouteError {
   return 'error' in r;
+}
+
+function target(model: RouteModel): RouteTarget {
+  return {
+    providerId: model.providerId,
+    modelId: model.id,
+    externalModelId: model.externalModelId,
+  };
 }
 
 function modelDecision(
@@ -85,6 +104,7 @@ function modelDecision(
     tierKey,
     decisionLayer,
     routingReason,
+    chain: [target(model)], // a directly-named model has no fallback
   };
 }
 
@@ -94,15 +114,31 @@ function resolveTier(
   layer: DecisionLayer,
   reason: string,
 ): RouteDecision | RouteError {
-  // The primary is position 0 exactly (walking a fallback chain is #12); if a
-  // model/provider cascade removed position 0, treat the tier as unusable here
-  // rather than silently promoting a fallback.
-  const primary = (snap.entriesByTierId.get(tier.id) ?? []).find((e) => e.position === 0);
+  // Primary is position 0 exactly (if a cascade removed it, the tier is unusable
+  // here rather than silently promoting a fallback). The chain is all resolvable
+  // entries in position order (#12), chain[0] = the position-0 primary.
+  const entries = [...(snap.entriesByTierId.get(tier.id) ?? [])].sort(
+    (a, b) => a.position - b.position,
+  );
+  const primary = entries.find((e) => e.position === 0);
   if (!primary) return { error: 'empty_tier', detail: tier.key };
-  const model = snap.models.find((m) => m.id === primary.modelId);
+  const chain: RouteTarget[] = [];
+  for (const e of entries) {
+    const m = snap.models.find((mm) => mm.id === e.modelId);
+    if (m) chain.push(target(m));
+  }
+  const primaryModel = snap.models.find((m) => m.id === primary.modelId);
   // FK guarantees the model exists; guard defensively as an unresolved target.
-  if (!model) return { error: 'unresolved_target', detail: tier.key };
-  return modelDecision(model, layer, reason, tier.key);
+  if (!primaryModel || chain.length === 0) return { error: 'unresolved_target', detail: tier.key };
+  return {
+    providerId: primaryModel.providerId,
+    modelId: primaryModel.id,
+    externalModelId: primaryModel.externalModelId,
+    tierKey: tier.key,
+    decisionLayer: layer,
+    routingReason: reason,
+    chain,
+  };
 }
 
 function resolveTarget(

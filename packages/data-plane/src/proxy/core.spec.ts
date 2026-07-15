@@ -1,7 +1,21 @@
 /* eslint-disable @typescript-eslint/require-await, require-yield -- fake async generators in tests */
-import { openStream, runBuffered } from './core';
+import {
+  openStream,
+  runBuffered,
+  runBufferedChain,
+  openStreamChain,
+  fallbackEligible,
+  type ChainAttempt,
+} from './core';
 import { getAdapter, type NormalizedStreamEvent, type NormalizedResponse } from './translate';
-import { ProviderError, type ProviderAdapter } from '../providers';
+import {
+  CallCancelledError,
+  CircuitBreaker,
+  InMemoryBreakerStore,
+  ProviderCircuitOpenError,
+  ProviderError,
+  type ProviderAdapter,
+} from '../providers';
 
 const OPTS = { firstEventTimeoutMs: 1000, created: 1_700_000_000 };
 
@@ -178,6 +192,135 @@ describe('openStream — outcome (usage capture for #11)', () => {
     if (res.kind !== 'stream') throw new Error('unreachable');
     await res.frames.return(undefined); // never called next()
     expect((await res.outcome).status).toBe('error');
+  });
+});
+
+describe('fallbackEligible', () => {
+  it('continues on retryable/circuit-open, stops on bad_request/cancellation', () => {
+    expect(fallbackEligible(new ProviderError('rate_limit', 'x'))).toBe(true);
+    expect(fallbackEligible(new ProviderError('unavailable', 'x'))).toBe(true);
+    expect(fallbackEligible(new ProviderError('unknown_model', 'x'))).toBe(true);
+    expect(fallbackEligible(new ProviderCircuitOpenError('p'))).toBe(true);
+    expect(fallbackEligible(new ProviderError('bad_request', 'x'))).toBe(false);
+    expect(fallbackEligible(new CallCancelledError())).toBe(false);
+  });
+});
+
+describe('runBufferedChain', () => {
+  const client = getAdapter('openai');
+  const newBreaker = (): CircuitBreaker => new CircuitBreaker(new InMemoryBreakerStore());
+  const resp = (): NormalizedResponse => ({
+    id: 'r',
+    model: 'm',
+    content: [{ type: 'text', text: 'ok' }],
+    stopReason: 'stop',
+  });
+  const bufAttempt = (
+    providerId: string,
+    externalModelId: string,
+    chat: () => Promise<NormalizedResponse>,
+  ): ChainAttempt => ({
+    providerId,
+    externalModelId,
+    buildAdapter: () =>
+      Promise.resolve({
+        protocol: 'openai_compatible',
+        chat,
+        chatStream: async function* () {
+          /* unused */
+        },
+        listModels: () => Promise.resolve([]),
+        testConnection: () => Promise.resolve({ ok: true, models: 0 }),
+      } as unknown as ProviderAdapter),
+  });
+
+  it('falls through a retryable failure to the next member and records the trail', async () => {
+    const attempts = [
+      bufAttempt('p1', 'a', () => Promise.reject(new ProviderError('rate_limit', 'slow'))),
+      bufAttempt('p2', 'b', () => Promise.resolve(resp())),
+    ];
+    const r = await runBufferedChain(
+      newBreaker(),
+      attempts,
+      client,
+      { model: 'x', messages: [], params: {} },
+      { created: 1 },
+      new AbortController().signal,
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('unreachable');
+    expect(r.servedIndex).toBe(1);
+    expect(r.failures).toHaveLength(1);
+    expect(r.failures[0]!.error.kind).toBe('rate_limit');
+  });
+
+  it('stops the walk on a bad_request (no fallback)', async () => {
+    let secondCalled = false;
+    const attempts = [
+      bufAttempt('p1', 'a', () => Promise.reject(new ProviderError('bad_request', 'nope'))),
+      bufAttempt('p2', 'b', () => {
+        secondCalled = true;
+        return Promise.resolve(resp());
+      }),
+    ];
+    const r = await runBufferedChain(
+      newBreaker(),
+      attempts,
+      client,
+      { model: 'x', messages: [], params: {} },
+      { created: 1 },
+      new AbortController().signal,
+    );
+    expect(r.ok).toBe(false);
+    expect(secondCalled).toBe(false);
+  });
+});
+
+describe('openStreamChain', () => {
+  const client = getAdapter('openai');
+  const newBreaker = (): CircuitBreaker => new CircuitBreaker(new InMemoryBreakerStore());
+  const streamAttempt = (
+    providerId: string,
+    gen: () => AsyncGenerator<NormalizedStreamEvent>,
+  ): ChainAttempt => ({
+    providerId,
+    externalModelId: providerId,
+    buildAdapter: () =>
+      Promise.resolve({
+        protocol: 'openai_compatible',
+        chat: () => Promise.reject(new Error('unused')),
+        chatStream: gen,
+        listModels: () => Promise.resolve([]),
+        testConnection: () => Promise.resolve({ ok: true, models: 0 }),
+      } as unknown as ProviderAdapter),
+  });
+
+  it('falls back pre-commit and commits the next member', async () => {
+    const attempts = [
+      streamAttempt('p1', async function* () {
+        throw new ProviderError('rate_limit', 'slow');
+      }),
+      streamAttempt('p2', async function* () {
+        yield START;
+        yield TEXT;
+        yield STOP;
+        yield END;
+      }),
+    ];
+    const r = await openStreamChain(
+      newBreaker(),
+      attempts,
+      client,
+      { model: 'x', messages: [], params: {} },
+      OPTS,
+    );
+    expect(r.kind).toBe('stream');
+    if (r.kind !== 'stream') throw new Error('unreachable');
+    expect(r.servedIndex).toBe(1);
+    expect(r.failures).toHaveLength(1);
+    const out = await collect(r.frames);
+    expect(out).toContain('data: [DONE]');
+    expect(out).not.toContain('"upstream_error"'); // clean stream, no terminal error
   });
 });
 

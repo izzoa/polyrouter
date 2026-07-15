@@ -390,16 +390,20 @@ export async function* withBreakerStream(
   };
 
   let sawTerminalStop = false;
-  let streamErrorKind: ReturnType<typeof classifyStreamError> | undefined;
+  let sawError = false;
   try {
     for await (const ev of gen()) {
       if (ev.type === 'message_delta' && ev.stopReason !== undefined) sawTerminalStop = true;
-      if (ev.type === 'error') streamErrorKind = classifyStreamError(ev.error.type);
+      if (ev.type === 'error') {
+        // Settle BEFORE yielding: a commit-gated consumer may `.return()` the
+        // generator on seeing the error event, whose `finally` would otherwise
+        // settle `neutral` first and let an overload/rate-limit escape untripped.
+        sawError = true;
+        await settle(breakerImpact(classifyStreamError(ev.error.type)) ? 'trip' : 'success');
+      }
       yield ev;
     }
-    if (streamErrorKind !== undefined) {
-      await settle(breakerImpact(streamErrorKind) ? 'trip' : 'success');
-    } else {
+    if (!sawError) {
       await settle(sawTerminalStop ? 'success' : 'trip'); // no terminal stop → truncated
     }
   } catch (err) {

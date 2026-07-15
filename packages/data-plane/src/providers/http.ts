@@ -199,6 +199,10 @@ export async function openRequest(
   firstByteTimeoutMs: number,
   ctx?: CallContext,
 ): Promise<OpenedRequest> {
+  // A signal already aborted before we attach the listener would never fire it,
+  // so the call would start anyway; honor it up front (a fallback walk aborts
+  // during breaker admission / adapter build).
+  if (ctx?.signal?.aborted) throw new CallCancelledError();
   const ctl = new AbortController();
   let timedOut = false;
   const timer = setTimeout(() => {

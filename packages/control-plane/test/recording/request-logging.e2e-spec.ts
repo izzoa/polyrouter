@@ -14,7 +14,11 @@ import {
   type PersistencePort,
   type Principal,
 } from '@polyrouter/shared/server';
-import { createProviderAdapter } from '@polyrouter/data-plane';
+import {
+  CircuitBreaker,
+  InMemoryBreakerStore,
+  createProviderAdapter,
+} from '@polyrouter/data-plane';
 import request from 'supertest';
 import type { App } from 'supertest/types';
 import { Pool } from 'pg';
@@ -25,6 +29,7 @@ import { ChatCompletionsController } from '../../src/proxy/chat-completions.cont
 import { ProxyExceptionFilter } from '../../src/proxy/proxy-exception.filter';
 import {
   PROXY_ADAPTER_FACTORY,
+  PROXY_BREAKER,
   PROXY_RUNTIME,
   loadProxyRuntime,
 } from '../../src/proxy/proxy.config';
@@ -83,6 +88,7 @@ describe('request-logging e2e', () => {
         StreamDrainRegistry,
         { provide: PROXY_RUNTIME, useFactory: loadProxyRuntime },
         { provide: PROXY_ADAPTER_FACTORY, useValue: createProviderAdapter },
+        { provide: PROXY_BREAKER, useValue: new CircuitBreaker(new InMemoryBreakerStore()) },
         { provide: APP_FILTER, useClass: ProxyExceptionFilter },
       ],
     }).compile();
@@ -112,9 +118,14 @@ describe('request-logging e2e', () => {
       externalModelId: 'gpt-4o',
     });
     gpt4oModelId = model!.id;
+    const srvfail = await port.models.createForProvider(principal, provider.id, {
+      externalModelId: 'oai-srvfail',
+    });
     await port.ensureDefaultTier(principal);
     const tier = (await port.tiers.list(principal)).find((t) => t.key === 'default')!;
     await port.routingEntries.replaceForTier(principal, tier.id, [gpt4oModelId]);
+    const fb = await port.tiers.insert(principal, { key: 'fallback' });
+    await port.routingEntries.replaceForTier(principal, fb.id, [srvfail!.id, gpt4oModelId]);
     const minted = mintAgentKey(HMAC);
     await pool.query(
       `INSERT INTO agent (id, owner_user_id, name, api_key_hash, api_key_prefix, harness_type)
@@ -153,20 +164,30 @@ describe('request-logging e2e', () => {
     expect(JSON.stringify(row)).not.toContain('hi'); // no prompt/response body
   });
 
+  it('records status=fallback against the SERVED model with a failure trail (#12)', async () => {
+    const res = await request(server)
+      .post('/v1/chat/completions')
+      .set('Authorization', `Bearer ${key}`)
+      .send({ model: 'fallback', messages: [] }); // primary 500s → gpt-4o serves
+    expect(res.status).toBe(200);
+    await writer.flush();
+    const row = (await port.requestLogs.list(principal)).find((r) => r.status === 'fallback');
+    expect(row).toBeDefined();
+    expect(row!.modelId).toBe(gpt4oModelId); // the served member, not the failed primary
+    expect(row!.routingReason).toContain('fell back'); // sanitized trail
+  });
+
   it('cost is immutable: a later catalog price change does not move a recorded cost', async () => {
     // Record via the pipeline with a KNOWN-host provider so the bundled catalog
     // price (openai:gpt-4o) resolves — deriveModelKey is pure (no network).
     const ctx: RecordingContext = {
       principal,
       agentId: null,
-      decision: {
-        providerId: 'p-known',
-        modelId: gpt4oModelId,
-        externalModelId: 'gpt-4o',
-        tierKey: null,
-        decisionLayer: 'explicit',
-        routingReason: 'explicit model',
-      },
+      providerId: 'p-known',
+      modelId: gpt4oModelId,
+      tierAssigned: null,
+      decisionLayer: 'explicit',
+      routingReason: 'explicit model',
       provider: { baseUrl: 'https://api.openai.com/v1', kind: 'api_key' },
       model: {
         externalModelId: 'gpt-4o',

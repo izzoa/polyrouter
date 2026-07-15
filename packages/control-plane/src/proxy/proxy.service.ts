@@ -10,11 +10,15 @@ import {
   type ProviderRow,
 } from '@polyrouter/shared/server';
 import {
+  ProviderError,
   getAdapter,
-  openStream,
-  resolveRoute,
-  runBuffered,
   isRouteError,
+  openStreamChain,
+  resolveRoute,
+  runBufferedChain,
+  type AttemptFailure,
+  type ChainAttempt,
+  type CircuitBreaker,
   type ContentBlock,
   type NormalizedRequest,
   type ProtocolAdapter,
@@ -35,18 +39,36 @@ import {
 } from './proxy-errors';
 import {
   PROXY_ADAPTER_FACTORY,
+  PROXY_BREAKER,
   PROXY_RUNTIME,
   type ProxyAdapterFactory,
   type ProxyRuntime,
 } from './proxy.config';
 import { RequestRecorder, type RecordingContext } from '../recording/request-recorder';
 
+/** Per-chain-member recording metadata (parallel to the attempts). */
+interface AttemptMeta {
+  readonly providerId: string;
+  readonly modelId: string;
+  readonly providerBaseUrl: string | null;
+  readonly providerKind: string;
+  readonly model: Pick<
+    ModelRow,
+    'externalModelId' | 'inputPricePer1m' | 'outputPricePer1m' | 'isFree'
+  >;
+}
+
 interface Prepared {
-  adapter: ProviderAdapter;
   client: ProtocolAdapter;
   routed: NormalizedRequest;
   created: number;
-  ctx: RecordingContext;
+  attempts: ChainAttempt[];
+  meta: AttemptMeta[];
+  decision: RouteDecision;
+  startedAt: number;
+  requestChars: number;
+  principal: Principal;
+  agentId: string | null;
 }
 
 /** Assistant output characters (text + tool name/args) for a usage estimate. */
@@ -76,44 +98,49 @@ export class ProxyService {
     @Inject(PERSISTENCE_PORT) private readonly db: PersistencePort,
     @Inject(PROXY_RUNTIME) private readonly rt: ProxyRuntime,
     @Inject(PROXY_ADAPTER_FACTORY) private readonly factory: ProxyAdapterFactory,
+    @Inject(PROXY_BREAKER) private readonly breaker: CircuitBreaker,
     private readonly recorder: RequestRecorder,
   ) {
     this.key = rt.key;
     this.mode = rt.mode;
   }
 
-  /** Non-streaming: returns the client-wire response body; records after (#11). */
+  /** Non-streaming: walk the fallback chain; return the served member's wire and
+   * record it (#11/#12). `signal` aborts the walk on client disconnect. */
   async completion(
     principal: Principal,
     protocol: ClientProtocol,
     wireBody: unknown,
     headers: NodeJS.Dict<string | string[]>,
     agentId: string | null,
+    signal: AbortSignal,
   ): Promise<unknown> {
-    const { adapter, client, routed, created, ctx } = await this.prepare(
-      principal,
-      protocol,
-      wireBody,
-      headers,
-      agentId,
+    const p = await this.prepare(principal, protocol, wireBody, headers, agentId);
+    const result = await runBufferedChain(
+      this.breaker,
+      p.attempts,
+      p.client,
+      p.routed,
+      { created: p.created },
+      signal,
     );
-    try {
-      const { wire, response } = await runBuffered(adapter, client, routed, { created });
-      this.recorder.record(ctx, {
-        status: 'success',
-        ...(response.usage !== undefined ? { providerUsage: response.usage } : {}),
-        outputChars: countOutputChars(response.content),
+    if (result.ok) {
+      this.recorder.record(this.servedContext(p, result.servedIndex, result.failures), {
+        status: result.failures.length > 0 ? 'fallback' : 'success',
+        ...(result.response.usage !== undefined ? { providerUsage: result.response.usage } : {}),
+        outputChars: countOutputChars(result.response.content),
       });
-      return wire;
-    } catch (err) {
-      this.recorder.record(ctx, { status: 'error', outputChars: 0 });
-      throw toProxyError(err);
+      return result.wire;
     }
+    this.recorder.record(this.failedContext(p, result.failures), {
+      status: 'error',
+      outputChars: 0,
+    });
+    throw toProxyError(result.error);
   }
 
-  /** Streaming: returns the client-SSE frame generator (throws a mapped
-   * ProxyError on a pre-commit failure, before any byte is written); records
-   * when the stream outcome settles (#11), off the request path. */
+  /** Streaming: walk the chain to the first committed member; record the served
+   * member when the stream outcome settles (a post-commit error → `status=error`). */
   async stream(
     principal: Principal,
     protocol: ClientProtocol,
@@ -122,25 +149,25 @@ export class ProxyService {
     signal: AbortSignal,
     agentId: string | null,
   ): Promise<AsyncGenerator<string>> {
-    const { adapter, client, routed, created, ctx } = await this.prepare(
-      principal,
-      protocol,
-      wireBody,
-      headers,
-      agentId,
-    );
-    const result = await openStream(adapter, client, routed, {
+    const p = await this.prepare(principal, protocol, wireBody, headers, agentId);
+    const result = await openStreamChain(this.breaker, p.attempts, p.client, p.routed, {
       signal,
       firstEventTimeoutMs: this.rt.firstByteTimeoutMs,
-      created,
+      created: p.created,
     });
     if (result.kind === 'error') {
-      this.recorder.record(ctx, { status: 'error', outputChars: 0 });
+      this.recorder.record(this.failedContext(p, result.failures), {
+        status: 'error',
+        outputChars: 0,
+      });
       throw providerErrorToProxy(result.error);
     }
+    const ctx = this.servedContext(p, result.servedIndex, result.failures);
+    const fellBack = result.failures.length > 0;
     void result.outcome.then((o) =>
       this.recorder.record(ctx, {
-        status: o.status,
+        // Post-commit precedence: a committed stream that later fails is `error`.
+        status: o.status === 'error' ? 'error' : fellBack ? 'fallback' : 'success',
         providerUsage: o.usage,
         outputChars: o.outputChars,
       }),
@@ -195,47 +222,92 @@ export class ProxyService {
     });
     if (isRouteError(decision)) throw routeError(decision.error);
 
-    const provider = await this.db.providers.findById(principal, decision.providerId);
-    if (!provider) throw serviceUnavailable('routing target provider is unavailable');
-    const model = models.find((m) => m.id === decision.modelId);
-    if (!model) throw serviceUnavailable('routing target model is unavailable');
-    const adapter = await this.buildAdapter(provider);
+    // Build the attempt chain in the CONFIGURED order (no reorder). Provider/model
+    // metadata is loaded now (ownership-scoped, cheap); the adapter is built lazily
+    // INSIDE the breaker callback so an open/broken later member can't fail a
+    // healthy primary and an open circuit skips before any setup work.
+    const attempts: ChainAttempt[] = [];
+    const meta: AttemptMeta[] = [];
+    for (const t of decision.chain) {
+      const provider = await this.db.providers.findById(principal, t.providerId);
+      const model = models.find((m) => m.id === t.modelId);
+      if (!provider || !model) continue;
+      meta.push({
+        providerId: t.providerId,
+        modelId: t.modelId,
+        providerBaseUrl: provider.baseUrl,
+        providerKind: provider.kind,
+        model: {
+          externalModelId: model.externalModelId,
+          inputPricePer1m: model.inputPricePer1m,
+          outputPricePer1m: model.outputPricePer1m,
+          isFree: model.isFree,
+        },
+      });
+      attempts.push({
+        providerId: t.providerId,
+        externalModelId: t.externalModelId,
+        buildAdapter: () => this.chainAdapter(provider),
+      });
+    }
+    if (attempts.length === 0) throw serviceUnavailable('no usable provider for the route');
 
-    const routed: NormalizedRequest = { ...ir, model: decision.externalModelId };
-    const ctx = this.buildContext(
-      principal,
-      agentId,
+    return {
+      client,
+      routed: ir, // the model is retargeted per-attempt inside the walker
+      created: Math.floor(Date.now() / 1000),
+      attempts,
+      meta,
       decision,
-      provider,
-      model,
       startedAt,
       requestChars,
-    );
-    return { adapter, client, routed, created: Math.floor(Date.now() / 1000), ctx };
+      principal,
+      agentId,
+    };
   }
 
-  private buildContext(
-    principal: Principal,
-    agentId: string | null,
-    decision: RouteDecision,
-    provider: ProviderRow,
-    model: ModelRow,
-    startedAt: number,
-    requestChars: number,
+  /** Build a chain member's adapter; a setup failure (SSRF/credential/decrypt)
+   * becomes a classified, fallback-eligible ProviderError (skipped + trips the
+   * breaker so it's skipped fast next time). */
+  private async chainAdapter(provider: ProviderRow): Promise<ProviderAdapter> {
+    try {
+      return await this.buildAdapter(provider);
+    } catch {
+      throw new ProviderError('unavailable', 'provider setup failed');
+    }
+  }
+
+  private servedContext(
+    p: Prepared,
+    servedIndex: number,
+    failures: readonly AttemptFailure[],
   ): RecordingContext {
+    return this.contextFor(p, servedIndex, failures);
+  }
+
+  /** Total-chain failure is recorded against the primary. */
+  private failedContext(p: Prepared, failures: readonly AttemptFailure[]): RecordingContext {
+    return this.contextFor(p, 0, failures);
+  }
+
+  private contextFor(
+    p: Prepared,
+    metaIndex: number,
+    failures: readonly AttemptFailure[],
+  ): RecordingContext {
+    const m = p.meta[metaIndex]!;
     return {
-      principal,
-      agentId,
-      decision,
-      provider: { baseUrl: provider.baseUrl, kind: provider.kind },
-      model: {
-        externalModelId: model.externalModelId,
-        inputPricePer1m: model.inputPricePer1m,
-        outputPricePer1m: model.outputPricePer1m,
-        isFree: model.isFree,
-      },
-      startedAt,
-      requestChars,
+      principal: p.principal,
+      agentId: p.agentId,
+      providerId: m.providerId,
+      modelId: m.modelId,
+      tierAssigned: p.decision.tierKey,
+      decisionLayer: p.decision.decisionLayer,
+      routingReason: reasonWithTrail(p.decision.routingReason, failures, p.meta),
+      provider: { baseUrl: m.providerBaseUrl, kind: m.providerKind },
+      model: m.model,
+      startedAt: p.startedAt,
+      requestChars: p.requestChars,
     };
   }
 
@@ -303,6 +375,20 @@ export class ProxyService {
       firstByteTimeoutMs: this.rt.firstByteTimeoutMs,
     });
   }
+}
+
+/** The routing reason plus a sanitized fallback trail (kind@model — no raw
+ * messages) so #11 records why earlier chain members failed (§7.4). */
+function reasonWithTrail(
+  reason: string,
+  failures: readonly AttemptFailure[],
+  meta: readonly AttemptMeta[],
+): string {
+  if (failures.length === 0) return reason;
+  const trail = failures
+    .map((f) => `${f.error.kind}@${meta[f.index]?.model.externalModelId ?? '?'}`)
+    .join(', ');
+  return `${reason}; fell back after: ${trail}`;
 }
 
 /** Rough request size for the input-token estimate; never throws. */

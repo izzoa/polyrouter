@@ -25,8 +25,23 @@ export async function handleInference(
   const agentId = (req as { agentId?: string }).agentId ?? null;
   const streaming = (body as { stream?: unknown } | null)?.stream === true;
   if (!streaming) {
-    const wire = await deps.svc.completion(principal, protocol, body, req.headers, agentId);
-    res.status(200).json(wire); // a completion is 200, not Nest's POST-default 201
+    // Wire client disconnect to an abort so a buffered fallback walk stops.
+    const abort = new AbortController();
+    const onClose = (): void => abort.abort();
+    res.on('close', onClose);
+    try {
+      const wire = await deps.svc.completion(
+        principal,
+        protocol,
+        body,
+        req.headers,
+        agentId,
+        abort.signal,
+      );
+      res.status(200).json(wire); // a completion is 200, not Nest's POST-default 201
+    } finally {
+      res.off('close', onClose);
+    }
     return;
   }
   await pumpSse(deps, protocol, principal, body, req, res, agentId);

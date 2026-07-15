@@ -12,7 +12,11 @@ import {
   type PersistencePort,
   type Principal,
 } from '@polyrouter/shared/server';
-import { createProviderAdapter } from '@polyrouter/data-plane';
+import {
+  CircuitBreaker,
+  InMemoryBreakerStore,
+  createProviderAdapter,
+} from '@polyrouter/data-plane';
 import request from 'supertest';
 import type { App } from 'supertest/types';
 import { Pool } from 'pg';
@@ -25,6 +29,7 @@ import { ModelsController } from '../../src/proxy/models.controller';
 import { ProxyExceptionFilter } from '../../src/proxy/proxy-exception.filter';
 import {
   PROXY_ADAPTER_FACTORY,
+  PROXY_BREAKER,
   PROXY_RUNTIME,
   loadProxyRuntime,
 } from '../../src/proxy/proxy.config';
@@ -77,6 +82,7 @@ async function seedTenant(
   };
   await add(openai.id, 'gpt-4o');
   await add(openai.id, 'oai-miderror');
+  await add(openai.id, 'oai-srvfail');
   await add(anthropic.id, 'claude-x');
   await add(anthropic.id, 'anthro-miderror');
   await add(anthropic.id, 'anthro-firsterror');
@@ -88,6 +94,17 @@ async function seedTenant(
   await port.routingEntries.replaceForTier(principal, defaultTier.id, [models['gpt-4o']!]);
   const fast = await port.tiers.insert(principal, { key: 'fast' });
   await port.routingEntries.replaceForTier(principal, fast.id, [models['claude-x']!]);
+  // #12 fallback chains: primary 500s, second serves.
+  const fb = await port.tiers.insert(principal, { key: 'fallback' });
+  await port.routingEntries.replaceForTier(principal, fb.id, [
+    models['oai-srvfail']!,
+    models['gpt-4o']!,
+  ]);
+  const mid = await port.tiers.insert(principal, { key: 'midchain' });
+  await port.routingEntries.replaceForTier(principal, mid.id, [
+    models['anthro-miderror']!,
+    models['gpt-4o']!,
+  ]);
   await port.tiers.insert(principal, { key: 'empty' }); // no entries
 
   const minted = mintAgentKey(HMAC);
@@ -134,6 +151,7 @@ describe('inference proxy e2e', () => {
         { provide: RequestRecorder, useValue: { record: () => undefined } }, // #10 doesn't assert logging
         { provide: PROXY_RUNTIME, useFactory: loadProxyRuntime },
         { provide: PROXY_ADAPTER_FACTORY, useValue: createProviderAdapter },
+        { provide: PROXY_BREAKER, useValue: new CircuitBreaker(new InMemoryBreakerStore()) },
         { provide: APP_FILTER, useClass: ProxyExceptionFilter },
       ],
     }).compile();
@@ -206,6 +224,29 @@ describe('inference proxy e2e', () => {
     const res = await chat(A.key, { model: 'empty', messages: [] });
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('empty_tier');
+  });
+
+  // --- #12 fallback + mid-stream safety ---
+
+  it('falls back to the next member when the primary fails (non-streaming)', async () => {
+    const res = await chat(A.key, { model: 'fallback', messages: [] });
+    expect(res.status).toBe(200); // primary (oai-srvfail) 500s → gpt-4o serves
+    expect(res.body.choices[0].message.content).toContain('Hello from stub');
+  });
+
+  it('falls back pre-commit while streaming and delivers one clean stream', async () => {
+    const res = await chat(A.key, { model: 'fallback', stream: true, messages: [] });
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('data: [DONE]');
+    expect(res.text).not.toContain('"upstream_error"'); // fell back before committing
+  });
+
+  it('a post-commit failure terminates the stream without swapping to the fallback', async () => {
+    // midchain = [anthro-miderror, gpt-4o]: the first commits then fails mid-stream.
+    const res = await chat(A.key, { model: 'midchain', stream: true, messages: [] });
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('"upstream_error"'); // terminal error, not a second model
+    expect(res.text).not.toContain('Hello from stub'); // gpt-4o (the fallback) never served
   });
 
   it('shapes a malformed JSON body as a protocol 4xx', async () => {

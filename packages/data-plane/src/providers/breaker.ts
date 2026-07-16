@@ -512,10 +512,21 @@ export async function* withBreakerStream(
       await settle(sawTerminalStop ? 'success' : 'trip'); // no terminal stop → truncated
     }
   } catch (err) {
-    // A caller-gone teardown is neutral even in converted ProviderError shape;
-    // a system-imposed timeout (client still present) keeps tripping.
-    const neutral = isCancellation(err) || isCallerAbort?.() === true;
-    await settle(neutral ? 'neutral' : outcomeForError(err));
+    // Neutrality is authoritative from the caller-abort predicate when supplied:
+    // only a genuine client-gone teardown is neutral (invariant, commit 8abd4b6).
+    // A system-imposed cancellation (a first/inter-event timeout while the client
+    // is still present) is a tripping failure — settle it explicitly rather than
+    // via outcomeForError, whose `CallCancelledError → neutral` branch would
+    // re-neutralize it (E1.3). With no predicate, keep the prior cancellation-is-
+    // neutral behavior.
+    const callerGone = isCallerAbort !== undefined ? isCallerAbort() : isCancellation(err);
+    if (callerGone) {
+      await settle('neutral');
+    } else if (isCancellation(err)) {
+      await settle('trip');
+    } else {
+      await settle(outcomeForError(err));
+    }
     throw err;
   } finally {
     // Consumer abandoned the generator (early break / .return()) → neutral.

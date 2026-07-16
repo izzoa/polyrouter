@@ -14,6 +14,8 @@ import {
   InMemoryBreakerStore,
   ProviderCircuitOpenError,
   ProviderError,
+  createOpenaiProviderAdapter,
+  type HttpClient,
   type ProviderAdapter,
 } from '../providers';
 
@@ -322,6 +324,112 @@ describe('openStreamChain', () => {
     expect(out).toContain('data: [DONE]');
     expect(out).not.toContain('"upstream_error"'); // clean stream, no terminal error
   });
+
+  // E1.3 composition: a hung-at-connect member whose stream is aborted by a
+  // system timeout (CallCancelledError, caller still present) must TRIP its
+  // breaker through the openStreamChain → withBreakerStream wiring, so the next
+  // request skips it fast instead of paying the timeout again.
+  it('a system-timeout (caller present) trips the breaker so the provider is skipped next time', async () => {
+    const breaker = new CircuitBreaker(new InMemoryBreakerStore(), {
+      config: { threshold: 1, cooldownMs: 60_000, probeLeaseMs: 200, stateTtlMs: 60_000 },
+    });
+    const hung = streamAttempt('phung', async function* () {
+      throw new CallCancelledError(); // core aborted the hung call; the client never left
+    });
+    const optsSystemAbort = { ...OPTS, isCallerAbort: () => false };
+
+    const first = await openStreamChain(
+      breaker,
+      [hung],
+      client,
+      { model: 'x', messages: [], params: {} },
+      optsSystemAbort,
+    );
+    expect(first.kind).toBe('error'); // no fallback member → chain fails
+
+    // Second request: the breaker is now open, so admission throws
+    // ProviderCircuitOpenError BEFORE the member's stream body runs — the hung
+    // upstream is never touched again. If the breaker had wrongly stayed closed
+    // (the re-neutralization bug), the body would run and set this true.
+    let bodyRan = false;
+    const guarded = streamAttempt('phung', async function* () {
+      bodyRan = true;
+      throw new CallCancelledError();
+    });
+    const second = await openStreamChain(
+      breaker,
+      [guarded],
+      client,
+      { model: 'x', messages: [], params: {} },
+      optsSystemAbort,
+    );
+    expect(second.kind).toBe('error');
+    expect(bodyRan).toBe(false); // skipped fast — breaker is open
+  });
+
+  // E1.3 adapter→core timing (clink finding 4, case i): when a provider accepts
+  // the connection but never returns headers, the ADAPTER's own first-byte timer
+  // (40ms) must fire before core's first-event timer (40+500ms) and throw the
+  // typed `unavailable` ProviderError — which trips the breaker — rather than
+  // core aborting first into a (would-be neutral) CallCancelledError.
+  it("the adapter's first-byte timeout wins pre-headers, yielding a tripping `unavailable`", async () => {
+    const neverHeaders: HttpClient = (_url, init) =>
+      new Promise((_resolve, reject) => {
+        if (init.signal?.aborted) return reject(new DOMException('aborted', 'AbortError'));
+        init.signal?.addEventListener(
+          'abort',
+          () => reject(new DOMException('aborted', 'AbortError')),
+          { once: true },
+        );
+      });
+    const hungAdapter = (): ProviderAdapter =>
+      createOpenaiProviderAdapter(
+        {
+          protocol: 'openai_compatible',
+          baseUrl: 'http://provider.invalid/v1',
+          credential: 'k',
+          kind: 'api_key',
+          mode: 'selfhosted',
+          firstByteTimeoutMs: 40, // adapter bound < core first-event bound (540)
+        },
+        { httpClient: neverHeaders },
+      );
+    const attempt = {
+      providerId: 'phdr',
+      externalModelId: 'phdr',
+      buildAdapter: () => Promise.resolve(hungAdapter()),
+    };
+    const breaker = new CircuitBreaker(new InMemoryBreakerStore(), {
+      config: { threshold: 1, cooldownMs: 60_000, probeLeaseMs: 200, stateTtlMs: 60_000 },
+    });
+    // caller present (client did NOT abort); core bound is 540ms so the adapter's
+    // 40ms timer must win.
+    const opts = { firstEventTimeoutMs: 540, created: 1, isCallerAbort: () => false };
+
+    const started = Date.now();
+    const r = await openStreamChain(breaker, [attempt], client, { model: 'x', messages: [], params: {} }, opts);
+    const elapsed = Date.now() - started;
+    expect(r.kind).toBe('error');
+    if (r.kind === 'error') {
+      expect(r.error.kind).toBe('unavailable');
+      // The ADAPTER's timer won (its message), not core's ('upstream event timeout').
+      expect(r.error.message).toMatch(/first-byte/);
+    }
+    expect(elapsed).toBeLessThan(300); // fired at ~40ms (adapter), nowhere near core's 540ms
+
+    // The unavailable tripped the breaker: a second attempt is skipped fast (body never built).
+    let built = false;
+    const guard = {
+      providerId: 'phdr',
+      externalModelId: 'phdr',
+      buildAdapter: () => {
+        built = true;
+        return Promise.resolve(hungAdapter());
+      },
+    };
+    await openStreamChain(breaker, [guard], client, { model: 'x', messages: [], params: {} }, opts);
+    expect(built).toBe(false);
+  }, 10_000);
 });
 
 describe('runBuffered', () => {

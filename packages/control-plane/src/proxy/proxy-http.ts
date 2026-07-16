@@ -83,29 +83,45 @@ async function pumpSse(
   try {
     for await (const frame of frames) {
       if (res.writableEnded || abort.signal.aborted) break;
-      if (!res.write(frame)) await drain(res);
+      if (!res.write(frame)) await drain(res, abort.signal);
     }
   } finally {
+    // Snapshot whether the abort came from OUTSIDE this finally (the drain
+    // deadline aborted the stream, or the client's 'close' fired) BEFORE we
+    // self-cancel below — otherwise the post-abort signal is always aborted and
+    // a normally-completed stream would be wrongly destroyed/truncated (E1.2).
+    const externallyAborted = abort.signal.aborted;
     res.off('close', onClose);
     deps.registry.deregister(abort);
     abort.abort(); // ensure the upstream is cancelled
     await frames.return?.(undefined);
-    if (!res.writableEnded) res.end();
+    if (externallyAborted) {
+      // Deadline-drained or client-severed: destroy so a write-blocked socket is
+      // released and httpServer.close() can resolve (no hang). A client 'close'
+      // may already have destroyed it — then there is nothing to do.
+      if (!res.destroyed) res.destroy();
+    } else if (!res.writableEnded) {
+      res.end(); // normal completion — flush and end cleanly
+    }
   }
 }
 
-/** Resolve on `drain` OR `close`/`error` so a client disconnect can't hang the
- * write loop waiting for a drain that will never come. */
-function drain(res: Response): Promise<void> {
+/** Resolve on `drain` OR `close`/`error` OR the pump's `abort` so neither a
+ * client disconnect nor a shutdown-deadline abort can hang the write loop
+ * waiting for a drain that will never come (E1.2). */
+function drain(res: Response, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
   return new Promise((resolve) => {
     const done = (): void => {
       res.off('drain', done);
       res.off('close', done);
       res.off('error', done);
+      signal.removeEventListener('abort', done);
       resolve();
     };
     res.once('drain', done);
     res.once('close', done);
     res.once('error', done);
+    signal.addEventListener('abort', done, { once: true });
   });
 }

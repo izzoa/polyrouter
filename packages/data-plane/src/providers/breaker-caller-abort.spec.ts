@@ -9,7 +9,7 @@ import {
   withBreakerStream,
   type BreakerConfig,
 } from './breaker';
-import { ProviderCircuitOpenError, ProviderError } from './errors';
+import { CallCancelledError, ProviderCircuitOpenError, ProviderError } from './errors';
 import type { NormalizedStreamEvent } from '../proxy/translate';
 
 const cfg: BreakerConfig = {
@@ -119,5 +119,36 @@ describe('withBreakerStream — caller-abort neutrality', () => {
       drain(withBreakerStream(breaker, 's2', throwingStream, undefined, undefined, () => false)),
     ).rejects.toThrow('terminated');
     expect(await admits(breaker, 's2')).toBe(false);
+  });
+
+  // E1.3: a system-imposed first/inter-event timeout surfaces as CallCancelledError
+  // (core aborted the call while the client was still present). This is the exact
+  // shape outcomeForError maps to 'neutral' — so it must be tripped explicitly.
+  // eslint-disable-next-line @typescript-eslint/require-await -- AsyncGenerator by contract
+  async function* cancelledStream(): AsyncGenerator<NormalizedStreamEvent> {
+    yield { type: 'message_start', id: 'm', model: 'x', role: 'assistant' };
+    throw new CallCancelledError();
+  }
+
+  it('a CallCancelledError with the client PRESENT (system timeout) trips', async () => {
+    const breaker = new CircuitBreaker(new InMemoryBreakerStore(), { config: cfg });
+    await expect(
+      drain(withBreakerStream(breaker, 's3', cancelledStream, undefined, undefined, () => false)),
+    ).rejects.toBeInstanceOf(CallCancelledError);
+    expect(await admits(breaker, 's3')).toBe(false); // opened — NOT re-neutralized
+  });
+
+  it('a CallCancelledError with the client GONE stays neutral (8abd4b6 preserved)', async () => {
+    const breaker = new CircuitBreaker(new InMemoryBreakerStore(), { config: cfg });
+    let opened = 0;
+    for (let i = 0; i < 3; i += 1) {
+      await expect(
+        drain(
+          withBreakerStream(breaker, 's4', cancelledStream, () => (opened += 1), undefined, () => true),
+        ),
+      ).rejects.toBeInstanceOf(CallCancelledError);
+    }
+    expect(opened).toBe(0);
+    expect(await admits(breaker, 's4')).toBe(true); // still closed
   });
 });

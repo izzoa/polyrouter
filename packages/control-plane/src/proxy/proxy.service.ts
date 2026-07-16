@@ -263,7 +263,7 @@ export class ProxyService {
 
     const result = await openStreamChain(this.breaker, p.attempts, p.client, p.routed, {
       signal,
-      firstEventTimeoutMs: this.rt.firstByteTimeoutMs,
+      firstEventTimeoutMs: this.rt.firstEventTimeoutMs,
       created: p.created,
       onOpen: this.onOpenFor(p.principal, p.meta),
       onBreakerState: this.onBreakerStateFor(p.meta),
@@ -496,7 +496,7 @@ export class ProxyService {
   ): Promise<AsyncGenerator<string>> {
     const result = await openStreamChain(this.breaker, c.escalation.attempts, p.client, p.routed, {
       signal,
-      firstEventTimeoutMs: this.rt.firstByteTimeoutMs,
+      firstEventTimeoutMs: this.rt.firstEventTimeoutMs,
       created: p.created,
       onOpen: this.onOpenFor(p.principal, c.escalation.meta),
       onBreakerState: this.onBreakerStateFor(c.escalation.meta),

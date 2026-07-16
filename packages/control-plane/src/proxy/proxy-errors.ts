@@ -130,6 +130,11 @@ export const budgetEnforcementUnavailable = (): ProxyError =>
   );
 export const internalError = (): ProxyError =>
   new ProxyError(500, 'internal proxy error', 'api_error', null);
+/** The `/v1` request body exceeded `PROXY_MAX_BODY_BYTES` (E1.1). Raised by the
+ * body parser before Nest routing, so it is rendered by the `/v1` body-parse
+ * error handler in the Express chain, not the Nest exception filter. */
+export const requestTooLarge = (): ProxyError =>
+  new ProxyError(413, 'request body too large', 'invalid_request_error', 'request_too_large');
 
 /** Any thrown value → a ProxyError (a #6 ProviderError maps to its kind). */
 export function toProxyError(err: unknown): ProxyError {

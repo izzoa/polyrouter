@@ -155,7 +155,7 @@ The audit confirmed these as correct and load-bearing. Treat them as constraints
 ---
 
 <a id="epic-e1"></a>
-## EPIC E1 — /v1 ingress & streaming lifecycle correctness · **P0**
+## EPIC E1 — /v1 ingress & streaming lifecycle correctness · **P0** · ✅ SHIPPED 2026-07-16 (`fix-proxy-ingress-and-drain`)
 
 **Proposal slug:** `fix-proxy-ingress-and-drain` ·
 **Spec refs:** spec.md §6.1, §15 (first criterion); `openspec/specs/inference-proxy`; CLAUDE.md invariants 3, 12
@@ -165,7 +165,7 @@ gets working completions, no other changes"); the drain and timeout defects unde
 the breaker's purpose for exactly the self-host workloads (long streams, slow local models) the
 product targets.
 
-### Task E1.1 — Raise the /v1 body limit and render body-parser errors in protocol shape ☐ `[high/S]`
+### Task E1.1 — Raise the /v1 body limit and render body-parser errors in protocol shape ✅ `[high/S]`
 - **Where:** `packages/control-plane/src/auth/mount.ts:31` (`mountAuth`); `packages/control-plane/src/proxy/proxy-exception.filter.ts`
 - **Defect:** `main.ts` disables Nest's parser (`bodyParser:false`) and `mountAuth` installs
   `express.json()` with **no options** → body-parser's default **100kb** limit governs
@@ -185,7 +185,7 @@ product targets.
   - WHEN malformed JSON is POSTed THEN a 400 in the caller's protocol envelope is returned.
 - **Verify:** new e2e cases in `packages/control-plane/test/proxy/inference-proxy.e2e-spec.ts`; `npm run test:e2e -w packages/control-plane`.
 
-### Task E1.2 — Make the drain deadline able to terminate a write-blocked stream ☐ `[medium/S]`
+### Task E1.2 — Make the drain deadline able to terminate a write-blocked stream ✅ `[medium/S]`
 - **Where:** `packages/control-plane/src/proxy/stream-drain.registry.ts:40` (`beforeApplicationShutdown`); `packages/control-plane/src/proxy/proxy-http.ts:86-111` (`pumpSse`/`drain`)
 - **Defect:** At the drain deadline the registry only aborts the **upstream** controller. A pump parked
   in `await drain(res)` (client stopped reading, socket open) never resolves — `drain()` races only
@@ -198,7 +198,7 @@ product targets.
   THEN `app.close()` resolves within `streamDrainDeadlineMs` + margin and the process exits cleanly.
 - **Verify:** integration test with a raw `net` client that reads nothing (see Task E7.2 which adds the harness); breaking the abort wiring must fail it.
 
-### Task E1.3 — Stop the first-event timeout from masking hung-at-connect providers as breaker-neutral ☐ `[medium/S]`
+### Task E1.3 — Stop the first-event timeout from masking hung-at-connect providers as breaker-neutral ✅ `[medium/S]`
 - **Where:** `packages/data-plane/src/proxy/core.ts:307` (`nextWithTimeout`); `packages/data-plane/src/providers/http.ts:223-226`; `packages/data-plane/src/providers/breaker.ts:392,517`
 - **Defect:** Core's 30s first-event timer starts before breaker admission/DNS and fires before the
   adapter's identical 30s first-byte timer. Its `abort.abort()` makes `openRequest` throw
@@ -218,7 +218,7 @@ product targets.
   during the same window remains breaker-neutral.
 - **Verify:** unit test in `core.spec.ts`/`breaker-caller-abort.spec.ts` driving `openAttemptStream` with a never-yielding stream, `firstEventTimeoutMs=40`, shared `InMemoryBreakerStore`; assert transition to open. `npm test -w packages/data-plane`.
 
-### Task E1.4 — Make the proxy timeouts configurable (slow local models falsely trip breakers) ☐ `[medium/S]`
+### Task E1.4 — Make the proxy timeouts configurable (slow local models falsely trip breakers) ✅ `[medium/S]`
 - **Where:** `packages/control-plane/src/proxy/proxy.config.ts:34` (`loadProxyRuntime`)
 - **Defect:** `firstByteTimeoutMs: 30_000` is hardcoded and reused as (a) the adapter headers/first-byte
   bound, (b) core's first-event bound, (c) the per-event inter-event bound. Local models (the primary

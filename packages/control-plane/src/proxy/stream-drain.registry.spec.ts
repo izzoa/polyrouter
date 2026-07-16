@@ -12,6 +12,8 @@ const runtime = (streamDrainDeadlineMs: number): ProxyRuntime => ({
   mode: 'selfhosted',
   defaultMaxOutputTokens: 4096,
   firstByteTimeoutMs: 30_000,
+  firstEventTimeoutMs: 30_500,
+  maxBodyBytes: 10_485_760,
   streamDrainDeadlineMs,
 });
 

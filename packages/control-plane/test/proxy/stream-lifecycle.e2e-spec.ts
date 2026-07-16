@@ -458,4 +458,34 @@ describe('stream lifecycle e2e (drain / disconnect / backpressure)', () => {
     },
     30_000,
   );
+
+  it(
+    'app.close() completes even when a client has stopped reading a write-blocked stream (E1.2)',
+    async () => {
+      // A dedicated short-deadline app so closing it does not disturb a1/a2.
+      const app = await bootApp(500);
+      let client: StreamClient | undefined;
+      try {
+        // Fill the whole buffer chain with large frames, then stop reading so the
+        // proxy pump parks in `await drain(res)` with the socket open. Before the
+        // fix, the drain deadline aborts only the upstream and drain() never
+        // resolves → httpServer.close() hangs forever. After the fix, drain()
+        // resolves on the abort signal and the finally destroys the socket.
+        client = await openStream(app.port, key, 'oai-bigframes');
+        await withTimeout(client.firstFrame, 10_000, 'first frame');
+        client.res.pause();
+        await settle(() => stub.framesSent(), 200, 5_000); // let the pump reach backpressure
+
+        const started = Date.now();
+        await withTimeout(app.app.close(), 5_000, 'app.close() during write-blocked drain');
+        const took = Date.now() - started;
+        // Resolves within the drain deadline (500ms) + the registry poll interval
+        // (50ms) + a generous fixed tolerance — NOT hanging to the 5s timeout.
+        expect(took).toBeLessThan(3_000);
+      } finally {
+        client?.destroy();
+      }
+    },
+    30_000,
+  );
 });

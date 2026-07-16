@@ -1,0 +1,27 @@
+# Build context for the production image (#22). Keep .npmrc — npm ci needs it.
+node_modules
+**/node_modules
+**/dist
+.turbo
+**/.turbo
+.git
+.gitignore
+.env
+.env.*
+coverage
+**/coverage
+*.log
+.DS_Store
+
+# Repo meta the image never needs
+openspec
+docs
+TODOS.md
+spec.md
+CLAUDE.md
+AGENTS.md
+docker-compose.dev.yml
+docker-compose.yml
+install.sh
+scripts
+README.md

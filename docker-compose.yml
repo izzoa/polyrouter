@@ -1,0 +1,128 @@
+# polyrouter self-host stack (#22, spec §13): app + postgres + redis (+ an
+# optional apprise fan-out service behind the "apprise" profile). Product
+# compose — dev infrastructure lives in docker-compose.dev.yml.
+#
+#   ./install.sh            # generates .env (secrets) and boots the stack
+#   docker compose up -d    # or manually, once .env exists
+#
+# The app publishes on LOOPBACK by default: the first sign-up becomes the
+# admin, so claim the instance before exposing it (set POLYROUTER_HOST=0.0.0.0
+# and APP_URL in .env, ideally behind a reverse proxy with TLS).
+
+name: polyrouter-selfhost
+
+services:
+  app:
+    build: .
+    image: ${POLYROUTER_IMAGE:-polyrouter:latest}
+    restart: unless-stopped
+    ports:
+      - '${POLYROUTER_HOST:-127.0.0.1}:${POLYROUTER_PORT:-3001}:3001'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # In-flight streams drain on SIGTERM (spec §3.2); give them time before KILL.
+    stop_grace_period: 45s
+    environment:
+      NODE_ENV: production
+      MODE: selfhosted
+      # Inside the container the port must bind all interfaces or the published
+      # port is dead; the host-side exposure is controlled by `ports` above.
+      BIND_ADDRESS: 0.0.0.0
+      PORT: '3001'
+      DATABASE_URL: postgresql://polyrouter:${POSTGRES_PASSWORD}@postgres:5432/polyrouter
+      REDIS_URL: redis://redis:6379
+      # Follows the published port unless APP_URL overrides (set APP_URL when
+      # exposing behind a real origin/reverse proxy).
+      BETTER_AUTH_URL: ${APP_URL:-http://localhost:${POLYROUTER_PORT:-3001}}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set in .env (install.sh generates it)}
+      API_KEY_HMAC_SECRET: ${API_KEY_HMAC_SECRET:?set in .env (install.sh generates it)}
+      PROVIDER_CREDENTIAL_KEY: ${PROVIDER_CREDENTIAL_KEY:?set in .env (install.sh generates it)}
+      NOTIFY_CREDENTIALS_SECRET: ${NOTIFY_CREDENTIALS_SECRET:?set in .env (install.sh generates it)}
+      # Optional pass-through: bare keys stay UNSET in the container when unset
+      # here (several of these reject empty strings at boot).
+      METRICS_ENABLED:
+      OTEL_ENABLED:
+      OTEL_EXPORTER_OTLP_ENDPOINT:
+      OTEL_SERVICE_NAME:
+      APPRISE_API_URL:
+      NOTIFY_ALLOWED_ENDPOINTS:
+      NOTIFY_APPRISE_EGRESS_CONFIRMED:
+      SMTP_HOST:
+      SMTP_PORT:
+      SMTP_USER:
+      SMTP_PASS:
+      SMTP_FROM:
+      SMTP_SECURE:
+      ROUTING_AUTO_LAYERS:
+      ROUTING_STRUCTURAL_HIGH_THRESHOLD:
+      ROUTING_STRUCTURAL_LOW_THRESHOLD:
+      ROUTING_STRUCTURAL_BASELINE_ALPHA:
+      ROUTING_STRUCTURAL_WEIGHTS:
+      ROUTING_CASCADE_QUALITY_THRESHOLD:
+      ROUTING_CASCADE_CHEAP_TIMEOUT_MS:
+      TRUSTED_PROXY_CIDRS:
+      BUDGET_FAIL_OPEN:
+      BUDGET_SCHED_CRON:
+      PRICING_REFRESH_URL:
+      GOOGLE_CLIENT_ID:
+      GOOGLE_CLIENT_SECRET:
+      GITHUB_CLIENT_ID:
+      GITHUB_CLIENT_SECRET:
+      DISCORD_CLIENT_ID:
+      DISCORD_CLIENT_SECRET:
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: polyrouter
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env (install.sh generates it)}
+      POSTGRES_DB: polyrouter
+    volumes:
+      - polyrouter-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U polyrouter -d polyrouter']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - polyrouter-redis:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  # Optional URL-based notification fan-out (spec §10.1). Opt-in:
+  #   docker compose --profile apprise up -d
+  # then wire it in .env (both lines — the SSRF guard requires the port-bounded
+  # allowlist for a private-range host, by design):
+  #   APPRISE_API_URL=http://apprise:8000
+  #   NOTIFY_ALLOWED_ENDPOINTS=apprise,172.28.5.0/24,8000
+  apprise:
+    image: caronc/apprise:latest
+    profiles: ['apprise']
+    restart: unless-stopped
+    volumes:
+      - polyrouter-apprise:/config
+
+networks:
+  # Pinned subnet so the documented NOTIFY_ALLOWED_ENDPOINTS CIDR is
+  # deterministic. Override POLYROUTER_SUBNET in .env (and keep the allowlist
+  # entry in sync) if it collides with an existing network.
+  default:
+    ipam:
+      config:
+        - subnet: ${POLYROUTER_SUBNET:-172.28.5.0/24}
+
+volumes:
+  polyrouter-pg:
+  polyrouter-redis:
+  polyrouter-apprise:

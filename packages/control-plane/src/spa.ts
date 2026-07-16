@@ -31,7 +31,14 @@ export function configureSpa(app: NestExpressApplication): void {
       return;
     }
     const path = req.path;
-    if (path === '/api' || path.startsWith('/api/') || path === '/v1' || path.startsWith('/v1/')) {
+    if (
+      path === '/api' ||
+      path.startsWith('/api/') ||
+      path === '/v1' ||
+      path.startsWith('/v1/') ||
+      path === '/metrics' || // #21 Prometheus scrape — must never be swallowed by the shell
+      path.startsWith('/metrics/') // whole namespace: a 404 JSON beats an HTML shell
+    ) {
       next();
       return;
     }

@@ -1,0 +1,31 @@
+# Proposal: add-packaging
+
+## Why
+
+Every capability is built (#1–#21), but there is no way to RUN polyrouter outside a dev checkout: no production image, no product compose, no install path. Spec §13 defines the deliverable — one Docker image (NestJS serving SPA + API + proxy on one port) composed with PostgreSQL, Redis, and an optional Apprise service, plus a one-line install script — and §14.11 schedules it last. This is the change that turns the repo into a self-hostable product ("`docker compose up` → a working instance").
+
+## What Changes
+
+1. **Production image** (`Dockerfile`, multi-stage): build stage runs `npm ci` + `turbo build` over the workspace, then prunes dev dependencies; the runtime stage keeps the monorepo layout (`packages/*/dist` + production `node_modules`) so `configureSpa`'s relative frontend-dist resolution and the control-plane's bundled migrations work unchanged. Runs as the non-root `node` user, `NODE_ENV=production`, exec-form `CMD ["node", "packages/control-plane/dist/main.js"]` so SIGTERM reaches the process directly and Nest's shutdown hooks (stream drain #12, span flush #21, writer flush #11) run on `docker stop`. A container `HEALTHCHECK` polls the existing **`/api/health`** (the SPA fallback answers bare `/health` with HTML — probing it would mask an API outage).
+2. **Product compose** (`docker-compose.yml`, project name `polyrouter-selfhost` — distinct from the dev-infra `docker-compose.dev.yml`, whose implicit project name is the repo directory): services `app` (build-from-source with an image tag), `postgres` (16-alpine, volume, healthcheck), `redis` (7-alpine, volume, healthcheck), and `apprise` (`caronc/apprise`) behind a compose **profile** so it is opt-in (`--profile apprise`, wired via the documented `APPRISE_API_URL` + `NOTIFY_ALLOWED_ENDPOINTS` pair — the §10.1 SSRF guard rejects a private-range Apprise host without the port-bounded allowlist entry). The app waits on healthy postgres/redis and **publishes on loopback by default** (`${POLYROUTER_HOST:-127.0.0.1}` — an all-interfaces default would expose the unauthenticated first-sign-up-becomes-admin window and `/metrics` to the network before the operator claims the instance; exposing is an explicit, documented step). Container env set by compose: `BIND_ADDRESS=0.0.0.0` (the §12 loopback default would break the published port — TODOS #22 calls this out), `DATABASE_URL`/`REDIS_URL` pointing at the service names, `MODE=selfhosted`, the four required 32-byte-hex secrets from `.env`, and bare-key pass-through for the optional vars (unset stays unset — several reject empty strings). `stop_grace_period` gives in-flight streams time to drain.
+3. **Install script** (`install.sh`): fetches ONE pinned source archive (compose file taken from inside it, so compose and build context can never be different commits), generates the secrets (`openssl rand -hex 32` for `BETTER_AUTH_SECRET`, `API_KEY_HMAC_SECRET`, `PROVIDER_CREDENTIAL_KEY`, `NOTIFY_CREDENTIALS_SECRET`, plus `POSTGRES_PASSWORD`) atomically under `umask 077` into a `.env` it never overwrites, and boots `docker compose -p polyrouter-selfhost up -d --build`. Requires Compose v2 (no legacy `docker-compose` fallback); checks `curl`/`tar`/`docker info` with clear failures; idempotent re-runs; the README notes the pipe-to-sh trust posture and the inspect/clone alternative.
+4. **Bundle the Geist fonts locally** (assigned to #22 by the Phase F note in TODOS.md): vendor the Geist/Geist Mono woff2 files (+ their OFL license) into the frontend, replace the Google Fonts `<link>`s with local `@font-face` — the packaged SPA must load with zero third-party runtime fetches (self-host posture, works offline).
+5. **Docs**: a Self-hosting section in `README.md` — the one-liner, the manual compose path, the env table (incl. `METRICS_ENABLED`/`OTEL_ENABLED` from #21 and the note that `/api/health` + `/metrics` are unauthenticated — network-guard the port), first-sign-up-is-admin, exposure/reverse-proxy guidance, upgrade/backup basics, the `POSTGRES_PASSWORD`-after-init and single-replica (migrations are not advisory-locked) caveats.
+6. **`.dockerignore`** so the build context excludes `node_modules`, `dist`, `.git`, test artifacts; a **scripted smoke test** (`scripts/selfhost-smoke.sh`) providing the repeatable DoD evidence.
+
+No application-code **behavior** changes: boot fail-fast (§12), migrations-on-boot, first-user-admin, metadata-only defaults, and graceful drain already exist and are what the container relies on. The only source change is the frontend font-asset swap above (no logic). (If in-container verification exposes a packaging-blocking app bug, it is fixed as part of this change and called out.)
+
+## Capabilities
+
+### New Capabilities
+- `packaging`: the production container image, the product compose topology (app + postgres + redis + optional apprise), the secret-generating install script, and the self-host documentation.
+
+### Modified Capabilities
+
+<!-- none — deployment artifacts only; runtime behavior is unchanged -->
+
+## Impact
+
+- **New files:** `Dockerfile`, `docker-compose.yml`, `install.sh`, `.dockerignore`, `scripts/selfhost-smoke.sh`, vendored font assets under `packages/frontend`; `README.md` gains the self-host section; `packages/frontend/index.html` + `styles.css` swap to local fonts. No new npm dependencies; no schema/config-fragment changes (compose only SETS existing registered vars).
+- **Verification:** the scripted in-container smoke pass (throwaway volumes, non-conflicting port): healthchecks green; `/api/health` 200 JSON; the SPA served (with local fonts, no CDN fetch); `/metrics` scrapes; first sign-up = admin and a second sign-up is not; an **in-flight SSE stream held open across `docker stop` drains cleanly** with the container's inspected exit state 0 (not merely the compose command's exit); a prompt sentinel sent through the proxy never appears in the persisted rows (metadata-only). Frontend unit tests re-run (assets touched); backend suites unchanged.
+- **Out of scope:** publishing images to a registry/CI release pipeline (the compose builds from source; an `image:` tag is in place for when a registry exists), TLS termination (documented as the operator's reverse-proxy concern), and the cloud split (§13 graduation).

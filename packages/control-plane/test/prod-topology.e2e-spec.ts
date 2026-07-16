@@ -45,6 +45,7 @@ async function startProdServer(nodeEnv: string | undefined): Promise<RunningServ
     API_KEY_HMAC_SECRET: 'b'.repeat(64),
     PROVIDER_CREDENTIAL_KEY: 'c'.repeat(64),
     NOTIFY_CREDENTIALS_SECRET: 'd'.repeat(64),
+    METRICS_ENABLED: 'true', // pinned — a developer shell must not flip the /metrics assertion
   };
   delete env['NODE_ENV'];
   delete env['SEED_DATA'];
@@ -127,6 +128,13 @@ describe('production topology via `npm start` (app-bootstrap)', () => {
       const unknownV1 = await fetch(`${server.baseUrl}/v1/nonexistent`);
       expect(unknownV1.status).toBe(404);
       expect(unknownV1.headers.get('content-type')).toContain('application/json');
+
+      // #21/#22: the Prometheus scrape must reach Nest, never the SPA shell
+      // (caught in-container by the packaging smoke pass).
+      const metrics = await fetch(`${server.baseUrl}/metrics`);
+      expect(metrics.status).toBe(200);
+      expect(metrics.headers.get('content-type')).toContain('text/plain');
+      expect(await metrics.text()).toContain('polyrouter_');
     } finally {
       await server.stop();
     }

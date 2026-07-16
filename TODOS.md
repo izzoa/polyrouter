@@ -53,7 +53,7 @@ Env var names, endpoint paths (`/v1/chat/completions`, `/v1/messages`, `/api`), 
 | 19 | `add-dashboard-analytics` | F | 17, 18 | M | ✅ archived 2026-07-16 |
 | 20 | `add-dashboard-config` | F | 9, 14, 15, 16, 18 | M | ✅ archived 2026-07-16 |
 | 21 | `add-observability` | G | 12 | S | ✅ archived 2026-07-16 |
-| 22 | `add-packaging` | G | 12, 15, 18 (full value: 13–21) | M | ☐ |
+| 22 | `add-packaging` | G | 12, 15, 18 (full value: 13–21) | M | ✅ archived 2026-07-16 |
 | — | Deferred (org/workspaces + cloud tier) | — | flagged only | — | ☐ |
 
 ---
@@ -184,7 +184,7 @@ Stop for human review of the shippable core (spec §14.5, CLAUDE.md). Do **not**
 
 ## Phase F — Dashboard
 
-> **Note (2026-07-14):** the out-of-band change `add-dashboard-prototype` implemented the full dashboard UI from the approved Claude Design prototype (project `c06afc7f…`, file `Polyrouter Prototype.dc.html`) against a **simulated data layer** (`packages/frontend/src/data/` + `src/state/appState.ts`). #18–#20 therefore re-scope from "build the UI" to **"replace the simulator with real APIs/auth"** behind that boundary — their spec sections, DoD, and dependencies stand, but the visual/interaction work is done. The UI's Google-Fonts (Geist) dependency should be bundled locally in #22.
+> **Note (2026-07-14):** the out-of-band change `add-dashboard-prototype` implemented the full dashboard UI from the approved Claude Design prototype (project `c06afc7f…`, file `Polyrouter Prototype.dc.html`) against a **simulated data layer** (`packages/frontend/src/data/` + `src/state/appState.ts`). #18–#20 therefore re-scope from "build the UI" to **"replace the simulator with real APIs/auth"** behind that boundary — their spec sections, DoD, and dependencies stand, but the visual/interaction work is done. The UI's Google-Fonts (Geist) dependency was bundled locally in #22 (done).
 
 ### 17. `add-analytics-api`
 - **Goal:** The control-plane aggregation endpoints powering every chart.

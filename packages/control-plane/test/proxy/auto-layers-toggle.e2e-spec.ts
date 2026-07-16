@@ -27,6 +27,7 @@ import {
   InMemoryBreakerStore,
   createProviderAdapter,
 } from '@polyrouter/data-plane';
+import { startStubUpstream } from './stub-upstream';
 import request from 'supertest';
 import type { App } from 'supertest/types';
 import type { Redis } from 'ioredis';
@@ -235,7 +236,6 @@ describe('per-tenant auto-layer toggle e2e', () => {
     // Both layers available instance-wide (cascade implies structural), so the
     // per-tenant preference is the only thing gating them.
     process.env['ROUTING_AUTO_LAYERS'] = 'cascade';
-    const { startStubUpstream } = await import('./stub-upstream');
     stub = await startStubUpstream();
 
     const databaseUrl = loadConfig<{ DATABASE_URL: string }>().DATABASE_URL;

@@ -20,6 +20,7 @@ import {
   InMemoryBreakerStore,
   createProviderAdapter,
 } from '@polyrouter/data-plane';
+import { startStubUpstream } from './stub-upstream';
 import request from 'supertest';
 import type { App } from 'supertest/types';
 import type { Redis } from 'ioredis';
@@ -143,7 +144,6 @@ describe('structural routing e2e', () => {
     process.env['PROVIDER_CREDENTIAL_KEY'] = 'c'.repeat(64);
     process.env['API_KEY_HMAC_SECRET'] = HMAC;
     process.env['ROUTING_AUTO_LAYERS'] = 'structural';
-    const { startStubUpstream } = await import('./stub-upstream');
     stub = await startStubUpstream();
 
     const databaseUrl = loadConfig<{ DATABASE_URL: string }>().DATABASE_URL;
@@ -232,7 +232,7 @@ describe('structural routing e2e', () => {
     await writer.flush();
   }
   async function lastLog(): Promise<{
-    modelId: string;
+    modelId: string | null;
     decisionLayer: string;
     routingReason: string;
   }> {

@@ -20,6 +20,7 @@ import {
   InMemoryBreakerStore,
   createProviderAdapter,
 } from '@polyrouter/data-plane';
+import { startStubUpstream } from './stub-upstream';
 import request from 'supertest';
 import type { App } from 'supertest/types';
 import type { Redis } from 'ioredis';
@@ -150,7 +151,6 @@ describe('cascade routing e2e', () => {
     process.env['API_KEY_HMAC_SECRET'] = HMAC;
     process.env['ROUTING_AUTO_LAYERS'] = 'structural,cascade';
     process.env['ROUTING_CASCADE_CHEAP_TIMEOUT_MS'] = '600'; // fast timeout for the hang test
-    const { startStubUpstream } = await import('./stub-upstream');
     stub = await startStubUpstream();
 
     const databaseUrl = loadConfig<{ DATABASE_URL: string }>().DATABASE_URL;
@@ -259,11 +259,12 @@ describe('cascade routing e2e', () => {
   }
   async function log(): Promise<{
     id: string;
-    modelId: string;
+    modelId: string | null;
     decisionLayer: string;
     escalated: boolean;
     qualitySignal: number | null;
     tierAssigned: string | null;
+    inputTokens: number | null;
   }> {
     const logs = await port.requestLogs.list(principal);
     return logs[logs.length - 1]!;

@@ -56,6 +56,16 @@ Env var names, endpoint paths (`/v1/chat/completions`, `/v1/messages`, `/api`), 
 | 22 | `add-packaging` | G | 12, 15, 18 (full value: 13–21) | M | ✅ archived 2026-07-16 |
 | — | Deferred (org/workspaces + cloud tier) | — | flagged only | — | ☐ |
 
+### Post-baseline hardening (from `FABLE_AUDIT.md`)
+
+Changes proposed against the full-audit epics after the 22-entry baseline shipped. Same per-change workflow.
+
+| Epic | Change | Size | Status |
+|---|---|---|---|
+| E7 | `add-ci-and-drain-tests` | M | ✅ archived 2026-07-16 |
+
+- **E7 — ✅ Done (archived 2026-07-16):** shipped as `add-ci-and-drain-tests` — the project's first CI pipeline (`.github/workflows/ci.yml`: a `quality` job running build/lint/**typecheck**/unit with a redis service, and an `e2e` job over postgres:16 + redis:7) plus the new **`ci-pipeline`** capability spec. Adds per-package `tsc --noEmit` typecheck (**including test files** — turbo `typecheck` task + `env:["CI","REDIS_URL"]` on `test` so strict-mode turbo forwards them), which surfaced and fixed ~18 latent test-file type errors incl. three breaker specs importing a nonexistent `./translate` and a phantom `ProviderCircuitOpenError` export (that had silently made a circuit-open assertion vacuous). The `REDIS_URL`-gated breaker parity suite now **fails loudly in CI** instead of silently skipping. New invariant-12 coverage (previously zero): a `StreamDrainRegistry` unit spec + a `stream-lifecycle` e2e that drives a real listening server through shutdown-drain (503 refusal + in-flight completion + deadline abort), mid-stream client disconnect (breaker-neutral, threshold-1 recording breaker), and slow-client backpressure. Removed `forceExit` from the e2e runner and fixed the leak it masked — a `NotificationsModule` compile-reject test that orphaned eagerly-connected Redis sockets — relocating that boot-time-SSRF coverage to a spawned-process test. **Test/CI-only: no production `src/` changes, no migration, no changeset.** Verified: build/lint/typecheck green; data-plane 202 unit (parity suite executed); e2e 182/182 green ×3 consecutive, exiting unaided.
+
 ---
 
 ## Phase A — Foundations

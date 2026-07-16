@@ -17,10 +17,15 @@
       "persistent": true
     },
     "test": {
-      "dependsOn": ["build"]
+      "dependsOn": ["build"],
+      "env": ["CI", "REDIS_URL"]
     },
     "test:e2e": {
-      "dependsOn": ["build"]
+      "dependsOn": ["build"],
+      "env": ["CI", "REDIS_URL"]
+    },
+    "typecheck": {
+      "dependsOn": ["^build"]
     }
   }
 }

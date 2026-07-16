@@ -86,7 +86,7 @@ describe('migrations on boot (database-schema)', () => {
     await admin.query(`CREATE DATABASE ${dbName}`);
     const freshUrl = adminUrl(databaseUrl, dbName);
     const port = await getFreePort();
-    const env = {
+    const env: NodeJS.ProcessEnv = {
       ...process.env,
       DATABASE_URL: freshUrl,
       PORT: String(port),
@@ -143,7 +143,7 @@ describe('migrations on boot (database-schema)', () => {
 
   it('an unusable database fails the boot without ever binding the port', async () => {
     const port = await getFreePort();
-    const env = {
+    const env: NodeJS.ProcessEnv = {
       ...process.env,
       DATABASE_URL: 'postgresql://polyrouter:polyrouter@127.0.0.1:59999/polyrouter',
       PORT: String(port),

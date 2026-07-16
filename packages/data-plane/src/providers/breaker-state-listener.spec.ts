@@ -4,13 +4,13 @@
 import {
   CircuitBreaker,
   InMemoryBreakerStore,
-  ProviderCircuitOpenError,
   withBreaker,
   withBreakerStream,
   type BreakerConfig,
   type BreakerState,
 } from './breaker';
-import type { NormalizedStreamEvent } from './translate';
+import { ProviderCircuitOpenError } from './errors';
+import type { NormalizedStreamEvent } from '../proxy/translate';
 
 const cfg: BreakerConfig = {
   threshold: 1,

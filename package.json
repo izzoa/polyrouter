@@ -22,7 +22,8 @@
     "db:migrate": "npm run db:migrate -w packages/control-plane",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "typecheck": "turbo run typecheck"
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.0",

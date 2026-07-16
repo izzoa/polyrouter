@@ -336,7 +336,7 @@ describe('boot reconciliation of crashed hooks (session-auth)', () => {
       try {
         const admins = await p.query<{ id: string }>(`SELECT id FROM "user" WHERE role='admin'`);
         expect(admins.rows.length).toBe(1);
-        expect(admins.rows[0].id).toBe(firstId); // earliest promoted
+        expect(admins.rows[0]!.id).toBe(firstId); // earliest promoted
         const tiers = await p.query(
           `SELECT count(DISTINCT owner_user_id)::int n FROM tier WHERE key='default'`,
         );

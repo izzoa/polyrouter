@@ -10,7 +10,7 @@ import {
   type BreakerConfig,
 } from './breaker';
 import { ProviderCircuitOpenError, ProviderError } from './errors';
-import type { NormalizedStreamEvent } from './translate';
+import type { NormalizedStreamEvent } from '../proxy/translate';
 
 const cfg: BreakerConfig = {
   threshold: 1, // a single counted failure opens — the sharpest possible pin

@@ -52,7 +52,7 @@ import { runBudgetOccurrence } from '../../src/budgets/budget.scheduler';
 import { DatabaseModule } from '../../src/database/database.module';
 import { RedisModule } from '../../src/redis/redis.module';
 import { COMPOSE_HINT } from '../tenancy/harness';
-import type { StubUpstream } from '../proxy/stub-upstream';
+import { startStubUpstream, type StubUpstream } from '../proxy/stub-upstream';
 import '../../src/database/database.config';
 import '../../src/redis/redis.config';
 import '../../src/auth/auth.config';
@@ -145,7 +145,6 @@ describe('budget block enforcement — proxy path (#16)', () => {
     process.env['PROVIDER_CREDENTIAL_KEY'] = 'c'.repeat(64);
     process.env['API_KEY_HMAC_SECRET'] = HMAC;
     process.env['BUDGET_FAIL_OPEN'] = 'false'; // fail-closed so a stale heartbeat → 503
-    const { startStubUpstream } = await import('../proxy/stub-upstream');
     stub = await startStubUpstream();
 
     const databaseUrl = loadConfig<{ DATABASE_URL: string }>().DATABASE_URL;

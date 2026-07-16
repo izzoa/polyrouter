@@ -20,6 +20,7 @@ import {
   InMemoryBreakerStore,
   createProviderAdapter,
 } from '@polyrouter/data-plane';
+import { startStubUpstream } from '../proxy/stub-upstream';
 import request from 'supertest';
 import type { App } from 'supertest/types';
 import { Pool } from 'pg';
@@ -105,7 +106,6 @@ describe('/metrics e2e', () => {
     process.env['PROVIDER_CREDENTIAL_KEY'] = 'c'.repeat(64);
     process.env['API_KEY_HMAC_SECRET'] = HMAC;
     delete process.env['METRICS_ENABLED']; // default on
-    const { startStubUpstream } = await import('../proxy/stub-upstream');
     stub = await startStubUpstream();
 
     const databaseUrl = loadConfig<{ DATABASE_URL: string }>().DATABASE_URL;

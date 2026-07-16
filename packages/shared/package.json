@@ -34,7 +34,8 @@
   "scripts": {
     "build": "tsc --noEmit -p tsconfig.json && tsup",
     "dev": "tsup --watch",
-    "test": "vitest run"
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.2",

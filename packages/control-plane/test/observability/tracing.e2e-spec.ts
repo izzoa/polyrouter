@@ -26,6 +26,7 @@ import {
   InMemoryBreakerStore,
   createProviderAdapter,
 } from '@polyrouter/data-plane';
+import { startStubUpstream } from '../proxy/stub-upstream';
 import request from 'supertest';
 import type { App } from 'supertest/types';
 import { Pool } from 'pg';
@@ -119,7 +120,6 @@ describe('tracing e2e', () => {
     provider = new NodeTracerProvider({ spanProcessors: [new SimpleSpanProcessor(exporter)] });
     provider.register();
 
-    const { startStubUpstream } = await import('../proxy/stub-upstream');
     stub = await startStubUpstream();
 
     const databaseUrl = loadConfig<{ DATABASE_URL: string }>().DATABASE_URL;

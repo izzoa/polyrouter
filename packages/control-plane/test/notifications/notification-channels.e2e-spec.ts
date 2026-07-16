@@ -1,4 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { createServer } from 'node:net';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { Logger, type INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { loadConfig } from '@polyrouter/shared';
@@ -10,6 +14,7 @@ import { NotificationsModule } from '../../src/notifications/notifications.modul
 import { ChannelsService, type SafeChannel } from '../../src/notifications/channels.service';
 import { NotificationService } from '../../src/notifications/notification.service';
 import { NotifyQueue, withDeadline } from '../../src/notifications/notify.queue';
+import { resolveNotifyRuntime } from '../../src/notifications/notify.config';
 import type { NotificationEvent } from '../../src/notifications/notification.types';
 import { startAppriseStub, startSmtpStub, waitFor, type AppriseStub, type SmtpStub } from './stubs';
 
@@ -458,11 +463,74 @@ describe('notification channels — cloud SSRF posture (#15a)', () => {
     }
 
     // A cloud instance pointed at a private APPRISE_API_URL must fail to boot.
-    // The async NOTIFY_RUNTIME factory runs during compile(), so the SSRF failure
-    // surfaces there (before an app/worker exists).
+    // The gate is the NOTIFY_RUNTIME factory (resolveNotifyRuntime), which boot
+    // awaits. Assert its rejection DIRECTLY here rather than rejecting a full
+    // module compile in-process: a failed compile() orphans already-constructed
+    // providers with no owner to dispose them (NotifyQueue's eagerly-connected
+    // Redis duplicates), leaking live sockets that keep the jest process alive
+    // (ci-pipeline spec: the runner must exit without forceExit). The companion
+    // spawned-boot test below proves this rejection actually aborts the REAL
+    // application boot before it binds a port (OS reclaims the orphaned sockets).
     process.env.APPRISE_API_URL = 'http://10.0.0.9:9000';
-    await expect(
-      Test.createTestingModule({ imports: [NotificationsModule] }).compile(),
-    ).rejects.toThrow(/SSRF/);
+    await expect(resolveNotifyRuntime()).rejects.toThrow(/SSRF/);
   }, 60_000);
+});
+
+// Process-isolated proof that the SSRF rejection above actually aborts a REAL
+// application boot before it binds — the coverage the in-process compile test
+// used to provide, relocated to a spawned process so orphaned Redis sockets are
+// reclaimed by the OS instead of hanging the jest runner.
+describe('notification channels — cloud APPRISE_API_URL boot gate (#15a)', () => {
+  const builtMain = join(__dirname, '..', '..', 'dist', 'main.js');
+
+  const freePort = (): Promise<number> =>
+    new Promise((resolve, reject) => {
+      const srv = createServer();
+      srv.once('error', reject);
+      srv.listen(0, '127.0.0.1', () => {
+        const addr = srv.address();
+        if (addr === null || typeof addr === 'string') return reject(new Error('no port'));
+        srv.close(() => resolve(addr.port));
+      });
+    });
+
+  it('a cloud instance with a private APPRISE_API_URL exits non-zero without binding the port', async () => {
+    if (!existsSync(builtMain)) {
+      throw new Error(`Built app missing at ${builtMain} — run \`npm run build\` first.`);
+    }
+    const port = await freePort();
+    const databaseUrl = loadConfig<{ DATABASE_URL: string }>().DATABASE_URL;
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      NODE_ENV: 'production',
+      MODE: 'cloud',
+      BIND_ADDRESS: '127.0.0.1',
+      PORT: String(port),
+      DATABASE_URL: databaseUrl,
+      BETTER_AUTH_SECRET: 'a'.repeat(64),
+      API_KEY_HMAC_SECRET: 'b'.repeat(64),
+      PROVIDER_CREDENTIAL_KEY: 'c'.repeat(64),
+      NOTIFY_CREDENTIALS_SECRET: NOTIFY_SECRET,
+      APPRISE_API_URL: 'http://10.0.0.9:9000', // private → boot SSRF gate must reject
+    };
+    delete env['NOTIFY_ALLOWED_ENDPOINTS'];
+    const child = spawn(process.execPath, [builtMain], { env });
+    let bound = false;
+    const exitCode: number = await new Promise((resolve) => {
+      const probe = setInterval(() => {
+        void fetch(`http://127.0.0.1:${String(port)}/api/health`, {
+          signal: AbortSignal.timeout(300),
+        })
+          .then(() => (bound = true))
+          .catch(() => undefined);
+      }, 200);
+      child.once('close', (code) => {
+        clearInterval(probe);
+        resolve(code ?? -1);
+      });
+      setTimeout(() => child.kill('SIGKILL'), 30_000);
+    });
+    expect(exitCode).not.toBe(0);
+    expect(bound).toBe(false);
+  }, 45_000);
 });

@@ -1,0 +1,87 @@
+name: CI
+
+# Enforces the CLAUDE.md Definition of done on every push and pull request:
+# build, lint, typecheck (test files included), unit suites, and the e2e suite
+# against real Postgres 16 + Redis 7. See openspec/specs/ci-pipeline.
+on:
+  push:
+  pull_request:
+
+# One in-flight run per ref; a new push cancels the previous run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: build · lint · typecheck · unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      # Present so the REDIS_URL-gated breaker parity suite EXECUTES here (and
+      # fails loudly if it can't) rather than silently skipping.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      CI: 'true'
+      REDIS_URL: redis://127.0.0.1:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+
+  e2e:
+    name: e2e (postgres + redis)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16-alpine
+        # Credentials match docker-compose.dev.yml so the config defaults connect.
+        env:
+          POSTGRES_USER: polyrouter
+          POSTGRES_PASSWORD: polyrouter
+          POSTGRES_DB: polyrouter
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U polyrouter -d polyrouter"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      CI: 'true'
+      DATABASE_URL: postgresql://polyrouter:polyrouter@127.0.0.1:5432/polyrouter
+      REDIS_URL: redis://127.0.0.1:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      # Root script runs `turbo run build` first, then the control-plane e2e suite.
+      - run: npm run test:e2e

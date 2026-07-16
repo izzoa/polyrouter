@@ -17,7 +17,15 @@ const cfg: BreakerConfig = {
 
 // The pure-transition and shared-InMemory suites prove the state machine
 // everywhere; this suite pins the Lua to it against a real Redis. It is gated on
-// REDIS_URL for local runs and is expected to run in CI (Redis provisioned).
+// REDIS_URL for local runs, but in CI it MUST run (ci-pipeline spec: env-gated
+// suites fail loudly when their infrastructure is missing, never silently skip).
+if (REDIS_URL === undefined && process.env['CI'] !== undefined) {
+  throw new Error(
+    '[breaker-redis] CI is set but REDIS_URL is missing — the real-Redis parity/concurrency ' +
+      'suite is required in CI. Provision a redis service and export REDIS_URL ' +
+      '(e.g. redis://127.0.0.1:6379); see .github/workflows/ci.yml.',
+  );
+}
 const suite = REDIS_URL !== undefined ? describe : describe.skip;
 if (REDIS_URL === undefined) {
   console.warn(

@@ -6,7 +6,7 @@ import {
   type BreakerConfig,
   type BreakerStore,
 } from './breaker';
-import type { NormalizedStreamEvent } from './translate';
+import type { NormalizedStreamEvent } from '../proxy/translate';
 
 const cfg: BreakerConfig = {
   threshold: 3,

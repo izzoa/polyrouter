@@ -189,6 +189,108 @@ export interface RequestAttemptAccessor {
   listForRequest(principal: Principal, requestLogId: string): Promise<RequestAttemptRow[]>;
 }
 
+/** Owner-scoped analytics reads over the request-log ledgers (#17, spec §9).
+ * Aggregation only — no writes, no cross-owner path. Spend sums BOTH the served
+ * `request_log.cost` and the cascade `request_attempt.cost`, with the same
+ * per-row µ$ rounding the budget counters use (#16), so dashboard spend
+ * reconciles with budgets (invariant 4). */
+export interface AnalyticsRange {
+  from: Date;
+  /** Exclusive upper bound (half-open `[from, to)`). */
+  to: Date;
+}
+
+export type AnalyticsBucket = 'hour' | 'day' | 'week' | 'month';
+export type AnalyticsDimension = 'model' | 'provider' | 'agent' | 'tier';
+
+export interface AnalyticsSummary {
+  /** USD, both ledgers, µ$-rounded (matches budgets). */
+  spend: number;
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  successCount: number;
+  fallbackCount: number;
+  errorCount: number;
+  escalatedCount: number;
+  estimatedCount: number;
+  /** Served-request classification by served cost: 0 / >0 / null. */
+  freeRequests: number;
+  paidRequests: number;
+  unpricedRequests: number;
+}
+
+export interface AnalyticsTimeseriesPoint {
+  /** UTC-aligned bucket start. */
+  bucket: Date;
+  requests: number;
+  spend: number;
+  inputTokens: number;
+  outputTokens: number;
+  errorCount: number;
+  fallbackCount: number;
+  escalatedCount: number;
+}
+
+export interface AnalyticsBreakdownRow {
+  /** Dimension id / tier key (`''` when the dimension is null on the row). */
+  key: string;
+  /** Owner-scoped human label, null if the catalog row was deleted. */
+  label: string | null;
+  spend: number;
+  requests: number;
+}
+
+export interface AnalyticsRequestsCursor {
+  createdAt: Date;
+  id: string;
+}
+
+export interface AnalyticsRequestsQuery {
+  from: Date;
+  to: Date;
+  limit: number;
+  cursor?: AnalyticsRequestsCursor;
+  status?: string;
+  decisionLayer?: string;
+  escalated?: boolean;
+}
+
+/** A request-log row enriched for the dashboard listing: owner-scoped labels
+ * (id fallback when a catalog row is gone) + this request's attempt cost in µ$
+ * so the UI can show `total = round(cost×1e6) + attemptCostMicros`. */
+export type AnalyticsRequestRow = RequestLogRow & {
+  modelLabel: string | null;
+  providerLabel: string | null;
+  agentLabel: string | null;
+  attemptCostMicros: number;
+};
+
+export interface AnalyticsRequestsPage {
+  rows: AnalyticsRequestRow[];
+  nextCursor: string | null;
+}
+
+/** Owner-scoped analytics aggregation reads (#17). Every method is scoped to the
+ * principal (invariant 5) — no unscoped-by-owner fetch, no cross-tenant path. */
+export interface AnalyticsAccessor {
+  summary(principal: Principal, range: AnalyticsRange): Promise<AnalyticsSummary>;
+  timeseries(
+    principal: Principal,
+    range: AnalyticsRange,
+    bucket: AnalyticsBucket,
+  ): Promise<AnalyticsTimeseriesPoint[]>;
+  breakdown(
+    principal: Principal,
+    range: AnalyticsRange,
+    dimension: AnalyticsDimension,
+    limit: number,
+  ): Promise<AnalyticsBreakdownRow[]>;
+  listRequests(principal: Principal, query: AnalyticsRequestsQuery): Promise<AnalyticsRequestsPage>;
+}
+
 /** The ONLY persistence surface exported outside the database module. By
  * construction it has no query/execute/Pool/drizzle member — unscoped SQL is
  * unwritable against it. */
@@ -207,6 +309,7 @@ export interface PersistencePort {
   routingEntries: RoutingEntryAccessor;
   requestLogs: RequestLogAccessor;
   requestAttempts: RequestAttemptAccessor;
+  analytics: AnalyticsAccessor;
   users: UsersInfra;
   /** Global pricing catalog (#8) — non-owned, append-only. */
   pricing: PricingCatalog;

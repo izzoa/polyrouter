@@ -29,6 +29,7 @@ import {
   type TierRow,
 } from '@polyrouter/shared/server';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { createAnalyticsAccessor } from './analytics.queries';
 import type { Db } from './database.internal';
 import {
   buildFindById,
@@ -406,6 +407,7 @@ export function buildPersistencePort(db: Db): PersistencePort {
     routingEntries: createRoutingEntryAccessor(db),
     requestLogs: createRequestLogAccessor(db),
     requestAttempts: createRequestAttemptAccessor(db),
+    analytics: createAnalyticsAccessor(db),
     pricing: createPricingCatalog(db),
     users: {
       async count() {

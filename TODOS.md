@@ -48,7 +48,7 @@ Env var names, endpoint paths (`/v1/chat/completions`, `/v1/messages`, `/api`), 
 | 15a | `add-notification-channels` | E | 3, 4, 6 | M | ✅ archived 2026-07-15 |
 | 15b | `add-notification-producers` | E | 15a, 6, 11 | M | ✅ archived 2026-07-16 |
 | 16 | `add-spend-limits` | E | 11, 15 | M | ✅ archived 2026-07-16 |
-| 17 | `add-analytics-api` | F | 11 | S | ☐ |
+| 17 | `add-analytics-api` | F | 11 | S | ✅ archived 2026-07-16 |
 | 18 | `add-dashboard-core` | F | 3, 7, 8, 9, 10 | L | ✅ archived 2026-07-16 |
 | 19 | `add-dashboard-analytics` | F | 17, 18 | M | ☐ |
 | 20 | `add-dashboard-config` | F | 9, 14, 15, 16, 18 | M | ☐ |
@@ -191,6 +191,7 @@ Stop for human review of the shippable core (spec §14.5, CLAUDE.md). Do **not**
 - **Spec:** §9 (aggregations), §5 (RequestLog indexes); invariant 5.
 - **Scope:** time-bucketed `GROUP BY` endpoints over RequestLog: requests over time, spend, tokens, success/fallback/escalation rates, top models, per-agent/per-provider/per-tier breakdowns, free-vs-paid split; date-range params; paginated request-log listing incl. `decision_layer` + `routing_reason`; all tenant-scoped. (Timescale/ClickHouse are deferred cloud graduations — plain Postgres here.)
 - **DoD:** aggregation correctness tests over seeded logs; cross-tenant coverage; queries indexed (no seq-scan on the hot log table for the standard ranges).
+- **✅ Done (archived 2026-07-16):** shipped as `add-analytics-api` — a tenant-scoped `analytics` accessor on the central `PersistencePort` + a session-guarded `/api/analytics` controller (`summary`/`timeseries`/`breakdown`/`requests`) over `request_log` + the `request_attempt` cascade ledger. Spend sums **both ledgers with #16's per-row µ$ rounding** so the dashboard reconciles with budgets (invariant 4); counts/tokens/free-paid split are over served rows; `breakdown` resolves owner-scoped labels and attributes cascade attempts via their parent (both-sides `ownershipPredicate` — an adversarial cross-tenant attempt is tested); `requests` is keyset-paginated with the decision-inspector fields + per-row attempt cost. UTC buckets, plain SQL (invariant 9), bad-enum→400 / bad-range/cursor→422, no `sql.raw` of user input. **No migration** (reuses the `(owner, created_at)` index from #16), no new deps. Verified: 8 analytics e2e + full 152-test e2e suite green, build/lint/format clean. Deferred: the analytics UI (#19), a subscription-vs-API split, zero-filled buckets. **Unblocks #19 `add-dashboard-analytics`.**
 
 ### 18. `add-dashboard-core`
 - **Goal:** The SPA shell and the 3-step onboarding: auth, connect an agent, connect providers — ending with a real proxied completion.

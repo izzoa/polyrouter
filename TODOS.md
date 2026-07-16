@@ -45,8 +45,8 @@ Env var names, endpoint paths (`/v1/chat/completions`, `/v1/messages`, `/api`), 
 | — | **⛔ REVIEW GATE — human review of the shippable core** | C | 10–12 | — | ☐ |
 | 13 | `add-structural-routing` | D | 11 | M | ✅ archived 2026-07-15 |
 | 14 | `add-cascade-routing` | D | 12, 13 | M | ✅ archived 2026-07-15 |
-| 15a | `add-notification-channels` | E | 3, 4, 6 | M | ☐ |
-| 15b | `add-notification-producers` | E | 15a, 6, 11 | M | ☐ |
+| 15a | `add-notification-channels` | E | 3, 4, 6 | M | ✅ archived 2026-07-15 |
+| 15b | `add-notification-producers` | E | 15a, 6, 11 | M | ✅ archived 2026-07-16 |
 | 16 | `add-spend-limits` | E | 11, 15 | M | ☐ |
 | 17 | `add-analytics-api` | F | 11 | S | ☐ |
 | 18 | `add-dashboard-core` | F | 3, 7, 8, 9, 10 | L | ☐ |

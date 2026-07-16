@@ -1,6 +1,8 @@
 import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from 'node:http';
+import { Logger } from '@nestjs/common';
 import type { IdentityPort } from '@polyrouter/shared/server';
 import type { AuthAdapter } from '../database/auth-adapter';
+import type { SystemMailer } from '../producers/system-mailer';
 import { nativeImport } from '../util/native-import';
 import type { AuthConfig } from './auth.config';
 
@@ -35,13 +37,37 @@ interface CreateAuthDeps {
   identity: IdentityPort;
   betterAuthSecret: string;
   config: AuthConfig;
+  /** Server-wide system mailer (#15b) for the password-reset email; when absent
+   * or unconfigured, reset falls back to a warn + skip (the token flow works). */
+  mailer?: SystemMailer;
+}
+
+/** The `sendResetPassword` hook (#15b), extracted for unit testing. **Detached**:
+ * Better Auth awaits this hook, so the reset request must not wait on SMTP — it
+ * returns synchronously and the send runs in the background. The token/url is
+ * NEVER logged (only fixed config-state strings). */
+export function buildResetPasswordSender(
+  mailer: SystemMailer | undefined,
+  logger: Pick<Logger, 'warn'>,
+): (data: { user: { email: string }; url: string }) => void {
+  return (data) => {
+    if (!mailer?.configured) {
+      logger.warn('password-reset email skipped: SMTP not configured');
+      return;
+    }
+    void mailer
+      .send(data.user.email, 'Reset your polyrouter password', `Reset your password: ${data.url}`)
+      .catch(() => logger.warn('password-reset email failed to send'));
+  };
 }
 
 /** Builds the Better Auth instance. The `user.create.after` hook does the
  * common-path first-admin promotion + default-tier provisioning; the boot
- * reconciliation (elsewhere) heals crashes. sendResetPassword is a stub that
- * never logs the token — email delivery is deferred to #15. */
+ * reconciliation (elsewhere) heals crashes. sendResetPassword mails the reset
+ * link via the system mailer, **detached** so the request never waits on SMTP,
+ * and never logs the token/url. */
 export async function createAuth(deps: CreateAuthDeps): Promise<AuthInstance> {
+  const logger = new Logger('auth');
   const { betterAuth } = await nativeImport<BetterAuthModule>('better-auth');
   const { fromNodeHeaders, toNodeHandler } =
     await nativeImport<BetterAuthNodeModule>('better-auth/node');
@@ -76,11 +102,7 @@ export async function createAuth(deps: CreateAuthDeps): Promise<AuthInstance> {
     trustedOrigins: [config.DASHBOARD_ORIGIN],
     emailAndPassword: {
       enabled: true,
-      sendResetPassword: () => {
-        // Token flow works now; delivery is deferred to #15. NEVER log the token.
-        console.log('[auth] password reset requested (delivery pending — see change #15)');
-        return Promise.resolve();
-      },
+      sendResetPassword: buildResetPasswordSender(deps.mailer, logger),
     },
     socialProviders,
     user: {

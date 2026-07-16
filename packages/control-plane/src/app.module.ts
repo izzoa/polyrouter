@@ -8,6 +8,7 @@ import { DatabaseModule } from './database/database.module';
 import { HealthController } from './health/health.controller';
 import { NotificationsModule } from './notifications/notifications.module';
 import { PricingModule } from './pricing/pricing.module';
+import { ProducersModule } from './producers/producers.module';
 import { ProvidersModule } from './providers/providers.module';
 import { ProxyModule } from './proxy/proxy.module';
 import { RecordingModule } from './recording/recording.module';
@@ -26,6 +27,7 @@ import { RoutingConfigModule } from './routing-config/routing-config.module';
     ProxyModule,
     RecordingModule,
     NotificationsModule,
+    ProducersModule,
   ],
   controllers: [HealthController, AgentsController],
   providers: [

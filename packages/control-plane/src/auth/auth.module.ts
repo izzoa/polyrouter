@@ -7,6 +7,8 @@ import {
 } from '@polyrouter/shared/server';
 import { DatabaseModule } from '../database/database.module';
 import { RedisModule } from '../redis/redis.module';
+import { MailerModule } from '../producers/mailer.module';
+import { SystemMailer } from '../producers/system-mailer';
 import type { AuthAdapter } from '../database/auth-adapter';
 import './auth.config';
 import { AgentApiKeyGuard } from './agent-key.guard';
@@ -22,13 +24,14 @@ import { SessionGuard } from './session.guard';
  * bootstrap, and throttles the auth routes. The SessionGuard is bound to
  * `/api/**` by the app module, not globally (the `/v1` plane uses agent keys). */
 @Module({
-  imports: [DatabaseModule, RedisModule],
+  imports: [DatabaseModule, RedisModule, MailerModule],
   providers: [
     {
       provide: AUTH_INSTANCE,
       useFactory: async (
         adapterFactory: AuthAdapterFactory,
         identity: IdentityPort,
+        mailer: SystemMailer,
       ): Promise<AuthInstance> => {
         const { auth, base } = loadAuthConfig();
         const { betterAuthSecret, usedDevFallback } = resolveAuthSecrets(auth, base);
@@ -38,9 +41,9 @@ import { SessionGuard } from './session.guard';
           );
         }
         const adapter = (await adapterFactory()) as AuthAdapter;
-        return createAuth({ adapter, identity, betterAuthSecret, config: auth });
+        return createAuth({ adapter, identity, betterAuthSecret, config: auth, mailer });
       },
-      inject: [AUTH_ADAPTER_FACTORY, IDENTITY_PORT],
+      inject: [AUTH_ADAPTER_FACTORY, IDENTITY_PORT, SystemMailer],
     },
     SessionGuard,
     AgentApiKeyGuard,

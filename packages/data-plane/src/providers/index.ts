@@ -53,4 +53,6 @@ export type {
   BreakerRedis,
   CircuitBreakerOptions,
   Admission,
+  BreakerCompletion,
+  BreakerOpenListener,
 } from './breaker';

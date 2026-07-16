@@ -19,6 +19,7 @@ import {
   resolveRoute,
   runBufferedChain,
   type AttemptFailure,
+  type BreakerOpenListener,
   type ChainAttempt,
   type CircuitBreaker,
   type ContentBlock,
@@ -50,10 +51,12 @@ import {
 import { RequestRecorder, type RecordingContext } from '../recording/request-recorder';
 import { StructuralRouter } from './structural/structural-router';
 import { CascadeRouter, type CascadePlan } from './cascade/cascade-router';
+import { NotificationProducers } from '../producers/notification-producers';
 
 /** Per-chain-member recording metadata (parallel to the attempts). */
 interface AttemptMeta {
   readonly providerId: string;
+  readonly providerName: string;
   readonly modelId: string;
   /** The tier this member belongs to (its own — a cascade escalation chain mixes
    * strong + default members, so provenance is per-member, #14). */
@@ -131,9 +134,25 @@ export class ProxyService {
     private readonly recorder: RequestRecorder,
     private readonly structural: StructuralRouter,
     private readonly cascade: CascadeRouter,
+    private readonly producers: NotificationProducers,
   ) {
     this.key = rt.key;
     this.mode = rt.mode;
+  }
+
+  /** A per-request breaker-open listener that emits `provider_down` (#15b) for
+   * the tripped provider, owner = the request principal. Fire-and-forget. */
+  private onOpenFor(principal: Principal, meta: AttemptMeta[]): BreakerOpenListener {
+    const owner = principal.kind === 'user' ? principal.userId : principal.orgId;
+    return (providerId) => {
+      const m = meta.find((x) => x.providerId === providerId);
+      if (m) this.producers.providerDown(providerId, m.providerName, owner);
+    };
+  }
+
+  /** Fire-and-forget failure-spike check for a recorded chain error (#15b). */
+  private notifyFailed(principal: Principal): void {
+    void this.producers.onRequestFailed(principal);
   }
 
   /** Non-streaming: walk the fallback chain (or the cascade); return the served
@@ -154,7 +173,7 @@ export class ProxyService {
       p.attempts,
       p.client,
       p.routed,
-      { created: p.created },
+      { created: p.created, onOpen: this.onOpenFor(p.principal, p.meta) },
       signal,
     );
     if (result.ok) {
@@ -169,6 +188,7 @@ export class ProxyService {
       status: 'error',
       outputChars: 0,
     });
+    this.notifyFailed(p.principal);
     throw toProxyError(result.error);
   }
 
@@ -189,24 +209,27 @@ export class ProxyService {
       signal,
       firstEventTimeoutMs: this.rt.firstByteTimeoutMs,
       created: p.created,
+      onOpen: this.onOpenFor(p.principal, p.meta),
     });
     if (result.kind === 'error') {
       this.recorder.record(this.failedContext(p, result.failures), {
         status: 'error',
         outputChars: 0,
       });
+      this.notifyFailed(p.principal);
       throw providerErrorToProxy(result.error);
     }
     const ctx = this.servedContext(p, result.servedIndex, result.failures);
     const fellBack = result.failures.length > 0;
-    void result.outcome.then((o) =>
+    void result.outcome.then((o) => {
       this.recorder.record(ctx, {
         // Post-commit precedence: a committed stream that later fails is `error`.
         status: o.status === 'error' ? 'error' : fellBack ? 'fallback' : 'success',
         providerUsage: o.usage,
         outputChars: o.outputChars,
-      }),
-    );
+      });
+      if (o.status === 'error') this.notifyFailed(p.principal);
+    });
     return result.frames;
   }
 
@@ -245,7 +268,7 @@ export class ProxyService {
       c.cheap.attempts,
       p.client,
       p.routed,
-      { created: p.created },
+      { created: p.created, onOpen: this.onOpenFor(p.principal, c.cheap.meta) },
       AbortSignal.any([signal, AbortSignal.timeout(c.cheapTimeoutMs)]),
     );
     if (cheap.ok) {
@@ -294,7 +317,7 @@ export class ProxyService {
       c.escalation.attempts,
       p.client,
       p.routed,
-      { created: p.created },
+      { created: p.created, onOpen: this.onOpenFor(p.principal, c.escalation.meta) },
       signal,
     );
     if (!result.ok) {
@@ -309,6 +332,7 @@ export class ProxyService {
         ),
         { status: 'error', outputChars: 0, escalated: true, qualitySignal: score },
       );
+      this.notifyFailed(p.principal);
       throw toProxyError(result.error);
     }
     const requestId = this.recorder.record(
@@ -344,7 +368,7 @@ export class ProxyService {
       c.cheap.attempts,
       p.client,
       p.routed,
-      { created: p.created },
+      { created: p.created, onOpen: this.onOpenFor(p.principal, c.cheap.meta) },
       AbortSignal.any([signal, AbortSignal.timeout(c.cheapTimeoutMs)]),
     );
     if (cheap.ok) {
@@ -394,6 +418,7 @@ export class ProxyService {
       signal,
       firstEventTimeoutMs: this.rt.firstByteTimeoutMs,
       created: p.created,
+      onOpen: this.onOpenFor(p.principal, c.escalation.meta),
     });
     if (result.kind === 'error') {
       this.recorder.record(
@@ -407,6 +432,7 @@ export class ProxyService {
         ),
         { status: 'error', outputChars: 0, escalated: true, qualitySignal: score },
       );
+      this.notifyFailed(p.principal);
       throw providerErrorToProxy(result.error);
     }
     const ctx = this.servedFrom(
@@ -426,6 +452,7 @@ export class ProxyService {
         escalated: true,
         qualitySignal: score,
       });
+      if (o.status === 'error') this.notifyFailed(p.principal);
       if (cheapServed !== null) this.recordCheapAttempt(p, c, requestId, cheapServed);
     });
     return result.frames;
@@ -546,6 +573,7 @@ export class ProxyService {
       if (!provider || !model) continue;
       meta.push({
         providerId: t.providerId,
+        providerName: provider.name,
         modelId: t.modelId,
         tierKey: decision.tierKey,
         providerBaseUrl: provider.baseUrl,

@@ -20,6 +20,7 @@ import { DRIZZLE, PG_POOL } from './database.internal';
 import { runMigrations } from './migrations-runner';
 import { buildPersistenceFacilities, buildPersistencePort } from './port';
 import { buildIdentityPort } from './port-identity';
+import { WEEKLY_SPEND_READER, buildWeeklySpendReader } from './weekly-spend.reader';
 import type { DatabaseConfig } from './database.config';
 
 /** Applies migrations during app init — before `listen()` ever runs — so a
@@ -74,6 +75,13 @@ class PoolLifecycle implements OnApplicationShutdown {
       inject: [DRIZZLE],
     },
     {
+      // Narrow, scheduler-only cross-owner reader (#15b weekly summary). Built on
+      // the private handle; only this token is exported (never raw drizzle).
+      provide: WEEKLY_SPEND_READER,
+      useFactory: (db: NodePgDatabase) => buildWeeklySpendReader(db),
+      inject: [DRIZZLE],
+    },
+    {
       // LAZY factory: closes over the private handle so the auth plane needs
       // no raw handle of its own, but imports the ESM better-auth package only
       // when actually called — non-auth consumers of this module never do.
@@ -84,6 +92,12 @@ class PoolLifecycle implements OnApplicationShutdown {
     MigrationRunner,
     PoolLifecycle,
   ],
-  exports: [PERSISTENCE_PORT, PERSISTENCE_FACILITIES, IDENTITY_PORT, AUTH_ADAPTER_FACTORY],
+  exports: [
+    PERSISTENCE_PORT,
+    PERSISTENCE_FACILITIES,
+    IDENTITY_PORT,
+    AUTH_ADAPTER_FACTORY,
+    WEEKLY_SPEND_READER,
+  ],
 })
 export class DatabaseModule {}

@@ -34,6 +34,7 @@ import {
   loadProxyRuntime,
 } from '../../src/proxy/proxy.config';
 import { ProxyService } from '../../src/proxy/proxy.service';
+import { NotificationProducers } from '../../src/producers/notification-producers';
 import { StreamDrainRegistry } from '../../src/proxy/stream-drain.registry';
 import { StructuralRouter } from '../../src/proxy/structural/structural-router';
 import { CascadeRouter } from '../../src/proxy/cascade/cascade-router';
@@ -93,6 +94,10 @@ describe('request-logging e2e', () => {
           useValue: { enabled: false, evaluate: () => Promise.resolve({ kind: 'skip' }) },
         }, // #13 off here
         { provide: CascadeRouter, useValue: { enabled: false, plan: () => null } }, // #14 off here
+        {
+          provide: NotificationProducers,
+          useValue: { providerDown: () => undefined, onRequestFailed: () => Promise.resolve() },
+        }, // #15b notifications not asserted here
         { provide: PROXY_RUNTIME, useFactory: loadProxyRuntime },
         { provide: PROXY_ADAPTER_FACTORY, useValue: createProviderAdapter },
         { provide: PROXY_BREAKER, useValue: new CircuitBreaker(new InMemoryBreakerStore()) },

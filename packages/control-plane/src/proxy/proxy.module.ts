@@ -12,6 +12,7 @@ import type { Redis } from 'ioredis';
 import { AuthModule } from '../auth/auth.module';
 import { loadAuthConfig, resolveAuthSecrets } from '../auth/auth.config';
 import { DatabaseModule } from '../database/database.module';
+import { ProducersModule } from '../producers/producers.module';
 import { RecordingModule } from '../recording/recording.module';
 import { RedisModule } from '../redis/redis.module';
 import { ChatCompletionsController } from './chat-completions.controller';
@@ -52,7 +53,7 @@ function boundedBreakerRedis(redis: Redis): BreakerRedis {
  * filter is registered globally (it protocol-shapes only `/v1`).
  */
 @Module({
-  imports: [DatabaseModule, AuthModule, RecordingModule, RedisModule],
+  imports: [DatabaseModule, AuthModule, RecordingModule, RedisModule, ProducersModule],
   controllers: [ChatCompletionsController, MessagesController, ModelsController],
   providers: [
     ProxyService,

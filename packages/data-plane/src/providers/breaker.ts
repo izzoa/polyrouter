@@ -155,6 +155,15 @@ export interface Admission {
   readonly isProbe: boolean;
 }
 
+/** Result of a completion — `justOpened` is true iff this completion applied a
+ * transition INTO the open state (closed→open or half_open→open), so a caller
+ * can fire a one-shot side effect (e.g. a `provider_down` alert) on the trip. */
+export interface BreakerCompletion {
+  readonly justOpened: boolean;
+  readonly generation: number;
+  readonly openedAt: number;
+}
+
 export interface BreakerStore {
   decide(providerId: string, now: number, cfg: BreakerConfig): Promise<Admission>;
   complete(
@@ -163,7 +172,7 @@ export interface BreakerStore {
     outcome: BreakerOutcome,
     now: number,
     cfg: BreakerConfig,
-  ): Promise<void>;
+  ): Promise<BreakerCompletion>;
 }
 
 /** In-memory store: the read-compute-write is synchronous (single-threaded JS),
@@ -184,10 +193,15 @@ export class InMemoryBreakerStore implements BreakerStore {
     outcome: BreakerOutcome,
     now: number,
     cfg: BreakerConfig,
-  ): Promise<void> {
+  ): Promise<BreakerCompletion> {
     const rec = this.records.get(providerId) ?? INITIAL_RECORD;
-    this.records.set(providerId, applyComplete(rec, generation, outcome, now, cfg));
-    return Promise.resolve();
+    const next = applyComplete(rec, generation, outcome, now, cfg);
+    this.records.set(providerId, next);
+    return Promise.resolve({
+      justOpened: rec.state !== 'open' && next.state === 'open',
+      generation: next.generation,
+      openedAt: next.openedAt,
+    });
   }
 }
 
@@ -221,8 +235,9 @@ local now=tonumber(ARGV[1]); local tokenGen=tonumber(ARGV[2]); local outcome=ARG
 local h=redis.call('HMGET',KEYS[1],'state','failures','openedAt','generation','probeExpiresAt')
 local state=h[1] or 'closed'
 local failures=tonumber(h[2] or '0'); local openedAt=tonumber(h[3] or '0'); local generation=tonumber(h[4] or '0'); local probeExp=tonumber(h[5] or '0')
-if tokenGen~=generation then return 0 end
-if outcome=='neutral' then return 0 end
+local prev=state
+if tokenGen~=generation then return {0,generation,openedAt} end
+if outcome=='neutral' then return {0,generation,openedAt} end
 if outcome=='success' then
   if state=='half_open' then state='closed'; failures=0; openedAt=0; generation=generation+1; probeExp=0
   elseif state=='closed' then failures=0 end
@@ -232,7 +247,9 @@ else
 end
 redis.call('HMSET',KEYS[1],'state',state,'failures',failures,'openedAt',openedAt,'generation',generation,'probeExpiresAt',probeExp)
 redis.call('PEXPIRE',KEYS[1],ttl)
-return 1
+local justOpened=0
+if prev~='open' and state=='open' then justOpened=1 end
+return {justOpened,generation,openedAt}
 `;
 
 export class RedisBreakerStore implements BreakerStore {
@@ -268,8 +285,8 @@ export class RedisBreakerStore implements BreakerStore {
     outcome: BreakerOutcome,
     now: number,
     cfg: BreakerConfig,
-  ): Promise<void> {
-    await this.redis.eval(
+  ): Promise<BreakerCompletion> {
+    const res = (await this.redis.eval(
       COMPLETE_LUA,
       1,
       this.key(providerId),
@@ -278,7 +295,12 @@ export class RedisBreakerStore implements BreakerStore {
       outcome,
       cfg.threshold,
       cfg.stateTtlMs,
-    );
+    )) as [unknown, unknown, unknown];
+    return {
+      justOpened: Number(res[0]) === 1,
+      generation: Number(res[1]),
+      openedAt: Number(res[2]),
+    };
   }
 }
 
@@ -287,6 +309,10 @@ export interface BreakerToken {
   readonly store: BreakerStore;
   readonly generation: number;
   readonly isProbe: boolean;
+  /** Whether admission ran on the shared primary store (vs the per-instance
+   * fallback). Only a primary-store transition surfaces `justOpened` — a Redis
+   * outage must not fan out N duplicate `provider_down` alerts. */
+  readonly isPrimary: boolean;
 }
 
 export interface CircuitBreakerOptions {
@@ -318,24 +344,47 @@ export class CircuitBreaker {
       const a = await this.primary.decide(providerId, now, this.cfg);
       return {
         decision: a.decision,
-        token: { providerId, store: this.primary, generation: a.generation, isProbe: a.isProbe },
+        token: {
+          providerId,
+          store: this.primary,
+          generation: a.generation,
+          isProbe: a.isProbe,
+          isPrimary: true,
+        },
       };
     } catch (err) {
       this.onError(err);
       const a = await this.fallback.decide(providerId, now, this.cfg);
       return {
         decision: a.decision,
-        token: { providerId, store: this.fallback, generation: a.generation, isProbe: a.isProbe },
+        token: {
+          providerId,
+          store: this.fallback,
+          generation: a.generation,
+          isProbe: a.isProbe,
+          isPrimary: false,
+        },
       };
     }
   }
 
-  /** Store-affine: the completion goes to whichever store admitted the call. */
-  async complete(token: BreakerToken, outcome: BreakerOutcome): Promise<void> {
+  /** Store-affine: the completion goes to whichever store admitted the call.
+   * `justOpened` is surfaced only for a **primary-store** transition (never on a
+   * fallback open, never on a store fault) so `provider_down` alerts are one per
+   * shared incident, not per instance. */
+  async complete(token: BreakerToken, outcome: BreakerOutcome): Promise<BreakerCompletion> {
     try {
-      await token.store.complete(token.providerId, token.generation, outcome, this.now(), this.cfg);
+      const res = await token.store.complete(
+        token.providerId,
+        token.generation,
+        outcome,
+        this.now(),
+        this.cfg,
+      );
+      return token.isPrimary ? res : { ...res, justOpened: false };
     } catch (err) {
       this.onError(err);
+      return { justOpened: false, generation: token.generation, openedAt: 0 };
     }
   }
 }
@@ -350,22 +399,47 @@ function isCancellation(err: unknown): boolean {
   return err instanceof CallCancelledError || (err instanceof Error && err.name === 'AbortError');
 }
 
+/** Fired once when a completion opens the shared breaker (see `BreakerToken.isPrimary`). */
+export type BreakerOpenListener = (
+  providerId: string,
+  info: { generation: number; openedAt: number },
+) => void;
+
+/** Complete + fire `onOpen` on a fresh open. The listener is best-effort and
+ * MUST NOT throw into the call path (it's a fire-and-forget alert hook). */
+async function completeAndNotify(
+  breaker: CircuitBreaker,
+  token: BreakerToken,
+  outcome: BreakerOutcome,
+  onOpen: BreakerOpenListener | undefined,
+): Promise<void> {
+  const res = await breaker.complete(token, outcome);
+  if (res.justOpened && onOpen) {
+    try {
+      onOpen(token.providerId, { generation: res.generation, openedAt: res.openedAt });
+    } catch {
+      /* an alert hook must never affect routing */
+    }
+  }
+}
+
 /** Wrap a unary provider call. Health = "did the provider respond": a resolved
  * call or a non-tripping error is success; a tripping error trips; a caller
- * cancellation is neutral. */
+ * cancellation is neutral. `onOpen` fires once if this call opens the breaker. */
 export async function withBreaker<T>(
   breaker: CircuitBreaker,
   providerId: string,
   fn: () => Promise<T>,
+  onOpen?: BreakerOpenListener,
 ): Promise<T> {
   const { decision, token } = await breaker.before(providerId);
   if (decision === 'skip') throw new ProviderCircuitOpenError(providerId);
   try {
     const result = await fn();
-    await breaker.complete(token, 'success');
+    await completeAndNotify(breaker, token, 'success', onOpen);
     return result;
   } catch (err) {
-    await breaker.complete(token, outcomeForError(err));
+    await completeAndNotify(breaker, token, outcomeForError(err), onOpen);
     throw err;
   }
 }
@@ -378,6 +452,7 @@ export async function* withBreakerStream(
   breaker: CircuitBreaker,
   providerId: string,
   gen: () => AsyncGenerator<NormalizedStreamEvent>,
+  onOpen?: BreakerOpenListener,
 ): AsyncGenerator<NormalizedStreamEvent> {
   const { decision, token } = await breaker.before(providerId);
   if (decision === 'skip') throw new ProviderCircuitOpenError(providerId);
@@ -386,7 +461,7 @@ export async function* withBreakerStream(
   const settle = async (outcome: BreakerOutcome): Promise<void> => {
     if (settled) return;
     settled = true;
-    await breaker.complete(token, outcome);
+    await completeAndNotify(breaker, token, outcome, onOpen);
   };
 
   let sawTerminalStop = false;

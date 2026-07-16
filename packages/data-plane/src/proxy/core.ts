@@ -22,6 +22,7 @@ import {
   shouldFallback,
   withBreaker,
   withBreakerStream,
+  type BreakerOpenListener,
   type CircuitBreaker,
   type ProviderAdapter,
 } from '../providers';
@@ -35,6 +36,8 @@ export interface ProxyStreamOptions {
   readonly firstEventTimeoutMs: number;
   /** Unix seconds for OpenAI `created` when the IR lacks it. */
   readonly created: number;
+  /** Fire-and-forget hook when a provider's shared breaker opens (#15b provider_down). */
+  readonly onOpen?: BreakerOpenListener;
 }
 
 /** Captured usage for #11, resolved exactly once when the stream finishes. */
@@ -406,7 +409,7 @@ export async function runBufferedChain(
   attempts: readonly ChainAttempt[],
   client: ProtocolAdapter,
   request: NormalizedRequest,
-  ctx: { created: number },
+  ctx: { created: number; onOpen?: BreakerOpenListener },
   signal: AbortSignal,
 ): Promise<BufferedChainResult> {
   const failures: AttemptFailure[] = [];
@@ -418,10 +421,15 @@ export async function runBufferedChain(
     const req: NormalizedRequest = { ...request, model: attempt.externalModelId };
     try {
       // build INSIDE the breaker callback: an open circuit skips before setup.
-      const response = await withBreaker(breaker, attempt.providerId, async () => {
-        const adapter = await attempt.buildAdapter();
-        return adapter.chat(req, { signal });
-      });
+      const response = await withBreaker(
+        breaker,
+        attempt.providerId,
+        async () => {
+          const adapter = await attempt.buildAdapter();
+          return adapter.chat(req, { signal });
+        },
+        ctx.onOpen,
+      );
       return {
         ok: true,
         wire: client.responseOut(response, { created: ctx.created }),
@@ -458,7 +466,12 @@ export async function openStreamChain(
     const req: NormalizedRequest = { ...request, model: attempt.externalModelId };
     const result = await openAttemptStream(
       (signal) =>
-        withBreakerStream(breaker, attempt.providerId, () => buildThenStream(attempt, req, signal)),
+        withBreakerStream(
+          breaker,
+          attempt.providerId,
+          () => buildThenStream(attempt, req, signal),
+          opts.onOpen,
+        ),
       client,
       opts,
     );

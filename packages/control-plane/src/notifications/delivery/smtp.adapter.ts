@@ -11,7 +11,7 @@ import type { SmtpConfig } from '../channel-config';
 export async function deliverSmtp(
   config: SmtpConfig,
   rendered: { title: string; body: string },
-  rt: NotifyRuntime,
+  rt: Pick<NotifyRuntime, 'mode' | 'allowedEndpoints'>,
   timeoutMs: number,
 ): Promise<void> {
   let ip: string;

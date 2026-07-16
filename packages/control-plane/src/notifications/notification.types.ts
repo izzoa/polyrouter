@@ -119,8 +119,10 @@ export function renderEvent(event: NotificationEvent): { title: string; body: st
       };
     case 'weekly_spend_summary':
       return {
+        // "Known spend": unknown-price rows count as 0, so an all-unknown owner
+        // isn't shown a misleading total (#15b).
         title: 'polyrouter — weekly spend summary',
-        body: `Total spend this week: ${f['total'] ?? '0'}.`,
+        body: `Known spend this week: ${f['total'] ?? '0'}.`,
       };
   }
 }

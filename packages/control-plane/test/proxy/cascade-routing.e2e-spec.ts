@@ -37,6 +37,7 @@ import {
 } from '../../src/proxy/proxy.config';
 import { ROUTING_CONFIG, loadRoutingConfig } from '../../src/proxy/routing.config';
 import { ProxyService } from '../../src/proxy/proxy.service';
+import { NotificationProducers } from '../../src/producers/notification-producers';
 import { StreamDrainRegistry } from '../../src/proxy/stream-drain.registry';
 import { StructuralBaselineStore } from '../../src/proxy/structural/structural-baseline.store';
 import { StructuralRouter } from '../../src/proxy/structural/structural-router';
@@ -85,6 +86,10 @@ async function buildApp(): Promise<{ app: INestApplication; server: App }> {
       StreamDrainRegistry,
       StructuralRouter,
       CascadeRouter,
+      {
+        provide: NotificationProducers,
+        useValue: { providerDown: () => undefined, onRequestFailed: () => Promise.resolve() },
+      },
       { provide: PROXY_RUNTIME, useFactory: loadProxyRuntime },
       { provide: PROXY_ADAPTER_FACTORY, useValue: createProviderAdapter },
       { provide: PROXY_BREAKER, useValue: new CircuitBreaker(new InMemoryBreakerStore()) },

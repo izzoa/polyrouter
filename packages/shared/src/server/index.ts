@@ -10,6 +10,8 @@ export { PERSISTENCE_FACILITIES, PERSISTENCE_PORT, REDIS_CLIENT } from './persis
 export type {
   AgentInsertInput,
   AgentPatch,
+  BudgetInsertInput,
+  BudgetPatch,
   ModelAccessor,
   ModelInsertInput,
   ModelPatch,

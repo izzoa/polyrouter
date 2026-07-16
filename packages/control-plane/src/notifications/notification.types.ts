@@ -41,6 +41,10 @@ export interface NotificationEvent {
   readonly type: EventType;
   readonly scope: EventScope;
   readonly fields: Readonly<Record<string, string | number | boolean>>;
+  /** Optional per-event channel allow-list (#16 §5 `notify_channel_ids`): when
+   * present, fan-out targets only these channel ids (intersected with the owner's
+   * enabled + subscribed channels). Absent ⇒ all subscribed channels, as before. */
+  readonly channelIds?: readonly string[];
 }
 
 /** Canonical, collision-safe scope serialization for dedup. */
@@ -86,6 +90,19 @@ const WINDOW_MS: Record<EventType, number> = {
 };
 export function windowMs(type: EventType): number {
   return WINDOW_MS[type];
+}
+
+/** Whether a channel receives this event: enabled, subscribed to the type, and —
+ * when the event carries a per-event allow-list (#16 per-budget targeting) — in
+ * that set. An absent allow-list means all subscribed channels (as before). */
+export function channelMatchesEvent(
+  channel: { readonly id: string; readonly enabled: boolean; readonly eventsSubscribed: string },
+  event: NotificationEvent,
+): boolean {
+  if (!channel.enabled) return false;
+  if (!channel.eventsSubscribed.split(',').includes(event.type)) return false;
+  if (event.channelIds !== undefined && !event.channelIds.includes(channel.id)) return false;
+  return true;
 }
 
 /** Render the human title/body from the structured fields (in the worker). */

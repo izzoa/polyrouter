@@ -36,6 +36,8 @@ import {
 import type { ClientProtocol } from './proxy-errors';
 import {
   badRequest,
+  budgetBlocked,
+  budgetEnforcementUnavailable,
   providerErrorToProxy,
   routeError,
   serviceUnavailable,
@@ -52,6 +54,7 @@ import { RequestRecorder, type RecordingContext } from '../recording/request-rec
 import { StructuralRouter } from './structural/structural-router';
 import { CascadeRouter, type CascadePlan } from './cascade/cascade-router';
 import { NotificationProducers } from '../producers/notification-producers';
+import { BudgetService, BudgetEnforcementUnavailableError } from '../budgets/budget-service';
 
 /** Per-chain-member recording metadata (parallel to the attempts). */
 interface AttemptMeta {
@@ -135,9 +138,27 @@ export class ProxyService {
     private readonly structural: StructuralRouter,
     private readonly cascade: CascadeRouter,
     private readonly producers: NotificationProducers,
+    private readonly budgets: BudgetService,
   ) {
     this.key = rt.key;
     this.mode = rt.mode;
+  }
+
+  /** Block-budget gate (#16). Reject a request at/over a `block` budget BEFORE any
+   * routing/upstream work — streaming throws pre-commit so it renders cleanly. A
+   * fail-closed enforcement fault maps to 503; the read is bounded, never stalls. */
+  private async enforceBudgets(principal: Principal, agentId: string | null): Promise<void> {
+    let hit;
+    try {
+      hit = await this.budgets.checkBlocked(principal, agentId);
+    } catch (err) {
+      if (err instanceof BudgetEnforcementUnavailableError) throw budgetEnforcementUnavailable();
+      throw err;
+    }
+    if (hit !== null) {
+      this.budgets.notifyBlocked(principal, hit); // fire-and-forget
+      throw budgetBlocked(hit);
+    }
   }
 
   /** A per-request breaker-open listener that emits `provider_down` (#15b) for
@@ -165,6 +186,7 @@ export class ProxyService {
     agentId: string | null,
     signal: AbortSignal,
   ): Promise<unknown> {
+    await this.enforceBudgets(principal, agentId);
     const p = await this.prepare(principal, protocol, wireBody, headers, agentId);
     if (p.cascade !== undefined) return this.cascadeCompletion(p, p.cascade, signal);
 
@@ -202,6 +224,7 @@ export class ProxyService {
     signal: AbortSignal,
     agentId: string | null,
   ): Promise<AsyncGenerator<string>> {
+    await this.enforceBudgets(principal, agentId);
     const p = await this.prepare(principal, protocol, wireBody, headers, agentId);
     if (p.cascade !== undefined) return this.cascadeStream(p, p.cascade, signal);
 

@@ -39,6 +39,46 @@ describe('NotificationProducers.providerDown', () => {
   });
 });
 
+describe('NotificationProducers.budgetAlert / budgetBlock', () => {
+  it('emits an owner+limit-scoped budget_alert with formatted money and channelIds', () => {
+    const { producers, emit } = make(1);
+    producers.budgetAlert({
+      ownerUserId: 'u1',
+      agentId: 'ag1',
+      budgetId: 'b1',
+      periodId: '2026-03-15',
+      name: 'Cap',
+      spent: 12_000_000,
+      threshold: 10_000_000,
+      channelIds: ['ch1'],
+    });
+    expect(emit).toHaveBeenCalledWith({
+      type: 'budget_alert',
+      scope: { ownerUserId: 'u1', agentId: 'ag1', limitId: 'b1', lifecycleId: '2026-03-15' },
+      fields: { limitName: 'Cap', spent: '$12.00', threshold: '$10.00' },
+      channelIds: ['ch1'],
+    });
+  });
+
+  it('omits channelIds when empty and agentId when absent (budget_block)', () => {
+    const { producers, emit } = make(1);
+    producers.budgetBlock({
+      ownerUserId: 'u1',
+      budgetId: 'b1',
+      periodId: 'p',
+      name: 'Cap',
+      spent: 0,
+      threshold: 5_000_000,
+      channelIds: [],
+    });
+    expect(emit).toHaveBeenCalledWith({
+      type: 'budget_block',
+      scope: { ownerUserId: 'u1', limitId: 'b1', lifecycleId: 'p' },
+      fields: { limitName: 'Cap', spent: '$0.00', threshold: '$5.00' },
+    });
+  });
+});
+
 describe('NotificationProducers.onRequestFailed', () => {
   it('emits a spike exactly when the counter reaches the threshold', async () => {
     const { producers, emit } = make(3);

@@ -11,6 +11,7 @@ import { REDIS_CLIENT } from '@polyrouter/shared/server';
 import type { Redis } from 'ioredis';
 import { AuthModule } from '../auth/auth.module';
 import { loadAuthConfig, resolveAuthSecrets } from '../auth/auth.config';
+import { BudgetsModule } from '../budgets/budgets.module';
 import { DatabaseModule } from '../database/database.module';
 import { ProducersModule } from '../producers/producers.module';
 import { RecordingModule } from '../recording/recording.module';
@@ -53,7 +54,14 @@ function boundedBreakerRedis(redis: Redis): BreakerRedis {
  * filter is registered globally (it protocol-shapes only `/v1`).
  */
 @Module({
-  imports: [DatabaseModule, AuthModule, RecordingModule, RedisModule, ProducersModule],
+  imports: [
+    DatabaseModule,
+    AuthModule,
+    RecordingModule,
+    RedisModule,
+    ProducersModule,
+    BudgetsModule,
+  ],
   controllers: [ChatCompletionsController, MessagesController, ModelsController],
   providers: [
     ProxyService,

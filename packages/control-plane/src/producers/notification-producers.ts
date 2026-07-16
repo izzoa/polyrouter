@@ -12,6 +12,23 @@ function ownerOf(principal: Principal): string {
   return principal.kind === 'user' ? principal.userId : principal.orgId;
 }
 
+/** Integer micro-dollars → a display USD string (operator-facing, non-secret). */
+function fmtMicros(micros: number): string {
+  return `$${((Number.isFinite(micros) ? micros : 0) / 1_000_000).toFixed(2)}`;
+}
+
+/** A budget event's owner/scope + display figures (spend/threshold in µ$). */
+export interface BudgetEventArgs {
+  readonly ownerUserId: string;
+  readonly agentId?: string;
+  readonly budgetId: string;
+  readonly periodId: string;
+  readonly name: string;
+  readonly spent: number;
+  readonly threshold: number;
+  readonly channelIds: string[];
+}
+
 /**
  * The #15b event producers that call #15a's non-blocking `emit`. Every method is
  * fire-and-forget and self-contained (own try/catch) so a producer or Redis
@@ -40,6 +57,37 @@ export class NotificationProducers {
       scope: { ownerUserId, providerId },
       fields: { providerName },
     });
+  }
+
+  /** A scheduled reconcile found an `alert` budget at/over threshold → emit
+   * `budget_alert` (deduped once per period by the scheduler's Redis marker;
+   * `lifecycleId=periodId` keeps a new period un-suppressed). Fire-and-forget. */
+  budgetAlert(a: BudgetEventArgs): void {
+    this.emitBudget('budget_alert', a);
+  }
+
+  /** A `block` budget engaged (first block of the period) → emit `budget_block`.
+   * Fire-and-forget; the caller dedups per period. */
+  budgetBlock(a: BudgetEventArgs): void {
+    this.emitBudget('budget_block', a);
+  }
+
+  private emitBudget(type: 'budget_alert' | 'budget_block', a: BudgetEventArgs): void {
+    try {
+      void this.notifications.emit({
+        type,
+        scope: {
+          ownerUserId: a.ownerUserId,
+          ...(a.agentId !== undefined ? { agentId: a.agentId } : {}),
+          limitId: a.budgetId,
+          lifecycleId: a.periodId,
+        },
+        fields: { limitName: a.name, spent: fmtMicros(a.spent), threshold: fmtMicros(a.threshold) },
+        ...(a.channelIds.length > 0 ? { channelIds: a.channelIds } : {}),
+      });
+    } catch (err) {
+      this.logger.warn(`budget emit skipped: ${String((err as Error).message)}`);
+    }
   }
 
   /** A request was recorded as an error → bump the owner's windowed Redis

@@ -10,6 +10,7 @@ import { Queue, Worker, type Job } from 'bullmq';
 import { Redis } from 'ioredis';
 import { NOTIFY_RUNTIME, type NotifyRuntime } from './notify.config';
 import {
+  channelMatchesEvent,
   dedupId,
   deliveryId,
   renderEvent,
@@ -142,8 +143,10 @@ export class NotifyQueue implements OnApplicationShutdown {
 
   private async fanout(event: NotificationEvent, jobTimestamp: number): Promise<void> {
     const principal = userPrincipal(event.scope.ownerUserId);
-    const channels = (await this.db.notificationChannels.list(principal)).filter(
-      (c) => c.enabled && c.eventsSubscribed.split(',').includes(event.type),
+    // Enabled + subscribed, intersected with the event's per-budget allow-list
+    // (#16) when present.
+    const channels = (await this.db.notificationChannels.list(principal)).filter((c) =>
+      channelMatchesEvent(c, event),
     );
     // Bucket derives from the fan-out job's immutable timestamp, not retry time.
     const bucket = Math.floor(jobTimestamp / Math.max(windowMs(event.type), 60_000));

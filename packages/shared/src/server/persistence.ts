@@ -1,5 +1,6 @@
 import type {
   agents,
+  budgets,
   models,
   notificationChannels,
   providers,
@@ -8,6 +9,7 @@ import type {
   routingRules,
   tiers,
   AgentRow,
+  BudgetRow,
   ModelPriceRow,
   ModelRow,
   NotificationChannelRow,
@@ -39,11 +41,13 @@ export type ProviderInsertInput = InsertInputOf<typeof providers>;
 export type TierInsertInput = InsertInputOf<typeof tiers>;
 export type RoutingRuleInsertInput = InsertInputOf<typeof routingRules>;
 export type NotificationChannelInsertInput = InsertInputOf<typeof notificationChannels>;
+export type BudgetInsertInput = InsertInputOf<typeof budgets>;
 export type AgentPatch = PatchOf<typeof agents>;
 export type ProviderPatch = PatchOf<typeof providers>;
 export type TierPatch = PatchOf<typeof tiers>;
 export type RoutingRulePatch = PatchOf<typeof routingRules>;
 export type NotificationChannelPatch = PatchOf<typeof notificationChannels>;
+export type BudgetPatch = PatchOf<typeof budgets>;
 
 /** Every method takes the principal; the ownership predicate is appended
  * centrally. There is NO unscoped by-id method. `id` and ownership columns
@@ -198,6 +202,7 @@ export interface PersistencePort {
     NotificationChannelInsertInput,
     NotificationChannelPatch
   >;
+  budgets: OwnedRepository<BudgetRow, BudgetInsertInput, BudgetPatch>;
   models: ModelAccessor;
   routingEntries: RoutingEntryAccessor;
   requestLogs: RequestLogAccessor;

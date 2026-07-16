@@ -9,6 +9,7 @@ import {
   type ProviderErrorKind,
   type RouteErrorKind,
 } from '@polyrouter/data-plane';
+import type { BudgetHit } from '../budgets/budget-service';
 
 export type ClientProtocol = 'openai' | 'anthropic';
 
@@ -109,6 +110,24 @@ export const unauthorized = (): ProxyError =>
   new ProxyError(401, 'invalid API key', 'authentication_error', 'invalid_api_key');
 export const serviceUnavailable = (message: string): ProxyError =>
   new ProxyError(503, message, 'api_error', 'unavailable');
+/** A `block` budget is at/over threshold — reject the request pre-upstream (#16),
+ * naming the budget AND its reset (from the hit) so the caller knows when to retry. */
+export const budgetBlocked = (hit: BudgetHit): ProxyError =>
+  new ProxyError(
+    402,
+    `budget exceeded: ${hit.budget.name} (resets ${hit.resetAt.toISOString()})`,
+    'invalid_request_error',
+    'budget_exceeded',
+  );
+/** Fail-closed enforcement: the budget check couldn't be trusted (Redis fault /
+ * stale reconciliation) and the operator chose to reject rather than allow (#16). */
+export const budgetEnforcementUnavailable = (): ProxyError =>
+  new ProxyError(
+    503,
+    'budget enforcement unavailable',
+    'api_error',
+    'budget_enforcement_unavailable',
+  );
 export const internalError = (): ProxyError =>
   new ProxyError(500, 'internal proxy error', 'api_error', null);
 

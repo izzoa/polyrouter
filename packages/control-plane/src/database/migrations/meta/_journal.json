@@ -43,6 +43,13 @@
       "when": 1784151186083,
       "tag": "0005_daily_maginty",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1784168696280,
+      "tag": "0006_breezy_onslaught",
+      "breakpoints": true
     }
   ]
 }

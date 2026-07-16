@@ -2,6 +2,7 @@ import { and, desc, eq, inArray, lte, sql } from 'drizzle-orm';
 import {
   agents,
   assertUserPrincipal,
+  budgets,
   models,
   modelPrices,
   notificationChannels,
@@ -400,6 +401,7 @@ export function buildPersistencePort(db: Db): PersistencePort {
       db,
       notificationChannels as unknown as AnyOwnedTable,
     ),
+    budgets: createOwnedRepository(db, budgets as unknown as AnyOwnedTable),
     models: createModelAccessor(db),
     routingEntries: createRoutingEntryAccessor(db),
     requestLogs: createRequestLogAccessor(db),

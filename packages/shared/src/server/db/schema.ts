@@ -310,6 +310,10 @@ export const requestLogs = pgTable(
   (t) => [
     index('request_log_created_idx').on(t.createdAt),
     index('request_log_owner_idx').on(t.ownerUserId),
+    // Composite (owner, created) for the #16 per-period budget-reconcile scan
+    // (a spend sum over one owner's current window) — the owner-only + created-only
+    // singles above don't serve that predicate as tightly.
+    index('request_log_owner_created_idx').on(t.ownerUserId, t.createdAt),
     index('request_log_agent_idx').on(t.agentId),
     index('request_log_provider_idx').on(t.providerId),
     index('request_log_model_idx').on(t.modelId),
@@ -358,6 +362,10 @@ export const requestAttempts = pgTable(
   (t) => [
     index('request_attempt_request_idx').on(t.requestLogId),
     index('request_attempt_owner_idx').on(t.ownerUserId),
+    // Composite (owner, created) for the #16 reconcile scan — the attempt ledger
+    // otherwise has no `created_at` index, so a per-period owner spend sum would
+    // seq-scan the ledger.
+    index('request_attempt_owner_created_idx').on(t.ownerUserId, t.createdAt),
     check(
       'request_attempt_tokens_nonneg',
       sql`${t.inputTokens} >= 0 AND ${t.outputTokens} >= 0
@@ -390,6 +398,43 @@ export const notificationChannels = pgTable(
   (t) => [index('notification_channel_owner_idx').on(t.ownerUserId)],
 );
 
+/** Owner-scoped spend budget (#16, spec §5 Limit / §10). Table name `budget`
+ * avoids the `limit` SQL keyword. `scope='global'` meters all of the owner's
+ * spend; `scope='agent'` meters one agent (its `agent_id`, denormalized — not an
+ * FK, so a deleted agent leaves the budget inert, not a cascade). `window` is a
+ * UTC calendar period (day/week/month) that resets at the boundary; `action`
+ * `alert` emits a notification, `block` rejects new requests in the proxy path.
+ * `amount` is a USD threshold (≤ 1e9 so `round(amount×1e6)` stays a safe
+ * integer). `notify_channel_ids` is a CSV of the channels an alert/block targets
+ * (empty = all subscribed). The Redis spend counter is reconciled from the
+ * request-log ledgers, never a column here (invariant 4/10). */
+export const budgets = pgTable(
+  'budget',
+  {
+    id: id(),
+    ownerUserId: owned.ownerUserId(),
+    orgId: owned.orgId(),
+    name: text('name').notNull(),
+    scope: text('scope').notNull(), // global | agent
+    agentId: text('agent_id'), // set iff scope='agent'
+    window: text('window').notNull(), // day | week | month
+    action: text('action').notNull(), // alert | block
+    amount: doublePrecision('amount').notNull(), // USD threshold
+    notifyChannelIds: text('notify_channel_ids').default('').notNull(), // csv
+    enabled: boolean('enabled').default(true).notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index('budget_owner_idx').on(t.ownerUserId),
+    check('budget_amount_range', sql`${t.amount} > 0 AND ${t.amount} <= 1000000000`),
+    check('budget_scope_valid', sql`${t.scope} IN ('global', 'agent')`),
+    check('budget_window_valid', sql`${t.window} IN ('day', 'week', 'month')`),
+    check('budget_action_valid', sql`${t.action} IN ('alert', 'block')`),
+    // An agent budget has an agent; a global budget has none.
+    check('budget_agent_iff_scope', sql`(${t.scope} = 'agent') = (${t.agentId} IS NOT NULL)`),
+  ],
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
 export type AccountRow = typeof accounts.$inferSelect;
@@ -403,3 +448,4 @@ export type ModelPriceRow = typeof modelPrices.$inferSelect;
 export type RequestLogRow = typeof requestLogs.$inferSelect;
 export type RequestAttemptRow = typeof requestAttempts.$inferSelect;
 export type NotificationChannelRow = typeof notificationChannels.$inferSelect;
+export type BudgetRow = typeof budgets.$inferSelect;

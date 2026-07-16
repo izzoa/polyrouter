@@ -21,6 +21,7 @@ import { runMigrations } from './migrations-runner';
 import { buildPersistenceFacilities, buildPersistencePort } from './port';
 import { buildIdentityPort } from './port-identity';
 import { WEEKLY_SPEND_READER, buildWeeklySpendReader } from './weekly-spend.reader';
+import { BUDGET_READER, buildBudgetReader } from './budget.reader';
 import type { DatabaseConfig } from './database.config';
 
 /** Applies migrations during app init — before `listen()` ever runs — so a
@@ -82,6 +83,13 @@ class PoolLifecycle implements OnApplicationShutdown {
       inject: [DRIZZLE],
     },
     {
+      // Narrow, scheduler-only cross-owner reconcile reader (#16 spend budgets).
+      // Same discipline — private handle in, only the token out.
+      provide: BUDGET_READER,
+      useFactory: (db: NodePgDatabase) => buildBudgetReader(db),
+      inject: [DRIZZLE],
+    },
+    {
       // LAZY factory: closes over the private handle so the auth plane needs
       // no raw handle of its own, but imports the ESM better-auth package only
       // when actually called — non-auth consumers of this module never do.
@@ -98,6 +106,7 @@ class PoolLifecycle implements OnApplicationShutdown {
     IDENTITY_PORT,
     AUTH_ADAPTER_FACTORY,
     WEEKLY_SPEND_READER,
+    BUDGET_READER,
   ],
 })
 export class DatabaseModule {}

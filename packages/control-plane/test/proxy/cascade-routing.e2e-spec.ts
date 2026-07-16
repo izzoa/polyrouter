@@ -38,6 +38,7 @@ import {
 import { ROUTING_CONFIG, loadRoutingConfig } from '../../src/proxy/routing.config';
 import { ProxyService } from '../../src/proxy/proxy.service';
 import { NotificationProducers } from '../../src/producers/notification-producers';
+import { BudgetService } from '../../src/budgets/budget-service';
 import { StreamDrainRegistry } from '../../src/proxy/stream-drain.registry';
 import { StructuralBaselineStore } from '../../src/proxy/structural/structural-baseline.store';
 import { StructuralRouter } from '../../src/proxy/structural/structural-router';
@@ -90,6 +91,10 @@ async function buildApp(): Promise<{ app: INestApplication; server: App }> {
         provide: NotificationProducers,
         useValue: { providerDown: () => undefined, onRequestFailed: () => Promise.resolve() },
       },
+      {
+        provide: BudgetService,
+        useValue: { checkBlocked: () => Promise.resolve(null), notifyBlocked: () => undefined },
+      }, // #16 budgets: allow-all (enforcement asserted in the budgets e2e)
       { provide: PROXY_RUNTIME, useFactory: loadProxyRuntime },
       { provide: PROXY_ADAPTER_FACTORY, useValue: createProviderAdapter },
       { provide: PROXY_BREAKER, useValue: new CircuitBreaker(new InMemoryBreakerStore()) },

@@ -47,7 +47,7 @@ Env var names, endpoint paths (`/v1/chat/completions`, `/v1/messages`, `/api`), 
 | 14 | `add-cascade-routing` | D | 12, 13 | M | ✅ archived 2026-07-15 |
 | 15a | `add-notification-channels` | E | 3, 4, 6 | M | ✅ archived 2026-07-15 |
 | 15b | `add-notification-producers` | E | 15a, 6, 11 | M | ✅ archived 2026-07-16 |
-| 16 | `add-spend-limits` | E | 11, 15 | M | ☐ |
+| 16 | `add-spend-limits` | E | 11, 15 | M | ✅ archived 2026-07-16 |
 | 17 | `add-analytics-api` | F | 11 | S | ☐ |
 | 18 | `add-dashboard-core` | F | 3, 7, 8, 9, 10 | L | ☐ |
 | 19 | `add-dashboard-analytics` | F | 17, 18 | M | ☐ |
@@ -180,6 +180,7 @@ Stop for human review of the shippable core (spec §14.5, CLAUDE.md). Do **not**
 - **Spec:** §5 (Limit), §10; invariants 5, 10, 11.
 - **Scope:** **`Limit` table + migration lands here**; Limit CRUD: scope global/org/agent, window day/week/month, action `alert`|`block`, subscribed channel ids; **Redis atomic counters** (INCR+expiry or token-bucket Lua) updated per request, reconciled against RequestLog; `block` evaluated in the proxy path with a clear rejection error until window reset; `alert` evaluated on a schedule, emitting `budget_alert`/`budget_block` events into #15.
 - **DoD (§15):** two proxy instances + one Redis: combined spend crossing a block threshold stops new requests (no per-instance drift); a budget hovering at its threshold produces **at most one `budget_alert` per window per scope**; a failing notification channel never delays or blocks block-action enforcement; budget check adds negligible hot-path latency; cross-tenant tests cover Limits.
+- **✅ Done (archived 2026-07-16):** shipped as `add-spend-limits`. The `Limit` table landed as **`budget`** (avoids the `limit` keyword); scope `global`/`agent` (org deferred), window `day`/`week`/`month`. Enforcement is an **asynchronously-metered postpaid soft cap over resetting UTC calendar windows** — the counter is a **reconciled read-model** (integer µ$): a `budget-eval` scheduler (own BullMQ queue) is the **sole writer**, recomputing each budget's current-period spend from the RequestLog ledgers and monotonically setting the shared Redis counter (no double-count/race), plus a reconciliation heartbeat. `block` is enforced pre-`prepare` in the proxy (streaming rejects pre-commit → 402) via a bounded fail-fast read off a capped cache with a **named fail mode** (`BUDGET_FAIL_OPEN`, default open) that also trips on a stale heartbeat (stopped scheduler → fail-closed 503, never silently under-budget). `alert`/`block` emit through #15's pipeline, once per budget per period, targeted to the budget's channels. Root `spec.md` §10 updated (rolling → resetting calendar window + single-writer reconciliation). Deferred here: **org scope**, a **reserve-then-settle hard cap**, a **sliding window**, and the **budgets SPA** (#18–#20).
 
 ## Phase F — Dashboard
 

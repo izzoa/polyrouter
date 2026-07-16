@@ -64,7 +64,7 @@ export class AnalyticsService {
       limit: q.limit ?? DEFAULT_REQUESTS_LIMIT,
       ...(q.cursor !== undefined ? { cursor: this.parseCursor(q.cursor) } : {}),
       ...(q.status !== undefined ? { status: q.status } : {}),
-      ...(q.layer !== undefined ? { decisionLayer: q.layer } : {}),
+      ...(q.layer !== undefined ? { decisionLayers: q.layer } : {}),
       ...(q.escalated !== undefined ? { escalated: q.escalated } : {}),
     });
     return { rows: page.rows.map(toSafeRequest), nextCursor: page.nextCursor };

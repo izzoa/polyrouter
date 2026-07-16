@@ -1,15 +1,31 @@
-import { For, Show } from 'solid-js';
-import { fmtCost, fmtTime, fmtTokens } from '../data/catalog';
+import { For } from 'solid-js';
+import { labelOf, type RequestRow, type RequestStatus } from '../data/api';
+import { rowCostLabel } from '../data/analytics';
+import { fmtTime, fmtTokens } from '../data/catalog';
 import { useApp } from '../state/context';
-import type { DecisionLayer, RoutedRequest } from '../types';
 
 const GRID = '66px 1.5fr 1.1fr 0.8fr 1.1fr 0.9fr 0.7fr 0.6fr 0.8fr';
 
-const CHIP: Record<DecisionLayer, { bg: string; fg: string }> = {
+/** Decision-layer chip palette. Any unknown layer renders neutral (invariant 1 —
+ * the table is layer-agnostic). */
+const CHIP: Record<string, { bg: string; fg: string }> = {
   explicit: { bg: 'var(--accent-bg)', fg: 'var(--accent-deep)' },
   header: { bg: 'var(--chip)', fg: 'var(--text2)' },
+  default: { bg: 'var(--chip)', fg: 'var(--text2)' },
   structural: { bg: 'var(--chip)', fg: 'var(--text2)' },
-  escalated: { bg: 'var(--amber-bg)', fg: 'var(--amber)' },
+  cascade: { bg: 'var(--amber-bg)', fg: 'var(--amber)' },
+};
+const NEUTRAL_CHIP = { bg: 'var(--chip)', fg: 'var(--text2)' };
+
+const STATUS_DOT: Record<RequestStatus, string> = {
+  success: 'var(--green)',
+  fallback: 'var(--amber)',
+  error: 'var(--red)',
+};
+const STATUS_TEXT: Record<RequestStatus, string> = {
+  success: 'OK',
+  fallback: 'Fallback',
+  error: 'Error',
 };
 
 export function RequestTableHead() {
@@ -28,38 +44,30 @@ export function RequestTableHead() {
   );
 }
 
-export function RequestRow(props: { r: RoutedRequest; animate: boolean }) {
+export function RequestRow(props: { r: RequestRow }) {
   const app = useApp();
   const { state } = app;
   const selected = () => state.selId === props.r.id;
-  const chip = () => CHIP[props.r.layer];
+  const chip = () => CHIP[props.r.decisionLayer] ?? NEUTRAL_CHIP;
   return (
     <div
       class="req-row row-hover"
       style={{
         'grid-template-columns': GRID,
         background: selected() ? 'var(--accent-bg)' : 'transparent',
-        animation: props.animate ? 'rowin 1.6s ease-out' : 'none',
       }}
       onClick={() => app.select(selected() ? null : props.r.id)}
     >
       <div class="mono" style="font-size:11px;color:var(--text3)">
-        {fmtTime(props.r.ts)}
+        {fmtTime(new Date(props.r.createdAt).getTime())}
       </div>
       <div class="mono" style="font-size:11.5px;color:var(--text)">
-        {props.r.model}
+        {labelOf(props.r.modelLabel, props.r.modelId)}
       </div>
-      <div style="display:flex;align-items:center;gap:5px;min-width:0">
-        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-          {props.r.provider}
-        </span>
-        <Show when={props.r.tag}>
-          <span style="font-size:10px;color:var(--text3);border:1px solid var(--border);border-radius:4px;padding:0 4px;flex:none">
-            {props.r.tag}
-          </span>
-        </Show>
+      <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+        {labelOf(props.r.providerLabel, props.r.providerId)}
       </div>
-      <div>{props.r.tier}</div>
+      <div>{props.r.tierAssigned ?? '—'}</div>
       <div>
         <span
           style={{
@@ -71,24 +79,17 @@ export function RequestRow(props: { r: RoutedRequest; animate: boolean }) {
             'font-weight': '500',
           }}
         >
-          {props.r.layer === 'escalated' ? 'escalated ↗' : props.r.layer}
+          {props.r.escalated ? `${props.r.decisionLayer} ↗` : props.r.decisionLayer}
         </span>
       </div>
       <div class="mono" style="font-size:11px">
-        {fmtTokens(props.r.tin)} → {fmtTokens(props.r.tout)}
+        {fmtTokens(props.r.inputTokens)} → {fmtTokens(props.r.outputTokens)}
       </div>
-      <div
-        class="mono"
-        style={{
-          'font-size': '11px',
-          color: props.r.tag === 'local' ? 'var(--green)' : 'var(--text)',
-        }}
-      >
-        {fmtCost(props.r)}
-        {props.r.estimated ? '~' : ''}
+      <div class="mono" style="font-size:11px;color:var(--text)">
+        {rowCostLabel(props.r)}
       </div>
       <div class="mono" style="font-size:11px">
-        {(props.r.ms / 1000).toFixed(1)}s
+        {(props.r.durationMs / 1000).toFixed(1)}s
       </div>
       <div style="display:flex;align-items:center;gap:5px">
         <span
@@ -96,22 +97,16 @@ export function RequestRow(props: { r: RoutedRequest; animate: boolean }) {
             width: '6px',
             height: '6px',
             'border-radius': '50%',
-            background: props.r.status === 'ok' ? 'var(--green)' : 'var(--amber)',
+            background: STATUS_DOT[props.r.status],
             flex: 'none',
           }}
         />
-        {props.r.status === 'ok' ? 'OK' : 'Fallback'}
+        {STATUS_TEXT[props.r.status]}
       </div>
     </div>
   );
 }
 
-export function RequestRows(props: { rows: RoutedRequest[]; live: boolean }) {
-  const app = useApp();
-  const newestId = () => app.state.requests[0]?.id;
-  return (
-    <For each={props.rows}>
-      {(r) => <RequestRow r={r} animate={props.live && r.id === newestId()} />}
-    </For>
-  );
+export function RequestRows(props: { rows: RequestRow[] }) {
+  return <For each={props.rows}>{(r) => <RequestRow r={r} />}</For>;
 }

@@ -1,7 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiError, type AgentDto } from '../data/api';
-import { generateRequest } from '../data/simulator';
-import { filterRequests } from '../pages/Requests';
 import { DEFAULT_SESSION, FakeApiClient } from '../test/fakeClient';
 import type { ProviderForm } from '../types';
 import { createAppStore } from './appState';
@@ -362,30 +360,5 @@ describe('simulated slices (deferred pages)', () => {
     expect(limit?.threshold).toBe(42.5);
     expect(limit?.action).toBe('block');
     expect(limit?.note).toContain('hard stop');
-  });
-
-  it('live feed prepends requests, caps the list, and updates stats', () => {
-    const s = sim();
-    const reqsBefore = s.state.stats.reqs;
-    for (let i = 0; i < 50; i++) s.pushLiveRequest();
-    expect(s.state.requests.length).toBeLessThanOrEqual(40);
-    expect(s.state.stats.reqs).toBe(reqsBefore + 50);
-  });
-
-  it('filters requests by decision layer and status — non-vacuously', () => {
-    const corpus = Array.from({ length: 400 }, () => generateRequest(Date.now()));
-    const auto = filterRequests(corpus, 'auto');
-    const explicit = filterRequests(corpus, 'explicit');
-    const fallback = filterRequests(corpus, 'fallback');
-    const escalated = filterRequests(corpus, 'escalated');
-    for (const bucket of [auto, explicit, fallback, escalated]) {
-      expect(bucket.length).toBeGreaterThan(0);
-    }
-    expect(auto.every((r) => r.layer === 'structural' || r.layer === 'escalated')).toBe(true);
-    expect(explicit.every((r) => r.layer === 'explicit' || r.layer === 'header')).toBe(true);
-    expect(fallback.every((r) => r.status === 'fallback')).toBe(true);
-    expect(escalated.every((r) => r.escalated)).toBe(true);
-    expect(auto.length + explicit.length).toBe(corpus.length);
-    expect(filterRequests(corpus, 'all')).toHaveLength(corpus.length);
   });
 });

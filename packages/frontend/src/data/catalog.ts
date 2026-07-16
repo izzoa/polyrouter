@@ -1,4 +1,4 @@
-import type { ModelTag, RoutedRequest } from '../types';
+import type { ModelTag } from '../types';
 
 /** Simulated model catalog with unit prices ($ per 1M tokens). The real
  * catalog arrives with the pricing-catalog change; pages never read this
@@ -21,8 +21,6 @@ export const CATALOG: Record<string, CatalogEntry> = {
   'qwen3-coder-30b': { p: 'Ollama', tag: 'local', inP: 0, outP: 0 },
   'gemini-3-flash': { p: 'OpenRouter', tag: null, inP: 0.3, outP: 1.2 },
 };
-
-export const AGENTS_POOL = ['openclaw', 'vscode-continue', 'cron-summarizer', 'research-notebook'];
 
 /** Display-only endpoint shown in connection snippets/UI. NEVER fetched — the
  * ApiClient talks to the SPA's own origin via the relative bases below (same
@@ -54,12 +52,4 @@ export function fmtTime(ts: number): string {
 
 export function fmtTokens(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1).replace(/\.0$/, '')}k` : String(n);
-}
-
-/** Formats from the request's own snapshot fields — never the mutable catalog,
- * so rows from providers outside the bundled catalog render fine. */
-export function fmtCost(r: RoutedRequest): string {
-  if (r.tag === 'local') return 'free';
-  if (r.tag === 'sub') return '$0.00';
-  return `$${r.cost.toFixed(4)}`;
 }

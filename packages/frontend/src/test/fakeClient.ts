@@ -3,7 +3,11 @@ import type {
   ActionResult,
   AgentDto,
   AgentReveal,
+  AnalyticsRangeParams,
+  AnalyticsSummary,
   ApiClient,
+  BreakdownDimension,
+  BreakdownRow,
   ChatCompletion,
   CreateProviderInput,
   LoginConfig,
@@ -11,9 +15,15 @@ import type {
   ModelPricingInput,
   ProviderDto,
   ProxyTestBody,
+  RequestRow,
+  RequestsPage,
+  RequestsQuery,
+  RequestStatus,
   SessionInfo,
   TierDto,
   TierEntryDto,
+  TimeseriesBucket,
+  TimeseriesPoint,
   UpdateProviderInput,
 } from '../data/api';
 
@@ -33,6 +43,131 @@ export const DEFAULT_LOGIN_CONFIG: LoginConfig = {
 
 const NOW = '2026-07-15T00:00:00.000Z';
 
+export const DEFAULT_SUMMARY: AnalyticsSummary = {
+  spend: 12.5,
+  requests: 30,
+  inputTokens: 120_000,
+  outputTokens: 45_000,
+  cacheReadTokens: 3_000,
+  cacheWriteTokens: 1_500,
+  successCount: 24,
+  fallbackCount: 4,
+  errorCount: 2,
+  escalatedCount: 6,
+  estimatedCount: 3,
+  freeRequests: 8,
+  paidRequests: 20,
+  unpricedRequests: 2,
+};
+
+export const DEFAULT_TIMESERIES: TimeseriesPoint[] = [
+  {
+    bucket: '2026-07-15T00:00:00.000Z',
+    requests: 5,
+    spend: 2,
+    inputTokens: 20_000,
+    outputTokens: 8_000,
+    errorCount: 0,
+    fallbackCount: 1,
+    escalatedCount: 1,
+  },
+  {
+    bucket: '2026-07-15T01:00:00.000Z',
+    requests: 8,
+    spend: 3.5,
+    inputTokens: 32_000,
+    outputTokens: 12_000,
+    errorCount: 1,
+    fallbackCount: 0,
+    escalatedCount: 2,
+  },
+  {
+    bucket: '2026-07-15T02:00:00.000Z',
+    requests: 6,
+    spend: 2.4,
+    inputTokens: 24_000,
+    outputTokens: 9_000,
+    errorCount: 0,
+    fallbackCount: 2,
+    escalatedCount: 1,
+  },
+  {
+    bucket: '2026-07-15T03:00:00.000Z',
+    requests: 11,
+    spend: 4.6,
+    inputTokens: 44_000,
+    outputTokens: 16_000,
+    errorCount: 1,
+    fallbackCount: 1,
+    escalatedCount: 2,
+  },
+];
+
+function defaultBreakdown(): Record<BreakdownDimension, BreakdownRow[]> {
+  return {
+    model: [
+      { key: 'model-0', label: 'Model 0', spend: 6.2, requests: 12 },
+      { key: 'model-1', label: 'Model 1', spend: 3.1, requests: 8 },
+      { key: 'model-2', label: 'Model 2', spend: 1.9, requests: 6 },
+    ],
+    provider: [
+      { key: 'prov-0', label: 'Provider 0', spend: 7.4, requests: 16 },
+      { key: 'prov-1', label: 'Provider 1', spend: 5.1, requests: 14 },
+    ],
+    agent: [
+      { key: 'agent-0', label: 'agent-0', spend: 5.0, requests: 11 },
+      { key: 'agent-1', label: 'agent-1', spend: 4.2, requests: 10 },
+      { key: '', label: null, spend: 3.3, requests: 9 },
+    ],
+    tier: [{ key: 'default', label: 'default', spend: 12.5, requests: 30 }],
+  };
+}
+
+/** A deterministic corpus (newest-first by `createdAt`) with a spread of layers,
+ * statuses, escalation, estimated usage, null costs and price snapshots — enough
+ * to exercise pagination + server-side filtering + the inspector's distinctions. */
+export function buildRequestRows(n: number): RequestRow[] {
+  const layers = ['explicit', 'header', 'default', 'structural', 'cascade'];
+  const statuses: RequestStatus[] = ['success', 'success', 'fallback', 'error'];
+  const base = Date.parse(NOW);
+  const rows: RequestRow[] = [];
+  for (let i = 0; i < n; i += 1) {
+    const layer = layers[i % layers.length] ?? 'explicit';
+    const status = statuses[i % statuses.length] ?? 'success';
+    const unpriced = i % 6 === 0;
+    const free = !unpriced && i % 5 === 0;
+    rows.push({
+      id: `req-${String(i).padStart(3, '0')}`,
+      createdAt: new Date(base - i * 60_000).toISOString(),
+      agentId: `agent-${String(i % 3)}`,
+      providerId: `prov-${String(i % 2)}`,
+      modelId: `model-${String(i % 4)}`,
+      tierAssigned: i % 5 === 0 ? null : 'default',
+      decisionLayer: layer,
+      routingReason: `reason for ${layer} #${String(i)}`,
+      status,
+      escalated: layer === 'cascade',
+      inputTokens: 100 + i * 3,
+      outputTokens: 40 + i,
+      cacheReadTokens: i % 4 === 0 ? null : i,
+      cacheWriteTokens: i % 3 === 0 ? null : i * 2,
+      inputPriceSnapshot: unpriced ? null : free ? 0 : 1.5,
+      outputPriceSnapshot: unpriced ? null : free ? 0 : 6,
+      cacheReadPriceSnapshot: i % 4 === 0 ? null : 0.3,
+      cacheWritePriceSnapshot: i % 3 === 0 ? null : 0.6,
+      cost: unpriced ? null : free ? 0 : 0.001 * (i + 1),
+      attemptCostMicros: i % 7 === 0 ? 250 : 0,
+      durationMs: 500 + i * 10,
+      usageEstimated: i % 8 === 0,
+      qualitySignal: i % 3 === 0 ? null : 0.7,
+      modelLabel: `Model ${String(i % 4)}`,
+      providerLabel: `Provider ${String(i % 2)}`,
+      agentLabel: `agent-${String(i % 3)}`,
+    });
+  }
+  return rows;
+}
+
 export interface FakeOptions {
   session?: SessionInfo | null;
   meFailure?: ApiError | null;
@@ -45,6 +180,12 @@ export interface FakeOptions {
   syncResult?: ActionResult;
   proxyResult?: ChatCompletion;
   proxyFailure?: ApiError | null;
+  summary?: AnalyticsSummary;
+  timeseries?: TimeseriesPoint[];
+  breakdown?: Record<BreakdownDimension, BreakdownRow[]>;
+  requestRows?: RequestRow[];
+  /** When set, every analytics read rejects (exercise the error/retry states). */
+  analyticsFailure?: ApiError | null;
 }
 
 function okResult(synced?: number): ActionResult {
@@ -87,6 +228,11 @@ export class FakeApiClient implements ApiClient {
   syncResult: ActionResult;
   proxyResult: ChatCompletion;
   proxyFailure: ApiError | null;
+  summaryResult: AnalyticsSummary;
+  timeseriesResult: TimeseriesPoint[];
+  breakdownResult: Record<BreakdownDimension, BreakdownRow[]>;
+  requestRows: RequestRow[];
+  analyticsFailure: ApiError | null;
 
   private seq = 0;
 
@@ -114,6 +260,11 @@ export class FakeApiClient implements ApiClient {
       choices: [{ message: { role: 'assistant', content: 'routing works' } }],
     };
     this.proxyFailure = opts.proxyFailure ?? null;
+    this.summaryResult = opts.summary ?? DEFAULT_SUMMARY;
+    this.timeseriesResult = opts.timeseries ?? DEFAULT_TIMESERIES;
+    this.breakdownResult = opts.breakdown ?? defaultBreakdown();
+    this.requestRows = opts.requestRows ?? buildRequestRows(30);
+    this.analyticsFailure = opts.analyticsFailure ?? null;
   }
 
   private record(method: string, ...args: unknown[]): void {
@@ -315,5 +466,49 @@ export class FakeApiClient implements ApiClient {
     this.record('proxyTest', agentKey, body);
     if (this.proxyFailure) return Promise.reject(this.proxyFailure);
     return Promise.resolve(this.proxyResult);
+  }
+
+  summary(range: AnalyticsRangeParams): Promise<AnalyticsSummary> {
+    this.record('summary', range);
+    if (this.analyticsFailure) return Promise.reject(this.analyticsFailure);
+    return Promise.resolve(this.summaryResult);
+  }
+
+  timeseries(range: AnalyticsRangeParams, bucket: TimeseriesBucket): Promise<TimeseriesPoint[]> {
+    this.record('timeseries', range, bucket);
+    if (this.analyticsFailure) return Promise.reject(this.analyticsFailure);
+    return Promise.resolve([...this.timeseriesResult]);
+  }
+
+  breakdown(
+    dimension: BreakdownDimension,
+    range: AnalyticsRangeParams,
+    limit?: number,
+  ): Promise<BreakdownRow[]> {
+    this.record('breakdown', dimension, range, limit);
+    if (this.analyticsFailure) return Promise.reject(this.analyticsFailure);
+    return Promise.resolve((this.breakdownResult[dimension] ?? []).slice(0, limit ?? 10));
+  }
+
+  /** Honors the frozen `cursor` + server-side `status`/`escalated`/`decisionLayers`
+   * so pagination + filtering are testable. `nextCursor` is the last row's id when
+   * more rows remain; the next page starts strictly after it (no dupes/skips). */
+  requests(query: RequestsQuery): Promise<RequestsPage> {
+    this.record('requests', query);
+    if (this.analyticsFailure) return Promise.reject(this.analyticsFailure);
+    let rows = this.requestRows;
+    if (query.status !== undefined) rows = rows.filter((r) => r.status === query.status);
+    if (query.escalated !== undefined) rows = rows.filter((r) => r.escalated === query.escalated);
+    if (query.decisionLayers !== undefined) {
+      const layers = query.decisionLayers;
+      rows = rows.filter((r) => layers.includes(r.decisionLayer));
+    }
+    const startIdx =
+      query.cursor !== undefined ? rows.findIndex((r) => r.id === query.cursor) + 1 : 0;
+    const limit = query.limit ?? 50;
+    const page = rows.slice(startIdx, startIdx + limit);
+    const last = page[page.length - 1];
+    const nextCursor = startIdx + limit < rows.length && last !== undefined ? last.id : null;
+    return Promise.resolve({ rows: page, nextCursor });
   }
 }

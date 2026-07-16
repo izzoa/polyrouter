@@ -350,8 +350,8 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
         lt(requestLogs.createdAt, query.to),
       ];
       if (query.status !== undefined) conds.push(eq(requestLogs.status, query.status));
-      if (query.decisionLayer !== undefined)
-        conds.push(eq(requestLogs.decisionLayer, query.decisionLayer));
+      if (query.decisionLayers !== undefined && query.decisionLayers.length > 0)
+        conds.push(inArray(requestLogs.decisionLayer, query.decisionLayers));
       if (query.escalated !== undefined) conds.push(eq(requestLogs.escalated, query.escalated));
       if (query.cursor !== undefined) {
         conds.push(

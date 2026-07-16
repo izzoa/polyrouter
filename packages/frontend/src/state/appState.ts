@@ -1,25 +1,23 @@
 import { connectionSnippet, isHarnessType, type HarnessType } from '@polyrouter/shared';
 import { createStore, produce, type SetStoreFunction } from 'solid-js/store';
-import { BASE_URL } from '../data/catalog';
+import { filterToRequestParams } from '../data/analytics';
 import {
   isApiError,
   realClient,
   type AgentDto,
+  type AnalyticsSummary,
   type ApiClient,
   type ApiProviderKind,
+  type BreakdownRow,
   type CreateProviderInput,
   type ModelPricingInput,
   type ProviderDto,
+  type RequestRow,
+  type TimeseriesPoint,
 } from '../data/api';
-import {
-  SEED_CHANNELS,
-  SEED_CHART,
-  SEED_LIMITS,
-  SEED_RULES,
-  SEED_STATS,
-  SEED_TIERS,
-} from '../data/seed';
-import { generateRequest, seedRequests } from '../data/simulator';
+import { BASE_URL } from '../data/catalog';
+import { rangeToParams } from '../data/range';
+import { SEED_CHANNELS, SEED_LIMITS, SEED_RULES, SEED_TIERS } from '../data/seed';
 import type {
   Agent,
   AuthView,
@@ -40,12 +38,23 @@ import type {
   ProviderStatus,
   Range,
   RequestFilter,
-  RoutedRequest,
   SessionInfo,
-  Stats,
   Theme,
   Tier,
 } from '../types';
+
+/** Rows fetched per page of the requests list / "Load more". */
+const REQUEST_PAGE_SIZE = 25;
+/** Cost breakdown dimensions the dashboard renders (the tier dimension is unused). */
+type CostDimension = 'model' | 'provider' | 'agent';
+
+/** Frozen window for the requests list — appends reuse it so a moving clock never
+ * shifts the range and skips/duplicates boundary rows. */
+export interface RequestWindow {
+  from: string;
+  to: string;
+  filter: RequestFilter;
+}
 
 export interface AppState {
   // chrome / navigation
@@ -77,10 +86,28 @@ export interface AppState {
   /** Transient key-reveal — raw key/snippet live here ONLY, never persisted. */
   kr: { title: string; key: string; snippet: string; harness: Harness };
 
-  // still-simulated slices (deferred pages: overview/requests/costs/routing/limits/notifications)
-  requests: RoutedRequest[];
-  stats: Stats;
-  chart: number[];
+  // Observe (analytics) slices — fetched from /api/analytics (#17). Each carries
+  // loading + error; a per-shared-slice `generation` guard discards stale replies.
+  analyticsSummary: AnalyticsSummary | null;
+  analyticsSummaryLoading: boolean;
+  analyticsSummaryError: string | null;
+  analyticsSeries: TimeseriesPoint[];
+  analyticsSeriesLoading: boolean;
+  analyticsSeriesError: string | null;
+  analyticsBreakdown: { model: BreakdownRow[]; provider: BreakdownRow[]; agent: BreakdownRow[] };
+  analyticsBreakdownLoading: boolean;
+  analyticsBreakdownError: string | null;
+  /** Overview's unfiltered first-6 — independent of the Requests page's window. */
+  recentRequests: RequestRow[];
+  recentRequestsLoading: boolean;
+  recentRequestsError: string | null;
+  requestList: RequestRow[];
+  requestListLoading: boolean;
+  requestListError: string | null;
+  requestCursor: string | null;
+  requestWindow: RequestWindow | null;
+
+  // still-simulated slices (deferred config pages #20: routing/limits/notifications)
   tiers: Tier[];
   autoLayers: { structural: boolean; cascade: boolean; semantic: boolean };
   rules: HeaderRule[];
@@ -281,9 +308,23 @@ function initialState(): AppState {
     np: { ...emptyProviderForm(), busy: false, error: null },
     kr: emptyKeyReveal(),
 
-    requests: seedRequests(26),
-    stats: { ...SEED_STATS },
-    chart: [...SEED_CHART],
+    analyticsSummary: null,
+    analyticsSummaryLoading: false,
+    analyticsSummaryError: null,
+    analyticsSeries: [],
+    analyticsSeriesLoading: false,
+    analyticsSeriesError: null,
+    analyticsBreakdown: { model: [], provider: [], agent: [] },
+    analyticsBreakdownLoading: false,
+    analyticsBreakdownError: null,
+    recentRequests: [],
+    recentRequestsLoading: false,
+    recentRequestsError: null,
+    requestList: [],
+    requestListLoading: false,
+    requestListError: null,
+    requestCursor: null,
+    requestWindow: null,
     tiers: SEED_TIERS.map((t) => ({ ...t, chain: [...t.chain] })),
     autoLayers: { structural: true, cascade: true, semantic: false },
     rules: SEED_RULES.map((r) => ({ ...r })),
@@ -308,8 +349,11 @@ export interface AppStore {
   say: (msg: string) => void;
   clearToast: () => void;
   copy: (txt: string, msg?: string) => void;
-  // live feed (simulated)
-  pushLiveRequest: () => void;
+  // observe (analytics, realized)
+  loadOverview: () => Promise<void>;
+  loadCosts: () => Promise<void>;
+  loadRecentRequests: () => Promise<void>;
+  loadRequests: (reset: boolean) => Promise<void>;
   // auth / account
   bootstrap: () => Promise<void>;
   retry: () => Promise<void>;
@@ -401,6 +445,163 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     }
   };
 
+  // --- observe (analytics) loaders ---
+
+  // A monotonic generation PER SHARED mutable slice: whichever loader writes a
+  // slice bumps its counter and applies its response only if still current, so a
+  // stale (old-range) reply can't overwrite newer state — last-writer-wins across
+  // pages (loadOverview/loadCosts share `summary` + the model breakdown).
+  const generation = { summary: 0, series: 0, breakdown: 0, recent: 0, requests: 0 };
+  type SliceKey = keyof typeof generation;
+  const bump = (key: SliceKey): number => (generation[key] += 1);
+  const isCurrent = (key: SliceKey, token: number): boolean => generation[key] === token;
+
+  /** Run a single-slice fetch with loading/error + the stale-response guard. */
+  async function runSlice<T>(
+    key: SliceKey,
+    setLoading: (v: boolean) => void,
+    setError: (v: string | null) => void,
+    fetchFn: () => Promise<T>,
+    apply: (data: T) => void,
+  ): Promise<void> {
+    const token = bump(key);
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await fetchFn();
+      if (!isCurrent(key, token)) return;
+      apply(data);
+    } catch (e) {
+      if (!isCurrent(key, token)) return;
+      setError(errMessage(e));
+    } finally {
+      if (isCurrent(key, token)) setLoading(false);
+    }
+  }
+
+  const currentRange = (): { from: string; to: string; bucket: 'hour' | 'day' } =>
+    rangeToParams(state.range, Date.now());
+
+  const loadSummary = (range: { from: string; to: string }): Promise<void> =>
+    runSlice(
+      'summary',
+      (v) => setState('analyticsSummaryLoading', v),
+      (v) => setState('analyticsSummaryError', v),
+      () => client.summary(range),
+      (data) => setState('analyticsSummary', data),
+    );
+
+  // The breakdowns are one shared slice (Overview loads `model`; Costs loads all
+  // three) — one generation so a stale reply is discarded wholesale.
+  const loadBreakdowns = async (dims: CostDimension[]): Promise<void> => {
+    const { from, to } = currentRange();
+    const range = { from, to };
+    const token = bump('breakdown');
+    setState({ analyticsBreakdownLoading: true, analyticsBreakdownError: null });
+    try {
+      const results = await Promise.all(dims.map((d) => client.breakdown(d, range)));
+      if (!isCurrent('breakdown', token)) return;
+      setState(
+        produce((s) => {
+          dims.forEach((d, i) => {
+            s.analyticsBreakdown[d] = results[i] ?? [];
+          });
+        }),
+      );
+    } catch (e) {
+      if (!isCurrent('breakdown', token)) return;
+      setState('analyticsBreakdownError', errMessage(e));
+    } finally {
+      if (isCurrent('breakdown', token)) setState('analyticsBreakdownLoading', false);
+    }
+  };
+
+  const loadRecentRequests = async (): Promise<void> => {
+    const { from, to } = currentRange();
+    await runSlice(
+      'recent',
+      (v) => setState('recentRequestsLoading', v),
+      (v) => setState('recentRequestsError', v),
+      () => client.requests({ from, to, limit: 6 }),
+      (page) => setState('recentRequests', page.rows),
+    );
+  };
+
+  const loadOverview = async (): Promise<void> => {
+    const { from, to, bucket } = currentRange();
+    const range = { from, to };
+    await Promise.all([
+      loadSummary(range),
+      runSlice(
+        'series',
+        (v) => setState('analyticsSeriesLoading', v),
+        (v) => setState('analyticsSeriesError', v),
+        () => client.timeseries(range, bucket),
+        (data) => setState('analyticsSeries', data),
+      ),
+      loadBreakdowns(['model']),
+      loadRecentRequests(),
+    ]);
+  };
+
+  const loadCosts = async (): Promise<void> => {
+    const { from, to } = currentRange();
+    await Promise.all([loadSummary({ from, to }), loadBreakdowns(['model', 'provider', 'agent'])]);
+  };
+
+  // On `reset` FREEZE {from,to}+filter into `requestWindow` and fetch page 1; on
+  // append reuse the frozen window + cursor (never re-derive the range from the
+  // clock). Window/list/cursor update atomically on success, so a failed reset
+  // keeps the last-good page consistent with its cursor.
+  const loadRequests = async (reset: boolean): Promise<void> => {
+    if (!reset && (state.requestWindow === null || state.requestCursor === null)) return;
+    const token = bump('requests');
+    setState({ requestListLoading: true, requestListError: null });
+    try {
+      if (reset) {
+        const { from, to } = currentRange();
+        const window: RequestWindow = { from, to, filter: state.reqFilter };
+        const page = await client.requests({
+          from,
+          to,
+          limit: REQUEST_PAGE_SIZE,
+          ...filterToRequestParams(window.filter),
+        });
+        if (!isCurrent('requests', token)) return;
+        setState(
+          produce((s) => {
+            s.requestWindow = window;
+            s.requestList = page.rows;
+            s.requestCursor = page.nextCursor;
+          }),
+        );
+      } else {
+        const window = state.requestWindow;
+        const cursor = state.requestCursor;
+        if (window === null || cursor === null) return;
+        const page = await client.requests({
+          from: window.from,
+          to: window.to,
+          limit: REQUEST_PAGE_SIZE,
+          cursor,
+          ...filterToRequestParams(window.filter),
+        });
+        if (!isCurrent('requests', token)) return;
+        setState(
+          produce((s) => {
+            s.requestList = [...s.requestList, ...page.rows];
+            s.requestCursor = page.nextCursor;
+          }),
+        );
+      }
+    } catch (e) {
+      if (!isCurrent('requests', token)) return;
+      setState('requestListError', errMessage(e));
+    } finally {
+      if (isCurrent('requests', token)) setState('requestListLoading', false);
+    }
+  };
+
   // --- auth bootstrap / gate ---
 
   const bootstrap = async (): Promise<void> => {
@@ -457,7 +658,10 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       setState('theme', theme);
     },
     setRange: (range) => setState('range', range),
-    setFilter: (reqFilter) => setState('reqFilter', reqFilter),
+    setFilter: (reqFilter) => {
+      setState('reqFilter', reqFilter);
+      void loadRequests(true);
+    },
     select: (id) => setState('selId', id),
     say,
     clearToast: () => {
@@ -466,22 +670,10 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     },
     copy,
 
-    pushLiveRequest: () => {
-      const r = generateRequest(Date.now());
-      setState(
-        produce((s) => {
-          s.requests = [r, ...s.requests].slice(0, 40);
-          const last = s.chart.length - 1;
-          s.chart[last] = Math.min(98, (s.chart[last] ?? 0) + 1);
-          s.stats.spend += r.cost;
-          s.stats.reqs += 1;
-          s.stats.tin += r.tin;
-          s.stats.tout += r.tout;
-          if (r.status === 'fallback') s.stats.fb += 1;
-          if (r.escalated) s.stats.esc += 1;
-        }),
-      );
-    },
+    loadOverview,
+    loadCosts,
+    loadRecentRequests,
+    loadRequests,
 
     bootstrap,
     retry: bootstrap,

@@ -48,6 +48,7 @@ interface LogSeed {
   modelId?: string | null;
   providerId?: string | null;
   tier?: string | null;
+  layer?: string;
   cost: number | null;
   tin?: number;
   tout?: number;
@@ -94,7 +95,7 @@ describe('analytics API (#17)', () => {
         (id, owner_user_id, agent_id, provider_id, model_id, tier_assigned, decision_layer,
          routing_reason, input_tokens, output_tokens, usage_estimated, cost, duration_ms, status,
          escalated, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,'default','test',$7,$8,$9,$10,1,$11,$12,$13)`,
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'test',$8,$9,$10,$11,1,$12,$13,$14)`,
       [
         id,
         owner,
@@ -102,6 +103,7 @@ describe('analytics API (#17)', () => {
         s.providerId ?? null,
         s.modelId ?? null,
         s.tier ?? null,
+        s.layer ?? 'default',
         s.tin ?? 0,
         s.tout ?? 0,
         s.estimated ?? false,
@@ -352,6 +354,21 @@ describe('analytics API (#17)', () => {
       (await q('summary', A, { from: '2000-01-01T00:00:00Z', to: '2025-01-01T00:00:00Z' })).status,
     ).toBe(422); // > 400 days
     expect((await q('requests', A, { ...RANGE, cursor: 'not-a-valid-cursor' })).status).toBe(422);
+  });
+
+  it('requests: a multi-value layer filter matches ANY listed layer (server-side); a bad segment is 400', async () => {
+    const c = await mkUser();
+    await seedLog(c, { layer: 'explicit', cost: 1, at: DAY1 });
+    await seedLog(c, { layer: 'header', cost: 1, at: DAY1 });
+    await seedLog(c, { layer: 'default', cost: 1, at: DAY1 });
+    const res = await q('requests', c, { ...RANGE, layer: 'explicit,header', limit: 50 });
+    expect(res.status).toBe(200);
+    const layers = res.body.rows.map((r: { decisionLayer: string }) => r.decisionLayer).sort();
+    expect(layers).toEqual(['explicit', 'header']); // the 'default' row is excluded
+    // an empty / whitespace-only segment is rejected at the DTO (400)
+    expect((await q('requests', c, { ...RANGE, layer: 'explicit,' })).status).toBe(400);
+    expect((await q('requests', c, { ...RANGE, layer: ' , ' })).status).toBe(400);
+    await pool.query('DELETE FROM "user" WHERE id = $1', [c]);
   });
 
   it('the (owner, created_at) index the queries rely on exists', async () => {

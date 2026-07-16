@@ -50,7 +50,7 @@ Env var names, endpoint paths (`/v1/chat/completions`, `/v1/messages`, `/api`), 
 | 16 | `add-spend-limits` | E | 11, 15 | M | ✅ archived 2026-07-16 |
 | 17 | `add-analytics-api` | F | 11 | S | ✅ archived 2026-07-16 |
 | 18 | `add-dashboard-core` | F | 3, 7, 8, 9, 10 | L | ✅ archived 2026-07-16 |
-| 19 | `add-dashboard-analytics` | F | 17, 18 | M | ☐ |
+| 19 | `add-dashboard-analytics` | F | 17, 18 | M | ✅ archived 2026-07-16 |
 | 20 | `add-dashboard-config` | F | 9, 14, 15, 16, 18 | M | ☐ |
 | 21 | `add-observability` | G | 12 | S | ☐ |
 | 22 | `add-packaging` | G | 12, 15, 18 (full value: 13–21) | M | ☐ |
@@ -205,6 +205,7 @@ Stop for human review of the shippable core (spec §14.5, CLAUDE.md). Do **not**
 - **Spec:** §9 (Overview/Requests/Costs), §1 (transparency).
 - **Scope:** uPlot overview (messages over time, spend, tokens, success/fallback/escalation rates, date range); request-log table with the **decision inspector** (`decision_layer` + `routing_reason` — renders whatever layers exist; no dependency on #13); costs breakdowns (by model/provider/agent/tier, top models, free-vs-paid).
 - **DoD (§15):** every request shows tokens, cost, latency, model, and a readable decision layer + reason in the dashboard.
+- **✅ Done (archived 2026-07-16):** shipped as `add-dashboard-analytics` — the three Observe pages (Overview/Costs/Requests) + the routing-decision inspector now render live `/api/analytics` data (the simulator + its "preview" banners are retired). Overview: summary cards (spend + success/fallback/escalation rates) + a **uPlot** requests-per-bucket chart + spend-by-model breakdown + recent requests; Costs: range-relative spend + free/paid/unpriced split + model/provider/agent breakdowns; Requests: keyset-paginated log **over a frozen range window** with server-side filter chips + "Load more"; the inspector shows the verbatim `decision_layer` + `routing_reason` (transparency, invariant 1) + immutable price snapshots (0→"$0 free" vs null→"unpriced") + served/attempt/**total** cost, all rendered from snapshots (invariant 4). Backend: `/api/analytics/requests` gained a **multi-value `layer` filter** (so the grouped chips stay server-side; keyset pagination never yields an empty page). Store uses a per-shared-slice **generation guard** (discards stale responses) + a frozen `requestWindow` (no page skips). New dep `uplot`; simulator retired. Verified: 55 frontend Vitest + 143 control-plane unit + 153 e2e green, build/lint/format clean. Deferred: subscription-vs-API split, zero-filled buckets, a live stream. **Phase F remaining: #20 `add-dashboard-config`.**
 
 ### 20. `add-dashboard-config`
 - **Goal:** Configure: routing, limits, and notification settings UI.

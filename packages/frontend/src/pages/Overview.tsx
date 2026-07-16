@@ -1,132 +1,133 @@
-import { For, Show } from 'solid-js';
+import { createEffect, For, on, onCleanup, onMount, Show } from 'solid-js';
 import { BarRows } from '../components/BarRows';
-import { PreviewBanner } from '../components/PreviewBanner';
+import { Chart } from '../components/Chart';
+import { RangeSelector } from '../components/RangeSelector';
 import { RequestRows, RequestTableHead } from '../components/RequestTable';
-import { SEED_FALLBACK_DOTS, SEED_OVERVIEW_NOTES, SEED_SPEND_BY_MODEL_24H } from '../data/seed';
+import { breakdownToSpend, pct, timeseriesToChart } from '../data/analytics';
 import { useApp } from '../state/context';
-import type { Range } from '../types';
 
-const RANGES: Range[] = ['24h', '7d', '30d'];
+const POLL_MS = 15_000;
 
 export function Overview(props: { live: boolean }) {
   const app = useApp();
   const { state } = app;
-  const chartPts = () => {
-    const max = Math.max(...state.chart);
-    return state.chart.map((v, i) => [
-      Math.round(i * (540 / (state.chart.length - 1))),
-      Math.round(120 - (v / max) * 95),
-    ]);
-  };
-  const line = () =>
-    `M${chartPts()
-      .map((p) => `${String(p[0])},${String(p[1])}`)
-      .join(' L')}`;
+
+  // Load on mount + on range change; poll on a bounded interval (gated by `live`,
+  // cleared on unmount). The requests list is not polled.
+  createEffect(
+    on(
+      () => state.range,
+      () => void app.loadOverview(),
+    ),
+  );
+  onMount(() => {
+    if (!props.live) return;
+    const timer = setInterval(() => void app.loadOverview(), POLL_MS);
+    onCleanup(() => clearInterval(timer));
+  });
+
+  const spend = () => state.analyticsSummary?.spend ?? 0;
+  const reqs = () => state.analyticsSummary?.requests ?? 0;
+  const tin = () => state.analyticsSummary?.inputTokens ?? 0;
+  const tout = () => state.analyticsSummary?.outputTokens ?? 0;
+  const successCount = () => state.analyticsSummary?.successCount ?? 0;
+  const fallbackCount = () => state.analyticsSummary?.fallbackCount ?? 0;
+  const escalatedCount = () => state.analyticsSummary?.escalatedCount ?? 0;
+  const chartData = () => timeseriesToChart(state.analyticsSeries);
+  const errorMsg = () =>
+    state.analyticsSummaryError ??
+    state.analyticsSeriesError ??
+    state.analyticsBreakdownError ??
+    state.recentRequestsError;
 
   return (
     <div style="padding:22px 26px;display:flex;flex-direction:column;gap:14px;max-width:1200px">
-      <PreviewBanner note="Usage, spend and the request feed are simulated until analytics ships. Agents, providers and routing are live." />
-      <div style="display:flex;justify-content:flex-end">
-        <div style="display:flex;background:var(--panel);border:1px solid var(--border);border-radius:7px;padding:2px">
-          <For each={RANGES}>
-            {(rg) => (
-              <div
-                style={{
-                  padding: '4px 12px',
-                  font: `${state.range === rg ? '500' : '400'} 12px 'Geist',sans-serif`,
-                  color: state.range === rg ? 'var(--text)' : 'var(--text3)',
-                  background: state.range === rg ? 'var(--chip)' : 'transparent',
-                  'border-radius': '5px',
-                  cursor: 'pointer',
-                }}
-                onClick={() => app.setRange(rg)}
-              >
-                {rg}
-              </div>
-            )}
-          </For>
-        </div>
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div class="section-title">Overview · {state.range}</div>
+        <RangeSelector />
       </div>
+
+      <Show when={errorMsg()}>
+        {(msg) => (
+          <div style="display:flex;align-items:center;gap:10px;padding:9px 14px;background:var(--red-bg);border:1px solid var(--red);border-radius:8px;font:500 12px 'Geist',sans-serif;color:var(--red)">
+            <span style="flex:1">Couldn’t load analytics — {msg()}</span>
+            <span
+              class="link-accent"
+              style="cursor:pointer;font-weight:600"
+              onClick={() => void app.loadOverview()}
+            >
+              Retry
+            </span>
+          </div>
+        )}
+      </Show>
+
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
         <div class="panel card">
-          <div class="stat-label">Spend</div>
-          <div class="stat-value">${state.stats.spend.toFixed(2)}</div>
-          <div class="stat-sub" style="color:var(--green)">
-            {SEED_OVERVIEW_NOTES.spendVsList}
+          <div class="stat-label">Spend · {state.range}</div>
+          <div class="stat-value">${spend().toFixed(2)}</div>
+          <div class="stat-sub">
+            {state.analyticsSummary?.estimatedCount ?? 0} flagged ~estimated
           </div>
         </div>
         <div class="panel card">
           <div class="stat-label">Requests</div>
-          <div class="stat-value">{state.stats.reqs.toLocaleString()}</div>
-          <div class="stat-sub">{SEED_OVERVIEW_NOTES.requestsTrend}</div>
+          <div class="stat-value">{reqs().toLocaleString()}</div>
+          <div class="stat-sub">
+            {state.analyticsSummaryLoading && state.analyticsSummary === null ? 'loading…' : ' '}
+          </div>
         </div>
         <div class="panel card">
           <div class="stat-label">Tokens</div>
-          <div class="stat-value">{((state.stats.tin + state.stats.tout) / 1e6).toFixed(2)}M</div>
+          <div class="stat-value">{((tin() + tout()) / 1e6).toFixed(2)}M</div>
           <div class="stat-sub">
-            {(state.stats.tin / 1e6).toFixed(2)}M in · {(state.stats.tout / 1e6).toFixed(2)}M out
+            {(tin() / 1e6).toFixed(2)}M in · {(tout() / 1e6).toFixed(2)}M out
           </div>
         </div>
         <div class="panel card">
-          <div class="stat-label">Fallback rate</div>
-          <div class="stat-value">{((state.stats.fb / state.stats.reqs) * 100).toFixed(1)}%</div>
+          <div class="stat-label">Success rate</div>
+          <div class="stat-value">{reqs() === 0 ? '—' : pct(successCount(), reqs())}</div>
           <div class="stat-sub">
-            {state.stats.fb} fired · {state.stats.esc} escalated
+            {reqs() === 0
+              ? 'no requests yet'
+              : `fallback ${pct(fallbackCount(), reqs())} · escalated ${pct(escalatedCount(), reqs())}`}
           </div>
         </div>
       </div>
+
       <div style="display:grid;grid-template-columns:1fr 300px;gap:12px">
         <div class="panel card">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-            <div class="section-title">Requests per hour</div>
-            <div style="display:flex;gap:14px;font:400 11px 'Geist',sans-serif;color:var(--text3)">
-              <span style="display:flex;align-items:center;gap:5px">
-                <span style="width:8px;height:2.5px;background:var(--accent);border-radius:2px" />
-                Routed
-              </span>
-              <span style="display:flex;align-items:center;gap:5px">
-                <span style="width:8px;height:2.5px;background:var(--amber);border-radius:2px" />
-                Fallback
-              </span>
-            </div>
+          <div class="section-title" style="margin-bottom:12px">
+            Requests · {state.range}
           </div>
-          <svg
-            width="100%"
-            height="126"
-            viewBox="0 0 540 126"
-            preserveAspectRatio="none"
-            style="display:block"
+          <Show
+            when={state.analyticsSeries.length > 0}
+            fallback={
+              <div style="height:150px;display:flex;align-items:center;justify-content:center;font:400 12px 'Geist',sans-serif;color:var(--text3)">
+                {state.analyticsSeriesLoading ? 'Loading…' : 'No requests in this range'}
+              </div>
+            }
           >
-            <line x1="0" y1="31" x2="540" y2="31" stroke="var(--border2)" stroke-width="1" />
-            <line x1="0" y1="63" x2="540" y2="63" stroke="var(--border2)" stroke-width="1" />
-            <line x1="0" y1="95" x2="540" y2="95" stroke="var(--border2)" stroke-width="1" />
-            <path d={`${line()} L540,126 L0,126 Z`} fill="var(--accent-bg)" />
-            <path
-              d={line()}
-              fill="none"
-              stroke="var(--accent)"
-              stroke-width="1.8"
-              stroke-linejoin="round"
-            />
-            <For each={SEED_FALLBACK_DOTS}>
-              {(x) => <circle cx={x} cy="116" r="2.2" fill="var(--amber)" />}
-            </For>
-          </svg>
-          <div style="display:flex;justify-content:space-between;font:400 10.5px 'Geist Mono',monospace;color:var(--faint);margin-top:6px">
-            <span>00:00</span>
-            <span>06:00</span>
-            <span>12:00</span>
-            <span>18:00</span>
-            <span>now</span>
-          </div>
+            <Chart data={chartData()} label="requests" height={150} />
+          </Show>
         </div>
         <div class="panel card">
           <div class="section-title" style="margin-bottom:14px">
             Spend by model
           </div>
-          <BarRows data={SEED_SPEND_BY_MODEL_24H} />
+          <Show
+            when={state.analyticsBreakdown.model.length > 0}
+            fallback={
+              <div style="font:400 12px 'Geist',sans-serif;color:var(--text3)">
+                {state.analyticsBreakdownLoading ? 'Loading…' : 'No spend in this range'}
+              </div>
+            }
+          >
+            <BarRows data={breakdownToSpend(state.analyticsBreakdown.model)} />
+          </Show>
         </div>
       </div>
+
       <div
         class="panel"
         style="display:flex;align-items:center;gap:16px;padding:11px 18px;flex-wrap:wrap;border-radius:10px"
@@ -168,19 +169,29 @@ export function Overview(props: { live: boolean }) {
           </For>
         </Show>
       </div>
+
       <div class="panel" style="overflow:hidden;border-radius:10px">
         <div style="display:flex;justify-content:space-between;align-items:center;padding:13px 18px;border-bottom:1px solid var(--border2)">
           <div class="section-title">Recent requests</div>
           <div
             class="link-accent"
-            style="font:400 12px 'Geist',sans-serif"
+            style="font:400 12px 'Geist',sans-serif;cursor:pointer"
             onClick={() => app.go('requests')}
           >
             View all →
           </div>
         </div>
         <RequestTableHead />
-        <RequestRows rows={state.requests.slice(0, 6)} live={props.live} />
+        <Show
+          when={state.recentRequests.length > 0}
+          fallback={
+            <div style="padding:16px 18px;font:400 12px 'Geist',sans-serif;color:var(--text3)">
+              {state.recentRequestsLoading ? 'Loading…' : 'No requests in this range yet.'}
+            </div>
+          }
+        >
+          <RequestRows rows={state.recentRequests} />
+        </Show>
       </div>
     </div>
   );

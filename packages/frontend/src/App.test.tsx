@@ -99,28 +99,24 @@ describe('dashboard shell (auth-gated)', () => {
     }
   });
 
-  it('opens the inspector on a structural request and shows the L1 evidence', async () => {
-    const store = createAppStore(new FakeApiClient());
-    for (let guard = 0; guard < 100; guard++) {
-      if (store.state.requests.some((r) => r.layer === 'structural')) break;
-      store.pushLiveRequest();
-    }
-    const { host, dispose } = mount(store);
+  it('opens the decision inspector on a request row and shows the routing reason', async () => {
+    const { host, store, dispose } = mount();
     try {
       await flush();
       clickByText(host, '.nav-item span', 'Requests');
-      const index = store.state.requests.findIndex((r) => r.layer === 'structural');
-      expect(index).toBeGreaterThanOrEqual(0);
-      const row = host.querySelectorAll<HTMLElement>('.req-row')[index];
-      expect(row).toBeDefined();
+      await flush();
+      const row = host.querySelector<HTMLElement>('.req-row');
+      expect(row).not.toBeNull();
       row?.click();
-      expect(store.state.selId).toBe(store.state.requests[index]?.id);
+      const first = store.state.requestList[0];
+      expect(first).toBeDefined();
+      expect(store.state.selId).toBe(first?.id);
       const drawer = host.querySelector('.drawer');
       expect(drawer).not.toBeNull();
-      expect(drawer?.textContent).toContain('Decision trace');
-      expect(drawer?.textContent).toContain('Structural features (L1)');
-      expect(drawer?.textContent).toContain('price snapshot');
-      expect(drawer?.textContent).toContain('routing decision');
+      expect(drawer?.textContent).toContain('Decision');
+      expect(drawer?.textContent).toContain('Usage & cost');
+      expect(drawer?.textContent).toContain('Timing');
+      if (first) expect(drawer?.textContent).toContain(first.routingReason);
       host.querySelector<HTMLElement>('.overlay')?.click();
       expect(store.state.selId).toBeNull();
     } finally {

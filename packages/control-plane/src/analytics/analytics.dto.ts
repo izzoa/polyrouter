@@ -1,5 +1,19 @@
 import { Transform } from 'class-transformer';
-import { IsBoolean, IsIn, IsInt, IsISO8601, IsOptional, IsString, Max, Min } from 'class-validator';
+import {
+  ArrayMaxSize,
+  ArrayNotEmpty,
+  IsArray,
+  IsBoolean,
+  IsIn,
+  IsInt,
+  IsISO8601,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  Max,
+  MaxLength,
+  Min,
+} from 'class-validator';
 
 export const ANALYTICS_BUCKETS = ['hour', 'day', 'week', 'month'] as const;
 export const ANALYTICS_DIMENSIONS = ['model', 'provider', 'agent', 'tier'] as const;
@@ -10,6 +24,10 @@ const toInt = ({ value }: { value: unknown }): unknown =>
 /** Query-string `'true'`/`'false'` → boolean. */
 const toBool = ({ value }: { value: unknown }): unknown =>
   value === 'true' ? true : value === 'false' ? false : value;
+/** Comma-separated `layer` → trimmed string[]; empty/whitespace segments survive
+ * as `''` so `@IsNotEmpty({ each })` rejects them (400). */
+const toLayers = ({ value }: { value: unknown }): unknown =>
+  typeof value === 'string' ? value.split(',').map((s) => s.trim()) : value;
 
 /** ISO `from`/`to` are DTO-validated (400 on a non-ISO string); the `from < to`
  * + max-window semantics are enforced in the service (422). */
@@ -58,8 +76,14 @@ export class RequestsQueryDto extends RangeQueryDto {
   status?: string;
 
   @IsOptional()
-  @IsString()
-  layer?: string;
+  @Transform(toLayers)
+  @IsArray()
+  @ArrayNotEmpty()
+  @ArrayMaxSize(16)
+  @IsString({ each: true })
+  @IsNotEmpty({ each: true })
+  @MaxLength(64, { each: true })
+  layer?: string[];
 
   @IsOptional()
   @Transform(toBool)

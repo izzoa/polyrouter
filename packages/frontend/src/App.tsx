@@ -1,4 +1,4 @@
-import { Match, onCleanup, onMount, Show, Switch, type ParentProps } from 'solid-js';
+import { Match, onMount, Show, Switch, type ParentProps } from 'solid-js';
 import { Inspector } from './components/Inspector';
 import { Modals } from './components/Modals';
 import { Sidebar } from './components/Sidebar';
@@ -16,10 +16,8 @@ import { Settings } from './pages/Settings';
 import { Setup } from './pages/Setup';
 import { useApp } from './state/context';
 
-const LIVE_FEED_INTERVAL_MS = 4000;
-
 export interface AppProps {
-  /** Disable the simulated live feed (tests). */
+  /** Disable the aggregate-page polling interval (tests). */
   live?: boolean;
 }
 
@@ -37,10 +35,10 @@ function Shell(props: { live: boolean }) {
               <Overview live={props.live} />
             </Match>
             <Match when={state.page === 'requests'}>
-              <Requests live={props.live} />
+              <Requests />
             </Match>
             <Match when={state.page === 'costs'}>
-              <Costs />
+              <Costs live={props.live} />
             </Match>
             <Match when={state.page === 'agents'}>
               <Agents />
@@ -96,10 +94,6 @@ export function App(props: AppProps) {
     }
     // Authorization probe before anything else renders the shell.
     void app.bootstrap();
-    if (live()) {
-      const timer = setInterval(() => app.pushLiveRequest(), LIVE_FEED_INTERVAL_MS);
-      onCleanup(() => clearInterval(timer));
-    }
   });
 
   return (

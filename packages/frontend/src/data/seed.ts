@@ -1,27 +1,9 @@
-import type {
-  Channel,
-  Limit,
-  MonthCostSummary,
-  OverviewNotes,
-  SpendDatum,
-  Stats,
-  Tier,
-} from '../types';
+import type { Channel, Limit, Tier } from '../types';
 
-/** Initial simulated dashboard state, ported from the design prototype. */
-
-export const SEED_STATS: Stats = {
-  spend: 4.12,
-  reqs: 1284,
-  tin: 1.92e6,
-  tout: 0.49e6,
-  fb: 8,
-  esc: 2,
-};
-
-export const SEED_CHART: number[] = [
-  22, 25, 21, 30, 28, 38, 34, 46, 42, 55, 49, 62, 58, 70, 64, 76, 71, 84, 78, 88, 82, 90, 86, 92,
-];
+/** Simulated seeds for the still-deferred config pages (#20: routing/limits/
+ * notifications). The Observe pages (overview/costs/requests) are now real and no
+ * longer read seeds. Pages consume these through the state/data boundary so #20
+ * swaps them without touching JSX. */
 
 export const SEED_TIERS: Tier[] = [
   {
@@ -98,52 +80,3 @@ export const SEED_CHANNELS: Channel[] = [
     testing: false,
   },
 ];
-
-/* Simulated analytics datasets (prototype values). Pages read these through the
- * data boundary so the analytics-api change swaps them without touching JSX. */
-
-export const SEED_SPEND_BY_MODEL_24H: SpendDatum[] = [
-  { n: 'claude-sonnet-4.5', v: 1.86 },
-  { n: 'gpt-5.2-mini', v: 0.94 },
-  { n: 'deepseek-v3.2', v: 0.71 },
-  { n: 'kimi-k2', v: 0.38 },
-  { n: 'llama3.3:70b', v: 0, fv: 0.62, free: true },
-];
-
-export const SEED_COST_BY_MODEL_30D: SpendDatum[] = [
-  { n: 'claude-sonnet-4.5', v: 27.4 },
-  { n: 'gpt-5.2', v: 12.1 },
-  { n: 'gpt-5.2-mini', v: 10.22 },
-  { n: 'deepseek-v3.2', v: 7.94 },
-  { n: 'kimi-k2', v: 3.82 },
-  { n: 'llama3.3:70b', v: 0, fv: 9.1, free: true },
-];
-
-export const SEED_COST_BY_PROVIDER_30D: SpendDatum[] = [
-  { n: 'Anthropic', v: 27.4 },
-  { n: 'OpenAI', v: 22.32 },
-  { n: 'DeepSeek', v: 7.94 },
-  { n: 'Ollama', v: 0, fv: 12, free: true },
-];
-
-export const SEED_COST_BY_AGENT_30D: SpendDatum[] = [
-  { n: 'openclaw', v: 31.2 },
-  { n: 'vscode-continue', v: 19.44 },
-  { n: 'cron-summarizer', v: 6.9 },
-  { n: 'research-notebook', v: 3.94 },
-];
-
-/** Chart x-positions of the simulated fallback events on the Overview chart. */
-export const SEED_FALLBACK_DOTS: number[] = [208, 291, 457];
-
-export const SEED_MONTH_COST_SUMMARY: MonthCostSummary = {
-  spend: 61.48,
-  listPrice: 99.2,
-  estimatedFlagged: 3,
-  splitPct: { free: 23, subscription: 12, api: 65 },
-};
-
-export const SEED_OVERVIEW_NOTES: OverviewNotes = {
-  spendVsList: '38% below list price',
-  requestsTrend: '↑ 12% vs yesterday',
-};

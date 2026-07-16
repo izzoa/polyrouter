@@ -254,7 +254,8 @@ export interface AnalyticsRequestsQuery {
   limit: number;
   cursor?: AnalyticsRequestsCursor;
   status?: string;
-  decisionLayer?: string;
+  /** Match ANY of these decision layers (the dashboard's multi-value chips). */
+  decisionLayers?: string[];
   escalated?: boolean;
 }
 

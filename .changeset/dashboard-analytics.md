@@ -1,0 +1,12 @@
+---
+'@polyrouter/shared': minor
+'@polyrouter/control-plane': minor
+---
+
+Wire the dashboard's Observe pages to the real analytics API (#19, spec §9/§15). The backend gains one small extension — `/api/analytics/requests` now accepts a **multi-value `layer` filter** (comma-separated → `inArray(decision_layer, …)`, validated), so the dashboard's grouped filter chips stay server-side and keyset pagination never yields an empty filtered page. The frontend (private package) is rewired as below. The three Observe pages (Overview, Costs, Requests) and the routing-decision inspector — previously an in-memory simulator behind a "preview — simulated" banner — now render live, tenant-scoped data from `/api/analytics` (#17): summary stat cards (spend + success/fallback/escalation rates), a uPlot requests-per-bucket chart, spend-by-model/provider/agent breakdowns, a free/paid/unpriced split, and a keyset-paginated request log with server-side filter chips and "Load more".
+
+- **New dep:** `uplot` (^1.6) — the first chart library. A single `<Chart>` wrapper isolates uPlot's imperative lifecycle (built on mount, data updates reuse the instance, a theme toggle rebuilds so the CSS-var palette re-applies, the ResizeObserver is disconnected and the instance destroyed on cleanup); x values are epoch seconds.
+- **Store:** the simulated `stats`/`chart`/`requests` slices + the 4s live-feed are replaced by fetched slices (`analyticsSummary`, `analyticsSeries`, `analyticsBreakdown`, `recentRequests`, `requestList`) each with loading/error, a monotonic per-shared-slice generation guard that discards stale responses (last-writer-wins across pages), and a frozen request window so "Load more" never shifts the range and skips/duplicates boundary rows. Aggregate pages poll on a bounded interval (gated by `live`, cleared on unmount); the requests log is not polled.
+- **Inspector:** reworked to the real RequestLog row — the verbatim `decision_layer` + `routing_reason` (transparency, invariant 1), all four immutable price snapshots (a `0` snapshot → "$0 free" vs a `null` snapshot → "unpriced", kept distinct), served + attempt + total cost (`totalCostMicros`, a null served cost → "unpriced", never $0.00), and timing — all rendered from the row's snapshots, never recomputed (invariant 4).
+
+The request simulator is retired. Filter chips are all server-side (the multi-value `layer` param). A subscription-vs-API cost split and zero-filled buckets stay deferred.

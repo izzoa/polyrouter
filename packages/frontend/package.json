@@ -11,7 +11,8 @@
   },
   "dependencies": {
     "@polyrouter/shared": "*",
-    "solid-js": "^1.9.14"
+    "solid-js": "^1.9.14",
+    "uplot": "^1.6.32"
   },
   "devDependencies": {
     "happy-dom": "^20.10.6",

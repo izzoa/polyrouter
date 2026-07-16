@@ -157,6 +157,128 @@ export interface ChatCompletion {
   usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
 }
 
+// --- Analytics (#17 `/api/analytics`) — the safe wire shapes the UI consumes ---
+
+/** ISO `[from, to)` window the analytics reads filter by. */
+export interface AnalyticsRangeParams {
+  from: string;
+  to: string;
+}
+
+export type TimeseriesBucket = 'hour' | 'day' | 'week' | 'month';
+export type BreakdownDimension = 'model' | 'provider' | 'agent' | 'tier';
+/** Served-request status as recorded in the log (fallback/error included). */
+export type RequestStatus = 'success' | 'fallback' | 'error';
+
+/** `GET /summary` — owner-scoped aggregates over the range. `spend` is USD (both
+ * ledgers, µ$-rounded so it reconciles with budgets); free/paid/unpriced classify
+ * served requests by cost 0 / >0 / null. */
+export interface AnalyticsSummary {
+  spend: number;
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  successCount: number;
+  fallbackCount: number;
+  errorCount: number;
+  escalatedCount: number;
+  estimatedCount: number;
+  freeRequests: number;
+  paidRequests: number;
+  unpricedRequests: number;
+}
+
+/** `GET /timeseries` — one point per non-empty bucket, ascending. `bucket` is an
+ * ISO string (UTC-aligned bucket start). */
+export interface TimeseriesPoint {
+  bucket: string;
+  requests: number;
+  spend: number;
+  inputTokens: number;
+  outputTokens: number;
+  errorCount: number;
+  fallbackCount: number;
+  escalatedCount: number;
+}
+
+/** `GET /breakdown` — top-N by spend desc. `key` is the dimension id (`''` for a
+ * null dimension); `label` is the owner-scoped human label (null if deleted). */
+export interface BreakdownRow {
+  key: string;
+  label: string | null;
+  spend: number;
+  requests: number;
+}
+
+/** One `GET /requests` row — #17's safe view EXACTLY (no owner columns). Ids,
+ * labels, tier, cache tokens, cost, quality signal and all four price snapshots
+ * are nullable; `createdAt` is an ISO string; snapshots are $/1M, rendered never
+ * recomputed (invariant 4). */
+export interface RequestRow {
+  id: string;
+  createdAt: string;
+  agentId: string | null;
+  providerId: string | null;
+  modelId: string | null;
+  tierAssigned: string | null;
+  decisionLayer: string;
+  routingReason: string;
+  status: RequestStatus;
+  escalated: boolean;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
+  inputPriceSnapshot: number | null;
+  outputPriceSnapshot: number | null;
+  cacheReadPriceSnapshot: number | null;
+  cacheWritePriceSnapshot: number | null;
+  cost: number | null;
+  attemptCostMicros: number;
+  durationMs: number;
+  usageEstimated: boolean;
+  qualitySignal: number | null;
+  modelLabel: string | null;
+  providerLabel: string | null;
+  agentLabel: string | null;
+}
+
+export interface RequestsPage {
+  rows: RequestRow[];
+  nextCursor: string | null;
+}
+
+/** A `GET /requests` query. `decisionLayers` is sent as a comma-separated `layer`
+ * param (the dashboard's multi-value chips); undefined fields are omitted. */
+export interface RequestsQuery {
+  from: string;
+  to: string;
+  limit?: number;
+  cursor?: string;
+  status?: string;
+  decisionLayers?: string[];
+  escalated?: boolean;
+}
+
+/** Micros-exact total request cost = served `cost` (µ$) + this request's attempt
+ * ledger (µ$). Integer so it reconciles with summary/budget spend. A null served
+ * cost contributes 0 here; the UI distinguishes "unpriced" from `$0.00` upstream. */
+export function totalCostMicros(row: { cost: number | null; attemptCostMicros: number }): number {
+  return Math.round((row.cost ?? 0) * 1_000_000) + row.attemptCostMicros;
+}
+
+/** Format a µ$ integer as a dollar string (per-request precision). */
+export function fmtMicros(micros: number): string {
+  return `$${(micros / 1_000_000).toFixed(4)}`;
+}
+
+/** Owner-scoped label with the documented fallback: label → id → 'unknown'. */
+export function labelOf(label: string | null, id: string | null): string {
+  return label ?? id ?? 'unknown';
+}
+
 export interface ApiClient {
   me(): Promise<SessionInfo>;
   loginConfig(): Promise<LoginConfig>;
@@ -179,6 +301,32 @@ export interface ApiClient {
   listTiers(): Promise<TierDto[]>;
   replaceTierEntries(tierId: string, modelIds: string[]): Promise<TierEntryDto[]>;
   proxyTest(agentKey: string, body: ProxyTestBody): Promise<ChatCompletion>;
+  summary(range: AnalyticsRangeParams): Promise<AnalyticsSummary>;
+  timeseries(range: AnalyticsRangeParams, bucket: TimeseriesBucket): Promise<TimeseriesPoint[]>;
+  breakdown(
+    dimension: BreakdownDimension,
+    range: AnalyticsRangeParams,
+    limit?: number,
+  ): Promise<BreakdownRow[]>;
+  requests(query: RequestsQuery): Promise<RequestsPage>;
+}
+
+/** Build a `?a=b&…` query string, omitting undefined params and joining an array
+ * (`decisionLayers`) as a comma list. Empty string when there is nothing to send. */
+type QueryValue = string | number | boolean | readonly string[] | undefined;
+function queryString(params: Record<string, QueryValue>): string {
+  const sp = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined) continue;
+    if (Array.isArray(value)) {
+      if (value.length === 0) continue;
+      sp.set(key, value.join(','));
+    } else {
+      sp.set(key, String(value));
+    }
+  }
+  const s = sp.toString();
+  return s ? `?${s}` : '';
 }
 
 function pickString(rec: Record<string, unknown>, key: string): string | null {
@@ -291,5 +439,29 @@ export const realClient: ApiClient = {
     http<ChatCompletion>(
       `${PROXY_BASE}/chat/completions`,
       jsonInit('POST', body, { authorization: `Bearer ${agentKey}` }),
+    ),
+  summary: (range) =>
+    http<AnalyticsSummary>(
+      `${API_BASE}/analytics/summary${queryString({ from: range.from, to: range.to })}`,
+    ),
+  timeseries: (range, bucket) =>
+    http<TimeseriesPoint[]>(
+      `${API_BASE}/analytics/timeseries${queryString({ from: range.from, to: range.to, bucket })}`,
+    ),
+  breakdown: (dimension, range, limit) =>
+    http<BreakdownRow[]>(
+      `${API_BASE}/analytics/breakdown${queryString({ dimension, from: range.from, to: range.to, limit })}`,
+    ),
+  requests: (query) =>
+    http<RequestsPage>(
+      `${API_BASE}/analytics/requests${queryString({
+        from: query.from,
+        to: query.to,
+        limit: query.limit,
+        cursor: query.cursor,
+        status: query.status,
+        layer: query.decisionLayers,
+        escalated: query.escalated,
+      })}`,
     ),
 };

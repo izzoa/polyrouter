@@ -24,7 +24,14 @@ export const CATALOG: Record<string, CatalogEntry> = {
 
 export const AGENTS_POOL = ['openclaw', 'vscode-continue', 'cron-summarizer', 'research-notebook'];
 
+/** Display-only endpoint shown in connection snippets/UI. NEVER fetched — the
+ * ApiClient talks to the SPA's own origin via the relative bases below (same
+ * origin in prod, Vite-proxied in dev). */
 export const BASE_URL = 'http://127.0.0.1:3001/v1';
+
+/** Origin-relative bases the real ApiClient calls (spec §4 dev/prod topology). */
+export const API_BASE = '/api';
+export const PROXY_BASE = '/v1';
 
 export function catalogEntry(model: string): CatalogEntry {
   const entry = CATALOG[model];

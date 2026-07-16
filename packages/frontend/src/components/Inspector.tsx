@@ -1,6 +1,6 @@
 import { For, Show } from 'solid-js';
 import { fmtCost, fmtTime } from '../data/catalog';
-import { app } from '../state/appState';
+import { useApp } from '../state/context';
 import type { RoutedRequest, TraceState } from '../types';
 
 /** dot bg / dot border / title color per trace-step state, from the prototype. */
@@ -25,6 +25,7 @@ function snapshotOf(r: RoutedRequest): string {
 }
 
 export function Inspector() {
+  const app = useApp();
   const { state } = app;
   const sel = () => state.requests.find((r) => r.id === state.selId);
 

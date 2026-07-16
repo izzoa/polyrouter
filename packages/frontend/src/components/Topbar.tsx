@@ -1,4 +1,4 @@
-import { app } from '../state/appState';
+import { useApp } from '../state/context';
 import { BASE_URL } from '../data/catalog';
 import type { Page } from '../types';
 
@@ -15,6 +15,7 @@ const TITLES: Record<Page, [string, string]> = {
 };
 
 export function Topbar() {
+  const app = useApp();
   const { state } = app;
   return (
     <div style="flex:none;display:flex;align-items:center;justify-content:space-between;padding:14px 26px;border-bottom:1px solid var(--border);background:var(--bg)">

@@ -1,10 +1,13 @@
 import { For } from 'solid-js';
-import { app } from '../state/appState';
+import { PreviewBanner } from '../components/PreviewBanner';
+import { useApp } from '../state/context';
 
 export function Limits() {
+  const app = useApp();
   const { state } = app;
   return (
     <div style="padding:22px 26px;display:flex;flex-direction:column;gap:14px;max-width:1200px">
+      <PreviewBanner note="Budgets shown here are simulated until the limits change ships." />
       <div style="display:flex;justify-content:space-between;align-items:center">
         <div style="font:400 12.5px 'Geist',sans-serif;color:var(--text3)">
           Spend counters are atomic across instances — a blocked budget stops requests everywhere at

@@ -1,10 +1,8 @@
 import type {
-  Agent,
   Channel,
   Limit,
   MonthCostSummary,
   OverviewNotes,
-  Provider,
   SpendDatum,
   Stats,
   Tier,
@@ -46,102 +44,6 @@ export const SEED_TIERS: Tier[] = [
 export const SEED_RULES = [
   { id: 1, value: 'heavy', target: 'tier heavy' },
   { id: 2, value: 'background', target: 'tier background' },
-];
-
-export const SEED_PROVIDERS: Provider[] = [
-  {
-    id: 'anthropic',
-    name: 'Anthropic',
-    kind: 'API key',
-    status: 'ok',
-    models: 6,
-    reqs: 214,
-    spend: '$1.92',
-  },
-  {
-    id: 'openai',
-    name: 'OpenAI',
-    kind: 'API key',
-    status: 'ok',
-    models: 9,
-    reqs: 517,
-    spend: '$1.31',
-  },
-  {
-    id: 'claude-max',
-    name: 'Claude Max',
-    kind: 'subscription',
-    status: 'ok',
-    models: 3,
-    reqs: 41,
-    spend: '$0.00',
-  },
-  {
-    id: 'deepseek',
-    name: 'DeepSeek',
-    kind: 'API key',
-    status: 'ok',
-    models: 4,
-    reqs: 202,
-    spend: '$0.71',
-  },
-  {
-    id: 'ollama',
-    name: 'Ollama',
-    kind: 'local',
-    status: 'ok',
-    models: 5,
-    reqs: 268,
-    spend: 'free',
-  },
-  {
-    id: 'openrouter',
-    name: 'OpenRouter',
-    kind: 'API key',
-    status: 'warn',
-    models: 42,
-    reqs: 42,
-    spend: '$0.18',
-  },
-];
-
-export const SEED_AGENTS: Agent[] = [
-  {
-    id: 'a1',
-    name: 'openclaw',
-    harness: 'openclaw',
-    prefix: 'poly_k7Jf',
-    reqs: 641,
-    spend: '$2.04',
-    last: '12s ago',
-  },
-  {
-    id: 'a2',
-    name: 'vscode-continue',
-    harness: 'openai_sdk',
-    prefix: 'poly_mQ2x',
-    reqs: 388,
-    spend: '$1.42',
-    last: '2m ago',
-  },
-  {
-    id: 'a3',
-    name: 'cron-summarizer',
-    harness: 'curl',
-    prefix: 'poly_R8na',
-    reqs: 196,
-    spend: '$0.38',
-    last: '31m ago',
-  },
-  {
-    id: 'a4',
-    name: 'research-notebook',
-    harness: 'anthropic_sdk',
-    prefix: 'poly_Zt5c',
-    reqs: 59,
-    spend: '$0.28',
-    last: '3h ago',
-  },
 ];
 
 export const SEED_LIMITS: Limit[] = [

@@ -1,6 +1,6 @@
 import { For, Show } from 'solid-js';
 import { fmtCost, fmtTime, fmtTokens } from '../data/catalog';
-import { app } from '../state/appState';
+import { useApp } from '../state/context';
 import type { DecisionLayer, RoutedRequest } from '../types';
 
 const GRID = '66px 1.5fr 1.1fr 0.8fr 1.1fr 0.9fr 0.7fr 0.6fr 0.8fr';
@@ -29,6 +29,7 @@ export function RequestTableHead() {
 }
 
 export function RequestRow(props: { r: RoutedRequest; animate: boolean }) {
+  const app = useApp();
   const { state } = app;
   const selected = () => state.selId === props.r.id;
   const chip = () => CHIP[props.r.layer];
@@ -106,6 +107,7 @@ export function RequestRow(props: { r: RoutedRequest; animate: boolean }) {
 }
 
 export function RequestRows(props: { rows: RoutedRequest[]; live: boolean }) {
+  const app = useApp();
   const newestId = () => app.state.requests[0]?.id;
   return (
     <For each={props.rows}>

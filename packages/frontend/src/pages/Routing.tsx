@@ -1,6 +1,7 @@
 import { createSignal, For, Show } from 'solid-js';
+import { PreviewBanner } from '../components/PreviewBanner';
 import { CATALOG, catalogEntry, priceOf } from '../data/catalog';
-import { app } from '../state/appState';
+import { useApp } from '../state/context';
 
 interface DragPos {
   ti: number;
@@ -38,11 +39,13 @@ export function posStyle(i: number): [string, string, string] {
 }
 
 export function Routing() {
+  const app = useApp();
   const { state } = app;
   const [drag, setDrag] = createSignal<DragPos | null>(null);
 
   return (
     <div style="padding:22px 26px;display:flex;flex-direction:column;gap:14px;max-width:1200px">
+      <PreviewBanner note="Tiers, fallbacks and auto-layers here are simulated until the routing-config change ships." />
       <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px;align-items:start">
         <div style="display:flex;flex-direction:column;gap:12px">
           <For each={state.tiers}>

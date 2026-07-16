@@ -1,4 +1,4 @@
-import { Match, onCleanup, onMount, Switch } from 'solid-js';
+import { Match, onCleanup, onMount, Show, Switch, type ParentProps } from 'solid-js';
 import { Inspector } from './components/Inspector';
 import { Modals } from './components/Modals';
 import { Sidebar } from './components/Sidebar';
@@ -7,13 +7,14 @@ import { Topbar } from './components/Topbar';
 import { Agents } from './pages/Agents';
 import { Costs } from './pages/Costs';
 import { Limits } from './pages/Limits';
+import { Login } from './pages/Login';
 import { Overview } from './pages/Overview';
 import { Providers } from './pages/Providers';
 import { Requests } from './pages/Requests';
 import { Routing } from './pages/Routing';
 import { Settings } from './pages/Settings';
 import { Setup } from './pages/Setup';
-import { app } from './state/appState';
+import { useApp } from './state/context';
 
 const LIVE_FEED_INTERVAL_MS = 4000;
 
@@ -22,27 +23,9 @@ export interface AppProps {
   live?: boolean;
 }
 
-export function App(props: AppProps) {
+function Shell(props: { live: boolean }) {
+  const app = useApp();
   const { state } = app;
-  const live = () => props.live !== false;
-
-  onMount(() => {
-    let stored: string | null;
-    try {
-      stored = localStorage.getItem('polyrouter-theme');
-    } catch {
-      stored = null;
-    }
-    if (stored === 'dark' || stored === 'light') {
-      document.documentElement.dataset['theme'] = stored;
-      app.setState('theme', stored);
-    }
-    if (live()) {
-      const timer = setInterval(() => app.pushLiveRequest(), LIVE_FEED_INTERVAL_MS);
-      onCleanup(() => clearInterval(timer));
-    }
-  });
-
   return (
     <div style="display:flex;height:100vh;overflow:hidden;background:var(--bg);color:var(--text);font-family:'Geist',sans-serif">
       <Sidebar />
@@ -51,10 +34,10 @@ export function App(props: AppProps) {
         <main style="flex:1;min-height:0;overflow-y:auto">
           <Switch>
             <Match when={state.page === 'overview'}>
-              <Overview live={live()} />
+              <Overview live={props.live} />
             </Match>
             <Match when={state.page === 'requests'}>
-              <Requests live={live()} />
+              <Requests live={props.live} />
             </Match>
             <Match when={state.page === 'costs'}>
               <Costs />
@@ -84,5 +67,69 @@ export function App(props: AppProps) {
       <Modals />
       <Toast />
     </div>
+  );
+}
+
+function CenterFrame(props: ParentProps) {
+  return (
+    <div style="display:flex;align-items:center;justify-content:center;height:100vh;background:var(--bg);color:var(--text);font-family:'Geist',sans-serif">
+      {props.children}
+    </div>
+  );
+}
+
+export function App(props: AppProps) {
+  const app = useApp();
+  const { state } = app;
+  const live = () => props.live !== false;
+
+  onMount(() => {
+    let stored: string | null;
+    try {
+      stored = localStorage.getItem('polyrouter-theme');
+    } catch {
+      stored = null;
+    }
+    if (stored === 'dark' || stored === 'light') {
+      document.documentElement.dataset['theme'] = stored;
+      app.setState('theme', stored);
+    }
+    // Authorization probe before anything else renders the shell.
+    void app.bootstrap();
+    if (live()) {
+      const timer = setInterval(() => app.pushLiveRequest(), LIVE_FEED_INTERVAL_MS);
+      onCleanup(() => clearInterval(timer));
+    }
+  });
+
+  return (
+    <Switch>
+      <Match when={state.authView === 'loading'}>
+        <CenterFrame>
+          <div style="font:400 13px 'Geist',sans-serif;color:var(--text3)">Loading…</div>
+        </CenterFrame>
+      </Match>
+      <Match when={state.authView === 'gate'}>
+        <Login />
+      </Match>
+      <Match when={state.authView === 'error'}>
+        <CenterFrame>
+          <div style="display:flex;flex-direction:column;gap:12px;align-items:center;max-width:360px;text-align:center">
+            <div style="font:600 15px 'Geist',sans-serif">Couldn’t reach the server</div>
+            <Show when={state.authError}>
+              <div style="font:400 12px 'Geist',sans-serif;color:var(--text3)">
+                {state.authError}
+              </div>
+            </Show>
+            <div class="btn-primary" onClick={() => void app.retry()}>
+              Retry
+            </div>
+          </div>
+        </CenterFrame>
+      </Match>
+      <Match when={state.authView === 'ready'}>
+        <Shell live={live()} />
+      </Match>
+    </Switch>
   );
 }

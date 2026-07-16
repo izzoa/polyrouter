@@ -1,10 +1,10 @@
 import { For, Show } from 'solid-js';
 import { HarnessSelect } from '../components/Modals';
-import { catalogEntry, priceOf } from '../data/catalog';
-import { app, PROVIDER_KINDS, snippetFor } from '../state/appState';
-import { posStyle } from './Routing';
+import { PROVIDER_KINDS } from '../state/appState';
+import { useApp } from '../state/context';
 
 export function Setup() {
+  const app = useApp();
   const { state, setState } = app;
   const ob = () => state.ob;
   const steps = () =>
@@ -14,10 +14,10 @@ export function Setup() {
         ['Provider', 2],
         ['Routing', 3],
       ] as const
-    ).map(([label, n], i) => {
+    ).map(([label, n]) => {
       const done = (n === 1 && ob().done1) || (n === 2 && ob().done2);
       const active = ob().step === n;
-      return { n, label, i, done, active };
+      return { n, label, i: n - 1, done, active };
     });
 
   return (
@@ -69,6 +69,7 @@ export function Setup() {
           </For>
         </div>
 
+        {/* Step 1 — mint an agent key */}
         <Show when={ob().step === 1}>
           <div
             class="panel"
@@ -101,24 +102,30 @@ export function Setup() {
                 />
               </div>
             </div>
+            <Show when={ob().error1}>
+              <div style="font:400 11px 'Geist',sans-serif;color:var(--red)">{ob().error1}</div>
+            </Show>
             <Show when={!ob().key}>
               <div
                 class="btn-primary"
                 style="align-self:flex-start;padding:8px 16px"
-                onClick={() => app.obCreateAgent()}
+                onClick={() => void app.obCreateAgent()}
               >
-                Create agent & mint key
+                {ob().busy1 ? 'Minting…' : 'Create agent & mint key'}
               </div>
             </Show>
             <Show when={ob().key}>
               <div style="display:flex;flex-direction:column;gap:10px">
                 <div style="display:flex;align-items:center;gap:10px;padding:10px 13px;background:var(--amber-bg);border-radius:8px">
-                  <span class="mono" style="font:500 12px 'Geist Mono',monospace;color:var(--text)">
+                  <span
+                    class="mono"
+                    style="font:500 12px 'Geist Mono',monospace;color:var(--text);word-break:break-all"
+                  >
                     {ob().key}
                   </span>
                   <span
                     class="link-accent"
-                    style="margin-left:auto;font:500 11.5px 'Geist',sans-serif"
+                    style="margin-left:auto;flex:none;font:500 11.5px 'Geist',sans-serif"
                     onClick={() => app.copy(ob().key, 'Key copied')}
                   >
                     Copy
@@ -127,7 +134,7 @@ export function Setup() {
                 <div style="font:400 11px 'Geist',sans-serif;color:var(--amber)">
                   Shown once — we store only a hash.
                 </div>
-                <div class="snippet-box">{snippetFor(ob().harness, ob().key || 'poly_…')}</div>
+                <div class="snippet-box">{ob().snippet}</div>
                 <div
                   class="btn-primary"
                   style="align-self:flex-start;padding:8px 16px"
@@ -140,6 +147,7 @@ export function Setup() {
           </div>
         </Show>
 
+        {/* Step 2 — connect a provider, sync, assign the first model to `default` */}
         <Show when={ob().step === 2}>
           <div
             class="panel"
@@ -151,8 +159,21 @@ export function Setup() {
               </div>
               <div style="font:400 12.5px 'Geist',sans-serif;color:var(--text3);margin-top:3px;line-height:1.5">
                 Bring what you already pay for. polyrouter never marks up tokens — you pay providers
-                directly.
+                directly. We’ll sync its models and assign the first to your{' '}
+                <span class="mono" style="font-size:11.5px">
+                  default
+                </span>{' '}
+                tier.
               </div>
+            </div>
+            <div>
+              <div class="field-label">Name</div>
+              <input
+                class="input"
+                value={ob().prov.name}
+                placeholder="e.g. OpenAI, mylab-endpoint"
+                onInput={(e) => setState('ob', 'prov', 'name', e.currentTarget.value)}
+              />
             </div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
               <For each={PROVIDER_KINDS}>
@@ -161,15 +182,15 @@ export function Setup() {
                     class="kind-card"
                     style={{
                       padding: '14px 15px',
-                      border: `1px solid ${ob().provPicked === k.id ? 'var(--accent)' : 'var(--border)'}`,
-                      background: ob().provPicked === k.id ? 'var(--accent-bg)' : 'var(--bg)',
+                      border: `1px solid ${ob().prov.kind === k.id ? 'var(--accent)' : 'var(--border)'}`,
+                      background: ob().prov.kind === k.id ? 'var(--accent-bg)' : 'var(--bg)',
                       'border-radius': '10px',
                       cursor: 'pointer',
                       display: 'flex',
                       'flex-direction': 'column',
                       gap: '4px',
                     }}
-                    onClick={() => app.obPickProvider(k.id)}
+                    onClick={() => setState('ob', 'prov', 'kind', k.id)}
                   >
                     <div style="font:500 13px 'Geist',sans-serif;color:var(--text)">{k.name}</div>
                     <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3);line-height:1.45">
@@ -179,24 +200,86 @@ export function Setup() {
                 )}
               </For>
             </div>
-            <Show when={ob().provPicked !== null}>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+              <div>
+                <div class="field-label">Protocol</div>
+                <select
+                  class="select"
+                  value={ob().prov.protocol}
+                  onChange={(e) =>
+                    setState(
+                      'ob',
+                      'prov',
+                      'protocol',
+                      e.currentTarget.value as 'openai_compatible' | 'anthropic_compatible',
+                    )
+                  }
+                >
+                  <option value="openai_compatible">OpenAI-compatible</option>
+                  <option value="anthropic_compatible">Anthropic-compatible</option>
+                </select>
+              </div>
+              <div>
+                <div class="field-label">Base URL</div>
+                <input
+                  class="input mono"
+                  style="font:400 12px 'Geist Mono',monospace"
+                  value={ob().prov.baseUrl}
+                  placeholder={
+                    ob().prov.kind === 'local'
+                      ? 'http://127.0.0.1:11434/v1'
+                      : 'https://api.provider.com/v1'
+                  }
+                  onInput={(e) => setState('ob', 'prov', 'baseUrl', e.currentTarget.value)}
+                />
+              </div>
+            </div>
+            <div>
+              <div class="field-label">
+                Credential{ob().prov.kind === 'local' ? ' (optional)' : ''}
+              </div>
+              <input
+                class="input mono"
+                style="font:400 12px 'Geist Mono',monospace"
+                type="password"
+                value={ob().prov.credential}
+                placeholder="sk-…"
+                onInput={(e) => setState('ob', 'prov', 'credential', e.currentTarget.value)}
+              />
+            </div>
+            <Show when={ob().error2}>
+              <div style="font:400 11px 'Geist',sans-serif;color:var(--red)">{ob().error2}</div>
+            </Show>
+            <Show when={!ob().done2}>
+              <div
+                class="btn-primary"
+                style="align-self:flex-start;padding:8px 16px"
+                onClick={() => void app.obConnectProvider()}
+              >
+                {ob().busy2 ? 'Connecting & syncing…' : 'Connect provider & sync models'}
+              </div>
+            </Show>
+            <Show when={ob().done2}>
               <div style="display:flex;align-items:center;gap:10px;padding:11px 13px;background:var(--green-bg);border-radius:8px;font:400 12px 'Geist',sans-serif;color:var(--text2)">
                 <span style="width:7px;height:7px;border-radius:50%;background:var(--green)" />
-                {ob().provPicked === 'local'
-                  ? 'Ollama found at 127.0.0.1:11434 — 5 models, all free'
-                  : 'Connected — models & bundled prices synced'}
+                Synced —{' '}
+                <span class="mono" style="font-size:11.5px">
+                  {ob().assignedModel}
+                </span>{' '}
+                assigned to the default tier.
               </div>
               <div
                 class="btn-primary"
                 style="align-self:flex-start;padding:8px 16px"
                 onClick={() => app.obGo(3)}
               >
-                Next: routing →
+                Next: verify →
               </div>
             </Show>
           </div>
         </Show>
 
+        {/* Step 3 — verify a real `auto` completion through the proxy */}
         <Show when={ob().step === 3}>
           <div
             class="panel"
@@ -204,55 +287,42 @@ export function Setup() {
           >
             <div>
               <div style="font:600 15px 'Geist',sans-serif;letter-spacing:-.01em">
-                Routing is ready
+                Verify routing
               </div>
               <div style="font:400 12.5px 'Geist',sans-serif;color:var(--text3);margin-top:3px;line-height:1.5">
-                Name a model and it's honored. Send{' '}
-                <span
-                  class="mono"
-                  style="font-size:11.5px;background:var(--chip);padding:1px 5px;border-radius:4px"
-                >
-                  auto
+                We’ll send a real{' '}
+                <span class="mono" style="font-size:11.5px">
+                  model: "auto"
                 </span>{' '}
-                and the default tier below serves it — cheapest first, with fallbacks.
+                request through your new key and show the response — the end-to-end proof.
               </div>
             </div>
-            <div style="border:1px solid var(--border2);border-radius:9px;overflow:hidden">
-              <For each={state.tiers[0]?.chain ?? []}>
-                {(model, i) => {
-                  const c = catalogEntry(model);
-                  return (
-                    <div style="display:flex;align-items:center;gap:12px;padding:9px 14px;border-bottom:1px solid var(--border2);background:var(--bg)">
-                      <span
-                        class="pos-badge"
-                        style={{ background: posStyle(i())[1], color: posStyle(i())[2] }}
-                      >
-                        {posStyle(i())[0]}
-                      </span>
-                      <span
-                        class="mono"
-                        style="font:500 12px 'Geist Mono',monospace;color:var(--text)"
-                      >
-                        {model}
-                      </span>
-                      <span style="font:400 11.5px 'Geist',sans-serif;color:var(--text3)">
-                        {c.p}
-                        {c.tag !== null ? ` · ${c.tag}` : ''}
-                      </span>
-                      <span
-                        class="mono"
-                        style={{
-                          'margin-left': 'auto',
-                          font: "400 11px 'Geist Mono',monospace",
-                          color: c.tag === 'local' ? 'var(--green)' : 'var(--text3)',
-                        }}
-                      >
-                        {priceOf(model)}
-                      </span>
-                    </div>
-                  );
-                }}
-              </For>
+            <Show when={ob().error3}>
+              <div style="font:400 12px 'Geist',sans-serif;color:var(--red);background:var(--red-bg);border-radius:8px;padding:10px 12px;line-height:1.5">
+                {ob().error3}
+              </div>
+            </Show>
+            <Show when={ob().verifyReply}>
+              <div style="display:flex;flex-direction:column;gap:6px;background:var(--green-bg);border-radius:8px;padding:12px 14px">
+                <div style="font:500 11px 'Geist',sans-serif;color:var(--green)">
+                  Routed{ob().verifyModel ? ` → ${ob().verifyModel ?? ''}` : ''}
+                </div>
+                <div style="font:400 12.5px 'Geist',sans-serif;color:var(--text);line-height:1.5;white-space:pre-wrap">
+                  {ob().verifyReply}
+                </div>
+              </div>
+            </Show>
+            <div style="display:flex;gap:8px">
+              <div class="btn-ghost" style="padding:8px 16px" onClick={() => void app.obVerify()}>
+                {ob().busy3
+                  ? 'Sending…'
+                  : ob().verifyReply || ob().error3
+                    ? 'Send again'
+                    : 'Send test request'}
+              </div>
+              <div class="btn-primary" style="padding:8px 16px" onClick={() => app.obFinish()}>
+                Open dashboard
+              </div>
             </div>
             <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3)">
               Tune tiers, fallback order and auto-layers any time under{' '}
@@ -260,13 +330,6 @@ export function Setup() {
                 Routing
               </span>
               .
-            </div>
-            <div
-              class="btn-primary"
-              style="align-self:flex-start;padding:8px 16px"
-              onClick={() => app.obFinish()}
-            >
-              Open dashboard
             </div>
           </div>
         </Show>

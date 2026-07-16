@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { DataPlaneModule } from '@polyrouter/data-plane';
+import { AccountModule } from './account/account.module';
 import { AgentsController } from './agents/agents.controller';
 import { AuthModule } from './auth/auth.module';
 import { BudgetsModule } from './budgets/budgets.module';
@@ -30,6 +31,7 @@ import { RoutingConfigModule } from './routing-config/routing-config.module';
     NotificationsModule,
     ProducersModule,
     BudgetsModule,
+    AccountModule,
   ],
   controllers: [HealthController, AgentsController],
   providers: [

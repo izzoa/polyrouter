@@ -1,16 +1,33 @@
-import { render } from 'solid-js/web';
 import { APP_NAME } from '@polyrouter/shared';
+import { render } from 'solid-js/web';
 import { afterEach, describe, expect, it } from 'vitest';
 import { App } from './App';
-import { SEED_TIERS } from './data/seed';
-import { app } from './state/appState';
+import { createAppStore, type AppStore } from './state/appState';
+import { AppProvider } from './state/context';
+import { FakeApiClient } from './test/fakeClient';
 
-function mount(): { host: HTMLElement; dispose: () => void } {
+const flush = async (): Promise<void> => {
+  for (let i = 0; i < 4; i++) await new Promise((r) => setTimeout(r, 0));
+};
+
+function mount(store: AppStore = createAppStore(new FakeApiClient())): {
+  host: HTMLElement;
+  store: AppStore;
+  dispose: () => void;
+} {
   const host = document.createElement('div');
   document.body.appendChild(host);
-  const dispose = render(() => <App live={false} />, host);
+  const dispose = render(
+    () => (
+      <AppProvider store={store}>
+        <App live={false} />
+      </AppProvider>
+    ),
+    host,
+  );
   return {
     host,
+    store,
     dispose: () => {
       dispose();
       host.remove();
@@ -26,28 +43,27 @@ function clickByText(host: HTMLElement, selector: string, text: string): void {
   el.click();
 }
 
-describe('dashboard shell (dashboard-prototype)', () => {
+describe('dashboard shell (auth-gated)', () => {
   afterEach(() => {
-    // The render tests share the process-wide store — restore everything they touch,
-    // including the toast's pending auto-dismiss timer. (Simulated live-feed growth
-    // from pushLiveRequest is deliberately not rolled back: no assertion depends on
-    // request counts, and regenerating seeds would just shuffle random data.)
-    app.clearToast();
     localStorage.clear();
     delete document.documentElement.dataset['theme'];
-    app.setState({
-      page: 'overview',
-      selId: null,
-      modal: null,
-      theme: 'light',
-      reqFilter: 'all',
-      tiers: SEED_TIERS.map((t) => ({ ...t, chain: [...t.chain] })),
-    });
   });
 
-  it('renders the branded shell with all nav items (shared resolves via ESM)', () => {
+  it('shows the login gate when unauthenticated (me 401)', async () => {
+    const { host, dispose } = mount(createAppStore(new FakeApiClient({ session: null })));
+    try {
+      await flush();
+      expect(host.textContent).toContain('Sign in');
+      expect(host.querySelector('nav')).toBeNull();
+    } finally {
+      dispose();
+    }
+  });
+
+  it('renders the branded shell with all nav items once ready', async () => {
     const { host, dispose } = mount();
     try {
+      await flush();
       expect(APP_NAME).toBe('polyrouter');
       expect(host.textContent).toContain(APP_NAME);
       for (const label of [
@@ -68,11 +84,12 @@ describe('dashboard shell (dashboard-prototype)', () => {
     }
   });
 
-  it('navigates between pages from the sidebar', () => {
-    const { host, dispose } = mount();
+  it('navigates between pages from the sidebar', async () => {
+    const { host, store, dispose } = mount();
     try {
+      await flush();
       clickByText(host, '.nav-item span', 'Routing');
-      expect(app.state.page).toBe('routing');
+      expect(store.state.page).toBe('routing');
       expect(host.textContent).toContain('Automatic routing');
       expect(host.textContent).toContain('x-polyrouter-tier');
       clickByText(host, '.nav-item span', 'Settings');
@@ -82,21 +99,22 @@ describe('dashboard shell (dashboard-prototype)', () => {
     }
   });
 
-  it('opens the inspector on a structural request and shows the L1 evidence', () => {
-    // Guarantee a structural request exists (P(none in 26 seeds) is tiny but nonzero).
+  it('opens the inspector on a structural request and shows the L1 evidence', async () => {
+    const store = createAppStore(new FakeApiClient());
     for (let guard = 0; guard < 100; guard++) {
-      if (app.state.requests.some((r) => r.layer === 'structural')) break;
-      app.pushLiveRequest();
+      if (store.state.requests.some((r) => r.layer === 'structural')) break;
+      store.pushLiveRequest();
     }
-    const { host, dispose } = mount();
+    const { host, dispose } = mount(store);
     try {
+      await flush();
       clickByText(host, '.nav-item span', 'Requests');
-      const index = app.state.requests.findIndex((r) => r.layer === 'structural');
+      const index = store.state.requests.findIndex((r) => r.layer === 'structural');
       expect(index).toBeGreaterThanOrEqual(0);
       const row = host.querySelectorAll<HTMLElement>('.req-row')[index];
       expect(row).toBeDefined();
       row?.click();
-      expect(app.state.selId).toBe(app.state.requests[index]?.id);
+      expect(store.state.selId).toBe(store.state.requests[index]?.id);
       const drawer = host.querySelector('.drawer');
       expect(drawer).not.toBeNull();
       expect(drawer?.textContent).toContain('Decision trace');
@@ -104,34 +122,36 @@ describe('dashboard shell (dashboard-prototype)', () => {
       expect(drawer?.textContent).toContain('price snapshot');
       expect(drawer?.textContent).toContain('routing decision');
       host.querySelector<HTMLElement>('.overlay')?.click();
-      expect(app.state.selId).toBeNull();
+      expect(store.state.selId).toBeNull();
     } finally {
       dispose();
     }
   });
 
-  it('toggles the theme, persists it, and re-applies it on a fresh mount', () => {
+  it('toggles the theme, persists it, and re-applies it on a fresh mount', async () => {
     const first = mount();
     try {
+      await flush();
       clickByText(first.host, '.theme-toggle span', 'Switch to dark');
       expect(document.documentElement.dataset['theme']).toBe('dark');
       expect(localStorage.getItem('polyrouter-theme')).toBe('dark');
     } finally {
       first.dispose();
     }
-    // simulate a reload: fresh mount must re-apply the stored theme in onMount
     delete document.documentElement.dataset['theme'];
     const second = mount();
     try {
+      await flush();
       expect(document.documentElement.dataset['theme']).toBe('dark');
     } finally {
       second.dispose();
     }
   });
 
-  it('enforces the 5-model tier cap through the Routing UI with a toast', () => {
+  it('enforces the 5-model tier cap through the Routing UI with a toast', async () => {
     const { host, dispose } = mount();
     try {
+      await flush();
       clickByText(host, '.nav-item span', 'Routing');
       const firstTierCard = host.querySelector<HTMLElement>('.panel');
       expect(firstTierCard).not.toBeNull();
@@ -149,7 +169,7 @@ describe('dashboard shell (dashboard-prototype)', () => {
       addViaSelect();
       addViaSelect();
       expect(rows()).toBe(Math.min(5, start + 2));
-      addViaSelect(); // 6th — must be rejected with the toast
+      addViaSelect();
       expect(rows()).toBe(5);
       expect(host.querySelector('.toast')?.textContent).toBe('Max 5 models per tier');
     } finally {

@@ -59,6 +59,19 @@ export type AuthConfig = {
   DISCORD_CLIENT_SECRET?: string;
 };
 
+export type OauthProvider = 'google' | 'github' | 'discord';
+
+/** The OAuth providers usable for sign-in — one is listed iff BOTH its client id
+ * and secret are set (mirrors better-auth's own conditional wiring). Drives the
+ * dashboard login gate (#18 `GET /api/login-config`); returns no secrets. */
+export function enabledOauthProviders(cfg: AuthConfig): OauthProvider[] {
+  const out: OauthProvider[] = [];
+  if (cfg.GOOGLE_CLIENT_ID && cfg.GOOGLE_CLIENT_SECRET) out.push('google');
+  if (cfg.GITHUB_CLIENT_ID && cfg.GITHUB_CLIENT_SECRET) out.push('github');
+  if (cfg.DISCORD_CLIENT_ID && cfg.DISCORD_CLIENT_SECRET) out.push('discord');
+  return out;
+}
+
 export function isLoopbackAddress(address: string): boolean {
   const host = address.replace(/^::ffff:/, '');
   if (host === 'localhost') return true;

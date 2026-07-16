@@ -1,6 +1,7 @@
 import { HARNESS_LABELS, HARNESS_TYPES } from '@polyrouter/shared';
 import { For, Show } from 'solid-js';
-import { app, PROVIDER_KINDS, snippetFor } from '../state/appState';
+import { PROVIDER_KINDS } from '../state/appState';
+import { useApp } from '../state/context';
 import type { Harness } from '../types';
 
 export function HarnessSelect(props: { value: Harness; onChange: (h: Harness) => void }) {
@@ -16,6 +17,7 @@ export function HarnessSelect(props: { value: Harness; onChange: (h: Harness) =>
 }
 
 export function Modals() {
+  const app = useApp();
   const { state, setState } = app;
   const npKind = () => PROVIDER_KINDS.find((k) => k.id === state.np.kind);
 
@@ -41,12 +43,15 @@ export function Modals() {
                 onChange={(h) => setState('na', 'harness', h)}
               />
             </div>
+            <Show when={state.na.error}>
+              <div style="font:400 11px 'Geist',sans-serif;color:var(--red)">{state.na.error}</div>
+            </Show>
             <div style="display:flex;gap:8px;justify-content:flex-end">
               <div class="btn-cancel" onClick={() => app.closeModal()}>
                 Cancel
               </div>
-              <div class="btn-primary" onClick={() => app.createAgent()}>
-                Create & mint key
+              <div class="btn-primary" onClick={() => void app.createAgent()}>
+                {state.na.busy ? 'Minting…' : 'Create & mint key'}
               </div>
             </div>
           </Show>
@@ -71,7 +76,7 @@ export function Modals() {
             <div style="font:400 11px 'Geist',sans-serif;color:var(--amber)">
               Shown once — only an HMAC hash is stored. The old key stops working immediately.
             </div>
-            <div class="snippet-box">{snippetFor(state.kr.harness, state.kr.key)}</div>
+            <div class="snippet-box">{state.kr.snippet}</div>
             <div style="display:flex;justify-content:flex-end">
               <div class="btn-primary" onClick={() => app.closeModal()}>
                 Done
@@ -81,85 +86,108 @@ export function Modals() {
 
           <Show when={state.modal === 'newProvider'}>
             <div class="modal-title">Add provider</div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-              <For each={PROVIDER_KINDS}>
-                {(k) => (
-                  <div
-                    class="kind-card"
-                    style={{
-                      padding: '12px 14px',
-                      border: `1px solid ${state.np.kind === k.id ? 'var(--accent)' : 'var(--border)'}`,
-                      background: state.np.kind === k.id ? 'var(--accent-bg)' : 'var(--bg)',
-                      'border-radius': '10px',
-                      cursor: 'pointer',
-                    }}
-                    onClick={() => app.pickProviderKind(k.id)}
-                  >
-                    <div style="font:500 12.5px 'Geist',sans-serif;color:var(--text)">{k.name}</div>
-                    <div style="font:400 11px 'Geist',sans-serif;color:var(--text3);line-height:1.45;margin-top:3px">
-                      {k.desc}
-                    </div>
-                  </div>
-                )}
-              </For>
+            <div>
+              <div class="field-label">Name</div>
+              <input
+                class="input"
+                value={state.np.name}
+                placeholder="e.g. OpenAI, mylab-endpoint"
+                onInput={(e) => setState('np', 'name', e.currentTarget.value)}
+              />
             </div>
-            <Show when={npKind()}>
-              {(kind) => (
-                <div style="display:flex;flex-direction:column;gap:10px">
-                  <div>
-                    <div class="field-label">{kind().field}</div>
-                    <input
-                      class="input mono"
-                      style="font:400 12px 'Geist Mono',monospace"
-                      value={state.np.value}
-                      placeholder={kind().ph}
-                      onInput={(e) => app.setNpValue(e.currentTarget.value)}
-                    />
-                  </div>
-                  <div style="display:flex;align-items:center;gap:10px">
+            <div>
+              <div class="field-label">Kind</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+                <For each={PROVIDER_KINDS}>
+                  {(k) => (
                     <div
-                      class="btn-ghost"
-                      style="padding:6px 13px;font:500 12px 'Geist',sans-serif;border-radius:7px"
-                      onClick={() => app.testProvider()}
-                    >
-                      Test connection
-                    </div>
-                    <span
+                      class="kind-card"
                       style={{
-                        font: "400 11.5px 'Geist',sans-serif",
-                        color: state.np.test === 'ok' ? 'var(--green)' : 'var(--text3)',
+                        padding: '12px 14px',
+                        border: `1px solid ${state.np.kind === k.id ? 'var(--accent)' : 'var(--border)'}`,
+                        background: state.np.kind === k.id ? 'var(--accent-bg)' : 'var(--bg)',
+                        'border-radius': '10px',
+                        cursor: 'pointer',
                       }}
+                      onClick={() => setState('np', 'kind', k.id)}
                     >
-                      {state.np.test === 'testing'
-                        ? 'Testing…'
-                        : state.np.test === 'ok'
-                          ? '✓ Reachable — 12 models found'
-                          : ''}
-                    </span>
-                  </div>
-                  <div style="font:400 10.5px 'Geist',sans-serif;color:var(--faint);line-height:1.5">
-                    Custom base URLs are SSRF-checked — private and metadata ranges are rejected.
-                    Credentials are encrypted at rest.
-                  </div>
-                </div>
-              )}
+                      <div style="font:500 12.5px 'Geist',sans-serif;color:var(--text)">
+                        {k.name}
+                      </div>
+                      <div style="font:400 11px 'Geist',sans-serif;color:var(--text3);line-height:1.45;margin-top:3px">
+                        {k.desc}
+                      </div>
+                    </div>
+                  )}
+                </For>
+              </div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+              <div>
+                <div class="field-label">Protocol</div>
+                <select
+                  class="select"
+                  value={state.np.protocol}
+                  onChange={(e) =>
+                    setState(
+                      'np',
+                      'protocol',
+                      e.currentTarget.value as 'openai_compatible' | 'anthropic_compatible',
+                    )
+                  }
+                >
+                  <option value="openai_compatible">OpenAI-compatible</option>
+                  <option value="anthropic_compatible">Anthropic-compatible</option>
+                </select>
+              </div>
+              <div>
+                <div class="field-label">Base URL</div>
+                <input
+                  class="input mono"
+                  style="font:400 12px 'Geist Mono',monospace"
+                  value={state.np.baseUrl}
+                  placeholder={
+                    npKind()?.id === 'local'
+                      ? 'http://127.0.0.1:11434/v1'
+                      : 'https://api.provider.com/v1'
+                  }
+                  onInput={(e) => setState('np', 'baseUrl', e.currentTarget.value)}
+                />
+              </div>
+            </div>
+            <div>
+              <div class="field-label">
+                {npKind()?.field ?? 'Credential'}
+                {state.np.kind === 'local' ? ' (optional)' : ''}
+              </div>
+              <input
+                class="input mono"
+                style="font:400 12px 'Geist Mono',monospace"
+                type="password"
+                value={state.np.credential}
+                placeholder={npKind()?.ph ?? ''}
+                onInput={(e) => setState('np', 'credential', e.currentTarget.value)}
+              />
+            </div>
+            <Show when={state.np.kind === 'sub'}>
+              <div style="font:400 10.5px 'Geist',sans-serif;color:var(--amber);line-height:1.5">
+                Reusing a flat-rate subscription programmatically may violate the provider’s ToS —
+                pair it with a pay-per-token fallback.
+              </div>
+            </Show>
+            <div style="font:400 10.5px 'Geist',sans-serif;color:var(--faint);line-height:1.5">
+              Custom base URLs are SSRF-checked — private and metadata ranges are rejected.
+              Credentials are encrypted at rest.
+            </div>
+            <Show when={state.np.error}>
+              <div style="font:400 11px 'Geist',sans-serif;color:var(--red)">{state.np.error}</div>
             </Show>
             <div style="display:flex;gap:8px;justify-content:flex-end">
               <div class="btn-cancel" onClick={() => app.closeModal()}>
                 Cancel
               </div>
-              <div
-                style={{
-                  padding: '7px 14px',
-                  background: state.np.test === 'ok' ? 'var(--accent)' : 'var(--faint)',
-                  color: '#fff',
-                  'border-radius': '7px',
-                  font: "500 12.5px 'Geist',sans-serif",
-                  cursor: state.np.test === 'ok' ? 'pointer' : 'not-allowed',
-                }}
-                onClick={() => app.addProvider()}
-              >
-                Add provider
+              <div class="btn-primary" onClick={() => void app.addProvider()}>
+                {state.np.busy ? 'Adding…' : 'Add provider'}
               </div>
             </div>
           </Show>

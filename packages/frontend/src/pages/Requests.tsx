@@ -1,6 +1,7 @@
 import { For } from 'solid-js';
+import { PreviewBanner } from '../components/PreviewBanner';
 import { RequestRows, RequestTableHead } from '../components/RequestTable';
-import { app } from '../state/appState';
+import { useApp } from '../state/context';
 import type { RequestFilter, RoutedRequest } from '../types';
 
 const FILTERS: [RequestFilter, string][] = [
@@ -25,11 +26,13 @@ export function filterRequests(requests: RoutedRequest[], filter: RequestFilter)
 }
 
 export function Requests(props: { live: boolean }) {
+  const app = useApp();
   const { state } = app;
   const filtered = () => filterRequests(state.requests, state.reqFilter);
 
   return (
     <div style="padding:22px 26px;display:flex;flex-direction:column;gap:14px;max-width:1200px">
+      <PreviewBanner note="This request feed is simulated until the request-logging change ships." />
       <div style="display:flex;align-items:center;gap:10px">
         <div style="display:flex;gap:6px">
           <For each={FILTERS}>

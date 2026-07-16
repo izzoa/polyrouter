@@ -1,13 +1,15 @@
-import { For } from 'solid-js';
+import { For, Show } from 'solid-js';
 import { BarRows } from '../components/BarRows';
+import { PreviewBanner } from '../components/PreviewBanner';
 import { RequestRows, RequestTableHead } from '../components/RequestTable';
 import { SEED_FALLBACK_DOTS, SEED_OVERVIEW_NOTES, SEED_SPEND_BY_MODEL_24H } from '../data/seed';
-import { app } from '../state/appState';
+import { useApp } from '../state/context';
 import type { Range } from '../types';
 
 const RANGES: Range[] = ['24h', '7d', '30d'];
 
 export function Overview(props: { live: boolean }) {
+  const app = useApp();
   const { state } = app;
   const chartPts = () => {
     const max = Math.max(...state.chart);
@@ -23,6 +25,7 @@ export function Overview(props: { live: boolean }) {
 
   return (
     <div style="padding:22px 26px;display:flex;flex-direction:column;gap:14px;max-width:1200px">
+      <PreviewBanner note="Usage, spend and the request feed are simulated until analytics ships. Agents, providers and routing are live." />
       <div style="display:flex;justify-content:flex-end">
         <div style="display:flex;background:var(--panel);border:1px solid var(--border);border-radius:7px;padding:2px">
           <For each={RANGES}>
@@ -131,26 +134,39 @@ export function Overview(props: { live: boolean }) {
         <span class="upper-label" style="letter-spacing:.05em">
           Providers
         </span>
-        <For each={state.providers}>
-          {(p) => (
-            <span
-              style="display:flex;align-items:center;gap:6px;font:400 12px 'Geist',sans-serif;color:var(--text2);cursor:pointer"
-              onClick={() => app.go('providers')}
-            >
-              <span
-                style={{
-                  width: '6px',
-                  height: '6px',
-                  'border-radius': '50%',
-                  background: p.status === 'ok' ? 'var(--green)' : 'var(--amber)',
-                }}
-              />
-              {p.name}
-              {p.kind === 'local' ? ' · local' : ''}
-              {p.status === 'warn' ? ' · circuit half-open' : ''}
+        <Show
+          when={state.providers.length > 0}
+          fallback={
+            <span style="font:400 12px 'Geist',sans-serif;color:var(--text3)">
+              None yet — add one under Providers.
             </span>
-          )}
-        </For>
+          }
+        >
+          <For each={state.providers}>
+            {(p) => (
+              <span
+                style="display:flex;align-items:center;gap:6px;font:400 12px 'Geist',sans-serif;color:var(--text2);cursor:pointer"
+                onClick={() => app.go('providers')}
+              >
+                <span
+                  style={{
+                    width: '6px',
+                    height: '6px',
+                    'border-radius': '50%',
+                    background:
+                      p.status === 'ok'
+                        ? 'var(--green)'
+                        : p.status === 'error'
+                          ? 'var(--red)'
+                          : 'var(--faint)',
+                  }}
+                />
+                {p.name}
+                {p.kind === 'local' ? ' · local' : ''}
+              </span>
+            )}
+          </For>
+        </Show>
       </div>
       <div class="panel" style="overflow:hidden;border-radius:10px">
         <div style="display:flex;justify-content:space-between;align-items:center;padding:13px 18px;border-bottom:1px solid var(--border2)">

@@ -2,10 +2,12 @@ import { Transform } from 'class-transformer';
 import {
   IsBoolean,
   IsIn,
+  IsNumber,
   IsOptional,
   IsString,
   IsUrl,
   MaxLength,
+  Min,
   MinLength,
 } from 'class-validator';
 
@@ -87,4 +89,23 @@ export class ListModelsQueryDto {
   @Transform(asBool)
   @IsBoolean()
   supportsVision?: boolean;
+}
+
+/** Set a custom/local model's user-entered prices (#18 §7.7). Primitive shape
+ * only — the paired/free cross-field rule is enforced in the service against the
+ * fields PRESENT in the body (not merged with the existing row). */
+export class UpdateModelPricingDto {
+  @IsOptional()
+  @IsNumber({ allowNaN: false, allowInfinity: false })
+  @Min(0)
+  inputPricePer1m?: number;
+
+  @IsOptional()
+  @IsNumber({ allowNaN: false, allowInfinity: false })
+  @Min(0)
+  outputPricePer1m?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  isFree?: boolean;
 }

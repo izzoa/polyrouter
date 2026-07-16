@@ -24,6 +24,10 @@ export interface IdentityPort {
   findAdminUserId(): Promise<string | null>;
   /** Whether a specific user has the admin role (#8 gates global mutations). */
   isAdmin(userId: string): Promise<boolean>;
+  /** The user's dashboard identity (#18 `GET /api/me`), or null if the row is gone. */
+  getIdentity(
+    userId: string,
+  ): Promise<{ id: string; email: string; name: string; role: string | null } | null>;
   /** Idempotent default-tier provisioning for one user. */
   provisionDefaultTier(userId: string): Promise<void>;
   /** Advisory-locked: provision a default tier for EVERY user missing one — boot reconciliation of crashed post-commit hooks (including later users). */

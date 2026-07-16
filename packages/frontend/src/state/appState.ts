@@ -1,55 +1,95 @@
-import { connectionSnippet, type HarnessType } from '@polyrouter/shared';
+import { connectionSnippet, isHarnessType, type HarnessType } from '@polyrouter/shared';
 import { createStore, produce, type SetStoreFunction } from 'solid-js/store';
 import { BASE_URL } from '../data/catalog';
 import {
-  SEED_AGENTS,
+  isApiError,
+  realClient,
+  type AgentDto,
+  type ApiClient,
+  type ApiProviderKind,
+  type CreateProviderInput,
+  type ModelPricingInput,
+  type ProviderDto,
+} from '../data/api';
+import {
   SEED_CHANNELS,
   SEED_CHART,
   SEED_LIMITS,
-  SEED_PROVIDERS,
   SEED_RULES,
   SEED_STATS,
   SEED_TIERS,
 } from '../data/seed';
-import { generateRequest, mintKey, seedRequests } from '../data/simulator';
+import { generateRequest, seedRequests } from '../data/simulator';
 import type {
+  Agent,
+  AuthView,
+  Channel,
   Harness,
+  HeaderRule,
+  Limit,
   LimitAction,
   LimitWindow,
+  LoginConfig,
+  Model,
   ModalKind,
   OnboardingState,
   Page,
+  Provider,
+  ProviderForm,
   ProviderKindId,
-  RequestFilter,
+  ProviderStatus,
   Range,
+  RequestFilter,
   RoutedRequest,
+  SessionInfo,
+  Stats,
   Theme,
+  Tier,
 } from '../types';
-import type { Agent, Channel, HeaderRule, Limit, Provider, Stats, Tier } from '../types';
 
 export interface AppState {
+  // chrome / navigation
   page: Page;
   theme: Theme;
   range: Range;
   reqFilter: RequestFilter;
-  requests: RoutedRequest[];
   selId: string | null;
   toast: string | null;
+  modal: ModalKind | null;
+
+  // auth / account (realized)
+  authView: AuthView;
+  authError: string | null;
+  authBusy: boolean;
+  session: SessionInfo | null;
+  loginConfig: LoginConfig | null;
+
+  // realized data slices — initialize EMPTY, loaded from the API on `ready`
+  agents: Agent[];
+  agentsError: string | null;
+  providers: Provider[];
+  providersError: string | null;
+  models: Record<string, Model[]>;
+
+  // realized modal/form state
+  na: { name: string; harness: Harness; busy: boolean; error: string | null };
+  np: ProviderForm & { busy: boolean; error: string | null };
+  /** Transient key-reveal — raw key/snippet live here ONLY, never persisted. */
+  kr: { title: string; key: string; snippet: string; harness: Harness };
+
+  // still-simulated slices (deferred pages: overview/requests/costs/routing/limits/notifications)
+  requests: RoutedRequest[];
   stats: Stats;
   chart: number[];
   tiers: Tier[];
   autoLayers: { structural: boolean; cascade: boolean; semantic: boolean };
   rules: HeaderRule[];
-  providers: Provider[];
-  agents: Agent[];
   limits: Limit[];
   channels: Channel[];
   bodyLog: boolean;
-  modal: ModalKind | null;
-  na: { name: string; harness: Harness };
-  kr: { title: string; key: string; harness: Harness };
-  np: { kind: ProviderKindId | null; value: string; test: 'idle' | 'testing' | 'ok' };
   nl: { scope: string; amount: string; window: LimitWindow; action: LimitAction };
+
+  // onboarding (realized, failure-aware)
   ob: OnboardingState;
 }
 
@@ -92,9 +132,127 @@ export const PROVIDER_KINDS: ProviderKindDef[] = [
   },
 ];
 
-/** Delegates to the canonical shared snippet builder (spec §2.1). */
+const UI_TO_API_KIND: Record<ProviderKindId, ApiProviderKind> = {
+  api: 'api_key',
+  sub: 'subscription',
+  custom: 'custom',
+  local: 'local',
+};
+
+/** API provider kind → the prototype's UI kind id. */
+export function apiKindToUi(kind: string): ProviderKindId {
+  return kind === 'api_key'
+    ? 'api'
+    : kind === 'subscription'
+      ? 'sub'
+      : kind === 'local'
+        ? 'local'
+        : 'custom';
+}
+
+/** Human label for a stored (API) provider kind. */
+export function providerKindLabel(kind: string): string {
+  return kind === 'api_key'
+    ? 'API key'
+    : kind === 'subscription'
+      ? 'subscription'
+      : kind === 'custom'
+        ? 'custom endpoint'
+        : kind === 'local'
+          ? 'local'
+          : kind;
+}
+
+/** True for provider kinds whose model prices the user edits directly (#18 §7.7). */
+export function isPriceEditableKind(kind: string): boolean {
+  return kind === 'custom' || kind === 'local';
+}
+
+/** Delegates to the canonical shared snippet builder (spec §2.1). Server-returned
+ * snippets are preferred; this is a display fallback. */
 export function snippetFor(harness: HarnessType, key: string): string {
   return connectionSnippet(harness, BASE_URL, key);
+}
+
+function toHarness(value: string): Harness {
+  return isHarnessType(value) ? value : 'curl';
+}
+
+function asStatus(value: string): ProviderStatus {
+  return value === 'ok' || value === 'error' ? value : 'unknown';
+}
+
+function toAgent(a: AgentDto): Agent {
+  return {
+    id: a.id,
+    name: a.name,
+    harness: toHarness(a.harness),
+    prefix: a.prefix,
+    lastUsedAt: a.lastUsedAt,
+    createdAt: a.createdAt,
+  };
+}
+
+function toProvider(p: ProviderDto): Provider {
+  return {
+    id: p.id,
+    name: p.name,
+    kind: p.kind,
+    protocol: p.protocol,
+    baseUrl: p.baseUrl,
+    status: asStatus(p.status),
+    hasCredential: p.hasCredential,
+    createdAt: p.createdAt,
+  };
+}
+
+function errMessage(e: unknown): string {
+  if (isApiError(e)) return e.message;
+  if (e instanceof Error) return e.message;
+  return 'Unexpected error';
+}
+
+function emptyProviderForm(): ProviderForm {
+  return { name: '', kind: 'api', protocol: 'openai_compatible', baseUrl: '', credential: '' };
+}
+
+function buildProviderInput(form: ProviderForm): CreateProviderInput {
+  const base: CreateProviderInput = {
+    name: form.name.trim(),
+    kind: UI_TO_API_KIND[form.kind],
+    protocol: form.protocol,
+    baseUrl: form.baseUrl.trim(),
+  };
+  const credential = form.credential.trim();
+  return credential ? { ...base, credential } : base;
+}
+
+function emptyKeyReveal(): AppState['kr'] {
+  return { title: '', key: '', snippet: '', harness: 'openai_sdk' };
+}
+
+function initialOnboarding(): OnboardingState {
+  return {
+    step: 1,
+    name: 'my-agent',
+    harness: 'openai_sdk',
+    agentId: null,
+    key: '',
+    snippet: '',
+    done1: false,
+    busy1: false,
+    error1: null,
+    prov: emptyProviderForm(),
+    providerId: null,
+    assignedModel: null,
+    done2: false,
+    busy2: false,
+    error2: null,
+    busy3: false,
+    error3: null,
+    verifyReply: null,
+    verifyModel: null,
+  };
 }
 
 function initialState(): AppState {
@@ -103,33 +261,38 @@ function initialState(): AppState {
     theme: 'light',
     range: '24h',
     reqFilter: 'all',
-    requests: seedRequests(26),
     selId: null,
     toast: null,
+    modal: null,
+
+    authView: 'loading',
+    authError: null,
+    authBusy: false,
+    session: null,
+    loginConfig: null,
+
+    agents: [],
+    agentsError: null,
+    providers: [],
+    providersError: null,
+    models: {},
+
+    na: { name: '', harness: 'openai_sdk', busy: false, error: null },
+    np: { ...emptyProviderForm(), busy: false, error: null },
+    kr: emptyKeyReveal(),
+
+    requests: seedRequests(26),
     stats: { ...SEED_STATS },
     chart: [...SEED_CHART],
     tiers: SEED_TIERS.map((t) => ({ ...t, chain: [...t.chain] })),
     autoLayers: { structural: true, cascade: true, semantic: false },
     rules: SEED_RULES.map((r) => ({ ...r })),
-    providers: SEED_PROVIDERS.map((p) => ({ ...p })),
-    agents: SEED_AGENTS.map((a) => ({ ...a })),
     limits: SEED_LIMITS.map((l) => ({ ...l })),
     channels: SEED_CHANNELS.map((c) => ({ ...c })),
     bodyLog: false,
-    modal: null,
-    na: { name: '', harness: 'openai_sdk' },
-    kr: { title: '', key: '', harness: 'openai_sdk' },
-    np: { kind: null, value: '', test: 'idle' },
     nl: { scope: 'Global', amount: '10.00', window: 'day', action: 'alert' },
-    ob: {
-      step: 1,
-      name: 'my-agent',
-      harness: 'openai_sdk',
-      key: '',
-      provPicked: null,
-      done1: false,
-      done2: false,
-    },
+
+    ob: initialOnboarding(),
   };
 }
 
@@ -143,47 +306,56 @@ export interface AppStore {
   setFilter: (filter: RequestFilter) => void;
   select: (id: string | null) => void;
   say: (msg: string) => void;
-  /** Clears the toast and its pending auto-dismiss timer (tests, teardown). */
   clearToast: () => void;
   copy: (txt: string, msg?: string) => void;
-  // live feed
+  // live feed (simulated)
   pushLiveRequest: () => void;
-  // routing
+  // auth / account
+  bootstrap: () => Promise<void>;
+  retry: () => Promise<void>;
+  signIn: (input: { email: string; password: string }) => Promise<void>;
+  signUp: (input: { name: string; email: string; password: string }) => Promise<void>;
+  oauth: (provider: string) => Promise<void>;
+  signOut: () => Promise<void>;
+  // agents (realized)
+  loadAgents: () => Promise<void>;
+  createAgent: () => Promise<void>;
+  rotateKey: (agent: Agent) => Promise<void>;
+  deleteAgent: (agent: Agent) => Promise<void>;
+  // providers (realized)
+  loadProviders: () => Promise<void>;
+  addProvider: () => Promise<void>;
+  testProviderById: (id: string) => Promise<void>;
+  syncProvider: (id: string) => Promise<void>;
+  deleteProvider: (id: string) => Promise<void>;
+  loadModels: (providerId: string) => Promise<void>;
+  setModelPrice: (providerId: string, modelId: string, body: ModelPricingInput) => Promise<void>;
+  // modals
+  openModal: (modal: ModalKind) => void;
+  closeModal: () => void;
+  // routing (simulated)
   reorderChain: (tierIndex: number, from: number, to: number) => void;
   removeFromChain: (tierIndex: number, model: string) => void;
   addToChain: (tierIndex: number, model: string) => boolean;
   toggleLayer: (layer: 'structural' | 'cascade' | 'semantic') => void;
   removeRule: (id: number) => void;
-  // agents & providers
-  openModal: (modal: ModalKind) => void;
-  closeModal: () => void;
-  createAgent: () => void;
-  revealSnippet: (agent: Agent) => void;
-  rotateKey: (agent: Agent) => void;
-  pickProviderKind: (kind: ProviderKindId) => void;
-  setNpValue: (value: string) => void;
-  testProvider: () => void;
-  addProvider: () => void;
-  // limits & settings
+  // limits & notifications (simulated)
   createLimit: () => void;
   toggleBodyLog: () => void;
   toggleChannel: (id: number) => void;
   testChannel: (id: number) => void;
   addChannel: () => void;
-  // onboarding
+  // onboarding (realized)
   obGo: (step: 1 | 2 | 3) => void;
-  obCreateAgent: () => void;
-  obPickProvider: (kind: ProviderKindId) => void;
+  obCreateAgent: () => Promise<void>;
+  obConnectProvider: () => Promise<void>;
+  obVerify: () => Promise<void>;
   obFinish: () => void;
 }
 
-export function createAppStore(): AppStore {
+export function createAppStore(client: ApiClient = realClient): AppStore {
   const [state, setState] = createStore<AppState>(initialState());
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
-  // Invalidates in-flight simulated connection tests: any change to the tested
-  // form (kind, value, modal close) bumps the token so a stale timeout can't
-  // mark an untested configuration as ok.
-  let npTestToken = 0;
 
   const say = (msg: string): void => {
     clearTimeout(toastTimer);
@@ -199,6 +371,75 @@ export function createAppStore(): AppStore {
     }
     say(msg ?? 'Copied');
   };
+
+  // --- realized loaders ---
+
+  const loadAgents = async (): Promise<void> => {
+    try {
+      const rows = await client.listAgents();
+      setState({ agents: rows.map(toAgent), agentsError: null });
+    } catch (e) {
+      setState('agentsError', errMessage(e));
+    }
+  };
+
+  const loadProviders = async (): Promise<void> => {
+    try {
+      const rows = await client.listProviders();
+      setState({ providers: rows.map(toProvider), providersError: null });
+    } catch (e) {
+      setState('providersError', errMessage(e));
+    }
+  };
+
+  const loadModels = async (providerId: string): Promise<void> => {
+    try {
+      const rows = await client.listModels(providerId);
+      setState('models', providerId, rows);
+    } catch (e) {
+      say(errMessage(e));
+    }
+  };
+
+  // --- auth bootstrap / gate ---
+
+  const bootstrap = async (): Promise<void> => {
+    setState({ authView: 'loading', authError: null });
+    let session: SessionInfo;
+    try {
+      session = await client.me();
+    } catch (e) {
+      if (isApiError(e) && e.status === 401) {
+        let cfg: LoginConfig | null = null;
+        try {
+          cfg = await client.loginConfig();
+        } catch {
+          // keep cfg null — the gate renders email/password without OAuth buttons
+        }
+        setState({ session: null, loginConfig: cfg, authView: 'gate' });
+      } else {
+        setState({ authView: 'error', authError: errMessage(e) });
+      }
+      return;
+    }
+    setState('session', session);
+    await Promise.all([loadAgents(), loadProviders()]);
+    setState({ authView: 'ready', authError: null });
+  };
+
+  const runEmailAuth = async (fn: () => Promise<void>): Promise<void> => {
+    setState({ authBusy: true, authError: null });
+    try {
+      await fn();
+      await bootstrap();
+    } catch (e) {
+      setState('authError', errMessage(e));
+    } finally {
+      setState('authBusy', false);
+    }
+  };
+
+  // --- store shape ---
 
   return {
     state,
@@ -238,6 +479,200 @@ export function createAppStore(): AppStore {
           s.stats.tout += r.tout;
           if (r.status === 'fallback') s.stats.fb += 1;
           if (r.escalated) s.stats.esc += 1;
+        }),
+      );
+    },
+
+    bootstrap,
+    retry: bootstrap,
+    signIn: (input) => runEmailAuth(() => client.signInEmail(input)),
+    signUp: (input) => runEmailAuth(() => client.signUpEmail(input)),
+    oauth: async (provider) => {
+      setState({ authBusy: true, authError: null });
+      try {
+        // Fixed SPA path — better-auth restricts callbackURL to trustedOrigins, so
+        // no open redirect. Dev caveat: OAuth callback cookies are host-only, so a
+        // dev round-trip needs BETTER_AUTH_URL and DASHBOARD_ORIGIN on the SAME host
+        // (set BETTER_AUTH_URL to the dashboard host, or run Vite on 127.0.0.1).
+        const callbackURL = `${globalThis.location.origin}/`;
+        const { url } = await client.signInSocial(provider, callbackURL);
+        // A bare POST does not begin OAuth — the browser must navigate to `url`.
+        try {
+          globalThis.location.assign(url);
+        } catch {
+          // non-navigable environment (tests) — nothing else to do
+        }
+      } catch (e) {
+        setState({ authError: errMessage(e), authBusy: false });
+      }
+    },
+    signOut: async () => {
+      // Clear ALL raw agent keys first — reveal + onboarding secrets.
+      setState(
+        produce((s) => {
+          s.kr = emptyKeyReveal();
+          s.ob.key = '';
+          s.ob.snippet = '';
+          s.modal = null;
+        }),
+      );
+      try {
+        await client.signOut();
+      } catch {
+        // ignore — bootstrap decides the resulting view (loopback stays ready)
+      }
+      await bootstrap();
+    },
+
+    loadAgents,
+    createAgent: async () => {
+      const name = state.na.name.trim();
+      if (!name) {
+        setState('na', 'error', 'Name is required');
+        return;
+      }
+      setState('na', { busy: true, error: null });
+      try {
+        const reveal = await client.createAgent({ name, harness: state.na.harness });
+        setState(
+          produce((s) => {
+            s.agents = [toAgent(reveal), ...s.agents];
+            s.kr = {
+              title: `Key minted — ${reveal.name}`,
+              key: reveal.key,
+              snippet: reveal.snippet,
+              harness: toHarness(reveal.harness),
+            };
+            s.modal = 'keyReveal';
+            s.na = { name: '', harness: 'openai_sdk', busy: false, error: null };
+          }),
+        );
+      } catch (e) {
+        setState('na', { busy: false, error: errMessage(e) });
+      }
+    },
+    rotateKey: async (agent) => {
+      try {
+        const reveal = await client.rotateAgentKey(agent.id);
+        setState(
+          produce((s) => {
+            const idx = s.agents.findIndex((a) => a.id === agent.id);
+            if (idx >= 0) s.agents[idx] = toAgent(reveal);
+            s.kr = {
+              title: `New key — ${reveal.name}`,
+              key: reveal.key,
+              snippet: reveal.snippet,
+              harness: toHarness(reveal.harness),
+            };
+            s.modal = 'keyReveal';
+          }),
+        );
+      } catch (e) {
+        say(errMessage(e));
+      }
+    },
+    deleteAgent: async (agent) => {
+      try {
+        await client.deleteAgent(agent.id);
+        setState('agents', (list) => list.filter((a) => a.id !== agent.id));
+        say(`Agent ${agent.name} deleted`);
+      } catch (e) {
+        say(errMessage(e));
+      }
+    },
+
+    loadProviders,
+    addProvider: async () => {
+      const form = state.np;
+      if (!form.name.trim()) {
+        setState('np', 'error', 'Name is required');
+        return;
+      }
+      if (!form.baseUrl.trim()) {
+        setState('np', 'error', 'Base URL is required');
+        return;
+      }
+      setState('np', { busy: true, error: null });
+      try {
+        const created = await client.createProvider(buildProviderInput(form));
+        setState(
+          produce((s) => {
+            s.providers = [...s.providers, toProvider(created)];
+            s.np = { ...emptyProviderForm(), busy: false, error: null };
+            s.modal = null;
+          }),
+        );
+        say(`Provider ${created.name} added — test the connection & sync models`);
+      } catch (e) {
+        setState('np', { busy: false, error: errMessage(e) });
+      }
+    },
+    testProviderById: async (id) => {
+      try {
+        const result = await client.testProvider(id);
+        setState('providers', (p) => p.id === id, 'status', result.status);
+        say(result.ok ? 'Connection ok' : `Connection failed — ${result.message}`);
+      } catch (e) {
+        say(errMessage(e));
+      }
+    },
+    syncProvider: async (id) => {
+      try {
+        const result = await client.syncModels(id);
+        setState('providers', (p) => p.id === id, 'status', result.status);
+        if (result.ok) {
+          await loadModels(id);
+          say(`Synced ${String(result.synced ?? 0)} models`);
+        } else {
+          say(`Sync failed — ${result.message}`);
+        }
+      } catch (e) {
+        say(errMessage(e));
+      }
+    },
+    deleteProvider: async (id) => {
+      try {
+        await client.deleteProvider(id);
+        setState(
+          produce((s) => {
+            s.providers = s.providers.filter((p) => p.id !== id);
+            delete s.models[id];
+          }),
+        );
+        say('Provider deleted');
+      } catch (e) {
+        say(errMessage(e));
+      }
+    },
+    loadModels,
+    setModelPrice: async (providerId, modelId, body) => {
+      try {
+        const updated = await client.updateModelPricing(modelId, body);
+        setState('models', providerId, (list) =>
+          (list ?? []).map((m) => (m.id === modelId ? updated : m)),
+        );
+        say('Price updated');
+      } catch (e) {
+        say(errMessage(e));
+      }
+    },
+
+    openModal: (modal) => {
+      if (modal === 'newAgent') {
+        setState({ modal, na: { name: '', harness: 'openai_sdk', busy: false, error: null } });
+      } else if (modal === 'newProvider') {
+        setState({ modal, np: { ...emptyProviderForm(), busy: false, error: null } });
+      } else {
+        setState('modal', modal);
+      }
+    },
+    closeModal: () => {
+      setState(
+        produce((s) => {
+          s.kr = emptyKeyReveal();
+          s.np.busy = false;
+          s.np.error = null;
+          s.modal = null;
         }),
       );
     },
@@ -282,86 +717,6 @@ export function createAppStore(): AppStore {
       setState('autoLayers', layer, (on) => !on);
     },
     removeRule: (id) => setState('rules', (rules) => rules.filter((r) => r.id !== id)),
-
-    openModal: (modal) => {
-      if (modal === 'newAgent') setState({ modal, na: { name: '', harness: 'openai_sdk' } });
-      else if (modal === 'newProvider') {
-        npTestToken++;
-        setState({ modal, np: { kind: null, value: '', test: 'idle' } });
-      } else setState('modal', modal);
-    },
-    closeModal: () => {
-      npTestToken++;
-      setState('np', 'test', 'idle');
-      setState('modal', null);
-    },
-    createAgent: () => {
-      const name = state.na.name.trim() || 'my-agent';
-      const key = mintKey();
-      setState(
-        produce((s) => {
-          s.agents.push({
-            id: `a${String(s.agents.length + 1)}${Math.random().toString(36).slice(2, 5)}`,
-            name,
-            harness: s.na.harness,
-            prefix: key.slice(0, 9),
-            reqs: 0,
-            spend: '$0.00',
-            last: 'never',
-          });
-          s.modal = 'keyReveal';
-          s.kr = { title: `Key minted — ${name}`, key, harness: s.na.harness };
-        }),
-      );
-    },
-    revealSnippet: (agent) =>
-      setState({
-        modal: 'keyReveal',
-        kr: {
-          title: `Connection snippet — ${agent.name}`,
-          key: `${agent.prefix}••••••••••••••••••••`,
-          harness: agent.harness,
-        },
-      }),
-    rotateKey: (agent) =>
-      setState({
-        modal: 'keyReveal',
-        kr: { title: `New key — ${agent.name}`, key: mintKey(), harness: agent.harness },
-      }),
-    pickProviderKind: (kind) => {
-      npTestToken++;
-      setState('np', { kind, value: '', test: 'idle' });
-    },
-    setNpValue: (value) => {
-      npTestToken++;
-      setState('np', (np) => ({ ...np, value, test: 'idle' }));
-    },
-    testProvider: () => {
-      const token = ++npTestToken;
-      setState('np', 'test', 'testing');
-      setTimeout(() => {
-        if (token === npTestToken) setState('np', 'test', 'ok');
-      }, 900);
-    },
-    addProvider: () => {
-      if (state.np.test !== 'ok' || state.np.kind === null) return;
-      const kind = state.np.kind;
-      setState(
-        produce((s) => {
-          s.providers.push({
-            id: `p${Math.random().toString(36).slice(2, 6)}`,
-            name: kind === 'local' ? 'LM Studio' : kind === 'custom' ? 'mylab-endpoint' : 'Mistral',
-            kind: kind === 'api' ? 'API key' : kind === 'sub' ? 'subscription' : kind,
-            status: 'ok',
-            models: 12,
-            reqs: 0,
-            spend: '$0.00',
-          });
-          s.modal = null;
-        }),
-      );
-      say('Provider added — 12 models synced');
-    },
 
     createLimit: () => {
       const amount = parseFloat(state.nl.amount) || 10;
@@ -421,14 +776,124 @@ export function createAppStore(): AppStore {
       ),
 
     obGo: (step) => setState('ob', 'step', step),
-    obCreateAgent: () => setState('ob', (ob) => ({ ...ob, key: mintKey(), done1: true })),
-    obPickProvider: (kind) => setState('ob', (ob) => ({ ...ob, provPicked: kind, done2: true })),
+    obCreateAgent: async () => {
+      const name = state.ob.name.trim() || 'my-agent';
+      setState('ob', { busy1: true, error1: null });
+      try {
+        const reveal = await client.createAgent({ name, harness: state.ob.harness });
+        setState(
+          produce((s) => {
+            s.ob.agentId = reveal.id;
+            s.ob.key = reveal.key;
+            s.ob.snippet = reveal.snippet;
+            s.ob.done1 = true;
+            s.ob.busy1 = false;
+            s.ob.error1 = null;
+            s.agents = [toAgent(reveal), ...s.agents.filter((a) => a.id !== reveal.id)];
+          }),
+        );
+      } catch (e) {
+        setState('ob', { busy1: false, error1: errMessage(e) });
+      }
+    },
+    obConnectProvider: async () => {
+      const form = state.ob.prov;
+      if (!form.name.trim()) {
+        setState('ob', 'error2', 'Provider name is required');
+        return;
+      }
+      if (!form.baseUrl.trim()) {
+        setState('ob', 'error2', 'Base URL is required');
+        return;
+      }
+      setState('ob', { busy2: true, error2: null, done2: false });
+      try {
+        const created = await client.createProvider(buildProviderInput(form));
+        setState('ob', 'providerId', created.id);
+        setState(
+          produce((s) => {
+            s.providers = [...s.providers.filter((p) => p.id !== created.id), toProvider(created)];
+          }),
+        );
+
+        const sync = await client.syncModels(created.id);
+        setState('providers', (p) => p.id === created.id, 'status', sync.status);
+        if (!sync.ok) {
+          setState('ob', { busy2: false, error2: `Model sync failed — ${sync.message}` });
+          return;
+        }
+        if ((sync.synced ?? 0) === 0) {
+          setState('ob', { busy2: false, error2: 'Provider synced but exposed no models' });
+          return;
+        }
+
+        const models = await client.listModels(created.id);
+        setState('models', created.id, models);
+        const first = models[0];
+        if (!first) {
+          setState('ob', { busy2: false, error2: 'Provider synced but exposed no models' });
+          return;
+        }
+
+        const tiers = await client.listTiers();
+        const def = tiers.find((t) => t.key === 'default');
+        if (!def) {
+          setState('ob', { busy2: false, error2: 'No default tier found — cannot assign a model' });
+          return;
+        }
+
+        await client.replaceTierEntries(def.id, [first.id]);
+        setState(
+          produce((s) => {
+            s.ob.assignedModel = first.externalModelId;
+            s.ob.done2 = true;
+            s.ob.busy2 = false;
+            s.ob.error2 = null;
+          }),
+        );
+      } catch (e) {
+        setState('ob', { busy2: false, error2: errMessage(e) });
+      }
+    },
+    obVerify: async () => {
+      const key = state.ob.key;
+      if (!key) {
+        setState('ob', 'error3', 'Missing agent key — recreate the agent in step 1');
+        return;
+      }
+      setState('ob', { busy3: true, error3: null, verifyReply: null, verifyModel: null });
+      try {
+        const completion = await client.proxyTest(key, {
+          model: 'auto',
+          messages: [
+            { role: 'user', content: 'Reply with a one-line confirmation that routing works.' },
+          ],
+        });
+        const reply = completion.choices?.[0]?.message?.content ?? '';
+        setState(
+          produce((s) => {
+            s.ob.busy3 = false;
+            s.ob.verifyReply = reply.length > 0 ? reply : '(empty response)';
+            s.ob.verifyModel = completion.model ?? null;
+          }),
+        );
+      } catch (e) {
+        setState('ob', { busy3: false, error3: errMessage(e) });
+      }
+    },
     obFinish: () => {
+      // Clear the minted secret on completion.
+      setState(
+        produce((s) => {
+          s.ob.key = '';
+          s.ob.snippet = '';
+        }),
+      );
       setState('page', 'overview');
       say('You’re live — point your agent at /v1');
     },
   };
 }
 
-/** Process-wide store used by the app; tests construct their own via createAppStore(). */
+/** Process-wide store used by the app; tests construct their own via createAppStore(fakeClient). */
 export const app = createAppStore();

@@ -1,4 +1,5 @@
 import { BarRows } from '../components/BarRows';
+import { PreviewBanner } from '../components/PreviewBanner';
 import {
   SEED_COST_BY_AGENT_30D,
   SEED_COST_BY_MODEL_30D,
@@ -11,6 +12,7 @@ export function Costs() {
   const saved = (s.listPrice - s.spend).toFixed(2);
   return (
     <div style="padding:22px 26px;display:flex;flex-direction:column;gap:14px;max-width:1200px">
+      <PreviewBanner note="Cost analytics are simulated until the analytics change ships." />
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
         <div class="panel card">
           <div class="stat-label">Spend this month</div>

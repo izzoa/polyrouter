@@ -12,6 +12,7 @@ import {
   decryptSecret,
   encryptSecret,
   type ModelInsertInput,
+  type ModelPatch,
   type ModelRow,
   type PersistencePort,
   type Principal,
@@ -29,7 +30,12 @@ import {
   type ProviderProtocol,
   type ProviderModelInfo,
 } from '@polyrouter/data-plane';
-import type { CreateProviderDto, ListModelsQueryDto, UpdateProviderDto } from './providers.dto';
+import type {
+  CreateProviderDto,
+  ListModelsQueryDto,
+  UpdateModelPricingDto,
+  UpdateProviderDto,
+} from './providers.dto';
 
 export type ProviderAdapterFactory = typeof createProviderAdapter;
 export const PROVIDER_ADAPTER_FACTORY = 'polyrouter:provider-adapter-factory';
@@ -63,6 +69,10 @@ export interface SafeModel {
   supportsVision: boolean;
   supportsReasoning: boolean;
   isFree: boolean;
+  // User-editable model-own prices (#18 §7.7) — null when unpriced; the top of
+  // `resolveModelPrice`'s precedence for custom/local models.
+  inputPricePer1m: number | null;
+  outputPricePer1m: number | null;
   lastSyncedAt: Date | null;
 }
 
@@ -114,6 +124,8 @@ function toSafeModel(m: ModelRow): SafeModel {
     supportsVision: m.supportsVision,
     supportsReasoning: m.supportsReasoning,
     isFree: m.isFree,
+    inputPricePer1m: m.inputPricePer1m,
+    outputPricePer1m: m.outputPricePer1m,
     lastSyncedAt: m.lastSyncedAt,
   };
 }
@@ -245,6 +257,51 @@ export class ProvidersService {
       rows = rows.filter((r) => r.supportsVision === q.supportsVision);
     }
     return rows.map(toSafeModel);
+  }
+
+  /**
+   * Set a custom/local model's user-entered prices (#18 §7.7). Owner-scoped
+   * (models owned through their provider — invariant 5). Rejects known-provider
+   * kinds because model-own price is the top of `resolveModelPrice`'s precedence
+   * and would otherwise bypass the bundled catalog. Validates the REQUEST SHAPE
+   * (fields present in the body, not merged with the existing row): exactly one
+   * of `{ isFree:true }` or `{ inputPricePer1m, outputPricePer1m }` (both
+   * present). Editing the current price never rewrites historical cost — the
+   * recorder snapshots prices at completion (invariant 4).
+   */
+  async updateModelPricing(
+    principal: Principal,
+    id: string,
+    dto: UpdateModelPricingDto,
+  ): Promise<SafeModel> {
+    const model = await this.db.models.findById(principal, id);
+    if (!model) throw new NotFoundException();
+    const provider = await this.db.providers.findById(principal, model.providerId);
+    if (!provider) throw new NotFoundException();
+    if (provider.kind !== 'custom' && provider.kind !== 'local') {
+      throw new UnprocessableEntityException(
+        'prices can only be set for custom or local models; known-provider prices come from the catalog',
+      );
+    }
+    const hasInput = dto.inputPricePer1m !== undefined;
+    const hasOutput = dto.outputPricePer1m !== undefined;
+    let patch: ModelPatch;
+    if (dto.isFree === true && !hasInput && !hasOutput) {
+      patch = { inputPricePer1m: 0, outputPricePer1m: 0, isFree: true };
+    } else if (hasInput && hasOutput && dto.isFree === undefined) {
+      patch = {
+        inputPricePer1m: dto.inputPricePer1m,
+        outputPricePer1m: dto.outputPricePer1m,
+        isFree: false,
+      };
+    } else {
+      throw new UnprocessableEntityException(
+        'provide exactly one of { isFree: true } or both { inputPricePer1m, outputPricePer1m }',
+      );
+    }
+    const updated = await this.db.models.update(principal, id, patch);
+    if (!updated) throw new NotFoundException();
+    return toSafeModel(updated);
   }
 
   // --- internals ---

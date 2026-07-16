@@ -1,5 +1,5 @@
 import { For, Show } from 'solid-js';
-import { app } from '../state/appState';
+import { useApp } from '../state/context';
 import type { Page } from '../types';
 
 const NAV: [Page, string][] = [
@@ -14,13 +14,12 @@ const NAV: [Page, string][] = [
 ];
 
 export function Sidebar() {
+  const app = useApp();
   const { state } = app;
+  // Only the real providers count is shown; the simulated request count would
+  // misrepresent an empty instance.
   const badge = (id: Page): string | null =>
-    id === 'requests'
-      ? state.stats.reqs.toLocaleString()
-      : id === 'providers'
-        ? String(state.providers.length)
-        : null;
+    id === 'providers' && state.providers.length > 0 ? String(state.providers.length) : null;
   const setupProgress = () =>
     state.ob.done2 ? '3 of 3 done' : state.ob.done1 ? '2 of 3 done' : '1 of 3 — connect an agent';
 
@@ -123,7 +122,7 @@ export function Sidebar() {
         </div>
         <div style="display:flex;align-items:center;gap:6px;font:400 11px 'Geist Mono',monospace;color:var(--text3)">
           <span style="width:6px;height:6px;border-radius:50%;background:var(--green);flex:none" />
-          self-hosted · v0.4.1
+          {state.session?.mode === 'cloud' ? 'cloud' : 'self-hosted'} · v0.4.1
         </div>
         <div style="font:400 11px 'Geist Mono',monospace;color:var(--faint)">127.0.0.1:3001</div>
       </div>

@@ -49,7 +49,7 @@ Env var names, endpoint paths (`/v1/chat/completions`, `/v1/messages`, `/api`), 
 | 15b | `add-notification-producers` | E | 15a, 6, 11 | M | ✅ archived 2026-07-16 |
 | 16 | `add-spend-limits` | E | 11, 15 | M | ✅ archived 2026-07-16 |
 | 17 | `add-analytics-api` | F | 11 | S | ☐ |
-| 18 | `add-dashboard-core` | F | 3, 7, 8, 9, 10 | L | ☐ |
+| 18 | `add-dashboard-core` | F | 3, 7, 8, 9, 10 | L | ✅ archived 2026-07-16 |
 | 19 | `add-dashboard-analytics` | F | 17, 18 | M | ☐ |
 | 20 | `add-dashboard-config` | F | 9, 14, 15, 16, 18 | M | ☐ |
 | 21 | `add-observability` | G | 12 | S | ☐ |
@@ -197,6 +197,7 @@ Stop for human review of the shippable core (spec §14.5, CLAUDE.md). Do **not**
 - **Spec:** §2, §9 (Agents/Providers/Settings pages), §3.4, §7.7 (price override UI), §16 (ToS note).
 - **Scope:** SolidJS + Vite app served by NestJS in prod; auth pages (Better Auth incl. OAuth, localhost auto-login self-host); Agents page — create/rotate/delete, key-shown-once flow, **per-harness connection snippets** (OpenAI SDK, Anthropic SDK, Vercel AI SDK, LangChain, cURL, personal-agent harnesses from `shared`); Providers page — add all four kinds, test connection, sync models, health/breaker state, **model pricing view with manual override / user-entered prices for custom+local models** (backed by #8; a new effective-dated row, never mutating history); **subscription-kind UX: surface the ToS risk and nudge adding a pay-per-token fallback (§8, §16)**; onboarding assigns the first synced model to the `default` tier (via #9) so the snippet works immediately; Settings/account shell.
 - **DoD:** a new user can sign up, mint an agent key, add a provider, and hit the proxy using a copied snippet — end to end against a real instance; frontend Vitest suites for key flows.
+- **✅ Done (archived 2026-07-16):** shipped as `add-dashboard-core` — the SPA's **management slice** (auth + Agents + Providers + onboarding + account) now runs on the real `/api` backend; the observe (Overview/Requests/Costs, needs #17/#19) + config (Routing/Limits/Notifications, #20) pages stay on the simulator behind a "preview — simulated" marker. Filled three backend gaps: `GET /api/me` (works under cookie auth AND cookieless localhost auto-login), `GET /api/login-config` (public; named outside the `/api/auth*` prefix the raw Better Auth mount intercepts — a codex-caught would-have-shipped bug), and `PATCH /api/models/:id` for custom/local pricing (owner-scoped, request-shape-validated, cost-immutable). Frontend: an injectable `ApiClient` + Solid `AppProvider` context seam (fake-client-injectable), an auth gate (me→dashboard / login+OAuth, retryable error, auto-login-aware logout), real Agents CRUD (key shown once, never persisted), Providers CRUD + create-then-test/sync + custom/local price editor + subscription ToS nudge, and a failure-aware onboarding ending in a real proxied `auto` call. Verified: 36 frontend Vitest + 143 control-plane unit + 144 e2e (new `account` + `model-pricing` suites), full build/lint/format clean. The live "fresh user → real LLM" journey remains a manual smoke check.
 
 ### 19. `add-dashboard-analytics`
 - **Goal:** Observe: overview charts, the request log, and the routing-decision inspector (the transparency feature).

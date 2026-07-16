@@ -227,6 +227,7 @@ export class ProxyService {
         created: p.created,
         onOpen: this.onOpenFor(p.principal, p.meta),
         onBreakerState: this.onBreakerStateFor(p.meta),
+        isCallerAbort: () => signal.aborted,
       },
       signal,
     );
@@ -266,6 +267,7 @@ export class ProxyService {
       created: p.created,
       onOpen: this.onOpenFor(p.principal, p.meta),
       onBreakerState: this.onBreakerStateFor(p.meta),
+      isCallerAbort: () => signal.aborted,
     });
     if (result.kind === 'error') {
       this.recorder.record(this.failedContext(p, result.failures), {
@@ -328,6 +330,9 @@ export class ProxyService {
         created: p.created,
         onOpen: this.onOpenFor(p.principal, c.cheap.meta),
         onBreakerState: this.onBreakerStateFor(c.cheap.meta),
+        // PURE client signal: a cheap-DEADLINE abort must still trip (a
+        // chronically slow cheap provider keeps being routed around).
+        isCallerAbort: () => signal.aborted,
       },
       AbortSignal.any([signal, AbortSignal.timeout(c.cheapTimeoutMs)]),
     );
@@ -381,6 +386,7 @@ export class ProxyService {
         created: p.created,
         onOpen: this.onOpenFor(p.principal, c.escalation.meta),
         onBreakerState: this.onBreakerStateFor(c.escalation.meta),
+        isCallerAbort: () => signal.aborted,
       },
       signal,
     );
@@ -439,6 +445,9 @@ export class ProxyService {
         created: p.created,
         onOpen: this.onOpenFor(p.principal, c.cheap.meta),
         onBreakerState: this.onBreakerStateFor(c.cheap.meta),
+        // PURE client signal: a cheap-DEADLINE abort must still trip (a
+        // chronically slow cheap provider keeps being routed around).
+        isCallerAbort: () => signal.aborted,
       },
       AbortSignal.any([signal, AbortSignal.timeout(c.cheapTimeoutMs)]),
     );
@@ -491,6 +500,7 @@ export class ProxyService {
       created: p.created,
       onOpen: this.onOpenFor(p.principal, c.escalation.meta),
       onBreakerState: this.onBreakerStateFor(c.escalation.meta),
+      isCallerAbort: () => signal.aborted,
     });
     if (result.kind === 'error') {
       const requestId = this.recorder.record(

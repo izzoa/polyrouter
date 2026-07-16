@@ -41,6 +41,9 @@ export interface ProxyStreamOptions {
   readonly onOpen?: BreakerOpenListener;
   /** Best-effort state observation at each admission decision (#21 metrics). */
   readonly onBreakerState?: BreakerStateListener;
+  /** True when the CLIENT went away — a caller-abort teardown is breaker-neutral
+   * even in converted provider-error shape; system timeouts keep tripping. */
+  readonly isCallerAbort?: () => boolean;
 }
 
 /** Captured usage for #11, resolved exactly once when the stream finishes. */
@@ -412,7 +415,12 @@ export async function runBufferedChain(
   attempts: readonly ChainAttempt[],
   client: ProtocolAdapter,
   request: NormalizedRequest,
-  ctx: { created: number; onOpen?: BreakerOpenListener; onBreakerState?: BreakerStateListener },
+  ctx: {
+    created: number;
+    onOpen?: BreakerOpenListener;
+    onBreakerState?: BreakerStateListener;
+    isCallerAbort?: () => boolean;
+  },
   signal: AbortSignal,
 ): Promise<BufferedChainResult> {
   const failures: AttemptFailure[] = [];
@@ -433,6 +441,7 @@ export async function runBufferedChain(
         },
         ctx.onOpen,
         ctx.onBreakerState,
+        ctx.isCallerAbort,
       );
       return {
         ok: true,
@@ -476,6 +485,7 @@ export async function openStreamChain(
           () => buildThenStream(attempt, req, signal),
           opts.onOpen,
           opts.onBreakerState,
+          opts.isCallerAbort,
         ),
       client,
       opts,

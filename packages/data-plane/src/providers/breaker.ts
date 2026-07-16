@@ -444,13 +444,18 @@ async function completeAndNotify(
 
 /** Wrap a unary provider call. Health = "did the provider respond": a resolved
  * call or a non-tripping error is success; a tripping error trips; a caller
- * cancellation is neutral. `onOpen` fires once if this call opens the breaker. */
+ * cancellation is neutral — including when the CALLER-gone teardown error
+ * reaches us in a normalized provider-error shape (a mid-body abort is
+ * converted by the adapters), which `isCallerAbort` disambiguates from
+ * system-imposed timeouts that must keep tripping. `onOpen` fires once if this
+ * call opens the breaker. */
 export async function withBreaker<T>(
   breaker: CircuitBreaker,
   providerId: string,
   fn: () => Promise<T>,
   onOpen?: BreakerOpenListener,
   onState?: BreakerStateListener,
+  isCallerAbort?: () => boolean,
 ): Promise<T> {
   const { decision, token } = await breaker.before(providerId);
   notifyState(onState, providerId, decision, token.isProbe);
@@ -460,7 +465,8 @@ export async function withBreaker<T>(
     await completeAndNotify(breaker, token, 'success', onOpen);
     return result;
   } catch (err) {
-    await completeAndNotify(breaker, token, outcomeForError(err), onOpen);
+    const outcome = isCallerAbort?.() === true ? 'neutral' : outcomeForError(err);
+    await completeAndNotify(breaker, token, outcome, onOpen);
     throw err;
   }
 }
@@ -475,6 +481,7 @@ export async function* withBreakerStream(
   gen: () => AsyncGenerator<NormalizedStreamEvent>,
   onOpen?: BreakerOpenListener,
   onState?: BreakerStateListener,
+  isCallerAbort?: () => boolean,
 ): AsyncGenerator<NormalizedStreamEvent> {
   const { decision, token } = await breaker.before(providerId);
   notifyState(onState, providerId, decision, token.isProbe);
@@ -505,7 +512,10 @@ export async function* withBreakerStream(
       await settle(sawTerminalStop ? 'success' : 'trip'); // no terminal stop → truncated
     }
   } catch (err) {
-    await settle(isCancellation(err) ? 'neutral' : outcomeForError(err));
+    // A caller-gone teardown is neutral even in converted ProviderError shape;
+    // a system-imposed timeout (client still present) keeps tripping.
+    const neutral = isCancellation(err) || isCallerAbort?.() === true;
+    await settle(neutral ? 'neutral' : outcomeForError(err));
     throw err;
   } finally {
     // Consumer abandoned the generator (early break / .return()) → neutral.

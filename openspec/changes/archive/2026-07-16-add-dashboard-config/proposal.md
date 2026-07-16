@@ -1,0 +1,26 @@
+# Proposal: add-dashboard-config
+
+## Why
+
+The last Phase-F dashboard surface: #18/#19 left the **Configure** pages — Routing, Limits, Settings→Notifications — on the simulator behind a "preview — simulated" banner. This change wires them to the real per-tenant config APIs so routing and limits are fully configurable from the UI, notification channels can be added/tested inline, and the automatic-routing layers can be toggled per tenant and take effect without a restart (§9, §2.3; DoD §15).
+
+Most of it is frontend plumbing against APIs that already exist per-tenant (#9 routing tiers/rules, #16 budgets, #15a notification channels + test-send). The one real gap is the **auto-layer toggle**: structural (#13) and cascade (#14) enablement is currently a global env var (`ROUTING_AUTO_LAYERS`) resolved once at boot, with no per-tenant control — so this change adds a small per-tenant routing setting and makes the proxy honor it live.
+
+## What Changes
+
+**Backend — per-tenant auto-layer setting (the gap):**
+
+- A new owner-scoped **`routing_settings`** table (one row per tenant: `structuralEnabled`/`cascadeEnabled`) + a `routingSettings` accessor on the `PersistencePort` (`get`/`upsert`, owner-scoped — invariant 5). One migration (`0007`).
+- **`GET /api/routing/auto-layers`** → `{ structural, cascade, structuralAvailable, cascadeAvailable }` and **`PUT /api/routing/auto-layers`** (body `{ structural, cascade }`) in the routing-config module. The tenant setting is the **preference**; the instance's `ROUTING_AUTO_LAYERS` env is the **capability** (`*Available`). Effective = `available && (tenantPreference ?? on)`, so a tenant can opt any layer out (and opt in within what the instance enables); "cascade implies structural" is preserved (enabling cascade enables structural). Thresholds/weights stay global env (power-user knobs), out of scope.
+- **The proxy honors it live.** In the auto→default branch of `ProxyService.prepare` (the only place the smart layers run — an `auto` request that fell through to the `default` tier), it reads the tenant's effective flags once and gates the structural call + the cascade branch on them. The read is lazy (only auto-fell-to-default requests pay for it — the minority), owner-scoped, and never fails a request (a settings-read fault degrades to the global default — invariant 1). No change to the `StructuralRouter`/`CascadeRouter` classes.
+
+**Frontend — wire the three Configure pages to the real APIs:**
+
+- **Routing.** Tier chains from `GET /api/routing/tiers` + `GET .../:id/entries`, with **drag-to-reorder / add / remove / set-primary** persisted atomically via `PUT .../:id/entries { modelIds }` (position 0 = primary, ≤5); the model picker from `GET /api/models`. Header rules from `GET /api/routing/rules` with create/delete (target `tier:<key>`/`model:<id>`, `x-polyrouter-tier`). The **auto-layer toggles** read `GET /api/routing/auto-layers` and `PUT` on toggle (structural/cascade; L2 semantic stays locked; a layer the instance disabled is shown greyed as "instance-wide off").
+- **Limits.** Budgets from `GET /api/budgets` with create/edit/delete — scope global/agent, window day/week/month, **alert-vs-block**, amount, and **channel wiring** (multi-select the owner's notification channels). Cross-field rules surface as inline errors (agent scope needs an agent → 422). The prototype's live "current spend" bar is dropped for now (the budget API is config-only; the reconciled spend counter isn't exposed — deferred, noted).
+- **Settings → Notifications.** Channels from `GET /api/notification-channels` with add/edit/enable/delete (SMTP host/port/secure/from/to or Apprise URLs; the kind-specific config is write-only — the card shows `hasConfig`, never a secret), **event-type subscriptions** (`EVENT_TYPES`), and a **"Send test"** button hitting `POST /:id/test` that surfaces `{ ok, error? }` inline and updates `lastTestStatus`. (The body-logging toggle stays out of scope — no opt-in API exists yet; left as-is.)
+- Remove the three `PreviewBanner`s and the simulated routing/limits/channels store slices; the API client gains tier/rule/budget/channel CRUD + the auto-layers methods.
+
+**Tests:** backend e2e — the per-tenant auto-layer toggle changes an `auto` request's routing on the same running instance (structural off → stays default; on → structural-routes), owner-scoped, with the endpoint GET/PUT + the effective/availability + cascade-implies-structural rules; plus routing-settings tenant isolation. Frontend Vitest (via the fake client) — tier reorder → PUT entries, rule create/delete, budget CRUD + alert/block + channel wiring, channel CRUD + test-send inline result, and the auto-layer toggle → PUT.
+
+Governing invariants: **5** (every config read/write owner-scoped, incl. the new routing-settings accessor + the proxy's per-tenant read), **1** (the smart router degrades to the default tier — a settings fault never fails a request; the toggle only gates opt-in refinement), **8** (channel/provider secrets stay write-only; test-send returns only sanitized codes). Out of scope / deferred: per-tenant structural thresholds/weights + cascade quality/timeout (global env), live budget-spend display, the body-logging opt-in, and org-scoped config.

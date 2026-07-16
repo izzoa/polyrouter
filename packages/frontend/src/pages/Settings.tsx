@@ -1,14 +1,35 @@
-import { For, Show } from 'solid-js';
-import { PreviewBanner } from '../components/PreviewBanner';
+import { For, onMount, Show } from 'solid-js';
 import { Toggle } from '../components/Toggle';
+import type { ChannelDto } from '../data/api';
 import { BASE_URL } from '../data/catalog';
 import { useApp } from '../state/context';
+
+interface TestLine {
+  text: string;
+  ok: boolean | null;
+}
 
 export function Settings() {
   const app = useApp();
   const { state } = app;
   const session = () => state.session;
   const isAdmin = () => session()?.role === 'admin' && session()?.mode === 'selfhosted';
+
+  onMount(() => void app.loadChannels());
+
+  // Inline test-send result takes precedence; otherwise fall back to the stored
+  // `lastTestStatus` (`success` | `failed:<code>`). Only `{ ok, error? }` is known.
+  const testLine = (c: ChannelDto): TestLine => {
+    const inline = state.channelTests[c.id];
+    if (inline !== undefined) {
+      return inline.ok
+        ? { text: 'test ok', ok: true }
+        : { text: `test failed — ${inline.error ?? 'error'}`, ok: false };
+    }
+    if (c.lastTestStatus === null) return { text: 'never tested', ok: null };
+    if (c.lastTestStatus === 'success') return { text: 'test ok', ok: true };
+    return { text: c.lastTestStatus.replace(/^failed:/, 'test failed — '), ok: false };
+  };
 
   return (
     <div style="padding:22px 26px;display:flex;flex-direction:column;gap:12px;max-width:760px">
@@ -94,23 +115,38 @@ export function Settings() {
           <div
             class="link-accent"
             style="font:500 12px 'Geist',sans-serif"
-            onClick={() => app.addChannel()}
+            onClick={() => app.openChannel()}
           >
             + Add channel
           </div>
-        </div>
-        <div style="margin-bottom:10px">
-          <PreviewBanner note="Notification channels are simulated until the notifications change ships." />
         </div>
         <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3);margin-bottom:12px">
           Budget alerts, provider-down and failure spikes fan out to every enabled channel —
           delivered async, never blocking a request.
         </div>
+
+        <Show when={state.channelsError}>
+          <div style="font:400 11.5px 'Geist',sans-serif;color:var(--red);margin-bottom:8px">
+            Couldn’t load channels: {state.channelsError}
+          </div>
+        </Show>
+
         <div style="display:flex;flex-direction:column;gap:8px">
-          <For each={state.channels}>
+          <For
+            each={state.channels}
+            fallback={
+              <div style="font:400 11.5px 'Geist',sans-serif;color:var(--faint)">
+                {state.channelsLoading ? 'Loading channels…' : 'No channels yet.'}
+              </div>
+            }
+          >
             {(c) => (
               <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:var(--bg);border:1px solid var(--border2);border-radius:8px">
-                <Toggle on={c.enabled} onToggle={() => app.toggleChannel(c.id)} />
+                <Toggle
+                  on={c.enabled}
+                  locked={state.channelToggling[c.id] ?? false}
+                  onToggle={() => void app.toggleChannelEnabled(c)}
+                />
                 <div style="min-width:0">
                   <div style="font:500 12.5px 'Geist',sans-serif;color:var(--text)">
                     {c.name}{' '}
@@ -121,23 +157,50 @@ export function Settings() {
                       {c.kind}
                     </span>
                   </div>
-                  <div style="font:400 11px 'Geist',sans-serif;color:var(--text3)">{c.detail}</div>
+                  <div style="font:400 11px 'Geist',sans-serif;color:var(--text3)">
+                    {c.hasConfig ? 'config set (encrypted)' : 'no config'} ·{' '}
+                    {c.eventsSubscribed.length} event
+                    {c.eventsSubscribed.length === 1 ? '' : 's'}
+                  </div>
                 </div>
                 <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
-                  <span
-                    style={{
-                      font: "400 11px 'Geist',sans-serif",
-                      color: c.lastOk === true ? 'var(--green)' : 'var(--text3)',
-                    }}
-                  >
-                    {c.testing ? 'sending…' : c.last}
-                  </span>
+                  {(() => {
+                    const line = testLine(c);
+                    return (
+                      <span
+                        style={{
+                          font: "400 11px 'Geist',sans-serif",
+                          color:
+                            line.ok === true
+                              ? 'var(--green)'
+                              : line.ok === false
+                                ? 'var(--red)'
+                                : 'var(--text3)',
+                        }}
+                      >
+                        {line.text}
+                      </span>
+                    );
+                  })()}
                   <div
                     class="btn-ghost"
-                    style="background:var(--panel)"
-                    onClick={() => app.testChannel(c.id)}
+                    style={{
+                      background: 'var(--panel)',
+                      'pointer-events': state.channelTesting[c.id] ? 'none' : 'auto',
+                      opacity: state.channelTesting[c.id] ? '0.6' : '1',
+                    }}
+                    onClick={() => void app.testChannelById(c.id)}
                   >
-                    {c.testing ? '…' : 'Send test'}
+                    {state.channelTesting[c.id] ? 'Sending…' : 'Send test'}
+                  </div>
+                  <div class="btn-ghost" onClick={() => app.openChannel(c)}>
+                    Edit
+                  </div>
+                  <div
+                    class="btn-ghost btn-ghost--amber"
+                    onClick={() => void app.deleteChannel(c.id)}
+                  >
+                    Delete
                   </div>
                 </div>
               </div>

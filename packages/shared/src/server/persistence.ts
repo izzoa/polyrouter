@@ -292,6 +292,20 @@ export interface AnalyticsAccessor {
   listRequests(principal: Principal, query: AnalyticsRequestsQuery): Promise<AnalyticsRequestsPage>;
 }
 
+/** Per-tenant automatic-routing layer preference (#20). Absent = inherit the
+ * instance capability. */
+export interface RoutingSettingsValue {
+  structuralEnabled: boolean;
+  cascadeEnabled: boolean;
+}
+
+/** Owner-scoped read/upsert of the tenant's auto-layer preference (one row per
+ * owner). `get` returns null when the tenant has no preference. */
+export interface RoutingSettingsAccessor {
+  get(principal: Principal): Promise<RoutingSettingsValue | null>;
+  upsert(principal: Principal, value: RoutingSettingsValue): Promise<RoutingSettingsValue>;
+}
+
 /** The ONLY persistence surface exported outside the database module. By
  * construction it has no query/execute/Pool/drizzle member — unscoped SQL is
  * unwritable against it. */
@@ -311,6 +325,7 @@ export interface PersistencePort {
   requestLogs: RequestLogAccessor;
   requestAttempts: RequestAttemptAccessor;
   analytics: AnalyticsAccessor;
+  routingSettings: RoutingSettingsAccessor;
   users: UsersInfra;
   /** Global pricing catalog (#8) — non-owned, append-only. */
   pricing: PricingCatalog;

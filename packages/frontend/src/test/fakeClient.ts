@@ -6,10 +6,18 @@ import type {
   AnalyticsRangeParams,
   AnalyticsSummary,
   ApiClient,
+  AutoLayers,
   BreakdownDimension,
   BreakdownRow,
+  BudgetDto,
+  ChannelDto,
+  ChannelTestResult,
   ChatCompletion,
+  CreateBudgetInput,
+  CreateChannelInput,
   CreateProviderInput,
+  CreateRuleInput,
+  CreateTierInput,
   LoginConfig,
   ModelDto,
   ModelPricingInput,
@@ -19,12 +27,16 @@ import type {
   RequestsPage,
   RequestsQuery,
   RequestStatus,
+  RuleDto,
   SessionInfo,
   TierDto,
   TierEntryDto,
   TimeseriesBucket,
   TimeseriesPoint,
+  UpdateBudgetInput,
+  UpdateChannelInput,
   UpdateProviderInput,
+  UpdateTierInput,
 } from '../data/api';
 
 export const DEFAULT_SESSION: SessionInfo = {
@@ -176,6 +188,12 @@ export interface FakeOptions {
   providers?: ProviderDto[];
   models?: Record<string, ModelDto[]>;
   tiers?: TierDto[];
+  tierEntries?: Record<string, TierEntryDto[]>;
+  rules?: RuleDto[];
+  budgets?: BudgetDto[];
+  channels?: ChannelDto[];
+  autoLayers?: AutoLayers;
+  channelTestResult?: ChannelTestResult;
   testResult?: ActionResult;
   syncResult?: ActionResult;
   proxyResult?: ChatCompletion;
@@ -213,9 +231,37 @@ function fakeModel(providerId: string, n: number): ModelDto {
 
 /** In-memory ApiClient double: records every call, mutates like the real backend
  * on CRUD, and exposes mutable fields tests flip mid-flow (e.g. me() failures). */
+/** A queued, test-controllable async response (resolve/reject on demand). */
+interface DeferredCall<T> {
+  settle: (mode: 'resolve' | 'reject') => void;
+  input: T;
+}
+
 export class FakeApiClient implements ApiClient {
   calls: string[] = [];
   callLog: { method: string; args: unknown[] }[] = [];
+
+  // When set, `replaceTierEntries` / `setAutoLayers` return promises the test
+  // settles out of order (via the queues below) to exercise write serialization.
+  deferTierWrites = false;
+  tierWriteQueue: DeferredCall<{ tierId: string; modelIds: string[] }>[] = [];
+  deferAutoLayers = false;
+  autoLayersQueue: DeferredCall<{ structural: boolean; cascade: boolean }>[] = [];
+
+  // When `gateReads` is set, config GET reads snapshot state at call time and then
+  // WAIT for `openGate()` — so a test can land a mutation mid-load and assert the
+  // loader's (now-stale) result is discarded (stale-loader-overwrite guards).
+  gateReads = false;
+  private gateResolvers: (() => void)[] = [];
+  private gate(): Promise<void> {
+    if (!this.gateReads) return Promise.resolve();
+    return new Promise<void>((resolve) => this.gateResolvers.push(resolve));
+  }
+  openGate(): void {
+    const resolvers = this.gateResolvers;
+    this.gateResolvers = [];
+    for (const r of resolvers) r();
+  }
 
   session: SessionInfo | null;
   meFailure: ApiError | null;
@@ -224,6 +270,12 @@ export class FakeApiClient implements ApiClient {
   providers: ProviderDto[];
   models: Record<string, ModelDto[]>;
   tiers: TierDto[];
+  tierEntries: Record<string, TierEntryDto[]>;
+  rules: RuleDto[];
+  budgets: BudgetDto[];
+  channels: ChannelDto[];
+  autoLayers: AutoLayers;
+  channelTestResult: ChannelTestResult;
   testResult: ActionResult;
   syncResult: ActionResult;
   proxyResult: ChatCompletion;
@@ -252,6 +304,17 @@ export class FakeApiClient implements ApiClient {
         createdAt: NOW,
       },
     ];
+    this.tierEntries = opts.tierEntries ?? {};
+    this.rules = opts.rules ?? [];
+    this.budgets = opts.budgets ?? [];
+    this.channels = opts.channels ?? [];
+    this.autoLayers = opts.autoLayers ?? {
+      structural: true,
+      cascade: true,
+      structuralAvailable: true,
+      cascadeAvailable: true,
+    };
+    this.channelTestResult = opts.channelTestResult ?? { ok: true };
     this.testResult = opts.testResult ?? okResult();
     this.syncResult = opts.syncResult ?? okResult(2);
     this.proxyResult = opts.proxyResult ?? {
@@ -419,8 +482,11 @@ export class FakeApiClient implements ApiClient {
 
   listModels(providerId?: string): Promise<ModelDto[]> {
     this.record('listModels', providerId);
-    if (providerId === undefined) return Promise.resolve(Object.values(this.models).flat());
-    return Promise.resolve([...(this.models[providerId] ?? [])]);
+    const snapshot =
+      providerId === undefined
+        ? Object.values(this.models).flat()
+        : [...(this.models[providerId] ?? [])];
+    return this.gate().then(() => snapshot);
   }
 
   updateModelPricing(id: string, body: ModelPricingInput): Promise<ModelDto> {
@@ -446,20 +512,275 @@ export class FakeApiClient implements ApiClient {
 
   listTiers(): Promise<TierDto[]> {
     this.record('listTiers');
-    return Promise.resolve([...this.tiers]);
+    const snapshot = [...this.tiers];
+    return this.gate().then(() => snapshot);
+  }
+
+  createTier(input: CreateTierInput): Promise<TierDto> {
+    this.record('createTier', input);
+    const tier: TierDto = {
+      id: this.nextId('tier'),
+      key: input.key,
+      displayName: input.displayName ?? null,
+      description: input.description ?? null,
+      createdAt: NOW,
+    };
+    this.tiers = [...this.tiers, tier];
+    this.tierEntries[tier.id] = [];
+    return Promise.resolve(tier);
+  }
+
+  updateTier(id: string, patch: UpdateTierInput): Promise<TierDto> {
+    this.record('updateTier', id, patch);
+    const existing = this.tiers.find((t) => t.id === id);
+    if (!existing) return Promise.reject(new ApiError(404, 'Not Found', 'tier not found'));
+    const updated: TierDto = {
+      ...existing,
+      ...(patch.displayName !== undefined ? { displayName: patch.displayName } : {}),
+      ...(patch.description !== undefined ? { description: patch.description } : {}),
+    };
+    this.tiers = this.tiers.map((t) => (t.id === id ? updated : t));
+    return Promise.resolve(updated);
+  }
+
+  deleteTier(id: string): Promise<{ deleted: boolean }> {
+    this.record('deleteTier', id);
+    this.tiers = this.tiers.filter((t) => t.id !== id);
+    const rest: Record<string, TierEntryDto[]> = {};
+    for (const [k, v] of Object.entries(this.tierEntries)) if (k !== id) rest[k] = v;
+    this.tierEntries = rest;
+    return Promise.resolve({ deleted: true });
+  }
+
+  listTierEntries(tierId: string): Promise<TierEntryDto[]> {
+    this.record('listTierEntries', tierId);
+    const snapshot = (this.tierEntries[tierId] ?? []).map((e) => ({ ...e }));
+    return this.gate().then(() => snapshot);
+  }
+
+  private buildTierEntries(tierId: string, modelIds: string[]): TierEntryDto[] {
+    const allModels = Object.values(this.models).flat();
+    return modelIds.map((modelId, position) => {
+      const m = allModels.find((x) => x.id === modelId);
+      return {
+        id: `entry-${tierId}-${String(position)}`,
+        tierId,
+        modelId,
+        position,
+        model: m
+          ? {
+              id: m.id,
+              providerId: m.providerId,
+              externalModelId: m.externalModelId,
+              displayName: m.displayName,
+            }
+          : null,
+      };
+    });
   }
 
   replaceTierEntries(tierId: string, modelIds: string[]): Promise<TierEntryDto[]> {
     this.record('replaceTierEntries', tierId, modelIds);
-    return Promise.resolve(
-      modelIds.map((modelId, position) => ({
-        id: `entry-${String(position)}`,
-        tierId,
-        modelId,
-        position,
-        model: null,
-      })),
+    const entries = this.buildTierEntries(tierId, modelIds);
+    if (!this.deferTierWrites) {
+      this.tierEntries[tierId] = entries;
+      return Promise.resolve(entries.map((e) => ({ ...e })));
+    }
+    return new Promise<TierEntryDto[]>((resolve, reject) => {
+      this.tierWriteQueue.push({
+        input: { tierId, modelIds },
+        settle: (mode) => {
+          if (mode === 'resolve') {
+            this.tierEntries[tierId] = entries;
+            resolve(entries.map((e) => ({ ...e })));
+          } else {
+            reject(new ApiError(500, 'Internal', 'tier write failed'));
+          }
+        },
+      });
+    });
+  }
+
+  listRules(): Promise<RuleDto[]> {
+    this.record('listRules');
+    const snapshot = [...this.rules];
+    return this.gate().then(() => snapshot);
+  }
+
+  createRule(input: CreateRuleInput): Promise<RuleDto> {
+    this.record('createRule', input);
+    const rule: RuleDto = {
+      id: this.nextId('rule'),
+      matchType: input.matchType,
+      headerName: input.headerName ?? 'x-polyrouter-tier',
+      headerValue: input.headerValue ?? null,
+      target: input.target,
+      priority: input.priority ?? 0,
+      createdAt: NOW,
+    };
+    this.rules = [...this.rules, rule];
+    return Promise.resolve(rule);
+  }
+
+  deleteRule(id: string): Promise<{ deleted: boolean }> {
+    this.record('deleteRule', id);
+    this.rules = this.rules.filter((r) => r.id !== id);
+    return Promise.resolve({ deleted: true });
+  }
+
+  getAutoLayers(): Promise<AutoLayers> {
+    this.record('getAutoLayers');
+    const snapshot = { ...this.autoLayers };
+    return this.gate().then(() => snapshot);
+  }
+
+  private applyAutoLayers(input: { structural: boolean; cascade: boolean }): AutoLayers {
+    // Mirror the server: cascade implies structural; effective = available × pref.
+    const structuralEnabled = input.structural || input.cascade;
+    this.autoLayers = {
+      structuralAvailable: this.autoLayers.structuralAvailable,
+      cascadeAvailable: this.autoLayers.cascadeAvailable,
+      structural: this.autoLayers.structuralAvailable && structuralEnabled,
+      cascade: this.autoLayers.cascadeAvailable && input.cascade,
+    };
+    return { ...this.autoLayers };
+  }
+
+  setAutoLayers(input: { structural: boolean; cascade: boolean }): Promise<AutoLayers> {
+    this.record('setAutoLayers', input);
+    if (!this.deferAutoLayers) return Promise.resolve(this.applyAutoLayers(input));
+    return new Promise<AutoLayers>((resolve, reject) => {
+      this.autoLayersQueue.push({
+        input,
+        settle: (mode) => {
+          if (mode === 'resolve') resolve(this.applyAutoLayers(input));
+          else reject(new ApiError(500, 'Internal', 'auto-layers write failed'));
+        },
+      });
+    });
+  }
+
+  listBudgets(): Promise<BudgetDto[]> {
+    this.record('listBudgets');
+    const snapshot = [...this.budgets];
+    return this.gate().then(() => snapshot);
+  }
+
+  createBudget(input: CreateBudgetInput): Promise<BudgetDto> {
+    this.record('createBudget', input);
+    if (input.scope === 'agent' && (input.agentId === undefined || input.agentId === '')) {
+      return Promise.reject(
+        new ApiError(422, 'Unprocessable Entity', 'an agent-scoped budget requires an agentId'),
+      );
+    }
+    const budget: BudgetDto = {
+      id: this.nextId('budget'),
+      name: input.name,
+      scope: input.scope,
+      agentId: input.scope === 'agent' ? (input.agentId ?? null) : null,
+      window: input.window,
+      action: input.action,
+      amount: input.amount,
+      notifyChannelIds: input.notifyChannelIds ?? [],
+      enabled: input.enabled ?? true,
+      createdAt: NOW,
+    };
+    this.budgets = [...this.budgets, budget];
+    return Promise.resolve(budget);
+  }
+
+  updateBudget(id: string, patch: UpdateBudgetInput): Promise<BudgetDto> {
+    this.record('updateBudget', id, patch);
+    const existing = this.budgets.find((b) => b.id === id);
+    if (!existing) return Promise.reject(new ApiError(404, 'Not Found', 'budget not found'));
+    const scope = patch.scope ?? existing.scope;
+    const agentId = patch.agentId !== undefined ? patch.agentId : existing.agentId;
+    if (scope === 'agent' && (agentId === null || agentId === undefined || agentId === '')) {
+      return Promise.reject(
+        new ApiError(422, 'Unprocessable Entity', 'an agent-scoped budget requires an agentId'),
+      );
+    }
+    const updated: BudgetDto = {
+      ...existing,
+      ...(patch.name !== undefined ? { name: patch.name } : {}),
+      ...(patch.window !== undefined ? { window: patch.window } : {}),
+      ...(patch.action !== undefined ? { action: patch.action } : {}),
+      ...(patch.amount !== undefined ? { amount: patch.amount } : {}),
+      ...(patch.notifyChannelIds !== undefined ? { notifyChannelIds: patch.notifyChannelIds } : {}),
+      ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
+      scope,
+      agentId: scope === 'agent' ? (agentId ?? null) : null,
+    };
+    this.budgets = this.budgets.map((b) => (b.id === id ? updated : b));
+    return Promise.resolve(updated);
+  }
+
+  deleteBudget(id: string): Promise<{ deleted: boolean }> {
+    this.record('deleteBudget', id);
+    this.budgets = this.budgets.filter((b) => b.id !== id);
+    return Promise.resolve({ deleted: true });
+  }
+
+  listChannels(): Promise<ChannelDto[]> {
+    this.record('listChannels');
+    const snapshot = [...this.channels];
+    return this.gate().then(() => snapshot);
+  }
+
+  createChannel(input: CreateChannelInput): Promise<ChannelDto> {
+    this.record('createChannel', input);
+    const channel: ChannelDto = {
+      id: this.nextId('chan'),
+      name: input.name,
+      kind: input.kind,
+      enabled: input.enabled ?? true,
+      eventsSubscribed: [...input.eventsSubscribed],
+      hasConfig: true,
+      lastTestAt: null,
+      lastTestStatus: null,
+    };
+    this.channels = [...this.channels, channel];
+    return Promise.resolve(channel);
+  }
+
+  updateChannel(id: string, patch: UpdateChannelInput): Promise<ChannelDto> {
+    this.record('updateChannel', id, patch);
+    const existing = this.channels.find((c) => c.id === id);
+    if (!existing) return Promise.reject(new ApiError(404, 'Not Found', 'channel not found'));
+    // Mirror the backend: changing kind requires a new config for the new kind.
+    if (patch.kind !== undefined && patch.kind !== existing.kind && patch.config === undefined) {
+      return Promise.reject(
+        new ApiError(422, 'Unprocessable Entity', 'changing kind requires a new config'),
+      );
+    }
+    const updated: ChannelDto = {
+      ...existing,
+      ...(patch.name !== undefined ? { name: patch.name } : {}),
+      ...(patch.kind !== undefined ? { kind: patch.kind } : {}),
+      ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
+      ...(patch.eventsSubscribed !== undefined
+        ? { eventsSubscribed: [...patch.eventsSubscribed] }
+        : {}),
+      ...(patch.config !== undefined ? { hasConfig: true } : {}),
+    };
+    this.channels = this.channels.map((c) => (c.id === id ? updated : c));
+    return Promise.resolve(updated);
+  }
+
+  deleteChannel(id: string): Promise<{ deleted: boolean }> {
+    this.record('deleteChannel', id);
+    this.channels = this.channels.filter((c) => c.id !== id);
+    return Promise.resolve({ deleted: true });
+  }
+
+  testChannel(id: string): Promise<ChannelTestResult> {
+    this.record('testChannel', id);
+    const result = this.channelTestResult;
+    const status = result.ok ? 'success' : `failed:${result.error ?? 'error'}`;
+    this.channels = this.channels.map((c) =>
+      c.id === id ? { ...c, lastTestAt: NOW, lastTestStatus: status } : c,
     );
+    return Promise.resolve({ ...result });
   }
 
   proxyTest(agentKey: string, body: ProxyTestBody): Promise<ChatCompletion> {

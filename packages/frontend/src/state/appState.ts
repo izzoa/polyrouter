@@ -2,31 +2,41 @@ import { connectionSnippet, isHarnessType, type HarnessType } from '@polyrouter/
 import { createStore, produce, type SetStoreFunction } from 'solid-js/store';
 import { filterToRequestParams } from '../data/analytics';
 import {
+  EVENT_TYPES,
   isApiError,
+  MAX_MODELS_PER_TIER,
   realClient,
+  TIER_HEADER_NAME,
   type AgentDto,
   type AnalyticsSummary,
   type ApiClient,
   type ApiProviderKind,
+  type AutoLayers,
   type BreakdownRow,
+  type BudgetDto,
+  type ChannelConfigInput,
+  type ChannelDto,
+  type ChannelTestResult,
+  type CreateBudgetInput,
   type CreateProviderInput,
   type ModelPricingInput,
   type ProviderDto,
   type RequestRow,
+  type RuleDto,
+  type TierDto,
+  type TierEntryDto,
   type TimeseriesPoint,
+  type UpdateBudgetInput,
+  type UpdateChannelInput,
 } from '../data/api';
 import { BASE_URL } from '../data/catalog';
 import { rangeToParams } from '../data/range';
-import { SEED_CHANNELS, SEED_LIMITS, SEED_RULES, SEED_TIERS } from '../data/seed';
 import type {
   Agent,
   AuthView,
-  Channel,
+  BudgetForm,
+  ChannelForm,
   Harness,
-  HeaderRule,
-  Limit,
-  LimitAction,
-  LimitWindow,
   LoginConfig,
   Model,
   ModalKind,
@@ -40,7 +50,6 @@ import type {
   RequestFilter,
   SessionInfo,
   Theme,
-  Tier,
 } from '../types';
 
 /** Rows fetched per page of the requests list / "Load more". */
@@ -107,14 +116,43 @@ export interface AppState {
   requestCursor: string | null;
   requestWindow: RequestWindow | null;
 
-  // still-simulated slices (deferred config pages #20: routing/limits/notifications)
-  tiers: Tier[];
-  autoLayers: { structural: boolean; cascade: boolean; semantic: boolean };
-  rules: HeaderRule[];
-  limits: Limit[];
-  channels: Channel[];
+  // Routing config (#20) — loaded on the Routing page mount. `tierEntries` is the
+  // (optimistic) ordered chain per tier id; `confirmedEntries` is the last
+  // server-CONFIRMED order per tier (the rollback target); `allModels` feeds the
+  // picker + labels/prices.
+  routingTiers: TierDto[];
+  tierEntries: Record<string, TierEntryDto[]>;
+  confirmedEntries: Record<string, string[]>;
+  allModels: Model[];
+  rules: RuleDto[];
+  autoLayers: AutoLayers | null;
+  routingLoading: boolean;
+  routingError: string | null;
+  /** New header-rule form: a tier-header value routed to a target tier key. */
+  rf: { value: string; target: string; busy: boolean; error: string | null };
+  /** New-tier form. */
+  tf: { key: string; displayName: string; busy: boolean; error: string | null };
+
+  // Budgets (#20) — Limits page.
+  budgets: BudgetDto[];
+  budgetsLoading: boolean;
+  budgetsError: string | null;
+  bf: BudgetForm;
+
+  // Notification channels (#20) — Settings page (also feeds the budget notify
+  // picker). `channelTests` holds the last inline test-send result per channel;
+  // `channelTesting` is the per-channel test-send in-flight guard (no double-fire).
+  channels: ChannelDto[];
+  channelsLoading: boolean;
+  channelsError: string | null;
+  channelTests: Record<string, ChannelTestResult>;
+  channelTesting: Record<string, boolean>;
+  /** Per-channel enable-toggle in-flight guard (coalesce rapid clicks). */
+  channelToggling: Record<string, boolean>;
+  cf: ChannelForm;
+
+  /** Body-logging toggle — no opt-in API yet (#20 out of scope); left inert. */
   bodyLog: boolean;
-  nl: { scope: string; amount: string; window: LimitWindow; action: LimitAction };
 
   // onboarding (realized, failure-aware)
   ob: OnboardingState;
@@ -258,6 +296,139 @@ function emptyKeyReveal(): AppState['kr'] {
   return { title: '', key: '', snippet: '', harness: 'openai_sdk' };
 }
 
+function emptyBudgetForm(): BudgetForm {
+  return {
+    id: null,
+    name: '',
+    scope: 'global',
+    agentId: '',
+    window: 'day',
+    action: 'alert',
+    amount: '10.00',
+    notifyChannelIds: [],
+    enabled: true,
+    busy: false,
+    error: null,
+  };
+}
+
+/** Populate the budget form from an existing budget (edit), or empty (create). */
+function budgetFormFrom(b: BudgetDto): BudgetForm {
+  return {
+    id: b.id,
+    name: b.name,
+    scope: b.scope === 'agent' ? 'agent' : 'global',
+    agentId: b.agentId ?? '',
+    window: b.window === 'week' ? 'week' : b.window === 'month' ? 'month' : 'day',
+    action: b.action === 'block' ? 'block' : 'alert',
+    amount: String(b.amount),
+    notifyChannelIds: [...b.notifyChannelIds],
+    enabled: b.enabled,
+    busy: false,
+    error: null,
+  };
+}
+
+const EVENT_TYPE_SET: ReadonlySet<string> = new Set(EVENT_TYPES);
+
+function emptyChannelForm(): ChannelForm {
+  return {
+    id: null,
+    name: '',
+    kind: 'smtp',
+    originalKind: null,
+    events: ['budget_alert', 'budget_block'],
+    smtpHost: '',
+    smtpPort: '587',
+    smtpSecure: 'starttls',
+    smtpUser: '',
+    smtpPass: '',
+    smtpFrom: '',
+    smtpTo: '',
+    appriseUrls: '',
+    busy: false,
+    error: null,
+  };
+}
+
+/** Populate the channel form for edit — config fields stay BLANK (write-only,
+ * invariant 8); the existing kind + events are prefilled. */
+function channelFormFrom(c: ChannelDto): ChannelForm {
+  const form = emptyChannelForm();
+  const kind: ChannelForm['kind'] = c.kind === 'apprise' ? 'apprise' : 'smtp';
+  return {
+    ...form,
+    id: c.id,
+    name: c.name,
+    kind,
+    originalKind: kind,
+    events: c.eventsSubscribed.filter((e): e is ChannelForm['events'][number] =>
+      EVENT_TYPE_SET.has(e),
+    ),
+  };
+}
+
+function splitList(v: string): string[] {
+  return v
+    .split(/[\s,]+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+/** Build the write-only channel config from the form. On EDIT of the SAME kind with
+ * all config fields blank, returns `config: null` so the stored secret is left
+ * untouched (invariant 8). On CREATE — or on an edit that CHANGES the kind — a
+ * complete config for the (new) kind is required (the old config belongs to the old
+ * kind's schema; the backend re-validates config against `kind`). */
+function buildChannelConfig(f: ChannelForm): {
+  error: string | null;
+  config: ChannelConfigInput | null;
+} {
+  const kindChanged = f.id !== null && f.originalKind !== null && f.kind !== f.originalKind;
+  const blankPreserve = f.id !== null && !kindChanged;
+  if (f.kind === 'smtp') {
+    const host = f.smtpHost.trim();
+    const from = f.smtpFrom.trim();
+    const user = f.smtpUser.trim();
+    const to = splitList(f.smtpTo);
+    const anyProvided =
+      host !== '' || from !== '' || user !== '' || f.smtpPass !== '' || to.length > 0;
+    if (blankPreserve && !anyProvided) return { error: null, config: null };
+    const port = Number(f.smtpPort);
+    if (host === '' || from === '' || to.length === 0 || !Number.isFinite(port) || port <= 0) {
+      return {
+        error: kindChanged
+          ? 'Changing the kind to SMTP requires a full host, port, from address, and recipient'
+          : 'SMTP needs a host, port, from address, and at least one recipient',
+        config: null,
+      };
+    }
+    return {
+      error: null,
+      config: {
+        host,
+        port,
+        secure: f.smtpSecure,
+        ...(user !== '' ? { user } : {}),
+        ...(f.smtpPass !== '' ? { pass: f.smtpPass } : {}),
+        from,
+        to,
+      },
+    };
+  }
+  const urls = splitList(f.appriseUrls);
+  if (blankPreserve && urls.length === 0) return { error: null, config: null };
+  if (urls.length === 0) {
+    return {
+      error: kindChanged
+        ? 'Changing the kind to Apprise requires at least one URL'
+        : 'Add at least one Apprise URL',
+      config: null,
+    };
+  }
+  return { error: null, config: { urls } };
+}
+
 function initialOnboarding(): OnboardingState {
   return {
     step: 1,
@@ -325,13 +496,32 @@ function initialState(): AppState {
     requestListError: null,
     requestCursor: null,
     requestWindow: null,
-    tiers: SEED_TIERS.map((t) => ({ ...t, chain: [...t.chain] })),
-    autoLayers: { structural: true, cascade: true, semantic: false },
-    rules: SEED_RULES.map((r) => ({ ...r })),
-    limits: SEED_LIMITS.map((l) => ({ ...l })),
-    channels: SEED_CHANNELS.map((c) => ({ ...c })),
+
+    routingTiers: [],
+    tierEntries: {},
+    confirmedEntries: {},
+    allModels: [],
+    rules: [],
+    autoLayers: null,
+    routingLoading: false,
+    routingError: null,
+    rf: { value: '', target: '', busy: false, error: null },
+    tf: { key: '', displayName: '', busy: false, error: null },
+
+    budgets: [],
+    budgetsLoading: false,
+    budgetsError: null,
+    bf: emptyBudgetForm(),
+
+    channels: [],
+    channelsLoading: false,
+    channelsError: null,
+    channelTests: {},
+    channelTesting: {},
+    channelToggling: {},
+    cf: emptyChannelForm(),
+
     bodyLog: false,
-    nl: { scope: 'Global', amount: '10.00', window: 'day', action: 'alert' },
 
     ob: initialOnboarding(),
   };
@@ -377,18 +567,31 @@ export interface AppStore {
   // modals
   openModal: (modal: ModalKind) => void;
   closeModal: () => void;
-  // routing (simulated)
-  reorderChain: (tierIndex: number, from: number, to: number) => void;
-  removeFromChain: (tierIndex: number, model: string) => void;
-  addToChain: (tierIndex: number, model: string) => boolean;
-  toggleLayer: (layer: 'structural' | 'cascade' | 'semantic') => void;
-  removeRule: (id: number) => void;
-  // limits & notifications (simulated)
-  createLimit: () => void;
+  // routing config (#20)
+  loadRouting: () => Promise<void>;
+  moveTierEntry: (tierId: string, from: number, to: number) => void;
+  commitTierOrder: (tierId: string) => Promise<void>;
+  addTierModel: (tierId: string, modelId: string) => void;
+  removeTierModel: (tierId: string, modelId: string) => void;
+  setPrimaryTierModel: (tierId: string, modelId: string) => void;
+  createTier: () => Promise<void>;
+  deleteTier: (tierId: string) => Promise<void>;
+  createRule: () => Promise<void>;
+  deleteRule: (id: string) => Promise<void>;
+  toggleAutoLayer: (layer: 'structural' | 'cascade') => Promise<void>;
+  // limits (#20)
+  loadLimits: () => Promise<void>;
+  openBudget: (budget?: BudgetDto) => void;
+  saveBudget: () => Promise<void>;
+  deleteBudget: (id: string) => Promise<void>;
+  // notifications (#20)
+  loadChannels: () => Promise<void>;
+  openChannel: (channel?: ChannelDto) => void;
+  saveChannel: () => Promise<void>;
+  deleteChannel: (id: string) => Promise<void>;
+  toggleChannelEnabled: (channel: ChannelDto) => Promise<void>;
+  testChannelById: (id: string) => Promise<void>;
   toggleBodyLog: () => void;
-  toggleChannel: (id: number) => void;
-  testChannel: (id: number) => void;
-  addChannel: () => void;
   // onboarding (realized)
   obGo: (step: 1 | 2 | 3) => void;
   obCreateAgent: () => Promise<void>;
@@ -442,6 +645,218 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       setState('models', providerId, rows);
     } catch (e) {
       say(errMessage(e));
+    }
+  };
+
+  // --- config (#20): routing / limits / notifications loaders + helpers ---
+
+  // Per-tier single-flight write coordination. `tierDesired` holds the LATEST
+  // desired ordered modelIds per tier; `tierInFlight` marks a tier whose drain loop
+  // is running. Writes are serialized per tier — one PUT at a time, always sending
+  // the latest desired order — so overlapping edits can't lose a newer edit or roll
+  // back across a later success. Rollback restores `confirmedEntries` (the last
+  // SERVER-confirmed order), never a mid-drag optimistic order (blockers #1/#2).
+  const tierDesired = new Map<string, string[]>();
+  const tierInFlight = new Set<string>();
+
+  // Auto-layer single-flight: serialize `setAutoLayers` so rapid toggles apply in
+  // order, sending the latest desired state; roll back to the last confirmed view.
+  let autoLayersDesired: { structural: boolean; cascade: boolean } | null = null;
+  let autoLayersInFlight = false;
+  let autoLayersConfirmed: AutoLayers | null = null;
+
+  // Per-domain mutation sequences (the #19 generation-guard pattern applied to
+  // load-vs-mutation): every config mutation bumps its domain counter; each loader
+  // captures the counter before its GET(s) and discards its (now-stale) result if a
+  // mutation raced in during the load — the optimistic/confirmed state is newer.
+  let routingSeq = 0;
+  let budgetsSeq = 0;
+  let channelsSeq = 0;
+  const bumpRouting = (): void => {
+    routingSeq += 1;
+  };
+  const bumpBudgets = (): void => {
+    budgetsSeq += 1;
+  };
+  const bumpChannels = (): void => {
+    channelsSeq += 1;
+  };
+  // Tombstoned tier ids — a delete retires any queued/in-flight writer so a late PUT
+  // response can't resurrect the tier's snapshot or raise a misleading 404 toast.
+  const deletedTiers = new Set<string>();
+
+  const loadRouting = async (): Promise<void> => {
+    setState({ routingLoading: true, routingError: null });
+    // Capture the mutation counter BEFORE the GETs; if any routing mutation lands
+    // while we load, this GET saw the old config and must be discarded (else it
+    // would restore stale visible state AND the stale rollback baseline).
+    const seq = routingSeq;
+    try {
+      const [tiers, models, rules, autoLayers] = await Promise.all([
+        client.listTiers(),
+        client.listModels(),
+        client.listRules(),
+        client.getAutoLayers(),
+      ]);
+      const entries = await Promise.all(tiers.map((t) => client.listTierEntries(t.id)));
+      if (routingSeq !== seq) return; // a mutation raced in — keep the newer state
+      setState(
+        produce((s) => {
+          s.routingTiers = tiers;
+          s.allModels = models;
+          s.rules = rules;
+          s.autoLayers = autoLayers;
+          s.tierEntries = {};
+          s.confirmedEntries = {};
+          tiers.forEach((t, i) => {
+            const list = entries[i] ?? [];
+            s.tierEntries[t.id] = list;
+            s.confirmedEntries[t.id] = list.map((e) => e.modelId);
+          });
+        }),
+      );
+      autoLayersConfirmed = autoLayers;
+    } catch (e) {
+      if (routingSeq === seq) setState('routingError', errMessage(e));
+    } finally {
+      setState('routingLoading', false);
+    }
+  };
+
+  const modelEntryInfo = (modelId: string): TierEntryDto['model'] => {
+    const m = state.allModels.find((x) => x.id === modelId);
+    return m
+      ? {
+          id: m.id,
+          providerId: m.providerId,
+          externalModelId: m.externalModelId,
+          displayName: m.displayName,
+        }
+      : null;
+  };
+
+  const buildEntries = (tierId: string, modelIds: string[]): TierEntryDto[] =>
+    modelIds.map((modelId, position) => ({
+      id: `pending-${tierId}-${modelId}`,
+      tierId,
+      modelId,
+      position,
+      model: modelEntryInfo(modelId),
+    }));
+
+  const currentModelIds = (tierId: string): string[] =>
+    (state.tierEntries[tierId] ?? []).map((e) => e.modelId);
+
+  /** Apply an ordered chain optimistically (immediate UI), then schedule a
+   * serialized PUT that sends the latest desired order. */
+  const applyTierOrder = (tierId: string, modelIds: string[]): void => {
+    setState('tierEntries', tierId, buildEntries(tierId, modelIds));
+    scheduleTierWrite(tierId, modelIds);
+  };
+
+  const scheduleTierWrite = (tierId: string, modelIds: string[]): void => {
+    if (deletedTiers.has(tierId)) return; // tombstoned — no writes for a deleted tier
+    bumpRouting(); // a mutation is starting — invalidate any in-flight loadRouting
+    tierDesired.set(tierId, modelIds);
+    if (!tierInFlight.has(tierId)) void drainTierWrites(tierId);
+  };
+
+  const drainTierWrites = async (tierId: string): Promise<void> => {
+    tierInFlight.add(tierId);
+    try {
+      while (tierDesired.has(tierId)) {
+        const desired = tierDesired.get(tierId) ?? [];
+        tierDesired.delete(tierId);
+        // Capture the confirmed order BEFORE this PUT — the rollback target.
+        const confirmed = [...(state.confirmedEntries[tierId] ?? [])];
+        try {
+          const entries = await client.replaceTierEntries(tierId, desired);
+          if (deletedTiers.has(tierId)) continue; // deleted mid-flight — don't resurrect
+          bumpRouting();
+          setState(
+            'confirmedEntries',
+            tierId,
+            entries.map((e) => e.modelId),
+          );
+          // Reconcile the visible chain to the server truth ONLY when no newer edit
+          // is queued — else the newer optimistic state stays and the next PUT wins.
+          if (!tierDesired.has(tierId)) setState('tierEntries', tierId, entries);
+        } catch (e) {
+          if (deletedTiers.has(tierId)) continue; // deleted — no misleading 404 toast
+          // Roll back to the last CONFIRMED order (never the failed optimistic one),
+          // and only when no newer edit is queued.
+          if (!tierDesired.has(tierId)) {
+            setState('tierEntries', tierId, buildEntries(tierId, confirmed));
+          }
+          say(errMessage(e));
+        }
+      }
+    } finally {
+      tierInFlight.delete(tierId);
+    }
+  };
+
+  const scheduleAutoLayers = (desired: { structural: boolean; cascade: boolean }): void => {
+    bumpRouting(); // an auto-layer mutation is starting — invalidate in-flight loads
+    autoLayersDesired = desired;
+    if (!autoLayersInFlight) void drainAutoLayers();
+  };
+
+  const drainAutoLayers = async (): Promise<void> => {
+    autoLayersInFlight = true;
+    try {
+      while (autoLayersDesired !== null) {
+        const desired = autoLayersDesired;
+        autoLayersDesired = null;
+        const confirmed = autoLayersConfirmed;
+        try {
+          const next = await client.setAutoLayers(desired);
+          bumpRouting();
+          autoLayersConfirmed = next;
+          if (autoLayersDesired === null) setState('autoLayers', next);
+        } catch (e) {
+          if (autoLayersDesired === null && confirmed !== null) {
+            setState('autoLayers', confirmed);
+          }
+          say(errMessage(e));
+        }
+      }
+    } finally {
+      autoLayersInFlight = false;
+    }
+  };
+
+  const loadLimits = async (): Promise<void> => {
+    setState({ budgetsLoading: true, budgetsError: null });
+    // Guard each list independently: a budget mutation must not discard the channel
+    // refresh (and vice versa) — only the raced domain is stale.
+    const bSeq = budgetsSeq;
+    const cSeq = channelsSeq;
+    try {
+      const [budgets, channels] = await Promise.all([client.listBudgets(), client.listChannels()]);
+      setState(
+        produce((s) => {
+          if (budgetsSeq === bSeq) s.budgets = budgets;
+          if (channelsSeq === cSeq) s.channels = channels;
+        }),
+      );
+    } catch (e) {
+      if (budgetsSeq === bSeq) setState('budgetsError', errMessage(e));
+    } finally {
+      setState('budgetsLoading', false);
+    }
+  };
+
+  const loadChannels = async (): Promise<void> => {
+    setState({ channelsLoading: true, channelsError: null });
+    const cSeq = channelsSeq;
+    try {
+      const channels = await client.listChannels();
+      if (channelsSeq === cSeq) setState('channels', channels); // discard if a mutation raced in
+    } catch (e) {
+      if (channelsSeq === cSeq) setState('channelsError', errMessage(e));
+    } finally {
+      setState('channelsLoading', false);
     }
   };
 
@@ -859,6 +1274,14 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       }
     },
     closeModal: () => {
+      // Don't dismiss a budget/channel modal while its save is in flight — a
+      // cancel→reopen→save would let the first completion reset the newer modal.
+      if (
+        (state.modal === 'newLimit' && state.bf.busy) ||
+        (state.modal === 'channel' && state.cf.busy)
+      ) {
+        return;
+      }
       setState(
         produce((s) => {
           s.kr = emptyKeyReveal();
@@ -869,103 +1292,331 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       );
     },
 
-    reorderChain: (tierIndex, from, to) => {
+    loadRouting,
+    moveTierEntry: (tierId, from, to) => {
       setState(
         produce((s) => {
-          const tier = s.tiers[tierIndex];
-          if (!tier) return;
-          const [moved] = tier.chain.splice(from, 1);
-          if (moved !== undefined) tier.chain.splice(to, 0, moved);
+          const list = s.tierEntries[tierId];
+          if (!list) return;
+          const [moved] = list.splice(from, 1);
+          if (moved === undefined) return;
+          list.splice(to, 0, moved);
+          list.forEach((e, i) => {
+            e.position = i;
+          });
         }),
       );
     },
-    removeFromChain: (tierIndex, model) => {
-      setState(
-        produce((s) => {
-          const tier = s.tiers[tierIndex];
-          if (!tier) return;
-          tier.chain = tier.chain.filter((m) => m !== model);
-        }),
-      );
+    // The chain is already reordered locally by `moveTierEntry` during the drag;
+    // on drop, schedule a single serialized PUT of the current order.
+    commitTierOrder: (tierId) => {
+      scheduleTierWrite(tierId, currentModelIds(tierId));
+      return Promise.resolve();
     },
-    addToChain: (tierIndex, model) => {
-      const tier = state.tiers[tierIndex];
-      if (!tier || tier.chain.length >= 5) {
-        say('Max 5 models per tier');
-        return false;
-      }
-      setState(
-        produce((s) => {
-          s.tiers[tierIndex]?.chain.push(model);
-        }),
-      );
-      return true;
-    },
-    toggleLayer: (layer) => {
-      if (layer === 'semantic') {
-        say('Layer 2 is a cloud-tier graduation');
+    addTierModel: (tierId, modelId) => {
+      const ids = currentModelIds(tierId);
+      if (ids.includes(modelId)) return;
+      if (ids.length >= MAX_MODELS_PER_TIER) {
+        say(`Max ${String(MAX_MODELS_PER_TIER)} models per tier`);
         return;
       }
-      setState('autoLayers', layer, (on) => !on);
+      applyTierOrder(tierId, [...ids, modelId]);
     },
-    removeRule: (id) => setState('rules', (rules) => rules.filter((r) => r.id !== id)),
-
-    createLimit: () => {
-      const amount = parseFloat(state.nl.amount) || 10;
-      setState(
-        produce((s) => {
-          s.limits.push({
-            id: Date.now(),
-            scope: s.nl.scope,
-            threshold: amount,
-            window: s.nl.window,
-            action: s.nl.action,
-            current: 0,
-            note:
-              s.nl.action === 'alert'
-                ? 'notifies: all enabled channels'
-                : 'hard stop — requests rejected at limit',
-          });
-          s.modal = null;
-        }),
+    removeTierModel: (tierId, modelId) => {
+      applyTierOrder(
+        tierId,
+        currentModelIds(tierId).filter((id) => id !== modelId),
       );
-      say('Budget created');
+    },
+    setPrimaryTierModel: (tierId, modelId) => {
+      const ids = currentModelIds(tierId);
+      if (ids[0] === modelId || !ids.includes(modelId)) return;
+      applyTierOrder(tierId, [modelId, ...ids.filter((id) => id !== modelId)]);
+    },
+    createTier: async () => {
+      const key = state.tf.key.trim();
+      if (!key) {
+        setState('tf', 'error', 'Key is required');
+        return;
+      }
+      setState('tf', { busy: true, error: null });
+      try {
+        const displayName = state.tf.displayName.trim();
+        const tier = await client.createTier({ key, ...(displayName ? { displayName } : {}) });
+        bumpRouting(); // invalidate any in-flight loadRouting that predates this tier
+        setState(
+          produce((s) => {
+            s.routingTiers = [...s.routingTiers, tier];
+            s.tierEntries[tier.id] = [];
+            s.confirmedEntries[tier.id] = [];
+            s.tf = { key: '', displayName: '', busy: false, error: null };
+          }),
+        );
+        say(`Tier ${tier.key} created`);
+      } catch (e) {
+        setState('tf', { busy: false, error: errMessage(e) });
+      }
+    },
+    deleteTier: async (tierId) => {
+      try {
+        await client.deleteTier(tierId);
+        // Retire any queued/in-flight writer for this tier and tombstone it so a late
+        // PUT response can't resurrect its snapshot or raise a misleading 404 toast.
+        tierDesired.delete(tierId);
+        deletedTiers.add(tierId);
+        bumpRouting();
+        setState(
+          produce((s) => {
+            s.routingTiers = s.routingTiers.filter((t) => t.id !== tierId);
+            delete s.tierEntries[tierId];
+            delete s.confirmedEntries[tierId];
+          }),
+        );
+        say('Tier deleted');
+      } catch (e) {
+        say(errMessage(e));
+      }
+    },
+    createRule: async () => {
+      const value = state.rf.value.trim();
+      const target = state.rf.target.trim();
+      if (!value || !target) {
+        setState('rf', 'error', 'A header value and target tier are required');
+        return;
+      }
+      setState('rf', { busy: true, error: null });
+      try {
+        const rule = await client.createRule({
+          matchType: 'header',
+          headerName: TIER_HEADER_NAME,
+          headerValue: value,
+          target: `tier:${target}`,
+        });
+        setState(
+          produce((s) => {
+            s.rules = [...s.rules, rule];
+            s.rf = { value: '', target: '', busy: false, error: null };
+          }),
+        );
+        say('Header rule created');
+      } catch (e) {
+        setState('rf', { busy: false, error: errMessage(e) });
+      }
+    },
+    deleteRule: async (id) => {
+      try {
+        await client.deleteRule(id);
+        setState('rules', (rules) => rules.filter((r) => r.id !== id));
+      } catch (e) {
+        say(errMessage(e));
+      }
+    },
+    toggleAutoLayer: (layer) => {
+      const cur = state.autoLayers;
+      if (!cur) return Promise.resolve();
+      const available = layer === 'structural' ? cur.structuralAvailable : cur.cascadeAvailable;
+      // Off instance-wide — the toggle is inert (greyed in the UI); no write.
+      if (!available) return Promise.resolve();
+      let structural = cur.structural;
+      let cascade = cur.cascade;
+      if (layer === 'structural') {
+        structural = !structural;
+        if (!structural) cascade = false; // cascade requires structural
+      } else {
+        cascade = !cascade;
+        if (cascade) structural = true; // enabling cascade forces structural (mirrors the server)
+      }
+      // Optimistic update + serialized write (rapid toggles send the latest state).
+      setState('autoLayers', { ...cur, structural, cascade });
+      scheduleAutoLayers({ structural, cascade });
+      return Promise.resolve();
+    },
+
+    loadLimits,
+    openBudget: (budget) => {
+      setState({ modal: 'newLimit', bf: budget ? budgetFormFrom(budget) : emptyBudgetForm() });
+    },
+    saveBudget: async () => {
+      if (state.bf.busy) return; // single-flight — no double-submit duplicates
+      const f = state.bf;
+      const name = f.name.trim();
+      if (!name) {
+        setState('bf', 'error', 'Name is required');
+        return;
+      }
+      const amount = Number(f.amount);
+      if (!Number.isFinite(amount) || amount <= 0) {
+        setState('bf', 'error', 'Amount must be a positive number');
+        return;
+      }
+      setState('bf', { busy: true, error: null });
+      const body: CreateBudgetInput = {
+        name,
+        scope: f.scope,
+        window: f.window,
+        action: f.action,
+        amount,
+        notifyChannelIds: f.notifyChannelIds,
+        enabled: f.enabled,
+        ...(f.scope === 'agent' && f.agentId ? { agentId: f.agentId } : {}),
+      };
+      try {
+        if (f.id) {
+          const patch: UpdateBudgetInput = body;
+          const updated = await client.updateBudget(f.id, patch);
+          bumpBudgets(); // invalidate an in-flight budgets loader (stale-overwrite)
+          setState(
+            produce((s) => {
+              const i = s.budgets.findIndex((b) => b.id === updated.id);
+              if (i >= 0) s.budgets[i] = updated;
+              s.modal = null;
+              s.bf = emptyBudgetForm();
+            }),
+          );
+          say('Budget updated');
+        } else {
+          const created = await client.createBudget(body);
+          bumpBudgets();
+          setState(
+            produce((s) => {
+              s.budgets = [...s.budgets, created];
+              s.modal = null;
+              s.bf = emptyBudgetForm();
+            }),
+          );
+          say('Budget created');
+        }
+      } catch (e) {
+        setState('bf', { busy: false, error: errMessage(e) });
+      }
+    },
+    deleteBudget: async (id) => {
+      try {
+        await client.deleteBudget(id);
+        bumpBudgets();
+        setState('budgets', (list) => list.filter((b) => b.id !== id));
+        say('Budget deleted');
+      } catch (e) {
+        say(errMessage(e));
+      }
+    },
+
+    loadChannels,
+    openChannel: (channel) => {
+      setState({ modal: 'channel', cf: channel ? channelFormFrom(channel) : emptyChannelForm() });
+    },
+    saveChannel: async () => {
+      if (state.cf.busy) return; // single-flight — no double-submit duplicates
+      const f = state.cf;
+      const name = f.name.trim();
+      if (!name) {
+        setState('cf', 'error', 'Name is required');
+        return;
+      }
+      const built = buildChannelConfig(f);
+      if (built.error !== null) {
+        setState('cf', 'error', built.error);
+        return;
+      }
+      const config = built.config;
+      if (f.id === null && config === null) {
+        setState('cf', 'error', 'Channel config is required');
+        return;
+      }
+      setState('cf', { busy: true, error: null });
+      try {
+        if (f.id) {
+          // Always send `kind` so a kind change persists; when the kind changes a
+          // full new config is required (enforced above via buildChannelConfig).
+          const patch: UpdateChannelInput = {
+            name,
+            kind: f.kind,
+            eventsSubscribed: f.events,
+            ...(config !== null ? { config } : {}),
+          };
+          const updated = await client.updateChannel(f.id, patch);
+          bumpChannels(); // invalidate an in-flight channels loader (stale-overwrite)
+          // Reconcile the returned row directly (a failed re-list must not read as
+          // success and leave stale UI, should-fix #5).
+          setState(
+            produce((s) => {
+              const i = s.channels.findIndex((c) => c.id === updated.id);
+              if (i >= 0) s.channels[i] = updated;
+              s.modal = null;
+              s.cf = emptyChannelForm();
+            }),
+          );
+          say('Channel updated');
+        } else {
+          const created = await client.createChannel({
+            name,
+            kind: f.kind,
+            eventsSubscribed: f.events,
+            config: config as ChannelConfigInput,
+          });
+          bumpChannels();
+          setState(
+            produce((s) => {
+              s.channels = [...s.channels, created];
+              s.modal = null;
+              s.cf = emptyChannelForm();
+            }),
+          );
+          say('Channel created');
+        }
+      } catch (e) {
+        setState('cf', { busy: false, error: errMessage(e) });
+      }
+    },
+    deleteChannel: async (id) => {
+      try {
+        await client.deleteChannel(id);
+        bumpChannels();
+        setState('channels', (list) => list.filter((c) => c.id !== id));
+        say('Channel deleted');
+      } catch (e) {
+        say(errMessage(e));
+      }
+    },
+    toggleChannelEnabled: async (channel) => {
+      if (state.channelToggling[channel.id]) return; // coalesce rapid clicks (#5)
+      setState('channelToggling', channel.id, true);
+      try {
+        const updated = await client.updateChannel(channel.id, { enabled: !channel.enabled });
+        bumpChannels(); // invalidate an in-flight channels loader (stale-overwrite)
+        setState('channels', (c) => c.id === channel.id, updated);
+      } catch (e) {
+        say(errMessage(e));
+      } finally {
+        setState('channelToggling', channel.id, false);
+      }
+    },
+    testChannelById: async (id) => {
+      if (state.channelTesting[id]) return; // per-channel single-flight (no double-fire)
+      setState('channelTesting', id, true);
+      try {
+        const result = await client.testChannel(id);
+        setState('channelTests', id, result);
+        // Reconcile lastTest* locally from the result (avoid a swallowed re-list).
+        const status = result.ok ? 'success' : `failed:${result.error ?? 'error'}`;
+        bumpChannels(); // invalidate an in-flight channels loader (stale-overwrite)
+        setState(
+          produce((s) => {
+            const ch = s.channels.find((c) => c.id === id);
+            if (ch) {
+              ch.lastTestStatus = status;
+              ch.lastTestAt = new Date().toISOString();
+            }
+          }),
+        );
+        say(result.ok ? 'Test sent' : `Test failed — ${result.error ?? 'unknown error'}`);
+      } catch (e) {
+        setState('channelTests', id, { ok: false, error: errMessage(e) });
+      } finally {
+        setState('channelTesting', id, false);
+      }
     },
     toggleBodyLog: () => setState('bodyLog', (on) => !on),
-    toggleChannel: (id) =>
-      setState(
-        'channels',
-        (c) => c.id === id,
-        'enabled',
-        (on) => !on,
-      ),
-    testChannel: (id) => {
-      setState('channels', (c) => c.id === id, 'testing', true);
-      setTimeout(
-        () =>
-          setState(
-            'channels',
-            (c) => c.id === id,
-            (c) => ({ ...c, testing: false, last: 'test ok · just now', lastOk: true }),
-          ),
-        1100,
-      );
-    },
-    addChannel: () =>
-      setState(
-        produce((s) => {
-          s.channels.push({
-            id: Date.now(),
-            name: 'discord alerts',
-            kind: 'apprise',
-            enabled: true,
-            detail: 'discord://webhook…',
-            last: 'never tested',
-            lastOk: null,
-            testing: false,
-          });
-        }),
-      ),
 
     obGo: (step) => setState('ob', 'step', step),
     obCreateAgent: async () => {

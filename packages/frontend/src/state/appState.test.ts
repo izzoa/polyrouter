@@ -1,8 +1,63 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, type AgentDto } from '../data/api';
+import {
+  ApiError,
+  type AgentDto,
+  type ChannelDto,
+  type ModelDto,
+  type TierDto,
+  type TierEntryDto,
+} from '../data/api';
 import { DEFAULT_SESSION, FakeApiClient } from '../test/fakeClient';
 import type { ProviderForm } from '../types';
 import { createAppStore } from './appState';
+
+const NOW = '2026-07-15T00:00:00.000Z';
+/** Let a fire-and-forget optimistic persist settle (macrotask after microtasks). */
+const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+function mkModel(id: string): ModelDto {
+  return {
+    id,
+    providerId: 'p1',
+    externalModelId: `ext-${id}`,
+    displayName: null,
+    contextWindow: null,
+    supportsTools: false,
+    supportsVision: false,
+    supportsReasoning: false,
+    isFree: false,
+    inputPricePer1m: 1,
+    outputPricePer1m: 2,
+    lastSyncedAt: null,
+  };
+}
+function mkEntry(tierId: string, modelId: string, position: number): TierEntryDto {
+  return { id: `e-${modelId}`, tierId, modelId, position, model: null };
+}
+function mkChannel(id: string, kind: 'smtp' | 'apprise'): ChannelDto {
+  return {
+    id,
+    name: `chan-${id}`,
+    kind,
+    enabled: true,
+    eventsSubscribed: ['budget_alert'],
+    hasConfig: true,
+    lastTestAt: null,
+    lastTestStatus: null,
+  };
+}
+/** A fake seeded with a `default` tier holding m1..m3 and 6 available models. */
+function routingFake(): FakeApiClient {
+  const tiers: TierDto[] = [
+    { id: 't1', key: 'default', displayName: 'Default', description: null, createdAt: NOW },
+  ];
+  return new FakeApiClient({
+    session: DEFAULT_SESSION,
+    models: { p1: ['m1', 'm2', 'm3', 'm4', 'm5', 'm6'].map(mkModel) },
+    tiers,
+    tierEntries: { t1: [mkEntry('t1', 'm1', 0), mkEntry('t1', 'm2', 1), mkEntry('t1', 'm3', 2)] },
+  });
+}
 
 const LOCAL_FORM: ProviderForm = {
   name: 'Local',
@@ -313,52 +368,472 @@ describe('onboarding (failure-aware walk)', () => {
   });
 });
 
-describe('simulated slices (deferred pages)', () => {
-  const sim = () => createAppStore(new FakeApiClient());
-
-  it('reorders a tier chain and recomputes the primary', () => {
-    const s = sim();
-    const before = [...(s.state.tiers[0]?.chain ?? [])];
-    s.reorderChain(0, 2, 0);
-    const after = s.state.tiers[0]?.chain ?? [];
-    expect(after[0]).toBe(before[2]);
-    expect(after).toHaveLength(before.length);
+describe('routing config (real CRUD)', () => {
+  it('loads tiers, entries, models, rules and auto-layers', async () => {
+    const fake = routingFake();
+    const s = createAppStore(fake);
+    await s.loadRouting();
+    expect(s.state.routingTiers).toHaveLength(1);
+    expect(s.state.tierEntries['t1']).toHaveLength(3);
+    expect(s.state.allModels).toHaveLength(6);
+    expect(s.state.autoLayers?.structural).toBe(true);
   });
 
-  it('enforces the 5-model cap with a toast', () => {
-    const s = sim();
-    expect(s.addToChain(0, 'kimi-k2')).toBe(true);
-    expect(s.addToChain(0, 'gemini-3-flash')).toBe(true);
-    expect(s.state.tiers[0]?.chain).toHaveLength(5);
-    expect(s.addToChain(0, 'gpt-5.2')).toBe(false);
-    expect(s.state.tiers[0]?.chain).toHaveLength(5);
+  it('reorders a tier chain and persists the new modelIds', async () => {
+    const fake = routingFake();
+    const s = createAppStore(fake);
+    await s.loadRouting();
+    s.moveTierEntry('t1', 2, 0);
+    await s.commitTierOrder('t1');
+    expect(fake.lastArgs('replaceTierEntries')).toEqual(['t1', ['m3', 'm1', 'm2']]);
+  });
+
+  it('adds a model (appended modelIds) and caps at 5 with a toast', async () => {
+    const fake = routingFake();
+    const s = createAppStore(fake);
+    await s.loadRouting();
+    s.addTierModel('t1', 'm4');
+    await tick();
+    expect(fake.lastArgs('replaceTierEntries')).toEqual(['t1', ['m1', 'm2', 'm3', 'm4']]);
+    s.addTierModel('t1', 'm5');
+    await tick();
+    expect(s.state.tierEntries['t1']).toHaveLength(5);
+    s.addTierModel('t1', 'm6');
     expect(s.state.toast).toBe('Max 5 models per tier');
+    expect(s.state.tierEntries['t1']).toHaveLength(5);
+    await tick();
   });
 
-  it('removes models and header rules', () => {
-    const s = sim();
-    s.removeFromChain(0, 'deepseek-v3.2');
-    expect(s.state.tiers[0]?.chain).not.toContain('deepseek-v3.2');
-    s.removeRule(1);
-    expect(s.state.rules.map((r) => r.id)).not.toContain(1);
+  it('removes a model and persists the shortened modelIds', async () => {
+    const fake = routingFake();
+    const s = createAppStore(fake);
+    await s.loadRouting();
+    s.removeTierModel('t1', 'm2');
+    await tick();
+    expect(fake.lastArgs('replaceTierEntries')).toEqual(['t1', ['m1', 'm3']]);
   });
 
-  it('toggles L1/L3 but keeps L2 locked as cloud-tier', () => {
-    const s = sim();
-    s.toggleLayer('structural');
-    expect(s.state.autoLayers.structural).toBe(false);
-    s.toggleLayer('semantic');
-    expect(s.state.autoLayers.semantic).toBe(false);
-    expect(s.state.toast).toBe('Layer 2 is a cloud-tier graduation');
+  it('sets a fallback as primary (position 0)', async () => {
+    const fake = routingFake();
+    const s = createAppStore(fake);
+    await s.loadRouting();
+    s.setPrimaryTierModel('t1', 'm3');
+    await tick();
+    expect(fake.lastArgs('replaceTierEntries')).toEqual(['t1', ['m3', 'm1', 'm2']]);
   });
 
-  it('creates budgets from the modal state', () => {
-    const s = sim();
-    s.setState('nl', { scope: 'Global', amount: '42.50', window: 'week', action: 'block' });
-    s.createLimit();
-    const limit = s.state.limits.at(-1);
-    expect(limit?.threshold).toBe(42.5);
-    expect(limit?.action).toBe('block');
-    expect(limit?.note).toContain('hard stop');
+  it('creates and deletes a header rule (value → tier:<key>)', async () => {
+    const fake = routingFake();
+    const s = createAppStore(fake);
+    await s.loadRouting();
+    s.setState('rf', { value: 'heavy', target: 'heavy' });
+    await s.createRule();
+    expect(fake.lastArgs('createRule')?.[0]).toMatchObject({
+      matchType: 'header',
+      headerValue: 'heavy',
+      target: 'tier:heavy',
+    });
+    const created = s.state.rules.find((r) => r.headerValue === 'heavy');
+    expect(created).toBeDefined();
+    if (!created) return;
+    await s.deleteRule(created.id);
+    expect(s.state.rules.find((r) => r.id === created.id)).toBeUndefined();
+  });
+
+  it('toggles auto-layers: structural off, then cascade-on re-enables structural', async () => {
+    const fake = routingFake();
+    const s = createAppStore(fake);
+    await s.loadRouting();
+    await s.toggleAutoLayer('structural');
+    expect(fake.lastArgs('setAutoLayers')?.[0]).toEqual({ structural: false, cascade: false });
+    expect(s.state.autoLayers?.structural).toBe(false);
+    await s.toggleAutoLayer('cascade');
+    expect(fake.lastArgs('setAutoLayers')?.[0]).toEqual({ structural: true, cascade: true });
+    expect(s.state.autoLayers?.structural).toBe(true);
+    expect(s.state.autoLayers?.cascade).toBe(true);
+  });
+
+  it('leaves an instance-disabled (unavailable) layer inert', async () => {
+    const fake = new FakeApiClient({
+      session: DEFAULT_SESSION,
+      autoLayers: {
+        structural: false,
+        cascade: false,
+        structuralAvailable: false,
+        cascadeAvailable: false,
+      },
+    });
+    const s = createAppStore(fake);
+    await s.loadRouting();
+    await s.toggleAutoLayer('structural');
+    expect(fake.countOf('setAutoLayers')).toBe(0);
+    expect(s.state.autoLayers?.structural).toBe(false);
+  });
+});
+
+describe('budgets (real CRUD)', () => {
+  it('creates an alert budget with channel wiring', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    const s = createAppStore(fake);
+    s.openBudget();
+    s.setState('bf', {
+      name: 'daily cap',
+      scope: 'global',
+      amount: '12.50',
+      window: 'day',
+      action: 'alert',
+      notifyChannelIds: ['chan-1'],
+    });
+    await s.saveBudget();
+    expect(fake.lastArgs('createBudget')?.[0]).toMatchObject({
+      scope: 'global',
+      action: 'alert',
+      amount: 12.5,
+      notifyChannelIds: ['chan-1'],
+    });
+    expect(s.state.budgets.some((b) => b.name === 'daily cap')).toBe(true);
+    expect(s.state.modal).toBeNull();
+  });
+
+  it('creates a block budget', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    const s = createAppStore(fake);
+    s.openBudget();
+    s.setState('bf', { name: 'hard cap', amount: '80', window: 'month', action: 'block' });
+    await s.saveBudget();
+    expect(fake.lastArgs('createBudget')?.[0]).toMatchObject({ action: 'block', amount: 80 });
+  });
+
+  it('surfaces the agent-needs-agentId 422 inline and keeps the modal open', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    const s = createAppStore(fake);
+    s.openBudget();
+    s.setState('bf', { name: 'agent cap', scope: 'agent', agentId: '', amount: '5' });
+    await s.saveBudget();
+    expect(s.state.bf.error).toMatch(/agentId/i);
+    expect(s.state.modal).toBe('newLimit');
+    expect(s.state.budgets).toHaveLength(0);
+  });
+});
+
+describe('notification channels (real CRUD + test-send)', () => {
+  it('creates an SMTP channel from the form', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    const s = createAppStore(fake);
+    s.openChannel();
+    s.setState('cf', {
+      name: 'homelab email',
+      kind: 'smtp',
+      smtpHost: 'smtp.fastmail.com',
+      smtpPort: '587',
+      smtpFrom: 'alerts@my.box',
+      smtpTo: 'admin@my.box',
+      events: ['budget_alert'],
+    });
+    await s.saveChannel();
+    expect(fake.lastArgs('createChannel')?.[0]).toMatchObject({
+      name: 'homelab email',
+      kind: 'smtp',
+    });
+    expect(s.state.channels.some((c) => c.name === 'homelab email')).toBe(true);
+    expect(s.state.modal).toBeNull();
+  });
+
+  it('renders a failed test-send result inline via channelTests', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    const s = createAppStore(fake);
+    s.openChannel();
+    s.setState('cf', {
+      name: 'ntfy',
+      kind: 'apprise',
+      appriseUrls: 'ntfy://homelab/polyrouter',
+      events: ['budget_alert'],
+    });
+    await s.saveChannel();
+    const created = s.state.channels[0];
+    expect(created).toBeDefined();
+    if (!created) return;
+    fake.channelTestResult = { ok: false, error: 'apprise_unreachable' };
+    await s.testChannelById(created.id);
+    expect(s.state.channelTests[created.id]).toEqual({ ok: false, error: 'apprise_unreachable' });
+  });
+
+  it('toggles a channel enabled flag through the API', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    const s = createAppStore(fake);
+    s.openChannel();
+    s.setState('cf', {
+      name: 'c',
+      kind: 'apprise',
+      appriseUrls: 'ntfy://x/y',
+      events: ['budget_alert'],
+    });
+    await s.saveChannel();
+    const c = s.state.channels[0];
+    expect(c?.enabled).toBe(true);
+    if (!c) return;
+    await s.toggleChannelEnabled(c);
+    expect(s.state.channels[0]?.enabled).toBe(false);
+  });
+
+  it('requires a full new config on a kind change, then PATCHes kind + config (#3)', async () => {
+    const fake = new FakeApiClient({
+      session: DEFAULT_SESSION,
+      channels: [mkChannel('c1', 'smtp')],
+    });
+    const s = createAppStore(fake);
+    await s.loadChannels();
+    s.openChannel(s.state.channels[0]);
+    // Change kind smtp → apprise with a BLANK config: blocked inline, no PATCH.
+    s.setState('cf', 'kind', 'apprise');
+    await s.saveChannel();
+    expect(s.state.cf.error).toBeTruthy();
+    expect(fake.countOf('updateChannel')).toBe(0);
+    // Provide the new apprise config: PATCH now carries kind + config.
+    s.setState('cf', 'appriseUrls', 'ntfy://homelab/x');
+    await s.saveChannel();
+    expect(fake.lastArgs('updateChannel')?.[1]).toMatchObject({
+      kind: 'apprise',
+      config: { urls: ['ntfy://homelab/x'] },
+    });
+    expect(s.state.channels[0]?.kind).toBe('apprise');
+  });
+
+  it('reconciles a saved channel directly without re-listing (#5)', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    const s = createAppStore(fake);
+    s.openChannel();
+    s.setState('cf', {
+      name: 'direct',
+      kind: 'apprise',
+      appriseUrls: 'ntfy://x/y',
+      events: ['budget_alert'],
+    });
+    await s.saveChannel();
+    expect(s.state.channels.some((c) => c.name === 'direct')).toBe(true);
+    // No GET /notification-channels re-list — a swallowed refresh can't mask success.
+    expect(fake.countOf('listChannels')).toBe(0);
+  });
+});
+
+describe('config write serialization & single-flight guards (#20 review)', () => {
+  it('serializes tier writes: a failed earlier PUT never loses a newer edit (#1/#2)', async () => {
+    const fake = routingFake();
+    fake.deferTierWrites = true;
+    const s = createAppStore(fake);
+    await s.loadRouting();
+    // Two rapid edits; only the first PUT ([..m4]) is in flight (single-flight).
+    s.addTierModel('t1', 'm4');
+    s.addTierModel('t1', 'm5');
+    await tick();
+    expect(fake.tierWriteQueue).toHaveLength(1);
+    expect(fake.tierWriteQueue[0]?.input.modelIds).toEqual(['m1', 'm2', 'm3', 'm4']);
+    // The earlier write FAILS out of order; the newer desired must still be sent + win.
+    fake.tierWriteQueue[0]?.settle('reject');
+    await tick();
+    expect(fake.tierWriteQueue).toHaveLength(2);
+    expect(fake.tierWriteQueue[1]?.input.modelIds).toEqual(['m1', 'm2', 'm3', 'm4', 'm5']);
+    fake.tierWriteQueue[1]?.settle('resolve');
+    await tick();
+    expect(s.state.tierEntries['t1']?.map((e) => e.modelId)).toEqual([
+      'm1',
+      'm2',
+      'm3',
+      'm4',
+      'm5',
+    ]);
+    expect(s.state.confirmedEntries['t1']).toEqual(['m1', 'm2', 'm3', 'm4', 'm5']);
+  });
+
+  it('rolls a failed reorder back to the CONFIRMED order, not the mid-drag order (#1)', async () => {
+    const fake = routingFake();
+    fake.deferTierWrites = true;
+    const s = createAppStore(fake);
+    await s.loadRouting();
+    s.moveTierEntry('t1', 2, 0); // optimistic mid-drag order [m3, m1, m2]
+    await s.commitTierOrder('t1');
+    expect(s.state.tierEntries['t1']?.map((e) => e.modelId)).toEqual(['m3', 'm1', 'm2']);
+    fake.tierWriteQueue[0]?.settle('reject');
+    await tick();
+    // Rollback restores the server-confirmed order, NOT the failed optimistic one.
+    expect(s.state.tierEntries['t1']?.map((e) => e.modelId)).toEqual(['m1', 'm2', 'm3']);
+    expect(s.state.confirmedEntries['t1']).toEqual(['m1', 'm2', 'm3']);
+  });
+
+  it('serializes auto-layer toggles: a failed earlier PUT never loses the newer toggle (#2)', async () => {
+    const fake = routingFake();
+    fake.deferAutoLayers = true;
+    const s = createAppStore(fake);
+    await s.loadRouting();
+    await s.toggleAutoLayer('structural'); // desired {structural:false, cascade:false}
+    await s.toggleAutoLayer('structural'); // desired {structural:true, cascade:false}
+    expect(fake.autoLayersQueue).toHaveLength(1);
+    expect(fake.autoLayersQueue[0]?.input).toEqual({ structural: false, cascade: false });
+    fake.autoLayersQueue[0]?.settle('reject');
+    await tick();
+    expect(fake.autoLayersQueue).toHaveLength(2);
+    expect(fake.autoLayersQueue[1]?.input).toEqual({ structural: true, cascade: false });
+    fake.autoLayersQueue[1]?.settle('resolve');
+    await tick();
+    expect(s.state.autoLayers?.structural).toBe(true);
+    expect(s.state.autoLayers?.cascade).toBe(false);
+  });
+
+  it('prevents double-submit of a budget (#6)', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    const s = createAppStore(fake);
+    s.openBudget();
+    s.setState('bf', { name: 'x', scope: 'global', amount: '5', window: 'day', action: 'alert' });
+    await Promise.all([s.saveBudget(), s.saveBudget()]);
+    expect(fake.countOf('createBudget')).toBe(1);
+  });
+
+  it('prevents double-submit of a channel (#6)', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    const s = createAppStore(fake);
+    s.openChannel();
+    s.setState('cf', {
+      name: 'c',
+      kind: 'apprise',
+      appriseUrls: 'ntfy://x/y',
+      events: ['budget_alert'],
+    });
+    await Promise.all([s.saveChannel(), s.saveChannel()]);
+    expect(fake.countOf('createChannel')).toBe(1);
+  });
+
+  it('prevents double-fire of a channel test-send (#6)', async () => {
+    const fake = new FakeApiClient({
+      session: DEFAULT_SESSION,
+      channels: [mkChannel('c1', 'smtp')],
+    });
+    const s = createAppStore(fake);
+    await s.loadChannels();
+    const id = s.state.channels[0]?.id ?? 'c1';
+    await Promise.all([s.testChannelById(id), s.testChannelById(id)]);
+    expect(fake.countOf('testChannel')).toBe(1);
+  });
+});
+
+describe('stale-loader-overwrite guards (#20 verify pass)', () => {
+  it('discards a routing GET that lands after a successful PUT (#1)', async () => {
+    const fake = routingFake();
+    const s = createAppStore(fake);
+    await s.loadRouting();
+    // Start a reload that is held open mid-flight (it snapshots the OLD config).
+    fake.gateReads = true;
+    const reload = s.loadRouting();
+    await tick();
+    // A PUT succeeds during the load — confirmed/visible advance to [..m4].
+    s.addTierModel('t1', 'm4');
+    await tick();
+    expect(s.state.confirmedEntries['t1']).toEqual(['m1', 'm2', 'm3', 'm4']);
+    // The stale GET now resolves — it must NOT clobber the just-persisted state.
+    fake.gateReads = false;
+    fake.openGate();
+    await reload;
+    expect(s.state.confirmedEntries['t1']).toEqual(['m1', 'm2', 'm3', 'm4']);
+    expect(s.state.tierEntries['t1']?.map((e) => e.modelId)).toEqual(['m1', 'm2', 'm3', 'm4']);
+  });
+
+  it('discards a channels GET that lands after a save (#3)', async () => {
+    const fake = new FakeApiClient({
+      session: DEFAULT_SESSION,
+      channels: [mkChannel('c1', 'smtp')],
+    });
+    const s = createAppStore(fake);
+    await s.loadChannels();
+    fake.gateReads = true;
+    const reload = s.loadChannels(); // snapshots [c1]
+    await tick();
+    s.openChannel();
+    s.setState('cf', {
+      name: 'c2',
+      kind: 'apprise',
+      appriseUrls: 'ntfy://x/y',
+      events: ['budget_alert'],
+    });
+    await s.saveChannel(); // adds c2, bumps channelsSeq
+    expect(s.state.channels.some((c) => c.name === 'c2')).toBe(true);
+    fake.gateReads = false;
+    fake.openGate();
+    await reload;
+    // The stale GET (snapshot [c1]) must not drop the just-created c2.
+    expect(s.state.channels.some((c) => c.name === 'c2')).toBe(true);
+  });
+
+  it('discards a budgets GET that lands after a budget create, keeping channels fresh (#3)', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    const s = createAppStore(fake);
+    await s.loadLimits();
+    fake.gateReads = true;
+    const reload = s.loadLimits(); // snapshots empty budgets
+    await tick();
+    s.openBudget();
+    s.setState('bf', { name: 'b1', scope: 'global', amount: '5', window: 'day', action: 'alert' });
+    await s.saveBudget(); // adds b1, bumps budgetsSeq
+    fake.gateReads = false;
+    fake.openGate();
+    await reload;
+    expect(s.state.budgets.some((b) => b.name === 'b1')).toBe(true);
+  });
+
+  it('retires a deleted tier’s in-flight write without resurrecting it (#2)', async () => {
+    const fake = routingFake();
+    fake.deferTierWrites = true;
+    const s = createAppStore(fake);
+    await s.loadRouting();
+    s.addTierModel('t1', 'm4'); // PUT queued, deferred
+    await tick();
+    expect(fake.tierWriteQueue).toHaveLength(1);
+    await s.deleteTier('t1');
+    expect(s.state.routingTiers.find((t) => t.id === 't1')).toBeUndefined();
+    expect(s.state.tierEntries['t1']).toBeUndefined();
+    // The late PUT response must not recreate the tier's snapshot.
+    fake.tierWriteQueue[0]?.settle('resolve');
+    await tick();
+    expect(s.state.tierEntries['t1']).toBeUndefined();
+    expect(s.state.confirmedEntries['t1']).toBeUndefined();
+  });
+
+  it('a deleted tier’s failed late write raises no misleading toast (#2)', async () => {
+    const fake = routingFake();
+    fake.deferTierWrites = true;
+    const s = createAppStore(fake);
+    await s.loadRouting();
+    s.addTierModel('t1', 'm4');
+    await tick();
+    await s.deleteTier('t1');
+    expect(s.state.toast).toBe('Tier deleted');
+    fake.tierWriteQueue[0]?.settle('reject');
+    await tick();
+    expect(s.state.toast).toBe('Tier deleted'); // no 404/error toast for the retired write
+    expect(s.state.tierEntries['t1']).toBeUndefined();
+  });
+
+  it('coalesces rapid channel enable-toggle clicks (#5)', async () => {
+    const fake = new FakeApiClient({
+      session: DEFAULT_SESSION,
+      channels: [mkChannel('c1', 'smtp')],
+    });
+    const s = createAppStore(fake);
+    await s.loadChannels();
+    const c = s.state.channels[0];
+    expect(c).toBeDefined();
+    if (!c) return;
+    await Promise.all([s.toggleChannelEnabled(c), s.toggleChannelEnabled(c)]);
+    expect(fake.countOf('updateChannel')).toBe(1);
+    expect(s.state.channels[0]?.enabled).toBe(false);
+  });
+
+  it('refuses to dismiss a budget/channel modal while a save is in flight (#4)', () => {
+    const s = createAppStore(new FakeApiClient({ session: DEFAULT_SESSION }));
+    s.openChannel();
+    s.setState('cf', 'busy', true); // simulate an in-flight save
+    s.closeModal();
+    expect(s.state.modal).toBe('channel'); // not dismissed
+    s.setState('cf', 'busy', false);
+    s.closeModal();
+    expect(s.state.modal).toBeNull();
   });
 });

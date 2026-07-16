@@ -50,6 +50,7 @@ import {
   type ProxyAdapterFactory,
   type ProxyRuntime,
 } from './proxy.config';
+import { ROUTING_CONFIG, autoLayerCapability, type RoutingConfig } from './routing.config';
 import { RequestRecorder, type RecordingContext } from '../recording/request-recorder';
 import { StructuralRouter } from './structural/structural-router';
 import { CascadeRouter, type CascadePlan } from './cascade/cascade-router';
@@ -106,6 +107,12 @@ interface Prepared {
   cascade?: CascadeBundle;
 }
 
+/** Deadline for the per-tenant auto-layer preference read (#20). Generous: the
+ * routing snapshot loads immediately before, so the pool is already proven live
+ * — only a genuine hang trips this, and it degrades to the capability default
+ * rather than stalling the request (invariant 1). */
+const ROUTING_SETTINGS_READ_TIMEOUT_MS = 1_000;
+
 /** Assistant output characters (text + tool name/args) for a usage estimate. */
 function countOutputChars(content: readonly ContentBlock[]): number {
   let n = 0;
@@ -134,6 +141,7 @@ export class ProxyService {
     @Inject(PROXY_RUNTIME) private readonly rt: ProxyRuntime,
     @Inject(PROXY_ADAPTER_FACTORY) private readonly factory: ProxyAdapterFactory,
     @Inject(PROXY_BREAKER) private readonly breaker: CircuitBreaker,
+    @Inject(ROUTING_CONFIG) private readonly routingConfig: RoutingConfig,
     private readonly recorder: RequestRecorder,
     private readonly structural: StructuralRouter,
     private readonly cascade: CascadeRouter,
@@ -506,6 +514,41 @@ export class ProxyService {
 
   // --- internals ---
 
+  /** The tenant's effective auto layers (#20): the boot capability masked by the
+   * owner-scoped preference (absent → inherit-on). Read lazily, only on an
+   * `auto`→default request. A settings-read fault must NOT fail or stall the
+   * request (invariant 1) — a throw, rejection, OR a never-settling read all
+   * degrade to the raw instance capability (the read is deadline-bounded). */
+  private async effectiveAutoLayers(
+    principal: Principal,
+  ): Promise<{ structural: boolean; cascade: boolean }> {
+    const cap = autoLayerCapability(this.routingConfig);
+    // Cascade implies structural, so structural off instance-wide leaves nothing
+    // for a preference to gate — skip the read entirely.
+    if (!cap.structural) return cap;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const pref = await Promise.race([
+        this.db.routingSettings.get(principal),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error('routing-settings read timeout')),
+            ROUTING_SETTINGS_READ_TIMEOUT_MS,
+          );
+          timer.unref();
+        }),
+      ]);
+      return {
+        structural: cap.structural && (pref?.structuralEnabled ?? true),
+        cascade: cap.cascade && (pref?.cascadeEnabled ?? true),
+      };
+    } catch {
+      return cap;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
   private async prepare(
     principal: Principal,
     protocol: ClientProtocol,
@@ -534,13 +577,19 @@ export class ProxyService {
     // default tier; explicit models and header tiers already won in Layer 0.
     let cascadePlan: CascadePlan | null = null;
     if (ir.model === AUTO_ALIAS && decision.decisionLayer === 'default') {
-      const evaln = await this.structural.evaluate(principal, agentId, ir, snapshot);
-      if (evaln.kind === 'route')
-        decision = evaln.decision; // Layer 1 confident band
-      else if (evaln.kind === 'ambiguous' && this.cascade.enabled) {
-        cascadePlan = this.cascade.plan(snapshot); // Layer 3 candidate
+      // Per-tenant opt-out (#20): the effective layers are the instance
+      // capability masked by the tenant's preference. A disabled layer is
+      // skipped; the Layer-0 default then stands (invariant 1).
+      const layers = await this.effectiveAutoLayers(principal);
+      if (layers.structural) {
+        const evaln = await this.structural.evaluate(principal, agentId, ir, snapshot);
+        if (evaln.kind === 'route')
+          decision = evaln.decision; // Layer 1 confident band
+        else if (evaln.kind === 'ambiguous' && layers.cascade) {
+          cascadePlan = this.cascade.plan(snapshot); // Layer 3 candidate
+        }
+        // else: the Layer-0 default decision stands (invariant 1)
       }
-      // else: the Layer-0 default decision stands (invariant 1)
     }
 
     const primary = await this.buildBundle(principal, decision, models);

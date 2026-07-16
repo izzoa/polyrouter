@@ -139,6 +139,151 @@ export interface TierEntryDto {
   model: TierEntryModel | null;
 }
 
+// --- Config surfaces (#20) — tiers / rules / budgets / channels / auto-layers ---
+
+export interface CreateTierInput {
+  key: string;
+  displayName?: string;
+  description?: string;
+}
+
+export interface UpdateTierInput {
+  displayName?: string;
+  description?: string;
+}
+
+/** Client-side mirror of the server tier cap (§7.4) and the tier header (§7.2).
+ * Re-declared here because the frontend cannot import `@polyrouter/shared/server`
+ * (the module-boundary lint forbids it), where the canonical constants live. */
+export const MAX_MODELS_PER_TIER = 5;
+export const TIER_HEADER_NAME = 'x-polyrouter-tier';
+
+/** Rule match types the proxy (#10) understands. The dashboard authors `header`
+ * rules; the auto-band / default kinds are surfaced read-only. */
+export type RuleMatchType = 'header' | 'default' | 'auto_high' | 'auto_low';
+
+export interface RuleDto {
+  id: string;
+  matchType: string;
+  headerName: string;
+  headerValue: string | null;
+  target: string;
+  priority: number;
+  createdAt: string;
+}
+
+export interface CreateRuleInput {
+  matchType: RuleMatchType;
+  headerName?: string;
+  headerValue?: string;
+  target: string;
+  priority?: number;
+}
+
+export type BudgetScope = 'global' | 'agent';
+export type BudgetWindow = 'day' | 'week' | 'month';
+export type BudgetAction = 'alert' | 'block';
+
+/** The API view of a budget (no secrets; channel ids as an array). */
+export interface BudgetDto {
+  id: string;
+  name: string;
+  scope: string;
+  agentId: string | null;
+  window: string;
+  action: string;
+  amount: number;
+  notifyChannelIds: string[];
+  enabled: boolean;
+  createdAt: string;
+}
+
+export interface CreateBudgetInput {
+  name: string;
+  scope: BudgetScope;
+  agentId?: string;
+  window: BudgetWindow;
+  action: BudgetAction;
+  amount: number;
+  notifyChannelIds?: string[];
+  enabled?: boolean;
+}
+
+export type UpdateBudgetInput = Partial<CreateBudgetInput>;
+
+export type ChannelKind = 'smtp' | 'apprise';
+export type SmtpSecure = 'none' | 'starttls' | 'tls';
+
+/** Notification event types a channel can subscribe to (#15a). Mirrors the
+ * server `EVENT_TYPES` (a server-only module the frontend can't import). */
+export const EVENT_TYPES = [
+  'budget_alert',
+  'budget_block',
+  'provider_down',
+  'request_failures_spike',
+  'weekly_spend_summary',
+  'test',
+] as const;
+export type EventType = (typeof EVENT_TYPES)[number];
+
+/** The channel's safe view — never the decrypted config (invariant 8). */
+export interface ChannelDto {
+  id: string;
+  name: string;
+  kind: string;
+  enabled: boolean;
+  eventsSubscribed: string[];
+  hasConfig: boolean;
+  lastTestAt: string | null;
+  lastTestStatus: string | null;
+}
+
+/** Write-only, kind-specific channel config sent on create/edit; never returned. */
+export interface SmtpChannelConfig {
+  host: string;
+  port: number;
+  secure: SmtpSecure;
+  user?: string;
+  pass?: string;
+  from: string;
+  to: string[];
+}
+export interface AppriseChannelConfig {
+  urls: string[];
+}
+export type ChannelConfigInput = SmtpChannelConfig | AppriseChannelConfig;
+
+export interface CreateChannelInput {
+  name: string;
+  kind: ChannelKind;
+  enabled?: boolean;
+  eventsSubscribed: EventType[];
+  config: ChannelConfigInput;
+}
+
+export interface UpdateChannelInput {
+  name?: string;
+  kind?: ChannelKind;
+  enabled?: boolean;
+  eventsSubscribed?: EventType[];
+  config?: ChannelConfigInput;
+}
+
+/** Sanitized test-send result — HTTP 200 even on failure; branch on `ok`. */
+export interface ChannelTestResult {
+  ok: boolean;
+  error?: string;
+}
+
+/** Effective auto-layer flags + the instance capability (#20). A layer whose
+ * `*Available` is false is off instance-wide (`ROUTING_AUTO_LAYERS`). */
+export interface AutoLayers {
+  structural: boolean;
+  cascade: boolean;
+  structuralAvailable: boolean;
+  cascadeAvailable: boolean;
+}
+
 export interface ChatMessage {
   role: string;
   content: string;
@@ -299,7 +444,25 @@ export interface ApiClient {
   listModels(providerId?: string): Promise<ModelDto[]>;
   updateModelPricing(id: string, body: ModelPricingInput): Promise<ModelDto>;
   listTiers(): Promise<TierDto[]>;
+  createTier(input: CreateTierInput): Promise<TierDto>;
+  updateTier(id: string, patch: UpdateTierInput): Promise<TierDto>;
+  deleteTier(id: string): Promise<{ deleted: boolean }>;
+  listTierEntries(tierId: string): Promise<TierEntryDto[]>;
   replaceTierEntries(tierId: string, modelIds: string[]): Promise<TierEntryDto[]>;
+  listRules(): Promise<RuleDto[]>;
+  createRule(input: CreateRuleInput): Promise<RuleDto>;
+  deleteRule(id: string): Promise<{ deleted: boolean }>;
+  getAutoLayers(): Promise<AutoLayers>;
+  setAutoLayers(input: { structural: boolean; cascade: boolean }): Promise<AutoLayers>;
+  listBudgets(): Promise<BudgetDto[]>;
+  createBudget(input: CreateBudgetInput): Promise<BudgetDto>;
+  updateBudget(id: string, patch: UpdateBudgetInput): Promise<BudgetDto>;
+  deleteBudget(id: string): Promise<{ deleted: boolean }>;
+  listChannels(): Promise<ChannelDto[]>;
+  createChannel(input: CreateChannelInput): Promise<ChannelDto>;
+  updateChannel(id: string, patch: UpdateChannelInput): Promise<ChannelDto>;
+  deleteChannel(id: string): Promise<{ deleted: boolean }>;
+  testChannel(id: string): Promise<ChannelTestResult>;
   proxyTest(agentKey: string, body: ProxyTestBody): Promise<ChatCompletion>;
   summary(range: AnalyticsRangeParams): Promise<AnalyticsSummary>;
   timeseries(range: AnalyticsRangeParams, bucket: TimeseriesBucket): Promise<TimeseriesPoint[]>;
@@ -430,10 +593,53 @@ export const realClient: ApiClient = {
   updateModelPricing: (id, body) =>
     http<ModelDto>(`${API_BASE}/models/${encodeURIComponent(id)}`, jsonInit('PATCH', body)),
   listTiers: () => http<TierDto[]>(`${API_BASE}/routing/tiers`),
+  createTier: (input) => http<TierDto>(`${API_BASE}/routing/tiers`, jsonInit('POST', input)),
+  updateTier: (id, patch) =>
+    http<TierDto>(`${API_BASE}/routing/tiers/${encodeURIComponent(id)}`, jsonInit('PATCH', patch)),
+  deleteTier: (id) =>
+    http<{ deleted: boolean }>(`${API_BASE}/routing/tiers/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+  listTierEntries: (tierId) =>
+    http<TierEntryDto[]>(`${API_BASE}/routing/tiers/${encodeURIComponent(tierId)}/entries`),
   replaceTierEntries: (tierId, modelIds) =>
     http<TierEntryDto[]>(
       `${API_BASE}/routing/tiers/${encodeURIComponent(tierId)}/entries`,
       jsonInit('PUT', { modelIds }),
+    ),
+  listRules: () => http<RuleDto[]>(`${API_BASE}/routing/rules`),
+  createRule: (input) => http<RuleDto>(`${API_BASE}/routing/rules`, jsonInit('POST', input)),
+  deleteRule: (id) =>
+    http<{ deleted: boolean }>(`${API_BASE}/routing/rules/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+  getAutoLayers: () => http<AutoLayers>(`${API_BASE}/routing/auto-layers`),
+  setAutoLayers: (input) =>
+    http<AutoLayers>(`${API_BASE}/routing/auto-layers`, jsonInit('PUT', input)),
+  listBudgets: () => http<BudgetDto[]>(`${API_BASE}/budgets`),
+  createBudget: (input) => http<BudgetDto>(`${API_BASE}/budgets`, jsonInit('POST', input)),
+  updateBudget: (id, patch) =>
+    http<BudgetDto>(`${API_BASE}/budgets/${encodeURIComponent(id)}`, jsonInit('PATCH', patch)),
+  deleteBudget: (id) =>
+    http<{ deleted: boolean }>(`${API_BASE}/budgets/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+  listChannels: () => http<ChannelDto[]>(`${API_BASE}/notification-channels`),
+  createChannel: (input) =>
+    http<ChannelDto>(`${API_BASE}/notification-channels`, jsonInit('POST', input)),
+  updateChannel: (id, patch) =>
+    http<ChannelDto>(
+      `${API_BASE}/notification-channels/${encodeURIComponent(id)}`,
+      jsonInit('PATCH', patch),
+    ),
+  deleteChannel: (id) =>
+    http<{ deleted: boolean }>(`${API_BASE}/notification-channels/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+  testChannel: (id) =>
+    http<ChannelTestResult>(
+      `${API_BASE}/notification-channels/${encodeURIComponent(id)}/test`,
+      jsonInit('POST', {}),
     ),
   proxyTest: (agentKey, body) =>
     http<ChatCompletion>(

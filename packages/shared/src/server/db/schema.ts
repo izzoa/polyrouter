@@ -435,6 +435,31 @@ export const budgets = pgTable(
   ],
 );
 
+/** Per-tenant automatic-routing layer preferences (#20, spec §9). One row per
+ * owner (unique) — the tenant's structural/cascade on/off PREFERENCE. Absent =
+ * inherit the instance capability (`ROUTING_AUTO_LAYERS`). The proxy reads it on
+ * the auto→default path; effective = capability AND (preference, default on).
+ * The check backstops the write-time "cascade implies structural" normalization. */
+export const routingSettings = pgTable(
+  'routing_settings',
+  {
+    id: id(),
+    ownerUserId: owned.ownerUserId(),
+    orgId: owned.orgId(),
+    structuralEnabled: boolean('structural_enabled').notNull(),
+    cascadeEnabled: boolean('cascade_enabled').notNull(),
+    createdAt: createdAt(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex('routing_settings_owner_unique').on(t.ownerUserId),
+    check(
+      'routing_settings_cascade_implies_structural',
+      sql`NOT ${t.cascadeEnabled} OR ${t.structuralEnabled}`,
+    ),
+  ],
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
 export type AccountRow = typeof accounts.$inferSelect;
@@ -449,3 +474,4 @@ export type RequestLogRow = typeof requestLogs.$inferSelect;
 export type RequestAttemptRow = typeof requestAttempts.$inferSelect;
 export type NotificationChannelRow = typeof notificationChannels.$inferSelect;
 export type BudgetRow = typeof budgets.$inferSelect;
+export type RoutingSettingsRow = typeof routingSettings.$inferSelect;

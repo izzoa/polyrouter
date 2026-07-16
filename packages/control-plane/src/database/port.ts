@@ -12,6 +12,7 @@ import {
   requestLogs,
   routingEntries,
   routingRules,
+  routingSettings,
   tiers,
   users,
   type ModelAccessor,
@@ -26,6 +27,7 @@ import {
   type RequestAttemptAccessor,
   type RequestLogAccessor,
   type RoutingEntryAccessor,
+  type RoutingSettingsAccessor,
   type TierRow,
 } from '@polyrouter/shared/server';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
@@ -392,6 +394,49 @@ function createRequestAttemptAccessor(db: Db): RequestAttemptAccessor {
   };
 }
 
+/** Per-tenant auto-layer preference (#20). Owner-scoped read + one-row-per-owner
+ * upsert (owner forced from the principal; conflict on the unique owner index). */
+function createRoutingSettingsAccessor(db: Db): RoutingSettingsAccessor {
+  return {
+    async get(principal) {
+      const rows = await db
+        .select({
+          structuralEnabled: routingSettings.structuralEnabled,
+          cascadeEnabled: routingSettings.cascadeEnabled,
+        })
+        .from(routingSettings)
+        .where(ownershipPredicate(routingSettings, principal))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+    async upsert(principal, value) {
+      const rows = await db
+        .insert(routingSettings)
+        .values(
+          buildInsertValues(principal, {
+            structuralEnabled: value.structuralEnabled,
+            cascadeEnabled: value.cascadeEnabled,
+          }) as typeof routingSettings.$inferInsert,
+        )
+        .onConflictDoUpdate({
+          target: routingSettings.ownerUserId,
+          set: {
+            structuralEnabled: value.structuralEnabled,
+            cascadeEnabled: value.cascadeEnabled,
+            updatedAt: new Date(),
+          },
+        })
+        .returning({
+          structuralEnabled: routingSettings.structuralEnabled,
+          cascadeEnabled: routingSettings.cascadeEnabled,
+        });
+      const row = rows[0];
+      if (!row) throw new Error('routingSettings upsert returned no row');
+      return row;
+    },
+  };
+}
+
 export function buildPersistencePort(db: Db): PersistencePort {
   return {
     agents: createOwnedRepository(db, agents as unknown as AnyOwnedTable),
@@ -408,6 +453,7 @@ export function buildPersistencePort(db: Db): PersistencePort {
     requestLogs: createRequestLogAccessor(db),
     requestAttempts: createRequestAttemptAccessor(db),
     analytics: createAnalyticsAccessor(db),
+    routingSettings: createRoutingSettingsAccessor(db),
     pricing: createPricingCatalog(db),
     users: {
       async count() {

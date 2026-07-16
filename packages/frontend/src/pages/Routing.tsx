@@ -1,36 +1,22 @@
-import { createSignal, For, Show } from 'solid-js';
-import { PreviewBanner } from '../components/PreviewBanner';
-import { CATALOG, catalogEntry, priceOf } from '../data/catalog';
+import { createSignal, For, onMount, Show } from 'solid-js';
+import { Toggle } from '../components/Toggle';
+import type { AutoLayers, TierEntryDto } from '../data/api';
 import { useApp } from '../state/context';
+import type { Model } from '../types';
 
 interface DragPos {
-  ti: number;
-  mi: number;
+  tierId: string;
+  index: number;
 }
 
-const LAYERS = [
-  {
-    id: 'structural' as const,
-    name: 'L1 · Structural',
-    tag: '<1ms, local',
-    desc: 'Language-neutral features; system prompts fingerprinted & subtracted.',
-    locked: false,
-  },
-  {
-    id: 'cascade' as const,
-    name: 'L3 · Cascade',
-    tag: 'cheap-first',
-    desc: 'Ambiguous requests try the cheap model, escalate on a failed quality check.',
-    locked: false,
-  },
-  {
-    id: 'semantic' as const,
-    name: 'L2 · Semantic',
-    tag: 'cloud tier',
-    desc: 'Local embedding classifier — not part of the self-host baseline.',
-    locked: true,
-  },
-];
+interface LayerRow {
+  id: 'structural' | 'cascade';
+  name: string;
+  tag: string;
+  desc: string;
+  on: boolean;
+  available: boolean;
+}
 
 export function posStyle(i: number): [string, string, string] {
   return i === 0
@@ -38,124 +24,229 @@ export function posStyle(i: number): [string, string, string] {
     : [`Fallback ${String(i)}`, 'var(--chip)', 'var(--text3)'];
 }
 
+function modelPriceLabel(m: Model | undefined): string {
+  if (!m) return 'catalog price';
+  if (m.isFree) return 'free';
+  if (m.inputPricePer1m === null || m.outputPricePer1m === null) return 'catalog price';
+  return `$${String(m.inputPricePer1m)} / $${String(m.outputPricePer1m)} per 1M`;
+}
+
+function structuralLayers(al: AutoLayers | null): LayerRow[] {
+  return [
+    {
+      id: 'structural',
+      name: 'L1 · Structural',
+      tag: '<1ms, local',
+      desc: 'Language-neutral features; system prompts fingerprinted & subtracted.',
+      on: al?.structural ?? false,
+      available: al?.structuralAvailable ?? false,
+    },
+    {
+      id: 'cascade',
+      name: 'L3 · Cascade',
+      tag: 'cheap-first',
+      desc: 'Ambiguous requests try the cheap model, escalate on a failed quality check.',
+      on: al?.cascade ?? false,
+      available: al?.cascadeAvailable ?? false,
+    },
+  ];
+}
+
 export function Routing() {
   const app = useApp();
   const { state } = app;
   const [drag, setDrag] = createSignal<DragPos | null>(null);
 
+  onMount(() => void app.loadRouting());
+
+  const modelById = (id: string): Model | undefined => state.allModels.find((m) => m.id === id);
+  const entryLabel = (e: TierEntryDto): string =>
+    e.model?.externalModelId ?? modelById(e.modelId)?.externalModelId ?? e.modelId;
+  const entries = (tierId: string): TierEntryDto[] => state.tierEntries[tierId] ?? [];
+  const addableModels = (tierId: string): Model[] => {
+    const used = new Set(entries(tierId).map((e) => e.modelId));
+    return state.allModels.filter((m) => !used.has(m.id));
+  };
+  // Only `header` rules are user-editable here; `auto_high`/`auto_low` drive band
+  // routing and are read-only (deleting them would silently break structural/cascade).
+  const headerRules = () => state.rules.filter((r) => r.matchType === 'header');
+
   return (
     <div style="padding:22px 26px;display:flex;flex-direction:column;gap:14px;max-width:1200px">
-      <PreviewBanner note="Tiers, fallbacks and auto-layers here are simulated until the routing-config change ships." />
+      <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:16px">
+        <div style="font:400 12.5px 'Geist',sans-serif;color:var(--text3)">
+          Tier chains route explicit and auto requests; position 0 is the primary, the rest are
+          ordered fallbacks (max {String(5)}). Explicit model requests always win.
+        </div>
+        <div style="display:flex;align-items:flex-end;gap:6px">
+          <div>
+            <div class="field-label">New tier key</div>
+            <input
+              class="input mono"
+              style="font:400 12px 'Geist Mono',monospace;width:150px"
+              placeholder="e.g. heavy"
+              value={state.tf.key}
+              onInput={(e) => app.setState('tf', 'key', e.currentTarget.value)}
+            />
+          </div>
+          <div class="btn-primary" onClick={() => void app.createTier()}>
+            {state.tf.busy ? 'Adding…' : 'Add tier'}
+          </div>
+        </div>
+      </div>
+      <Show when={state.tf.error}>
+        <div style="font:400 11px 'Geist',sans-serif;color:var(--red)">{state.tf.error}</div>
+      </Show>
+      <Show when={state.routingError}>
+        <div style="display:flex;align-items:center;gap:10px;padding:9px 14px;background:var(--red-bg);border:1px solid var(--red);border-radius:8px;font:500 12px 'Geist',sans-serif;color:var(--red)">
+          <span style="flex:1">Couldn’t load routing — {state.routingError}</span>
+          <span class="link-accent" style="font-weight:600" onClick={() => void app.loadRouting()}>
+            Retry
+          </span>
+        </div>
+      </Show>
+
       <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px;align-items:start">
         <div style="display:flex;flex-direction:column;gap:12px">
-          <For each={state.tiers}>
-            {(t, ti) => (
-              <div class="panel" style="overflow:hidden;border-radius:10px">
-                <div style="display:flex;align-items:baseline;justify-content:space-between;padding:13px 18px;border-bottom:1px solid var(--border2)">
-                  <div style="display:flex;align-items:baseline;gap:10px">
-                    <span
-                      class="mono"
-                      style="font:500 13.5px 'Geist Mono',monospace;color:var(--text)"
-                    >
-                      {t.key}
-                    </span>
-                    <span style="font:400 12px 'Geist',sans-serif;color:var(--text3)">
-                      {t.desc}
-                    </span>
-                  </div>
-                  <span style="font:400 11px 'Geist',sans-serif;color:var(--faint)">
-                    drag to reorder · max 5
-                  </span>
-                </div>
-                <For each={t.chain}>
-                  {(model, mi) => {
-                    const c = catalogEntry(model);
-                    const dragging = () => {
-                      const d = drag();
-                      return d !== null && d.ti === ti() && d.mi === mi();
-                    };
-                    return (
-                      <div
-                        class="chain-row"
-                        draggable={true}
-                        style={{ opacity: dragging() ? '0.4' : '1' }}
-                        onDragStart={(e) => {
-                          setDrag({ ti: ti(), mi: mi() });
-                          if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
-                        }}
-                        onDragOver={(e) => {
-                          e.preventDefault();
-                          const d = drag();
-                          if (d !== null && d.ti === ti() && d.mi !== mi()) {
-                            app.reorderChain(ti(), d.mi, mi());
-                            setDrag({ ti: ti(), mi: mi() });
-                          }
-                        }}
-                        onDragEnd={() => setDrag(null)}
+          <Show
+            when={state.routingTiers.length > 0}
+            fallback={
+              <div class="panel card" style="font:400 12.5px 'Geist',sans-serif;color:var(--text3)">
+                {state.routingLoading ? 'Loading tiers…' : 'No tiers yet.'}
+              </div>
+            }
+          >
+            <For each={state.routingTiers}>
+              {(t) => (
+                <div class="panel" style="overflow:hidden;border-radius:10px">
+                  <div style="display:flex;align-items:baseline;justify-content:space-between;padding:13px 18px;border-bottom:1px solid var(--border2)">
+                    <div style="display:flex;align-items:baseline;gap:10px">
+                      <span
+                        class="mono"
+                        style="font:500 13.5px 'Geist Mono',monospace;color:var(--text)"
                       >
-                        <span style="color:var(--faint);font-size:13px;letter-spacing:1px;flex:none">
-                          ⋮⋮
+                        {t.key}
+                      </span>
+                      <Show when={t.displayName ?? t.description}>
+                        <span style="font:400 12px 'Geist',sans-serif;color:var(--text3)">
+                          {t.displayName ?? t.description}
                         </span>
-                        <span
-                          class="pos-badge"
-                          style={{ background: posStyle(mi())[1], color: posStyle(mi())[2] }}
-                        >
-                          {posStyle(mi())[0]}
+                      </Show>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:10px">
+                      <span style="font:400 11px 'Geist',sans-serif;color:var(--faint)">
+                        drag to reorder · max {String(5)}
+                      </span>
+                      <Show when={t.key !== 'default'}>
+                        <span class="icon-x" onClick={() => void app.deleteTier(t.id)}>
+                          Delete
                         </span>
-                        <span
-                          class="mono"
-                          style="font:500 12px 'Geist Mono',monospace;color:var(--text);min-width:150px"
-                        >
-                          {model}
-                        </span>
-                        <span style="font:400 11.5px 'Geist',sans-serif;color:var(--text3)">
-                          {c.p}
-                          {c.tag !== null ? ` · ${c.tag}` : ''}
-                        </span>
-                        <span
-                          class="mono"
-                          style={{
-                            'margin-left': 'auto',
-                            font: "400 11px 'Geist Mono',monospace",
-                            color: c.tag === 'local' ? 'var(--green)' : 'var(--text3)',
+                      </Show>
+                    </div>
+                  </div>
+                  <For each={entries(t.id)}>
+                    {(entry, mi) => {
+                      const dragging = (): boolean => {
+                        const d = drag();
+                        return d !== null && d.tierId === t.id && d.index === mi();
+                      };
+                      return (
+                        <div
+                          class="chain-row"
+                          draggable={true}
+                          style={{ opacity: dragging() ? '0.4' : '1' }}
+                          onDragStart={(e) => {
+                            setDrag({ tierId: t.id, index: mi() });
+                            if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+                          }}
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            const d = drag();
+                            if (d !== null && d.tierId === t.id && d.index !== mi()) {
+                              app.moveTierEntry(t.id, d.index, mi());
+                              setDrag({ tierId: t.id, index: mi() });
+                            }
+                          }}
+                          onDragEnd={() => {
+                            const d = drag();
+                            if (d !== null) void app.commitTierOrder(t.id);
+                            setDrag(null);
                           }}
                         >
-                          {priceOf(model)}
-                        </span>
-                        <span
-                          class="icon-x"
-                          style="font-size:14px;padding:0 2px"
-                          onClick={() => app.removeFromChain(ti(), model)}
-                        >
-                          ×
-                        </span>
-                      </div>
-                    );
-                  }}
-                </For>
-                <div style="padding:8px 18px">
-                  <select
-                    style="background:var(--panel);border:1px dashed var(--border);border-radius:6px;padding:5px 8px;font:400 12px 'Geist',sans-serif;color:var(--text3);cursor:pointer"
-                    onChange={(e) => {
-                      const id = e.currentTarget.value;
-                      e.currentTarget.value = '';
-                      if (id) app.addToChain(ti(), id);
+                          <span style="color:var(--faint);font-size:13px;letter-spacing:1px;flex:none">
+                            ⋮⋮
+                          </span>
+                          <span
+                            class="pos-badge"
+                            style={{ background: posStyle(mi())[1], color: posStyle(mi())[2] }}
+                          >
+                            {posStyle(mi())[0]}
+                          </span>
+                          <span
+                            class="mono"
+                            style="font:500 12px 'Geist Mono',monospace;color:var(--text);min-width:150px"
+                          >
+                            {entryLabel(entry)}
+                          </span>
+                          <span
+                            class="mono"
+                            style="margin-left:auto;font:400 11px 'Geist Mono',monospace;color:var(--text3)"
+                          >
+                            {modelPriceLabel(modelById(entry.modelId))}
+                          </span>
+                          <Show when={mi() > 0}>
+                            <span
+                              class="link-accent"
+                              style="font:400 11px 'Geist',sans-serif"
+                              onClick={() => app.setPrimaryTierModel(t.id, entry.modelId)}
+                            >
+                              Make primary
+                            </span>
+                          </Show>
+                          <span
+                            class="icon-x"
+                            style="font-size:14px;padding:0 2px"
+                            onClick={() => app.removeTierModel(t.id, entry.modelId)}
+                          >
+                            ×
+                          </span>
+                        </div>
+                      );
                     }}
-                  >
-                    {/* `selected` (not a value prop) keeps the placeholder shown — Solid sets the
-                        value property before the options render, so a value prop never matches. */}
-                    <option value="" disabled selected>
-                      + Add model…
-                    </option>
-                    <For each={Object.keys(CATALOG).filter((id) => !t.chain.includes(id))}>
-                      {(id) => <option value={id}>{`${id} — ${catalogEntry(id).p}`}</option>}
-                    </For>
-                  </select>
+                  </For>
+                  <Show when={entries(t.id).length === 0}>
+                    <div style="padding:9px 18px;font:400 11.5px 'Geist',sans-serif;color:var(--faint)">
+                      No models — add one below.
+                    </div>
+                  </Show>
+                  <div style="padding:8px 18px">
+                    <select
+                      class="select"
+                      style="border:1px dashed var(--border);width:auto;color:var(--text3);cursor:pointer;padding:5px 8px;font:400 12px 'Geist',sans-serif"
+                      onChange={(e) => {
+                        const id = e.currentTarget.value;
+                        e.currentTarget.value = '';
+                        if (id) app.addTierModel(t.id, id);
+                      }}
+                    >
+                      <option value="" disabled selected>
+                        + Add model…
+                      </option>
+                      <For each={addableModels(t.id)}>
+                        {(m) => (
+                          <option
+                            value={m.id}
+                          >{`${m.externalModelId} — ${modelPriceLabel(m)}`}</option>
+                        )}
+                      </For>
+                    </select>
+                  </div>
                 </div>
-              </div>
-            )}
-          </For>
+              )}
+            </For>
+          </Show>
         </div>
+
         <div style="display:flex;flex-direction:column;gap:12px">
           <div class="panel card">
             <div class="section-title" style="margin-bottom:4px">
@@ -172,53 +263,67 @@ export function Routing() {
               . Explicit requests always win.
             </div>
             <div style="display:flex;flex-direction:column;gap:10px">
-              <For each={LAYERS}>
-                {(l) => {
-                  const on = () => (l.locked ? false : app.state.autoLayers[l.id]);
-                  return (
-                    <div
-                      style={{
-                        display: 'flex',
-                        'align-items': 'flex-start',
-                        gap: '10px',
-                        opacity: l.locked ? '0.45' : '1',
-                      }}
-                    >
-                      <div style="margin-top:1px">
-                        <div
-                          class="toggle"
-                          style={{
-                            width: '30px',
-                            height: '17px',
-                            background: on() ? 'var(--accent)' : 'var(--faint)',
-                            cursor: l.locked ? 'not-allowed' : 'pointer',
-                          }}
-                          onClick={() => app.toggleLayer(l.id)}
-                        >
-                          <div
-                            class="toggle-knob"
-                            style={{ width: '13px', height: '13px', left: on() ? '15px' : '2px' }}
-                          />
-                        </div>
-                      </div>
-                      <div>
-                        <div style="font:500 12px 'Geist',sans-serif;color:var(--text)">
-                          {l.name}{' '}
-                          <span
-                            class="mono"
-                            style="font:400 10.5px 'Geist Mono',monospace;color:var(--faint)"
-                          >
-                            {l.tag}
-                          </span>
-                        </div>
-                        <div style="font:400 11px 'Geist',sans-serif;color:var(--text3);line-height:1.45">
-                          {l.desc}
-                        </div>
-                      </div>
+              <For each={structuralLayers(state.autoLayers)}>
+                {(l) => (
+                  <div style={{ display: 'flex', 'align-items': 'flex-start', gap: '10px' }}>
+                    <div style="margin-top:1px">
+                      <Toggle
+                        on={l.on}
+                        locked={!l.available}
+                        onToggle={() => void app.toggleAutoLayer(l.id)}
+                      />
                     </div>
-                  );
-                }}
+                    <div style={{ opacity: l.available ? '1' : '0.55' }}>
+                      <div style="font:500 12px 'Geist',sans-serif;color:var(--text)">
+                        {l.name}{' '}
+                        <span
+                          class="mono"
+                          style="font:400 10.5px 'Geist Mono',monospace;color:var(--faint)"
+                        >
+                          {l.tag}
+                        </span>
+                      </div>
+                      <div style="font:400 11px 'Geist',sans-serif;color:var(--text3);line-height:1.45">
+                        {l.desc}
+                      </div>
+                      <Show when={!l.available}>
+                        <div
+                          class="mono"
+                          style="font:400 10px 'Geist Mono',monospace;color:var(--amber);margin-top:2px"
+                        >
+                          off instance-wide (ROUTING_AUTO_LAYERS)
+                        </div>
+                      </Show>
+                    </div>
+                  </div>
+                )}
               </For>
+              <div
+                style={{
+                  display: 'flex',
+                  'align-items': 'flex-start',
+                  gap: '10px',
+                  opacity: '0.45',
+                }}
+              >
+                <div style="margin-top:1px">
+                  <Toggle on={false} locked={true} onToggle={() => undefined} />
+                </div>
+                <div>
+                  <div style="font:500 12px 'Geist',sans-serif;color:var(--text)">
+                    L2 · Semantic{' '}
+                    <span
+                      class="mono"
+                      style="font:400 10.5px 'Geist Mono',monospace;color:var(--faint)"
+                    >
+                      cloud tier
+                    </span>
+                  </div>
+                  <div style="font:400 11px 'Geist',sans-serif;color:var(--text3);line-height:1.45">
+                    Local embedding classifier — not part of the self-host baseline.
+                  </div>
+                </div>
+              </div>
             </div>
             <div style="margin-top:12px;padding:9px 11px;background:var(--accent-bg);border-radius:7px;font:400 11px 'Geist',sans-serif;color:var(--text2);line-height:1.5">
               If a smart layer is down,{' '}
@@ -228,6 +333,7 @@ export function Routing() {
               degrades to the default tier. Requests never fail because routing got clever.
             </div>
           </div>
+
           <div class="panel card">
             <div class="section-title" style="margin-bottom:4px">
               Header rules
@@ -239,31 +345,68 @@ export function Routing() {
               </span>
             </div>
             <div style="display:flex;flex-direction:column;gap:6px">
-              <For each={state.rules}>
+              <For each={headerRules()}>
                 {(ru) => (
                   <div
                     class="mono"
                     style="display:flex;align-items:center;gap:8px;font:400 11.5px 'Geist Mono',monospace;color:var(--text2);padding:6px 9px;background:var(--bg);border:1px solid var(--border2);border-radius:6px"
                   >
-                    <span style="color:var(--text3)">x-polyrouter-tier: {ru.value}</span>
+                    <span style="color:var(--text3)">
+                      {ru.headerName}: {ru.headerValue ?? ''}
+                    </span>
                     <span style="color:var(--faint)">→</span>
                     <span style="color:var(--text)">{ru.target}</span>
                     <span
                       class="icon-x"
                       style="margin-left:auto"
-                      onClick={() => app.removeRule(ru.id)}
+                      onClick={() => void app.deleteRule(ru.id)}
                     >
                       ×
                     </span>
                   </div>
                 )}
               </For>
-              <Show when={state.rules.length === 0}>
+              <Show when={headerRules().length === 0}>
                 <div style="font:400 11.5px 'Geist',sans-serif;color:var(--faint);padding:4px 0">
                   No header rules yet.
                 </div>
               </Show>
             </div>
+            <div style="display:flex;align-items:flex-end;gap:6px;margin-top:10px">
+              <div style="flex:1">
+                <div class="field-label">Header value</div>
+                <input
+                  class="input mono"
+                  style="font:400 11.5px 'Geist Mono',monospace"
+                  placeholder="e.g. heavy"
+                  value={state.rf.value}
+                  onInput={(e) => app.setState('rf', 'value', e.currentTarget.value)}
+                />
+              </div>
+              <div style="flex:1">
+                <div class="field-label">Target tier</div>
+                <select
+                  class="select"
+                  value={state.rf.target}
+                  onChange={(e) => app.setState('rf', 'target', e.currentTarget.value)}
+                >
+                  <option value="" disabled selected={state.rf.target === ''}>
+                    Pick a tier…
+                  </option>
+                  <For each={state.routingTiers}>
+                    {(t) => <option value={t.key}>{t.key}</option>}
+                  </For>
+                </select>
+              </div>
+              <div class="btn-ghost" onClick={() => void app.createRule()}>
+                {state.rf.busy ? '…' : 'Add'}
+              </div>
+            </div>
+            <Show when={state.rf.error}>
+              <div style="font:400 11px 'Geist',sans-serif;color:var(--red);margin-top:6px">
+                {state.rf.error}
+              </div>
+            </Show>
           </div>
         </div>
       </div>

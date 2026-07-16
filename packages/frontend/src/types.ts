@@ -1,5 +1,14 @@
 import type { HarnessType } from '@polyrouter/shared';
-import type { Mode, ModelDto } from './data/api';
+import type {
+  BudgetAction,
+  BudgetScope,
+  BudgetWindow,
+  ChannelKind,
+  EventType,
+  Mode,
+  ModelDto,
+  SmtpSecure,
+} from './data/api';
 
 export type Page =
   | 'overview'
@@ -15,13 +24,10 @@ export type Page =
 export type Theme = 'light' | 'dark';
 export type Range = '24h' | '7d' | '30d';
 export type RequestFilter = 'all' | 'explicit' | 'auto' | 'fallback' | 'escalated';
-export type ModelTag = 'sub' | 'local' | null;
 /** The dashboard's harness type IS the canonical shared one (single source). */
 export type Harness = HarnessType;
-export type LimitWindow = 'day' | 'week' | 'month';
-export type LimitAction = 'alert' | 'block';
 export type ProviderKindId = 'api' | 'sub' | 'custom' | 'local';
-export type ModalKind = 'newAgent' | 'keyReveal' | 'newProvider' | 'newLimit';
+export type ModalKind = 'newAgent' | 'keyReveal' | 'newProvider' | 'newLimit' | 'channel';
 
 /** One row of a spend/cost breakdown (BarRows). */
 export interface SpendDatum {
@@ -29,18 +35,6 @@ export interface SpendDatum {
   v: number;
   fv?: number;
   free?: boolean;
-}
-
-export interface Tier {
-  key: string;
-  desc: string;
-  chain: string[];
-}
-
-export interface HeaderRule {
-  id: number;
-  value: string;
-  target: string;
 }
 
 /** Real provider health (#18) — the prototype's 'warn'/circuit copy is gone. */
@@ -101,27 +95,44 @@ export interface ProviderForm {
   credential: string;
 }
 
-export interface Limit {
-  id: number;
-  scope: string;
-  threshold: number;
-  window: LimitWindow;
-  action: LimitAction;
-  current: number;
-  note: string;
+/** The create/edit budget form (#20 Limits page). `id` null = create. `amount`
+ * is a text field (parsed on save); an agent-scoped budget needs an `agentId`
+ * (surfaced as an inline 422 from the server otherwise). */
+export interface BudgetForm {
+  id: string | null;
+  name: string;
+  scope: BudgetScope;
+  agentId: string;
+  window: BudgetWindow;
+  action: BudgetAction;
+  amount: string;
+  notifyChannelIds: string[];
+  enabled: boolean;
+  busy: boolean;
+  error: string | null;
 }
 
-export type ChannelKind = 'smtp' | 'apprise';
-
-export interface Channel {
-  id: number;
+/** The create/edit notification-channel form (#20 Settings). Kind-specific config
+ * is WRITE-ONLY — never populated from the server (invariant 8). On edit, leaving
+ * the config fields blank patches name/enabled/events without touching secrets. */
+export interface ChannelForm {
+  id: string | null;
   name: string;
   kind: ChannelKind;
-  enabled: boolean;
-  detail: string;
-  last: string;
-  lastOk: boolean | null;
-  testing: boolean;
+  /** The channel's stored kind (edit only); a change from this requires a full new
+   * config, since the old config belongs to the old kind's schema. */
+  originalKind: ChannelKind | null;
+  events: EventType[];
+  smtpHost: string;
+  smtpPort: string;
+  smtpSecure: SmtpSecure;
+  smtpUser: string;
+  smtpPass: string;
+  smtpFrom: string;
+  smtpTo: string;
+  appriseUrls: string;
+  busy: boolean;
+  error: string | null;
 }
 
 /** Failure-aware onboarding state machine (#18 §7). Each step stops and surfaces

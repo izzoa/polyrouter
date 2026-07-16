@@ -41,6 +41,8 @@ export type {
   RequestLogAccessor,
   RequestLogInsertInput,
   RoutingEntryAccessor,
+  RoutingSettingsAccessor,
+  RoutingSettingsValue,
   RoutingRuleInsertInput,
   RoutingRulePatch,
   TierInsertInput,

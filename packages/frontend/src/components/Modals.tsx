@@ -1,8 +1,26 @@
 import { HARNESS_LABELS, HARNESS_TYPES } from '@polyrouter/shared';
 import { For, Show } from 'solid-js';
+import {
+  EVENT_TYPES,
+  type BudgetScope,
+  type BudgetWindow,
+  type ChannelKind,
+  type EventType,
+  type SmtpSecure,
+} from '../data/api';
 import { PROVIDER_KINDS } from '../state/appState';
 import { useApp } from '../state/context';
 import type { Harness } from '../types';
+
+/** Friendly labels for the event-subscription checkboxes (#20 channel modal). */
+const EVENT_LABELS: Record<EventType, string> = {
+  budget_alert: 'Budget alert',
+  budget_block: 'Budget block',
+  provider_down: 'Provider down',
+  request_failures_spike: 'Request failure spike',
+  weekly_spend_summary: 'Weekly spend summary',
+  test: 'Test',
+};
 
 export function HarnessSelect(props: { value: Harness; onChange: (h: Harness) => void }) {
   return (
@@ -20,6 +38,15 @@ export function Modals() {
   const app = useApp();
   const { state, setState } = app;
   const npKind = () => PROVIDER_KINDS.find((k) => k.id === state.np.kind);
+
+  const toggleNotifyChannel = (id: string): void =>
+    setState('bf', 'notifyChannelIds', (ids) =>
+      ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id],
+    );
+  const toggleEvent = (ev: EventType): void =>
+    setState('cf', 'events', (evs) =>
+      evs.includes(ev) ? evs.filter((x) => x !== ev) : [...evs, ev],
+    );
 
   return (
     <Show when={state.modal}>
@@ -193,19 +220,26 @@ export function Modals() {
           </Show>
 
           <Show when={state.modal === 'newLimit'}>
-            <div class="modal-title">New budget</div>
+            <div class="modal-title">{state.bf.id ? 'Edit budget' : 'New budget'}</div>
+            <div>
+              <div class="field-label">Name</div>
+              <input
+                class="input"
+                value={state.bf.name}
+                placeholder="e.g. monthly cap"
+                onInput={(e) => setState('bf', 'name', e.currentTarget.value)}
+              />
+            </div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
               <div>
                 <div class="field-label">Scope</div>
                 <select
                   class="select"
-                  value={state.nl.scope}
-                  onChange={(e) => setState('nl', 'scope', e.currentTarget.value)}
+                  value={state.bf.scope}
+                  onChange={(e) => setState('bf', 'scope', e.currentTarget.value as BudgetScope)}
                 >
-                  <option value="Global">Global</option>
-                  <For each={state.agents}>
-                    {(a) => <option value={`Agent · ${a.name}`}>{`Agent · ${a.name}`}</option>}
-                  </For>
+                  <option value="global">Global</option>
+                  <option value="agent">Agent</option>
                 </select>
               </div>
               <div>
@@ -213,21 +247,34 @@ export function Modals() {
                 <input
                   class="input mono"
                   style="font:400 12.5px 'Geist Mono',monospace"
-                  value={state.nl.amount}
+                  value={state.bf.amount}
                   placeholder="10.00"
-                  onInput={(e) => setState('nl', 'amount', e.currentTarget.value)}
+                  onInput={(e) => setState('bf', 'amount', e.currentTarget.value)}
                 />
               </div>
             </div>
+            <Show when={state.bf.scope === 'agent'}>
+              <div>
+                <div class="field-label">Agent</div>
+                <select
+                  class="select"
+                  value={state.bf.agentId}
+                  onChange={(e) => setState('bf', 'agentId', e.currentTarget.value)}
+                >
+                  <option value="" disabled selected={state.bf.agentId === ''}>
+                    Pick an agent…
+                  </option>
+                  <For each={state.agents}>{(a) => <option value={a.id}>{a.name}</option>}</For>
+                </select>
+              </div>
+            </Show>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
               <div>
                 <div class="field-label">Window</div>
                 <select
                   class="select"
-                  value={state.nl.window}
-                  onChange={(e) =>
-                    setState('nl', 'window', e.currentTarget.value as 'day' | 'week' | 'month')
-                  }
+                  value={state.bf.window}
+                  onChange={(e) => setState('bf', 'window', e.currentTarget.value as BudgetWindow)}
                 >
                   <option value="day">Per day</option>
                   <option value="week">Per week</option>
@@ -245,10 +292,10 @@ export function Modals() {
                       'border-radius': '5px',
                       font: "500 12px 'Geist',sans-serif",
                       cursor: 'pointer',
-                      background: state.nl.action === 'alert' ? 'var(--chip)' : 'transparent',
-                      color: state.nl.action === 'alert' ? 'var(--text)' : 'var(--text3)',
+                      background: state.bf.action === 'alert' ? 'var(--chip)' : 'transparent',
+                      color: state.bf.action === 'alert' ? 'var(--text)' : 'var(--text3)',
                     }}
-                    onClick={() => setState('nl', 'action', 'alert')}
+                    onClick={() => setState('bf', 'action', 'alert')}
                   >
                     Alert
                   </div>
@@ -260,26 +307,252 @@ export function Modals() {
                       'border-radius': '5px',
                       font: "500 12px 'Geist',sans-serif",
                       cursor: 'pointer',
-                      background: state.nl.action === 'block' ? 'var(--red-bg)' : 'transparent',
-                      color: state.nl.action === 'block' ? 'var(--red)' : 'var(--text3)',
+                      background: state.bf.action === 'block' ? 'var(--red-bg)' : 'transparent',
+                      color: state.bf.action === 'block' ? 'var(--red)' : 'var(--text3)',
                     }}
-                    onClick={() => setState('nl', 'action', 'block')}
+                    onClick={() => setState('bf', 'action', 'block')}
                   >
                     Block
                   </div>
                 </div>
               </div>
             </div>
+            <div>
+              <div class="field-label">Notify channels</div>
+              <Show
+                when={state.channels.length > 0}
+                fallback={
+                  <div style="font:400 11px 'Geist',sans-serif;color:var(--faint)">
+                    No channels yet — add one under Settings → Notifications.
+                  </div>
+                }
+              >
+                <div style="display:flex;flex-wrap:wrap;gap:8px">
+                  <For each={state.channels}>
+                    {(c) => (
+                      <label style="display:flex;align-items:center;gap:6px;font:400 11.5px 'Geist',sans-serif;color:var(--text2)">
+                        <input
+                          type="checkbox"
+                          checked={state.bf.notifyChannelIds.includes(c.id)}
+                          onChange={() => toggleNotifyChannel(c.id)}
+                        />
+                        {c.name}
+                      </label>
+                    )}
+                  </For>
+                </div>
+              </Show>
+            </div>
+            <label style="display:flex;align-items:center;gap:8px;font:400 12px 'Geist',sans-serif;color:var(--text2)">
+              <input
+                type="checkbox"
+                checked={state.bf.enabled}
+                onChange={(e) => setState('bf', 'enabled', e.currentTarget.checked)}
+              />
+              Enabled
+            </label>
             <div style="font:400 11px 'Geist',sans-serif;color:var(--text3);line-height:1.5">
               Alert notifies your channels and keeps serving. Block rejects new requests for this
               scope until the window resets.
             </div>
+            <Show when={state.bf.error}>
+              <div style="font:400 11px 'Geist',sans-serif;color:var(--red)">{state.bf.error}</div>
+            </Show>
             <div style="display:flex;gap:8px;justify-content:flex-end">
-              <div class="btn-cancel" onClick={() => app.closeModal()}>
+              <div
+                class="btn-cancel"
+                style={{
+                  'pointer-events': state.bf.busy ? 'none' : 'auto',
+                  opacity: state.bf.busy ? '0.6' : '1',
+                }}
+                onClick={() => app.closeModal()}
+              >
                 Cancel
               </div>
-              <div class="btn-primary" onClick={() => app.createLimit()}>
-                Create budget
+              <div
+                class="btn-primary"
+                style={{
+                  'pointer-events': state.bf.busy ? 'none' : 'auto',
+                  opacity: state.bf.busy ? '0.6' : '1',
+                }}
+                onClick={() => void app.saveBudget()}
+              >
+                {state.bf.busy ? 'Saving…' : state.bf.id ? 'Save budget' : 'Create budget'}
+              </div>
+            </div>
+          </Show>
+
+          <Show when={state.modal === 'channel'}>
+            <div class="modal-title">{state.cf.id ? 'Edit channel' : 'Add channel'}</div>
+            <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px">
+              <div>
+                <div class="field-label">Name</div>
+                <input
+                  class="input"
+                  value={state.cf.name}
+                  placeholder="e.g. homelab email"
+                  onInput={(e) => setState('cf', 'name', e.currentTarget.value)}
+                />
+              </div>
+              <div>
+                <div class="field-label">Kind</div>
+                <select
+                  class="select"
+                  value={state.cf.kind}
+                  onChange={(e) => setState('cf', 'kind', e.currentTarget.value as ChannelKind)}
+                >
+                  <option value="smtp">SMTP</option>
+                  <option value="apprise">Apprise</option>
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <div class="field-label">Subscribed events</div>
+              <div style="display:flex;flex-wrap:wrap;gap:8px">
+                <For each={EVENT_TYPES}>
+                  {(ev) => (
+                    <label style="display:flex;align-items:center;gap:6px;font:400 11.5px 'Geist',sans-serif;color:var(--text2)">
+                      <input
+                        type="checkbox"
+                        checked={state.cf.events.includes(ev)}
+                        onChange={() => toggleEvent(ev)}
+                      />
+                      {EVENT_LABELS[ev]}
+                    </label>
+                  )}
+                </For>
+              </div>
+            </div>
+
+            <Show when={state.cf.id !== null}>
+              <div style="font:400 10.5px 'Geist',sans-serif;color:var(--faint);line-height:1.5">
+                Config is write-only — leave the fields below blank to keep the stored secret
+                unchanged.
+              </div>
+            </Show>
+
+            <Show when={state.cf.kind === 'smtp'}>
+              <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px">
+                <div>
+                  <div class="field-label">Host</div>
+                  <input
+                    class="input mono"
+                    style="font:400 12px 'Geist Mono',monospace"
+                    value={state.cf.smtpHost}
+                    placeholder="smtp.fastmail.com"
+                    onInput={(e) => setState('cf', 'smtpHost', e.currentTarget.value)}
+                  />
+                </div>
+                <div>
+                  <div class="field-label">Port</div>
+                  <input
+                    class="input mono"
+                    style="font:400 12px 'Geist Mono',monospace"
+                    value={state.cf.smtpPort}
+                    placeholder="587"
+                    onInput={(e) => setState('cf', 'smtpPort', e.currentTarget.value)}
+                  />
+                </div>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                <div>
+                  <div class="field-label">Security</div>
+                  <select
+                    class="select"
+                    value={state.cf.smtpSecure}
+                    onChange={(e) =>
+                      setState('cf', 'smtpSecure', e.currentTarget.value as SmtpSecure)
+                    }
+                  >
+                    <option value="none">None</option>
+                    <option value="starttls">STARTTLS</option>
+                    <option value="tls">TLS</option>
+                  </select>
+                </div>
+                <div>
+                  <div class="field-label">From</div>
+                  <input
+                    class="input mono"
+                    style="font:400 12px 'Geist Mono',monospace"
+                    value={state.cf.smtpFrom}
+                    placeholder="alerts@my.box"
+                    onInput={(e) => setState('cf', 'smtpFrom', e.currentTarget.value)}
+                  />
+                </div>
+              </div>
+              <div>
+                <div class="field-label">Recipients (comma or space separated)</div>
+                <input
+                  class="input mono"
+                  style="font:400 12px 'Geist Mono',monospace"
+                  value={state.cf.smtpTo}
+                  placeholder="admin@my.box"
+                  onInput={(e) => setState('cf', 'smtpTo', e.currentTarget.value)}
+                />
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                <div>
+                  <div class="field-label">User (optional)</div>
+                  <input
+                    class="input mono"
+                    style="font:400 12px 'Geist Mono',monospace"
+                    value={state.cf.smtpUser}
+                    onInput={(e) => setState('cf', 'smtpUser', e.currentTarget.value)}
+                  />
+                </div>
+                <div>
+                  <div class="field-label">Password (optional)</div>
+                  <input
+                    class="input mono"
+                    style="font:400 12px 'Geist Mono',monospace"
+                    type="password"
+                    value={state.cf.smtpPass}
+                    onInput={(e) => setState('cf', 'smtpPass', e.currentTarget.value)}
+                  />
+                </div>
+              </div>
+            </Show>
+
+            <Show when={state.cf.kind === 'apprise'}>
+              <div>
+                <div class="field-label">Apprise URLs (one per line)</div>
+                <textarea
+                  class="input mono"
+                  style="font:400 12px 'Geist Mono',monospace;min-height:70px;resize:vertical"
+                  value={state.cf.appriseUrls}
+                  placeholder="ntfy://homelab/polyrouter"
+                  onInput={(e) => setState('cf', 'appriseUrls', e.currentTarget.value)}
+                />
+              </div>
+            </Show>
+
+            <div style="font:400 10.5px 'Geist',sans-serif;color:var(--faint);line-height:1.5">
+              Targets are SSRF-checked and the config is encrypted at rest — it’s never shown back.
+            </div>
+            <Show when={state.cf.error}>
+              <div style="font:400 11px 'Geist',sans-serif;color:var(--red)">{state.cf.error}</div>
+            </Show>
+            <div style="display:flex;gap:8px;justify-content:flex-end">
+              <div
+                class="btn-cancel"
+                style={{
+                  'pointer-events': state.cf.busy ? 'none' : 'auto',
+                  opacity: state.cf.busy ? '0.6' : '1',
+                }}
+                onClick={() => app.closeModal()}
+              >
+                Cancel
+              </div>
+              <div
+                class="btn-primary"
+                style={{
+                  'pointer-events': state.cf.busy ? 'none' : 'auto',
+                  opacity: state.cf.busy ? '0.6' : '1',
+                }}
+                onClick={() => void app.saveChannel()}
+              >
+                {state.cf.busy ? 'Saving…' : state.cf.id ? 'Save channel' : 'Add channel'}
               </div>
             </div>
           </Show>

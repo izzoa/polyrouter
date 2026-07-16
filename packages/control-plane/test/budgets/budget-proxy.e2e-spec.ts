@@ -35,6 +35,7 @@ import {
   PROXY_RUNTIME,
   loadProxyRuntime,
 } from '../../src/proxy/proxy.config';
+import { ROUTING_CONFIG, loadRoutingConfig } from '../../src/proxy/routing.config';
 import { ProxyService } from '../../src/proxy/proxy.service';
 import { RequestRecorder } from '../../src/recording/request-recorder';
 import { StreamDrainRegistry } from '../../src/proxy/stream-drain.registry';
@@ -189,6 +190,7 @@ describe('budget block enforcement — proxy path (#16)', () => {
         { provide: PROXY_RUNTIME, useFactory: loadProxyRuntime },
         { provide: PROXY_ADAPTER_FACTORY, useValue: createProviderAdapter },
         { provide: PROXY_BREAKER, useValue: new CircuitBreaker(new InMemoryBreakerStore()) },
+        { provide: ROUTING_CONFIG, useFactory: loadRoutingConfig },
         { provide: APP_FILTER, useClass: ProxyExceptionFilter },
       ],
     }).compile();

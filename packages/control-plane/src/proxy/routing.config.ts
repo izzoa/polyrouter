@@ -143,3 +143,10 @@ export function buildRoutingConfig(env: RoutingEnv): RoutingConfig {
 export function loadRoutingConfig(): RoutingConfig {
   return buildRoutingConfig(loadConfig<RoutingEnv>());
 }
+
+/** The instance's auto-layer CAPABILITY, from the boot-resolved config (#20).
+ * Pure over the injected `ROUTING_CONFIG` singleton (NOT a fresh env read) so the
+ * dashboard's reported capability can't drift from what the routers enforce. */
+export function autoLayerCapability(cfg: RoutingConfig): { structural: boolean; cascade: boolean } {
+  return { structural: cfg.autoLayers.has('structural'), cascade: cfg.cascade.enabled };
+}

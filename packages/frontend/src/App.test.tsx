@@ -1,6 +1,7 @@
 import { APP_NAME } from '@polyrouter/shared';
 import { render } from 'solid-js/web';
 import { afterEach, describe, expect, it } from 'vitest';
+import type { ChannelDto, ModelDto, RuleDto, TierDto, TierEntryDto } from './data/api';
 import { App } from './App';
 import { createAppStore, type AppStore } from './state/appState';
 import { AppProvider } from './state/context';
@@ -8,6 +9,34 @@ import { FakeApiClient } from './test/fakeClient';
 
 const flush = async (): Promise<void> => {
   for (let i = 0; i < 4; i++) await new Promise((r) => setTimeout(r, 0));
+};
+
+const NOW = '2026-07-15T00:00:00.000Z';
+function mkModel(id: string): ModelDto {
+  return {
+    id,
+    providerId: 'p1',
+    externalModelId: `ext-${id}`,
+    displayName: null,
+    contextWindow: null,
+    supportsTools: false,
+    supportsVision: false,
+    supportsReasoning: false,
+    isFree: false,
+    inputPricePer1m: 1,
+    outputPricePer1m: 2,
+    lastSyncedAt: null,
+  };
+}
+function mkEntry(modelId: string, position: number): TierEntryDto {
+  return { id: `e-${modelId}`, tierId: 't1', modelId, position, model: null };
+}
+const DEFAULT_TIER: TierDto = {
+  id: 't1',
+  key: 'default',
+  displayName: 'Default',
+  description: null,
+  createdAt: NOW,
 };
 
 function mount(store: AppStore = createAppStore(new FakeApiClient())): {
@@ -145,10 +174,16 @@ describe('dashboard shell (auth-gated)', () => {
   });
 
   it('enforces the 5-model tier cap through the Routing UI with a toast', async () => {
-    const { host, dispose } = mount();
+    const fake = new FakeApiClient({
+      models: { p1: ['m1', 'm2', 'm3', 'm4', 'm5', 'm6'].map(mkModel) },
+      tiers: [DEFAULT_TIER],
+      tierEntries: { t1: [mkEntry('m1', 0), mkEntry('m2', 1), mkEntry('m3', 2)] },
+    });
+    const { host, dispose } = mount(createAppStore(fake));
     try {
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
+      await flush();
       const firstTierCard = host.querySelector<HTMLElement>('.panel');
       expect(firstTierCard).not.toBeNull();
       if (!firstTierCard) return;
@@ -162,12 +197,96 @@ describe('dashboard shell (auth-gated)', () => {
       };
       const rows = () => firstTierCard.querySelectorAll('.chain-row').length;
       const start = rows();
+      expect(start).toBe(3);
       addViaSelect();
       addViaSelect();
-      expect(rows()).toBe(Math.min(5, start + 2));
+      expect(rows()).toBe(5);
       addViaSelect();
       expect(rows()).toBe(5);
       expect(host.querySelector('.toast')?.textContent).toBe('Max 5 models per tier');
+    } finally {
+      dispose();
+    }
+  });
+
+  it('greys an instance-disabled auto layer with the ROUTING_AUTO_LAYERS hint', async () => {
+    const fake = new FakeApiClient({
+      tiers: [DEFAULT_TIER],
+      autoLayers: {
+        structural: false,
+        cascade: false,
+        structuralAvailable: false,
+        cascadeAvailable: false,
+      },
+    });
+    const { host, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Routing');
+      await flush();
+      expect(host.textContent).toContain('off instance-wide (ROUTING_AUTO_LAYERS)');
+    } finally {
+      dispose();
+    }
+  });
+
+  it('shows only header rules in the Header rules panel (auto rules stay read-only)', async () => {
+    const rules: RuleDto[] = [
+      {
+        id: 'r-hdr',
+        matchType: 'header',
+        headerName: 'x-polyrouter-tier',
+        headerValue: 'heavy',
+        target: 'tier:heavy',
+        priority: 0,
+        createdAt: NOW,
+      },
+      {
+        id: 'r-auto',
+        matchType: 'auto_high',
+        headerName: 'x-polyrouter-tier',
+        headerValue: null,
+        target: 'model:auto-band-xyz',
+        priority: 0,
+        createdAt: NOW,
+      },
+    ];
+    const fake = new FakeApiClient({ tiers: [DEFAULT_TIER], rules });
+    const { host, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Routing');
+      await flush();
+      expect(host.textContent).toContain('tier:heavy'); // the header rule is shown + deletable
+      expect(host.textContent).not.toContain('auto-band-xyz'); // the auto rule is not (no delete)
+    } finally {
+      dispose();
+    }
+  });
+
+  it('renders a failed channel test-send result inline in Settings', async () => {
+    const channel: ChannelDto = {
+      id: 'chan-1',
+      name: 'homelab email',
+      kind: 'smtp',
+      enabled: true,
+      eventsSubscribed: ['budget_alert'],
+      hasConfig: true,
+      lastTestAt: null,
+      lastTestStatus: null,
+    };
+    const fake = new FakeApiClient({
+      channels: [channel],
+      channelTestResult: { ok: false, error: 'smtp_auth' },
+    });
+    const { host, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Settings');
+      await flush();
+      clickByText(host, '.btn-ghost', 'Send test');
+      await flush();
+      expect(host.textContent).toContain('test failed — smtp_auth');
     } finally {
       dispose();
     }

@@ -50,6 +50,13 @@
       "when": 1784168696280,
       "tag": "0006_breezy_onslaught",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1784207400144,
+      "tag": "0007_colossal_clea",
+      "breakpoints": true
     }
   ]
 }

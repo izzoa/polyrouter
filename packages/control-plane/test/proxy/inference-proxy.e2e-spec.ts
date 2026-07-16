@@ -38,6 +38,7 @@ import { ProxyService } from '../../src/proxy/proxy.service';
 import { NotificationProducers } from '../../src/producers/notification-producers';
 import { BudgetService } from '../../src/budgets/budget-service';
 import { RequestRecorder } from '../../src/recording/request-recorder';
+import { ObservabilityModule } from '../../src/observability/observability.module';
 import { StreamDrainRegistry } from '../../src/proxy/stream-drain.registry';
 import { StructuralRouter } from '../../src/proxy/structural/structural-router';
 import { CascadeRouter } from '../../src/proxy/cascade/cascade-router';
@@ -147,7 +148,7 @@ describe('inference proxy e2e', () => {
     }
 
     const moduleRef = await Test.createTestingModule({
-      imports: [DatabaseModule],
+      imports: [DatabaseModule, ObservabilityModule],
       controllers: [ChatCompletionsController, MessagesController, ModelsController],
       providers: [
         AgentApiKeyGuard,

@@ -1,16 +1,19 @@
 import { userPrincipal } from '@polyrouter/shared/server';
 import type { LogWriter, RequestLogDraft } from './log-writer';
+import { ProxyMetrics } from '../observability/proxy-metrics';
 import { RequestRecorder, type RecordingContext } from './request-recorder';
 
 function makeRecorder(enqueue = jest.fn()): { recorder: RequestRecorder; enqueue: jest.Mock } {
   const writer = { enqueue } as unknown as LogWriter;
-  return { recorder: new RequestRecorder(writer), enqueue };
+  return { recorder: new RequestRecorder(writer, new ProxyMetrics()), enqueue };
 }
 
 const ctx = (over: Partial<RecordingContext> = {}): RecordingContext => ({
   principal: userPrincipal('u1'),
   agentId: 'a1',
+  protocol: 'openai',
   providerId: 'p1',
+  providerName: 'openai',
   modelId: 'm1',
   tierAssigned: 'default',
   decisionLayer: 'default',

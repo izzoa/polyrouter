@@ -38,6 +38,7 @@ import {
 import { ROUTING_CONFIG, loadRoutingConfig } from '../../src/proxy/routing.config';
 import { ProxyService } from '../../src/proxy/proxy.service';
 import { RequestRecorder } from '../../src/recording/request-recorder';
+import { ObservabilityModule } from '../../src/observability/observability.module';
 import { StreamDrainRegistry } from '../../src/proxy/stream-drain.registry';
 import { StructuralRouter } from '../../src/proxy/structural/structural-router';
 import { CascadeRouter } from '../../src/proxy/cascade/cascade-router';
@@ -156,7 +157,7 @@ describe('budget block enforcement — proxy path (#16)', () => {
     }
 
     const moduleRef = await Test.createTestingModule({
-      imports: [DatabaseModule, RedisModule],
+      imports: [DatabaseModule, RedisModule, ObservabilityModule],
       controllers: [ChatCompletionsController, MessagesController],
       providers: [
         AgentApiKeyGuard,

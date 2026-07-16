@@ -6,10 +6,12 @@ import {
   type ExecutionContext,
 } from '@nestjs/common';
 import { IDENTITY_PORT, userPrincipal, type IdentityPort } from '@polyrouter/shared/server';
+import { trace } from '@opentelemetry/api';
 import type { Request } from 'express';
 import { loadAuthConfig } from './auth.config';
 import { resolveAuthSecrets } from './auth.config';
 import { prefixOf, verifyAgentKey } from '../agents/agent-keys';
+import { TRACER_NAME } from '../observability/tracing';
 import type { AuthedRequest } from './principal.decorator';
 
 const TOUCH_INTERVAL_MS = 60_000;
@@ -28,6 +30,22 @@ export class AgentApiKeyGuard implements CanActivate {
   }
 
   async canActivate(ctx: ExecutionContext): Promise<boolean> {
+    // #21 `auth` span — child of the /v1 root via the ALS context; a no-op when
+    // tracing is off. Attributes carry ONLY the outcome, never key material.
+    const span = trace.getTracer(TRACER_NAME).startSpan('auth');
+    try {
+      const ok = await this.verify(ctx);
+      span.setAttribute('polyrouter.outcome', 'ok');
+      return ok;
+    } catch (err) {
+      span.setAttribute('polyrouter.outcome', 'unauthorized');
+      throw err;
+    } finally {
+      span.end();
+    }
+  }
+
+  private async verify(ctx: ExecutionContext): Promise<boolean> {
     const req = ctx.switchToHttp().getRequest<AuthedRequest>();
     const key = this.extractKey(req);
     if (!key) throw new UnauthorizedException();

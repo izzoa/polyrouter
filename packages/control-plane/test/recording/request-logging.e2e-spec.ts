@@ -41,6 +41,7 @@ import { StreamDrainRegistry } from '../../src/proxy/stream-drain.registry';
 import { StructuralRouter } from '../../src/proxy/structural/structural-router';
 import { CascadeRouter } from '../../src/proxy/cascade/cascade-router';
 import { RecordingModule } from '../../src/recording/recording.module';
+import { ObservabilityModule } from '../../src/observability/observability.module';
 import { RequestRecorder, type RecordingContext } from '../../src/recording/request-recorder';
 import { LogWriter } from '../../src/recording/log-writer';
 import { PricingModule } from '../../src/pricing/pricing.module';
@@ -85,7 +86,7 @@ describe('request-logging e2e', () => {
     }
 
     const moduleRef = await Test.createTestingModule({
-      imports: [DatabaseModule, PricingModule, RecordingModule],
+      imports: [DatabaseModule, PricingModule, RecordingModule, ObservabilityModule],
       controllers: [ChatCompletionsController],
       providers: [
         AgentApiKeyGuard,
@@ -202,7 +203,9 @@ describe('request-logging e2e', () => {
     const ctx: RecordingContext = {
       principal,
       agentId: null,
+      protocol: 'openai',
       providerId: 'p-known',
+      providerName: 'openai-known',
       modelId: gpt4oModelId,
       tierAssigned: null,
       decisionLayer: 'explicit',

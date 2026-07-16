@@ -17,6 +17,11 @@
     "@nestjs/common": "^11.1.28",
     "@nestjs/core": "^11.1.28",
     "@nestjs/platform-express": "^11.1.28",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.220.0",
+    "@opentelemetry/resources": "^2.9.0",
+    "@opentelemetry/sdk-trace-node": "^2.9.0",
+    "@opentelemetry/semantic-conventions": "^1.43.0",
     "@polyrouter/data-plane": "*",
     "@polyrouter/shared": "*",
     "better-auth": "^1.6.23",
@@ -27,6 +32,7 @@
     "ioredis": "^5.11.1",
     "nodemailer": "^9.0.3",
     "pg": "^8.22.0",
+    "prom-client": "^15.1.3",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",
     "undici": "^8.7.0"
@@ -34,6 +40,7 @@
   "devDependencies": {
     "@nestjs/cli": "^11.0.24",
     "@nestjs/testing": "^11.1.28",
+    "@opentelemetry/sdk-trace-base": "^2.9.0",
     "@types/express": "^5.0.0",
     "@types/jest": "^30.0.0",
     "@types/node": "^24.13.3",

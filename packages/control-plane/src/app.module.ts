@@ -10,6 +10,7 @@ import { SessionGuard } from './auth/session.guard';
 import { DatabaseModule } from './database/database.module';
 import { HealthController } from './health/health.controller';
 import { NotificationsModule } from './notifications/notifications.module';
+import { ObservabilityModule } from './observability/observability.module';
 import { PricingModule } from './pricing/pricing.module';
 import { ProducersModule } from './producers/producers.module';
 import { ProvidersModule } from './providers/providers.module';
@@ -30,6 +31,7 @@ import { RoutingConfigModule } from './routing-config/routing-config.module';
     ProxyModule,
     RecordingModule,
     NotificationsModule,
+    ObservabilityModule,
     ProducersModule,
     BudgetsModule,
     AccountModule,

@@ -55,4 +55,5 @@ export type {
   Admission,
   BreakerCompletion,
   BreakerOpenListener,
+  BreakerStateListener,
 } from './breaker';

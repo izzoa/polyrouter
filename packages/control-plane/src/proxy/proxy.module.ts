@@ -13,6 +13,7 @@ import { AuthModule } from '../auth/auth.module';
 import { loadAuthConfig, resolveAuthSecrets } from '../auth/auth.config';
 import { BudgetsModule } from '../budgets/budgets.module';
 import { DatabaseModule } from '../database/database.module';
+import { ObservabilityModule } from '../observability/observability.module';
 import { ProducersModule } from '../producers/producers.module';
 import { RecordingModule } from '../recording/recording.module';
 import { RedisModule } from '../redis/redis.module';
@@ -61,6 +62,7 @@ function boundedBreakerRedis(redis: Redis): BreakerRedis {
     RedisModule,
     ProducersModule,
     BudgetsModule,
+    ObservabilityModule,
   ],
   controllers: [ChatCompletionsController, MessagesController, ModelsController],
   providers: [

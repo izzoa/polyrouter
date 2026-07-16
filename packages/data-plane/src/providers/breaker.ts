@@ -405,6 +405,25 @@ export type BreakerOpenListener = (
   info: { generation: number; openedAt: number },
 ) => void;
 
+/** Fired with the state OBSERVED at each admission decision (#21 metrics):
+ * `skip` ⇒ open, an allowed probe ⇒ half_open, a plain allow ⇒ closed.
+ * Best-effort — it must never throw into the call path. */
+export type BreakerStateListener = (providerId: string, state: BreakerState) => void;
+
+function notifyState(
+  onState: BreakerStateListener | undefined,
+  providerId: string,
+  decision: BreakerDecision,
+  isProbe: boolean,
+): void {
+  if (!onState) return;
+  try {
+    onState(providerId, decision === 'skip' ? 'open' : isProbe ? 'half_open' : 'closed');
+  } catch {
+    /* an observation hook must never affect routing */
+  }
+}
+
 /** Complete + fire `onOpen` on a fresh open. The listener is best-effort and
  * MUST NOT throw into the call path (it's a fire-and-forget alert hook). */
 async function completeAndNotify(
@@ -431,8 +450,10 @@ export async function withBreaker<T>(
   providerId: string,
   fn: () => Promise<T>,
   onOpen?: BreakerOpenListener,
+  onState?: BreakerStateListener,
 ): Promise<T> {
   const { decision, token } = await breaker.before(providerId);
+  notifyState(onState, providerId, decision, token.isProbe);
   if (decision === 'skip') throw new ProviderCircuitOpenError(providerId);
   try {
     const result = await fn();
@@ -453,8 +474,10 @@ export async function* withBreakerStream(
   providerId: string,
   gen: () => AsyncGenerator<NormalizedStreamEvent>,
   onOpen?: BreakerOpenListener,
+  onState?: BreakerStateListener,
 ): AsyncGenerator<NormalizedStreamEvent> {
   const { decision, token } = await breaker.before(providerId);
+  notifyState(onState, providerId, decision, token.isProbe);
   if (decision === 'skip') throw new ProviderCircuitOpenError(providerId);
 
   let settled = false;

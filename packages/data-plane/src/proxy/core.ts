@@ -23,6 +23,7 @@ import {
   withBreaker,
   withBreakerStream,
   type BreakerOpenListener,
+  type BreakerStateListener,
   type CircuitBreaker,
   type ProviderAdapter,
 } from '../providers';
@@ -38,6 +39,8 @@ export interface ProxyStreamOptions {
   readonly created: number;
   /** Fire-and-forget hook when a provider's shared breaker opens (#15b provider_down). */
   readonly onOpen?: BreakerOpenListener;
+  /** Best-effort state observation at each admission decision (#21 metrics). */
+  readonly onBreakerState?: BreakerStateListener;
 }
 
 /** Captured usage for #11, resolved exactly once when the stream finishes. */
@@ -409,7 +412,7 @@ export async function runBufferedChain(
   attempts: readonly ChainAttempt[],
   client: ProtocolAdapter,
   request: NormalizedRequest,
-  ctx: { created: number; onOpen?: BreakerOpenListener },
+  ctx: { created: number; onOpen?: BreakerOpenListener; onBreakerState?: BreakerStateListener },
   signal: AbortSignal,
 ): Promise<BufferedChainResult> {
   const failures: AttemptFailure[] = [];
@@ -429,6 +432,7 @@ export async function runBufferedChain(
           return adapter.chat(req, { signal });
         },
         ctx.onOpen,
+        ctx.onBreakerState,
       );
       return {
         ok: true,
@@ -471,6 +475,7 @@ export async function openStreamChain(
           attempt.providerId,
           () => buildThenStream(attempt, req, signal),
           opts.onOpen,
+          opts.onBreakerState,
         ),
       client,
       opts,

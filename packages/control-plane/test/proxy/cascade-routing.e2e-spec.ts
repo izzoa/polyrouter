@@ -44,6 +44,7 @@ import { StructuralBaselineStore } from '../../src/proxy/structural/structural-b
 import { StructuralRouter } from '../../src/proxy/structural/structural-router';
 import { CascadeRouter } from '../../src/proxy/cascade/cascade-router';
 import { RecordingModule } from '../../src/recording/recording.module';
+import { ObservabilityModule } from '../../src/observability/observability.module';
 import { LogWriter } from '../../src/recording/log-writer';
 import { PricingModule } from '../../src/pricing/pricing.module';
 import { DatabaseModule } from '../../src/database/database.module';
@@ -79,7 +80,7 @@ function body(system: string, stream = false): Record<string, unknown> {
 
 async function buildApp(): Promise<{ app: INestApplication; server: App }> {
   const moduleRef = await Test.createTestingModule({
-    imports: [DatabaseModule, PricingModule, RecordingModule, RedisModule],
+    imports: [DatabaseModule, PricingModule, RecordingModule, RedisModule, ObservabilityModule],
     controllers: [ChatCompletionsController],
     providers: [
       AgentApiKeyGuard,
@@ -334,6 +335,35 @@ describe('cascade routing e2e', () => {
     expect(row.escalated).toBe(false);
     expect(row.inputTokens).toBeGreaterThan(0); // billed from the buffered cheap response
     await setBand('auto_low', 'cheap-bad');
+  });
+
+  it('ledgers the superseded cheap call even when EVERY escalation member fails (§7.7)', async () => {
+    // Cheap succeeds (bad quality -> escalate); strong AND default both 500 ->
+    // the request errors, but the cheap spend must still get its attempt row.
+    const tiers = new Map((await port.tiers.list(principal)).map((t) => [t.key, t.id]));
+    await setBand('auto_high', 'strong-down');
+    await port.routingEntries.replaceForTier(principal, tiers.get('default')!, [
+      modelId['strongDown']!,
+    ]);
+    try {
+      const res = await request(server)
+        .post('/v1/chat/completions')
+        .set('Authorization', `Bearer ${key}`)
+        .send(body('sysLedgerAllFail'));
+      expect(res.status).toBeGreaterThanOrEqual(500);
+      await writer.flush();
+      const row = await log();
+      expect(row.decisionLayer).toBe('cascade');
+      expect(row.escalated).toBe(true);
+      const attempts = await port.requestAttempts.listForRequest(principal, row.id);
+      expect(attempts).toHaveLength(1);
+      expect(attempts[0]!.modelId).toBe(modelId['cheapBad']); // the billed cheap call
+    } finally {
+      await port.routingEntries.replaceForTier(principal, tiers.get('default')!, [
+        modelId['default']!,
+      ]);
+      await setBand('auto_high', 'premium');
+    }
   });
 
   it('with cascade disabled, an ambiguous auto request serves via the default tier', async () => {

@@ -1,4 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
+import { SpanStatusCode, trace } from '@opentelemetry/api';
 import {
   AUTO_ALIAS,
   PERSISTENCE_PORT,
@@ -20,6 +21,7 @@ import {
   runBufferedChain,
   type AttemptFailure,
   type BreakerOpenListener,
+  type BreakerStateListener,
   type ChainAttempt,
   type CircuitBreaker,
   type ContentBlock,
@@ -52,6 +54,9 @@ import {
 } from './proxy.config';
 import { ROUTING_CONFIG, autoLayerCapability, type RoutingConfig } from './routing.config';
 import { RequestRecorder, type RecordingContext } from '../recording/request-recorder';
+import { ProxyMetrics } from '../observability/proxy-metrics';
+import { observeAdapter } from '../observability/observe-adapter';
+import { TRACER_NAME } from '../observability/tracing';
 import { StructuralRouter } from './structural/structural-router';
 import { CascadeRouter, type CascadePlan } from './cascade/cascade-router';
 import { NotificationProducers } from '../producers/notification-producers';
@@ -95,6 +100,7 @@ interface CheapServed {
 
 interface Prepared {
   client: ProtocolAdapter;
+  protocol: ClientProtocol;
   routed: NormalizedRequest;
   created: number;
   attempts: ChainAttempt[];
@@ -143,6 +149,7 @@ export class ProxyService {
     @Inject(PROXY_BREAKER) private readonly breaker: CircuitBreaker,
     @Inject(ROUTING_CONFIG) private readonly routingConfig: RoutingConfig,
     private readonly recorder: RequestRecorder,
+    private readonly metrics: ProxyMetrics,
     private readonly structural: StructuralRouter,
     private readonly cascade: CascadeRouter,
     private readonly producers: NotificationProducers,
@@ -170,12 +177,25 @@ export class ProxyService {
   }
 
   /** A per-request breaker-open listener that emits `provider_down` (#15b) for
-   * the tripped provider, owner = the request principal. Fire-and-forget. */
+   * the tripped provider, owner = the request principal, plus the #21 open
+   * transition counter. Fire-and-forget. */
   private onOpenFor(principal: Principal, meta: AttemptMeta[]): BreakerOpenListener {
     const owner = principal.kind === 'user' ? principal.userId : principal.orgId;
     return (providerId) => {
       const m = meta.find((x) => x.providerId === providerId);
-      if (m) this.producers.providerDown(providerId, m.providerName, owner);
+      if (m) {
+        this.producers.providerDown(providerId, m.providerName, owner);
+        this.metrics.breakerOpened(m.providerName);
+      }
+    };
+  }
+
+  /** #21: set the breaker-state gauge from the state observed at each admission
+   * decision (provider id → display name via this request's chain meta). */
+  private onBreakerStateFor(meta: AttemptMeta[]): BreakerStateListener {
+    return (providerId, state) => {
+      const m = meta.find((x) => x.providerId === providerId);
+      if (m) this.metrics.breakerStateObserved(m.providerName, state);
     };
   }
 
@@ -195,7 +215,7 @@ export class ProxyService {
     signal: AbortSignal,
   ): Promise<unknown> {
     await this.enforceBudgets(principal, agentId);
-    const p = await this.prepare(principal, protocol, wireBody, headers, agentId);
+    const p = await this.prepare(principal, protocol, wireBody, headers, agentId, signal);
     if (p.cascade !== undefined) return this.cascadeCompletion(p, p.cascade, signal);
 
     const result = await runBufferedChain(
@@ -203,7 +223,11 @@ export class ProxyService {
       p.attempts,
       p.client,
       p.routed,
-      { created: p.created, onOpen: this.onOpenFor(p.principal, p.meta) },
+      {
+        created: p.created,
+        onOpen: this.onOpenFor(p.principal, p.meta),
+        onBreakerState: this.onBreakerStateFor(p.meta),
+      },
       signal,
     );
     if (result.ok) {
@@ -233,7 +257,7 @@ export class ProxyService {
     agentId: string | null,
   ): Promise<AsyncGenerator<string>> {
     await this.enforceBudgets(principal, agentId);
-    const p = await this.prepare(principal, protocol, wireBody, headers, agentId);
+    const p = await this.prepare(principal, protocol, wireBody, headers, agentId, signal);
     if (p.cascade !== undefined) return this.cascadeStream(p, p.cascade, signal);
 
     const result = await openStreamChain(this.breaker, p.attempts, p.client, p.routed, {
@@ -241,6 +265,7 @@ export class ProxyService {
       firstEventTimeoutMs: this.rt.firstByteTimeoutMs,
       created: p.created,
       onOpen: this.onOpenFor(p.principal, p.meta),
+      onBreakerState: this.onBreakerStateFor(p.meta),
     });
     if (result.kind === 'error') {
       this.recorder.record(this.failedContext(p, result.failures), {
@@ -299,7 +324,11 @@ export class ProxyService {
       c.cheap.attempts,
       p.client,
       p.routed,
-      { created: p.created, onOpen: this.onOpenFor(p.principal, c.cheap.meta) },
+      {
+        created: p.created,
+        onOpen: this.onOpenFor(p.principal, c.cheap.meta),
+        onBreakerState: this.onBreakerStateFor(c.cheap.meta),
+      },
       AbortSignal.any([signal, AbortSignal.timeout(c.cheapTimeoutMs)]),
     );
     if (cheap.ok) {
@@ -348,11 +377,15 @@ export class ProxyService {
       c.escalation.attempts,
       p.client,
       p.routed,
-      { created: p.created, onOpen: this.onOpenFor(p.principal, c.escalation.meta) },
+      {
+        created: p.created,
+        onOpen: this.onOpenFor(p.principal, c.escalation.meta),
+        onBreakerState: this.onBreakerStateFor(c.escalation.meta),
+      },
       signal,
     );
     if (!result.ok) {
-      this.recorder.record(
+      const requestId = this.recorder.record(
         this.servedFrom(
           p,
           c.escalation.meta,
@@ -363,6 +396,9 @@ export class ProxyService {
         ),
         { status: 'error', outputChars: 0, escalated: true, qualitySignal: score },
       );
+      // The superseded cheap call was still billed — its ledger row must exist
+      // even when every escalation member failed (§7.7, spend completeness).
+      if (cheapServed !== null) this.recordCheapAttempt(p, c, requestId, cheapServed);
       this.notifyFailed(p.principal);
       throw toProxyError(result.error);
     }
@@ -399,7 +435,11 @@ export class ProxyService {
       c.cheap.attempts,
       p.client,
       p.routed,
-      { created: p.created, onOpen: this.onOpenFor(p.principal, c.cheap.meta) },
+      {
+        created: p.created,
+        onOpen: this.onOpenFor(p.principal, c.cheap.meta),
+        onBreakerState: this.onBreakerStateFor(c.cheap.meta),
+      },
       AbortSignal.any([signal, AbortSignal.timeout(c.cheapTimeoutMs)]),
     );
     if (cheap.ok) {
@@ -450,9 +490,10 @@ export class ProxyService {
       firstEventTimeoutMs: this.rt.firstByteTimeoutMs,
       created: p.created,
       onOpen: this.onOpenFor(p.principal, c.escalation.meta),
+      onBreakerState: this.onBreakerStateFor(c.escalation.meta),
     });
     if (result.kind === 'error') {
-      this.recorder.record(
+      const requestId = this.recorder.record(
         this.servedFrom(
           p,
           c.escalation.meta,
@@ -463,6 +504,9 @@ export class ProxyService {
         ),
         { status: 'error', outputChars: 0, escalated: true, qualitySignal: score },
       );
+      // The superseded cheap call was still billed — ledger it even on total
+      // escalation failure (§7.7, spend completeness).
+      if (cheapServed !== null) this.recordCheapAttempt(p, c, requestId, cheapServed);
       this.notifyFailed(p.principal);
       throw providerErrorToProxy(result.error);
     }
@@ -555,6 +599,35 @@ export class ProxyService {
     wireBody: unknown,
     headers: NodeJS.Dict<string | string[]>,
     agentId: string | null,
+    signal: AbortSignal,
+  ): Promise<Prepared> {
+    // #21 `routing` span: covers route resolution, the structural/cascade
+    // evaluation, and chain building. A no-op when tracing is off.
+    const span = trace.getTracer(TRACER_NAME).startSpan('routing');
+    try {
+      const p = await this.resolvePlan(principal, protocol, wireBody, headers, agentId, signal);
+      span.setAttributes({
+        'polyrouter.decision_layer': p.decision.decisionLayer,
+        'polyrouter.tier': p.decision.tierKey ?? '',
+        'polyrouter.model': p.meta[0]?.model.externalModelId ?? '',
+        'polyrouter.cascade': p.cascade !== undefined,
+      });
+      return p;
+    } catch (err) {
+      span.setStatus({ code: SpanStatusCode.ERROR });
+      throw err;
+    } finally {
+      span.end();
+    }
+  }
+
+  private async resolvePlan(
+    principal: Principal,
+    protocol: ClientProtocol,
+    wireBody: unknown,
+    headers: NodeJS.Dict<string | string[]>,
+    agentId: string | null,
+    signal: AbortSignal,
   ): Promise<Prepared> {
     const startedAt = Date.now();
     const client = getAdapter(protocol);
@@ -592,12 +665,12 @@ export class ProxyService {
       }
     }
 
-    const primary = await this.buildBundle(principal, decision, models);
+    const primary = await this.buildBundle(principal, decision, models, signal);
 
     let cascade: CascadeBundle | undefined;
     if (cascadePlan !== null) {
-      const cheap = await this.buildBundle(principal, cascadePlan.cheap, models);
-      const strong = await this.buildBundle(principal, cascadePlan.strong, models);
+      const cheap = await this.buildBundle(principal, cascadePlan.cheap, models, signal);
+      const strong = await this.buildBundle(principal, cascadePlan.strong, models, signal);
       // Escalation walks strong then the Layer-0 default (reliable-core rescue).
       if (cheap.attempts.length > 0 && strong.attempts.length + primary.attempts.length > 0) {
         cascade = {
@@ -617,6 +690,7 @@ export class ProxyService {
 
     return {
       client,
+      protocol,
       routed: ir, // the model is retargeted per-attempt inside the walker
       created: Math.floor(Date.now() / 1000),
       attempts: primary.attempts,
@@ -636,6 +710,7 @@ export class ProxyService {
     principal: Principal,
     decision: RouteDecision,
     models: ModelRow[],
+    signal: AbortSignal,
   ): Promise<Bundle> {
     const attempts: ChainAttempt[] = [];
     const meta: AttemptMeta[] = [];
@@ -660,7 +735,7 @@ export class ProxyService {
       attempts.push({
         providerId: t.providerId,
         externalModelId: t.externalModelId,
-        buildAdapter: () => this.chainAdapter(provider),
+        buildAdapter: () => this.chainAdapter(provider, signal),
       });
     }
     return { attempts, meta };
@@ -668,13 +743,21 @@ export class ProxyService {
 
   /** Build a chain member's adapter; a setup failure (SSRF/credential/decrypt)
    * becomes a classified, fallback-eligible ProviderError (skipped + trips the
-   * breaker so it's skipped fast next time). */
-  private async chainAdapter(provider: ProviderRow): Promise<ProviderAdapter> {
+   * breaker so it's skipped fast next time), counted per provider (#21). The
+   * built adapter is wrapped with the `upstream` span + metrics decorator. */
+  private async chainAdapter(provider: ProviderRow, signal: AbortSignal): Promise<ProviderAdapter> {
+    let adapter: ProviderAdapter;
     try {
-      return await this.buildAdapter(provider);
+      adapter = await this.buildAdapter(provider);
     } catch {
+      this.metrics.upstreamSetupFailed(provider.name);
       throw new ProviderError('unavailable', 'provider setup failed');
     }
+    return observeAdapter(adapter, {
+      provider: provider.name,
+      clientAborted: () => signal.aborted,
+      metrics: this.metrics,
+    });
   }
 
   private servedContext(
@@ -699,7 +782,9 @@ export class ProxyService {
     return {
       principal: p.principal,
       agentId: p.agentId,
+      protocol: p.protocol,
       providerId: m.providerId,
+      providerName: m.providerName,
       modelId: m.modelId,
       tierAssigned: p.decision.tierKey,
       decisionLayer: p.decision.decisionLayer,
@@ -729,7 +814,9 @@ export class ProxyService {
     return {
       principal: p.principal,
       agentId: p.agentId,
+      protocol: p.protocol,
       providerId: m.providerId,
+      providerName: m.providerName,
       modelId: m.modelId,
       tierAssigned: m.tierKey,
       decisionLayer: 'cascade',

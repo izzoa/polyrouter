@@ -6,6 +6,7 @@ import { AppModule } from './app.module';
 import { configureApp } from './app.setup';
 import { loadAuthConfig } from './auth/auth.config';
 import { mountAuth } from './auth/mount';
+import { initTracing } from './observability/tracing';
 import { configureSpa } from './spa';
 
 export async function bootstrap(): Promise<void> {
@@ -21,6 +22,10 @@ export async function bootstrap(): Promise<void> {
     }
     throw error;
   }
+
+  // Register the OTel SDK (when enabled) BEFORE Nest exists so every span in
+  // the process has a provider; flushed on shutdown by ObservabilityModule.
+  initTracing();
 
   // bodyParser off so the Better Auth handler can be mounted ahead of parsing.
   const app = await NestFactory.create<NestExpressApplication>(AppModule, { bodyParser: false });

@@ -54,6 +54,7 @@ import { StructuralBaselineStore } from '../../src/proxy/structural/structural-b
 import { StructuralRouter } from '../../src/proxy/structural/structural-router';
 import { CascadeRouter } from '../../src/proxy/cascade/cascade-router';
 import { RecordingModule } from '../../src/recording/recording.module';
+import { ObservabilityModule } from '../../src/observability/observability.module';
 import { LogWriter } from '../../src/recording/log-writer';
 import { PricingModule } from '../../src/pricing/pricing.module';
 import { DatabaseModule } from '../../src/database/database.module';
@@ -120,7 +121,7 @@ class PermissivePrincipalGuard implements CanActivate {
 
 async function buildApp(): Promise<{ app: INestApplication; server: App }> {
   const moduleRef = await Test.createTestingModule({
-    imports: [DatabaseModule, PricingModule, RecordingModule, RedisModule],
+    imports: [DatabaseModule, PricingModule, RecordingModule, RedisModule, ObservabilityModule],
     controllers: [ChatCompletionsController, AutoLayersController],
     providers: [
       AgentApiKeyGuard,

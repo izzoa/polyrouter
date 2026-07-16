@@ -52,7 +52,7 @@ Env var names, endpoint paths (`/v1/chat/completions`, `/v1/messages`, `/api`), 
 | 18 | `add-dashboard-core` | F | 3, 7, 8, 9, 10 | L | ✅ archived 2026-07-16 |
 | 19 | `add-dashboard-analytics` | F | 17, 18 | M | ✅ archived 2026-07-16 |
 | 20 | `add-dashboard-config` | F | 9, 14, 15, 16, 18 | M | ✅ archived 2026-07-16 |
-| 21 | `add-observability` | G | 12 | S | ☐ |
+| 21 | `add-observability` | G | 12 | S | ✅ archived 2026-07-16 |
 | 22 | `add-packaging` | G | 12, 15, 18 (full value: 13–21) | M | ☐ |
 | — | Deferred (org/workspaces + cloud tier) | — | flagged only | — | ☐ |
 

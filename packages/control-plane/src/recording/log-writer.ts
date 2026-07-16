@@ -6,6 +6,14 @@ import {
   type OnModuleInit,
 } from '@nestjs/common';
 import {
+  ROOT_CONTEXT,
+  SpanStatusCode,
+  trace,
+  type Link,
+  type Span,
+  type SpanContext,
+} from '@opentelemetry/api';
+import {
   PERSISTENCE_PORT,
   type PersistencePort,
   type Principal,
@@ -13,6 +21,8 @@ import {
   type RequestLogInsertInput,
 } from '@polyrouter/shared/server';
 import { computeCost, type ResolvedUsage } from '@polyrouter/data-plane';
+import { ProxyMetrics } from '../observability/proxy-metrics';
+import { TRACER_NAME } from '../observability/tracing';
 import { PricingService } from '../pricing/pricing.service';
 
 /** Pricing inputs captured at request-completion time, resolved later in the
@@ -34,6 +44,8 @@ export interface RequestLogDraft {
   readonly principal: Principal;
   readonly agentId: string | null;
   readonly providerId: string | null;
+  /** Provider display name — #21 metric label only, never persisted. */
+  readonly providerName: string;
   readonly modelId: string | null;
   readonly tierAssigned: string | null;
   readonly decisionLayer: string;
@@ -46,6 +58,9 @@ export interface RequestLogDraft {
   readonly escalated?: boolean;
   /** #14 cascade: the numeric quality score (or null on a fail-open error). */
   readonly qualitySignal?: number | null;
+  /** The originating request's span context (#21 `recording.write` link);
+   * absent when tracing is off. Never persisted. */
+  readonly spanContext?: SpanContext;
 }
 
 /** A per-billable-call ledger job (#14 cascade) — the superseded cheap attempt.
@@ -57,10 +72,14 @@ export interface RequestAttemptDraft {
   readonly attemptIndex: number;
   readonly tierKey: string | null;
   readonly providerId: string | null;
+  /** Provider display name — #21 metric label only, never persisted. */
+  readonly providerName: string;
   readonly modelId: string | null;
   readonly status: 'success' | 'error' | 'fallback';
   readonly usage: ResolvedUsage;
   readonly pricing: DraftPricing;
+  /** The originating request's span context (#21); never persisted. */
+  readonly spanContext?: SpanContext;
 }
 
 export interface LogWriterConfig {
@@ -102,6 +121,7 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
     @Inject(PERSISTENCE_PORT) private readonly db: PersistencePort,
     private readonly pricing: PricingService,
     @Inject(LOG_WRITER_CONFIG) private readonly cfg: LogWriterConfig,
+    private readonly metrics: ProxyMetrics,
   ) {}
 
   onModuleInit(): void {
@@ -119,6 +139,7 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
     if (this.queue.length >= this.cfg.maxQueue) {
       this.queue.shift();
       this.dropped += 1;
+      this.metrics.logRowsDroppedBy(1);
     }
     this.queue.push(draft);
     if (this.queue.length >= this.cfg.batchSize) void this.flush();
@@ -147,25 +168,41 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
   }
 
   /** Resolve prices + insert one principal's rows, with bounded retry wrapping
-   * the WHOLE attempt (a pricing lookup can fail during a DB outage too). */
+   * the WHOLE attempt (a pricing lookup can fail during a DB outage too). The
+   * batch runs under a `recording.write` span LINKED to the originating request
+   * spans (#21 — the spec's traced "DB write"); the cost counters are emitted
+   * exactly once per row, only after ITS batch insert succeeded (a retry
+   * rebuilds rows but must never re-emit; a dropped row emits no cost). */
   private async writeGroup(drafts: RequestLogDraft[]): Promise<void> {
     const principal = drafts[0]!.principal;
-    for (let attempt = 0; ; attempt += 1) {
-      try {
-        const rows: RequestLogInsertInput[] = [];
-        for (const d of drafts) rows.push(await this.toRow(d)); // sequential → bounded pricing work
-        await this.db.requestLogs.insertMany(principal, rows);
-        return;
-      } catch (err) {
-        if (attempt >= this.cfg.maxRetries) {
-          this.dropped += drafts.length;
-          this.logger.warn(
-            `request-log write failed after ${attempt + 1} attempts; dropped ${drafts.length} row(s): ${String(err)}`,
-          );
+    const span = writeSpan(drafts);
+    try {
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          const rows: RequestLogInsertInput[] = [];
+          for (const d of drafts) rows.push(await this.toRow(d)); // sequential → bounded pricing work
+          await this.db.requestLogs.insertMany(principal, rows);
+          rows.forEach((row, i) => {
+            const d = drafts[i]!;
+            this.metrics.recordCost(d.providerName, d.pricing.externalModelId, row.cost ?? null);
+          });
           return;
+        } catch (err) {
+          if (attempt >= this.cfg.maxRetries) {
+            this.dropped += drafts.length;
+            this.metrics.logRowsDroppedBy(drafts.length);
+            span.setStatus({ code: SpanStatusCode.ERROR });
+            span.setAttribute('polyrouter.dropped', drafts.length);
+            this.logger.warn(
+              `request-log write failed after ${attempt + 1} attempts; dropped ${drafts.length} row(s): ${String(err)}`,
+            );
+            return;
+          }
+          await sleep(this.cfg.backoffMs * (attempt + 1));
         }
-        await sleep(this.cfg.backoffMs * (attempt + 1));
       }
+    } finally {
+      span.end();
     }
   }
 
@@ -212,29 +249,43 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
     if (this.attemptQueue.length >= this.cfg.maxQueue) {
       this.attemptQueue.shift();
       this.dropped += 1;
+      this.metrics.logRowsDroppedBy(1);
     }
     this.attemptQueue.push(draft);
   }
 
-  /** Resolve prices + insert one principal's attempt ledger rows (bounded retry). */
+  /** Resolve prices + insert one principal's attempt ledger rows (bounded retry;
+   * same #21 persistence-span + exactly-once cost discipline as `writeGroup`). */
   private async writeAttemptGroup(drafts: RequestAttemptDraft[]): Promise<void> {
     const principal = drafts[0]!.principal;
-    for (let attempt = 0; ; attempt += 1) {
-      try {
-        const rows: RequestAttemptInsertInput[] = [];
-        for (const d of drafts) rows.push(await this.toAttemptRow(d));
-        await this.db.requestAttempts.insertMany(principal, rows);
-        return;
-      } catch (err) {
-        if (attempt >= this.cfg.maxRetries) {
-          this.dropped += drafts.length;
-          this.logger.warn(
-            `request-attempt write failed after ${attempt + 1} attempts; dropped ${drafts.length} row(s): ${String(err)}`,
-          );
+    const span = writeSpan(drafts);
+    try {
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          const rows: RequestAttemptInsertInput[] = [];
+          for (const d of drafts) rows.push(await this.toAttemptRow(d));
+          await this.db.requestAttempts.insertMany(principal, rows);
+          rows.forEach((row, i) => {
+            const d = drafts[i]!;
+            this.metrics.recordCost(d.providerName, d.pricing.externalModelId, row.cost ?? null);
+          });
           return;
+        } catch (err) {
+          if (attempt >= this.cfg.maxRetries) {
+            this.dropped += drafts.length;
+            this.metrics.logRowsDroppedBy(drafts.length);
+            span.setStatus({ code: SpanStatusCode.ERROR });
+            span.setAttribute('polyrouter.dropped', drafts.length);
+            this.logger.warn(
+              `request-attempt write failed after ${attempt + 1} attempts; dropped ${drafts.length} row(s): ${String(err)}`,
+            );
+            return;
+          }
+          await sleep(this.cfg.backoffMs * (attempt + 1));
         }
-        await sleep(this.cfg.backoffMs * (attempt + 1));
       }
+    } finally {
+      span.end();
     }
   }
 
@@ -271,6 +322,26 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
       status: d.status,
     };
   }
+}
+
+/** The #21 `recording.write` batch span: one per persist group, LINKED to each
+ * draft's originating request span (one batch serves many requests — links,
+ * not parenting). Started under ROOT_CONTEXT explicitly: a threshold-triggered
+ * flush runs synchronously inside SOME request's ALS context, and the batch
+ * must never become a child of that arbitrary request. A no-op when tracing is
+ * off (no valid contexts collected). */
+function writeSpan(drafts: readonly { readonly spanContext?: SpanContext }[]): Span {
+  const links: Link[] = [];
+  for (const d of drafts) {
+    if (d.spanContext !== undefined) links.push({ context: d.spanContext });
+  }
+  return trace
+    .getTracer(TRACER_NAME)
+    .startSpan(
+      'recording.write',
+      { links, attributes: { 'polyrouter.rows': drafts.length } },
+      ROOT_CONTEXT,
+    );
 }
 
 function groupByOwner<T extends { readonly principal: Principal }>(batch: T[]): Map<string, T[]> {

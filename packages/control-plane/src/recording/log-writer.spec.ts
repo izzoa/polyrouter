@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { PersistencePort, PriceSnapshot, Principal } from '@polyrouter/shared/server';
 import { userPrincipal } from '@polyrouter/shared/server';
+import { ProxyMetrics } from '../observability/proxy-metrics';
 import type { PricingService } from '../pricing/pricing.service';
 import { LogWriter, type LogWriterConfig, type RequestLogDraft } from './log-writer';
 
@@ -18,6 +19,7 @@ function draft(over: Partial<RequestLogDraft> = {}): RequestLogDraft {
     principal: over.principal ?? userPrincipal('u1'),
     agentId: 'a1',
     providerId: 'p1',
+    providerName: 'openai',
     modelId: 'm1',
     tierAssigned: 'default',
     decisionLayer: 'default',
@@ -54,12 +56,19 @@ function makeWriter(overrides: { insertMany?: jest.Mock; resolveForModel?: jest.
   writer: LogWriter;
   insertMany: jest.Mock;
   resolveForModel: jest.Mock;
+  metrics: ProxyMetrics;
 } {
   const insertMany = overrides.insertMany ?? jest.fn().mockResolvedValue(undefined);
   const resolveForModel = overrides.resolveForModel ?? jest.fn().mockResolvedValue(snapshot());
   const db = { requestLogs: { insertMany } } as unknown as PersistencePort;
   const pricing = { resolveForModel } as unknown as PricingService;
-  return { writer: new LogWriter(db, pricing, CONFIG), insertMany, resolveForModel };
+  const metrics = new ProxyMetrics();
+  return {
+    writer: new LogWriter(db, pricing, CONFIG, metrics),
+    insertMany,
+    resolveForModel,
+    metrics,
+  };
 }
 
 describe('LogWriter', () => {
@@ -110,5 +119,45 @@ describe('LogWriter', () => {
     const [, rows] = insertMany.mock.calls[0] as [Principal, { id: string }[]];
     expect(rows.length).toBe(CONFIG.maxQueue); // 2 oldest dropped
     expect(rows.some((r) => r.id === 'd0')).toBe(false);
+  });
+
+  // --- #21 metrics at the writer ---
+
+  it('emits cost exactly once when the first insert fails and the retry succeeds', async () => {
+    const insertMany = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('transient'))
+      .mockResolvedValue(undefined);
+    const { writer, metrics } = makeWriter({ insertMany });
+    writer.enqueue(draft());
+    await writer.flush();
+    expect(insertMany).toHaveBeenCalledTimes(2); // failed once, then succeeded
+    // 0.000075 USD → 75 µ$, counted ONCE despite the retry rebuilding rows.
+    expect(await metrics.metricsText()).toContain(
+      'polyrouter_cost_microusd_total{provider="openai",model="gpt-4o"} 75',
+    );
+  });
+
+  it('emits no cost for unpriced rows or dropped batches; drops hit the counter', async () => {
+    // Unpriced: no snapshot → cost null → no cost series.
+    const unpriced = makeWriter({ resolveForModel: jest.fn().mockResolvedValue(null) });
+    unpriced.writer.enqueue(draft());
+    await unpriced.writer.flush();
+    expect(await unpriced.metrics.metricsText()).not.toContain('polyrouter_cost_microusd_total{');
+
+    // Give-up: every insert fails → the row drops, no cost, drop counter = 1.
+    const failing = makeWriter({ insertMany: jest.fn().mockRejectedValue(new Error('db down')) });
+    failing.writer.enqueue(draft());
+    await failing.writer.flush();
+    const text = await failing.metrics.metricsText();
+    expect(text).not.toContain('polyrouter_cost_microusd_total{');
+    expect(text).toContain('polyrouter_log_rows_dropped_total 1');
+  });
+
+  it('counts queue-overflow drops on the same counter', async () => {
+    const { writer, metrics } = makeWriter({});
+    for (let i = 0; i < CONFIG.maxQueue + 2; i++) writer.enqueue(draft({ id: `q${i}` }));
+    await writer.flush();
+    expect(await metrics.metricsText()).toContain('polyrouter_log_rows_dropped_total 2');
   });
 });

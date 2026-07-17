@@ -85,6 +85,10 @@ class RecordingBreakerStore implements BreakerStore {
     this.outcomes.push(outcome);
     return this.inner.complete(providerId, generation, outcome, now, cfg);
   }
+
+  renew(providerId: string, generation: number, now: number, cfg: BreakerConfig): Promise<void> {
+    return this.inner.renew(providerId, generation, now, cfg);
+  }
 }
 
 const THRESHOLD_1: BreakerConfig = {

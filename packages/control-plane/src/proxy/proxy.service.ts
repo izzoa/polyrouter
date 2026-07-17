@@ -909,6 +909,7 @@ export class ProxyService {
       mode: this.mode,
       defaultMaxOutputTokens: this.rt.defaultMaxOutputTokens,
       firstByteTimeoutMs: this.rt.firstByteTimeoutMs,
+      idleTimeoutMs: this.rt.idleTimeoutMs,
     });
   }
 }

@@ -39,6 +39,9 @@ export const proxyConfigSchema = z.object({
   PROXY_MAX_BODY_BYTES: z.coerce.number().int().positive().default(DEFAULT_MAX_BODY_BYTES),
   PROXY_FIRST_EVENT_TIMEOUT_MS: z.coerce.number().int().positive().max(MAX_TIMEOUT_MS).default(30_000),
   PROXY_EVENT_TIMEOUT_MARGIN_MS: z.coerce.number().int().positive().max(60_000).default(500),
+  // Inter-chunk idle deadline for buffered upstream reads (E4.3). Raise it
+  // alongside PROXY_FIRST_EVENT_TIMEOUT_MS for slow local models.
+  PROXY_IDLE_TIMEOUT_MS: z.coerce.number().int().positive().max(MAX_TIMEOUT_MS).default(30_000),
 });
 
 registerConfig('proxy', proxyConfigSchema);
@@ -47,6 +50,7 @@ export type ProxyRawConfig = {
   PROXY_MAX_BODY_BYTES: number;
   PROXY_FIRST_EVENT_TIMEOUT_MS: number;
   PROXY_EVENT_TIMEOUT_MARGIN_MS: number;
+  PROXY_IDLE_TIMEOUT_MS: number;
 };
 
 export type ProxyAdapterFactory = typeof createProviderAdapter;
@@ -62,6 +66,8 @@ export interface ProxyRuntime {
    * subsequent stream event, kept above the adapter bound so the adapter's typed
    * `unavailable` timeout wins for a pre-headers hang (E1.3). */
   readonly firstEventTimeoutMs: number;
+  /** Adapter bound: inter-chunk idle deadline for a buffered upstream read (E4.3). */
+  readonly idleTimeoutMs: number;
   /** Max `/v1` request body size in bytes. */
   readonly maxBodyBytes: number;
   /** Max time to wait for in-flight streams to finish on shutdown. */
@@ -74,12 +80,14 @@ export interface ProxyRuntime {
 export function resolveProxyBounds(proxy: ProxyRawConfig): {
   firstByteTimeoutMs: number;
   firstEventTimeoutMs: number;
+  idleTimeoutMs: number;
   maxBodyBytes: number;
 } {
   const firstByteTimeoutMs = proxy.PROXY_FIRST_EVENT_TIMEOUT_MS;
   return {
     firstByteTimeoutMs,
     firstEventTimeoutMs: firstByteTimeoutMs + proxy.PROXY_EVENT_TIMEOUT_MARGIN_MS,
+    idleTimeoutMs: proxy.PROXY_IDLE_TIMEOUT_MS,
     maxBodyBytes: proxy.PROXY_MAX_BODY_BYTES,
   };
 }

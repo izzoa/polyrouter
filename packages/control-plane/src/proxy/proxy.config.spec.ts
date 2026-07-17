@@ -8,6 +8,7 @@ const raw = (over: Partial<ProxyRawConfig> = {}): ProxyRawConfig => ({
   PROXY_MAX_BODY_BYTES: 10_485_760,
   PROXY_FIRST_EVENT_TIMEOUT_MS: 30_000,
   PROXY_EVENT_TIMEOUT_MARGIN_MS: 500,
+  PROXY_IDLE_TIMEOUT_MS: 30_000,
   ...over,
 });
 
@@ -17,6 +18,7 @@ describe('proxyConfigSchema', () => {
       PROXY_MAX_BODY_BYTES: 10_485_760,
       PROXY_FIRST_EVENT_TIMEOUT_MS: 30_000,
       PROXY_EVENT_TIMEOUT_MARGIN_MS: 500,
+      PROXY_IDLE_TIMEOUT_MS: 30_000,
     });
   });
 
@@ -25,12 +27,19 @@ describe('proxyConfigSchema', () => {
       PROXY_MAX_BODY_BYTES: '1048576',
       PROXY_FIRST_EVENT_TIMEOUT_MS: '120000',
       PROXY_EVENT_TIMEOUT_MARGIN_MS: '250',
+      PROXY_IDLE_TIMEOUT_MS: '90000',
     });
     expect(c).toEqual({
       PROXY_MAX_BODY_BYTES: 1_048_576,
       PROXY_FIRST_EVENT_TIMEOUT_MS: 120_000,
       PROXY_EVENT_TIMEOUT_MARGIN_MS: 250,
+      PROXY_IDLE_TIMEOUT_MS: 90_000,
     });
+  });
+
+  it('rejects a non-positive or timer-overflowing idle timeout (E4.3)', () => {
+    expect(() => proxyConfigSchema.parse({ PROXY_IDLE_TIMEOUT_MS: '0' })).toThrow();
+    expect(() => proxyConfigSchema.parse({ PROXY_IDLE_TIMEOUT_MS: '999999999' })).toThrow(); // > 1h cap
   });
 
   it('rejects a zero/negative margin (core bound must stay above the adapter bound)', () => {
@@ -53,7 +62,14 @@ describe('resolveProxyBounds', () => {
     const b = resolveProxyBounds(raw());
     expect(b.firstByteTimeoutMs).toBe(30_000);
     expect(b.firstEventTimeoutMs).toBe(30_500);
+    expect(b.idleTimeoutMs).toBe(30_000);
     expect(b.maxBodyBytes).toBe(10_485_760);
+  });
+
+  it('carries an overridden idle timeout independently of the first-event bound (E4.3)', () => {
+    const b = resolveProxyBounds(raw({ PROXY_IDLE_TIMEOUT_MS: 90_000 }));
+    expect(b.idleTimeoutMs).toBe(90_000);
+    expect(b.firstByteTimeoutMs).toBe(30_000); // unaffected
   });
 
   it('core first/inter-event bound is always strictly above the adapter first-byte bound', () => {

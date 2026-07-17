@@ -77,6 +77,10 @@ export function createHttpProviderAdapter(
   const httpClient =
     deps.httpClient ?? createGuardedHttpClient({ mode: config.mode, providerKind: config.kind });
   const firstByteTimeoutMs = config.firstByteTimeoutMs ?? DEFAULT_FIRST_BYTE_TIMEOUT_MS;
+  // Inter-chunk idle deadline for buffered drains (E4.3). Defaults to the
+  // first-byte bound; applied to non-streaming reads only (the stream path is
+  // bounded by core's per-event timeout).
+  const idleTimeoutMs = config.idleTimeoutMs ?? firstByteTimeoutMs;
   const chatUrl = joinUrl(config.baseUrl, spec.chatPath);
   const modelsUrl = joinUrl(config.baseUrl, spec.modelsPath);
 
@@ -96,6 +100,7 @@ export function createHttpProviderAdapter(
         { method: 'POST', headers: headers(true, false), body },
         firstByteTimeoutMs,
         ctx,
+        idleTimeoutMs,
       );
       try {
         if (!res.ok) {
@@ -148,6 +153,7 @@ export function createHttpProviderAdapter(
         { method: 'GET', headers: headers(false, false) },
         firstByteTimeoutMs,
         ctx,
+        idleTimeoutMs,
       );
       try {
         if (!res.ok) {

@@ -430,7 +430,7 @@ counted in summaries but unreachable in the list, so the dashboard is silently i
 ---
 
 <a id="epic-e4"></a>
-## EPIC E4 — Circuit-breaker recovery & upstream timeouts · P1
+## EPIC E4 — Circuit-breaker recovery & upstream timeouts · P1 · ✅ SHIPPED 2026-07-17 (`fix-breaker-recovery`)
 
 **Proposal slug:** `fix-breaker-recovery` ·
 **Spec refs:** `openspec/specs/provider-adapters` (half-open probe, Redis server clock, idle timeout); CLAUDE.md invariants 1, 10
@@ -438,7 +438,7 @@ counted in summaries but unreachable in the list, so the dashboard is silently i
 workload (long streams), throttling a healthy provider indefinitely; two smaller defects undermine its
 multi-instance correctness and its hang protection.
 
-### Task E4.1 — Let a long-lived streaming probe close the breaker (lease renewal) ☐ `[high/M]`
+### Task E4.1 — Let a long-lived streaming probe close the breaker (lease renewal) ✅ `[high/M]`
 - **Where:** `packages/data-plane/src/providers/breaker.ts:86-99` (`decide`, half-open reclaim), `:112` (stale-generation no-op), `:499-513` (`withBreakerStream` settles at stream end), Lua mirrors at `:225/:239`
 - **Defect:** A streaming probe settles success only at stream end, but LLM streams routinely outlive
   `probeLeaseMs` (10s). The next admission reclaims the lease and **bumps the generation**, so the
@@ -454,7 +454,7 @@ multi-instance correctness and its hang protection.
   calls during the probe still return skip (single-probe preserved).
 - **Verify:** new jest test with injected clock advancing between stream events past `probeLeaseMs`; `npm test -w packages/data-plane`; Lua parity in `breaker-redis.spec.ts` (runs once E7.1 lands).
 
-### Task E4.2 — Use the Redis server clock in the breaker Lua scripts ☐ `[medium/S]`
+### Task E4.2 — Use the Redis server clock in the breaker Lua scripts ✅ `[medium/S]`
 - **Where:** `packages/data-plane/src/providers/breaker.ts:215` (`DECIDE_LUA`), `:233` (`COMPLETE_LUA`), `RedisBreakerStore.decide/complete`
 - **Defect:** The capability spec mandates "a single Lua script … using the **Redis server clock**";
   both scripts take `now` as `ARGV[1]` from each instance's `Date.now()`. Clock skew between proxy
@@ -466,7 +466,7 @@ multi-instance correctness and its hang protection.
   cooldown/probe decisions are consistent (driven by server time).
 - **Verify:** extend `breaker-redis.spec.ts`; `REDIS_URL=... npm test -w packages/data-plane -- breaker-redis`.
 
-### Task E4.3 — Enforce a body/idle deadline on buffered upstream reads (make `idleTimeoutMs` real) ☐ `[medium/S]`
+### Task E4.3 — Enforce a body/idle deadline on buffered upstream reads (make `idleTimeoutMs` real) ✅ `[medium/S]`
 - **Where:** `packages/data-plane/src/providers/http-adapter.ts:104` (`chat`), `http.ts:219`, `adapter.ts:39`
 - **Defect:** The first-byte timer disarms at headers; the buffered `res.json()` drain then has no
   adapter-level deadline — only undici's default 300s `bodyTimeout` backstops a stalled/trickling

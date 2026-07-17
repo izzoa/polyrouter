@@ -149,6 +149,25 @@ export function applyComplete(
   return rec;
 }
 
+/** Pure lease renewal. Extends the half-open probe lease for the CURRENT
+ * generation while it is still unexpired; a no-op otherwise. The expiry guard
+ * (`now < probeExpiresAt`) is load-bearing: a renewal arriving at/after lease
+ * expiry must NOT revive the dead lease, or a silent-until-expiry probe would
+ * dodge reclamation (its stale completion could then transition the breaker). */
+export function applyRenew(
+  rec: BreakerRecord,
+  tokenGeneration: number,
+  now: number,
+  cfg: BreakerConfig,
+): BreakerRecord {
+  if (rec.state !== 'half_open' || tokenGeneration !== rec.generation || now >= rec.probeExpiresAt) {
+    return rec;
+  }
+  // A renewal only ever EXTENDS the lease — `Math.max` guarantees it can never
+  // shorten it, so a backward wall-clock step can't shrink a live probe's window.
+  return { ...rec, probeExpiresAt: Math.max(rec.probeExpiresAt, now + cfg.probeLeaseMs) };
+}
+
 export interface Admission {
   readonly decision: BreakerDecision;
   readonly generation: number;
@@ -173,6 +192,14 @@ export interface BreakerStore {
     now: number,
     cfg: BreakerConfig,
   ): Promise<BreakerCompletion>;
+  /** Extend a live half-open probe's lease (see {@link applyRenew}). Best-effort
+   * and idempotent — a stale-generation or expired-lease renewal is a no-op. */
+  renew(
+    providerId: string,
+    generation: number,
+    now: number,
+    cfg: BreakerConfig,
+  ): Promise<void>;
 }
 
 /** In-memory store: the read-compute-write is synchronous (single-threaded JS),
@@ -203,6 +230,12 @@ export class InMemoryBreakerStore implements BreakerStore {
       openedAt: next.openedAt,
     });
   }
+
+  renew(providerId: string, generation: number, now: number, cfg: BreakerConfig): Promise<void> {
+    const rec = this.records.get(providerId) ?? INITIAL_RECORD;
+    this.records.set(providerId, applyRenew(rec, generation, now, cfg));
+    return Promise.resolve();
+  }
 }
 
 /** The subset of ioredis used by the Redis store (structurally satisfied by an
@@ -211,8 +244,17 @@ export interface BreakerRedis {
   eval(script: string, numKeys: number, ...args: (string | number)[]): Promise<unknown>;
 }
 
+// `now` is derived from the Redis server clock (`TIME`) inside every script, not
+// from a per-instance `Date.now()` ARGV, so inter-instance wall-clock skew cannot
+// corrupt cooldown/lease arithmetic (spec: "a single Lua script … using the Redis
+// server clock"). Redis 7 replicates script *effects*, so a `TIME` read in a
+// writing script is allowed. The store still accepts a `now` argument (interface
+// parity with the in-memory store) but does not forward it.
+const NOW_FROM_SERVER = `local st=redis.call('TIME'); local now=tonumber(st[1])*1000+math.floor(tonumber(st[2])/1000)`;
+
 const DECIDE_LUA = `
-local now=tonumber(ARGV[1]); local cooldown=tonumber(ARGV[2]); local lease=tonumber(ARGV[3]); local ttl=tonumber(ARGV[4])
+${NOW_FROM_SERVER}
+local cooldown=tonumber(ARGV[1]); local lease=tonumber(ARGV[2]); local ttl=tonumber(ARGV[3])
 local h=redis.call('HMGET',KEYS[1],'state','failures','openedAt','generation','probeExpiresAt')
 local state=h[1] or 'closed'
 local failures=tonumber(h[2] or '0'); local openedAt=tonumber(h[3] or '0'); local generation=tonumber(h[4] or '0'); local probeExp=tonumber(h[5] or '0')
@@ -231,7 +273,8 @@ return {decision,generation,isProbe}
 `;
 
 const COMPLETE_LUA = `
-local now=tonumber(ARGV[1]); local tokenGen=tonumber(ARGV[2]); local outcome=ARGV[3]; local threshold=tonumber(ARGV[4]); local ttl=tonumber(ARGV[5])
+${NOW_FROM_SERVER}
+local tokenGen=tonumber(ARGV[1]); local outcome=ARGV[2]; local threshold=tonumber(ARGV[3]); local ttl=tonumber(ARGV[4])
 local h=redis.call('HMGET',KEYS[1],'state','failures','openedAt','generation','probeExpiresAt')
 local state=h[1] or 'closed'
 local failures=tonumber(h[2] or '0'); local openedAt=tonumber(h[3] or '0'); local generation=tonumber(h[4] or '0'); local probeExp=tonumber(h[5] or '0')
@@ -252,6 +295,21 @@ if prev~='open' and state=='open' then justOpened=1 end
 return {justOpened,generation,openedAt}
 `;
 
+// Renew a live half-open probe's lease (E4.1). Mirrors `applyRenew`: extends only
+// the current generation's lease and only while it is still unexpired (server
+// clock), so a late/silent probe is left to be reclaimed by the next `decide`.
+const RENEW_LUA = `
+${NOW_FROM_SERVER}
+local tokenGen=tonumber(ARGV[1]); local lease=tonumber(ARGV[2]); local ttl=tonumber(ARGV[3])
+local h=redis.call('HMGET',KEYS[1],'state','generation','probeExpiresAt')
+local state=h[1] or 'closed'; local generation=tonumber(h[2] or '0'); local probeExp=tonumber(h[3] or '0')
+if state=='half_open' and tokenGen==generation and now<probeExp then
+  redis.call('HSET',KEYS[1],'probeExpiresAt',math.max(probeExp,now+lease))
+  redis.call('PEXPIRE',KEYS[1],ttl)
+end
+return 1
+`;
+
 export class RedisBreakerStore implements BreakerStore {
   constructor(
     private readonly redis: BreakerRedis,
@@ -262,12 +320,13 @@ export class RedisBreakerStore implements BreakerStore {
     return `${this.keyPrefix}${providerId}`;
   }
 
-  async decide(providerId: string, now: number, cfg: BreakerConfig): Promise<Admission> {
+  // `_now` is ignored: the Lua reads the Redis server clock (E4.2). The parameter
+  // stays for `BreakerStore` interface parity with the in-memory store.
+  async decide(providerId: string, _now: number, cfg: BreakerConfig): Promise<Admission> {
     const res = (await this.redis.eval(
       DECIDE_LUA,
       1,
       this.key(providerId),
-      now,
       cfg.cooldownMs,
       cfg.probeLeaseMs,
       cfg.stateTtlMs,
@@ -283,14 +342,13 @@ export class RedisBreakerStore implements BreakerStore {
     providerId: string,
     generation: number,
     outcome: BreakerOutcome,
-    now: number,
+    _now: number,
     cfg: BreakerConfig,
   ): Promise<BreakerCompletion> {
     const res = (await this.redis.eval(
       COMPLETE_LUA,
       1,
       this.key(providerId),
-      now,
       generation,
       outcome,
       cfg.threshold,
@@ -301,6 +359,22 @@ export class RedisBreakerStore implements BreakerStore {
       generation: Number(res[1]),
       openedAt: Number(res[2]),
     };
+  }
+
+  async renew(
+    providerId: string,
+    generation: number,
+    _now: number,
+    cfg: BreakerConfig,
+  ): Promise<void> {
+    await this.redis.eval(
+      RENEW_LUA,
+      1,
+      this.key(providerId),
+      generation,
+      cfg.probeLeaseMs,
+      cfg.stateTtlMs,
+    );
   }
 }
 
@@ -385,6 +459,34 @@ export class CircuitBreaker {
     } catch (err) {
       this.onError(err);
       return { justOpened: false, generation: token.generation, openedAt: 0 };
+    }
+  }
+
+  /** The breaker's clock — exposed so a streaming caller can throttle probe-lease
+   * renewals against the same time source the store math uses. */
+  nowMs(): number {
+    return this.now();
+  }
+
+  get probeLeaseMs(): number {
+    return this.cfg.probeLeaseMs;
+  }
+
+  /** Renew a live half-open probe's lease on the store that admitted it (E4.1).
+   * A no-op for a non-probe token. Contains BOTH the store fault and a throwing
+   * `onError` hook, so the returned promise NEVER rejects — a fire-and-forget
+   * caller (`withBreakerStream`) can never leak an unhandled rejection or stall
+   * the stream. */
+  async renewProbe(token: BreakerToken): Promise<void> {
+    if (!token.isProbe) return;
+    try {
+      await token.store.renew(token.providerId, token.generation, this.now(), this.cfg);
+    } catch (err) {
+      try {
+        this.onError(err);
+      } catch {
+        /* a renewal must never break the stream — even a throwing onError hook */
+      }
     }
   }
 }
@@ -494,6 +596,16 @@ export async function* withBreakerStream(
     await completeAndNotify(breaker, token, outcome, onOpen);
   };
 
+  // A half-open probe settles only at stream end, but LLM streams routinely
+  // outlive `probeLeaseMs`; renew the lease on stream activity so the probe keeps
+  // its generation and its eventual success closes the breaker (E4.1). Fire-and-
+  // forget (never awaited) so it adds no token-path latency and cannot stall the
+  // stream; throttled to ~once per third of a lease so a fast stream doesn't issue
+  // one store op per token. The store's own expiry/generation guards make a
+  // late-landing renewal a harmless no-op.
+  const renewEveryMs = Math.max(1, Math.floor(breaker.probeLeaseMs / 3));
+  let lastRenewAt = breaker.nowMs();
+
   let sawTerminalStop = false;
   let sawError = false;
   try {
@@ -505,6 +617,16 @@ export async function* withBreakerStream(
         // settle `neutral` first and let an overload/rate-limit escape untripped.
         sawError = true;
         await settle(breakerImpact(classifyStreamError(ev.error.type)) ? 'trip' : 'success');
+      }
+      if (token.isProbe && !settled) {
+        const t = breaker.nowMs();
+        // Throttle by elapsed time; `t < lastRenewAt` catches a BACKWARD wall-clock
+        // step (NTP correction) — renew at once and re-baseline, so renewals never
+        // stall against the store's independent (server) clock still advancing.
+        if (t - lastRenewAt >= renewEveryMs || t < lastRenewAt) {
+          lastRenewAt = t;
+          void breaker.renewProbe(token);
+        }
       }
       yield ev;
     }

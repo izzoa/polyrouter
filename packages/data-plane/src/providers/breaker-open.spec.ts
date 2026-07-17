@@ -46,6 +46,7 @@ describe('CircuitBreaker.complete — primary-store only (#15b)', () => {
     const brokenPrimary: BreakerStore = {
       decide: () => Promise.reject(new Error('redis down')),
       complete: () => Promise.reject(new Error('redis down')),
+      renew: () => Promise.reject(new Error('redis down')),
     };
     const breaker = new CircuitBreaker(brokenPrimary, {
       config: { ...cfg, threshold: 1 },

@@ -186,6 +186,86 @@ export interface OpenedRequest {
 }
 
 /**
+ * Bound a buffered (non-streaming) body drain with an inter-chunk idle deadline
+ * (E4.3 — makes `ProviderConfig.idleTimeoutMs` real). After headers, each body
+ * chunk resets the timer; on idle the request is aborted (prompt real-socket
+ * teardown — a graceful `dispatcher.close()` would hang on a wedged body) and the
+ * drained stream is errored directly with a trip-eligible `unavailable`
+ * `ProviderError`. The direct error is essential: a stalled body whose `read()`
+ * never rejects would otherwise never surface. `text()`/`json()` are overridden
+ * to drain the guarded stream (the originals close over the inner body). The
+ * caller disarms the timer via the returned `clear()` when the call completes.
+ */
+function guardBufferedBodyIdle(
+  res: HttpResponse,
+  ctl: AbortController,
+  idleTimeoutMs: number,
+): { res: HttpResponse; clear: () => void } {
+  const source = res.body;
+  if (source === null) return { res, clear: () => undefined };
+  const reader = source.getReader();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
+  let done = false; // stream terminalized (closed/errored) — no further controller ops
+  const clear = (): void => {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
+  };
+  const onIdle = (): void => {
+    clear();
+    if (done) return;
+    done = true;
+    ctl.abort(); // prompt upstream teardown
+    void reader.cancel().catch(() => undefined);
+    controller?.error(new ProviderError('unavailable', 'provider body idle timeout'));
+  };
+  const arm = (): void => {
+    clear();
+    timer = setTimeout(onIdle, idleTimeoutMs);
+  };
+  const guarded = new ReadableStream<Uint8Array>({
+    start(c) {
+      controller = c;
+      arm();
+    },
+    async pull(c) {
+      try {
+        const r = await reader.read();
+        if (done) return; // idle already terminalized the stream
+        if (r.done) {
+          clear();
+          done = true;
+          c.close();
+          return;
+        }
+        arm();
+        c.enqueue(r.value);
+      } catch (err) {
+        clear();
+        if (done) return;
+        done = true;
+        c.error(err);
+      }
+    },
+    async cancel(reason) {
+      clear();
+      await reader.cancel(reason).catch(() => undefined);
+    },
+  });
+  const guardedRes: HttpResponse = {
+    status: res.status,
+    ok: res.ok,
+    headers: res.headers,
+    body: guarded,
+    text: () => drainText(guarded),
+    json: async () => JSON.parse(await drainText(guarded)) as unknown,
+  };
+  return { res: guardedRes, clear };
+}
+
+/**
  * Open a request with a first-byte timeout composed with the caller's signal.
  * The timeout aborts if no response headers arrive in time; it is disarmed once
  * headers arrive, so it never becomes an overall stream deadline. Caller-abort
@@ -198,6 +278,7 @@ export async function openRequest(
   init: Omit<HttpInit, 'signal'>,
   firstByteTimeoutMs: number,
   ctx?: CallContext,
+  idleTimeoutMs?: number,
 ): Promise<OpenedRequest> {
   // A signal already aborted before we attach the listener would never fire it,
   // so the call would start anyway; honor it up front (a fallback walk aborts
@@ -211,12 +292,22 @@ export async function openRequest(
   }, firstByteTimeoutMs);
   const onCallerAbort = (): void => ctl.abort();
   ctx?.signal?.addEventListener('abort', onCallerAbort, { once: true });
+  // Set when a buffered call arms an idle guard on the body (E4.3); disarmed here.
+  let idleClear: (() => void) | undefined;
   const dispose = (): void => {
     ctx?.signal?.removeEventListener('abort', onCallerAbort);
+    idleClear?.();
   };
   try {
     const res = await httpClient(url, { ...init, signal: ctl.signal });
     clearTimeout(timer); // disarm: headers arrived (first byte)
+    // For a buffered read, keep the request abortable and bound the body drain by
+    // an inter-chunk idle deadline (a stream is left to core's per-event timeout).
+    if (idleTimeoutMs !== undefined) {
+      const guarded = guardBufferedBodyIdle(res, ctl, idleTimeoutMs);
+      idleClear = guarded.clear;
+      return { res: guarded.res, dispose };
+    }
     return { res, dispose };
   } catch (err) {
     clearTimeout(timer);

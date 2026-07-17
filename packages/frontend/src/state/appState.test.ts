@@ -837,3 +837,127 @@ describe('stale-loader-overwrite guards (#20 verify pass)', () => {
     expect(s.state.modal).toBeNull();
   });
 });
+
+describe('E12.1 — a mid-session 401 re-gates to login', () => {
+  it('a loader 401 after ready re-probes and flips authView to gate', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    expect(s.state.authView).toBe('ready');
+    // Session expires: the next loader 401s, and the re-probe me() 401s too.
+    fake.session = null;
+    vi.spyOn(fake, 'listProviders').mockRejectedValueOnce(
+      new ApiError(401, 'Unauthorized', 'Unauthorized'),
+    );
+    await s.loadProviders();
+    await tick(); // let the fire-and-forget bootstrap() re-probe settle
+    expect(s.state.authView).toBe('gate');
+    expect(s.state.session).toBeNull();
+  });
+
+  it('a non-401 loader error stays ready (no spurious re-gate)', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    vi.spyOn(fake, 'listProviders').mockRejectedValueOnce(new ApiError(500, 'Internal', 'boom'));
+    await s.loadProviders();
+    await tick();
+    expect(s.state.authView).toBe('ready');
+    expect(s.state.providersError).toBe('boom');
+  });
+});
+
+describe('E12.2 — copy() only claims success when the clipboard write succeeded', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('a missing clipboard API toasts a failure, not "Key copied"', async () => {
+    const s = createAppStore(new FakeApiClient({ session: DEFAULT_SESSION }));
+    vi.stubGlobal('navigator', {}); // non-secure origin: navigator.clipboard is undefined
+    s.copy('poly_secret', 'Key copied');
+    await tick();
+    expect(s.state.toast).toBe('Copy failed — select the text manually');
+  });
+
+  it('a rejected writeText toasts a failure', async () => {
+    const s = createAppStore(new FakeApiClient({ session: DEFAULT_SESSION }));
+    vi.stubGlobal('navigator', {
+      clipboard: { writeText: () => Promise.reject(new Error('denied')) },
+    });
+    s.copy('poly_secret', 'Key copied');
+    await tick();
+    expect(s.state.toast).toBe('Copy failed — select the text manually');
+  });
+
+  it('a successful writeText toasts the success message and writes the text', async () => {
+    const s = createAppStore(new FakeApiClient({ session: DEFAULT_SESSION }));
+    const writeText = vi.fn(() => Promise.resolve());
+    vi.stubGlobal('navigator', { clipboard: { writeText } });
+    s.copy('poly_secret', 'Key copied');
+    await tick();
+    expect(writeText).toHaveBeenCalledWith('poly_secret');
+    expect(s.state.toast).toBe('Key copied');
+  });
+});
+
+describe('E12.4 — the setup guide does not wipe an existing default-tier chain', () => {
+  it('appends the new model, preserving the existing chain (not a single-element replace)', async () => {
+    const tiers: TierDto[] = [
+      { id: 'tier-default', key: 'default', displayName: 'Default', description: null, createdAt: NOW },
+    ];
+    const fake = new FakeApiClient({
+      session: DEFAULT_SESSION,
+      tiers,
+      tierEntries: {
+        'tier-default': [mkEntry('tier-default', 'keep-1', 0), mkEntry('tier-default', 'keep-2', 1)],
+      },
+    });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    s.setState('ob', 'prov', { ...LOCAL_FORM });
+    await s.obConnectProvider();
+
+    expect(s.state.ob.done2).toBe(true);
+    const args = fake.lastArgs('replaceTierEntries');
+    const sent = args?.[1] as string[];
+    // The existing chain is preserved and the new model is appended (not wiped to 1).
+    expect(sent.slice(0, 2)).toEqual(['keep-1', 'keep-2']);
+    expect(sent.length).toBe(3);
+    expect(sent.length).not.toBe(1);
+  });
+
+  it('a fresh (empty) default tier still gets the single assigned model', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION }); // default tier, no entries
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    s.setState('ob', 'prov', { ...LOCAL_FORM });
+    await s.obConnectProvider();
+    const sent = fake.lastArgs('replaceTierEntries')?.[1] as string[];
+    expect(sent.length).toBe(1);
+  });
+
+  it('is single-flight — a call while busy2 is set is a no-op (no duplicate provider)', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    s.setState('ob', 'prov', { ...LOCAL_FORM });
+    s.setState('ob', 'busy2', true); // a submit is already in flight
+    await s.obConnectProvider();
+    expect(fake.calls).not.toContain('createProvider');
+  });
+
+  it('a full (5-entry) default tier surfaces an error instead of a phantom assignment', async () => {
+    const full = ['a', 'b', 'c', 'd', 'e'].map((m, i) => mkEntry('tier-default', m, i));
+    const fake = new FakeApiClient({
+      session: DEFAULT_SESSION,
+      tierEntries: { 'tier-default': full },
+    });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    s.setState('ob', 'prov', { ...LOCAL_FORM });
+    await s.obConnectProvider();
+    // No phantom "assigned" success; the existing chain is untouched (no write).
+    expect(s.state.ob.done2).toBe(false);
+    expect(s.state.ob.error2).toMatch(/already has 5 models/i);
+    expect(fake.calls).not.toContain('replaceTierEntries');
+  });
+});

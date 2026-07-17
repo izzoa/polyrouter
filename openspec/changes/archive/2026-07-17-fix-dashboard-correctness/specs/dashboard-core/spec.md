@@ -1,8 +1,22 @@
-# dashboard-core Specification
+## ADDED Requirements
 
-## Purpose
-TBD - created by archiving change add-dashboard-core. Update Purpose after archive.
-## Requirements
+### Requirement: The displayed connection endpoint is derived from the serving origin
+
+The endpoint the dashboard **displays and copies** (the topbar endpoint chip, the Settings "Endpoint"
+field, the Agents connection instructions, the sidebar footer host, and the client-side `snippetFor`
+fallback) SHALL be derived from the SPA's runtime origin (`${location.origin}/v1`), not a build-time
+constant. Because the app is served same-origin in production, this makes the shown endpoint correct for
+any host the instance runs behind and consistent with the server-minted key-reveal snippet (which
+derives from the real origin). The value is display-only and never fetched (the ApiClient uses
+origin-relative bases).
+
+#### Scenario: The endpoint matches the origin the instance is served from
+
+- WHEN the dashboard is served from a non-default origin (e.g. behind a configured host)
+- THEN the displayed/copied endpoint is `${that origin}/v1` and agrees with the key-reveal snippet, rather than a hardcoded `127.0.0.1` dev URL
+
+## MODIFIED Requirements
+
 ### Requirement: The dashboard authorizes via a current-user probe and gates on it
 
 The SPA SHALL determine authorization on load by calling a session-guarded **`GET /api/me`** (not Better Auth `get-session`, which is null under localhost auto-login): a `200` with the principal renders the dashboard; a `401` renders a login/sign-up gate. `GET /api/me` SHALL return the current principal's `{ userId, email, name, role, mode }` and MUST be owner-scoped to the caller (a user never sees another user's identity). Because the global `SessionGuard`'s localhost auto-login authorizes `/api/*` **without issuing a session cookie**, `GET /api/me` SHALL succeed for the auto-logged-in admin on a self-host loopback instance. A **mid-session** `401` (any loader or mutation returning `401` after the SPA has reached the ready state) SHALL re-run the authorization probe (re-gating to login and reloading `login-config`) rather than surfacing an unexplained per-action error, so an expired session is never left stranding the dashboard shell where every action fails and the background poll paints a permanent, unretryable error.
@@ -21,20 +35,6 @@ The SPA SHALL determine authorization on load by calling a session-guarded **`GE
 
 - WHEN the SPA is in the ready (authorized) state and a subsequent loader or mutation returns `401` (the session expired)
 - THEN the SPA re-probes `/api/me` and transitions to the login gate (with the current `login-config`), rather than leaving the user in a shell where every action fails with an unexplained error
-
-### Requirement: The login gate reflects the instance's configured auth methods
-
-A `@Public()` **`GET /api/login-config`** (named outside the `/api/auth*` prefix, which the raw Better Auth middleware intercepts before Nest) SHALL return `{ mode, emailPassword, oauthProviders }` where `oauthProviders` lists only the OAuth providers whose client id AND secret are both configured. The login gate SHALL render email/password sign-in + sign-up (via `/api/auth/*`; sign-up collects `name` + email + password) and exactly one button per listed OAuth provider (which navigates to the `url` returned by `/api/auth/sign-in/social`). The response MUST NOT contain any secret.
-
-#### Scenario: Only configured OAuth providers are offered
-
-- WHEN GitHub's client id+secret are set but Google's and Discord's are not
-- THEN `GET /api/login-config` lists `["github"]` and the login gate shows a GitHub button and no Google/Discord button, and the response carries no client secret
-
-#### Scenario: After signing in, the dashboard loads
-
-- WHEN a user submits valid email/password to the gate (or completes an OAuth round-trip) and a session is established
-- THEN re-running the bootstrap `GET /api/me` returns 200 and the SPA transitions from the gate to the dashboard
 
 ### Requirement: Agents are managed from the dashboard with the key shown once
 
@@ -55,25 +55,6 @@ The Agents page SHALL list/create/rotate/delete agents against the owner-scoped 
 - WHEN the copy action runs but `navigator.clipboard` is unavailable or `writeText` rejects
 - THEN the toast is a distinct failure ("Copy failed — select the text manually"), not "Copied"/"Key copied", so the user knows the shown-once key was not captured before dismissing the reveal
 
-### Requirement: Providers are managed with create-then-verify and user-entered custom/local pricing
-
-The Providers page SHALL add all four kinds (`api_key`/`subscription`/`custom`/`local`), then **test-connection** and **sync-models** against the created provider (the backend acts on an existing id, so create precedes test/sync). Provider credentials SHALL be write-only — submitted but never displayed or returned (only `hasCredential`). For **custom and local** models the user SHALL be able to set per-token prices via an owner-scoped **`PATCH /api/models/:id`** — accepting a *price pair* (both input and output together) or *free* (normalized to 0/0/free), rejecting a half-set price; this sets the model's current price without rewriting any historical RequestLog cost. The endpoint SHALL reject (422) a model whose provider is a known kind (`api_key`/`subscription`), because model-own price is the highest-precedence source and would otherwise bypass the bundled catalog. A **subscription**-kind provider SHALL surface the flat-plan-reuse ToS risk and nudge adding a pay-per-token fallback.
-
-#### Scenario: A provider is created, then tested and synced
-
-- WHEN a user adds a provider and triggers test-connection and sync-models
-- THEN the provider is created first, the two actions run against its id, and their sanitized results update the provider's health status and model list — with the submitted credential never echoed back
-
-#### Scenario: A user sets a custom/local model's price
-
-- WHEN a user enters input+output per-1M prices (or marks free) for a custom or local model
-- THEN `PATCH /api/models/:id` (owner-scoped) stores them on that model, subsequent requests price against them, and previously-recorded request costs are unchanged; a half-set price is rejected (422), a known-provider (api_key/subscription) model is rejected (422), and a cross-tenant edit by id is rejected (404)
-
-#### Scenario: A subscription provider surfaces the ToS risk
-
-- WHEN a user selects the `subscription` kind
-- THEN the UI shows the flat-rate-reuse risk note and nudges adding a pay-per-token fallback provider
-
 ### Requirement: Onboarding runs end to end to a real proxied completion
 
 The 3-step onboarding SHALL persist real state: create an agent (minting a key), add a provider and sync its models, assign the first synced model to the `default` tier (`PUT /api/routing/tiers/:defaultId/entries`, position 0 = primary), and finally issue a real proxied request (`model:"auto"`) with the minted agent key and display the upstream response. Because the setup guide is always available (not only on a fresh instance), the model-assignment step SHALL be **non-destructive**: it SHALL read the default tier's current entries and full-replace **only when the tier is empty**; when the tier already has entries it SHALL append the new model within the position cap (preserving the existing primary and fallbacks) and no-op when the model is already routed, so re-walking the guide never silently wipes an existing routing chain.
@@ -87,19 +68,3 @@ The 3-step onboarding SHALL persist real state: create an agent (minting a key),
 
 - WHEN the `default` tier already holds a multi-model chain and the user walks the setup guide to add another provider/model
 - THEN the guide appends the new model within the position cap (the existing primary and fallbacks are preserved), rather than replacing the whole chain with a single-element list; a model already in the chain is left unchanged
-
-### Requirement: The displayed connection endpoint is derived from the serving origin
-
-The endpoint the dashboard **displays and copies** (the topbar endpoint chip, the Settings "Endpoint"
-field, the Agents connection instructions, the sidebar footer host, and the client-side `snippetFor`
-fallback) SHALL be derived from the SPA's runtime origin (`${location.origin}/v1`), not a build-time
-constant. Because the app is served same-origin in production, this makes the shown endpoint correct for
-any host the instance runs behind and consistent with the server-minted key-reveal snippet (which
-derives from the real origin). The value is display-only and never fetched (the ApiClient uses
-origin-relative bases).
-
-#### Scenario: The endpoint matches the origin the instance is served from
-
-- WHEN the dashboard is served from a non-default origin (e.g. behind a configured host)
-- THEN the displayed/copied endpoint is `${that origin}/v1` and agrees with the key-reveal snippet, rather than a hardcoded `127.0.0.1` dev URL
-

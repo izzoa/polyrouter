@@ -124,7 +124,9 @@ export function Sidebar() {
           <span style="width:6px;height:6px;border-radius:50%;background:var(--green);flex:none" />
           {state.session?.mode === 'cloud' ? 'cloud' : 'self-hosted'} · v0.4.1
         </div>
-        <div style="font:400 11px 'Geist Mono',monospace;color:var(--faint)">127.0.0.1:3001</div>
+        <div style="font:400 11px 'Geist Mono',monospace;color:var(--faint)">
+          {globalThis.location.host}
+        </div>
       </div>
     </div>
   );

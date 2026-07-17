@@ -610,13 +610,33 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     toastTimer = setTimeout(() => setState('toast', null), 1800);
   };
 
+  // Shared error funnel (E12.1). A 401 after we've reached `ready` means the session
+  // expired mid-session: re-probe via `bootstrap()` (which re-gates to login and
+  // reloads login-config) instead of stranding the shell where every action fails
+  // and the poll paints a permanent, unretryable error. The `ready` guard prevents
+  // recursion — during bootstrap `authView` is `loading`, on the gate it's `gate`.
+  // `bootstrap` is declared later in this closure but only ever CALLED here at event
+  // time (well after init), so there is no temporal-dead-zone hazard.
+  const err = (e: unknown): string => {
+    if (isApiError(e) && e.status === 401 && state.authView === 'ready') void bootstrap();
+    return errMessage(e);
+  };
+
+  // Keeps the `=> void` signature (onClick handlers stay void), but the clipboard
+  // write is now authoritative (E12.2): on a non-secure origin `navigator.clipboard`
+  // is undefined and on failure the write rejects — either way we toast a distinct
+  // failure, never a false "Copied", so a user doesn't dismiss the shown-once key
+  // reveal believing a copy that never happened.
   const copy = (txt: string, msg?: string): void => {
-    try {
-      void navigator.clipboard.writeText(txt).catch(() => undefined);
-    } catch {
-      // clipboard unavailable (non-secure context) — the toast still confirms intent
-    }
-    say(msg ?? 'Copied');
+    void (async () => {
+      try {
+        if (!navigator.clipboard) throw new Error('clipboard unavailable');
+        await navigator.clipboard.writeText(txt);
+        say(msg ?? 'Copied');
+      } catch {
+        say('Copy failed — select the text manually');
+      }
+    })();
   };
 
   // --- realized loaders ---
@@ -626,7 +646,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       const rows = await client.listAgents();
       setState({ agents: rows.map(toAgent), agentsError: null });
     } catch (e) {
-      setState('agentsError', errMessage(e));
+      setState('agentsError', err(e));
     }
   };
 
@@ -635,7 +655,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       const rows = await client.listProviders();
       setState({ providers: rows.map(toProvider), providersError: null });
     } catch (e) {
-      setState('providersError', errMessage(e));
+      setState('providersError', err(e));
     }
   };
 
@@ -644,7 +664,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       const rows = await client.listModels(providerId);
       setState('models', providerId, rows);
     } catch (e) {
-      say(errMessage(e));
+      say(err(e));
     }
   };
 
@@ -717,7 +737,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       );
       autoLayersConfirmed = autoLayers;
     } catch (e) {
-      if (routingSeq === seq) setState('routingError', errMessage(e));
+      if (routingSeq === seq) setState('routingError', err(e));
     } finally {
       setState('routingLoading', false);
     }
@@ -788,7 +808,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           if (!tierDesired.has(tierId)) {
             setState('tierEntries', tierId, buildEntries(tierId, confirmed));
           }
-          say(errMessage(e));
+          say(err(e));
         }
       }
     } finally {
@@ -818,7 +838,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           if (autoLayersDesired === null && confirmed !== null) {
             setState('autoLayers', confirmed);
           }
-          say(errMessage(e));
+          say(err(e));
         }
       }
     } finally {
@@ -841,7 +861,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         }),
       );
     } catch (e) {
-      if (budgetsSeq === bSeq) setState('budgetsError', errMessage(e));
+      if (budgetsSeq === bSeq) setState('budgetsError', err(e));
     } finally {
       setState('budgetsLoading', false);
     }
@@ -854,7 +874,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       const channels = await client.listChannels();
       if (channelsSeq === cSeq) setState('channels', channels); // discard if a mutation raced in
     } catch (e) {
-      if (channelsSeq === cSeq) setState('channelsError', errMessage(e));
+      if (channelsSeq === cSeq) setState('channelsError', err(e));
     } finally {
       setState('channelsLoading', false);
     }
@@ -888,7 +908,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       apply(data);
     } catch (e) {
       if (!isCurrent(key, token)) return;
-      setError(errMessage(e));
+      setError(err(e));
     } finally {
       if (isCurrent(key, token)) setLoading(false);
     }
@@ -925,7 +945,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       );
     } catch (e) {
       if (!isCurrent('breakdown', token)) return;
-      setState('analyticsBreakdownError', errMessage(e));
+      setState('analyticsBreakdownError', err(e));
     } finally {
       if (isCurrent('breakdown', token)) setState('analyticsBreakdownLoading', false);
     }
@@ -1011,7 +1031,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       }
     } catch (e) {
       if (!isCurrent('requests', token)) return;
-      setState('requestListError', errMessage(e));
+      setState('requestListError', err(e));
     } finally {
       if (isCurrent('requests', token)) setState('requestListLoading', false);
     }
@@ -1034,7 +1054,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         }
         setState({ session: null, loginConfig: cfg, authView: 'gate' });
       } else {
-        setState({ authView: 'error', authError: errMessage(e) });
+        setState({ authView: 'error', authError: err(e) });
       }
       return;
     }
@@ -1049,7 +1069,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       await fn();
       await bootstrap();
     } catch (e) {
-      setState('authError', errMessage(e));
+      setState('authError', err(e));
     } finally {
       setState('authBusy', false);
     }
@@ -1110,7 +1130,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           // non-navigable environment (tests) — nothing else to do
         }
       } catch (e) {
-        setState({ authError: errMessage(e), authBusy: false });
+        setState({ authError: err(e), authBusy: false });
       }
     },
     signOut: async () => {
@@ -1155,7 +1175,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           }),
         );
       } catch (e) {
-        setState('na', { busy: false, error: errMessage(e) });
+        setState('na', { busy: false, error: err(e) });
       }
     },
     rotateKey: async (agent) => {
@@ -1175,7 +1195,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           }),
         );
       } catch (e) {
-        say(errMessage(e));
+        say(err(e));
       }
     },
     deleteAgent: async (agent) => {
@@ -1184,7 +1204,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         setState('agents', (list) => list.filter((a) => a.id !== agent.id));
         say(`Agent ${agent.name} deleted`);
       } catch (e) {
-        say(errMessage(e));
+        say(err(e));
       }
     },
 
@@ -1211,7 +1231,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         );
         say(`Provider ${created.name} added — test the connection & sync models`);
       } catch (e) {
-        setState('np', { busy: false, error: errMessage(e) });
+        setState('np', { busy: false, error: err(e) });
       }
     },
     testProviderById: async (id) => {
@@ -1220,7 +1240,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         setState('providers', (p) => p.id === id, 'status', result.status);
         say(result.ok ? 'Connection ok' : `Connection failed — ${result.message}`);
       } catch (e) {
-        say(errMessage(e));
+        say(err(e));
       }
     },
     syncProvider: async (id) => {
@@ -1234,7 +1254,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           say(`Sync failed — ${result.message}`);
         }
       } catch (e) {
-        say(errMessage(e));
+        say(err(e));
       }
     },
     deleteProvider: async (id) => {
@@ -1248,7 +1268,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         );
         say('Provider deleted');
       } catch (e) {
-        say(errMessage(e));
+        say(err(e));
       }
     },
     loadModels,
@@ -1260,7 +1280,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         );
         say('Price updated');
       } catch (e) {
-        say(errMessage(e));
+        say(err(e));
       }
     },
 
@@ -1354,7 +1374,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         );
         say(`Tier ${tier.key} created`);
       } catch (e) {
-        setState('tf', { busy: false, error: errMessage(e) });
+        setState('tf', { busy: false, error: err(e) });
       }
     },
     deleteTier: async (tierId) => {
@@ -1374,7 +1394,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         );
         say('Tier deleted');
       } catch (e) {
-        say(errMessage(e));
+        say(err(e));
       }
     },
     createRule: async () => {
@@ -1400,7 +1420,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         );
         say('Header rule created');
       } catch (e) {
-        setState('rf', { busy: false, error: errMessage(e) });
+        setState('rf', { busy: false, error: err(e) });
       }
     },
     deleteRule: async (id) => {
@@ -1408,7 +1428,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         await client.deleteRule(id);
         setState('rules', (rules) => rules.filter((r) => r.id !== id));
       } catch (e) {
-        say(errMessage(e));
+        say(err(e));
       }
     },
     toggleAutoLayer: (layer) => {
@@ -1487,7 +1507,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           say('Budget created');
         }
       } catch (e) {
-        setState('bf', { busy: false, error: errMessage(e) });
+        setState('bf', { busy: false, error: err(e) });
       }
     },
     deleteBudget: async (id) => {
@@ -1497,7 +1517,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         setState('budgets', (list) => list.filter((b) => b.id !== id));
         say('Budget deleted');
       } catch (e) {
-        say(errMessage(e));
+        say(err(e));
       }
     },
 
@@ -1565,7 +1585,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           say('Channel created');
         }
       } catch (e) {
-        setState('cf', { busy: false, error: errMessage(e) });
+        setState('cf', { busy: false, error: err(e) });
       }
     },
     deleteChannel: async (id) => {
@@ -1575,7 +1595,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         setState('channels', (list) => list.filter((c) => c.id !== id));
         say('Channel deleted');
       } catch (e) {
-        say(errMessage(e));
+        say(err(e));
       }
     },
     toggleChannelEnabled: async (channel) => {
@@ -1586,7 +1606,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         bumpChannels(); // invalidate an in-flight channels loader (stale-overwrite)
         setState('channels', (c) => c.id === channel.id, updated);
       } catch (e) {
-        say(errMessage(e));
+        say(err(e));
       } finally {
         setState('channelToggling', channel.id, false);
       }
@@ -1611,7 +1631,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         );
         say(result.ok ? 'Test sent' : `Test failed — ${result.error ?? 'unknown error'}`);
       } catch (e) {
-        setState('channelTests', id, { ok: false, error: errMessage(e) });
+        setState('channelTests', id, { ok: false, error: err(e) });
       } finally {
         setState('channelTesting', id, false);
       }
@@ -1636,10 +1656,14 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           }),
         );
       } catch (e) {
-        setState('ob', { busy1: false, error1: errMessage(e) });
+        setState('ob', { busy1: false, error1: err(e) });
       }
     },
     obConnectProvider: async () => {
+      // Single-flight (E12.4): the step's control isn't a disabled button, so a
+      // double-click would otherwise mint a duplicate provider and race the
+      // read-then-replace tier append (losing one model). Bail if already running.
+      if (state.ob.busy2) return;
       const form = state.ob.prov;
       if (!form.name.trim()) {
         setState('ob', 'error2', 'Provider name is required');
@@ -1685,7 +1709,25 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           return;
         }
 
-        await client.replaceTierEntries(def.id, [first.id]);
+        // Non-destructive assignment (E12.4): the setup guide is always available,
+        // so a user re-walking it must not have an existing default-tier chain wiped.
+        // Full-replace only when the tier is empty; otherwise append (preserving the
+        // existing primary + fallbacks), and no-op when the model is already routed.
+        const existing = await client.listTierEntries(def.id);
+        const existingIds = existing.map((e) => e.modelId);
+        const alreadyRouted = existingIds.includes(first.id);
+        if (!alreadyRouted && existingIds.length >= MAX_MODELS_PER_TIER) {
+          // Full and this model isn't in it — don't claim a phantom assignment.
+          setState('ob', {
+            busy2: false,
+            error2: `Default tier already has ${String(MAX_MODELS_PER_TIER)} models — remove one on the Routing page to add this one`,
+          });
+          return;
+        }
+        const nextIds = alreadyRouted ? existingIds : [...existingIds, first.id];
+        if (nextIds.join('\n') !== existingIds.join('\n')) {
+          await client.replaceTierEntries(def.id, nextIds);
+        }
         setState(
           produce((s) => {
             s.ob.assignedModel = first.externalModelId;
@@ -1695,7 +1737,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           }),
         );
       } catch (e) {
-        setState('ob', { busy2: false, error2: errMessage(e) });
+        setState('ob', { busy2: false, error2: err(e) });
       }
     },
     obVerify: async () => {
@@ -1721,7 +1763,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           }),
         );
       } catch (e) {
-        setState('ob', { busy3: false, error3: errMessage(e) });
+        setState('ob', { busy3: false, error3: err(e) });
       }
     },
     obFinish: () => {

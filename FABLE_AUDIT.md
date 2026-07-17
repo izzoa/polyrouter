@@ -862,14 +862,14 @@ allowed by design (no allow-list), so the server willingly drains whatever it se
 ---
 
 <a id="epic-e12"></a>
-## EPIC E12 — Dashboard correctness · P2
+## EPIC E12 — Dashboard correctness · P2 · ✅ SHIPPED 2026-07-17 (`fix-dashboard-correctness`)
 
 **Proposal slug:** `fix-dashboard-correctness` ·
 **Spec refs:** `openspec/specs/{dashboard-core,dashboard-config,dashboard-prototype}`; spec.md §2, §9
 **Why:** The SPA's key handling and XSS posture are exemplary; these four are correctness/UX defects
 that lose a shown-once key, strand an expired session, wipe routing config, or copy a wrong endpoint.
 
-### Task E12.1 — Route mid-session 401s back to the login gate ☐ `[medium/S]`
+### Task E12.1 — Route mid-session 401s back to the login gate ✅ `[medium/S]`
 - **Where:** `packages/frontend/src/state/appState.ts:274` (`errMessage`); the only 401 branch is `bootstrap()` at `:1028`
 - **Defect:** 401 is handled only during bootstrap. After `authView==='ready'`, loaders/mutations
   funnel through `errMessage` (status discarded) → a cloud user whose session expires is stuck in a
@@ -880,7 +880,7 @@ that lose a shown-once key, strand an expired session, wipe routing config, or c
 - **Acceptance criteria:** WHEN a loader/mutation gets 401 after ready THEN `authView` becomes `gate`.
 - **Verify:** Vitest — session-set store, force `ApiError(401)` on a loader, assert `authView==='gate'`.
 
-### Task E12.2 — Stop `copy()` from toasting success when the clipboard write failed ☐ `[medium/XS]`
+### Task E12.2 — Stop `copy()` from toasting success when the clipboard write failed ✅ `[medium/XS]`
 - **Where:** `packages/frontend/src/state/appState.ts:613` (`copy`)
 - **Defect:** `copy()` fires `navigator.clipboard.writeText(txt).catch(()=>undefined)` and
   **unconditionally** toasts "Copied"/"Key copied". On a non-secure origin (self-host over plain http
@@ -894,7 +894,7 @@ that lose a shown-once key, strand an expired session, wipe routing config, or c
   message, not "Key copied".
 - **Verify:** Vitest stubbing `navigator.clipboard` undefined and rejecting.
 
-### Task E12.3 — Derive the displayed/copied endpoint from runtime origin, not a hardcoded dev URL ☐ `[medium/XS]`
+### Task E12.3 — Derive the displayed/copied endpoint from runtime origin, not a hardcoded dev URL ✅ `[medium/XS]`
 - **Where:** `packages/frontend/src/data/catalog.ts:4` (`BASE_URL`); consumers `Topbar.tsx:35`, `Settings.tsx:64/69`, `Agents.tsx:35`, `Sidebar.tsx:127`, `appState.ts:239` (`snippetFor`)
 - **Defect:** `BASE_URL = 'http://127.0.0.1:3001/v1'` is a build-time constant used by the endpoint
   chip, Settings "Endpoint", the Agents instructions, and the sidebar footer. The server-minted
@@ -907,7 +907,7 @@ that lose a shown-once key, strand an expired session, wipe routing config, or c
   endpoint matches that origin and the key-reveal snippet.
 - **Verify:** run Vite dev at :3000 (or deploy with `APP_URL` set); confirm Settings endpoint matches origin.
 
-### Task E12.4 — Stop the setup guide from wiping an existing default-tier chain ☐ `[medium/S]`
+### Task E12.4 — Stop the setup guide from wiping an existing default-tier chain ✅ `[medium/S]`
 - **Where:** `packages/frontend/src/state/appState.ts:1688` (`obConnectProvider`)
 - **Defect:** `obConnectProvider` unconditionally calls `replaceTierEntries(def.id, [first.id])` — an
   atomic full replace. The Setup guide card is permanently visible for every user, so someone who

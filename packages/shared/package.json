@@ -1,7 +1,7 @@
 {
   "name": "@polyrouter/shared",
   "version": "0.1.0",
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "private": true,
   "description": "Shared types, constants, and the config-schema registry for polyrouter",
   "type": "commonjs",

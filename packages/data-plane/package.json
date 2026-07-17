@@ -1,7 +1,7 @@
 {
   "name": "@polyrouter/data-plane",
   "version": "0.1.0",
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "private": true,
   "description": "polyrouter inference proxy (a NestJS module in the baseline; extractable to its own service per spec §3.3)",
   "type": "commonjs",

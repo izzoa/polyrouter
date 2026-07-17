@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "Self-hostable LLM router/gateway — one OpenAI- and Anthropic-compatible endpoint with explicit-first routing, fallbacks, and spend limits",
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/OWNER/polyrouter.git"

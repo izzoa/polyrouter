@@ -180,4 +180,4 @@ Useful commands (see `CLAUDE.md` for the full set):
 | `npm run db:generate` / `npm run db:migrate` | Drizzle migrations (also run automatically on boot) |
 | `npm run lint` / `npm run format`            | ESLint / Prettier                                   |
 
-MIT licensed.
+[AGPL-3.0](./LICENSE.md) licensed.

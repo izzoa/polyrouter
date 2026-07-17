@@ -187,6 +187,7 @@ describe('cascade routing e2e', () => {
       cheapHang: 'oai-hang',
       strongDown: 'oai-srvfail',
       strongMid: 'oai-miderror',
+      cheapBadReq: 'oai-badreq',
     };
     for (const [k, ext] of Object.entries(external)) {
       modelId[k] = (await port.models.createForProvider(principal, provider.id, {
@@ -222,6 +223,9 @@ describe('cascade routing e2e', () => {
     ]);
     await port.routingEntries.replaceForTier(principal, await tier('strong-mid'), [
       modelId['strongMid']!,
+    ]);
+    await port.routingEntries.replaceForTier(principal, await tier('cheap-badreq'), [
+      modelId['cheapBadReq']!,
     ]);
     await setBand('auto_high', 'premium');
     await setBand('auto_low', 'cheap-bad');
@@ -350,6 +354,52 @@ describe('cascade routing e2e', () => {
     const row = await log();
     expect(row.modelId).toBe(modelId['strong']);
     expect(row.escalated).toBe(true);
+  });
+
+  it('does NOT escalate when the cheap leg fails non-retryably (bad_request) — A-21', async () => {
+    await setBand('auto_low', 'cheap-badreq'); // cheap tier returns a 400 (client-fault)
+    const res = await send('sysCheapBadReqUnique', false);
+    // A bad_request is the client's fault — the expensive tier would 400 too, so we
+    // surface it (4xx) instead of wasting an escalation.
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(res.status).toBeLessThan(500);
+    const row = await log();
+    expect(row.modelId).toBe(modelId['cheapBadReq']); // the cheap model — NO strong-tier escalation
+    expect(row.escalated).toBe(false);
+    await setBand('auto_low', 'cheap-bad');
+  });
+
+  it('does NOT escalate a STREAMED cheap bad_request either — A-21 (streaming cascade path)', async () => {
+    await setBand('auto_low', 'cheap-badreq'); // cheap tier 400s (pre-commit, no bytes)
+    const res = await send('sysStreamCheapBadReqUnique', true);
+    expect(res.status).toBeGreaterThanOrEqual(400); // surfaced 4xx, not escalated
+    expect(res.status).toBeLessThan(500);
+    const row = await log();
+    expect(row.modelId).toBe(modelId['cheapBadReq']); // never reached the strong tier
+    expect(row.escalated).toBe(false);
+    await setBand('auto_low', 'cheap-bad');
+  });
+
+  it('a cascade escalation whose strong stream errors post-commit terminates — no swap, no leak (A-22, invariant 3)', async () => {
+    // Drive the seeded `strong-mid` (oai-miderror) fixture THROUGH the real cascade:
+    // the cheap answer is empty (fails quality) → escalate → the strong tier streams a
+    // token then errors mid-stream (post-commit). `setBand` is matchType-scoped, so
+    // setting auto_high leaves auto_low intact.
+    await setBand('auto_low', 'cheap-bad'); // empty cheap answer → fails the quality gate
+    await setBand('auto_high', 'strong-mid'); // escalation target commits then errors mid-stream
+    try {
+      const res = await send('sysMidErrorEscalateUnique', true);
+      expect(res.status).toBe(200); // committed before the upstream error
+      expect(res.text).not.toContain('SECRET'); // the upstream error text never leaks (invariant 8)
+      const mine = (await port.requestLogs.list(principal)).find(
+        (l) => l.modelId === modelId['strongMid'] && l.decisionLayer === 'cascade',
+      );
+      expect(mine).toBeDefined(); // escalated into the seeded mid-error strong model, via cascade
+      expect(mine!.escalated).toBe(true);
+      expect(mine!.status).toBe('error'); // post-commit terminal error, not a silent swap
+    } finally {
+      await setBand('auto_high', 'premium'); // restore the fixture's default strong band
+    }
   });
 
   it('replays a good cheap answer as the client stream', async () => {

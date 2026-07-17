@@ -214,6 +214,17 @@ describe('routing-config e2e', () => {
         })
       ).status,
     ).toBe(422);
+    // A-25: a target naming ANOTHER tenant's model is rejected (write-time referential
+    // integrity is owner-scoped — never resolves across the tenant boundary).
+    expect(
+      (
+        await asA('post', '/api/routing/rules').send({
+          matchType: 'header',
+          headerValue: 'x',
+          target: `model:${B.modelIds[0]}`,
+        })
+      ).status,
+    ).toBe(422);
     // header rule without a header_value → 422
     expect(
       (

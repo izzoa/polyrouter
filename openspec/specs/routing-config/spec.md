@@ -74,7 +74,7 @@ The system SHALL expose the tier↔model chain under `/api/routing/tiers/:tierId
 
 ### Requirement: Routing-rule CRUD with a structured, write-time-validated target
 
-The system SHALL expose CRUD for routing rules under `/api/routing/rules`, tenant-scoped, with fields `match_type` (`header`|`default`), `header_name` (default `x-polyrouter-tier`), `header_value`, `target`, and `priority` (default 0) (spec §5, §7.2). The `target` is a structured reference — `tier:<key>` or `model:<id>`. Target references are validated **at write time** against the caller's own tiers and models (best-effort referential integrity — see the unresolved-target contract below). `header_name` is normalized to a valid lower-cased HTTP field-name; on create, `header_name` and `priority` are optional and fall back to their defaults. An explicit JSON `null` for a **non-nullable** field (`match_type`, `header_name`, `target`, `priority`) SHALL be rejected with a 4xx validation error and leave any stored rule unchanged — it SHALL NOT be treated like an absent field (which would reach a parser/NOT-NULL column and 500, or silently rewrite the rule to a default). (`header_value` remains optional at the DTO layer, but the effective-merged validation still requires a `header` rule to carry a value, so an absent/`null` `header_value` on a `header` rule is itself a 4xx.)
+The system SHALL expose CRUD for routing rules under `/api/routing/rules`, tenant-scoped, with fields `match_type` (`header`|`default`|`auto_high`|`auto_low` — the latter two bind a structural-routing confidence band, #13, to a tier/model target), `header_name` (default `x-polyrouter-tier`), `header_value`, `target`, and `priority` (default 0) (spec §5, §7.2). The `target` is a structured reference — `tier:<key>` or `model:<id>`. Target references are validated **at write time** against the caller's own tiers and models (best-effort referential integrity — see the unresolved-target contract below). `header_name` is normalized to a valid lower-cased HTTP field-name; on create, `header_name` and `priority` are optional and fall back to their defaults. An explicit JSON `null` for a **non-nullable** field (`match_type`, `header_name`, `target`, `priority`) SHALL be rejected with a 4xx validation error and leave any stored rule unchanged — it SHALL NOT be treated like an absent field (which would reach a parser/NOT-NULL column and 500, or silently rewrite the rule to a default). (`header_value` remains optional at the DTO layer, but the effective-merged validation still requires a `header` rule to carry a value, so an absent/`null` `header_value` on a `header` rule is itself a 4xx.)
 
 #### Scenario: A header rule maps a header value to an owned target
 
@@ -85,7 +85,7 @@ The system SHALL expose CRUD for routing rules under `/api/routing/rules`, tenan
 
 #### Scenario: match_type and header fields are validated, including the effective row after PATCH
 
-- WHEN a principal creates a rule with a `match_type` outside {`header`,`default`}, a `header` rule missing `header_value`, or an invalid `header_name`
+- WHEN a principal creates a rule with a `match_type` outside {`header`,`default`,`auto_high`,`auto_low`}, a `header` rule missing `header_value`, or an invalid `header_name`
 - THEN the request is rejected with a 4xx validation error
 - WHEN a PATCH would leave the **effective merged** rule invalid (e.g. changing `match_type` to `header` without a `header_value`)
 - THEN the PATCH is rejected and the stored rule is unchanged

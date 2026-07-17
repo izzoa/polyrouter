@@ -221,6 +221,11 @@ export async function startStubUpstream(): Promise<StubUpstream> {
         res.writeHead(500, { 'content-type': 'application/json' });
         return res.end(JSON.stringify({ error: { message: 'stub failure' } }));
       }
+      // `*badreq*` → an HTTP 400 (a NON-retryable client-fault error → no fallback/escalation).
+      if (model.includes('badreq')) {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: { message: 'invalid request' } }));
+      }
       // `*hang*` → headers then no body (tests the #14 cascade cheap-response deadline).
       if (model.includes('hang')) {
         res.writeHead(200, { 'content-type': 'application/json' });

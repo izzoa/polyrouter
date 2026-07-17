@@ -1055,11 +1055,11 @@ change proposal. Batch opportunistically when touching the neighboring code.
 | A-18 ✅ | docs | Added `SECURITY.md` (private disclosure route) + `CONTRIBUTING.md` | root |
 | A-19 ✅ | docs | README expose/upgrade compose commands omit `-f/--env-file` for fetch installs → fixed in E13 (`fix-installer-rerun`) | `README.md:45` |
 | A-20 ✅ | docs | Sub-package `license` (done in E8) + root `repository` added | `packages/*/package.json` |
-| A-21 | routing | Cascade escalates on non-retryable `bad_request` cheap failure | `proxy.service.ts:370` |
-| A-22 | routing | Seeded `oai-miderror` cascade fixture never asserted (post-commit terminal error) | `cascade-routing.e2e-spec.ts:223` |
-| A-23 | routing | EWMA seeds full value from first observation — single-outlier sensitive | `structural-baseline.store.ts:111` |
-| A-24 | routing | Archived routing-config spec contradicts code on `match_type` (missing auto_high/low) | `openspec/specs/routing-config/spec.md:83` |
-| A-25 | routing | No test asserts a rule target naming another tenant's model is rejected | `test/routing/routing-config.e2e-spec.ts:190` |
+| A-21 ✅ | routing | cascade no longer escalates a non-retryable bad_request cheap failure (buffered + streaming) | `proxy.service.ts:370` |
+| A-22 ✅ | routing | e2e drives the oai-miderror fixture through the cascade → post-commit terminal error asserted | `cascade-routing.e2e-spec.ts:223` |
+| A-23 ⏸️ accepted | routing | EWMA first-observation seed is standard + self-correcting; structural layer degrades safely — warmup deferred | `structural-baseline.store.ts:111` |
+| A-24 ✅ | routing | routing-config spec match_type corrected to include auto_high/auto_low | `openspec/specs/routing-config/spec.md:83` |
+| A-25 ✅ | routing | e2e asserts a rule target naming another tenant's model is rejected (422) | `test/routing/routing-config.e2e-spec.ts:190` |
 | A-26 | frontend | Onboarding step-2 retry mints a duplicate provider each attempt | `appState.ts:1654` |
 | A-27 | frontend | create/add mutations lack the single-flight guard budgets/channels have | `appState.ts:1135` |
 | A-28 | frontend | Body-logging toggle is an inert client-only no-op (resets on reload) | `Settings.tsx:101` |

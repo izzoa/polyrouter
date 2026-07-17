@@ -19,6 +19,7 @@ import {
   replayBufferedStream,
   resolveRoute,
   runBufferedChain,
+  shouldFallback,
   type AttemptFailure,
   type BreakerOpenListener,
   type BreakerStateListener,
@@ -382,6 +383,23 @@ export class ProxyService {
       );
       throw toProxyError(cheap.error);
     }
+    if (!shouldFallback(cheap.error.kind)) {
+      // A non-retryable cheap failure (a `bad_request` — the client's request is
+      // malformed) will fail the expensive tier too; surface it instead of wasting
+      // an escalation (A-21). Record one error row, no escalation, no notifyFailed.
+      this.recorder.record(
+        this.servedFrom(
+          p,
+          c.cheap.meta,
+          0,
+          `cascade: cheap failed non-retryably (${cheap.error.kind})`,
+          null,
+          cheap.failures,
+        ),
+        { status: 'error', outputChars: 0, escalated: false, qualitySignal: null },
+      );
+      throw toProxyError(cheap.error);
+    }
     return this.escalateBuffered(p, c, null, 0, signal); // cheap failed/timed out — escalate, score 0
   }
 
@@ -506,6 +524,22 @@ export class ProxyService {
       // one error row (§7.5), no escalation, no notifyFailed. E5.2.
       this.recorder.record(
         this.servedFrom(p, c.cheap.meta, 0, 'cascade: client disconnected during cheap attempt', null, cheap.failures),
+        { status: 'error', outputChars: 0, escalated: false, qualitySignal: null },
+      );
+      throw providerErrorToProxy(cheap.error);
+    }
+    if (!shouldFallback(cheap.error.kind)) {
+      // A non-retryable cheap failure (bad_request) won't succeed on the strong tier
+      // either — surface it instead of escalating (A-21). Pre-commit: no bytes sent.
+      this.recorder.record(
+        this.servedFrom(
+          p,
+          c.cheap.meta,
+          0,
+          `cascade: cheap failed non-retryably (${cheap.error.kind})`,
+          null,
+          cheap.failures,
+        ),
         { status: 'error', outputChars: 0, escalated: false, qualitySignal: null },
       );
       throw providerErrorToProxy(cheap.error);

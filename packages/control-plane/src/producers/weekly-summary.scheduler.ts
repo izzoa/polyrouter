@@ -130,7 +130,8 @@ export class WeeklySummaryScheduler implements OnApplicationBootstrap, OnApplica
       await this.queue.upsertJobScheduler(
         SCHEDULER_ID,
         { pattern: this.cfg.weeklyCron, tz: 'UTC' },
-        { name: JOB_NAME },
+        // Bounded retention (E6.2) — mirrors notify.queue's BASE_JOB_OPTS.
+        { name: JOB_NAME, opts: { removeOnComplete: { age: 3_600 }, removeOnFail: { age: 86_400 } } },
       );
     } else {
       await this.queue.removeJobScheduler(SCHEDULER_ID).catch(() => undefined);

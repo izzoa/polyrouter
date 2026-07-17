@@ -86,6 +86,12 @@ export class ProxyMetrics {
     help: 'Request-log rows the writer abandoned (queue overflow or insert give-up)',
     registers: [this.registry],
   });
+  private readonly budgetFaults = new Counter({
+    name: 'polyrouter_budget_enforcement_faults_total',
+    help: 'Budget checks that faulted and engaged the named fail mode (open|closed)',
+    labelNames: ['mode'] as const,
+    registers: [this.registry],
+  });
 
   constructor() {
     collectDefaultMetrics({ register: this.registry });
@@ -146,6 +152,12 @@ export class ProxyMetrics {
   logRowsDroppedBy(n: number): void {
     if (n <= 0) return;
     this.safe(() => this.logRowsDropped.inc(n));
+  }
+
+  /** A budget check faulted and engaged its named fail mode (E6.1) — so an
+   * instance silently running degraded enforcement is visible on `/metrics`. */
+  recordBudgetFault(mode: 'open' | 'closed'): void {
+    this.safe(() => this.budgetFaults.inc({ mode }));
   }
 
   metricsText(): Promise<string> {

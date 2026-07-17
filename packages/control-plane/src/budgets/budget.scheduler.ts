@@ -51,6 +51,9 @@ interface KeyGroup {
  * caller passes `prevMillis − 1` so a run at a boundary reconciles the just-closed
  * period). Extracted (no queue/worker) so it is directly unit-testable.
  */
+/** Best-effort logger for the free-function occurrence (alert-dedup faults). */
+const occurrenceLogger = new Logger('BudgetReconcile');
+
 export async function runBudgetOccurrence(
   reader: BudgetReader,
   counter: SpendCounter,
@@ -101,17 +104,26 @@ export async function runBudgetOccurrence(
     for (const b of g.budgets) {
       if (b.action !== 'alert' || micros < toMicros(b.amount)) continue;
       const markKey = `budget-alerted:${b.id}:${g.periodId}`;
-      if (await counter.markOnce(markKey, ttlMs)) {
-        producers.budgetAlert({
-          ownerUserId: b.ownerUserId,
-          ...(b.agentId !== null ? { agentId: b.agentId } : {}),
-          budgetId: b.id,
-          periodId: g.periodId,
-          name: b.name,
-          spent: micros,
-          threshold: toMicros(b.amount),
-          channelIds: parseCsv(b.notifyChannelIds),
-        });
+      // Alert dedup/emit is best-effort and NOT required for counter correctness:
+      // a marker fault must never abort the occurrence and skip the heartbeat
+      // (which would degrade block enforcement). Contain it per budget. (E6.3)
+      try {
+        if (await counter.markAlertOnce(markKey, ttlMs)) {
+          producers.budgetAlert({
+            ownerUserId: b.ownerUserId,
+            ...(b.agentId !== null ? { agentId: b.agentId } : {}),
+            budgetId: b.id,
+            periodId: g.periodId,
+            name: b.name,
+            spent: micros,
+            threshold: toMicros(b.amount),
+            channelIds: parseCsv(b.notifyChannelIds),
+          });
+        }
+      } catch (err) {
+        occurrenceLogger.warn(
+          `budget alert dedup failed for ${b.id}: ${err instanceof Error ? err.constructor.name : 'unknown'}`,
+        );
       }
     }
   }
@@ -209,7 +221,9 @@ export class BudgetScheduler implements OnApplicationBootstrap, OnApplicationShu
       await this.queue.upsertJobScheduler(
         SCHEDULER_ID,
         { pattern: this.cron, tz: 'UTC' },
-        { name: JOB_NAME },
+        // Bounded retention (E6.2): don't accumulate job records forever in the
+        // enforcement Redis (mirrors notify.queue's BASE_JOB_OPTS).
+        { name: JOB_NAME, opts: { removeOnComplete: { age: 3_600 }, removeOnFail: { age: 86_400 } } },
       );
     } else {
       await this.queue.removeJobScheduler(SCHEDULER_ID).catch(() => undefined);

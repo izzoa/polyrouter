@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { DatabaseModule } from '../database/database.module';
 import { RedisModule } from '../redis/redis.module';
 import { ProducersModule } from '../producers/producers.module';
+import { ObservabilityModule } from '../observability/observability.module';
 import { BudgetsController } from './budgets.controller';
 import { BudgetsCrudService } from './budgets.crud';
 import { BudgetCache } from './budget-cache';
@@ -20,7 +21,7 @@ import { BUDGETS_CONFIG, resolveBudgetsConfig } from './budgets.config';
  * `RecordingModule` is untouched.
  */
 @Module({
-  imports: [DatabaseModule, RedisModule, ProducersModule],
+  imports: [DatabaseModule, RedisModule, ProducersModule, ObservabilityModule],
   controllers: [BudgetsController],
   providers: [
     { provide: BUDGETS_CONFIG, useFactory: resolveBudgetsConfig },

@@ -4,6 +4,7 @@ import type { BudgetsConfig } from './budgets.config';
 
 const CFG: BudgetsConfig = {
   redisTimeoutMs: 50,
+  reconcileTimeoutMs: 2_000,
   cacheTtlMs: 10_000,
   cacheMax: 5_000,
   failOpen: true,
@@ -74,10 +75,13 @@ describe('SpendCounter', () => {
     expect(await counter.read(['k'])).toEqual([150]);
   });
 
-  it('markOnce wins exactly once per key', async () => {
+  it('markBlockOnce/markAlertOnce win exactly once per key', async () => {
     const { counter } = make();
-    expect(await counter.markOnce('m', 1000)).toBe(true);
-    expect(await counter.markOnce('m', 1000)).toBe(false);
+    expect(await counter.markBlockOnce('m', 1000)).toBe(true);
+    expect(await counter.markBlockOnce('m', 1000)).toBe(false);
+    // the alert marker is an independent key namespace on the write connection
+    expect(await counter.markAlertOnce('a', 1000)).toBe(true);
+    expect(await counter.markAlertOnce('a', 1000)).toBe(false);
   });
 
   it('heartbeat age reflects the last stamp; absent → +Infinity', async () => {

@@ -47,7 +47,9 @@ class FakeCounter {
     this.store.set(key, v);
     return Promise.resolve(v);
   }
-  markOnce(key: string): Promise<boolean> {
+  failMark = false;
+  markAlertOnce(key: string): Promise<boolean> {
+    if (this.failMark) return Promise.reject(new Error('mark fault'));
     if (this.marks.has(key)) return Promise.resolve(false);
     this.marks.add(key);
     return Promise.resolve(true);
@@ -132,6 +134,18 @@ describe('runBudgetOccurrence (#16)', () => {
       threshold: 5_000_000,
       channelIds: ['ch1'],
     });
+  });
+
+  it('a failing alert-dedup marker does NOT abort the occurrence — counters + heartbeat still stamped (E6.3)', async () => {
+    const b = row({ action: 'alert', amount: 5, notifyChannelIds: 'ch1' });
+    const counter = new FakeCounter();
+    counter.failMark = true; // the alert marker faults
+    const alert = jest.fn();
+    const { reader } = makeReader([b], toMicros(7)); // over threshold → would alert
+    await expect(run(reader, counter, alert)).resolves.toBeUndefined(); // did NOT throw
+    expect(counter.reconciled).toHaveLength(1); // the counter was still reconciled
+    expect(counter.heartbeats).toHaveLength(1); // and the heartbeat was still stamped
+    expect(alert).not.toHaveBeenCalled(); // the alert emit was skipped (marker failed), best-effort
   });
 
   it('does not alert for a block budget or an under-threshold alert budget', async () => {

@@ -563,7 +563,7 @@ instead of µ$ rounding — sub-cent inconsistency).
 ---
 
 <a id="epic-e6"></a>
-## EPIC E6 — Budget-enforcement operability · P1
+## EPIC E6 — Budget-enforcement operability · P1 · ✅ SHIPPED 2026-07-17 (`fix-budget-operability`)
 
 **Proposal slug:** `fix-budget-operability` ·
 **Spec refs:** spec.md §10; `openspec/specs/spend-limits`; CLAUDE.md invariant 10
@@ -571,7 +571,7 @@ instead of µ$ rounding — sub-cent inconsistency).
 fail-open, a broken enforcement path admits unlimited spend **with zero operator signal** — the spend-
 limits design doc itself flagged the missing metric and it was never added.
 
-### Task E6.1 — Log and count fail-open enforcement faults ☐ `[medium/S]`
+### Task E6.1 — Log and count fail-open enforcement faults ✅ `[medium/S]`
 - **Where:** `packages/control-plane/src/budgets/budget-service.ts:119-122` (`checkBlocked` bare catch); `packages/control-plane/src/observability/proxy-metrics.ts`
 - **Defect:** Any enforcement fault (Redis fault/timeout, cold-cache DB failure, stale heartbeat,
   programming error) is swallowed → `null` (allow) with no Logger in the class and no budget metric in
@@ -585,7 +585,7 @@ limits design doc itself flagged the missing metric and it was never added.
   admitted AND a warn line + metric increment occur; `/metrics` exposes the fault counter.
 - **Verify:** unit test in `budget-service.spec.ts` (failing mget + failOpen → logger/metric invoked).
 
-### Task E6.2 — Add BullMQ retention to the budget-eval and weekly-summary schedulers ☐ `[medium/XS]`
+### Task E6.2 — Add BullMQ retention to the budget-eval and weekly-summary schedulers ✅ `[medium/XS]`
 - **Where:** `packages/control-plane/src/budgets/budget.scheduler.ts:209-213`; `packages/control-plane/src/producers/weekly-summary.scheduler.ts:129-133`
 - **Defect:** Job templates pass no `removeOnComplete`/`removeOnFail`; BullMQ 5 keeps completed/failed
   jobs forever. The per-minute cron adds ~525k records/year to the same Redis holding spend counters
@@ -596,7 +596,7 @@ limits design doc itself flagged the missing metric and it was never added.
 - **Acceptance criteria:** WHEN several occurrences run THEN `bull:budget-eval:completed` stays bounded.
 - **Verify:** unit-assert template opts; optionally ZCARD after reconcile e2e.
 
-### Task E6.3 — Give reconcile writes their own Redis timeout (not the 50ms hot-path bound) ☐ `[medium/S]`
+### Task E6.3 — Give reconcile writes their own Redis timeout (not the 50ms hot-path bound) ✅ `[medium/S]`
 - **Where:** `packages/control-plane/src/budgets/spend-counter.ts:40-44`; `budget.scheduler.ts:99/104/121`
 - **Defect:** The scheduler's reconcile writes (Lua eval, markOnce, heartbeatSet) share the dedicated
   hot-path connection with `commandTimeout: 50ms`. Redis RTT near/above 50ms (managed Redis, AOF fsync

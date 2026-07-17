@@ -1,9 +1,11 @@
+import { Logger } from '@nestjs/common';
 import { Redis } from 'ioredis';
 import { userPrincipal, type BudgetRow } from '@polyrouter/shared/server';
 import { BudgetService, BudgetEnforcementUnavailableError, type BudgetHit } from './budget-service';
 import { BudgetCache } from './budget-cache';
 import { SpendCounter } from './spend-counter';
 import { NotificationProducers } from '../producers/notification-producers';
+import { ProxyMetrics } from '../observability/proxy-metrics';
 import { periodInfo, toMicros } from './period';
 import type { BudgetsConfig } from './budgets.config';
 
@@ -12,6 +14,7 @@ const PRINCIPAL = userPrincipal('u1');
 
 const BASE_CFG: BudgetsConfig = {
   redisTimeoutMs: 50,
+  reconcileTimeoutMs: 2_000,
   cacheTtlMs: 10_000,
   cacheMax: 5_000,
   failOpen: true,
@@ -69,8 +72,9 @@ function make(rows: BudgetRow[], failOpen = true) {
   const cache = { get: jest.fn().mockResolvedValue(rows) } as unknown as BudgetCache;
   const budgetBlock = jest.fn();
   const producers = { budgetBlock } as unknown as NotificationProducers;
-  const svc = new BudgetService(cache, counter, producers, { ...BASE_CFG, failOpen });
-  return { svc, conn, counter, budgetBlock };
+  const metrics = new ProxyMetrics();
+  const svc = new BudgetService(cache, counter, producers, metrics, { ...BASE_CFG, failOpen });
+  return { svc, conn, counter, budgetBlock, metrics };
 }
 
 /** Seed the shared counter for a budget's current-period key + a fresh heartbeat. */
@@ -166,6 +170,46 @@ describe('BudgetService.checkBlocked', () => {
     await expect(closed.svc.checkBlocked(PRINCIPAL, null)).rejects.toBeInstanceOf(
       BudgetEnforcementUnavailableError,
     );
+  });
+
+  // E6.1 — the fault is metered + logged, not silently swallowed.
+  it('meters every fault but throttles the warn, and never leaks the error message (fail-open)', async () => {
+    const b = row({ amount: 10 });
+    const open = make([b]);
+    seed(open.conn, open.counter, b, toMicros(10));
+    open.conn.failMget = true; // the counter read rejects with Error('timeout')
+    const metricSpy = jest.spyOn(open.metrics, 'recordBudgetFault');
+    const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    try {
+      expect(await open.svc.checkBlocked(PRINCIPAL, null)).toBeNull(); // fail-open still admits
+      expect(await open.svc.checkBlocked(PRINCIPAL, null)).toBeNull(); // second fault, same window
+      expect(metricSpy).toHaveBeenCalledTimes(2); // metric is UNthrottled
+      expect(metricSpy).toHaveBeenCalledWith('open');
+      expect(warnSpy).toHaveBeenCalledTimes(1); // warn IS throttled (once per window)
+      const msg = String(warnSpy.mock.calls[0]![0]);
+      expect(msg).toContain('fail-open');
+      expect(msg).toContain('Error'); // the error CLASS is named
+      expect(msg).not.toContain('timeout'); // the error MESSAGE (potential data) is not
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('meters the fault with mode="closed" under fail-closed', async () => {
+    const b = row({ amount: 10 });
+    const closed = make([b], false);
+    seed(closed.conn, closed.counter, b, toMicros(10));
+    closed.conn.failMget = true;
+    const metricSpy = jest.spyOn(closed.metrics, 'recordBudgetFault');
+    const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    try {
+      await expect(closed.svc.checkBlocked(PRINCIPAL, null)).rejects.toBeInstanceOf(
+        BudgetEnforcementUnavailableError,
+      );
+      expect(metricSpy).toHaveBeenCalledWith('closed');
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });
 

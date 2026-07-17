@@ -14,6 +14,9 @@ registerConfig(
   'budgets',
   z.object({
     BUDGET_REDIS_TIMEOUT_MS: z.coerce.number().int().min(1).default(50),
+    // Generous bound for the scheduler's reconcile writes (E6.3) — separate from
+    // the 50ms hot-path read bound, so a slow-but-healthy Redis still reconciles.
+    BUDGET_RECONCILE_TIMEOUT_MS: z.coerce.number().int().min(1).default(2000),
     BUDGET_CACHE_TTL_MS: z.coerce.number().int().min(0).default(10_000),
     BUDGET_CACHE_MAX: z.coerce.number().int().min(1).default(5_000),
     BUDGET_FAIL_OPEN: z
@@ -33,6 +36,7 @@ export const BUDGETS_CONFIG = 'polyrouter:budgets-config';
 
 export type BudgetsRawConfig = {
   BUDGET_REDIS_TIMEOUT_MS: number;
+  BUDGET_RECONCILE_TIMEOUT_MS: number;
   BUDGET_CACHE_TTL_MS: number;
   BUDGET_CACHE_MAX: number;
   BUDGET_FAIL_OPEN: boolean;
@@ -44,6 +48,7 @@ export type BudgetsRawConfig = {
 /** The resolved config the budget subsystem depends on. */
 export interface BudgetsConfig {
   readonly redisTimeoutMs: number;
+  readonly reconcileTimeoutMs: number;
   readonly cacheTtlMs: number;
   readonly cacheMax: number;
   readonly failOpen: boolean;
@@ -56,6 +61,7 @@ export function resolveBudgetsConfig(): BudgetsConfig {
   const all = loadConfig<BudgetsRawConfig>();
   return {
     redisTimeoutMs: all.BUDGET_REDIS_TIMEOUT_MS,
+    reconcileTimeoutMs: all.BUDGET_RECONCILE_TIMEOUT_MS,
     cacheTtlMs: all.BUDGET_CACHE_TTL_MS,
     cacheMax: all.BUDGET_CACHE_MAX,
     failOpen: all.BUDGET_FAIL_OPEN,

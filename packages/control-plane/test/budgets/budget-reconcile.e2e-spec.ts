@@ -23,6 +23,7 @@ import { BudgetService, BudgetEnforcementUnavailableError } from '../../src/budg
 import { BudgetScheduler, runBudgetOccurrence } from '../../src/budgets/budget.scheduler';
 import { periodInfo } from '../../src/budgets/period';
 import { NotificationProducers } from '../../src/producers/notification-producers';
+import { ProxyMetrics } from '../../src/observability/proxy-metrics';
 import type { BudgetsConfig } from '../../src/budgets/budgets.config';
 import type { ProducersConfig } from '../../src/producers/producers.config';
 import type { NotificationService } from '../../src/notifications/notification.service';
@@ -33,8 +34,10 @@ import '../../src/redis/redis.config';
 const HINT = 'Dev Postgres/Redis unreachable — docker compose -f docker-compose.dev.yml up -d';
 const STALE_MS = 180_000;
 
+const METRICS = new ProxyMetrics();
 const CFG = (failOpen: boolean): BudgetsConfig => ({
   redisTimeoutMs: 1_000,
+  reconcileTimeoutMs: 2_000,
   cacheTtlMs: 10_000,
   cacheMax: 5_000,
   failOpen,
@@ -225,7 +228,13 @@ describe('budget reconcile + enforcement — real infra (#16)', () => {
     const producers = new NotificationProducers(capture().svc, redis, PRODUCERS_CFG);
     await runBudgetOccurrence(reader, counter, producers, Date.now(), STALE_MS);
 
-    const svc = new BudgetService(new BudgetCache(port, CFG(true)), counter, producers, CFG(true));
+    const svc = new BudgetService(
+      new BudgetCache(port, CFG(true)),
+      counter,
+      producers,
+      METRICS,
+      CFG(true),
+    );
     const hit = await svc.checkBlocked(principal, null);
     expect(hit).not.toBeNull();
     expect(hit!.budget.amount).toBe(5);
@@ -256,6 +265,7 @@ describe('budget reconcile + enforcement — real infra (#16)', () => {
       new BudgetCache(port, CFG(true)),
       counter,
       capturingProducers(),
+      METRICS,
       CFG(true),
     );
     expect(await open.checkBlocked(principal, null)).toBeNull(); // fail-open allows
@@ -264,6 +274,7 @@ describe('budget reconcile + enforcement — real infra (#16)', () => {
       new BudgetCache(port, CFG(false)),
       counter,
       capturingProducers(),
+      METRICS,
       CFG(false),
     );
     await expect(closed.checkBlocked(principal, null)).rejects.toBeInstanceOf(

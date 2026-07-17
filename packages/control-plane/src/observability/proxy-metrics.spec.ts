@@ -55,6 +55,21 @@ describe('ProxyMetrics (#21)', () => {
     expect(() => m.logRowsDroppedBy(-2)).not.toThrow();
   });
 
+  it('uses LLM-scale duration buckets so a >10s observation lands in a finite bucket (E15.1)', async () => {
+    const m = new ProxyMetrics();
+    m.recordRequest('openai', 'default', 'success', 90); // a 90s streamed completion
+    m.recordUpstream('openai-prod', 'gpt-4o', 'success', 90);
+    const text = await m.metricsText();
+    // The explicit ladder is present (prom-client defaults stop at le="10", so a 90s
+    // observation would otherwise land ONLY in +Inf). prom-client emits `le` first.
+    expect(text).toContain('polyrouter_request_duration_seconds_bucket{le="60",protocol="openai",decision_layer="default",status="success"} 0');
+    expect(text).toContain('polyrouter_request_duration_seconds_bucket{le="120",protocol="openai",decision_layer="default",status="success"} 1');
+    expect(text).toContain('polyrouter_request_duration_seconds_bucket{le="300",protocol="openai",decision_layer="default",status="success"} 1');
+    // Upstream histogram gets the same ladder — a 90s stream is finite, not only +Inf.
+    expect(text).toContain('polyrouter_upstream_duration_seconds_bucket{le="60",provider="openai-prod",model="gpt-4o"} 0');
+    expect(text).toContain('polyrouter_upstream_duration_seconds_bucket{le="120",provider="openai-prod",model="gpt-4o"} 1');
+  });
+
   it('two instances own independent registries (no cross-app collision)', async () => {
     const a = new ProxyMetrics();
     const b = new ProxyMetrics();

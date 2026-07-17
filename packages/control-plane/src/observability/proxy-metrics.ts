@@ -14,6 +14,15 @@ const BREAKER_STATE_VALUE: Record<BreakerState, number> = {
 };
 
 /**
+ * LLM-scale latency buckets (E15.1). prom-client's default histogram buckets top
+ * out at a 10s finite bucket, but streamed completions routinely run 10s–minutes,
+ * so with the defaults every real observation lands only in `+Inf` and
+ * `histogram_quantile` reports ~10s for all traffic (per-provider comparison above
+ * 10s is impossible). These explicit buckets span sub-second to 10 minutes.
+ */
+const LLM_DURATION_BUCKETS = [0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 600];
+
+/**
  * The proxy's Prometheus registry (#21, spec §3.2.6). One registry PER Nest app
  * (never prom-client's global default — Jest builds many apps per process, and a
  * shared registry would collide on re-registration). Every emit method is
@@ -37,6 +46,7 @@ export class ProxyMetrics {
     name: 'polyrouter_request_duration_seconds',
     help: 'End-to-end proxied request duration',
     labelNames: ['protocol', 'decision_layer', 'status'] as const,
+    buckets: LLM_DURATION_BUCKETS,
     registers: [this.registry],
   });
   private readonly tokens = new Counter({
@@ -61,6 +71,7 @@ export class ProxyMetrics {
     name: 'polyrouter_upstream_duration_seconds',
     help: 'Upstream call duration (streams measured to completion)',
     labelNames: ['provider', 'model'] as const,
+    buckets: LLM_DURATION_BUCKETS,
     registers: [this.registry],
   });
   private readonly upstreamSetupFailures = new Counter({

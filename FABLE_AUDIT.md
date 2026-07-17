@@ -991,7 +991,7 @@ doesn't clear `lastTestStatus`).
 ---
 
 <a id="epic-e15"></a>
-## EPIC E15 — Observability accuracy · P3
+## EPIC E15 — Observability accuracy · P3 · ✅ SHIPPED 2026-07-17 (`fix-metrics-buckets`)
 
 **Proposal slug:** `fix-metrics-buckets` ·
 **Spec refs:** `openspec/specs/observability`; spec.md §3.2
@@ -999,7 +999,7 @@ doesn't clear `lastTestStatus`).
 latency metrics useless for the exact traffic the product routes. (The observability auditor also
 reported the shutdown-flush defect — it is the same root cause as Task E5.1; fix once.)
 
-### Task E15.1 — Set explicit LLM-scale buckets on the duration histograms ☐ `[medium/XS]`
+### Task E15.1 — Set explicit LLM-scale buckets on the duration histograms ✅ `[medium/XS]`
 - **Where:** `packages/control-plane/src/observability/proxy-metrics.ts:36` (`requestDuration`), `:60` (`upstreamDuration`)
 - **Defect:** Both histograms are built with no `buckets`, so prom-client's defaults apply (max finite
   bucket **10s**). Streamed LLM completions run 10s–minutes → every such observation lands in `+Inf`, so
@@ -1010,7 +1010,7 @@ reported the shutdown-flush defect — it is the same root cause as Task E5.1; f
   not only `+Inf`.
 - **Verify:** `proxy-metrics.spec.ts` asserts `le="60"`/`le="300"` lines and a >10s observation increments a finite bucket.
 
-### Task E15.2 — Cover the enabled tracing path & unreachable-collector scenario ☐ `[medium/S]`
+### Task E15.2 — Cover the enabled tracing path & unreachable-collector scenario ✅ `[medium/S]`
 - **Where:** `packages/control-plane/src/observability/tracing.ts:23` (`initTracing`)
 - **Defect:** The openspec scenario "an unreachable collector does not affect requests" has no test, and
   `initTracing`/`shutdownTracing` (the `OTEL_ENABLED` gate, OTLP exporter, BatchSpanProcessor) are never

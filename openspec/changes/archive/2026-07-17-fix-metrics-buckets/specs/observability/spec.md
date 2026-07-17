@@ -1,44 +1,4 @@
-# observability Specification
-
-## Purpose
-TBD - created by archiving change add-observability. Update Purpose after archive.
-## Requirements
-### Requirement: Proxied inference requests emit a full OTel span chain when tracing is enabled
-
-When `OTEL_ENABLED` is on, every **authenticated inference request** (`/v1/chat/completions`, `/v1/messages`) SHALL produce one trace: a root `proxy.request` span (method, original path, client protocol, response status, ended when the response closes — streaming included) with child spans `auth` (agent-key verification), `routing` (route resolution, carrying `decision_layer`/tier/model attributes), one `upstream` span per attempted chain member (provider name + external model id attributes; error status on a failed attempt; a consumer-aborted stream marked canceled, not error), and `recording.enqueue` (the request-path log enqueue). Requests that exit before a phase (auth failure, budget block, route error, `/v1/models`) SHALL produce a partial chain ending at the failing phase. The durable insert SHALL be traced at the writer as a `recording.write` batch span **linked** to the originating requests' span contexts, with insert give-ups marked. Span attributes SHALL contain no prompt/response content and no credentials (metadata only). When tracing is disabled (the default), the API calls SHALL be no-ops and requests behave identically to before this capability.
-
-#### Scenario: full span chain for a proxied request
-- **WHEN** tracing is enabled with an in-memory exporter and an agent completes a request through `/v1/chat/completions`
-- **THEN** the exporter holds one `proxy.request` root for the request whose children include `auth`, `routing`, at least one `upstream` (with the served provider's name and external model id), and `recording.enqueue`, all sharing the root's trace id
-
-#### Scenario: the durable write is traced and linked
-- **WHEN** tracing is enabled, a request completes, and the log writer flushes
-- **THEN** the exporter holds a `recording.write` span carrying a span link to that request's span context
-
-#### Scenario: a failed provider attempt is attributed in the trace
-- **WHEN** tracing is enabled and the primary provider fails so a fallback serves the request
-- **THEN** the trace contains an `upstream` span for the failed member marked with error status and its provider name, and a second `upstream` span for the member that served
-
-#### Scenario: a streamed request's chain completes; an aborted stream is not an error
-- **WHEN** tracing is enabled and an agent streams a completion to the end, and separately a client disconnects mid-stream
-- **THEN** the completed stream's `upstream` span ends with success after the final event, and the aborted stream's `upstream` span ends marked canceled (not error) with the root span closed by the connection close
-
-#### Scenario: tracing off is the default and inert
-- **WHEN** `OTEL_ENABLED` is unset
-- **THEN** no tracer provider is registered, no export ever occurs, and proxied requests behave identically to before this capability
-
-### Requirement: Observability can never change a request outcome
-
-Trace export SHALL be batched and asynchronous; metric emission SHALL be exception-safe in-process counter work only; no observability failure (unreachable collector, a throwing metrics call) SHALL fail, slow, or stall a proxied request or budget enforcement. A malformed registered observability variable (e.g. a non-URL `OTEL_EXPORTER_OTLP_ENDPOINT` while tracing is enabled) SHALL fail boot fast per the config discipline — never degrade silently at request time. The production tracing switch — enabling under `OTEL_ENABLED`, registering the OTLP exporter + batch processor, and the graceful-drain flush — SHALL be covered by a regression test that exercises the enabled path against an unreachable collector and asserts requests are unaffected and shutdown flushes cleanly, so a regression in the real switch (throwing, blocking, or failing to register/flush) cannot ship undetected.
-
-#### Scenario: an unreachable collector does not affect requests
-- **WHEN** tracing is enabled with a well-formed OTLP endpoint that accepts no connections and an agent sends requests
-- **THEN** every request completes exactly as with tracing disabled, with export failures contained to the exporter
-
-#### Scenario: the enabled tracing switch registers, never blocks, and shuts down cleanly
-
-- **WHEN** `initTracing` runs with `OTEL_ENABLED=true` and an OTLP endpoint pointed at a closed port, then work is done inside a span, then `shutdownTracing` is called
-- **THEN** `initTracing` registers a recording provider without throwing or blocking, the span-wrapped work completes promptly (not stalled on the dead collector), and `shutdownTracing` resolves (the batch flush is contained); and `initTracing` with `OTEL_ENABLED` unset registers no provider (a no-op)
+## MODIFIED Requirements
 
 ### Requirement: A Prometheus metrics endpoint exposes proxy health per provider, model, and routing layer
 
@@ -89,3 +49,15 @@ Labels SHALL never include tenant/agent/request identifiers or message content.
 - **WHEN** the budget check faults (e.g. its Redis connection is down) and the request is admitted under fail-open
 - **THEN** a subsequent `/metrics` scrape contains `polyrouter_budget_enforcement_faults_total` with a `mode` label reflecting the engaged fail mode
 
+### Requirement: Observability can never change a request outcome
+
+Trace export SHALL be batched and asynchronous; metric emission SHALL be exception-safe in-process counter work only; no observability failure (unreachable collector, a throwing metrics call) SHALL fail, slow, or stall a proxied request or budget enforcement. A malformed registered observability variable (e.g. a non-URL `OTEL_EXPORTER_OTLP_ENDPOINT` while tracing is enabled) SHALL fail boot fast per the config discipline — never degrade silently at request time. The production tracing switch — enabling under `OTEL_ENABLED`, registering the OTLP exporter + batch processor, and the graceful-drain flush — SHALL be covered by a regression test that exercises the enabled path against an unreachable collector and asserts requests are unaffected and shutdown flushes cleanly, so a regression in the real switch (throwing, blocking, or failing to register/flush) cannot ship undetected.
+
+#### Scenario: an unreachable collector does not affect requests
+- **WHEN** tracing is enabled with a well-formed OTLP endpoint that accepts no connections and an agent sends requests
+- **THEN** every request completes exactly as with tracing disabled, with export failures contained to the exporter
+
+#### Scenario: the enabled tracing switch registers, never blocks, and shuts down cleanly
+
+- **WHEN** `initTracing` runs with `OTEL_ENABLED=true` and an OTLP endpoint pointed at a closed port, then work is done inside a span, then `shutdownTracing` is called
+- **THEN** `initTracing` registers a recording provider without throwing or blocking, the span-wrapped work completes promptly (not stalled on the dead collector), and `shutdownTracing` resolves (the batch flush is contained); and `initTracing` with `OTEL_ENABLED` unset registers no provider (a no-op)

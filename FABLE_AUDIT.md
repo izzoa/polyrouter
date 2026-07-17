@@ -1036,7 +1036,7 @@ change proposal. Batch opportunistically when touching the neighboring code.
 | ID | Area | Item | File |
 |---|---|---|---|
 | A-1 ✅ | build | `format:check` failed on Drizzle-generated JSON → prettier-ignored the generated migrations dir | `migrations/meta/*` |
-| A-2 | deps | 5 moderate `npm audit` advisories via `better-auth → drizzle-kit` — bump when upstream allows | root |
+| A-2 ⏸️ accepted | deps | esbuild dev-server advisory via drizzle-kit (dev-only migration tooling; polyrouter never runs esbuild's dev server → no runtime exposure); only fix is a breaking drizzle-kit downgrade — bump when upstream allows | root |
 | A-3 | proxy | Client aborts recorded `status='error'` + fire `notifyFailed` → inflate error rate / spike alerts | `proxy.service.ts:246` |
 | A-4 ✅ | proxy | Buffered upstream call has no post-headers deadline beyond undici's 300s → fixed in E4.3 (idle timeout) | `core.ts:95` |
 | A-5 ✅ | proxy | Anthropic-wire terminal error frame/envelope → tested in E2.6 (stream-fidelity) | `stream-error.ts:19` |
@@ -1072,8 +1072,8 @@ change proposal. Batch opportunistically when touching the neighboring code.
 | A-35 ✅ | observ | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` now registered (boot-validated) + compose pass-through | `observability.config.ts` |
 | A-36 ✅ | observ | provider display-name label documented as an accepted trade-off (legibility over rename-stability) | `proxy-metrics.ts` |
 | A-37 ✅ | observ | added `outcome` label to `upstream_duration` (canceled no longer pollutes success latency) | `proxy-metrics.ts` |
-| A-38 | db | Money columns are `double precision` (mitigated by µ$ rounding) — `numeric` would remove the class | `schema.ts` |
-| A-39 | db | Boot migrations take no advisory lock (documented single-replica constraint) | `migrations-runner.ts` |
+| A-38 ⏸️ accepted | db | Money columns `double precision`, but every money READ rounds to integer µ$ (budget/analytics/cost) so no float drift is observable — a `numeric` migration is deferred as a mitigated, invasive change | `schema.ts` |
+| A-39 ⏸️ accepted | db | Boot migrations take no advisory lock — by design; documented as a single-replica constraint (README:111 + packaging spec: do not --scale app) | `migrations-runner.ts` |
 | A-40 ✅ | security | GCM auth tag pinned to 16 bytes on decrypt (truncated tag rejected) | `encryption.ts:49` |
 | A-41 ✅ | security | allowlist HARD-overlap guard now checks the full CIDR range (v4+v6) + runs on the notification path | `ssrf.ts:183` |
 | A-42 ✅ | provider-mgmt | `IsUrl` `require_tld` rejects `http://localhost:11434` (Ollama) with a misleading 400 → fixed in E11 (`bound-provider-sync`) | `providers.dto.ts:19` |

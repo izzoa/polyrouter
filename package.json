@@ -4,6 +4,10 @@
   "private": true,
   "description": "Self-hostable LLM router/gateway — one OpenAI- and Anthropic-compatible endpoint with explicit-first routing, fallbacks, and spend limits",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OWNER/polyrouter.git"
+  },
   "workspaces": [
     "packages/*"
   ],

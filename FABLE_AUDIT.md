@@ -1035,26 +1035,26 @@ change proposal. Batch opportunistically when touching the neighboring code.
 
 | ID | Area | Item | File |
 |---|---|---|---|
-| A-1 | build | `format:check` fails on 2 Drizzle-generated JSON files — add to `.prettierignore` | `migrations/meta/*` |
+| A-1 ✅ | build | `format:check` failed on Drizzle-generated JSON → prettier-ignored the generated migrations dir | `migrations/meta/*` |
 | A-2 | deps | 5 moderate `npm audit` advisories via `better-auth → drizzle-kit` — bump when upstream allows | root |
 | A-3 | proxy | Client aborts recorded `status='error'` + fire `notifyFailed` → inflate error rate / spike alerts | `proxy.service.ts:246` |
-| A-4 | proxy | Buffered upstream call has no post-headers deadline beyond undici's 300s (see E4.3) | `core.ts:95` |
-| A-5 | proxy | Anthropic-wire terminal error frame/envelope untested (folded into E2.6) | `stream-error.ts:19` |
+| A-4 ✅ | proxy | Buffered upstream call has no post-headers deadline beyond undici's 300s → fixed in E4.3 (idle timeout) | `core.ts:95` |
+| A-5 ✅ | proxy | Anthropic-wire terminal error frame/envelope → tested in E2.6 (stream-fidelity) | `stream-error.ts:19` |
 | A-6 | translate | Duplicate `tool_use_start` on repeated id/name argument fragments | `openai.ts:420` |
 | A-7 | translate | Uninvited trailing usage chunk sent to OpenAI clients that didn't opt in | `openai.ts:536` |
 | A-8 | translate | User-message `[text, tool_result]` order inverted (text emitted after) | `anthropic.ts:170` |
 | A-9 | translate | `message_start` fabricates `input_tokens:0` cross-protocol — document in golden README | `anthropic.ts:450` |
 | A-10 | breaker | Production breaker wires no `onError` → Redis-outage degradation silent | `proxy.module.ts:92` |
-| A-11 | breaker | 3 breaker spec files import a nonexistent `./translate` + phantom export (E7.1 `tsc` catches) | `breaker-*.spec.ts` |
+| A-11 ✅ | breaker | breaker specs imported a nonexistent `./translate` + phantom export → fixed in E7 (tsc + real imports) | `breaker-*.spec.ts` |
 | A-12 | adapters | Anthropic `listModels` ignores pagination → catalogs truncate at page size | `anthropic-adapter.ts:23` |
 | A-13 | pricing | LiteLLM refresh skips `validate()` → one negative price aborts the whole refresh | `pricing.service.ts:205` |
 | A-14 | recording | Orphaned cascade attempt FK-poisons its per-principal batch (drops valid rows) | `log-writer.ts:267` |
 | A-15 | analytics | `weekly-spend.reader` sums raw float, diverges sub-µ$ from µ$-rounded readers | `weekly-spend.reader.ts` |
 | A-16 | budgets | `BUDGET_STALE_MS` vs cron interval unvalidated (hourly cron → ~57min unavailable) | `budgets.config.ts` |
 | A-17 | budgets | No test for Anthropic-shaped budget rejection or cold-cache DB fail mode; no `budget-cache.spec.ts` | `test/budgets/` |
-| A-18 | docs | Add `SECURITY.md` (disclosure route) + `CONTRIBUTING.md` | root |
+| A-18 ✅ | docs | Added `SECURITY.md` (private disclosure route) + `CONTRIBUTING.md` | root |
 | A-19 ✅ | docs | README expose/upgrade compose commands omit `-f/--env-file` for fetch installs → fixed in E13 (`fix-installer-rerun`) | `README.md:45` |
-| A-20 | docs | Sub-package `package.json` lack `license`; root lacks `repository` | `packages/*/package.json` |
+| A-20 ✅ | docs | Sub-package `license` (done in E8) + root `repository` added | `packages/*/package.json` |
 | A-21 | routing | Cascade escalates on non-retryable `bad_request` cheap failure | `proxy.service.ts:370` |
 | A-22 | routing | Seeded `oai-miderror` cascade fixture never asserted (post-commit terminal error) | `cascade-routing.e2e-spec.ts:223` |
 | A-23 | routing | EWMA seeds full value from first observation — single-outlier sensitive | `structural-baseline.store.ts:111` |
@@ -1067,7 +1067,7 @@ change proposal. Batch opportunistically when touching the neighboring code.
 | A-30 | frontend | Hardcoded `v0.4.1 · postgres 16 · redis 7` / fabricated instance info | `appState.ts`,`Settings.tsx` |
 | A-31 | frontend | Timeseries gaps interpolated by uPlot — zero-fill client-side | `data/analytics.ts` |
 | A-32 | notify | Weekly-summary job runs single-attempt despite idempotent occurrence design | `weekly-summary.scheduler.ts:130` |
-| A-33 | notify | Validate `APPRISE_API_URL` at boot with send-time `assertUrlSafe` policy | `notify.config.ts:100` |
+| A-33 ✅ | notify | Validate `APPRISE_API_URL` at boot → already done (notify.config SSRF-gates it at boot) | `notify.config.ts:100` |
 | A-34 | notify | Channel config update doesn't clear `lastTestStatus` — stale "success" | `channels.service.ts` |
 | A-35 | observ | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` per-signal var unregistered | `observability.config.ts` |
 | A-36 | observ | breaker-state/upstream gauges labeled by provider display name → stale series on rename | `proxy-metrics.ts` |

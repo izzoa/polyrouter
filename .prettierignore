@@ -6,6 +6,10 @@ coverage/
 package-lock.json
 CHANGELOG.md
 
+# Drizzle-generated migration artifacts (machine-authored — A-1; reformatting the
+# snapshot/journal JSON would churn generated output and can desync drizzle-kit)
+packages/*/src/database/migrations/
+
 # planning docs & agent configs (not code — leave untouched)
 openspec/
 spec.md

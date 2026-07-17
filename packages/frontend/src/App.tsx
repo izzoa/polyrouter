@@ -115,9 +115,9 @@ export function App(props: AppProps) {
                 {state.authError}
               </div>
             </Show>
-            <div class="btn-primary" onClick={() => void app.retry()}>
+            <button type="button" class="btn-primary" onClick={() => void app.retry()}>
               Retry
-            </div>
+            </button>
           </div>
         </CenterFrame>
       </Match>

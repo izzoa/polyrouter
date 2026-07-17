@@ -15,7 +15,7 @@
   --chip: #f1f1ef;
   --text: #17181a;
   --text2: #55575e;
-  --text3: #8a8c92;
+  --text3: #6a6c73;
   --faint: #b4b6bc;
   --green: #3bb273;
   --green-bg: #e9f6ef;
@@ -25,7 +25,12 @@
   --red-bg: #fdecec;
   --accent-bg: color-mix(in oklab, var(--accent) 9%, var(--panel));
   --accent-deep: color-mix(in oklab, var(--accent) 78%, var(--text) 22%);
+  /* Flat-borders lock (STYLESEED.md): shadows are whispers ≤ 8% alpha, themed OFF in dark. */
   --shadow: 0 1px 3px rgba(20, 20, 25, 0.05);
+  --shadow-pop: 0 18px 50px rgba(10, 10, 14, 0.08);
+  --shadow-drawer: -12px 0 32px rgba(10, 10, 14, 0.08);
+  --shadow-toast: 0 8px 24px rgba(10, 10, 14, 0.08);
+  --shadow-knob: 0 1px 2px rgba(10, 10, 14, 0.08);
 }
 
 [data-theme='dark'] {
@@ -37,7 +42,7 @@
   --chip: #22232a;
   --text: #f0f1f4;
   --text2: #a6a8b0;
-  --text3: #787a82;
+  --text3: #898b93;
   --faint: #4e5058;
   --green: #46c482;
   --green-bg: #12291d;
@@ -45,7 +50,11 @@
   --amber-bg: #2e2712;
   --red: #f2555a;
   --red-bg: #391a1c;
-  --shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  --shadow: none;
+  --shadow-pop: none;
+  --shadow-drawer: none;
+  --shadow-toast: none;
+  --shadow-knob: none;
 }
 
 body {
@@ -70,10 +79,39 @@ button,
 textarea {
   font-family: inherit;
 }
+
+/* Actions are real <button>s; strip the UA chrome so the component classes below
+   render on <button> exactly as they did on div/span. */
+button {
+  appearance: none;
+  -webkit-appearance: none;
+  font: inherit;
+  line-height: inherit;
+  color: inherit;
+  text-align: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+}
+button::-moz-focus-inner {
+  border: 0;
+  padding: 0;
+}
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 input:focus,
 select:focus {
   border-color: var(--accent) !important;
-  outline: none;
 }
 
 @keyframes pulse {
@@ -93,14 +131,6 @@ select:focus {
   to {
     transform: translateX(0);
     opacity: 1;
-  }
-}
-@keyframes rowin {
-  from {
-    background: var(--accent-bg);
-  }
-  to {
-    background: transparent;
   }
 }
 
@@ -221,7 +251,7 @@ select:focus {
 }
 
 .icon-x {
-  color: var(--faint);
+  color: var(--text3);
   cursor: pointer;
 }
 .icon-x:hover {
@@ -308,6 +338,7 @@ select:focus {
 
 .req-row {
   display: grid;
+  width: 100%;
   gap: 0 14px;
   padding: 9px 18px;
   border-bottom: 1px solid var(--border2);
@@ -340,7 +371,7 @@ select:focus {
   top: 2px;
   border-radius: 50%;
   background: #fff;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  box-shadow: var(--shadow-knob);
   transition: left 0.15s;
 }
 
@@ -388,7 +419,7 @@ select:focus {
   display: flex;
   flex-direction: column;
   animation: slidein 0.18s ease-out;
-  box-shadow: -12px 0 32px rgba(10, 10, 14, 0.1);
+  box-shadow: var(--shadow-drawer);
 }
 
 .drawer-close {
@@ -428,7 +459,7 @@ select:focus {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 12px;
-  box-shadow: 0 18px 50px rgba(10, 10, 14, 0.18);
+  box-shadow: var(--shadow-pop);
   padding: 22px 24px;
   display: flex;
   flex-direction: column;
@@ -454,7 +485,7 @@ select:focus {
   font:
     500 12.5px 'Geist',
     sans-serif;
-  box-shadow: 0 8px 24px rgba(10, 10, 14, 0.25);
+  box-shadow: var(--shadow-toast);
 }
 
 .snippet-box {
@@ -491,4 +522,20 @@ select:focus {
   font:
     500 10.5px 'Geist',
     sans-serif;
+}
+
+/* Reduced-motion guard (dashboard-core spec): collapse ALL motion — including future
+   animations by default — while every animated state stays statically visible.
+   0.01ms (not 0/none) keeps animationend/transitionend semantics intact. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+    scroll-behavior: auto !important;
+  }
 }

@@ -5,7 +5,9 @@ export function Toast() {
   const app = useApp();
   return (
     <Show when={app.state.toast}>
-      <div class="toast">{app.state.toast}</div>
+      <div class="toast" role="status">
+        {app.state.toast}
+      </div>
     </Show>
   );
 }

@@ -12,6 +12,12 @@ export function Limits() {
 
   onMount(() => void app.loadLimits());
 
+  const removeBudget = (b: BudgetDto): void => {
+    if (globalThis.confirm(`Delete budget "${b.name}"? New requests will no longer be enforced by it.`)) {
+      void app.deleteBudget(b.id);
+    }
+  };
+
   const agentName = (agentId: string | null): string => {
     if (agentId === null) return agentId ?? '';
     return state.agents.find((a) => a.id === agentId)?.name ?? agentId;
@@ -27,9 +33,9 @@ export function Limits() {
           Spend counters are atomic across instances — a blocked budget stops requests everywhere at
           once.
         </div>
-        <div class="btn-primary" onClick={() => app.openBudget()}>
+        <button type="button" class="btn-primary" onClick={() => app.openBudget()}>
           New budget
-        </div>
+        </button>
       </div>
 
       <Show when={state.budgetsError}>
@@ -93,21 +99,22 @@ export function Limits() {
                   </Show>
                 </div>
                 <div style="display:flex;gap:6px;margin-top:10px">
-                  <div class="btn-ghost" onClick={() => app.openBudget(b)}>
+                  <button type="button" class="btn-ghost" onClick={() => app.openBudget(b)}>
                     Edit
-                  </div>
-                  <div
+                  </button>
+                  <button
+                    type="button"
                     class="btn-ghost btn-ghost--amber"
-                    onClick={() => void app.deleteBudget(b.id)}
+                    onClick={() => removeBudget(b)}
                   >
                     Delete
-                  </div>
+                  </button>
                   <span
                     style={{
                       'margin-left': 'auto',
                       'align-self': 'center',
                       font: "400 11px 'Geist',sans-serif",
-                      color: b.enabled ? 'var(--green)' : 'var(--faint)',
+                      color: b.enabled ? 'var(--green)' : 'var(--text3)',
                     }}
                   >
                     {b.enabled ? 'enabled' : 'disabled'}

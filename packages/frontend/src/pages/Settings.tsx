@@ -16,6 +16,12 @@ export function Settings() {
 
   onMount(() => void app.loadChannels());
 
+  const removeChannel = (c: ChannelDto): void => {
+    if (globalThis.confirm(`Delete channel "${c.name}"? Future alerts will no longer be delivered to it.`)) {
+      void app.deleteChannel(c.id);
+    }
+  };
+
   // Inline test-send result takes precedence; otherwise fall back to the stored
   // `lastTestStatus` (`success` | `failed:<code>`). Only `{ ok, error? }` is known.
   const testLine = (c: ChannelDto): TestLine => {
@@ -37,9 +43,9 @@ export function Settings() {
           <div class="section-title" style="margin-bottom:12px">
             Instance
           </div>
-          <div class="btn-ghost" onClick={() => void app.signOut()}>
+          <button type="button" class="btn-ghost" onClick={() => void app.signOut()}>
             Log out
-          </div>
+          </button>
         </div>
         <div style="display:grid;grid-template-columns:140px 1fr;gap:8px 16px;font:400 12.5px 'Geist',sans-serif;color:var(--text2);align-items:center">
           <div style="color:var(--text3)">Account</div>
@@ -62,13 +68,14 @@ export function Settings() {
             <span class="mono" style="font-size:11.5px">
               {BASE_URL}
             </span>
-            <span
+            <button
+              type="button"
               class="link-accent"
               style="font-size:11.5px"
               onClick={() => app.copy(BASE_URL, 'Endpoint copied')}
             >
               Copy
-            </span>
+            </button>
           </div>
           <div style="color:var(--text3)">Version</div>
           <div class="mono" style="font-size:11.5px">v{__APP_VERSION__}</div>
@@ -106,13 +113,14 @@ export function Settings() {
       <div class="panel card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
           <div class="section-title">Notifications</div>
-          <div
+          <button
+            type="button"
             class="link-accent"
             style="font:500 12px 'Geist',sans-serif"
             onClick={() => app.openChannel()}
           >
             + Add channel
-          </div>
+          </button>
         </div>
         <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3);margin-bottom:12px">
           Budget alerts, provider-down and failure spikes fan out to every enabled channel —
@@ -129,7 +137,7 @@ export function Settings() {
           <For
             each={state.channels}
             fallback={
-              <div style="font:400 11.5px 'Geist',sans-serif;color:var(--faint)">
+              <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3)">
                 {state.channelsLoading ? 'Loading channels…' : 'No channels yet.'}
               </div>
             }
@@ -139,6 +147,7 @@ export function Settings() {
                 <Toggle
                   on={c.enabled}
                   locked={state.channelToggling[c.id] ?? false}
+                  label={`Toggle channel ${c.name}`}
                   onToggle={() => void app.toggleChannelEnabled(c)}
                 />
                 <div style="min-width:0">
@@ -176,26 +185,25 @@ export function Settings() {
                       </span>
                     );
                   })()}
-                  <div
+                  <button
+                    type="button"
                     class="btn-ghost"
-                    style={{
-                      background: 'var(--panel)',
-                      'pointer-events': state.channelTesting[c.id] ? 'none' : 'auto',
-                      opacity: state.channelTesting[c.id] ? '0.6' : '1',
-                    }}
+                    style={{ background: 'var(--panel)' }}
+                    disabled={state.channelTesting[c.id] ?? false}
                     onClick={() => void app.testChannelById(c.id)}
                   >
                     {state.channelTesting[c.id] ? 'Sending…' : 'Send test'}
-                  </div>
-                  <div class="btn-ghost" onClick={() => app.openChannel(c)}>
+                  </button>
+                  <button type="button" class="btn-ghost" onClick={() => app.openChannel(c)}>
                     Edit
-                  </div>
-                  <div
+                  </button>
+                  <button
+                    type="button"
                     class="btn-ghost btn-ghost--amber"
-                    onClick={() => void app.deleteChannel(c.id)}
+                    onClick={() => removeChannel(c)}
                   >
                     Delete
-                  </div>
+                  </button>
                 </div>
               </div>
             )}

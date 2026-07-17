@@ -64,13 +64,14 @@ export function Costs(props: { live: boolean }) {
         {(msg) => (
           <div style="display:flex;align-items:center;gap:10px;padding:9px 14px;background:var(--red-bg);border:1px solid var(--red);border-radius:8px;font:500 12px 'Geist',sans-serif;color:var(--red)">
             <span style="flex:1">Couldn’t load cost analytics — {msg()}</span>
-            <span
+            <button
+              type="button"
               class="link-accent"
-              style="cursor:pointer;font-weight:600"
+              style="font-weight:600"
               onClick={() => void app.loadCosts()}
             >
               Retry
-            </span>
+            </button>
           </div>
         )}
       </Show>
@@ -101,7 +102,7 @@ export function Costs(props: { live: boolean }) {
               <span style="color:var(--faint)">■</span> {segPct(unpriced())}% unpriced
             </span>
           </div>
-          <div style="font:400 10.5px 'Geist',sans-serif;color:var(--faint);margin-top:6px">
+          <div style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);margin-top:6px">
             By request count. Subscription/API split lands in a later change.
           </div>
         </div>

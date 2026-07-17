@@ -35,7 +35,7 @@ export function Login() {
     <div style="display:flex;align-items:center;justify-content:center;height:100vh;background:var(--bg);color:var(--text);font-family:'Geist',sans-serif">
       <div style="width:380px;max-width:92vw;display:flex;flex-direction:column;gap:16px">
         <div style="display:flex;align-items:center;gap:9px;justify-content:center">
-          <svg width="22" height="22" viewBox="0 0 20 20" style="flex:none">
+          <svg width="22" height="22" viewBox="0 0 20 20" style="flex:none" aria-hidden="true">
             <circle cx="4" cy="10" r="2.4" fill="var(--text)" />
             <circle cx="15" cy="4.5" r="2.4" fill="var(--accent)" />
             <circle cx="15" cy="10" r="2.4" fill="var(--faint)" />
@@ -58,7 +58,9 @@ export function Login() {
               }
             >
               {([id, label]) => (
-                <div
+                <button
+                  type="button"
+                  aria-pressed={mode() === id}
                   style={{
                     flex: '1',
                     'text-align': 'center',
@@ -72,7 +74,7 @@ export function Login() {
                   onClick={() => setMode(id)}
                 >
                   {label}
-                </div>
+                </button>
               )}
             </For>
           </div>
@@ -80,9 +82,12 @@ export function Login() {
           <form style="display:flex;flex-direction:column;gap:11px" onSubmit={submit}>
             <Show when={mode() === 'signup'}>
               <div>
-                <div class="field-label">Name</div>
+                <label class="field-label" for="f-login-name" style="display:block">
+                  Name
+                </label>
                 <input
                   class="input"
+                  id="f-login-name"
                   value={name()}
                   placeholder="Ada Lovelace"
                   onInput={(e) => setName(e.currentTarget.value)}
@@ -90,9 +95,12 @@ export function Login() {
               </div>
             </Show>
             <div>
-              <div class="field-label">Email</div>
+              <label class="field-label" for="f-login-email" style="display:block">
+                Email
+              </label>
               <input
                 class="input"
+                id="f-login-email"
                 type="email"
                 autocomplete="email"
                 value={email()}
@@ -101,9 +109,12 @@ export function Login() {
               />
             </div>
             <div>
-              <div class="field-label">Password</div>
+              <label class="field-label" for="f-login-password" style="display:block">
+                Password
+              </label>
               <input
                 class="input"
+                id="f-login-password"
                 type="password"
                 autocomplete={mode() === 'signup' ? 'new-password' : 'current-password'}
                 value={password()}
@@ -119,12 +130,12 @@ export function Login() {
             <button
               type="submit"
               class="btn-primary"
+              disabled={state.authBusy}
               style={{
                 display: 'flex',
                 'justify-content': 'center',
                 width: '100%',
                 border: 'none',
-                opacity: state.authBusy ? '0.6' : '1',
               }}
             >
               {state.authBusy ? 'Working…' : mode() === 'signup' ? 'Create account' : 'Sign in'}
@@ -143,6 +154,7 @@ export function Login() {
                   <button
                     type="button"
                     class="btn-ghost"
+                    disabled={state.authBusy}
                     style="display:flex;justify-content:center;width:100%;background:transparent;padding:9px 0"
                     onClick={() => void app.oauth(p)}
                   >

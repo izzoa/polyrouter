@@ -1,4 +1,5 @@
-import { createMemo, For, Show } from 'solid-js';
+import { createMemo, For, onCleanup, onMount, Show } from 'solid-js';
+import { dialogKeyboard } from '../a11y';
 import { toInspectorView } from '../data/analytics';
 import type { RequestRow, RequestStatus } from '../data/api';
 import { fmtTime } from '../data/catalog';
@@ -34,10 +35,32 @@ export function Inspector() {
     <Show when={selected()}>
       {(row) => {
         const view = createMemo(() => toInspectorView(row()));
+        let drawerEl: HTMLDivElement | undefined;
+        onMount(() => {
+          const dispose = dialogKeyboard({
+            root: () => drawerEl,
+            onClose: () => app.select(null),
+            // A modal stacked above owns the keyboard entirely (Escape AND Tab loop);
+            // the drawer resumes when it closes.
+            suspended: () => state.modal !== null,
+          });
+          onCleanup(dispose);
+        });
         return (
           <>
+            {/* eslint-disable-next-line a11y-guard/no-noninteractive-click -- pointer-only backdrop redundancy; Escape is the keyboard path */}
             <div class="overlay" onClick={() => app.select(null)} />
-            <div class="drawer">
+            <div
+              class="drawer"
+              id="inspector-drawer"
+              role="dialog"
+              aria-modal="true"
+              aria-label="Request inspector"
+              tabindex="-1"
+              ref={(el) => {
+                drawerEl = el;
+              }}
+            >
               <div style="flex:none;display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border2)">
                 <div>
                   <div
@@ -65,9 +88,14 @@ export function Inspector() {
                   >
                     {badgeFor(view().status)[0]}
                   </span>
-                  <span class="drawer-close" onClick={() => app.select(null)}>
+                  <button
+                    type="button"
+                    class="drawer-close"
+                    aria-label="Close inspector"
+                    onClick={() => app.select(null)}
+                  >
                     ✕
-                  </span>
+                  </button>
                 </div>
               </div>
               <div style="flex:1;overflow-y:auto;padding:18px 20px;display:flex;flex-direction:column;gap:18px">
@@ -153,7 +181,7 @@ export function Inspector() {
                           <span
                             style={{
                               color: p.unpriced
-                                ? 'var(--faint)'
+                                ? 'var(--text3)'
                                 : p.free
                                   ? 'var(--green)'
                                   : 'var(--text)',
@@ -177,7 +205,7 @@ export function Inspector() {
                       <span style="color:var(--text);font-weight:500">{view().totalCost}</span>
                     </div>
                   </div>
-                  <div style="font:400 10.5px 'Geist',sans-serif;color:var(--faint);margin-top:6px">
+                  <div style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);margin-top:6px">
                     {view().usageEstimated
                       ? 'Provider omitted usage — output estimated from stream, flagged ~.'
                       : 'Token counts from provider usage; unit prices snapshotted at request time.'}

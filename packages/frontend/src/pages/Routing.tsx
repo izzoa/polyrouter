@@ -80,18 +80,26 @@ export function Routing() {
         </div>
         <div style="display:flex;align-items:flex-end;gap:6px">
           <div>
-            <div class="field-label">New tier key</div>
+            <label class="field-label" for="f-tf-key" style="display:block">
+              New tier key
+            </label>
             <input
               class="input mono"
+              id="f-tf-key"
               style="font:400 12px 'Geist Mono',monospace;width:150px"
               placeholder="e.g. heavy"
               value={state.tf.key}
               onInput={(e) => app.setState('tf', 'key', e.currentTarget.value)}
             />
           </div>
-          <div class="btn-primary" onClick={() => void app.createTier()}>
+          <button
+            type="button"
+            class="btn-primary"
+            disabled={state.tf.busy}
+            onClick={() => void app.createTier()}
+          >
             {state.tf.busy ? 'Adding…' : 'Add tier'}
-          </div>
+          </button>
         </div>
       </div>
       <Show when={state.tf.error}>
@@ -100,9 +108,14 @@ export function Routing() {
       <Show when={state.routingError}>
         <div style="display:flex;align-items:center;gap:10px;padding:9px 14px;background:var(--red-bg);border:1px solid var(--red);border-radius:8px;font:500 12px 'Geist',sans-serif;color:var(--red)">
           <span style="flex:1">Couldn’t load routing — {state.routingError}</span>
-          <span class="link-accent" style="font-weight:600" onClick={() => void app.loadRouting()}>
+          <button
+            type="button"
+            class="link-accent"
+            style="font-weight:600"
+            onClick={() => void app.loadRouting()}
+          >
             Retry
-          </span>
+          </button>
         </div>
       </Show>
 
@@ -134,13 +147,18 @@ export function Routing() {
                       </Show>
                     </div>
                     <div style="display:flex;align-items:center;gap:10px">
-                      <span style="font:400 11px 'Geist',sans-serif;color:var(--faint)">
+                      <span style="font:400 11px 'Geist',sans-serif;color:var(--text3)">
                         drag to reorder · max {String(5)}
                       </span>
                       <Show when={t.key !== 'default'}>
-                        <span class="icon-x" onClick={() => void app.deleteTier(t.id)}>
+                        <button
+                          type="button"
+                          class="icon-x"
+                          aria-label={`Delete tier ${t.key}`}
+                          onClick={() => void app.deleteTier(t.id)}
+                        >
                           Delete
-                        </span>
+                        </button>
                       </Show>
                     </div>
                   </div>
@@ -173,7 +191,10 @@ export function Routing() {
                             setDrag(null);
                           }}
                         >
-                          <span style="color:var(--faint);font-size:13px;letter-spacing:1px;flex:none">
+                          <span
+                            aria-hidden="true"
+                            style="color:var(--faint);font-size:13px;letter-spacing:1px;flex:none"
+                          >
                             ⋮⋮
                           </span>
                           <span
@@ -195,33 +216,37 @@ export function Routing() {
                             {modelPriceLabel(modelById(entry.modelId))}
                           </span>
                           <Show when={mi() > 0}>
-                            <span
+                            <button
+                              type="button"
                               class="link-accent"
                               style="font:400 11px 'Geist',sans-serif"
                               onClick={() => app.setPrimaryTierModel(t.id, entry.modelId)}
                             >
                               Make primary
-                            </span>
+                            </button>
                           </Show>
-                          <span
+                          <button
+                            type="button"
                             class="icon-x"
                             style="font-size:14px;padding:0 2px"
+                            aria-label={`Remove ${entryLabel(entry)} from tier ${t.key}`}
                             onClick={() => app.removeTierModel(t.id, entry.modelId)}
                           >
                             ×
-                          </span>
+                          </button>
                         </div>
                       );
                     }}
                   </For>
                   <Show when={entries(t.id).length === 0}>
-                    <div style="padding:9px 18px;font:400 11.5px 'Geist',sans-serif;color:var(--faint)">
+                    <div style="padding:9px 18px;font:400 11.5px 'Geist',sans-serif;color:var(--text3)">
                       No models — add one below.
                     </div>
                   </Show>
                   <div style="padding:8px 18px">
                     <select
                       class="select"
+                      aria-label={`Add model to tier ${t.key}`}
                       style="border:1px dashed var(--border);width:auto;color:var(--text3);cursor:pointer;padding:5px 8px;font:400 12px 'Geist',sans-serif"
                       onChange={(e) => {
                         const id = e.currentTarget.value;
@@ -270,6 +295,7 @@ export function Routing() {
                       <Toggle
                         on={l.on}
                         locked={!l.available}
+                        label={`Toggle ${l.name}`}
                         onToggle={() => void app.toggleAutoLayer(l.id)}
                       />
                     </div>
@@ -278,7 +304,7 @@ export function Routing() {
                         {l.name}{' '}
                         <span
                           class="mono"
-                          style="font:400 10.5px 'Geist Mono',monospace;color:var(--faint)"
+                          style="font:400 10.5px 'Geist Mono',monospace;color:var(--text3)"
                         >
                           {l.tag}
                         </span>
@@ -307,14 +333,19 @@ export function Routing() {
                 }}
               >
                 <div style="margin-top:1px">
-                  <Toggle on={false} locked={true} onToggle={() => undefined} />
+                  <Toggle
+                    on={false}
+                    locked={true}
+                    label="Toggle L2 · Semantic (cloud tier only)"
+                    onToggle={() => undefined}
+                  />
                 </div>
                 <div>
                   <div style="font:500 12px 'Geist',sans-serif;color:var(--text)">
                     L2 · Semantic{' '}
                     <span
                       class="mono"
-                      style="font:400 10.5px 'Geist Mono',monospace;color:var(--faint)"
+                      style="font:400 10.5px 'Geist Mono',monospace;color:var(--text3)"
                     >
                       cloud tier
                     </span>
@@ -356,27 +387,32 @@ export function Routing() {
                     </span>
                     <span style="color:var(--faint)">→</span>
                     <span style="color:var(--text)">{ru.target}</span>
-                    <span
+                    <button
+                      type="button"
                       class="icon-x"
                       style="margin-left:auto"
+                      aria-label={`Delete rule ${ru.headerValue ?? ''} → ${ru.target}`}
                       onClick={() => void app.deleteRule(ru.id)}
                     >
                       ×
-                    </span>
+                    </button>
                   </div>
                 )}
               </For>
               <Show when={headerRules().length === 0}>
-                <div style="font:400 11.5px 'Geist',sans-serif;color:var(--faint);padding:4px 0">
+                <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3);padding:4px 0">
                   No header rules yet.
                 </div>
               </Show>
             </div>
             <div style="display:flex;align-items:flex-end;gap:6px;margin-top:10px">
               <div style="flex:1">
-                <div class="field-label">Header value</div>
+                <label class="field-label" for="f-rf-value" style="display:block">
+                  Header value
+                </label>
                 <input
                   class="input mono"
+                  id="f-rf-value"
                   style="font:400 11.5px 'Geist Mono',monospace"
                   placeholder="e.g. heavy"
                   value={state.rf.value}
@@ -384,9 +420,12 @@ export function Routing() {
                 />
               </div>
               <div style="flex:1">
-                <div class="field-label">Target tier</div>
+                <label class="field-label" for="f-rf-target" style="display:block">
+                  Target tier
+                </label>
                 <select
                   class="select"
+                  id="f-rf-target"
                   value={state.rf.target}
                   onChange={(e) => app.setState('rf', 'target', e.currentTarget.value)}
                 >
@@ -398,9 +437,14 @@ export function Routing() {
                   </For>
                 </select>
               </div>
-              <div class="btn-ghost" onClick={() => void app.createRule()}>
+              <button
+                type="button"
+                class="btn-ghost"
+                disabled={state.rf.busy}
+                onClick={() => void app.createRule()}
+              >
                 {state.rf.busy ? '…' : 'Add'}
-              </div>
+              </button>
             </div>
             <Show when={state.rf.error}>
               <div style="font:400 11px 'Geist',sans-serif;color:var(--red);margin-top:6px">

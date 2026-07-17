@@ -29,12 +29,23 @@ export function Topbar() {
       </div>
       <div style="display:flex;align-items:center;gap:10px">
         <div style="display:flex;align-items:center;gap:6px;padding:5px 11px;background:var(--panel);border:1px solid var(--border);border-radius:7px;font:500 12px 'Geist',sans-serif;color:var(--green)">
-          <span style="width:6px;height:6px;border-radius:50%;background:var(--green);animation:pulse 2s infinite" />
+          <span
+            aria-hidden="true"
+            style="width:6px;height:6px;border-radius:50%;background:var(--green);animation:pulse 2s infinite"
+          />
           Live
         </div>
-        <div class="endpoint-chip" onClick={() => app.copy(BASE_URL, 'Endpoint copied')}>
-          /v1 <span style="color:var(--faint)">⧉</span>
-        </div>
+        <button
+          type="button"
+          class="endpoint-chip"
+          aria-label="Copy endpoint URL"
+          onClick={() => app.copy(BASE_URL, 'Endpoint copied')}
+        >
+          /v1{' '}
+          <span aria-hidden="true" style="color:var(--faint)">
+            ⧉
+          </span>
+        </button>
       </div>
     </div>
   );

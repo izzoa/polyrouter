@@ -13,7 +13,9 @@ export function RangeSelector() {
     <div style="display:flex;background:var(--panel);border:1px solid var(--border);border-radius:7px;padding:2px">
       <For each={RANGES}>
         {(rg) => (
-          <div
+          <button
+            type="button"
+            aria-pressed={state.range === rg}
             style={{
               padding: '4px 12px',
               font: `${state.range === rg ? '500' : '400'} 12px 'Geist',sans-serif`,
@@ -25,7 +27,7 @@ export function RangeSelector() {
             onClick={() => app.setRange(rg)}
           >
             {rg}
-          </div>
+          </button>
         )}
       </For>
     </div>

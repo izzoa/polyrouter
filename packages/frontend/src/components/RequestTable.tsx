@@ -56,25 +56,28 @@ export function RequestRow(props: { r: RequestRow }) {
   const selected = () => state.selId === props.r.id;
   const chip = () => CHIP[props.r.decisionLayer] ?? NEUTRAL_CHIP;
   return (
-    <div
+    <button
+      type="button"
       class="req-row row-hover"
       style={{
         'grid-template-columns': GRID,
         background: selected() ? 'var(--accent-bg)' : 'transparent',
       }}
+      aria-expanded={selected()}
+      aria-controls="inspector-drawer"
       onClick={() => app.select(selected() ? null : props.r.id)}
     >
-      <div class="mono" style="font-size:11px;color:var(--text3)">
+      <span class="mono" style="font-size:11px;color:var(--text3)">
         {fmtTime(new Date(props.r.createdAt).getTime())}
-      </div>
-      <div class="mono" style="font-size:11.5px;color:var(--text)">
+      </span>
+      <span class="mono" style="font-size:11.5px;color:var(--text)">
         {labelOf(props.r.modelLabel, props.r.modelId)}
-      </div>
-      <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+      </span>
+      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
         {labelOf(props.r.providerLabel, props.r.providerId)}
-      </div>
-      <div>{props.r.tierAssigned ?? '—'}</div>
-      <div>
+      </span>
+      <span>{props.r.tierAssigned ?? '—'}</span>
+      <span>
         <span
           style={{
             padding: '2px 8px',
@@ -87,17 +90,17 @@ export function RequestRow(props: { r: RequestRow }) {
         >
           {props.r.escalated ? `${props.r.decisionLayer} ↗` : props.r.decisionLayer}
         </span>
-      </div>
-      <div class="mono" style="font-size:11px">
+      </span>
+      <span class="mono" style="font-size:11px">
         {fmtTokens(props.r.inputTokens)} → {fmtTokens(props.r.outputTokens)}
-      </div>
-      <div class="mono" style="font-size:11px;color:var(--text)">
+      </span>
+      <span class="mono" style="font-size:11px;color:var(--text)">
         {rowCostLabel(props.r)}
-      </div>
-      <div class="mono" style="font-size:11px">
+      </span>
+      <span class="mono" style="font-size:11px">
         {(props.r.durationMs / 1000).toFixed(1)}s
-      </div>
-      <div style="display:flex;align-items:center;gap:5px">
+      </span>
+      <span style="display:flex;align-items:center;gap:5px">
         <span
           style={{
             width: '6px',
@@ -108,8 +111,8 @@ export function RequestRow(props: { r: RequestRow }) {
           }}
         />
         {textFor(props.r.status)}
-      </div>
-    </div>
+      </span>
+    </button>
   );
 }
 

@@ -5,7 +5,7 @@ import { useApp } from '../state/context';
 import type { Model, Provider, ProviderStatus } from '../types';
 
 function statusColor(s: ProviderStatus): string {
-  return s === 'ok' ? 'var(--green)' : s === 'error' ? 'var(--red)' : 'var(--faint)';
+  return s === 'ok' ? 'var(--green)' : s === 'error' ? 'var(--red)' : 'var(--text3)';
 }
 
 function statusLabel(s: ProviderStatus): string {
@@ -69,6 +69,7 @@ function ModelPriceEditor(props: { model: Model; onSave: (body: ModelPricingInpu
             class="input mono"
             style="font:400 11px 'Geist Mono',monospace;padding:5px 8px"
             placeholder="in $/1M"
+            aria-label="Input price per 1M tokens (USD)"
             value={inP()}
             onInput={(e) => setInP(e.currentTarget.value)}
           />
@@ -76,6 +77,7 @@ function ModelPriceEditor(props: { model: Model; onSave: (body: ModelPricingInpu
             class="input mono"
             style="font:400 11px 'Geist Mono',monospace;padding:5px 8px"
             placeholder="out $/1M"
+            aria-label="Output price per 1M tokens (USD)"
             value={outP()}
             onInput={(e) => setOutP(e.currentTarget.value)}
           />
@@ -84,9 +86,9 @@ function ModelPriceEditor(props: { model: Model; onSave: (body: ModelPricingInpu
       <Show when={err()}>
         <div style="font:400 10.5px 'Geist',sans-serif;color:var(--red)">{err()}</div>
       </Show>
-      <div class="btn-ghost" style="align-self:flex-start" onClick={save}>
+      <button type="button" class="btn-ghost" style="align-self:flex-start" onClick={save}>
         Save price
-      </div>
+      </button>
     </div>
   );
 }
@@ -149,30 +151,31 @@ function ProviderCard(props: { p: Provider }) {
       <Show when={props.p.kind === 'subscription'}>
         <div style="font:400 11px 'Geist',sans-serif;color:var(--amber);background:var(--amber-bg);border-radius:7px;padding:8px 10px;line-height:1.5">
           Reusing a flat-rate subscription may violate the provider’s ToS.{' '}
-          <span
+          <button
+            type="button"
             class="link-accent"
             style="color:var(--amber)"
             onClick={() => app.openModal('newProvider')}
           >
             Add a pay-per-token fallback
-          </span>
+          </button>
           .
         </div>
       </Show>
 
       <div style="display:flex;gap:6px;margin-top:2px;flex-wrap:wrap">
-        <div class="btn-ghost" onClick={() => void app.testProviderById(props.p.id)}>
+        <button type="button" class="btn-ghost" onClick={() => void app.testProviderById(props.p.id)}>
           Test
-        </div>
-        <div class="btn-ghost" onClick={() => void app.syncProvider(props.p.id)}>
+        </button>
+        <button type="button" class="btn-ghost" onClick={() => void app.syncProvider(props.p.id)}>
           Sync models
-        </div>
-        <div class="btn-ghost" onClick={toggleModels}>
+        </button>
+        <button type="button" class="btn-ghost" onClick={toggleModels} aria-expanded={open()}>
           {open() ? 'Hide models' : 'Models'}
-        </div>
-        <div class="btn-ghost btn-ghost--amber" onClick={remove}>
+        </button>
+        <button type="button" class="btn-ghost btn-ghost--amber" onClick={remove}>
           Delete
-        </div>
+        </button>
       </div>
 
       <Show when={open()}>
@@ -208,7 +211,7 @@ function ProviderCard(props: { p: Provider }) {
                   <Show
                     when={editable()}
                     fallback={
-                      <div style="font:400 10px 'Geist',sans-serif;color:var(--faint)">
+                      <div style="font:400 10px 'Geist',sans-serif;color:var(--text3)">
                         Prices come from the bundled catalog for known providers.
                       </div>
                     }
@@ -237,9 +240,9 @@ export function Providers() {
         <div style="font:400 12.5px 'Geist',sans-serif;color:var(--text3)">
           Your keys, your accounts — requests go straight from this box to the provider.
         </div>
-        <div class="btn-primary" onClick={() => app.openModal('newProvider')}>
+        <button type="button" class="btn-primary" onClick={() => app.openModal('newProvider')}>
           Add provider
-        </div>
+        </button>
       </div>
       <Show when={state.providersError}>
         <div style="font:400 11.5px 'Geist',sans-serif;color:var(--red)">

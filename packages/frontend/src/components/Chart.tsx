@@ -31,8 +31,13 @@ export function Chart(props: ChartProps) {
     const styles = getComputedStyle(container);
     const cssVar = (name: string, fallback: string): string =>
       styles.getPropertyValue(name).trim() || fallback;
-    const axisStroke = cssVar('--faint', '#9aa0aa');
-    const gridStroke = cssVar('--border2', 'rgba(120,120,130,0.15)');
+    // Fallbacks mirror the styles.css light-theme tokens (--accent-bg is a color-mix;
+    // its literal is the evaluated value). They fire only if the CSS-variable read
+    // returns empty and must never render off-lock — change them with the tokens.
+    // Axis stroke colors uPlot's tick-label TEXT, so it uses the contrast-passing
+    // --text3, never decorative --faint.
+    const axisStroke = cssVar('--text3', '#6a6c73');
+    const gridStroke = cssVar('--border2', '#f1f1ef');
     const axis: uPlot.Axis = {
       stroke: axisStroke,
       font: "11px 'Geist Mono', monospace",
@@ -50,8 +55,8 @@ export function Chart(props: ChartProps) {
         {},
         {
           label: props.label ?? 'requests',
-          stroke: cssVar('--accent', '#6366f1'),
-          fill: cssVar('--accent-bg', 'rgba(99,102,241,0.12)'),
+          stroke: cssVar('--accent', '#4f5dff'),
+          fill: cssVar('--accent-bg', '#eff0ff'),
           width: 2,
           points: { show: false },
         },

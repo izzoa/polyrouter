@@ -91,6 +91,7 @@ packages/
 - Conventional, present-tense commit messages explaining **why**.
 - Keep PRs/changes focused on one capability.
 - Gate self-host-only behavior (local providers, localhost auto-login, SSRF loopback exception) on `MODE=selfhosted`.
+- UI work follows the [`STYLESEED.md`](./STYLESEED.md) design lock (one accent `#4F5DFF`, one focal point per screen) and must pass the `/ss-score` quality gate (≥ 80) before being shown.
 
 ## Do NOT
 - Proxy through a central third party in self-host mode; add a per-call fee; persist prompt/response bodies without opt-in.

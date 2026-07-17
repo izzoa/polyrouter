@@ -25,10 +25,12 @@ export function Requests() {
         <div style="display:flex;gap:6px">
           <For each={FILTERS}>
             {([id, label]) => (
-              <div
+              <button
+                type="button"
+                aria-pressed={state.reqFilter === id}
                 style={{
                   padding: '5px 12px',
-                  'border-radius': '14px',
+                  'border-radius': '10px',
                   font: "500 12px 'Geist',sans-serif",
                   color: state.reqFilter === id ? 'var(--accent-deep)' : 'var(--text2)',
                   background: state.reqFilter === id ? 'var(--accent-bg)' : 'var(--panel)',
@@ -38,7 +40,7 @@ export function Requests() {
                 onClick={() => app.setFilter(id)}
               >
                 {label}
-              </div>
+              </button>
             )}
           </For>
         </div>
@@ -52,13 +54,14 @@ export function Requests() {
         {(msg) => (
           <div style="display:flex;align-items:center;gap:10px;padding:9px 14px;background:var(--red-bg);border:1px solid var(--red);border-radius:8px;font:500 12px 'Geist',sans-serif;color:var(--red)">
             <span style="flex:1">Couldn’t load requests — {msg()}</span>
-            <span
+            <button
+              type="button"
               class="link-accent"
-              style="cursor:pointer;font-weight:600"
+              style="font-weight:600"
               onClick={() => void app.loadRequests(true)}
             >
               Retry
-            </span>
+            </button>
           </div>
         )}
       </Show>
@@ -79,13 +82,15 @@ export function Requests() {
         </Show>
         <Show when={state.requestCursor !== null}>
           <div style="display:flex;justify-content:center;padding:12px;border-top:1px solid var(--border2)">
-            <span
+            <button
+              type="button"
               class="link-accent"
-              style="cursor:pointer;font:500 12px 'Geist',sans-serif"
+              style="font:500 12px 'Geist',sans-serif"
+              disabled={state.requestListLoading}
               onClick={() => void app.loadRequests(false)}
             >
               {state.requestListLoading ? 'Loading…' : 'Load more'}
-            </span>
+            </button>
           </div>
         </Show>
       </div>

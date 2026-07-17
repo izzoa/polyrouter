@@ -1,0 +1,5 @@
+---
+'@polyrouter/frontend': minor
+---
+
+Fix dashboard coherence drift (StyleSeed/design-lock fix #5, closing the baseline's fix-first list). The Agents page had its destructive signal inverted — the amber treatment sat on the recoverable "Rotate key" while "Delete" (which permanently kills the agent's key) was plain; Delete now carries the amber like every other surface. Deleting a budget or notification channel now asks for confirmation with honest, resource-named copy (previously one un-confirmable click), matching Providers/Agents; the copy states the forward-looking guarantee rather than claiming literal immediacy. Chart fallback colors now mirror the locked palette (accent `#4f5dff`, evaluated `--accent-bg`) instead of a pre-lock Tailwind indigo, and — a review catch — the chart's axis tick-label text no longer uses the ~2:1 decorative tint: it reads the contrast-passing `--text3`, with the contrast test extended to block `--faint` from ever reaching dynamic token reads again. Requests filter pills drop from a 14px pill radius to the system's 10px soft scale.

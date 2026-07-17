@@ -87,7 +87,7 @@ describe('Observe pages render real analytics', () => {
       expect(host.textContent).toContain('load analytics');
       expect(host.textContent).toContain('boom');
       fake.analyticsFailure = null;
-      clickText(host, 'span', 'Retry');
+      clickText(host, 'button', 'Retry');
       await flush();
       expect(host.textContent).toContain('$12.50');
     } finally {
@@ -102,7 +102,7 @@ describe('Observe pages render real analytics', () => {
       clickNav(host, 'Requests');
       await flush();
       expect(host.querySelectorAll('.req-row').length).toBe(25);
-      clickText(host, 'span', 'Load more');
+      clickText(host, 'button', 'Load more');
       await flush();
       expect(host.querySelectorAll('.req-row').length).toBe(30);
       expect(new Set(store.state.requestList.map((r) => r.id)).size).toBe(30);
@@ -117,7 +117,7 @@ describe('Observe pages render real analytics', () => {
       await flush();
       clickNav(host, 'Requests');
       await flush();
-      clickText(host, 'div', 'Fallbacks');
+      clickText(host, 'button', 'Fallbacks');
       await flush();
       expect(store.state.requestList.length).toBeGreaterThan(0);
       expect(store.state.requestList.every((r) => r.status === 'fallback')).toBe(true);

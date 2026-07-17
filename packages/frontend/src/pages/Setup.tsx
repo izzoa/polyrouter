@@ -29,11 +29,14 @@ export function Setup() {
               <div
                 style={{ display: 'flex', 'align-items': 'center', flex: s.i < 2 ? '1' : 'none' }}
               >
-                <div
+                <button
+                  type="button"
+                  aria-current={s.active ? 'step' : undefined}
                   style="display:flex;align-items:center;gap:8px;cursor:pointer"
                   onClick={() => app.obGo(s.n)}
                 >
-                  <div
+                  <span
+                    aria-hidden="true"
                     style={{
                       width: '22px',
                       height: '22px',
@@ -51,7 +54,7 @@ export function Setup() {
                     }}
                   >
                     {s.done ? '✓' : String(s.n)}
-                  </div>
+                  </span>
                   <span
                     style={{
                       font: "500 12px 'Geist',sans-serif",
@@ -60,7 +63,7 @@ export function Setup() {
                   >
                     {s.label}
                   </span>
-                </div>
+                </button>
                 <Show when={s.i < 2}>
                   <div style="flex:1;height:1px;background:var(--border);margin:0 12px" />
                 </Show>
@@ -86,17 +89,23 @@ export function Setup() {
             </div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
               <div>
-                <div class="field-label">Agent name</div>
+                <label class="field-label" for="f-ob-name" style="display:block">
+                  Agent name
+                </label>
                 <input
                   class="input"
+                  id="f-ob-name"
                   value={ob().name}
                   placeholder="my-agent"
                   onInput={(e) => setState('ob', 'name', e.currentTarget.value)}
                 />
               </div>
               <div>
-                <div class="field-label">Platform</div>
+                <label class="field-label" for="f-ob-harness" style="display:block">
+                  Platform
+                </label>
                 <HarnessSelect
+                  id="f-ob-harness"
                   value={ob().harness}
                   onChange={(h) => setState('ob', 'harness', h)}
                 />
@@ -106,13 +115,15 @@ export function Setup() {
               <div style="font:400 11px 'Geist',sans-serif;color:var(--red)">{ob().error1}</div>
             </Show>
             <Show when={!ob().key}>
-              <div
+              <button
+                type="button"
                 class="btn-primary"
                 style="align-self:flex-start;padding:8px 16px"
+                disabled={ob().busy1}
                 onClick={() => void app.obCreateAgent()}
               >
                 {ob().busy1 ? 'Minting…' : 'Create agent & mint key'}
-              </div>
+              </button>
             </Show>
             <Show when={ob().key}>
               <div style="display:flex;flex-direction:column;gap:10px">
@@ -123,25 +134,27 @@ export function Setup() {
                   >
                     {ob().key}
                   </span>
-                  <span
+                  <button
+                    type="button"
                     class="link-accent"
                     style="margin-left:auto;flex:none;font:500 11.5px 'Geist',sans-serif"
                     onClick={() => app.copy(ob().key, 'Key copied')}
                   >
                     Copy
-                  </span>
+                  </button>
                 </div>
                 <div style="font:400 11px 'Geist',sans-serif;color:var(--amber)">
                   Shown once — we store only a hash.
                 </div>
                 <div class="snippet-box">{ob().snippet}</div>
-                <div
+                <button
+                  type="button"
                   class="btn-primary"
                   style="align-self:flex-start;padding:8px 16px"
                   onClick={() => app.obGo(2)}
                 >
                   Next: connect a provider →
-                </div>
+                </button>
               </div>
             </Show>
           </div>
@@ -167,9 +180,12 @@ export function Setup() {
               </div>
             </div>
             <div>
-              <div class="field-label">Name</div>
+              <label class="field-label" for="f-ob-pname" style="display:block">
+                Name
+              </label>
               <input
                 class="input"
+                id="f-ob-pname"
                 value={ob().prov.name}
                 placeholder="e.g. OpenAI, mylab-endpoint"
                 onInput={(e) => setState('ob', 'prov', 'name', e.currentTarget.value)}
@@ -178,8 +194,10 @@ export function Setup() {
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
               <For each={PROVIDER_KINDS}>
                 {(k) => (
-                  <div
+                  <button
+                    type="button"
                     class="kind-card"
+                    aria-pressed={ob().prov.kind === k.id}
                     style={{
                       padding: '14px 15px',
                       border: `1px solid ${ob().prov.kind === k.id ? 'var(--accent)' : 'var(--border)'}`,
@@ -192,19 +210,22 @@ export function Setup() {
                     }}
                     onClick={() => setState('ob', 'prov', 'kind', k.id)}
                   >
-                    <div style="font:500 13px 'Geist',sans-serif;color:var(--text)">{k.name}</div>
-                    <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3);line-height:1.45">
+                    <span style="font:500 13px 'Geist',sans-serif;color:var(--text)">{k.name}</span>
+                    <span style="font:400 11.5px 'Geist',sans-serif;color:var(--text3);line-height:1.45">
                       {k.desc}
-                    </div>
-                  </div>
+                    </span>
+                  </button>
                 )}
               </For>
             </div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
               <div>
-                <div class="field-label">Protocol</div>
+                <label class="field-label" for="f-ob-protocol" style="display:block">
+                  Protocol
+                </label>
                 <select
                   class="select"
+                  id="f-ob-protocol"
                   value={ob().prov.protocol}
                   onChange={(e) =>
                     setState(
@@ -220,9 +241,12 @@ export function Setup() {
                 </select>
               </div>
               <div>
-                <div class="field-label">Base URL</div>
+                <label class="field-label" for="f-ob-baseurl" style="display:block">
+                  Base URL
+                </label>
                 <input
                   class="input mono"
+                  id="f-ob-baseurl"
                   style="font:400 12px 'Geist Mono',monospace"
                   value={ob().prov.baseUrl}
                   placeholder={
@@ -235,11 +259,12 @@ export function Setup() {
               </div>
             </div>
             <div>
-              <div class="field-label">
+              <label class="field-label" for="f-ob-credential" style="display:block">
                 Credential{ob().prov.kind === 'local' ? ' (optional)' : ''}
-              </div>
+              </label>
               <input
                 class="input mono"
+                id="f-ob-credential"
                 style="font:400 12px 'Geist Mono',monospace"
                 type="password"
                 value={ob().prov.credential}
@@ -251,30 +276,36 @@ export function Setup() {
               <div style="font:400 11px 'Geist',sans-serif;color:var(--red)">{ob().error2}</div>
             </Show>
             <Show when={!ob().done2}>
-              <div
+              <button
+                type="button"
                 class="btn-primary"
                 style="align-self:flex-start;padding:8px 16px"
+                disabled={ob().busy2}
                 onClick={() => void app.obConnectProvider()}
               >
                 {ob().busy2 ? 'Connecting & syncing…' : 'Connect provider & sync models'}
-              </div>
+              </button>
             </Show>
             <Show when={ob().done2}>
               <div style="display:flex;align-items:center;gap:10px;padding:11px 13px;background:var(--green-bg);border-radius:8px;font:400 12px 'Geist',sans-serif;color:var(--text2)">
-                <span style="width:7px;height:7px;border-radius:50%;background:var(--green)" />
+                <span
+                  aria-hidden="true"
+                  style="width:7px;height:7px;border-radius:50%;background:var(--green)"
+                />
                 Synced —{' '}
                 <span class="mono" style="font-size:11.5px">
                   {ob().assignedModel}
                 </span>{' '}
                 assigned to the default tier.
               </div>
-              <div
+              <button
+                type="button"
                 class="btn-primary"
                 style="align-self:flex-start;padding:8px 16px"
                 onClick={() => app.obGo(3)}
               >
                 Next: verify →
-              </div>
+              </button>
             </Show>
           </div>
         </Show>
@@ -313,22 +344,33 @@ export function Setup() {
               </div>
             </Show>
             <div style="display:flex;gap:8px">
-              <div class="btn-ghost" style="padding:8px 16px" onClick={() => void app.obVerify()}>
+              <button
+                type="button"
+                class="btn-ghost"
+                style="padding:8px 16px"
+                disabled={ob().busy3}
+                onClick={() => void app.obVerify()}
+              >
                 {ob().busy3
                   ? 'Sending…'
                   : ob().verifyReply || ob().error3
                     ? 'Send again'
                     : 'Send test request'}
-              </div>
-              <div class="btn-primary" style="padding:8px 16px" onClick={() => app.obFinish()}>
+              </button>
+              <button
+                type="button"
+                class="btn-primary"
+                style="padding:8px 16px"
+                onClick={() => app.obFinish()}
+              >
                 Open dashboard
-              </div>
+              </button>
             </div>
             <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3)">
               Tune tiers, fallback order and auto-layers any time under{' '}
-              <span class="link-accent" onClick={() => app.go('routing')}>
+              <button type="button" class="link-accent" onClick={() => app.go('routing')}>
                 Routing
-              </span>
+              </button>
               .
             </div>
           </div>

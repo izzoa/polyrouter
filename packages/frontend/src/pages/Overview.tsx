@@ -53,13 +53,14 @@ export function Overview(props: { live: boolean }) {
         {(msg) => (
           <div style="display:flex;align-items:center;gap:10px;padding:9px 14px;background:var(--red-bg);border:1px solid var(--red);border-radius:8px;font:500 12px 'Geist',sans-serif;color:var(--red)">
             <span style="flex:1">Couldn’t load analytics — {msg()}</span>
-            <span
+            <button
+              type="button"
               class="link-accent"
-              style="cursor:pointer;font-weight:600"
+              style="font-weight:600"
               onClick={() => void app.loadOverview()}
             >
               Retry
-            </span>
+            </button>
           </div>
         )}
       </Show>
@@ -147,11 +148,17 @@ export function Overview(props: { live: boolean }) {
         >
           <For each={state.providers}>
             {(p) => (
-              <span
+              <button
+                type="button"
                 style="display:flex;align-items:center;gap:6px;font:400 12px 'Geist',sans-serif;color:var(--text2);cursor:pointer"
+                aria-label={`${p.name} — ${
+                  p.status === 'ok' ? 'healthy' : p.status === 'error' ? 'failing' : 'not tested'
+                }`}
+                title={p.status === 'ok' ? 'healthy' : p.status === 'error' ? 'failing' : 'not tested'}
                 onClick={() => app.go('providers')}
               >
                 <span
+                  aria-hidden="true"
                   style={{
                     width: '6px',
                     height: '6px',
@@ -166,7 +173,7 @@ export function Overview(props: { live: boolean }) {
                 />
                 {p.name}
                 {p.kind === 'local' ? ' · local' : ''}
-              </span>
+              </button>
             )}
           </For>
         </Show>
@@ -175,13 +182,14 @@ export function Overview(props: { live: boolean }) {
       <div class="panel" style="overflow:hidden;border-radius:10px">
         <div style="display:flex;justify-content:space-between;align-items:center;padding:13px 18px;border-bottom:1px solid var(--border2)">
           <div class="section-title">Recent requests</div>
-          <div
+          <button
+            type="button"
             class="link-accent"
-            style="font:400 12px 'Geist',sans-serif;cursor:pointer"
+            style="font:400 12px 'Geist',sans-serif"
             onClick={() => app.go('requests')}
           >
             View all →
-          </div>
+          </button>
         </div>
         <RequestTableHead />
         <Show

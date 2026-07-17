@@ -43,9 +43,9 @@ export function Agents() {
             {BASE_URL}
           </span>
         </div>
-        <div class="btn-primary" onClick={() => app.openModal('newAgent')}>
+        <button type="button" class="btn-primary" onClick={() => app.openModal('newAgent')}>
           New agent
-        </div>
+        </button>
       </div>
       <Show when={state.agentsError}>
         <div style="font:400 11.5px 'Geist',sans-serif;color:var(--red)">
@@ -100,12 +100,16 @@ export function Agents() {
                 </div>
                 <div style="font-size:11.5px;color:var(--text3)">{fmtWhen(a.lastUsedAt)}</div>
                 <div style="display:flex;gap:6px;justify-content:flex-end">
-                  <div class="btn-ghost btn-ghost--amber" onClick={() => void app.rotateKey(a)}>
+                  <button type="button" class="btn-ghost" onClick={() => void app.rotateKey(a)}>
                     Rotate key
-                  </div>
-                  <div class="btn-ghost" onClick={() => remove(a)}>
+                  </button>
+                  <button
+                    type="button"
+                    class="btn-ghost btn-ghost--amber"
+                    onClick={() => remove(a)}
+                  >
                     Delete
-                  </div>
+                  </button>
                 </div>
               </div>
             )}

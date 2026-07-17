@@ -26,7 +26,7 @@ export function Sidebar() {
   return (
     <div style="width:208px;flex:none;border-right:1px solid var(--border);display:flex;flex-direction:column;background:var(--panel)">
       <div style="display:flex;align-items:center;gap:9px;padding:20px 18px 16px">
-        <svg width="20" height="20" viewBox="0 0 20 20" style="flex:none">
+        <svg width="20" height="20" viewBox="0 0 20 20" style="flex:none" aria-hidden="true">
           <circle cx="4" cy="10" r="2.4" fill="var(--text)" />
           <circle cx="15" cy="4.5" r="2.4" fill="var(--accent)" />
           <circle cx="15" cy="10" r="2.4" fill="var(--faint)" />
@@ -40,8 +40,10 @@ export function Sidebar() {
       <nav style="display:flex;flex-direction:column;gap:2px;padding:0 10px">
         <For each={NAV}>
           {([id, label]) => (
-            <div
+            <button
+              type="button"
               class="nav-item"
+              aria-current={state.page === id ? 'page' : undefined}
               style={{
                 font: `${state.page === id ? '500' : '400'} 13px 'Geist',sans-serif`,
                 color: state.page === id ? 'var(--accent-deep)' : 'var(--text2)',
@@ -57,12 +59,12 @@ export function Sidebar() {
                   </span>
                 )}
               </Show>
-            </div>
+            </button>
           )}
         </For>
       </nav>
-      <div class="setup-card" onClick={() => app.go('setup')}>
-        <svg width="18" height="18" viewBox="0 0 18 18">
+      <button type="button" class="setup-card" onClick={() => app.go('setup')}>
+        <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
           <circle cx="9" cy="9" r="7" fill="none" stroke="var(--border)" stroke-width="2" />
           <path
             d="M9 2 a7 7 0 0 1 6.06 10.5"
@@ -72,14 +74,18 @@ export function Sidebar() {
             stroke-linecap="round"
           />
         </svg>
-        <div>
-          <div style="font:500 12px 'Geist',sans-serif;color:var(--text)">Setup guide</div>
-          <div style="font:400 10.5px 'Geist',sans-serif;color:var(--text3)">{setupProgress()}</div>
-        </div>
-      </div>
+        <span style="display:block">
+          <span style="display:block;font:500 12px 'Geist',sans-serif;color:var(--text)">
+            Setup guide
+          </span>
+          <span style="display:block;font:400 10.5px 'Geist',sans-serif;color:var(--text3)">
+            {setupProgress()}
+          </span>
+        </span>
+      </button>
       <div style="margin-top:auto;padding:14px 18px;border-top:1px solid var(--border2);display:flex;flex-direction:column;gap:8px">
-        <div class="theme-toggle" onClick={() => app.toggleTheme()}>
-          <svg width="14" height="14" viewBox="0 0 14 14">
+        <button type="button" class="theme-toggle" onClick={() => app.toggleTheme()}>
+          <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
             <circle cx="7" cy="7" r="3.2" fill="none" stroke="currentColor" stroke-width="1.4" />
             <line
               x1="7"
@@ -119,12 +125,12 @@ export function Sidebar() {
             />
           </svg>
           <span>{state.theme === 'light' ? 'Switch to dark' : 'Switch to light'}</span>
-        </div>
+        </button>
         <div style="display:flex;align-items:center;gap:6px;font:400 11px 'Geist Mono',monospace;color:var(--text3)">
           <span style="width:6px;height:6px;border-radius:50%;background:var(--green);flex:none" />
           {state.session?.mode === 'cloud' ? 'cloud' : 'self-hosted'} · v{__APP_VERSION__}
         </div>
-        <div style="font:400 11px 'Geist Mono',monospace;color:var(--faint)">
+        <div style="font:400 11px 'Geist Mono',monospace;color:var(--text3)">
           {globalThis.location.host}
         </div>
       </div>

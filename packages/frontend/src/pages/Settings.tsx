@@ -13,7 +13,6 @@ export function Settings() {
   const app = useApp();
   const { state } = app;
   const session = () => state.session;
-  const isAdmin = () => session()?.role === 'admin' && session()?.mode === 'selfhosted';
 
   onMount(() => void app.loadChannels());
 
@@ -72,9 +71,7 @@ export function Settings() {
             </span>
           </div>
           <div style="color:var(--text3)">Version</div>
-          <div class="mono" style="font-size:11.5px">
-            v0.4.1 · postgres 16 · redis 7
-          </div>
+          <div class="mono" style="font-size:11.5px">v{__APP_VERSION__}</div>
         </div>
         <Show when={session()?.mode === 'selfhosted'}>
           <div style="font:400 11px 'Geist',sans-serif;color:var(--text3);margin-top:10px;line-height:1.5">
@@ -88,24 +85,21 @@ export function Settings() {
         <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:20px">
           <div>
             <div class="section-title" style="margin-bottom:3px">
-              Log prompt & response bodies
+              Prompt & response bodies
             </div>
             <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3);line-height:1.5">
-              Off by default — polyrouter stores metadata only (tokens, cost, latency, decision).
-              Bodies never leave this box either way.
-              <Show when={!isAdmin()}>
-                <span style="color:var(--amber)"> Admin only.</span>
-              </Show>
+              polyrouter stores metadata only (tokens, cost, latency, routing decision) — prompt
+              and response bodies are never persisted. This is a property of the build, not a
+              runtime setting.
             </div>
           </div>
-          <Toggle
-            on={state.bodyLog}
-            size="md"
-            locked={!isAdmin()}
-            onToggle={() => {
-              if (isAdmin()) app.toggleBodyLog();
-            }}
-          />
+          <span
+            class="chip"
+            style="white-space:nowrap;color:var(--green);align-self:center"
+            title="Request/response bodies are never stored"
+          >
+            Metadata-only
+          </span>
         </div>
       </div>
 

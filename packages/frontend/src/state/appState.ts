@@ -85,6 +85,11 @@ export interface AppState {
   // realized data slices — initialize EMPTY, loaded from the API on `ready`
   agents: Agent[];
   agentsError: string | null;
+  /** Per-agent recent (24h) request count + spend, keyed by agent id — the `agent`
+   * analytics breakdown, loaded on the Agents page. `agentStatsLoaded` distinguishes a
+   * genuine zero (loaded, no activity) from unavailable (not loaded / load failed). */
+  agentStats: Record<string, { requests: number; spend: number }>;
+  agentStatsLoaded: boolean;
   providers: Provider[];
   providersError: string | null;
   models: Record<string, Model[]>;
@@ -151,8 +156,6 @@ export interface AppState {
   channelToggling: Record<string, boolean>;
   cf: ChannelForm;
 
-  /** Body-logging toggle — no opt-in API yet (#20 out of scope); left inert. */
-  bodyLog: boolean;
 
   // onboarding (realized, failure-aware)
   ob: OnboardingState;
@@ -442,6 +445,7 @@ function initialOnboarding(): OnboardingState {
     error1: null,
     prov: emptyProviderForm(),
     providerId: null,
+    provInput: null,
     assignedModel: null,
     done2: false,
     busy2: false,
@@ -471,6 +475,8 @@ function initialState(): AppState {
 
     agents: [],
     agentsError: null,
+    agentStats: {},
+    agentStatsLoaded: false,
     providers: [],
     providersError: null,
     models: {},
@@ -521,7 +527,6 @@ function initialState(): AppState {
     channelToggling: {},
     cf: emptyChannelForm(),
 
-    bodyLog: false,
 
     ob: initialOnboarding(),
   };
@@ -553,6 +558,7 @@ export interface AppStore {
   signOut: () => Promise<void>;
   // agents (realized)
   loadAgents: () => Promise<void>;
+  loadAgentStats: () => Promise<void>;
   createAgent: () => Promise<void>;
   rotateKey: (agent: Agent) => Promise<void>;
   deleteAgent: (agent: Agent) => Promise<void>;
@@ -591,7 +597,6 @@ export interface AppStore {
   deleteChannel: (id: string) => Promise<void>;
   toggleChannelEnabled: (channel: ChannelDto) => Promise<void>;
   testChannelById: (id: string) => Promise<void>;
-  toggleBodyLog: () => void;
   // onboarding (realized)
   obGo: (step: 1 | 2 | 3) => void;
   obCreateAgent: () => Promise<void>;
@@ -647,6 +652,29 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       setState({ agents: rows.map(toAgent), agentsError: null });
     } catch (e) {
       setState('agentsError', err(e));
+    }
+  };
+
+  /** Per-agent recent (24h) requests + spend from the `agent` analytics breakdown (A-29).
+   * Requests the API cap (100 rows) so it isn't limited to the default top-10-by-spend.
+   * Best-effort: a failure leaves `agentStatsLoaded` false so the UI shows `—` (unknown)
+   * rather than presenting missing data as a measured zero — the agent list still renders. */
+  const loadAgentStats = async (): Promise<void> => {
+    setState('agentStatsLoaded', false); // a failed (re)load shows `—`, never stale figures
+    try {
+      const now = Date.now();
+      const range = { from: new Date(now - 86_400_000).toISOString(), to: new Date(now).toISOString() };
+      const rows = await client.breakdown('agent', range, 100);
+      setState(
+        produce((s) => {
+          const next: Record<string, { requests: number; spend: number }> = {};
+          for (const r of rows) next[r.key] = { requests: r.requests, spend: r.spend };
+          s.agentStats = next;
+          s.agentStatsLoaded = true;
+        }),
+      );
+    } catch {
+      /* non-fatal — the agent list still renders; rows show `—` (not a false zero) */
     }
   };
 
@@ -1134,12 +1162,15 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       }
     },
     signOut: async () => {
-      // Clear ALL raw agent keys first — reveal + onboarding secrets.
+      // Clear ALL raw agent keys first — reveal + onboarding secrets — plus the
+      // provider-retry identity, so a different account can't reuse this run's provider (A-26).
       setState(
         produce((s) => {
           s.kr = emptyKeyReveal();
           s.ob.key = '';
           s.ob.snippet = '';
+          s.ob.providerId = null;
+          s.ob.provInput = null;
           s.modal = null;
         }),
       );
@@ -1152,7 +1183,9 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     },
 
     loadAgents,
+    loadAgentStats,
     createAgent: async () => {
+      if (state.na.busy) return; // single-flight — no double-submit duplicates (A-27)
       const name = state.na.name.trim();
       if (!name) {
         setState('na', 'error', 'Name is required');
@@ -1210,6 +1243,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
 
     loadProviders,
     addProvider: async () => {
+      if (state.np.busy) return; // single-flight — no double-submit duplicates (A-27)
       const form = state.np;
       if (!form.name.trim()) {
         setState('np', 'error', 'Name is required');
@@ -1354,6 +1388,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       applyTierOrder(tierId, [modelId, ...ids.filter((id) => id !== modelId)]);
     },
     createTier: async () => {
+      if (state.tf.busy) return; // single-flight — no double-submit duplicates (A-27)
       const key = state.tf.key.trim();
       if (!key) {
         setState('tf', 'error', 'Key is required');
@@ -1398,6 +1433,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       }
     },
     createRule: async () => {
+      if (state.rf.busy) return; // single-flight — no double-submit duplicates (A-27)
       const value = state.rf.value.trim();
       const target = state.rf.target.trim();
       if (!value || !target) {
@@ -1636,7 +1672,6 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         setState('channelTesting', id, false);
       }
     },
-    toggleBodyLog: () => setState('bodyLog', (on) => !on),
 
     obGo: (step) => setState('ob', 'step', step),
     obCreateAgent: async () => {
@@ -1675,16 +1710,34 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       }
       setState('ob', { busy2: true, error2: null, done2: false });
       try {
-        const created = await client.createProvider(buildProviderInput(form));
-        setState('ob', 'providerId', created.id);
-        setState(
-          produce((s) => {
-            s.providers = [...s.providers.filter((p) => p.id !== created.id), toProvider(created)];
-          }),
-        );
+        // Reuse a provider already created for THIS onboarding attempt (a prior try that
+        // succeeded at create but failed a later step) instead of minting a duplicate on
+        // retry (A-26) — but only if the form is UNCHANGED. If the user edited the details
+        // (e.g. corrected a bad base URL that made sync fail), create a fresh provider so
+        // the edit takes effect rather than re-syncing the stale one.
+        const input = buildProviderInput(form);
+        // Reuse the provider from a prior attempt only when the CURRENT input fingerprint
+        // matches the one that created it (input-to-input, so server-side URL canonicalization
+        // can't cause a false mismatch; and it includes the credential, so a key-only edit
+        // creates a fresh provider). An edited form ⇒ create anew so the edit takes effect.
+        const inputKey = JSON.stringify(input);
+        const reusable = state.ob.providerId !== null && state.ob.provInput === inputKey;
+        let providerId: string;
+        if (reusable) {
+          providerId = state.ob.providerId!;
+        } else {
+          const created = await client.createProvider(input);
+          providerId = created.id;
+          setState('ob', { providerId: created.id, provInput: inputKey });
+          setState(
+            produce((s) => {
+              s.providers = [...s.providers.filter((p) => p.id !== created.id), toProvider(created)];
+            }),
+          );
+        }
 
-        const sync = await client.syncModels(created.id);
-        setState('providers', (p) => p.id === created.id, 'status', sync.status);
+        const sync = await client.syncModels(providerId);
+        setState('providers', (p) => p.id === providerId, 'status', sync.status);
         if (!sync.ok) {
           setState('ob', { busy2: false, error2: `Model sync failed — ${sync.message}` });
           return;
@@ -1694,8 +1747,8 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           return;
         }
 
-        const models = await client.listModels(created.id);
-        setState('models', created.id, models);
+        const models = await client.listModels(providerId);
+        setState('models', providerId, models);
         const first = models[0];
         if (!first) {
           setState('ob', { busy2: false, error2: 'Provider synced but exposed no models' });
@@ -1767,11 +1820,14 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       }
     },
     obFinish: () => {
-      // Clear the minted secret on completion.
+      // Clear the minted secret AND the provider-retry tracking on completion, so a later
+      // onboarding run is a fresh attempt (never reuses this run's provider) (A-26).
       setState(
         produce((s) => {
           s.ob.key = '';
           s.ob.snippet = '';
+          s.ob.providerId = null;
+          s.ob.provInput = null;
         }),
       );
       setState('page', 'overview');

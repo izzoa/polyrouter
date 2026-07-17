@@ -154,6 +154,16 @@ describe('agents (real CRUD)', () => {
     expect(s.state.kr.snippet).toContain(s.state.kr.key);
   });
 
+  it('createAgent is single-flight — a double-submit creates one agent (A-27)', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    s.setState('na', { name: 'once', harness: 'curl' });
+    // Both calls fire before the first resolves; the second must bail on the busy guard.
+    await Promise.all([s.createAgent(), s.createAgent()]);
+    expect(fake.countOf('createAgent')).toBe(1);
+  });
+
   it('clears the raw key on modal dismiss (never persisted)', async () => {
     const fake = new FakeApiClient({ session: DEFAULT_SESSION });
     const s = createAppStore(fake);
@@ -351,6 +361,23 @@ describe('onboarding (failure-aware walk)', () => {
     expect(s.state.ob.done2).toBe(false);
     expect(s.state.ob.error2).toMatch(/default tier/i);
     expect(fake.calls).not.toContain('replaceTierEntries');
+  });
+
+  it('a retry after a downstream failure reuses the provider, not a duplicate (A-26)', async () => {
+    // Sync reports zero models → the connect step fails AFTER the provider was created.
+    const fake = new FakeApiClient({
+      session: DEFAULT_SESSION,
+      syncResult: { ok: true, status: 'ok', message: 'synced', traceId: 't', synced: 0 },
+    });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    await s.obCreateAgent();
+    setProv(s);
+    await s.obConnectProvider();
+    expect(s.state.ob.done2).toBe(false);
+    expect(fake.countOf('createProvider')).toBe(1);
+    await s.obConnectProvider(); // retry with the SAME form
+    expect(fake.countOf('createProvider')).toBe(1); // reused the created provider, no duplicate
   });
 
   it('surfaces a verify failure without a reply', async () => {

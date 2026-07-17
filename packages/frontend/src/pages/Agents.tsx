@@ -1,7 +1,13 @@
-import { For, Show } from 'solid-js';
+import { For, Show, onMount } from 'solid-js';
 import { BASE_URL } from '../data/catalog';
 import { useApp } from '../state/context';
 import type { Agent } from '../types';
+
+/** Compact USD for the per-agent 24h spend cell (sub-cent shown to 4dp). */
+function fmtSpend(v: number): string {
+  if (v === 0) return '$0';
+  return v < 0.01 ? `$${v.toFixed(4)}` : `$${v.toFixed(2)}`;
+}
 
 const GRID = '1.3fr 1fr 1.2fr 0.9fr 0.8fr 0.9fr 1.2fr';
 
@@ -19,6 +25,8 @@ function fmtWhen(iso: string | null): string {
 export function Agents() {
   const app = useApp();
   const { state } = app;
+
+  onMount(() => void app.loadAgentStats());
 
   const remove = (a: Agent): void => {
     if (globalThis.confirm(`Delete agent "${a.name}"? Its key stops working immediately.`)) {
@@ -84,11 +92,11 @@ export function Agents() {
                 <div class="mono" style="font-size:11px;color:var(--text3)">
                   {a.prefix}…
                 </div>
-                <div class="mono" style="font-size:11.5px;color:var(--text3)">
-                  —
+                <div class="mono" style="font-size:11.5px;color:var(--text2)">
+                  {state.agentStatsLoaded ? (state.agentStats[a.id]?.requests ?? 0) : '—'}
                 </div>
-                <div class="mono" style="font-size:11.5px;color:var(--text3)">
-                  —
+                <div class="mono" style="font-size:11.5px;color:var(--text2)">
+                  {state.agentStatsLoaded ? fmtSpend(state.agentStats[a.id]?.spend ?? 0) : '—'}
                 </div>
                 <div style="font-size:11.5px;color:var(--text3)">{fmtWhen(a.lastUsedAt)}</div>
                 <div style="display:flex;gap:6px;justify-content:flex-end">
@@ -105,7 +113,7 @@ export function Agents() {
         </Show>
       </div>
       <div style="font:400 11px 'Geist',sans-serif;color:var(--text3);padding:0 2px">
-        Per-agent request and spend figures arrive with the analytics change.
+        Per-agent request and spend figures cover the last 24 hours.
       </div>
     </div>
   );

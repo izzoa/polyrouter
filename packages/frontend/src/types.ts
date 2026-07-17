@@ -153,6 +153,10 @@ export interface OnboardingState {
   // Step 2 — connect a provider, sync models, assign the first to `default`.
   prov: ProviderForm;
   providerId: string | null;
+  /** Fingerprint (JSON of the built API input) of the form that created `providerId`,
+   * so a retry with the SAME input reuses the provider (no duplicate) but an edited form
+   * creates a fresh one — compared input-to-input, immune to server-side URL canonicalization. */
+  provInput: string | null;
   assignedModel: string | null;
   done2: boolean;
   busy2: boolean;

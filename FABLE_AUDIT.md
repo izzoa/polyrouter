@@ -1060,12 +1060,12 @@ change proposal. Batch opportunistically when touching the neighboring code.
 | A-23 ⏸️ accepted | routing | EWMA first-observation seed is standard + self-correcting; structural layer degrades safely — warmup deferred | `structural-baseline.store.ts:111` |
 | A-24 ✅ | routing | routing-config spec match_type corrected to include auto_high/auto_low | `openspec/specs/routing-config/spec.md:83` |
 | A-25 ✅ | routing | e2e asserts a rule target naming another tenant's model is rejected (422) | `test/routing/routing-config.e2e-spec.ts:190` |
-| A-26 | frontend | Onboarding step-2 retry mints a duplicate provider each attempt | `appState.ts:1654` |
-| A-27 | frontend | create/add mutations lack the single-flight guard budgets/channels have | `appState.ts:1135` |
-| A-28 | frontend | Body-logging toggle is an inert client-only no-op (resets on reload) | `Settings.tsx:101` |
-| A-29 | frontend | Agents page shows placeholder dashes + stale "arrives with analytics" copy | `Agents.tsx:108` |
-| A-30 | frontend | Hardcoded `v0.4.1 · postgres 16 · redis 7` / fabricated instance info | `appState.ts`,`Settings.tsx` |
-| A-31 | frontend | Timeseries gaps interpolated by uPlot — zero-fill client-side | `data/analytics.ts` |
+| A-26 ✅ | frontend | onboarding retry reuses the created provider (input-fingerprint match) instead of duplicating; cleared on finish/sign-out | `appState.ts` |
+| A-27 ✅ | frontend | createAgent/addProvider/createTier/createRule now single-flight (busy guard) — no double-submit duplicates | `appState.ts` |
+| A-28 ✅ | frontend | removed the inert body-log toggle → read-only "Metadata-only" note (no body-persistence exists by design) | `Settings.tsx`, `appState.ts` |
+| A-29 ✅ | frontend | Agents page shows real per-agent 24h requests/spend (agent breakdown, limit 100); `—` when unknown, stale copy removed | `Agents.tsx`, `appState.ts` |
+| A-30 ✅ | frontend | real build version injected (`__APP_VERSION__`) in settings + sidebar; fabricated pg/redis versions removed | `vite.config.ts`, `Settings.tsx`, `Sidebar.tsx` |
+| A-31 ✅ | frontend | `timeseriesToChart` zero-fills empty buckets (by bucket interval) so idle spans dip to 0, not an interpolated line | `data/analytics.ts` |
 | A-32 ✅ | notify | weekly-summary job now retries (attempts+backoff) — safe under its idempotent occurrence keying | `weekly-summary.scheduler.ts:130` |
 | A-33 ✅ | notify | Validate `APPRISE_API_URL` at boot → already done (notify.config SSRF-gates it at boot) | `notify.config.ts:100` |
 | A-34 ✅ | notify | a channel config change clears lastTestStatus/lastTestAt (no stale success) | `channels.service.ts` |

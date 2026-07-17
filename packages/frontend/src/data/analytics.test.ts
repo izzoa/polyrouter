@@ -104,12 +104,38 @@ describe('timeseriesToChart', () => {
         escalatedCount: 0,
       },
     ];
-    const [secs, counts] = timeseriesToChart(pts);
+    const [secs, counts] = timeseriesToChart(pts, 3600);
     expect(secs).toEqual([
       Math.floor(Date.parse('2026-07-15T00:00:00.000Z') / 1000),
       Math.floor(Date.parse('2026-07-15T01:00:00.000Z') / 1000),
     ]);
     expect(counts).toEqual([5, 8]);
+  });
+
+  it('zero-fills missing (empty) buckets instead of interpolating across the gap (A-31)', () => {
+    const pt = (bucket: string, requests: number): TimeseriesPoint => ({
+      bucket,
+      requests,
+      spend: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      errorCount: 0,
+      fallbackCount: 0,
+      escalatedCount: 0,
+    });
+    // Hourly buckets with 01:00 and 02:00 missing (no requests those hours).
+    const [secs, counts] = timeseriesToChart(
+      [pt('2026-07-15T00:00:00.000Z', 5), pt('2026-07-15T03:00:00.000Z', 8)],
+      3600,
+    );
+    const h = (s: string): number => Math.floor(Date.parse(s) / 1000);
+    expect(secs).toEqual([
+      h('2026-07-15T00:00:00.000Z'),
+      h('2026-07-15T01:00:00.000Z'),
+      h('2026-07-15T02:00:00.000Z'),
+      h('2026-07-15T03:00:00.000Z'),
+    ]);
+    expect(counts).toEqual([5, 0, 0, 8]); // dips to zero over the idle hours, not a straight line
   });
 });
 

@@ -33,15 +33,40 @@ export function pct(num: number, denom: number): string {
 }
 
 /** Timeseries → uPlot single-series data `[secs[], counts[]]` (x = epoch SECONDS,
- * uPlot's unit; y = requests per bucket). */
-export function timeseriesToChart(points: TimeseriesPoint[]): [number[], number[]] {
+ * uPlot's unit; y = requests per bucket). The server returns one point per NON-empty
+ * bucket, so empty buckets are missing; we zero-fill them (an empty bucket had 0
+ * requests) so the chart dips to the baseline over idle periods instead of drawing a
+ * line interpolated across the gap that falsely implies continuous activity (A-31). */
+export function timeseriesToChart(
+  points: TimeseriesPoint[],
+  bucketSeconds: number,
+): [number[], number[]] {
+  const rows = points.map((p) => ({
+    t: Math.floor(new Date(p.bucket).getTime() / 1000),
+    n: p.requests,
+  }));
+  const step = bucketSeconds > 0 ? bucketSeconds : Infinity;
   const secs: number[] = [];
   const counts: number[] = [];
-  for (const p of points) {
-    secs.push(Math.floor(new Date(p.bucket).getTime() / 1000));
-    counts.push(p.requests);
+  for (let i = 0; i < rows.length; i += 1) {
+    const row = rows[i]!;
+    if (i > 0 && Number.isFinite(step)) {
+      // Insert a zero point for each bucket skipped between the previous point and this one
+      // (the server omits empty buckets), so the chart dips to the baseline over idle spans.
+      for (let t = rows[i - 1]!.t + step; t < row.t - step / 2; t += step) {
+        secs.push(t);
+        counts.push(0);
+      }
+    }
+    secs.push(row.t);
+    counts.push(row.n);
   }
   return [secs, counts];
+}
+
+/** Seconds per timeseries bucket for zero-fill positioning. */
+export function bucketSeconds(bucket: 'hour' | 'day'): number {
+  return bucket === 'hour' ? 3600 : 86_400;
 }
 
 /** A breakdown row → a `BarRows` datum (label via the id fallback, spend in USD). */

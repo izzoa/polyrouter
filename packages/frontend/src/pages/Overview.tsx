@@ -3,7 +3,8 @@ import { BarRows } from '../components/BarRows';
 import { Chart } from '../components/Chart';
 import { RangeSelector } from '../components/RangeSelector';
 import { RequestRows, RequestTableHead } from '../components/RequestTable';
-import { breakdownToSpend, pct, timeseriesToChart } from '../data/analytics';
+import { breakdownToSpend, bucketSeconds, pct, timeseriesToChart } from '../data/analytics';
+import { rangeToParams } from '../data/range';
 import { useApp } from '../state/context';
 
 const POLL_MS = 15_000;
@@ -33,7 +34,8 @@ export function Overview(props: { live: boolean }) {
   const successCount = () => state.analyticsSummary?.successCount ?? 0;
   const fallbackCount = () => state.analyticsSummary?.fallbackCount ?? 0;
   const escalatedCount = () => state.analyticsSummary?.escalatedCount ?? 0;
-  const chartData = () => timeseriesToChart(state.analyticsSeries);
+  const chartData = () =>
+    timeseriesToChart(state.analyticsSeries, bucketSeconds(rangeToParams(state.range, Date.now()).bucket));
   const errorMsg = () =>
     state.analyticsSummaryError ??
     state.analyticsSeriesError ??

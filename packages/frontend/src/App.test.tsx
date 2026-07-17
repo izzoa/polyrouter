@@ -122,7 +122,7 @@ describe('dashboard shell (auth-gated)', () => {
       expect(host.textContent).toContain('Automatic routing');
       expect(host.textContent).toContain('x-polyrouter-tier');
       clickByText(host, '.nav-item span', 'Settings');
-      expect(host.textContent).toContain('Log prompt & response bodies');
+      expect(host.textContent).toContain('Prompt & response bodies');
     } finally {
       dispose();
     }

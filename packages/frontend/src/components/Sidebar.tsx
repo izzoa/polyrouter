@@ -122,7 +122,7 @@ export function Sidebar() {
         </div>
         <div style="display:flex;align-items:center;gap:6px;font:400 11px 'Geist Mono',monospace;color:var(--text3)">
           <span style="width:6px;height:6px;border-radius:50%;background:var(--green);flex:none" />
-          {state.session?.mode === 'cloud' ? 'cloud' : 'self-hosted'} · v0.4.1
+          {state.session?.mode === 'cloud' ? 'cloud' : 'self-hosted'} · v{__APP_VERSION__}
         </div>
         <div style="font:400 11px 'Geist Mono',monospace;color:var(--faint)">
           {globalThis.location.host}

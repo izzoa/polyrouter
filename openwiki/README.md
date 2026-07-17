@@ -70,7 +70,6 @@ These files in the repository root provide essential context:
 
 | File | Purpose |
 |------|---------|
-| [`spec.md`](/spec.md) | Full implementation specification — the authoritative design document |
 | [`CLAUDE.md`](/CLAUDE.md) | Agent operating rules and 12 non-negotiable core invariants |
 | [`STYLESEED.md`](/STYLESEED.md) | Frontend design system lock (accent color, elevation, density) |
 | [`FABLE_AUDIT.md`](/FABLE_AUDIT.md) | 19-surface security audit findings and resolutions |
@@ -123,7 +122,6 @@ polyrouter/
 │           ├── data/api.ts        # Typed fetch client
 │           ├── state/appState.ts  # SolidJS store with context DI
 │           └── styles.css         # StyleSeed design tokens
-├── spec.md                  # Full implementation specification
 ├── CLAUDE.md                # Agent operating rules
 ├── STYLESEED.md             # Design system lock
 ├── FABLE_AUDIT.md           # Security audit

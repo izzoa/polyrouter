@@ -47,7 +47,7 @@ behavior wrong with realistic trigger · `medium` = robustness gap or mandated-b
 - **Codebase:** all 4 workspaces (`shared`, `data-plane`, `control-plane`, `frontend`), all root
   operational files (Dockerfile, compose, install.sh, configs), README/spec/openspec corpus.
   231 source files; auditors read 521 files including every test suite and golden fixture.
-- **Reference bar:** `spec.md` (§-cited throughout), the 12 CLAUDE.md non-negotiable invariants, and
+- **Reference bar:** the reference spec (§-cited throughout), the 12 CLAUDE.md non-negotiable invariants, and
   the 30 archived `openspec/specs/*/spec.md` capability contracts (authoritative WHEN/THEN).
 - **Method:** 19 scoped principal-engineer audit agents + 1 ground-truth runner that actually executed
   the build/test suites → every medium+ finding adversarially verified by 1–2 independent skeptic
@@ -158,7 +158,7 @@ The audit confirmed these as correct and load-bearing. Treat them as constraints
 ## EPIC E1 — /v1 ingress & streaming lifecycle correctness · **P0** · ✅ SHIPPED 2026-07-16 (`fix-proxy-ingress-and-drain`)
 
 **Proposal slug:** `fix-proxy-ingress-and-drain` ·
-**Spec refs:** spec.md §6.1, §15 (first criterion); `openspec/specs/inference-proxy`; CLAUDE.md invariants 3, 12
+**Spec refs:** the spec §6.1, §15 (first criterion); `openspec/specs/inference-proxy`; CLAUDE.md invariants 3, 12
 **Why:** These four defects sit on the request path every agent hits. The body cap breaks the
 product's headline acceptance criterion ("an external agent configured only with base_url + api_key
 gets working completions, no other changes"); the drain and timeout defects undermine invariant 12 and
@@ -240,7 +240,7 @@ has no post-headers deadline — see also E4.3), A-5 (Anthropic-wire terminal er
 ## EPIC E2 — Protocol translation fidelity & golden coverage · **P0** · ✅ SHIPPED 2026-07-17 (request + stream halves)
 
 **Proposal slug:** `fix-translation-fidelity` (IR extensions need their own delta spec) ·
-**Spec refs:** spec.md §6.3, §7.7, §15; `openspec/specs/protocol-translation`; CLAUDE.md invariant 2
+**Spec refs:** the spec §6.3, §7.7, §15; `openspec/specs/protocol-translation`; CLAUDE.md invariant 2
 **Why:** The translate module's core is sound (IR, usage math, purity, tool grouping), but the
 Anthropic client-facing stream serializer — the entire streamed `/v1/messages` surface — is
 protocol-non-conformant and untested, several high-value request fields are silently stripped
@@ -395,7 +395,7 @@ A-9 (`message_start` fabricated `input_tokens: 0` cross-protocol — document in
 ## EPIC E3 — Analytics keyset pagination correctness · P1 · ✅ SHIPPED 2026-07-17 (`fix-analytics-keyset-cursor`)
 
 **Proposal slug:** `fix-analytics-keyset-cursor` ·
-**Spec refs:** `openspec/specs/analytics-api` ("walking all pages returns every in-range row exactly once"); `openspec/specs/dashboard-analytics`; spec.md §9
+**Spec refs:** `openspec/specs/analytics-api` ("walking all pages returns every in-range row exactly once"); `openspec/specs/dashboard-analytics`; the spec §9
 **Why:** Found independently by two auditors. Dashboard pagination silently drops rows — the rows are
 counted in summaries but unreachable in the list, so the dashboard is silently inconsistent with itself.
 
@@ -491,7 +491,7 @@ assertion is vacuous; fix imports + add `tsc --noEmit` to CI), A-11 (production 
 ## EPIC E5 — Cost-recording completeness & pricing coverage · P1 · ✅ SHIPPED 2026-07-17 (`fix-cost-recording-gaps`)
 
 **Proposal slug:** `fix-cost-recording-gaps` ·
-**Spec refs:** spec.md §7.5, §7.7, §8; `openspec/specs/{request-logging,pricing-catalog,cascade-routing}`; CLAUDE.md invariants 4, 12
+**Spec refs:** the spec §7.5, §7.7, §8; `openspec/specs/{request-logging,pricing-catalog,cascade-routing}`; CLAUDE.md invariants 4, 12
 **Why:** Invariant 4's machinery is correct, but rows can be silently lost at shutdown, one request
 class writes no row at all, and several spec-§8 BYOK providers are structurally unpriceable — all of
 which silently under-count the spend record that budgets and dashboards reconcile from.
@@ -566,7 +566,7 @@ instead of µ$ rounding — sub-cent inconsistency).
 ## EPIC E6 — Budget-enforcement operability · P1 · ✅ SHIPPED 2026-07-17 (`fix-budget-operability`)
 
 **Proposal slug:** `fix-budget-operability` ·
-**Spec refs:** spec.md §10; `openspec/specs/spend-limits`; CLAUDE.md invariant 10
+**Spec refs:** the spec §10; `openspec/specs/spend-limits`; CLAUDE.md invariant 10
 **Why:** The enforcement design is race-free, but its degraded modes are invisible: under the default
 fail-open, a broken enforcement path admits unlimited spend **with zero operator signal** — the spend-
 limits design doc itself flagged the missing metric and it was never added.
@@ -621,7 +621,7 @@ cron leaves enforcement "unavailable" 57 min/hour), A-19 (budget CRUD accepts fo
 ## EPIC E7 — CI pipeline & invariant-12 test coverage · P1 · ✅ SHIPPED 2026-07-16 (`add-ci-and-drain-tests`)
 
 **Proposal slug:** `add-ci-and-drain-tests` (test/infra-only change) ·
-**Spec refs:** spec.md §15 (last bullet), §3.2; CLAUDE.md invariant 12 + Definition of done
+**Spec refs:** the spec §15 (last bullet), §3.2; CLAUDE.md invariant 12 + Definition of done
 **Why:** The Definition of done is enforced by convention only — no CI exists, so the one env-gated
 suite pinning the breaker's Lua to the state machine **never runs**, and the two spec-mandated
 streaming behaviors (drain, backpressure) have zero regression protection. This epic multiplies the
@@ -672,7 +672,7 @@ value of every other epic's verification.
 ## EPIC E8 — OSS launch readiness: LICENSE & operator docs · P1 · ✅ SHIPPED 2026-07-17 (`docs-oss-launch`)
 
 **Proposal slug:** `docs-oss-launch` (docs-only; still an OpenSpec change per CLAUDE.md sync rule) ·
-**Spec refs:** spec.md §12, §15 (first criterion), §16; `openspec/specs/packaging` docs requirement
+**Spec refs:** the spec §12, §15 (first criterion), §16; `openspec/specs/packaging` docs requirement
 **Why:** The repo is a self-described open-source router with **no license grant** (legal blocker for
 any adopter), no documentation of how to actually use the product, and a reference spec whose
 config section contradicts the code by ~38 variables.
@@ -680,7 +680,7 @@ config section contradicts the code by ~38 variables.
 ### Task E8.1 — Add the LICENSE file ✅ `[high/XS]`
 - **Defect:** README:126 says "MIT licensed." and root package.json declares `"license": "MIT"`, but no
   LICENSE/COPYING exists anywhere — no actual grant; forks/adopters are technically infringing;
-  spec.md line 21 lists "MIT-style license" as a project goal.
+  the reference spec listed "MIT-style license" as a project goal.
 - **Fix:** Add standard MIT text as `/LICENSE` (correct holder + year); add `"license": "MIT"` to the
   four workspace package.json files.
 - **Verify:** `test -f LICENSE && head -1 LICENSE | grep -qi 'MIT License'`.
@@ -694,16 +694,16 @@ config section contradicts the code by ~38 variables.
   protocol.
 - **Verify:** `grep -q 'x-polyrouter-tier' README.md && grep -q '/v1/chat/completions' README.md`.
 
-### Task E8.3 — Refresh spec.md §12 from the config registry (~38 missing vars) ✅ `[medium/S]`
+### Task E8.3 — Refresh the spec §12 from the config registry (~38 missing vars) ✅ `[medium/S]`
 - **Defect:** The registry defines 53 env vars; §12 lists ~15. Missing entirely: the required-in-prod
   `PROVIDER_CREDENTIAL_KEY`, all `BUDGET_*` (incl. security-relevant `BUDGET_FAIL_OPEN`),
   `OTEL_*`/`METRICS_ENABLED`, `PRICING_*`, `TRUSTED_PROXY_CIDRS`, `ROUTING_STRUCTURAL_*/CASCADE_*`,
-  `NOTIFY_*`, `BETTER_AUTH_URL`, `DASHBOARD_ORIGIN`. CLAUDE.md makes spec.md the reference that "wins"
+  `NOTIFY_*`, `BETTER_AUTH_URL`, `DASHBOARD_ORIGIN`. CLAUDE.md makes the reference spec the source that "wins"
   — it currently loses to the code.
 - **Fix:** Regenerate §12 grouped by namespace from the `registerConfig` call sites; mark
   required-in-production secrets; note loopback-dev fallbacks; fix the stale
   `ROUTING_AUTO_LAYERS=explicit,structural` example (code default is `structural`).
-- **Verify:** `grep -q PROVIDER_CREDENTIAL_KEY spec.md && grep -q BUDGET_FAIL_OPEN spec.md`.
+- **Verify:** the required secrets appear in the regenerated config docs.
 
 ### Task E8.4 — Document operator-facing tunables in the README .env reference ✅ `[medium/S]`
 - **Defect:** ~24 compose-passthrough vars are documented only in source comments. Three with sharp
@@ -776,7 +776,7 @@ both weaken defenses the spec mandates and one is an auth-plane DoS.
 ## EPIC E10 — Routing-config robustness & structural baseline · P2 · ✅ SHIPPED 2026-07-17 (`fix-routing-config-edges`)
 
 **Proposal slug:** `fix-routing-config-edges` ·
-**Spec refs:** spec.md §7.1/§7.2/§7.4; `openspec/specs/{routing-config,structural-routing}`; CLAUDE.md invariants 1, 5
+**Spec refs:** the spec §7.1/§7.2/§7.4; `openspec/specs/{routing-config,structural-routing}`; CLAUDE.md invariants 1, 5
 **Why:** Precedence and degradation are airtight; these are edge defects that produce 500s, brick a
 usable tier, or silently disable shared learning. (The cascade client-cancel record gap is a recording
 defect — it is Task E5.2, not here.)
@@ -865,7 +865,7 @@ allowed by design (no allow-list), so the server willingly drains whatever it se
 ## EPIC E12 — Dashboard correctness · P2 · ✅ SHIPPED 2026-07-17 (`fix-dashboard-correctness`)
 
 **Proposal slug:** `fix-dashboard-correctness` ·
-**Spec refs:** `openspec/specs/{dashboard-core,dashboard-config,dashboard-prototype}`; spec.md §2, §9
+**Spec refs:** `openspec/specs/{dashboard-core,dashboard-config,dashboard-prototype}`; the spec §2, §9
 **Why:** The SPA's key handling and XSS posture are exemplary; these four are correctness/UX defects
 that lose a shown-once key, strand an expired session, wipe routing config, or copy a wrong endpoint.
 
@@ -994,7 +994,7 @@ doesn't clear `lastTestStatus`).
 ## EPIC E15 — Observability accuracy · P3 · ✅ SHIPPED 2026-07-17 (`fix-metrics-buckets`)
 
 **Proposal slug:** `fix-metrics-buckets` ·
-**Spec refs:** `openspec/specs/observability`; spec.md §3.2
+**Spec refs:** `openspec/specs/observability`; the spec §3.2
 **Why:** Attribute hygiene and exactly-once cost metrics are correct; the histogram buckets make the
 latency metrics useless for the exact traffic the product routes. (The observability auditor also
 reported the shutdown-flush defect — it is the same root cause as Task E5.1; fix once.)

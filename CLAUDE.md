@@ -1,7 +1,7 @@
 # CLAUDE.md — polyrouter (open-source LLM router)
 
 ## What this file is
-The always-loaded operating rules for coding agents on this project. The **full architecture, rationale, data model, and acceptance criteria live in [`spec.md`](./spec.md)** — the reference spec. Read the relevant section of that spec before proposing or implementing anything. This file is the short version; **the spec wins on any specific detail**, and the invariants below are non-negotiable.
+The always-loaded operating rules for coding agents on this project. The **full architecture, data model, and acceptance criteria live in the archived OpenSpec capability contracts (`openspec/specs/`)** and the code itself. Read the relevant capability spec before proposing or implementing anything. This file is the always-loaded short version; the invariants below are non-negotiable.
 
 ## What we're building
 **polyrouter** — a self-hostable **LLM router / gateway**: one OpenAI- and Anthropic-compatible endpoint that sits between a user's AI agents and their LLM providers, routes each request to an appropriate model, adds fallbacks and spend limits, and records cost/tokens/latency. Local-first, no per-call markup, metadata-only by default. See §1 of the spec.
@@ -10,8 +10,8 @@ The always-loaded operating rules for coding agents on this project. The **full 
 
 ## How we work (spec-driven, OpenSpec)
 - **No feature code without an approved change proposal.** Work is delivered as OpenSpec changes.
-- Flow: `/opsx:explore` (when unsure) or `/opsx:propose <capability>` → **review `proposal.md` + `tasks.md` + spec deltas against `spec.md`** → implement `tasks.md` in order → `archive` (merges deltas into `openspec/specs/`).
-- **Durable context lives in two places:** `openspec/project.md` (the constitution — stack, conventions, invariants) and `spec.md` (the full reference). Keep both in sync when a decision changes; open a change to do it, don't edit silently.
+- Flow: `/opsx:explore` (when unsure) or `/opsx:propose <capability>` → **review `proposal.md` + `tasks.md` + spec deltas against the archived `openspec/specs/` contracts** → implement `tasks.md` in order → `archive` (merges deltas into `openspec/specs/`).
+- **Durable context lives in `openspec/project.md`** (the constitution — stack, conventions, invariants) and the archived `openspec/specs/` capability contracts. Keep them in sync when a decision changes; open a change to do it, don't edit silently.
 - **Implement only the current approved change's `tasks.md`.** If a task contradicts the spec or an invariant below, **stop and flag it** — never silently reinterpret scope.
 - Prefer **small, single-capability changes** in dependency order (see build order). One capability ≈ one proposal.
 - Lift each capability's "definition of done" from the spec's **§15 acceptance criteria** + the matching milestone; express them as WHEN/THEN scenarios in the delta spec.

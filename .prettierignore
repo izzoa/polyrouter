@@ -12,7 +12,6 @@ packages/*/src/database/migrations/
 
 # planning docs & agent configs (not code — leave untouched)
 openspec/
-spec.md
 CLAUDE.md
 TODOS.md
 .changeset/

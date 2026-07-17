@@ -93,7 +93,6 @@ See [Architecture Overview](/openwiki/architecture/overview.md) for the full bre
 
 | File | Purpose |
 |------|---------|
-| [`spec.md`](/spec.md) | Full implementation specification |
 | [`CLAUDE.md`](/CLAUDE.md) | Agent operating rules and core invariants |
 | [`STYLESEED.md`](/STYLESEED.md) | Frontend design system lock |
 | [`FABLE_AUDIT.md`](/FABLE_AUDIT.md) | Security audit findings and resolutions |

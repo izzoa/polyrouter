@@ -19,7 +19,6 @@ polyrouter/
 │   ├── control-plane/   # NestJS: auth, routing config, budgets, notifications, observability
 │   ├── data-plane/      # Pure TS: proxy core, routing resolution, protocol translation, provider adapters
 │   └── frontend/        # SolidJS SPA: dashboard UI
-├── spec.md              # Full implementation specification
 ├── CLAUDE.md            # Agent operating rules
 ├── STYLESEED.md         # Frontend design system lock
 ├── docker-compose.yml   # Production stack

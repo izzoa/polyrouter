@@ -35,14 +35,14 @@ Some Redis-backed suites are gated on `REDIS_URL`; export it (e.g.
 
 1. `openspec new change <slug>` — scaffold the change.
 2. Write `proposal.md`, `design.md`, `tasks.md`, and the spec deltas under `openspec/changes/<slug>/`,
-   reviewed against [`spec.md`](./spec.md) and the invariants in [`CLAUDE.md`](./CLAUDE.md).
+   reviewed against the archived `openspec/specs/` contracts and the invariants in [`CLAUDE.md`](./CLAUDE.md).
 3. `openspec validate <slug> --strict`.
 4. Implement `tasks.md` in order.
 5. `openspec archive <slug> --yes` (merges the deltas into `openspec/specs/`).
 
 Keep changes **small and single-capability**. The full architecture, data model, and acceptance criteria
-live in [`spec.md`](./spec.md); the always-on operating rules and non-negotiable invariants live in
-[`CLAUDE.md`](./CLAUDE.md). Read the relevant section before proposing.
+live in the archived `openspec/specs/` capability contracts; the always-on operating rules and
+non-negotiable invariants live in [`CLAUDE.md`](./CLAUDE.md). Read the relevant capability spec before proposing.
 
 ## Definition of done
 

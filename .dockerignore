@@ -17,7 +17,6 @@ coverage
 openspec
 docs
 TODOS.md
-spec.md
 CLAUDE.md
 AGENTS.md
 docker-compose.dev.yml

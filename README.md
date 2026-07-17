@@ -138,8 +138,8 @@ flowchart LR
 Monorepo (Turborepo + npm workspaces): `packages/shared` (types),
 `packages/control-plane` (NestJS — dashboard API, auth, CRUD, analytics),
 `packages/data-plane` (the proxy: routing, translation, recording),
-`packages/frontend` (SolidJS SPA). Full architecture and rationale:
-[`spec.md`](./spec.md); build history: [`TODOS.md`](./TODOS.md).
+`packages/frontend` (SolidJS SPA). Architecture overview: the code wiki in
+[`openwiki/`](./openwiki/); build history: [`TODOS.md`](./TODOS.md).
 
 ## Self-hosting
 
@@ -223,8 +223,9 @@ public, or set `METRICS_ENABLED=false`.
 
 > The optional tunables are compose pass-through: set one in `.env` and it reaches the
 > container (the compose file sets the deploy-invariant ones — bind address, mode,
-> `NODE_ENV`, DB/Redis URLs — itself). See [`spec.md` §12](./spec.md#12-configuration--environment)
-> for the exhaustive grouped list (defaults, required-in-production secrets, dev fallbacks).
+> `NODE_ENV`, DB/Redis URLs — itself). The config registry in the source
+> (`packages/*/src/**` config schemas) is the exhaustive list — defaults,
+> required-in-production secrets, and dev fallbacks are declared there.
 
 **Secret rotation caveat:** `PROVIDER_CREDENTIAL_KEY` and `NOTIFY_CREDENTIALS_SECRET`
 encrypt stored provider/channel credentials — rotating them orphans those rows (you
@@ -324,7 +325,7 @@ Useful commands (see [`CLAUDE.md`](./CLAUDE.md) for the full set):
 | `npm run db:generate` / `npm run db:migrate` | Drizzle migrations (also run automatically on boot) |
 | `npm run lint` / `npm run format`            | ESLint / Prettier                                   |
 
-Development is **spec-driven**: [`spec.md`](./spec.md) is the reference architecture,
+Development is **spec-driven** (OpenSpec change proposals):
 [`CLAUDE.md`](./CLAUDE.md) pins the stack and the non-negotiable invariants,
 [`TODOS.md`](./TODOS.md) records every shipped change with its review history, and
 [`STYLESEED.md`](./STYLESEED.md) locks the dashboard's visual language (UI changes must

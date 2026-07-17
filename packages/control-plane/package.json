@@ -1,6 +1,7 @@
 {
   "name": "@polyrouter/control-plane",
   "version": "0.1.0",
+  "license": "MIT",
   "private": true,
   "description": "polyrouter control plane: dashboard API, auth, provider/tier/rule CRUD, analytics — serves the SPA and hosts the data-plane module",
   "type": "commonjs",

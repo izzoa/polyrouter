@@ -1,27 +1,4 @@
-# packaging Specification
-
-## Purpose
-TBD - created by archiving change add-packaging. Update Purpose after archive.
-## Requirements
-### Requirement: One container image serves the whole product on one port
-
-The repository SHALL build a single production Docker image in which the NestJS process serves the SPA, the dashboard API, and the inference proxy on one port, using the already-built workspace artifacts (monorepo layout preserved so the SPA dist and bundled migrations resolve unchanged). The image SHALL run as a non-root user with `NODE_ENV=production`, receive SIGTERM directly (exec-form entrypoint, no shell wrapper), apply migrations on boot before serving, and expose a container healthcheck against **`/api/health`** (the SPA fallback answers bare `/health` with HTML, which must never satisfy a health probe).
-
-#### Scenario: the image boots the full product
-- **WHEN** the image runs with valid required env against healthy postgres/redis
-- **THEN** migrations apply before the port opens, `/api/health` returns 200 JSON, the SPA shell is served at `/`, and `/api` + `/v1` respond on the same port
-
-#### Scenario: stopping the container drains an in-flight stream
-- **WHEN** the container receives SIGTERM (e.g. `docker stop`) while a streamed completion is being served
-- **THEN** the stream terminates cleanly for the client (drained, never severed mid-token without a terminal event), the writer and span exporter flush, and the container's inspected exit state is 0 within the grace period (never SIGKILLed)
-
-### Requirement: The packaged SPA is self-contained
-
-The built frontend SHALL load with zero third-party runtime fetches: the Geist/Geist Mono fonts are bundled locally (with their license) and no CDN `<link>`/import remains, so a self-hosted instance renders fully on an offline or egress-restricted network.
-
-#### Scenario: no third-party fetch on load
-- **WHEN** the packaged SPA loads in a browser with external egress blocked
-- **THEN** the dashboard renders with its intended fonts, and the document references only same-origin assets
+## MODIFIED Requirements
 
 ### Requirement: The product compose yields a working instance with one command
 
@@ -41,14 +18,6 @@ The repository SHALL provide a product `docker-compose.yml` (explicit project na
 - **WHEN** an operator sets a registered optional var (e.g. `NOTIFY_WEEKLY_ENABLED`, `BUDGET_STALE_MS`, or `PROXY_IDLE_TIMEOUT_MS`) in `.env`
 - **THEN** `docker compose config` renders it on the `app` service (the compose pass-through allowlist covers it), so the documented `.env` mechanism actually takes effect in the packaged distribution
 
-### Requirement: The install script bootstraps secrets and boots the stack
-
-The repository SHALL provide an `install.sh` that verifies `curl`, `tar`, a reachable Docker daemon, and Compose v2 (no legacy fallback); fetches ONE pinned source archive and uses the compose file from inside it (compose and build context always the same commit; a checkout uses the working tree); generates the four required 32-byte-hex secrets (`BETTER_AUTH_SECRET`, `API_KEY_HMAC_SECRET`, `PROVIDER_CREDENTIAL_KEY`, `NOTIFY_CREDENTIALS_SECRET`) and a database password into a mode-600 `.env` written atomically under `umask 077`; and starts the stack under the product project name. The script SHALL be idempotent: an existing `.env` is NEVER overwritten or rotated (rotating the encryption keys would orphan encrypted provider/channel credentials — the script says so), and re-extraction stages cleanly. Secret values SHALL never be echoed to the terminal or logs.
-
-#### Scenario: first run generates, second run preserves
-- **WHEN** the script runs on a machine without a prior install and then runs again
-- **THEN** the first run creates `.env` (600) with four distinct 32-byte-hex secrets and boots the stack, and the second run leaves `.env` byte-identical while re-applying the stack
-
 ### Requirement: Self-host documentation covers install, configuration, and the security posture
 
 The repository SHALL include a top-level `LICENSE` file with the license the packages declare (MIT), so adopters have an actual grant rather than a bare `"license"` field. The README SHALL document: the one-line install (with its pipe-to-sh trust note and an inspect-first/clone alternative) and the manual compose path; **how to connect an agent** — the OpenAI/Anthropic-compatible endpoints (`/v1/chat/completions`, `/v1/messages`, `/v1/models`) with the base URL convention per SDK (an OpenAI client uses `<instance>/v1`; an Anthropic SDK uses `<instance>` and appends `/v1/messages`), the `poly_…` dashboard key, and selecting a model explicitly, via `auto`, or by tier with the `x-polyrouter-tier` header, with a curl example per protocol; the `.env` reference (secrets, `POLYROUTER_HOST`/`POLYROUTER_PORT`/`APP_URL`, `METRICS_ENABLED`, `OTEL_ENABLED` + OTLP endpoint, OAuth client vars, the apprise pair) **plus the sharp-edged operator tunables** — `SMTP_*` (absence silently disables password-reset email), `BUDGET_FAIL_OPEN` (default admits requests on an enforcement fault — flip it for a hard cap), and `ROUTING_AUTO_LAYERS` (cost-saving cascade is off until it lists `cascade`); that `/api/health` and `/metrics` are unauthenticated by design and that exposing beyond loopback is an explicit step taken AFTER claiming the admin account (reverse-proxy/TLS guidance); first-sign-up-is-admin; upgrade (rebuild — migrations run on boot) and backup (postgres volume) basics; the key-rotation caveat for the two encryption secrets; the `POSTGRES_PASSWORD`-is-initialization-only caveat; that scaling beyond one app replica is unsupported (boot migrations are not advisory-locked); and the §16 ToS caveat for subscription-kind providers. The reference spec's configuration section SHALL be kept in sync with the config registry (every registered var, its default, and which are required in production).
@@ -64,4 +33,3 @@ The repository SHALL include a top-level `LICENSE` file with the license the pac
 #### Scenario: sharp-edged defaults are documented
 - **WHEN** an operator reads the `.env` reference
 - **THEN** they learn that password reset needs `SMTP_*`, that `BUDGET_FAIL_OPEN` defaults to allow-on-fault (and how to fail closed), and that cascade routing requires `ROUTING_AUTO_LAYERS=structural,cascade`
-

@@ -669,7 +669,7 @@ value of every other epic's verification.
 ---
 
 <a id="epic-e8"></a>
-## EPIC E8 — OSS launch readiness: LICENSE & operator docs · P1
+## EPIC E8 — OSS launch readiness: LICENSE & operator docs · P1 · ✅ SHIPPED 2026-07-17 (`docs-oss-launch`)
 
 **Proposal slug:** `docs-oss-launch` (docs-only; still an OpenSpec change per CLAUDE.md sync rule) ·
 **Spec refs:** spec.md §12, §15 (first criterion), §16; `openspec/specs/packaging` docs requirement
@@ -677,7 +677,7 @@ value of every other epic's verification.
 any adopter), no documentation of how to actually use the product, and a reference spec whose
 config section contradicts the code by ~38 variables.
 
-### Task E8.1 — Add the LICENSE file ☐ `[high/XS]`
+### Task E8.1 — Add the LICENSE file ✅ `[high/XS]`
 - **Defect:** README:126 says "MIT licensed." and root package.json declares `"license": "MIT"`, but no
   LICENSE/COPYING exists anywhere — no actual grant; forks/adopters are technically infringing;
   spec.md line 21 lists "MIT-style license" as a project goal.
@@ -685,7 +685,7 @@ config section contradicts the code by ~38 variables.
   four workspace package.json files.
 - **Verify:** `test -f LICENSE && head -1 LICENSE | grep -qi 'MIT License'`.
 
-### Task E8.2 — Add a "Connect an agent" section to the README ☐ `[medium/S]`
+### Task E8.2 — Add a "Connect an agent" section to the README ✅ `[medium/S]`
 - **Defect:** README covers install + development only — zero mentions of `/v1/chat/completions`,
   `/v1/messages`, `/v1/models`, the `poly_` key prefix, `x-polyrouter-tier`, or model `auto`. The
   product's core pitch (spec §15 first criterion) is undiscoverable.
@@ -694,7 +694,7 @@ config section contradicts the code by ~38 variables.
   protocol.
 - **Verify:** `grep -q 'x-polyrouter-tier' README.md && grep -q '/v1/chat/completions' README.md`.
 
-### Task E8.3 — Refresh spec.md §12 from the config registry (~38 missing vars) ☐ `[medium/S]`
+### Task E8.3 — Refresh spec.md §12 from the config registry (~38 missing vars) ✅ `[medium/S]`
 - **Defect:** The registry defines 53 env vars; §12 lists ~15. Missing entirely: the required-in-prod
   `PROVIDER_CREDENTIAL_KEY`, all `BUDGET_*` (incl. security-relevant `BUDGET_FAIL_OPEN`),
   `OTEL_*`/`METRICS_ENABLED`, `PRICING_*`, `TRUSTED_PROXY_CIDRS`, `ROUTING_STRUCTURAL_*/CASCADE_*`,
@@ -705,7 +705,7 @@ config section contradicts the code by ~38 variables.
   `ROUTING_AUTO_LAYERS=explicit,structural` example (code default is `structural`).
 - **Verify:** `grep -q PROVIDER_CREDENTIAL_KEY spec.md && grep -q BUDGET_FAIL_OPEN spec.md`.
 
-### Task E8.4 — Document operator-facing tunables in the README .env reference ☐ `[medium/S]`
+### Task E8.4 — Document operator-facing tunables in the README .env reference ✅ `[medium/S]`
 - **Defect:** ~24 compose-passthrough vars are documented only in source comments. Three with sharp
   edges: `SMTP_*` (without it, password reset silently never sends), `BUDGET_FAIL_OPEN` (**default
   true** — block budgets admit requests during Redis faults; operators wanting hard caps must be told
@@ -717,7 +717,7 @@ config section contradicts the code by ~38 variables.
   timeout vars.
 - **Verify:** `grep -q SMTP_HOST README.md && grep -q BUDGET_FAIL_OPEN README.md`.
 
-### Task E8.5 — Pass the missing registered env vars through docker-compose ☐ `[medium/XS]`
+### Task E8.5 — Pass the missing registered env vars through docker-compose ✅ `[medium/XS]`
 - **Where:** `docker-compose.yml:44-75` (`services.app.environment` allowlist)
 - **Defect:** The explicit allowlist omits registered, code-honored vars — `NOTIFY_WEEKLY_ENABLED`/
   `NOTIFY_WEEKLY_CRON`, `NOTIFY_FAILURE_THRESHOLD`/`_WINDOW_MS`, `BUDGET_SCHED_ENABLED`,

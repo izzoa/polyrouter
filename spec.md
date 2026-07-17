@@ -317,29 +317,90 @@ Rate-limit / throttle the **registration, login, and password-reset** endpoints 
 
 ## 12. Configuration & environment
 
+All configuration is environment variables, assembled from per-namespace Zod fragments (each subsystem's
+`*.config.ts` calls `registerConfig(...)`) and validated once at boot by `loadConfig()`
+(`packages/shared/src/config/registry.ts`): boot **fails fast and names each offending variable, never
+its value**. New config goes through the registry, not raw `process.env`. The list below is the full
+registered surface; the packaged compose fixes the deploy-invariant ones itself (`BIND_ADDRESS=0.0.0.0`,
+`MODE=selfhosted`, `NODE_ENV=production`, service-network `DATABASE_URL`/`REDIS_URL`, the auth URLs) and
+passes the optional tunables through from `.env`.
+
 ```
-PORT=3001
-BIND_ADDRESS=127.0.0.1              # loopback by default for self-host safety
-NODE_ENV=development|production|test    # `test` is used by test harnesses only
-MODE=selfhosted|cloud              # gates local providers, auto-login, L2/learning
-BETTER_AUTH_SECRET=<32-byte hex>   # openssl rand -hex 32
-DATABASE_URL=postgresql://user:pass@host:5432/db
-REDIS_URL=redis://localhost:6379   # atomic counters, cache, circuit breaker, log buffer
-API_KEY_HMAC_SECRET=<32-byte hex>  # keyed hash for agent API keys
-SEED_DATA=true|false
-# Layer 2 (cloud/opt-in):
-EMBEDDING_MODEL_PATH=/models/bge-m3.onnx   # local embedding model for semantic routing
-ROUTING_AUTO_LAYERS=explicit,structural    # csv: which layers are active (add semantic,cascade)
-# Notifications (channels are managed in the Settings UI; these are optional server-wide defaults/fallbacks):
-SMTP_HOST=... SMTP_PORT=587 SMTP_USER=... SMTP_PASS=... SMTP_FROM=... SMTP_SECURE=starttls
-APPRISE_API_URL=http://apprise:8000        # optional: caronc/apprise container for URL-based fan-out
-NOTIFY_CREDENTIALS_SECRET=<32-byte hex>    # encrypts stored channel credentials at rest
-# If data plane is split out (cloud graduation):
-CONTROL_PLANE_URL=... / DATA_PLANE_URL=...
-# OAuth client IDs/secrets for Google/GitHub/Discord
+# --- core / boot ---
+PORT=3001                          # HTTP listen port
+BIND_ADDRESS=127.0.0.1             # loopback by default for self-host safety (compose sets 0.0.0.0)
+NODE_ENV=development|production|test   # `production` disables ALL dev-secret fallbacks + serves the SPA
+MODE=selfhosted|cloud              # gates local providers, auto-login, the SSRF loopback exception, dev fallbacks
+
+# --- database / redis (localhost defaults — MUST override in production) ---
+DATABASE_URL=postgresql://user:pass@host:5432/db   # default postgresql://polyrouter:polyrouter@localhost:5432/polyrouter
+REDIS_URL=redis://localhost:6379   # breaker state, budget counters, rate limits, queues
+
+# --- auth & identity (the four hex secrets are REQUIRED IN PRODUCTION) ---
+BETTER_AUTH_SECRET=<32-byte hex>   # session signing — required in prod (openssl rand -hex 32)
+API_KEY_HMAC_SECRET=<32-byte hex>  # agent-API-key HMAC — required in prod
+PROVIDER_CREDENTIAL_KEY=<32-byte hex>  # encrypts provider credentials at rest — required in prod
+NOTIFY_CREDENTIALS_SECRET=<32-byte hex>  # encrypts notification-channel credentials at rest — required in prod
+BETTER_AUTH_URL=http://127.0.0.1:3001  # public auth base URL (cookies/redirects) — set when exposing
+DASHBOARD_ORIGIN=http://localhost:3000 # allowed CORS origin — set to the real dashboard origin
+TRUSTED_PROXY_CIDRS=                # csv CIDRs trusted for X-Forwarded-For (empty ⇒ proxy headers untrusted)
+SEED_DATA=false                    # seed a dev admin (self-host, non-prod, loopback only)
+# OAuth (a provider is offered only when BOTH id AND secret are set):
+GOOGLE_CLIENT_ID= GOOGLE_CLIENT_SECRET=
+GITHUB_CLIENT_ID= GITHUB_CLIENT_SECRET=
+DISCORD_CLIENT_ID= DISCORD_CLIENT_SECRET=
+# Dev-only: with NODE_ENV≠production AND MODE=selfhosted AND loopback-bound, the four hex secrets fall back
+# to FIXED, PUBLICLY-KNOWN constants (identical on every install) — never run a reachable instance that way.
+
+# --- proxy (hot-path bounds) ---
+PROXY_MAX_BODY_BYTES=10485760       # 10 MiB /v1 request cap
+PROXY_FIRST_EVENT_TIMEOUT_MS=30000  # time-to-first-byte/event abort — raise for slow local models
+PROXY_EVENT_TIMEOUT_MARGIN_MS=500   # core per-event bound = first-byte + margin (adapter timeout wins pre-headers)
+PROXY_IDLE_TIMEOUT_MS=30000         # buffered-read inter-chunk idle deadline — raise for slow models
+
+# --- routing (smart layers; explicit routing is always on) ---
+ROUTING_AUTO_LAYERS=structural      # csv: smart layers on. DEFAULT OMITS cascade — set structural,cascade to enable L3
+ROUTING_STRUCTURAL_HIGH_THRESHOLD=0.6   # must be > LOW (cross-field boot check)
+ROUTING_STRUCTURAL_LOW_THRESHOLD=0.25
+ROUTING_STRUCTURAL_BASELINE_ALPHA=0.2   # baseline EWMA alpha ∈ (0,1]
+ROUTING_STRUCTURAL_WEIGHTS=         # optional JSON weight override (validated, normalized)
+ROUTING_CASCADE_QUALITY_THRESHOLD=0.5   # cascade escalates below this quality
+ROUTING_CASCADE_CHEAP_TIMEOUT_MS=30000  # cheap-leg drain bound so a hung upstream still escalates
+
+# --- budgets / spend limits ---
+BUDGET_FAIL_OPEN=true              # on a Redis/enforcement fault, ADMIT (default). Set false for a hard 503 cap
+BUDGET_SCHED_ENABLED=true          # the reconcile scheduler IS the enforcement engine (sole counter writer)
+BUDGET_SCHED_CRON=* * * * *
+BUDGET_STALE_MS=180000             # heartbeat older than this ⇒ counters untrusted ⇒ route through the fail mode
+BUDGET_REDIS_TIMEOUT_MS=50         # hot-path block-check read deadline
+BUDGET_RECONCILE_TIMEOUT_MS=2000   # scheduler reconcile-write deadline (separate from the 50ms hot path)
+BUDGET_CACHE_TTL_MS=10000  BUDGET_CACHE_MAX=5000   # in-process owner-budget cache
+
+# --- pricing catalog ---
+PRICING_REFRESH_URL=<LiteLLM raw JSON>  # admin refresh source (a bundled snapshot ships by default; refresh is opt-in)
+PRICING_FETCH_TIMEOUT_MS=15000  PRICING_MAX_BYTES=8000000
+
+# --- notifications (channels are managed in the Settings UI; these are server-wide defaults) ---
+SMTP_HOST= SMTP_PORT=587 SMTP_USER= SMTP_PASS= SMTP_FROM= SMTP_SECURE=starttls  # active only when HOST AND FROM set
+APPRISE_API_URL=                   # unset by default; e.g. http://apprise:8000 for the caronc/apprise sidecar (SSRF-validated at boot)
+NOTIFY_ALLOWED_ENDPOINTS=          # ; -separated host,cidr[,port] SSRF allowlist entries for soft-private ranges
+NOTIFY_APPRISE_EGRESS_CONFIRMED=false   # gates cloud Apprise egress
+NOTIFY_FAILURE_THRESHOLD=20  NOTIFY_FAILURE_WINDOW_MS=900000   # request-failure spike alert
+NOTIFY_WEEKLY_ENABLED=false  NOTIFY_WEEKLY_CRON="0 8 * * 1"    # weekly per-owner spend summary
+
+# --- observability ---
+METRICS_ENABLED=true               # Prometheus /metrics (404 when false)
+OTEL_ENABLED=false                 # OTLP tracing (never required for a request to succeed)
+OTEL_SERVICE_NAME=polyrouter
+OTEL_EXPORTER_OTLP_ENDPOINT=       # malformed URL fails boot; unreachable-but-valid never blocks a request
 ```
 
-Gate by `MODE`: local providers, localhost auto-login, and Layer 2 / learning only where appropriate.
+Gate by `MODE`: local providers, localhost auto-login, and the SSRF loopback exception only where
+appropriate. **Sharp edges** an operator must know: `BUDGET_FAIL_OPEN` defaults to allow-on-fault (and a
+stopped `BUDGET_SCHED_ENABLED` scheduler silently degrades block enforcement after `BUDGET_STALE_MS`);
+`ROUTING_AUTO_LAYERS` leaves cost-saving cascade OFF unless it lists `cascade`; SMTP is a no-op unless
+both `SMTP_HOST` and `SMTP_FROM` are set. (Cloud graduation — a split data plane, embedding classifier,
+Timescale/ClickHouse — adds its own vars and is out of the baseline build.)
 
 ---
 

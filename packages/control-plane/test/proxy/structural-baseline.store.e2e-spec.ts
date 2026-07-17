@@ -67,7 +67,7 @@ describe('StructuralBaselineStore (real Redis)', () => {
     a.observe(uid, 'ag', 'sys', 800, 0.5);
     await a.flushPending();
 
-    const hkey = `route:sbaseline:${uid}:ag`;
+    const hkey = `route:sbaseline:v2:${uid}:ag`;
     const fields = await client.hgetall(hkey);
     expect(Number(Object.values(fields)[0])).toBe(800);
     expect(await client.ttl(hkey)).toBeGreaterThan(0);
@@ -79,13 +79,25 @@ describe('StructuralBaselineStore (real Redis)', () => {
     expect(b.read(uid, 'ag', 'sys')?.ewma).toBe(800);
   });
 
-  it('caps the number of fingerprint fields per agent', async () => {
+  it('caps fields, evicts the stalest, and keeps a recurring fingerprint learnable (E10.3)', async () => {
     const c = newStore();
     await c.waitReady();
     const uid = `cap-${Date.now()}`;
     for (let i = 0; i < 40; i++) c.observe(uid, 'ag', `sys-${i}`, 100, 0.5);
+    // A recurring boilerplate fingerprint AFTER the flood must survive eviction
+    // (the OLD code refused it once the hash filled + never let the TTL lapse).
+    c.observe(uid, 'ag', 'recurring', 777, 0.5);
     await c.flushPending();
-    expect(await client.hlen(`route:sbaseline:${uid}:ag`)).toBeLessThanOrEqual(32);
+    const hkey = `route:sbaseline:v2:${uid}:ag`;
+    const hlen = await client.hlen(hkey);
+    expect(hlen).toBeLessThanOrEqual(32);
+    expect(hlen).toBe(await client.zcard(`${hkey}:z`)); // hash + LRU ZSET stay in sync
+    // The recurring fingerprint is (re-)learnable: a fresh store cold-seeds it.
+    const d = newStore();
+    await d.waitReady();
+    d.read(uid, 'ag', 'recurring');
+    await waitFor(() => d.read(uid, 'ag', 'recurring') !== null);
+    expect(d.read(uid, 'ag', 'recurring')?.ewma).toBe(777);
   });
 
   it('scopes baseline keys by tenant', async () => {
@@ -96,8 +108,8 @@ describe('StructuralBaselineStore (real Redis)', () => {
     d.observe(u1, 'ag', 'sys', 100, 0.5);
     d.observe(u2, 'ag', 'sys', 200, 0.5);
     await d.flushPending();
-    expect(await client.exists(`route:sbaseline:${u1}:ag`)).toBe(1);
-    expect(await client.exists(`route:sbaseline:${u2}:ag`)).toBe(1);
+    expect(await client.exists(`route:sbaseline:v2:${u1}:ag`)).toBe(1);
+    expect(await client.exists(`route:sbaseline:v2:${u2}:ag`)).toBe(1);
   });
 
   it('bounds background work during a Redis outage (unique-fingerprint flood)', () => {

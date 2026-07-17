@@ -163,11 +163,16 @@ function createModelAccessor(db: Db): ModelAccessor {
       return rows[0] ?? null;
     },
     async remove(principal, id) {
-      const rows = await db
-        .delete(models)
-        .where(and(eq(models.id, id), inArray(models.providerId, ownedProviderIds(db, principal))))
-        .returning({ id: models.id });
-      return rows.length > 0;
+      return db.transaction(async (tx) => {
+        await lockOwnerTiers(tx, principal); // tier-first lock order (no deadlock w/ replaceForTier)
+        const rows = await tx
+          .delete(models)
+          .where(and(eq(models.id, id), inArray(models.providerId, ownedProviderIds(tx, principal))))
+          .returning({ id: models.id });
+        if (rows.length === 0) return false;
+        await compactTiers(tx, principal); // E10.2: keep tier positions contiguous after the cascade
+        return true;
+      });
     },
     async clearPricingForProvider(principal, providerId) {
       const rows = await db
@@ -189,6 +194,48 @@ function createModelAccessor(db: Db): ModelAccessor {
  * their tier; the linked model must also be reachable by the principal). */
 function ownedTierIds(db: Db, principal: Principal) {
   return db.select({ id: tiers.id }).from(tiers).where(ownershipPredicate(tiers, principal));
+}
+
+/** Renumber every OWNER tier's routing entries to contiguous positions 0..N-1
+ * (E10.2). Run after a provider/model delete whose `ON DELETE CASCADE` removed
+ * entries, so a tier that lost its position-0 (or an interior) entry stays
+ * routable (`resolveTier` requires position 0 exactly). Renumbers ASCENDING so
+ * each new (lower) target position is already vacated — never transiently
+ * colliding with the `(tier_id, position)` unique index (the `0..4` CHECK forbids
+ * a bump-to-high-offset). Compacts the WHOLE owner tier set on the post-delete
+ * committed state (idempotent for already-contiguous tiers), so a concurrent
+ * chain mutation can't leave an uncaptured gap. Owner-scoped (invariant 5). */
+/** Lock the owner's tier rows (id order) at the START of a delete transaction, so
+ * its later position compaction acquires tier locks BEFORE the cascade touches
+ * routing entries — the same tier-first order `replaceForTier` uses — preventing a
+ * row-lock deadlock (`40P01`) between a concurrent chain edit and a delete (E10.2,
+ * clink round 2). Owner-scoped; id order also serializes concurrent deletes safely. */
+async function lockOwnerTiers(db: Db, principal: Principal): Promise<void> {
+  await db
+    .select({ id: tiers.id })
+    .from(tiers)
+    .where(ownershipPredicate(tiers, principal))
+    .orderBy(tiers.id)
+    .for('update');
+}
+
+async function compactTiers(db: Db, principal: Principal): Promise<void> {
+  const ownerTiers = await db
+    .select({ id: tiers.id })
+    .from(tiers)
+    .where(ownershipPredicate(tiers, principal));
+  for (const { id: tierId } of ownerTiers) {
+    const entries = await db
+      .select({ id: routingEntries.id, position: routingEntries.position })
+      .from(routingEntries)
+      .where(eq(routingEntries.tierId, tierId))
+      .orderBy(routingEntries.position);
+    for (let i = 0; i < entries.length; i += 1) {
+      if (entries[i]!.position !== i) {
+        await db.update(routingEntries).set({ position: i }).where(eq(routingEntries.id, entries[i]!.id));
+      }
+    }
+  }
 }
 
 function createRoutingEntryAccessor(db: Db): RoutingEntryAccessor {
@@ -453,7 +500,20 @@ function createRoutingSettingsAccessor(db: Db): RoutingSettingsAccessor {
 export function buildPersistencePort(db: Db): PersistencePort {
   return {
     agents: createOwnedRepository(db, agents as unknown as AnyOwnedTable),
-    providers: createOwnedRepository(db, providers as unknown as AnyOwnedTable),
+    providers: {
+      ...createOwnedRepository(db, providers as unknown as AnyOwnedTable),
+      // E10.2: delete + re-compact tier positions in one transaction, so a
+      // cascade that removed a position-0 model leaves the tier routable.
+      async remove(principal: Principal, id: string): Promise<boolean> {
+        return db.transaction(async (tx) => {
+          await lockOwnerTiers(tx, principal); // tier-first lock order (no deadlock w/ replaceForTier)
+          const rows = await buildRemove(tx, providers as unknown as AnyOwnedTable, principal, id);
+          if (rows.length === 0) return false;
+          await compactTiers(tx, principal);
+          return true;
+        });
+      },
+    },
     tiers: createOwnedRepository(db, tiers as unknown as AnyOwnedTable),
     routingRules: createOwnedRepository(db, routingRules as unknown as AnyOwnedTable),
     notificationChannels: createOwnedRepository(

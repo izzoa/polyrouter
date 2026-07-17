@@ -29,14 +29,19 @@ const MAX_FINGERPRINTS_PER_AGENT = 32;
 const BASELINE_TTL_SECONDS = 2_592_000; // 30 days
 const OBSERVE_FLUSH_MS = 5_000;
 
-/** Atomic EWMA of a hash field, capped field count, sliding TTL.
- * KEYS[1]=hash; ARGV: [1]=field [2]=x [3]=alpha [4]=maxFields [5]=ttl. */
+/** Atomic EWMA of a hash field with a per-field LRU (E10.3): a paired ZSET
+ * (field → last-touch) lets a new field at cap EVICT the stalest field instead of
+ * being refused, so a rotating-fingerprint flood can't permanently saturate the
+ * set and block re-learning legitimate boilerplate. `now` is the Redis server
+ * clock (skew-free; allowed in a writing script under Redis 7 effects replication).
+ * KEYS[1]=hash, KEYS[2]=lru-zset; ARGV: [1]=field [2]=x [3]=alpha [4]=maxFields [5]=ttl. */
 const EWMA_LUA = `
+local st = redis.call('TIME'); local now = tonumber(st[1]) * 1000 + math.floor(tonumber(st[2]) / 1000)
 local exists = redis.call('HEXISTS', KEYS[1], ARGV[1])
 if exists == 0 then
   if redis.call('HLEN', KEYS[1]) >= tonumber(ARGV[4]) then
-    redis.call('EXPIRE', KEYS[1], ARGV[5])
-    return 0
+    local stale = redis.call('ZPOPMIN', KEYS[2])
+    if stale[1] then redis.call('HDEL', KEYS[1], stale[1]) end
   end
   redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
 else
@@ -44,7 +49,9 @@ else
   local a = tonumber(ARGV[3])
   redis.call('HSET', KEYS[1], ARGV[1], a * tonumber(ARGV[2]) + (1 - a) * prev)
 end
+redis.call('ZADD', KEYS[2], now, ARGV[1])
 redis.call('EXPIRE', KEYS[1], ARGV[5])
+redis.call('EXPIRE', KEYS[2], ARGV[5])
 return 1
 `;
 
@@ -163,8 +170,16 @@ export class StructuralBaselineStore implements OnApplicationShutdown {
 
   // --- internals ---
 
+  // `v2` (E10.3): the hash now has a paired LRU ZSET. A legacy `v1`-shaped hash
+  // (no ZSET) would keep its 32 fields immortal under the new evict-at-cap Lua, so
+  // the namespace is versioned — old hashes are ignored and expire on their TTL.
   private hashKey(tenantId: string, agentId: string | null): string {
-    return `route:sbaseline:${tenantId}:${agentId ?? '-'}`;
+    return `route:sbaseline:v2:${tenantId}:${agentId ?? '-'}`;
+  }
+
+  /** Per-agent field→last-touch LRU ZSET, paired with the baseline hash (E10.3). */
+  private static zsetKey(hashKey: string): string {
+    return `${hashKey}:z`;
   }
 
   private field(canonicalSystem: string): string {
@@ -228,8 +243,9 @@ export class StructuralBaselineStore implements OnApplicationShutdown {
     try {
       await this.redis.eval(
         EWMA_LUA,
-        1,
+        2,
         obs.hashKey,
+        StructuralBaselineStore.zsetKey(obs.hashKey),
         obs.field,
         String(obs.x),
         String(obs.alpha),

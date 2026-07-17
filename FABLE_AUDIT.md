@@ -773,7 +773,7 @@ both weaken defenses the spec mandates and one is an auth-plane DoS.
 ---
 
 <a id="epic-e10"></a>
-## EPIC E10 — Routing-config robustness & structural baseline · P2
+## EPIC E10 — Routing-config robustness & structural baseline · P2 · ✅ SHIPPED 2026-07-17 (`fix-routing-config-edges`)
 
 **Proposal slug:** `fix-routing-config-edges` ·
 **Spec refs:** spec.md §7.1/§7.2/§7.4; `openspec/specs/{routing-config,structural-routing}`; CLAUDE.md invariants 1, 5
@@ -781,7 +781,7 @@ both weaken defenses the spec mandates and one is an auth-plane DoS.
 usable tier, or silently disable shared learning. (The cascade client-cancel record gap is a recording
 defect — it is Task E5.2, not here.)
 
-### Task E10.1 — Reject explicit JSON nulls in rule create/PATCH (currently 500s) ☐ `[medium/XS]`
+### Task E10.1 — Reject explicit JSON nulls in rule create/PATCH (currently 500s) ✅ `[medium/XS]`
 - **Where:** `packages/control-plane/src/routing-config/routing-config.service.ts:265` (`updateRule`); `routing-config.dto.ts` (`UpdateRuleDto`/`CreateRuleDto`)
 - **Defect:** `@IsOptional()` skips validators for `null` (not just `undefined`), and the
   ValidationPipe doesn't strip nulls. So `{target:null}` → `parseRoutingTarget(null)` TypeError → 500;
@@ -795,7 +795,7 @@ defect — it is Task E5.2, not here.)
   and the stored rule is unchanged.
 - **Verify:** e2e null-PATCH cases in `routing-config.e2e-spec.ts`.
 
-### Task E10.2 — Stop a cascade-deleted position-0 model from bricking a tier with healthy fallbacks ☐ `[medium/S]`
+### Task E10.2 — Stop a cascade-deleted position-0 model from bricking a tier with healthy fallbacks ✅ `[medium/S]`
 - **Where:** `packages/data-plane/src/routing/resolve.ts:123` (`resolveTier`); provider/model delete transaction in `packages/control-plane/src/database/port.ts`
 - **Defect:** `replaceForTier` writes contiguous positions, but provider deletion cascades
   `routing_entries` (blessed by the provider-mgmt spec) and nothing re-compacts. `resolveTier` requires
@@ -809,7 +809,7 @@ defect — it is Task E5.2, not here.)
   surviving next model serves; a genuinely empty tier still reports `empty_tier`.
 - **Verify:** e2e — 2-model cross-provider chain, delete the position-0 provider, POST to the tier, assert the survivor serves.
 
-### Task E10.3 — Evict (or coarsen) the structural baseline fingerprint hash instead of saturating ☐ `[medium/M]`
+### Task E10.3 — Evict (or coarsen) the structural baseline fingerprint hash instead of saturating ✅ `[medium/M]`
 - **Where:** `packages/control-plane/src/proxy/structural/structural-baseline.store.ts:37` (`EWMA_LUA`)
 - **Defect:** The per-agent baseline hash caps at 32 fields and, when full, **rejects new fields while
   refreshing the whole-hash TTL** (no per-field eviction). Harnesses commonly interpolate dynamic

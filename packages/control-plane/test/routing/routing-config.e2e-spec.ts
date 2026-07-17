@@ -248,6 +248,66 @@ describe('routing-config e2e', () => {
     await asA('delete', `/api/routing/rules/${ruleRes.body.id}`);
   });
 
+  it('rejects an explicit null on a non-nullable rule field with 4xx, not 500 (E10.1)', async () => {
+    const created = await asA('post', '/api/routing/rules').send({
+      matchType: 'header',
+      headerValue: 'x',
+      target: `model:${A.modelIds[0]}`,
+    });
+    expect(created.status).toBe(201);
+    const id = created.body.id;
+    for (const bad of [{ target: null }, { priority: null }, { matchType: null }, { headerName: null }]) {
+      const res = await asA('patch', `/api/routing/rules/${id}`).send(bad);
+      expect(res.status).toBeGreaterThanOrEqual(400);
+      expect(res.status).toBeLessThan(500); // 4xx validation, NOT a 500 (TypeError/NOT NULL)
+    }
+    // POST with an explicit null target is also a 4xx, not a 500.
+    const post = await asA('post', '/api/routing/rules').send({
+      matchType: 'header',
+      headerValue: 'x',
+      target: null,
+    });
+    expect(post.status).toBeGreaterThanOrEqual(400);
+    expect(post.status).toBeLessThan(500);
+    // The stored rule is unchanged by the rejected PATCHes.
+    const after = await asA('get', `/api/routing/rules/${id}`);
+    expect(after.body.target).toBe(`model:${A.modelIds[0]}`);
+    await asA('delete', `/api/routing/rules/${id}`);
+  });
+
+  it('re-compacts tier positions when a position-0 provider is deleted (E10.2)', async () => {
+    // A cross-provider chain so deleting the primary's provider leaves a healthy survivor.
+    const p1 = await port.providers.insert(A.principal, {
+      name: 'e10p1',
+      kind: 'api_key',
+      protocol: 'openai_compatible',
+      baseUrl: 'https://e10a.example.com',
+    });
+    const mm1 = (await port.models.createForProvider(A.principal, p1.id, { externalModelId: 'e10-m1' }))!;
+    const p2 = await port.providers.insert(A.principal, {
+      name: 'e10p2',
+      kind: 'api_key',
+      protocol: 'openai_compatible',
+      baseUrl: 'https://e10b.example.com',
+    });
+    const mm2 = (await port.models.createForProvider(A.principal, p2.id, { externalModelId: 'e10-m2' }))!;
+    const tier = await asA('post', '/api/routing/tiers').send({ key: 'e10tier' });
+    await asA('put', `/api/routing/tiers/${tier.body.id}/entries`).send({ modelIds: [mm1.id, mm2.id] });
+
+    // Delete p1 (owns the position-0 model) — the cascade removes mm1's entry.
+    expect(await port.providers.remove(A.principal, p1.id)).toBe(true);
+
+    // The tier is re-compacted: the survivor mm2 is now position 0 (routable), not left at 1.
+    const entries = await port.routingEntries.listForTier(A.principal, tier.body.id);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.modelId).toBe(mm2.id);
+    expect(entries[0]!.position).toBe(0);
+
+    // Deleting the sole remaining provider leaves the tier genuinely empty.
+    expect(await port.providers.remove(A.principal, p2.id)).toBe(true);
+    expect(await port.routingEntries.listForTier(A.principal, tier.body.id)).toHaveLength(0);
+  });
+
   // --- tenant isolation ---
 
   it('never leaks another tenant’s tiers, entries, or rules by id', async () => {

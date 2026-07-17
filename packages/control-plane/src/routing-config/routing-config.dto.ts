@@ -10,6 +10,7 @@ import {
   MaxLength,
   Min,
   MinLength,
+  ValidateIf,
 } from 'class-validator';
 import {
   MAX_MODELS_PER_TIER,
@@ -21,6 +22,12 @@ import {
 // `priority` is stored in an int4 column; bound it so an oversized value is a
 // clean 4xx, never an insert-time overflow 500.
 const PRIORITY_MAX = 1_000_000;
+
+/** Validate a field only when it is PRESENT (E10.1). Unlike `@IsOptional()`
+ * (which skips validators for BOTH `undefined` and `null`), this still runs them
+ * for an explicit `null` — so a non-nullable field sent as `null` is a clean 4xx
+ * rather than a downstream TypeError / NOT NULL 500. */
+const IfDefined = (): PropertyDecorator => ValidateIf((_o, v) => v !== undefined);
 
 export class CreateTierDto {
   // Pattern also bounds length (1–64) and charset (lowercase slug).
@@ -65,7 +72,7 @@ export class CreateRuleDto {
   matchType!: RuleMatchType;
 
   // Optional on create; defaults to the tier header (normalized in the service).
-  @IsOptional()
+  @IfDefined()
   @IsString()
   @MaxLength(128)
   headerName?: string;
@@ -81,7 +88,7 @@ export class CreateRuleDto {
   @MaxLength(320)
   target!: string;
 
-  @IsOptional()
+  @IfDefined()
   @IsInt()
   @Min(0)
   @Max(PRIORITY_MAX)
@@ -90,11 +97,11 @@ export class CreateRuleDto {
 
 // Every field optional — the service validates the effective merged row.
 export class UpdateRuleDto {
-  @IsOptional()
+  @IfDefined()
   @IsIn(RULE_MATCH_TYPES)
   matchType?: RuleMatchType;
 
-  @IsOptional()
+  @IfDefined()
   @IsString()
   @MaxLength(128)
   headerName?: string;
@@ -104,13 +111,13 @@ export class UpdateRuleDto {
   @MaxLength(256)
   headerValue?: string;
 
-  @IsOptional()
+  @IfDefined()
   @IsString()
   @MinLength(1)
   @MaxLength(320)
   target?: string;
 
-  @IsOptional()
+  @IfDefined()
   @IsInt()
   @Min(0)
   @Max(PRIORITY_MAX)

@@ -131,6 +131,10 @@ export class ChannelsService {
       this.gateCloudApprise(kind);
       await this.assertConfigSafe(kind, config);
       patch.encryptedConfig = encryptSecret(JSON.stringify(config), this.rt.notifySecret);
+      // The prior test result was for the OLD config — clear it so the UI doesn't show
+      // a stale "success" for a target/credentials that changed (A-34).
+      patch.lastTestStatus = null;
+      patch.lastTestAt = null;
     }
     const row = await this.db.notificationChannels.update(principal, id, patch);
     if (row === null) throw new NotFoundException();

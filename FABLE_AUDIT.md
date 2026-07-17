@@ -1066,9 +1066,9 @@ change proposal. Batch opportunistically when touching the neighboring code.
 | A-29 | frontend | Agents page shows placeholder dashes + stale "arrives with analytics" copy | `Agents.tsx:108` |
 | A-30 | frontend | Hardcoded `v0.4.1 · postgres 16 · redis 7` / fabricated instance info | `appState.ts`,`Settings.tsx` |
 | A-31 | frontend | Timeseries gaps interpolated by uPlot — zero-fill client-side | `data/analytics.ts` |
-| A-32 | notify | Weekly-summary job runs single-attempt despite idempotent occurrence design | `weekly-summary.scheduler.ts:130` |
+| A-32 ✅ | notify | weekly-summary job now retries (attempts+backoff) — safe under its idempotent occurrence keying | `weekly-summary.scheduler.ts:130` |
 | A-33 ✅ | notify | Validate `APPRISE_API_URL` at boot → already done (notify.config SSRF-gates it at boot) | `notify.config.ts:100` |
-| A-34 | notify | Channel config update doesn't clear `lastTestStatus` — stale "success" | `channels.service.ts` |
+| A-34 ✅ | notify | a channel config change clears lastTestStatus/lastTestAt (no stale success) | `channels.service.ts` |
 | A-35 ✅ | observ | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` now registered (boot-validated) + compose pass-through | `observability.config.ts` |
 | A-36 ✅ | observ | provider display-name label documented as an accepted trade-off (legibility over rename-stability) | `proxy-metrics.ts` |
 | A-37 ✅ | observ | added `outcome` label to `upstream_duration` (canceled no longer pollutes success latency) | `proxy-metrics.ts` |

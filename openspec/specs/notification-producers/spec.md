@@ -33,7 +33,7 @@ The system SHALL detect a spike of failed requests per owner — counting record
 
 ### Requirement: A scheduled weekly job emits per-owner spend summaries
 
-The system SHALL provide a scheduled (opt-in) job that, once per configured period regardless of the number of running instances, aggregates each owner's total spend over the past week from **both cost ledgers** (the request log and cascade request-attempts) and emits one `weekly_spend_summary` per owner (carrying that owner's total). The aggregate is a system-level rollup exposed through a **narrow, scheduler-only** reader (not the general persistence seam); its output SHALL be partitioned per owner so that no owner's summary contains another owner's spend (invariant 5). The scheduler's produced job records SHALL be **retention-bounded** (completed/failed jobs removed by age) so they do not accumulate unbounded in Redis.
+The system SHALL provide a scheduled (opt-in) job that, once per configured period regardless of the number of running instances, aggregates each owner's total spend over the past week from **both cost ledgers** (the request log and cascade request-attempts) and emits one `weekly_spend_summary` per owner (carrying that owner's total). The aggregate is a system-level rollup exposed through a **narrow, scheduler-only** reader (not the general persistence seam); its output SHALL be partitioned per owner so that no owner's summary contains another owner's spend (invariant 5). The scheduler's produced job records SHALL be **retention-bounded** (completed/failed jobs removed by age) so they do not accumulate unbounded in Redis. The job SHALL **retry a transient failure** (bounded `attempts` with backoff): because each owner's summary emit is keyed by the occurrence and deduplicated, a retry cannot double-send, so a single DB/Redis blip during a run must not silently drop the whole period's summaries.
 
 #### Scenario: The weekly job emits each owner only their own total
 
@@ -42,8 +42,8 @@ The system SHALL provide a scheduled (opt-in) job that, once per configured peri
 
 #### Scenario: An occurrence yields one summary per owner regardless of instances or re-runs
 
-- WHEN multiple app instances share one Redis and the scheduled occurrence fires (and even if a stalled job re-runs)
-- THEN each owner receives one `weekly_spend_summary` for that occurrence (not one per instance or per re-run), because emits are keyed by the occurrence and deduplicated
+- WHEN multiple app instances share one Redis and the scheduled occurrence fires (and even if a stalled job re-runs OR a transient failure triggers a bounded retry)
+- THEN each owner receives one `weekly_spend_summary` for that occurrence (not one per instance, per re-run, or per retry attempt), because emits are keyed by the occurrence and deduplicated
 
 #### Scenario: Scheduler registration never blocks boot
 

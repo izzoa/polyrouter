@@ -218,6 +218,16 @@ describe('notification channels — delivery core (#15a)', () => {
     expect(appriseRes.ok).toBe(true);
     expect(await lastTestStatusOf(appriseCh.id)).toBe('success');
     expect(apprise.requests.length).toBe(beforeA + 1);
+
+    // A-34: changing the config invalidates the prior test result — a stale
+    // "success" for the OLD config must not linger in the UI.
+    await svc.update(principal, smtp.id, { config: smtpConfig(smtpAccept.port, { from: 'new@x.io' }) });
+    expect(await lastTestStatusOf(smtp.id)).toBeNull();
+    // A metadata-only update (no config change) keeps the last test result.
+    await svc.testSend(principal, smtp.id);
+    expect(await lastTestStatusOf(smtp.id)).toBe('success');
+    await svc.update(principal, smtp.id, { name: 'renamed' });
+    expect(await lastTestStatusOf(smtp.id)).toBe('success');
   });
 
   it('rate-limits the test-send route per user — 429 past the threshold (E14.2)', async () => {

@@ -130,8 +130,19 @@ export class WeeklySummaryScheduler implements OnApplicationBootstrap, OnApplica
       await this.queue.upsertJobScheduler(
         SCHEDULER_ID,
         { pattern: this.cfg.weeklyCron, tz: 'UTC' },
-        // Bounded retention (E6.2) — mirrors notify.queue's BASE_JOB_OPTS.
-        { name: JOB_NAME, opts: { removeOnComplete: { age: 3_600 }, removeOnFail: { age: 86_400 } } },
+        {
+          name: JOB_NAME,
+          opts: {
+            // Retry a transient failure (A-32): the weekly-summary occurrence is
+            // idempotent (dedup'd per scope+period), so a retry can't double-send —
+            // but without `attempts` a single transient fault (DB/Redis blip) drops
+            // the whole week's summary silently. Bounded retention (E6.2).
+            attempts: 4,
+            backoff: { type: 'exponential' as const, delay: 2_000 },
+            removeOnComplete: { age: 3_600 },
+            removeOnFail: { age: 86_400 },
+          },
+        },
       );
     } else {
       await this.queue.removeJobScheduler(SCHEDULER_ID).catch(() => undefined);

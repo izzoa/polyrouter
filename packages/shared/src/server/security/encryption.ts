@@ -45,8 +45,14 @@ export function decryptSecret(envelope: string, keyHex: string): string {
   }
   const [, , ivB64, tagB64, ciphertextB64] = parts;
   try {
+    const tag = Buffer.from(tagB64 ?? '', 'base64');
+    // Pin the GCM tag to the full 16 bytes (A-40): Node accepts 4–16-byte tags, and
+    // a truncated tag weakens forgery resistance. `encryptSecret` always emits 16, so
+    // any other length is a malformed/tampered envelope — reject it (the catch below
+    // rethrows the fixed, secret-free message).
+    if (tag.length !== 16) throw new Error('bad auth tag length');
     const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(ivB64 ?? '', 'base64'));
-    decipher.setAuthTag(Buffer.from(tagB64 ?? '', 'base64'));
+    decipher.setAuthTag(tag);
     return Buffer.concat([
       decipher.update(Buffer.from(ciphertextB64 ?? '', 'base64')),
       decipher.final(),

@@ -49,4 +49,16 @@ describe('assertNetworkHostSafe (#15a notification host guard)', () => {
       ).rejects.toBeInstanceOf(SsrfError); // port-bounded
     }
   });
+
+  it('validates the allowlist ENTRIES on the notification path too (A-41)', async () => {
+    // A hard-overlapping allowlist entry is now rejected here (config parity with
+    // the URL path), not silently ignored.
+    await expect(
+      assertNetworkHostSafe('relay', 25, {
+        mode: 'cloud',
+        resolve: to('10.1.2.3'),
+        allowedEndpoints: [{ host: 'relay', cidr: '127.0.0.0/8' }],
+      }),
+    ).rejects.toThrow(/overlaps a hard-blocked/);
+  });
 });

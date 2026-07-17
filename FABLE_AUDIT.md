@@ -1074,10 +1074,10 @@ change proposal. Batch opportunistically when touching the neighboring code.
 | A-37 ✅ | observ | added `outcome` label to `upstream_duration` (canceled no longer pollutes success latency) | `proxy-metrics.ts` |
 | A-38 | db | Money columns are `double precision` (mitigated by µ$ rounding) — `numeric` would remove the class | `schema.ts` |
 | A-39 | db | Boot migrations take no advisory lock (documented single-replica constraint) | `migrations-runner.ts` |
-| A-40 | security | GCM auth tag length not pinned to 16 bytes on decrypt (defense-in-depth) | `encryption.ts:49` |
-| A-41 | security | Allowlist HARD-overlap guard checks only CIDR network address; skipped on notification host path | `ssrf.ts:183` |
+| A-40 ✅ | security | GCM auth tag pinned to 16 bytes on decrypt (truncated tag rejected) | `encryption.ts:49` |
+| A-41 ✅ | security | allowlist HARD-overlap guard now checks the full CIDR range (v4+v6) + runs on the notification path | `ssrf.ts:183` |
 | A-42 ✅ | provider-mgmt | `IsUrl` `require_tld` rejects `http://localhost:11434` (Ollama) with a misleading 400 → fixed in E11 (`bound-provider-sync`) | `providers.dto.ts:19` |
-| A-43 | foundation | Redis client attaches no `error` listener → noisy `[ioredis] Unhandled error` on outage | `redis.module.ts` |
+| A-43 ✅ | foundation | Redis client attaches a latched, message-redacted `error` listener | `redis.module.ts` |
 | A-44 | routing-config | PATCH can't clear nullable fields (`@IsString` rejects null on displayName/description) | `routing-config.dto.ts` |
 | A-45 | dx | Duplicated comparators/formulas (`ruleOrder`, effective-auto-layers) risk drift — share one impl | `routing-config.service.ts:224`, `auto-layers.service.ts:51` |
 

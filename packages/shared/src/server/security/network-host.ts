@@ -1,5 +1,11 @@
 import { lookup as dnsLookup } from 'node:dns/promises';
-import { classifyIp, isAddressPermitted, SsrfError, type AllowedEndpoint } from './ssrf';
+import {
+  assertEndpointsSafe,
+  classifyIp,
+  isAddressPermitted,
+  SsrfError,
+  type AllowedEndpoint,
+} from './ssrf';
 
 /**
  * SSRF guard for a raw network host+port (a notification SMTP server / Apprise
@@ -26,6 +32,10 @@ export async function assertNetworkHostSafe(
   port: number,
   opts: NetworkHostOptions,
 ): Promise<{ ip: string }> {
+  // Validate the allowlist ENTRIES with the same HARD-overlap policy the URL path
+  // uses (A-41) — a hard-overlapping/malformed `NOTIFY_ALLOWED_ENDPOINTS` entry is
+  // rejected here too, not only on the provider/URL path.
+  assertEndpointsSafe(opts.allowedEndpoints);
   const cleaned = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
   let ips: string[];
   try {

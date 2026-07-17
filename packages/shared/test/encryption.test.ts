@@ -32,6 +32,14 @@ describe('secret encryption (secret-encryption)', () => {
     expect(() => decryptSecret(envelope, otherKey)).toThrow(/decryption failed/);
   });
 
+  it('rejects a truncated GCM auth tag (A-40 — pinned to 16 bytes)', () => {
+    const parts = encryptSecret(plaintext, key).split(':');
+    // Truncate the (16-byte) tag to 8 bytes — GCM would otherwise accept a short
+    // tag with weaker forgery resistance; we require the full 16.
+    parts[3] = Buffer.from(parts[3]!, 'base64').subarray(0, 8).toString('base64');
+    expect(() => decryptSecret(parts.join(':'), key)).toThrow(/decryption failed/);
+  });
+
   it('rejects malformed envelopes and bad keys', () => {
     expect(() => decryptSecret('not-an-envelope', key)).toThrow(/malformed envelope/);
     expect(() => decryptSecret('poly-enc:v9:a:b:c', key)).toThrow(/unsupported envelope version/);

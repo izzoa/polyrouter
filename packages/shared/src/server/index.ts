@@ -79,6 +79,7 @@ export {
   classifyIp,
   isBlockedIp,
   isAddressPermitted,
+  assertEndpointsSafe,
   assertUrlSafe,
   createGuardedDispatcher,
   guardedFetch,

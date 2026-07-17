@@ -1,6 +1,7 @@
 import { createServer, type Server } from 'node:http';
 import { afterAll, describe, expect, it } from 'vitest';
 import {
+  assertEndpointsSafe,
   assertUrlSafe,
   classifyIp,
   guardedFetch,
@@ -120,7 +121,46 @@ describe('assertUrlSafe (ssrf-url-guard)', () => {
         context: { mode: 'cloud' },
         allowedEndpoints: [{ host: 'x', cidr: '127.0.0.0/8' }],
       }),
-    ).rejects.toThrow(/overlaps a hard-blocked range/);
+    ).rejects.toThrow(/overlaps a hard-blocked/);
+  });
+
+  it('A-41: allowlist CIDRs are validated on the FULL range (both ends), v4 and v6', () => {
+    const bad = (cidr: string) => (): void => assertEndpointsSafe([{ host: 'h', cidr }]);
+    const ok = (cidr: string) => (): void => assertEndpointsSafe([{ host: 'h', cidr }]);
+    // A soft NETWORK whose range spans a hard/public block is rejected — this
+    // isolates the broadcast check (the network address alone would classify soft):
+    //  - 10.0.0.0/7  → broadcast 11.255.255.255 (public)
+    //  - fc00::/6    → range spans hard fe80::/10 and ff00::/8
+    for (const cidr of ['10.0.0.0/7', 'fc00::/6', 'fc00::/0', '0.0.0.0/0', '127.0.0.0/8']) {
+      expect(bad(cidr)).toThrow(/overlaps a hard-blocked or public range/);
+    }
+    // Malformed / out-of-range / noncanonical CIDRs are a TYPED rejection (never a
+    // parser RangeError): bad prefix, zone id, double slash, non-decimal prefix.
+    for (const cidr of [
+      '10.0.0.0/33',
+      'fc00::/129',
+      '10.0.0.0/x',
+      'not-a-cidr',
+      'fc00::1%eth0/128',
+      'fc00::%eth0/8',
+      'fc00::/8/x',
+      'fd00::/0x8',
+      'fd00::/1e2',
+    ]) {
+      expect(bad(cidr)).toThrow(/invalid allowedEndpoint cidr/);
+    }
+    // Fully-contained private ranges (v4 RFC1918 + v6 ULA), incl. /32 and /128, pass.
+    for (const cidr of [
+      '10.1.0.0/16',
+      '192.168.1.0/24',
+      '172.16.0.0/12',
+      '10.5.6.7/32',
+      'fc00::/8',
+      'fd12:3456::/64',
+      'fd00::1/128',
+    ]) {
+      expect(ok(cidr)).not.toThrow();
+    }
   });
 });
 

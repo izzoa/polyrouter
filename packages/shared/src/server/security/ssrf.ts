@@ -170,21 +170,78 @@ function loopbackAllowed(ctx: GuardContext): boolean {
   return ctx.mode === 'selfhosted' && ctx.providerKind === 'local';
 }
 
-/** Reject an allowlist entry whose CIDR overlaps the HARD set — an allowlist
- * may relax SOFT space only (codex r2 #1). Checks both ends of the range. */
-function assertEndpointsSafe(endpoints: AllowedEndpoint[] | undefined): void {
+function ipToBigInt(addr: string, family: Family): bigint {
+  if (family === 'ipv4') {
+    return addr.split('.').reduce((acc, o) => (acc << 8n) + BigInt(Number(o)), 0n);
+  }
+  // Expand an embedded IPv4 tail (e.g. `::ffff:1.2.3.4`) into two hex groups first.
+  let a = addr;
+  const v4 = /^(.*:)(\d+\.\d+\.\d+\.\d+)$/.exec(a);
+  if (v4) {
+    const o = v4[2]!.split('.').map((x) => Number(x));
+    a = `${v4[1]!}${(((o[0]! << 8) | o[1]!) >>> 0).toString(16)}:${(((o[2]! << 8) | o[3]!) >>> 0).toString(16)}`;
+  }
+  const [head, tail] = a.split('::');
+  const h: string[] = head ? head.split(':').filter(Boolean) : [];
+  const t: string[] | null =
+    tail === undefined ? null : tail ? tail.split(':').filter(Boolean) : [];
+  const fill: string[] = t === null ? [] : Array.from({ length: 8 - h.length - t.length }, () => '0');
+  const groups: string[] = t === null ? h : [...h, ...fill, ...t];
+  return groups.reduce((acc, g) => (acc << 16n) + BigInt(parseInt(g || '0', 16)), 0n);
+}
+function bigIntToIp(n: bigint, family: Family): string {
+  if (family === 'ipv4') {
+    return [24n, 16n, 8n, 0n].map((s) => Number((n >> s) & 0xffn)).join('.');
+  }
+  const groups: string[] = [];
+  let v = n;
+  for (let i = 0; i < 8; i += 1) {
+    groups.unshift((v & 0xffffn).toString(16));
+    v >>= 16n;
+  }
+  return groups.join(':');
+}
+/** Network + broadcast (both ends) of a CIDR, for either family. */
+function cidrRange(addr: string, prefix: number, family: Family): [string, string] {
+  const bits = family === 'ipv4' ? 32n : 128n;
+  const full = (1n << bits) - 1n;
+  const host = bits - BigInt(prefix);
+  const mask = prefix === 0 ? 0n : (full << host) & full;
+  const base = ipToBigInt(addr, family);
+  const net = base & mask;
+  const last = net | ((1n << host) - 1n);
+  return [bigIntToIp(net, family), bigIntToIp(last, family)];
+}
+
+/** Reject an allowlist entry whose CIDR overlaps the HARD set — an allowlist may
+ * relax SOFT (private) space only (codex r2 #1; A-41). It checks BOTH the network
+ * and broadcast address (for either family), so a short-prefix CIDR whose network
+ * is private but whose range spans a hard/public block (e.g. `10.0.0.0/7` →
+ * `11.x` public, or `fc00::/6` → hard `fe80::/10`) is rejected — not just the
+ * network. Exported so the network-host (notification) path validates its allowlist
+ * with the same policy; throws `SsrfError` so callers classify it uniformly. */
+export function assertEndpointsSafe(endpoints: AllowedEndpoint[] | undefined): void {
   for (const e of endpoints ?? []) {
-    const [addr, prefixStr] = e.cidr.split('/');
-    const family = addr ? familyOf(addr) : null;
-    if (!addr || prefixStr === undefined || !family) {
-      throw new Error(`ssrf: invalid allowedEndpoint cidr ${e.cidr}`);
-    }
-    // A soft-only CIDR has both its network and broadcast in SOFT space.
-    const netClass = classifyIp(addr, {});
-    if (netClass !== 'soft') {
-      throw new Error(
-        `ssrf: allowedEndpoint cidr ${e.cidr} overlaps a hard-blocked range — only private (soft) ranges may be allowlisted`,
-      );
+    const invalid = (): SsrfError =>
+      new SsrfError('blocked_ip', `invalid allowedEndpoint cidr ${e.cidr}`);
+    // Strict grammar: exactly one `/`, a decimal-only prefix, and no IPv6 zone id
+    // (`%eth0`) — so noncanonical/scoped inputs are a typed rejection, never a
+    // parser `RangeError` reaching the caller (codex r2).
+    const slash = e.cidr.split('/');
+    if (slash.length !== 2 || e.cidr.includes('%') || !/^\d+$/.test(slash[1] ?? '')) throw invalid();
+    const addr = slash[0]!;
+    const prefix = Number(slash[1]!);
+    const family = familyOf(addr);
+    if (!family) throw invalid();
+    const maxPrefix = family === 'ipv4' ? 32 : 128;
+    if (prefix > maxPrefix) throw invalid();
+    for (const ip of cidrRange(addr, prefix, family)) {
+      if (classifyIp(ip, {}) !== 'soft') {
+        throw new SsrfError(
+          'blocked_ip',
+          `allowedEndpoint cidr ${e.cidr} overlaps a hard-blocked or public range — only private (soft) ranges may be allowlisted`,
+        );
+      }
     }
   }
 }

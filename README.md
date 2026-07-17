@@ -164,12 +164,109 @@ The first build takes a few minutes. Manual alternative: copy `.env` values by h
 the same compose command from the repo. Re-running the installer from **inside** the
 created `polyrouter/` directory is safe — it refreshes the source and keeps `.env`.
 
-> **Prebuilt image (skip the local build).** Tagged releases publish a multi-arch
-> (amd64 + arm64) image to GHCR. Set `POLYROUTER_IMAGE=ghcr.io/izzoa/polyrouter:latest`
-> (or a pinned `:X.Y.Z`) in `.env`, then run the compose command **without** `--build`;
-> upgrades become `docker compose -p polyrouter-selfhost pull && docker compose -p
-> polyrouter-selfhost up -d`. On a **fetch install**, the compose flags go **before**
-> the subcommand, exactly as the installer prints:
+### Self-host from the prebuilt image
+
+No checkout, no local build — pull the published multi-arch (amd64 + arm64) image and run
+it next to Postgres + Redis. Make a directory with two files.
+
+**`docker-compose.yml`** — pin a version (or use `:latest`):
+
+```yaml
+name: polyrouter-selfhost
+
+services:
+  app:
+    image: ghcr.io/izzoa/polyrouter:0.1.0        # or :latest
+    restart: unless-stopped
+    ports:
+      - '${POLYROUTER_HOST:-127.0.0.1}:${POLYROUTER_PORT:-3001}:3001'  # loopback by default
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    stop_grace_period: 45s                        # drain in-flight streams on stop
+    environment:
+      NODE_ENV: production
+      MODE: selfhosted
+      BIND_ADDRESS: 0.0.0.0                        # bind inside the container; host exposure is `ports`
+      PORT: '3001'
+      DATABASE_URL: postgresql://polyrouter:${POSTGRES_PASSWORD}@postgres:5432/polyrouter
+      REDIS_URL: redis://redis:6379
+      BETTER_AUTH_URL: ${APP_URL:-http://localhost:${POLYROUTER_PORT:-3001}}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set in .env}
+      API_KEY_HMAC_SECRET: ${API_KEY_HMAC_SECRET:?set in .env}
+      PROVIDER_CREDENTIAL_KEY: ${PROVIDER_CREDENTIAL_KEY:?set in .env}
+      NOTIFY_CREDENTIALS_SECRET: ${NOTIFY_CREDENTIALS_SECRET:?set in .env}
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: polyrouter
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      POSTGRES_DB: polyrouter
+    volumes: ['polyrouter-pg:/var/lib/postgresql/data']
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U polyrouter -d polyrouter']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes: ['polyrouter-redis:/data']
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+volumes:
+  polyrouter-pg:
+  polyrouter-redis:
+```
+
+**`.env`** — the app aborts at boot if any of the five secrets is missing. Generate real
+values straight into the file (compose does **not** run shell substitution inside `.env`, so
+these must be literal), then lock it down:
+
+```bash
+{
+  for k in BETTER_AUTH_SECRET API_KEY_HMAC_SECRET PROVIDER_CREDENTIAL_KEY \
+           NOTIFY_CREDENTIALS_SECRET POSTGRES_PASSWORD; do
+    echo "$k=$(openssl rand -hex 32)"
+  done
+} > .env
+chmod 600 .env
+```
+
+Then boot it — migrations run on start, no build step:
+
+```bash
+docker compose up -d
+docker compose logs -f app       # watch it come up, then sign up at http://localhost:3001
+```
+
+Upgrade by bumping the `image:` tag (or tracking `:latest`) and pulling:
+
+```bash
+docker compose pull && docker compose up -d      # migrations run on boot
+```
+
+> These are the same service definitions as the repo's `docker-compose.yml`, trimmed to the
+> **required** env — every other variable is optional and defaults when unset (see the
+> `.env` reference below), and the volume/name match so the **Operations** notes below
+> (backup, drain, one-replica) apply unchanged. To go public, expose the port and set
+> `APP_URL` as in **Claim the instance** below.
+>
+> If `docker compose pull` returns `unauthorized`/`denied`, the image is private — either
+> the maintainer hasn't flipped the GHCR package to public yet, or run
+> `docker login ghcr.io` first.
+
+> **Already used the installer or a checkout?** Skip the local build by setting
+> `POLYROUTER_IMAGE=ghcr.io/izzoa/polyrouter:latest` (or a pinned `:X.Y.Z`) in `.env` and
+> running the compose command **without** `--build`. On a **fetch install** the compose
+> flags go **before** the subcommand, exactly as the installer prints:
 > `docker compose -p polyrouter-selfhost --env-file .env -f src/docker-compose.yml
 > --project-directory src pull`.
 >

@@ -109,7 +109,11 @@ async function startProdServer(nodeEnv: string | undefined): Promise<RunningServ
 
 /** Deadline-bound GET so a stalled response is a fast, line-attributed failure. */
 function probe(url: string, headers?: Record<string, string>): Promise<Response> {
-  return fetch(url, { headers, signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+  const init: RequestInit = { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) };
+  if (headers !== undefined) {
+    init.headers = headers;
+  }
+  return fetch(url, init);
 }
 
 /** Bound body reads too — fetch resolves on HEADERS, so a body that never

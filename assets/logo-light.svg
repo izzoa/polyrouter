@@ -1,0 +1,13 @@
+<svg width="392" height="88" viewBox="0 0 392 88" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">polyrouter — one endpoint, routed to the right model</title>
+  <!-- The routing mark: one source node fanning out to three models; the chosen
+       route carries the locked accent (#4F5DFF, STYLESEED.md). Light theme. -->
+  <line x1="20" y1="44" x2="60" y2="22" stroke="#4F5DFF" stroke-width="6" stroke-linecap="round"/>
+  <line x1="21" y1="44" x2="58" y2="44" stroke="#ececea" stroke-width="6" stroke-linecap="round"/>
+  <line x1="20" y1="44" x2="60" y2="66" stroke="#ececea" stroke-width="6" stroke-linecap="round"/>
+  <circle cx="15" cy="44" r="10.5" fill="#17181a"/>
+  <circle cx="66" cy="20" r="10.5" fill="#4F5DFF"/>
+  <circle cx="66" cy="44" r="10.5" fill="#b4b6bc"/>
+  <circle cx="66" cy="68" r="10.5" fill="#b4b6bc"/>
+  <text x="100" y="59" font-family="Geist, -apple-system, 'Segoe UI', system-ui, sans-serif" font-size="42" font-weight="600" letter-spacing="-1.2" fill="#17181a">polyrouter</text>
+</svg>

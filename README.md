@@ -1,29 +1,160 @@
-# polyrouter
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
+    <img src="assets/logo-light.svg" alt="polyrouter" width="400">
+  </picture>
+</p>
 
-Self-hostable **LLM router / gateway** — one OpenAI- and Anthropic-compatible endpoint that
-routes each request to the right model across your providers, with explicit-first routing,
-fallbacks, spend limits, and metadata-only cost tracking. No markup, no third-party proxy:
-your keys, your box.
+<p align="center">
+  <strong>One endpoint for every model.</strong><br>
+  A self-hostable LLM router / gateway: OpenAI- and Anthropic-compatible, explicit-first
+  routing with fallbacks, spend limits, and metadata-only cost tracking.<br>
+  No markup, no third-party proxy — your keys, your box.
+</p>
 
-> Under active spec-driven development — see [`spec.md`](./spec.md) (reference spec),
-> [`TODOS.md`](./TODOS.md) (build plan), and [`openspec/`](./openspec/) (change history).
+<p align="center">
+  <a href="https://github.com/izzoa/polyrouter/actions/workflows/ci.yml"><img src="https://github.com/izzoa/polyrouter/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="./LICENSE.md"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="License: AGPL-3.0"></a>
+  <img src="https://img.shields.io/badge/image-ghcr.io%2Fizzoa%2Fpolyrouter-2496ED?logo=docker&logoColor=white" alt="ghcr.io/izzoa/polyrouter">
+  <img src="https://img.shields.io/badge/node-24.x-5FA04E?logo=node.js&logoColor=white" alt="Node 24.x">
+</p>
+
+---
+
+polyrouter sits between your AI agents and your LLM providers. Agents talk to **one**
+endpoint with **one** key; polyrouter routes each request to the right model across your
+providers (BYOK API keys, custom OpenAI/Anthropic-compatible endpoints, local models),
+retries down a fallback chain when a provider fails, enforces budgets, and records what
+every request actually cost — while storing **metadata only**, never your prompts.
+
+## Features
+
+**Routing & reliability**
+
+- **Explicit-first routing** — naming a model always works; that's the reliable core.
+  On top of it: per-request **tier pinning** (`x-polyrouter-tier: fast`), configurable
+  **tier chains** (primary + ordered fallbacks, drag-to-reorder in the dashboard), and
+  opt-in smart layers for `model: "auto"` — **L1 structural** (sub-millisecond local
+  features; harness system prompts are fingerprinted and subtracted so a huge boilerplate
+  prompt can't force everything into the top tier) and **L3 cascade** (try the cheap
+  model, escalate on a failed quality check). Every smart layer **degrades to
+  explicit/default** — a request never fails because routing tried to be clever.
+- **Safe mid-stream semantics** — fallbacks happen freely *before* the first token; once
+  streaming has begun the model is committed, and an upstream failure terminates the
+  stream with a clear error. Models are **never silently swapped mid-response**.
+- **Per-provider circuit breakers** (Redis-backed, shared across instances) with
+  half-open probes that survive long LLM streams; hung connects and stalled reads trip
+  them cleanly.
+
+**Protocols**
+
+- **OpenAI-compatible** `/v1/chat/completions` + `/v1/models` and **Anthropic-compatible**
+  `/v1/messages`, streaming and non-streaming — any SDK that accepts a base URL works
+  unchanged. Cross-protocol requests (OpenAI client → Anthropic provider and vice versa)
+  go through a dedicated translation core covering multi-turn tool calls, system prompts,
+  cache-control passthrough, stop reasons, and usage — locked by a **golden-file contract
+  suite**.
+
+**Cost & limits**
+
+- **Immutable cost records** — every request stores its **unit-price snapshot** at request
+  time; later catalog updates never rewrite history. Missing provider usage is flagged
+  `~estimated`, never silently nulled. Prices come from a bundled versioned catalog
+  (opt-in refresh from LiteLLM's), with per-model overrides for custom/local endpoints.
+- **Budgets that actually block** — day/week/month windows, global or per-agent,
+  alert-or-block at the threshold, enforced via **atomic Redis counters** that stay
+  correct across multiple proxy instances.
+- **Async notifications** — SMTP and/or [Apprise](https://github.com/caronc/apprise)
+  channels for budget alerts/blocks, provider-down, and failure spikes; deliveries are
+  queued off the request path, deduplicated, and a failing channel never blocks a request
+  or budget enforcement.
+
+**Dashboard**
+
+- SolidJS + uPlot: overview KPIs and request charts, cost breakdowns by
+  model/provider/agent, per-agent usage with one-click key rotation, provider health &
+  catalog sync, routing configuration, and the **decision inspector** — every request
+  shows its decision layer and human-readable routing reason, tokens, snapshot-priced
+  cost, and latency.
+- **Accessible by design**: fully keyboard-operable (real buttons, visible focus, honest
+  dialog semantics), WCAG-checked contrast, `prefers-reduced-motion` support — all
+  enforced by regression test suites, with the visual language pinned in
+  [`STYLESEED.md`](./STYLESEED.md).
+
+**Security & privacy**
+
+- **Metadata only** — prompt/response bodies are never persisted (a property of the
+  build, not a setting). Provider and channel credentials are **encrypted at rest**.
+- **Two credential planes** — dashboard sessions (Better Auth: email/password +
+  optional Google/GitHub/Discord OAuth, slow-hashed) vs. agent API keys
+  (`poly_…`, **HMAC-SHA256 + prefix lookup** — fast per-request verification, never
+  bcrypt on the hot path).
+- **SSRF-guarded egress** — every user-supplied URL the server fetches (provider base
+  URLs, webhook/Apprise targets) is resolved and checked against private/loopback/
+  link-local/metadata ranges, IPv6 included, with DNS-rebinding defense; loopback is
+  allowed only for local models in self-host mode.
+- **Tenant isolation everywhere** — every entity access is ownership-scoped through a
+  central guard; covered by a dedicated e2e suite alongside the SSRF, protocol-contract,
+  and cost-immutability suites.
+
+**Operations**
+
+- **One container** serves the SPA, the API, and the proxy on one port, next to
+  PostgreSQL 16 + Redis; graceful shutdown **drains in-flight streams**; streaming applies
+  backpressure. Prometheus `/metrics` + opt-in OpenTelemetry traces.
+- **CI/CD** — every push runs build/lint/typecheck, the unit suites, and e2e against real
+  Postgres + Redis; tagged releases publish a **multi-arch (amd64+arm64) image** to
+  [`ghcr.io/izzoa/polyrouter`](https://github.com/izzoa/polyrouter/pkgs/container/polyrouter).
+
+## How a request is routed
+
+Precedence order, first match wins:
+
+1. **Explicit model** in the request body — always honored.
+2. **`x-polyrouter-tier` header** → that tier's chain.
+3. **`model: "auto"`** → enabled smart layers (L1 structural → L3 cascade).
+4. **`default` tier** — the guaranteed catch-all.
+
+Whatever layer decides, the tier's fallback chain applies on provider failure, budgets are
+enforced, and the decision (`decision_layer` + `routing_reason`) is recorded for the
+inspector. If a smart layer is unavailable, `auto` silently degrades to the default tier.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  A["Agents<br/>(any OpenAI / Anthropic SDK)"] -- "/v1 + poly_ key" --> P
+  subgraph S["polyrouter — one container"]
+    P["Inference proxy<br/>route · fallback · budget"] --- T["Protocol<br/>translation"]
+    D["Dashboard SPA + API"]
+  end
+  T --> O["OpenAI-compatible<br/>providers"]
+  T --> C["Anthropic-compatible<br/>providers"]
+  P -.->|"atomic counters · breakers"| R[("Redis")]
+  P -->|"RequestLog + price snapshots"| PG[("PostgreSQL")]
+  D --> PG
+```
+
+Monorepo (Turborepo + npm workspaces): `packages/shared` (types),
+`packages/control-plane` (NestJS — dashboard API, auth, CRUD, analytics),
+`packages/data-plane` (the proxy: routing, translation, recording),
+`packages/frontend` (SolidJS SPA). Full architecture and rationale:
+[`spec.md`](./spec.md); build history: [`TODOS.md`](./TODOS.md).
 
 ## Self-hosting
 
-One Docker image runs everything (dashboard + API + proxy on one port) next to
-PostgreSQL and Redis. Requirements: Docker with **Compose v2**.
+Requirements: Docker with **Compose v2**.
 
 ```bash
 # One-liner (inspect it first if you prefer — see below):
-curl -fsSL https://raw.githubusercontent.com/OWNER/polyrouter/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/izzoa/polyrouter/main/install.sh | sh
 
 # Or from a checkout (uses your working tree, downloads nothing):
-git clone <repo> polyrouter && cd polyrouter && ./install.sh
+git clone https://github.com/izzoa/polyrouter.git && cd polyrouter && ./install.sh
 ```
 
 > The one-liner executes a remote script. To inspect first: download `install.sh`,
-> read it, then run it — or use the checkout path. Until the project has a public
-> repository, set `POLYROUTER_REPO=<owner>/<repo>` or use the checkout path.
+> read it, then run it — or use the checkout path.
 
 The script checks Docker, fetches one pinned source archive (compose file and build
 context always the same commit), generates secrets into a mode-600 `.env` (**never**
@@ -50,9 +181,9 @@ created `polyrouter/` directory is safe — it refreshes the source and keeps `.
 > `docker compose -p polyrouter-selfhost …` form shown below assumes a **checkout**
 > (compose file at the repo root). A **one-line (fetch) install** keeps the compose
 > file under `src/` with `.env` beside it, so run the commands from inside the
-> `polyrouter/` directory with `--env-file .env -f src/docker-compose.yml
-> --project-directory src` appended — exactly the manage command the installer prints
-> when it finishes.
+> `polyrouter/` directory with the `--env-file .env -f src/docker-compose.yml
+> --project-directory src` flags placed before the subcommand — exactly the manage
+> command the installer prints when it finishes.
 
 **Claim the instance, then expose it.** The app publishes on **loopback only** by
 default and the **first account to sign up becomes the admin** — sign up at
@@ -168,7 +299,7 @@ Requirements: **Node.js 24.x** (see `.nvmrc`), npm 10–11, Docker (for the dev 
 # 1. dependencies
 npm ci
 
-# 2. dev infrastructure (PostgreSQL 16 + Redis 7 — required from the database change onward)
+# 2. dev infrastructure (PostgreSQL 16 + Redis 7)
 docker compose -f docker-compose.dev.yml up -d
 
 # 3. run: control-plane API on :3001, dashboard (Vite) on :3000
@@ -181,7 +312,7 @@ self-hosted only) — it creates `admin@polyrouter.local` with password `changem
 (change it immediately). Auth secrets (`BETTER_AUTH_SECRET`, `API_KEY_HMAC_SECRET`,
 32-byte hex) are required for any network-reachable or production instance.
 
-Useful commands (see `CLAUDE.md` for the full set):
+Useful commands (see [`CLAUDE.md`](./CLAUDE.md) for the full set):
 
 | Command                                      | What it does                                        |
 | -------------------------------------------- | --------------------------------------------------- |
@@ -193,4 +324,16 @@ Useful commands (see `CLAUDE.md` for the full set):
 | `npm run db:generate` / `npm run db:migrate` | Drizzle migrations (also run automatically on boot) |
 | `npm run lint` / `npm run format`            | ESLint / Prettier                                   |
 
-[AGPL-3.0](./LICENSE.md) licensed.
+Development is **spec-driven**: [`spec.md`](./spec.md) is the reference architecture,
+[`CLAUDE.md`](./CLAUDE.md) pins the stack and the non-negotiable invariants,
+[`TODOS.md`](./TODOS.md) records every shipped change with its review history, and
+[`STYLESEED.md`](./STYLESEED.md) locks the dashboard's visual language (UI changes must
+pass its `/ss-score` gate). CI enforces build, lint, typecheck, the unit suites, and e2e
+— including the protocol-contract (golden files), SSRF, tenant-isolation, and
+cost-immutability suites — on every push.
+
+## License
+
+[AGPL-3.0](./LICENSE.md). Run it, self-host it, fork it — if you offer a **modified**
+polyrouter as a network service, the AGPL asks you to offer its users your modified
+source.

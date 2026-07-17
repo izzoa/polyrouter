@@ -15,6 +15,9 @@ export interface RateRule {
   prefix: string;
   max: number;
   windowSec: number;
+  /** Redis key namespace (default `auth`). Lets the same limiter guard non-auth
+   * surfaces (e.g. the per-channel test-send, E14.2) without colliding keys. */
+  keyspace?: string;
 }
 
 /** Better Auth 1.6 route limits (codex round 2: real endpoint names). */
@@ -68,7 +71,9 @@ export class AuthRateLimiter {
   ) {}
 
   async check(ip: string, rule: RateRule, now: number): Promise<RateDecision> {
-    const key = `rl:auth:${rule.prefix}:${ip}`;
+    // `ip` is the identity component (a client IP for auth, a user id for a
+    // per-user surface). Default keyspace `auth` keeps existing auth keys stable.
+    const key = `rl:${rule.keyspace ?? 'auth'}:${rule.prefix}:${ip}`;
     try {
       const result = (await this.redis.eval(FIXED_WINDOW_LUA, 1, key, String(rule.windowSec))) as [
         number,

@@ -954,13 +954,13 @@ A-30 (hardcoded `v0.4.1`/fabricated instance info), A-31 (timeseries gaps interp
 ---
 
 <a id="epic-e14"></a>
-## EPIC E14 — Notifications hardening · P3
+## EPIC E14 — Notifications hardening · P3 · ✅ SHIPPED 2026-07-17 (`harden-notifications`)
 
 **Proposal slug:** `harden-notifications` ·
 **Spec refs:** `openspec/specs/{notification-channels,notification-producers}`; CLAUDE.md invariants 6, 11
 **Why:** The surface is strong; these two close a spec-mandated test gap and an abuse vector.
 
-### Task E14.1 — Add a test for `deliverSmtp`'s connect-time SSRF refusal ☐ `[medium/S]`
+### Task E14.1 — Add a test for `deliverSmtp`'s connect-time SSRF refusal ✅ `[medium/S]`
 - **Where:** `packages/control-plane/src/notifications/delivery/smtp.adapter.ts:19` (`deliverSmtp`) — no colocated spec
 - **Defect:** The spec requires the SMTP host validated at connect time (connect to the pinned validated
   IP) with the scenario "a host resolving to a blocked address is refused, logged without
@@ -973,7 +973,7 @@ A-30 (hardcoded `v0.4.1`/fabricated instance info), A-31 (timeseries gaps interp
 - **Acceptance criteria:** removing the SSRF assertion or IP pinning fails the new test.
 - **Verify:** `npm test -w packages/control-plane -- smtp.adapter`.
 
-### Task E14.2 — Rate-limit the per-channel test-send endpoint ☐ `[medium/S]`
+### Task E14.2 — Rate-limit the per-channel test-send endpoint ✅ `[medium/S]`
 - **Where:** `packages/control-plane/src/notifications/channels.controller.ts:48` (`POST /:id/test`)
 - **Defect:** The test-send route is session-guarded and tenant-scoped but **unthrottled**
   (`AuthRateLimitMiddleware` only matches Better Auth routes). Each call drives a real SMTP session or

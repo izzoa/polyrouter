@@ -1,21 +1,4 @@
-# notification-channels Specification
-
-## Purpose
-TBD - created by archiving change add-notification-channels. Update Purpose after archive.
-## Requirements
-### Requirement: Notification channel CRUD with encrypted config and tenant isolation
-
-The system SHALL let an authenticated user manage `smtp` and `apprise` notification channels via a session-guarded API (list / create / get / update / delete), storing each channel's credentials **encrypted at rest** and never returning the decrypted config. Every access SHALL be ownership-scoped so one tenant cannot read or mutate another's channels by id (invariant 5).
-
-#### Scenario: A channel stores its config encrypted and never exposes it
-
-- WHEN a user creates an SMTP or Apprise channel with credentials
-- THEN the stored config is encrypted at rest (the persisted blob is not plaintext) and the API response exposes only safe fields (kind, name, enabled, subscriptions, whether a config is set, last-test status) — never the password or token-bearing URL
-
-#### Scenario: Channels are tenant-isolated
-
-- WHEN user A requests, updates, or deletes a channel id owned by user B
-- THEN the request is not found (no cross-tenant read or mutation)
+## MODIFIED Requirements
 
 ### Requirement: SSRF validation on every notification egress
 
@@ -50,38 +33,6 @@ The system SHALL treat every server-reached notification destination as SSRF-sen
 - WHEN `deliverSmtp` is invoked with a host that resolves to a permitted address
 - THEN the SMTP connection is opened to the **resolved IP** (pinned, defeating a post-validation DNS rebind), with the certificate validated against the original hostname (SNI preserved)
 
-### Requirement: Events are delivered asynchronously and failure-isolated
-
-The system SHALL provide a `NotificationService.emit(event)` that fans an event out to the enabled, subscribed channels via a Redis-backed queue, **off the caller's path** — `emit` returns without awaiting delivery and never throws into the caller, so a producer or a budget check is never blocked (invariant 11), including when Redis is unavailable. A channel whose delivery fails SHALL be retried with bounded backoff and then **left failed and logged**; it MUST NOT stall delivery of other channels/events, the request path, or budget enforcement.
-
-#### Scenario: Delivery never blocks the emitter
-
-- WHEN a producer emits an event (including when Redis/queue is unavailable)
-- THEN the emit call returns promptly without awaiting delivery and never throws into the caller
-
-#### Scenario: A dead channel logs a failure without stalling others
-
-- WHEN an event fans out to two channels and one (e.g. a dead webhook) fails delivery
-- THEN that channel's delivery fails and is logged (no secret), retried within bounds, while the other channel still delivers, and nothing on the request/budget path is blocked
-
-### Requirement: Events are de-duplicated per scope per window (accept-once)
-
-The system SHALL de-duplicate events so that at most one event of a given type per scope is **accepted** within its window (BullMQ TTL-based deduplication keyed on a canonical `(type, scope)` id, independent of job retention), so a condition hovering at a threshold cannot spam channels. (External delivery is best-effort idempotent — the queue is at-least-once — so exact-once external send is not guaranteed.)
-
-#### Scenario: Duplicate events within a window are accepted at most once
-
-- WHEN the same event type for the same scope is emitted more than once within one window
-- THEN it is accepted at most once (a single fan-out; subsequent duplicates within the window are dropped)
-
-### Requirement: Delivery errors are sanitized (never leak secrets)
-
-Delivery failures SHALL surface only fixed, sanitized error codes — never a raw mailer/HTTP error containing a host, recipient, URL, response body, or credential (invariant 8). Sanitized codes are what appears in logs, the queue's failure records, the channel's `last_test_status`, and API responses.
-
-#### Scenario: A failed delivery never leaks a secret
-
-- WHEN a delivery (or a test-send) fails with a channel that has a token-bearing URL or SMTP password
-- THEN the recorded status, logs, queue job record, and API response contain only a sanitized code — the secret/host/recipient appears in none of them
-
 ### Requirement: Per-channel test-send records its status
 
 The system SHALL provide a per-channel **test-send** that delivers a sample event directly (for inline feedback) and surfaces success or a sanitized failure, persisting `last_test_at` and `last_test_status` on the channel (spec §10.1). The test-send route SHALL be **rate-limited per user** (a small number of sends per minute, across all of the caller's channels, via the shared atomic Redis window limiter), and the throttle SHALL be applied **before** any DNS/SMTP/Apprise work — so an authenticated (or stolen) session cannot loop it to spam recipients, hammer the Apprise sidecar, or tie up connections. Over the threshold the route SHALL return **429** and perform no delivery.
@@ -95,4 +46,3 @@ The system SHALL provide a per-channel **test-send** that delivers a sample even
 
 - WHEN a user triggers more than the allowed number of test-sends within the window
 - THEN further calls return `429` and open no SMTP session / Apprise POST, while a different user's test-sends (their own window) are unaffected
-

@@ -1,11 +1,16 @@
 import {
+  HttpException,
+  HttpStatus,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
+import type { Redis } from 'ioredis';
 import {
   PERSISTENCE_PORT,
+  REDIS_CLIENT,
   assertAppriseTargetSafe,
   assertNetworkHostSafe,
   decryptSecret,
@@ -15,6 +20,7 @@ import {
   type PersistencePort,
   type Principal,
 } from '@polyrouter/shared/server';
+import { AuthRateLimiter, type RateRule } from '../auth/rate-limit';
 import {
   parseStoredConfig,
   validateChannelConfig,
@@ -29,6 +35,12 @@ import { deliverSmtp } from './delivery/smtp.adapter';
 import type { CreateChannelDto, UpdateChannelDto } from './channels.dto';
 
 const TEST_SEND_TIMEOUT_MS = 15_000;
+
+// Per-user throttle on the test-send route (E14.2): it drives a real SMTP session
+// / Apprise POST + live DNS, so an authenticated (or stolen) session must not loop
+// it to spam recipients or hammer the sidecar. A few per minute is plenty for a UI
+// "send test" button; the shared window limiter counts globally across instances.
+const NOTIFY_TEST_RATE: RateRule = { prefix: 'test-send', max: 5, windowSec: 60, keyspace: 'notify' };
 
 /** The API-safe view of a channel — never the decrypted config. */
 export interface SafeChannel {
@@ -57,10 +69,24 @@ function toSafe(r: NotificationChannelRow): SafeChannel {
 
 @Injectable()
 export class ChannelsService {
+  private readonly logger = new Logger(ChannelsService.name);
+  private readonly testLimiter: AuthRateLimiter;
+  private testLimiterRedisWarned = false;
+
   constructor(
     @Inject(PERSISTENCE_PORT) private readonly db: PersistencePort,
     @Inject(NOTIFY_RUNTIME) private readonly rt: NotifyRuntime,
-  ) {}
+    @Inject(REDIS_CLIENT) redis: Redis,
+  ) {
+    // Latch the degradation warning to once per process (a Redis outage otherwise
+    // logs on EVERY test-send, including throttled ones — log amplification during
+    // the outage). The limiter itself keeps enforcing via its per-instance fallback.
+    this.testLimiter = new AuthRateLimiter(redis, () => {
+      if (this.testLimiterRedisWarned) return;
+      this.testLimiterRedisWarned = true;
+      this.logger.warn('test-send rate limiter: Redis unavailable — per-instance fallback active');
+    });
+  }
 
   async list(principal: Principal): Promise<SafeChannel[]> {
     return (await this.db.notificationChannels.list(principal)).map(toSafe);
@@ -120,6 +146,20 @@ export class ChannelsService {
   /** Deliver a test event directly (bypass the queue) for inline feedback;
    * persist a sanitized `last_test_status`. */
   async testSend(principal: Principal, id: string): Promise<{ ok: boolean; error?: string }> {
+    // Throttle BEFORE any DNS/SMTP/Apprise work, keyed per user across all their
+    // channels, so a loop can't spam recipients or tie up the sidecar (E14.2).
+    const decision = await this.testLimiter.check(ownerOf(principal), NOTIFY_TEST_RATE, Date.now());
+    if (!decision.allowed) {
+      throw new HttpException(
+        {
+          statusCode: HttpStatus.TOO_MANY_REQUESTS,
+          error: 'Too Many Requests',
+          message: 'too many test-sends — please retry shortly',
+          retryAfterSec: decision.retryAfterSec,
+        },
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
     const row = await this.db.notificationChannels.findById(principal, id);
     if (row === null) throw new NotFoundException();
     const config = parseStoredConfig(

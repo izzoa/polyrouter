@@ -36,7 +36,10 @@ function makeSvc(rtOver?: Partial<NotifyRuntime>) {
     appriseEgressConfirmed: false,
     ...rtOver,
   };
-  return { svc: new ChannelsService(db, rt), rows };
+  // A fake Redis whose eval always reports "1st hit" → the test-send rate check
+  // (E14.2) always allows; these tests exercise CRUD/SSRF, not throttling.
+  const redis = { eval: () => Promise.resolve([1, 60]) } as unknown as import('ioredis').Redis;
+  return { svc: new ChannelsService(db, rt, redis), rows };
 }
 
 const smtpDto = (host: string): CreateChannelDto => ({

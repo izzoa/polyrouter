@@ -1,4 +1,4 @@
-import { AuthRateLimiter, matchRule } from './rate-limit';
+import { AuthRateLimiter, matchRule, type RateRule } from './rate-limit';
 
 interface FakeRedis {
   eval: (...args: unknown[]) => Promise<unknown>;
@@ -52,5 +52,39 @@ describe('auth rate limiter (session-auth)', () => {
       true,
     );
     expect(errored).toBeGreaterThan(0);
+  });
+
+  it('namespaces the Redis key by rule.keyspace (E14.2, default auth)', async () => {
+    const keys: string[] = [];
+    const redis: FakeRedis = {
+      eval: (...args: unknown[]) => {
+        keys.push(args[2] as string); // eval(lua, numKeys, KEY, windowSec)
+        return Promise.resolve([1, 60]);
+      },
+    };
+    const limiter = new AuthRateLimiter(redis as never, () => undefined);
+    // A default (auth) rule keeps the historical `rl:auth:` prefix (no key churn).
+    await limiter.check('1.2.3.4', matchRule('/api/auth/sign-in/email')!, 1_000);
+    // A notify-keyspaced rule keyed per user lands in its own namespace.
+    const notify: RateRule = { prefix: 'test-send', max: 5, windowSec: 60, keyspace: 'notify' };
+    await limiter.check('user-123', notify, 1_000);
+    expect(keys[0]).toBe('rl:auth:/api/auth/sign-in:1.2.3.4'); // key uses rule.prefix
+    expect(keys[1]).toBe('rl:notify:test-send:user-123');
+  });
+
+  it('a per-user notify rule 429s past its max (E14.2)', async () => {
+    let count = 0;
+    const redis: FakeRedis = {
+      eval: () => {
+        count += 1;
+        return Promise.resolve([count, 60]);
+      },
+    };
+    const limiter = new AuthRateLimiter(redis as never, () => undefined);
+    const notify: RateRule = { prefix: 'test-send', max: 5, windowSec: 60, keyspace: 'notify' };
+    for (let i = 0; i < notify.max; i++) {
+      expect((await limiter.check('u1', notify, 1_000)).allowed).toBe(true);
+    }
+    expect((await limiter.check('u1', notify, 1_000)).allowed).toBe(false);
   });
 });

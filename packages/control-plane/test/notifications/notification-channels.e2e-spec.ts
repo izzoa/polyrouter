@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { Logger, type INestApplication } from '@nestjs/common';
+import { HttpException, Logger, type INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { loadConfig } from '@polyrouter/shared';
 import { decryptSecret, userPrincipal, type Principal } from '@polyrouter/shared/server';
@@ -218,6 +218,40 @@ describe('notification channels — delivery core (#15a)', () => {
     expect(appriseRes.ok).toBe(true);
     expect(await lastTestStatusOf(appriseCh.id)).toBe('success');
     expect(apprise.requests.length).toBe(beforeA + 1);
+  });
+
+  it('rate-limits the test-send route per user — 429 past the threshold (E14.2)', async () => {
+    const principal = await newUser('ratelimit'); // fresh user → fresh per-user window
+    const ch = await svc.create(principal, {
+      name: 'smtp throttle',
+      kind: 'smtp',
+      eventsSubscribed: ['test'],
+      config: smtpConfig(smtpAccept.port),
+    });
+    // NOTIFY_TEST_RATE.max = 5: the first 5 are allowed (and actually deliver)...
+    for (let i = 0; i < 5; i++) {
+      const r = await svc.testSend(principal, ch.id);
+      expect(r.ok).toBe(true);
+    }
+    // ...the 6th within the window is throttled BEFORE any delivery.
+    const sentBefore = smtpAccept.messages.length;
+    let status = 0;
+    try {
+      await svc.testSend(principal, ch.id);
+    } catch (e) {
+      status = e instanceof HttpException ? e.getStatus() : -1;
+    }
+    expect(status).toBe(429);
+    expect(smtpAccept.messages.length).toBe(sentBefore); // no SMTP session on the throttled call
+    // A different user is independent (own window) — still allowed.
+    const other = await newUser('ratelimit-other');
+    const ch2 = await svc.create(other, {
+      name: 'smtp other',
+      kind: 'smtp',
+      eventsSubscribed: ['test'],
+      config: smtpConfig(smtpAccept.port),
+    });
+    expect((await svc.testSend(other, ch2.id)).ok).toBe(true);
   });
 
   it('test-send to a refusing target records a sanitized failed:<code>', async () => {

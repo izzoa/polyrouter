@@ -228,6 +228,12 @@ function requestIn(wireInput: unknown, quirks: AdapterQuirks): NormalizedRequest
       ? { reasoning: { protocol: 'openai' as const, effort: wire.reasoning_effort } }
       : {}),
     ...(wire.stream !== undefined ? { stream: wire.stream } : {}),
+    // Client presentation preference (A-7). NOTE: this is intentionally NOT
+    // round-trip-stable — `requestOut` always forces `stream_options.include_usage`
+    // upstream for cost accuracy (E2.2), so `requestIn(requestOut(ir))` reports
+    // `includeUsage: true`. The proxy always serializes from the ORIGINAL client
+    // request (`p.routed`), so the client-facing relay is gated correctly regardless.
+    ...(wire.stream_options?.include_usage === true ? { includeUsage: true } : {}),
   };
 }
 
@@ -377,6 +383,9 @@ interface OpenBlock {
   id?: string;
   name?: string;
   json: string;
+  /** Whether `tool_use_start` was already emitted for this tool block (A-6) — a
+   * provider that repeats `id`/`name` on later argument fragments must not re-open. */
+  started?: boolean;
 }
 
 async function* streamParse(
@@ -459,10 +468,13 @@ async function* streamParse(
         block = { kind: 'tool', json: '' };
         open.set(idx, block);
       }
-      const isStart = tc.id !== undefined || tc.function?.name !== undefined;
       if (tc.id !== undefined) block.id = tc.id;
       if (tc.function?.name !== undefined) block.name = tc.function.name;
-      if (isStart) {
+      // Emit `tool_use_start` exactly once per block (A-6): the first fragment that
+      // carries an id/name opens it; a provider that repeats id/name on subsequent
+      // argument fragments updates the block but must not re-open it.
+      if (!block.started && (block.id !== undefined || block.name !== undefined)) {
+        block.started = true;
         yield {
           type: 'tool_use_start',
           index: idx,
@@ -584,7 +596,10 @@ async function* streamSerialize(
         break;
       }
       case 'message_stop': {
-        if (pendingUsage !== undefined) {
+        // Only relay the terminal usage chunk when the client opted in (A-7) — the
+        // proxy always requests usage upstream for cost, but OpenAI itself omits the
+        // `choices:[]` usage chunk unless `stream_options.include_usage` was set.
+        if (pendingUsage !== undefined && ctx?.includeUsage === true) {
           const norm = usagePartialToWire(pendingUsage);
           if (norm !== undefined) {
             yield formatSseData({

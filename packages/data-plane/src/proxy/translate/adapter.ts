@@ -25,6 +25,11 @@ export interface AdapterQuirks {
 export interface SerializationContext {
   /** Unix seconds for OpenAI `created` when the IR lacks it. */
   readonly created?: number;
+  /** Whether the client opted into the terminal usage chunk (OpenAI
+   * `stream_options.include_usage`, A-7). When false/unset, the OpenAI stream
+   * serializer omits the trailing `choices:[]` usage chunk — matching OpenAI, which
+   * only sends it on opt-in. Anthropic ignores this (it always includes usage). */
+  readonly includeUsage?: boolean;
 }
 
 /** Raised only for preconditions on OUR outbound serialization (e.g. a missing

@@ -128,6 +128,11 @@ export interface NormalizedRequest {
   readonly reasoning?: ReasoningControl;
   /** Whether the client asked for a streamed response. */
   readonly stream?: boolean;
+  /** Whether the client opted into a terminal usage chunk (OpenAI
+   * `stream_options.include_usage`). The proxy always requests usage from the
+   * upstream for cost accuracy, but only relays the terminal usage chunk to the
+   * client when it asked (A-7); Anthropic always includes usage regardless. */
+  readonly includeUsage?: boolean;
 }
 
 export type NormalizedStopReason =

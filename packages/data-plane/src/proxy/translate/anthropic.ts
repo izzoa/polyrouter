@@ -191,8 +191,14 @@ function requestIn(wireInput: unknown): NormalizedRequest {
 
   for (const msg of wire.messages) {
     if (msg.role === 'user' && Array.isArray(msg.content)) {
-      // Split leading tool_result blocks into their own role:'tool' messages;
-      // keep trailing (text/image) blocks as one following user message.
+      // Normalize a user turn's blocks to the Anthropic contract: `tool_result`
+      // blocks lead a user turn, so each becomes its own `role:'tool'` message (one
+      // per result → 1:1 with an OpenAI tool message) and text/image become one
+      // trailing `role:'user'` message. A non-conformant `[text, tool_result]` input
+      // (Anthropic requires tool_result FIRST) is deliberately normalized to
+      // `[tool_result, text]` — preserving the literal source order would emit invalid
+      // consecutive user turns on the way back out (A-8: reviewed — this
+      // reorder-to-conformant is correct, not the bug the audit read it as).
       const trailing: ContentBlock[] = [];
       for (const b of msg.content) {
         if (b.type === 'tool_result') {

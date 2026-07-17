@@ -54,6 +54,29 @@ never fused into one string (which would alter prompt text and destroy the
 caching layout); a single unmarked text block still serializes to a plain string
 (canonically equivalent).
 
+### Non-conformant user turns are normalized to tool_result-first (A-8)
+
+The Anthropic wire requires `tool_result` blocks to **lead** a user turn. A
+non-conformant input turn that places user content before a `tool_result` (e.g.
+`[text, tool_result]`) is deliberately **normalized** to the conformant shape on the
+way into the IR — the `tool_result` becomes its own leading `role:"tool"` message and
+the text trails as a `role:"user"` message. Preserving the literal source order would
+emit invalid consecutive user turns (and an `assistant → user → tool` OpenAI
+sequence) when serialized back out, so this reorder-to-conformant is intentional, not
+an "order inversion" bug. Each `tool_result` is one `role:"tool"` message (1:1 with
+an OpenAI tool message).
+
+### Streamed usage on a cross-protocol `message_start` (A-9)
+
+The Anthropic wire requires a `usage` object on the opening `message_start`
+event. When serializing an **OpenAI-origin** stream to the Anthropic wire, the
+upstream has not yet reported usage (OpenAI emits usage only in the terminal
+chunk), so the serializer emits `usage.input_tokens: 0` on `message_start` as a
+**structural placeholder** — the authoritative token counts arrive in the single
+`message_delta` before `message_stop` (E2.1), and cost/recording (#11) always
+read from that terminal usage, never from the `message_start` zero. This is a
+deliberate, documented cross-protocol placeholder, not a real token count.
+
 ## Error matrix
 
 The `error` cases covered are **in-band** stream `error` events and malformed/edge

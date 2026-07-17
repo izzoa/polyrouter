@@ -265,6 +265,7 @@ export class ProxyService {
       signal,
       firstEventTimeoutMs: this.rt.firstEventTimeoutMs,
       created: p.created,
+      ...(p.routed.includeUsage !== undefined ? { includeUsage: p.routed.includeUsage } : {}),
       onOpen: this.onOpenFor(p.principal, p.meta),
       onBreakerState: this.onBreakerStateFor(p.meta),
       isCallerAbort: () => signal.aborted,
@@ -464,7 +465,10 @@ export class ProxyService {
       const { score, escalate } = this.cascade.shouldEscalate(cheap.response);
       const cheapServed: CheapServed = { response: cheap.response, servedIndex: cheap.servedIndex };
       if (!escalate) {
-        const replay = await replayBufferedStream(p.client, cheap.response, { created: p.created });
+        const replay = await replayBufferedStream(p.client, cheap.response, {
+          created: p.created,
+          ...(p.routed.includeUsage !== undefined ? { includeUsage: p.routed.includeUsage } : {}),
+        });
         if (replay.kind === 'stream') {
           const ctx = this.servedFrom(
             p,
@@ -515,6 +519,7 @@ export class ProxyService {
       signal,
       firstEventTimeoutMs: this.rt.firstEventTimeoutMs,
       created: p.created,
+      ...(p.routed.includeUsage !== undefined ? { includeUsage: p.routed.includeUsage } : {}),
       onOpen: this.onOpenFor(p.principal, c.escalation.meta),
       onBreakerState: this.onBreakerStateFor(c.escalation.meta),
       isCallerAbort: () => signal.aborted,

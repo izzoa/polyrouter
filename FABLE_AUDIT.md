@@ -1040,10 +1040,10 @@ change proposal. Batch opportunistically when touching the neighboring code.
 | A-3 | proxy | Client aborts recorded `status='error'` + fire `notifyFailed` → inflate error rate / spike alerts | `proxy.service.ts:246` |
 | A-4 ✅ | proxy | Buffered upstream call has no post-headers deadline beyond undici's 300s → fixed in E4.3 (idle timeout) | `core.ts:95` |
 | A-5 ✅ | proxy | Anthropic-wire terminal error frame/envelope → tested in E2.6 (stream-fidelity) | `stream-error.ts:19` |
-| A-6 | translate | Duplicate `tool_use_start` on repeated id/name argument fragments | `openai.ts:420` |
-| A-7 | translate | Uninvited trailing usage chunk sent to OpenAI clients that didn't opt in | `openai.ts:536` |
-| A-8 | translate | User-message `[text, tool_result]` order inverted (text emitted after) | `anthropic.ts:170` |
-| A-9 | translate | `message_start` fabricates `input_tokens:0` cross-protocol — document in golden README | `anthropic.ts:450` |
+| A-6 ✅ | translate | Duplicate `tool_use_start` on repeated id/name fragments → emitted once per block | `openai.ts:420` |
+| A-7 ✅ | translate | terminal usage chunk now relayed only on client `include_usage` opt-in (cost unaffected) | `openai.ts:536` |
+| A-8 ✅ reviewed | translate | `[text, tool_result]` reorder is a deliberate normalization to the conformant tool_result-first shape (documented) — not a bug | `anthropic.ts:170` |
+| A-9 ✅ | translate | `message_start` `input_tokens:0` cross-protocol placeholder documented in the golden README | `anthropic.ts:450` |
 | A-10 | breaker | Production breaker wires no `onError` → Redis-outage degradation silent | `proxy.module.ts:92` |
 | A-11 ✅ | breaker | breaker specs imported a nonexistent `./translate` + phantom export → fixed in E7 (tsc + real imports) | `breaker-*.spec.ts` |
 | A-12 | adapters | Anthropic `listModels` ignores pagination → catalogs truncate at page size | `anthropic-adapter.ts:23` |

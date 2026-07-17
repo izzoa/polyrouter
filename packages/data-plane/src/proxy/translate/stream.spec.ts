@@ -50,7 +50,8 @@ describe('streaming — OpenAI parse/serialize round-trip', () => {
 
   it('re-serializes to OpenAI chunks that re-parse to the same text and usage', async () => {
     const events = await collect(oai.streamParse(fromChunks([oaiSse(oaiStreamed.textChunks)])));
-    const frames = await collect(oai.streamSerialize(fromArray(events)));
+    // includeUsage: the client opted into the terminal usage chunk (A-7).
+    const frames = await collect(oai.streamSerialize(fromArray(events), { includeUsage: true }));
     const joined = frames.join('');
     expect(joined).toContain('data: [DONE]');
     const reparsed = await collect(oai.streamParse(fromChunks([joined])));
@@ -72,6 +73,34 @@ describe('streaming — tool-call JSON assembly', () => {
     const finalized = stop?.finalizedToolUse as ToolUseBlock | undefined;
     expect(finalized && 'input' in finalized ? finalized.input : null).toEqual({ city: 'SF' });
     expect(finalized?.name).toBe('get_weather');
+  });
+
+  it('emits tool_use_start exactly once per block even if id/name repeat on later fragments (A-6)', async () => {
+    // A provider that repeats id/name on subsequent argument fragments must not
+    // re-open the block; and two DISTINCT tool indices each get their own start.
+    const frag = (
+      index: number,
+      args: string,
+      id?: string,
+      name?: string,
+    ): Record<string, unknown> => {
+      const fn: Record<string, unknown> = { arguments: args };
+      if (name !== undefined) fn['name'] = name;
+      const tc: Record<string, unknown> = { index, function: fn };
+      if (id !== undefined) tc['id'] = id;
+      return { choices: [{ index: 0, delta: { tool_calls: [tc] } }] };
+    };
+    const chunks = [
+      { id: 'c', model: 'm', choices: [{ index: 0, delta: { role: 'assistant' } }] },
+      frag(0, '{"a":', 't1', 'f'),
+      frag(0, '1}', 't1', 'f'), // repeats id+name — must NOT re-open block 0
+      frag(1, '{}', 't2', 'g'), // distinct parallel index → its own start
+      { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] },
+    ];
+    const events = await collect(oai.streamParse(fromChunks([oaiSse(chunks)])));
+    const starts = events.filter((e) => e.type === 'tool_use_start');
+    expect(starts).toHaveLength(2); // one per distinct block, never a duplicate for t1
+    expect(starts.map((s) => (s as { id: string }).id).sort()).toEqual(['t1', 't2']);
   });
 
   it('finalizes malformed tool JSON as an inputParseError block, never throwing', async () => {
@@ -163,7 +192,7 @@ describe('streaming — Anthropic parse + usage lifecycle', () => {
 
   it('cross-serializes an Anthropic stream to OpenAI chunks with merged usage', async () => {
     const events = await collect(ant.streamParse(fromChunks([antSse(antStreamed.textEvents)])));
-    const frames = await collect(oai.streamSerialize(fromArray(events)));
+    const frames = await collect(oai.streamSerialize(fromArray(events), { includeUsage: true }));
     const reparsed = await collect(oai.streamParse(fromChunks([frames.join('')])));
     expect(concatText(reparsed)).toBe('Hello world');
     // Crossing to OpenAI folds cache-write into prompt_tokens: reparsed input = 100+10.
@@ -172,6 +201,17 @@ describe('streaming — Anthropic parse + usage lifecycle', () => {
       outputTokens: 2,
       cacheReadTokens: 80,
     });
+  });
+
+  it('omits the terminal usage chunk when the client did NOT opt in (A-7)', async () => {
+    const events = await collect(oai.streamParse(fromChunks([oaiSse(oaiStreamed.textChunks)])));
+    // No `includeUsage` → the OpenAI serializer emits no trailing choices:[] usage
+    // chunk (matching OpenAI, which only sends it on stream_options.include_usage).
+    const frames = (await collect(oai.streamSerialize(fromArray(events)))).join('');
+    expect(frames).toContain('data: [DONE]');
+    const reparsed = await collect(oai.streamParse(fromChunks([frames])));
+    expect(concatText(reparsed)).toBe('Hello world'); // text intact
+    expect(mergedUsage(reparsed)).toBeUndefined(); // no usage chunk relayed
   });
 });
 

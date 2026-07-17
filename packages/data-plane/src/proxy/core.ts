@@ -37,6 +37,8 @@ export interface ProxyStreamOptions {
   readonly firstEventTimeoutMs: number;
   /** Unix seconds for OpenAI `created` when the IR lacks it. */
   readonly created: number;
+  /** Client opted into the terminal usage chunk (OpenAI `stream_options.include_usage`, A-7). */
+  readonly includeUsage?: boolean;
   /** Fire-and-forget hook when a provider's shared breaker opens (#15b provider_down). */
   readonly onOpen?: BreakerOpenListener;
   /** Best-effort state observation at each admission decision (#21 metrics). */
@@ -148,13 +150,14 @@ export async function openStream(
 export async function replayBufferedStream(
   client: ProtocolAdapter,
   response: NormalizedResponse,
-  ctx: { created: number },
+  ctx: { created: number; includeUsage?: boolean },
 ): Promise<{ kind: 'failed' } | CommittedStream> {
   let materialized: string[];
   try {
     materialized = [];
     for await (const frame of client.streamSerialize(arrayGen(responseToStreamEvents(response)), {
       created: ctx.created,
+      ...(ctx.includeUsage !== undefined ? { includeUsage: ctx.includeUsage } : {}),
     })) {
       materialized.push(frame);
     }
@@ -326,7 +329,7 @@ async function* buildFrames(
   try {
     for await (const frame of client.streamSerialize(
       replay(iterator, firstValue, opts.firstEventTimeoutMs, abort, acc),
-      { created: opts.created },
+      { created: opts.created, ...(opts.includeUsage !== undefined ? { includeUsage: opts.includeUsage } : {}) },
     )) {
       yield frame;
     }

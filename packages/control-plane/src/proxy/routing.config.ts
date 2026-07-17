@@ -150,3 +150,17 @@ export function loadRoutingConfig(): RoutingConfig {
 export function autoLayerCapability(cfg: RoutingConfig): { structural: boolean; cascade: boolean } {
   return { structural: cfg.autoLayers.has('structural'), cascade: cfg.cascade.enabled };
 }
+
+/** The single "effective layers" formula (A-45): a layer is on iff the instance
+ * CAN do it (`cap`) AND the tenant preference allows it (default-on when unset).
+ * Shared by the dashboard's `AutoLayersService` and the proxy's per-request read so
+ * the two can never drift. `structuralAvailable`/`cascadeAvailable` come from `cap`. */
+export function effectiveAutoLayers(
+  cap: { structural: boolean; cascade: boolean },
+  pref: { structuralEnabled: boolean; cascadeEnabled: boolean } | null,
+): { structural: boolean; cascade: boolean } {
+  return {
+    structural: cap.structural && (pref?.structuralEnabled ?? true),
+    cascade: cap.cascade && (pref?.cascadeEnabled ?? true),
+  };
+}

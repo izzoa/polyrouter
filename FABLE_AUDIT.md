@@ -1078,8 +1078,8 @@ change proposal. Batch opportunistically when touching the neighboring code.
 | A-41 ✅ | security | allowlist HARD-overlap guard now checks the full CIDR range (v4+v6) + runs on the notification path | `ssrf.ts:183` |
 | A-42 ✅ | provider-mgmt | `IsUrl` `require_tld` rejects `http://localhost:11434` (Ollama) with a misleading 400 → fixed in E11 (`bound-provider-sync`) | `providers.dto.ts:19` |
 | A-43 ✅ | foundation | Redis client attaches a latched, message-redacted `error` listener | `redis.module.ts` |
-| A-44 | routing-config | PATCH can't clear nullable fields (`@IsString` rejects null on displayName/description) | `routing-config.dto.ts` |
-| A-45 | dx | Duplicated comparators/formulas (`ruleOrder`, effective-auto-layers) risk drift — share one impl | `routing-config.service.ts:224`, `auto-layers.service.ts:51` |
+| A-44 ✅ | routing-config | nullable display fields clearable via explicit null (already worked via @IsOptional; e2e-guarded) | `routing-config.dto.ts` |
+| A-45 ✅ | dx | shared one `ruleOrder` (generic) + one `effectiveAutoLayers` formula across config/proxy/resolver | `routing-config.service.ts:224`, `auto-layers.service.ts:51` |
 
 ## Appendix B — Coverage & confidence
 

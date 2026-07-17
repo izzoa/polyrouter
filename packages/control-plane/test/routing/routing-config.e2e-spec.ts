@@ -128,6 +128,15 @@ describe('routing-config e2e', () => {
     });
     expect(patched.body).toMatchObject({ key: 'fast', displayName: 'Renamed' });
 
+    // A-44: a nullable field can be CLEARED by an explicit null (not rejected 4xx,
+    // not silently ignored) — displayName/description are `@IsOptional` (null-tolerant)
+    // and the update persists the null.
+    const cleared = await asA('patch', `/api/routing/tiers/${created.body.id}`).send({
+      displayName: null,
+    });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.displayName).toBeNull();
+
     expect((await asA('delete', `/api/routing/tiers/${defaultId}`)).status).toBe(422);
     expect((await asA('delete', `/api/routing/tiers/${created.body.id}`)).status).toBe(200);
   });

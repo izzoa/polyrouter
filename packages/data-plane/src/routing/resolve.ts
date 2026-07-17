@@ -164,9 +164,13 @@ export function resolveTarget(
 }
 
 /** The single deterministic RoutingRule ordering (priority desc, then oldest,
- * then id). Exported so Layer 1 (#13) selects its `auto_high`/`auto_low` band
- * rule with the same tie-breaking, independent of snapshot/storage order. */
-export const ruleOrder = (a: RouteRule, b: RouteRule): number =>
+ * then id). Exported and generic over the ordering fields (A-45), so Layer 1
+ * (#13) band-rule selection AND the config layer's rule listing share ONE
+ * comparator — no drift between how rules are evaluated and how they're shown. */
+export const ruleOrder = <T extends { priority: number; createdAt: Date; id: string }>(
+  a: T,
+  b: T,
+): number =>
   b.priority - a.priority ||
   a.createdAt.getTime() - b.createdAt.getTime() ||
   (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);

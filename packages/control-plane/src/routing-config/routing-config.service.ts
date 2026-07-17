@@ -24,6 +24,7 @@ import {
   type TierPatch,
   type TierRow,
 } from '@polyrouter/shared/server';
+import { ruleOrder } from '@polyrouter/data-plane';
 import type {
   CreateRuleDto,
   CreateTierDto,
@@ -219,14 +220,9 @@ export class RoutingConfigService {
 
   async listRules(principal: Principal): Promise<SafeRule[]> {
     const rows = await this.db.routingRules.list(principal);
-    // The proxy's (#10) evaluation order: priority desc, then created_at, then
-    // id — a total order, so resolution is deterministic even with ties.
-    rows.sort(
-      (a, b) =>
-        b.priority - a.priority ||
-        a.createdAt.getTime() - b.createdAt.getTime() ||
-        (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
-    );
+    // The proxy's (#10) evaluation order — the SAME shared `ruleOrder` comparator
+    // the resolver uses (A-45), so display and evaluation can't drift.
+    rows.sort(ruleOrder);
     return rows.map(toSafeRule);
   }
 

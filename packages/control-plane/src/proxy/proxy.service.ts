@@ -52,7 +52,12 @@ import {
   type ProxyAdapterFactory,
   type ProxyRuntime,
 } from './proxy.config';
-import { ROUTING_CONFIG, autoLayerCapability, type RoutingConfig } from './routing.config';
+import {
+  ROUTING_CONFIG,
+  autoLayerCapability,
+  effectiveAutoLayers as computeEffectiveLayers,
+  type RoutingConfig,
+} from './routing.config';
 import { RequestRecorder, type RecordingContext } from '../recording/request-recorder';
 import { ProxyMetrics } from '../observability/proxy-metrics';
 import { observeAdapter } from '../observability/observe-adapter';
@@ -614,10 +619,7 @@ export class ProxyService {
           timer.unref();
         }),
       ]);
-      return {
-        structural: cap.structural && (pref?.structuralEnabled ?? true),
-        cascade: cap.cascade && (pref?.cascadeEnabled ?? true),
-      };
+      return computeEffectiveLayers(cap, pref); // A-45: shared formula (also used by AutoLayersService)
     } catch {
       return cap;
     } finally {

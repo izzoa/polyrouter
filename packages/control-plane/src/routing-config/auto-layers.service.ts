@@ -1,6 +1,11 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { PERSISTENCE_PORT, type PersistencePort, type Principal } from '@polyrouter/shared/server';
-import { ROUTING_CONFIG, autoLayerCapability, type RoutingConfig } from '../proxy/routing.config';
+import {
+  ROUTING_CONFIG,
+  autoLayerCapability,
+  effectiveAutoLayers,
+  type RoutingConfig,
+} from '../proxy/routing.config';
 import type { AutoLayersDto } from './auto-layers.dto';
 
 /** The tenant's effective auto-layer state plus what the instance is capable of
@@ -50,8 +55,7 @@ export class AutoLayersService {
   ): AutoLayersView {
     const cap = autoLayerCapability(this.cfg);
     return {
-      structural: cap.structural && (pref?.structuralEnabled ?? true),
-      cascade: cap.cascade && (pref?.cascadeEnabled ?? true),
+      ...effectiveAutoLayers(cap, pref), // A-45: one shared formula (also used by the proxy)
       structuralAvailable: cap.structural,
       cascadeAvailable: cap.cascade,
     };

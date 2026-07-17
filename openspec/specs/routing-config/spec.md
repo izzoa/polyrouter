@@ -5,7 +5,7 @@ TBD - created by archiving change add-routing-config. Update Purpose after archi
 ## Requirements
 ### Requirement: Tenant-scoped tier CRUD with a protected, seeded default
 
-The system SHALL expose session-authenticated CRUD for tiers under `/api/routing/tiers`, scoped to the authenticated principal (spec §5, §6.2; invariant 5). Every tenant always has a `default` tier (provisioned at signup); it cannot be deleted or have its key changed. Tier keys are validated and unique per owner.
+The system SHALL expose session-authenticated CRUD for tiers under `/api/routing/tiers`, scoped to the authenticated principal (spec §5, §6.2; invariant 5). Every tenant always has a `default` tier (provisioned at signup); it cannot be deleted or have its key changed. Tier keys are validated and unique per owner. The nullable display fields (`display_name`, `description`) SHALL be clearable by an explicit `null` in a PATCH — they are optional/null-tolerant, so a `null` is persisted (the field is cleared), not rejected as a validation error and not silently ignored.
 
 #### Scenario: The default tier is always present and protected
 
@@ -25,6 +25,11 @@ The system SHALL expose session-authenticated CRUD for tiers under `/api/routing
 - WHEN a principal patches a tier's display name or description
 - THEN those fields are updated and the tier's `key` is unchanged
 - AND any attempt to change `key` through the update path is ignored or rejected (never mutated)
+
+#### Scenario: A nullable display field is cleared by an explicit null
+
+- WHEN a principal patches a tier with `display_name: null`
+- THEN the request succeeds (200) and the field is cleared to null (an explicit null on a nullable field is persisted, not rejected)
 
 #### Scenario: Another tenant's tier is invisible by id
 

@@ -69,8 +69,11 @@ export class ProxyMetrics {
   });
   private readonly upstreamDuration = new Histogram({
     name: 'polyrouter_upstream_duration_seconds',
-    help: 'Upstream call duration (streams measured to completion)',
-    labelNames: ['provider', 'model'] as const,
+    help: 'Upstream call duration (streams measured to completion), split by outcome',
+    // `outcome` (A-37): a client-abort (`canceled`) settles whenever the consumer
+    // leaves, so its duration is not provider latency — labeling it keeps aborts out
+    // of `success` latency quantiles.
+    labelNames: ['provider', 'model', 'outcome'] as const,
     buckets: LLM_DURATION_BUCKETS,
     registers: [this.registry],
   });
@@ -144,7 +147,7 @@ export class ProxyMetrics {
   ): void {
     this.safe(() => {
       this.upstream.inc({ provider, model, outcome });
-      this.upstreamDuration.observe({ provider, model }, durationSeconds);
+      this.upstreamDuration.observe({ provider, model, outcome }, durationSeconds);
     });
   }
 

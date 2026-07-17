@@ -1069,9 +1069,9 @@ change proposal. Batch opportunistically when touching the neighboring code.
 | A-32 | notify | Weekly-summary job runs single-attempt despite idempotent occurrence design | `weekly-summary.scheduler.ts:130` |
 | A-33 ✅ | notify | Validate `APPRISE_API_URL` at boot → already done (notify.config SSRF-gates it at boot) | `notify.config.ts:100` |
 | A-34 | notify | Channel config update doesn't clear `lastTestStatus` — stale "success" | `channels.service.ts` |
-| A-35 | observ | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` per-signal var unregistered | `observability.config.ts` |
-| A-36 | observ | breaker-state/upstream gauges labeled by provider display name → stale series on rename | `proxy-metrics.ts` |
-| A-37 | observ | `upstream_duration` has no outcome label → client-abort durations pollute latency | `proxy-metrics.ts` |
+| A-35 ✅ | observ | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` now registered (boot-validated) + compose pass-through | `observability.config.ts` |
+| A-36 ✅ | observ | provider display-name label documented as an accepted trade-off (legibility over rename-stability) | `proxy-metrics.ts` |
+| A-37 ✅ | observ | added `outcome` label to `upstream_duration` (canceled no longer pollutes success latency) | `proxy-metrics.ts` |
 | A-38 | db | Money columns are `double precision` (mitigated by µ$ rounding) — `numeric` would remove the class | `schema.ts` |
 | A-39 | db | Boot migrations take no advisory lock (documented single-replica constraint) | `migrations-runner.ts` |
 | A-40 | security | GCM auth tag length not pinned to 16 bytes on decrypt (defense-in-depth) | `encryption.ts:49` |

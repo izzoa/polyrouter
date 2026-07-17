@@ -19,6 +19,11 @@ registerConfig(
       .transform((v) => v !== 'false'), // default true
     OTEL_SERVICE_NAME: z.string().default('polyrouter'),
     OTEL_EXPORTER_OTLP_ENDPOINT: z.string().url().optional(),
+    // The per-signal traces override (A-35). The OTLP exporter reads it directly and
+    // it takes precedence over the generic endpoint, so register it here too — a
+    // malformed value fails boot (same discipline as the generic one) and it flows
+    // through the compose pass-through allowlist.
+    OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: z.string().url().optional(),
   }),
 );
 
@@ -27,6 +32,7 @@ export type ObservabilityRawConfig = {
   METRICS_ENABLED: boolean;
   OTEL_SERVICE_NAME: string;
   OTEL_EXPORTER_OTLP_ENDPOINT?: string;
+  OTEL_EXPORTER_OTLP_TRACES_ENDPOINT?: string;
 };
 
 export interface ObservabilityConfig {

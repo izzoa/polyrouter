@@ -66,8 +66,19 @@ describe('ProxyMetrics (#21)', () => {
     expect(text).toContain('polyrouter_request_duration_seconds_bucket{le="120",protocol="openai",decision_layer="default",status="success"} 1');
     expect(text).toContain('polyrouter_request_duration_seconds_bucket{le="300",protocol="openai",decision_layer="default",status="success"} 1');
     // Upstream histogram gets the same ladder — a 90s stream is finite, not only +Inf.
-    expect(text).toContain('polyrouter_upstream_duration_seconds_bucket{le="60",provider="openai-prod",model="gpt-4o"} 0');
-    expect(text).toContain('polyrouter_upstream_duration_seconds_bucket{le="120",provider="openai-prod",model="gpt-4o"} 1');
+    // It also carries the `outcome` label (A-37) so aborts don't pollute success latency.
+    expect(text).toContain('polyrouter_upstream_duration_seconds_bucket{le="60",provider="openai-prod",model="gpt-4o",outcome="success"} 0');
+    expect(text).toContain('polyrouter_upstream_duration_seconds_bucket{le="120",provider="openai-prod",model="gpt-4o",outcome="success"} 1');
+  });
+
+  it('splits upstream duration by outcome so a client abort does not pollute success latency (A-37)', async () => {
+    const m = new ProxyMetrics();
+    m.recordUpstream('openai-prod', 'gpt-4o', 'success', 3);
+    m.recordUpstream('openai-prod', 'gpt-4o', 'canceled', 0.2); // client left early
+    const text = await m.metricsText();
+    // Distinct series per outcome — the canceled 0.2s never lands in the success histogram.
+    expect(text).toContain('polyrouter_upstream_duration_seconds_count{provider="openai-prod",model="gpt-4o",outcome="success"} 1');
+    expect(text).toContain('polyrouter_upstream_duration_seconds_count{provider="openai-prod",model="gpt-4o",outcome="canceled"} 1');
   });
 
   it('two instances own independent registries (no cross-app collision)', async () => {

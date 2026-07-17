@@ -58,7 +58,7 @@ function partsToBlocks(parts: OaiContentPart[]): ContentBlock[] {
   for (const part of parts) {
     if (part.type === 'text') {
       blocks.push({ type: 'text', text: part.text });
-    } else {
+    } else if (part.type === 'image_url') {
       const { url, detail } = part.image_url;
       const data = parseDataUrl(url);
       if (data !== null) {
@@ -297,6 +297,9 @@ function requestOut(ir: NormalizedRequest): OaiRequest {
     // control is a documented drop here (E2.5).
     ...(ir.reasoning?.protocol === 'openai' ? { reasoning_effort: ir.reasoning.effort } : {}),
     ...(ir.stream !== undefined ? { stream: ir.stream } : {}),
+    // Ask OpenAI-compatible upstreams for the terminal usage chunk so streamed
+    // cost is exact, not chars/4-estimated (E2.2). `canon` drops stream_options.
+    ...(ir.stream === true ? { stream_options: { include_usage: true } } : {}),
   };
 }
 
@@ -383,6 +386,11 @@ async function* streamParse(
   const blockIndex = new Map<string, number>();
   const open = new Map<number, OpenBlock>();
   let started = false;
+  // Whether a finish_reason (the semantic terminator) was seen. `[DONE]` alone is
+  // SSE housekeeping — a stream that ends with `[DONE]` but no finish_reason (or
+  // just exhausts) is truncated and must NOT get a clean message_stop, which
+  // would launder a cut-off answer into status=success (E2.7).
+  let sawFinish = false;
 
   const alloc = (key: string): number => {
     const existing = blockIndex.get(key);
@@ -393,13 +401,33 @@ async function* streamParse(
   };
 
   for await (const frame of sseFrames(chunks)) {
-    if (frame.data === '[DONE]') break;
-    let chunk: OaiChunk;
+    if (frame.data === '[DONE]') break; // loop terminator only — not a stop reason
+    let parsed: unknown;
     try {
-      chunk = JSON.parse(frame.data) as OaiChunk;
+      parsed = JSON.parse(frame.data);
     } catch {
       continue;
     }
+    // An in-band error frame (`{ error: … }`, no usable `choices`) must be
+    // recognized BEFORE reading `choices`, else it TypeErrors (E2.8/finding 5).
+    if (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      (parsed as { error?: unknown }).error != null &&
+      (parsed as { choices?: unknown }).choices === undefined
+    ) {
+      const err = (parsed as { error: { type?: unknown; message?: unknown } }).error;
+      yield {
+        type: 'error',
+        error: {
+          type: typeof err.type === 'string' ? err.type : 'server_error',
+          message: typeof err.message === 'string' ? err.message : 'upstream stream error',
+        },
+      };
+      continue;
+    }
+    const chunk = parsed as OaiChunk;
+    if (!Array.isArray(chunk.choices)) continue; // malformed frame — skip, don't throw
 
     if (!started) {
       started = true;
@@ -450,6 +478,7 @@ async function* streamParse(
     }
 
     if (choice.finish_reason != null) {
+      sawFinish = true;
       for (const [idx, block] of [...open.entries()].sort((a, b) => a[0] - b[0])) {
         if (block.kind === 'tool') {
           yield {
@@ -470,7 +499,14 @@ async function* streamParse(
     }
   }
 
-  yield { type: 'message_stop' };
+  if (sawFinish) {
+    yield { type: 'message_stop' };
+  } else {
+    yield {
+      type: 'error',
+      error: { type: 'truncated', message: 'upstream stream ended without a terminator' },
+    };
+  }
 }
 
 async function* streamSerialize(

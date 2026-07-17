@@ -56,7 +56,23 @@ caching layout); a single unmarked text block still serializes to a plain string
 
 ## Error matrix
 
-The `error` cases covered by the suite are **in-band** stream `error` events and
-malformed/edge wire payloads (e.g. invalid tool JSON, split SSE frames). HTTP
-transport errors (non-2xx, connection failures) are **out of scope here** — they
-belong to the provider layer (#6) and the proxy (#10).
+The `error` cases covered are **in-band** stream `error` events and malformed/edge
+wire payloads. Specifically (`stream-fidelity.spec.ts`):
+
+- an in-band OpenAI `{ error }` stream frame → a normalized `error` event (no
+  `TypeError` on `choices`);
+- a **truncated** stream — OpenAI exhausting without `[DONE]`/a finish chunk, or
+  Anthropic without `message_stop` → a normalized `error` (type `truncated`),
+  never a fabricated clean terminator;
+- a **malformed streamed** Anthropic `tool_use` (argument fragments that never
+  form valid JSON) → finalized as the `inputParseError` variant, never thrown;
+- an **unknown streamed block** (e.g. Anthropic `thinking` / `thinking_delta`) →
+  skipped, so it never reaches the proxy as a malformed `tool_use_delta`;
+- the non-streaming `malformed-tool` fixture (invalid tool JSON) and split SSE
+  frames.
+
+HTTP transport errors (non-2xx, connection failures) are **out of scope here** —
+they belong to the provider layer (#6) and the proxy (#10). The streamed
+`/v1/messages` client wire (the Anthropic serializer, incl. the single
+usage-bearing `message_delta` before `message_stop`) is asserted end-to-end in
+`packages/control-plane/test/proxy/inference-proxy.e2e-spec.ts`.

@@ -237,7 +237,7 @@ has no post-headers deadline — see also E4.3), A-5 (Anthropic-wire terminal er
 ---
 
 <a id="epic-e2"></a>
-## EPIC E2 — Protocol translation fidelity & golden coverage · **P0** · ◑ SPLIT: request half ✅ 2026-07-17 (`fix-translation-request-fidelity`); stream half pending
+## EPIC E2 — Protocol translation fidelity & golden coverage · **P0** · ✅ SHIPPED 2026-07-17 (request + stream halves)
 
 **Proposal slug:** `fix-translation-fidelity` (IR extensions need their own delta spec) ·
 **Spec refs:** spec.md §6.3, §7.7, §15; `openspec/specs/protocol-translation`; CLAUDE.md invariant 2
@@ -248,7 +248,7 @@ protocol-non-conformant and untested, several high-value request fields are sile
 streamed usage is never requested from OpenAI upstreams so cost accuracy is degraded on the dominant
 path. Execute E2.1–E2.5 as one change (they touch the same files); E2.6–E2.10 can follow.
 
-### Task E2.1 — Emit conformant `message_delta` usage when serializing streams to Anthropic clients ☐ `[high/S]`
+### Task E2.1 — Emit conformant `message_delta` usage when serializing streams to Anthropic clients ✅ `[high/S]`
 - **Where:** `packages/data-plane/src/proxy/translate/anthropic.ts:515` (`streamSerialize`)
 - **Defect:** Anthropic's wire requires every `message_delta` to carry `usage.output_tokens`; SDKs
   validate this (Python raises, TS accumulator reads it unguarded). `streamSerialize` omits `usage`
@@ -263,7 +263,7 @@ path. Execute E2.1–E2.5 as one change (they touch the same files); E2.6–E2.1
   message has a non-null `stop_reason`.
 - **Verify:** new stream test: `collect(ant.streamSerialize(oai.streamParse(<openai golden stream>)))`, assert every `message_delta` has numeric `usage.output_tokens`. `npm test -w packages/data-plane`.
 
-### Task E2.2 — Set `stream_options.include_usage` on outbound OpenAI streamed requests ☐ `[high/XS]`
+### Task E2.2 — Set `stream_options.include_usage` on outbound OpenAI streamed requests ✅ `[high/XS]`
 - **Where:** `packages/data-plane/src/proxy/translate/openai.ts:285` (`requestOut`)
 - **Defect:** OpenAI upstreams send the terminal usage chunk only when the request opts in.
   `requestOut` never emits `stream_options`, so the `streamParse` machinery built to read it never
@@ -320,7 +320,7 @@ path. Execute E2.1–E2.5 as one change (they touch the same files); E2.6–E2.1
   behavior (map or documented drop) is explicit in canon + golden README.
 - **Verify:** golden fixture with `response_format` round-trips OpenAI→OpenAI; cross fixture documents Anthropic-bound behavior.
 
-### Task E2.6 — Cover the Anthropic stream serializer & in-band error events in the golden suite ☐ `[medium/M]`
+### Task E2.6 — Cover the Anthropic stream serializer & in-band error events in the golden suite ✅ `[medium/M]`
 - **Where:** `packages/data-plane/src/proxy/translate/stream.spec.ts`, `golden/`, `packages/control-plane/test/proxy/`
 - **Defect:** `ant.streamSerialize` has no golden/cross-translation coverage (only a shape check in
   `cascade.spec.ts`); no fixture or test contains an in-band `error` stream event despite
@@ -336,7 +336,7 @@ path. Execute E2.1–E2.5 as one change (they touch the same files); E2.6–E2.1
   actually satisfied; breaking any Anthropic client-bound frame shape fails a test.
 - **Verify:** `npm test -w packages/data-plane` + `npm run test:e2e -w packages/control-plane`.
 
-### Task E2.7 — Do not fabricate `message_stop`/`[DONE]` when the upstream stream is truncated ☐ `[medium/S]`
+### Task E2.7 — Do not fabricate `message_stop`/`[DONE]` when the upstream stream is truncated ✅ `[medium/S]`
 - **Where:** `packages/data-plane/src/proxy/translate/openai.ts:457-460` (`streamParse`)
 - **Defect:** `message_stop` is yielded whether the loop saw `data: [DONE]` or the source was simply
   exhausted (LB idle-timeout cutting a stream cleanly, or a server that never sends `[DONE]`). Core
@@ -349,7 +349,7 @@ path. Execute E2.1–E2.5 as one change (they touch the same files); E2.6–E2.1
   client receives a terminal error frame (not a clean stop) and the row records `status=error`.
 - **Verify:** unit test feeding chunks without `[DONE]`; assert no `message_stop` and error outcome.
 
-### Task E2.8 — Degrade gracefully on unknown content-block and content-part types ☐ `[medium/S]`
+### Task E2.8 — Degrade gracefully on unknown content-block and content-part types ✅ `[medium/S]`
 - **Where:** `packages/data-plane/src/proxy/translate/anthropic.ts:90` (`antBlockToIr`, no default case); `openai.ts:62` (`partsToBlocks` destructures `image_url` for any non-text part)
 - **Defect:** An Anthropic-side `thinking`/`redacted_thinking`/`server_tool_use` block becomes
   `undefined` in the IR and explodes later with a `TypeError` surfaced as a misleading `unavailable`

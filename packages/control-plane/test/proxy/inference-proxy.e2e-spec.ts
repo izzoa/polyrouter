@@ -325,6 +325,41 @@ describe('inference proxy e2e', () => {
     expect(res.headers['content-type']).toContain('application/json');
   });
 
+  // --- streamed /v1/messages (Anthropic client wire; exercises ant.streamSerialize, E2.6) ---
+
+  const messages = (key: string | null, body: unknown) => {
+    let r = request(server).post('/v1/messages');
+    if (key) r = r.set('x-api-key', key);
+    return r.send(body as object);
+  };
+
+  it('streams an OpenAI upstream to an Anthropic client as conformant frames (one usage-bearing message_delta)', async () => {
+    const res = await messages(A.key, { model: 'gpt-4o', stream: true, max_tokens: 64, messages: [] });
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toContain('text/event-stream');
+    expect(res.text).toContain('event: message_start');
+    expect(res.text).toContain('event: message_stop');
+    // Exactly one message_delta, and it carries usage.output_tokens (Anthropic SDKs require it).
+    const deltas = res.text.split('\n\n').filter((b) => b.startsWith('event: message_delta'));
+    expect(deltas).toHaveLength(1);
+    expect(deltas[0]).toContain('"output_tokens"');
+    expect(deltas[0]).not.toContain('"stop_reason":null'); // never null-clobbered
+  });
+
+  it('renders a 401 on /v1/messages in the Anthropic error envelope', async () => {
+    const res = await messages('poly_notarealkey000', { model: 'auto', max_tokens: 16, messages: [] });
+    expect(res.status).toBe(401);
+    expect(res.body.type).toBe('error'); // Anthropic-shaped {type:'error', error:{…}}
+    expect(res.body.error.type).toBeDefined();
+  });
+
+  it('emits an Anthropic terminal error frame on a mid-stream failure (no swap, no leak)', async () => {
+    const res = await messages(A.key, { model: 'oai-miderror', stream: true, max_tokens: 64, messages: [] });
+    expect(res.status).toBe(200); // committed before the failure
+    expect(res.text).toContain('event: error'); // Anthropic terminal error shape
+    expect(res.text).not.toContain('SECRET'); // raw upstream detail never leaks
+  });
+
   // --- /v1/models & isolation ---
 
   it('lists routable ids and isolates tenants', async () => {

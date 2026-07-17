@@ -17,8 +17,10 @@ import type {
   NormalizedMessage,
   NormalizedRequest,
   NormalizedResponse,
+  NormalizedStopReason,
   NormalizedStreamEvent,
   NormalizedToolChoice,
+  PartialUsage,
   TextBlock,
   ToolUseBlock,
 } from './ir';
@@ -31,7 +33,12 @@ import type {
   AntToolChoice,
 } from './wire/anthropic';
 import { stopReasonFromAnthropic, stopReasonToAnthropic } from './stop-reason';
-import { partialUsageFromAnthropicStart, usageFromAnthropic, usageToAnthropic } from './usage';
+import {
+  mergePartialUsage,
+  partialUsageFromAnthropicStart,
+  usageFromAnthropic,
+  usageToAnthropic,
+} from './usage';
 import { formatSseEvent, sseFrames } from './stream';
 
 export interface AnthropicAdapterOptions {
@@ -96,7 +103,10 @@ function toolResultContentToAnt(blocks: readonly ContentBlock[]): string | AntCo
   return blocks.map(irBlockToAnt);
 }
 
-function antBlockToIr(block: AntContentBlock): ContentBlock {
+/** Wire block → IR block, or `null` for an unmodeled block type (`thinking`,
+ * `server_tool_use`, …) which callers skip — never an `undefined` IR block that
+ * crashes a later serialization (E2.8). */
+function antBlockToIr(block: AntContentBlock): ContentBlock | null {
   switch (block.type) {
     case 'text':
       return { type: 'text', text: block.text, ...ccIn(block.cache_control) };
@@ -127,6 +137,8 @@ function antBlockToIr(block: AntContentBlock): ContentBlock {
     case 'tool_result':
       // handled during message splitting; represent defensively as text
       return { type: 'text', text: '' };
+    default:
+      return null; // unknown block type — skip
   }
 }
 
@@ -134,7 +146,7 @@ function antContentToBlocks(content: string | AntContentBlock[]): ContentBlock[]
   if (typeof content === 'string') {
     return content === '' ? [] : [{ type: 'text', text: content }];
   }
-  return content.map(antBlockToIr);
+  return content.map(antBlockToIr).filter((b): b is ContentBlock => b !== null);
 }
 
 // --- tool choice ---
@@ -197,7 +209,8 @@ function requestIn(wireInput: unknown): NormalizedRequest {
             ],
           });
         } else {
-          trailing.push(antBlockToIr(b));
+          const ir = antBlockToIr(b);
+          if (ir !== null) trailing.push(ir);
         }
       }
       if (trailing.length > 0) messages.push({ role: 'user', content: trailing });
@@ -342,7 +355,9 @@ function systemOut(
 
 function responseIn(wireInput: unknown, quirks: AdapterQuirks): NormalizedResponse {
   const wire = wireInput as AntResponse;
-  const content: ContentBlock[] = wire.content.map(antBlockToIr);
+  const content: ContentBlock[] = wire.content
+    .map(antBlockToIr)
+    .filter((b): b is ContentBlock => b !== null);
   const usage = quirks.usageOmitted ? undefined : usageFromAnthropic(wire.usage);
   return {
     id: wire.id,
@@ -384,7 +399,16 @@ interface AntOpenBlock {
 }
 
 async function* streamParse(chunks: AsyncIterable<string>): AsyncGenerator<NormalizedStreamEvent> {
+  // Keyed by the DENSE IR index. Unmodeled blocks (`thinking`, `server_tool_use`,
+  // …) get NO IR index, so `remap` maps only recognized upstream indices to a
+  // contiguous 0,1,2,… — otherwise skipping a block leaves a gap that makes
+  // Anthropic SDKs append later content at the wrong position and drop it
+  // (E2.8 + review finding 1).
   const open = new Map<number, AntOpenBlock>();
+  const remap = new Map<number, number>();
+  let nextIndex = 0;
+  let sawMessageStop = false;
+  let sawStopReason = false;
 
   for await (const frame of sseFrames(chunks)) {
     let ev: AntStreamEvent;
@@ -406,51 +430,62 @@ async function* streamParse(chunks: AsyncIterable<string>): AsyncGenerator<Norma
         break;
       }
       case 'content_block_start': {
-        if (ev.content_block.type === 'tool_use') {
-          open.set(ev.index, {
+        // The wire union is a lie at runtime (providers ship `thinking` &c.), so
+        // read the type as a string and skip anything unmodeled (no IR index).
+        const cb = ev.content_block as { type: string; id?: string; name?: string };
+        if (cb.type === 'tool_use') {
+          const iri = nextIndex++;
+          remap.set(ev.index, iri);
+          open.set(iri, {
             kind: 'tool',
-            id: ev.content_block.id,
-            name: ev.content_block.name,
+            ...(cb.id !== undefined ? { id: cb.id } : {}),
+            ...(cb.name !== undefined ? { name: cb.name } : {}),
             json: '',
           });
-          yield {
-            type: 'tool_use_start',
-            index: ev.index,
-            id: ev.content_block.id,
-            name: ev.content_block.name,
-          };
-        } else {
-          open.set(ev.index, { kind: 'text', json: '' });
+          yield { type: 'tool_use_start', index: iri, id: cb.id ?? '', name: cb.name ?? '' };
+        } else if (cb.type === 'text') {
+          const iri = nextIndex++;
+          remap.set(ev.index, iri);
+          open.set(iri, { kind: 'text', json: '' });
         }
+        // unknown block type → no remap entry; its deltas/stop resolve to
+        // undefined below and are ignored.
         break;
       }
       case 'content_block_delta': {
-        if (ev.delta.type === 'text_delta') {
-          yield { type: 'text_delta', index: ev.index, text: ev.delta.text };
-        } else {
-          const block = open.get(ev.index);
-          if (block !== undefined) block.json += ev.delta.partial_json;
-          yield { type: 'tool_use_delta', index: ev.index, partialJson: ev.delta.partial_json };
+        const iri = remap.get(ev.index);
+        if (iri === undefined) break; // skipped/unknown block
+        const d = ev.delta as { type: string; text?: string; partial_json?: string };
+        if (d.type === 'text_delta') {
+          yield { type: 'text_delta', index: iri, text: d.text ?? '' };
+        } else if (d.type === 'input_json_delta') {
+          const block = open.get(iri);
+          if (block !== undefined) block.json += d.partial_json ?? '';
+          yield { type: 'tool_use_delta', index: iri, partialJson: d.partial_json ?? '' };
         }
+        // an unknown delta type (thinking_delta, signature_delta, …) is ignored
         break;
       }
       case 'content_block_stop': {
-        const block = open.get(ev.index);
+        const iri = remap.get(ev.index);
+        if (iri === undefined) break; // skipped/unknown block
+        const block = open.get(iri);
         if (block !== undefined && block.kind === 'tool') {
           yield {
             type: 'block_stop',
-            index: ev.index,
+            index: iri,
             finalizedToolUse: finalizeTool(block.id ?? '', block.name ?? '', block.json),
           };
         } else {
-          yield { type: 'block_stop', index: ev.index };
+          yield { type: 'block_stop', index: iri };
         }
-        open.delete(ev.index);
+        open.delete(iri);
         break;
       }
       case 'message_delta': {
         const stopRaw = ev.delta.stop_reason;
         const outputTokens = ev.usage?.output_tokens;
+        if (stopRaw != null) sawStopReason = true;
         yield {
           type: 'message_delta',
           ...(stopRaw != null
@@ -462,7 +497,19 @@ async function* streamParse(chunks: AsyncIterable<string>): AsyncGenerator<Norma
         break;
       }
       case 'message_stop':
-        yield { type: 'message_stop' };
+        sawMessageStop = true;
+        // A terminated-but-incomplete stream (message_stop with no stop reason
+        // ever delivered) becomes an IR error — which core sees and records as
+        // status=error — rather than a clean message_stop that reads as success
+        // (review finding 2). E2.7 handles the no-message_stop case below.
+        if (sawStopReason) {
+          yield { type: 'message_stop' };
+        } else {
+          yield {
+            type: 'error',
+            error: { type: 'incomplete', message: 'stream ended without a stop reason' },
+          };
+        }
         break;
       case 'error':
         yield { type: 'error', error: ev.error };
@@ -470,6 +517,14 @@ async function* streamParse(chunks: AsyncIterable<string>): AsyncGenerator<Norma
       case 'ping':
         break;
     }
+  }
+  // Exhaustion without message_stop is a truncated stream — surface it as an
+  // error, not a silent clean end that records status=success (E2.7/finding 2).
+  if (!sawMessageStop) {
+    yield {
+      type: 'error',
+      error: { type: 'truncated', message: 'upstream stream ended without a terminator' },
+    };
   }
 }
 
@@ -489,10 +544,43 @@ async function* streamSerialize(
   events: AsyncIterable<NormalizedStreamEvent>,
 ): AsyncGenerator<string> {
   const started = new Set<number>();
+  // Buffer the tail: Anthropic's wire carries a SINGLE message_delta (with the
+  // final stop reason + output usage) immediately before message_stop. OpenAI
+  // splits these across a finish chunk and a terminal usage-only chunk, so we
+  // accumulate usage across all message_delta events and hold the stop info,
+  // then emit one conformant message_delta at message_stop (E2.1) — never
+  // null-clobbering a known stop reason, and always carrying usage.output_tokens
+  // (a number Anthropic SDKs require).
+  const tailUsage: PartialUsage[] = [];
+  let stopReason: NormalizedStopReason | undefined;
+  let rawStopReason: string | undefined;
+  let stopSequence: string | undefined;
+
+  const emitTail = (): string => {
+    const merged = mergePartialUsage(...tailUsage);
+    if (stopReason === undefined) {
+      // A well-formed stream always carries a stop reason (and E2.7 turns a
+      // truncated one into an `error` before message_stop). Reaching message_stop
+      // with none is anomalous — surface it, don't fabricate `end_turn`.
+      return formatSseEvent('error', {
+        type: 'error',
+        error: { type: 'incomplete', message: 'stream ended without a stop reason' },
+      });
+    }
+    return formatSseEvent('message_delta', {
+      type: 'message_delta',
+      delta: {
+        stop_reason: stopReasonToAnthropic(stopReason, rawStopReason),
+        stop_sequence: stopSequence ?? null,
+      },
+      usage: { output_tokens: merged.outputTokens ?? 0 },
+    });
+  };
 
   for await (const ev of events) {
     switch (ev.type) {
       case 'message_start': {
+        if (ev.usage !== undefined) tailUsage.push(ev.usage);
         const usage = {
           input_tokens: ev.usage?.inputTokens ?? 0,
           output_tokens: ev.usage?.outputTokens ?? 0,
@@ -559,22 +647,18 @@ async function* streamSerialize(
         break;
       }
       case 'message_delta': {
-        yield formatSseEvent('message_delta', {
-          type: 'message_delta',
-          delta: {
-            stop_reason:
-              ev.stopReason !== undefined
-                ? stopReasonToAnthropic(ev.stopReason, ev.rawStopReason)
-                : null,
-            stop_sequence: ev.stopSequence ?? null,
-          },
-          ...(ev.usage?.outputTokens !== undefined
-            ? { usage: { output_tokens: ev.usage.outputTokens } }
-            : {}),
-        });
+        // Buffer, don't emit — the single conformant message_delta is flushed at
+        // message_stop. Later usage merges in; a known stop reason is never lost.
+        if (ev.usage !== undefined) tailUsage.push(ev.usage);
+        if (ev.stopReason !== undefined) {
+          stopReason = ev.stopReason;
+          rawStopReason = ev.rawStopReason;
+        }
+        if (ev.stopSequence !== undefined) stopSequence = ev.stopSequence;
         break;
       }
       case 'message_stop': {
+        yield emitTail();
         yield formatSseEvent('message_stop', { type: 'message_stop' });
         break;
       }

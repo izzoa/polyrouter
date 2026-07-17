@@ -488,7 +488,7 @@ assertion is vacuous; fix imports + add `tsc --noEmit` to CI), A-11 (production 
 ---
 
 <a id="epic-e5"></a>
-## EPIC E5 — Cost-recording completeness & pricing coverage · P1
+## EPIC E5 — Cost-recording completeness & pricing coverage · P1 · ✅ SHIPPED 2026-07-17 (`fix-cost-recording-gaps`)
 
 **Proposal slug:** `fix-cost-recording-gaps` ·
 **Spec refs:** spec.md §7.5, §7.7, §8; `openspec/specs/{request-logging,pricing-catalog,cascade-routing}`; CLAUDE.md invariants 4, 12
@@ -496,7 +496,7 @@ assertion is vacuous; fix imports + add `tsc --noEmit` to CI), A-11 (production 
 class writes no row at all, and several spec-§8 BYOK providers are structurally unpriceable — all of
 which silently under-count the spend record that budgets and dashboards reconcile from.
 
-### Task E5.1 — Make the shutdown flush actually drain the queue ☐ `[medium/S]`
+### Task E5.1 — Make the shutdown flush actually drain the queue ✅ `[medium/S]`
 - **Where:** `packages/control-plane/src/recording/log-writer.ts:149` (`flush` guard), `:132-135` (`onApplicationShutdown`)
 - **Defect:** `flush()` early-returns when `this.flushing` is true, and timer flushes are un-awaited
   (`void this.flush()`). If any flush is in flight when SIGTERM lands (normal under steady traffic;
@@ -512,7 +512,7 @@ which silently under-count the spend record that budgets and dashboards reconcil
 - **Verify:** unit test: deferred `insertMany`, call `flush()` (pending), enqueue another draft, call
   `onApplicationShutdown()`, resolve; assert a second `insertMany` carried the late draft.
 
-### Task E5.2 — Record a RequestLog row when a client cancels during the cascade cheap leg ☐ `[medium/XS]`
+### Task E5.2 — Record a RequestLog row when a client cancels during the cascade cheap leg ✅ `[medium/XS]`
 - **Where:** `packages/control-plane/src/proxy/proxy.service.ts:369` (`cascadeCompletion`) and `:486` (`cascadeStream`)
 - **Defect:** Both aborted branches `throw` without `recorder.record(...)`, while every non-cascade
   cancel path records `status='error'`. A cancelled cascade request **vanishes entirely** — invisible
@@ -525,7 +525,7 @@ which silently under-count the spend record that budgets and dashboards reconcil
   `request_log` row exists (`status='error'`) and no `request_attempt` rows / strong-tier calls.
 - **Verify:** e2e in `cascade-routing.e2e-spec.ts`: destroy the client socket during the `oai-hang` cheap leg, flush the writer, assert the row.
 
-### Task E5.3 — Map the missing spec-§8 BYOK host families (Qwen/MiniMax/Kimi/Z.ai) and extend the bundle ☐ `[medium/S]`
+### Task E5.3 — Map the missing spec-§8 BYOK host families (Qwen/MiniMax/Kimi/Z.ai) and extend the bundle ✅ `[medium/S]`
 - **Where:** `packages/shared/src/server/pricing/resolve.ts:50-62` (`PROVIDER_FAMILY_HOSTS`), `:86-88`; `packages/control-plane/src/pricing/bundled-catalog.ts`
 - **Defect:** No host mapping exists for dashscope (Qwen), MiniMax, Moonshot (Kimi), or Z.ai/Zhipu, so
   `deriveModelKey` returns null → the catalog is never consulted, a **manual override can never
@@ -540,7 +540,7 @@ which silently under-count the spend record that budgets and dashboards reconcil
   non-null cost; boot seed contains ≥1 row per §8 BYOK family.
 - **Verify:** unit test on `resolveForModel` with dashscope URL; pricing-catalog e2e family assertion.
 
-### Task E5.4 — Clear (or block) stale model-own prices when a provider's kind leaves custom/local ☐ `[medium/S]`
+### Task E5.4 — Clear (or block) stale model-own prices when a provider's kind leaves custom/local ✅ `[medium/S]`
 - **Where:** `packages/control-plane/src/providers/providers.service.ts:171-198` (`update`); `packages/shared/src/server/pricing/resolve.ts:98`
 - **Defect:** Changing kind `custom → api_key` leaves user-set model prices in place; model-own price
   sits at the **top** of `resolveModelPrice` precedence, so a stale `$0` silently overrides the

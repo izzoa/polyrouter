@@ -47,6 +47,25 @@ describe('deriveModelKey', () => {
     expect(deriveModelKey('https://reseller.example/v1', 'gpt-4o')).toBeNull();
     expect(deriveModelKey('not a url', 'gpt-4o')).toBeNull();
   });
+  it('maps §8 BYOK international (USD) hosts but NOT the CNY-domestic ones (E5.3)', () => {
+    // International/USD endpoints → resolvable family key.
+    const intl: [string, string, string][] = [
+      ['https://dashscope-intl.aliyuncs.com/compatible-mode/v1', 'qwen-max', 'dashscope:qwen-max'],
+      ['https://api.moonshot.ai/v1', 'kimi-k2-0905-preview', 'moonshot:kimi-k2-0905-preview'],
+      ['https://api.minimax.io/v1', 'MiniMax-M2', 'minimax:minimax-m2'],
+      ['https://api.z.ai/api/paas/v4', 'glm-4.5', 'zai:glm-4.5'],
+    ];
+    for (const [url, model, key] of intl) expect(deriveModelKey(url, model)).toBe(key);
+    // CNY-domestic endpoints → null (unknown, never a currency-wrong USD price).
+    const cny = [
+      'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      'https://api.moonshot.cn/v1',
+      'https://api.minimax.chat/v1',
+      'https://api.minimaxi.com/v1', // the CNY MiniMax endpoint (intl is api.minimax.io)
+      'https://open.bigmodel.cn/api/paas/v4',
+    ];
+    for (const url of cny) expect(deriveModelKey(url, 'some-model')).toBeNull();
+  });
   it('round-trips with the parser key for a prefixed Gemini entry', () => {
     const parsed = parseLiteLlmCatalog({
       'gemini/gemini-1.5-pro': {
@@ -71,12 +90,29 @@ describe('resolveModelPrice', () => {
     modelIsFree: false,
   };
 
-  it('prefers explicit Model-own prices', () => {
+  it('prefers explicit Model-own prices for a custom/local provider', () => {
     const snap = resolveModelPrice(
-      { ...base, modelInputPricePer1m: 5, modelOutputPricePer1m: 12, modelIsFree: false },
+      {
+        ...base,
+        providerKind: 'custom',
+        modelInputPricePer1m: 5,
+        modelOutputPricePer1m: 12,
+        modelIsFree: false,
+      },
       catalogRow(),
     );
     expect(snap).toMatchObject({ source: 'model', inputPricePer1m: 5, outputPricePer1m: 12 });
+  });
+
+  it('IGNORES a model-own price on an api_key/subscription provider (E5.4) — uses the catalog', () => {
+    for (const providerKind of ['api_key', 'subscription'] as const) {
+      const snap = resolveModelPrice(
+        { ...base, providerKind, modelInputPricePer1m: 5, modelOutputPricePer1m: 12 },
+        catalogRow(),
+      );
+      // A stale/raced model price on a known provider must not override the catalog.
+      expect(snap).toMatchObject({ source: 'bundled', inputPricePer1m: 2.5 });
+    }
   });
   it('treats local as free', () => {
     const snap = resolveModelPrice({ ...base, providerKind: 'local' }, null);

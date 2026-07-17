@@ -57,8 +57,18 @@ export const PROVIDER_FAMILY_HOSTS: Readonly<Record<string, string>> = {
   'openrouter.ai': 'openrouter',
   'api.x.ai': 'xai',
   'api.cohere.ai': 'cohere',
+  'api.cohere.com': 'cohere',
   'api.together.xyz': 'together_ai',
   'api.perplexity.ai': 'perplexity',
+  // §8 BYOK families — ONLY the international (USD-billed) endpoints are mapped, so
+  // a bundled/refresh USD price is correct. The China-domestic endpoints
+  // (dashscope.aliyuncs.com, api.moonshot.cn, api.minimax.chat, open.bigmodel.cn)
+  // bill in CNY and are deliberately left unmapped → null (unknown, not a
+  // currency-wrong cost — invariant 4's "unknown rather than wrong").
+  'dashscope-intl.aliyuncs.com': 'dashscope',
+  'api.moonshot.ai': 'moonshot',
+  'api.minimax.io': 'minimax', // NOTE: api.minimaxi.com is the CNY endpoint — left unmapped
+  'api.z.ai': 'zai',
 };
 
 /** THE single key builder — used by both the LiteLLM parser and `deriveModelKey`
@@ -95,7 +105,16 @@ export function resolveModelPrice(
   input: PriceResolutionInput,
   catalogRow: ModelPriceRow | null,
 ): PriceSnapshot | null {
-  if (input.modelInputPricePer1m !== null && input.modelOutputPricePer1m !== null) {
+  // A model-own price is honored ONLY for a custom/local provider — the API forbids
+  // setting one on an api_key/subscription provider (its price comes from the
+  // catalog), so a stale price left after a kind change, or one restored by a
+  // request racing that change, must never override the catalog (§7.7, invariant 4).
+  const kindHonorsModelPrice = input.providerKind === 'custom' || input.providerKind === 'local';
+  if (
+    kindHonorsModelPrice &&
+    input.modelInputPricePer1m !== null &&
+    input.modelOutputPricePer1m !== null
+  ) {
     return {
       priceVersionId: null,
       modelKey: null,

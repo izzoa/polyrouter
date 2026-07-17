@@ -317,6 +317,32 @@ describe('cascade routing e2e', () => {
     await setBand('auto_low', 'cheap-bad');
   });
 
+  it('records exactly one error row when the client disconnects during the cheap leg (E5.2)', async () => {
+    await setBand('auto_low', 'cheap-hang'); // cheap upstream hangs; ~600ms cheap deadline
+    // A UNIQUE system prompt → no per-agent baseline → guaranteed ambiguous → cascade.
+    const req = request(server)
+      .post('/v1/chat/completions')
+      .set('Authorization', `Bearer ${key}`)
+      .send(body('sysClientAbortDuringCheapLeg', false));
+    setTimeout(() => {
+      req.abort();
+    }, 150); // client goes away mid-cheap-leg (well before the deadline)
+    await expect(req).rejects.toThrow(); // aborted client
+    await new Promise((r) => setTimeout(r, 150)); // let the server observe the abort + record
+    await writer.flush();
+    const logs = await port.requestLogs.list(principal);
+    expect(logs).toHaveLength(1); // NOT invisible — exactly one row (§7.5 completeness)
+    const row = logs[0]!;
+    expect(row.status).toBe('error');
+    expect(row.escalated).toBe(false);
+    expect(row.decisionLayer).toBe('cascade');
+    expect(row.modelId).toBe(modelId['cheapHang']); // the cheap model — NO strong-tier escalation
+    // No billable-attempt ledger rows (the cheap leg itself was aborted); the branch
+    // also does not notifyFailed (a client disconnect is breaker-neutral, not a fault).
+    expect(await port.requestAttempts.listForRequest(principal, row.id)).toHaveLength(0);
+    await setBand('auto_low', 'cheap-bad');
+  });
+
   it('streams only the strong tier on escalation (no cheap output, no swap)', async () => {
     const res = await send('sysStream', true);
     expect(res.status).toBe(200);

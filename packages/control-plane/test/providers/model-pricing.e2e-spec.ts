@@ -152,6 +152,60 @@ describe('custom/local model pricing (#18)', () => {
     expect((await patch('ghost-user', id, { isFree: true })).status).toBe(404);
   });
 
+  it('clears stale model prices when a provider kind leaves custom/local (E5.4)', async () => {
+    const principal = userPrincipal(alice);
+    const provider = await port.providers.insert(principal, {
+      name: 'custom-then-apikey',
+      kind: 'custom',
+      protocol: 'openai_compatible',
+      baseUrl: 'https://api.z.ai/api/paas/v4', // an intl BYOK host (catalog-priceable as api_key)
+    });
+    const model = await port.models.createForProvider(principal, provider.id, {
+      externalModelId: 'glm-4.5',
+    });
+    expect((await patch(alice, model!.id, { inputPricePer1m: 7, outputPricePer1m: 9 })).status).toBe(
+      200,
+    );
+    // Kind change custom → api_key: the stale user prices are cleared in the same flow.
+    const kindChange = await request(server)
+      .patch(`/api/providers/${provider.id}`)
+      .set('x-test-user', alice)
+      .send({ kind: 'api_key', credential: 'sk-test' });
+    expect(kindChange.status).toBe(200);
+    const list = await request(server)
+      .get(`/api/models?providerId=${provider.id}`)
+      .set('x-test-user', alice);
+    expect(list.body[0]).toMatchObject({
+      inputPricePer1m: null,
+      outputPricePer1m: null,
+      isFree: false,
+    });
+  });
+
+  it('a within-custom update leaves user prices intact (E5.4)', async () => {
+    const principal = userPrincipal(alice);
+    const provider = await port.providers.insert(principal, {
+      name: 'stays-custom',
+      kind: 'custom',
+      protocol: 'openai_compatible',
+      baseUrl: 'https://2.2.2.2/v1',
+    });
+    const model = await port.models.createForProvider(principal, provider.id, {
+      externalModelId: 'm-keep',
+    });
+    await patch(alice, model!.id, { inputPricePer1m: 4, outputPricePer1m: 6 });
+    // Rename only — kind stays custom → prices must survive.
+    const rename = await request(server)
+      .patch(`/api/providers/${provider.id}`)
+      .set('x-test-user', alice)
+      .send({ name: 'renamed' });
+    expect(rename.status).toBe(200);
+    const list = await request(server)
+      .get(`/api/models?providerId=${provider.id}`)
+      .set('x-test-user', alice);
+    expect(list.body[0]).toMatchObject({ inputPricePer1m: 4, outputPricePer1m: 6 });
+  });
+
   it('does not rewrite historical cost — a recorded log keeps its snapshot after a price edit', async () => {
     const id = await mkModel(alice, 'custom');
     await patch(alice, id, { inputPricePer1m: 1, outputPricePer1m: 1 });

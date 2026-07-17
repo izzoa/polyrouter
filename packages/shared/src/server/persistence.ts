@@ -87,6 +87,10 @@ export interface ModelAccessor {
   ): Promise<ModelRow | null>;
   update(principal: Principal, id: string, patch: ModelPatch): Promise<ModelRow | null>;
   remove(principal: Principal, id: string): Promise<boolean>;
+  /** Clear all of a provider's models' user-set unit prices (owner-scoped),
+   * returning the count cleared. Used when a provider's kind leaves custom/local
+   * so a stale price can't be displayed for a now-catalog-priced provider. */
+  clearPricingForProvider(principal: Principal, providerId: string): Promise<number>;
 }
 
 /** Outcome of an atomic chain replacement (#9). Distinguishes the two ownership

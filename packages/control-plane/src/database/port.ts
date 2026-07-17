@@ -169,6 +169,19 @@ function createModelAccessor(db: Db): ModelAccessor {
         .returning({ id: models.id });
       return rows.length > 0;
     },
+    async clearPricingForProvider(principal, providerId) {
+      const rows = await db
+        .update(models)
+        .set({ inputPricePer1m: null, outputPricePer1m: null, isFree: false })
+        .where(
+          and(
+            eq(models.providerId, providerId),
+            inArray(models.providerId, ownedProviderIds(db, principal)),
+          ),
+        )
+        .returning({ id: models.id });
+      return rows.length;
+    },
   };
 }
 

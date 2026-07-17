@@ -3,7 +3,12 @@ import type { PersistencePort, PriceSnapshot, Principal } from '@polyrouter/shar
 import { userPrincipal } from '@polyrouter/shared/server';
 import { ProxyMetrics } from '../observability/proxy-metrics';
 import type { PricingService } from '../pricing/pricing.service';
-import { LogWriter, type LogWriterConfig, type RequestLogDraft } from './log-writer';
+import {
+  LogWriter,
+  type LogWriterConfig,
+  type RequestAttemptDraft,
+  type RequestLogDraft,
+} from './log-writer';
 
 const CONFIG: LogWriterConfig = {
   intervalMs: 1_000_000, // never auto-fire in tests
@@ -11,6 +16,7 @@ const CONFIG: LogWriterConfig = {
   maxQueue: 3,
   maxRetries: 2,
   backoffMs: 1,
+  opTimeoutMs: 1_000, // generous; tests that exercise it override with a small value
 };
 
 function draft(over: Partial<RequestLogDraft> = {}): RequestLogDraft {
@@ -40,6 +46,31 @@ function draft(over: Partial<RequestLogDraft> = {}): RequestLogDraft {
   };
 }
 
+function attemptDraft(over: Partial<RequestAttemptDraft> = {}): RequestAttemptDraft {
+  return {
+    id: over.id ?? randomUUID(),
+    requestLogId: over.requestLogId ?? randomUUID(),
+    principal: over.principal ?? userPrincipal('u1'),
+    attemptIndex: 0,
+    tierKey: 'cheap',
+    providerId: 'p1',
+    providerName: 'openai',
+    modelId: 'm1',
+    status: 'fallback',
+    usage: { inputTokens: 3, outputTokens: 1, estimated: false },
+    pricing: {
+      externalModelId: 'gpt-4o',
+      modelInputPricePer1m: null,
+      modelOutputPricePer1m: null,
+      modelIsFree: false,
+      providerBaseUrl: 'https://api.openai.com/v1',
+      providerKind: 'api_key',
+      at: new Date('2026-07-15T00:00:00Z'),
+    },
+    ...over,
+  };
+}
+
 const snapshot = (): PriceSnapshot => ({
   priceVersionId: 'v1',
   modelKey: 'openai:gpt-4o',
@@ -52,20 +83,31 @@ const snapshot = (): PriceSnapshot => ({
   validFrom: new Date('2026-07-15T00:00:00Z'),
 });
 
-function makeWriter(overrides: { insertMany?: jest.Mock; resolveForModel?: jest.Mock }): {
+function makeWriter(overrides: {
+  insertMany?: jest.Mock;
+  attemptInsertMany?: jest.Mock;
+  resolveForModel?: jest.Mock;
+  config?: Partial<LogWriterConfig>;
+}): {
   writer: LogWriter;
   insertMany: jest.Mock;
+  attemptInsertMany: jest.Mock;
   resolveForModel: jest.Mock;
   metrics: ProxyMetrics;
 } {
   const insertMany = overrides.insertMany ?? jest.fn().mockResolvedValue(undefined);
+  const attemptInsertMany = overrides.attemptInsertMany ?? jest.fn().mockResolvedValue(undefined);
   const resolveForModel = overrides.resolveForModel ?? jest.fn().mockResolvedValue(snapshot());
-  const db = { requestLogs: { insertMany } } as unknown as PersistencePort;
+  const db = {
+    requestLogs: { insertMany },
+    requestAttempts: { insertMany: attemptInsertMany },
+  } as unknown as PersistencePort;
   const pricing = { resolveForModel } as unknown as PricingService;
   const metrics = new ProxyMetrics();
   return {
-    writer: new LogWriter(db, pricing, CONFIG, metrics),
+    writer: new LogWriter(db, pricing, { ...CONFIG, ...overrides.config }, metrics),
     insertMany,
+    attemptInsertMany,
     resolveForModel,
     metrics,
   };
@@ -159,5 +201,62 @@ describe('LogWriter', () => {
     for (let i = 0; i < CONFIG.maxQueue + 2; i++) writer.enqueue(draft({ id: `q${i}` }));
     await writer.flush();
     expect(await metrics.metricsText()).toContain('polyrouter_log_rows_dropped_total 2');
+  });
+
+  // --- E5.1: the shutdown flush drains to completion, bounded ---
+
+  it('the shutdown drain writes a draft enqueued while a flush is in flight', async () => {
+    let resolveFirst!: () => void;
+    const firstInsert = new Promise<void>((r) => (resolveFirst = () => r()));
+    const insertMany = jest.fn().mockReturnValueOnce(firstInsert).mockResolvedValue(undefined);
+    const { writer } = makeWriter({ insertMany });
+    writer.enqueue(draft({ id: 'first' }));
+    const first = writer.flush(); // flush #1 — insertMany pending on 'first'
+    writer.enqueue(draft({ id: 'late' })); // enqueued AFTER flush #1's splice
+    const shutdown = writer.onApplicationShutdown(); // coalesces, then re-drains
+    resolveFirst();
+    await Promise.all([first, shutdown]);
+    expect(insertMany).toHaveBeenCalledTimes(2); // NOT a silent no-op
+    const secondRows = insertMany.mock.calls[1]![1] as { id: string }[];
+    expect(secondRows.map((r) => r.id)).toEqual(['late']); // the late draft survived
+  });
+
+  it('the shutdown drain terminates on a hung insert, counting the rows as dropped', async () => {
+    const insertMany = jest.fn().mockReturnValue(new Promise<void>(() => undefined)); // never resolves
+    const { writer, metrics } = makeWriter({
+      insertMany,
+      config: { opTimeoutMs: 20, backoffMs: 1 },
+    });
+    writer.enqueue(draft({ id: 'stuck' }));
+    await writer.onApplicationShutdown(); // MUST NOT hang
+    expect(insertMany).toHaveBeenCalledTimes(CONFIG.maxRetries + 1); // timed out each attempt
+    expect(await metrics.metricsText()).toContain('polyrouter_log_rows_dropped_total 1');
+  });
+
+  it('a log + its attempt enqueued during a flush are written in one cycle, attempt after log', async () => {
+    let resolveFirst!: () => void;
+    const order: string[] = [];
+    const firstInsert = new Promise<void>((r) => (resolveFirst = () => r()));
+    const insertMany = jest
+      .fn()
+      .mockReturnValueOnce(firstInsert)
+      .mockImplementation((_p: unknown, rows: { id: string }[]) => {
+        order.push(`log:${rows.map((r) => r.id).join(',')}`);
+        return Promise.resolve();
+      });
+    const attemptInsertMany = jest.fn().mockImplementation((_p: unknown, rows: { id: string }[]) => {
+      order.push(`attempt:${rows.map((r) => r.id).join(',')}`);
+      return Promise.resolve();
+    });
+    const { writer } = makeWriter({ insertMany, attemptInsertMany });
+    writer.enqueue(draft({ id: 'L1' }));
+    const first = writer.flush(); // flush #1 — pending on L1
+    writer.enqueue(draft({ id: 'L2' })); // a NEW log + its attempt during the in-flight flush
+    writer.enqueueAttempt(attemptDraft({ id: 'A2', requestLogId: 'L2' }));
+    const shutdown = writer.onApplicationShutdown();
+    resolveFirst();
+    await Promise.all([first, shutdown]);
+    // L2 (parent) is written before A2 (child) in the same cycle — no FK-order drop.
+    expect(order).toEqual(['log:L2', 'attempt:A2']);
   });
 });

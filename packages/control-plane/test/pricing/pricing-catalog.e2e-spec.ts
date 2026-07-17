@@ -115,6 +115,21 @@ describe('pricing catalog (self-host)', () => {
     expect(res.body.some((r: { isFree: boolean }) => r.isFree === true)).toBe(true);
   });
 
+  it('seeds ≥1 priced row per §8 BYOK family, resolvable to a USD price (E5.3)', async () => {
+    const res = await request(server).get('/api/pricing').set('x-test-user', user);
+    expect(res.status).toBe(200);
+    const keys = (res.body as { modelKey: string }[]).map((r) => r.modelKey);
+    for (const prefix of ['dashscope:', 'moonshot:', 'minimax:', 'zai:']) {
+      expect(keys.some((k) => k.startsWith(prefix))).toBe(true);
+    }
+    // A Qwen (dashscope) row resolves to its non-null bundled USD price.
+    const qwen = await request(server)
+      .get('/api/pricing/dashscope:qwen-max')
+      .set('x-test-user', user);
+    expect(qwen.status).toBe(200);
+    expect(qwen.body.inputPricePer1m).toBeCloseTo(1.6, 6);
+  });
+
   it('priceAt is effective-dated', async () => {
     const before = BUNDLED_CATALOG_VERSION.getTime() - 1000;
     const notYet = await request(server)

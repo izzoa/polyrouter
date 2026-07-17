@@ -366,7 +366,16 @@ export class ProxyService {
         signal,
       );
     }
-    if (signal.aborted) throw toProxyError(cheap.error); // client disconnected — do not escalate
+    if (signal.aborted) {
+      // Client disconnected during the cheap leg — record one error row for spend/
+      // inspector completeness (§7.5), do NOT escalate, and do NOT notifyFailed (a
+      // client disconnect is breaker-neutral, not a provider fault). E5.2.
+      this.recorder.record(
+        this.servedFrom(p, c.cheap.meta, 0, 'cascade: client disconnected during cheap attempt', null, cheap.failures),
+        { status: 'error', outputChars: 0, escalated: false, qualitySignal: null },
+      );
+      throw toProxyError(cheap.error);
+    }
     return this.escalateBuffered(p, c, null, 0, signal); // cheap failed/timed out — escalate, score 0
   }
 
@@ -483,7 +492,15 @@ export class ProxyService {
       }
       return this.escalateStream(p, c, cheapServed, score, signal);
     }
-    if (signal.aborted) throw providerErrorToProxy(cheap.error);
+    if (signal.aborted) {
+      // Client disconnected during the cheap leg (pre-commit — no bytes sent). Record
+      // one error row (§7.5), no escalation, no notifyFailed. E5.2.
+      this.recorder.record(
+        this.servedFrom(p, c.cheap.meta, 0, 'cascade: client disconnected during cheap attempt', null, cheap.failures),
+        { status: 'error', outputChars: 0, escalated: false, qualitySignal: null },
+      );
+      throw providerErrorToProxy(cheap.error);
+    }
     return this.escalateStream(p, c, null, 0, signal);
   }
 

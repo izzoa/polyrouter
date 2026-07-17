@@ -102,6 +102,82 @@ const LITELLM_SNAPSHOT: Record<string, unknown> = {
     max_input_tokens: 128000,
     supports_function_calling: true,
   },
+  // §8 BYOK families (E5.3) — real per-token values vendored from LiteLLM's
+  // canonical catalog; keys use LiteLLM's `<family>/<model>` form (canonicalized
+  // to `family:model`, matching `deriveModelKey(intl-host, bare-model-id)`).
+  'dashscope/qwen-max': {
+    litellm_provider: 'dashscope',
+    mode: 'chat',
+    input_cost_per_token: 0.0000016,
+    output_cost_per_token: 0.0000064,
+    max_input_tokens: 30720,
+    supports_function_calling: true,
+  },
+  'dashscope/qwen-plus': {
+    litellm_provider: 'dashscope',
+    mode: 'chat',
+    input_cost_per_token: 0.0000004,
+    output_cost_per_token: 0.0000012,
+    max_input_tokens: 129024,
+    supports_function_calling: true,
+  },
+  'moonshot/kimi-k2-0905-preview': {
+    litellm_provider: 'moonshot',
+    mode: 'chat',
+    input_cost_per_token: 0.0000006,
+    output_cost_per_token: 0.0000025,
+    cache_read_input_token_cost: 0.00000015,
+    max_input_tokens: 262144,
+    supports_function_calling: true,
+  },
+  'minimax/MiniMax-M2': {
+    litellm_provider: 'minimax',
+    mode: 'chat',
+    input_cost_per_token: 0.0000003,
+    output_cost_per_token: 0.0000012,
+    cache_read_input_token_cost: 0.00000003,
+    max_input_tokens: 200000,
+    supports_function_calling: true,
+  },
+  'zai/glm-4.5': {
+    litellm_provider: 'zai',
+    mode: 'chat',
+    input_cost_per_token: 0.0000006,
+    output_cost_per_token: 0.0000022,
+    max_input_tokens: 128000,
+    supports_function_calling: true,
+  },
+  'zai/glm-4.5-air': {
+    litellm_provider: 'zai',
+    mode: 'chat',
+    input_cost_per_token: 0.0000002,
+    output_cost_per_token: 0.0000011,
+    max_input_tokens: 128000,
+    supports_function_calling: true,
+  },
+  'xai/grok-4': {
+    litellm_provider: 'xai',
+    mode: 'chat',
+    input_cost_per_token: 0.000003,
+    output_cost_per_token: 0.000015,
+    max_input_tokens: 256000,
+    supports_function_calling: true,
+  },
+  'xai/grok-3-mini': {
+    litellm_provider: 'xai',
+    mode: 'chat',
+    input_cost_per_token: 0.0000003,
+    output_cost_per_token: 0.0000005,
+    max_input_tokens: 131072,
+    supports_function_calling: true,
+  },
+  command: {
+    litellm_provider: 'cohere',
+    mode: 'completion',
+    input_cost_per_token: 0.000001,
+    output_cost_per_token: 0.000002,
+    max_input_tokens: 4096,
+  },
   // Curated free set (§8) — $0 tiers routable for simple traffic.
   'openrouter/meta-llama/llama-3.3-70b-instruct:free': {
     litellm_provider: 'openrouter',
@@ -121,6 +197,6 @@ const LITELLM_SNAPSHOT: Record<string, unknown> = {
 };
 
 /** UTC instant used as `valid_from` for every bundled row. Bump on any change. */
-export const BUNDLED_CATALOG_VERSION = new Date('2026-07-15T00:00:00.000Z');
+export const BUNDLED_CATALOG_VERSION = new Date('2026-07-17T00:00:00.000Z');
 
 export const BUNDLED_PRICES: BundledPrice[] = parseLiteLlmCatalog(LITELLM_SNAPSHOT);

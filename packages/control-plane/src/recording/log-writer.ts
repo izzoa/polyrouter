@@ -88,6 +88,9 @@ export interface LogWriterConfig {
   readonly maxQueue: number;
   readonly maxRetries: number;
   readonly backoffMs: number;
+  /** Per-batch DB deadline (price lookup + insert). Bounds the shutdown drain so a
+   * hung database cannot leave it (and the drop accounting) blocked forever. */
+  readonly opTimeoutMs: number;
 }
 export const LOG_WRITER_CONFIG = 'polyrouter:log-writer-config';
 export const DEFAULT_LOG_WRITER_CONFIG: LogWriterConfig = {
@@ -96,9 +99,25 @@ export const DEFAULT_LOG_WRITER_CONFIG: LogWriterConfig = {
   maxQueue: 10_000,
   maxRetries: 3,
   backoffMs: 200,
+  opTimeoutMs: 5000,
 };
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** Reject after `ms` if `op` hasn't settled. The underlying DB call keeps running
+ * (no driver AbortSignal); a retry reuses the same idempotent row ids, so a late
+ * commit is conflict-ignored, not double-counted. */
+async function withTimeout<T>(op: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${String(ms)}ms`)), ms);
+  });
+  try {
+    return await Promise.race([op, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 /**
  * Off-request-path, batched, failure-isolated request-log writer (#11, spec
@@ -115,6 +134,7 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
   private readonly attemptQueue: RequestAttemptDraft[] = [];
   private dropped = 0;
   private flushing = false;
+  private flushPromise: Promise<void> | undefined;
   private timer: ReturnType<typeof setInterval> | undefined;
 
   constructor(
@@ -131,7 +151,7 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
 
   async onApplicationShutdown(): Promise<void> {
     if (this.timer) clearInterval(this.timer);
-    await this.flush();
+    await this.drain();
   }
 
   /** Enqueue a draft — O(1), never throws, never awaits the DB. */
@@ -145,25 +165,47 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
     if (this.queue.length >= this.cfg.batchSize) void this.flush();
   }
 
+  /** Flush a batch. If a flush is already in flight, COALESCE onto it (await it)
+   * rather than early-returning — so a shutdown flush racing a periodic one never
+   * abandons the drafts enqueued after that flush's splice (E5.1). */
   async flush(): Promise<void> {
-    if (this.flushing || (this.queue.length === 0 && this.attemptQueue.length === 0)) return;
+    if (this.flushing) {
+      await this.flushPromise;
+      return;
+    }
+    if (this.queue.length === 0 && this.attemptQueue.length === 0) return;
     this.flushing = true;
-    try {
-      const batch = this.queue.splice(0, this.queue.length);
-      for (const [, drafts] of groupByOwner(batch)) {
-        await this.writeGroup(drafts);
-      }
-      // Attempt ledger AFTER the logs (FK: request_attempt.request_log_id → request_log.id).
-      const attempts = this.attemptQueue.splice(0, this.attemptQueue.length);
-      for (const [, drafts] of groupByOwner(attempts)) {
-        await this.writeAttemptGroup(drafts);
-      }
-    } finally {
+    this.flushPromise = this.flushOnce().finally(() => {
       this.flushing = false;
       if (this.dropped > 0) {
         this.logger.warn(`request-log writer dropped ${this.dropped} row(s)`);
         this.dropped = 0;
       }
+    });
+    await this.flushPromise;
+  }
+
+  /** Drain both queues to completion — used on shutdown. Bounded by the per-op
+   * timeout × retry budget (a hung DB times out and its rows are counted-as-
+   * dropped), so it always terminates before the drop accounting is complete. */
+  private async drain(): Promise<void> {
+    while (this.flushing || this.queue.length > 0 || this.attemptQueue.length > 0) {
+      await this.flush();
+    }
+  }
+
+  private async flushOnce(): Promise<void> {
+    // Snapshot BOTH queues before any await: a cascade log and its attempt
+    // enqueued during a write must land in the SAME cycle, or the child attempt's
+    // FK to its not-yet-written parent fails and the row is avoidably dropped.
+    const batch = this.queue.splice(0, this.queue.length);
+    const attempts = this.attemptQueue.splice(0, this.attemptQueue.length);
+    for (const [, drafts] of groupByOwner(batch)) {
+      await this.writeGroup(drafts);
+    }
+    // Attempt ledger AFTER the logs (FK: request_attempt.request_log_id → request_log.id).
+    for (const [, drafts] of groupByOwner(attempts)) {
+      await this.writeAttemptGroup(drafts);
     }
   }
 
@@ -180,8 +222,12 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
       for (let attempt = 0; ; attempt += 1) {
         try {
           const rows: RequestLogInsertInput[] = [];
-          for (const d of drafts) rows.push(await this.toRow(d)); // sequential → bounded pricing work
-          await this.db.requestLogs.insertMany(principal, rows);
+          for (const d of drafts) rows.push(await this.toRow(d)); // each price lookup is per-op bounded
+          await withTimeout(
+            this.db.requestLogs.insertMany(principal, rows),
+            this.cfg.opTimeoutMs,
+            'request-log insert',
+          );
           rows.forEach((row, i) => {
             const d = drafts[i]!;
             this.metrics.recordCost(d.providerName, d.pricing.externalModelId, row.cost ?? null);
@@ -207,16 +253,20 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
   }
 
   private async toRow(d: RequestLogDraft): Promise<RequestLogInsertInput> {
-    const price = await this.pricing.resolveForModel(
-      {
-        externalModelId: d.pricing.externalModelId,
-        inputPricePer1m: d.pricing.modelInputPricePer1m,
-        outputPricePer1m: d.pricing.modelOutputPricePer1m,
-        isFree: d.pricing.modelIsFree,
-      },
-      d.pricing.providerBaseUrl,
-      d.pricing.providerKind,
-      d.pricing.at,
+    const price = await withTimeout(
+      this.pricing.resolveForModel(
+        {
+          externalModelId: d.pricing.externalModelId,
+          inputPricePer1m: d.pricing.modelInputPricePer1m,
+          outputPricePer1m: d.pricing.modelOutputPricePer1m,
+          isFree: d.pricing.modelIsFree,
+        },
+        d.pricing.providerBaseUrl,
+        d.pricing.providerKind,
+        d.pricing.at,
+      ),
+      this.cfg.opTimeoutMs,
+      'price lookup',
     );
     return {
       id: d.id,
@@ -263,8 +313,12 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
       for (let attempt = 0; ; attempt += 1) {
         try {
           const rows: RequestAttemptInsertInput[] = [];
-          for (const d of drafts) rows.push(await this.toAttemptRow(d));
-          await this.db.requestAttempts.insertMany(principal, rows);
+          for (const d of drafts) rows.push(await this.toAttemptRow(d)); // per-op bounded price lookup
+          await withTimeout(
+            this.db.requestAttempts.insertMany(principal, rows),
+            this.cfg.opTimeoutMs,
+            'request-attempt insert',
+          );
           rows.forEach((row, i) => {
             const d = drafts[i]!;
             this.metrics.recordCost(d.providerName, d.pricing.externalModelId, row.cost ?? null);
@@ -290,16 +344,20 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
   }
 
   private async toAttemptRow(d: RequestAttemptDraft): Promise<RequestAttemptInsertInput> {
-    const price = await this.pricing.resolveForModel(
-      {
-        externalModelId: d.pricing.externalModelId,
-        inputPricePer1m: d.pricing.modelInputPricePer1m,
-        outputPricePer1m: d.pricing.modelOutputPricePer1m,
-        isFree: d.pricing.modelIsFree,
-      },
-      d.pricing.providerBaseUrl,
-      d.pricing.providerKind,
-      d.pricing.at,
+    const price = await withTimeout(
+      this.pricing.resolveForModel(
+        {
+          externalModelId: d.pricing.externalModelId,
+          inputPricePer1m: d.pricing.modelInputPricePer1m,
+          outputPricePer1m: d.pricing.modelOutputPricePer1m,
+          isFree: d.pricing.modelIsFree,
+        },
+        d.pricing.providerBaseUrl,
+        d.pricing.providerKind,
+        d.pricing.at,
+      ),
+      this.cfg.opTimeoutMs,
+      'price lookup',
     );
     return {
       id: d.id,

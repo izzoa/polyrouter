@@ -194,6 +194,13 @@ export class ProvidersService {
     };
     const row = await this.db.providers.update(principal, id, patch);
     if (!row) throw new NotFoundException();
+    // A model-own price left over from a custom/local kind would display for a now
+    // catalog-priced provider (the resolver already ignores it — E5.4); clear it for
+    // GET /api/models consistency when the kind leaves custom/local.
+    const leftUserPriced =
+      (existing.kind === 'custom' || existing.kind === 'local') &&
+      (nextKind === 'api_key' || nextKind === 'subscription');
+    if (leftUserPriced) await this.db.models.clearPricingForProvider(principal, id);
     return toSafe(row);
   }
 

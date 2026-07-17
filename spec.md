@@ -18,7 +18,7 @@ The core value proposition: users already pay for LLM access in fragmented ways 
 - **Privacy:** In self-hosted mode, prompts/responses never leave the user's infrastructure except to go directly to the chosen provider. Store only metadata (tokens, cost, model, latency, timestamps) by default — not prompt/response bodies. Make body logging opt-in.
 - **No markup:** The router does not resell tokens or take a per-call fee. Users pay providers directly with their own keys/subscriptions.
 - **Transparency:** The routing decision must be inspectable — the user can see *why* a given model was chosen for a request.
-- **Open source:** MIT-style license, cloud + self-hosted parity on the same codebase/DB backend.
+- **Open source:** AGPL-3.0 license (network copyleft), cloud + self-hosted parity on the same codebase/DB backend.
 
 ### The routing philosophy (read this before §7)
 **Explicit routing is the reliable core; automatic routing is an opt-in enhancement that must degrade gracefully.** The reference project shipped an automatic rule-based complexity classifier as its headline feature and then **deprecated it** because static rules proved brittle (system-prompt contamination, English-only, no way to keep up with new harnesses). The lesson baked into this spec: the dependable, zero-latency, language-neutral path is *explicit* (caller names a model, or a tier via header, or a default). Anything "smart" layers on top and can always fall back to explicit. See §7 for the full design.

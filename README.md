@@ -292,6 +292,37 @@ The router applies your configured fallbacks, spend limits, and cost tracking on
 call. Explicit routing (a named model) is the reliable core; `auto` and tier routing are
 opt-in and always degrade back to explicit/default.
 
+### Terminal coding agents (OpenClaw, Hermes)
+
+Terminal-native coding agents are configured with a **config file** rather than SDK code.
+Both speak the OpenAI-compatible endpoint, so point their `base_url` at
+`https://<your-instance>/v1` with your `poly_…` key and let the router pick the model
+(`auto`). The dashboard's **Agents → New** picks the harness and shows the exact block once;
+the equivalents are:
+
+**OpenClaw** — `~/.openclaw/config.toml`:
+
+```toml
+[llm]
+base_url = "https://<your-instance>/v1"
+api_key  = "poly_your_key"
+model    = "auto"
+```
+
+**[Hermes Agent](https://github.com/NousResearch/hermes-agent)** — `~/.hermes/config.yaml`:
+
+```yaml
+model:
+  default: auto
+  provider: custom
+  base_url: "https://<your-instance>/v1"
+  api_key: "poly_your_key"
+```
+
+Prefer to keep the key out of the YAML? Hermes supports env substitution — use
+`api_key: ${POLYROUTER_KEY}` in `~/.hermes/config.yaml` and put `POLYROUTER_KEY=poly_your_key`
+in `~/.hermes/.env`.
+
 ## Development
 
 Requirements: **Node.js 24.x** (see `.nvmrc`), npm 10–11, Docker (for the dev database).

@@ -8,6 +8,7 @@ export const HARNESS_TYPES = [
   'vercel_ai_sdk',
   'langchain',
   'openclaw',
+  'hermes',
   'curl',
 ] as const;
 
@@ -23,6 +24,7 @@ export const HARNESS_LABELS: Record<HarnessType, string> = {
   vercel_ai_sdk: 'Vercel AI SDK',
   langchain: 'LangChain',
   openclaw: 'OpenClaw',
+  hermes: 'Hermes',
   curl: 'cURL / other',
 };
 
@@ -36,6 +38,12 @@ export function connectionSnippet(harness: HarnessType, baseUrl: string, apiKey:
   }
   if (harness === 'openclaw') {
     return `# ~/.openclaw/config.toml\n[llm]\nbase_url = "${baseUrl}"\napi_key  = "${apiKey}"\nmodel    = "auto"`;
+  }
+  if (harness === 'hermes') {
+    // OpenAI-compatible: base_url keeps its /v1, provider=custom, default=auto lets the
+    // router decide. JSON.stringify emits a properly-escaped double-quoted scalar (valid
+    // YAML) so an unusual base_url/key can't corrupt the block.
+    return `# ~/.hermes/config.yaml\nmodel:\n  default: auto\n  provider: custom\n  base_url: ${JSON.stringify(baseUrl)}\n  api_key: ${JSON.stringify(apiKey)}`;
   }
   // openai_sdk, vercel_ai_sdk, langchain all speak the OpenAI base URL
   return `from openai import OpenAI\n\nclient = OpenAI(\n    base_url="${baseUrl}",\n    api_key="${apiKey}")\n# model="auto" lets the router decide`;

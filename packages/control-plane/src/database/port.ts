@@ -507,7 +507,7 @@ export function buildPersistencePort(db: Db): PersistencePort {
       async remove(principal: Principal, id: string): Promise<boolean> {
         return db.transaction(async (tx) => {
           await lockOwnerTiers(tx, principal); // tier-first lock order (no deadlock w/ replaceForTier)
-          const rows = await buildRemove(tx, providers as unknown as AnyOwnedTable, principal, id);
+          const rows = await buildRemove(tx, providers, principal, id);
           if (rows.length === 0) return false;
           await compactTiers(tx, principal);
           return true;

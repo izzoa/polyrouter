@@ -12,7 +12,7 @@ export type {
   ProviderModelInfo,
   ConnectionResult,
 } from './adapter';
-export { DEFAULT_FIRST_BYTE_TIMEOUT_MS } from './adapter';
+export { DEFAULT_FIRST_BYTE_TIMEOUT_MS, MAX_MODEL_ID_LEN } from './adapter';
 export {
   ProviderError,
   ProviderCircuitOpenError,

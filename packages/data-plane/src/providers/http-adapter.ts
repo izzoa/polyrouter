@@ -13,6 +13,9 @@ import type {
 } from '../proxy/translate';
 import {
   DEFAULT_FIRST_BYTE_TIMEOUT_MS,
+  DEFAULT_MAX_RESPONSE_BYTES,
+  MAX_MODEL_ID_LEN,
+  MAX_PARSED_MODELS,
   type CallContext,
   type ConnectionResult,
   type ProviderAdapter,
@@ -74,13 +77,18 @@ export function createHttpProviderAdapter(
   deps: AdapterDeps,
   spec: HttpAdapterSpec,
 ): ProviderAdapter {
-  const httpClient =
-    deps.httpClient ?? createGuardedHttpClient({ mode: config.mode, providerKind: config.kind });
   const firstByteTimeoutMs = config.firstByteTimeoutMs ?? DEFAULT_FIRST_BYTE_TIMEOUT_MS;
   // Inter-chunk idle deadline for buffered drains (E4.3). Defaults to the
   // first-byte bound; applied to non-streaming reads only (the stream path is
   // bounded by core's per-event timeout).
   const idleTimeoutMs = config.idleTimeoutMs ?? firstByteTimeoutMs;
+  // Byte cap on buffered (non-streaming) drains (E11.1); streaming is exempt. Also
+  // handed to the default guarded client so a stream request's buffered *error*
+  // body honors the same cap (not just the 10 MiB backstop).
+  const maxResponseBytes = config.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
+  const httpClient =
+    deps.httpClient ??
+    createGuardedHttpClient({ mode: config.mode, providerKind: config.kind, maxResponseBytes });
   const chatUrl = joinUrl(config.baseUrl, spec.chatPath);
   const modelsUrl = joinUrl(config.baseUrl, spec.modelsPath);
 
@@ -101,6 +109,7 @@ export function createHttpProviderAdapter(
         firstByteTimeoutMs,
         ctx,
         idleTimeoutMs,
+        maxResponseBytes,
       );
       try {
         if (!res.ok) {
@@ -154,6 +163,7 @@ export function createHttpProviderAdapter(
         firstByteTimeoutMs,
         ctx,
         idleTimeoutMs,
+        maxResponseBytes,
       );
       try {
         if (!res.ok) {
@@ -185,16 +195,27 @@ export function createHttpProviderAdapter(
   return { protocol: spec.protocol, chat, chatStream, listModels, testConnection };
 }
 
-/** Parse a `{ data: [{ id, <displayKey?> }] }` model list into ProviderModelInfo[]. */
+/**
+ * Parse a `{ data: [{ id, <displayKey?> }] }` model list into ProviderModelInfo[].
+ * Skips entries with a non-string, over-long (`> MAX_MODEL_ID_LEN`), or duplicate
+ * id **before** counting toward `MAX_PARSED_MODELS` (E11.1) — so a flood of junk or
+ * repeated ids from an address-safe-but-hostile endpoint can't consume the parse
+ * budget and starve out the legitimate ids that follow.
+ */
 export function parseModelList(json: unknown, displayKey?: string): ProviderModelInfo[] {
   const data = typeof json === 'object' && json !== null && 'data' in json ? json.data : undefined;
   if (!Array.isArray(data)) return [];
   const out: ProviderModelInfo[] = [];
+  const seen = new Set<string>();
   for (const entry of data as unknown[]) {
+    if (out.length >= MAX_PARSED_MODELS) break;
     if (typeof entry !== 'object' || entry === null) continue;
     const rec = entry as Record<string, unknown>;
     const id = rec['id'];
     if (typeof id !== 'string') continue;
+    if (id.length > MAX_MODEL_ID_LEN) continue; // skip before it consumes the cap
+    if (seen.has(id)) continue; // dedup before the cap: a repeat can't starve valids
+    seen.add(id);
     const display = displayKey !== undefined ? rec[displayKey] : undefined;
     out.push({ id, ...(typeof display === 'string' ? { displayName: display } : {}) });
   }

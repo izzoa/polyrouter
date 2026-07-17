@@ -37,6 +37,9 @@ export interface ProviderConfig {
   readonly firstByteTimeoutMs?: number;
   /** Optional bound on inter-event gaps for a stream (not an overall deadline). */
   readonly idleTimeoutMs?: number;
+  /** Cap on a buffered (non-streaming) response body; defaults to
+   * `DEFAULT_MAX_RESPONSE_BYTES`. Overridable mainly for tests (E11.1). */
+  readonly maxResponseBytes?: number;
   /** Forwarded to #5's translate adapter (genuine provider deviations). */
   readonly quirks?: AdapterQuirks;
   /** Merged into outbound requests (subscription/custom header seam). */
@@ -61,3 +64,24 @@ export interface ProviderAdapter {
 }
 
 export const DEFAULT_FIRST_BYTE_TIMEOUT_MS = 30_000;
+
+/**
+ * Hard cap on a buffered (non-streaming) provider response body (E11.1). A
+ * `base_url` only has to pass the SSRF *address* check — a hostile-but-public
+ * endpoint is allowed by design — so the buffered drain must bound memory itself.
+ * 10 MiB mirrors the `/v1` ingress bound; a real model list or completion JSON is
+ * orders of magnitude smaller. Streaming SSE is consumed incrementally and exempt.
+ */
+export const DEFAULT_MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
+
+/** Parse-time cap on the number of DISTINCT, length-valid model ids
+ * `parseModelList` will materialize from one `listModels` response (defense-in-depth
+ * under the byte cap; the write-time `MAX_SYNCED_MODELS` bound is what protects the
+ * DB). Oversized/duplicate ids are skipped BEFORE they count toward this cap, so a
+ * flood of junk ids can't starve out the valid ones (E11.1). */
+export const MAX_PARSED_MODELS = 5_000;
+
+/** Max external-model-id length. A longer id is skipped (not truncated — a
+ * truncated id is a *wrong* id that could collide on `(provider_id, id)`). Shared
+ * by the data-plane parse cap and the control-plane upsert guard. */
+export const MAX_MODEL_ID_LEN = 512;

@@ -21,6 +21,7 @@ import {
   type ProviderRow,
 } from '@polyrouter/shared/server';
 import {
+  MAX_MODEL_ID_LEN,
   ProviderError,
   createProviderAdapter,
   type ConnectionResult,
@@ -39,6 +40,15 @@ import type {
 
 export type ProviderAdapterFactory = typeof createProviderAdapter;
 export const PROVIDER_ADAPTER_FACTORY = 'polyrouter:provider-adapter-factory';
+
+/** Write-time ingestion bounds for `sync-models` (E11.1). A `base_url` is
+ * address-safe but its response is untrusted, so a single sync must not flood the
+ * `models` table. Cap the row count and per-field lengths before upserting. The
+ * id-length bound is shared with the data-plane parse guard (`MAX_MODEL_ID_LEN`),
+ * which also skips over-long/duplicate ids before its own cap; this write-time skip
+ * is defense-in-depth for any adapter path that bypasses `parseModelList`. */
+const MAX_SYNCED_MODELS = 2_000;
+const MAX_MODEL_NAME_LEN = 512;
 
 /** Resolved config the service needs (encryption key + runtime mode). Provided
  * by the module via `loadProvidersConfig`; injected directly in unit tests. */
@@ -240,12 +250,23 @@ export class ProvidersService {
     }
     const deduped = new Map<string, ProviderModelInfo>();
     for (const m of models) deduped.set(m.id, m);
+    // Bound ingestion (E11.1): cap the number of upserts and skip/truncate over-long
+    // fields before writing, so a pathological (but address-safe) response can't
+    // flood the models table. Skip — not truncate — an over-long id: a truncated id
+    // is a *wrong* id, and two distinct long ids could collide on (provider_id, id).
+    // `attempts` bounds DB round-trips (a skipped id doesn't consume the budget).
     let synced = 0;
+    let attempts = 0;
     for (const m of deduped.values()) {
+      if (attempts >= MAX_SYNCED_MODELS) break;
+      if (m.id.length > MAX_MODEL_ID_LEN) continue;
+      attempts += 1;
+      const displayName =
+        m.displayName !== undefined ? m.displayName.slice(0, MAX_MODEL_NAME_LEN) : undefined;
       const values: ModelInsertInput = {
         externalModelId: m.id,
         lastSyncedAt: new Date(),
-        ...(m.displayName !== undefined ? { displayName: m.displayName } : {}),
+        ...(displayName !== undefined ? { displayName } : {}),
       };
       const row = await this.db.models.upsertForProvider(principal, provider.id, values);
       if (row) synced += 1;

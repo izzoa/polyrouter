@@ -835,14 +835,14 @@ A-25 (no test for a rule target naming another tenant's model), A-44 (PATCH can'
 ---
 
 <a id="epic-e11"></a>
-## EPIC E11 — Provider-management input bounds · P2
+## EPIC E11 — Provider-management input bounds · P2 · ✅ SHIPPED 2026-07-17 (`bound-provider-sync`)
 
 **Proposal slug:** `bound-provider-sync` ·
 **Spec refs:** CLAUDE.md invariant 6 (server-fetched user URLs); `openspec/specs/provider-management`
 **Why:** A base_url only has to pass the SSRF *address* check — a hostile-but-public endpoint is
 allowed by design (no allow-list), so the server willingly drains whatever it sends.
 
-### Task E11.1 — Bound sync-models/test-connection response size and synced-model count/field length ☐ `[medium/S]`
+### Task E11.1 — Bound sync-models/test-connection response size and synced-model count/field length ✅ `[medium/S]`
 - **Where:** `packages/data-plane/src/providers/http.ts:56` (`drainText`, unbounded); `packages/control-plane/src/providers/providers.service.ts:237` (`syncModels` loop)
 - **Defect:** `drainText` accumulates the response body with no byte cap; `parseModelList` accepts an
   unbounded array with unbounded id/name lengths; `syncModels` upserts every entry with no count/length
@@ -1076,7 +1076,7 @@ change proposal. Batch opportunistically when touching the neighboring code.
 | A-39 | db | Boot migrations take no advisory lock (documented single-replica constraint) | `migrations-runner.ts` |
 | A-40 | security | GCM auth tag length not pinned to 16 bytes on decrypt (defense-in-depth) | `encryption.ts:49` |
 | A-41 | security | Allowlist HARD-overlap guard checks only CIDR network address; skipped on notification host path | `ssrf.ts:183` |
-| A-42 | provider-mgmt | `IsUrl` `require_tld` rejects `http://localhost:11434` (Ollama) with a misleading 400 | `providers.dto.ts:19` |
+| A-42 ✅ | provider-mgmt | `IsUrl` `require_tld` rejects `http://localhost:11434` (Ollama) with a misleading 400 → fixed in E11 (`bound-provider-sync`) | `providers.dto.ts:19` |
 | A-43 | foundation | Redis client attaches no `error` listener → noisy `[ioredis] Unhandled error` on outage | `redis.module.ts` |
 | A-44 | routing-config | PATCH can't clear nullable fields (`@IsString` rejects null on displayName/description) | `routing-config.dto.ts` |
 | A-45 | dx | Duplicated comparators/formulas (`ruleOrder`, effective-auto-layers) risk drift — share one impl | `routing-config.service.ts:224`, `auto-layers.service.ts:51` |

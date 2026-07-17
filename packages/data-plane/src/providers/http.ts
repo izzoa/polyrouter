@@ -16,6 +16,7 @@ import {
   createGuardedDispatcher,
   type UrlGuardOptions,
 } from '@polyrouter/shared/server';
+import { DEFAULT_MAX_RESPONSE_BYTES } from './adapter';
 import type { CallContext, RuntimeMode, ProviderKind } from './adapter';
 import { CallCancelledError, ProviderError } from './errors';
 
@@ -44,6 +45,9 @@ export interface GuardedClientOptions {
   readonly providerKind: ProviderKind;
   /** Injected in tests to drive connect-time (rebinding) refusal. */
   readonly resolve?: (hostname: string) => Promise<string[]>;
+  /** Byte cap for a raw buffered drain off this client (e.g. a stream request's
+   * error body). Defaults to `DEFAULT_MAX_RESPONSE_BYTES` (E11.1). */
+  readonly maxResponseBytes?: number;
 }
 
 function guardOptions(o: GuardedClientOptions): UrlGuardOptions {
@@ -53,23 +57,53 @@ function guardOptions(o: GuardedClientOptions): UrlGuardOptions {
   };
 }
 
-async function drainText(stream: ReadableStream<Uint8Array> | null): Promise<string> {
+/**
+ * Drain a buffered response body to a string, bounded by `maxBytes` (E11.1). The
+ * byte count is checked BEFORE decoding/appending each chunk, so peak memory stays
+ * near the cap regardless of what an address-safe-but-hostile endpoint returns; on
+ * overflow the reader is cancelled (closing the guarded dispatcher — no leaked
+ * connection) and a typed `bad_request` is thrown (neither trips the breaker nor
+ * falls back — see errors.ts). Any read fault also cancels the reader.
+ */
+async function drainText(
+  stream: ReadableStream<Uint8Array> | null,
+  maxBytes: number = DEFAULT_MAX_RESPONSE_BYTES,
+): Promise<string> {
   if (stream === null) return '';
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let out = '';
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (value) out += decoder.decode(value, { stream: true });
+  let bytes = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        bytes += value.length;
+        if (bytes > maxBytes) {
+          throw new ProviderError(
+            'bad_request',
+            `provider response body exceeds ${String(maxBytes)} bytes`,
+          );
+        }
+        out += decoder.decode(value, { stream: true });
+      }
+    }
+    out += decoder.decode();
+    return out;
+  } catch (err) {
+    await reader.cancel().catch(() => undefined);
+    throw err;
   }
-  out += decoder.decode();
-  return out;
 }
 
 /** Wrap the upstream body so the dispatcher closes exactly once when the body
  * ends, errors, or is cancelled. Bodyless responses close immediately. */
-function bindDispatcherToBody(res: Response, dispatcher: Dispatcher): HttpResponse {
+function bindDispatcherToBody(
+  res: Response,
+  dispatcher: Dispatcher,
+  maxResponseBytes: number = DEFAULT_MAX_RESPONSE_BYTES,
+): HttpResponse {
   const upstream: ReadableStream<Uint8Array> | null = res.body;
   let closePromise: Promise<void> | undefined;
   const closeOnce = (): Promise<void> => {
@@ -113,8 +147,8 @@ function bindDispatcherToBody(res: Response, dispatcher: Dispatcher): HttpRespon
     ok: res.ok,
     headers: res.headers,
     body: wrapped,
-    text: () => drainText(wrapped),
-    json: async () => JSON.parse(await drainText(wrapped)) as unknown,
+    text: () => drainText(wrapped, maxResponseBytes),
+    json: async () => JSON.parse(await drainText(wrapped, maxResponseBytes)) as unknown,
   };
 }
 
@@ -148,7 +182,7 @@ export function createGuardedHttpClient(options: GuardedClientOptions): HttpClie
         { status: res.status },
       );
     }
-    return bindDispatcherToBody(res, dispatcher);
+    return bindDispatcherToBody(res, dispatcher, options.maxResponseBytes);
   };
 }
 
@@ -200,6 +234,7 @@ function guardBufferedBodyIdle(
   res: HttpResponse,
   ctl: AbortController,
   idleTimeoutMs: number,
+  maxResponseBytes: number,
 ): { res: HttpResponse; clear: () => void } {
   const source = res.body;
   if (source === null) return { res, clear: () => undefined };
@@ -259,8 +294,8 @@ function guardBufferedBodyIdle(
     ok: res.ok,
     headers: res.headers,
     body: guarded,
-    text: () => drainText(guarded),
-    json: async () => JSON.parse(await drainText(guarded)) as unknown,
+    text: () => drainText(guarded, maxResponseBytes),
+    json: async () => JSON.parse(await drainText(guarded, maxResponseBytes)) as unknown,
   };
   return { res: guardedRes, clear };
 }
@@ -279,6 +314,7 @@ export async function openRequest(
   firstByteTimeoutMs: number,
   ctx?: CallContext,
   idleTimeoutMs?: number,
+  maxResponseBytes: number = DEFAULT_MAX_RESPONSE_BYTES,
 ): Promise<OpenedRequest> {
   // A signal already aborted before we attach the listener would never fire it,
   // so the call would start anyway; honor it up front (a fallback walk aborts
@@ -304,7 +340,7 @@ export async function openRequest(
     // For a buffered read, keep the request abortable and bound the body drain by
     // an inter-chunk idle deadline (a stream is left to core's per-event timeout).
     if (idleTimeoutMs !== undefined) {
-      const guarded = guardBufferedBodyIdle(res, ctl, idleTimeoutMs);
+      const guarded = guardBufferedBodyIdle(res, ctl, idleTimeoutMs, maxResponseBytes);
       idleClear = guarded.clear;
       return { res: guarded.res, dispose };
     }

@@ -178,6 +178,28 @@ describe('provider management', () => {
     expect(res.body.kind).toBe('local');
   });
 
+  it('accepts the canonical TLD-less local host (A-42), still SSRF-gated for non-local', async () => {
+    // `localhost` is a single-label host that the old `@IsUrl` require_tld rejected
+    // outright (a 400 shape error) — the canonical Ollama URL. It must now pass the
+    // shape check and be accepted for a local provider under self-host.
+    const ok = await asAlice().send({
+      name: 'ollama-host',
+      kind: 'local',
+      protocol: 'openai_compatible',
+      baseUrl: 'http://localhost:11434',
+    });
+    expect(ok.status).toBe(201);
+    expect(ok.body.kind).toBe('local');
+    // The address decision still belongs to the SSRF gate: the same TLD-less
+    // loopback host for a `custom` provider is rejected (loopback is local-only).
+    const gated = await asAlice().send({
+      ...CUSTOM,
+      baseUrl: 'http://localhost:11434',
+      credential: 'k',
+    });
+    expect(gated.status).toBe(422);
+  });
+
   it('test-connection sets status and stays sanitized on a reflected-credential failure', async () => {
     const created = await asAlice().send({ ...CUSTOM, credential: 'sk-reflect-e2e' });
     nextTest = () => ({ ok: false, kind: 'bad_request', message: 'upstream said sk-reflect-e2e' });

@@ -284,4 +284,57 @@ describe('ProvidersService — sync-models', () => {
       expect(values).not.toHaveProperty('isFree');
     }
   });
+
+  it('caps the upsert count at MAX_SYNCED_MODELS — no partial 10k flood (E11.1)', async () => {
+    const { port, upsert } = makePort();
+    const seed = new ProvidersService(port, factory(), runtime('selfhosted'));
+    const prov = await seed.create(principal, {
+      ...baseCreate,
+      kind: 'custom',
+      baseUrl: 'https://1.1.1.1/v1',
+      credential: 'k',
+    });
+    const listing: ProviderModelInfo[] = Array.from({ length: 10_000 }, (_v, i) => ({
+      id: `m-${String(i)}`,
+    }));
+    const svc = new ProvidersService(
+      port,
+      factory({ listModels: () => Promise.resolve(listing) }),
+      runtime('selfhosted'),
+    );
+    const res = await svc.syncModels(principal, prov.id);
+    expect(upsert).toHaveBeenCalledTimes(2_000); // MAX_SYNCED_MODELS
+    expect(res.synced).toBe(2_000);
+  });
+
+  it('skips an over-long id and truncates an over-long display name before upserting (E11.1)', async () => {
+    const { port, upsert } = makePort();
+    const seed = new ProvidersService(port, factory(), runtime('selfhosted'));
+    const prov = await seed.create(principal, {
+      ...baseCreate,
+      kind: 'custom',
+      baseUrl: 'https://1.1.1.1/v1',
+      credential: 'k',
+    });
+    // Special entries first so they fall within the cap and are actually processed.
+    const listing: ProviderModelInfo[] = [
+      { id: 'z'.repeat(600) }, // > MAX_MODEL_ID_LEN → skipped (a truncated id is a wrong id)
+      { id: 'longname', displayName: 'n'.repeat(600) }, // name truncated to MAX_MODEL_NAME_LEN
+      { id: 'ok', displayName: 'fine' },
+    ];
+    const svc = new ProvidersService(
+      port,
+      factory({ listModels: () => Promise.resolve(listing) }),
+      runtime('selfhosted'),
+    );
+    const res = await svc.syncModels(principal, prov.id);
+    // The 600-char id contributed no upsert; the two valid ids did.
+    expect(res.synced).toBe(2);
+    const ids = upsert.mock.calls.map((c) => (c[2] as ModelInsertInput).externalModelId);
+    expect(ids).toEqual(['longname', 'ok']);
+    const longNameCall = upsert.mock.calls.find(
+      (c) => (c[2] as ModelInsertInput).externalModelId === 'longname',
+    );
+    expect((longNameCall?.[2] as ModelInsertInput).displayName?.length).toBe(512);
+  });
 });

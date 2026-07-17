@@ -16,7 +16,11 @@ export const PROVIDER_PROTOCOLS = ['openai_compatible', 'anthropic_compatible'] 
 export type ProviderKind = (typeof PROVIDER_KINDS)[number];
 export type ProviderProtocol = (typeof PROVIDER_PROTOCOLS)[number];
 
-const urlOpts = { protocols: ['http', 'https'], require_protocol: true };
+// `require_tld: false` accepts a single-label host like `localhost:11434` (the
+// canonical Ollama endpoint, A-42). This is a SHAPE check only — address safety
+// (private/loopback/metadata, loopback gated on MODE=selfhosted) is enforced by the
+// service's SSRF gate, which is where the address decision belongs.
+const urlOpts = { protocols: ['http', 'https'], require_protocol: true, require_tld: false };
 
 export class CreateProviderDto {
   @IsString()

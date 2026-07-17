@@ -332,6 +332,14 @@ pass its `/ss-score` gate). CI enforces build, lint, typecheck, the unit suites,
 — including the protocol-contract (golden files), SSRF, tenant-isolation, and
 cost-immutability suites — on every push.
 
+An auto-generated **code wiki** lives in [`openwiki/`](./openwiki/): start at
+[`openwiki/quickstart.md`](./openwiki/quickstart.md) for the architecture overview,
+source maps, request flow, and runbook notes. The scheduled
+[OpenWiki workflow](./.github/workflows/openwiki-update.yml) regenerates it daily and
+opens a PR with the refresh — don't hand-edit generated wiki pages; change the source and
+let the next run regenerate them. (Maintainer: the workflow needs the
+`OPENROUTER_API_KEY` repo secret.)
+
 ## License
 
 [AGPL-3.0](./LICENSE.md). Run it, self-host it, fork it — if you offer a **modified**

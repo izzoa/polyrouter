@@ -100,3 +100,13 @@ packages/
 - Swap models mid-stream after bytes are sent; recompute historical cost against current prices.
 - Add cloud-tier infrastructure (data-plane split, embedding classifier, ClickHouse/Timescale) to the baseline build.
 - **Compliance note:** reusing flat-rate *subscriptions* (ChatGPT Plus, Claude Max) programmatically likely violates those providers' ToS. Support it as a provider kind, but surface the risk to users; BYOK/API-key and local models don't carry it. (spec §16)
+
+<!-- OPENWIKI:START -->
+
+## OpenWiki
+
+This repository uses OpenWiki for recurring code documentation. Start with `openwiki/quickstart.md`, then follow its links to architecture, workflows, domain concepts, operations, integrations, testing guidance, and source maps.
+
+The scheduled OpenWiki GitHub Actions workflow refreshes the repository wiki. Do not hand-edit generated OpenWiki pages unless explicitly asked; prefer updating source code/docs and letting OpenWiki regenerate.
+
+<!-- OPENWIKI:END -->

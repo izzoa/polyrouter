@@ -24,12 +24,16 @@ coverage/
 # per-user agent settings (project agent config itself is committed)
 .claude/settings.local.json
 
-# skill symlink mirrors for agent tools this project doesn't use
-# (.agents/skills is the committed source of truth — Codex & co. read it directly;
-# Claude Code's relative symlinks in .claude/skills ARE committed)
+# per-tool skill/command mirrors for agent tools this project doesn't use
+# (committed agent config: .agents/skills is the skill source of truth, plus the
+# Claude Code (.claude) and Codex (.codex) dirs — the tools actually in use here)
+.agent/
 .augment/
 .crush/
+.cursor/
+.gemini/
 .junie/
+.opencode/
 
 # OpenSpec planning workspace (proposals, deltas, archives) — machine-local
 openspec/

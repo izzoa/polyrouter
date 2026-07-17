@@ -737,14 +737,14 @@ routing-config specs drift from code — small spec-sync change).
 ---
 
 <a id="epic-e9"></a>
-## EPIC E9 — Auth plane & rate-limit hardening · P2
+## EPIC E9 — Auth plane & rate-limit hardening · P2 · ✅ SHIPPED 2026-07-17 (`harden-auth-plane`)
 
 **Proposal slug:** `harden-auth-plane` ·
 **Spec refs:** `openspec/specs/{session-auth,agent-keys}`; CLAUDE.md invariants 5, 7
 **Why:** Neither is a live data-exposure hole today (compensated by `@CurrentPrincipal` throwing), but
 both weaken defenses the spec mandates and one is an auth-plane DoS.
 
-### Task E9.1 — Make client-IP CIDR matching IPv6-aware ☐ `[medium/S]`
+### Task E9.1 — Make client-IP CIDR matching IPv6-aware ✅ `[medium/S]`
 - **Where:** `packages/control-plane/src/auth/client-ip.ts:8` (`ipInCidr`); `auth.config.ts:27` (`TRUSTED_PROXY_CIDRS`, unvalidated)
 - **Defect:** `ipInCidr` short-circuits false for any non-IPv4 peer or CIDR, so behind an
   IPv6-connecting proxy (dual-stack cloud ingress, pod-to-pod v6) `X-Forwarded-For` is discarded and
@@ -757,7 +757,7 @@ both weaken defenses the spec mandates and one is an auth-plane DoS.
   THEN each gets a distinct bucket from its `X-Forwarded-For` address.
 - **Verify:** new `client-ip` unit test (none exists yet): `clientIp({peer:'fd00::1', xff:'2001:db8::5'}, ['fd00::/8'])` → `'2001:db8::5'`.
 
-### Task E9.2 — Make the /api plane check case-insensitive ☐ `[medium/XS]`
+### Task E9.2 — Make the /api plane check case-insensitive ✅ `[medium/XS]`
 - **Where:** `packages/control-plane/src/auth/session.guard.ts:48`; also `mount.ts`, `rate-limit.middleware.ts`
 - **Defect:** Plane scoping is `req.path.startsWith('/api')` (case-sensitive), but Express routes
   case-insensitively (no override set) → `GET /API/agents` matches the controller but **skips the

@@ -1,6 +1,7 @@
 import { isIP } from 'node:net';
 import { loadConfig, registerConfig, z } from '@polyrouter/shared';
 import type { BaseConfig } from '@polyrouter/shared';
+import { parseCidr } from './client-ip';
 
 const HEX_64 = /^[0-9a-f]{64}$/i;
 const DEV_SECRET_FALLBACK = 'polyrouter-dev-only-not-a-real-secret-do-not-use-in-production00';
@@ -34,7 +35,12 @@ registerConfig(
               .map((s) => s.trim())
               .filter(Boolean)
           : [],
-      ),
+      )
+      // Strict: every entry must be a valid IPv4/IPv6 CIDR (E9.1) — a malformed one
+      // (e.g. an empty `/` suffix) fails boot rather than silently trusting all peers.
+      .refine((cidrs) => cidrs.every((c) => parseCidr(c) !== null), {
+        message: 'each TRUSTED_PROXY_CIDRS entry must be a valid IPv4/IPv6 CIDR (e.g. 10.0.0.0/8, fd00::/8)',
+      }),
     GOOGLE_CLIENT_ID: z.string().optional(),
     GOOGLE_CLIENT_SECRET: z.string().optional(),
     GITHUB_CLIENT_ID: z.string().optional(),

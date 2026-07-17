@@ -129,6 +129,15 @@ describe('production topology via `npm start` (app-bootstrap)', () => {
       expect(unknownV1.status).toBe(404);
       expect(unknownV1.headers.get('content-type')).toContain('application/json');
 
+      // E9.2: an UPPER-CASE /API or /V1 path must also reach Nest, never the SPA
+      // shell (otherwise the case-insensitive session guard would be bypassed).
+      const upperApi = await fetch(`${server.baseUrl}/API/nonexistent`);
+      expect(upperApi.status).toBe(404);
+      expect(upperApi.headers.get('content-type')).not.toContain('text/html');
+      const upperV1 = await fetch(`${server.baseUrl}/V1/nonexistent`);
+      expect(upperV1.status).toBe(404);
+      expect(upperV1.headers.get('content-type')).not.toContain('text/html');
+
       // #21/#22: the Prometheus scrape must reach Nest, never the SPA shell
       // (caught in-container by the packaging smoke pass).
       const metrics = await fetch(`${server.baseUrl}/metrics`);

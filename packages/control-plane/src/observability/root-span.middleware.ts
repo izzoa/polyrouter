@@ -2,10 +2,12 @@ import { SpanKind, SpanStatusCode, context, trace } from '@opentelemetry/api';
 import type { NextFunction, Request, Response } from 'express';
 import { TRACER_NAME } from './tracing';
 
-/** Client protocol from the request path (metadata for the root span only). */
+/** Client protocol from the request path (metadata for the root span only).
+ * Case-insensitive (E9.2) — Express routes `/V1/...` to the same handler. */
 function protocolOf(originalUrl: string): string {
-  if (originalUrl.startsWith('/v1/messages')) return 'anthropic';
-  if (originalUrl.startsWith('/v1/chat/completions')) return 'openai';
+  const u = originalUrl.toLowerCase();
+  if (u.startsWith('/v1/messages')) return 'anthropic';
+  if (u.startsWith('/v1/chat/completions')) return 'openai';
   return 'other';
 }
 

@@ -9,6 +9,7 @@ import {
   toProxyError,
   unauthorized,
 } from './proxy-errors';
+import { isV1Path } from '../planes';
 
 /**
  * Renders every `/v1` failure — the guard's 401, resolver/provider errors, a
@@ -22,7 +23,7 @@ export class ProxyExceptionFilter extends BaseExceptionFilter {
   override catch(exception: unknown, host: ArgumentsHost): void {
     const ctx = host.switchToHttp();
     const req = ctx.getRequest<Request>();
-    if (!req.path.startsWith('/v1')) {
+    if (!isV1Path(req.path)) {
       super.catch(exception, host);
       return;
     }

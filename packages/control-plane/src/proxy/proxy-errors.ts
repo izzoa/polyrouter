@@ -165,5 +165,5 @@ export function renderProxyError(
 /** Client protocol from the request path (`/v1/messages` is Anthropic;
  * tolerate a trailing slash from Express's non-strict routing). */
 export function protocolForPath(path: string): ClientProtocol {
-  return /\/messages\/?$/.test(path) ? 'anthropic' : 'openai';
+  return /\/messages\/?$/i.test(path) ? 'anthropic' : 'openai';
 }

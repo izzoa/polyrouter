@@ -26,7 +26,9 @@ export const AUTH_RATE_RULES: RateRule[] = [
 ];
 
 export function matchRule(path: string): RateRule | null {
-  return AUTH_RATE_RULES.find((r) => path.startsWith(r.prefix)) ?? null;
+  // Case-insensitive (E9.2): an upper-case auth path must be throttled identically.
+  const lower = path.toLowerCase();
+  return AUTH_RATE_RULES.find((r) => lower.startsWith(r.prefix)) ?? null;
 }
 
 export interface RateDecision {

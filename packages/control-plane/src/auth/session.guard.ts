@@ -10,6 +10,7 @@ import { IDENTITY_PORT, userPrincipal, type IdentityPort } from '@polyrouter/sha
 import type { BaseConfig } from '@polyrouter/shared';
 import { AUTH_INSTANCE } from './auth.tokens';
 import { autoLoginEligible } from './auto-login';
+import { isApiPath } from '../planes';
 import { loadAuthConfig } from './auth.config';
 import { PUBLIC_KEY, type AuthedRequest } from './principal.decorator';
 import type { AuthInstance } from './better-auth';
@@ -45,7 +46,7 @@ export class SessionGuard implements CanActivate {
     // agent-key plane (its routes carry AgentApiKeyGuard); a session cookie is
     // inert there. `/api/auth/*` is handled by the mounted Better Auth handler
     // before Nest routing, so it never reaches here.
-    if (!req.path.startsWith('/api')) return true;
+    if (!isApiPath(req.path)) return true;
 
     const session = await this.auth.getSession(req.headers);
     if (session) {

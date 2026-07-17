@@ -11,6 +11,9 @@ describe('auth rate limiter (session-auth)', () => {
     expect(matchRule('/api/auth/request-password-reset')?.max).toBe(3);
     expect(matchRule('/api/auth/reset-password')?.max).toBe(3);
     expect(matchRule('/api/auth/get-session')).toBeNull();
+    // E9.2: an upper-case auth path is throttled identically (no case bypass).
+    expect(matchRule('/API/auth/sign-in/email')?.max).toBe(10);
+    expect(matchRule('/Api/Auth/Request-Password-Reset')?.max).toBe(3);
   });
 
   it('allows within the window and 429s past it (atomic count from Redis)', async () => {

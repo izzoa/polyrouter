@@ -5,6 +5,7 @@ import { AuthRateLimitMiddleware } from './rate-limit.middleware';
 import type { AuthInstance } from './better-auth';
 import { DEFAULT_MAX_BODY_BYTES, PROXY_RUNTIME, type ProxyRuntime } from '../proxy/proxy.config';
 import { protocolForPath, renderProxyError, requestTooLarge, badRequest } from '../proxy/proxy-errors';
+import { isV1Path } from '../planes';
 
 /** The `/v1` body limit comes from the proxy runtime in production; auth-only
  * test harnesses mount body parsing without the proxy module, so fall back to
@@ -18,7 +19,7 @@ function resolveMaxBodyBytes(app: NestExpressApplication): number {
 }
 
 // Segment-safe so `/v10` or `/v1evil` are NOT treated as the proxy surface.
-const isV1 = (path: string): boolean => path === '/v1' || path.startsWith('/v1/');
+const isV1 = isV1Path;
 
 /**
  * Body parsing (E1.1). The `/v1` proxy surface accepts large bodies (real
@@ -87,7 +88,7 @@ export function mountAuth(app: NestExpressApplication): void {
   });
 
   expressApp.use((req, res, next) => {
-    if (req.path.startsWith('/api/auth')) {
+    if (req.path.toLowerCase().startsWith('/api/auth')) {
       authInstance.handler(req, res);
       return;
     }

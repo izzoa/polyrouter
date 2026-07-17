@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import type { NextFunction, Request, Response } from 'express';
+import { isApiPath, isV1Path } from './planes';
 
 /**
  * Production single-port topology (spec §3.1/§4): this process serves the
@@ -31,13 +32,14 @@ export function configureSpa(app: NestExpressApplication): void {
       return;
     }
     const path = req.path;
+    const lower = path.toLowerCase();
     if (
-      path === '/api' ||
-      path.startsWith('/api/') ||
-      path === '/v1' ||
-      path.startsWith('/v1/') ||
-      path === '/metrics' || // #21 Prometheus scrape — must never be swallowed by the shell
-      path.startsWith('/metrics/') // whole namespace: a 404 JSON beats an HTML shell
+      // Case-insensitive (E9.2): an upper-case /API or /V1 path must reach Nest
+      // (the guards/proxy), NOT be served the SPA shell before the session guard runs.
+      isApiPath(path) ||
+      isV1Path(path) ||
+      lower === '/metrics' || // #21 Prometheus scrape — must never be swallowed by the shell
+      lower.startsWith('/metrics/') // whole namespace: a 404 JSON beats an HTML shell
     ) {
       next();
       return;

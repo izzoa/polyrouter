@@ -61,6 +61,15 @@ describe('auth flow, planes & agent keys (session-auth / agent-keys)', () => {
     expect((await request(server).get('/api/probe')).status).toBe(401);
   });
 
+  it('an UPPER-CASE /API path is still session-guarded (E9.2 — no case bypass)', async () => {
+    const { cookie } = await signUp(server);
+    // Express routes case-insensitively; the guard must scope /API like /api.
+    expect((await request(server).get('/API/probe')).status).toBe(401); // no session → 401, not 500/SPA
+    const authed = await request(server).get('/API/probe').set('Cookie', cookie);
+    expect(authed.status).toBe(200); // a valid session still authenticates the upper-case path
+    expect(authed.body.principal.kind).toBe('user');
+  });
+
   it('health is @Public under the real session guard (no session needed)', async () => {
     const res = await request(server).get('/api/health');
     expect(res.status).toBe(200);

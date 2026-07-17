@@ -14,6 +14,10 @@ import type { Protocol } from './ir';
 type Json = unknown;
 type JsonObject = Record<string, Json>;
 
+// `response_format`, `reasoning_effort` (OpenAI) and `cache_control`, `thinking`
+// (Anthropic) are deliberately NOT dropped: they must round-trip on the same
+// protocol (E2.4/E2.5). Crossing protocols they are dropped at the adapter (a
+// documented loss — see golden/README.md), never mapped to a wrong value.
 const DROP_KEYS = new Set([
   'object',
   'system_fingerprint',

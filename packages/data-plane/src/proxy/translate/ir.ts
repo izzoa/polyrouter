@@ -17,9 +17,16 @@ export type Role = 'user' | 'assistant' | 'tool';
 
 export type ImageDetail = 'auto' | 'low' | 'high';
 
+/** Anthropic prompt-caching marker, carried opaquely (the translator never
+ * interprets it). Present only on the Anthropic wire; dropped — documented —
+ * crossing to OpenAI. Lives on text/tool_use/tool_result blocks, tools, and
+ * system text blocks, never on images or nested tool-result content. */
+export type CacheControl = { readonly type: 'ephemeral' } | Readonly<Record<string, unknown>>;
+
 export interface TextBlock {
   readonly type: 'text';
   readonly text: string;
+  readonly cacheControl?: CacheControl;
 }
 
 /** Base64-embedded image. `detail` is preserved through the IR but has no
@@ -46,6 +53,7 @@ export interface ToolUseOkBlock {
   readonly id: string;
   readonly name: string;
   readonly input: Record<string, unknown>;
+  readonly cacheControl?: CacheControl;
 }
 
 /** A tool call whose model-generated arguments were not valid JSON. OpenAI
@@ -56,6 +64,7 @@ export interface ToolUseRawBlock {
   readonly name: string;
   readonly inputRaw: string;
   readonly inputParseError: true;
+  readonly cacheControl?: CacheControl;
 }
 
 export type ToolUseBlock = ToolUseOkBlock | ToolUseRawBlock;
@@ -67,6 +76,7 @@ export interface ToolResultBlock {
   readonly toolUseId: string;
   readonly content: readonly ContentBlock[];
   readonly isError?: boolean;
+  readonly cacheControl?: CacheControl;
 }
 
 export type ContentBlock = TextBlock | ImageBlock | ToolUseBlock | ToolResultBlock;
@@ -83,7 +93,15 @@ export interface NormalizedTool {
   readonly name: string;
   readonly description?: string;
   readonly parameters: ToolParameters;
+  readonly cacheControl?: CacheControl;
 }
+
+/** A reasoning/thinking control, tagged with its SOURCE protocol so `requestOut`
+ * emits it only when serializing back to the owning protocol (same-protocol
+ * passthrough) and drops it — documented — crossing to the other. */
+export type ReasoningControl =
+  | { readonly protocol: 'openai'; readonly effort: unknown }
+  | { readonly protocol: 'anthropic'; readonly thinking: unknown };
 
 export type NormalizedToolChoice = 'auto' | 'none' | 'required' | { readonly toolName: string };
 
@@ -103,6 +121,11 @@ export interface NormalizedRequest {
   /** Default true; maps to Anthropic `disable_parallel_tool_use = !this`. */
   readonly allowParallelTools?: boolean;
   readonly params: NormalizedParams;
+  /** Structured-output control (OpenAI `response_format`), carried opaquely and
+   * emitted only back to OpenAI. */
+  readonly responseFormat?: unknown;
+  /** Reasoning/thinking control, tagged with its source protocol (see {@link ReasoningControl}). */
+  readonly reasoning?: ReasoningControl;
   /** Whether the client asked for a streamed response. */
   readonly stream?: boolean;
 }

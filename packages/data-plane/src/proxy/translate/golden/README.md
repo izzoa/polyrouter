@@ -31,6 +31,29 @@ own normalized form, not against a provider's live output.
   lifecycle (Anthropic start/delta; OpenAI empty-`choices` terminal chunk),
   per-block tool-JSON assembly, and split-frame tolerance.
 
+## Request-control passthrough & intentional cross-protocol drops
+
+Request-side controls are carried **verbatim on the same protocol the client
+used** and **dropped — deliberately, never mapped to a wrong value — crossing to
+a protocol that lacks them** (see `request-fidelity.spec.ts`):
+
+- `cache_control` (Anthropic prompt caching) — carried on Anthropic text /
+  tool_use / tool_result blocks, tools, and system blocks; **dropped** crossing
+  to OpenAI (no wire equivalent). Not modeled on image blocks or nested
+  tool-result content.
+- `response_format` (OpenAI structured output) — carried OpenAI→OpenAI;
+  **dropped** crossing to Anthropic.
+- reasoning controls — OpenAI `reasoning_effort` and Anthropic `thinking` are
+  tagged with their source protocol in the IR and emitted **only** back to that
+  protocol; each is **dropped** crossing to the other (no semantic map).
+- `temperature` — **clamped to `[0, 1]`** when serializing to Anthropic (OpenAI
+  ranges 0–2), a documented lossy mapping so a legal OpenAI request doesn't 400.
+
+Multi-block content and system prompts are serialized as block/parts **arrays**,
+never fused into one string (which would alter prompt text and destroy the
+caching layout); a single unmarked text block still serializes to a plain string
+(canonically equivalent).
+
 ## Error matrix
 
 The `error` cases covered by the suite are **in-band** stream `error` events and

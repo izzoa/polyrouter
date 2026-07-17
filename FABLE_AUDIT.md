@@ -237,7 +237,7 @@ has no post-headers deadline — see also E4.3), A-5 (Anthropic-wire terminal er
 ---
 
 <a id="epic-e2"></a>
-## EPIC E2 — Protocol translation fidelity & golden coverage · **P0**
+## EPIC E2 — Protocol translation fidelity & golden coverage · **P0** · ◑ SPLIT: request half ✅ 2026-07-17 (`fix-translation-request-fidelity`); stream half pending
 
 **Proposal slug:** `fix-translation-fidelity` (IR extensions need their own delta spec) ·
 **Spec refs:** spec.md §6.3, §7.7, §15; `openspec/specs/protocol-translation`; CLAUDE.md invariant 2
@@ -276,7 +276,7 @@ path. Execute E2.1–E2.5 as one change (they touch the same files); E2.6–E2.1
   the flag THEN the RequestLog row records provider usage with `usage_estimated=false`.
 - **Verify:** unit test on `requestOut` (stream vs non-stream); e2e against the stub upstream sending a usage chunk.
 
-### Task E2.3 — Stop fusing adjacent text blocks without a separator ☐ `[high/S]`
+### Task E2.3 — Stop fusing adjacent text blocks without a separator ✅ `[high/S]`
 - **Where:** `packages/data-plane/src/proxy/translate/anthropic.ts:270` (`requestOut`, system field); `packages/data-plane/src/proxy/translate/openai.ts:113` (`blocksToContent`), `:229` (system via `toolResultText`)
 - **Defect:** Multi-block `system`/content arrays are joined with `''`, fusing the last word of one
   block with the first of the next — **silently rewriting prompts on the same-protocol
@@ -290,7 +290,7 @@ path. Execute E2.1–E2.5 as one change (they touch the same files); E2.6–E2.1
   equivalence holds).
 - **Verify:** new golden fixture (2-block system + 2-text-block user message); same-protocol round-trip test. `npm test -w packages/data-plane`.
 
-### Task E2.4 — Preserve `cache_control` so Anthropic prompt caching works through the router ☐ `[high/M]`
+### Task E2.4 — Preserve `cache_control` so Anthropic prompt caching works through the router ✅ `[high/M]`
 - **Where:** `packages/data-plane/src/proxy/translate/anthropic.ts:197-202` (`requestIn`), `wire/anthropic.ts:6-9`
 - **Defect:** `cache_control` markers are stripped from system/content/tools (wire types don't model
   the field). Any caching-reliant agent (the norm for coding agents) **loses prompt caching entirely**
@@ -304,7 +304,7 @@ path. Execute E2.1–E2.5 as one change (they touch the same files); E2.6–E2.1
   usage; WHEN routed to an OpenAI provider THEN the drop is documented, not accidental.
 - **Verify:** golden round-trips byte-identically; e2e asserts outbound stub body contains `cache_control`.
 
-### Task E2.5 — Carry `response_format` and reasoning controls instead of silently stripping them ☐ `[high/M]`
+### Task E2.5 — Carry `response_format` and reasoning controls instead of silently stripping them ✅ `[high/M]`
 - **Where:** `packages/data-plane/src/proxy/translate/openai.ts:207/273` (`requestIn`/`requestOut`), `wire/openai.ts:43-57`
 - **Defect:** The allowlist rebuild drops `response_format` (JSON mode / json_schema),
   `reasoning_effort`, Anthropic `thinking`, penalties, `logit_bias`. Same-protocol passthrough
@@ -363,7 +363,7 @@ path. Execute E2.1–E2.5 as one change (they touch the same files); E2.6–E2.1
   (part skipped) or fails with a clear 400 — never a TypeError-driven 500/`unavailable`.
 - **Verify:** unit tests for both directions. `npm test -w packages/data-plane`.
 
-### Task E2.9 — Clamp `temperature` to Anthropic's 0–1 range on cross-translation ☐ `[medium/XS]`
+### Task E2.9 — Clamp `temperature` to Anthropic's 0–1 range on cross-translation ✅ `[medium/XS]`
 - **Where:** `packages/data-plane/src/proxy/translate/anthropic.ts:286` (`requestOut`)
 - **Defect:** OpenAI temperature ranges 0–2; verbatim copy makes Anthropic return 400
   `invalid_request_error` → classified `bad_request` → **fallback refused** → the whole request fails
@@ -374,7 +374,7 @@ path. Execute E2.1–E2.5 as one change (they touch the same files); E2.6–E2.1
   THEN the upstream receives `1` and the request serves.
 - **Verify:** unit test on `requestOut`.
 
-### Task E2.10 — Give `n > 1` an explicit policy (reject with a clear 400) ☐ `[medium/XS]`
+### Task E2.10 — Give `n > 1` an explicit policy (reject with a clear 400) ✅ `[medium/XS]`
 - **Where:** proxy request path / `packages/data-plane/src/proxy/translate/openai.ts:152`
 - **Defect:** The protocol-translation spec scopes the IR to n=1 and delegates n>1 policy to the proxy
   — but no layer ever decided: `n` is silently dropped and best-of-n clients get one choice with zero

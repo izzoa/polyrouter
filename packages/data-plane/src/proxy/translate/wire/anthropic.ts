@@ -6,6 +6,7 @@
 export interface AntTextBlock {
   type: 'text';
   text: string;
+  cache_control?: unknown;
 }
 export interface AntImageBlock {
   type: 'image';
@@ -16,12 +17,14 @@ export interface AntToolUseBlock {
   id: string;
   name: string;
   input: unknown;
+  cache_control?: unknown;
 }
 export interface AntToolResultBlock {
   type: 'tool_result';
   tool_use_id: string;
   content: string | AntContentBlock[];
   is_error?: boolean;
+  cache_control?: unknown;
 }
 export type AntContentBlock = AntTextBlock | AntImageBlock | AntToolUseBlock | AntToolResultBlock;
 
@@ -34,6 +37,7 @@ export interface AntTool {
   name: string;
   description?: string;
   input_schema: Record<string, unknown>;
+  cache_control?: unknown;
 }
 
 export interface AntToolChoice {
@@ -52,6 +56,7 @@ export interface AntRequest {
   temperature?: number;
   top_p?: number;
   stop_sequences?: string[];
+  thinking?: unknown;
   stream?: boolean;
 }
 

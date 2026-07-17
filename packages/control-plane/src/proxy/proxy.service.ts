@@ -640,6 +640,15 @@ export class ProxyService {
     signal: AbortSignal,
   ): Promise<Prepared> {
     const startedAt = Date.now();
+    // n>1 is rejected before normalization (the IR is n=1 and discards `n`), so
+    // its explanatory message isn't overwritten by the generic body-parse catch
+    // below. OpenAI-only: Anthropic has no `n` (E2.10).
+    if (protocol === 'openai' && typeof wireBody === 'object' && wireBody !== null) {
+      const n = (wireBody as { n?: unknown }).n;
+      if (typeof n === 'number' && n > 1) {
+        throw badRequest('n>1 is not supported; the router returns a single choice');
+      }
+    }
     const client = getAdapter(protocol);
     let ir: NormalizedRequest;
     try {

@@ -246,6 +246,17 @@ describe('inference proxy e2e', () => {
     expect(res.body.error.code).toBe('empty_tier');
   });
 
+  it('rejects n>1 with a protocol-shaped 400 and makes no upstream call (E2.10)', async () => {
+    const before = stub.requests.length;
+    const res = await chat(A.key, { model: 'gpt-4o', n: 2, messages: [] });
+    expect(res.status).toBe(400);
+    expect(res.body.error.type).toBe('invalid_request_error'); // OpenAI-shaped
+    expect(String(res.body.error.message)).toMatch(/n>1|single choice/);
+    expect(stub.requests.length).toBe(before); // rejected before any upstream call
+    // n:1 / absent is unaffected.
+    expect((await chat(A.key, { model: 'gpt-4o', n: 1, messages: [] })).status).toBe(200);
+  });
+
   // --- #12 fallback + mid-stream safety ---
 
   it('falls back to the next member when the primary fails (non-streaming)', async () => {

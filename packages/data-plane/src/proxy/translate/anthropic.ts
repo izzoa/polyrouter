@@ -12,6 +12,7 @@
 import type { ProtocolAdapter, AdapterQuirks } from './adapter';
 import { SerializationError } from './adapter';
 import type {
+  CacheControl,
   ContentBlock,
   NormalizedMessage,
   NormalizedRequest,
@@ -52,10 +53,16 @@ function tryParseObject(s: string): Record<string, unknown> {
 
 // --- IR block <-> Anthropic block ---
 
+/** Anthropic prompt-caching marker passthrough (E2.4), carried opaquely. */
+const ccOut = (c: CacheControl | undefined): { cache_control?: unknown } =>
+  c !== undefined ? { cache_control: c } : {};
+const ccIn = (c: unknown): { cacheControl?: CacheControl } =>
+  c !== undefined ? { cacheControl: c as CacheControl } : {};
+
 function irBlockToAnt(block: ContentBlock): AntContentBlock {
   switch (block.type) {
     case 'text':
-      return { type: 'text', text: block.text };
+      return { type: 'text', text: block.text, ...ccOut(block.cacheControl) };
     case 'image':
       return 'url' in block
         ? { type: 'image', source: { type: 'url', url: block.url } }
@@ -69,6 +76,7 @@ function irBlockToAnt(block: ContentBlock): AntContentBlock {
         id: block.id,
         name: block.name,
         input: 'input' in block ? block.input : tryParseObject(block.inputRaw),
+        ...ccOut(block.cacheControl),
       };
     case 'tool_result':
       return {
@@ -76,6 +84,7 @@ function irBlockToAnt(block: ContentBlock): AntContentBlock {
         tool_use_id: block.toolUseId,
         content: toolResultContentToAnt(block.content),
         ...(block.isError === true ? { is_error: true } : {}),
+        ...ccOut(block.cacheControl),
       };
   }
 }
@@ -90,7 +99,7 @@ function toolResultContentToAnt(blocks: readonly ContentBlock[]): string | AntCo
 function antBlockToIr(block: AntContentBlock): ContentBlock {
   switch (block.type) {
     case 'text':
-      return { type: 'text', text: block.text };
+      return { type: 'text', text: block.text, ...ccIn(block.cache_control) };
     case 'image':
       return block.source.type === 'base64'
         ? { type: 'image', data: block.source.data, mediaType: block.source.media_type }
@@ -103,6 +112,7 @@ function antBlockToIr(block: AntContentBlock): ContentBlock {
           id: block.id,
           name: block.name,
           input: input as Record<string, unknown>,
+          ...ccIn(block.cache_control),
         };
       }
       return {
@@ -111,6 +121,7 @@ function antBlockToIr(block: AntContentBlock): ContentBlock {
         name: block.name,
         inputRaw: JSON.stringify(input),
         inputParseError: true,
+        ...ccIn(block.cache_control),
       };
     }
     case 'tool_result':
@@ -181,6 +192,7 @@ function requestIn(wireInput: unknown): NormalizedRequest {
                 toolUseId: b.tool_use_id,
                 content: antContentToBlocks(b.content),
                 ...(b.is_error === true ? { isError: true } : {}),
+                ...ccIn(b.cache_control),
               },
             ],
           });
@@ -199,12 +211,13 @@ function requestIn(wireInput: unknown): NormalizedRequest {
       ? undefined
       : typeof wire.system === 'string'
         ? [{ type: 'text', text: wire.system }]
-        : wire.system.map((b) => ({ type: 'text', text: b.text }));
+        : wire.system.map((b) => ({ type: 'text', text: b.text, ...ccIn(b.cache_control) }));
 
   const tools = wire.tools?.map((t) => ({
     name: t.name,
     ...(t.description !== undefined ? { description: t.description } : {}),
     parameters: t.input_schema,
+    ...ccIn(t.cache_control),
   }));
 
   const { toolChoice, allowParallelTools } = toolChoiceIn(wire.tool_choice);
@@ -222,6 +235,9 @@ function requestIn(wireInput: unknown): NormalizedRequest {
       ...(wire.top_p !== undefined ? { topP: wire.top_p } : {}),
       ...(wire.stop_sequences !== undefined ? { stopSequences: wire.stop_sequences } : {}),
     },
+    ...(wire.thinking !== undefined
+      ? { reasoning: { protocol: 'anthropic' as const, thinking: wire.thinking } }
+      : {}),
     ...(wire.stream !== undefined ? { stream: wire.stream } : {}),
   };
 }
@@ -265,14 +281,12 @@ function requestOut(ir: NormalizedRequest, options: AnthropicAdapterOptions): An
     }
   }
 
-  const system =
-    ir.system !== undefined && ir.system.length > 0
-      ? (ir.system as TextBlock[]).map((b) => b.text).join('')
-      : undefined;
+  const system = systemOut(ir.system);
   const tools = ir.tools?.map((t) => ({
     name: t.name,
     ...(t.description !== undefined ? { description: t.description } : {}),
     input_schema: t.parameters,
+    ...ccOut(t.cacheControl),
   }));
   const toolChoice = toolChoiceOut(ir.toolChoice, ir.allowParallelTools);
 
@@ -283,13 +297,45 @@ function requestOut(ir: NormalizedRequest, options: AnthropicAdapterOptions): An
     max_tokens: maxTokens,
     ...(tools !== undefined ? { tools } : {}),
     ...(toolChoice !== undefined ? { tool_choice: toolChoice } : {}),
-    ...(ir.params.temperature !== undefined ? { temperature: ir.params.temperature } : {}),
+    // OpenAI temperature is 0–2; Anthropic accepts 0–1 — clamp so a legal OpenAI
+    // request routed here doesn't 400 (E2.9). Same-protocol input is in range.
+    // (Extended thinking additionally requires temperature=1, but that is a
+    // model-level constraint the proxy handles, not a protocol-level transform;
+    // cross-protocol requests never carry `thinking`.)
+    ...(ir.params.temperature !== undefined
+      ? { temperature: Math.min(ir.params.temperature, 1) }
+      : {}),
     ...(ir.params.topP !== undefined ? { top_p: ir.params.topP } : {}),
     ...(ir.params.stopSequences !== undefined
       ? { stop_sequences: [...ir.params.stopSequences] }
       : {}),
+    // `thinking` is emitted only back to Anthropic (same-protocol); an OpenAI-tagged
+    // reasoning control is a documented drop here (E2.5).
+    ...(ir.reasoning?.protocol === 'anthropic' ? { thinking: ir.reasoning.thinking } : {}),
     ...(ir.stream !== undefined ? { stream: ir.stream } : {}),
   };
+}
+
+/** Serialize the IR system prompt without fusing blocks (E2.3): a text-block
+ * array (carrying per-block `cache_control`) when there is more than one block or
+ * any block has a marker; a plain string for a single unmarked text block
+ * (canonically equivalent). Anthropic system supports only text, so any non-text
+ * block (anomalous) is skipped rather than emitted as an empty block. */
+function systemOut(
+  system: NormalizedRequest['system'],
+): string | { type: 'text'; text: string; cache_control?: unknown }[] | undefined {
+  if (system === undefined || system.length === 0) return undefined;
+  const texts = system.filter((b): b is TextBlock => b.type === 'text');
+  if (texts.length === 0) return undefined;
+  const hasMarker = texts.some((b) => b.cacheControl !== undefined);
+  if (texts.length === 1 && !hasMarker) {
+    return texts[0]!.text;
+  }
+  return texts.map((b) => ({
+    type: 'text' as const,
+    text: b.text,
+    ...ccOut(b.cacheControl),
+  }));
 }
 
 // --- response ---

@@ -54,6 +54,8 @@ export interface OaiRequest {
   stream?: boolean;
   stream_options?: { include_usage?: boolean };
   n?: number;
+  response_format?: unknown;
+  reasoning_effort?: unknown;
 }
 
 export interface OaiUsage {

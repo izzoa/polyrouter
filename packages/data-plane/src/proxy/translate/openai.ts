@@ -103,14 +103,18 @@ function blockToPart(block: ContentBlock): OaiContentPart | null {
   return null; // tool_use / tool_result handled separately
 }
 
-/** Text-only blocks → a string; mixed → parts array; empty → null. */
+/** A single text block → a string; more than one block (or any image) → a parts
+ * array so adjacent text blocks are never fused into one string (E2.3); empty →
+ * null. `canon` treats a string and a single-text-part array as equivalent, so
+ * round-trip equivalence holds either way. */
 function blocksToContent(blocks: readonly ContentBlock[]): string | OaiContentPart[] | null {
   const visual = blocks.filter(
     (b): b is TextBlock | ImageBlock => b.type === 'text' || b.type === 'image',
   );
   if (visual.length === 0) return null;
-  if (visual.every((b) => b.type === 'text')) {
-    return visual.map((b) => (b.type === 'text' ? b.text : '')).join('');
+  const first = visual[0];
+  if (visual.length === 1 && first !== undefined && first.type === 'text') {
+    return first.text;
   }
   const parts: OaiContentPart[] = [];
   for (const b of visual) {
@@ -219,6 +223,10 @@ function requestIn(wireInput: unknown, quirks: AdapterQuirks): NormalizedRequest
       ...(wire.top_p !== undefined ? { topP: wire.top_p } : {}),
       ...(stopSequences !== undefined ? { stopSequences } : {}),
     },
+    ...(wire.response_format !== undefined ? { responseFormat: wire.response_format } : {}),
+    ...(wire.reasoning_effort !== undefined
+      ? { reasoning: { protocol: 'openai' as const, effort: wire.reasoning_effort } }
+      : {}),
     ...(wire.stream !== undefined ? { stream: wire.stream } : {}),
   };
 }
@@ -226,7 +234,9 @@ function requestIn(wireInput: unknown, quirks: AdapterQuirks): NormalizedRequest
 function requestOut(ir: NormalizedRequest): OaiRequest {
   const messages: OaiMessage[] = [];
   if (ir.system !== undefined && ir.system.length > 0) {
-    messages.push({ role: 'system', content: toolResultText(ir.system) });
+    // A multi-block system prompt emits parts (no fusion, E2.3); a single block
+    // stays a string. `?? ''` keeps a genuinely-empty system as an empty string.
+    messages.push({ role: 'system', content: blocksToContent(ir.system) ?? '' });
   }
   for (const msg of ir.messages) {
     if (msg.role === 'tool') {
@@ -282,6 +292,10 @@ function requestOut(ir: NormalizedRequest): OaiRequest {
     ...(ir.params.temperature !== undefined ? { temperature: ir.params.temperature } : {}),
     ...(ir.params.topP !== undefined ? { top_p: ir.params.topP } : {}),
     ...(ir.params.stopSequences !== undefined ? { stop: [...ir.params.stopSequences] } : {}),
+    ...(ir.responseFormat !== undefined ? { response_format: ir.responseFormat } : {}),
+    // Reasoning is emitted only back to OpenAI (same-protocol); an Anthropic-tagged
+    // control is a documented drop here (E2.5).
+    ...(ir.reasoning?.protocol === 'openai' ? { reasoning_effort: ir.reasoning.effort } : {}),
     ...(ir.stream !== undefined ? { stream: ir.stream } : {}),
   };
 }

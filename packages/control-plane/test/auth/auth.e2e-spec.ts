@@ -35,6 +35,13 @@ async function signUp(
   return { cookie, email };
 }
 
+// Documented flake (TODOS/memory): under the FULL e2e run this suite's harness
+// intermittently dies in jest-runtime module loading ("Cannot read properties of
+// undefined (reading 'identifier')") and passes clean on retry / standalone. One
+// retry keeps CI signal-preserving (errors still logged) without masking a real
+// regression, which would fail both attempts.
+jest.retryTimes(1, { logErrorsBeforeRetry: true });
+
 // ────────────────────────────────────────────────────────────── cloud plane
 describe('auth flow, planes & agent keys (session-auth / agent-keys)', () => {
   let app: NestExpressApplication;

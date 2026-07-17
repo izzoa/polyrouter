@@ -7,11 +7,19 @@ import { join } from 'node:path';
  * Production single-port topology (app-bootstrap): spawns the real
  * `npm start` (which must force NODE_ENV=production) and probes it over HTTP.
  * Requires a prior `npm run build` (frontend dist + control-plane dist).
+ *
+ * CI-hardened: every probe carries an abort deadline (a served-but-stalled
+ * response fails in seconds, attributed to its line — never a mute jest
+ * timeout), any failure rethrows WITH the server's captured stdout/stderr,
+ * and spawned children are reaped in afterEach so jest always exits.
  */
 
 const repoRoot = join(__dirname, '..', '..', '..');
 const frontendIndex = join(repoRoot, 'packages', 'frontend', 'dist', 'index.html');
 const controlPlaneMain = join(repoRoot, 'packages', 'control-plane', 'dist', 'main.js');
+
+/** Per-request bound: generous for a loaded 2-vCPU CI runner, tiny next to jest's 120s. */
+const PROBE_TIMEOUT_MS = 15_000;
 
 function getFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -32,8 +40,13 @@ function getFreePort(): Promise<number> {
 interface RunningServer {
   child: ChildProcess;
   baseUrl: string;
+  output: () => string;
   stop: () => Promise<void>;
 }
+
+/** Every child ever spawned — reaped in afterEach so a failed test can never
+ * leak a live `npm start` (which would hold jest open until the job timeout). */
+const spawnedChildren: ChildProcess[] = [];
 
 async function startProdServer(nodeEnv: string | undefined): Promise<RunningServer> {
   const port = await getFreePort();
@@ -54,6 +67,7 @@ async function startProdServer(nodeEnv: string | undefined): Promise<RunningServ
   }
 
   const child = spawn('npm', ['start'], { cwd: repoRoot, env });
+  spawnedChildren.push(child);
   let output = '';
   child.stdout.on('data', (chunk: Buffer) => (output += chunk.toString()));
   child.stderr.on('data', (chunk: Buffer) => (output += chunk.toString()));
@@ -90,7 +104,43 @@ async function startProdServer(nodeEnv: string | undefined): Promise<RunningServ
       child.kill('SIGTERM');
     });
 
-  return { child, baseUrl, stop };
+  return { child, baseUrl, output: () => output, stop };
+}
+
+/** Deadline-bound GET so a stalled response is a fast, line-attributed failure. */
+function probe(url: string, headers?: Record<string, string>): Promise<Response> {
+  return fetch(url, { headers, signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+}
+
+/** Bound body reads too — fetch resolves on HEADERS, so a body that never
+ * finishes would otherwise hang `text()` forever with the status checks green. */
+function bounded<T>(what: string, p: Promise<T>): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<never>((_, reject) =>
+      setTimeout(
+        () => reject(new Error(`${what} did not complete within ${String(PROBE_TIMEOUT_MS)}ms`)),
+        PROBE_TIMEOUT_MS,
+      ).unref(),
+    ),
+  ]);
+}
+
+/** Boot, run the probes, always stop; on ANY failure rethrow with the server's
+ * captured output appended — CI failures must carry the server's side of the story. */
+async function withProdServer(
+  nodeEnv: string | undefined,
+  run: (server: RunningServer) => Promise<void>,
+): Promise<void> {
+  const server = await startProdServer(nodeEnv);
+  try {
+    await run(server);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(`${detail}\n--- server output ---\n${server.output()}`);
+  } finally {
+    await server.stop();
+  }
 }
 
 describe('production topology via `npm start` (app-bootstrap)', () => {
@@ -102,67 +152,75 @@ describe('production topology via `npm start` (app-bootstrap)', () => {
     }
   });
 
+  afterEach(async () => {
+    // Reap anything a failed test left behind; a lingering child would hold
+    // jest open ("Jest did not exit…") until the CI job timeout.
+    for (const child of spawnedChildren.splice(0)) {
+      if (child.exitCode === null) {
+        child.kill('SIGKILL');
+        await new Promise((r) => child.once('close', r));
+      }
+    }
+  });
+
   it('serves SPA + API on one port; the fallback never swallows /api or /v1', async () => {
-    const server = await startProdServer(undefined); // NODE_ENV unset → npm start must force production
-    try {
-      const shell = await fetch(`${server.baseUrl}/`);
+    await withProdServer(undefined, async (server) => {
+      // NODE_ENV unset → npm start must force production
+      const shell = await probe(`${server.baseUrl}/`);
       expect(shell.status).toBe(200);
       expect(shell.headers.get('content-type')).toContain('text/html');
-      expect(await shell.text()).toContain('polyrouter');
+      expect(await bounded('SPA shell body', shell.text())).toContain('polyrouter');
 
-      const health = await fetch(`${server.baseUrl}/api/health`, {
-        headers: { Origin: 'http://evil.example' },
+      const health = await probe(`${server.baseUrl}/api/health`, {
+        Origin: 'http://evil.example',
       });
       expect(health.status).toBe(200);
-      expect(await health.json()).toEqual({ status: 'ok' });
+      expect(await bounded('health body', health.json())).toEqual({ status: 'ok' });
       expect(health.headers.get('access-control-allow-origin')).toBeNull();
 
-      const deepLink = await fetch(`${server.baseUrl}/agents`);
+      const deepLink = await probe(`${server.baseUrl}/agents`);
       expect(deepLink.status).toBe(200);
       expect(deepLink.headers.get('content-type')).toContain('text/html');
+      await bounded('deep-link body', deepLink.text());
 
-      const unknownApi = await fetch(`${server.baseUrl}/api/nonexistent`);
+      const unknownApi = await probe(`${server.baseUrl}/api/nonexistent`);
       expect(unknownApi.status).toBe(404);
       expect(unknownApi.headers.get('content-type')).toContain('application/json');
 
-      const unknownV1 = await fetch(`${server.baseUrl}/v1/nonexistent`);
+      const unknownV1 = await probe(`${server.baseUrl}/v1/nonexistent`);
       expect(unknownV1.status).toBe(404);
       expect(unknownV1.headers.get('content-type')).toContain('application/json');
 
       // E9.2: an UPPER-CASE /API or /V1 path must also reach Nest, never the SPA
       // shell (otherwise the case-insensitive session guard would be bypassed).
-      const upperApi = await fetch(`${server.baseUrl}/API/nonexistent`);
+      const upperApi = await probe(`${server.baseUrl}/API/nonexistent`);
       expect(upperApi.status).toBe(404);
       expect(upperApi.headers.get('content-type')).not.toContain('text/html');
-      const upperV1 = await fetch(`${server.baseUrl}/V1/nonexistent`);
+      const upperV1 = await probe(`${server.baseUrl}/V1/nonexistent`);
       expect(upperV1.status).toBe(404);
       expect(upperV1.headers.get('content-type')).not.toContain('text/html');
 
       // #21/#22: the Prometheus scrape must reach Nest, never the SPA shell
       // (caught in-container by the packaging smoke pass).
-      const metrics = await fetch(`${server.baseUrl}/metrics`);
+      const metrics = await probe(`${server.baseUrl}/metrics`);
       expect(metrics.status).toBe(200);
       expect(metrics.headers.get('content-type')).toContain('text/plain');
-      expect(await metrics.text()).toContain('polyrouter_');
-    } finally {
-      await server.stop();
-    }
+      expect(await bounded('metrics body', metrics.text())).toContain('polyrouter_');
+    });
   });
 
   it('forces production mode over an inherited NODE_ENV=development', async () => {
-    const server = await startProdServer('development');
-    try {
-      const shell = await fetch(`${server.baseUrl}/`);
+    await withProdServer('development', async (server) => {
+      const shell = await probe(`${server.baseUrl}/`);
       expect(shell.status).toBe(200);
       expect(shell.headers.get('content-type')).toContain('text/html');
+      await bounded('SPA shell body', shell.text());
 
-      const health = await fetch(`${server.baseUrl}/api/health`, {
-        headers: { Origin: 'http://evil.example' },
+      const health = await probe(`${server.baseUrl}/api/health`, {
+        Origin: 'http://evil.example',
       });
       expect(health.status).toBe(200);
       expect(health.headers.get('access-control-allow-origin')).toBeNull();
-    } finally {
-      await server.stop();
-    }
+    });
   });
 });

@@ -96,9 +96,13 @@ export class AnalyticsService {
     }
     const sep = decoded.indexOf('|');
     if (sep <= 0) throw new UnprocessableEntityException('invalid cursor');
-    const createdAt = new Date(decoded.slice(0, sep));
+    // The full-precision timestamp TEXT (bound back as ::timestamptz in the query).
+    // Validate the exact server-emitted grammar (ISO-8601, UTC, µs) so a malformed
+    // or crafted cursor is a clean 422, never a downstream cast 500 (E3).
+    const createdAt = decoded.slice(0, sep);
     const id = decoded.slice(sep + 1);
-    if (Number.isNaN(createdAt.getTime()) || id.length === 0) {
+    const wellFormed = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/.test(createdAt);
+    if (!wellFormed || Number.isNaN(new Date(createdAt).getTime()) || id.length === 0) {
       throw new UnprocessableEntityException('invalid cursor');
     }
     return { createdAt, id };

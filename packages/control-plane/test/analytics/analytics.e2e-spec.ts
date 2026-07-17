@@ -323,6 +323,36 @@ describe('analytics API (#17)', () => {
     expect(first).toMatchObject({ modelLabel: 'gpt-x', providerLabel: 'ProvA' });
   });
 
+  it('listRequests: a microsecond-precision batch pages exactly once (E3)', async () => {
+    // Production LogWriter flushes a batch in one INSERT, so every row shares one
+    // µs-precision now(). Reproduce with a fresh owner + a shared µs timestamp;
+    // walking one row per page must not drop the tie group (a ms-truncated cursor
+    // would skip rows 2..N). Fails before the E3 fix, passes after.
+    const owner = await mkUser();
+    const SHARED_US = '2025-03-15T12:00:00.123456Z';
+    const ids = new Set<string>();
+    for (let i = 0; i < 3; i += 1) {
+      ids.add(await seedLog(owner, { layer: 'default', cost: 1, at: SHARED_US }));
+    }
+    const seen = new Set<string>();
+    let cursor: string | null = null;
+    let pages = 0;
+    for (;;) {
+      const query: Record<string, string | number> = { ...RANGE, limit: 1 };
+      if (cursor) query['cursor'] = cursor;
+      const res = await q('requests', owner, query);
+      expect(res.status).toBe(200);
+      for (const row of res.body.rows) {
+        expect(seen.has(row.id)).toBe(false); // exactly once
+        seen.add(row.id);
+      }
+      cursor = res.body.nextCursor;
+      if (++pages > 10) throw new Error('pagination did not terminate');
+      if (!cursor) break;
+    }
+    expect(seen).toEqual(ids); // all 3 rows — none skipped by a truncated cursor
+  });
+
   it('listRequests: status / escalated filters narrow correctly', async () => {
     const errs = (await q('requests', A, { ...RANGE, status: 'error' })).body.rows;
     expect(errs).toHaveLength(1);

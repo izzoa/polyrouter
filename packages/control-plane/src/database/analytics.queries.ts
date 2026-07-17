@@ -1,4 +1,15 @@
-import { and, desc, eq, gte, inArray, lt, or, sql, type SQL } from 'drizzle-orm';
+import {
+  and,
+  desc,
+  eq,
+  getTableColumns,
+  gte,
+  inArray,
+  lt,
+  or,
+  sql,
+  type SQL,
+} from 'drizzle-orm';
 import {
   agents,
   models,
@@ -50,8 +61,10 @@ function bucketExpr(col: AnyPgColumn, bucket: AnalyticsBucket): SQL<Date> {
   }
 }
 
-function encodeCursor(row: { createdAt: Date; id: string }): string {
-  return Buffer.from(`${row.createdAt.toISOString()}|${row.id}`, 'utf8').toString('base64');
+function encodeCursor(row: { createdAtText: string; id: string }): string {
+  // Encode the FULL-precision timestamp text (µs), not a ms-truncated JS Date, so
+  // the next-page predicate can match rows sharing one batched `now()` (E3).
+  return Buffer.from(`${row.createdAtText}|${row.id}`, 'utf8').toString('base64');
 }
 
 /** Subquery of the principal's provider ids — models are owned THROUGH providers. */
@@ -354,18 +367,27 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
         conds.push(inArray(requestLogs.decisionLayer, query.decisionLayers));
       if (query.escalated !== undefined) conds.push(eq(requestLogs.escalated, query.escalated));
       if (query.cursor !== undefined) {
+        // Bind the cursor timestamp as ::timestamptz so Postgres compares at the
+        // column's full µs precision (the cursor carries the raw ::text value).
+        const cursorTs = query.cursor.createdAt;
         conds.push(
           or(
-            lt(requestLogs.createdAt, query.cursor.createdAt),
+            sql`${requestLogs.createdAt} < ${cursorTs}::timestamptz`,
             and(
-              eq(requestLogs.createdAt, query.cursor.createdAt),
+              sql`${requestLogs.createdAt} = ${cursorTs}::timestamptz`,
               lt(requestLogs.id, query.cursor.id),
             ),
           ) as SQL,
         );
       }
       const raw = await db
-        .select()
+        .select({
+          ...getTableColumns(requestLogs),
+          // A DateStyle-independent, always-UTC, µs-precision rendering (not raw
+          // `::text`, whose format depends on the server's DateStyle) so the
+          // cursor round-trips deterministically and `::timestamptz` re-parses it.
+          createdAtText: sql<string>`to_char(${requestLogs.createdAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
+        })
         .from(requestLogs)
         .where(and(...conds))
         .orderBy(desc(requestLogs.createdAt), desc(requestLogs.id))
@@ -375,7 +397,9 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
       const page = raw.slice(0, query.limit);
       const last = page[page.length - 1];
       const nextCursor = hasMore && last ? encodeCursor(last) : null;
-      return { rows: await enrich(db, principal, page), nextCursor };
+      // Strip the cursor-only helper column so it never reaches the safe view.
+      const stripped = page.map(({ createdAtText: _t, ...r }) => r);
+      return { rows: await enrich(db, principal, stripped), nextCursor };
     },
   };
 }

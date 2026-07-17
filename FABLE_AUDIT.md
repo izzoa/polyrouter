@@ -392,14 +392,14 @@ A-9 (`message_start` fabricated `input_tokens: 0` cross-protocol — document in
 ---
 
 <a id="epic-e3"></a>
-## EPIC E3 — Analytics keyset pagination correctness · P1
+## EPIC E3 — Analytics keyset pagination correctness · P1 · ✅ SHIPPED 2026-07-17 (`fix-analytics-keyset-cursor`)
 
 **Proposal slug:** `fix-analytics-keyset-cursor` ·
 **Spec refs:** `openspec/specs/analytics-api` ("walking all pages returns every in-range row exactly once"); `openspec/specs/dashboard-analytics`; spec.md §9
 **Why:** Found independently by two auditors. Dashboard pagination silently drops rows — the rows are
 counted in summaries but unreachable in the list, so the dashboard is silently inconsistent with itself.
 
-### Task E3.1 — Carry full timestamp precision through the request-list cursor ☐ `[high/S]`
+### Task E3.1 — Carry full timestamp precision through the request-list cursor ✅ `[high/S]`
 - **Where:** `packages/control-plane/src/database/analytics.queries.ts:53` (`encodeCursor`) and `:356-366` (cursor predicate); `packages/control-plane/src/analytics/analytics.service.ts:90-105` (`parseCursor`)
 - **Defect:** `request_log.created_at` is `timestamptz` from `now()` (µs precision) and the LogWriter
   batches rows in one `INSERT` — **every row in a flush shares one identical µs timestamp**. The cursor
@@ -417,7 +417,7 @@ counted in summaries but unreachable in the list, so the dashboard is silently i
   and the list is walked with `limit=1` THEN every row id appears exactly once across pages.
 - **Verify:** Task E3.2's test fails before, passes after. `npm run test:e2e -w packages/control-plane -- analytics`.
 
-### Task E3.2 — Add a µs-realistic pagination e2e (current seeds mask the bug) ☐ `[medium/XS]`
+### Task E3.2 — Add a µs-realistic pagination e2e (current seeds mask the bug) ✅ `[medium/XS]`
 - **Where:** `packages/control-plane/test/analytics/analytics.e2e-spec.ts:29` (seeds)
 - **Defect:** All seeds are explicit `.000`-millisecond ISO constants, so the "exactly once" spec
   scenario is asserted only against data that cannot trigger the failure — the fix in E3.1 could

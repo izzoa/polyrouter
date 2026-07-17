@@ -244,7 +244,9 @@ export interface AnalyticsBreakdownRow {
 }
 
 export interface AnalyticsRequestsCursor {
-  createdAt: Date;
+  /** Full-precision `created_at::text` (µs), NOT a millisecond-truncated JS Date —
+   * so a batch of rows sharing one `now()` timestamp pages exactly once (E3). */
+  createdAt: string;
   id: string;
 }
 

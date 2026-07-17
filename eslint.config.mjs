@@ -12,6 +12,11 @@ export default tseslint.config(
       '**/*.d.mts',
       '.changeset/**',
       'openspec/**',
+      // design-sync (claude.ai/design) staged scaffolding + previews are not
+      // part of the app's tsconfig project service — don't type-lint them.
+      '.design-sync/**',
+      '.ds-sync/**',
+      'ds-bundle/**',
       '**/drizzle.config.ts',
     ],
   },

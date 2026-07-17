@@ -86,4 +86,16 @@ jobs:
           cache: npm
       - run: npm ci
       # Root script runs `turbo run build` first, then the control-plane e2e suite.
-      - run: npm run test:e2e
+      # One fresh-process retry absorbs the documented Better-Auth ESM/jest
+      # module-load flake (`auth.e2e` intermittently gets `undefined … 'identifier'`
+      # from jest's --experimental-vm-modules loader under runner memory pressure;
+      # the auth stack itself is proven by prod-topology booting the real server).
+      # A fresh jest process gets a clean module registry — the in-process
+      # jest.retryTimes cannot, since --runInBand shares one registry. A genuine
+      # failure fails both attempts and still reds the job.
+      - name: e2e (fresh-process retry once on the documented auth ESM flake)
+        run: |
+          if ! npm run test:e2e; then
+            echo "::warning title=e2e retried::first attempt failed; re-running once on a fresh process (documented auth.e2e ESM module-load flake)"
+            npm run test:e2e
+          fi

@@ -1,0 +1,78 @@
+# Publishes the production image to GHCR on release tags (spec: packaging).
+# Releases are human-gated: tag v*.*.* after CI is green — no branch push ever
+# publishes. Auth is the job-scoped GITHUB_TOKEN; no standing registry secrets.
+# Actions are pinned to full commit SHAs (this job holds packages:write — a
+# moved tag must not be able to substitute the publisher).
+name: Release image
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+# ONE global group, no cancellation: concurrent tag pushes queue instead of
+# racing each other's writes to the shared `latest` tag.
+concurrency:
+  group: release-image
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: build & push ghcr image
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      # The v*.*.* glob also matches junk like vfoo.bar.baz, which would reach
+      # build-push with zero tags; fail fast with a clear message instead.
+      - name: validate release tag format
+        if: github.ref_type == 'tag'
+        run: |
+          echo "${GITHUB_REF_NAME}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            || { echo "::error::tag '${GITHUB_REF_NAME}' is not strict semver (vX.Y.Z)"; exit 1; }
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      # arm64 is built under QEMU emulation — slow but tag-cadence only.
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Resolves to ghcr.io/izzoa/polyrouter on the canonical repo (the action
+      # lowercases, so uppercase fork owners are safe). Index-level annotations
+      # give the GHCR package page its description on multi-arch images.
+      - id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            # Manual dispatch (no tag ref) publishes an explicit sha-… tag only.
+            type=sha,enable=${{ github.event_name == 'workflow_dispatch' }}
+          labels: |
+            org.opencontainers.image.licenses=AGPL-3.0-only
+
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Plain manifest list: default provenance attestations still confuse
+          # some simple clients/UIs self-hosters use. Revisit with cosign.
+          provenance: false

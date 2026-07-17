@@ -33,6 +33,19 @@ The first build takes a few minutes. Manual alternative: copy `.env` values by h
 the same compose command from the repo. Re-running the installer from **inside** the
 created `polyrouter/` directory is safe — it refreshes the source and keeps `.env`.
 
+> **Prebuilt image (skip the local build).** Tagged releases publish a multi-arch
+> (amd64 + arm64) image to GHCR. Set `POLYROUTER_IMAGE=ghcr.io/izzoa/polyrouter:latest`
+> (or a pinned `:X.Y.Z`) in `.env`, then run the compose command **without** `--build`;
+> upgrades become `docker compose -p polyrouter-selfhost pull && docker compose -p
+> polyrouter-selfhost up -d`. On a **fetch install**, the compose flags go **before**
+> the subcommand, exactly as the installer prints:
+> `docker compose -p polyrouter-selfhost --env-file .env -f src/docker-compose.yml
+> --project-directory src pull`.
+>
+> Maintainer note (one-time, first release): GHCR packages are created **private** by
+> default — after the first `v*` tag publishes, set the `polyrouter` package to public
+> (package settings → Danger zone → Change visibility) or anonymous pulls will fail.
+
 > **Compose commands below — checkout vs. one-line install.** The bare
 > `docker compose -p polyrouter-selfhost …` form shown below assumes a **checkout**
 > (compose file at the repo root). A **one-line (fetch) install** keeps the compose
@@ -105,7 +118,7 @@ change both places if it collides with your network.
 
 ### Operations
 
-- **Upgrade:** pull/re-download the source, then `docker compose -p polyrouter-selfhost up -d --build` — migrations run on boot.
+- **Upgrade:** pull/re-download the source, then `docker compose -p polyrouter-selfhost up -d --build` — or, on the prebuilt image, `docker compose -p polyrouter-selfhost pull && docker compose -p polyrouter-selfhost up -d`. Migrations run on boot either way.
 - **Backup:** the `polyrouter-pg` volume is the data; `docker compose exec postgres pg_dump -U polyrouter polyrouter > backup.sql`.
 - **Stop/restart:** in-flight streaming responses are drained on `docker stop` (45s grace period) — deploys don't sever live completions.
 - **One app replica only:** boot migrations take no advisory lock — do not `--scale app`.

@@ -1,0 +1,26 @@
+{
+  "projectId": "b8249652-f0e4-4c36-9b04-7619c917ed0a",
+  "shape": "package",
+  "pkg": "@polyrouter/design-kit",
+  "globalName": "Polyrouter",
+  "entry": "./.design-sync/wrapper/dist/index.js",
+  "buildCmd": "cd .design-sync/wrapper && npm run build",
+  "cssEntry": "solid/design-kit.css",
+  "extraFonts": ["assets/fonts.css"],
+  "readmeHeader": ".design-sync/conventions.md",
+  "overrides": {
+    "Inspector": { "cardMode": "single", "primaryStory": "CascadeEscalation", "viewport": "900x640" },
+    "Modals": { "cardMode": "single", "viewport": "820x620" },
+    "Toast": { "cardMode": "single", "viewport": "420x180" },
+    "Overview": { "cardMode": "single", "viewport": "1180x760" },
+    "Requests": { "cardMode": "single", "viewport": "1180x760" },
+    "Costs": { "cardMode": "single", "viewport": "1180x760" },
+    "Routing": { "cardMode": "single", "viewport": "1180x760" },
+    "Settings": { "cardMode": "single", "viewport": "1180x680" },
+    "Login": { "cardMode": "single", "viewport": "1180x680" },
+    "Setup": { "cardMode": "single", "viewport": "1180x680" },
+    "Agents": { "cardMode": "single", "viewport": "1040x470" },
+    "Providers": { "cardMode": "single", "viewport": "1040x450" },
+    "Limits": { "cardMode": "single", "viewport": "1040x380" }
+  }
+}

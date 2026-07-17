@@ -4,22 +4,34 @@ import { createServer } from 'node:net';
 import { join } from 'node:path';
 
 /**
- * Production single-port topology (app-bootstrap): spawns the real
- * `npm start` (which must force NODE_ENV=production) and probes it over HTTP.
+ * Production single-port topology (app-bootstrap): boots the real compiled
+ * server (`node dist/main.js`) in production and probes it over HTTP.
  * Requires a prior `npm run build` (frontend dist + control-plane dist).
  *
- * CI-hardened: every probe carries an abort deadline (a served-but-stalled
- * response fails in seconds, attributed to its line — never a mute jest
- * timeout), any failure rethrows WITH the server's captured stdout/stderr,
- * and spawned children are reaped in afterEach so jest always exits.
+ * CI-hardened after the first GitHub run hung two ways:
+ *  - The app defaults NODE_ENV=development; only `cross-env NODE_ENV=production`
+ *    (the `npm start` script) forces production, and SPA serving is gated on it.
+ *    We invoke `cross-env` DIRECTLY — not `npm start` — so the process tree is
+ *    just cross-env → node, with no npm/sh wrapper that swallows SIGTERM (which
+ *    leaked the server, held jest open, and starved the next test).
+ *  - The child is spawned `detached` and reaped by process GROUP, so the whole
+ *    tree dies on stop/afterEach.
+ *  - Every probe carries an abort deadline AND the whole scenario races a
+ *    self-imposed deadline shorter than jest's, so a stall fails FAST with the
+ *    server's captured stdout/stderr — never a mute 120s jest timeout again.
  */
 
 const repoRoot = join(__dirname, '..', '..', '..');
 const frontendIndex = join(repoRoot, 'packages', 'frontend', 'dist', 'index.html');
 const controlPlaneMain = join(repoRoot, 'packages', 'control-plane', 'dist', 'main.js');
+const crossEnvBin = join(repoRoot, 'node_modules', '.bin', 'cross-env');
 
 /** Per-request bound: generous for a loaded 2-vCPU CI runner, tiny next to jest's 120s. */
 const PROBE_TIMEOUT_MS = 15_000;
+/** Whole-scenario bound: must beat jest's 120s so OUR error (with server output) wins. */
+const SCENARIO_TIMEOUT_MS = 90_000;
+/** Boot health-poll bound. */
+const BOOT_TIMEOUT_MS = 45_000;
 
 function getFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -44,11 +56,23 @@ interface RunningServer {
   stop: () => Promise<void>;
 }
 
-/** Every child ever spawned — reaped in afterEach so a failed test can never
- * leak a live `npm start` (which would hold jest open until the job timeout). */
+/** Every child ever spawned — reaped by process group in afterEach so a failed
+ * test can never leak a live server (which would hold jest open until the job
+ * timeout and starve the next test). */
 const spawnedChildren: ChildProcess[] = [];
 
-async function startProdServer(nodeEnv: string | undefined): Promise<RunningServer> {
+/** Kill the child's whole process group (cross-env → node), tolerating a
+ * group that has already exited. */
+function killGroup(child: ChildProcess, signal: NodeJS.Signals): void {
+  if (child.pid === undefined || child.exitCode !== null) return;
+  try {
+    process.kill(-child.pid, signal); // negative pid → the detached group
+  } catch {
+    // group already gone
+  }
+}
+
+async function startProdServer(inheritedNodeEnv: string | undefined): Promise<RunningServer> {
   const port = await getFreePort();
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -62,21 +86,29 @@ async function startProdServer(nodeEnv: string | undefined): Promise<RunningServ
   };
   delete env['NODE_ENV'];
   delete env['SEED_DATA'];
-  if (nodeEnv !== undefined) {
-    env['NODE_ENV'] = nodeEnv;
+  // The scenario under test: cross-env forces NODE_ENV=production over whatever
+  // the ambient shell inherited (unset, or an explicit `development`).
+  if (inheritedNodeEnv !== undefined) {
+    env['NODE_ENV'] = inheritedNodeEnv;
   }
 
-  const child = spawn('npm', ['start'], { cwd: repoRoot, env });
+  // `cross-env NODE_ENV=production node dist/main.js`, spawned directly (no npm
+  // or sh wrapper) and as its own process-group leader so we can reap the tree.
+  const child = spawn(
+    crossEnvBin,
+    ['NODE_ENV=production', process.execPath, controlPlaneMain],
+    { cwd: repoRoot, env, detached: true },
+  );
   spawnedChildren.push(child);
   let output = '';
-  child.stdout.on('data', (chunk: Buffer) => (output += chunk.toString()));
-  child.stderr.on('data', (chunk: Buffer) => (output += chunk.toString()));
+  child.stdout?.on('data', (chunk: Buffer) => (output += chunk.toString()));
+  child.stderr?.on('data', (chunk: Buffer) => (output += chunk.toString()));
 
   const baseUrl = `http://127.0.0.1:${String(port)}`;
-  const deadline = Date.now() + 60_000;
+  const deadline = Date.now() + BOOT_TIMEOUT_MS;
   for (;;) {
     if (child.exitCode !== null) {
-      throw new Error(`npm start exited early (${String(child.exitCode)}):\n${output}`);
+      throw new Error(`server exited early (${String(child.exitCode)}):\n${output}`);
     }
     try {
       const res = await fetch(`${baseUrl}/api/health`, { signal: AbortSignal.timeout(1_000) });
@@ -85,7 +117,7 @@ async function startProdServer(nodeEnv: string | undefined): Promise<RunningServ
       // not up yet
     }
     if (Date.now() > deadline) {
-      throw new Error(`server did not become healthy in time:\n${output}`);
+      throw new Error(`server did not become healthy within ${String(BOOT_TIMEOUT_MS)}ms:\n${output}`);
     }
     await new Promise((r) => setTimeout(r, 250));
   }
@@ -96,12 +128,12 @@ async function startProdServer(nodeEnv: string | undefined): Promise<RunningServ
         resolve();
         return;
       }
-      const killTimer = setTimeout(() => child.kill('SIGKILL'), 10_000);
+      const killTimer = setTimeout(() => killGroup(child, 'SIGKILL'), 8_000);
       child.once('close', () => {
         clearTimeout(killTimer);
         resolve();
       });
-      child.kill('SIGTERM');
+      killGroup(child, 'SIGTERM');
     });
 
   return { child, baseUrl, output: () => output, stop };
@@ -130,19 +162,29 @@ function bounded<T>(what: string, p: Promise<T>): Promise<T> {
   ]);
 }
 
-/** Boot, run the probes, always stop; on ANY failure rethrow with the server's
- * captured output appended — CI failures must carry the server's side of the story. */
+/** Boot, run the probes under a self-imposed deadline, always stop; on ANY
+ * failure (including the deadline) rethrow with the server's captured output —
+ * CI failures must fail FAST and carry the server's side of the story, never a
+ * mute jest timeout. */
 async function withProdServer(
-  nodeEnv: string | undefined,
+  inheritedNodeEnv: string | undefined,
   run: (server: RunningServer) => Promise<void>,
 ): Promise<void> {
-  const server = await startProdServer(nodeEnv);
+  const server = await startProdServer(inheritedNodeEnv);
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    await run(server);
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`scenario exceeded ${String(SCENARIO_TIMEOUT_MS)}ms`)),
+        SCENARIO_TIMEOUT_MS,
+      );
+    });
+    await Promise.race([run(server), deadline]);
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     throw new Error(`${detail}\n--- server output ---\n${server.output()}`);
   } finally {
+    if (timer !== undefined) clearTimeout(timer);
     await server.stop();
   }
 }
@@ -157,11 +199,11 @@ describe('production topology via `npm start` (app-bootstrap)', () => {
   });
 
   afterEach(async () => {
-    // Reap anything a failed test left behind; a lingering child would hold
-    // jest open ("Jest did not exit…") until the CI job timeout.
+    // Reap by process group anything a failed test left behind; a lingering
+    // server would hold jest open ("Jest did not exit…") until the job timeout.
     for (const child of spawnedChildren.splice(0)) {
       if (child.exitCode === null) {
-        child.kill('SIGKILL');
+        killGroup(child, 'SIGKILL');
         await new Promise((r) => child.once('close', r));
       }
     }

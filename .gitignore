@@ -37,3 +37,13 @@ coverage/
 
 # OpenSpec planning workspace (proposals, deltas, archives) — machine-local
 openspec/
+
+# design-sync (claude.ai/design): staged converter scripts, regenerated bundle,
+# machine-local verification state, and the wrapper's stage-1 compiled output.
+# .design-sync/config.json, NOTES.md, conventions.md, previews/, wrapper/src ARE committed.
+.ds-sync/
+ds-bundle/
+.design-sync/.cache/
+.design-sync/learnings/
+.design-sync/node_modules
+.design-sync/wrapper/solid/

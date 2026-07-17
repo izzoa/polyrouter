@@ -1,0 +1,26 @@
+{
+  "name": "@polyrouter/design-kit",
+  "version": "0.1.0",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "description": "React adapters over polyrouter's real SolidJS dashboard components, built for the claude.ai/design sync. Each adapter mounts the app's compiled Solid code inside a React host — no component is reimplemented.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "vite build && tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "solid-js": "^1.9.14",
+    "uplot": "^1.6.32"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "typescript": "^5.7.2",
+    "vite": "^8.1.4",
+    "vite-plugin-solid": "^2.11.12"
+  }
+}

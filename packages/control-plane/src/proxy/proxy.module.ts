@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Logger, Module } from '@nestjs/common';
 import { APP_FILTER } from '@nestjs/core';
 import {
   CircuitBreaker,
@@ -30,6 +30,8 @@ import {
 } from './proxy.config';
 import { ROUTING_CONFIG, loadRoutingConfig } from './routing.config';
 import { ProxyService } from './proxy.service';
+import { ProxyMetrics } from '../observability/proxy-metrics';
+import { breakerStoreErrorHandler } from './breaker-observability';
 import { StreamDrainRegistry } from './stream-drain.registry';
 import { StructuralBaselineStore } from './structural/structural-baseline.store';
 import { StructuralRouter } from './structural/structural-router';
@@ -86,10 +88,13 @@ function boundedBreakerRedis(redis: Redis): BreakerRedis {
     },
     {
       provide: PROXY_BREAKER,
-      inject: [REDIS_CLIENT],
-      useFactory: (redis: Redis): CircuitBreaker =>
+      inject: [REDIS_CLIENT, ProxyMetrics],
+      useFactory: (redis: Redis, metrics: ProxyMetrics): CircuitBreaker =>
         new CircuitBreaker(new RedisBreakerStore(boundedBreakerRedis(redis)), {
           fallback: new InMemoryBreakerStore(),
+          // Surface a Redis breaker-store fault instead of silently degrading to the
+          // per-instance fallback (A-10): meter every fault + throttled WARN.
+          onError: breakerStoreErrorHandler(metrics, new Logger('ProxyBreaker')),
         }),
     },
     { provide: APP_FILTER, useClass: ProxyExceptionFilter },

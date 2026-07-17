@@ -106,6 +106,11 @@ export class ProxyMetrics {
     labelNames: ['mode'] as const,
     registers: [this.registry],
   });
+  private readonly breakerStoreFaults = new Counter({
+    name: 'polyrouter_breaker_store_faults_total',
+    help: 'Shared breaker-store faults that degraded the breaker to its per-instance fallback',
+    registers: [this.registry],
+  });
 
   constructor() {
     collectDefaultMetrics({ register: this.registry });
@@ -161,6 +166,13 @@ export class ProxyMetrics {
 
   breakerOpened(provider: string): void {
     this.safe(() => this.breakerOpens.inc({ provider }));
+  }
+
+  /** The shared (Redis) breaker store faulted and the breaker fell back to its
+   * per-instance in-memory store — cross-replica coordination is lost until Redis
+   * recovers. Store-wide (not per-provider), so unlabeled. */
+  breakerStoreDegraded(): void {
+    this.safe(() => this.breakerStoreFaults.inc());
   }
 
   logRowsDroppedBy(n: number): void {

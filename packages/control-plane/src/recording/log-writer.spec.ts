@@ -259,4 +259,52 @@ describe('LogWriter', () => {
     // L2 (parent) is written before A2 (child) in the same cycle — no FK-order drop.
     expect(order).toEqual(['log:L2', 'attempt:A2']);
   });
+
+  // --- A-14: an orphaned attempt must not FK-poison its per-owner batch ---
+
+  it('drops an orphaned attempt without dropping its valid siblings', async () => {
+    const attemptInsertMany = jest.fn().mockResolvedValue(undefined);
+    const { writer, metrics } = makeWriter({ attemptInsertMany });
+    // A valid parent+attempt pair, plus an attempt whose parent 'L-missing' was never
+    // enqueued — all owner u1, so pre-fix they share ONE insertMany batch.
+    writer.enqueue(draft({ id: 'L-ok' }));
+    writer.enqueueAttempt(attemptDraft({ id: 'A-ok', requestLogId: 'L-ok' }));
+    writer.enqueueAttempt(attemptDraft({ id: 'A-orphan', requestLogId: 'L-missing' }));
+    await writer.flush();
+    // Only the attempt whose parent was written this cycle reaches the insert; the
+    // orphan (which would FK-violate and fail the whole batch) is filtered out first.
+    const insertedAttemptIds = attemptInsertMany.mock.calls.flatMap(
+      ([, rows]: [unknown, { id: string }[]]) => rows.map((r) => r.id),
+    );
+    expect(insertedAttemptIds).toEqual(['A-ok']);
+    // The orphan is a counted/logged drop, never a silent loss.
+    expect(await metrics.metricsText()).toContain('polyrouter_log_rows_dropped_total 1');
+  });
+
+  it('a threshold-triggered flush keeps a same-tick parent+attempt in one cycle (A-14 race)', async () => {
+    const attemptInsertMany = jest.fn().mockResolvedValue(undefined);
+    // batchSize=1: enqueue(parent) crosses the threshold. A synchronous flush would
+    // splice the log queue before the attempt (enqueued in the SAME tick) lands,
+    // orphaning it. The deferred (microtask) flush must keep them together.
+    const { writer } = makeWriter({ attemptInsertMany, config: { batchSize: 1 } });
+    writer.enqueue(draft({ id: 'P' })); // hits batchSize → schedules a microtask flush
+    writer.enqueueAttempt(attemptDraft({ id: 'C', requestLogId: 'P' })); // same tick, after
+    await writer.onApplicationShutdown(); // drain to completion
+    const attemptIds = attemptInsertMany.mock.calls.flatMap(
+      ([, rows]: [unknown, { id: string }[]]) => rows.map((r) => r.id),
+    );
+    expect(attemptIds).toEqual(['C']); // inserted, NOT dropped as an orphan
+  });
+
+  it('orphans an attempt whose parent log insert gave up (parent never durable)', async () => {
+    const insertMany = jest.fn().mockRejectedValue(new Error('db down')); // parent always fails
+    const attemptInsertMany = jest.fn().mockResolvedValue(undefined);
+    const { writer } = makeWriter({ insertMany, attemptInsertMany });
+    writer.enqueue(draft({ id: 'L-fail' }));
+    writer.enqueueAttempt(attemptDraft({ id: 'A-child', requestLogId: 'L-fail' }));
+    await writer.flush();
+    // Parent never became durable → its child is orphaned and not inserted (rather than
+    // repeatedly FK-failing the attempt batch).
+    expect(attemptInsertMany).not.toHaveBeenCalled();
+  });
 });

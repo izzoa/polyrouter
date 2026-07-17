@@ -30,12 +30,7 @@ import {
 } from '@polyrouter/shared/server';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import type { Db } from './database.internal';
-
-/** Per-row µ$ — the EXACT expression the budget reader (#16) uses, so dashboard
- * spend reconciles with the budget counters (a float `sum(cost)` would diverge). */
-function microsSum(col: AnyPgColumn): SQL<number> {
-  return sql<number>`coalesce(sum(round(coalesce(${col}, 0) * 1000000)), 0)`;
-}
+import { microsSum } from './cost-sql';
 
 function intCount(filter?: SQL): SQL<number> {
   return filter

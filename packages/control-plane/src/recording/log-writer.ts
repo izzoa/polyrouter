@@ -51,7 +51,7 @@ export interface RequestLogDraft {
   readonly decisionLayer: string;
   readonly routingReason: string;
   readonly durationMs: number;
-  readonly status: 'success' | 'error' | 'fallback';
+  readonly status: 'success' | 'error' | 'fallback' | 'cancelled';
   readonly usage: ResolvedUsage;
   readonly pricing: DraftPricing;
   /** #14 cascade: whether the request escalated cheap→strong. */
@@ -75,7 +75,7 @@ export interface RequestAttemptDraft {
   /** Provider display name — #21 metric label only, never persisted. */
   readonly providerName: string;
   readonly modelId: string | null;
-  readonly status: 'success' | 'error' | 'fallback';
+  readonly status: 'success' | 'error' | 'fallback' | 'cancelled';
   readonly usage: ResolvedUsage;
   readonly pricing: DraftPricing;
   /** The originating request's span context (#21); never persisted. */
@@ -162,7 +162,14 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
       this.metrics.logRowsDroppedBy(1);
     }
     this.queue.push(draft);
-    if (this.queue.length >= this.cfg.batchSize) void this.flush();
+    // Defer the threshold flush to a microtask: a cascade served-log and its attempt(s)
+    // are enqueued back-to-back in the SAME synchronous tick (record() then
+    // recordAttempt()). A synchronous flush here would splice the log queue mid-tick —
+    // BEFORE the sibling attempt is enqueued — stranding that valid attempt in the next
+    // cycle where its now-durable parent is absent from `writtenLogIds` and it would be
+    // wrongly dropped as orphaned (A-14). The microtask runs after the tick completes,
+    // so parent + attempts always flush in one cycle.
+    if (this.queue.length >= this.cfg.batchSize) queueMicrotask(() => void this.flush());
   }
 
   /** Flush a batch. If a flush is already in flight, COALESCE onto it (await it)
@@ -200,11 +207,30 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
     // FK to its not-yet-written parent fails and the row is avoidably dropped.
     const batch = this.queue.splice(0, this.queue.length);
     const attempts = this.attemptQueue.splice(0, this.attemptQueue.length);
+    const writtenLogIds = new Set<string>();
     for (const [, drafts] of groupByOwner(batch)) {
-      await this.writeGroup(drafts);
+      await this.writeGroup(drafts, writtenLogIds);
     }
     // Attempt ledger AFTER the logs (FK: request_attempt.request_log_id → request_log.id).
-    for (const [, drafts] of groupByOwner(attempts)) {
+    // Drop any attempt whose parent log was NOT written this cycle (its group's insert
+    // gave up, or the parent draft was queue-evicted): it can't be inserted regardless,
+    // and left in the batch its FK violation would fail the whole per-owner attempt
+    // insert — dropping valid sibling rows whose parents WERE written (A-14). A served
+    // log and its attempts enqueue in the same tick, so a non-orphan's parent is here.
+    const insertable: RequestAttemptDraft[] = [];
+    let orphaned = 0;
+    for (const a of attempts) {
+      if (writtenLogIds.has(a.requestLogId)) insertable.push(a);
+      else orphaned += 1;
+    }
+    if (orphaned > 0) {
+      this.dropped += orphaned;
+      this.metrics.logRowsDroppedBy(orphaned);
+      this.logger.warn(
+        `dropped ${orphaned} orphaned attempt row(s): parent request_log not written this cycle`,
+      );
+    }
+    for (const [, drafts] of groupByOwner(insertable)) {
       await this.writeAttemptGroup(drafts);
     }
   }
@@ -215,7 +241,7 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
    * spans (#21 — the spec's traced "DB write"); the cost counters are emitted
    * exactly once per row, only after ITS batch insert succeeded (a retry
    * rebuilds rows but must never re-emit; a dropped row emits no cost). */
-  private async writeGroup(drafts: RequestLogDraft[]): Promise<void> {
+  private async writeGroup(drafts: RequestLogDraft[], writtenLogIds: Set<string>): Promise<void> {
     const principal = drafts[0]!.principal;
     const span = writeSpan(drafts);
     try {
@@ -230,6 +256,7 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
           );
           rows.forEach((row, i) => {
             const d = drafts[i]!;
+            writtenLogIds.add(row.id); // parent is now durable → its attempts may insert (A-14)
             this.metrics.recordCost(d.providerName, d.pricing.externalModelId, row.cost ?? null);
           });
           return;

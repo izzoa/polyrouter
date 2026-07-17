@@ -9,7 +9,15 @@ const STATUS_BADGE: Record<RequestStatus, [string, string, string]> = {
   success: ['OK · served', 'var(--green-bg)', 'var(--green)'],
   fallback: ['Fallback · served', 'var(--amber-bg)', 'var(--amber)'],
   error: ['Error', 'var(--red-bg)', 'var(--red)'],
+  // A client-cancelled request (disconnect) — neutral, not a provider error.
+  cancelled: ['Cancelled · client', 'var(--chip)', 'var(--text3)'],
 };
+
+/** `request_log.status` is free-form text at the DB, so a legacy/unknown value must
+ * render a neutral badge rather than crash on a missing map entry. */
+function badgeFor(status: string): [string, string, string] {
+  return STATUS_BADGE[status as RequestStatus] ?? [status || 'unknown', 'var(--chip)', 'var(--text3)'];
+}
 
 /** Routing-decision inspector over a real RequestLog row — header, route, the
  * verbatim decision layer + routing reason (transparency payload, invariant 1),
@@ -51,11 +59,11 @@ export function Inspector() {
                       padding: '2px 9px',
                       'border-radius': '10px',
                       font: "500 11px 'Geist',sans-serif",
-                      background: STATUS_BADGE[view().status][1],
-                      color: STATUS_BADGE[view().status][2],
+                      background: badgeFor(view().status)[1],
+                      color: badgeFor(view().status)[2],
                     }}
                   >
-                    {STATUS_BADGE[view().status][0]}
+                    {badgeFor(view().status)[0]}
                   </span>
                   <span class="drawer-close" onClick={() => app.select(null)}>
                     ✕

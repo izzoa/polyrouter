@@ -275,6 +275,43 @@ describe('runBufferedChain', () => {
     );
     expect(r.ok).toBe(false);
     expect(secondCalled).toBe(false);
+    if (!r.ok) expect(r.callerAborted).toBe(false); // a provider/bad_request fault, not a caller abort
+  });
+
+  // A-3: the loop-STOP is on the composite work signal (so a cheap-tier deadline halts
+  // the chain), but `callerAborted` must reflect only a real CLIENT abort (the pure
+  // predicate) — otherwise a deadline would be recorded `cancelled` and suppress cascade
+  // escalation. These pin the discriminator at the loop-top exit.
+  it('a deadline abort (composite signal tripped, caller present) is NOT callerAborted', async () => {
+    const deadline = new AbortController();
+    deadline.abort(); // the composite (client-or-deadline) signal is already tripped
+    const r = await runBufferedChain(
+      newBreaker(),
+      [bufAttempt('p1', 'a', () => Promise.resolve(resp()))],
+      client,
+      { model: 'x', messages: [], params: {} },
+      { created: 1, isCallerAbort: () => false }, // client still present — only the deadline fired
+      deadline.signal,
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error('unreachable');
+    expect(r.callerAborted).toBe(false); // escalation-eligible, not a cancellation
+  });
+
+  it('a real client abort (pure predicate true) IS callerAborted', async () => {
+    const gone = new AbortController();
+    gone.abort();
+    const r = await runBufferedChain(
+      newBreaker(),
+      [bufAttempt('p1', 'a', () => Promise.resolve(resp()))],
+      client,
+      { model: 'x', messages: [], params: {} },
+      { created: 1, isCallerAbort: () => true }, // client disconnected
+      gone.signal,
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error('unreachable');
+    expect(r.callerAborted).toBe(true);
   });
 });
 

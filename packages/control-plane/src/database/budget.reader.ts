@@ -1,16 +1,10 @@
-import { and, eq, gte, lt, sql } from 'drizzle-orm';
+import { and, eq, gte, lt } from 'drizzle-orm';
 import { budgets, requestAttempts, requestLogs, type BudgetRow } from '@polyrouter/shared/server';
-import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { microsSum } from './cost-sql';
 
 /** DI token for the budget reconcile reader (a narrow, scheduler-only capability). */
 export const BUDGET_READER = 'polyrouter:budget-reader';
-
-/** Row-level integer micro-dollars: `Σ round(cost × 1e6)` — the exact figure the
- * block-check threshold compares (rounded per row, not sum-then-round), null → 0. */
-function microsSum(col: AnyPgColumn) {
-  return sql<number>`coalesce(sum(round(coalesce(${col}, 0) * 1000000)), 0)`;
-}
 
 export interface BudgetReader {
   /** Every enabled budget across all owners (the reconcile work-list). */

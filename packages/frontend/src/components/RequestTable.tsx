@@ -21,12 +21,18 @@ const STATUS_DOT: Record<RequestStatus, string> = {
   success: 'var(--green)',
   fallback: 'var(--amber)',
   error: 'var(--red)',
+  cancelled: 'var(--text3)',
 };
 const STATUS_TEXT: Record<RequestStatus, string> = {
   success: 'OK',
   fallback: 'Fallback',
   error: 'Error',
+  cancelled: 'Cancelled',
 };
+// `status` is free-form text at the DB — an unknown/legacy value renders neutrally
+// instead of crashing on a missing map entry.
+const dotFor = (s: string): string => STATUS_DOT[s as RequestStatus] ?? 'var(--text3)';
+const textFor = (s: string): string => STATUS_TEXT[s as RequestStatus] ?? (s || 'unknown');
 
 export function RequestTableHead() {
   return (
@@ -97,11 +103,11 @@ export function RequestRow(props: { r: RequestRow }) {
             width: '6px',
             height: '6px',
             'border-radius': '50%',
-            background: STATUS_DOT[props.r.status],
+            background: dotFor(props.r.status),
             flex: 'none',
           }}
         />
-        {STATUS_TEXT[props.r.status]}
+        {textFor(props.r.status)}
       </div>
     </div>
   );

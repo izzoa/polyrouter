@@ -104,11 +104,17 @@ interface BootedApp {
   registry: StreamDrainRegistry;
   store: RecordingBreakerStore;
   providerDown: jest.Mock;
+  recorded: jest.Mock;
+  onRequestFailed: jest.Mock;
 }
 
 async function bootApp(streamDrainDeadlineMs: number): Promise<BootedApp> {
   const store = new RecordingBreakerStore();
   const providerDown = jest.fn();
+  // Observable recorder + failure-spike producer so A-3 can assert a client disconnect
+  // records `cancelled` and never fires the spike notify.
+  const recorded = jest.fn<string, [unknown, { status: string }]>(() => 'rec-id');
+  const onRequestFailed = jest.fn(() => Promise.resolve());
   const moduleRef = await Test.createTestingModule({
     imports: [DatabaseModule, ObservabilityModule],
     controllers: [ChatCompletionsController, MessagesController, ModelsController],
@@ -116,7 +122,7 @@ async function bootApp(streamDrainDeadlineMs: number): Promise<BootedApp> {
       AgentApiKeyGuard,
       ProxyService,
       StreamDrainRegistry,
-      { provide: RequestRecorder, useValue: { record: () => undefined } },
+      { provide: RequestRecorder, useValue: { record: recorded } },
       {
         provide: StructuralRouter,
         useValue: { enabled: false, evaluate: () => Promise.resolve({ kind: 'skip' }) },
@@ -124,7 +130,7 @@ async function bootApp(streamDrainDeadlineMs: number): Promise<BootedApp> {
       { provide: CascadeRouter, useValue: { enabled: false, plan: () => null } },
       {
         provide: NotificationProducers,
-        useValue: { providerDown, onRequestFailed: () => Promise.resolve() },
+        useValue: { providerDown, onRequestFailed },
       },
       {
         provide: BudgetService,
@@ -141,7 +147,15 @@ async function bootApp(streamDrainDeadlineMs: number): Promise<BootedApp> {
   configureApp(app as NestExpressApplication, { NODE_ENV: 'test' }, 'http://localhost:3000');
   await app.listen(0, '127.0.0.1');
   const { port } = app.getHttpServer().address() as AddressInfo;
-  return { app, port, registry: app.get(StreamDrainRegistry), store, providerDown };
+  return {
+    app,
+    port,
+    registry: app.get(StreamDrainRegistry),
+    store,
+    providerDown,
+    recorded,
+    onRequestFailed,
+  };
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
@@ -395,6 +409,8 @@ describe('stream lifecycle e2e (drain / disconnect / backpressure)', () => {
     async () => {
       const before = stub.requests.length;
       const outcomesBefore = a1.store.outcomes.length;
+      const recordedBefore = a1.recorded.mock.calls.length;
+      const notifiedBefore = a1.onRequestFailed.mock.calls.length;
       const client = await openStreamTracked(a1.port, key, 'oai-slowtail');
       await withTimeout(client.firstFrame, 10_000, 'first frame');
 
@@ -411,6 +427,17 @@ describe('stream lifecycle e2e (drain / disconnect / backpressure)', () => {
       expect(a1.store.outcomes.length).toBeGreaterThan(outcomesBefore);
       expect(a1.store.outcomes[a1.store.outcomes.length - 1]).toBe('neutral');
       expect(a1.providerDown).not.toHaveBeenCalled();
+
+      // A-3: the disconnect is recorded as `cancelled` (not a provider `error`) and
+      // the failure-spike producer is never notified — a client hang-up can't inflate
+      // the error rate or trip a false spike. The record lands in the outcome microtask.
+      const recDeadline = Date.now() + 5_000;
+      while (a1.recorded.mock.calls.length <= recordedBefore && Date.now() < recDeadline) {
+        await sleep(25);
+      }
+      const call = a1.recorded.mock.calls[a1.recorded.mock.calls.length - 1]!;
+      expect(call[1].status).toBe('cancelled');
+      expect(a1.onRequestFailed.mock.calls.length).toBe(notifiedBefore); // no spike notify
 
       // Threshold-1 breaker: any mis-recorded trip would have opened it.
       const followUp = await postChat(a1.port, key, 'gpt-4o');

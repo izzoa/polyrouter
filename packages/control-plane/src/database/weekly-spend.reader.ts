@@ -1,6 +1,7 @@
-import { and, gte, lt, sql } from 'drizzle-orm';
+import { and, gte, lt } from 'drizzle-orm';
 import { requestAttempts, requestLogs } from '@polyrouter/shared/server';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { microsSum } from './cost-sql';
 
 /** DI token for the weekly-spend reader (a narrow, scheduler-only capability). */
 export const WEEKLY_SPEND_READER = 'polyrouter:weekly-spend-reader';
@@ -24,10 +25,14 @@ export interface WeeklySpendReader {
 export function buildWeeklySpendReader(db: NodePgDatabase): WeeklySpendReader {
   return {
     async weeklySpendByOwner(start, endExclusive) {
+      // Aggregate in integer micro-dollars (`Σ round(cost × 1e6)` per row) — the
+      // identical arithmetic the budget and analytics readers use — then convert to
+      // dollars once, so this summary reconciles exactly with those figures instead
+      // of drifting at the sub-µ$ margin a raw float `sum(cost)` would introduce (A-15).
       const logs = await db
         .select({
           ownerUserId: requestLogs.ownerUserId,
-          total: sql<number>`coalesce(sum(${requestLogs.cost}), 0)`,
+          micros: microsSum(requestLogs.cost),
         })
         .from(requestLogs)
         .where(and(gte(requestLogs.createdAt, start), lt(requestLogs.createdAt, endExclusive)))
@@ -35,7 +40,7 @@ export function buildWeeklySpendReader(db: NodePgDatabase): WeeklySpendReader {
       const attempts = await db
         .select({
           ownerUserId: requestAttempts.ownerUserId,
-          total: sql<number>`coalesce(sum(${requestAttempts.cost}), 0)`,
+          micros: microsSum(requestAttempts.cost),
         })
         .from(requestAttempts)
         .where(
@@ -43,12 +48,15 @@ export function buildWeeklySpendReader(db: NodePgDatabase): WeeklySpendReader {
         )
         .groupBy(requestAttempts.ownerUserId);
 
-      const byOwner = new Map<string, number>();
-      for (const r of logs) byOwner.set(r.ownerUserId, Number(r.total));
+      const microsByOwner = new Map<string, number>();
+      for (const r of logs) microsByOwner.set(r.ownerUserId, Number(r.micros));
       for (const r of attempts) {
-        byOwner.set(r.ownerUserId, (byOwner.get(r.ownerUserId) ?? 0) + Number(r.total));
+        microsByOwner.set(r.ownerUserId, (microsByOwner.get(r.ownerUserId) ?? 0) + Number(r.micros));
       }
-      return [...byOwner].map(([ownerUserId, total]) => ({ ownerUserId, total }));
+      return [...microsByOwner].map(([ownerUserId, micros]) => ({
+        ownerUserId,
+        total: micros / 1_000_000,
+      }));
     },
   };
 }

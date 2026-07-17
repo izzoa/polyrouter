@@ -13,6 +13,7 @@ import {
   WEEKLY_SPEND_READER,
   type WeeklySpendReader,
 } from '../../src/database/weekly-spend.reader';
+import { BUDGET_READER, type BudgetReader } from '../../src/database/budget.reader';
 import { NotificationProducers } from '../../src/producers/notification-producers';
 import { SystemMailer } from '../../src/producers/system-mailer';
 import { WeeklySummaryScheduler } from '../../src/producers/weekly-summary.scheduler';
@@ -54,6 +55,7 @@ describe('notification producers — real infra (#15b)', () => {
   let pool: Pool;
   let redis: Redis;
   let reader: WeeklySpendReader;
+  let budgetReader: BudgetReader;
   let smtp: SmtpStub;
   const userIds: string[] = [];
 
@@ -102,6 +104,7 @@ describe('notification producers — real infra (#15b)', () => {
     app.enableShutdownHooks();
     await app.init();
     reader = app.get<WeeklySpendReader>(WEEKLY_SPEND_READER);
+    budgetReader = app.get<BudgetReader>(BUDGET_READER);
     redis = app.get<Redis>(REDIS_CLIENT);
     smtp = await startSmtpStub();
   }, 60_000);
@@ -133,6 +136,31 @@ describe('notification producers — real infra (#15b)', () => {
     const map = new Map(rows.map((r) => [r.ownerUserId, r.total]));
     expect(map.get(a)).toBeCloseTo(15, 6);
     expect(map.get(b)).toBeCloseTo(3, 6);
+  });
+
+  it('the weekly total reconciles EXACTLY with the budget reader in micro-dollars (A-15)', async () => {
+    const owner = await makeUser('wk-micro');
+    const now = Date.now();
+    const at = new Date(now - 86_400_000);
+    const start = new Date(now - 7 * 86_400_000);
+    const end = new Date(now + 1000);
+    // Sub-µ$ costs chosen so a raw float `sum(cost)` diverges from the per-row µ$ sum
+    // every other reader uses: three rows of 0.0000004 (→ round to 0 µ$ each) + one of
+    // 0.00000075 (→ 1 µ$). Float sum = 0.00000195; per-row µ$ sum = 1 µ$ = 0.000001.
+    const logId = await seedLog(owner, 0.0000004, at);
+    await seedAttempt(logId, owner, 0.0000004, at);
+    await seedLog(owner, 0.0000004, at);
+    await seedLog(owner, 0.00000075, at);
+
+    const weekly = await reader.weeklySpendByOwner(start, end);
+    const weeklyTotal = new Map(weekly.map((r) => [r.ownerUserId, r.total])).get(owner);
+    const budgetMicros = await budgetReader.spendMicrosFor(owner, null, start, end);
+
+    // The weekly reader now aggregates in µ$ exactly like the budget reader — so their
+    // figures are identical, not merely close. A float `sum(cost)` would give 0.00000195.
+    expect(budgetMicros).toBe(1); // round(0.4)+round(0.4)+round(0.4)+round(0.75) = 1
+    expect(weeklyTotal).toBe(budgetMicros / 1_000_000);
+    expect(weeklyTotal).not.toBeCloseTo(0.00000195, 10); // the old float-sum value
   });
 
   it('the spike counter (real Redis Lua) alerts once at the threshold, owner-scoped', async () => {

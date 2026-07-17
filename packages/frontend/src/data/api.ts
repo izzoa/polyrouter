@@ -313,7 +313,7 @@ export interface AnalyticsRangeParams {
 export type TimeseriesBucket = 'hour' | 'day' | 'week' | 'month';
 export type BreakdownDimension = 'model' | 'provider' | 'agent' | 'tier';
 /** Served-request status as recorded in the log (fallback/error included). */
-export type RequestStatus = 'success' | 'fallback' | 'error';
+export type RequestStatus = 'success' | 'fallback' | 'error' | 'cancelled';
 
 /** `GET /summary` — owner-scoped aggregates over the range. `spend` is USD (both
  * ledgers, µ$-rounded so it reconciles with budgets); free/paid/unpriced classify

@@ -246,10 +246,10 @@ export class ProxyService {
       return result.wire;
     }
     this.recorder.record(this.failedContext(p, result.failures), {
-      status: 'error',
+      status: result.callerAborted ? 'cancelled' : 'error',
       outputChars: 0,
     });
-    this.notifyFailed(p.principal);
+    if (!result.callerAborted) this.notifyFailed(p.principal);
     throw toProxyError(result.error);
   }
 
@@ -278,22 +278,25 @@ export class ProxyService {
     });
     if (result.kind === 'error') {
       this.recorder.record(this.failedContext(p, result.failures), {
-        status: 'error',
+        status: result.callerAborted ? 'cancelled' : 'error',
         outputChars: 0,
       });
-      this.notifyFailed(p.principal);
+      if (!result.callerAborted) this.notifyFailed(p.principal);
       throw providerErrorToProxy(result.error);
     }
     const ctx = this.servedContext(p, result.servedIndex, result.failures);
     const fellBack = result.failures.length > 0;
     void result.outcome.then((o) => {
       this.recorder.record(ctx, {
-        // Post-commit precedence: a committed stream that later fails is `error`.
-        status: o.status === 'error' ? 'error' : fellBack ? 'fallback' : 'success',
+        // Post-commit precedence: a committed stream that later fails is `error` — but a
+        // CLIENT disconnect is `cancelled`, decided from the outcome's causal
+        // `callerAborted` (captured at teardown), not a mutable signal that a late
+        // disconnect during drain could flip on a genuine provider failure (A-3).
+        status: o.status === 'error' ? (o.callerAborted ? 'cancelled' : 'error') : fellBack ? 'fallback' : 'success',
         providerUsage: o.usage,
         outputChars: o.outputChars,
       });
-      if (o.status === 'error') this.notifyFailed(p.principal);
+      if (o.status === 'error' && !o.callerAborted) this.notifyFailed(p.principal);
     });
     return result.frames;
   }
@@ -373,13 +376,13 @@ export class ProxyService {
         signal,
       );
     }
-    if (signal.aborted) {
-      // Client disconnected during the cheap leg — record one error row for spend/
+    if (cheap.callerAborted) {
+      // Client disconnected during the cheap leg — record one `cancelled` row for spend/
       // inspector completeness (§7.5), do NOT escalate, and do NOT notifyFailed (a
-      // client disconnect is breaker-neutral, not a provider fault). E5.2.
+      // client disconnect is breaker-neutral, not a provider fault) (A-3/E5.2).
       this.recorder.record(
         this.servedFrom(p, c.cheap.meta, 0, 'cascade: client disconnected during cheap attempt', null, cheap.failures),
-        { status: 'error', outputChars: 0, escalated: false, qualitySignal: null },
+        { status: 'cancelled', outputChars: 0, escalated: false, qualitySignal: null },
       );
       throw toProxyError(cheap.error);
     }
@@ -433,12 +436,17 @@ export class ProxyService {
           score,
           result.failures,
         ),
-        { status: 'error', outputChars: 0, escalated: true, qualitySignal: score },
+        {
+          status: result.callerAborted ? 'cancelled' : 'error',
+          outputChars: 0,
+          escalated: true,
+          qualitySignal: score,
+        },
       );
       // The superseded cheap call was still billed — its ledger row must exist
       // even when every escalation member failed (§7.7, spend completeness).
       if (cheapServed !== null) this.recordCheapAttempt(p, c, requestId, cheapServed);
-      this.notifyFailed(p.principal);
+      if (!result.callerAborted) this.notifyFailed(p.principal); // client hang-up ≠ provider fault (A-3)
       throw toProxyError(result.error);
     }
     const requestId = this.recorder.record(
@@ -504,7 +512,16 @@ export class ProxyService {
           const fellBack = cheap.failures.length > 0;
           void replay.outcome.then((o) =>
             this.recorder.record(ctx, {
-              status: o.status === 'error' ? 'error' : fellBack ? 'fallback' : 'success',
+              // A client disconnect during replay is `cancelled`, not a provider fault
+              // (the cheap answer was valid); causal `callerAborted` from the outcome (A-3).
+              status:
+                o.status === 'error'
+                  ? o.callerAborted
+                    ? 'cancelled'
+                    : 'error'
+                  : fellBack
+                    ? 'fallback'
+                    : 'success',
               ...(cheap.response.usage !== undefined
                 ? { providerUsage: cheap.response.usage }
                 : {}),
@@ -519,12 +536,12 @@ export class ProxyService {
       }
       return this.escalateStream(p, c, cheapServed, score, signal);
     }
-    if (signal.aborted) {
+    if (cheap.callerAborted) {
       // Client disconnected during the cheap leg (pre-commit — no bytes sent). Record
-      // one error row (§7.5), no escalation, no notifyFailed. E5.2.
+      // one `cancelled` row (§7.5), no escalation, no notifyFailed (A-3/E5.2).
       this.recorder.record(
         this.servedFrom(p, c.cheap.meta, 0, 'cascade: client disconnected during cheap attempt', null, cheap.failures),
-        { status: 'error', outputChars: 0, escalated: false, qualitySignal: null },
+        { status: 'cancelled', outputChars: 0, escalated: false, qualitySignal: null },
       );
       throw providerErrorToProxy(cheap.error);
     }
@@ -573,12 +590,17 @@ export class ProxyService {
           score,
           result.failures,
         ),
-        { status: 'error', outputChars: 0, escalated: true, qualitySignal: score },
+        {
+          status: result.callerAborted ? 'cancelled' : 'error',
+          outputChars: 0,
+          escalated: true,
+          qualitySignal: score,
+        },
       );
       // The superseded cheap call was still billed — ledger it even on total
       // escalation failure (§7.7, spend completeness).
       if (cheapServed !== null) this.recordCheapAttempt(p, c, requestId, cheapServed);
-      this.notifyFailed(p.principal);
+      if (!result.callerAborted) this.notifyFailed(p.principal); // client hang-up ≠ provider fault (A-3)
       throw providerErrorToProxy(result.error);
     }
     const ctx = this.servedFrom(
@@ -592,13 +614,15 @@ export class ProxyService {
     const fellBack = result.failures.length > 0;
     void result.outcome.then((o) => {
       const requestId = this.recorder.record(ctx, {
-        status: o.status === 'error' ? 'error' : fellBack ? 'fallback' : 'success',
+        // A CLIENT disconnect is `cancelled`, not a provider fault — from the outcome's
+        // causal `callerAborted`, robust to a late disconnect during drain (A-3).
+        status: o.status === 'error' ? (o.callerAborted ? 'cancelled' : 'error') : fellBack ? 'fallback' : 'success',
         providerUsage: o.usage,
         outputChars: o.outputChars,
         escalated: true,
         qualitySignal: score,
       });
-      if (o.status === 'error') this.notifyFailed(p.principal);
+      if (o.status === 'error' && !o.callerAborted) this.notifyFailed(p.principal);
       if (cheapServed !== null) this.recordCheapAttempt(p, c, requestId, cheapServed);
     });
     return result.frames;

@@ -1037,19 +1037,19 @@ change proposal. Batch opportunistically when touching the neighboring code.
 |---|---|---|---|
 | A-1 ✅ | build | `format:check` failed on Drizzle-generated JSON → prettier-ignored the generated migrations dir | `migrations/meta/*` |
 | A-2 ⏸️ accepted | deps | esbuild dev-server advisory via drizzle-kit (dev-only migration tooling; polyrouter never runs esbuild's dev server → no runtime exposure); only fix is a breaking drizzle-kit downgrade — bump when upstream allows | root |
-| A-3 | proxy | Client aborts recorded `status='error'` + fire `notifyFailed` → inflate error rate / spike alerts | `proxy.service.ts:246` |
+| A-3 ✅ | proxy | client abort now records `cancelled` (not `error`) + no spike notify — cause captured causally (`callerAborted` on stream outcome + chain results, pure client predicate) | `proxy.service.ts` |
 | A-4 ✅ | proxy | Buffered upstream call has no post-headers deadline beyond undici's 300s → fixed in E4.3 (idle timeout) | `core.ts:95` |
 | A-5 ✅ | proxy | Anthropic-wire terminal error frame/envelope → tested in E2.6 (stream-fidelity) | `stream-error.ts:19` |
 | A-6 ✅ | translate | Duplicate `tool_use_start` on repeated id/name fragments → emitted once per block | `openai.ts:420` |
 | A-7 ✅ | translate | terminal usage chunk now relayed only on client `include_usage` opt-in (cost unaffected) | `openai.ts:536` |
 | A-8 ✅ reviewed | translate | `[text, tool_result]` reorder is a deliberate normalization to the conformant tool_result-first shape (documented) — not a bug | `anthropic.ts:170` |
 | A-9 ✅ | translate | `message_start` `input_tokens:0` cross-protocol placeholder documented in the golden README | `anthropic.ts:450` |
-| A-10 | breaker | Production breaker wires no `onError` → Redis-outage degradation silent | `proxy.module.ts:92` |
+| A-10 ✅ | breaker | production breaker wires `onError` → `polyrouter_breaker_store_faults_total` counter + throttled static WARN (no longer silent) | `proxy.module.ts`, `breaker-observability.ts` |
 | A-11 ✅ | breaker | breaker specs imported a nonexistent `./translate` + phantom export → fixed in E7 (tsc + real imports) | `breaker-*.spec.ts` |
 | A-12 | adapters | Anthropic `listModels` ignores pagination → catalogs truncate at page size | `anthropic-adapter.ts:23` |
 | A-13 | pricing | LiteLLM refresh skips `validate()` → one negative price aborts the whole refresh | `pricing.service.ts:205` |
-| A-14 | recording | Orphaned cascade attempt FK-poisons its per-principal batch (drops valid rows) | `log-writer.ts:267` |
-| A-15 | analytics | `weekly-spend.reader` sums raw float, diverges sub-µ$ from µ$-rounded readers | `weekly-spend.reader.ts` |
+| A-14 ✅ | recording | orphaned attempt dropped (counted) instead of FK-poisoning its batch; threshold flush deferred a microtask so a same-tick parent+attempt never split | `log-writer.ts` |
+| A-15 ✅ | analytics | `weekly-spend.reader` sums integer µ$ (shared `microsSum`) → reconciles EXACTLY with budget/analytics (no float drift) | `weekly-spend.reader.ts`, `cost-sql.ts` |
 | A-16 | budgets | `BUDGET_STALE_MS` vs cron interval unvalidated (hourly cron → ~57min unavailable) | `budgets.config.ts` |
 | A-17 | budgets | No test for Anthropic-shaped budget rejection or cold-cache DB fail mode; no `budget-cache.spec.ts` | `test/budgets/` |
 | A-18 ✅ | docs | Added `SECURITY.md` (private disclosure route) + `CONTRIBUTING.md` | root |

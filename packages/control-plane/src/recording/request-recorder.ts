@@ -9,8 +9,9 @@ import type { ClientProtocol } from '../proxy/proxy-errors';
 import { LogWriter, type DraftPricing, type RequestLogDraft } from './log-writer';
 
 /** The status recorded on a RequestLog. `fallback` = a later chain member served
- * after a predecessor failed (#12). */
-export type RecordStatus = 'success' | 'error' | 'fallback';
+ * after a predecessor failed (#12). `cancelled` = the CLIENT aborted (disconnected),
+ * which is neither a provider error nor an alertable failure (A-3). */
+export type RecordStatus = 'success' | 'error' | 'fallback' | 'cancelled';
 
 /** Everything needed to record a request, captured by the proxy for the SERVED
  * member (which may differ from the primary when a fallback served, #12). */

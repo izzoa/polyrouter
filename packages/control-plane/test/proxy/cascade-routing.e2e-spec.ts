@@ -321,7 +321,7 @@ describe('cascade routing e2e', () => {
     await setBand('auto_low', 'cheap-bad');
   });
 
-  it('records exactly one error row when the client disconnects during the cheap leg (E5.2)', async () => {
+  it('records exactly one cancelled row when the client disconnects during the cheap leg (E5.2/A-3)', async () => {
     await setBand('auto_low', 'cheap-hang'); // cheap upstream hangs; ~600ms cheap deadline
     // A UNIQUE system prompt → no per-agent baseline → guaranteed ambiguous → cascade.
     const req = request(server)
@@ -337,7 +337,9 @@ describe('cascade routing e2e', () => {
     const logs = await port.requestLogs.list(principal);
     expect(logs).toHaveLength(1); // NOT invisible — exactly one row (§7.5 completeness)
     const row = logs[0]!;
-    expect(row.status).toBe('error');
+    // A-3: a CLIENT disconnect is `cancelled`, not a provider `error` — so it never
+    // inflates the error rate or a failure-spike alert. Still exactly one recorded row.
+    expect(row.status).toBe('cancelled');
     expect(row.escalated).toBe(false);
     expect(row.decisionLayer).toBe('cascade');
     expect(row.modelId).toBe(modelId['cheapHang']); // the cheap model — NO strong-tier escalation

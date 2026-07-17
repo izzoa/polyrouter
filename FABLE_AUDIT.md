@@ -927,13 +927,13 @@ A-30 (hardcoded `v0.4.1`/fabricated instance info), A-31 (timeseries gaps interp
 ---
 
 <a id="epic-e13"></a>
-## EPIC E13 — Installer idempotency · P2
+## EPIC E13 — Installer idempotency · P2 · ✅ SHIPPED 2026-07-17 (`fix-installer-rerun`)
 
 **Proposal slug:** `fix-installer-rerun` ·
 **Spec refs:** `openspec/specs/packaging` (".env is NEVER overwritten or rotated"); CLAUDE.md invariant 12
 **Why:** A plausible operator upgrade action silently rotates a live stack's secrets → outage.
 
-### Task E13.1 — Detect a prior fetch-mode install so a re-run reuses the existing .env ☐ `[medium/XS]`
+### Task E13.1 — Detect a prior fetch-mode install so a re-run reuses the existing .env ✅ `[medium/XS]`
 - **Where:** `install.sh:38` (locate-or-fetch branch)
 - **Defect:** The prior-install check only recognizes a working tree
   (`docker-compose.yml && Dockerfile && package.json` at cwd). A fetch install creates
@@ -1053,7 +1053,7 @@ change proposal. Batch opportunistically when touching the neighboring code.
 | A-16 | budgets | `BUDGET_STALE_MS` vs cron interval unvalidated (hourly cron → ~57min unavailable) | `budgets.config.ts` |
 | A-17 | budgets | No test for Anthropic-shaped budget rejection or cold-cache DB fail mode; no `budget-cache.spec.ts` | `test/budgets/` |
 | A-18 | docs | Add `SECURITY.md` (disclosure route) + `CONTRIBUTING.md` | root |
-| A-19 | docs | README expose/upgrade compose commands omit `-f/--env-file` for fetch installs | `README.md:45` |
+| A-19 ✅ | docs | README expose/upgrade compose commands omit `-f/--env-file` for fetch installs → fixed in E13 (`fix-installer-rerun`) | `README.md:45` |
 | A-20 | docs | Sub-package `package.json` lack `license`; root lacks `repository` | `packages/*/package.json` |
 | A-21 | routing | Cascade escalates on non-retryable `bad_request` cheap failure | `proxy.service.ts:370` |
 | A-22 | routing | Seeded `oai-miderror` cascade fixture never asserted (post-commit terminal error) | `cascade-routing.e2e-spec.ts:223` |

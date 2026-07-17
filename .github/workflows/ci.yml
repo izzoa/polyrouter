@@ -43,6 +43,8 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
+      - name: install.sh re-run idempotency (E13)
+        run: sh test/install-rerun.test.sh
 
   e2e:
     name: e2e (postgres + redis)

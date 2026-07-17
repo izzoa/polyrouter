@@ -17,5 +17,9 @@ coverage/
 .env.*
 !.env.example
 
+# install.sh install-state sentinels (checkout mode writes these next to .env)
+.polyrouter-install
+.polyrouter-secrets-created
+
 # per-user agent settings (project agent config itself is committed)
 .claude/settings.local.json

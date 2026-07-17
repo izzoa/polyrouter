@@ -30,7 +30,16 @@ context always the same commit), generates secrets into a mode-600 `.env` (**nev
 overwritten on re-run), and boots `docker compose -p polyrouter-selfhost up -d --build`.
 The first build takes a few minutes. Manual alternative: copy `.env` values by hand
 (four 32-byte-hex secrets via `openssl rand -hex 32`, plus `POSTGRES_PASSWORD`) and run
-the same compose command from the repo.
+the same compose command from the repo. Re-running the installer from **inside** the
+created `polyrouter/` directory is safe — it refreshes the source and keeps `.env`.
+
+> **Compose commands below — checkout vs. one-line install.** The bare
+> `docker compose -p polyrouter-selfhost …` form shown below assumes a **checkout**
+> (compose file at the repo root). A **one-line (fetch) install** keeps the compose
+> file under `src/` with `.env` beside it, so run the commands from inside the
+> `polyrouter/` directory with `--env-file .env -f src/docker-compose.yml
+> --project-directory src` appended — exactly the manage command the installer prints
+> when it finishes.
 
 **Claim the instance, then expose it.** The app publishes on **loopback only** by
 default and the **first account to sign up becomes the admin** — sign up at

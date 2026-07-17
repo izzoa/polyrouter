@@ -26,5 +26,15 @@ export function createAnthropicProviderAdapter(
       'anthropic-version': ANTHROPIC_VERSION,
     }),
     parseModels: (json) => parseModelList(json, 'display_name'),
+    // Anthropic's /v1/models is cursor-paginated (`has_more` + `last_id`, followed via
+    // `after_id`) — follow the pages so a large catalog isn't truncated (A-12).
+    modelsPagination: {
+      param: 'after_id',
+      nextCursor: (json) => {
+        if (typeof json !== 'object' || json === null) return null;
+        const rec = json as Record<string, unknown>;
+        return rec['has_more'] === true && typeof rec['last_id'] === 'string' ? rec['last_id'] : null;
+      },
+    },
   });
 }

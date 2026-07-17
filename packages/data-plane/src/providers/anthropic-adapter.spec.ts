@@ -61,6 +61,43 @@ describe('Anthropic provider adapter', () => {
     expect(calls[0]!.url).toBe('https://api.anthropic.example/v1/models');
   });
 
+  it('follows /v1/models cursor pagination (has_more + last_id) to a complete catalog', async () => {
+    // Page 1: has_more + last_id='m1'; page 2 (requested with after_id=m1): no more.
+    const { client, calls } = recordingClient((url) =>
+      url.includes('after_id=m1')
+        ? jsonResponse({ data: [{ id: 'm2', display_name: 'M2' }], has_more: false, last_id: 'm2' })
+        : jsonResponse({ data: [{ id: 'm1', display_name: 'M1' }], has_more: true, last_id: 'm1' }),
+    );
+    const adapter = createAnthropicProviderAdapter(config, { httpClient: client });
+    const models = await adapter.listModels();
+    expect(models.map((m) => m.id)).toEqual(['m1', 'm2']); // both pages accumulated
+    expect(calls).toHaveLength(2);
+    expect(calls[0]!.url).toBe('https://api.anthropic.example/v1/models');
+    expect(calls[1]!.url).toBe('https://api.anthropic.example/v1/models?after_id=m1'); // cursor carried
+  });
+
+  it('stops paging when has_more is false (single fetch)', async () => {
+    const { calls, client } = recordingClient(() =>
+      jsonResponse({ data: [{ id: 'only' }], has_more: false }),
+    );
+    const adapter = createAnthropicProviderAdapter(config, { httpClient: client });
+    const models = await adapter.listModels();
+    expect(models.map((m) => m.id)).toEqual(['only']);
+    expect(calls).toHaveLength(1); // no phantom second page
+  });
+
+  it('stops on a stuck/repeating cursor instead of crawling to the page bound', async () => {
+    let n = 0;
+    const { calls, client } = recordingClient(() => {
+      n += 1;
+      // Always claims more, but never advances the cursor — a buggy/hostile endpoint.
+      return jsonResponse({ data: [{ id: `m${n}` }], has_more: true, last_id: 'STUCK' });
+    });
+    const adapter = createAnthropicProviderAdapter(config, { httpClient: client });
+    await adapter.listModels();
+    expect(calls.length).toBeLessThanOrEqual(2); // cursor cycle detected — not 50 requests
+  });
+
   it('streams events whose text concatenates', async () => {
     const events = [
       {

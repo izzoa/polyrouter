@@ -45,6 +45,25 @@ export interface HttpAdapterSpec {
   readonly modelsPath: string;
   authHeaders(credential: string): Record<string, string>;
   parseModels(json: unknown): ProviderModelInfo[];
+  /** Optional cursor pagination for the models endpoint (e.g. Anthropic's
+   * `has_more` + `last_id`). When present, `listModels` follows pages — appending
+   * `param=<cursor>` — until `nextCursor` returns null; when absent it fetches once. */
+  readonly modelsPagination?: {
+    readonly param: string;
+    nextCursor(pageJson: unknown): string | null;
+  };
+}
+
+/** Bound the pagination follow so a hostile/buggy always-`has_more` endpoint (or a
+ * cursor that never advances) cannot loop unboundedly; combined with the total
+ * `MAX_PARSED_MODELS` cap below it hard-limits the crawl. */
+const MAX_MODEL_PAGES = 50;
+
+/** Append a query param, preserving any existing query string. The cursor is
+ * provider-supplied, so it is URL-encoded (no injection into the request line). */
+function appendQuery(url: string, param: string, value: string): string {
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}${encodeURIComponent(param)}=${encodeURIComponent(value)}`;
 }
 
 export interface AdapterDeps {
@@ -156,23 +175,48 @@ export function createHttpProviderAdapter(
 
   async function listModels(ctx?: CallContext): Promise<ProviderModelInfo[]> {
     try {
-      const { res, dispose } = await openRequest(
-        httpClient,
-        modelsUrl,
-        { method: 'GET', headers: headers(false, false) },
-        firstByteTimeoutMs,
-        ctx,
-        idleTimeoutMs,
-        maxResponseBytes,
-      );
-      try {
-        if (!res.ok) {
-          throw classifyResponse(res.status, await res.text(), errMeta(res));
+      const all: ProviderModelInfo[] = [];
+      const seen = new Set<string>(); // dedup ids across pages
+      const seenCursors = new Set<string>(); // detect a stuck/cycling cursor
+      let cursor: string | null = null;
+      for (let page = 0; page < MAX_MODEL_PAGES; page += 1) {
+        const url = cursor === null ? modelsUrl : appendQuery(modelsUrl, spec.modelsPagination!.param, cursor);
+        const { res, dispose } = await openRequest(
+          httpClient,
+          url,
+          { method: 'GET', headers: headers(false, false) },
+          firstByteTimeoutMs,
+          ctx,
+          idleTimeoutMs,
+          maxResponseBytes,
+        );
+        try {
+          if (!res.ok) {
+            throw classifyResponse(res.status, await res.text(), errMeta(res));
+          }
+          const json = await res.json();
+          for (const m of spec.parseModels(json)) {
+            if (all.length >= MAX_PARSED_MODELS) return all; // total cap across pages
+            if (seen.has(m.id)) continue;
+            seen.add(m.id);
+            all.push(m);
+          }
+          // No pagination hook → single-page provider (e.g. OpenAI): done after one fetch.
+          if (spec.modelsPagination === undefined) return all;
+          // Cap reached exactly at a page boundary: stop HERE so a `has_more` doesn't
+          // fetch (and possibly fail on) a page we'd discard anyway.
+          if (all.length >= MAX_PARSED_MODELS) return all;
+          const next = spec.modelsPagination.nextCursor(json);
+          // Done, or a stuck/repeating cursor (a buggy/hostile endpoint) — stop rather
+          // than issue redundant requests until the page bound.
+          if (next === null || seenCursors.has(next)) return all;
+          seenCursors.add(next);
+          cursor = next;
+        } finally {
+          dispose();
         }
-        return spec.parseModels(await res.json());
-      } finally {
-        dispose();
       }
+      return all; // page-count safety bound reached — return what we have (bounded)
     } catch (err) {
       rethrowTyped(err);
     }

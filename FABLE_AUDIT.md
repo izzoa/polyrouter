@@ -1046,12 +1046,12 @@ change proposal. Batch opportunistically when touching the neighboring code.
 | A-9 ✅ | translate | `message_start` `input_tokens:0` cross-protocol placeholder documented in the golden README | `anthropic.ts:450` |
 | A-10 ✅ | breaker | production breaker wires `onError` → `polyrouter_breaker_store_faults_total` counter + throttled static WARN (no longer silent) | `proxy.module.ts`, `breaker-observability.ts` |
 | A-11 ✅ | breaker | breaker specs imported a nonexistent `./translate` + phantom export → fixed in E7 (tsc + real imports) | `breaker-*.spec.ts` |
-| A-12 | adapters | Anthropic `listModels` ignores pagination → catalogs truncate at page size | `anthropic-adapter.ts:23` |
-| A-13 | pricing | LiteLLM refresh skips `validate()` → one negative price aborts the whole refresh | `pricing.service.ts:205` |
+| A-12 ✅ | adapters | `listModels` follows Anthropic cursor pagination (`has_more`/`last_id` → `after_id`), deduped + bounded (cap/page/cursor-cycle) — no catalog truncation | `http-adapter.ts`, `anthropic-adapter.ts` |
+| A-13 ✅ | pricing | live LiteLLM refresh validates each entry, skips+logs an invalid row instead of aborting the whole refresh; trusted sources fail-fast pre-lock | `pricing.service.ts` |
 | A-14 ✅ | recording | orphaned attempt dropped (counted) instead of FK-poisoning its batch; threshold flush deferred a microtask so a same-tick parent+attempt never split | `log-writer.ts` |
 | A-15 ✅ | analytics | `weekly-spend.reader` sums integer µ$ (shared `microsSum`) → reconciles EXACTLY with budget/analytics (no float drift) | `weekly-spend.reader.ts`, `cost-sql.ts` |
-| A-16 | budgets | `BUDGET_STALE_MS` vs cron interval unvalidated (hourly cron → ~57min unavailable) | `budgets.config.ts` |
-| A-17 | budgets | No test for Anthropic-shaped budget rejection or cold-cache DB fail mode; no `budget-cache.spec.ts` | `test/budgets/` |
+| A-16 ✅ | budgets | boot-time fail-fast when `BUDGET_STALE_MS` is too short for `BUDGET_SCHED_CRON` (walks real fire gaps; catches the hourly-cron-short-stale misconfig) | `budgets.config.ts` |
+| A-17 ✅ | budgets | added `budget-cache.spec.ts` — TTL/LRU/single-flight/invalidate + serve-stale-on-refresh vs cold-miss-propagate (fail-mode contract) | `budget-cache.spec.ts` |
 | A-18 ✅ | docs | Added `SECURITY.md` (private disclosure route) + `CONTRIBUTING.md` | root |
 | A-19 ✅ | docs | README expose/upgrade compose commands omit `-f/--env-file` for fetch installs → fixed in E13 (`fix-installer-rerun`) | `README.md:45` |
 | A-20 ✅ | docs | Sub-package `license` (done in E8) + root `repository` added | `packages/*/package.json` |

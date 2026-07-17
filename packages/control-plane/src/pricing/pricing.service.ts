@@ -145,10 +145,33 @@ export class PricingService {
     entries: readonly BundledPrice[],
     validFrom: Date,
     source: string,
+    skipInvalid = false,
   ): Promise<number> {
+    // Every entry is validated before it is written. A trusted/explicit source (bundled
+    // snapshot, manual override, admin-supplied body) fails-fast on an invalid entry — a
+    // real bug or bad operator input worth surfacing. Only the untrusted LIVE LiteLLM pull
+    // (`skipInvalid`) skips + logs a bad row and continues, so one malformed upstream entry
+    // can't throw inside the transaction and abort the WHOLE refresh, dropping every other
+    // valid price update (A-13).
+    //
+    // For a trusted source, validate the WHOLE set up front — before acquiring the lock or
+    // doing any DB work — so bad operator input is rejected without touching the database.
+    if (!skipInvalid) for (const entry of entries) validate(entry);
     return this.facilities.withAdvisoryLock(PRICING_LOCK, async (tx) => {
       let written = 0;
+      let skipped = 0;
       for (const entry of entries) {
+        if (skipInvalid) {
+          try {
+            validate(entry);
+          } catch (err) {
+            skipped += 1;
+            this.logger.warn(
+              `pricing refresh (${source}): skipped invalid entry ${entry.modelKey}: ${(err as Error).message}`,
+            );
+            continue;
+          }
+        }
         const latest = await tx.pricing.latest(entry.modelKey);
         if (latest !== null) {
           if (source !== 'manual' && latest.source === 'manual') continue; // never clobber an override
@@ -157,6 +180,9 @@ export class PricingService {
         }
         await tx.pricing.insertVersion(toInput(entry, validFrom, source));
         written += 1;
+      }
+      if (skipped > 0) {
+        this.logger.warn(`pricing refresh (${source}): skipped ${String(skipped)} invalid entr(ies)`);
       }
       return written;
     });
@@ -192,18 +218,19 @@ export class PricingService {
   async refresh(input: RefreshInput, now: Date): Promise<number> {
     if (input.source === 'bundled') return this.seed();
     if (input.source === 'body') {
-      const entries = input.entries ?? [];
-      for (const e of entries) validate(e);
-      return this.applyVersions(entries, now, 'refresh');
+      // Admin-supplied body: fail-fast in applyVersions on any invalid entry (bad operator
+      // input is worth surfacing, not silently dropping).
+      return this.applyVersions(input.entries ?? [], now, 'refresh');
     }
-    // litellm: guarded fetch → parse → apply
+    // litellm: guarded fetch → parse → apply. `skipInvalid`: one malformed UPSTREAM row is
+    // skipped+logged, not fatal, so it can't abort the whole refresh (A-13).
     const json = await this.fetchCatalog(this.runtime.refreshUrl, {
       mode: this.runtime.mode,
       timeoutMs: this.runtime.timeoutMs,
       maxBytes: this.runtime.maxBytes,
     });
     const entries = parseLiteLlmCatalog(json);
-    const written = await this.applyVersions(entries, now, 'refresh');
+    const written = await this.applyVersions(entries, now, 'refresh', true);
     this.logger.log(`pricing refresh (litellm): ${String(written)} version(s) appended`);
     return written;
   }

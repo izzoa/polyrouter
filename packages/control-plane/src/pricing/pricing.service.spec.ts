@@ -187,3 +187,40 @@ describe('PricingService — resolveForModel', () => {
     expect(local).toMatchObject({ source: 'local', inputPricePer1m: 0 });
   });
 });
+
+describe('PricingService — refresh validation resilience (A-13)', () => {
+  it('a live LiteLLM refresh skips one invalid (negative-price) entry instead of aborting', async () => {
+    const { port, facilities } = makeStore();
+    // One negative-cost row (invalid) alongside a valid one — a single bad UPSTREAM row
+    // must not abort the whole refresh (which would drop the good update too).
+    const catalog = {
+      'good-model': {
+        litellm_provider: 'openai',
+        input_cost_per_token: 0.000002,
+        output_cost_per_token: 0.000008,
+      },
+      'bad-model': {
+        litellm_provider: 'openai',
+        input_cost_per_token: -0.001, // negative → invalid
+        output_cost_per_token: 0.000008,
+      },
+    };
+    const fetch: PricingFetch = () => Promise.resolve(catalog);
+    const svc = new PricingService(port, facilities, runtime, fetch);
+    const written = await svc.refresh({ source: 'litellm' }, new Date('2026-09-01'));
+    expect(written).toBe(1); // only the good model appended — the bad one skipped, not fatal
+    expect(await svc.priceAt('openai:good-model', new Date('2026-09-02'))).not.toBeNull();
+    expect(await svc.priceAt('openai:bad-model', new Date('2026-09-02'))).toBeNull();
+  });
+
+  it('an admin BODY refresh with an invalid entry fails-fast (operator input surfaced)', async () => {
+    const { port, facilities } = makeStore();
+    const svc = new PricingService(port, facilities, runtime, noFetch);
+    await expect(
+      svc.refresh(
+        { source: 'body', entries: [{ modelKey: 'x:y', inputPricePer1m: -1, outputPricePer1m: 1 }] },
+        new Date(),
+      ),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+  });
+});

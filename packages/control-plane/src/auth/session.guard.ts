@@ -50,6 +50,12 @@ export class SessionGuard implements CanActivate {
 
     const session = await this.auth.getSession(req.headers);
     if (session) {
+      // Disabled users are denied fail-closed even with an otherwise-valid
+      // session (user-administration; their session rows are also deleted on
+      // disable, so this is defense-in-depth for the race window).
+      if (await this.identity.isDisabled(session.user.id)) {
+        throw new UnauthorizedException();
+      }
       req.principal = userPrincipal(session.user.id);
       return true;
     }

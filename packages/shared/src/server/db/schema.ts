@@ -34,10 +34,61 @@ export const users = pgTable(
     emailVerified: boolean('email_verified').default(false).notNull(),
     image: text('image'),
     role: text('role'),
+    // Admin-managed lockout (user-administration): a disabled user is denied on
+    // BOTH planes (session + agent-key) and cannot mint a new session.
+    disabled: boolean('disabled').default(false).notNull(),
     createdAt: createdAt(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => [uniqueIndex('user_email_unique').on(t.email)],
+);
+
+/** Single-use, hashed, expiring account invites (user-administration). The raw
+ * token is never stored — only its prefix + HMAC-style hash, like agent keys. */
+export const invites = pgTable(
+  'invite',
+  {
+    id: id(),
+    email: text('email').notNull(),
+    tokenPrefix: text('token_prefix').notNull(),
+    tokenHash: text('token_hash').notNull(),
+    // Invited role is always non-admin; kept explicit for a future admin-invite.
+    role: text('role'),
+    createdBy: text('created_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    createdAt: createdAt(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    consumedAt: timestamp('consumed_at', { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex('invite_token_prefix_unique').on(t.tokenPrefix),
+    index('invite_email_idx').on(t.email),
+  ],
+);
+
+/** Instance-wide, admin-editable runtime settings — a single seeded row
+ * (id='singleton'). Holds the registration policy (user-administration).
+ * Admission reads this row authoritatively per signup attempt (multi-instance
+ * correctness — a per-node cache could leak signups after a close). */
+export const instanceSettings = pgTable(
+  'instance_settings',
+  {
+    id: text('id').primaryKey(),
+    registrationMode: text('registration_mode').notNull(),
+    /** Bootstrap single-winner marker (user-administration): the first-signup
+     * race is decided by ONE atomic claim on this column — losers are refused
+     * at admission; a stale claim (crashed winner, still zero users) is
+     * stealable after a short window, so a failed bootstrap self-heals. */
+    bootstrapClaimedAt: timestamp('bootstrap_claimed_at', { withTimezone: true }),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    check(
+      'instance_settings_registration_mode',
+      sql`${t.registrationMode} IN ('invite_only', 'open')`,
+    ),
+  ],
 );
 
 /* ---- Better Auth 1.6 auth-plane tables (#3). Complete 1.6.23 shapes;
@@ -475,3 +526,5 @@ export type RequestAttemptRow = typeof requestAttempts.$inferSelect;
 export type NotificationChannelRow = typeof notificationChannels.$inferSelect;
 export type BudgetRow = typeof budgets.$inferSelect;
 export type RoutingSettingsRow = typeof routingSettings.$inferSelect;
+export type InviteRow = typeof invites.$inferSelect;
+export type InstanceSettingsRow = typeof instanceSettings.$inferSelect;

@@ -3,6 +3,9 @@ import { createStore, produce, type SetStoreFunction } from 'solid-js/store';
 import { filterToRequestParams } from '../data/analytics';
 import {
   EVENT_TYPES,
+  type AdminInviteDto,
+  type AdminUserDto,
+  type RegistrationSettingsDto,
   isApiError,
   MAX_MODELS_PER_TIER,
   realClient,
@@ -93,6 +96,23 @@ export interface AppState {
   providers: Provider[];
   providersError: string | null;
   models: Record<string, Model[]>;
+
+  // user administration (admin-only Users page + public accept-invite)
+  ua: {
+    users: AdminUserDto[];
+    invites: AdminInviteDto[];
+    reg: RegistrationSettingsDto | null;
+    loading: boolean;
+    error: string | null;
+    inviteEmail: string;
+    inviteBusy: boolean;
+    /** Shown once after issuing: the copyable link + whether email went out. */
+    issued: { email: string; link: string; emailSent: boolean } | null;
+  };
+  /** Raw invite token captured from /accept-invite (scrubbed from the URL). */
+  inviteToken: string | null;
+  /** Accept-invite form. */
+  ai: { name: string; password: string; busy: boolean; error: string | null };
 
   // realized modal/form state
   na: { name: string; harness: Harness; busy: boolean; error: string | null };
@@ -481,6 +501,19 @@ function initialState(): AppState {
     providersError: null,
     models: {},
 
+    ua: {
+      users: [],
+      invites: [],
+      reg: null,
+      loading: false,
+      error: null,
+      inviteEmail: '',
+      inviteBusy: false,
+      issued: null,
+    },
+    inviteToken: null,
+    ai: { name: '', password: '', busy: false, error: null },
+
     na: { name: '', harness: 'openai_sdk', busy: false, error: null },
     np: { ...emptyProviderForm(), busy: false, error: null },
     kr: emptyKeyReveal(),
@@ -556,6 +589,16 @@ export interface AppStore {
   signUp: (input: { name: string; email: string; password: string }) => Promise<void>;
   oauth: (provider: string) => Promise<void>;
   signOut: () => Promise<void>;
+
+  // user administration (admin-only Users page) + public accept-invite
+  loadUserAdmin: () => Promise<void>;
+  uaCreateInvite: () => Promise<void>;
+  uaRevokeInvite: (inviteId: string) => Promise<void>;
+  uaSetRole: (userId: string, role: 'admin' | null) => Promise<void>;
+  uaSetDisabled: (userId: string, disabled: boolean) => Promise<void>;
+  uaDeleteUser: (userId: string) => Promise<void>;
+  uaSetRegistration: (mode: 'open' | 'invite_only') => Promise<void>;
+  acceptInvite: () => Promise<void>;
   // agents (realized)
   loadAgents: () => Promise<void>;
   loadAgentStats: () => Promise<void>;
@@ -1068,6 +1111,15 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
   // --- auth bootstrap / gate ---
 
   const bootstrap = async (): Promise<void> => {
+    // Public accept-invite page: the token travels in the URL FRAGMENT (never
+    // sent to the server, so no access-log/Referer exposure). Capture it, scrub
+    // it from the URL immediately, and render WITHOUT a session.
+    if (globalThis.location.pathname === '/accept-invite') {
+      const token = new URLSearchParams(globalThis.location.hash.replace(/^#/, '')).get('token');
+      globalThis.history.replaceState(null, '', '/accept-invite');
+      setState({ inviteToken: token, authView: 'invite', authError: null });
+      return;
+    }
     setState({ authView: 'loading', authError: null });
     let session: SessionInfo;
     try {
@@ -1100,6 +1152,71 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       setState('authError', err(e));
     } finally {
       setState('authBusy', false);
+    }
+  };
+
+  // --- user administration (admin-only) + accept-invite ---
+
+  const loadUserAdmin = async (): Promise<void> => {
+    setState('ua', { loading: true, error: null });
+    try {
+      const [users, invites, reg] = await Promise.all([
+        client.adminListUsers(),
+        client.adminListInvites(),
+        client.adminGetRegistration(),
+      ]);
+      setState('ua', { users, invites, reg, loading: false });
+    } catch (e) {
+      setState('ua', { loading: false, error: err(e) });
+    }
+  };
+
+  /** Shared shape for the mutate-then-reload admin actions. */
+  const uaMutate = async (fn: () => Promise<void>): Promise<void> => {
+    setState('ua', 'error', null);
+    try {
+      await fn();
+      await loadUserAdmin();
+    } catch (e) {
+      setState('ua', 'error', err(e));
+    }
+  };
+
+  const uaCreateInvite = async (): Promise<void> => {
+    if (state.ua.inviteBusy) return;
+    const email = state.ua.inviteEmail.trim();
+    if (email === '') {
+      setState('ua', 'error', 'enter an email to invite');
+      return;
+    }
+    setState('ua', { inviteBusy: true, error: null });
+    try {
+      const res = await client.adminCreateInvite(email);
+      setState('ua', {
+        inviteBusy: false,
+        inviteEmail: '',
+        issued: { email: res.invite.email, link: res.link, emailSent: res.emailSent },
+      });
+      await loadUserAdmin();
+    } catch (e) {
+      setState('ua', { inviteBusy: false, error: err(e) });
+    }
+  };
+
+  const acceptInvite = async (): Promise<void> => {
+    if (state.ai.busy) return;
+    const token = state.inviteToken;
+    if (token === null || token === '') {
+      setState('ai', 'error', 'this invite link is missing its token — ask for a fresh link');
+      return;
+    }
+    setState('ai', { busy: true, error: null });
+    try {
+      await client.acceptInvite({ token, name: state.ai.name.trim(), password: state.ai.password });
+      // The accept response set the session cookie; boot fresh as a signed-in user.
+      globalThis.location.assign('/');
+    } catch (e) {
+      setState('ai', { busy: false, error: err(e) });
     }
   };
 
@@ -1140,6 +1257,41 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
 
     bootstrap,
     retry: bootstrap,
+    loadUserAdmin,
+    uaCreateInvite,
+    uaRevokeInvite: (inviteId) => uaMutate(() => client.adminRevokeInvite(inviteId)),
+    uaSetRole: (userId, role) => uaMutate(() => client.adminSetRole(userId, role)),
+    uaSetDisabled: async (userId, disabled) => {
+      // Self-disable revokes THIS session server-side: don't reload the admin
+      // data (it would just 401) — reboot to the login gate.
+      if (disabled && userId === state.session?.userId) {
+        setState('ua', 'error', null);
+        try {
+          await client.adminSetDisabled(userId, disabled);
+          globalThis.location.assign('/');
+        } catch (e) {
+          setState('ua', 'error', err(e));
+        }
+        return;
+      }
+      await uaMutate(() => client.adminSetDisabled(userId, disabled));
+    },
+    uaDeleteUser: async (userId) => {
+      // Deleting yourself removes the account under this session — reboot.
+      if (userId === state.session?.userId) {
+        setState('ua', 'error', null);
+        try {
+          await client.adminDeleteUser(userId);
+          globalThis.location.assign('/');
+        } catch (e) {
+          setState('ua', 'error', err(e));
+        }
+        return;
+      }
+      await uaMutate(() => client.adminDeleteUser(userId));
+    },
+    uaSetRegistration: (mode) => uaMutate(() => client.adminSetRegistration(mode)),
+    acceptInvite,
     signIn: (input) => runEmailAuth(() => client.signInEmail(input)),
     signUp: (input) => runEmailAuth(() => client.signUpEmail(input)),
     oauth: async (provider) => {
@@ -1164,6 +1316,8 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     signOut: async () => {
       // Clear ALL raw agent keys first — reveal + onboarding secrets — plus the
       // provider-retry identity, so a different account can't reuse this run's provider (A-26).
+      // Same for identity-scoped admin state: the user list and any one-time
+      // invite link must not survive into the next account's session.
       setState(
         produce((s) => {
           s.kr = emptyKeyReveal();
@@ -1172,6 +1326,18 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           s.ob.providerId = null;
           s.ob.provInput = null;
           s.modal = null;
+          s.ua = {
+            users: [],
+            invites: [],
+            reg: null,
+            loading: false,
+            error: null,
+            inviteEmail: '',
+            inviteBusy: false,
+            issued: null,
+          };
+          s.inviteToken = null;
+          s.ai = { name: '', password: '', busy: false, error: null };
         }),
       );
       try {

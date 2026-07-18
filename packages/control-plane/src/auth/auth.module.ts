@@ -16,6 +16,8 @@ import { AuthBootstrap } from './auth.bootstrap';
 import { loadAuthConfig, resolveAuthSecrets } from './auth.config';
 import { AUTH_INSTANCE } from './auth.tokens';
 import { createAuth, type AuthInstance } from './better-auth';
+import { InvitesController } from './invites.controller';
+import { InvitesService } from './invites.service';
 import { AuthRateLimitMiddleware } from './rate-limit.middleware';
 import { SessionGuard } from './session.guard';
 
@@ -25,6 +27,7 @@ import { SessionGuard } from './session.guard';
  * `/api/**` by the app module, not globally (the `/v1` plane uses agent keys). */
 @Module({
   imports: [DatabaseModule, RedisModule, MailerModule],
+  controllers: [InvitesController],
   providers: [
     {
       provide: AUTH_INSTANCE,
@@ -48,10 +51,11 @@ import { SessionGuard } from './session.guard';
     SessionGuard,
     AgentApiKeyGuard,
     AuthBootstrap,
+    InvitesService,
     // Provided (not registered as Nest middleware): mounted as raw Express
     // middleware in bootstrap so it runs BEFORE the Better Auth handler.
     AuthRateLimitMiddleware,
   ],
-  exports: [AUTH_INSTANCE, SessionGuard, AgentApiKeyGuard, AuthRateLimitMiddleware],
+  exports: [AUTH_INSTANCE, SessionGuard, AgentApiKeyGuard, AuthRateLimitMiddleware, InvitesService],
 })
 export class AuthModule {}

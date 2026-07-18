@@ -19,10 +19,15 @@ export function Login() {
   const [email, setEmail] = createSignal('');
   const [password, setPassword] = createSignal('');
 
+  // Under invite_only the sign-up tab disappears (user-administration) — the
+  // server refuses ungated sign-ups anyway; this just keeps the gate honest.
+  const inviteOnly = () => state.loginConfig?.registration === 'invite_only';
+  const signingUp = () => mode() === 'signup' && !inviteOnly();
+
   const submit = (e: Event): void => {
     e.preventDefault();
     if (state.authBusy) return;
-    if (mode() === 'signup') {
+    if (signingUp()) {
       void app.signUp({ name: name().trim(), email: email().trim(), password: password() });
     } else {
       void app.signIn({ email: email().trim(), password: password() });
@@ -48,39 +53,51 @@ export function Login() {
         </div>
 
         <div class="panel card" style="display:flex;flex-direction:column;gap:14px">
-          <div style="display:flex;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:2px">
-            <For
-              each={
-                [
-                  ['signin', 'Sign in'],
-                  ['signup', 'Sign up'],
-                ] as const
-              }
-            >
-              {([id, label]) => (
-                <button
-                  type="button"
-                  aria-pressed={mode() === id}
-                  style={{
-                    flex: '1',
-                    'text-align': 'center',
-                    padding: '6px 0',
-                    'border-radius': '6px',
-                    font: "500 12.5px 'Geist',sans-serif",
-                    cursor: 'pointer',
-                    background: mode() === id ? 'var(--chip)' : 'transparent',
-                    color: mode() === id ? 'var(--text)' : 'var(--text3)',
-                  }}
-                  onClick={() => setMode(id)}
-                >
-                  {label}
-                </button>
-              )}
-            </For>
-          </div>
+          <Show
+            when={!inviteOnly()}
+            fallback={
+              <div>
+                <div style="font:600 14px 'Geist',sans-serif;letter-spacing:-.01em">Sign in</div>
+                <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3);margin-top:3px;line-height:1.5">
+                  New accounts are invite-only — ask an admin for an invite link.
+                </div>
+              </div>
+            }
+          >
+            <div style="display:flex;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:2px">
+              <For
+                each={
+                  [
+                    ['signin', 'Sign in'],
+                    ['signup', 'Sign up'],
+                  ] as const
+                }
+              >
+                {([id, label]) => (
+                  <button
+                    type="button"
+                    aria-pressed={mode() === id}
+                    style={{
+                      flex: '1',
+                      'text-align': 'center',
+                      padding: '6px 0',
+                      'border-radius': '6px',
+                      font: "500 12.5px 'Geist',sans-serif",
+                      cursor: 'pointer',
+                      background: mode() === id ? 'var(--chip)' : 'transparent',
+                      color: mode() === id ? 'var(--text)' : 'var(--text3)',
+                    }}
+                    onClick={() => setMode(id)}
+                  >
+                    {label}
+                  </button>
+                )}
+              </For>
+            </div>
+          </Show>
 
           <form style="display:flex;flex-direction:column;gap:11px" onSubmit={submit}>
-            <Show when={mode() === 'signup'}>
+            <Show when={signingUp()}>
               <div>
                 <label class="field-label" for="f-login-name" style="display:block">
                   Name
@@ -116,7 +133,7 @@ export function Login() {
                 class="input"
                 id="f-login-password"
                 type="password"
-                autocomplete={mode() === 'signup' ? 'new-password' : 'current-password'}
+                autocomplete={signingUp() ? 'new-password' : 'current-password'}
                 value={password()}
                 placeholder="••••••••"
                 onInput={(e) => setPassword(e.currentTarget.value)}
@@ -138,7 +155,7 @@ export function Login() {
                 border: 'none',
               }}
             >
-              {state.authBusy ? 'Working…' : mode() === 'signup' ? 'Create account' : 'Sign in'}
+              {state.authBusy ? 'Working…' : signingUp() ? 'Create account' : 'Sign in'}
             </button>
           </form>
 

@@ -11,6 +11,7 @@ const TITLES: Record<Page, [string, string]> = {
   routing: ['Routing', 'tiers, fallbacks & auto layers'],
   limits: ['Limits', 'budgets that alert or block'],
   settings: ['Settings', 'instance & notifications'],
+  users: ['Users', 'who can sign in, and how'],
   setup: ['Setup guide', 'three steps to your first routed request'],
 };
 

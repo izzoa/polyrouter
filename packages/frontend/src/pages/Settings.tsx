@@ -39,13 +39,8 @@ export function Settings() {
   return (
     <div style="padding:22px 26px;display:flex;flex-direction:column;gap:12px;max-width:760px">
       <div class="panel card">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start">
-          <div class="section-title" style="margin-bottom:12px">
-            Instance
-          </div>
-          <button type="button" class="btn-ghost" onClick={() => void app.signOut()}>
-            Log out
-          </button>
+        <div class="section-title" style="margin-bottom:12px">
+          Instance
         </div>
         <div style="display:grid;grid-template-columns:140px 1fr;gap:8px 16px;font:400 12.5px 'Geist',sans-serif;color:var(--text2);align-items:center">
           <div style="color:var(--text3)">Account</div>
@@ -82,8 +77,8 @@ export function Settings() {
         </div>
         <Show when={session()?.mode === 'selfhosted'}>
           <div style="font:400 11px 'Geist',sans-serif;color:var(--text3);margin-top:10px;line-height:1.5">
-            Self-hosted loopback uses auto-login with no session cookie — “Log out” is inert here
-            and you’ll land straight back in.
+            Self-hosted loopback uses auto-login with no session cookie — “Log out” (in the
+            account menu, bottom of the sidebar) is inert here and you’ll land straight back in.
           </div>
         </Show>
       </div>

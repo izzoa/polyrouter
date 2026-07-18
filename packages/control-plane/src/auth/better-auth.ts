@@ -5,11 +5,15 @@ import type { AuthAdapter } from '../database/auth-adapter';
 import type { SystemMailer } from '../producers/system-mailer';
 import { nativeImport } from '../util/native-import';
 import type { AuthConfig } from './auth.config';
+import { inviteBypassEmail } from './signup-gate';
 
 interface BetterAuthModule {
   betterAuth: (options: unknown) => {
     api: unknown;
   };
+}
+interface BetterAuthApiModule {
+  APIError: new (status: string, body?: { message?: string }) => Error;
 }
 interface BetterAuthNodeModule {
   toNodeHandler: (auth: unknown) => (req: IncomingMessage, res: ServerResponse) => void;
@@ -30,6 +34,13 @@ export interface AuthInstance {
   getSession: (headers: IncomingHttpHeaders) => Promise<{ user: SessionUser } | null>;
   /** Seed path: create a user through the normal signup flow (hooks run). */
   signUpEmail: (input: { name: string; email: string; password: string }) => Promise<unknown>;
+  /** Invite-accept path: same signup flow, but returns the response headers so
+   * the caller can forward Set-Cookie — the invitee lands signed in. */
+  signUpEmailWithHeaders: (input: {
+    name: string;
+    email: string;
+    password: string;
+  }) => Promise<{ headers: Headers }>;
 }
 
 interface CreateAuthDeps {
@@ -71,7 +82,30 @@ export async function createAuth(deps: CreateAuthDeps): Promise<AuthInstance> {
   const { betterAuth } = await nativeImport<BetterAuthModule>('better-auth');
   const { fromNodeHeaders, toNodeHandler } =
     await nativeImport<BetterAuthNodeModule>('better-auth/node');
+  const { APIError } = await nativeImport<BetterAuthApiModule>('better-auth/api');
   const { config, identity } = deps;
+
+  /** Registration admission (user-administration), evaluated at USER CREATION —
+   * the one seam that covers both email/password and OAuth new accounts. A
+   * server-side claimed-invite bypass (ALS) wins; a zero-user instance admits
+   * exactly ONE bootstrap winner via the atomic claim (losers refused); after
+   * that the authoritative registration_mode decides. Never gates an existing
+   * user's sign-in (this hook only runs on creation). */
+  const admitNewAccount = async (email: string | undefined): Promise<void> => {
+    const bypass = inviteBypassEmail();
+    if (bypass !== null && email !== undefined && bypass === email.toLowerCase()) {
+      return; // invite already atomically claimed by the accept endpoint
+    }
+    if (!(await identity.userAdmin.anyUserExists())) {
+      if (await identity.userAdmin.claimBootstrap()) return; // THE first user
+      throw new APIError('FORBIDDEN', {
+        message: 'Instance setup is in progress — try again shortly.',
+      });
+    }
+    const mode = await identity.userAdmin.getRegistrationMode();
+    if (mode === 'open') return;
+    throw new APIError('FORBIDDEN', { message: 'Registration is invite-only.' });
+  };
 
   const socialProviders: Record<string, { clientId: string; clientSecret: string }> = {};
   if (config.GOOGLE_CLIENT_ID && config.GOOGLE_CLIENT_SECRET) {
@@ -114,9 +148,35 @@ export async function createAuth(deps: CreateAuthDeps): Promise<AuthInstance> {
     databaseHooks: {
       user: {
         create: {
+          // The registration gate: throwing here aborts creation for BOTH the
+          // email/password flow and OAuth new-account creation.
+          before: async (user: { email?: string | null }) => {
+            await admitNewAccount(user.email ?? undefined);
+          },
           after: async (user: { id: string }) => {
+            // With adapter transactions on, after-hooks still run when the
+            // surrounding transaction failed (1.6.23) — tolerate a rolled-back
+            // user instead of FK-throwing into a dead signup.
+            const exists = await identity.getIdentity(user.id);
+            if (!exists) return;
             await identity.ensureFirstAdmin();
             await identity.provisionDefaultTier(user.id);
+          },
+        },
+      },
+      session: {
+        create: {
+          // Better Auth intercepts /api/auth/* before the app guard, so a
+          // disabled user must be refused HERE: no new session (sign-in) can
+          // be minted while disabled — email and OAuth alike.
+          before: async (session: { userId: string }) => {
+            // Tri-state read: this hook runs INSIDE the signup transaction,
+            // where the brand-new user row isn't committed yet — an invisible
+            // row means "being created", never "disabled" (only explicit true
+            // blocks; the deleted-user case has no credentials to sign in with).
+            if ((await identity.disabledFlag(session.userId)) === true) {
+              throw new APIError('UNAUTHORIZED', { message: 'This account is disabled.' });
+            }
           },
         },
       },
@@ -125,14 +185,19 @@ export async function createAuth(deps: CreateAuthDeps): Promise<AuthInstance> {
 
   const api = auth.api as {
     getSession: (input: { headers: Headers }) => Promise<{ user: SessionUser } | null>;
-    signUpEmail: (input: {
+    signUpEmail: ((input: {
       body: { name: string; email: string; password: string };
-    }) => Promise<unknown>;
+    }) => Promise<unknown>) &
+      ((input: {
+        body: { name: string; email: string; password: string };
+        returnHeaders: true;
+      }) => Promise<{ headers: Headers }>);
   };
 
   return {
     handler: toNodeHandler(auth),
     getSession: (headers) => api.getSession({ headers: fromNodeHeaders(headers) }),
     signUpEmail: (input) => api.signUpEmail({ body: input }),
+    signUpEmailWithHeaders: (input) => api.signUpEmail({ body: input, returnHeaders: true }),
   } satisfies AuthInstance;
 }

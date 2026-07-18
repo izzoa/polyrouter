@@ -25,6 +25,10 @@ export async function buildAuthAdapter(db: NodePgDatabase): Promise<AuthAdapter>
   );
   const adapter = drizzleAdapter(db, {
     provider: 'pg',
+    // Real transactions (user-administration): the user insert and its
+    // account/session inserts commit or roll back TOGETHER — a post-insert
+    // failure can never leave a partial user. (The adapter default is false.)
+    transaction: true,
     schema: {
       user: users,
       session: sessions,

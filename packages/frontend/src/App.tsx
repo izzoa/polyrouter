@@ -4,6 +4,7 @@ import { Modals } from './components/Modals';
 import { Sidebar } from './components/Sidebar';
 import { Toast } from './components/Toast';
 import { Topbar } from './components/Topbar';
+import { AcceptInvite } from './pages/AcceptInvite';
 import { Agents } from './pages/Agents';
 import { Costs } from './pages/Costs';
 import { Limits } from './pages/Limits';
@@ -14,6 +15,7 @@ import { Requests } from './pages/Requests';
 import { Routing } from './pages/Routing';
 import { Settings } from './pages/Settings';
 import { Setup } from './pages/Setup';
+import { Users } from './pages/Users';
 import { useApp } from './state/context';
 
 export interface AppProps {
@@ -54,6 +56,9 @@ function Shell(props: { live: boolean }) {
             </Match>
             <Match when={state.page === 'settings'}>
               <Settings />
+            </Match>
+            <Match when={state.page === 'users'}>
+              <Users />
             </Match>
             <Match when={state.page === 'setup'}>
               <Setup />
@@ -105,6 +110,9 @@ export function App(props: AppProps) {
       </Match>
       <Match when={state.authView === 'gate'}>
         <Login />
+      </Match>
+      <Match when={state.authView === 'invite'}>
+        <AcceptInvite />
       </Match>
       <Match when={state.authView === 'error'}>
         <CenterFrame>

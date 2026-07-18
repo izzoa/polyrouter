@@ -85,6 +85,12 @@ every request actually cost — while storing **metadata only**, never your prom
 
 - **Metadata only** — prompt/response bodies are never persisted (a property of the
   build, not a setting). Provider and channel credentials are **encrypted at rest**.
+- **First-signup-wins, then invite-only** — the first account becomes the admin and
+  public registration closes; teammates join via single-use, 72-hour, hash-stored
+  invite links (emailed when SMTP is configured). Admins manage users, roles, and the
+  registration mode from the dashboard; **disabling a user revokes sessions and agent
+  keys in one stroke**, and the last enabled admin is undeletable. See
+  [Users & registration](#users--registration).
 - **Two credential planes** — dashboard sessions (Better Auth: email/password +
   optional Google/GitHub/Discord OAuth, slow-hashed) vs. agent API keys
   (`poly_…`, **HMAC-SHA256 + prefix lookup** — fast per-request verification, never
@@ -309,7 +315,7 @@ public, or set `METRICS_ENABLED=false`.
 | `OTEL_ENABLED` / `OTEL_EXPORTER_OTLP_ENDPOINT`                                                      | `false` / SDK default   | OpenTelemetry traces for the proxy path (batched OTLP/HTTP export)                                           |
 | `GOOGLE_/GITHUB_/DISCORD_CLIENT_ID`+`_SECRET`                                                       | unset                   | Optional OAuth sign-in providers                                                                             |
 | `APPRISE_API_URL` + `NOTIFY_ALLOWED_ENDPOINTS`                                                      | unset                   | Optional Apprise fan-out — see below                                                                         |
-| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` / `SMTP_SECURE`                 | unset (`PORT` 587, `SECURE` starttls) | Server-wide SMTP for password-reset email — **active only when both `SMTP_HOST` and `SMTP_FROM` are set; otherwise password reset silently never sends.** Rely on OAuth if you don't set it |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` / `SMTP_SECURE`                 | unset (`PORT` 587, `SECURE` starttls) | Server-wide SMTP for password-reset **and invite** email — **active only when both `SMTP_HOST` and `SMTP_FROM` are set; otherwise password reset silently never sends and invites must be delivered by copying the link.** Rely on OAuth if you don't set it |
 | `ROUTING_AUTO_LAYERS`                                                                               | `structural`            | Which smart-routing layers are on. **Cascade (cheap→escalate) is OFF until you set `structural,cascade`** — the dashboard toggle just shows it greyed out otherwise |
 | `BUDGET_FAIL_OPEN`                                                                                  | `true`                  | On a Redis/enforcement fault, block budgets **admit** the request (availability-first). Set `false` for a hard cap that returns `503` instead |
 | `TRUSTED_PROXY_CIDRS`                                                                               | unset                   | CIDRs of reverse proxies allowed to set `X-Forwarded-For` (rate-limit client-IP trust) — set it when behind a proxy |
@@ -353,6 +359,37 @@ change both places if it collides with your network.
 - **One app replica only:** boot migrations take no advisory lock — do not `--scale app`.
 - **Verify an install:** `scripts/selfhost-smoke.sh` runs the end-to-end smoke pass (health, admin bootstrap, live-stream drain, metadata-only persistence) against a throwaway stack.
 - **Compliance note:** using flat-rate consumer _subscriptions_ (ChatGPT Plus, Claude Max) programmatically likely violates those providers' ToS — polyrouter supports the provider kind but surfaces the risk; BYOK API keys and local models don't carry it.
+
+### Users & registration
+
+The **first account to sign up owns the instance**: it becomes the admin and
+registration immediately closes to **invite-only** (racing sign-ups during that
+first moment are refused — exactly one bootstrap winner). Everything after that
+is managed from the admin-only **Users** page (account menu, bottom of the
+sidebar):
+
+- **Invites** — single-use links pinned to an email, expiring after 72 h. With
+  server SMTP configured (`SMTP_HOST` + `SMTP_FROM`) the invite is emailed
+  automatically; without it, copy the link from the dashboard and deliver it
+  yourself — issuing never depends on SMTP. Only a token hash is stored, and the
+  raw token travels in the link's `#fragment`, which browsers never send to
+  servers or proxies.
+- **Roles** — promote/demote admins. The last *enabled* admin can never be
+  deleted, demoted, or disabled (the API refuses with `409`).
+- **Disable** — cuts both credential planes at once: dashboard sessions are
+  revoked immediately and every agent API key the user owns stops working on
+  `/v1`. Re-enabling requires a fresh sign-in.
+- **Registration mode** — reopen public sign-up (`open`) or keep it
+  `invite_only`, live from the dashboard.
+
+**Upgrading an existing instance closes public sign-up** (the migration seeds
+`invite_only`); reopen it under Users → Registration if you want walk-in
+sign-ups back. Break-glass if you ever lock yourself out (no enabled admin
+left): fix the row directly in Postgres, then sign in again —
+
+```sql
+UPDATE "user" SET disabled = false, role = 'admin' WHERE email = 'you@example.com';
+```
 
 ## Connect an agent
 

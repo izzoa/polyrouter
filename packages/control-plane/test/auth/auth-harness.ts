@@ -43,8 +43,10 @@ export function applyAuthEnv(env: AuthEnv): void {
 }
 
 /** Boots the real auth stack against the dev database/redis (Better Auth
- * mounted exactly as production does it). Call applyAuthEnv first. */
-export async function createAuthApp(): Promise<NestExpressApplication> {
+ * mounted exactly as production does it). Call applyAuthEnv first.
+ * `extraModules` lets a spec mount additional real modules (e.g. the
+ * user-administration AdminModule) on the same guarded app. */
+export async function createAuthApp(extraModules: unknown[] = []): Promise<NestExpressApplication> {
   const databaseUrl = loadConfig<{ DATABASE_URL: string }>().DATABASE_URL;
   const probe = new Pool({ connectionString: databaseUrl, max: 1 });
   try {
@@ -56,7 +58,8 @@ export async function createAuthApp(): Promise<NestExpressApplication> {
   }
 
   const moduleRef = await Test.createTestingModule({
-    imports: [DatabaseModule, RedisModule, AuthModule],
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- Nest module refs are class values
+    imports: [DatabaseModule, RedisModule, AuthModule, ...(extraModules as never[])],
     controllers: [HealthController, AgentsController, ProbeController],
     providers: [{ provide: APP_GUARD, useClass: SessionGuard }],
   }).compile();
@@ -75,7 +78,30 @@ export async function resetAuthState(databaseUrl: string): Promise<void> {
   try {
     // agents/tiers/sessions/accounts cascade from user; truncate the roots.
     await pool.query('TRUNCATE "user", verification RESTART IDENTITY CASCADE');
-    await pool.query(`SELECT 1`);
+    // user-administration state: multi-user tests need the gate OPEN (specs
+    // that test invite_only set it explicitly), and the bootstrap claim must
+    // be cleared so each test's first signup can win it fresh.
+    await pool.query(`
+      INSERT INTO instance_settings (id, registration_mode, bootstrap_claimed_at)
+      VALUES ('singleton', 'open', NULL)
+      ON CONFLICT (id) DO UPDATE
+        SET registration_mode = 'open', bootstrap_claimed_at = NULL
+    `);
+  } finally {
+    await pool.end();
+  }
+}
+
+/** Set the registration mode directly (for gate-specific specs). */
+export async function setRegistrationMode(
+  databaseUrl: string,
+  mode: 'open' | 'invite_only',
+): Promise<void> {
+  const pool = new Pool({ connectionString: databaseUrl, max: 1 });
+  try {
+    await pool.query(`UPDATE instance_settings SET registration_mode = $1 WHERE id = 'singleton'`, [
+      mode,
+    ]);
   } finally {
     await pool.end();
   }

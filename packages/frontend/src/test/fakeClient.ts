@@ -1,6 +1,10 @@
 import { ApiError } from '../data/api';
 import type {
   ActionResult,
+  AdminInviteDto,
+  AdminUserDto,
+  IssuedInviteDto,
+  RegistrationSettingsDto,
   AgentDto,
   AgentReveal,
   AnalyticsRangeParams,
@@ -51,6 +55,7 @@ export const DEFAULT_LOGIN_CONFIG: LoginConfig = {
   mode: 'selfhosted',
   emailPassword: true,
   oauthProviders: [],
+  registration: 'open',
 };
 
 const NOW = '2026-07-15T00:00:00.000Z';
@@ -181,6 +186,9 @@ export function buildRequestRows(n: number): RequestRow[] {
 }
 
 export interface FakeOptions {
+  adminUsers?: AdminUserDto[];
+  adminInvites?: AdminInviteDto[];
+  registration?: RegistrationSettingsDto;
   session?: SessionInfo | null;
   meFailure?: ApiError | null;
   loginConfig?: LoginConfig;
@@ -266,6 +274,11 @@ export class FakeApiClient implements ApiClient {
   session: SessionInfo | null;
   meFailure: ApiError | null;
   loginConfigResult: LoginConfig;
+  adminUsers: AdminUserDto[];
+  adminInvites: AdminInviteDto[];
+  registration: RegistrationSettingsDto;
+  /** When set, adminSetRole rejects with a 409 carrying this message (last-admin refusal). */
+  adminSetRoleFailure: string | null = null;
   agents: AgentDto[];
   providers: ProviderDto[];
   models: Record<string, ModelDto[]>;
@@ -292,6 +305,9 @@ export class FakeApiClient implements ApiClient {
     this.session = opts.session === undefined ? DEFAULT_SESSION : opts.session;
     this.meFailure = opts.meFailure ?? null;
     this.loginConfigResult = opts.loginConfig ?? DEFAULT_LOGIN_CONFIG;
+    this.adminUsers = opts.adminUsers ?? [];
+    this.adminInvites = opts.adminInvites ?? [];
+    this.registration = opts.registration ?? { mode: 'open', smtpConfigured: false };
     this.agents = opts.agents ?? [];
     this.providers = opts.providers ?? [];
     this.models = opts.models ?? {};
@@ -350,6 +366,81 @@ export class FakeApiClient implements ApiClient {
 
   countOf(method: string): number {
     return this.calls.filter((m) => m === method).length;
+  }
+
+  acceptInvite(input: { token: string; name: string; password: string }): Promise<void> {
+    this.record('acceptInvite', input.token);
+    if (input.token === 'expired-or-bad') {
+      return Promise.reject(new ApiError(400, 'Bad Request', 'invalid or expired invite'));
+    }
+    return Promise.resolve();
+  }
+
+  adminListUsers(): Promise<AdminUserDto[]> {
+    this.record('adminListUsers');
+    return Promise.resolve([...this.adminUsers]);
+  }
+
+  adminSetRole(userId: string, role: 'admin' | null): Promise<void> {
+    this.record('adminSetRole', userId, role);
+    if (this.adminSetRoleFailure !== null) {
+      return Promise.reject(new ApiError(409, 'Conflict', this.adminSetRoleFailure));
+    }
+    this.adminUsers = this.adminUsers.map((u) => (u.id === userId ? { ...u, role } : u));
+    return Promise.resolve();
+  }
+
+  adminSetDisabled(userId: string, disabled: boolean): Promise<void> {
+    this.record('adminSetDisabled', userId, disabled);
+    this.adminUsers = this.adminUsers.map((u) => (u.id === userId ? { ...u, disabled } : u));
+    return Promise.resolve();
+  }
+
+  adminDeleteUser(userId: string): Promise<void> {
+    this.record('adminDeleteUser', userId);
+    this.adminUsers = this.adminUsers.filter((u) => u.id !== userId);
+    return Promise.resolve();
+  }
+
+  adminCreateInvite(email: string): Promise<IssuedInviteDto> {
+    this.record('adminCreateInvite', email);
+    const invite: AdminInviteDto = {
+      id: `inv-${String(this.adminInvites.length + 1)}`,
+      email,
+      tokenPrefix: 'faketoken123',
+      createdAt: NOW,
+      // Relative to the real clock so the UI's pending/expired split sees it as pending.
+      expiresAt: new Date(Date.now() + 72 * 3_600_000).toISOString(),
+      consumedAt: null,
+    };
+    this.adminInvites = [invite, ...this.adminInvites];
+    return Promise.resolve({
+      invite,
+      link: `http://localhost:3001/accept-invite#token=faketoken123-raw`,
+      emailSent: this.registration.smtpConfigured,
+    });
+  }
+
+  adminListInvites(): Promise<AdminInviteDto[]> {
+    this.record('adminListInvites');
+    return Promise.resolve([...this.adminInvites]);
+  }
+
+  adminRevokeInvite(inviteId: string): Promise<void> {
+    this.record('adminRevokeInvite', inviteId);
+    this.adminInvites = this.adminInvites.filter((i) => i.id !== inviteId);
+    return Promise.resolve();
+  }
+
+  adminGetRegistration(): Promise<RegistrationSettingsDto> {
+    this.record('adminGetRegistration');
+    return Promise.resolve({ ...this.registration });
+  }
+
+  adminSetRegistration(mode: 'open' | 'invite_only'): Promise<void> {
+    this.record('adminSetRegistration', mode);
+    this.registration = { ...this.registration, mode };
+    return Promise.resolve();
   }
 
   me(): Promise<SessionInfo> {

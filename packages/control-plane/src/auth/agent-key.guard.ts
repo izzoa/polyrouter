@@ -57,6 +57,11 @@ export class AgentApiKeyGuard implements CanActivate {
     if (!record || !verifyAgentKey(key, record.apiKeyHash, this.hmacSecret)) {
       throw new UnauthorizedException();
     }
+    // A disabled owner's keys stop serving /v1 (user-administration, invariant
+    // 7 — the two credential planes stay consistent). Same lookup, no extra query.
+    if (record.ownerDisabled) {
+      throw new UnauthorizedException();
+    }
 
     req.principal = userPrincipal(record.ownerUserId);
     (req as AuthedRequest & { agentId?: string }).agentId = record.id;

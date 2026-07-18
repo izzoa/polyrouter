@@ -1,6 +1,7 @@
 import { For, Show } from 'solid-js';
 import { useApp } from '../state/context';
 import type { Page } from '../types';
+import { UserMenu } from './UserMenu';
 
 const NAV: [Page, string][] = [
   ['overview', 'Overview'],
@@ -22,6 +23,9 @@ export function Sidebar() {
     id === 'providers' && state.providers.length > 0 ? String(state.providers.length) : null;
   const setupProgress = () =>
     state.ob.done2 ? '3 of 3 done' : state.ob.done1 ? '2 of 3 done' : '1 of 3 — connect an agent';
+  // The Users area is admin-only chrome — hidden entirely from non-admins.
+  const nav = (): [Page, string][] =>
+    state.session?.role === 'admin' ? [...NAV, ['users', 'Users'] as [Page, string]] : NAV;
 
   return (
     <div style="width:208px;flex:none;border-right:1px solid var(--border);display:flex;flex-direction:column;background:var(--panel)">
@@ -38,7 +42,7 @@ export function Sidebar() {
         <div style="font:600 14px 'Geist',sans-serif;letter-spacing:-.02em">polyrouter</div>
       </div>
       <nav style="display:flex;flex-direction:column;gap:2px;padding:0 10px">
-        <For each={NAV}>
+        <For each={nav()}>
           {([id, label]) => (
             <button
               type="button"
@@ -84,48 +88,7 @@ export function Sidebar() {
         </span>
       </button>
       <div style="margin-top:auto;padding:14px 18px;border-top:1px solid var(--border2);display:flex;flex-direction:column;gap:8px">
-        <button type="button" class="theme-toggle" onClick={() => app.toggleTheme()}>
-          <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
-            <circle cx="7" cy="7" r="3.2" fill="none" stroke="currentColor" stroke-width="1.4" />
-            <line
-              x1="7"
-              y1="0.5"
-              x2="7"
-              y2="2.5"
-              stroke="currentColor"
-              stroke-width="1.4"
-              stroke-linecap="round"
-            />
-            <line
-              x1="7"
-              y1="11.5"
-              x2="7"
-              y2="13.5"
-              stroke="currentColor"
-              stroke-width="1.4"
-              stroke-linecap="round"
-            />
-            <line
-              x1="0.5"
-              y1="7"
-              x2="2.5"
-              y2="7"
-              stroke="currentColor"
-              stroke-width="1.4"
-              stroke-linecap="round"
-            />
-            <line
-              x1="11.5"
-              y1="7"
-              x2="13.5"
-              y2="7"
-              stroke="currentColor"
-              stroke-width="1.4"
-              stroke-linecap="round"
-            />
-          </svg>
-          <span>{state.theme === 'light' ? 'Switch to dark' : 'Switch to light'}</span>
-        </button>
+        <UserMenu />
         <div style="display:flex;align-items:center;gap:6px;font:400 11px 'Geist Mono',monospace;color:var(--text3)">
           <span style="width:6px;height:6px;border-radius:50%;background:var(--green);flex:none" />
           {state.session?.mode === 'cloud' ? 'cloud' : 'self-hosted'} · v{__APP_VERSION__}

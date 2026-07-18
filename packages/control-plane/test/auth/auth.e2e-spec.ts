@@ -12,6 +12,7 @@ import {
   clearRateLimits,
   createAuthApp,
   resetAuthState,
+  setRegistrationMode,
   uniqueEmail,
 } from './auth-harness';
 
@@ -131,8 +132,14 @@ describe('auth flow, planes & agent keys (session-auth / agent-keys)', () => {
     }
   });
 
-  it('concurrent first signups yield exactly one admin and one default tier each', async () => {
-    await Promise.all(
+  it('concurrent first signups under invite_only admit EXACTLY ONE bootstrap winner', async () => {
+    // user-administration single-winner contract, proven under the shipping
+    // default (invite_only, as migration 0008 seeds it): only the atomic
+    // bootstrap claimant is admitted; every other racer — in-window or after
+    // the winner commits — is refused (403). Exactly one user, one admin,
+    // provisioned with the default tier.
+    await setRegistrationMode(databaseUrl, 'invite_only');
+    const responses = await Promise.all(
       Array.from({ length: 5 }, () =>
         request(server)
           .post('/api/auth/sign-up/email')
@@ -145,7 +152,9 @@ describe('auth flow, planes & agent keys (session-auth / agent-keys)', () => {
         (await pool.query(`SELECT count(*)::int n FROM "user" WHERE role='admin'`)).rows[0].n,
       ).toBe(1);
       const users = await pool.query<{ id: string }>(`SELECT id FROM "user"`);
-      expect(users.rows.length).toBe(5);
+      expect(users.rows.length).toBe(1);
+      expect(responses.filter((r) => r.status === 200).length).toBe(1);
+      expect(responses.filter((r) => r.status === 403).length).toBe(4);
       for (const u of users.rows) {
         const t = await pool.query(
           `SELECT count(*)::int n FROM tier WHERE owner_user_id=$1 AND key='default'`,

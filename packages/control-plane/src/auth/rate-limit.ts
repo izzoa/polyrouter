@@ -26,6 +26,9 @@ export const AUTH_RATE_RULES: RateRule[] = [
   { prefix: '/api/auth/sign-up', max: 5, windowSec: 60 },
   { prefix: '/api/auth/request-password-reset', max: 3, windowSec: 300 },
   { prefix: '/api/auth/reset-password', max: 3, windowSec: 300 },
+  // Public invite acceptance (user-administration): token-guessing gets the
+  // same per-IP throttle discipline as the auth routes.
+  { prefix: '/api/invites/accept', max: 5, windowSec: 60 },
 ];
 
 export function matchRule(path: string): RateRule | null {

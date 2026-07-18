@@ -157,7 +157,10 @@ describe('dashboard shell (auth-gated)', () => {
     const first = mount();
     try {
       await flush();
-      clickByText(first.host, '.theme-toggle span', 'Switch to dark');
+      // The theme toggle lives in the current-user menu (user-administration).
+      first.host.querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]')?.click();
+      await flush();
+      clickByText(first.host, '[role="menuitem"]', 'Switch to dark');
       expect(document.documentElement.dataset['theme']).toBe('dark');
       expect(localStorage.getItem('polyrouter-theme')).toBe('dark');
     } finally {

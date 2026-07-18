@@ -99,10 +99,21 @@ export {
   APPRISE_HOST_BEARING_SCHEMES,
   APPRISE_FIXED_SERVICE_SCHEMES,
 } from './security/apprise';
-export { AUTH_ADAPTER_FACTORY, FIRST_ADMIN_LOCK, IDENTITY_PORT } from './identity';
+export {
+  AUTH_ADAPTER_FACTORY,
+  BOOTSTRAP_LOCK,
+  FIRST_ADMIN_LOCK,
+  IDENTITY_PORT,
+  INSTANCE_SETTINGS_ID,
+  REGISTRATION_MODES,
+} from './identity';
 export type {
+  AdminInviteRecord,
+  AdminUserRecord,
   AgentAuthAccessor,
   AgentAuthRecord,
   AuthAdapterFactory,
   IdentityPort,
+  RegistrationMode,
+  UserAdminAccessor,
 } from './identity';

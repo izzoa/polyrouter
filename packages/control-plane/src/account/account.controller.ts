@@ -44,8 +44,23 @@ export class AccountController {
 
   @Get('login-config')
   @Public()
-  loginConfig(): { mode: BaseConfig['MODE']; emailPassword: true; oauthProviders: string[] } {
+  async loginConfig(): Promise<{
+    mode: BaseConfig['MODE'];
+    emailPassword: true;
+    oauthProviders: string[];
+    /** Under `invite_only` the login gate hides public sign-up (user-administration).
+     * Bootstrap nuance: on a zero-user instance the first sign-up is always
+     * allowed, so sign-up stays visible until a user exists. */
+    registration: 'open' | 'invite_only';
+  }> {
     const cfg = loadConfig<AuthConfig & BaseConfig>();
-    return { mode: cfg.MODE, emailPassword: true, oauthProviders: enabledOauthProviders(cfg) };
+    const anyUser = await this.identity.userAdmin.anyUserExists();
+    const mode = anyUser ? await this.identity.userAdmin.getRegistrationMode() : 'open';
+    return {
+      mode: cfg.MODE,
+      emailPassword: true,
+      oauthProviders: enabledOauthProviders(cfg),
+      registration: mode,
+    };
   }
 }

@@ -39,6 +39,39 @@ export interface LoginConfig {
   mode: Mode;
   emailPassword: boolean;
   oauthProviders: string[];
+  /** Under invite_only the login gate hides public sign-up (user-administration). */
+  registration: 'open' | 'invite_only';
+}
+
+/** Whitelisted admin user record (user-administration) — identity fields only. */
+export interface AdminUserDto {
+  id: string;
+  email: string;
+  name: string;
+  role: string | null;
+  disabled: boolean;
+  createdAt: string;
+}
+
+export interface AdminInviteDto {
+  id: string;
+  email: string;
+  tokenPrefix: string;
+  createdAt: string;
+  expiresAt: string;
+  consumedAt: string | null;
+}
+
+export interface IssuedInviteDto {
+  invite: AdminInviteDto;
+  /** One-time link carrying the raw token — shown once for copy/manual delivery. */
+  link: string;
+  emailSent: boolean;
+}
+
+export interface RegistrationSettingsDto {
+  mode: 'open' | 'invite_only';
+  smtpConfigured: boolean;
 }
 
 export interface AgentDto {
@@ -427,6 +460,16 @@ export function labelOf(label: string | null, id: string | null): string {
 export interface ApiClient {
   me(): Promise<SessionInfo>;
   loginConfig(): Promise<LoginConfig>;
+  acceptInvite(input: { token: string; name: string; password: string }): Promise<void>;
+  adminListUsers(): Promise<AdminUserDto[]>;
+  adminSetRole(userId: string, role: 'admin' | null): Promise<void>;
+  adminSetDisabled(userId: string, disabled: boolean): Promise<void>;
+  adminDeleteUser(userId: string): Promise<void>;
+  adminCreateInvite(email: string): Promise<IssuedInviteDto>;
+  adminListInvites(): Promise<AdminInviteDto[]>;
+  adminRevokeInvite(inviteId: string): Promise<void>;
+  adminGetRegistration(): Promise<RegistrationSettingsDto>;
+  adminSetRegistration(mode: 'open' | 'invite_only'): Promise<void>;
   signInEmail(input: { email: string; password: string }): Promise<void>;
   signUpEmail(input: { name: string; email: string; password: string }): Promise<void>;
   signOut(): Promise<void>;
@@ -549,6 +592,22 @@ function jsonInit(
 export const realClient: ApiClient = {
   me: () => http<SessionInfo>(`${API_BASE}/me`),
   loginConfig: () => http<LoginConfig>(`${API_BASE}/login-config`),
+  acceptInvite: (input) => http<void>(`${API_BASE}/invites/accept`, jsonInit('POST', input)),
+  adminListUsers: () => http<AdminUserDto[]>(`${API_BASE}/admin/users`),
+  adminSetRole: (userId, role) =>
+    http<void>(`${API_BASE}/admin/users/${userId}/role`, jsonInit('PATCH', { role })),
+  adminSetDisabled: (userId, disabled) =>
+    http<void>(`${API_BASE}/admin/users/${userId}/disabled`, jsonInit('PATCH', { disabled })),
+  adminDeleteUser: (userId) =>
+    http<void>(`${API_BASE}/admin/users/${userId}`, { method: 'DELETE' }),
+  adminCreateInvite: (email) =>
+    http<IssuedInviteDto>(`${API_BASE}/admin/invites`, jsonInit('POST', { email })),
+  adminListInvites: () => http<AdminInviteDto[]>(`${API_BASE}/admin/invites`),
+  adminRevokeInvite: (inviteId) =>
+    http<void>(`${API_BASE}/admin/invites/${inviteId}`, { method: 'DELETE' }),
+  adminGetRegistration: () => http<RegistrationSettingsDto>(`${API_BASE}/admin/settings/registration`),
+  adminSetRegistration: (mode) =>
+    http<{ mode: string }>(`${API_BASE}/admin/settings/registration`, jsonInit('PUT', { mode })).then(() => undefined),
   signInEmail: (input) => http<void>(`${API_BASE}/auth/sign-in/email`, jsonInit('POST', input)),
   signUpEmail: (input) => http<void>(`${API_BASE}/auth/sign-up/email`, jsonInit('POST', input)),
   signOut: () => http<void>(`${API_BASE}/auth/sign-out`, jsonInit('POST', {})),

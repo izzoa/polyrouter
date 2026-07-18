@@ -66,6 +66,12 @@ describe('account bootstrap endpoints (#18)', () => {
         [`admin-${randomUUID()}@acct.test`],
       )
     ).rows[0]!.id;
+    // Users exist, so login-config reflects the stored registration mode — pin
+    // it so the assertion below is deterministic across suite orderings.
+    await pool.query(
+      `INSERT INTO "instance_settings" ("id", "registration_mode") VALUES ('singleton', 'open')
+       ON CONFLICT ("id") DO UPDATE SET "registration_mode" = 'open'`,
+    );
 
     const moduleRef = await Test.createTestingModule({
       imports: [DatabaseModule],
@@ -96,7 +102,12 @@ describe('account bootstrap endpoints (#18)', () => {
   it('GET /api/login-config is public, reachable (not swallowed by the /api/auth mount), and lists no configured OAuth providers by default', async () => {
     const res = await request(server).get('/api/login-config');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ mode: 'selfhosted', emailPassword: true, oauthProviders: [] });
+    expect(res.body).toEqual({
+      mode: 'selfhosted',
+      emailPassword: true,
+      oauthProviders: [],
+      registration: 'open',
+    });
     expect(JSON.stringify(res.body)).not.toContain('fake'); // reached Nest, not the auth handler
   });
 

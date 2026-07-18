@@ -57,6 +57,13 @@
       "when": 1784207400144,
       "tag": "0007_colossal_clea",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1784340188501,
+      "tag": "0008_lyrical_madame_masque",
+      "breakpoints": true
     }
   ]
 }

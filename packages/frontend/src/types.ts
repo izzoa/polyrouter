@@ -19,6 +19,7 @@ export type Page =
   | 'routing'
   | 'limits'
   | 'settings'
+  | 'users'
   | 'setup';
 
 export type Theme = 'light' | 'dark';
@@ -81,10 +82,12 @@ export interface LoginConfig {
   mode: Mode;
   emailPassword: boolean;
   oauthProviders: string[];
+  registration: 'open' | 'invite_only';
 }
 
-/** Auth-gate machine: loader → login → error(retry) → shell. */
-export type AuthView = 'loading' | 'gate' | 'ready' | 'error';
+/** Auth-gate machine: loader → login → error(retry) → shell; `invite` is the
+ * public accept-invite page (rendered without a session). */
+export type AuthView = 'loading' | 'gate' | 'ready' | 'error' | 'invite';
 
 /** The add-provider form, reused by the Providers modal and onboarding step 2. */
 export interface ProviderForm {

@@ -78,6 +78,7 @@ describe('CircuitBreaker — degrade when the shared store errors', () => {
     decide: () => Promise.reject(new Error('redis down')),
     complete: () => Promise.reject(new Error('redis down')),
     renew: () => Promise.reject(new Error('redis down')),
+    reset: () => Promise.reject(new Error('redis down')),
   };
 
   it('falls back to a per-instance decision and never fails open', async () => {

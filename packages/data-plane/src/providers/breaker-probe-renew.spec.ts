@@ -120,6 +120,7 @@ describe('withBreakerStream — probe lease renewal closes the breaker', () => {
     const recording: BreakerStore = {
       decide: (p, n, c) => inner.decide(p, n, c),
       complete: (p, g, o, n, c) => inner.complete(p, g, o, n, c),
+      reset: (p) => inner.reset(p),
       renew: (p, g, n, c) => {
         renews.push(n);
         return inner.renew(p, g, n, c);
@@ -157,6 +158,7 @@ describe('withBreakerStream — probe lease renewal closes the breaker', () => {
       decide: (p, n, c) => inner.decide(p, n, c),
       complete: (p, g, o, n, c) => inner.complete(p, g, o, n, c),
       renew: () => Promise.resolve(),
+      reset: (p) => inner.reset(p),
     };
     const breaker = new CircuitBreaker(noRenew, { config: cfg, now: () => clock.t });
     await openThenReachCooldown(breaker, clock); // clock.t = 1000
@@ -220,6 +222,7 @@ describe('renewProbe — fire-and-forget containment', () => {
       decide: (p, n, c) => inner.decide(p, n, c),
       complete: (p, g, o, n, c) => inner.complete(p, g, o, n, c),
       renew: () => Promise.reject(new Error('redis down')),
+      reset: (p) => inner.reset(p),
     };
     const rejections: unknown[] = [];
     const onRejection = (e: unknown): void => void rejections.push(e);

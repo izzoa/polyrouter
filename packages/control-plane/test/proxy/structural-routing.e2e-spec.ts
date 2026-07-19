@@ -265,6 +265,40 @@ describe('structural routing e2e', () => {
     expect(row.decisionLayer).toBe('structural');
   });
 
+  it('a declared reasoning_effort high steers a tiny request to auto_high (add-auto-hint-features)', async () => {
+    await send({
+      model: 'auto',
+      reasoning_effort: 'high',
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+    const row = await lastLog();
+    expect(row.modelId).toBe(idPremium);
+    expect(row.decisionLayer).toBe('structural');
+    expect(row.routingReason).toContain('declared=max');
+  });
+
+  it('language neutrality holds with a hint: EQUAL structural vectors in two languages score identically (add-auto-hint-features)', async () => {
+    const enText = 'summarize it briefly'; // 20 chars
+    const jaText = '簡潔に要約してください、どうか宜しく願う'; // 20 UTF-16 code units — equal size signal
+    expect(jaText.length).toBe(enText.length);
+    await send({
+      model: 'auto',
+      reasoning_effort: 'minimal',
+      messages: [{ role: 'user', content: enText }],
+    });
+    const en = await lastLog();
+    await send({
+      model: 'auto',
+      reasoning_effort: 'minimal',
+      messages: [{ role: 'user', content: jaText }],
+    });
+    const ja = await lastLog();
+    expect(ja.modelId).toBe(en.modelId);
+    const scoreOf = (reason: string): string => /score=([0-9.]+)/.exec(reason)![1]!;
+    expect(scoreOf(ja.routingReason)).toBe(scoreOf(en.routingReason)); // identical vectors → identical score
+    expect(ja.routingReason).toContain('think=0.25');
+  });
+
   it('does not force a huge identical system prompt into the top tier (de-contamination)', async () => {
     await send(body({ system: 'X'.repeat(50_000), userChars: 3 }));
     const row = await lastLog();

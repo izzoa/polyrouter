@@ -14,7 +14,13 @@ const PRINCIPAL = userPrincipal('u1');
 function cfg(over?: Partial<RoutingConfig>): RoutingConfig {
   return {
     autoLayers: new Set(['structural']),
-    structural: { high: 0.6, low: 0.25, baselineAlpha: 0.2, weights: DEFAULT_STRUCTURAL_WEIGHTS },
+    structural: {
+      high: 0.6,
+      low: 0.25,
+      baselineAlpha: 0.2,
+      weights: DEFAULT_STRUCTURAL_WEIGHTS,
+      reasoningAdjust: 0.1,
+    },
     cascade: { enabled: false, qualityThreshold: 0.5, cheapTimeoutMs: 30_000 },
     ...over,
   };
@@ -183,6 +189,79 @@ describe('StructuralRouter.decide', () => {
       snapshot([rule('r', 'auto_high', 'tier:premium')]),
     );
     expect(d!.routingReason).not.toContain(sentinel);
+  });
+});
+
+describe('declared reasoning hints (add-auto-hint-features)', () => {
+  const declaredHigh: NormalizedRequest = {
+    ...ir('hi'),
+    reasoning: { protocol: 'openai', effort: 'high' },
+  };
+  const scoreOf = (reason: string): number => {
+    const m = /score=([0-9.]+)/.exec(reason);
+    if (!m) throw new Error(`no score in: ${reason}`);
+    return Number(m[1]);
+  };
+
+  it('the previously-impossible motivating case: a two-character request with effort high bands HIGH', async () => {
+    const r = new StructuralRouter(cfg(), store());
+    const d = await r.decide(
+      PRINCIPAL,
+      'a1',
+      declaredHigh,
+      snapshot([rule('r', 'auto_high', 'tier:premium')]),
+    );
+    expect(d).not.toBeNull();
+    expect(d!.tierKey).toBe('premium');
+    expect(d!.routingReason).toContain('declared=max');
+  });
+
+  it('a declared-maximal band with NO auto_high target falls through to default (null)', async () => {
+    const r = new StructuralRouter(cfg(), store());
+    const d = await r.decide(
+      PRINCIPAL,
+      'a1',
+      declaredHigh,
+      snapshot([rule('r', 'auto_low', 'tier:cheap')]),
+    );
+    expect(d).toBeNull(); // only the router resolves targets — no target, no override
+  });
+
+  it('cascade bypass at the router: declared none on an ambiguous-ambient request routes auto_low, never triggering L3', async () => {
+    const r = new StructuralRouter(
+      cfg({ cascade: { enabled: true, qualityThreshold: 0.5, cheapTimeoutMs: 30_000 } }),
+      store(),
+    );
+    const ambientAmbiguous: NormalizedRequest = {
+      ...ir('Z'.repeat(8_000)), // ambient .30 → ambiguous (the cascade trigger)
+      reasoning: { protocol: 'openai', effort: 'none' }, // −R → .20 → low
+    };
+    const e = await r.evaluate(
+      PRINCIPAL,
+      'a1',
+      ambientAmbiguous,
+      snapshot([rule('r', 'auto_low', 'tier:cheap')]),
+    );
+    expect(e.kind).toBe('route'); // a ROUTE, not 'ambiguous' — the cascade plan is never constructed
+    if (e.kind === 'route') expect(e.decision.tierKey).toBe('cheap');
+  });
+
+  it('minimal scores strictly below its hintless twin at the router (both low-banded)', async () => {
+    const r = new StructuralRouter(cfg(), store());
+    const twin = ir('Z'.repeat(4_000)); // ambient .30 × .5 = .15 → low
+    const minimal: NormalizedRequest = {
+      ...twin,
+      reasoning: { protocol: 'openai', effort: 'minimal' },
+    };
+    const snap = snapshot([rule('r', 'auto_low', 'tier:cheap')]);
+    const dTwin = await r.decide(PRINCIPAL, 'a1', twin, snap);
+    const dMin = await r.decide(PRINCIPAL, 'a1', minimal, snap);
+    expect(dTwin).not.toBeNull();
+    expect(dMin).not.toBeNull();
+    const twinScore = scoreOf(dTwin!.routingReason);
+    expect(twinScore).toBeCloseTo(0.15, 2); // legacy ambient math, untouched
+    expect(scoreOf(dMin!.routingReason)).toBeLessThan(twinScore);
+    expect(dMin!.routingReason).toContain('think=0.25');
   });
 });
 

@@ -1,5 +1,6 @@
 import { loadConfig, registerConfig, z } from '@polyrouter/shared';
 import {
+  DEFAULT_REASONING_ADJUST,
   DEFAULT_STRUCTURAL_WEIGHTS,
   STRUCTURAL_WEIGHT_KEYS,
   type StructuralWeights,
@@ -41,6 +42,10 @@ export interface StructuralConfig {
   readonly low: number;
   readonly baselineAlpha: number;
   readonly weights: StructuralWeights;
+  /** Declared-reasoning adjustment magnitude R (add-auto-hint-features);
+   * bounded [0, 0.5]. Configured as the `reasoning` key of
+   * ROUTING_STRUCTURAL_WEIGHTS — EXCLUDED from ambient normalization. */
+  readonly reasoningAdjust: number;
 }
 
 export interface CascadeConfig {
@@ -59,10 +64,18 @@ export interface RoutingConfig {
   readonly cascade: CascadeConfig;
 }
 
-/** Parse + validate the optional weight override, merged over the built-ins and
- * normalized to sum 1. Rejects unknown keys and any non-finite/negative value. */
-export function parseStructuralWeights(json: string | undefined): StructuralWeights {
-  if (json === undefined || json.trim() === '') return DEFAULT_STRUCTURAL_WEIGHTS;
+/** Parse + validate the optional weight override: the 7 AMBIENT keys are merged
+ * over the built-ins and normalized to sum 1 (byte-identical legacy semantics);
+ * the `reasoning` key is the declared-adjustment MAGNITUDE R — excluded from
+ * normalization, bounded [0, 0.5] (add-auto-hint-features). Rejects unknown
+ * keys and any non-finite/negative value. */
+export function parseStructuralWeights(json: string | undefined): {
+  weights: StructuralWeights;
+  reasoningAdjust: number;
+} {
+  if (json === undefined || json.trim() === '') {
+    return { weights: DEFAULT_STRUCTURAL_WEIGHTS, reasoningAdjust: DEFAULT_REASONING_ADJUST };
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(json);
@@ -73,9 +86,17 @@ export function parseStructuralWeights(json: string | undefined): StructuralWeig
     throw new Error('ROUTING_STRUCTURAL_WEIGHTS must be a JSON object');
   }
   const obj = parsed as Record<string, unknown>;
-  const known = new Set<string>(STRUCTURAL_WEIGHT_KEYS);
+  const known = new Set<string>([...STRUCTURAL_WEIGHT_KEYS, 'reasoning']);
   for (const k of Object.keys(obj)) {
     if (!known.has(k)) throw new Error(`ROUTING_STRUCTURAL_WEIGHTS has unknown key "${k}"`);
+  }
+  let reasoningAdjust = DEFAULT_REASONING_ADJUST;
+  if ('reasoning' in obj) {
+    const r = obj['reasoning'];
+    if (typeof r !== 'number' || !Number.isFinite(r) || r < 0 || r > 0.5) {
+      throw new Error('ROUTING_STRUCTURAL_WEIGHTS.reasoning must be a finite number in [0, 0.5]');
+    }
+    reasoningAdjust = r;
   }
   const merged: Record<keyof StructuralWeights, number> = { ...DEFAULT_STRUCTURAL_WEIGHTS };
   for (const k of STRUCTURAL_WEIGHT_KEYS) {
@@ -99,7 +120,7 @@ export function parseStructuralWeights(json: string | undefined): StructuralWeig
     }
     normalized[k] = n;
   }
-  return normalized;
+  return { weights: normalized, reasoningAdjust };
 }
 
 /** Pure: apply the semantic (cross-field) validation the zod fragment cannot —
@@ -124,13 +145,15 @@ export function buildRoutingConfig(env: RoutingEnv): RoutingConfig {
   if (!(alpha > 0 && alpha <= 1)) {
     throw new Error('ROUTING_STRUCTURAL_BASELINE_ALPHA must be in (0, 1]');
   }
+  const structuralWeights = parseStructuralWeights(env.ROUTING_STRUCTURAL_WEIGHTS);
   return {
     autoLayers,
     structural: {
       high,
       low,
       baselineAlpha: alpha,
-      weights: parseStructuralWeights(env.ROUTING_STRUCTURAL_WEIGHTS),
+      weights: structuralWeights.weights,
+      reasoningAdjust: structuralWeights.reasoningAdjust,
     },
     cascade: {
       enabled: autoLayers.has('cascade'),

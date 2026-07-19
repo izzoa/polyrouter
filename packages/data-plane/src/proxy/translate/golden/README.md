@@ -46,6 +46,9 @@ a protocol that lacks them** (see `request-fidelity.spec.ts`):
 - reasoning controls — OpenAI `reasoning_effort` and Anthropic `thinking` are
   tagged with their source protocol in the IR and emitted **only** back to that
   protocol; each is **dropped** crossing to the other (no semantic map).
+- `output_config` (Anthropic effort / format) — source-tagged opaque
+  passthrough carried Anthropic→Anthropic; **dropped** crossing to OpenAI (no
+  semantic map; the translator never interprets the payload).
 - `temperature` — **clamped to `[0, 1]`** when serializing to Anthropic (OpenAI
   ranges 0–2), a documented lossy mapping so a legal OpenAI request doesn't 400.
 

@@ -53,15 +53,33 @@ describe('buildRoutingConfig', () => {
 
 describe('parseStructuralWeights', () => {
   it('returns the built-ins when absent/empty', () => {
-    expect(parseStructuralWeights(undefined)).toEqual(DEFAULT_STRUCTURAL_WEIGHTS);
-    expect(parseStructuralWeights('')).toEqual(DEFAULT_STRUCTURAL_WEIGHTS);
+    expect(parseStructuralWeights(undefined)).toEqual({
+      weights: DEFAULT_STRUCTURAL_WEIGHTS,
+      reasoningAdjust: 0.1,
+    });
+    expect(parseStructuralWeights('').weights).toEqual(DEFAULT_STRUCTURAL_WEIGHTS);
   });
 
   it('merges an override over the built-ins and normalizes to sum 1', () => {
-    const w = parseStructuralWeights('{"size":0.5}');
+    const { weights: w } = parseStructuralWeights('{"size":0.5}');
     const sum = Object.values(w).reduce((a, b) => a + b, 0);
     expect(sum).toBeCloseTo(1, 6);
     expect(w.size).toBeGreaterThan(DEFAULT_STRUCTURAL_WEIGHTS.size);
+  });
+
+  it('legacy 7-key overrides are byte-identical; `reasoning` is a bounded magnitude, not a weight (add-auto-hint-features)', () => {
+    const legacy = '{"size":0.4,"code":0.2,"tools":0.1,"schema":0.1,"depth":0.1,"multimodal":0.05,"maxTokens":0.05}';
+    const parsed = parseStructuralWeights(legacy);
+    const sum = Object.values(parsed.weights).reduce((a, b) => a + b, 0);
+    expect(sum).toBeCloseTo(1, 6);
+    expect(parsed.weights.size).toBeCloseTo(0.4, 6); // ambient normalization untouched by the new key
+    expect(parsed.reasoningAdjust).toBe(0.1); // default fills in — no dilution of ambient ratios
+
+    expect(parseStructuralWeights('{"reasoning":0.25}').reasoningAdjust).toBe(0.25);
+    expect(parseStructuralWeights('{"reasoning":0}').reasoningAdjust).toBe(0);
+    expect(() => parseStructuralWeights('{"reasoning":0.6}')).toThrow(); // bound [0, 0.5]
+    expect(() => parseStructuralWeights('{"reasoning":-0.1}')).toThrow();
+    expect(() => parseStructuralWeights('{"reasoning":"high"}')).toThrow();
   });
 
   it('rejects unknown keys, negatives, non-finite values, a zero sum, and bad JSON', () => {

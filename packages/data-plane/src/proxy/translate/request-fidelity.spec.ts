@@ -99,9 +99,12 @@ describe('E2.5 — response_format + source-tagged reasoning', () => {
   });
 
   it('OpenAI reasoning is DROPPED crossing to Anthropic (no thinking fabricated)', () => {
-    const ir = oai.requestIn(
-      { model: 'gpt', ...withMax, messages: [{ role: 'user', content: 'hi' }], reasoning_effort: 'high' }
-    );
+    const ir = oai.requestIn({
+      model: 'gpt',
+      ...withMax,
+      messages: [{ role: 'user', content: 'hi' }],
+      reasoning_effort: 'high',
+    });
     const out = ant.requestOut(ir) as AntRequest;
     expect(out.thinking).toBeUndefined();
   });
@@ -118,6 +121,25 @@ describe('E2.5 — response_format + source-tagged reasoning', () => {
     const oaiOut = oai.requestOut(ir) as OaiRequest;
     expect(oaiOut.reasoning_effort).toBeUndefined();
     expect(JSON.stringify(oaiOut)).not.toContain('thinking');
+  });
+
+  it('Anthropic output_config survives Anthropic→Anthropic verbatim and is DROPPED crossing to OpenAI (add-auto-hint-features)', () => {
+    const outputConfig = {
+      effort: 'xhigh',
+      format: { type: 'json_schema', schema: { type: 'object' } },
+    };
+    const ir = ant.requestIn({
+      model: 'claude',
+      max_tokens: 100,
+      messages: [{ role: 'user', content: 'hi' }],
+      output_config: outputConfig,
+    });
+    expect(ir.outputConfig).toEqual({ protocol: 'anthropic', value: outputConfig });
+    const antOut = ant.requestOut(ir) as AntRequest & { output_config?: unknown };
+    expect(antOut.output_config).toEqual(outputConfig); // opaque, verbatim
+    const oaiOut = oai.requestOut(ir) as OaiRequest;
+    expect(JSON.stringify(oaiOut)).not.toContain('output_config'); // documented drop, nothing fabricated
+    expect(oaiOut.response_format).toBeUndefined();
   });
 });
 
@@ -136,13 +158,19 @@ describe('E2.4/E2.3 — a non-text system block is skipped, not emitted as an em
 
 describe('E2.9 — temperature clamp to Anthropic range', () => {
   it('clamps an out-of-range OpenAI temperature and passes in-range through', () => {
-    const hot = oai.requestIn(
-      { model: 'gpt', max_completion_tokens: 100, temperature: 1.5, messages: [{ role: 'user', content: 'hi' }] }
-    );
+    const hot = oai.requestIn({
+      model: 'gpt',
+      max_completion_tokens: 100,
+      temperature: 1.5,
+      messages: [{ role: 'user', content: 'hi' }],
+    });
     expect((ant.requestOut(hot) as AntRequest).temperature).toBe(1);
-    const warm = oai.requestIn(
-      { model: 'gpt', max_completion_tokens: 100, temperature: 0.7, messages: [{ role: 'user', content: 'hi' }] }
-    );
+    const warm = oai.requestIn({
+      model: 'gpt',
+      max_completion_tokens: 100,
+      temperature: 0.7,
+      messages: [{ role: 'user', content: 'hi' }],
+    });
     expect((ant.requestOut(warm) as AntRequest).temperature).toBe(0.7);
   });
 });

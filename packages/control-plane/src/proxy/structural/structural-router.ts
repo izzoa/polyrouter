@@ -68,6 +68,7 @@ export class StructuralRouter {
         high: this.cfg.structural.high,
         low: this.cfg.structural.low,
         weights: this.cfg.structural.weights,
+        reasoningAdjust: this.cfg.structural.reasoningAdjust,
       });
       // Fire-and-forget learning update (off the response path).
       try {

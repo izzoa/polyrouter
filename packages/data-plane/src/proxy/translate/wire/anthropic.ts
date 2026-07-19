@@ -57,6 +57,8 @@ export interface AntRequest {
   top_p?: number;
   stop_sequences?: string[];
   thinking?: unknown;
+  /** Opaque output-control block (effort / format) — carried, never interpreted. */
+  output_config?: unknown;
   stream?: boolean;
 }
 

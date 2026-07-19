@@ -10,7 +10,7 @@ import { CascadeRouter } from './cascade-router';
 function cfg(over?: Partial<RoutingConfig['cascade']>): RoutingConfig {
   return {
     autoLayers: new Set(['structural', 'cascade']),
-    structural: { high: 0.6, low: 0.25, baselineAlpha: 0.2, weights: DEFAULT_STRUCTURAL_WEIGHTS },
+    structural: { high: 0.6, low: 0.25, baselineAlpha: 0.2, weights: DEFAULT_STRUCTURAL_WEIGHTS, reasoningAdjust: 0.1 },
     cascade: { enabled: true, qualityThreshold: 0.5, cheapTimeoutMs: 30_000, ...over },
   };
 }

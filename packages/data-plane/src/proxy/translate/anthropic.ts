@@ -257,6 +257,9 @@ function requestIn(wireInput: unknown): NormalizedRequest {
     ...(wire.thinking !== undefined
       ? { reasoning: { protocol: 'anthropic' as const, thinking: wire.thinking } }
       : {}),
+    ...(wire.output_config !== undefined
+      ? { outputConfig: { protocol: 'anthropic' as const, value: wire.output_config } }
+      : {}),
     ...(wire.stream !== undefined ? { stream: wire.stream } : {}),
   };
 }
@@ -331,6 +334,9 @@ function requestOut(ir: NormalizedRequest, options: AnthropicAdapterOptions): An
     // `thinking` is emitted only back to Anthropic (same-protocol); an OpenAI-tagged
     // reasoning control is a documented drop here (E2.5).
     ...(ir.reasoning?.protocol === 'anthropic' ? { thinking: ir.reasoning.thinking } : {}),
+    // `output_config` is same-protocol passthrough like `thinking`; the OpenAI
+    // adapter drops it (documented — golden README dropped-field list).
+    ...(ir.outputConfig?.protocol === 'anthropic' ? { output_config: ir.outputConfig.value } : {}),
     ...(ir.stream !== undefined ? { stream: ir.stream } : {}),
   };
 }

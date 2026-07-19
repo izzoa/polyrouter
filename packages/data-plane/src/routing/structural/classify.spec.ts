@@ -17,6 +17,8 @@ function features(p: Partial<StructuralFeatures>): StructuralFeatures {
     multimodalPresent: false,
     conversationDepth: 0,
     maxOutputTokens: 0,
+    reasoningDemand: null,
+    responseFormatDemand: false,
     ...p,
   };
 }
@@ -105,6 +107,131 @@ describe('classifyStructural', () => {
     );
     expect(v.score).toBe(0);
     expect(v.band).toBe('low');
+  });
+});
+
+describe('declared reasoning demand (add-auto-hint-features)', () => {
+  const R = 0.1; // DEFAULT_REASONING_ADJUST
+
+  it('NO-HINT PARITY: the three pinned legacy cases band identically to the pre-change classifier (r1-High-3)', () => {
+    // Saturated size + code + schema: exactly the high threshold.
+    const a = classifyStructural(
+      features({ effectiveInputChars: 8_000, codeBlockChars: 4_000, toolSchemaDemand: true }),
+      null,
+      OPTS,
+    );
+    expect(a.score).toBeCloseTo(0.6, 10);
+    expect(a.band).toBe('high');
+    // Saturated size alone.
+    const b = classifyStructural(features({ effectiveInputChars: 8_000 }), null, OPTS);
+    expect(b.score).toBeCloseTo(0.3, 10);
+    expect(b.band).toBe('ambiguous');
+    // Size sub-score 0.9.
+    const c = classifyStructural(features({ effectiveInputChars: 7_200 }), null, OPTS);
+    expect(c.score).toBeCloseTo(0.27, 10);
+    expect(c.band).toBe('ambiguous');
+  });
+
+  it('NO-HINT PARITY mechanism: null demand adds no adjustment term', () => {
+    const base = features({ effectiveInputChars: 2_400 });
+    const withNull = classifyStructural(base, null, OPTS);
+    const legacyScore = DEFAULT_STRUCTURAL_WEIGHTS.size * (2_400 / 8_000);
+    expect(withNull.score).toBeCloseTo(legacyScore, 10);
+  });
+
+  it('centered adjustment: none −R, minimal −R/2, low 0, medium +R/2 — presence-aware', () => {
+    const base = features({ effectiveInputChars: 4_000 }); // ambient .25·.5 = .125
+    const ambient = classifyStructural(base, null, OPTS).score;
+    const at = (demand: number) =>
+      classifyStructural(
+        features({ effectiveInputChars: 4_000, reasoningDemand: demand }),
+        null,
+        OPTS,
+      ).score;
+    expect(at(0)).toBeCloseTo(Math.max(0, ambient - R), 10); // none
+    expect(at(0.25)).toBeCloseTo(ambient - R / 2, 10); // minimal
+    expect(at(0.5)).toBeCloseTo(ambient, 10); // low / adaptive / unknown → centered zero
+    expect(at(0.75)).toBeCloseTo(ambient + R / 2, 10); // medium
+  });
+
+  it('clamps at both ends', () => {
+    const zero = classifyStructural(features({ reasoningDemand: 0 }), null, OPTS);
+    expect(zero.score).toBe(0); // ambient 0 − R clamps to 0
+    const maxed = classifyStructural(
+      features({
+        effectiveInputChars: 80_000,
+        codeBlockChars: 40_000,
+        toolCount: 80,
+        toolSchemaDemand: true,
+        conversationDepth: 200,
+        multimodalPresent: true,
+        maxOutputTokens: 40_960,
+        reasoningDemand: 0.75,
+      }),
+      null,
+      OPTS,
+    );
+    expect(maxed.score).toBeLessThanOrEqual(1);
+  });
+
+  it('the declared-maximal band rule fires at demand exactly 1, independent of R', () => {
+    const v = classifyStructural(
+      features({ reasoningDemand: 1 }),
+      null,
+      { ...OPTS, reasoningAdjust: 0 }, // R=0 disables ONLY the centered adjustment
+    );
+    expect(v.band).toBe('high');
+    expect(v.reason).toContain('declared=max');
+  });
+
+  it('a just-below-saturation demand does NOT trigger the rule', () => {
+    const v = classifyStructural(features({ reasoningDemand: 0.99 }), null, OPTS);
+    expect(v.band).not.toBe('high');
+    expect(v.reason).not.toContain('declared=max');
+  });
+
+  it('AMBIENT-HIGH BAND FLOOR: no permitted R can demote heavy structure', () => {
+    const heavy = { effectiveInputChars: 8_000, codeBlockChars: 4_000, toolSchemaDemand: true };
+    const ambient = classifyStructural(features(heavy), null, OPTS);
+    expect(ambient.band).toBe('high'); // .25+.18+.10 = ... wait — legacy weights .30+.20+.10 = .60
+    const demoted = classifyStructural(
+      features({ ...heavy, reasoningDemand: 0 }),
+      null,
+      { ...OPTS, reasoningAdjust: 0.5 }, // the maximum permitted R
+    );
+    expect(demoted.band).toBe('high'); // the downward adjustment is not applied
+    expect(demoted.score).toBeCloseTo(ambient.score, 10);
+  });
+
+  it('cascade bypass is INTENDED: ambiguous ambient + declared none routes low directly', () => {
+    const v = classifyStructural(
+      features({ effectiveInputChars: 8_000, reasoningDemand: 0 }), // ambient .30 − .10 = .20
+      null,
+      OPTS,
+    );
+    expect(v.score).toBeCloseTo(0.2, 10);
+    expect(v.band).toBe('low'); // ≤ .25 → cheap directly, no L3 verify
+  });
+
+  it('schema sub-score ORs tool-schema and response-format demand, with rf= provenance', () => {
+    const viaTool = classifyStructural(features({ toolSchemaDemand: true }), null, OPTS);
+    const viaRf = classifyStructural(features({ responseFormatDemand: true }), null, OPTS);
+    const both = classifyStructural(
+      features({ toolSchemaDemand: true, responseFormatDemand: true }),
+      null,
+      OPTS,
+    );
+    expect(viaTool.score).toBeCloseTo(viaRf.score, 10);
+    expect(both.score).toBeCloseTo(viaTool.score, 10); // OR, no double count
+    expect(viaRf.reason).toContain('rf=1.00');
+    expect(viaTool.reason).toContain('rf=0.00');
+  });
+
+  it('reason carries think= demand or -- when absent', () => {
+    expect(classifyStructural(features({}), null, OPTS).reason).toContain('think=--');
+    expect(classifyStructural(features({ reasoningDemand: 0.25 }), null, OPTS).reason).toContain(
+      'think=0.25',
+    );
   });
 });
 

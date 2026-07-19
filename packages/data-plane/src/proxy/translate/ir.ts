@@ -126,6 +126,9 @@ export interface NormalizedRequest {
   readonly responseFormat?: unknown;
   /** Reasoning/thinking control, tagged with its source protocol (see {@link ReasoningControl}). */
   readonly reasoning?: ReasoningControl;
+  /** Anthropic `output_config` (effort / format), source-tagged opaque passthrough —
+   * emitted only back to Anthropic; a documented drop crossing to OpenAI. */
+  readonly outputConfig?: { readonly protocol: 'anthropic'; readonly value: unknown };
   /** Whether the client asked for a streamed response. */
   readonly stream?: boolean;
   /** Whether the client opted into a terminal usage chunk (OpenAI

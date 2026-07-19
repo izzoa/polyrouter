@@ -55,7 +55,14 @@ export interface StructuralThresholds {
   readonly high: number;
   readonly low: number;
   readonly weights: StructuralWeights;
+  /** Declared-reasoning adjustment magnitude R (add-auto-hint-features):
+   * `score = clamp01(ambient + R × (2·demand − 1))`, applied ONLY when a
+   * reasoning control is present. Bounded [0, 0.5]; default 0.10. Independent
+   * of the declared-maximal band rule (R = 0 disables only the adjustment). */
+  readonly reasoningAdjust?: number;
 }
+
+export const DEFAULT_REASONING_ADJUST = 0.1;
 
 export type StructuralBand = 'high' | 'low' | 'ambiguous';
 
@@ -87,12 +94,15 @@ export function classifyStructural(
     size: sat(sizeDelta, SIZE_SAT),
     code: sat(f.codeBlockChars, CODE_SAT),
     tools: sat(f.toolCount, TOOLS_SAT),
-    schema: f.toolSchemaDemand ? 1 : 0,
+    // Structured-output demand from EITHER source (add-auto-hint-features): a
+    // deliberate broadening of the `schema` weight's meaning, provenance kept
+    // in the reason (`rf=`).
+    schema: f.toolSchemaDemand || f.responseFormatDemand ? 1 : 0,
     depth: sat(f.conversationDepth, DEPTH_SAT),
     multimodal: f.multimodalPresent ? 1 : 0,
     maxTokens: sat(f.maxOutputTokens, MAXTOK_SAT),
   };
-  const score =
+  const ambient =
     w.size * sub.size +
     w.code * sub.code +
     w.tools * sub.tools +
@@ -100,11 +110,34 @@ export function classifyStructural(
     w.depth * sub.depth +
     w.multimodal * sub.multimodal +
     w.maxTokens * sub.maxTokens;
-  const band: StructuralBand =
-    score >= opts.high ? 'high' : score <= opts.low ? 'low' : 'ambiguous';
+
+  const demand = f.reasoningDemand; // null = no declared control (presence bit)
+  const R = opts.reasoningAdjust ?? DEFAULT_REASONING_ADJUST;
+  // Presence-aware centered adjustment OUTSIDE the normalized ambient vector —
+  // hint-free requests score byte-identically to the pre-change classifier.
+  // AMBIENT-HIGH BAND FLOOR: a downward adjustment is never applied when the
+  // ambient alone crosses `high` (no permitted R can demote heavy structure).
+  let adjustment = demand === null ? 0 : R * (2 * demand - 1);
+  if (adjustment < 0 && ambient >= opts.high) adjustment = 0;
+  const score = Math.min(1, Math.max(0, ambient + adjustment));
+
+  // Declared-maximal band rule — INDEPENDENT of R: a demand of exactly 1
+  // (high/xhigh/max effort, or a thinking budget at/above saturation) bands
+  // high directly; the router still falls through to `default` when no
+  // auto_high target resolves, like any confident band.
+  const declaredMax = demand === 1;
+  const band: StructuralBand = declaredMax
+    ? 'high'
+    : score >= opts.high
+      ? 'high'
+      : score <= opts.low
+        ? 'low'
+        : 'ambiguous';
   const reason =
-    `structural:${band} score=${score.toFixed(2)} size=${sub.size.toFixed(2)} ` +
+    `structural:${band}${declaredMax ? ' declared=max' : ''} score=${score.toFixed(2)} ` +
+    `size=${sub.size.toFixed(2)} ` +
     `code=${sub.code.toFixed(2)} tools=${sub.tools.toFixed(2)} schema=${sub.schema.toFixed(2)} ` +
-    `depth=${sub.depth.toFixed(2)} mm=${sub.multimodal.toFixed(2)} maxtok=${sub.maxTokens.toFixed(2)}`;
+    `depth=${sub.depth.toFixed(2)} mm=${sub.multimodal.toFixed(2)} maxtok=${sub.maxTokens.toFixed(2)} ` +
+    `think=${demand === null ? '--' : demand.toFixed(2)} rf=${f.responseFormatDemand ? '1.00' : '0.00'}`;
   return { band, score, reason };
 }

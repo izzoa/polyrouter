@@ -198,21 +198,21 @@ describe('dashboard shell (auth-gated)', () => {
       const firstTierCard = host.querySelector<HTMLElement>('.panel');
       expect(firstTierCard).not.toBeNull();
       if (!firstTierCard) return;
-      const addViaSelect = (): void => {
-        const select = firstTierCard.querySelector<HTMLSelectElement>('select');
-        if (!select) throw new Error('add-model select missing');
-        const option = [...select.options].find((o) => o.value !== '');
-        if (!option) throw new Error('no addable models left');
-        select.value = option.value;
-        select.dispatchEvent(new Event('change', { bubbles: true }));
+      // Commit through the combobox: ArrowDown opens with the first addable model
+      // active, Enter adds it (the same addTierModel chain the old select drove).
+      const addViaPicker = (): void => {
+        const input = firstTierCard.querySelector<HTMLInputElement>('input[role="combobox"]');
+        if (!input) throw new Error('add-model combobox missing');
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
       };
       const rows = () => firstTierCard.querySelectorAll('.chain-row').length;
       const start = rows();
       expect(start).toBe(3);
-      addViaSelect();
-      addViaSelect();
+      addViaPicker();
+      addViaPicker();
       expect(rows()).toBe(5);
-      addViaSelect();
+      addViaPicker();
       expect(rows()).toBe(5);
       expect(host.querySelector('.toast')?.textContent).toBe('Max 5 models per tier');
     } finally {

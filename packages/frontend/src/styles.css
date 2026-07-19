@@ -488,6 +488,111 @@ select:focus {
   box-shadow: var(--shadow-toast);
 }
 
+/* Visually hidden but exposed to assistive tech (labels, live regions). */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ModelPicker — the tier editor's add-model combobox. */
+.mp-input {
+  background: var(--bg);
+  border: 1px dashed var(--border);
+  border-radius: 7px;
+  padding: 5px 24px 5px 8px;
+  width: 220px;
+  font:
+    400 12px 'Geist',
+    sans-serif;
+  color: var(--text);
+}
+.mp-input::placeholder {
+  color: var(--text3);
+}
+.mp-chevron {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+  font-size: 9px;
+  color: var(--text3);
+}
+.mp-panel {
+  position: fixed;
+  z-index: 55; /* above modal(50)/drawer(41), below toast(60) */
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.mp-listbox {
+  overflow-y: auto;
+  padding: 4px;
+}
+.mp-group-h {
+  font:
+    500 10.5px 'Geist',
+    sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text3);
+  padding: 6px 8px 3px;
+}
+.mp-option {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font:
+    400 12px 'Geist Mono',
+    monospace;
+  color: var(--text);
+}
+.mp-option:hover {
+  background: var(--chip);
+}
+.mp-price {
+  margin-left: auto;
+  font:
+    400 11px 'Geist Mono',
+    monospace;
+  color: var(--text3);
+}
+.mp-option.active,
+.mp-option.active .mp-price {
+  color: var(--accent-deep);
+}
+.mp-option.active {
+  background: var(--accent-bg);
+}
+.mp-empty {
+  padding: 12px 12px;
+  font:
+    400 11.5px 'Geist',
+    sans-serif;
+  color: var(--text3);
+}
+.mp-footer {
+  padding: 6px 12px;
+  border-top: 1px solid var(--border2);
+  font:
+    400 10.5px 'Geist',
+    sans-serif;
+  color: var(--text3);
+}
+
 .snippet-box {
   background: var(--bg);
   border: 1px solid var(--border2);

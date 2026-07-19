@@ -1,4 +1,5 @@
 import { createSignal, For, onMount, Show } from 'solid-js';
+import { ModelPicker } from '../components/ModelPicker';
 import { Toggle } from '../components/Toggle';
 import type { AutoLayers, TierEntryDto } from '../data/api';
 import { fmtUsd } from '../data/format';
@@ -159,6 +160,7 @@ export function Routing() {
                     <div style="display:flex;align-items:baseline;gap:10px">
                       <span
                         class="mono"
+                        id={`tier-h-${t.id}`}
                         style="font:500 13.5px 'Geist Mono',monospace;color:var(--text)"
                       >
                         {t.key}
@@ -267,33 +269,12 @@ export function Routing() {
                     </div>
                   </Show>
                   <div style="padding:8px 18px">
-                    <select
-                      class="select"
-                      aria-label={`Add model to tier ${t.key}`}
-                      style="border:1px dashed var(--border);width:auto;color:var(--text3);cursor:pointer;padding:5px 8px;font:400 12px 'Geist',sans-serif"
-                      onChange={(e) => {
-                        const id = e.currentTarget.value;
-                        e.currentTarget.value = '';
-                        if (id) app.addTierModel(t.id, id);
-                      }}
-                    >
-                      <option value="" disabled selected>
-                        + Add model…
-                      </option>
-                      <For each={groupModelsByProvider(addableModels(t.id), state.providers)}>
-                        {(g) => (
-                          <optgroup label={g.label}>
-                            <For each={g.models}>
-                              {(m) => (
-                                <option
-                                  value={m.id}
-                                >{`${m.externalModelId} — ${modelPriceLabel(m)}`}</option>
-                              )}
-                            </For>
-                          </optgroup>
-                        )}
-                      </For>
-                    </select>
+                    <ModelPicker
+                      groups={groupModelsByProvider(addableModels(t.id), state.providers)}
+                      labelledBy={`tier-h-${t.id}`}
+                      priceLabel={(m) => modelPriceLabel(m)}
+                      onCommit={(id) => app.addTierModel(t.id, id)}
+                    />
                   </div>
                 </div>
               )}

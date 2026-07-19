@@ -859,11 +859,14 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     // would restore stale visible state AND the stale rollback baseline).
     const seq = routingSeq;
     try {
-      const [tiers, models, rules, autoLayers] = await Promise.all([
+      // Providers ride along so the Routing page can label its model groups by
+      // provider name even when the Providers page was never visited.
+      const [tiers, models, rules, autoLayers, providerRows] = await Promise.all([
         client.listTiers(),
         client.listModels(),
         client.listRules(),
         client.getAutoLayers(),
+        client.listProviders(),
       ]);
       const entries = await Promise.all(tiers.map((t) => client.listTierEntries(t.id)));
       if (routingSeq !== seq) return; // a mutation raced in — keep the newer state
@@ -873,6 +876,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           s.allModels = models;
           s.rules = rules;
           s.autoLayers = autoLayers;
+          s.providers = providerRows.map(toProvider);
           s.tierEntries = {};
           s.confirmedEntries = {};
           tiers.forEach((t, i) => {

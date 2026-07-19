@@ -33,6 +33,27 @@ function modelPriceLabel(m: Model | undefined): string {
   return `${fmtUsd(ep.inputPricePer1m)} / ${fmtUsd(ep.outputPricePer1m)} per 1M${tag}`;
 }
 
+/** The add-model dropdown's `<optgroup>` sections: one per provider (labelled by
+ * provider name), models alphabetical within, groups alphabetical. Exported for
+ * the unit test. */
+export function groupModelsByProvider(
+  models: readonly Model[],
+  providers: readonly { id: string; name: string }[],
+): Array<{ label: string; models: Model[] }> {
+  const byProvider = new Map<string, Model[]>();
+  for (const m of models) {
+    const list = byProvider.get(m.providerId) ?? [];
+    list.push(m);
+    byProvider.set(m.providerId, list);
+  }
+  return [...byProvider.entries()]
+    .map(([providerId, group]) => ({
+      label: providers.find((p) => p.id === providerId)?.name ?? 'Other',
+      models: group.sort((a, b) => a.externalModelId.localeCompare(b.externalModelId)),
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+}
+
 function structuralLayers(al: AutoLayers | null): LayerRow[] {
   return [
     {
@@ -259,11 +280,17 @@ export function Routing() {
                       <option value="" disabled selected>
                         + Add model…
                       </option>
-                      <For each={addableModels(t.id)}>
-                        {(m) => (
-                          <option
-                            value={m.id}
-                          >{`${m.externalModelId} — ${modelPriceLabel(m)}`}</option>
+                      <For each={groupModelsByProvider(addableModels(t.id), state.providers)}>
+                        {(g) => (
+                          <optgroup label={g.label}>
+                            <For each={g.models}>
+                              {(m) => (
+                                <option
+                                  value={m.id}
+                                >{`${m.externalModelId} — ${modelPriceLabel(m)}`}</option>
+                              )}
+                            </For>
+                          </optgroup>
                         )}
                       </For>
                     </select>

@@ -1,6 +1,7 @@
 import { createSignal, For, onMount, Show } from 'solid-js';
 import { Toggle } from '../components/Toggle';
 import type { AutoLayers, TierEntryDto } from '../data/api';
+import { fmtUsd } from '../data/format';
 import { useApp } from '../state/context';
 import type { Model } from '../types';
 
@@ -29,7 +30,7 @@ function modelPriceLabel(m: Model | undefined): string {
   if (!ep) return 'unpriced';
   const tag = ep.estimated ? ' · est.' : '';
   if (ep.isFree) return `free${tag}`;
-  return `$${String(ep.inputPricePer1m)} / $${String(ep.outputPricePer1m)} per 1M${tag}`;
+  return `${fmtUsd(ep.inputPricePer1m)} / ${fmtUsd(ep.outputPricePer1m)} per 1M${tag}`;
 }
 
 function structuralLayers(al: AutoLayers | null): LayerRow[] {

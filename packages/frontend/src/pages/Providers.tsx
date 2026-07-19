@@ -1,5 +1,6 @@
 import { createSignal, For, Show } from 'solid-js';
 import type { ModelPricingInput } from '../data/api';
+import { fmtUsd } from '../data/format';
 import { isPriceEditableKind, providerKindLabel } from '../state/appState';
 import { useApp } from '../state/context';
 import type { Model, Provider, ProviderStatus } from '../types';
@@ -18,7 +19,7 @@ function priceText(m: Model): string {
   const ep = m.effectivePrice;
   if (ep === null) return 'unpriced';
   if (ep.isFree) return 'free';
-  return `$${String(ep.inputPricePer1m)} / $${String(ep.outputPricePer1m)} per 1M`;
+  return `${fmtUsd(ep.inputPricePer1m)} / ${fmtUsd(ep.outputPricePer1m)} per 1M`;
 }
 
 /** "· expires in Nh" from the non-secret credential expiry (blank when unknown/past —

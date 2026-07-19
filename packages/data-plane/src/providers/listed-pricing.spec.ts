@@ -43,6 +43,23 @@ describe('parseModelList — provider-listed pricing (display estimate)', () => 
     });
   });
 
+  it('normalizes ×1e6 float noise at the boundary (never stores $0.19999999999999998)', () => {
+    // 0.0000002 × 1e6 = 0.19999999999999998 in float64 — the stored estimate must be
+    // the clean value the provider actually lists.
+    const page = {
+      data: [
+        {
+          id: 'tencent/hy3',
+          pricing: { prompt: '0.0000002', completion: '0.0000008' },
+        },
+      ],
+    };
+    expect(parseModelList(page).find((m) => m.id === 'tencent/hy3')?.pricing).toEqual({
+      inputPricePer1m: 0.2,
+      outputPricePer1m: 0.8,
+    });
+  });
+
   it('marks isFree only when every listed monetary dimension is zero', () => {
     expect(byId('meta/muse-spark-1.1:free')?.pricing).toEqual({
       inputPricePer1m: 0,

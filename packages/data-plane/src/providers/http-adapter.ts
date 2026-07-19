@@ -324,14 +324,17 @@ function parseListedPricing(rec: Record<string, unknown>): ProviderModelInfo['pr
       break;
     }
   }
-  const inputPricePer1m = prompt * PER_MILLION;
-  const outputPricePer1m = completion * PER_MILLION;
+  const rawInput = prompt * PER_MILLION;
+  const rawOutput = completion * PER_MILLION;
   // Guard the scaling itself: a huge per-token value can overflow to Infinity (which
   // would serialize to JSON null / reach the DB as a bad value) — omit rather than emit it.
-  if (!Number.isFinite(inputPricePer1m) || !Number.isFinite(outputPricePer1m)) return undefined;
+  if (!Number.isFinite(rawInput) || !Number.isFinite(rawOutput)) return undefined;
+  // Normalize the ×1e6 float noise at the boundary (0.0000002 × 1e6 =
+  // 0.19999999999999998): 12 significant digits preserves every real price and
+  // stores the clean value ("0.2"), not the artifact.
   return {
-    inputPricePer1m,
-    outputPricePer1m,
+    inputPricePer1m: Number(rawInput.toPrecision(12)),
+    outputPricePer1m: Number(rawOutput.toPrecision(12)),
     ...(allZero ? { isFree: true } : {}),
   };
 }

@@ -11,6 +11,21 @@ import { DEFAULT_SESSION, FakeApiClient } from '../test/fakeClient';
 import type { ProviderForm } from '../types';
 import { PROVIDER_KINDS, createAppStore } from './appState';
 
+describe('setup-guide dismissal', () => {
+  it('dismisses, persists per browser, and honors the stored flag on the next boot', () => {
+    localStorage.removeItem('polyrouter-setup-dismissed');
+    const s = createAppStore(new FakeApiClient({ session: DEFAULT_SESSION }));
+    expect(s.state.setupDismissed).toBe(false);
+    s.dismissSetupGuide();
+    expect(s.state.setupDismissed).toBe(true);
+    expect(localStorage.getItem('polyrouter-setup-dismissed')).toBe('1');
+    // A fresh store (new page load) starts dismissed.
+    const s2 = createAppStore(new FakeApiClient({ session: DEFAULT_SESSION }));
+    expect(s2.state.setupDismissed).toBe(true);
+    localStorage.removeItem('polyrouter-setup-dismissed');
+  });
+});
+
 describe('PROVIDER_KINDS', () => {
   it("no kind labels its CREDENTIAL input 'Base URL' (the form has a dedicated Base URL field)", () => {
     // Regression: custom/local once carried field:'Base URL', so the API-key input

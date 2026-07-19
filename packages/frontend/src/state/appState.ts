@@ -74,6 +74,8 @@ export interface AppState {
   // chrome / navigation
   page: Page;
   theme: Theme;
+  /** The sidebar setup-guide card was dismissed (persisted per browser). */
+  setupDismissed: boolean;
   range: Range;
   reqFilter: RequestFilter;
   selId: string | null;
@@ -346,6 +348,15 @@ function emptyProviderForm(): ProviderForm {
 }
 
 /** Fresh create/edit-provider modal state (shared `np`). */
+/** Persisted per browser, like the theme — storage failures just mean no persistence. */
+function readSetupDismissed(): boolean {
+  try {
+    return localStorage.getItem('polyrouter-setup-dismissed') === '1';
+  } catch {
+    return false;
+  }
+}
+
 function emptyNp(): AppState['np'] {
   return {
     ...emptyProviderForm(),
@@ -541,6 +552,7 @@ function initialState(): AppState {
   return {
     page: 'overview',
     theme: 'light',
+    setupDismissed: readSetupDismissed(),
     range: '24h',
     reqFilter: 'all',
     selId: null,
@@ -632,6 +644,7 @@ export interface AppStore {
   // navigation & chrome
   go: (page: Page) => void;
   toggleTheme: () => void;
+  dismissSetupGuide: () => void;
   setRange: (range: Range) => void;
   setFilter: (filter: RequestFilter) => void;
   select: (id: string | null) => void;
@@ -1318,6 +1331,14 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         // storage unavailable — theme just won't persist
       }
       setState('theme', theme);
+    },
+    dismissSetupGuide: () => {
+      try {
+        localStorage.setItem('polyrouter-setup-dismissed', '1');
+      } catch {
+        // storage unavailable — the dismissal just won't survive a reload
+      }
+      setState('setupDismissed', true);
     },
     setRange: (range) => setState('range', range),
     setFilter: (reqFilter) => {

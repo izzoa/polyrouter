@@ -67,26 +67,39 @@ export function Sidebar() {
           )}
         </For>
       </nav>
-      <button type="button" class="setup-card" onClick={() => app.go('setup')}>
-        <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
-          <circle cx="9" cy="9" r="7" fill="none" stroke="var(--border)" stroke-width="2" />
-          <path
-            d="M9 2 a7 7 0 0 1 6.06 10.5"
-            fill="none"
-            stroke="var(--accent)"
-            stroke-width="2"
-            stroke-linecap="round"
-          />
-        </svg>
-        <span style="display:block">
-          <span style="display:block;font:500 12px 'Geist',sans-serif;color:var(--text)">
-            Setup guide
-          </span>
-          <span style="display:block;font:400 10.5px 'Geist',sans-serif;color:var(--text3)">
-            {setupProgress()}
-          </span>
-        </span>
-      </button>
+      <Show when={!state.setupDismissed}>
+        <div style="position:relative;display:flex;flex-direction:column">
+          <button type="button" class="setup-card" onClick={() => app.go('setup')}>
+            <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+              <circle cx="9" cy="9" r="7" fill="none" stroke="var(--border)" stroke-width="2" />
+              <path
+                d="M9 2 a7 7 0 0 1 6.06 10.5"
+                fill="none"
+                stroke="var(--accent)"
+                stroke-width="2"
+                stroke-linecap="round"
+              />
+            </svg>
+            <span style="display:block">
+              <span style="display:block;font:500 12px 'Geist',sans-serif;color:var(--text)">
+                Setup guide
+              </span>
+              <span style="display:block;font:400 10.5px 'Geist',sans-serif;color:var(--text3)">
+                {setupProgress()}
+              </span>
+            </span>
+          </button>
+          <button
+            type="button"
+            aria-label="Dismiss setup guide"
+            title="Dismiss setup guide"
+            style="position:absolute;top:16px;right:13px;width:22px;height:22px;border:none;background:transparent;color:var(--text3);cursor:pointer;font:400 14px 'Geist',sans-serif;line-height:1;border-radius:6px;display:flex;align-items:center;justify-content:center"
+            onClick={() => app.dismissSetupGuide()}
+          >
+            ×
+          </button>
+        </div>
+      </Show>
       <div style="margin-top:auto;padding:14px 18px;border-top:1px solid var(--border2);display:flex;flex-direction:column;gap:8px">
         <UserMenu />
         <div style="display:flex;align-items:center;gap:6px;font:400 11px 'Geist Mono',monospace;color:var(--text3)">

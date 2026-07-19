@@ -26,6 +26,11 @@ export interface BudgetEventArgs {
   readonly name: string;
   readonly spent: number;
   readonly threshold: number;
+  /** Whether the period's metered spend includes any native_family-priced
+   * component (add-native-price-fallback) — display provenance only. 'unknown'
+   * when the best-effort lookup failed/timed out: rendered as provenance
+   * unavailable, never as confirmed-exact. */
+  readonly spendEstimated: boolean | 'unknown';
   readonly channelIds: string[];
 }
 
@@ -82,7 +87,16 @@ export class NotificationProducers {
           limitId: a.budgetId,
           lifecycleId: a.periodId,
         },
-        fields: { limitName: a.name, spent: fmtMicros(a.spent), threshold: fmtMicros(a.threshold) },
+        fields: {
+          limitName: a.name,
+          spent: fmtMicros(a.spent),
+          threshold: fmtMicros(a.threshold),
+          ...(a.spendEstimated === true
+            ? { spendEstimated: 'true' }
+            : a.spendEstimated === 'unknown'
+              ? { spendEstimated: 'unknown' }
+              : {}),
+        },
         ...(a.channelIds.length > 0 ? { channelIds: a.channelIds } : {}),
       });
     } catch (err) {

@@ -233,6 +233,10 @@ export interface AnalyticsSummary {
   freeRequests: number;
   paidRequests: number;
   unpricedRequests: number;
+  /** USD: the portion of `spend` whose components (either ledger) were priced
+   * `native_family` — component-only arithmetic, same µ$ rounding
+   * (add-native-price-fallback). Zero when none. */
+  nativeFamilySpend: number;
 }
 
 export interface AnalyticsTimeseriesPoint {
@@ -282,6 +286,10 @@ export type AnalyticsRequestRow = RequestLogRow & {
   providerLabel: string | null;
   agentLabel: string | null;
   attemptCostMicros: number;
+  /** True when the served row OR any per-attempt row was priced `native_family`
+   * (add-native-price-fallback) — an estimate in the combined total is never
+   * invisible. */
+  priceEstimated: boolean;
 };
 
 export interface AnalyticsRequestsPage {

@@ -56,6 +56,7 @@ interface LogSeed {
   escalated?: boolean;
   estimated?: boolean;
   at: string;
+  priceSource?: string;
 }
 
 describe('analytics API (#17)', () => {
@@ -94,8 +95,8 @@ describe('analytics API (#17)', () => {
       `INSERT INTO request_log
         (id, owner_user_id, agent_id, provider_id, model_id, tier_assigned, decision_layer,
          routing_reason, input_tokens, output_tokens, usage_estimated, cost, duration_ms, status,
-         escalated, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,'test',$8,$9,$10,$11,1,$12,$13,$14)`,
+         escalated, created_at, price_source)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'test',$8,$9,$10,$11,1,$12,$13,$14,$15)`,
       [
         id,
         owner,
@@ -111,6 +112,7 @@ describe('analytics API (#17)', () => {
         s.status ?? 'success',
         s.escalated ?? false,
         s.at,
+        s.priceSource ?? null,
       ],
     );
     return id;
@@ -118,13 +120,13 @@ describe('analytics API (#17)', () => {
   async function seedAttempt(
     logId: string,
     owner: string,
-    s: { cost: number; modelId?: string; providerId?: string; tierKey?: string; at: string },
+    s: { cost: number; modelId?: string; providerId?: string; tierKey?: string; at: string; priceSource?: string },
   ): Promise<void> {
     await pool.query(
       `INSERT INTO request_attempt
         (id, request_log_id, owner_user_id, attempt_index, tier_key, provider_id, model_id,
-         input_tokens, output_tokens, cost, status, created_at)
-       VALUES ($1,$2,$3,0,$4,$5,$6,20,5,$7,'success',$8)`,
+         input_tokens, output_tokens, cost, status, created_at, price_source)
+       VALUES ($1,$2,$3,0,$4,$5,$6,20,5,$7,'success',$8,$9)`,
       [
         randomUUID(),
         logId,
@@ -134,6 +136,7 @@ describe('analytics API (#17)', () => {
         s.modelId ?? null,
         s.cost,
         s.at,
+        s.priceSource ?? null,
       ],
     );
   }
@@ -399,6 +402,36 @@ describe('analytics API (#17)', () => {
     expect((await q('requests', c, { ...RANGE, layer: 'explicit,' })).status).toBe(400);
     expect((await q('requests', c, { ...RANGE, layer: ' , ' })).status).toBe(400);
     await pool.query('DELETE FROM "user" WHERE id = $1', [c]);
+  });
+
+  it('native-family provenance rolls up: listing priceEstimated + summary nativeFamilySpend (add-native-price-fallback)', async () => {
+    // A separate window so the shared corpus assertions stay untouched.
+    const W = { from: '2025-05-01T00:00:00.000Z', to: '2025-05-02T00:00:00.000Z' };
+    const AT = '2025-05-01T10:00:00.000Z';
+    // $9 exact-priced served row + $1 native-priced superseded attempt (the pinned
+    // mixed case), plus an all-exact row and a native-served row.
+    const mixed = await seedLog(A, { cost: 9, priceSource: 'bundled', at: AT, layer: 'nf-mixed' });
+    await seedAttempt(mixed, A, { cost: 1, priceSource: 'native_family', at: AT });
+    await seedLog(A, { cost: 3, priceSource: 'refresh', at: AT, layer: 'nf-exact' });
+    await seedLog(A, { cost: 0.5, priceSource: 'native_family', at: AT, layer: 'nf-native' });
+
+    const summary = (await q('summary', A, W)).body;
+    expect(summary.spend).toBeCloseTo(13.5, 9); // 9 + 1 + 3 + 0.5 — totals unchanged by provenance
+    expect(summary.nativeFamilySpend).toBeCloseTo(1.5, 9); // COMPONENT-only: $1 attempt + $0.5 served
+
+    const rows = (await q('requests', A, W)).body.rows as Array<{
+      decisionLayer: string;
+      priceSource: string | null;
+      priceEstimated: boolean;
+    }>;
+    const byLayer = new Map(rows.map((r) => [r.decisionLayer, r]));
+    // The mixed case: served source stays exact, the ATTEMPT estimate marks the roll-up.
+    expect(byLayer.get('nf-mixed')).toMatchObject({ priceSource: 'bundled', priceEstimated: true });
+    expect(byLayer.get('nf-exact')).toMatchObject({ priceSource: 'refresh', priceEstimated: false });
+    expect(byLayer.get('nf-native')).toMatchObject({
+      priceSource: 'native_family',
+      priceEstimated: true,
+    });
   });
 
   it('the (owner, created_at) index the queries rely on exists', async () => {

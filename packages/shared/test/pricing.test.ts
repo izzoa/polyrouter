@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   canonicalModelKey,
   deriveModelKey,
+  deriveNativeFamilyKey,
   resolveModelPrice,
 } from '../src/server/pricing/resolve';
 import { parseLiteLlmCatalog } from '../src/server/pricing/litellm';
@@ -182,5 +183,90 @@ describe('parseLiteLlmCatalog', () => {
     expect(byKey.has('openai:text-embedding-3-small')).toBe(false); // embedding skipped
     expect(rows.some((r) => r.modelKey.includes('broken'))).toBe(false); // missing costs skipped
     expect(rows.some((r) => r.modelKey === 'sample_spec')).toBe(false);
+  });
+});
+
+describe('deriveNativeFamilyKey (add-native-price-fallback)', () => {
+  it('pins the derivation matrix — mapped vendors, aliases, identity', () => {
+    expect(deriveNativeFamilyKey('openrouter', 'minimax/minimax-m3')).toBe('minimax:minimax-m3');
+    // Mixed case normalizes BEFORE the allowlist lookups.
+    expect(deriveNativeFamilyKey('openrouter', 'MiniMax/MiniMax-M3')).toBe('minimax:minimax-m3');
+    expect(deriveNativeFamilyKey('openrouter', 'x-ai/grok-4.5')).toBe('xai:grok-4.5');
+    expect(deriveNativeFamilyKey('openrouter', 'google/gemini-3-pro')).toBe('gemini:gemini-3-pro');
+    expect(deriveNativeFamilyKey('openrouter', 'moonshotai/kimi-k3')).toBe('moonshot:kimi-k3');
+    expect(deriveNativeFamilyKey('openrouter', 'mistralai/mistral-large')).toBe('mistral:mistral-large');
+    expect(deriveNativeFamilyKey('openrouter', 'deepseek/deepseek-chat')).toBe('deepseek:deepseek-chat');
+  });
+
+  it('trims each segment independently (stray whitespace from provider lists)', () => {
+    expect(deriveNativeFamilyKey('openrouter', ' MiniMax / MiniMax-M3 ')).toBe('minimax:minimax-m3');
+    expect(deriveNativeFamilyKey('openrouter', '  / model')).toBeNull(); // empty vendor after trim
+    expect(deriveNativeFamilyKey('openrouter', 'minimax /  ')).toBeNull(); // empty id after trim
+  });
+
+  it('preserves variant suffixes — the paid unsuffixed key is never produced for :free', () => {
+    expect(deriveNativeFamilyKey('openrouter', 'minimax/minimax-m3:free')).toBe(
+      'minimax:minimax-m3:free',
+    );
+  });
+
+  it('yields null for everything outside the conservative allowlists', () => {
+    expect(deriveNativeFamilyKey('openrouter', 'somevendor/model-1')).toBeNull(); // unmapped vendor
+    expect(deriveNativeFamilyKey('openrouter', 'gpt-4o')).toBeNull(); // no vendor prefix
+    expect(deriveNativeFamilyKey('openai', 'minimax/minimax-m3')).toBeNull(); // not an aggregator
+    expect(deriveNativeFamilyKey('openrouter', 'minimax/')).toBeNull(); // empty id after prefix
+    expect(deriveNativeFamilyKey('openrouter', '/model')).toBeNull(); // empty vendor
+  });
+});
+
+describe('resolveModelPrice — native-family fallback', () => {
+  const input = {
+    providerKind: 'api_key',
+    modelInputPricePer1m: null,
+    modelOutputPricePer1m: null,
+    modelIsFree: false,
+  };
+  const nativeRow = catalogRow({
+    id: 'v-native',
+    modelKey: 'minimax:minimax-m3',
+    inputPricePer1m: 0.3,
+    outputPricePer1m: 1.2,
+    cacheReadPricePer1m: 0.06,
+    source: 'refresh',
+  });
+
+  it('the exact row always beats the native row', () => {
+    const exact = catalogRow({ id: 'v-exact', modelKey: 'openrouter:minimax/minimax-m3' });
+    const snap = resolveModelPrice(input, exact, nativeRow);
+    expect(snap?.priceVersionId).toBe('v-exact');
+    expect(snap?.source).toBe('bundled');
+  });
+
+  it('the live minimax case: exact miss + native row → flagged native_family snapshot', () => {
+    const snap = resolveModelPrice(input, null, nativeRow);
+    expect(snap).toMatchObject({
+      priceVersionId: 'v-native',
+      modelKey: 'minimax:minimax-m3',
+      inputPricePer1m: 0.3,
+      outputPricePer1m: 1.2,
+      cacheReadPricePer1m: 0.06,
+      source: 'native_family', // NEVER the native row's own 'refresh' label
+    });
+  });
+
+  it('model-own and local precedence are unaffected; both-miss stays null', () => {
+    const own = resolveModelPrice(
+      { providerKind: 'custom', modelInputPricePer1m: 1, modelOutputPricePer1m: 2, modelIsFree: false },
+      null,
+      nativeRow,
+    );
+    expect(own?.source).toBe('model');
+    const local = resolveModelPrice(
+      { providerKind: 'local', modelInputPricePer1m: null, modelOutputPricePer1m: null, modelIsFree: false },
+      null,
+      nativeRow,
+    );
+    expect(local?.source).toBe('local');
+    expect(resolveModelPrice(input, null, null)).toBeNull();
   });
 });

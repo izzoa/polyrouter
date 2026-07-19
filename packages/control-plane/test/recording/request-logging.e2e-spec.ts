@@ -255,6 +255,81 @@ describe('request-logging e2e', () => {
     expect(again!.inputPriceSnapshot).toBe(recordedSnapshot);
   });
 
+  it('native-family fallback prices an aggregator request — flagged, immutable, race-correct (add-native-price-fallback)', async () => {
+    // Seed ONLY the native-family key: the openrouter channel key is absent.
+    await pricing.override(
+      'minimax:minimax-m3',
+      { inputPricePer1m: 0.3, outputPricePer1m: 1.2 },
+      new Date(),
+    );
+    const mkCtx = (externalModelId: string): RecordingContext => ({
+      principal,
+      agentId: null,
+      protocol: 'openai',
+      providerId: 'p-openrouter',
+      providerName: 'openrouter',
+      modelId: gpt4oModelId,
+      tierAssigned: null,
+      decisionLayer: 'native-family-e2e',
+      routingReason: 'native-family e2e',
+      provider: { baseUrl: 'https://openrouter.ai/api/v1', kind: 'api_key' },
+      model: { externalModelId, inputPricePer1m: null, outputPricePer1m: null, isFree: false },
+      startedAt: Date.now(),
+      requestChars: 0,
+    });
+    recorder.record(mkCtx('minimax/minimax-m3'), {
+      status: 'success',
+      providerUsage: { inputTokens: 1_000_000, outputTokens: 1_000_000 },
+      outputChars: 0,
+    });
+    await writer.flush();
+    const rows = () => port.requestLogs.list(principal);
+    const first = (await rows()).find(
+      (r) => r.decisionLayer === 'native-family-e2e' && r.cost !== null,
+    );
+    expect(first).toBeDefined();
+    expect(first!.priceSource).toBe('native_family'); // flagged, never impersonating
+    expect(first!.inputPriceSnapshot).toBe(0.3);
+    expect(first!.outputPriceSnapshot).toBe(1.2);
+    expect(first!.cost).toBeCloseTo(1.5, 6); // 1M in + 1M out at the native rates
+
+    // A LATER exact-key append: the recorded row is immutable...
+    await pricing.override(
+      'openrouter:minimax/minimax-m3',
+      { inputPricePer1m: 9, outputPricePer1m: 9 },
+      new Date(),
+    );
+    const again = await port.requestLogs.findById(principal, first!.id);
+    expect(again!.cost).toBe(first!.cost);
+    expect(again!.priceSource).toBe('native_family');
+    // ...while a NEW request completing after the append records the EXACT row.
+    recorder.record(mkCtx('minimax/minimax-m3'), {
+      status: 'success',
+      providerUsage: { inputTokens: 1_000_000, outputTokens: 0 },
+      outputChars: 0,
+    });
+    await writer.flush();
+    const second = (await rows()).find(
+      (r) => r.decisionLayer === 'native-family-e2e' && r.id !== first!.id && r.cost !== null,
+    );
+    expect(second).toBeDefined();
+    expect(second!.priceSource).toBe('manual'); // the exact override row's own source
+    expect(second!.inputPriceSnapshot).toBe(9);
+
+    // An unmapped vendor stays honestly unpriced (null cost, null provenance).
+    recorder.record(mkCtx('somevendor/model-1'), {
+      status: 'success',
+      providerUsage: { inputTokens: 10, outputTokens: 10 },
+      outputChars: 0,
+    });
+    await writer.flush();
+    const unmapped = (await rows()).find(
+      (r) => r.decisionLayer === 'native-family-e2e' && r.cost === null,
+    );
+    expect(unmapped).toBeDefined();
+    expect(unmapped!.priceSource).toBeNull();
+  });
+
   it('a log-write failure never fails the request or throws', async () => {
     const spy = jest
       .spyOn(port.requestLogs, 'insertMany')

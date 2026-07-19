@@ -47,6 +47,7 @@ export function Costs(props: { live: boolean }) {
 
   const spend = () => state.analyticsSummary?.spend ?? 0;
   const estimated = () => state.analyticsSummary?.estimatedCount ?? 0;
+  const nativeSpend = () => state.analyticsSummary?.nativeFamilySpend ?? 0;
   const free = () => state.analyticsSummary?.freeRequests ?? 0;
   const paid = () => state.analyticsSummary?.paidRequests ?? 0;
   const unpriced = () => state.analyticsSummary?.unpricedRequests ?? 0;
@@ -82,6 +83,11 @@ export function Costs(props: { live: boolean }) {
           <div class="stat-value">${spend().toFixed(2)}</div>
           <div class="stat-sub">
             both ledgers · <span style="color:var(--text3)">{estimated()} requests ~estimated</span>
+            <Show when={nativeSpend() > 0}>
+              <span style="color:var(--text3)">
+                {' '}· includes ${nativeSpend().toFixed(4)} estimate-priced
+              </span>
+            </Show>
           </div>
         </div>
         <div class="panel card">

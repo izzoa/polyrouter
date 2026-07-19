@@ -137,10 +137,18 @@ export interface UpdateProviderInput {
 
 /** Provenance of a model's effective display price. `listed` is the display-only
  * provider-listed estimate; the rest are billing-resolver sources. */
-export type EffectivePriceSource = 'model' | 'local' | 'bundled' | 'refresh' | 'manual' | 'listed';
+export type EffectivePriceSource =
+  | 'model'
+  | 'local'
+  | 'bundled'
+  | 'refresh'
+  | 'manual'
+  | 'native_family'
+  | 'listed';
 
 /** A model's current effective price for display (backend-resolved). `estimated` is
- * true only for the `listed` provider estimate. Never a billing/cost value. */
+ * true for the `listed` provider estimate and the `native_family` fallback
+ * (add-native-price-fallback). Never a billing/cost value. */
 export interface EffectivePrice {
   inputPricePer1m: number;
   outputPricePer1m: number;
@@ -162,6 +170,14 @@ export interface ModelDto {
   inputPricePer1m: number | null;
   outputPricePer1m: number | null;
   effectivePrice: EffectivePrice | null;
+  /** The captured provider-listed channel estimate — always exposed when captured,
+   * shown alongside a `native_family` effective price. Display only. */
+  listedPrice: {
+    inputPricePer1m: number;
+    outputPricePer1m: number;
+    isFree: boolean;
+    capturedAt: string | null;
+  } | null;
   lastSyncedAt: string | null;
 }
 
@@ -396,6 +412,8 @@ export interface AnalyticsSummary {
   freeRequests: number;
   paidRequests: number;
   unpricedRequests: number;
+  /** USD portion of `spend` priced by the native-family estimate (component-only). */
+  nativeFamilySpend: number;
 }
 
 /** `GET /timeseries` — one point per non-empty bucket, ascending. `bucket` is an
@@ -447,6 +465,10 @@ export interface RequestRow {
   attemptCostMicros: number;
   durationMs: number;
   usageEstimated: boolean;
+  /** Served row's snapshot provenance; null = unpriced or predates the column. */
+  priceSource: string | null;
+  /** True when the served row OR any attempt was priced `native_family`. */
+  priceEstimated: boolean;
   qualitySignal: number | null;
   modelLabel: string | null;
   providerLabel: string | null;

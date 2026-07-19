@@ -30,7 +30,7 @@ import {
 } from '@polyrouter/shared/server';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import type { Db } from './database.internal';
-import { microsSum } from './cost-sql';
+import { microsSum, microsSumIf } from './cost-sql';
 
 function intCount(filter?: SQL): SQL<number> {
   return filter
@@ -120,6 +120,7 @@ async function enrich(
     .select({
       requestLogId: requestAttempts.requestLogId,
       micros: microsSum(requestAttempts.cost),
+      hasNative: sql<boolean>`bool_or(${requestAttempts.priceSource} = 'native_family')`,
     })
     .from(requestAttempts)
     .where(
@@ -130,6 +131,7 @@ async function enrich(
     )
     .groupBy(requestAttempts.requestLogId);
   const attemptByLog = new Map(attemptRows.map((r) => [r.requestLogId, Number(r.micros)]));
+  const nativeAttemptByLog = new Map(attemptRows.map((r) => [r.requestLogId, r.hasNative === true]));
 
   const uniq = (v: (string | null)[]): string[] => [
     ...new Set(v.filter((x): x is string => x !== null)),
@@ -146,6 +148,9 @@ async function enrich(
     providerLabel: r.providerId !== null ? (providerLabels.get(r.providerId) ?? null) : null,
     agentLabel: r.agentId !== null ? (agentLabels.get(r.agentId) ?? null) : null,
     attemptCostMicros: attemptByLog.get(r.id) ?? 0,
+    // Rolled-up estimate flag: the served row OR any attempt priced native_family.
+    priceEstimated:
+      r.priceSource === 'native_family' || (nativeAttemptByLog.get(r.id) ?? false),
   }));
 }
 
@@ -183,15 +188,26 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
           freeRequests: intCount(sql`${requestLogs.cost} = 0`),
           paidRequests: intCount(sql`${requestLogs.cost} > 0`),
           unpricedRequests: intCount(sql`${requestLogs.cost} is null`),
+          nativeMicros: microsSumIf(
+            requestLogs.cost,
+            sql`${requestLogs.priceSource} = 'native_family'`,
+          ),
         })
         .from(requestLogs)
         .where(logRange(principal, range));
       const [attempt] = await db
-        .select({ spendMicros: microsSum(requestAttempts.cost) })
+        .select({
+          spendMicros: microsSum(requestAttempts.cost),
+          nativeMicros: microsSumIf(
+            requestAttempts.cost,
+            sql`${requestAttempts.priceSource} = 'native_family'`,
+          ),
+        })
         .from(requestAttempts)
         .where(attemptRange(principal, range));
 
       const micros = Number(log?.spendMicros ?? 0) + Number(attempt?.spendMicros ?? 0);
+      const nativeMicros = Number(log?.nativeMicros ?? 0) + Number(attempt?.nativeMicros ?? 0);
       return {
         spend: micros / 1_000_000,
         requests: Number(log?.requests ?? 0),
@@ -207,6 +223,7 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
         freeRequests: Number(log?.freeRequests ?? 0),
         paidRequests: Number(log?.paidRequests ?? 0),
         unpricedRequests: Number(log?.unpricedRequests ?? 0),
+        nativeFamilySpend: nativeMicros / 1_000_000,
       };
     },
 

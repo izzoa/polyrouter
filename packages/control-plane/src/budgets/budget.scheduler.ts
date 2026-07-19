@@ -92,12 +92,13 @@ export async function runBudgetOccurrence(
 
   for (const g of groups.values()) {
     const agentId = g.scope === 'agent' ? g.scopeId : null;
-    const micros = await reader.spendMicrosFor(
+    const spend = await reader.spendMicrosFor(
       g.owner,
       agentId,
       new Date(g.startMs),
       new Date(g.endMs),
     );
+    const micros = spend.micros;
     const ttlMs = g.endMs - atMs + GRACE_MS;
     await counter.reconcileMax(g.key, micros, ttlMs);
 
@@ -117,6 +118,8 @@ export async function runBudgetOccurrence(
             name: b.name,
             spent: micros,
             threshold: toMicros(b.amount),
+            // Display provenance only — metering is identical either way.
+            spendEstimated: spend.nativeMicros > 0,
             channelIds: parseCsv(b.notifyChannelIds),
           });
         }

@@ -154,7 +154,7 @@ describe('notification producers — real infra (#15b)', () => {
 
     const weekly = await reader.weeklySpendByOwner(start, end);
     const weeklyTotal = new Map(weekly.map((r) => [r.ownerUserId, r.total])).get(owner);
-    const budgetMicros = await budgetReader.spendMicrosFor(owner, null, start, end);
+    const budgetMicros = (await budgetReader.spendMicrosFor(owner, null, start, end)).micros;
 
     // The weekly reader now aggregates in µ$ exactly like the budget reader — so their
     // figures are identical, not merely close. A float `sum(cost)` would give 0.00000195.

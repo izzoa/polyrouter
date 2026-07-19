@@ -106,6 +106,14 @@ export function channelMatchesEvent(
 }
 
 /** Render the human title/body from the structured fields (in the worker). */
+/** Spend-provenance sentence (add-native-price-fallback): 'true' = includes
+ * estimates; 'unknown' = the lookup failed — say so rather than implying exact. */
+function estimateNote(v: unknown): string {
+  if (v === 'true') return ' The metered spend includes estimate-priced components (native-family rates).';
+  if (v === 'unknown') return ' Price provenance was unavailable for this notice.';
+  return '';
+}
+
 export function renderEvent(event: NotificationEvent): { title: string; body: string } {
   const f = event.fields;
   switch (event.type) {
@@ -127,19 +135,21 @@ export function renderEvent(event: NotificationEvent): { title: string; body: st
     case 'budget_alert':
       return {
         title: `polyrouter — budget alert: ${f['limitName'] ?? 'a budget'}`,
-        body: `Spend ${f['spent'] ?? '?'} crossed the alert threshold ${f['threshold'] ?? '?'}.`,
+        // Estimate provenance (add-native-price-fallback): never present
+        // estimate-priced spend as exact. Metering itself is identical.
+        body: `Spend ${f['spent'] ?? '?'} crossed the alert threshold ${f['threshold'] ?? '?'}.${estimateNote(f['spendEstimated'])}`,
       };
     case 'budget_block':
       return {
         title: `polyrouter — budget block: ${f['limitName'] ?? 'a budget'}`,
-        body: `The budget ${f['limitName'] ?? ''} is blocking new requests until the window resets.`,
+        body: `The budget ${f['limitName'] ?? ''} is blocking new requests until the window resets.${estimateNote(f['spendEstimated'])}`,
       };
     case 'weekly_spend_summary':
       return {
         // "Known spend": unknown-price rows count as 0, so an all-unknown owner
         // isn't shown a misleading total (#15b).
         title: 'polyrouter — weekly spend summary',
-        body: `Known spend this week: ${f['total'] ?? '0'}.`,
+        body: `Known spend this week: ${f['total'] ?? '0'}.${f['nativeFamilySpend'] !== undefined ? ` Includes ${f['nativeFamilySpend']} priced by estimate (native-family rates).` : ''}`,
       };
   }
 }

@@ -6,7 +6,7 @@
  */
 import type { ModelPriceRow } from '../db/schema';
 
-export type PriceSource = 'model' | 'local' | 'bundled' | 'refresh' | 'manual';
+export type PriceSource = 'model' | 'local' | 'bundled' | 'refresh' | 'manual' | 'native_family';
 
 /** A resolved unit-price snapshot. `priceVersionId`/`validFrom` are set for a
  * catalog hit so #11 can record exactly which version priced the request. */
@@ -83,6 +83,55 @@ export function canonicalModelKey(family: string, modelId: string): string {
   return `${f}:${id}`;
 }
 
+/** Aggregator billing families eligible for the native-family price fallback
+ * (add-native-price-fallback). Direct providers NEVER fall back. */
+export const AGGREGATOR_FAMILIES: readonly string[] = ['openrouter'];
+
+/** Aggregator vendor slug → LiteLLM family. ALLOWLIST-ONLY (no fuzzy matching —
+ * a wrong mapping would price the wrong vendor's model): identity entries for
+ * slugs that ARE LiteLLM families, plus aliases VERIFIED against the LiteLLM key
+ * namespace. Extended by ordinary PRs. */
+export const AGGREGATOR_VENDOR_FAMILIES: Readonly<Record<string, string>> = {
+  minimax: 'minimax',
+  openai: 'openai',
+  anthropic: 'anthropic',
+  deepseek: 'deepseek',
+  mistral: 'mistral',
+  cohere: 'cohere',
+  perplexity: 'perplexity',
+  'x-ai': 'xai',
+  google: 'gemini',
+  moonshotai: 'moonshot',
+  mistralai: 'mistral',
+};
+
+/**
+ * The native-family catalog key for the channel-miss fallback
+ * (add-native-price-fallback), or null when no CONSERVATIVE derivation exists:
+ * aggregator billing families only, `vendor/`-prefixed ids only, vendor through
+ * the allowlist. Inputs are trimmed + lowercased BEFORE the allowlist lookups
+ * (`MiniMax/MiniMax-M3` must map). Variant suffixes (`:free`) are PRESERVED in
+ * the derived key — such SKUs miss the native family and stay unknown rather
+ * than borrowing the paid unsuffixed rate.
+ */
+export function deriveNativeFamilyKey(
+  billingFamily: string,
+  externalModelId: string,
+): string | null {
+  if (!AGGREGATOR_FAMILIES.includes(billingFamily.trim().toLowerCase())) return null;
+  const id = externalModelId.trim().toLowerCase();
+  const slash = id.indexOf('/');
+  if (slash <= 0 || slash === id.length - 1) return null;
+  // Trim EACH segment (provider lists can carry stray whitespace verbatim);
+  // an empty trimmed segment is malformed → no fallback.
+  const vendor = id.slice(0, slash).trim();
+  const rest = id.slice(slash + 1).trim();
+  if (vendor === '' || rest === '') return null;
+  const family = AGGREGATOR_VENDOR_FAMILIES[vendor];
+  if (family === undefined) return null;
+  return canonicalModelKey(family, rest);
+}
+
 /** Map a tenant provider (host) + model id to a catalog key, or null when the
  * host is not a known family — an unknown/reseller host NEVER inherits a
  * well-known provider's price (cost-correctness). */
@@ -98,12 +147,16 @@ export function deriveModelKey(providerBaseUrl: string, externalModelId: string)
   return canonicalModelKey(family, externalModelId);
 }
 
-/** Resolve unit prices by precedence: Model-own → local-free → catalog → null.
- * A null return means "price unknown" — distinct from `usage_estimated`
- * (missing token usage); the caller records it and never guesses a cost. */
+/** Resolve unit prices by precedence: Model-own → local-free → exact catalog →
+ * native-family catalog (flagged `native_family`) → null. A null return means
+ * "price unknown" — distinct from `usage_estimated` (missing token usage); the
+ * caller records it and never guesses a cost. `nativeCatalogRow` is supplied by
+ * the caller ONLY for aggregator channels (per `deriveNativeFamilyKey`) and is
+ * consulted ONLY when the exact row missed. */
 export function resolveModelPrice(
   input: PriceResolutionInput,
   catalogRow: ModelPriceRow | null,
+  nativeCatalogRow: ModelPriceRow | null = null,
 ): PriceSnapshot | null {
   // A model-own price is honored ONLY for a custom/local provider — the API forbids
   // setting one on an api_key/subscription provider (its price comes from the
@@ -151,6 +204,22 @@ export function resolveModelPrice(
       isFree: catalogRow.isFree,
       source: catalogRow.source as PriceSource,
       validFrom: catalogRow.validFrom,
+    };
+  }
+  if (nativeCatalogRow !== null) {
+    // Exact channel key missed — an adjacent channel's VERSIONED rate, flagged
+    // as the estimate it is (never impersonating the native row's own
+    // bundled/refresh/manual label; the version id keeps it auditable).
+    return {
+      priceVersionId: nativeCatalogRow.id,
+      modelKey: nativeCatalogRow.modelKey,
+      inputPricePer1m: nativeCatalogRow.inputPricePer1m,
+      outputPricePer1m: nativeCatalogRow.outputPricePer1m,
+      cacheReadPricePer1m: nativeCatalogRow.cacheReadPricePer1m,
+      cacheWritePricePer1m: nativeCatalogRow.cacheWritePricePer1m,
+      isFree: nativeCatalogRow.isFree,
+      source: 'native_family',
+      validFrom: nativeCatalogRow.validFrom,
     };
   }
   return null;

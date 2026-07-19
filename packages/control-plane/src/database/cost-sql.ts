@@ -12,3 +12,10 @@ import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 export function microsSum(col: AnyPgColumn): SQL<number> {
   return sql<number>`coalesce(sum(round(coalesce(${col}, 0) * 1000000)), 0)`;
 }
+
+/** `microsSum` restricted to rows matching `cond` — identical per-row rounding, so a
+ * split (e.g. native_family-priced spend) reconciles exactly with the total it is a
+ * portion of (add-native-price-fallback). */
+export function microsSumIf(col: AnyPgColumn, cond: SQL): SQL<number> {
+  return sql<number>`coalesce(sum(case when ${cond} then round(coalesce(${col}, 0) * 1000000) else 0 end), 0)`;
+}

@@ -1,7 +1,7 @@
-import { and, gte, lt } from 'drizzle-orm';
+import { and, gte, lt, sql } from 'drizzle-orm';
 import { requestAttempts, requestLogs } from '@polyrouter/shared/server';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { microsSum } from './cost-sql';
+import { microsSum, microsSumIf } from './cost-sql';
 
 /** DI token for the weekly-spend reader (a narrow, scheduler-only capability). */
 export const WEEKLY_SPEND_READER = 'polyrouter:weekly-spend-reader';
@@ -17,7 +17,7 @@ export interface WeeklySpendReader {
   weeklySpendByOwner(
     start: Date,
     endExclusive: Date,
-  ): Promise<{ ownerUserId: string; total: number }[]>;
+  ): Promise<{ ownerUserId: string; total: number; nativeFamilySpend: number }[]>;
 }
 
 /** Built inside DatabaseModule (which alone holds the private drizzle handle);
@@ -33,6 +33,10 @@ export function buildWeeklySpendReader(db: NodePgDatabase): WeeklySpendReader {
         .select({
           ownerUserId: requestLogs.ownerUserId,
           micros: microsSum(requestLogs.cost),
+          nativeMicros: microsSumIf(
+            requestLogs.cost,
+            sql`${requestLogs.priceSource} = 'native_family'`,
+          ),
         })
         .from(requestLogs)
         .where(and(gte(requestLogs.createdAt, start), lt(requestLogs.createdAt, endExclusive)))
@@ -41,6 +45,10 @@ export function buildWeeklySpendReader(db: NodePgDatabase): WeeklySpendReader {
         .select({
           ownerUserId: requestAttempts.ownerUserId,
           micros: microsSum(requestAttempts.cost),
+          nativeMicros: microsSumIf(
+            requestAttempts.cost,
+            sql`${requestAttempts.priceSource} = 'native_family'`,
+          ),
         })
         .from(requestAttempts)
         .where(
@@ -48,14 +56,17 @@ export function buildWeeklySpendReader(db: NodePgDatabase): WeeklySpendReader {
         )
         .groupBy(requestAttempts.ownerUserId);
 
-      const microsByOwner = new Map<string, number>();
-      for (const r of logs) microsByOwner.set(r.ownerUserId, Number(r.micros));
-      for (const r of attempts) {
-        microsByOwner.set(r.ownerUserId, (microsByOwner.get(r.ownerUserId) ?? 0) + Number(r.micros));
-      }
-      return [...microsByOwner].map(([ownerUserId, micros]) => ({
+      const microsByOwner = new Map<string, { micros: number; native: number }>();
+      const bump = (owner: string, micros: number, native: number): void => {
+        const cur = microsByOwner.get(owner) ?? { micros: 0, native: 0 };
+        microsByOwner.set(owner, { micros: cur.micros + micros, native: cur.native + native });
+      };
+      for (const r of logs) bump(r.ownerUserId, Number(r.micros), Number(r.nativeMicros));
+      for (const r of attempts) bump(r.ownerUserId, Number(r.micros), Number(r.nativeMicros));
+      return [...microsByOwner].map(([ownerUserId, v]) => ({
         ownerUserId,
-        total: micros / 1_000_000,
+        total: v.micros / 1_000_000,
+        nativeFamilySpend: v.native / 1_000_000,
       }));
     },
   };

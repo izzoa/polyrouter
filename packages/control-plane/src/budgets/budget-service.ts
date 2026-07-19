@@ -2,11 +2,14 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import type { BudgetRow, Principal } from '@polyrouter/shared/server';
 import { NotificationProducers } from '../producers/notification-producers';
 import { ProxyMetrics } from '../observability/proxy-metrics';
+import { BUDGET_READER, type BudgetReader } from '../database/budget.reader';
 import { BudgetCache } from './budget-cache';
 import { SpendCounter } from './spend-counter';
 import { periodInfo, toMicros, type BudgetWindow } from './period';
 import { BUDGETS_CONFIG, type BudgetsConfig } from './budgets.config';
 
+/** Deadline for the best-effort block-emit provenance lookup. */
+const PROVENANCE_DEADLINE_MS = 3_000;
 const MARKER_GRACE_MS = 60_000;
 /** An enforcement fault is a whole-instance condition — throttle the warn (the
  * metric is always incremented) so a sustained outage doesn't flood the log. */
@@ -27,6 +30,9 @@ export interface BudgetHit {
   readonly budget: BudgetRow;
   readonly spentMicros: number;
   readonly periodId: string;
+  /** The metered period's exact bounds — provenance lookups MUST use these, not
+   * `new Date()` (a boundary-crossing async emit would inspect the wrong period). */
+  readonly periodStart: Date;
   readonly resetAt: Date;
 }
 
@@ -61,6 +67,7 @@ export class BudgetService {
     private readonly counter: SpendCounter,
     private readonly producers: NotificationProducers,
     private readonly metrics: ProxyMetrics,
+    @Inject(BUDGET_READER) private readonly reader: BudgetReader,
     @Inject(BUDGETS_CONFIG) cfg: BudgetsConfig,
   ) {
     this.failOpen = cfg.failOpen;
@@ -91,13 +98,14 @@ export class BudgetService {
     owner: string,
     b: BudgetRow,
     at: Date,
-  ): { key: string; periodId: string; resetAt: Date } {
+  ): { key: string; periodId: string; periodStart: Date; resetAt: Date } {
     const window = b.window as BudgetWindow;
-    const { periodId, endMs } = periodInfo(window, at);
+    const { periodId, startMs, endMs } = periodInfo(window, at);
     const scopeId = b.scope === 'agent' ? (b.agentId ?? 'global') : 'global';
     return {
       key: this.counter.key(owner, b.scope, scopeId, window, periodId),
       periodId,
+      periodStart: new Date(startMs),
       resetAt: new Date(endMs),
     };
   }
@@ -131,6 +139,7 @@ export class BudgetService {
             budget: info.b,
             spentMicros: spent,
             periodId: info.periodId,
+            periodStart: info.periodStart,
             resetAt: info.resetAt,
           };
         }
@@ -154,6 +163,28 @@ export class BudgetService {
       const markKey = `budget-blocked:${hit.budget.id}:${hit.periodId}`;
       const ttlMs = Math.max(1, hit.resetAt.getTime() - Date.now()) + MARKER_GRACE_MS;
       if (!(await this.counter.markBlockOnce(markKey, ttlMs))) return;
+      // Display provenance (add-native-price-fallback): best-effort, once per
+      // period (this emit is deduped) and OFF the request path (fire-and-forget).
+      // Bound to the HIT's exact period (a boundary-crossing async emit must not
+      // inspect the next period) with a deadline; when the lookup fails or times
+      // out the payload says provenance is UNAVAILABLE — never confirmed-exact.
+      let spendEstimated: boolean | 'unknown' = 'unknown';
+      try {
+        const s = await Promise.race([
+          this.reader.spendMicrosFor(
+            ownerOf(principal),
+            hit.budget.agentId,
+            hit.periodStart,
+            hit.resetAt,
+          ),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('provenance deadline')), PROVENANCE_DEADLINE_MS),
+          ),
+        ]);
+        spendEstimated = s.nativeMicros > 0;
+      } catch {
+        /* provenance only — the emit proceeds with 'unknown' */
+      }
       this.producers.budgetBlock({
         ownerUserId: ownerOf(principal),
         ...(hit.budget.agentId !== null ? { agentId: hit.budget.agentId } : {}),
@@ -162,6 +193,7 @@ export class BudgetService {
         name: hit.budget.name,
         spent: hit.spentMicros,
         threshold: toMicros(hit.budget.amount),
+        spendEstimated,
         channelIds: parseCsv(hit.budget.notifyChannelIds),
       });
     } catch {

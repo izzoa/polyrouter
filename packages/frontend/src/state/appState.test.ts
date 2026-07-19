@@ -61,6 +61,7 @@ function mkModel(id: string): ModelDto {
       source: 'model',
       estimated: false,
     },
+    listedPrice: null,
     lastSyncedAt: null,
   };
 }

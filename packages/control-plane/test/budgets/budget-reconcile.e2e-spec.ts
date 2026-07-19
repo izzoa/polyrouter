@@ -233,6 +233,7 @@ describe('budget reconcile + enforcement — real infra (#16)', () => {
       counter,
       producers,
       METRICS,
+      reader,
       CFG(true),
     );
     const hit = await svc.checkBlocked(principal, null);
@@ -266,6 +267,7 @@ describe('budget reconcile + enforcement — real infra (#16)', () => {
       counter,
       capturingProducers(),
       METRICS,
+      reader,
       CFG(true),
     );
     expect(await open.checkBlocked(principal, null)).toBeNull(); // fail-open allows
@@ -275,6 +277,7 @@ describe('budget reconcile + enforcement — real infra (#16)', () => {
       counter,
       capturingProducers(),
       METRICS,
+      reader,
       CFG(false),
     );
     await expect(closed.checkBlocked(principal, null)).rejects.toBeInstanceOf(

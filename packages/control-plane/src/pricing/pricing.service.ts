@@ -3,6 +3,7 @@ import {
   PERSISTENCE_FACILITIES,
   PERSISTENCE_PORT,
   deriveModelKey,
+  deriveNativeFamilyKey,
   parseLiteLlmCatalog,
   resolveModelPrice,
   type BundledPrice,
@@ -127,6 +128,18 @@ export class PricingService {
     const key =
       providerBaseUrl !== null ? deriveModelKey(providerBaseUrl, model.externalModelId) : null;
     const catalogRow = key !== null ? await this.db.pricing.priceAt(key, at) : null;
+    // Native-family fallback (add-native-price-fallback): consulted ONLY after a
+    // SUCCESSFUL null exact lookup — a thrown lookup propagates into the writer's
+    // bounded retry path (a DB error is never treated as a catalog miss, so an
+    // estimated snapshot can never shadow an existing exact row).
+    let nativeRow = null;
+    if (key !== null && catalogRow === null) {
+      const nativeKey = deriveNativeFamilyKey(
+        key.slice(0, key.indexOf(':')),
+        model.externalModelId,
+      );
+      if (nativeKey !== null) nativeRow = await this.db.pricing.priceAt(nativeKey, at);
+    }
     return resolveModelPrice(
       {
         providerKind,
@@ -135,6 +148,7 @@ export class PricingService {
         modelIsFree: model.isFree,
       },
       catalogRow,
+      nativeRow,
     );
   }
 

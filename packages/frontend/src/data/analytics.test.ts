@@ -34,6 +34,7 @@ const SUMMARY: AnalyticsSummary = {
   freeRequests: 8,
   paidRequests: 20,
   unpricedRequests: 2,
+  nativeFamilySpend: 0,
 };
 
 const ROW: RequestRow = {
@@ -59,6 +60,8 @@ const ROW: RequestRow = {
   attemptCostMicros: 0,
   durationMs: 1200,
   usageEstimated: false,
+  priceSource: null,
+  priceEstimated: false,
   qualitySignal: 0.8,
   modelLabel: 'GPT',
   providerLabel: 'OpenAI',
@@ -218,5 +221,46 @@ describe('toInspectorView', () => {
     );
     expect(toInspectorView({ ...ROW, cost: 0 }).servedCost).toBe('$0.0000');
     expect(toInspectorView({ ...ROW, cost: 0 }).totalCost).toBe('$0.0000');
+  });
+});
+
+describe('toInspectorView — native-family provenance (add-native-price-fallback)', () => {
+  const base = ROW;
+
+  it('marks unit-price rows, the total, and the source line for a native-priced request', () => {
+    const v = toInspectorView({
+      ...base,
+      cost: 0.001,
+      inputPriceSnapshot: 0.3,
+      outputPriceSnapshot: 1.2,
+      cacheReadPriceSnapshot: 0,
+      priceSource: 'native_family',
+      priceEstimated: true,
+    });
+    expect(v.priceSourceLabel).toBe('native family · estimate');
+    expect(v.prices[0]!.value).toBe('$0.3 / 1M · est.');
+    expect(v.prices[1]!.value).toBe('$1.2 / 1M · est.');
+    // The zero-priced (free) snapshot carries the marker too — never exact-looking.
+    expect(v.prices[2]!.value).toBe('$0 free · est.');
+    expect(v.totalCost.endsWith(' · est.')).toBe(true);
+  });
+
+  it('an attempt-only estimate marks the TOTAL while the served source stays plain', () => {
+    const v = toInspectorView({
+      ...base,
+      cost: 0.009,
+      inputPriceSnapshot: 2.5,
+      priceSource: 'bundled',
+      priceEstimated: true, // rolled up from a native-priced superseded attempt
+    });
+    expect(v.priceSourceLabel).toBe('bundled');
+    expect(v.prices[0]!.value).toBe('$2.5 / 1M'); // served rows unmarked
+    expect(v.totalCost.endsWith(' · est.')).toBe(true); // the combined total is marked
+  });
+
+  it('legacy/unpriced rows render exactly as before', () => {
+    const v = toInspectorView({ ...base, cost: null, priceSource: null, priceEstimated: false });
+    expect(v.priceSourceLabel).toBeNull();
+    expect(v.totalCost).toBe('unpriced');
   });
 });

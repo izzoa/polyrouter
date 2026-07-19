@@ -13,6 +13,7 @@ import {
   credentialLockKey,
   decryptSecret,
   deriveModelKey,
+  deriveNativeFamilyKey,
   encryptSecret,
   resolveModelPrice,
   resolvePlainCredentialValue,
@@ -86,7 +87,14 @@ export interface SafeProvider {
 
 /** The provenance of an `EffectivePrice` — the billing-resolver sources plus the
  * display-only `listed` estimate (add-provider-price-sync-and-edit). */
-export type EffectivePriceSource = 'model' | 'local' | 'bundled' | 'refresh' | 'manual' | 'listed';
+export type EffectivePriceSource =
+  | 'model'
+  | 'local'
+  | 'bundled'
+  | 'refresh'
+  | 'manual'
+  | 'native_family'
+  | 'listed';
 
 /** A model's current effective price for DISPLAY (add-provider-price-sync-and-edit).
  * Resolved read-time: the pure billing resolver first, then the per-provider `listed`
@@ -118,6 +126,16 @@ export interface SafeModel {
   // The current effective price for display (billing resolver → listed estimate →
   // null), resolved on every path that returns a SafeModel. Display only.
   effectivePrice: EffectivePrice | null;
+  /** The captured provider-listed channel estimate, ALWAYS exposed when captured
+   * (add-native-price-fallback) — so the UI can show the channel's own figure
+   * alongside a `native_family` recorded-cost estimate. Display only, never a
+   * billing source. */
+  listedPrice: {
+    inputPricePer1m: number;
+    outputPricePer1m: number;
+    isFree: boolean;
+    capturedAt: Date | null;
+  } | null;
   lastSyncedAt: Date | null;
 }
 
@@ -204,6 +222,7 @@ function toEffectivePrice(
   model: ModelRow,
   providerKind: string,
   catalogRow: ModelPriceRow | null,
+  nativeCatalogRow: ModelPriceRow | null = null,
 ): EffectivePrice | null {
   const snap = resolveModelPrice(
     {
@@ -213,6 +232,7 @@ function toEffectivePrice(
       modelIsFree: model.isFree,
     },
     catalogRow,
+    nativeCatalogRow,
   );
   if (snap !== null) {
     return {
@@ -220,7 +240,8 @@ function toEffectivePrice(
       outputPricePer1m: snap.outputPricePer1m,
       isFree: snap.isFree,
       source: snap.source,
-      estimated: false,
+      // The native-family fallback is an adjacent channel's rate — an estimate.
+      estimated: snap.source === 'native_family',
     };
   }
   // Billing unknown → fall back to the per-provider listed estimate (display only).
@@ -250,6 +271,15 @@ function toSafeModel(m: ModelRow, effectivePrice: EffectivePrice | null = null):
     inputPricePer1m: m.inputPricePer1m,
     outputPricePer1m: m.outputPricePer1m,
     effectivePrice,
+    listedPrice:
+      m.listedInputPricePer1m !== null && m.listedOutputPricePer1m !== null
+        ? {
+            inputPricePer1m: m.listedInputPricePer1m,
+            outputPricePer1m: m.listedOutputPricePer1m,
+            isFree: m.listedIsFree ?? false,
+            capturedAt: m.listedPriceCapturedAt,
+          }
+        : null,
     lastSyncedAt: m.lastSyncedAt,
   };
 }
@@ -513,6 +543,7 @@ export class ProvidersService {
     const providers = await this.db.providers.list(principal);
     const provById = new Map(providers.map((p) => [p.id, p]));
     const keyByModel = new Map<string, string>();
+    const nativeKeyByModel = new Map<string, string>();
     const keys = new Set<string>();
     for (const r of rows) {
       const prov = provById.get(r.providerId);
@@ -521,6 +552,16 @@ export class ProvidersService {
       if (key !== null) {
         keyByModel.set(r.id, key);
         keys.add(key);
+        // Native-family fallback keys ride the SAME batch (derived up front — no
+        // follow-up query per exact-key miss; add-native-price-fallback).
+        const nativeKey = deriveNativeFamilyKey(
+          key.slice(0, key.indexOf(':')),
+          r.externalModelId,
+        );
+        if (nativeKey !== null) {
+          nativeKeyByModel.set(r.id, nativeKey);
+          keys.add(nativeKey);
+        }
       }
     }
     const catalog = await this.db.pricing.priceAtMany([...keys], new Date());
@@ -528,8 +569,10 @@ export class ProvidersService {
     let safe = rows.map((r) => {
       const kind = provById.get(r.providerId)?.kind ?? 'custom';
       const key = keyByModel.get(r.id);
+      const nativeKey = nativeKeyByModel.get(r.id);
       const catalogRow = key !== undefined ? (catByKey.get(key) ?? null) : null;
-      return toSafeModel(r, toEffectivePrice(r, kind, catalogRow));
+      const nativeRow = nativeKey !== undefined ? (catByKey.get(nativeKey) ?? null) : null;
+      return toSafeModel(r, toEffectivePrice(r, kind, catalogRow, nativeRow));
     });
     // The is_free filter applies to the EFFECTIVE price (resolve, then filter), so a
     // catalog-less free-by-listing model still matches (add-provider-price-sync-and-edit).
@@ -585,8 +628,17 @@ export class ProvidersService {
     // model from this response, so it must carry a consistent effective price (no refetch).
     const key =
       provider.baseUrl !== null ? deriveModelKey(provider.baseUrl, updated.externalModelId) : null;
-    const catalogRow = key !== null ? await this.db.pricing.priceAt(key, new Date()) : null;
-    return toSafeModel(updated, toEffectivePrice(updated, provider.kind, catalogRow));
+    const now = new Date();
+    const catalogRow = key !== null ? await this.db.pricing.priceAt(key, now) : null;
+    let nativeRow = null;
+    if (key !== null && catalogRow === null) {
+      const nativeKey = deriveNativeFamilyKey(
+        key.slice(0, key.indexOf(':')),
+        updated.externalModelId,
+      );
+      if (nativeKey !== null) nativeRow = await this.db.pricing.priceAt(nativeKey, now);
+    }
+    return toSafeModel(updated, toEffectivePrice(updated, provider.kind, catalogRow, nativeRow));
   }
 
   // --- internals ---

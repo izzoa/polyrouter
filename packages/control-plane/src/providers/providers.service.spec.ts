@@ -372,3 +372,83 @@ describe('ProvidersService — sync-models', () => {
     expect((longNameCall?.[2] as ModelInsertInput).displayName?.length).toBe(512);
   });
 });
+
+describe('listModels — native-family display batch (add-native-price-fallback)', () => {
+  it('one priceAtMany with BOTH keys; native_family effectivePrice; listedPrice alongside', async () => {
+    const provider = {
+      id: 'p-or',
+      ownerUserId: 'u1',
+      orgId: null,
+      name: 'Openrouter',
+      kind: 'api_key',
+      protocol: 'openai_compatible',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      encryptedCredentials: null,
+      status: 'ok',
+      oauthPreset: null,
+      credentialExpiresAt: null,
+      credentialError: null,
+      createdAt: new Date(),
+    };
+    const model = {
+      id: 'm1',
+      providerId: 'p-or',
+      externalModelId: 'minimax/minimax-m3',
+      displayName: null,
+      contextWindow: null,
+      supportsTools: false,
+      supportsVision: false,
+      supportsReasoning: false,
+      isFree: false,
+      inputPricePer1m: null,
+      outputPricePer1m: null,
+      listedInputPricePer1m: 0.3,
+      listedOutputPricePer1m: 1.1,
+      listedIsFree: false,
+      listedPriceCapturedAt: new Date('2026-07-19T00:00:00Z'),
+      lastSyncedAt: null,
+    };
+    const nativeRow = {
+      id: 'v-native',
+      modelKey: 'minimax:minimax-m3',
+      inputPricePer1m: 0.3,
+      outputPricePer1m: 1.2,
+      cacheReadPricePer1m: 0.06,
+      cacheWritePricePer1m: null,
+      contextWindow: null,
+      supportsTools: false,
+      supportsVision: false,
+      supportsReasoning: false,
+      isFree: false,
+      source: 'refresh',
+      validFrom: new Date('2026-07-01T00:00:00Z'),
+      createdAt: new Date('2026-07-01T00:00:00Z'),
+    };
+    const priceAtMany = jest.fn((keys: string[]) =>
+      Promise.resolve(keys.includes('minimax:minimax-m3') ? [nativeRow] : []),
+    );
+    const port = {
+      providers: { list: () => Promise.resolve([provider]) },
+      models: { listForPrincipal: () => Promise.resolve([model]) },
+      pricing: { priceAtMany },
+    } as unknown as PersistencePort;
+    const svc = mkProvidersService(port, factory(), runtime('selfhosted'));
+    const out = await svc.listModels(principal, {});
+
+    // Exactly ONE batch query carrying BOTH the exact and native keys (no N+1).
+    expect(priceAtMany).toHaveBeenCalledTimes(1);
+    const keys = priceAtMany.mock.calls[0]![0] as string[];
+    expect(keys).toEqual(
+      expect.arrayContaining(['openrouter:minimax/minimax-m3', 'minimax:minimax-m3']),
+    );
+    // The effective price is the flagged native-family estimate...
+    expect(out[0]!.effectivePrice).toMatchObject({
+      source: 'native_family',
+      estimated: true,
+      inputPricePer1m: 0.3,
+      outputPricePer1m: 1.2,
+    });
+    // ...with the provider-listed channel figure carried ALONGSIDE, not replaced.
+    expect(out[0]!.listedPrice).toMatchObject({ inputPricePer1m: 0.3, outputPricePer1m: 1.1 });
+  });
+});

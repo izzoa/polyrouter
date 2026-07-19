@@ -75,6 +75,7 @@ export const DEFAULT_SUMMARY: AnalyticsSummary = {
   freeRequests: 8,
   paidRequests: 20,
   unpricedRequests: 2,
+  nativeFamilySpend: 0,
 };
 
 export const DEFAULT_TIMESERIES: TimeseriesPoint[] = [
@@ -176,6 +177,8 @@ export function buildRequestRows(n: number): RequestRow[] {
       attemptCostMicros: i % 7 === 0 ? 250 : 0,
       durationMs: 500 + i * 10,
       usageEstimated: i % 8 === 0,
+      priceSource: null,
+      priceEstimated: false,
       qualitySignal: i % 3 === 0 ? null : 0.7,
       modelLabel: `Model ${String(i % 4)}`,
       providerLabel: `Provider ${String(i % 2)}`,
@@ -234,6 +237,7 @@ function fakeModel(providerId: string, n: number): ModelDto {
     inputPricePer1m: null,
     outputPricePer1m: null,
     effectivePrice: null,
+    listedPrice: null,
     lastSyncedAt: NOW,
   };
 }

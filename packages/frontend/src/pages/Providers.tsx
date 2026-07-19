@@ -39,6 +39,14 @@ function priceProvenance(m: Model): string {
   switch (ep.source) {
     case 'listed':
       return 'provider-listed · estimate';
+    case 'native_family': {
+      // The recorded-cost estimate (an adjacent channel's catalog rate); the
+      // channel's own listed figure rides ALONGSIDE when captured.
+      const listed = m.listedPrice;
+      return listed !== null
+        ? `native family · estimate — provider lists ${fmtUsd(listed.inputPricePer1m)} / ${fmtUsd(listed.outputPricePer1m)}`
+        : 'native family · estimate';
+    }
     case 'model':
       return 'you set this';
     case 'local':

@@ -63,6 +63,7 @@ class FakeCounter {
 function makeReader(
   rows: BudgetRow[],
   spend: number | number[],
+  nativeMicros = 0,
 ): { reader: BudgetReader; calls: SpendCall[] } {
   const calls: SpendCall[] = [];
   let i = 0;
@@ -71,7 +72,7 @@ function makeReader(
     spendMicrosFor: (owner, agentId, start, endExclusive) => {
       calls.push({ owner, agentId, start: start.getTime(), end: endExclusive.getTime() });
       const v = Array.isArray(spend) ? (spend[i++] ?? 0) : spend;
-      return Promise.resolve(v);
+      return Promise.resolve({ micros: v, nativeMicros });
     },
   };
   return { reader, calls };
@@ -134,6 +135,20 @@ describe('runBudgetOccurrence (#16)', () => {
       threshold: 5_000_000,
       channelIds: ['ch1'],
     });
+  });
+
+  it('an alert over native-priced spend carries spendEstimated: true (add-native-price-fallback)', async () => {
+    const b = row({ action: 'alert', amount: 5, notifyChannelIds: 'ch1' });
+    const counter = new FakeCounter();
+    const alert = jest.fn();
+    const { reader } = makeReader([b], toMicros(7), 1_000); // any native-priced component
+    await run(reader, counter, alert);
+    expect(alert.mock.calls[0]![0]).toMatchObject({ spendEstimated: true });
+    // And an all-exact period stays unmarked.
+    const alert2 = jest.fn();
+    const { reader: r2 } = makeReader([row({ id: 'b2', action: 'alert', amount: 5 })], toMicros(7));
+    await run(r2, new FakeCounter(), alert2);
+    expect(alert2.mock.calls[0]![0]).toMatchObject({ spendEstimated: false });
   });
 
   it('a failing alert-dedup marker does NOT abort the occurrence — counters + heartbeat still stamped (E6.3)', async () => {

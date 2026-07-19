@@ -129,6 +129,28 @@ describe('LogWriter', () => {
     expect(rows[0]!.inputPriceSnapshot).toBe(2.5);
   });
 
+  it('records the snapshot priceSource verbatim on BOTH ledgers (add-native-price-fallback)', async () => {
+    const native = { ...snapshot(), source: 'native_family' as const };
+    const { writer, insertMany, attemptInsertMany } = makeWriter({
+      resolveForModel: jest.fn().mockResolvedValue(native),
+    });
+    writer.enqueue(draft({ id: 'L1' }));
+    writer.enqueueAttempt(attemptDraft({ id: 'A1', requestLogId: 'L1' }));
+    await writer.flush();
+    const [, logRows] = insertMany.mock.calls[0] as [unknown, { priceSource: string }[]];
+    expect(logRows[0]!.priceSource).toBe('native_family');
+    const [, attemptRows] = attemptInsertMany.mock.calls[0] as [unknown, { priceSource: string }[]];
+    expect(attemptRows[0]!.priceSource).toBe('native_family');
+    // And an unpriced draft records null, not a stale source.
+    const { writer: w2, insertMany: i2 } = makeWriter({
+      resolveForModel: jest.fn().mockResolvedValue(null),
+    });
+    w2.enqueue(draft({ id: 'L2' }));
+    await w2.flush();
+    const [, unpriced] = i2.mock.calls[0] as [unknown, { priceSource: string | null }[]];
+    expect(unpriced[0]!.priceSource).toBeNull();
+  });
+
   it('batches per principal (a deleted owner cannot poison another tenant)', async () => {
     const { writer, insertMany } = makeWriter({});
     writer.enqueue(draft({ principal: userPrincipal('u1') }));

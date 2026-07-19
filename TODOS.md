@@ -117,6 +117,12 @@ The five fix-first items from the `STYLESEED.md` gate baseline (app overall ≈ 
 |---|---|---|---|
 | H-1 | `add-hermes-harness` | XS | ✅ archived 2026-07-17 |
 
+### Pricing
+
+| # | Change | Size | Status |
+|---|---|---|---|
+| PR-1 | `add-native-price-fallback` — aggregator channel-key misses fall back to the model's native-family catalog price, flagged `native_family` end-to-end (price_source on both ledgers, priceEstimated roll-up, nativeFamilySpend split, notification marking incl. honest-unknown provenance, listedPrice alongside) | L | ✅ archived 2026-07-19 (clink ×3 — r1: +dashboard-core/analytics-api deltas, attempt-ledger roll-up; r2: +notification-producers/spend-limits deltas, component-only split arithmetic, listed-alongside; r3 diff: block-emit period binding + deadline + unknown state, missing regression tests, per-segment trim, $0-free est marker) |
+
 ### User administration
 
 | # | Change | Size | Status |

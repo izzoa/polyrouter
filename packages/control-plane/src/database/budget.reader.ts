@@ -1,7 +1,7 @@
-import { and, eq, gte, lt } from 'drizzle-orm';
+import { and, eq, gte, lt, sql } from 'drizzle-orm';
 import { budgets, requestAttempts, requestLogs, type BudgetRow } from '@polyrouter/shared/server';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { microsSum } from './cost-sql';
+import { microsSum, microsSumIf } from './cost-sql';
 
 /** DI token for the budget reconcile reader (a narrow, scheduler-only capability). */
 export const BUDGET_READER = 'polyrouter:budget-reader';
@@ -23,7 +23,7 @@ export interface BudgetReader {
     agentId: string | null,
     start: Date,
     endExclusive: Date,
-  ): Promise<number>;
+  ): Promise<{ micros: number; nativeMicros: number }>;
 }
 
 /** Built inside DatabaseModule (which alone holds the private drizzle handle);
@@ -40,8 +40,12 @@ export function buildBudgetReader(db: NodePgDatabase): BudgetReader {
         lt(requestLogs.createdAt, endExclusive),
         ...(agentId !== null ? [eq(requestLogs.agentId, agentId)] : []),
       ];
+      const nativeLog = sql`${requestLogs.priceSource} = 'native_family'`;
       const logs = await db
-        .select({ total: microsSum(requestLogs.cost) })
+        .select({
+          total: microsSum(requestLogs.cost),
+          native: microsSumIf(requestLogs.cost, nativeLog),
+        })
         .from(requestLogs)
         .where(and(...logWhere));
 
@@ -50,20 +54,30 @@ export function buildBudgetReader(db: NodePgDatabase): BudgetReader {
         gte(requestAttempts.createdAt, start),
         lt(requestAttempts.createdAt, endExclusive),
       ];
+      const nativeAttempt = sql`${requestAttempts.priceSource} = 'native_family'`;
       const attemptQuery =
         agentId !== null
           ? db
-              .select({ total: microsSum(requestAttempts.cost) })
+              .select({
+                total: microsSum(requestAttempts.cost),
+                native: microsSumIf(requestAttempts.cost, nativeAttempt),
+              })
               .from(requestAttempts)
               .innerJoin(requestLogs, eq(requestAttempts.requestLogId, requestLogs.id))
               .where(and(...attemptWhere, eq(requestLogs.agentId, agentId)))
           : db
-              .select({ total: microsSum(requestAttempts.cost) })
+              .select({
+                total: microsSum(requestAttempts.cost),
+                native: microsSumIf(requestAttempts.cost, nativeAttempt),
+              })
               .from(requestAttempts)
               .where(and(...attemptWhere));
       const attempts = await attemptQuery;
 
-      return Number(logs[0]?.total ?? 0) + Number(attempts[0]?.total ?? 0);
+      return {
+        micros: Number(logs[0]?.total ?? 0) + Number(attempts[0]?.total ?? 0),
+        nativeMicros: Number(logs[0]?.native ?? 0) + Number(attempts[0]?.native ?? 0),
+      };
     },
   };
 }

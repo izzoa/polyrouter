@@ -186,6 +186,80 @@ describe('PricingService — resolveForModel', () => {
     const local = await svc.resolveForModel(model, 'http://127.0.0.1:11434', 'local', AT);
     expect(local).toMatchObject({ source: 'local', inputPricePer1m: 0 });
   });
+
+  it('falls back to the native-family row ONLY on a successful exact-key miss (add-native-price-fallback)', async () => {
+    const { port, facilities } = makeStore();
+    const svc = new PricingService(port, facilities, runtime, noFetch);
+    // Seed ONLY the native-family row — the openrouter channel key is absent.
+    await port.pricing.insertVersion({
+      modelKey: 'minimax:minimax-m3',
+      inputPricePer1m: 0.3,
+      outputPricePer1m: 1.2,
+      cacheReadPricePer1m: 0.06,
+      isFree: false,
+      source: 'refresh',
+      validFrom: new Date('2026-07-01T00:00:00Z'),
+    });
+    const model = {
+      externalModelId: 'minimax/minimax-m3',
+      inputPricePer1m: null,
+      outputPricePer1m: null,
+      isFree: false,
+    };
+    const snap = await svc.resolveForModel(model, 'https://openrouter.ai/api/v1', 'api_key', AT);
+    expect(snap).toMatchObject({
+      source: 'native_family',
+      modelKey: 'minimax:minimax-m3',
+      inputPricePer1m: 0.3,
+      outputPricePer1m: 1.2,
+      cacheReadPricePer1m: 0.06,
+    });
+    // An exact channel row, once appended, WINS for later resolutions (append race:
+    // pricing is completion-time — a later `at` sees the exact row).
+    await port.pricing.insertVersion({
+      modelKey: 'openrouter:minimax/minimax-m3',
+      inputPricePer1m: 0.35,
+      outputPricePer1m: 1.1,
+      isFree: false,
+      source: 'refresh',
+      validFrom: new Date('2026-08-15T00:00:00Z'),
+    });
+    const later = await svc.resolveForModel(
+      model,
+      'https://openrouter.ai/api/v1',
+      'api_key',
+      new Date('2026-08-16T00:00:00Z'),
+    );
+    expect(later).toMatchObject({ source: 'refresh', inputPricePer1m: 0.35 });
+    // An unmapped vendor never borrows a family price.
+    const unmapped = await svc.resolveForModel(
+      { ...model, externalModelId: 'somevendor/model-1' },
+      'https://openrouter.ai/api/v1',
+      'api_key',
+      AT,
+    );
+    expect(unmapped).toBeNull();
+  });
+
+  it('a thrown exact lookup PROPAGATES — a DB error is never treated as a catalog miss', async () => {
+    const { port, facilities } = makeStore();
+    const svc = new PricingService(port, facilities, runtime, noFetch);
+    const boom = new Error('pricing db down');
+    port.pricing.priceAt = () => Promise.reject(boom);
+    await expect(
+      svc.resolveForModel(
+        {
+          externalModelId: 'minimax/minimax-m3',
+          inputPricePer1m: null,
+          outputPricePer1m: null,
+          isFree: false,
+        },
+        'https://openrouter.ai/api/v1',
+        'api_key',
+        AT,
+      ),
+    ).rejects.toBe(boom); // no silent degrade to the native estimate
+  });
 });
 
 describe('PricingService — refresh validation resilience (A-13)', () => {

@@ -15,6 +15,7 @@ const model = (id: string, providerId: string, externalModelId: string): Model =
   inputPricePer1m: null,
   outputPricePer1m: null,
   effectivePrice: null,
+  listedPrice: null,
   lastSyncedAt: null,
 });
 

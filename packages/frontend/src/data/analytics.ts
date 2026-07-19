@@ -109,10 +109,13 @@ export interface PriceSnapshotView {
   unpriced: boolean;
 }
 
-function priceView(label: string, v: number | null): PriceSnapshotView {
+function priceView(label: string, v: number | null, source: string | null = null): PriceSnapshotView {
   if (v === null) return { label, value: 'unpriced', free: false, unpriced: true };
-  if (v === 0) return { label, value: '$0 free', free: true, unpriced: false };
-  return { label, value: `$${String(v)} / 1M`, free: false, unpriced: false };
+  // A native-family snapshot is an adjacent channel's rate — marked on EVERY
+  // priced row, the zero-priced (free) case included.
+  const est = source === 'native_family' ? ' · est.' : '';
+  if (v === 0) return { label, value: `$0 free${est}`, free: true, unpriced: false };
+  return { label, value: `$${String(v)} / 1M${est}`, free: false, unpriced: false };
 }
 
 export interface InspectorView {
@@ -139,6 +142,10 @@ export interface InspectorView {
   totalCost: string;
   totalMicros: number;
   usageEstimated: boolean;
+  /** Rendered price-source line (null hidden); `native_family` reads as an estimate. */
+  priceSourceLabel: string | null;
+  /** Served OR any attempt priced `native_family` — the TOTAL carries the marker. */
+  priceEstimated: boolean;
   durationMs: number;
 }
 
@@ -162,16 +169,26 @@ export function toInspectorView(r: RequestRow): InspectorView {
     cacheReadTokens: r.cacheReadTokens,
     cacheWriteTokens: r.cacheWriteTokens,
     prices: [
-      priceView('input', r.inputPriceSnapshot),
-      priceView('output', r.outputPriceSnapshot),
-      priceView('cache read', r.cacheReadPriceSnapshot),
-      priceView('cache write', r.cacheWritePriceSnapshot),
+      priceView('input', r.inputPriceSnapshot, r.priceSource),
+      priceView('output', r.outputPriceSnapshot, r.priceSource),
+      priceView('cache read', r.cacheReadPriceSnapshot, r.priceSource),
+      priceView('cache write', r.cacheWritePriceSnapshot, r.priceSource),
     ],
     servedCost: r.cost === null ? 'unpriced' : fmtMicros(Math.round(r.cost * 1_000_000)),
     attemptCost: fmtMicros(r.attemptCostMicros),
-    totalCost: r.cost === null ? 'unpriced' : fmtMicros(totalCostMicros(r)),
+    totalCost:
+      r.cost === null
+        ? 'unpriced'
+        : `${fmtMicros(totalCostMicros(r))}${r.priceEstimated ? ' · est.' : ''}`,
     totalMicros: totalCostMicros(r),
     usageEstimated: r.usageEstimated,
+    priceSourceLabel:
+      r.priceSource === null
+        ? null
+        : r.priceSource === 'native_family'
+          ? 'native family · estimate'
+          : r.priceSource,
+    priceEstimated: r.priceEstimated,
     durationMs: r.durationMs,
   };
 }

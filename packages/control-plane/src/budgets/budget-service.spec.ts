@@ -2,6 +2,7 @@ import { Logger } from '@nestjs/common';
 import { Redis } from 'ioredis';
 import { userPrincipal, type BudgetRow } from '@polyrouter/shared/server';
 import { BudgetService, BudgetEnforcementUnavailableError, type BudgetHit } from './budget-service';
+import type { BudgetReader } from '../database/budget.reader';
 import { BudgetCache } from './budget-cache';
 import { SpendCounter } from './spend-counter';
 import { NotificationProducers } from '../producers/notification-producers';
@@ -66,15 +67,23 @@ function row(p: Partial<BudgetRow>): BudgetRow {
   };
 }
 
-function make(rows: BudgetRow[], failOpen = true) {
+function make(
+  rows: BudgetRow[],
+  failOpen = true,
+  spendMicrosFor: jest.Mock = jest.fn().mockResolvedValue({ micros: 0, nativeMicros: 0 }),
+) {
   const conn = new FakeConn();
   const counter = new SpendCounter({ duplicate: () => conn } as unknown as Redis, BASE_CFG);
   const cache = { get: jest.fn().mockResolvedValue(rows) } as unknown as BudgetCache;
   const budgetBlock = jest.fn();
   const producers = { budgetBlock } as unknown as NotificationProducers;
   const metrics = new ProxyMetrics();
-  const svc = new BudgetService(cache, counter, producers, metrics, { ...BASE_CFG, failOpen });
-  return { svc, conn, counter, budgetBlock, metrics };
+  const reader = {
+    listActiveBudgets: jest.fn().mockResolvedValue([]),
+    spendMicrosFor,
+  } as unknown as BudgetReader;
+  const svc = new BudgetService(cache, counter, producers, metrics, reader, { ...BASE_CFG, failOpen });
+  return { svc, conn, counter, budgetBlock, metrics, spendMicrosFor };
 }
 
 /** Seed the shared counter for a budget's current-period key + a fresh heartbeat. */
@@ -221,6 +230,7 @@ describe('BudgetService.notifyBlocked', () => {
       budget: b,
       spentMicros: toMicros(12),
       periodId: '2026-03-15',
+      periodStart: new Date(Date.UTC(2026, 2, 15)),
       resetAt: new Date(Date.UTC(2026, 2, 16)),
     };
     const emit = (
@@ -237,5 +247,41 @@ describe('BudgetService.notifyBlocked', () => {
       threshold: 10_000_000,
       channelIds: ['ch1', 'ch2'],
     });
+  });
+});
+
+describe('BudgetService.emitBlock — provenance (add-native-price-fallback)', () => {
+  const b = row({ amount: 10 });
+  const hit: BudgetHit = {
+    budget: b,
+    spentMicros: toMicros(12),
+    periodId: '2026-03-15',
+    periodStart: new Date(Date.UTC(2026, 2, 15)),
+    resetAt: new Date(Date.UTC(2026, 2, 16)),
+  };
+  const emitOf = (svc: BudgetService) =>
+    (svc as unknown as { emitBlock: (p: typeof PRINCIPAL, h: BudgetHit) => Promise<void> }).emitBlock;
+
+  it('queries the HIT period bounds (never new Date()) and marks native spend', async () => {
+    const spend = jest.fn().mockResolvedValue({ micros: toMicros(12), nativeMicros: 5 });
+    const { svc, budgetBlock } = make([b], true, spend);
+    await emitOf(svc).call(svc, PRINCIPAL, hit);
+    expect(spend).toHaveBeenCalledWith('u1', b.agentId, hit.periodStart, hit.resetAt);
+    expect(budgetBlock.mock.calls[0]![0]).toMatchObject({ spendEstimated: true });
+  });
+
+  it('a rejected provenance lookup emits spendEstimated: "unknown" — never confirmed-exact', async () => {
+    const spend = jest.fn().mockRejectedValue(new Error('reader down'));
+    const { svc, budgetBlock } = make([b], true, spend);
+    await emitOf(svc).call(svc, PRINCIPAL, hit);
+    expect(budgetBlock).toHaveBeenCalledTimes(1); // the emit itself is never lost
+    expect(budgetBlock.mock.calls[0]![0]).toMatchObject({ spendEstimated: 'unknown' });
+  });
+
+  it('an all-exact period emits spendEstimated: false', async () => {
+    const spend = jest.fn().mockResolvedValue({ micros: toMicros(12), nativeMicros: 0 });
+    const { svc, budgetBlock } = make([b], true, spend);
+    await emitOf(svc).call(svc, PRINCIPAL, hit);
+    expect(budgetBlock.mock.calls[0]![0]).toMatchObject({ spendEstimated: false });
   });
 });

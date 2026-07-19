@@ -192,6 +192,12 @@ export function Inspector() {
                         </div>
                       )}
                     </For>
+                    <Show when={view().priceSourceLabel !== null}>
+                      <div style="display:flex;justify-content:space-between">
+                        <span style="color:var(--text3)">price source</span>
+                        <span style="color:var(--text)">{view().priceSourceLabel}</span>
+                      </div>
+                    </Show>
                     <div style="display:flex;justify-content:space-between;border-top:1px solid var(--border2);padding-top:7px">
                       <span style="color:var(--text3)">served cost</span>
                       <span style="color:var(--text)">{view().servedCost}</span>

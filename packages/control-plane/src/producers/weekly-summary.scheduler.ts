@@ -40,7 +40,12 @@ export async function runWeeklyOccurrence(
     await notifications.emit({
       type: 'weekly_spend_summary',
       scope: { ownerUserId: r.ownerUserId, lifecycleId: occurrenceKey },
-      fields: { total: formatMoney(r.total) },
+      fields: {
+        total: formatMoney(r.total),
+        // Present only when the week includes estimate-priced spend — the renderer
+        // marks the total accordingly (add-native-price-fallback).
+        ...(r.nativeFamilySpend > 0 ? { nativeFamilySpend: formatMoney(r.nativeFamilySpend) } : {}),
+      },
     });
   }
 }

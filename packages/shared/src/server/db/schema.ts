@@ -371,6 +371,10 @@ export const requestLogs = pgTable(
     cacheReadPriceSnapshot: doublePrecision('cache_read_price_snapshot'),
     cacheWritePriceSnapshot: doublePrecision('cache_write_price_snapshot'),
     priceVersionId: text('price_version_id'),
+    // Snapshot provenance verbatim (add-native-price-fallback):
+    // model|local|bundled|refresh|manual|native_family; null = unpriced or predates
+    // the column. 'native_family' is the estimate marker.
+    priceSource: text('price_source'),
     usageEstimated: boolean('usage_estimated').default(false).notNull(),
     cost: doublePrecision('cost'),
     durationMs: integer('duration_ms').notNull(),
@@ -426,6 +430,9 @@ export const requestAttempts = pgTable(
     cacheReadPriceSnapshot: doublePrecision('cache_read_price_snapshot'),
     cacheWritePriceSnapshot: doublePrecision('cache_write_price_snapshot'),
     priceVersionId: text('price_version_id'),
+    // Same provenance on the attempt ledger — an estimate hiding in a superseded
+    // attempt must be discoverable (add-native-price-fallback).
+    priceSource: text('price_source'),
     usageEstimated: boolean('usage_estimated').default(false).notNull(),
     cost: doublePrecision('cost'),
     status: text('status').notNull(),

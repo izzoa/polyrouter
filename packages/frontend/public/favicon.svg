@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
+  <!-- The polyrouter routing mark (same geometry as the sidebar logo), sized up
+       slightly for 16px legibility. Colors are the app tokens; the dark values
+       apply when the browser chrome is dark (SVG favicons honor the media query
+       in Chromium/Firefox; Safari simply shows the light variant). -->
+  <style>
+    .t { fill: #17181a; }
+    .f { fill: #b4b6bc; }
+    .lb { stroke: #d6d7dc; }
+    @media (prefers-color-scheme: dark) {
+      .t { fill: #f0f1f4; }
+      .f { fill: #4e5058; }
+      .lb { stroke: #3a3c44; }
+    }
+  </style>
+  <circle cx="4" cy="10" r="2.8" class="t" />
+  <circle cx="15" cy="4.5" r="2.8" fill="#4f5dff" />
+  <circle cx="15" cy="10" r="2.8" class="f" />
+  <circle cx="15" cy="15.5" r="2.8" class="f" />
+  <line x1="6" y1="10" x2="12.8" y2="5.2" stroke="#4f5dff" stroke-width="1.8" />
+  <line x1="6.4" y1="10" x2="12.6" y2="10" class="lb" stroke-width="1.8" />
+  <line x1="6" y1="10" x2="12.8" y2="14.8" class="lb" stroke-width="1.8" />
+</svg>

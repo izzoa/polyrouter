@@ -1,5 +1,118 @@
 # @polyrouter/shared
 
+## 0.3.0
+
+### Minor Changes
+
+- eceaa5a: feat(subscription): ChatGPT Plus/Pro preset + the `openai_responses` upstream protocol
+
+  The subscription-OAuth wizard gains a **ChatGPT Plus / Pro** preset (alongside Claude
+  Pro/Max): sign in at auth.openai.com, land on the dead `localhost:1455` tab, and paste the
+  redirect URL back — polyrouter exchanges the code (PKCE, form-encoded per this endpoint),
+  extracts the ChatGPT account id from the exchange's `id_token` (nested
+  `https://api.openai.com/auth` claim, strictly validated, sealed inside the encrypted
+  envelope, never logged or echoed), and creates a provider that speaks the ChatGPT backend's
+  **Responses API** — a new upstream-only `openai_responses` protocol translation
+  (`requestOut`/`responseIn`/stream parsing behind the same Normalized IR, golden-pinned:
+  `function_call`/`function_call_output` correlation by `call_id`, parallel-stream assembly
+  keyed by `item_id`, refusals surfaced as text, all four terminals, cached-input usage
+  subtraction).
+
+  Deliberate limits, stated up front: `store: false` on every call (nothing retained
+  server-side by request); reasoning items the backend emits are **dropped, never persisted
+  or replayed** (metadata-only trade — can reduce multi-turn tool-use quality); polyrouter
+  sends ONLY `Authorization: Bearer` + `chatgpt-account-id` + the Responses beta header —
+  **no client-fingerprint headers, no imitation instructions, ever**.
+
+  **Verified live (2026-07-18)** against real accounts — both presets ship **enabled**, and
+  the verification pinned real backend quirks into the code: the Codex backend is
+  **streaming-only** (buffered chat is stream-and-collect) and **rejects
+  `max_output_tokens`/`temperature`/`top_p`** (documented drops — token caps cannot be
+  enforced upstream there); the live model list is `gpt-5.4-mini`, `gpt-5.6-sol/terra/luna`,
+  `gpt-5.5`, `gpt-5.4`; auth.openai.com rejects a `state` token-body param (now
+  preset-declared — Anthropic's exchange wants it) and returns nested error objects (its
+  `token_expired` now correctly maps to "reauthorize" instead of looping "try again"); the
+  token client pins `Accept-Encoding: identity` (a compressed IdP response must never be
+  undecodable). Full flows proven: connect + account-id claim, buffered + streamed proxied
+  completions, live tool calling, and forced token refreshes on both presets (Claude's
+  proxied completion returned the account's own usage-window 429, surfaced as a typed
+  `rate_limit_error` — correct behavior; see `scripts/verify-*-oauth.md` for the records).
+
+  Supporting changes: the token client is preset-encoding-aware (`json`/`form`), surfaces
+  `id_token` from the exchange only, and a refresh response that omits `refresh_token` now
+  **retains the stored one** (non-rotating endpoints — applies to Claude too); the
+  `openai_responses` protocol is connect-only (the public create/update API rejects it) and
+  `listModels` on a models-endpoint-less provider is a typed error while `test-connection`
+  runs a designated 1-token probe; editing any OAuth-connected provider now submits a
+  **name-only** patch with endpoint/kind/protocol shown read-only (previously the edit form
+  echoed them, which would 400 on a Responses row).
+
+- eceaa5a: feat(providers): identify polyrouter to OpenRouter for app attribution
+
+  Requests to an `openrouter.ai`-host provider now carry OpenRouter's app-attribution headers —
+  `HTTP-Referer: https://polyrouter.app` and `X-OpenRouter-Title: polyrouter` — so polyrouter
+  appears in OpenRouter's public rankings and per-model app analytics. The headers are computed
+  once at adapter creation and cover all outbound OpenRouter calls (chat, streaming, model sync,
+  test-connection).
+
+  The headers are **non-secret** (an app URL and name — no user data, prompts, or keys) and are
+  disclosed **only** to OpenRouter (an exact `openrouter.ai` host match; every other provider —
+  OpenAI, Anthropic, custom, local — receives neither header). They are additive and never affect
+  authentication. This is default-on with no opt-out.
+
+- eceaa5a: feat(providers): show real prices for aggregators (display estimate) + edit providers
+
+  Aggregator providers (OpenRouter and other OpenAI-compatible model lists that carry
+  per-model pricing) no longer show a blank "catalog price". Their `/models` prices are now
+  captured at **sync** as a per-provider **display estimate** (new `listed_*` model columns)
+  and surfaced in the Providers and Routing UIs with clear provenance — "provider-listed ·
+  estimate", "catalog", "you set this", or an honest "unpriced — cost not tracked".
+
+  The estimate is **display only**: it never enters the `model_prices` catalog, `resolveModelPrice`,
+  or the request-time cost snapshot, so recorded cost stays honest (invariant 4 — cost comes
+  from the bundled catalog, not provider `/models`; an aggregator request still records
+  `unknown` cost rather than a possibly-wrong `/models`-derived one). Authoritative aggregator
+  cost (via upstream usage accounting) remains a future enhancement.
+
+  `GET /api/models` (and the model-pricing `PATCH` response) now return a resolved
+  `effectivePrice { input, output, isFree, source, estimated }`, resolved via a single bounded
+  catalog lookup; the `isFree` filter applies to the effective price.
+
+  Providers can now be **edited** from the dashboard — an Edit action opens a form for name,
+  kind, protocol, base_url, and credential (`PATCH /api/providers/:id`). The credential follows
+  the write-only contract: blank preserves the stored key, an explicit "remove stored credential"
+  control clears it, a typed value rotates it. Changing base_url/protocol clears stale listed
+  estimates; a kind change to api_key/subscription warns that user-set model prices are cleared.
+
+- eceaa5a: feat(providers): real subscription OAuth — connect wizard, token lifecycle, Claude preset
+
+  The `subscription` provider kind is now a real capability instead of a label:
+
+  - **Connect wizard** (Manifest-style paste-back): pick a preset, sign in at the provider's
+    authorize link, paste the redirect URL or `code#state` string back — polyrouter verifies
+    `state` (required on every paste form), exchanges the code (PKCE S256) at the preset's fixed
+    token endpoint, and creates the provider with a pinned base URL/protocol. Sessions are
+    server-held (Redis, ~10 min TTL), single-use (atomically consumed before the exchange),
+    bound to your login session, and rate-limited per user and per IP.
+  - **Token lifecycle**: access + refresh tokens live in a typed encrypted envelope (plain pasted
+    credentials are now wrapped in the same envelope — legacy stored credentials keep working).
+    Tokens auto-refresh before expiry with cross-instance single-flight (advisory lock + in-lock
+    re-read; refresh-token rotation can't be clobbered), transient IdP outages back off and keep
+    serving the still-valid token, and a revoked grant becomes a durable **"reauthorize
+    required"** state with a one-click reconnect on the provider card. Credential failures are
+    breaker-neutral; only a successful reauthorization resets the provider's breaker.
+  - **Anthropic OAuth wire support**: subscription providers with OAuth credentials authenticate
+    with `Authorization: Bearer` + the required `anthropic-beta` value (not `x-api-key`).
+  - **Claude Pro/Max preset** ships **disabled** pending live verification against a real
+    account (`scripts/verify-claude-oauth.md`): the preset's endpoints are ecosystem-known, not
+    a documented contract — polyrouter never ships an enabled-but-unverified preset, sends only
+    the documented headers, and never imitates the first-party client beyond them. The ToS
+    caution for flat-rate subscription reuse still applies and is shown in the UI.
+
+  Migration 0010 adds non-secret provider columns (`oauth_preset`, `credential_expires_at`,
+  `credential_error`). Rotating `PROVIDER_CREDENTIAL_KEY` invalidates stored envelopes; OAuth
+  providers then require reauthorization.
+
 ## 0.2.0
 
 ### Minor Changes

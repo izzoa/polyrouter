@@ -199,6 +199,15 @@ export const providers = pgTable(
     baseUrl: text('base_url'),
     encryptedCredentials: text('encrypted_credentials'),
     status: text('status').default('unknown').notNull(),
+    // Subscription-OAuth display/state metadata (add-subscription-oauth). NON-SECRET:
+    // tokens live only inside encrypted_credentials (invariant 8). `oauth_preset` names
+    // the bundled preset for an OAuth-connected provider; `credential_expires_at` mirrors
+    // the access token's expiry for the UI (never an auth input — the envelope is
+    // authoritative); `credential_error` is the durable credential state the dashboard
+    // reads after reload ('reauthorize_required', extensible).
+    oauthPreset: text('oauth_preset'),
+    credentialExpiresAt: timestamp('credential_expires_at', { withTimezone: true }),
+    credentialError: text('credential_error'),
     createdAt: createdAt(),
   },
   (t) => [index('provider_owner_idx').on(t.ownerUserId)],
@@ -220,6 +229,18 @@ export const models = pgTable(
     inputPricePer1m: doublePrecision('input_price_per_1m'),
     outputPricePer1m: doublePrecision('output_price_per_1m'),
     isFree: boolean('is_free').default(false).notNull(),
+    // Provider-listed price captured at sync as a DISPLAY-ONLY estimate
+    // (add-provider-price-sync-and-edit). Deliberately DISTINCT from the user-price
+    // columns above: these NEVER feed `resolveModelPrice`, the `model_prices` catalog,
+    // or the request-time cost snapshot (invariant 4 — recorded cost comes from the
+    // bundled catalog, not provider `/models`). Per-provider; rewritten on every sync
+    // (set from the listed price, or cleared to null when none is listed); cleared on a
+    // base_url/protocol change. `listed_is_free` is null when no estimate exists and is
+    // true only when every monetary dimension the provider lists is zero.
+    listedInputPricePer1m: doublePrecision('listed_input_price_per_1m'),
+    listedOutputPricePer1m: doublePrecision('listed_output_price_per_1m'),
+    listedIsFree: boolean('listed_is_free'),
+    listedPriceCapturedAt: timestamp('listed_price_captured_at', { withTimezone: true }),
     lastSyncedAt: timestamp('last_synced_at', { withTimezone: true }),
   },
   (t) => [

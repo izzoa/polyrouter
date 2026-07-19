@@ -25,10 +25,11 @@ export function posStyle(i: number): [string, string, string] {
 }
 
 function modelPriceLabel(m: Model | undefined): string {
-  if (!m) return 'catalog price';
-  if (m.isFree) return 'free';
-  if (m.inputPricePer1m === null || m.outputPricePer1m === null) return 'catalog price';
-  return `$${String(m.inputPricePer1m)} / $${String(m.outputPricePer1m)} per 1M`;
+  const ep = m?.effectivePrice;
+  if (!ep) return 'unpriced';
+  const tag = ep.estimated ? ' · est.' : '';
+  if (ep.isFree) return `free${tag}`;
+  return `$${String(ep.inputPricePer1m)} / $${String(ep.outputPricePer1m)} per 1M${tag}`;
 }
 
 function structuralLayers(al: AutoLayers | null): LayerRow[] {

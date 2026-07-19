@@ -91,6 +91,11 @@ export interface ModelAccessor {
    * returning the count cleared. Used when a provider's kind leaves custom/local
    * so a stale price can't be displayed for a now-catalog-priced provider. */
   clearPricingForProvider(principal: Principal, providerId: string): Promise<number>;
+  /** Clear all of a provider's models' provider-listed DISPLAY estimates (`listed_*`,
+   * owner-scoped), returning the count cleared. Used when a provider's base_url/protocol
+   * changes so an estimate captured from the prior endpoint is not displayed
+   * (add-provider-price-sync-and-edit). Never touches the billing user-price columns. */
+  clearListedPricingForProvider(principal: Principal, providerId: string): Promise<number>;
 }
 
 /** Outcome of an atomic chain replacement (#9). Distinguishes the two ownership
@@ -154,6 +159,10 @@ export type ModelPriceInput = {
 export interface PricingCatalog {
   /** The version in effect at `at` (greatest `valid_from ≤ at`), or null. */
   priceAt(modelKey: string, at: Date): Promise<ModelPriceRow | null>;
+  /** The versions in effect at `at` for each of `keys`, in ONE query (the effective
+   * row per key). For the display effective-price path: resolve only the keys a model
+   * set needs, never `N`×`priceAt` nor a full-catalog scan (add-provider-price-sync-and-edit). */
+  priceAtMany(keys: readonly string[], at: Date): Promise<ModelPriceRow[]>;
   latest(modelKey: string): Promise<ModelPriceRow | null>;
   /** The current version per `model_key` (latest with `valid_from ≤ now`). */
   listLatest(now: Date): Promise<ModelPriceRow[]>;
@@ -343,5 +352,13 @@ export interface PersistencePort {
  * receive a TRANSACTION-BOUND PersistencePort — never a raw handle. */
 export interface PersistenceFacilities {
   withTransaction<T>(fn: (tx: PersistencePort) => Promise<T>): Promise<T>;
-  withAdvisoryLock<T>(lockKey: number, fn: (tx: PersistencePort) => Promise<T>): Promise<T>;
+  /** `opts.lockTimeoutMs` bounds the lock WAIT via a transaction-local `lock_timeout`
+   * (add-subscription-oauth): exceeding it aborts the transaction with an
+   * `AdvisoryLockTimeoutError`, freeing the pooled connection — no detached waiter can
+   * outlive its caller. Omitted = today's unbounded wait (the pricing seed path). */
+  withAdvisoryLock<T>(
+    lockKey: number,
+    fn: (tx: PersistencePort) => Promise<T>,
+    opts?: { lockTimeoutMs?: number },
+  ): Promise<T>;
 }

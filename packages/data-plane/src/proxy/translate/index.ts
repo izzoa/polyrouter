@@ -10,10 +10,11 @@ import { openaiAdapter, createOpenaiAdapter } from './openai';
 import { anthropicAdapter, createAnthropicAdapter } from './anthropic';
 
 export * from './ir';
-export type { ProtocolAdapter, AdapterQuirks, SerializationContext } from './adapter';
+export type { ProtocolAdapter, UpstreamProtocolAdapter, AdapterQuirks, SerializationContext } from './adapter';
 export { SerializationError } from './adapter';
 export { createOpenaiAdapter, openaiAdapter } from './openai';
 export { createAnthropicAdapter, anthropicAdapter } from './anthropic';
+export { createResponsesAdapter } from './responses';
 export type { AnthropicAdapterOptions } from './anthropic';
 export { canonRequest, canonResponse } from './canon';
 export { sseFrames, formatSseData, formatSseEvent, fromChunks, collect } from './stream';

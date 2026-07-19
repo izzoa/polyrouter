@@ -1,4 +1,4 @@
-import {
+import { ProviderError,
   classifyResponse,
   classifyNetworkError,
   classifyStreamError,
@@ -46,6 +46,11 @@ describe('provider error classification', () => {
       expect(shouldFallback(k)).toBe(true);
       expect(breakerImpact(k)).toBe(true);
     }
+    // credential (add-subscription-oauth): a revoked OAuth grant / IdP outage falls
+    // back to the next chain member but is breaker-NEUTRAL — credential state is not
+    // upstream provider health.
+    expect(shouldFallback('credential')).toBe(true);
+    expect(breakerImpact('credential')).toBe(false);
   });
 
   it('classifies streamed error events by type', () => {
@@ -59,5 +64,18 @@ describe('provider error classification', () => {
   it('never embeds oversized bodies', () => {
     const big = 'x'.repeat(10_000);
     expect(classifyResponse(400, big).message.length).toBeLessThan(400);
+  });
+});
+
+// add-subscription-oauth (codex round 3): the breaker OUTCOME for a credential failure
+// is strictly neutral — never 'success' (which would erase genuine failure counts or
+// close a half-open probe) and never 'trip'.
+import { outcomeForError } from './breaker';
+
+describe('breaker outcome for credential failures', () => {
+  it('credential errors settle as neutral, not success or trip', () => {
+    expect(outcomeForError(new ProviderError('credential', 'revoked'))).toBe('neutral');
+    expect(outcomeForError(new ProviderError('unavailable', 'down'))).toBe('trip');
+    expect(outcomeForError(new ProviderError('unknown_model', 'gone'))).toBe('success');
   });
 });

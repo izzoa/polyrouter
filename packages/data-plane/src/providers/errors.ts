@@ -7,7 +7,16 @@
  */
 
 export type ProviderErrorKind =
-  'auth' | 'rate_limit' | 'unavailable' | 'bad_request' | 'unknown_model';
+  | 'auth'
+  | 'rate_limit'
+  | 'unavailable'
+  | 'bad_request'
+  | 'unknown_model'
+  // A local credential-resolution failure (add-subscription-oauth): a revoked OAuth
+  // grant (`reauthorize required`) or a transient identity-provider outage. Fallback-
+  // eligible (the chain moves on) but breaker-NEUTRAL — credential state and IdP
+  // availability are not upstream provider health.
+  | 'credential';
 
 export interface ProviderErrorMeta {
   readonly status?: number;

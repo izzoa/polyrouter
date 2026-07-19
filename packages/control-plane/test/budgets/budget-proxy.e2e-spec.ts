@@ -57,6 +57,7 @@ import '../../src/database/database.config';
 import '../../src/redis/redis.config';
 import '../../src/auth/auth.config';
 import '../../src/budgets/budgets.config';
+import { SubscriptionOauthService } from '../../src/subscription-oauth/subscription-oauth.service';
 
 const HMAC = 'b'.repeat(64);
 const HEARTBEAT = 'budget:reconcile:heartbeat';
@@ -161,6 +162,14 @@ describe('budget block enforcement — proxy path (#16)', () => {
       providers: [
         AgentApiKeyGuard,
         ProxyService,
+        {
+          // add-subscription-oauth: ProxyService's credential seam — these suites mint
+          // no OAuth envelopes, so a call here is a wiring bug worth failing loudly.
+          provide: SubscriptionOauthService,
+          useValue: {
+            resolveCredential: () => Promise.reject(new Error('oauth seam not stubbed')),
+          },
+        },
         StreamDrainRegistry,
         {
           provide: RequestRecorder,

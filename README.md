@@ -102,6 +102,11 @@ every request actually cost — while storing **metadata only**, never your prom
 - **Tenant isolation everywhere** — every entity access is ownership-scoped through a
   central guard; covered by a dedicated e2e suite alongside the SSRF, protocol-contract,
   and cost-immutability suites.
+- **OpenRouter app attribution** — requests to an `openrouter.ai` provider carry polyrouter's
+  identity headers (`HTTP-Referer: https://polyrouter.app`, `X-OpenRouter-Title: polyrouter`)
+  so the project appears in [OpenRouter's rankings](https://openrouter.ai/rankings). They are
+  non-secret (an app URL and name — never prompts, keys, or user data), sent **only** to
+  OpenRouter (every other provider gets neither), and never affect authentication.
 
 **Operations**
 
@@ -359,6 +364,40 @@ change both places if it collides with your network.
 - **One app replica only:** boot migrations take no advisory lock — do not `--scale app`.
 - **Verify an install:** `scripts/selfhost-smoke.sh` runs the end-to-end smoke pass (health, admin bootstrap, live-stream drain, metadata-only persistence) against a throwaway stack.
 - **Compliance note:** using flat-rate consumer _subscriptions_ (ChatGPT Plus, Claude Max) programmatically likely violates those providers' ToS — polyrouter supports the provider kind but surfaces the risk; BYOK API keys and local models don't carry it.
+
+### Subscriptions (OAuth)
+
+Subscription providers can connect through a guided **OAuth wizard** instead of pasting a
+token by hand: pick a preset (**Claude Pro/Max** or **ChatGPT Plus/Pro**), sign in at the
+provider's link, and paste the redirect URL — or the `code#state` string it shows — back
+into the dashboard. polyrouter verifies the `state`, exchanges the code (PKCE), and stores
+the access + refresh tokens **encrypted at rest**. Tokens **auto-refresh** before expiry
+(safe across multiple requests and instances); if the provider revokes the grant, the card
+shows **"reauthorize required"** with a one-click reconnect, and your fallback chain keeps
+serving traffic meanwhile.
+
+Honest caveats:
+
+- **These integrations ride undocumented contracts.** The OAuth endpoints and what the
+  provider accepts from subscription tokens are ecosystem-known, not published APIs — the
+  provider can change them at any time. Each preset ships enabled only after its own live
+  verification — both passed on 2026-07-18 (`scripts/verify-claude-oauth.md`,
+  `scripts/verify-chatgpt-oauth.md` record the runs and the pinned constants);
+  failures surface as a clear provider error, and polyrouter **never impersonates the
+  first-party client** beyond the documented headers — no client-fingerprint headers and no
+  imitation system prompts, even if that means a preset stays disabled.
+- **ChatGPT specifics:** the ChatGPT preset speaks the backend's **Responses API** with
+  `store: false` on every call (nothing is retained server-side by request), and any
+  reasoning items the backend emits are **dropped, never persisted or replayed** — a
+  deliberate metadata-only trade that can reduce multi-turn tool-use quality on
+  reasoning-heavy models. The backend also **rejects `max_tokens` and sampling
+  parameters** (`temperature`/`top_p`) — requests through this provider ignore them
+  (verified live; usage is flat-rate, so no billing surprise), and it only serves
+  streaming upstream (polyrouter buffers transparently for non-streaming clients).
+- **The ToS compliance note above applies** — pair a subscription with a pay-per-token
+  fallback provider.
+- **Key rotation:** changing `PROVIDER_CREDENTIAL_KEY` invalidates stored credentials;
+  OAuth-connected providers will then ask to be reauthorized.
 
 ### Users & registration
 

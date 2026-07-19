@@ -16,6 +16,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import { loadConfig } from '@polyrouter/shared';
 import {
   PERSISTENCE_PORT,
+  encryptSecret,
   userPrincipal,
   type PersistencePort,
   type Principal,
@@ -140,6 +141,24 @@ describe('provider management', () => {
     nextModels = () => [];
   });
 
+
+  /** Direct-construction helper for the in-process service tests: passthrough lock
+   * facilities + a plain-unwrap oauth stub (no OAuth envelopes are minted here). */
+  function mkSvc(
+    port: PersistencePort,
+    f: ProviderAdapterFactory,
+    rt: { key: string; mode: 'selfhosted' | 'cloud' },
+  ): ProvidersService {
+    const facilities = {
+      withAdvisoryLock: (_k: number, fn: (tx: PersistencePort) => Promise<unknown>) => fn(port),
+    } as unknown as import('@polyrouter/shared/server').PersistenceFacilities;
+    const oauth = {
+      presetFor: () => undefined,
+      resolveCredential: () => Promise.reject(new Error('not used in this test')),
+    } as unknown as import('../../src/subscription-oauth/subscription-oauth.service').SubscriptionOauthService;
+    return new ProvidersService(port, facilities, f, rt, oauth);
+  }
+
   const asAlice = (): request.Test =>
     request(server).post('/api/providers').set('x-test-user', alice);
 
@@ -236,6 +255,170 @@ describe('provider management', () => {
     );
   });
 
+  // --- add-provider-price-sync-and-edit: provider-listed price as a DISPLAY estimate ---
+
+  const OR = {
+    name: 'openrouter',
+    kind: 'api_key',
+    protocol: 'openai_compatible',
+    baseUrl: 'https://openrouter.ai/api/v1',
+  };
+  const listModelsFor = (user: string): request.Test =>
+    request(server).get('/api/models').set('x-test-user', user);
+
+  it('captures a provider-listed price as a display estimate, never as catalog/billing data', async () => {
+    const created = await asAlice().send({ ...OR, credential: 'k' });
+    nextModels = () => [
+      { id: 'moonshotai/kimi-k3', pricing: { inputPricePer1m: 3, outputPricePer1m: 15 } },
+    ];
+    const sync = await request(server)
+      .post(`/api/providers/${created.body.id}/sync-models`)
+      .set('x-test-user', alice);
+    expect(sync.body.synced).toBe(1);
+    expect(sync.body.pricesCaptured).toBe(1);
+
+    const list = await listModelsFor(alice);
+    const model = list.body.find(
+      (m: { externalModelId: string }) => m.externalModelId === 'moonshotai/kimi-k3',
+    );
+    // Effective price is the LISTED estimate, flagged; billing columns stay null.
+    expect(model.effectivePrice).toMatchObject({
+      inputPricePer1m: 3,
+      outputPricePer1m: 15,
+      source: 'listed',
+      estimated: true,
+    });
+    expect(model.inputPricePer1m).toBeNull();
+    expect(model.outputPricePer1m).toBeNull();
+    // The global catalog is NOT written by a sync (invariant 4): the synced model's
+    // derived key has no catalog row (a shared test DB may hold unrelated openrouter rows,
+    // so assert the specific key, not a prefix count).
+    const cat = await pool.query<{ n: string }>(
+      "SELECT count(*)::text n FROM model_price WHERE model_key = 'openrouter:moonshotai/kimi-k3'",
+    );
+    expect(cat.rows[0]!.n).toBe('0');
+
+    await request(server)
+      .delete(`/api/providers/${created.body.id}`)
+      .set('x-test-user', alice)
+      .expect(200);
+  });
+
+  it('a priceless sync captures no estimate (unpriced)', async () => {
+    const created = await asAlice().send({ ...OR, credential: 'k' });
+    nextModels = () => [{ id: 'vendor/no-price' }];
+    await request(server)
+      .post(`/api/providers/${created.body.id}/sync-models`)
+      .set('x-test-user', alice)
+      .expect(200);
+    const list = await listModelsFor(alice);
+    const model = list.body.find(
+      (m: { externalModelId: string }) => m.externalModelId === 'vendor/no-price',
+    );
+    expect(model.effectivePrice).toBeNull();
+    await request(server).delete(`/api/providers/${created.body.id}`).set('x-test-user', alice);
+  });
+
+  it('a later priceless re-sync clears a stale estimate', async () => {
+    const created = await asAlice().send({ ...OR, credential: 'k' });
+    nextModels = () => [
+      { id: 'x/model', pricing: { inputPricePer1m: 2, outputPricePer1m: 4 } },
+    ];
+    await request(server)
+      .post(`/api/providers/${created.body.id}/sync-models`)
+      .set('x-test-user', alice);
+    // Re-sync: the same model but now with no price → the estimate must be cleared.
+    nextModels = () => [{ id: 'x/model' }];
+    await request(server)
+      .post(`/api/providers/${created.body.id}/sync-models`)
+      .set('x-test-user', alice);
+    const list = await listModelsFor(alice);
+    expect(list.body[0].effectivePrice).toBeNull();
+    await request(server).delete(`/api/providers/${created.body.id}`).set('x-test-user', alice);
+  });
+
+  it('a base_url change clears the listed estimates', async () => {
+    const created = await asAlice().send({ ...OR, credential: 'k' });
+    nextModels = () => [
+      { id: 'y/model', pricing: { inputPricePer1m: 1, outputPricePer1m: 2 } },
+    ];
+    await request(server)
+      .post(`/api/providers/${created.body.id}/sync-models`)
+      .set('x-test-user', alice);
+    // Change the endpoint → the estimate captured from the old one must be dropped.
+    await request(server)
+      .patch(`/api/providers/${created.body.id}`)
+      .set('x-test-user', alice)
+      .send({ baseUrl: 'https://openrouter.ai/v1' })
+      .expect(200);
+    const list = await listModelsFor(alice);
+    expect(list.body[0].effectivePrice).toBeNull();
+    // A name-only edit leaves an estimate intact (control).
+    await request(server)
+      .post(`/api/providers/${created.body.id}/sync-models`)
+      .set('x-test-user', alice);
+    await request(server)
+      .patch(`/api/providers/${created.body.id}`)
+      .set('x-test-user', alice)
+      .send({ name: 'renamed' })
+      .expect(200);
+    expect((await listModelsFor(alice)).body[0].effectivePrice).not.toBeNull();
+    await request(server).delete(`/api/providers/${created.body.id}`).set('x-test-user', alice);
+  });
+
+  it('the models-list is_free filter uses the effective price', async () => {
+    const created = await asAlice().send({ ...OR, credential: 'k' });
+    nextModels = () => [
+      { id: 'free/one', pricing: { inputPricePer1m: 0, outputPricePer1m: 0, isFree: true } },
+      { id: 'paid/one', pricing: { inputPricePer1m: 5, outputPricePer1m: 5 } },
+    ];
+    await request(server)
+      .post(`/api/providers/${created.body.id}/sync-models`)
+      .set('x-test-user', alice);
+    const free = await request(server).get('/api/models?isFree=true').set('x-test-user', alice);
+    const ids = free.body.map((m: { externalModelId: string }) => m.externalModelId);
+    expect(ids).toContain('free/one');
+    expect(ids).not.toContain('paid/one');
+    await request(server).delete(`/api/providers/${created.body.id}`).set('x-test-user', alice);
+  });
+
+  it('an endpoint change during an in-flight sync does not persist the old endpoint estimate', async () => {
+    const port = app.get<PersistencePort>(PERSISTENCE_PORT);
+    const principal: Principal = userPrincipal(alice);
+    const provider = await port.providers.insert(principal, {
+      name: 'race',
+      kind: 'api_key',
+      protocol: 'openai_compatible',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      encryptedCredentials: encryptSecret('k', 'a'.repeat(64)),
+    });
+    // Adapter whose listModels flips the provider's base_url mid-call (simulating a
+    // concurrent PATCH), then returns a price captured from the OLD endpoint.
+    const racingFactory: ProviderAdapterFactory = (() =>
+      ({
+        protocol: 'openai_compatible',
+        chat: () => Promise.reject(new Error('n/a')),
+        chatStream: async function* () {
+          /* n/a */
+        },
+        testConnection: () => Promise.resolve({ ok: true, models: 0 }),
+        listModels: async () => {
+          await port.providers.update(principal, provider.id, {
+            baseUrl: 'https://openrouter.ai/v1',
+          });
+          return [{ id: 'race/model', pricing: { inputPricePer1m: 9, outputPricePer1m: 9 } }];
+        },
+      }) as unknown as ProviderAdapter) as unknown as ProviderAdapterFactory;
+    const svc = mkSvc(port, racingFactory, { key: 'a'.repeat(64), mode: 'selfhosted' });
+    const res = await svc.syncModels(principal, provider.id);
+    expect(res.ok).toBe(true);
+    expect(res.pricesCaptured).toBe(0); // the moved endpoint voids the capture
+    const models = await svc.listModels(principal, {});
+    const m = models.find((x) => x.externalModelId === 'race/model');
+    expect(m?.effectivePrice ?? null).toBeNull();
+    await port.providers.remove(principal, provider.id);
+  });
+
   it('cross-tenant access fails closed (404) and the models list is scoped', async () => {
     const created = await asAlice().send({ ...CUSTOM, credential: 'k' });
     const id = created.body.id;
@@ -263,10 +446,7 @@ describe('provider management', () => {
   it('default wiring: the real adapter connects, syncs, and upserts atomically over a loopback stub', async () => {
     const port = app.get<PersistencePort>(PERSISTENCE_PORT);
     const principal: Principal = userPrincipal(alice);
-    const svc = new ProvidersService(port, createProviderAdapter, {
-      key: 'a'.repeat(64),
-      mode: 'selfhosted',
-    });
+    const svc = mkSvc(port, createProviderAdapter, { key: 'a'.repeat(64), mode: 'selfhosted' });
     const provider = await port.providers.insert(principal, {
       name: 'stub',
       kind: 'local',

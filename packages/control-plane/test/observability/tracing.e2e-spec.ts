@@ -57,6 +57,7 @@ import { COMPOSE_HINT } from '../tenancy/harness';
 import '../../src/database/database.config';
 import '../../src/auth/auth.config';
 import '../../src/pricing/pricing.config';
+import { SubscriptionOauthService } from '../../src/subscription-oauth/subscription-oauth.service';
 
 const HMAC = 'a'.repeat(64);
 const PROMPT_MARKER = 'TRACE_PROMPT_MARKER_zzz';
@@ -68,6 +69,14 @@ async function buildApp(): Promise<{ app: INestApplication; server: App }> {
     providers: [
       AgentApiKeyGuard,
       ProxyService,
+      {
+        // add-subscription-oauth: ProxyService's credential seam — these suites mint
+        // no OAuth envelopes, so a call here is a wiring bug worth failing loudly.
+        provide: SubscriptionOauthService,
+        useValue: {
+          resolveCredential: () => Promise.reject(new Error('oauth seam not stubbed')),
+        },
+      },
       StreamDrainRegistry,
       {
         provide: StructuralRouter,

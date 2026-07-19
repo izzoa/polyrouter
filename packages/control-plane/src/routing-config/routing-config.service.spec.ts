@@ -39,6 +39,10 @@ function model(id: string): ModelRow {
     inputPricePer1m: null,
     outputPricePer1m: null,
     isFree: false,
+    listedInputPricePer1m: null,
+    listedOutputPricePer1m: null,
+    listedIsFree: null,
+    listedPriceCapturedAt: null,
     lastSyncedAt: null,
   };
 }

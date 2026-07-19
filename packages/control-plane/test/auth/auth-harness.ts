@@ -58,7 +58,6 @@ export async function createAuthApp(extraModules: unknown[] = []): Promise<NestE
   }
 
   const moduleRef = await Test.createTestingModule({
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- Nest module refs are class values
     imports: [DatabaseModule, RedisModule, AuthModule, ...(extraModules as never[])],
     controllers: [HealthController, AgentsController, ProbeController],
     providers: [{ provide: APP_GUARD, useClass: SessionGuard }],

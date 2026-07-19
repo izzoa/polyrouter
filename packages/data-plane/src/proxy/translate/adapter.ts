@@ -41,21 +41,29 @@ export class SerializationError extends Error {
   }
 }
 
-export interface ProtocolAdapter {
+/**
+ * The UPSTREAM-ONLY half of protocol translation (add-chatgpt-responses): what the
+ * provider HTTP adapter consumes — serialize the IR out, parse responses/streams in.
+ * A protocol that exists only upstream (the OpenAI Responses wire — no client ever
+ * speaks it to /v1) implements exactly this; the client-facing `ProtocolAdapter`
+ * extends it, so the existing OpenAI/Anthropic modules satisfy it unchanged.
+ */
+export interface UpstreamProtocolAdapter {
+  /** IR → wire request. */
+  requestOut(ir: NormalizedRequest): unknown;
+  /** Wire response → IR. */
+  responseIn(wire: unknown): NormalizedResponse;
+  /** Upstream SSE chunks → normalized event sequence. */
+  streamParse(chunks: AsyncIterable<string>): AsyncGenerator<NormalizedStreamEvent>;
+}
+
+export interface ProtocolAdapter extends UpstreamProtocolAdapter {
   readonly protocol: 'openai' | 'anthropic';
 
   /** Wire request → IR. */
   requestIn(wire: unknown): NormalizedRequest;
-  /** IR → wire request. */
-  requestOut(ir: NormalizedRequest): unknown;
-
-  /** Wire response → IR. */
-  responseIn(wire: unknown): NormalizedResponse;
   /** IR → wire response. */
   responseOut(ir: NormalizedResponse, ctx?: SerializationContext): unknown;
-
-  /** Upstream SSE chunks → normalized event sequence. */
-  streamParse(chunks: AsyncIterable<string>): AsyncGenerator<NormalizedStreamEvent>;
   /** Normalized event sequence → client SSE frame strings. */
   streamSerialize(
     events: AsyncIterable<NormalizedStreamEvent>,

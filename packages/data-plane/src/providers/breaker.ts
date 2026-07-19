@@ -200,6 +200,11 @@ export interface BreakerStore {
     now: number,
     cfg: BreakerConfig,
   ): Promise<void>;
+  /** Drop the provider's breaker record entirely (add-subscription-oauth): called ONLY
+   * on a successful OAuth reauthorization, so a freshly reconnected provider is not
+   * stuck serving a cooldown earned by its dead credential. NEVER called by ordinary
+   * refresh — routine token renewal must not erase genuine upstream failure history. */
+  reset(providerId: string): Promise<void>;
 }
 
 /** In-memory store: the read-compute-write is synchronous (single-threaded JS),
@@ -234,6 +239,11 @@ export class InMemoryBreakerStore implements BreakerStore {
   renew(providerId: string, generation: number, now: number, cfg: BreakerConfig): Promise<void> {
     const rec = this.records.get(providerId) ?? INITIAL_RECORD;
     this.records.set(providerId, applyRenew(rec, generation, now, cfg));
+    return Promise.resolve();
+  }
+
+  reset(providerId: string): Promise<void> {
+    this.records.delete(providerId);
     return Promise.resolve();
   }
 }
@@ -376,6 +386,10 @@ export class RedisBreakerStore implements BreakerStore {
       cfg.stateTtlMs,
     );
   }
+
+  async reset(providerId: string): Promise<void> {
+    await this.redis.eval(`redis.call('DEL', KEYS[1]); return 1`, 1, this.key(providerId));
+  }
 }
 
 export interface BreakerToken {
@@ -491,8 +505,12 @@ export class CircuitBreaker {
   }
 }
 
-function outcomeForError(err: unknown): BreakerOutcome {
+export function outcomeForError(err: unknown): BreakerOutcome {
   if (err instanceof CallCancelledError) return 'neutral';
+  // `credential` (add-subscription-oauth) is strictly NEUTRAL: a revoked grant or IdP
+  // outage must neither trip the breaker NOR settle as a success — a success would
+  // erase genuine failure counts or close a half-open probe the upstream never earned.
+  if (err instanceof ProviderError && err.kind === 'credential') return 'neutral';
   if (err instanceof ProviderError) return breakerImpact(err.kind) ? 'trip' : 'success';
   return 'trip';
 }

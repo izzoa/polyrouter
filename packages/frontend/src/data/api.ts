@@ -101,7 +101,22 @@ export interface ProviderDto {
   baseUrl: string | null;
   status: string;
   hasCredential: boolean;
+  /** Subscription-OAuth display/state metadata (non-secret; add-subscription-oauth). */
+  oauthPreset: string | null;
+  credentialExpiresAt: string | null;
+  credentialError: string | null;
   createdAt: string;
+}
+
+/** An enabled subscription-OAuth preset (server-driven card list). */
+export interface OauthPresetDto {
+  id: string;
+  displayName: string;
+}
+
+export interface OauthStartResult {
+  sessionId: string;
+  authorizeUrl: string;
 }
 
 export interface CreateProviderInput {
@@ -120,6 +135,20 @@ export interface UpdateProviderInput {
   credential?: string;
 }
 
+/** Provenance of a model's effective display price. `listed` is the display-only
+ * provider-listed estimate; the rest are billing-resolver sources. */
+export type EffectivePriceSource = 'model' | 'local' | 'bundled' | 'refresh' | 'manual' | 'listed';
+
+/** A model's current effective price for display (backend-resolved). `estimated` is
+ * true only for the `listed` provider estimate. Never a billing/cost value. */
+export interface EffectivePrice {
+  inputPricePer1m: number;
+  outputPricePer1m: number;
+  isFree: boolean;
+  source: EffectivePriceSource;
+  estimated: boolean;
+}
+
 export interface ModelDto {
   id: string;
   providerId: string;
@@ -132,6 +161,7 @@ export interface ModelDto {
   isFree: boolean;
   inputPricePer1m: number | null;
   outputPricePer1m: number | null;
+  effectivePrice: EffectivePrice | null;
   lastSyncedAt: string | null;
 }
 
@@ -481,6 +511,11 @@ export interface ApiClient {
   listProviders(): Promise<ProviderDto[]>;
   createProvider(input: CreateProviderInput): Promise<ProviderDto>;
   updateProvider(id: string, patch: UpdateProviderInput): Promise<ProviderDto>;
+  listOauthPresets(): Promise<OauthPresetDto[]>;
+  oauthStart(preset: string, name?: string): Promise<OauthStartResult>;
+  /** `pasted` is credential material — sent once, never stored client-side. */
+  oauthComplete(sessionId: string, pasted: string): Promise<ProviderDto>;
+  oauthReauthorize(providerId: string): Promise<OauthStartResult>;
   deleteProvider(id: string): Promise<{ deleted: boolean }>;
   testProvider(id: string): Promise<ActionResult>;
   syncModels(id: string): Promise<ActionResult>;
@@ -631,6 +666,19 @@ export const realClient: ApiClient = {
   createProvider: (input) => http<ProviderDto>(`${API_BASE}/providers`, jsonInit('POST', input)),
   updateProvider: (id, patch) =>
     http<ProviderDto>(`${API_BASE}/providers/${encodeURIComponent(id)}`, jsonInit('PATCH', patch)),
+  listOauthPresets: () => http<OauthPresetDto[]>(`${API_BASE}/providers/oauth/presets`),
+  oauthStart: (preset, name) =>
+    http<OauthStartResult>(
+      `${API_BASE}/providers/oauth/start`,
+      jsonInit('POST', name !== undefined ? { preset, name } : { preset }),
+    ),
+  oauthComplete: (sessionId, pasted) =>
+    http<ProviderDto>(`${API_BASE}/providers/oauth/complete`, jsonInit('POST', { sessionId, pasted })),
+  oauthReauthorize: (providerId) =>
+    http<OauthStartResult>(
+      `${API_BASE}/providers/oauth/reauthorize/${encodeURIComponent(providerId)}`,
+      jsonInit('POST', {}),
+    ),
   deleteProvider: (id) =>
     http<{ deleted: boolean }>(`${API_BASE}/providers/${encodeURIComponent(id)}`, {
       method: 'DELETE',

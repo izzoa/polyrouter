@@ -75,6 +75,16 @@ export { formatRoutingTarget, parseRoutingTarget } from './routing/target';
 export type { RoutingTarget } from './routing/target';
 export { decryptSecret, encryptSecret } from './security/encryption';
 export {
+  POLYCRED_MARKER,
+  TamperedCredentialError,
+  credentialLockKey,
+  parseCredentialEnvelope,
+  resolvePlainCredentialValue,
+  serializeOauthCredential,
+  serializePlainCredential,
+} from './security/credential-envelope';
+export type { OauthCredential, ParsedCredential } from './security/credential-envelope';
+export {
   SsrfError,
   classifyIp,
   isBlockedIp,

@@ -2,12 +2,14 @@ import { UnprocessableEntityException } from '@nestjs/common';
 import type {
   ModelInsertInput,
   ModelRow,
+  PersistenceFacilities,
   PersistencePort,
   Principal,
   ProviderInsertInput,
   ProviderPatch,
   ProviderRow,
 } from '@polyrouter/shared/server';
+import { decryptSecret, resolvePlainCredentialValue } from '@polyrouter/shared/server';
 import {
   ProviderError,
   type ConnectionResult,
@@ -23,6 +25,31 @@ import {
 const KEY = 'a'.repeat(64);
 const principal = {} as Principal;
 const runtime = (mode: 'selfhosted' | 'cloud'): ProvidersRuntime => ({ key: KEY, mode });
+
+/** Positional-construction helper: supplies stub facilities (lock = passthrough) and a
+ * stub subscription-oauth seam (plain unwrap only — these unit tests mint no OAuth
+ * envelopes) so the specs stay focused on provider CRUD behavior. */
+import type { SubscriptionOauthService } from '../subscription-oauth/subscription-oauth.service';
+function mkProvidersService(
+  port: PersistencePort,
+  f: ProviderAdapterFactory,
+  rt: ProvidersRuntime,
+): ProvidersService {
+  const facilities = {
+    withAdvisoryLock: (_k: number, fn: (tx: PersistencePort) => Promise<unknown>) => fn(port),
+  } as unknown as PersistenceFacilities;
+  const oauth = {
+    presetFor: () => undefined,
+    resolveCredential: (_p: Principal, row: ProviderRow) =>
+      Promise.resolve({
+        credential: resolvePlainCredentialValue(
+          decryptSecret(row.encryptedCredentials as string, rt.key),
+        ),
+        authScheme: 'api_key' as const,
+      }),
+  } as unknown as SubscriptionOauthService;
+  return new ProvidersService(port, facilities, f, rt, oauth);
+}
 
 interface FakePort {
   port: PersistencePort;
@@ -43,6 +70,9 @@ function makePort(): FakePort {
     baseUrl: values.baseUrl ?? null,
     encryptedCredentials: values.encryptedCredentials ?? null,
     status: values.status ?? 'unknown',
+    oauthPreset: values.oauthPreset ?? null,
+    credentialExpiresAt: values.credentialExpiresAt ?? null,
+    credentialError: values.credentialError ?? null,
     createdAt: new Date(),
   });
   const upsert = jest.fn(
@@ -59,6 +89,10 @@ function makePort(): FakePort {
         inputPricePer1m: null,
         outputPricePer1m: null,
         isFree: false,
+        listedInputPricePer1m: values.listedInputPricePer1m ?? null,
+        listedOutputPricePer1m: values.listedOutputPricePer1m ?? null,
+        listedIsFree: values.listedIsFree ?? null,
+        listedPriceCapturedAt: values.listedPriceCapturedAt ?? null,
         lastSyncedAt: values.lastSyncedAt ?? null,
       }),
   );
@@ -107,7 +141,7 @@ afterEach(() => jest.restoreAllMocks());
 describe('ProvidersService — credentials', () => {
   it('encrypts the credential at rest and never returns it', async () => {
     const { port, rows } = makePort();
-    const svc = new ProvidersService(port, factory(), runtime('selfhosted'));
+    const svc = mkProvidersService(port, factory(), runtime('selfhosted'));
     const safe = await svc.create(principal, {
       ...baseCreate,
       kind: 'api_key',
@@ -123,7 +157,7 @@ describe('ProvidersService — credentials', () => {
 });
 
 describe('ProvidersService — base_url gate', () => {
-  const svc = () => new ProvidersService(makePort().port, factory(), runtime('selfhosted'));
+  const svc = () => mkProvidersService(makePort().port, factory(), runtime('selfhosted'));
 
   it('rejects userinfo and query/fragment', async () => {
     await expect(
@@ -154,7 +188,7 @@ describe('ProvidersService — base_url gate', () => {
   });
 
   it('gates local on self-host mode', async () => {
-    const cloud = new ProvidersService(makePort().port, factory(), runtime('cloud'));
+    const cloud = mkProvidersService(makePort().port, factory(), runtime('cloud'));
     await expect(
       cloud.create(principal, { ...baseCreate, kind: 'local', baseUrl: 'http://127.0.0.1:11434' }),
     ).rejects.toBeInstanceOf(UnprocessableEntityException);
@@ -172,7 +206,7 @@ describe('ProvidersService — actions never leak the credential', () => {
 
   it('sanitizes a reflected message and upstream requestId in both actions', async () => {
     const { port } = makePort();
-    const seed = new ProvidersService(port, factory(), runtime('selfhosted'));
+    const seed = mkProvidersService(port, factory(), runtime('selfhosted'));
     const prov = await seed.create(principal, {
       ...baseCreate,
       kind: 'custom',
@@ -186,7 +220,7 @@ describe('ProvidersService — actions never leak the credential', () => {
         throw new ProviderError('bad_request', `echo ${CRED}`, { requestId: CRED });
       },
     });
-    const svc = new ProvidersService(port, reflecting, runtime('selfhosted'));
+    const svc = mkProvidersService(port, reflecting, runtime('selfhosted'));
     const logs: string[] = [];
     for (const m of ['log', 'info', 'warn', 'error', 'debug'] as const) {
       jest.spyOn(console, m).mockImplementation((...a: unknown[]) => {
@@ -212,7 +246,7 @@ describe('ProvidersService — actions never leak the credential', () => {
       built(cfg);
       return factory()(cfg as never);
     }) as unknown as ProviderAdapterFactory;
-    const svc = new ProvidersService(port, trackingFactory, runtime('selfhosted'));
+    const svc = mkProvidersService(port, trackingFactory, runtime('selfhosted'));
     const prov = await svc.create(principal, {
       ...baseCreate,
       kind: 'api_key',
@@ -228,7 +262,7 @@ describe('ProvidersService — actions never leak the credential', () => {
 describe('ProvidersService — update merged validation & credential preservation', () => {
   it('validates the merged tuple and preserves/clears the credential', async () => {
     const { port, rows } = makePort();
-    const svc = new ProvidersService(port, factory(), runtime('selfhosted'));
+    const svc = mkProvidersService(port, factory(), runtime('selfhosted'));
 
     const local = await svc.create(principal, {
       ...baseCreate,
@@ -257,7 +291,7 @@ describe('ProvidersService — update merged validation & credential preservatio
 describe('ProvidersService — sync-models', () => {
   it('dedupes ids and upserts with no prices', async () => {
     const { port, upsert } = makePort();
-    const seed = new ProvidersService(port, factory(), runtime('selfhosted'));
+    const seed = mkProvidersService(port, factory(), runtime('selfhosted'));
     const prov = await seed.create(principal, {
       ...baseCreate,
       kind: 'custom',
@@ -269,7 +303,7 @@ describe('ProvidersService — sync-models', () => {
       { id: 'm1' },
       { id: 'm2' },
     ];
-    const svc = new ProvidersService(
+    const svc = mkProvidersService(
       port,
       factory({ listModels: () => Promise.resolve(listing) }),
       runtime('selfhosted'),
@@ -287,7 +321,7 @@ describe('ProvidersService — sync-models', () => {
 
   it('caps the upsert count at MAX_SYNCED_MODELS — no partial 10k flood (E11.1)', async () => {
     const { port, upsert } = makePort();
-    const seed = new ProvidersService(port, factory(), runtime('selfhosted'));
+    const seed = mkProvidersService(port, factory(), runtime('selfhosted'));
     const prov = await seed.create(principal, {
       ...baseCreate,
       kind: 'custom',
@@ -297,7 +331,7 @@ describe('ProvidersService — sync-models', () => {
     const listing: ProviderModelInfo[] = Array.from({ length: 10_000 }, (_v, i) => ({
       id: `m-${String(i)}`,
     }));
-    const svc = new ProvidersService(
+    const svc = mkProvidersService(
       port,
       factory({ listModels: () => Promise.resolve(listing) }),
       runtime('selfhosted'),
@@ -309,7 +343,7 @@ describe('ProvidersService — sync-models', () => {
 
   it('skips an over-long id and truncates an over-long display name before upserting (E11.1)', async () => {
     const { port, upsert } = makePort();
-    const seed = new ProvidersService(port, factory(), runtime('selfhosted'));
+    const seed = mkProvidersService(port, factory(), runtime('selfhosted'));
     const prov = await seed.create(principal, {
       ...baseCreate,
       kind: 'custom',
@@ -322,7 +356,7 @@ describe('ProvidersService — sync-models', () => {
       { id: 'longname', displayName: 'n'.repeat(600) }, // name truncated to MAX_MODEL_NAME_LEN
       { id: 'ok', displayName: 'fine' },
     ];
-    const svc = new ProvidersService(
+    const svc = mkProvidersService(
       port,
       factory({ listModels: () => Promise.resolve(listing) }),
       runtime('selfhosted'),

@@ -112,6 +112,14 @@ describe('custom/local model pricing (#18)', () => {
     const res = await patch(alice, id, { inputPricePer1m: 1.5, outputPricePer1m: 3 });
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ inputPricePer1m: 1.5, outputPricePer1m: 3, isFree: false });
+    // The PATCH response carries a freshly resolved effective price (source 'model', not
+    // an estimate) so an optimistic client replace stays consistent (add-provider-price-sync-and-edit).
+    expect(res.body.effectivePrice).toMatchObject({
+      inputPricePer1m: 1.5,
+      outputPricePer1m: 3,
+      source: 'model',
+      estimated: false,
+    });
     const list = await request(server)
       .get(`/api/models?providerId=${res.body.providerId}`)
       .set('x-test-user', alice);

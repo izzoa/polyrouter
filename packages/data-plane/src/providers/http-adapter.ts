@@ -4,8 +4,9 @@
  * else — JSON encode/decode, streaming, timeout/cancellation, error mapping —
  * lives here. Consumes #5's IR; defines no response shape (invariant 2).
  */
+import { APP_NAME, OPENROUTER_HOST, PROJECT_URL } from '@polyrouter/shared';
 import { SsrfError } from '@polyrouter/shared/server';
-import type { ProtocolAdapter } from '../proxy/translate';
+import type { UpstreamProtocolAdapter } from '../proxy/translate';
 import type {
   NormalizedRequest,
   NormalizedResponse,
@@ -40,11 +41,18 @@ import {
 
 export interface HttpAdapterSpec {
   readonly protocol: ProviderProtocol;
-  readonly translate: ProtocolAdapter;
+  readonly translate: UpstreamProtocolAdapter;
   readonly chatPath: string;
-  readonly modelsPath: string;
+  /** Optional (add-chatgpt-responses): a protocol without a models endpoint omits BOTH
+   * `modelsPath` and `parseModels` — `listModels()` then rejects with a typed,
+   * non-tripping error (never an implicit empty list), and `testConnection()` uses
+   * `probeRequest` instead of aliasing `listModels()`. */
+  readonly modelsPath?: string;
   authHeaders(credential: string): Record<string, string>;
-  parseModels(json: unknown): ProviderModelInfo[];
+  parseModels?(json: unknown): ProviderModelInfo[];
+  /** The designated validating probe for a models-less protocol: a minimal chat
+   * request (1 max token) whose model comes from TRUSTED preset-registry data. */
+  readonly probeRequest?: NormalizedRequest;
   /** Optional cursor pagination for the models endpoint (e.g. Anthropic's
    * `has_more` + `last_id`). When present, `listModels` follows pages — appending
    * `param=<cursor>` — until `nextCursor` returns null; when absent it fetches once. */
@@ -91,6 +99,26 @@ function rethrowTyped(err: unknown): never {
   throw classifyNetworkError(err);
 }
 
+/**
+ * OpenRouter app-attribution headers (add-openrouter-attribution). Returned ONLY when
+ * `baseUrl`'s host is exactly `OPENROUTER_HOST` (a single trailing FQDN dot normalized away,
+ * so `openrouter.ai.` still matches; an exact match, so a spoofed `…openrouter.ai.evil.com`
+ * does not). Guarded: an unparseable URL yields `{}` and never throws — request-time SSRF/URL
+ * validation is unaffected. The header names are distinct from `Authorization`/`x-api-key`, so
+ * attribution can never combine with or displace authentication regardless of merge order.
+ */
+export function openRouterAttributionHeaders(baseUrl: string): Record<string, string> {
+  let host: string;
+  try {
+    host = new URL(baseUrl).hostname.replace(/\.$/, '');
+  } catch {
+    return {};
+  }
+  return host === OPENROUTER_HOST
+    ? { 'HTTP-Referer': PROJECT_URL, 'X-OpenRouter-Title': APP_NAME }
+    : {};
+}
+
 export function createHttpProviderAdapter(
   config: ProviderConfig,
   deps: AdapterDeps,
@@ -109,9 +137,12 @@ export function createHttpProviderAdapter(
     deps.httpClient ??
     createGuardedHttpClient({ mode: config.mode, providerKind: config.kind, maxResponseBytes });
   const chatUrl = joinUrl(config.baseUrl, spec.chatPath);
-  const modelsUrl = joinUrl(config.baseUrl, spec.modelsPath);
+  const modelsUrl = spec.modelsPath !== undefined ? joinUrl(config.baseUrl, spec.modelsPath) : null;
+  // Computed once — base_url is fixed per adapter (add-openrouter-attribution).
+  const attribution = openRouterAttributionHeaders(config.baseUrl);
 
   const headers = (json: boolean, sse: boolean): Record<string, string> => ({
+    ...attribution, // spread first (lowest); safety is by distinct names, not precedence
     ...(config.extraHeaders ?? {}),
     ...spec.authHeaders(config.credential),
     ...(json ? { 'Content-Type': 'application/json' } : {}),
@@ -174,6 +205,11 @@ export function createHttpProviderAdapter(
   }
 
   async function listModels(ctx?: CallContext): Promise<ProviderModelInfo[]> {
+    if (modelsUrl === null || spec.parseModels === undefined) {
+      // Explicitly unsupported (never an implicit empty list); bad_request is
+      // non-tripping and non-fallback — a deliberate "this surface does not exist".
+      throw new ProviderError('bad_request', 'model listing is not supported for this provider');
+    }
     try {
       const all: ProviderModelInfo[] = [];
       const seen = new Set<string>(); // dedup ids across pages
@@ -224,6 +260,15 @@ export function createHttpProviderAdapter(
 
   async function testConnection(ctx?: CallContext): Promise<ConnectionResult> {
     try {
+      if (spec.modelsPath === undefined) {
+        if (spec.probeRequest === undefined) {
+          throw new ProviderError('credential', 'no validating probe configured');
+        }
+        // The designated 1-token probe: a revoked/invalid credential surfaces as a
+        // typed auth failure exactly like any other action — never masked.
+        await chat(spec.probeRequest, ctx);
+        return { ok: true, models: 0 };
+      }
       const models = await listModels(ctx);
       return { ok: true, models: models.length };
     } catch (err) {
@@ -239,12 +284,66 @@ export function createHttpProviderAdapter(
   return { protocol: spec.protocol, chat, chatStream, listModels, testConnection };
 }
 
+const PER_MILLION = 1_000_000;
+
+/** Parse a USD amount that a provider may send as a number or a decimal string
+ * (OpenRouter sends per-token USD as strings). Empty/non-numeric/non-finite → undefined. */
+function toUsdNumber(v: unknown): number | undefined {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : undefined;
+  if (typeof v === 'string') {
+    if (v.trim() === '') return undefined;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Parse an OpenRouter-style `pricing` extension into a per-1M USD DISPLAY estimate
+ * (add-provider-price-sync-and-edit) — NEVER a billing source (invariant 4). Reads only
+ * the per-token `prompt`/`completion` rates (×1e6); every other charge dimension
+ * (`request`/`image`/reasoning/web-search) is ignored for the displayed rate. Defensive:
+ * a missing, non-finite, or negative prompt/completion omits the whole block (never a
+ * wrong number). `isFree` is set ONLY when EVERY monetary field the provider lists parses
+ * to zero — so a zero-token model with a per-request/image charge is `$0`, not free.
+ */
+function parseListedPricing(rec: Record<string, unknown>): ProviderModelInfo['pricing'] {
+  const pricing = rec['pricing'];
+  if (typeof pricing !== 'object' || pricing === null) return undefined;
+  const p = pricing as Record<string, unknown>;
+  const prompt = toUsdNumber(p['prompt']);
+  const completion = toUsdNumber(p['completion']);
+  if (prompt === undefined || completion === undefined || prompt < 0 || completion < 0) {
+    return undefined; // input+output must both resolve non-negative, else omit the block
+  }
+  let allZero = true;
+  for (const v of Object.values(p)) {
+    const n = toUsdNumber(v);
+    if (n === undefined || n !== 0) {
+      allZero = false; // an unparseable or non-zero dimension means freeness is not proven
+      break;
+    }
+  }
+  const inputPricePer1m = prompt * PER_MILLION;
+  const outputPricePer1m = completion * PER_MILLION;
+  // Guard the scaling itself: a huge per-token value can overflow to Infinity (which
+  // would serialize to JSON null / reach the DB as a bad value) — omit rather than emit it.
+  if (!Number.isFinite(inputPricePer1m) || !Number.isFinite(outputPricePer1m)) return undefined;
+  return {
+    inputPricePer1m,
+    outputPricePer1m,
+    ...(allZero ? { isFree: true } : {}),
+  };
+}
+
 /**
  * Parse a `{ data: [{ id, <displayKey?> }] }` model list into ProviderModelInfo[].
  * Skips entries with a non-string, over-long (`> MAX_MODEL_ID_LEN`), or duplicate
  * id **before** counting toward `MAX_PARSED_MODELS` (E11.1) — so a flood of junk or
  * repeated ids from an address-safe-but-hostile endpoint can't consume the parse
- * budget and starve out the legitimate ids that follow.
+ * budget and starve out the legitimate ids that follow. An OpenRouter-style per-model
+ * `pricing` block, when present, is parsed into an optional per-1M USD display estimate
+ * (aggregators carry it; native OpenAI/Anthropic do not, so it stays absent).
  */
 export function parseModelList(json: unknown, displayKey?: string): ProviderModelInfo[] {
   const data = typeof json === 'object' && json !== null && 'data' in json ? json.data : undefined;
@@ -261,7 +360,12 @@ export function parseModelList(json: unknown, displayKey?: string): ProviderMode
     if (seen.has(id)) continue; // dedup before the cap: a repeat can't starve valids
     seen.add(id);
     const display = displayKey !== undefined ? rec[displayKey] : undefined;
-    out.push({ id, ...(typeof display === 'string' ? { displayName: display } : {}) });
+    const pricing = parseListedPricing(rec);
+    out.push({
+      id,
+      ...(typeof display === 'string' ? { displayName: display } : {}),
+      ...(pricing !== undefined ? { pricing } : {}),
+    });
   }
   return out;
 }

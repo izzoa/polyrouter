@@ -85,6 +85,15 @@ const PROVIDER_MAP: Record<ProviderErrorKind, Mapped> = {
     type: 'api_error',
     code: 'upstream_unavailable',
   },
+  // add-subscription-oauth: a subscription credential could not be resolved (revoked
+  // OAuth grant needing reauthorization, or an identity-provider outage). Secret-free
+  // and generic by design; the dashboard carries the actionable reauthorize state.
+  credential: {
+    status: 503,
+    message: 'upstream credential unavailable',
+    type: 'api_error',
+    code: 'upstream_credential',
+  },
   bad_request: {
     status: 400,
     message: 'invalid request to upstream',

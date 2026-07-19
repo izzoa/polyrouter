@@ -6,13 +6,21 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import {
+  PERSISTENCE_FACILITIES,
   PERSISTENCE_PORT,
   SsrfError,
   assertUrlSafe,
+  credentialLockKey,
   decryptSecret,
+  deriveModelKey,
   encryptSecret,
+  resolveModelPrice,
+  resolvePlainCredentialValue,
+  serializePlainCredential,
   type ModelInsertInput,
   type ModelPatch,
+  type ModelPriceRow,
+  type PersistenceFacilities,
   type ModelRow,
   type PersistencePort,
   type Principal,
@@ -30,6 +38,7 @@ import {
   type ProviderKind,
   type ProviderProtocol,
   type ProviderModelInfo,
+  type ProviderListedPricing,
 } from '@polyrouter/data-plane';
 import type {
   CreateProviderDto,
@@ -37,6 +46,7 @@ import type {
   UpdateModelPricingDto,
   UpdateProviderDto,
 } from './providers.dto';
+import { SubscriptionOauthService } from '../subscription-oauth/subscription-oauth.service';
 
 export type ProviderAdapterFactory = typeof createProviderAdapter;
 export const PROVIDER_ADAPTER_FACTORY = 'polyrouter:provider-adapter-factory';
@@ -66,7 +76,29 @@ export interface SafeProvider {
   baseUrl: string | null;
   status: string;
   hasCredential: boolean;
+  // Subscription-OAuth display/state metadata (add-subscription-oauth) — NON-SECRET;
+  // never token material. `credentialError` is the durable 'reauthorize_required' state.
+  oauthPreset: string | null;
+  credentialExpiresAt: Date | null;
+  credentialError: string | null;
   createdAt: Date;
+}
+
+/** The provenance of an `EffectivePrice` — the billing-resolver sources plus the
+ * display-only `listed` estimate (add-provider-price-sync-and-edit). */
+export type EffectivePriceSource = 'model' | 'local' | 'bundled' | 'refresh' | 'manual' | 'listed';
+
+/** A model's current effective price for DISPLAY (add-provider-price-sync-and-edit).
+ * Resolved read-time: the pure billing resolver first, then the per-provider `listed`
+ * estimate ONLY when billing is unknown. `estimated` is true only for the `listed`
+ * fallback. This is never a billing/cost value — historical RequestLog cost is the
+ * request-time snapshot and is unaffected (invariant 4). */
+export interface EffectivePrice {
+  inputPricePer1m: number;
+  outputPricePer1m: number;
+  isFree: boolean;
+  source: EffectivePriceSource;
+  estimated: boolean;
 }
 
 export interface SafeModel {
@@ -83,6 +115,9 @@ export interface SafeModel {
   // `resolveModelPrice`'s precedence for custom/local models.
   inputPricePer1m: number | null;
   outputPricePer1m: number | null;
+  // The current effective price for display (billing resolver → listed estimate →
+  // null), resolved on every path that returns a SafeModel. Display only.
+  effectivePrice: EffectivePrice | null;
   lastSyncedAt: Date | null;
 }
 
@@ -96,10 +131,17 @@ export interface ActionResult {
   message: string;
   traceId: string;
   synced?: number;
+  // Count of models for which a provider-listed DISPLAY estimate was stored this sync
+  // (add-provider-price-sync-and-edit). Display only — never billing.
+  pricesCaptured?: number;
 }
 
 const FIXED_MESSAGE: Record<string, string> = {
   auth: 'authentication failed',
+  // add-subscription-oauth: a credential-resolution failure (revoked OAuth grant /
+  // identity-provider outage) — surfaced distinctly so the dashboard can offer
+  // reauthorize instead of a generic provider error.
+  credential: 'credential needs reauthorization',
   rate_limit: 'provider rate limited',
   unavailable: 'provider unavailable',
   bad_request: 'invalid request to provider',
@@ -110,7 +152,7 @@ function fixedMessage(kind: string): string {
   return FIXED_MESSAGE[kind] ?? 'provider error';
 }
 
-function toSafe(p: ProviderRow): SafeProvider {
+export function toSafe(p: ProviderRow): SafeProvider {
   return {
     id: p.id,
     name: p.name,
@@ -119,11 +161,82 @@ function toSafe(p: ProviderRow): SafeProvider {
     baseUrl: p.baseUrl,
     status: p.status,
     hasCredential: p.encryptedCredentials !== null,
+    oauthPreset: p.oauthPreset,
+    credentialExpiresAt: p.credentialExpiresAt,
+    credentialError: p.credentialError,
     createdAt: p.createdAt,
   };
 }
 
-function toSafeModel(m: ModelRow): SafeModel {
+/** Map an adapter-surfaced listed price to the model row's `listed_*` DISPLAY-estimate
+ * columns (add-provider-price-sync-and-edit). Returns explicit nulls when there is no
+ * price, so the sync upsert **clears** any stale estimate (present-with-null). Never the
+ * billing user-price columns. */
+function listedColumnsFrom(
+  pricing: ProviderListedPricing | undefined,
+  now: Date,
+): Pick<
+  ModelInsertInput,
+  'listedInputPricePer1m' | 'listedOutputPricePer1m' | 'listedIsFree' | 'listedPriceCapturedAt'
+> {
+  if (pricing === undefined) {
+    return {
+      listedInputPricePer1m: null,
+      listedOutputPricePer1m: null,
+      listedIsFree: null,
+      listedPriceCapturedAt: null,
+    };
+  }
+  return {
+    listedInputPricePer1m: pricing.inputPricePer1m,
+    listedOutputPricePer1m: pricing.outputPricePer1m,
+    listedIsFree: pricing.isFree ?? false,
+    listedPriceCapturedAt: now,
+  };
+}
+
+/** Resolve a model's effective DISPLAY price (add-provider-price-sync-and-edit): the pure
+ * billing resolver first (model-own for custom/local → local-free → catalog), and ONLY when
+ * that is unknown, the per-provider `listed` estimate (flagged `estimated`). Display only —
+ * this never recomputes historical cost (invariant 4). The caller supplies the catalog row
+ * it already resolved for the model's derived key. */
+function toEffectivePrice(
+  model: ModelRow,
+  providerKind: string,
+  catalogRow: ModelPriceRow | null,
+): EffectivePrice | null {
+  const snap = resolveModelPrice(
+    {
+      providerKind,
+      modelInputPricePer1m: model.inputPricePer1m,
+      modelOutputPricePer1m: model.outputPricePer1m,
+      modelIsFree: model.isFree,
+    },
+    catalogRow,
+  );
+  if (snap !== null) {
+    return {
+      inputPricePer1m: snap.inputPricePer1m,
+      outputPricePer1m: snap.outputPricePer1m,
+      isFree: snap.isFree,
+      source: snap.source,
+      estimated: false,
+    };
+  }
+  // Billing unknown → fall back to the per-provider listed estimate (display only).
+  if (model.listedInputPricePer1m !== null && model.listedOutputPricePer1m !== null) {
+    return {
+      inputPricePer1m: model.listedInputPricePer1m,
+      outputPricePer1m: model.listedOutputPricePer1m,
+      isFree: model.listedIsFree ?? false,
+      source: 'listed',
+      estimated: true,
+    };
+  }
+  return null;
+}
+
+function toSafeModel(m: ModelRow, effectivePrice: EffectivePrice | null = null): SafeModel {
   return {
     id: m.id,
     providerId: m.providerId,
@@ -136,6 +249,7 @@ function toSafeModel(m: ModelRow): SafeModel {
     isFree: m.isFree,
     inputPricePer1m: m.inputPricePer1m,
     outputPricePer1m: m.outputPricePer1m,
+    effectivePrice,
     lastSyncedAt: m.lastSyncedAt,
   };
 }
@@ -147,8 +261,10 @@ export class ProvidersService {
 
   constructor(
     @Inject(PERSISTENCE_PORT) private readonly db: PersistencePort,
+    @Inject(PERSISTENCE_FACILITIES) private readonly facilities: PersistenceFacilities,
     @Inject(PROVIDER_ADAPTER_FACTORY) private readonly factory: ProviderAdapterFactory,
     @Inject(PROVIDERS_RUNTIME) runtime: ProvidersRuntime,
+    private readonly oauth: SubscriptionOauthService,
   ) {
     this.key = runtime.key;
     this.mode = runtime.mode;
@@ -171,8 +287,10 @@ export class ProvidersService {
       kind: dto.kind,
       protocol: dto.protocol,
       baseUrl,
+      // Every NEW write stores the typed envelope; plain input is WRAPPED so a pasted
+      // marker-lookalike can never forge an OAuth credential (add-subscription-oauth).
       ...(dto.credential !== undefined && dto.credential !== ''
-        ? { encryptedCredentials: encryptSecret(dto.credential, this.key) }
+        ? { encryptedCredentials: encryptSecret(serializePlainCredential(dto.credential), this.key) }
         : {}),
     };
     return toSafe(await this.db.providers.insert(principal, values));
@@ -189,20 +307,62 @@ export class ProvidersService {
     }
     const normalized = await this.normalizeAndGateBaseUrl(nextKind, nextBaseUrl);
 
+    // The Responses protocol runs ONLY on its OAuth envelope (the account id lives
+    // there) — a pasted credential can never work, and the SO-1 conversion path would
+    // clear `oauth_preset` and leave a row that cannot be reauthorized (wedged). So
+    // credential rotate/clear is rejected outright on these rows: Reauthorize renews;
+    // delete + reconnect starts over (add-chatgpt-responses, r3 finding 3).
+    if (existing.protocol === 'openai_responses' && dto.credential !== undefined) {
+      throw new UnprocessableEntityException(
+        'this provider works only with its OAuth sign-in — reauthorize it, or delete it and reconnect',
+      );
+    }
+    // OAuth coherence (add-subscription-oauth): while the OAuth envelope is retained,
+    // the preset-pinned endpoint/kind must not drift from the token's issuer — reject
+    // base_url/protocol/kind changes (name-only edits fine). Supplying a credential
+    // (rotate or clear) converts the provider to an ordinary pasted-credential one, so
+    // the OAuth metadata is cleared in the same write (it never outlives the envelope).
+    const isOauthConnected = existing.oauthPreset !== null;
+    if (isOauthConnected && dto.credential === undefined) {
+      const drifts =
+        normalized !== existing.baseUrl ||
+        (dto.protocol !== undefined && dto.protocol !== existing.protocol) ||
+        (dto.kind !== undefined && dto.kind !== existing.kind);
+      if (drifts) {
+        throw new UnprocessableEntityException(
+          'this provider is OAuth-connected; reauthorize it or remove the stored credential before changing its endpoint, protocol, or kind',
+        );
+      }
+    }
+
     const patch: ProviderPatch = {
       baseUrl: normalized,
       ...(dto.name !== undefined ? { name: dto.name } : {}),
       ...(dto.kind !== undefined ? { kind: dto.kind } : {}),
       ...(dto.protocol !== undefined ? { protocol: dto.protocol } : {}),
-      // Present-but-empty clears; omitted (undefined) preserves the envelope.
+      // Present-but-empty clears; omitted (undefined) preserves the envelope. New
+      // plain values are WRAPPED in the typed envelope (forgery-proof by construction).
       ...(dto.credential !== undefined
         ? {
             encryptedCredentials:
-              dto.credential === '' ? null : encryptSecret(dto.credential, this.key),
+              dto.credential === ''
+                ? null
+                : encryptSecret(serializePlainCredential(dto.credential), this.key),
+            ...(isOauthConnected
+              ? { oauthPreset: null, credentialExpiresAt: null, credentialError: null }
+              : {}),
           }
         : {}),
     };
-    const row = await this.db.providers.update(principal, id, patch);
+    // A credential mutation on an OAuth provider serializes on the same per-provider
+    // lock as refresh/reauthorize, so an in-flight refresh's conditional write can
+    // never clobber or resurrect this mutation.
+    const row =
+      isOauthConnected && dto.credential !== undefined
+        ? await this.facilities.withAdvisoryLock(credentialLockKey(id), (tx) =>
+            tx.providers.update(principal, id, patch),
+          )
+        : await this.db.providers.update(principal, id, patch);
     if (!row) throw new NotFoundException();
     // A model-own price left over from a custom/local kind would display for a now
     // catalog-priced provider (the resolver already ignores it — E5.4); clear it for
@@ -211,6 +371,13 @@ export class ProvidersService {
       (existing.kind === 'custom' || existing.kind === 'local') &&
       (nextKind === 'api_key' || nextKind === 'subscription');
     if (leftUserPriced) await this.db.models.clearPricingForProvider(principal, id);
+    // A provider-listed DISPLAY estimate captured from the PRIOR endpoint must not linger
+    // after a base_url/protocol change (add-provider-price-sync-and-edit); the next sync
+    // repopulates it. Compare the normalized new base_url to the stored one.
+    const endpointChanged =
+      normalized !== existing.baseUrl ||
+      (dto.protocol !== undefined && dto.protocol !== existing.protocol);
+    if (endpointChanged) await this.db.models.clearListedPricingForProvider(principal, id);
     return toSafe(row);
   }
 
@@ -223,11 +390,31 @@ export class ProvidersService {
 
   async testConnection(principal: Principal, id: string): Promise<ActionResult> {
     const provider = await this.requireProvider(principal, id);
-    const adapter = this.buildAdapter(provider);
+    const bundledPreset = this.bundledPresetFor(provider);
     let result: ConnectionResult;
     try {
-      result = await adapter.testConnection();
+      // buildAdapter is inside the sanitize-try: a credential-resolution failure
+      // (e.g. reauthorize_required — add-subscription-oauth) must surface as a
+      // sanitized action result, not an unhandled 500.
+      const adapter = await this.buildAdapter(principal, provider);
+      if (bundledPreset !== undefined) {
+        // Bundled model sourcing (add-subscription-oauth): the models endpoint is not
+        // available under this preset, so the DESIGNATED validating call is a minimal
+        // 1-token chat probe — an invalid/revoked credential still surfaces as a typed
+        // auth failure and is never masked by the bundled list.
+        await adapter.chat({
+          model: bundledPreset.bundledModels?.[0] ?? 'probe',
+          messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+          params: { maxOutputTokens: 1 },
+        });
+        result = { ok: true, models: bundledPreset.bundledModels?.length ?? 0 };
+      } else {
+        result = await adapter.testConnection();
+      }
     } catch (err) {
+      // The 422 client contract (e.g. missing credential) stays a thrown 422 — only
+      // adapter/credential-resolution failures become sanitized action results.
+      if (err instanceof UnprocessableEntityException) throw err;
       const sanitized = this.sanitizeThrow(err);
       await this.db.providers.update(principal, id, { status: 'error' });
       return sanitized;
@@ -239,52 +426,117 @@ export class ProvidersService {
 
   async syncModels(principal: Principal, id: string): Promise<ActionResult> {
     const provider = await this.requireProvider(principal, id);
-    const adapter = this.buildAdapter(provider);
+    const bundledPreset = this.bundledPresetFor(provider);
     let models: ProviderModelInfo[];
     try {
-      models = await adapter.listModels();
+      if (bundledPreset !== undefined) {
+        // Bundled model sourcing: seed the preset's list (preset-sourced, no network) —
+        // the credential itself is validated by test-connection's designated probe.
+        models = (bundledPreset.bundledModels ?? []).map((m) => ({ id: m }));
+      } else {
+        const adapter = await this.buildAdapter(principal, provider);
+        models = await adapter.listModels();
+      }
     } catch (err) {
+      if (err instanceof UnprocessableEntityException) throw err; // 422 contract
+
       const sanitized = this.sanitizeThrow(err);
       await this.db.providers.update(principal, id, { status: 'error' });
       return sanitized;
     }
     const deduped = new Map<string, ProviderModelInfo>();
     for (const m of models) deduped.set(m.id, m);
+    // A concurrent edit could have changed the endpoint while `listModels()` was in
+    // flight; a listed price captured from the OLD endpoint must not be persisted for the
+    // new one. Re-read and, if base_url/protocol moved, treat the response as priceless
+    // (still sync the model rows; the next sync against the new endpoint repopulates). This
+    // narrows the race to the tiny window between this read and the write; the estimate is
+    // display-only and self-heals, so a residual is harmless.
+    const current = await this.db.providers.findById(principal, id);
+    const endpointMoved =
+      current === null ||
+      current.baseUrl !== provider.baseUrl ||
+      current.protocol !== provider.protocol;
     // Bound ingestion (E11.1): cap the number of upserts and skip/truncate over-long
     // fields before writing, so a pathological (but address-safe) response can't
     // flood the models table. Skip — not truncate — an over-long id: a truncated id
     // is a *wrong* id, and two distinct long ids could collide on (provider_id, id).
     // `attempts` bounds DB round-trips (a skipped id doesn't consume the budget).
     let synced = 0;
+    let pricesCaptured = 0;
     let attempts = 0;
+    const now = new Date();
     for (const m of deduped.values()) {
       if (attempts >= MAX_SYNCED_MODELS) break;
       if (m.id.length > MAX_MODEL_ID_LEN) continue;
       attempts += 1;
       const displayName =
         m.displayName !== undefined ? m.displayName.slice(0, MAX_MODEL_NAME_LEN) : undefined;
+      const pricing = endpointMoved ? undefined : m.pricing;
+      // Always write the listed_* columns (set from the listed price, or null to CLEAR a
+      // stale estimate) — a DISPLAY-only estimate, distinct from the billing user-price
+      // columns, never a catalog/cost source (invariant 4).
       const values: ModelInsertInput = {
         externalModelId: m.id,
-        lastSyncedAt: new Date(),
+        lastSyncedAt: now,
         ...(displayName !== undefined ? { displayName } : {}),
+        ...listedColumnsFrom(pricing, now),
       };
       const row = await this.db.models.upsertForProvider(principal, provider.id, values);
-      if (row) synced += 1;
+      if (row) {
+        synced += 1;
+        if (pricing !== undefined) pricesCaptured += 1;
+      }
     }
     await this.db.providers.update(principal, id, { status: 'ok' });
-    return { ok: true, status: 'ok', message: 'catalog synced', traceId: randomUUID(), synced };
+    return {
+      ok: true,
+      status: 'ok',
+      message: 'catalog synced',
+      traceId: randomUUID(),
+      synced,
+      pricesCaptured,
+    };
   }
 
   async listModels(principal: Principal, q: ListModelsQueryDto): Promise<SafeModel[]> {
     let rows = await this.db.models.listForPrincipal(principal);
     if (q.providerId !== undefined) rows = rows.filter((r) => r.providerId === q.providerId);
-    if (q.isFree !== undefined) rows = rows.filter((r) => r.isFree === q.isFree);
     if (q.supportsTools !== undefined)
       rows = rows.filter((r) => r.supportsTools === q.supportsTools);
     if (q.supportsVision !== undefined) {
       rows = rows.filter((r) => r.supportsVision === q.supportsVision);
     }
-    return rows.map(toSafeModel);
+    // Resolve each model's effective DISPLAY price. Need the owning provider (kind +
+    // base_url) and the catalog version in effect now. One providers read + ONE
+    // key-filtered catalog read (priceAtMany) — never per-model queries or a full scan.
+    const providers = await this.db.providers.list(principal);
+    const provById = new Map(providers.map((p) => [p.id, p]));
+    const keyByModel = new Map<string, string>();
+    const keys = new Set<string>();
+    for (const r of rows) {
+      const prov = provById.get(r.providerId);
+      if (prov === undefined || prov.baseUrl === null) continue;
+      const key = deriveModelKey(prov.baseUrl, r.externalModelId);
+      if (key !== null) {
+        keyByModel.set(r.id, key);
+        keys.add(key);
+      }
+    }
+    const catalog = await this.db.pricing.priceAtMany([...keys], new Date());
+    const catByKey = new Map(catalog.map((c) => [c.modelKey, c]));
+    let safe = rows.map((r) => {
+      const kind = provById.get(r.providerId)?.kind ?? 'custom';
+      const key = keyByModel.get(r.id);
+      const catalogRow = key !== undefined ? (catByKey.get(key) ?? null) : null;
+      return toSafeModel(r, toEffectivePrice(r, kind, catalogRow));
+    });
+    // The is_free filter applies to the EFFECTIVE price (resolve, then filter), so a
+    // catalog-less free-by-listing model still matches (add-provider-price-sync-and-edit).
+    if (q.isFree !== undefined) {
+      safe = safe.filter((m) => (m.effectivePrice?.isFree ?? false) === q.isFree);
+    }
+    return safe;
   }
 
   /**
@@ -329,7 +581,12 @@ export class ProvidersService {
     }
     const updated = await this.db.models.update(principal, id, patch);
     if (!updated) throw new NotFoundException();
-    return toSafeModel(updated);
+    // Resolve effectivePrice on this path too — the client optimistically replaces its
+    // model from this response, so it must carry a consistent effective price (no refetch).
+    const key =
+      provider.baseUrl !== null ? deriveModelKey(provider.baseUrl, updated.externalModelId) : null;
+    const catalogRow = key !== null ? await this.db.pricing.priceAt(key, new Date()) : null;
+    return toSafeModel(updated, toEffectivePrice(updated, provider.kind, catalogRow));
   }
 
   // --- internals ---
@@ -345,18 +602,53 @@ export class ProvidersService {
     return provider;
   }
 
-  private buildAdapter(provider: ProviderRow): ProviderAdapter {
-    return this.factory(this.buildAdapterConfig(provider));
+  /** The provider's OAuth preset when it declares bundled model sourcing. */
+  private bundledPresetFor(provider: ProviderRow) {
+    const preset = this.oauth.presetFor(provider);
+    return preset !== undefined && preset.modelsSource === 'bundled' ? preset : undefined;
   }
 
-  private buildAdapterConfig(provider: ProviderRow): ProviderConfig {
+  private async buildAdapter(
+    principal: Principal,
+    provider: ProviderRow,
+  ): Promise<ProviderAdapter> {
+    return this.factory(await this.buildAdapterConfig(principal, provider));
+  }
+
+  private async buildAdapterConfig(
+    principal: Principal,
+    provider: ProviderRow,
+  ): Promise<ProviderConfig> {
     if (provider.baseUrl === null) {
       throw new UnprocessableEntityException('provider base_url is required');
     }
     const kind = provider.kind as ProviderKind;
+    // Subscription providers resolve through the subscription-oauth seam: a plain
+    // paste unwraps; an OAuth envelope refreshes pre-request and supplies
+    // authScheme/oauthBeta — so test-connection exercises the REAL token path.
+    if (kind === 'subscription' && provider.encryptedCredentials !== null) {
+      const r = await this.oauth.resolveCredential(principal, provider);
+      return {
+        protocol: provider.protocol as ProviderProtocol,
+        baseUrl: provider.baseUrl,
+        credential: r.credential,
+        kind,
+        mode: this.mode,
+        authScheme: r.authScheme,
+        ...(r.oauthBeta !== undefined ? { oauthBeta: r.oauthBeta } : {}),
+        ...(r.oauthAccountId !== undefined ? { oauthAccountId: r.oauthAccountId } : {}),
+        ...(r.probeModel !== undefined ? { probeModel: r.probeModel } : {}),
+        defaultMaxOutputTokens: 4096,
+      };
+    }
     let credential = '';
     if (provider.encryptedCredentials !== null) {
-      credential = decryptSecret(provider.encryptedCredentials, this.key);
+      // Plain path only: unwraps the typed envelope (legacy raw strings pass through).
+      // OAuth envelopes never reach here — subscription providers resolve through the
+      // subscription-oauth seam (which refreshes and supplies authScheme/oauthBeta).
+      credential = resolvePlainCredentialValue(
+        decryptSecret(provider.encryptedCredentials, this.key),
+      );
     } else if (kind !== 'local') {
       throw new UnprocessableEntityException('provider has no credential');
     }

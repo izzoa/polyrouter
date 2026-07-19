@@ -233,6 +233,7 @@ function fakeModel(providerId: string, n: number): ModelDto {
     isFree: false,
     inputPricePer1m: null,
     outputPricePer1m: null,
+    effectivePrice: null,
     lastSyncedAt: NOW,
   };
 }
@@ -533,6 +534,9 @@ export class FakeApiClient implements ApiClient {
       baseUrl: input.baseUrl,
       status: 'unknown',
       hasCredential: input.credential !== undefined && input.credential !== '',
+      oauthPreset: null,
+      credentialExpiresAt: null,
+      credentialError: null,
       createdAt: NOW,
     };
     this.providers = [...this.providers, provider];
@@ -546,6 +550,57 @@ export class FakeApiClient implements ApiClient {
     const updated: ProviderDto = { ...existing, ...patch };
     this.providers = this.providers.map((p) => (p.id === id ? updated : p));
     return Promise.resolve(updated);
+  }
+
+  /** Subscription-OAuth wizard endpoints (add-subscription-oauth). */
+  oauthPresets: import('../data/api').OauthPresetDto[] = [
+    { id: 'claude', displayName: 'Claude Pro / Max' },
+    { id: 'chatgpt', displayName: 'ChatGPT Plus / Pro' },
+  ];
+  oauthCompleteRejects: ApiError | null = null;
+
+  listOauthPresets(): Promise<import('../data/api').OauthPresetDto[]> {
+    this.record('listOauthPresets');
+    return Promise.resolve(this.oauthPresets);
+  }
+
+  oauthStart(preset: string, name?: string): Promise<import('../data/api').OauthStartResult> {
+    this.record('oauthStart', preset, name);
+    return Promise.resolve({
+      sessionId: `sess-${preset}`,
+      authorizeUrl: `https://idp.example/authorize?state=st-${preset}`,
+    });
+  }
+
+  oauthComplete(sessionId: string, pasted: string): Promise<ProviderDto> {
+    this.record('oauthComplete', sessionId, pasted);
+    if (this.oauthCompleteRejects) return Promise.reject(this.oauthCompleteRejects);
+    // Mirror the backend: the row is pinned to the session's preset — the ChatGPT
+    // preset creates an `openai_responses` row (add-chatgpt-responses).
+    const chatgpt = sessionId === 'sess-chatgpt';
+    const provider: ProviderDto = {
+      id: this.nextId('prov'),
+      name: chatgpt ? 'ChatGPT Plus / Pro' : 'Claude Pro / Max',
+      kind: 'subscription',
+      protocol: chatgpt ? 'openai_responses' : 'anthropic_compatible',
+      baseUrl: chatgpt ? 'https://chatgpt.com/' : 'https://api.anthropic.com',
+      status: 'unknown',
+      hasCredential: true,
+      oauthPreset: chatgpt ? 'chatgpt' : 'claude',
+      credentialExpiresAt: NOW,
+      credentialError: null,
+      createdAt: NOW,
+    };
+    this.providers = [...this.providers, provider];
+    return Promise.resolve(provider);
+  }
+
+  oauthReauthorize(providerId: string): Promise<import('../data/api').OauthStartResult> {
+    this.record('oauthReauthorize', providerId);
+    return Promise.resolve({
+      sessionId: `sess-re-${providerId}`,
+      authorizeUrl: `https://idp.example/authorize?state=st-re`,
+    });
   }
 
   deleteProvider(id: string): Promise<{ deleted: boolean }> {
@@ -587,12 +642,31 @@ export class FakeApiClient implements ApiClient {
       if (model) {
         const updated: ModelDto =
           'isFree' in body
-            ? { ...model, isFree: true, inputPricePer1m: 0, outputPricePer1m: 0 }
+            ? {
+                ...model,
+                isFree: true,
+                inputPricePer1m: 0,
+                outputPricePer1m: 0,
+                effectivePrice: {
+                  inputPricePer1m: 0,
+                  outputPricePer1m: 0,
+                  isFree: true,
+                  source: 'model',
+                  estimated: false,
+                },
+              }
             : {
                 ...model,
                 isFree: false,
                 inputPricePer1m: body.inputPricePer1m,
                 outputPricePer1m: body.outputPricePer1m,
+                effectivePrice: {
+                  inputPricePer1m: body.inputPricePer1m,
+                  outputPricePer1m: body.outputPricePer1m,
+                  isFree: false,
+                  source: 'model',
+                  estimated: false,
+                },
               };
         this.models[pid] = list.map((m) => (m.id === id ? updated : m));
         return Promise.resolve(updated);

@@ -29,6 +29,10 @@ export const AUTH_RATE_RULES: RateRule[] = [
   // Public invite acceptance (user-administration): token-guessing gets the
   // same per-IP throttle discipline as the auth routes.
   { prefix: '/api/invites/accept', max: 5, windowSec: 60 },
+  // Subscription-OAuth connect endpoints (add-subscription-oauth): they drive
+  // outbound calls to a third-party token endpoint — per-IP throttled here, and
+  // per-PRINCIPAL throttled again inside the controller.
+  { prefix: '/api/providers/oauth', max: 10, windowSec: 60, keyspace: 'oauthc' },
 ];
 
 export function matchRule(path: string): RateRule | null {

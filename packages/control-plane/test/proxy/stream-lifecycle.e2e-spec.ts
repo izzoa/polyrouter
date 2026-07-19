@@ -61,6 +61,7 @@ import { DatabaseModule } from '../../src/database/database.module';
 import { COMPOSE_HINT } from '../tenancy/harness';
 import '../../src/database/database.config';
 import '../../src/auth/auth.config';
+import { SubscriptionOauthService } from '../../src/subscription-oauth/subscription-oauth.service';
 
 const HMAC = 'a'.repeat(64);
 
@@ -88,6 +89,10 @@ class RecordingBreakerStore implements BreakerStore {
 
   renew(providerId: string, generation: number, now: number, cfg: BreakerConfig): Promise<void> {
     return this.inner.renew(providerId, generation, now, cfg);
+  }
+
+  reset(providerId: string): Promise<void> {
+    return this.inner.reset(providerId);
   }
 }
 
@@ -121,6 +126,14 @@ async function bootApp(streamDrainDeadlineMs: number): Promise<BootedApp> {
     providers: [
       AgentApiKeyGuard,
       ProxyService,
+      {
+        // add-subscription-oauth: ProxyService's credential seam — these suites mint
+        // no OAuth envelopes, so a call here is a wiring bug worth failing loudly.
+        provide: SubscriptionOauthService,
+        useValue: {
+          resolveCredential: () => Promise.reject(new Error('oauth seam not stubbed')),
+        },
+      },
       StreamDrainRegistry,
       { provide: RequestRecorder, useValue: { record: recorded } },
       {

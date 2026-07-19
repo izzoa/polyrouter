@@ -14,7 +14,9 @@ import type {
 } from '../proxy/translate';
 
 export type ProviderKind = 'api_key' | 'subscription' | 'custom' | 'local';
-export type ProviderProtocol = 'openai_compatible' | 'anthropic_compatible';
+// 'openai_responses' (add-chatgpt-responses) is UPSTREAM/preset-only — no client speaks
+// it to /v1, and the public provider-create DTO deliberately does not accept it.
+export type ProviderProtocol = 'openai_compatible' | 'anthropic_compatible' | 'openai_responses';
 export type RuntimeMode = 'selfhosted' | 'cloud';
 
 /** Per-call context. `signal` aborts the call (breaker-neutral); `traceId` is
@@ -24,6 +26,12 @@ export interface CallContext {
   readonly traceId?: string;
 }
 
+/** How the credential authenticates (add-subscription-oauth). `api_key` (default) is
+ * every pre-existing behavior; `oauth_bearer` is set by credential resolution when the
+ * envelope is a structured OAuth credential — Anthropic-compatible adapters then send
+ * `Authorization: Bearer` + `anthropic-beta: <oauthBeta>` instead of `x-api-key`. */
+export type AuthScheme = 'api_key' | 'oauth_bearer';
+
 export interface ProviderConfig {
   readonly protocol: ProviderProtocol;
   readonly baseUrl: string;
@@ -31,6 +39,19 @@ export interface ProviderConfig {
   readonly credential: string;
   readonly kind: ProviderKind;
   readonly mode: RuntimeMode;
+  /** Defaults to 'api_key' — every existing caller unchanged. */
+  readonly authScheme?: AuthScheme;
+  /** The preset's OAuth `anthropic-beta` value — TRUSTED registry data threaded by
+   * credential resolution, never user input. Required under `oauth_bearer` on the
+   * Anthropic protocol (missing → typed configuration error, never a header-less call). */
+  readonly oauthBeta?: string;
+  /** The ChatGPT account id for the Responses protocol (add-chatgpt-responses) —
+   * TRUSTED envelope data threaded by credential resolution, never user input.
+   * Emitted as the `chatgpt-account-id` header; required for `openai_responses`. */
+  readonly oauthAccountId?: string;
+  /** The designated validating-probe model for a models-endpoint-less protocol —
+   * TRUSTED preset-registry data (the preset's first bundled model). */
+  readonly probeModel?: string;
   /** Anthropic requires max_tokens; used when the IR omits maxOutputTokens. */
   readonly defaultMaxOutputTokens?: number;
   /** Abort if no response headers / first stream event arrive in time. */
@@ -46,9 +67,25 @@ export interface ProviderConfig {
   readonly extraHeaders?: Readonly<Record<string, string>>;
 }
 
+/**
+ * A provider-listed price for DISPLAY only (add-provider-price-sync-and-edit) —
+ * surfaced from a models endpoint that carries per-model prices (OpenRouter and
+ * OpenAI-compatible aggregators). Normalized to per-1M USD at the adapter boundary.
+ * NEVER a billing/cost source (invariant 4): recorded cost comes from the bundled
+ * catalog, not provider `/models`. `isFree` is set only when every monetary dimension
+ * the provider lists is zero — a zero-token model with a per-request/image charge is
+ * `$0` but not free.
+ */
+export interface ProviderListedPricing {
+  readonly inputPricePer1m: number;
+  readonly outputPricePer1m: number;
+  readonly isFree?: boolean;
+}
+
 export interface ProviderModelInfo {
   readonly id: string;
   readonly displayName?: string;
+  readonly pricing?: ProviderListedPricing;
 }
 
 export type ConnectionResult =

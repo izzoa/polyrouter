@@ -28,6 +28,13 @@ function mkModel(id: string): ModelDto {
     isFree: false,
     inputPricePer1m: 1,
     outputPricePer1m: 2,
+    effectivePrice: {
+      inputPricePer1m: 1,
+      outputPricePer1m: 2,
+      isFree: false,
+      source: 'model',
+      estimated: false,
+    },
     lastSyncedAt: null,
   };
 }
@@ -246,6 +253,186 @@ describe('providers (create → test → sync, kind mapping, pricing)', () => {
     await s.syncProvider(created.id);
     expect(fake.calls).toContain('syncModels');
     expect(s.state.models[created.id]?.length ?? 0).toBeGreaterThan(0);
+  });
+
+  it('edits a provider: prefills, blank credential preserves, explicit clear sends empty, typed rotates', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    await addProvider(s, {
+      name: 'Orig',
+      kind: 'api',
+      protocol: 'openai_compatible',
+      baseUrl: 'https://api.example.com/v1',
+      credential: 'sk-1',
+    });
+    const p = s.state.providers[0]!;
+
+    // Open edit → prefilled, edit mode, credential never echoed into the form.
+    s.openEditProvider(p);
+    expect(s.state.modal).toBe('editProvider');
+    expect(s.state.np.editingId).toBe(p.id);
+    expect(s.state.np.name).toBe('Orig');
+    expect(s.state.np.kind).toBe('api');
+    expect(s.state.np.credential).toBe('');
+    expect(s.state.np.hadCredential).toBe(true);
+
+    // Rename, blank credential → the patch OMITS credential (preserve).
+    s.setState('np', 'name', 'Renamed');
+    await s.addProvider();
+    let patch = fake.lastArgs('updateProvider')?.[1] as Record<string, unknown>;
+    expect(fake.lastArgs('updateProvider')?.[0]).toBe(p.id);
+    expect(patch).toMatchObject({ name: 'Renamed' });
+    expect('credential' in patch).toBe(false);
+    expect(s.state.modal).toBeNull();
+    expect(s.state.providers[0]?.name).toBe('Renamed');
+
+    // Explicit clear → credential: ''.
+    s.openEditProvider(s.state.providers[0]!);
+    s.setState('np', 'clearCredential', true);
+    await s.addProvider();
+    patch = fake.lastArgs('updateProvider')?.[1] as Record<string, unknown>;
+    expect(patch['credential']).toBe('');
+
+    // A typed value rotates it.
+    s.openEditProvider(s.state.providers[0]!);
+    s.setState('np', 'credential', 'sk-2');
+    await s.addProvider();
+    patch = fake.lastArgs('updateProvider')?.[1] as Record<string, unknown>;
+    expect(patch['credential']).toBe('sk-2');
+  });
+
+  it('editing an OAuth-connected row submits a NAME-ONLY patch (add-chatgpt-responses)', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    // Connect a ChatGPT (Responses-protocol) row through the wizard.
+    s.openModal('newProvider');
+    await tick();
+    s.setState('np', 'kind', 'sub');
+    await s.startOauthConnect('chatgpt');
+    s.setState('ow', 'pasted', 'the-code#st-chatgpt');
+    await s.completeOauthConnect();
+    const row = s.state.providers.find((p) => p.oauthPreset === 'chatgpt')!;
+    expect(row.protocol).toBe('openai_responses');
+
+    // Edit: the form records the lock; the PATCH carries the name and NOTHING else —
+    // echoing protocol would 400 on the public DTO enum.
+    s.openEditProvider(row);
+    expect(s.state.np.oauthPreset).toBe('chatgpt');
+    s.setState('np', 'name', 'My ChatGPT');
+    await s.addProvider();
+    const patch = fake.lastArgs('updateProvider')?.[1] as Record<string, unknown>;
+    expect(patch).toEqual({ name: 'My ChatGPT' });
+    expect(s.state.providers.find((p) => p.id === row.id)?.name).toBe('My ChatGPT');
+
+    // The SO-1 credential rules still apply on the locked form: an explicit clear
+    // sends credential:'' (convert/clear), still without kind/protocol/baseUrl.
+    s.openEditProvider(s.state.providers.find((p) => p.id === row.id)!);
+    s.setState('np', 'clearCredential', true);
+    await s.addProvider();
+    const clearPatch = fake.lastArgs('updateProvider')?.[1] as Record<string, unknown>;
+    expect(clearPatch).toEqual({ name: 'My ChatGPT', credential: '' });
+
+    // A non-OAuth row's edit payload is UNCHANGED (regression guard).
+    await addProvider(s, {
+      name: 'Plain',
+      kind: 'api',
+      protocol: 'openai_compatible',
+      baseUrl: 'https://api.example.com/v1',
+      credential: 'sk-1',
+    });
+    const plain = s.state.providers.find((p) => p.name === 'Plain')!;
+    s.openEditProvider(plain);
+    expect(s.state.np.oauthPreset).toBeNull();
+    await s.addProvider();
+    const fullPatch = fake.lastArgs('updateProvider')?.[1] as Record<string, unknown>;
+    expect(fullPatch).toMatchObject({
+      name: 'Plain',
+      kind: 'api_key',
+      protocol: 'openai_compatible',
+      baseUrl: 'https://api.example.com/v1',
+    });
+  });
+
+  it('runs the OAuth connect wizard: start → paste → complete → provider appears', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    s.openModal('newProvider');
+    await tick(); // preset load settles
+    expect(s.state.ow.presets.map((p) => p.id)).toContain('claude');
+    s.setState('np', 'kind', 'sub');
+    await s.startOauthConnect('claude');
+    expect(s.state.ow.active?.sessionId).toBe('sess-claude');
+    expect(s.state.ow.active?.authorizeUrl).toContain('https://idp.example/authorize');
+    // Client-side bare-code guidance — no API call.
+    s.setState('ow', 'pasted', 'just-a-bare-code');
+    await s.completeOauthConnect();
+    expect(s.state.ow.error).toContain('code#state');
+    expect(fake.calls).not.toContain('oauthComplete');
+    // The real paste completes, appends the provider, and closes the modal.
+    s.setState('ow', 'pasted', 'the-code#st-claude');
+    await s.completeOauthConnect();
+    expect(fake.lastArgs('oauthComplete')?.[1]).toBe('the-code#st-claude');
+    expect(s.state.providers.some((p) => p.oauthPreset === 'claude')).toBe(true);
+    expect(s.state.modal).toBeNull();
+    expect(s.state.ow.pasted).toBe(''); // credential material cleared
+  });
+
+  it('a failed OAuth completion keeps the modal open, clears the paste, and shows the error', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    fake.oauthCompleteRejects = new ApiError(422, 'Unprocessable', 'sign-in state mismatch — restart connect');
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    s.openModal('newProvider');
+    s.setState('np', 'kind', 'sub');
+    await s.startOauthConnect('claude');
+    s.setState('ow', 'pasted', 'code#state');
+    await s.completeOauthConnect();
+    expect(s.state.modal).toBe('newProvider'); // still open
+    expect(s.state.ow.error).toContain('state mismatch');
+    expect(s.state.ow.pasted).toBe(''); // cleared after every submit attempt
+  });
+
+  it('reauthorize opens the wizard bound to the existing provider row', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    s.openModal('newProvider');
+    s.setState('np', 'kind', 'sub');
+    await s.startOauthConnect('claude');
+    s.setState('ow', 'pasted', 'the-code#st');
+    await s.completeOauthConnect();
+    const provider = s.state.providers.find((p) => p.oauthPreset === 'claude')!;
+    await s.startOauthReauthorize(provider);
+    expect(s.state.modal).toBe('newProvider');
+    expect(s.state.ow.active?.reauthorizeProviderId).toBe(provider.id);
+    expect(fake.lastArgs('oauthReauthorize')?.[0]).toBe(provider.id);
+  });
+
+  it('does not dismiss the provider modal while an OAuth exchange is in flight', () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    const s = createAppStore(fake);
+    s.setState('modal', 'newProvider');
+    s.setState('ow', 'busy', true);
+    s.closeModal();
+    expect(s.state.modal).toBe('newProvider');
+    s.setState('ow', 'busy', false);
+    s.closeModal();
+    expect(s.state.modal).toBeNull();
+  });
+
+  it('does not dismiss the provider modal while a save is in flight (busy-dismissal)', () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    const s = createAppStore(fake);
+    s.setState('modal', 'editProvider');
+    s.setState('np', 'busy', true);
+    s.closeModal();
+    expect(s.state.modal).toBe('editProvider'); // Cancel/Escape/backdrop are refused mid-save
+    s.setState('np', 'busy', false);
+    s.closeModal();
+    expect(s.state.modal).toBeNull();
   });
 
   it('marks the provider error and loads no models when sync !ok', async () => {

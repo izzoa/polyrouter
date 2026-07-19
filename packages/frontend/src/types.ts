@@ -28,7 +28,13 @@ export type RequestFilter = 'all' | 'explicit' | 'auto' | 'fallback' | 'escalate
 /** The dashboard's harness type IS the canonical shared one (single source). */
 export type Harness = HarnessType;
 export type ProviderKindId = 'api' | 'sub' | 'custom' | 'local';
-export type ModalKind = 'newAgent' | 'keyReveal' | 'newProvider' | 'newLimit' | 'channel';
+export type ModalKind =
+  | 'newAgent'
+  | 'keyReveal'
+  | 'newProvider'
+  | 'editProvider'
+  | 'newLimit'
+  | 'channel';
 
 /** One row of a spend/cost breakdown (BarRows). */
 export interface SpendDatum {
@@ -52,6 +58,11 @@ export interface Provider {
   baseUrl: string | null;
   status: ProviderStatus;
   hasCredential: boolean;
+  /** Subscription-OAuth state (non-secret): the connected preset, the token's display
+   * expiry, and the durable 'reauthorize_required' condition. */
+  oauthPreset: string | null;
+  credentialExpiresAt: string | null;
+  credentialError: string | null;
   createdAt: string;
 }
 
@@ -89,11 +100,14 @@ export interface LoginConfig {
  * public accept-invite page (rendered without a session). */
 export type AuthView = 'loading' | 'gate' | 'ready' | 'error' | 'invite';
 
-/** The add-provider form, reused by the Providers modal and onboarding step 2. */
+/** The add-provider form, reused by the Providers modal and onboarding step 2.
+ * `openai_responses` appears ONLY when the form was seeded from an OAuth-connected
+ * ChatGPT row (read-only display; edits submit name-only) — the create UI never
+ * offers it (connect-only protocol). */
 export interface ProviderForm {
   name: string;
   kind: ProviderKindId;
-  protocol: 'openai_compatible' | 'anthropic_compatible';
+  protocol: 'openai_compatible' | 'anthropic_compatible' | 'openai_responses';
   baseUrl: string;
   credential: string;
 }

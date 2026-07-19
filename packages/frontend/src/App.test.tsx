@@ -25,6 +25,13 @@ function mkModel(id: string): ModelDto {
     isFree: false,
     inputPricePer1m: 1,
     outputPricePer1m: 2,
+    effectivePrice: {
+      inputPricePer1m: 1,
+      outputPricePer1m: 2,
+      isFree: false,
+      source: 'model',
+      estimated: false,
+    },
     lastSyncedAt: null,
   };
 }

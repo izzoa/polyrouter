@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { createProviderAdapter } from '@polyrouter/data-plane';
 import { DatabaseModule } from '../database/database.module';
+import { SubscriptionOauthModule } from '../subscription-oauth/subscription-oauth.module';
 import { loadProvidersConfig, resolveCredentialKey } from './providers.config';
 import { ModelsController } from './models.controller';
 import { ProvidersController } from './providers.controller';
@@ -16,7 +17,7 @@ import {
  * overridable in tests to avoid the network; `PROVIDERS_RUNTIME` resolves the
  * credential key + mode from config (boot fails fast on a missing prod key). */
 @Module({
-  imports: [DatabaseModule],
+  imports: [DatabaseModule, SubscriptionOauthModule],
   controllers: [ProvidersController, ModelsController],
   providers: [
     ProvidersService,

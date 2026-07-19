@@ -8,8 +8,10 @@ export type {
   ProviderKind,
   ProviderProtocol,
   RuntimeMode,
+  AuthScheme,
   CallContext,
   ProviderModelInfo,
+  ProviderListedPricing,
   ConnectionResult,
 } from './adapter';
 export { DEFAULT_FIRST_BYTE_TIMEOUT_MS, MAX_MODEL_ID_LEN } from './adapter';
@@ -30,6 +32,7 @@ export { createHttpProviderAdapter, parseModelList } from './http-adapter';
 export type { AdapterDeps, HttpAdapterSpec } from './http-adapter';
 export { createOpenaiProviderAdapter } from './openai-adapter';
 export { createAnthropicProviderAdapter } from './anthropic-adapter';
+export { createResponsesProviderAdapter } from './responses-adapter';
 export { createProviderAdapter } from './factory';
 export {
   CircuitBreaker,

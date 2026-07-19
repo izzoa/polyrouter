@@ -22,7 +22,9 @@ import {
   type ChannelTestResult,
   type CreateBudgetInput,
   type CreateProviderInput,
+  type UpdateProviderInput,
   type ModelPricingInput,
+  type OauthPresetDto,
   type ProviderDto,
   type RequestRow,
   type RuleDto,
@@ -116,9 +118,43 @@ export interface AppState {
 
   // realized modal/form state
   na: { name: string; harness: Harness; busy: boolean; error: string | null };
-  np: ProviderForm & { busy: boolean; error: string | null };
+  // Shared by the create AND edit provider modals. `editingId` set ⇒ edit mode (submit
+  // PATCHes). `hadCredential`/`clearCredential` drive the write-only credential UX: blank
+  // preserves the stored key, the explicit clear sends an empty credential.
+  np: ProviderForm & {
+    busy: boolean;
+    error: string | null;
+    editingId: string | null;
+    hadCredential: boolean;
+    clearCredential: boolean;
+    /** The kind the provider had when edit opened — so the "prices will be cleared"
+     * warning fires only on a real transition into api_key/subscription. */
+    origKind: ProviderKindId;
+    /** Set when editing an OAuth-connected row (add-chatgpt-responses): endpoint/
+     * kind/protocol are preset-pinned server-side, so the edit submits a NAME-ONLY
+     * patch (credential rotate/clear still follows the SO-1 rules) and the modal
+     * renders those fields read-only. */
+    oauthPreset: string | null;
+  };
   /** Transient key-reveal — raw key/snippet live here ONLY, never persisted. */
   kr: { title: string; key: string; snippet: string; harness: Harness };
+  /** Subscription-OAuth connect wizard (add-subscription-oauth). `active` holds the
+   * server-minted session; `pasted` is credential material — cleared after submit,
+   * never persisted. */
+  ow: {
+    presets: OauthPresetDto[];
+    active: {
+      preset: string;
+      sessionId: string;
+      authorizeUrl: string;
+      reauthorizeProviderId: string | null;
+    } | null;
+    pasted: string;
+    busy: boolean;
+    error: string | null;
+    /** "Other subscription (advanced)" — the classic paste form instead of a preset. */
+    advanced: boolean;
+  };
 
   // Observe (analytics) slices — fetched from /api/analytics (#17). Each carries
   // loading + error; a per-shared-slice `generation` guard discards stale replies.
@@ -290,6 +326,9 @@ function toProvider(p: ProviderDto): Provider {
     baseUrl: p.baseUrl,
     status: asStatus(p.status),
     hasCredential: p.hasCredential,
+    oauthPreset: p.oauthPreset,
+    credentialExpiresAt: p.credentialExpiresAt,
+    credentialError: p.credentialError,
     createdAt: p.createdAt,
   };
 }
@@ -304,7 +343,26 @@ function emptyProviderForm(): ProviderForm {
   return { name: '', kind: 'api', protocol: 'openai_compatible', baseUrl: '', credential: '' };
 }
 
+/** Fresh create/edit-provider modal state (shared `np`). */
+function emptyNp(): AppState['np'] {
+  return {
+    ...emptyProviderForm(),
+    busy: false,
+    error: null,
+    editingId: null,
+    hadCredential: false,
+    clearCredential: false,
+    origKind: 'api',
+    oauthPreset: null,
+  };
+}
+
 function buildProviderInput(form: ProviderForm): CreateProviderInput {
+  if (form.protocol === 'openai_responses') {
+    // Unreachable: the connect-only protocol appears only on edit-seeded forms,
+    // never in the create UI — and the server would reject it anyway.
+    throw new Error('ChatGPT providers are created through the subscription connect flow');
+  }
   const base: CreateProviderInput = {
     name: form.name.trim(),
     kind: UI_TO_API_KIND[form.kind],
@@ -515,7 +573,8 @@ function initialState(): AppState {
     ai: { name: '', password: '', busy: false, error: null },
 
     na: { name: '', harness: 'openai_sdk', busy: false, error: null },
-    np: { ...emptyProviderForm(), busy: false, error: null },
+    np: emptyNp(),
+    ow: { presets: [], active: null, pasted: '', busy: false, error: null, advanced: false },
     kr: emptyKeyReveal(),
 
     analyticsSummary: null,
@@ -608,6 +667,14 @@ export interface AppStore {
   // providers (realized)
   loadProviders: () => Promise<void>;
   addProvider: () => Promise<void>;
+  /** Open the shared provider modal in edit mode, prefilled from `p`. */
+  openEditProvider: (p: Provider) => void;
+  /** Subscription-OAuth wizard (add-subscription-oauth). */
+  loadOauthPresets: () => Promise<void>;
+  startOauthConnect: (preset: string) => Promise<void>;
+  startOauthReauthorize: (p: Provider) => Promise<void>;
+  completeOauthConnect: () => Promise<void>;
+  cancelOauthConnect: () => void;
   testProviderById: (id: string) => Promise<void>;
   syncProvider: (id: string) => Promise<void>;
   deleteProvider: (id: string) => Promise<void>;
@@ -727,6 +794,15 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       setState({ providers: rows.map(toProvider), providersError: null });
     } catch (e) {
       setState('providersError', err(e));
+    }
+  };
+
+  const loadOauthPresets = async (): Promise<void> => {
+    try {
+      const presets = await client.listOauthPresets();
+      setState('ow', 'presets', presets);
+    } catch {
+      setState('ow', 'presets', []); // no enabled presets ≡ cards hidden
     }
   };
 
@@ -1420,12 +1496,47 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         return;
       }
       setState('np', { busy: true, error: null });
+      const editingId = form.editingId;
       try {
+        if (editingId !== null) {
+          // Edit: PATCH the merged config. Credential follows the write-only contract —
+          // blank PRESERVES the stored key (omit), the explicit clear sends '' (clear),
+          // a typed value rotates it. Never send '' implicitly.
+          // An OAuth-connected row's endpoint/kind/protocol are preset-pinned (the
+          // server 422s any drift, and a Responses row's protocol isn't even in the
+          // public enum) — submit a NAME-ONLY patch for those rows.
+          const patch: UpdateProviderInput =
+            form.oauthPreset !== null
+              ? { name: form.name.trim() }
+              : {
+                  name: form.name.trim(),
+                  kind: UI_TO_API_KIND[form.kind],
+                  // The connect-only protocol is not in the public enum — omit it
+                  // (unchangeable anyway) so a rename still works on such a row.
+                  ...(form.protocol !== 'openai_responses' ? { protocol: form.protocol } : {}),
+                  baseUrl: form.baseUrl.trim(),
+                };
+          const typed = form.credential.trim();
+          if (form.clearCredential) patch.credential = '';
+          else if (typed) patch.credential = typed;
+          const updated = await client.updateProvider(editingId, patch);
+          setState(
+            produce((s) => {
+              s.providers = s.providers.map((p) =>
+                p.id === editingId ? toProvider(updated) : p,
+              );
+              s.np = emptyNp();
+              s.modal = null;
+            }),
+          );
+          say(`Provider ${updated.name} updated`);
+          return;
+        }
         const created = await client.createProvider(buildProviderInput(form));
         setState(
           produce((s) => {
             s.providers = [...s.providers, toProvider(created)];
-            s.np = { ...emptyProviderForm(), busy: false, error: null };
+            s.np = emptyNp();
             s.modal = null;
           }),
         );
@@ -1433,6 +1544,110 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       } catch (e) {
         setState('np', { busy: false, error: err(e) });
       }
+    },
+    openEditProvider: (p) => {
+      setState({
+        modal: 'editProvider',
+        np: {
+          name: p.name,
+          kind: apiKindToUi(p.kind),
+          protocol: p.protocol as ProviderForm['protocol'],
+          baseUrl: p.baseUrl ?? '',
+          credential: '',
+          busy: false,
+          error: null,
+          editingId: p.id,
+          hadCredential: p.hasCredential,
+          clearCredential: false,
+          origKind: apiKindToUi(p.kind),
+          oauthPreset: p.oauthPreset,
+        },
+      });
+    },
+
+    loadOauthPresets,
+    startOauthConnect: async (preset) => {
+      if (state.ow.busy) return;
+      setState('ow', { busy: true, error: null });
+      try {
+        const name = state.np.name.trim();
+        const start = await client.oauthStart(preset, name === '' ? undefined : name);
+        setState('ow', {
+          busy: false,
+          pasted: '',
+          active: {
+            preset,
+            sessionId: start.sessionId,
+            authorizeUrl: start.authorizeUrl,
+            reauthorizeProviderId: null,
+          },
+        });
+      } catch (e) {
+        setState('ow', { busy: false, error: err(e) });
+      }
+    },
+    startOauthReauthorize: async (p) => {
+      if (state.ow.busy) return;
+      setState({ modal: 'newProvider', np: { ...emptyNp(), kind: 'sub' } });
+      setState('ow', { busy: true, error: null, presets: state.ow.presets });
+      try {
+        const start = await client.oauthReauthorize(p.id);
+        setState('ow', {
+          busy: false,
+          pasted: '',
+          active: {
+            preset: p.oauthPreset ?? '',
+            sessionId: start.sessionId,
+            authorizeUrl: start.authorizeUrl,
+            reauthorizeProviderId: p.id,
+          },
+        });
+      } catch (e) {
+        setState('ow', { busy: false, error: err(e) });
+      }
+    },
+    completeOauthConnect: async () => {
+      const ow = state.ow;
+      if (ow.busy || ow.active === null) return;
+      const pasted = ow.pasted.trim();
+      // Client-side mirror of the backend contract: both accepted forms carry state.
+      // A bare code gets guidance without a round-trip.
+      if (!/^https?:\/\//i.test(pasted) && !pasted.includes('#')) {
+        // Credential material is cleared on EVERY completion attempt, including this
+        // client-side rejection.
+        setState('ow', {
+          pasted: '',
+          error: 'paste the full redirect URL or the code#state string shown after signing in',
+        });
+        return;
+      }
+      setState('ow', { busy: true, error: null });
+      const isReauthorize = ow.active.reauthorizeProviderId !== null;
+      try {
+        const dto = await client.oauthComplete(ow.active.sessionId, pasted);
+        setState(
+          produce((s) => {
+            const provider = toProvider(dto);
+            s.providers = isReauthorize
+              ? s.providers.map((x) => (x.id === provider.id ? provider : x))
+              : [...s.providers, provider];
+            s.ow = { presets: s.ow.presets, active: null, pasted: '', busy: false, error: null, advanced: false };
+            s.modal = null;
+          }),
+        );
+        say(
+          isReauthorize
+            ? `${dto.name} reconnected — tokens will auto-refresh`
+            : `${dto.name} connected — sync models to start routing`,
+        );
+      } catch (e) {
+        // The pasted value is credential material — cleared after every submit attempt.
+        setState('ow', { busy: false, pasted: '', error: err(e) });
+      }
+    },
+    cancelOauthConnect: () => {
+      if (state.ow.busy) return;
+      setState('ow', { active: null, pasted: '', error: null });
     },
     testProviderById: async (id) => {
       try {
@@ -1488,17 +1703,21 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       if (modal === 'newAgent') {
         setState({ modal, na: { name: '', harness: 'openai_sdk', busy: false, error: null } });
       } else if (modal === 'newProvider') {
-        setState({ modal, np: { ...emptyProviderForm(), busy: false, error: null } });
+        setState({ modal, np: emptyNp() });
+        setState('ow', { active: null, pasted: '', busy: false, error: null, advanced: false });
+        void loadOauthPresets();
       } else {
         setState('modal', modal);
       }
     },
     closeModal: () => {
-      // Don't dismiss a budget/channel modal while its save is in flight — a
-      // cancel→reopen→save would let the first completion reset the newer modal.
+      // Don't dismiss a modal while its save is in flight — a cancel→reopen→save
+      // would let the first completion reset the newer modal (busy-dismissal a11y).
       if (
         (state.modal === 'newLimit' && state.bf.busy) ||
-        (state.modal === 'channel' && state.cf.busy)
+        (state.modal === 'channel' && state.cf.busy) ||
+        ((state.modal === 'newProvider' || state.modal === 'editProvider') &&
+          (state.np.busy || state.ow.busy))
       ) {
         return;
       }
@@ -1507,6 +1726,9 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           s.kr = emptyKeyReveal();
           s.np.busy = false;
           s.np.error = null;
+          // Abandon any open connect wizard (its server session simply expires); the
+          // pasted value is credential material and never survives the modal.
+          s.ow = { presets: s.ow.presets, active: null, pasted: '', busy: false, error: null, advanced: false };
           s.modal = null;
         }),
       );

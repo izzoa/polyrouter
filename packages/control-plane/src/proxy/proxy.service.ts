@@ -6,6 +6,7 @@ import {
   SsrfError,
   assertUrlSafe,
   decryptSecret,
+  resolvePlainCredentialValue,
   type ModelRow,
   type PersistencePort,
   type Principal,
@@ -67,6 +68,7 @@ import { StructuralRouter } from './structural/structural-router';
 import { CascadeRouter, type CascadePlan } from './cascade/cascade-router';
 import { NotificationProducers } from '../producers/notification-producers';
 import { BudgetService, BudgetEnforcementUnavailableError } from '../budgets/budget-service';
+import { SubscriptionOauthService } from '../subscription-oauth/subscription-oauth.service';
 
 /** Per-chain-member recording metadata (parallel to the attempts). */
 interface AttemptMeta {
@@ -160,6 +162,7 @@ export class ProxyService {
     private readonly cascade: CascadeRouter,
     private readonly producers: NotificationProducers,
     private readonly budgets: BudgetService,
+    private readonly oauth: SubscriptionOauthService,
   ) {
     this.key = rt.key;
     this.mode = rt.mode;
@@ -836,22 +839,30 @@ export class ProxyService {
       attempts.push({
         providerId: t.providerId,
         externalModelId: t.externalModelId,
-        buildAdapter: () => this.chainAdapter(provider, signal),
+        buildAdapter: () => this.chainAdapter(principal, provider, signal),
       });
     }
     return { attempts, meta };
   }
 
-  /** Build a chain member's adapter; a setup failure (SSRF/credential/decrypt)
+  /** Build a chain member's adapter; a setup failure (SSRF/config/decrypt)
    * becomes a classified, fallback-eligible ProviderError (skipped + trips the
-   * breaker so it's skipped fast next time), counted per provider (#21). The
-   * built adapter is wrapped with the `upstream` span + metrics decorator. */
-  private async chainAdapter(provider: ProviderRow, signal: AbortSignal): Promise<ProviderAdapter> {
+   * breaker so it's skipped fast next time), counted per provider (#21) — EXCEPT a
+   * `credential`-kind failure (add-subscription-oauth: revoked OAuth grant / IdP
+   * outage), which passes through as-is: fallback-eligible but breaker-NEUTRAL,
+   * because credential state is not upstream provider health. The built adapter is
+   * wrapped with the `upstream` span + metrics decorator. */
+  private async chainAdapter(
+    principal: Principal,
+    provider: ProviderRow,
+    signal: AbortSignal,
+  ): Promise<ProviderAdapter> {
     let adapter: ProviderAdapter;
     try {
-      adapter = await this.buildAdapter(provider);
-    } catch {
+      adapter = await this.buildAdapter(principal, provider);
+    } catch (err) {
       this.metrics.upstreamSetupFailed(provider.name);
+      if (err instanceof ProviderError && err.kind === 'credential') throw err;
       throw new ProviderError('unavailable', 'provider setup failed');
     }
     return observeAdapter(adapter, {
@@ -968,7 +979,7 @@ export class ProxyService {
     return { snapshot, models };
   }
 
-  private async buildAdapter(provider: ProviderRow): Promise<ProviderAdapter> {
+  private async buildAdapter(principal: Principal, provider: ProviderRow): Promise<ProviderAdapter> {
     if (provider.baseUrl === null) throw serviceUnavailable('provider has no base_url');
     const kind = provider.kind as ProviderKind;
     try {
@@ -977,9 +988,34 @@ export class ProxyService {
       if (err instanceof SsrfError) throw serviceUnavailable('provider address rejected');
       throw err;
     }
+    // Subscription providers resolve through the subscription-oauth seam: it unwraps a
+    // plain paste, or refreshes an OAuth token (pre-request only — invariant 3) and
+    // supplies authScheme/oauthBeta. Credential failures are ProviderError('credential')
+    // — fallback-eligible, breaker-neutral (chainAdapter passes them through).
+    if (kind === 'subscription' && provider.encryptedCredentials !== null) {
+      const r = await this.oauth.resolveCredential(principal, provider);
+      return this.factory({
+        protocol: provider.protocol as ProviderProtocol,
+        baseUrl: provider.baseUrl,
+        credential: r.credential,
+        kind,
+        mode: this.mode,
+        authScheme: r.authScheme,
+        ...(r.oauthBeta !== undefined ? { oauthBeta: r.oauthBeta } : {}),
+        ...(r.oauthAccountId !== undefined ? { oauthAccountId: r.oauthAccountId } : {}),
+        ...(r.probeModel !== undefined ? { probeModel: r.probeModel } : {}),
+        defaultMaxOutputTokens: this.rt.defaultMaxOutputTokens,
+        firstByteTimeoutMs: this.rt.firstByteTimeoutMs,
+        idleTimeoutMs: this.rt.idleTimeoutMs,
+      });
+    }
     let credential = '';
     if (provider.encryptedCredentials !== null) {
-      credential = decryptSecret(provider.encryptedCredentials, this.key);
+      // Plain path: unwrap the typed envelope (legacy raw passes through). OAuth
+      // envelopes resolve through the subscription-oauth seam above instead.
+      credential = resolvePlainCredentialValue(
+        decryptSecret(provider.encryptedCredentials, this.key),
+      );
     } else if (kind !== 'local') {
       throw serviceUnavailable('provider has no credential');
     }

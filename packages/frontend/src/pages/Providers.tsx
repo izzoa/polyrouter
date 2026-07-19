@@ -12,10 +12,39 @@ function statusLabel(s: ProviderStatus): string {
   return s === 'ok' ? 'Healthy' : s === 'error' ? 'Last action failed' : 'Not tested yet';
 }
 
+/** The effective display price — resolved server-side (billing resolver, then the
+ * provider-listed estimate). `null` means genuinely unpriced. */
 function priceText(m: Model): string {
-  if (m.isFree) return 'free';
-  if (m.inputPricePer1m === null || m.outputPricePer1m === null) return 'catalog price';
-  return `$${String(m.inputPricePer1m)} / $${String(m.outputPricePer1m)} per 1M`;
+  const ep = m.effectivePrice;
+  if (ep === null) return 'unpriced';
+  if (ep.isFree) return 'free';
+  return `$${String(ep.inputPricePer1m)} / $${String(ep.outputPricePer1m)} per 1M`;
+}
+
+/** "· expires in Nh" from the non-secret credential expiry (blank when unknown/past —
+ * the reauthorize state carries its own messaging). */
+function expiresLabel(iso: string | null): string {
+  if (iso === null) return '';
+  const ms = new Date(iso).getTime() - Date.now();
+  if (!Number.isFinite(ms) || ms <= 0) return '';
+  const hours = ms / 3_600_000;
+  return hours >= 1 ? ` · expires in ${String(Math.round(hours))}h` : ' · expires soon';
+}
+
+/** Short provenance line under the price — where the shown number comes from. */
+function priceProvenance(m: Model): string {
+  const ep = m.effectivePrice;
+  if (ep === null) return 'unpriced — cost not tracked';
+  switch (ep.source) {
+    case 'listed':
+      return 'provider-listed · estimate';
+    case 'model':
+      return 'you set this';
+    case 'local':
+      return 'local model — free';
+    default:
+      return 'from the price catalog';
+  }
 }
 
 /** Inline price editor for custom/local models only (#18 §7.7). Writes exactly one
@@ -148,6 +177,29 @@ function ProviderCard(props: { p: Provider }) {
         {props.p.hasCredential ? 'credential set (encrypted)' : 'no credential'}
       </div>
 
+      <Show when={props.p.oauthPreset !== null}>
+        <Show
+          when={props.p.credentialError === 'reauthorize_required'}
+          fallback={
+            <div style="font:400 11px 'Geist',sans-serif;color:var(--green)">
+              ● Connected · auto-refreshes{expiresLabel(props.p.credentialExpiresAt)}
+            </div>
+          }
+        >
+          <div style="display:flex;align-items:center;gap:10px;font:400 11px 'Geist',sans-serif;color:var(--amber);background:var(--amber-bg);border-radius:7px;padding:8px 10px">
+            <span>Sign-in expired — reconnect to keep routing through this subscription.</span>
+            <button
+              type="button"
+              class="btn-ghost"
+              style="margin-left:auto;flex:none"
+              onClick={() => void app.startOauthReauthorize(props.p)}
+            >
+              Reauthorize
+            </button>
+          </div>
+        </Show>
+      </Show>
+
       <Show when={props.p.kind === 'subscription'}>
         <div style="font:400 11px 'Geist',sans-serif;color:var(--amber);background:var(--amber-bg);border-radius:7px;padding:8px 10px;line-height:1.5">
           Reusing a flat-rate subscription may violate the provider’s ToS.{' '}
@@ -172,6 +224,9 @@ function ProviderCard(props: { p: Provider }) {
         </button>
         <button type="button" class="btn-ghost" onClick={toggleModels} aria-expanded={open()}>
           {open() ? 'Hide models' : 'Models'}
+        </button>
+        <button type="button" class="btn-ghost" onClick={() => app.openEditProvider(props.p)}>
+          Edit
         </button>
         <button type="button" class="btn-ghost btn-ghost--amber" onClick={remove}>
           Delete
@@ -202,7 +257,7 @@ function ProviderCard(props: { p: Provider }) {
                       class="mono"
                       style={{
                         font: "400 10.5px 'Geist Mono',monospace",
-                        color: m.isFree ? 'var(--green)' : 'var(--text3)',
+                        color: m.effectivePrice?.isFree ? 'var(--green)' : 'var(--text3)',
                       }}
                     >
                       {priceText(m)}
@@ -212,7 +267,7 @@ function ProviderCard(props: { p: Provider }) {
                     when={editable()}
                     fallback={
                       <div style="font:400 10px 'Geist',sans-serif;color:var(--text3)">
-                        Prices come from the bundled catalog for known providers.
+                        {priceProvenance(m)}
                       </div>
                     }
                   >

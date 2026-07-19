@@ -44,6 +44,22 @@ export function Modals() {
   const app = useApp();
   const { state, setState } = app;
   const npKind = () => PROVIDER_KINDS.find((k) => k.id === state.np.kind);
+  /** The OAuth connect path replaces the classic fields for a NEW subscription
+   * provider whenever the server lists an enabled preset (add-subscription-oauth). */
+  const subConnect = () =>
+    state.np.kind === 'sub' &&
+    state.np.editingId === null &&
+    !state.ow.advanced &&
+    state.ow.presets.length > 0;
+
+  // Editing an OAuth-connected row (add-chatgpt-responses): endpoint/kind/protocol
+  // are preset-pinned — rendered read-only; the submit is name-only.
+  const oauthLocked = () => state.np.editingId !== null && state.np.oauthPreset !== null;
+  const PROTOCOL_LABELS: Record<string, string> = {
+    openai_compatible: 'OpenAI-compatible',
+    anthropic_compatible: 'Anthropic-compatible',
+    openai_responses: 'ChatGPT Responses',
+  };
 
   const toggleNotifyChannel = (id: string): void =>
     setState('bf', 'notifyChannelIds', (ids) =>
@@ -169,9 +185,9 @@ export function Modals() {
                 </div>
               </Show>
 
-              <Show when={state.modal === 'newProvider'}>
+              <Show when={state.modal === 'newProvider' || state.modal === 'editProvider'}>
                 <div class="modal-title" id="modal-title">
-                  Add provider
+                  {state.np.editingId ? 'Edit provider' : 'Add provider'}
                 </div>
                 <div>
                   <label class="field-label" for="f-np-name" style="display:block">
@@ -185,55 +201,189 @@ export function Modals() {
                     onInput={(e) => setState('np', 'name', e.currentTarget.value)}
                   />
                 </div>
-                <div>
-                  <div class="field-label">Kind</div>
-                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-                    <For each={PROVIDER_KINDS}>
-                      {(k) => (
+                <Show
+                  when={!oauthLocked()}
+                  fallback={
+                    <div>
+                      <div class="field-label">Connection</div>
+                      <div style="padding:12px 14px;border:1px solid var(--border);border-radius:10px;background:var(--bg2)">
+                        <span style="display:block;font:500 12.5px 'Geist',sans-serif;color:var(--text)">
+                          Subscription — connected via {state.np.oauthPreset}
+                        </span>
+                        <span style="display:block;font:400 11px 'Geist',sans-serif;color:var(--text3);line-height:1.45;margin-top:3px">
+                          Endpoint, kind, and protocol are pinned by the connection. Use
+                          Reauthorize to refresh access
+                          {state.np.protocol === 'openai_responses'
+                            ? ' — this provider only works with its OAuth sign-in (to start over, delete it and reconnect).'
+                            : ', or paste a credential below to convert it to an ordinary provider.'}
+                        </span>
+                      </div>
+                    </div>
+                  }
+                >
+                  <div>
+                    <div class="field-label">Kind</div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+                      <For each={PROVIDER_KINDS}>
+                        {(k) => (
+                          <button
+                            type="button"
+                            class="kind-card"
+                            aria-pressed={state.np.kind === k.id}
+                            style={{
+                              padding: '12px 14px',
+                              border: `1px solid ${state.np.kind === k.id ? 'var(--accent)' : 'var(--border)'}`,
+                              background: state.np.kind === k.id ? 'var(--accent-bg)' : 'var(--bg)',
+                              'border-radius': '10px',
+                              cursor: 'pointer',
+                            }}
+                            onClick={() => setState('np', 'kind', k.id)}
+                          >
+                            <span style="display:block;font:500 12.5px 'Geist',sans-serif;color:var(--text)">
+                              {k.name}
+                            </span>
+                            <span style="display:block;font:400 11px 'Geist',sans-serif;color:var(--text3);line-height:1.45;margin-top:3px">
+                              {k.desc}
+                            </span>
+                          </button>
+                        )}
+                      </For>
+                    </div>
+                  </div>
+                </Show>
+                <Show when={subConnect()}>
+                  <Show
+                    when={state.ow.active}
+                    fallback={
+                      <div style="display:flex;flex-direction:column;gap:8px">
+                        <div class="field-label">Connect a subscription</div>
+                        <For each={state.ow.presets}>
+                          {(pr) => (
+                            <button
+                              type="button"
+                              class="kind-card"
+                              style="padding:12px 14px;border:1px solid var(--border);border-radius:10px;cursor:pointer;text-align:left"
+                              disabled={state.ow.busy}
+                              onClick={() => void app.startOauthConnect(pr.id)}
+                            >
+                              <span style="display:block;font:500 12.5px 'Geist',sans-serif;color:var(--text)">
+                                {pr.displayName}
+                              </span>
+                              <span style="display:block;font:400 11px 'Geist',sans-serif;color:var(--text3);margin-top:3px">
+                                Sign in with your account — tokens are stored encrypted and
+                                auto-refresh.
+                              </span>
+                            </button>
+                          )}
+                        </For>
                         <button
                           type="button"
-                          class="kind-card"
-                          aria-pressed={state.np.kind === k.id}
-                          style={{
-                            padding: '12px 14px',
-                            border: `1px solid ${state.np.kind === k.id ? 'var(--accent)' : 'var(--border)'}`,
-                            background: state.np.kind === k.id ? 'var(--accent-bg)' : 'var(--bg)',
-                            'border-radius': '10px',
-                            cursor: 'pointer',
-                          }}
-                          onClick={() => setState('np', 'kind', k.id)}
+                          class="btn-ghost"
+                          style="align-self:flex-start"
+                          onClick={() => setState('ow', 'advanced', true)}
                         >
-                          <span style="display:block;font:500 12.5px 'Geist',sans-serif;color:var(--text)">
-                            {k.name}
-                          </span>
-                          <span style="display:block;font:400 11px 'Geist',sans-serif;color:var(--text3);line-height:1.45;margin-top:3px">
-                            {k.desc}
-                          </span>
+                          Other subscription (paste a credential)
                         </button>
-                      )}
-                    </For>
+                      </div>
+                    }
+                  >
+                    <div style="display:flex;flex-direction:column;gap:10px">
+                      <div style="font:400 12px 'Geist',sans-serif;color:var(--text);line-height:1.5">
+                        1. Open the sign-in link and approve access.
+                      </div>
+                      <a
+                        class="btn-ghost"
+                        style="align-self:flex-start;text-decoration:none"
+                        href={state.ow.active!.authorizeUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Open sign-in link ↗
+                      </a>
+                      <div style="font:400 12px 'Geist',sans-serif;color:var(--text);line-height:1.5">
+                        2. Paste what you land on — the full redirect URL or the code#state
+                        string.
+                      </div>
+                      <label class="field-label" for="f-ow-paste" style="display:block">
+                        Redirect URL or code
+                      </label>
+                      <input
+                        class="input mono"
+                        id="f-ow-paste"
+                        style="font:400 12px 'Geist Mono',monospace"
+                        value={state.ow.pasted}
+                        placeholder="https://…/callback?code=…&state=… or code#state"
+                        onInput={(e) => setState('ow', 'pasted', e.currentTarget.value)}
+                      />
+                      <Show when={state.ow.error}>
+                        <div style="font:400 11px 'Geist',sans-serif;color:var(--red)">
+                          {state.ow.error}
+                        </div>
+                      </Show>
+                      <div style="display:flex;gap:8px;justify-content:flex-end">
+                        <button
+                          type="button"
+                          class="btn-cancel"
+                          disabled={state.ow.busy}
+                          onClick={() => app.cancelOauthConnect()}
+                        >
+                          Back
+                        </button>
+                        <button
+                          type="button"
+                          class="btn-primary"
+                          disabled={state.ow.busy}
+                          onClick={() => void app.completeOauthConnect()}
+                        >
+                          {state.ow.busy ? 'Connecting…' : 'Connect'}
+                        </button>
+                      </div>
+                    </div>
+                  </Show>
+                  <Show when={!state.ow.active && state.ow.error}>
+                    <div style="font:400 11px 'Geist',sans-serif;color:var(--red)">
+                      {state.ow.error}
+                    </div>
+                  </Show>
+                  <div style="font:400 10.5px 'Geist',sans-serif;color:var(--amber);line-height:1.5">
+                    Reusing a flat-rate subscription programmatically may violate the provider’s
+                    ToS — pair it with a pay-per-token fallback.
                   </div>
-                </div>
+                </Show>
+                <Show when={!subConnect()}>
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
                   <div>
                     <label class="field-label" for="f-np-protocol" style="display:block">
                       Protocol
                     </label>
-                    <select
-                      class="select"
-                      id="f-np-protocol"
-                      value={state.np.protocol}
-                      onChange={(e) =>
-                        setState(
-                          'np',
-                          'protocol',
-                          e.currentTarget.value as 'openai_compatible' | 'anthropic_compatible',
-                        )
+                    <Show
+                      when={!oauthLocked()}
+                      fallback={
+                        <input
+                          class="input"
+                          id="f-np-protocol"
+                          value={PROTOCOL_LABELS[state.np.protocol] ?? state.np.protocol}
+                          disabled
+                          aria-label="Protocol (pinned by the connection)"
+                        />
                       }
                     >
-                      <option value="openai_compatible">OpenAI-compatible</option>
-                      <option value="anthropic_compatible">Anthropic-compatible</option>
-                    </select>
+                      <select
+                        class="select"
+                        id="f-np-protocol"
+                        value={state.np.protocol}
+                        onChange={(e) =>
+                          setState(
+                            'np',
+                            'protocol',
+                            e.currentTarget.value as 'openai_compatible' | 'anthropic_compatible',
+                          )
+                        }
+                      >
+                        <option value="openai_compatible">OpenAI-compatible</option>
+                        <option value="anthropic_compatible">Anthropic-compatible</option>
+                      </select>
+                    </Show>
                   </div>
                   <div>
                     <label class="field-label" for="f-np-baseurl" style="display:block">
@@ -244,6 +394,7 @@ export function Modals() {
                       id="f-np-baseurl"
                       style="font:400 12px 'Geist Mono',monospace"
                       value={state.np.baseUrl}
+                      disabled={oauthLocked()}
                       placeholder={
                         npKind()?.id === 'local'
                           ? 'http://127.0.0.1:11434/v1'
@@ -253,6 +404,9 @@ export function Modals() {
                     />
                   </div>
                 </div>
+                {/* A Responses row runs ONLY on its OAuth sign-in — a pasted credential
+                    can never work, so the rotate/clear controls are not offered. */}
+                <Show when={!(oauthLocked() && state.np.protocol === 'openai_responses')}>
                 <div>
                   <label class="field-label" for="f-np-credential" style="display:block">
                     {npKind()?.field ?? 'Credential'}
@@ -264,14 +418,44 @@ export function Modals() {
                     style="font:400 12px 'Geist Mono',monospace"
                     type="password"
                     value={state.np.credential}
-                    placeholder={npKind()?.ph ?? ''}
+                    disabled={state.np.clearCredential}
+                    placeholder={
+                      oauthLocked()
+                        ? 'leave blank to keep the connected sign-in'
+                        : state.np.editingId && state.np.hadCredential
+                          ? 'leave blank to keep the stored key'
+                          : (npKind()?.ph ?? '')
+                    }
                     onInput={(e) => setState('np', 'credential', e.currentTarget.value)}
                   />
+                  <Show when={state.np.editingId !== null && state.np.hadCredential}>
+                    <label style="display:flex;align-items:center;gap:6px;margin-top:6px;font:400 10.5px 'Geist',sans-serif;color:var(--text3)">
+                      <input
+                        type="checkbox"
+                        checked={state.np.clearCredential}
+                        onChange={(e) => setState('np', 'clearCredential', e.currentTarget.checked)}
+                      />
+                      Remove the stored credential
+                    </label>
+                  </Show>
                 </div>
+                </Show>
                 <Show when={state.np.kind === 'sub'}>
                   <div style="font:400 10.5px 'Geist',sans-serif;color:var(--amber);line-height:1.5">
                     Reusing a flat-rate subscription programmatically may violate the provider’s
                     ToS — pair it with a pay-per-token fallback.
+                  </div>
+                </Show>
+                <Show
+                  when={
+                    state.np.editingId !== null &&
+                    (state.np.kind === 'api' || state.np.kind === 'sub') &&
+                    (state.np.origKind === 'custom' || state.np.origKind === 'local')
+                  }
+                >
+                  <div style="font:400 10.5px 'Geist',sans-serif;color:var(--amber);line-height:1.5">
+                    An API-key/subscription provider is priced from the catalog — any per-model
+                    prices you set are cleared on save.
                   </div>
                 </Show>
                 <div style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);line-height:1.5">
@@ -293,9 +477,16 @@ export function Modals() {
                     disabled={state.np.busy}
                     onClick={() => void app.addProvider()}
                   >
-                    {state.np.busy ? 'Adding…' : 'Add provider'}
+                    {state.np.editingId
+                      ? state.np.busy
+                        ? 'Saving…'
+                        : 'Save changes'
+                      : state.np.busy
+                        ? 'Adding…'
+                        : 'Add provider'}
                   </button>
                 </div>
+                </Show>
               </Show>
 
               <Show when={state.modal === 'newLimit'}>

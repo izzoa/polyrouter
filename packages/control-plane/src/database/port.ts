@@ -140,6 +140,15 @@ function createModelAccessor(db: Db): ModelAccessor {
         const set: Record<string, unknown> = {};
         if ('displayName' in rest) set['displayName'] = rest['displayName'];
         if ('lastSyncedAt' in rest) set['lastSyncedAt'] = rest['lastSyncedAt'];
+        // Provider-listed DISPLAY estimate (add-provider-price-sync-and-edit): always
+        // rewritten on sync (present-with-null CLEARS a stale estimate). Never the
+        // billing user-price columns (those stay #8's, untouched here).
+        if ('listedInputPricePer1m' in rest) set['listedInputPricePer1m'] = rest['listedInputPricePer1m'];
+        if ('listedOutputPricePer1m' in rest)
+          set['listedOutputPricePer1m'] = rest['listedOutputPricePer1m'];
+        if ('listedIsFree' in rest) set['listedIsFree'] = rest['listedIsFree'];
+        if ('listedPriceCapturedAt' in rest)
+          set['listedPriceCapturedAt'] = rest['listedPriceCapturedAt'];
         const rows = await tx
           .insert(models)
           .values(insertValues)
@@ -178,6 +187,28 @@ function createModelAccessor(db: Db): ModelAccessor {
       const rows = await db
         .update(models)
         .set({ inputPricePer1m: null, outputPricePer1m: null, isFree: false })
+        .where(
+          and(
+            eq(models.providerId, providerId),
+            inArray(models.providerId, ownedProviderIds(db, principal)),
+          ),
+        )
+        .returning({ id: models.id });
+      return rows.length;
+    },
+    async clearListedPricingForProvider(principal, providerId) {
+      // Drop the provider-listed DISPLAY estimates when the endpoint changes
+      // (add-provider-price-sync-and-edit) — a price captured from the prior base_url/
+      // protocol must not linger; the next sync repopulates. Owner-scoped; never the
+      // billing user-price columns.
+      const rows = await db
+        .update(models)
+        .set({
+          listedInputPricePer1m: null,
+          listedOutputPricePer1m: null,
+          listedIsFree: null,
+          listedPriceCapturedAt: null,
+        })
         .where(
           and(
             eq(models.providerId, providerId),
@@ -346,6 +377,21 @@ function createRoutingEntryAccessor(db: Db): RoutingEntryAccessor {
   };
 }
 
+/** The transaction-local `lock_timeout` elapsed while waiting on an advisory lock
+ * (add-subscription-oauth) — the transaction is aborted and its connection released. */
+export class AdvisoryLockTimeoutError extends Error {
+  constructor() {
+    super('advisory lock wait timed out');
+    this.name = 'AdvisoryLockTimeoutError';
+  }
+}
+
+function isLockTimeout(err: unknown): boolean {
+  const code = (err as { code?: string; cause?: { code?: string } }).code;
+  const causeCode = (err as { cause?: { code?: string } }).cause?.code;
+  return code === '55P03' || causeCode === '55P03';
+}
+
 /** Global (non-tenant) pricing catalog — append-only reads/insert; the locked
  * write orchestration lives in #8's PricingService. */
 function createPricingCatalog(db: Db): PricingCatalog {
@@ -358,6 +404,17 @@ function createPricingCatalog(db: Db): PricingCatalog {
         .orderBy(desc(modelPrices.validFrom))
         .limit(1);
       return rows[0] ?? null;
+    },
+    async priceAtMany(keys, at) {
+      // ONE query for the effective version of each requested key as of `at`
+      // (add-provider-price-sync-and-edit) — DISTINCT ON (model_key) ordered by
+      // valid_from desc, filtered to the given keys. Never N×priceAt / full scan.
+      if (keys.length === 0) return [];
+      return db
+        .selectDistinctOn([modelPrices.modelKey])
+        .from(modelPrices)
+        .where(and(inArray(modelPrices.modelKey, [...keys]), lte(modelPrices.validFrom, at)))
+        .orderBy(modelPrices.modelKey, desc(modelPrices.validFrom));
     },
     async latest(modelKey) {
       const rows = await db
@@ -566,11 +623,25 @@ export function buildPersistenceFacilities(db: NodePgDatabase): PersistenceFacil
       // drizzle — so even privileged code cannot issue unscoped SQL.
       return db.transaction(async (tx) => fn(buildPersistencePort(tx)));
     },
-    async withAdvisoryLock(lockKey, fn) {
-      return db.transaction(async (tx) => {
-        await tx.execute(sql`SELECT pg_advisory_xact_lock(${lockKey})`);
-        return fn(buildPersistencePort(tx));
-      });
+    async withAdvisoryLock(lockKey, fn, opts) {
+      const timeoutMs = opts?.lockTimeoutMs;
+      try {
+        return await db.transaction(async (tx) => {
+          if (timeoutMs !== undefined && Number.isInteger(timeoutMs) && timeoutMs > 0) {
+            // SET LOCAL cannot be parameterized; the value is validated as a positive
+            // integer above, never caller-supplied text.
+            await tx.execute(sql.raw(`SET LOCAL lock_timeout = ${String(timeoutMs)}`));
+          }
+          await tx.execute(sql`SELECT pg_advisory_xact_lock(${lockKey})`);
+          return fn(buildPersistencePort(tx));
+        });
+      } catch (err) {
+        // 55P03 = lock_not_available (the transaction-local lock_timeout elapsed). The
+        // tx has aborted and the connection is FREE — surface a typed timeout so the
+        // caller can re-read-and-adopt instead of a detached waiter living on.
+        if (timeoutMs !== undefined && isLockTimeout(err)) throw new AdvisoryLockTimeoutError();
+        throw err;
+      }
     },
   };
 }

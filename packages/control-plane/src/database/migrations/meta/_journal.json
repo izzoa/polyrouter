@@ -64,6 +64,20 @@
       "when": 1784340188501,
       "tag": "0008_lyrical_madame_masque",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1784397158308,
+      "tag": "0009_futuristic_yellowjacket",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1784406679506,
+      "tag": "0010_aspiring_clea",
+      "breakpoints": true
     }
   ]
 }

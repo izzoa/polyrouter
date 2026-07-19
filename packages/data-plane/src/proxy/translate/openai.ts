@@ -425,12 +425,22 @@ async function* streamParse(
       (parsed as { error?: unknown }).error != null &&
       (parsed as { choices?: unknown }).choices === undefined
     ) {
-      const err = (parsed as { error: { type?: unknown; message?: unknown } }).error;
+      const err = (parsed as { error: { type?: unknown; message?: unknown; code?: unknown } })
+        .error;
       yield {
         type: 'error',
         error: {
           type: typeof err.type === 'string' ? err.type : 'server_error',
           message: typeof err.message === 'string' ? err.message : 'upstream stream error',
+        },
+        // Raw wire fields for the adapter-stage sanitizer — incl. `code`, which
+        // can carry a content-policy marker the outward type lacks. Never serialized.
+        diagnostic: {
+          wire: {
+            ...(typeof err.message === 'string' ? { message: err.message } : {}),
+            ...(typeof err.type === 'string' ? { type: err.type } : {}),
+            ...(typeof err.code === 'string' ? { code: err.code } : {}),
+          },
         },
       };
       continue;

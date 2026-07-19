@@ -27,8 +27,11 @@ import {
 import {
   CallCancelledError,
   ProviderError,
+  captureProviderMessage,
   classifyNetworkError,
   classifyResponse,
+  classifyStreamError,
+  sanitizeRequestId,
 } from './errors';
 import {
   createGuardedHttpClient,
@@ -79,11 +82,58 @@ export interface AdapterDeps {
 }
 
 function errMeta(res: HttpResponse): { requestId?: string } {
-  const id =
+  // Strict allowlist (add-request-error-detail): an arbitrary response-header
+  // value is never copied verbatim into error metadata.
+  const id = sanitizeRequestId(
     res.headers.get('x-request-id') ??
-    res.headers.get('request-id') ??
-    res.headers.get('anthropic-request-id');
-  return id !== null ? { requestId: id } : {};
+      res.headers.get('request-id') ??
+      res.headers.get('anthropic-request-id'),
+  );
+  return id !== undefined ? { requestId: id } : {};
+}
+
+/**
+ * Adapter-stage sanitizer (add-request-error-detail): consume each error event's
+ * RAW `diagnostic.wire` through the sanitizing factory — the credential lives
+ * HERE, so the mandatory exact-credential redaction is possible only here — and
+ * yield events carrying ONLY the branded sanitized message (+ the allowlisted
+ * response-header request id). No event leaves the adapter with raw wire text.
+ * Synthetic events (truncated/incomplete — no `wire`) pass through untouched.
+ */
+async function* sanitizeStreamErrors(
+  events: AsyncGenerator<NormalizedStreamEvent>,
+  secrets: readonly string[],
+  requestId: string | undefined,
+): AsyncGenerator<NormalizedStreamEvent> {
+  for await (const ev of events) {
+    if (ev.type !== 'error' || ev.diagnostic?.wire === undefined) {
+      yield ev;
+      continue;
+    }
+    const wire = ev.diagnostic.wire;
+    // Conservative kind (r3-High-1): classify EVERY available field — a generic
+    // wire type must not launder a `code=invalid_request_error` into the
+    // operational-verbatim path. (The factory re-checks markers itself; this is
+    // the belt to its suspenders.)
+    const kinds = [wire.type, wire.code, ev.error.type]
+      .filter((v): v is string => typeof v === 'string')
+      .map(classifyStreamError);
+    const providerMessage = captureProviderMessage(
+      { source: 'stream-wire', ...wire },
+      {
+        kind: kinds.includes('bad_request') ? 'bad_request' : (kinds[0] ?? 'unavailable'),
+        secrets,
+      },
+    );
+    yield {
+      type: 'error',
+      error: ev.error,
+      diagnostic: {
+        ...(providerMessage !== null ? { providerMessage } : {}),
+        ...(requestId !== undefined ? { requestId } : {}),
+      },
+    };
+  }
 }
 
 /** Pass typed errors through; wrap everything unexpected as a network fault.
@@ -163,7 +213,7 @@ export function createHttpProviderAdapter(
       );
       try {
         if (!res.ok) {
-          throw classifyResponse(res.status, await res.text(), errMeta(res));
+          throw classifyResponse(res.status, await res.text(), errMeta(res), [config.credential]);
         }
         return spec.translate.responseIn(await res.json());
       } finally {
@@ -194,9 +244,15 @@ export function createHttpProviderAdapter(
     const { res, dispose } = opened;
     try {
       if (!res.ok) {
-        throw classifyResponse(res.status, await res.text(), errMeta(res));
+        throw classifyResponse(res.status, await res.text(), errMeta(res), [config.credential]);
       }
-      yield* spec.translate.streamParse(readSseChunks(res));
+      // Adapter-stage error-detail sanitization (add-request-error-detail): THIS
+      // layer holds the credential, so raw wire fields must not leave it.
+      yield* sanitizeStreamErrors(
+        spec.translate.streamParse(readSseChunks(res)),
+        [config.credential],
+        errMeta(res).requestId,
+      );
     } catch (err) {
       rethrowTyped(err);
     } finally {
@@ -216,7 +272,10 @@ export function createHttpProviderAdapter(
       const seenCursors = new Set<string>(); // detect a stuck/cycling cursor
       let cursor: string | null = null;
       for (let page = 0; page < MAX_MODEL_PAGES; page += 1) {
-        const url = cursor === null ? modelsUrl : appendQuery(modelsUrl, spec.modelsPagination!.param, cursor);
+        const url =
+          cursor === null
+            ? modelsUrl
+            : appendQuery(modelsUrl, spec.modelsPagination!.param, cursor);
         const { res, dispose } = await openRequest(
           httpClient,
           url,
@@ -228,7 +287,7 @@ export function createHttpProviderAdapter(
         );
         try {
           if (!res.ok) {
-            throw classifyResponse(res.status, await res.text(), errMeta(res));
+            throw classifyResponse(res.status, await res.text(), errMeta(res), [config.credential]);
           }
           const json = await res.json();
           for (const m of spec.parseModels(json)) {

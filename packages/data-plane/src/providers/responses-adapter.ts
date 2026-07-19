@@ -88,9 +88,20 @@ async function collectStream(
         }
         break;
       case 'error':
+        // Preserve the adapter-stage sanitized diagnostic (r3-Medium-3): the
+        // inner chatStream already ran the capture factory, so the buffered
+        // facade must carry providerMessage/requestId, not discard them.
         throw new ProviderError(
           classifyStreamError(ev.error.type),
           'provider stream failed before completion',
+          {
+            ...(ev.diagnostic?.providerMessage !== undefined
+              ? { providerMessage: ev.diagnostic.providerMessage }
+              : {}),
+            ...(ev.diagnostic?.requestId !== undefined
+              ? { requestId: ev.diagnostic.requestId }
+              : {}),
+          },
         );
       default:
         break;

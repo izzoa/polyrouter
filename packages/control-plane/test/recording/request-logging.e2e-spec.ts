@@ -150,6 +150,13 @@ describe('request-logging e2e', () => {
     const srvfail = await port.models.createForProvider(principal, provider.id, {
       externalModelId: 'oai-srvfail',
     });
+    // add-request-error-detail: a 400-mode and a mid-stream-error-mode model.
+    await port.models.createForProvider(principal, provider.id, {
+      externalModelId: 'oai-badreq',
+    });
+    await port.models.createForProvider(principal, provider.id, {
+      externalModelId: 'oai-miderror',
+    });
     await port.ensureDefaultTier(principal);
     const tier = (await port.tiers.list(principal)).find((t) => t.key === 'default')!;
     await port.routingEntries.replaceForTier(principal, tier.id, [gpt4oModelId]);
@@ -204,6 +211,76 @@ describe('request-logging e2e', () => {
     expect(row).toBeDefined();
     expect(row!.modelId).toBe(gpt4oModelId); // the served member, not the failed primary
     expect(row!.routingReason).toContain('fell back'); // sanitized trail
+    // add-request-error-detail decision 2: a SERVED request carries no error detail —
+    // its bumps stay summarized by the trail alone.
+    expect(row!.errorKind).toBeNull();
+    expect(row!.errorStatus).toBeNull();
+    expect(row!.errorMessage).toBeNull();
+    expect(row!.errorRequestId).toBeNull();
+  });
+
+  describe('terminal error detail (add-request-error-detail)', () => {
+    it('a whole-chain failure records kind/status and the provider-verbatim operational message', async () => {
+      const res = await request(server)
+        .post('/v1/chat/completions')
+        .set('Authorization', `Bearer ${key}`)
+        .send({ model: 'oai-srvfail', messages: [] }); // single-member chain → 500
+      expect(res.status).toBeGreaterThanOrEqual(500);
+      await writer.flush();
+      const row = (await port.requestLogs.list(principal)).find(
+        (r) => r.status === 'error' && r.errorStatus === 500,
+      );
+      expect(row).toBeDefined();
+      expect(row!.errorKind).toBe('unavailable');
+      expect(row!.errorMessage).toBe('stub failure'); // the provider's own words
+    });
+
+    it('a validation (bad_request) failure withholds the message by fixed marker', async () => {
+      const res = await request(server)
+        .post('/v1/chat/completions')
+        .set('Authorization', `Bearer ${key}`)
+        .send({ model: 'oai-badreq', messages: [] });
+      expect(res.status).toBe(400);
+      await writer.flush();
+      const row = (await port.requestLogs.list(principal)).find(
+        (r) => r.status === 'error' && r.errorKind === 'bad_request',
+      );
+      expect(row).toBeDefined();
+      expect(row!.errorStatus).toBe(400);
+      expect(row!.errorMessage).toBe('[validation message withheld]'); // never the echo-prone text
+    });
+
+    it('a post-commit stream failure records the wire error event’s own message', async () => {
+      const res = await request(server)
+        .post('/v1/chat/completions')
+        .set('Authorization', `Bearer ${key}`)
+        .send({ model: 'oai-miderror', stream: true, messages: [] });
+      expect(res.status).toBe(200);
+      expect(res.text).toContain('"upstream_error"'); // committed, then the terminal frame
+      await writer.flush();
+      const row = (await port.requestLogs.list(principal)).find(
+        (r) => r.status === 'error' && r.errorMessage === 'SECRET mid',
+      );
+      expect(row).toBeDefined();
+      expect(row!.errorKind).toBe('unavailable');
+      // The client saw the FIXED terminal message, never the provider text.
+      expect(res.text).not.toContain('SECRET mid');
+    });
+
+    it('a success row carries all-null error detail', async () => {
+      const res = await request(server)
+        .post('/v1/chat/completions')
+        .set('Authorization', `Bearer ${key}`)
+        .send({ model: 'gpt-4o', messages: [{ role: 'user', content: 'ok' }] });
+      expect(res.status).toBe(200);
+      await writer.flush();
+      const row = (await port.requestLogs.list(principal))
+        .filter((r) => r.status === 'success')
+        .at(0);
+      expect(row).toBeDefined();
+      expect(row!.errorKind).toBeNull();
+      expect(row!.errorMessage).toBeNull();
+    });
   });
 
   it('cost is immutable: a later catalog price change does not move a recorded cost', async () => {
@@ -256,6 +333,13 @@ describe('request-logging e2e', () => {
   });
 
   it('native-family fallback prices an aggregator request — flagged, immutable, race-correct (add-native-price-fallback)', async () => {
+    // The catalog is GLOBAL (not owner-scoped): the exact-key override this test
+    // appends later would survive into a rerun and hijack `first`'s resolution
+    // (priceSource 'manual'). Reset both keys so the test is idempotent.
+    await pool.query(`DELETE FROM model_price WHERE model_key IN ($1, $2)`, [
+      'minimax:minimax-m3',
+      'openrouter:minimax/minimax-m3',
+    ]);
     // Seed ONLY the native-family key: the openrouter channel key is absent.
     await pricing.override(
       'minimax:minimax-m3',

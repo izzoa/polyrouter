@@ -17,7 +17,9 @@ const STATUS_BADGE: Record<RequestStatus, [string, string, string]> = {
 /** `request_log.status` is free-form text at the DB, so a legacy/unknown value must
  * render a neutral badge rather than crash on a missing map entry. */
 function badgeFor(status: string): [string, string, string] {
-  return STATUS_BADGE[status as RequestStatus] ?? [status || 'unknown', 'var(--chip)', 'var(--text3)'];
+  return (
+    STATUS_BADGE[status as RequestStatus] ?? [status || 'unknown', 'var(--chip)', 'var(--text3)']
+  );
 }
 
 /** Routing-decision inspector over a real RequestLog row — header, route, the
@@ -141,6 +143,51 @@ export function Inspector() {
                     </Show>
                   </div>
                 </div>
+
+                <Show when={view().errorView} keyed>
+                  {(ev) => (
+                    <div>
+                      <div class="upper-label" style="margin-bottom:9px;color:var(--red)">
+                        Error
+                      </div>
+                      <div class="kv-box" style="border-color:var(--red-bg)">
+                        <Show when={ev.headline !== ''}>
+                          <div style="display:flex;justify-content:space-between;gap:16px">
+                            <span style="color:var(--text3)">kind</span>
+                            <span
+                              class="mono"
+                              style="font:500 11.5px 'Geist Mono',monospace;color:var(--red)"
+                            >
+                              {ev.headline}
+                            </span>
+                          </div>
+                        </Show>
+                        <Show when={ev.message !== null}>
+                          <div style="display:flex;flex-direction:column;gap:4px">
+                            <span style="color:var(--text3)">provider said</span>
+                            <span
+                              class="mono"
+                              style="font:400 11.5px 'Geist Mono',monospace;color:var(--text2);white-space:pre-wrap;word-break:break-word"
+                            >
+                              {ev.message}
+                            </span>
+                          </div>
+                        </Show>
+                        <Show when={ev.requestId !== null}>
+                          <div style="display:flex;justify-content:space-between;gap:16px">
+                            <span style="color:var(--text3)">provider request id</span>
+                            <span
+                              class="mono"
+                              style="font:400 11px 'Geist Mono',monospace;color:var(--text)"
+                            >
+                              {ev.requestId}
+                            </span>
+                          </div>
+                        </Show>
+                      </div>
+                    </div>
+                  )}
+                </Show>
 
                 <div>
                   <div class="upper-label" style="margin-bottom:9px">

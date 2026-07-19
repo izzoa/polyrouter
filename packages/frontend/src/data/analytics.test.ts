@@ -8,6 +8,7 @@ import {
   rowCostLabel,
   successRate,
   timeseriesToChart,
+  toErrorView,
   toInspectorView,
 } from './analytics';
 import {
@@ -66,6 +67,10 @@ const ROW: RequestRow = {
   modelLabel: 'GPT',
   providerLabel: 'OpenAI',
   agentLabel: 'openclaw',
+  errorKind: null,
+  errorStatus: null,
+  errorMessage: null,
+  errorRequestId: null,
 };
 
 describe('summary-derived rates', () => {
@@ -221,6 +226,57 @@ describe('toInspectorView', () => {
     );
     expect(toInspectorView({ ...ROW, cost: 0 }).servedCost).toBe('$0.0000');
     expect(toInspectorView({ ...ROW, cost: 0 }).totalCost).toBe('$0.0000');
+  });
+});
+
+describe('toErrorView — the ERROR card gate + headline rules (add-request-error-detail)', () => {
+  const errRow = (over: Partial<RequestRow>): RequestRow => ({
+    ...ROW,
+    status: 'error',
+    cost: null,
+    ...over,
+  });
+
+  it('kind + status + message + request id → full card', () => {
+    const v = toErrorView(
+      errRow({
+        errorKind: 'rate_limit',
+        errorStatus: 429,
+        errorMessage: 'Rate limit exceeded: free-models-per-day',
+        errorRequestId: 'req_1',
+      }),
+    );
+    expect(v).toEqual({
+      headline: 'rate_limit · HTTP 429',
+      message: 'Rate limit exceeded: free-models-per-day',
+      requestId: 'req_1',
+    });
+  });
+
+  it('each identity field alone renders a coherent headline — never a blank slot', () => {
+    expect(toErrorView(errRow({ errorKind: 'unavailable' }))?.headline).toBe('unavailable');
+    expect(toErrorView(errRow({ errorStatus: 429 }))?.headline).toBe('HTTP 429');
+    const msgOnly = toErrorView(errRow({ errorMessage: 'boom' }));
+    expect(msgOnly?.headline).toBe(''); // the card drops the headline row, keeps the message
+    expect(msgOnly?.message).toBe('boom');
+  });
+
+  it('normalizes FIRST: empty/whitespace strings do not summon the card', () => {
+    expect(toErrorView(errRow({ errorKind: '  ', errorMessage: '' }))).toBeNull();
+    expect(toErrorView(errRow({ errorMessage: '  spaced  ' }))?.message).toBe('spaced');
+  });
+
+  it('legacy all-null error rows and non-error rows (even with junk detail) → null', () => {
+    expect(toErrorView(errRow({}))).toBeNull(); // all four null
+    expect(
+      toErrorView({ ...ROW, status: 'success', errorKind: 'unavailable', errorMessage: 'junk' }),
+    ).toBeNull();
+    expect(toErrorView({ ...ROW, status: 'fallback', errorStatus: 500 })).toBeNull();
+  });
+
+  it('rides toInspectorView', () => {
+    expect(toInspectorView(errRow({ errorKind: 'auth' })).errorView?.headline).toBe('auth');
+    expect(toInspectorView(ROW).errorView).toBeNull();
   });
 });
 

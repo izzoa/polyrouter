@@ -59,6 +59,10 @@ export interface StreamOutcome {
   readonly callerAborted: boolean;
   readonly usage: PartialUsage;
   readonly outputChars: number;
+  /** The provider failure that terminated a COMMITTED stream (add-request-error-
+   * detail) — the same error that produced the terminal frame, captured at
+   * teardown. Absent on success and on caller-abort teardowns. */
+  readonly error?: ProviderError;
 }
 
 export interface BufferedResult {
@@ -90,7 +94,15 @@ function toProviderError(err: unknown): ProviderError {
 }
 
 function fromErrorEvent(ev: Extract<NormalizedStreamEvent, { type: 'error' }>): ProviderError {
-  return new ProviderError(classifyStreamError(ev.error.type), 'upstream stream error');
+  // Core reads ONLY the adapter-sanitized diagnostic (add-request-error-detail).
+  // The IR types `providerMessage` with the SanitizedMessage brand itself, so
+  // the value flows factory → adapter → here with no cast anywhere.
+  return new ProviderError(classifyStreamError(ev.error.type), 'upstream stream error', {
+    ...(ev.diagnostic?.providerMessage !== undefined
+      ? { providerMessage: ev.diagnostic.providerMessage }
+      : {}),
+    ...(ev.diagnostic?.requestId !== undefined ? { requestId: ev.diagnostic.requestId } : {}),
+  });
 }
 
 /** Non-streaming: returns the client wire body AND the IR response (for #11 usage). */
@@ -262,10 +274,20 @@ export async function openAttemptStream(
   let settled = false;
   let resolveOutcome!: (o: StreamOutcome) => void;
   const outcome = new Promise<StreamOutcome>((resolve) => (resolveOutcome = resolve));
-  const settle = (status: 'success' | 'error', callerAborted: boolean): void => {
+  const settle = (
+    status: 'success' | 'error',
+    callerAborted: boolean,
+    error?: ProviderError,
+  ): void => {
     if (settled) return;
     settled = true;
-    resolveOutcome({ status, callerAborted, usage: acc.usage, outputChars: acc.outputChars });
+    resolveOutcome({
+      status,
+      callerAborted,
+      usage: acc.usage,
+      outputChars: acc.outputChars,
+      ...(error !== undefined ? { error } : {}),
+    });
   };
 
   const inner = buildFrames(client, iterator, first.value, opts, abort, acc, cleanup, settle);
@@ -333,27 +355,32 @@ async function* buildFrames(
   abort: AbortController,
   acc: Accumulator,
   cleanup: () => Promise<void>,
-  settle: (status: 'success' | 'error', callerAborted: boolean) => void,
+  settle: (status: 'success' | 'error', callerAborted: boolean, error?: ProviderError) => void,
 ): AsyncGenerator<string> {
   let clean = false;
   let callerAborted = false;
   try {
     for await (const frame of client.streamSerialize(
       replay(iterator, firstValue, opts.firstEventTimeoutMs, abort, acc),
-      { created: opts.created, ...(opts.includeUsage !== undefined ? { includeUsage: opts.includeUsage } : {}) },
+      {
+        created: opts.created,
+        ...(opts.includeUsage !== undefined ? { includeUsage: opts.includeUsage } : {}),
+      },
     )) {
       yield frame;
     }
     clean = true; // reached the terminator ([DONE] / message_stop)
-  } catch {
+  } catch (err) {
     // Capture WHY the stream errored and SETTLE the outcome HERE — at teardown, before
     // yielding the terminal frame. The pure client signal being aborted now means the
     // CALLER tore this down; anything else is a provider/timeout fault that must stay
     // `error`. Settling before the yield is load-bearing: a consumer `return()` during
     // the terminal-frame suspension would otherwise reach `onEarlyEnd` and settle
-    // `callerAborted=true` first, mislabeling a genuine provider failure (A-3).
+    // `callerAborted=true` first, mislabeling a genuine provider failure (A-3). The
+    // outcome carries the classified failure so the recorder can persist its detail
+    // (add-request-error-detail) — omitted on a caller abort (no provider fault).
     callerAborted = opts.isCallerAbort?.() === true;
-    settle('error', callerAborted);
+    settle('error', callerAborted, callerAborted ? undefined : toProviderError(err));
     yield terminalErrorFrame(client.protocol, MID_STREAM_MESSAGE);
   } finally {
     // On the clean path this settles success; on the error path the catch already
@@ -496,7 +523,12 @@ export async function runBufferedChain(
       // signal (what the breaker also trusts) is the discriminator, read HERE at the
       // failure boundary rather than re-derived later at record time (A-3).
       if (!fallbackEligible(err))
-        return { ok: false, error: mapped, failures, callerAborted: ctx.isCallerAbort?.() === true };
+        return {
+          ok: false,
+          error: mapped,
+          failures,
+          callerAborted: ctx.isCallerAbort?.() === true,
+        };
       failures.push({ index: i, error: mapped });
       lastError = mapped;
     }
@@ -554,11 +586,21 @@ export async function openStreamChain(
     // Pre-commit failure: a caller abort is `unavailable` after adapter normalization,
     // so consult the pure client signal at the failure boundary (A-3).
     if (!fallbackEligible(result.error))
-      return { kind: 'error', error: mapped, failures, callerAborted: opts.isCallerAbort?.() === true };
+      return {
+        kind: 'error',
+        error: mapped,
+        failures,
+        callerAborted: opts.isCallerAbort?.() === true,
+      };
     failures.push({ index: i, error: mapped });
     lastError = mapped;
   }
-  return { kind: 'error', error: lastError, failures, callerAborted: opts.isCallerAbort?.() === true };
+  return {
+    kind: 'error',
+    error: lastError,
+    failures,
+    callerAborted: opts.isCallerAbort?.() === true,
+  };
 }
 
 /** Build the adapter (inside the breaker generator, after admission) then stream. */

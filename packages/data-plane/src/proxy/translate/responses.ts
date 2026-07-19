@@ -101,7 +101,11 @@ function requestOut(ir: NormalizedRequest): unknown {
     instructions = systemTexts[0]!.text;
   } else if (systemTexts.length > 1) {
     for (const b of systemTexts) {
-      input.push({ type: 'message', role: 'developer', content: [{ type: 'input_text', text: b.text }] });
+      input.push({
+        type: 'message',
+        role: 'developer',
+        content: [{ type: 'input_text', text: b.text }],
+      });
     }
   }
 
@@ -184,9 +188,7 @@ function usageIn(raw: unknown): NormalizedUsage | undefined {
   if (typeof input !== 'number' || typeof output !== 'number') return undefined;
   const details = u['input_tokens_details'];
   const cached =
-    typeof details === 'object' && details !== null
-      ? (details as Rec)['cached_tokens']
-      : undefined;
+    typeof details === 'object' && details !== null ? (details as Rec)['cached_tokens'] : undefined;
   const cacheRead = typeof cached === 'number' && cached > 0 ? cached : undefined;
   // The IR stores UNCACHED input components (the documented identity).
   return {
@@ -201,7 +203,11 @@ interface TerminalInfo {
   readonly rawStopReason?: string;
 }
 
-function terminalFrom(status: unknown, incompleteReason: unknown, hasToolUse: boolean): TerminalInfo {
+function terminalFrom(
+  status: unknown,
+  incompleteReason: unknown,
+  hasToolUse: boolean,
+): TerminalInfo {
   if (status === 'incomplete') {
     if (incompleteReason === 'max_output_tokens') {
       return { stopReason: 'length', rawStopReason: 'max_output_tokens' };
@@ -231,7 +237,10 @@ function contentIn(output: unknown): { blocks: ContentBlock[]; hasToolUse: boole
         if (typeof part !== 'object' || part === null) continue;
         const p = part as Rec;
         // Refusal content is represented as TEXT — the IR's faithful shape.
-        if ((p['type'] === 'output_text' || p['type'] === 'refusal') && typeof (p['text'] ?? p['refusal']) === 'string') {
+        if (
+          (p['type'] === 'output_text' || p['type'] === 'refusal') &&
+          typeof (p['text'] ?? p['refusal']) === 'string'
+        ) {
           const text = (p['type'] === 'refusal' ? p['refusal'] : p['text']) as string;
           blocks.push({ type: 'text', text });
         }
@@ -288,9 +297,7 @@ function safeErrorType(code: unknown): string {
   return typeof code === 'string' && SAFE_ERROR_CODE.test(code) ? code : 'server_error';
 }
 
-async function* streamParse(
-  chunks: AsyncIterable<string>,
-): AsyncGenerator<NormalizedStreamEvent> {
+async function* streamParse(chunks: AsyncIterable<string>): AsyncGenerator<NormalizedStreamEvent> {
   // COMMIT RULE (invariant 3): this wire ACKNOWLEDGES with `response.created`
   // before producing anything, so `message_start` must NOT be emitted for it —
   // the proxy commits on the first non-error event, and a `created → failed`
@@ -407,7 +414,8 @@ async function* streamParse(
       if (item['type'] === 'function_call') {
         const key = keyOf(item['id'], ev['output_index']);
         const meta = toolMeta.get(key);
-        const callId = typeof item['call_id'] === 'string' ? item['call_id'] : (meta?.callId ?? key);
+        const callId =
+          typeof item['call_id'] === 'string' ? item['call_id'] : (meta?.callId ?? key);
         const name = typeof item['name'] === 'string' ? item['name'] : (meta?.name ?? '');
         const args =
           typeof item['arguments'] === 'string' && item['arguments'] !== ''
@@ -452,18 +460,24 @@ async function* streamParse(
     }
 
     if (type === 'response.failed' || type === 'error') {
-      const errSrc =
-        type === 'error'
-          ? ev
-          : (((ev['response'] ?? {}) as Rec)['error'] ?? {});
+      const errSrc = type === 'error' ? ev : (((ev['response'] ?? {}) as Rec)['error'] ?? {});
       const err = (typeof errSrc === 'object' && errSrc !== null ? errSrc : {}) as Rec;
       sawTerminal = true;
       // NO message_start here: pre-output failure must be the FIRST normalized
       // event so the proxy can still fall back (invariant 3). FIXED message —
-      // upstream error text is untrusted and never forwarded (r3 finding 5).
+      // upstream error text is untrusted and never forwarded (r3 finding 5);
+      // the RAW wire fields ride the private diagnostic for the adapter-stage
+      // sanitizer instead (add-request-error-detail) — never serialized.
       yield {
         type: 'error',
         error: { type: safeErrorType(err['code']), message: 'upstream stream error' },
+        diagnostic: {
+          wire: {
+            ...(typeof err['message'] === 'string' ? { message: err['message'] } : {}),
+            ...(typeof err['type'] === 'string' ? { type: err['type'] } : {}),
+            ...(typeof err['code'] === 'string' ? { code: err['code'] } : {}),
+          },
+        },
       };
       continue;
     }

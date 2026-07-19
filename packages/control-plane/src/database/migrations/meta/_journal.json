@@ -85,6 +85,13 @@
       "when": 1784479886131,
       "tag": "0011_calm_paladin",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1784489622141,
+      "tag": "0012_brainy_green_goblin",
+      "breakpoints": true
     }
   ]
 }

@@ -7,8 +7,7 @@ import type { NormalizedRequest, NormalizedStreamEvent } from './ir';
 
 const adapter = createResponsesAdapter();
 
-const sse = (events: object[]): string[] =>
-  events.map((e) => `data: ${JSON.stringify(e)}\n\n`);
+const sse = (events: object[]): string[] => events.map((e) => `data: ${JSON.stringify(e)}\n\n`);
 
 async function collectEvents(chunks: string[]): Promise<NormalizedStreamEvent[]> {
   const out: NormalizedStreamEvent[] = [];
@@ -34,7 +33,9 @@ describe('openai_responses — request out (golden)', () => {
       model: 'gpt-5.4-mini',
       instructions: 'be terse', // single-block system → instructions
       input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] }],
-      tools: [{ type: 'function', name: 'get_time', description: 'time', parameters: { type: 'object' } }],
+      tools: [
+        { type: 'function', name: 'get_time', description: 'time', parameters: { type: 'object' } },
+      ],
       tool_choice: 'auto',
       parallel_tool_calls: true,
       store: false, // ALWAYS
@@ -58,7 +59,11 @@ describe('openai_responses — request out (golden)', () => {
     expect(wire.input.slice(0, 3)).toEqual([
       { type: 'message', role: 'developer', content: [{ type: 'input_text', text: 'block one' }] },
       { type: 'message', role: 'developer', content: [{ type: 'input_text', text: 'block two' }] },
-      { type: 'message', role: 'developer', content: [{ type: 'input_text', text: 'block three' }] },
+      {
+        type: 'message',
+        role: 'developer',
+        content: [{ type: 'input_text', text: 'block three' }],
+      },
     ]);
   });
 
@@ -92,7 +97,11 @@ describe('openai_responses — request out (golden)', () => {
         {
           role: 'tool',
           content: [
-            { type: 'tool_result', toolUseId: 'call_abc', content: [{ type: 'text', text: '12:00' }] },
+            {
+              type: 'tool_result',
+              toolUseId: 'call_abc',
+              content: [{ type: 'text', text: '12:00' }],
+            },
           ],
         },
       ],
@@ -249,27 +258,85 @@ describe('openai_responses — streaming (golden)', () => {
       sse([
         { type: 'response.created', response: { id: 'r1', model: 'm' } },
         { type: 'response.output_text.delta', item_id: 'msg1', output_index: 0, delta: 'Hel' },
-        { type: 'response.output_item.added', output_index: 1, item: { type: 'function_call', id: 'it1', call_id: 'c1', name: 'a' } },
-        { type: 'response.output_item.added', output_index: 2, item: { type: 'function_call', id: 'it2', call_id: 'c2', name: 'b' } },
-        { type: 'response.function_call_arguments.delta', item_id: 'it1', output_index: 1, delta: '{"x"' },
-        { type: 'response.function_call_arguments.delta', item_id: 'it2', output_index: 2, delta: '{"y"' },
+        {
+          type: 'response.output_item.added',
+          output_index: 1,
+          item: { type: 'function_call', id: 'it1', call_id: 'c1', name: 'a' },
+        },
+        {
+          type: 'response.output_item.added',
+          output_index: 2,
+          item: { type: 'function_call', id: 'it2', call_id: 'c2', name: 'b' },
+        },
+        {
+          type: 'response.function_call_arguments.delta',
+          item_id: 'it1',
+          output_index: 1,
+          delta: '{"x"',
+        },
+        {
+          type: 'response.function_call_arguments.delta',
+          item_id: 'it2',
+          output_index: 2,
+          delta: '{"y"',
+        },
         { type: 'response.output_text.delta', item_id: 'msg1', output_index: 0, delta: 'lo' },
-        { type: 'response.function_call_arguments.delta', item_id: 'it1', output_index: 1, delta: ':1}' },
-        { type: 'response.function_call_arguments.delta', item_id: 'it2', output_index: 2, delta: ':2}' },
-        { type: 'response.output_item.done', output_index: 1, item: { type: 'function_call', id: 'it1', call_id: 'c1', name: 'a', arguments: '{"x":1}' } },
-        { type: 'response.output_item.done', output_index: 2, item: { type: 'function_call', id: 'it2', call_id: 'c2', name: 'b', arguments: '{"y":2}' } },
+        {
+          type: 'response.function_call_arguments.delta',
+          item_id: 'it1',
+          output_index: 1,
+          delta: ':1}',
+        },
+        {
+          type: 'response.function_call_arguments.delta',
+          item_id: 'it2',
+          output_index: 2,
+          delta: ':2}',
+        },
+        {
+          type: 'response.output_item.done',
+          output_index: 1,
+          item: {
+            type: 'function_call',
+            id: 'it1',
+            call_id: 'c1',
+            name: 'a',
+            arguments: '{"x":1}',
+          },
+        },
+        {
+          type: 'response.output_item.done',
+          output_index: 2,
+          item: {
+            type: 'function_call',
+            id: 'it2',
+            call_id: 'c2',
+            name: 'b',
+            arguments: '{"y":2}',
+          },
+        },
         { type: 'response.completed', response: { usage: { input_tokens: 10, output_tokens: 4 } } },
       ]),
     );
     // message_start is emitted LAZILY at the first real output, with the buffered
     // created metadata — never for the bare acknowledgment (commit rule).
     expect(events[0]).toEqual({ type: 'message_start', id: 'r1', model: 'm', role: 'assistant' });
-    const text = events.filter((e) => e.type === 'text_delta').map((e) => (e as { text: string }).text).join('');
+    const text = events
+      .filter((e) => e.type === 'text_delta')
+      .map((e) => (e as { text: string }).text)
+      .join('');
     expect(text).toBe('Hello');
-    const finalized = events.filter((e) => e.type === 'block_stop' && e.finalizedToolUse !== undefined);
+    const finalized = events.filter(
+      (e) => e.type === 'block_stop' && e.finalizedToolUse !== undefined,
+    );
     expect(finalized).toHaveLength(2); // exactly once each — no .done duplication
-    expect((finalized[0] as { finalizedToolUse: { id: string; input?: unknown } }).finalizedToolUse).toMatchObject({ id: 'c1', input: { x: 1 } });
-    const delta = events.find((e) => e.type === 'message_delta') as { stopReason?: string; usage?: unknown };
+    expect(
+      (finalized[0] as { finalizedToolUse: { id: string; input?: unknown } }).finalizedToolUse,
+    ).toMatchObject({ id: 'c1', input: { x: 1 } });
+    const delta = events.find((e) => e.type === 'message_delta') as {
+      stopReason?: string;
+      usage?: unknown;
+    };
     expect(delta.stopReason).toBe('tool_use');
     expect(delta.usage).toEqual({ inputTokens: 10, outputTokens: 4 });
     expect(events.at(-1)?.type).toBe('message_stop');
@@ -285,7 +352,10 @@ describe('openai_responses — streaming (golden)', () => {
         { type: 'response.completed', response: {} },
       ]),
     );
-    const text = events.filter((e) => e.type === 'text_delta').map((e) => (e as { text: string }).text).join('');
+    const text = events
+      .filter((e) => e.type === 'text_delta')
+      .map((e) => (e as { text: string }).text)
+      .join('');
     expect(text).toBe('cannot help'); // never dropped as unknown, never doubled
   });
 
@@ -293,37 +363,69 @@ describe('openai_responses — streaming (golden)', () => {
     const incomplete = await collectEvents(
       sse([
         { type: 'response.created', response: {} },
-        { type: 'response.incomplete', response: { incomplete_details: { reason: 'max_output_tokens' } } },
+        {
+          type: 'response.incomplete',
+          response: { incomplete_details: { reason: 'max_output_tokens' } },
+        },
       ]),
     );
-    expect(incomplete.map((e) => e.type)).toEqual(['message_start', 'message_delta', 'message_stop']);
-    expect((incomplete.find((e) => e.type === 'message_delta') as { stopReason?: string }).stopReason).toBe('length');
+    expect(incomplete.map((e) => e.type)).toEqual([
+      'message_start',
+      'message_delta',
+      'message_stop',
+    ]);
+    expect(
+      (incomplete.find((e) => e.type === 'message_delta') as { stopReason?: string }).stopReason,
+    ).toBe('length');
   });
 
   it('a pre-output failure is the FIRST event — no message_start, so the proxy can fall back', async () => {
     const failed = await collectEvents(
       sse([
         { type: 'response.created', response: {} },
-        { type: 'response.failed', response: { error: { code: 'server_error', message: 'token oat-SECRET rejected' } } },
+        {
+          type: 'response.failed',
+          response: { error: { code: 'server_error', message: 'token oat-SECRET rejected' } },
+        },
       ]),
     );
     // The acknowledgment alone never commits; the failure is event #1 and the
-    // untrusted upstream message is REPLACED by the fixed one.
+    // untrusted upstream message is REPLACED by the fixed one — while the RAW
+    // wire fields ride the private diagnostic for the adapter-stage sanitizer
+    // (add-request-error-detail), never the outward message.
     expect(failed).toEqual([
-      { type: 'error', error: { type: 'server_error', message: 'upstream stream error' } },
+      {
+        type: 'error',
+        error: { type: 'server_error', message: 'upstream stream error' },
+        diagnostic: { wire: { message: 'token oat-SECRET rejected', code: 'server_error' } },
+      },
     ]);
     const inband = await collectEvents(
-      sse([{ type: 'response.created', response: {} }, { type: 'error', code: 'overloaded', message: 'busy' }]),
+      sse([
+        { type: 'response.created', response: {} },
+        { type: 'error', code: 'overloaded', message: 'busy' },
+      ]),
     );
     expect(inband).toEqual([
-      { type: 'error', error: { type: 'overloaded', message: 'upstream stream error' } },
+      {
+        type: 'error',
+        error: { type: 'overloaded', message: 'upstream stream error' },
+        diagnostic: { wire: { message: 'busy', type: 'error', code: 'overloaded' } },
+      },
     ]);
     // A hostile/free-text code is not forwarded as the classification type either.
     const hostile = await collectEvents(
-      sse([{ type: 'response.created', response: {} }, { type: 'error', code: 'acct LEAK\r\nx', message: 'x' }]),
+      sse([
+        { type: 'response.created', response: {} },
+        { type: 'error', code: 'acct LEAK\r\nx', message: 'x' },
+      ]),
     );
     expect(hostile).toEqual([
-      { type: 'error', error: { type: 'server_error', message: 'upstream stream error' } },
+      {
+        type: 'error',
+        error: { type: 'server_error', message: 'upstream stream error' },
+        diagnostic: { wire: { message: 'x', type: 'error', code: 'acct LEAK\r\nx' } },
+      },
     ]);
   });
 
@@ -351,7 +453,10 @@ describe('openai_responses — streaming (golden)', () => {
         { type: 'response.completed', response: {} },
       ]),
     );
-    const text = events.filter((e) => e.type === 'text_delta').map((e) => (e as { text: string }).text).join('');
+    const text = events
+      .filter((e) => e.type === 'text_delta')
+      .map((e) => (e as { text: string }).text)
+      .join('');
     expect(text).toBe('ok');
     expect(events.at(-1)?.type).toBe('message_stop');
   });

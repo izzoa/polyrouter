@@ -38,6 +38,16 @@ export interface RecordingContext {
   readonly requestChars: number;
 }
 
+/** Terminal provider-error detail (add-request-error-detail). `providerMessage`
+ * arrives pre-sanitized from the capture factory (the adapter layer); the writer
+ * re-applies the credential-free scrub defensively. */
+export interface RecordedError {
+  readonly kind: string;
+  readonly status?: number;
+  readonly providerMessage?: string;
+  readonly requestId?: string;
+}
+
 export interface RecordOutcome {
   readonly status: RecordStatus;
   readonly providerUsage?: PartialUsage;
@@ -46,6 +56,10 @@ export interface RecordOutcome {
   readonly escalated?: boolean;
   /** #14 cascade: the numeric quality score (or null on a fail-open error). */
   readonly qualitySignal?: number | null;
+  /** Terminal error detail — persisted ONLY when `status === 'error'` (the
+   * recorder centrally discards it otherwise; a served or cancelled request
+   * records no provider fault). */
+  readonly error?: RecordedError;
 }
 
 /**
@@ -94,6 +108,12 @@ export class RequestRecorder {
         pricing: pricingOf(ctx),
         ...(outcome.escalated !== undefined ? { escalated: outcome.escalated } : {}),
         ...(outcome.qualitySignal !== undefined ? { qualitySignal: outcome.qualitySignal } : {}),
+        // Central exclusivity gate (add-request-error-detail): error detail is
+        // dropped here unless the row IS an error — belt and suspenders over
+        // the call sites.
+        ...(outcome.status === 'error' && outcome.error !== undefined
+          ? { error: outcome.error }
+          : {}),
         ...spanContextOf(),
       };
       this.writer.enqueue(draft);

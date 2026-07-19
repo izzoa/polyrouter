@@ -7,7 +7,12 @@ import {
   fallbackEligible,
   type ChainAttempt,
 } from './core';
-import { getAdapter, type NormalizedStreamEvent, type NormalizedResponse } from './translate';
+import {
+  getAdapter,
+  type NormalizedStreamEvent,
+  type NormalizedResponse,
+  type SanitizedMessage,
+} from './translate';
 import {
   CallCancelledError,
   CircuitBreaker,
@@ -183,6 +188,52 @@ describe('openStream — outcome (usage capture for #11)', () => {
     expect((await res.outcome).status).toBe('error');
   });
 
+  it('the post-commit outcome CARRIES the classified error with its sanitized diagnostic (add-request-error-detail)', async () => {
+    const provider = providerFrom(async function* () {
+      yield START;
+      yield TEXT;
+      yield {
+        type: 'error',
+        error: { type: 'overloaded', message: 'x' },
+        // As yielded by the adapter stage: sanitized message + allowlisted id.
+        diagnostic: {
+          providerMessage: 'Overloaded, retry later' as SanitizedMessage,
+          requestId: 'req_9',
+        },
+      };
+    });
+    const res = await openStream(provider, client, REQ, OPTS);
+    if (res.kind !== 'stream') throw new Error('unreachable');
+    await collect(res.frames);
+    const o = await res.outcome;
+    expect(o.status).toBe('error');
+    expect(o.error?.kind).toBe('unavailable');
+    expect(o.error?.providerMessage).toBe('Overloaded, retry later');
+    expect(o.error?.requestId).toBe('req_9');
+  });
+
+  it('a disconnect DURING the terminal-frame suspension keeps the causal error settle (A-3)', async () => {
+    const provider = providerFrom(async function* () {
+      yield START;
+      yield TEXT;
+      yield { type: 'error', error: { type: 'overloaded', message: 'x' } };
+    });
+    const res = await openStream(provider, client, REQ, OPTS);
+    if (res.kind !== 'stream') throw new Error('unreachable');
+    // Pull manually until the terminal error frame arrives — the generator is
+    // then suspended AT the terminal yield, with the outcome already settled.
+    for (;;) {
+      const r = await res.frames.next();
+      if (r.done) throw new Error('stream ended before the terminal frame');
+      if (r.value.includes('upstream_error')) break;
+    }
+    await res.frames.return(undefined); // the client disconnects RIGHT here
+    const o = await res.outcome;
+    expect(o.status).toBe('error');
+    expect(o.callerAborted).toBe(false); // the earlier causal settle won — not mislabeled
+    expect(o.error?.kind).toBe('unavailable');
+  });
+
   it('settles outcome as error on an immediate pre-iteration return() (client disconnect)', async () => {
     const provider = providerFrom(async function* () {
       yield START;
@@ -193,7 +244,9 @@ describe('openStream — outcome (usage capture for #11)', () => {
     const res = await openStream(provider, client, REQ, OPTS);
     if (res.kind !== 'stream') throw new Error('unreachable');
     await res.frames.return(undefined); // never called next()
-    expect((await res.outcome).status).toBe('error');
+    const o = await res.outcome;
+    expect(o.status).toBe('error');
+    expect(o.error).toBeUndefined(); // a caller abort is not a provider fault
   });
 });
 
@@ -444,7 +497,13 @@ describe('openStreamChain', () => {
     const opts = { firstEventTimeoutMs: 540, created: 1, isCallerAbort: () => false };
 
     const started = Date.now();
-    const r = await openStreamChain(breaker, [attempt], client, { model: 'x', messages: [], params: {} }, opts);
+    const r = await openStreamChain(
+      breaker,
+      [attempt],
+      client,
+      { model: 'x', messages: [], params: {} },
+      opts,
+    );
     const elapsed = Date.now() - started;
     expect(r.kind).toBe('error');
     if (r.kind === 'error') {

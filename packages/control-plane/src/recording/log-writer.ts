@@ -20,7 +20,12 @@ import {
   type RequestAttemptInsertInput,
   type RequestLogInsertInput,
 } from '@polyrouter/shared/server';
-import { computeCost, type ResolvedUsage } from '@polyrouter/data-plane';
+import {
+  computeCost,
+  sanitizeRequestId,
+  scrubSecrets,
+  type ResolvedUsage,
+} from '@polyrouter/data-plane';
 import { ProxyMetrics } from '../observability/proxy-metrics';
 import { TRACER_NAME } from '../observability/tracing';
 import { PricingService } from '../pricing/pricing.service';
@@ -58,6 +63,16 @@ export interface RequestLogDraft {
   readonly escalated?: boolean;
   /** #14 cascade: the numeric quality score (or null on a fail-open error). */
   readonly qualitySignal?: number | null;
+  /** Terminal provider-error detail (add-request-error-detail) — present only
+   * on `status='error'` drafts (the recorder enforces exclusivity). The message
+   * arrives factory-sanitized; the writer re-applies the CREDENTIAL-FREE scrub
+   * defensively (no secret is ever queued to enable more). */
+  readonly error?: {
+    readonly kind: string;
+    readonly status?: number;
+    readonly providerMessage?: string;
+    readonly requestId?: string;
+  };
   /** The originating request's span context (#21 `recording.write` link);
    * absent when tracing is off. Never persisted. */
   readonly spanContext?: SpanContext;
@@ -103,6 +118,29 @@ export const DEFAULT_LOG_WRITER_CONFIG: LogWriterConfig = {
 };
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** Map a draft's terminal-error detail to the four columns. Defense in depth is
+ * CREDENTIAL-FREE (add-request-error-detail): the capture layer already ran the
+ * exact-credential redaction (no secret is queued), so the writer re-applies
+ * only the idempotent generic scrub + cap + request-id allowlist. */
+function errorColumns(d: { readonly error?: RequestLogDraft['error'] }): {
+  errorKind?: string;
+  errorStatus?: number;
+  errorMessage?: string;
+  errorRequestId?: string;
+} {
+  const e = d.error;
+  if (e === undefined) return {};
+  const message =
+    e.providerMessage !== undefined ? scrubSecrets(e.providerMessage).slice(0, 300) : undefined;
+  const requestId = sanitizeRequestId(e.requestId);
+  return {
+    errorKind: e.kind,
+    ...(e.status !== undefined ? { errorStatus: e.status } : {}),
+    ...(message !== undefined && message !== '' ? { errorMessage: message } : {}),
+    ...(requestId !== undefined ? { errorRequestId: requestId } : {}),
+  };
+}
 
 /** Reject after `ms` if `op` hasn't settled. The underlying DB call keeps running
  * (no driver AbortSignal); a retry reuses the same idempotent row ids, so a late
@@ -319,6 +357,7 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
       status: d.status,
       escalated: d.escalated ?? false,
       qualitySignal: d.qualitySignal ?? null,
+      ...errorColumns(d),
     };
   }
 

@@ -57,6 +57,10 @@ interface LogSeed {
   estimated?: boolean;
   at: string;
   priceSource?: string;
+  errorKind?: string;
+  errorStatus?: number;
+  errorMessage?: string;
+  errorRequestId?: string;
 }
 
 describe('analytics API (#17)', () => {
@@ -95,8 +99,8 @@ describe('analytics API (#17)', () => {
       `INSERT INTO request_log
         (id, owner_user_id, agent_id, provider_id, model_id, tier_assigned, decision_layer,
          routing_reason, input_tokens, output_tokens, usage_estimated, cost, duration_ms, status,
-         escalated, created_at, price_source)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,'test',$8,$9,$10,$11,1,$12,$13,$14,$15)`,
+         escalated, created_at, price_source, error_kind, error_status, error_message, error_request_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'test',$8,$9,$10,$11,1,$12,$13,$14,$15,$16,$17,$18,$19)`,
       [
         id,
         owner,
@@ -113,6 +117,10 @@ describe('analytics API (#17)', () => {
         s.escalated ?? false,
         s.at,
         s.priceSource ?? null,
+        s.errorKind ?? null,
+        s.errorStatus ?? null,
+        s.errorMessage ?? null,
+        s.errorRequestId ?? null,
       ],
     );
     return id;
@@ -228,6 +236,10 @@ describe('analytics API (#17)', () => {
       status: 'error',
       estimated: true,
       at: DAY1B,
+      errorKind: 'rate_limit',
+      errorStatus: 429,
+      errorMessage: 'Rate limit exceeded: free-models-per-day',
+      errorRequestId: 'req_e2e_1',
     });
 
     // B: an unrelated request (isolation) + an A-owned attempt pointing at B's log (adversarial).
@@ -324,6 +336,28 @@ describe('analytics API (#17)', () => {
     // a served-priced row carries resolved labels
     const first = (await q('requests', A, { ...RANGE, limit: 1 })).body.rows[0];
     expect(first).toMatchObject({ modelLabel: 'gpt-x', providerLabel: 'ProvA' });
+  });
+
+  it('listRequests: error detail rides the safe view for failed rows only (add-request-error-detail)', async () => {
+    const res = await q('requests', A, { ...RANGE, status: 'error' });
+    expect(res.status).toBe(200);
+    const errRow = res.body.rows.find((r: { errorKind: string | null }) => r.errorKind !== null);
+    expect(errRow).toMatchObject({
+      status: 'error',
+      errorKind: 'rate_limit',
+      errorStatus: 429,
+      errorMessage: 'Rate limit exceeded: free-models-per-day',
+      errorRequestId: 'req_e2e_1',
+    });
+    expect(errRow).not.toHaveProperty('ownerUserId'); // safe view unchanged
+    const all = await q('requests', A, { ...RANGE });
+    for (const row of all.body.rows) {
+      if (row.status !== 'error') {
+        // non-error rows carry all-null detail
+        expect(row.errorKind).toBeNull();
+        expect(row.errorMessage).toBeNull();
+      }
+    }
   });
 
   it('listRequests: a microsecond-precision batch pages exactly once (E3)', async () => {

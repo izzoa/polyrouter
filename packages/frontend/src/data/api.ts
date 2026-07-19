@@ -138,13 +138,7 @@ export interface UpdateProviderInput {
 /** Provenance of a model's effective display price. `listed` is the display-only
  * provider-listed estimate; the rest are billing-resolver sources. */
 export type EffectivePriceSource =
-  | 'model'
-  | 'local'
-  | 'bundled'
-  | 'refresh'
-  | 'manual'
-  | 'native_family'
-  | 'listed';
+  'model' | 'local' | 'bundled' | 'refresh' | 'manual' | 'native_family' | 'listed';
 
 /** A model's current effective price for display (backend-resolved). `estimated` is
  * true for the `listed` provider estimate and the `native_family` fallback
@@ -473,6 +467,12 @@ export interface RequestRow {
   modelLabel: string | null;
   providerLabel: string | null;
   agentLabel: string | null;
+  /** Terminal provider-error detail (add-request-error-detail): non-null only on
+   * `status='error'` rows recorded after capture landed; all null otherwise. */
+  errorKind: string | null;
+  errorStatus: number | null;
+  errorMessage: string | null;
+  errorRequestId: string | null;
 }
 
 export interface RequestsPage {
@@ -662,9 +662,13 @@ export const realClient: ApiClient = {
   adminListInvites: () => http<AdminInviteDto[]>(`${API_BASE}/admin/invites`),
   adminRevokeInvite: (inviteId) =>
     http<void>(`${API_BASE}/admin/invites/${inviteId}`, { method: 'DELETE' }),
-  adminGetRegistration: () => http<RegistrationSettingsDto>(`${API_BASE}/admin/settings/registration`),
+  adminGetRegistration: () =>
+    http<RegistrationSettingsDto>(`${API_BASE}/admin/settings/registration`),
   adminSetRegistration: (mode) =>
-    http<{ mode: string }>(`${API_BASE}/admin/settings/registration`, jsonInit('PUT', { mode })).then(() => undefined),
+    http<{ mode: string }>(
+      `${API_BASE}/admin/settings/registration`,
+      jsonInit('PUT', { mode }),
+    ).then(() => undefined),
   signInEmail: (input) => http<void>(`${API_BASE}/auth/sign-in/email`, jsonInit('POST', input)),
   signUpEmail: (input) => http<void>(`${API_BASE}/auth/sign-up/email`, jsonInit('POST', input)),
   signOut: () => http<void>(`${API_BASE}/auth/sign-out`, jsonInit('POST', {})),
@@ -695,7 +699,10 @@ export const realClient: ApiClient = {
       jsonInit('POST', name !== undefined ? { preset, name } : { preset }),
     ),
   oauthComplete: (sessionId, pasted) =>
-    http<ProviderDto>(`${API_BASE}/providers/oauth/complete`, jsonInit('POST', { sessionId, pasted })),
+    http<ProviderDto>(
+      `${API_BASE}/providers/oauth/complete`,
+      jsonInit('POST', { sessionId, pasted }),
+    ),
   oauthReauthorize: (providerId) =>
     http<OauthStartResult>(
       `${API_BASE}/providers/oauth/reauthorize/${encodeURIComponent(providerId)}`,

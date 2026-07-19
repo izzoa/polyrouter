@@ -518,7 +518,12 @@ async function* streamParse(chunks: AsyncIterable<string>): AsyncGenerator<Norma
         }
         break;
       case 'error':
-        yield { type: 'error', error: ev.error };
+        yield {
+          type: 'error',
+          error: ev.error,
+          // Raw wire fields for the adapter-stage sanitizer; never serialized.
+          diagnostic: { wire: { message: ev.error.message, type: ev.error.type } },
+        };
         break;
       case 'ping':
         break;

@@ -109,7 +109,11 @@ export interface PriceSnapshotView {
   unpriced: boolean;
 }
 
-function priceView(label: string, v: number | null, source: string | null = null): PriceSnapshotView {
+function priceView(
+  label: string,
+  v: number | null,
+  source: string | null = null,
+): PriceSnapshotView {
   if (v === null) return { label, value: 'unpriced', free: false, unpriced: true };
   // A native-family snapshot is an adjacent channel's rate — marked on EVERY
   // priced row, the zero-priced (free) case included.
@@ -147,6 +151,40 @@ export interface InspectorView {
   /** Served OR any attempt priced `native_family` — the TOTAL carries the marker. */
   priceEstimated: boolean;
   durationMs: number;
+  /** The ERROR card (add-request-error-detail): non-null ONLY for a status=error
+   * row with ≥1 normalized (trimmed, empty→null) detail field. */
+  errorView: ErrorView | null;
+}
+
+export interface ErrorView {
+  /** `rate_limit · HTTP 429` | `rate_limit` | `HTTP 429` — never a blank slot. */
+  headline: string;
+  message: string | null;
+  requestId: string | null;
+}
+
+/** Trim; empty string → null (a junk empty value must not summon the card). */
+function normalizeDetail(v: string | null): string | null {
+  if (v === null) return null;
+  const t = v.trim();
+  return t === '' ? null : t;
+}
+
+/** The ERROR-card gate + headline rules. Card only for `status === 'error'`
+ * AND ≥1 normalized field — legacy all-null error rows and non-error rows
+ * (even ones carrying stray non-null detail) render exactly as before. */
+export function toErrorView(r: RequestRow): ErrorView | null {
+  if (r.status !== 'error') return null;
+  const kind = normalizeDetail(r.errorKind);
+  const message = normalizeDetail(r.errorMessage);
+  const requestId = normalizeDetail(r.errorRequestId);
+  const status = r.errorStatus;
+  if (kind === null && message === null && requestId === null && status === null) return null;
+  const headline =
+    kind !== null && status !== null
+      ? `${kind} · HTTP ${String(status)}`
+      : (kind ?? (status !== null ? `HTTP ${String(status)}` : ''));
+  return { headline, message, requestId };
 }
 
 /** RequestRow → the inspector view-model. Reads snapshots only; a null served
@@ -190,5 +228,6 @@ export function toInspectorView(r: RequestRow): InspectorView {
           : r.priceSource,
     priceEstimated: r.priceEstimated,
     durationMs: r.durationMs,
+    errorView: toErrorView(r),
   };
 }

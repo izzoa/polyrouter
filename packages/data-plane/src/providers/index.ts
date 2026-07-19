@@ -24,8 +24,14 @@ export {
   classifyResponse,
   classifyNetworkError,
   classifyStreamError,
+  captureProviderMessage,
+  parseErrorEnvelope,
+  sanitizeRequestId,
+  scrubSecrets,
+  VALIDATION_WITHHELD,
+  POLICY_WITHHELD,
 } from './errors';
-export type { ProviderErrorKind } from './errors';
+export type { ProviderErrorKind, SanitizedMessage, CaptureInput, CaptureContext } from './errors';
 export { createGuardedHttpClient, readSseChunks, joinUrl, openRequest } from './http';
 export type { HttpClient, HttpResponse, HttpInit, GuardedClientOptions } from './http';
 export { createHttpProviderAdapter, parseModelList } from './http-adapter';

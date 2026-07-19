@@ -379,6 +379,14 @@ export const requestLogs = pgTable(
     cost: doublePrecision('cost'),
     durationMs: integer('duration_ms').notNull(),
     status: text('status').notNull(), // success | error (fallback/escalated: #12/#13)
+    // Terminal provider-error detail (add-request-error-detail): set ONLY on
+    // status='error' rows; null for non-error rows and rows predating capture
+    // (unknown-not-wrong, never backfilled). `error_message` is the factory-
+    // sanitized provider-verbatim text (≤300); `error_request_id` allowlisted.
+    errorKind: text('error_kind'),
+    errorStatus: integer('error_status'),
+    errorMessage: text('error_message'),
+    errorRequestId: text('error_request_id'),
     escalated: boolean('escalated').default(false).notNull(),
     qualitySignal: doublePrecision('quality_signal'),
     createdAt: createdAt(),

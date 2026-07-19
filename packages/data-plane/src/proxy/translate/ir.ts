@@ -214,6 +214,27 @@ export type NormalizedStreamEvent =
   | {
       readonly type: 'error';
       readonly error: { readonly type: string; readonly message: string };
+      /** Private error-detail seam (add-request-error-detail) — NEVER serialized
+       * to a client frame. Two stages: parsers retain the RAW wire fields as
+       * `wire`; the streaming HTTP adapter consumes `wire` through the
+       * sanitizing factory and yields only `providerMessage` (+ an
+       * allowlist-sanitized response-header `requestId`). */
+      readonly diagnostic?: {
+        readonly wire?: {
+          readonly message?: string;
+          readonly type?: string;
+          readonly code?: string;
+        };
+        readonly providerMessage?: SanitizedMessage;
+        readonly requestId?: string;
+      };
     };
+
+/** A provider error message that has passed the sanitizing capture factory —
+ * the ONLY producer (add-request-error-detail). Declared HERE (a dependency-
+ * neutral module) so the brand flows unbroken from the factory through the IR
+ * diagnostic into persistence: an unsanitized string is a TYPE error at every
+ * boundary, with no cast anywhere. */
+export type SanitizedMessage = string & { readonly __sanitized: unique symbol };
 
 export type Protocol = 'openai' | 'anthropic';

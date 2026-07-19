@@ -161,6 +161,32 @@ describe('dashboard shell (auth-gated)', () => {
     }
   });
 
+  it('shows the ERROR card for a detailed error row and hides it for others (add-request-error-detail)', async () => {
+    const { host, store, dispose } = mount();
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Requests');
+      await flush();
+      const rows = host.querySelectorAll<HTMLElement>('.req-row');
+      // buildRequestRows: status cycles success,success,fallback,error → index 3 errors.
+      rows[3]?.click();
+      const errRow = store.state.requestList[3];
+      expect(errRow?.status).toBe('error');
+      const drawer = host.querySelector('.drawer');
+      expect(drawer?.textContent).toContain('Error');
+      expect(drawer?.textContent).toContain('rate_limit · HTTP 429');
+      expect(drawer?.textContent).toContain('provider said');
+      expect(drawer?.textContent).toContain(errRow!.errorMessage!);
+      expect(drawer?.textContent).toContain(errRow!.errorRequestId!);
+      host.querySelector<HTMLElement>('.overlay')?.click();
+      rows[0]?.click(); // a success row renders exactly as before — no card
+      const drawer2 = host.querySelector('.drawer');
+      expect(drawer2?.textContent).not.toContain('provider said');
+    } finally {
+      dispose();
+    }
+  });
+
   it('toggles the theme, persists it, and re-applies it on a fresh mount', async () => {
     const first = mount();
     try {

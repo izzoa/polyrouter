@@ -183,6 +183,12 @@ export function buildRequestRows(n: number): RequestRow[] {
       modelLabel: `Model ${String(i % 4)}`,
       providerLabel: `Provider ${String(i % 2)}`,
       agentLabel: `agent-${String(i % 3)}`,
+      // Error rows carry terminal detail (add-request-error-detail); every other
+      // status — and every legacy-shaped row — is all-null.
+      errorKind: status === 'error' ? 'rate_limit' : null,
+      errorStatus: status === 'error' ? 429 : null,
+      errorMessage: status === 'error' ? `Rate limit exceeded on #${String(i)}` : null,
+      errorRequestId: status === 'error' ? `req_fake_${String(i)}` : null,
     });
   }
   return rows;

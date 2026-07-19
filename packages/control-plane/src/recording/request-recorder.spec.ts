@@ -69,4 +69,34 @@ describe('RequestRecorder', () => {
     );
     expect(() => recorder.record(ctx(), { status: 'success', outputChars: 0 })).not.toThrow();
   });
+
+  it('carries terminal error detail on an error outcome (add-request-error-detail)', () => {
+    const { recorder, enqueue } = makeRecorder();
+    recorder.record(ctx(), {
+      status: 'error',
+      outputChars: 0,
+      error: { kind: 'rate_limit', status: 429, providerMessage: 'Rate limited', requestId: 'r1' },
+    });
+    const d = enqueue.mock.calls[0]![0] as RequestLogDraft;
+    expect(d.error).toEqual({
+      kind: 'rate_limit',
+      status: 429,
+      providerMessage: 'Rate limited',
+      requestId: 'r1',
+    });
+  });
+
+  it('CENTRALLY discards error detail on any non-error status', () => {
+    const { recorder, enqueue } = makeRecorder();
+    for (const status of ['success', 'fallback', 'cancelled'] as const) {
+      recorder.record(ctx(), {
+        status,
+        outputChars: 0,
+        error: { kind: 'unavailable', providerMessage: 'should not persist' },
+      });
+    }
+    for (const call of enqueue.mock.calls) {
+      expect((call[0] as RequestLogDraft).error).toBeUndefined();
+    }
+  });
 });

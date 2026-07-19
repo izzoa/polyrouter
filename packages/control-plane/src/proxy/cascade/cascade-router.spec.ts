@@ -10,7 +10,13 @@ import { CascadeRouter } from './cascade-router';
 function cfg(over?: Partial<RoutingConfig['cascade']>): RoutingConfig {
   return {
     autoLayers: new Set(['structural', 'cascade']),
-    structural: { high: 0.6, low: 0.25, baselineAlpha: 0.2, weights: DEFAULT_STRUCTURAL_WEIGHTS, reasoningAdjust: 0.1 },
+    structural: {
+      high: 0.6,
+      low: 0.25,
+      baselineAlpha: 0.2,
+      weights: DEFAULT_STRUCTURAL_WEIGHTS,
+      reasoningAdjust: 0.1,
+    },
     cascade: { enabled: true, qualityThreshold: 0.5, cheapTimeoutMs: 30_000, ...over },
   };
 }
@@ -76,14 +82,46 @@ describe('CascadeRouter', () => {
 
   it('escalates a low-quality answer and passes a good one', () => {
     const r = new CascadeRouter(cfg());
-    expect(r.shouldEscalate(resp([{ type: 'text', text: 'a real answer' }]))).toEqual({
+    expect(r.shouldEscalate(resp([{ type: 'text', text: 'a real answer' }]), false)).toEqual({
       score: 1,
       escalate: false,
     });
-    expect(r.shouldEscalate(resp([]))).toEqual({ score: 0, escalate: true }); // empty
-    expect(r.shouldEscalate(resp([{ type: 'text', text: 'x' }], 'error'))).toEqual({
+    expect(r.shouldEscalate(resp([]), false)).toEqual({ score: 0, escalate: true }); // empty
+    expect(r.shouldEscalate(resp([{ type: 'text', text: 'x' }], 'error'), false)).toEqual({
       score: 0,
       escalate: true,
     });
+  });
+
+  it('structured demand escalates prose; truncation is inert at the default threshold, live above it (harden-cascade-quality-gate)', () => {
+    const r = new CascadeRouter(cfg());
+    expect(r.shouldEscalate(resp([{ type: 'text', text: 'Hello from stub' }]), true)).toEqual({
+      score: 0,
+      escalate: true,
+    });
+    expect(r.shouldEscalate(resp([{ type: 'text', text: '{"a":1}' }]), true)).toEqual({
+      score: 1,
+      escalate: false,
+    });
+    // 0.5 at the default 0.5 threshold: the DECISION is unchanged (strictly below).
+    expect(r.shouldEscalate(resp([{ type: 'text', text: 'x' }], 'length'), false)).toEqual({
+      score: 0.5,
+      escalate: false,
+    });
+    // A threshold above 0.5 opts into escalating truncation.
+    const strict = new CascadeRouter(cfg({ qualityThreshold: 0.6 }));
+    expect(strict.shouldEscalate(resp([{ type: 'text', text: 'x' }], 'length'), false)).toEqual({
+      score: 0.5,
+      escalate: true,
+    });
+  });
+
+  it('fails open when the evaluator throws (deliver cheap, score null)', () => {
+    const r = new CascadeRouter(cfg());
+    // Non-iterable content makes evaluateQuality throw naturally — no mocking.
+    const broken = { ...resp([]), content: null } as unknown as Parameters<
+      CascadeRouter['shouldEscalate']
+    >[0];
+    expect(r.shouldEscalate(broken, true)).toEqual({ score: null, escalate: false });
   });
 });

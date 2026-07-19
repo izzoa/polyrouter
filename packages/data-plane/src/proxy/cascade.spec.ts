@@ -22,13 +22,97 @@ async function collect<T>(gen: AsyncGenerator<T>): Promise<T[]> {
 }
 const count = (hay: string, needle: string): number => hay.split(needle).length - 1;
 
+describe('evaluateQuality — the graded lattice (harden-cascade-quality-gate)', () => {
+  const demand = { structuredDemand: true };
+  const textResp = (text: string, stopReason: NormalizedStopReason = 'stop') =>
+    resp({ content: [{ type: 'text', text }], stopReason });
+
+  it('length truncation scores 0.5 with no hard failure — ctx-independent', () => {
+    expect(evaluateQuality(resp(stop('length')))).toBe(0.5);
+    expect(evaluateQuality(resp(stop('length')), {})).toBe(0.5);
+    expect(evaluateQuality(resp(stop('length')), { structuredDemand: false })).toBe(0.5);
+  });
+
+  it('demanded JSON: prose fails, valid JSON passes (whitespace-wrapped too)', () => {
+    expect(evaluateQuality(textResp('Hello from stub'), demand)).toBe(0);
+    expect(evaluateQuality(textResp('{"a":1}'), demand)).toBe(1);
+    expect(evaluateQuality(textResp('  {"a": 1}\n '), demand)).toBe(1);
+    expect(evaluateQuality(textResp('answer: {"a":1}'), demand)).toBe(0); // prose-prefixed
+    expect(evaluateQuality(textResp('```json\n{"a":1}\n```'), demand)).toBe(0); // fenced is non-conformant
+  });
+
+  it('without the demand flag the same prose passes (conformance is ctx-gated)', () => {
+    expect(evaluateQuality(textResp('Hello from stub'))).toBe(1);
+    expect(evaluateQuality(textResp('Hello from stub'), { structuredDemand: false })).toBe(1);
+  });
+
+  it('multi-block: ONE document split across blocks conforms; adjacent documents do not', () => {
+    const split = resp({
+      content: [
+        { type: 'text', text: '{"a":' },
+        { type: 'text', text: '1}' },
+      ],
+    });
+    expect(evaluateQuality(split, demand)).toBe(1);
+    const adjacent = resp({
+      content: [
+        { type: 'text', text: '{"a":1}' },
+        { type: 'text', text: '{"b":2}' },
+      ],
+    });
+    expect(evaluateQuality(adjacent, demand)).toBe(0);
+  });
+
+  it('ZERO-PRECEDENCE: demanded JSON cut off by the cap is 0 (escalates at default); valid-but-truncated is 0.5', () => {
+    expect(evaluateQuality(textResp('{"a": [1, 2', 'length'), demand)).toBe(0);
+    expect(evaluateQuality(textResp('{"a": 1}', 'length'), demand)).toBe(0.5);
+  });
+
+  it('tool-TURN exemption: a tool_use block, a pause stop, or a tool_use stop — all with nonempty prose — score 1 under demand', () => {
+    // A NORMAL stop with a tool block present — proves the block-presence
+    // exemption independently of the stop-reason exemption (r3-Low-2).
+    const withBlock = resp({
+      content: [
+        { type: 'text', text: 'calling a tool' },
+        { type: 'tool_use', id: 't1', name: 'f', input: {} },
+      ],
+      stopReason: 'stop',
+    });
+    expect(evaluateQuality(withBlock, demand)).toBe(1);
+    expect(evaluateQuality(textResp('pausing for the server tool', 'pause'), demand)).toBe(1);
+    expect(evaluateQuality(textResp('continuing shortly', 'tool_use'), demand)).toBe(1); // no modeled block
+  });
+
+  it('exemption never masks hard failures (empty / malformed args still 0)', () => {
+    expect(evaluateQuality(resp({ content: [], stopReason: 'pause' }), demand)).toBe(0);
+    expect(
+      evaluateQuality(
+        resp({
+          content: [
+            { type: 'tool_use', id: 't1', name: 'f', inputRaw: '{bad', inputParseError: true },
+          ],
+          stopReason: 'tool_use',
+        }),
+        demand,
+      ),
+    ).toBe(0);
+  });
+
+  it('language neutrality: same structure, two languages, same score', () => {
+    expect(evaluateQuality(textResp('plain prose answer'), demand)).toBe(
+      evaluateQuality(textResp('プレーンな散文の答え'), demand),
+    );
+  });
+});
+
 describe('evaluateQuality (binary, language-neutral)', () => {
   it('scores usable answers 1.0', () => {
     expect(evaluateQuality(resp({}))).toBe(1); // text
     expect(
       evaluateQuality(resp({ content: [{ type: 'tool_use', id: 't', name: 'f', input: {} }] })),
     ).toBe(1); // tool-only
-    expect(evaluateQuality(resp(stop('length')))).toBe(1); // truncated but valid
+    // `length` moved to the 0.5 uncertainty grade (harden-cascade-quality-gate)
+    // — asserted in its own suite below; tool_use/pause stops stay 1 here.
     expect(
       evaluateQuality(
         resp({

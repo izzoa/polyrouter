@@ -41,11 +41,16 @@ export class CascadeRouter {
   }
 
   /** Escalate when the cheap answer's quality score is below the threshold. A
-   * quality-eval throw fails open (deliver cheap; `score = null`, not a false 1). */
-  shouldEscalate(response: NormalizedResponse): { score: number | null; escalate: boolean } {
+   * quality-eval throw fails open (deliver cheap; `score = null`, not a false 1).
+   * `structuredDemand` is the request's declared machine-parseable-output flag
+   * (computed once pre-cheap-call by the proxy). */
+  shouldEscalate(
+    response: NormalizedResponse,
+    structuredDemand: boolean,
+  ): { score: number | null; escalate: boolean } {
     let score: number;
     try {
-      score = evaluateQuality(response);
+      score = evaluateQuality(response, { structuredDemand });
     } catch {
       return { score: null, escalate: false };
     }

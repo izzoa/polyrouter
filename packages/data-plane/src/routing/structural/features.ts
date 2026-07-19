@@ -166,6 +166,14 @@ function reasoningDemandOf(ir: NormalizedRequest): { demand: number | null; form
   return { demand: demands.length > 0 ? Math.max(...demands) : null, format };
 }
 
+/** The request declared machine-parseable output (add-auto-hint-features reads,
+ * shared with the cascade quality gate): an OpenAI json response_format, or a
+ * non-null Anthropic `output_config.format`. */
+export function declaredStructuredOutput(ir: NormalizedRequest): boolean {
+  if (jsonResponseFormat(ir.responseFormat)) return true;
+  return ir.outputConfig !== undefined && outputConfigSignals(ir.outputConfig.value).format;
+}
+
 export function extractStructuralFeatures(ir: NormalizedRequest): StructuralFeatures {
   const messages = ir.messages;
   const window =

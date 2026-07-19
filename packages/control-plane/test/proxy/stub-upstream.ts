@@ -46,13 +46,16 @@ function openaiJson(res: ServerResponse, model: string): void {
   res.writeHead(200, { 'content-type': 'application/json' });
   // `*empty*` → an empty answer (a cascade quality failure → escalate, #14).
   const content = model.includes('empty') ? '' : 'Hello from stub';
+  // `*lenstop*` → a token-cap truncation (finish_reason 'length') — the 0.5
+  // quality grade (harden-cascade-quality-gate).
+  const finish = model.includes('lenstop') ? 'length' : 'stop';
   res.end(
     JSON.stringify({
       id: 'chatcmpl-stub',
       object: 'chat.completion',
       created: 1,
       model,
-      choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }],
+      choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: finish }],
       usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
     }),
   );
@@ -151,7 +154,7 @@ function openaiStream(res: ServerResponse, model: string): void {
     }, 400);
     return;
   }
-  chunk([{ index: 0, delta: {}, finish_reason: 'stop' }]);
+  chunk([{ index: 0, delta: {}, finish_reason: model.includes('lenstop') ? 'length' : 'stop' }]);
   res.write('data: [DONE]\n\n');
   res.end();
 }

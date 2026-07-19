@@ -2,6 +2,7 @@ import {
   MAX_FINGERPRINT_CHARS,
   MAX_SCAN_CHARS,
   canonicalizeSystem,
+  declaredStructuredOutput,
   extractStructuralFeatures,
 } from './features';
 import type { NormalizedMessage, NormalizedRequest } from '../../proxy/translate';
@@ -174,6 +175,28 @@ describe('declared-signal extraction (add-auto-hint-features)', () => {
     expect(rf({ responseFormat: { type: 'text' } })).toBe(false);
     expect(rf({ responseFormat: 'shapeless' })).toBe(false);
     expect(rf({})).toBe(false);
+  });
+});
+
+describe('declaredStructuredOutput (shared with the cascade gate)', () => {
+  it('mirrors the AR-1 demand sources exactly', () => {
+    expect(declaredStructuredOutput(req({ responseFormat: { type: 'json_schema' } }))).toBe(true);
+    expect(declaredStructuredOutput(req({ responseFormat: { type: 'json_object' } }))).toBe(true);
+    expect(declaredStructuredOutput(req({ responseFormat: { type: 'text' } }))).toBe(false);
+    expect(
+      declaredStructuredOutput(
+        req({ outputConfig: { protocol: 'anthropic', value: { format: {} } } }),
+      ),
+    ).toBe(true);
+    expect(
+      declaredStructuredOutput(
+        req({ outputConfig: { protocol: 'anthropic', value: { format: null } } }),
+      ),
+    ).toBe(false);
+    expect(
+      declaredStructuredOutput(req({ outputConfig: { protocol: 'anthropic', value: 'junk' } })),
+    ).toBe(false);
+    expect(declaredStructuredOutput(req({}))).toBe(false);
   });
 });
 

@@ -14,6 +14,7 @@ import {
 } from '@polyrouter/shared/server';
 import {
   ProviderError,
+  declaredStructuredOutput,
   getAdapter,
   isRouteError,
   openStreamChain,
@@ -114,6 +115,10 @@ interface Prepared {
   client: ProtocolAdapter;
   protocol: ClientProtocol;
   routed: NormalizedRequest;
+  /** The request's declared machine-parseable-output flag, captured ONCE at
+   * preparation — before any upstream call — so the cascade gate's demand can
+   * never drift with a shared nested reference (harden-cascade-quality-gate). */
+  structuredDemand: boolean;
   created: number;
   attempts: ChainAttempt[];
   meta: AttemptMeta[];
@@ -364,7 +369,7 @@ export class ProxyService {
       AbortSignal.any([signal, AbortSignal.timeout(c.cheapTimeoutMs)]),
     );
     if (cheap.ok) {
-      const { score, escalate } = this.cascade.shouldEscalate(cheap.response);
+      const { score, escalate } = this.cascade.shouldEscalate(cheap.response, p.structuredDemand);
       if (!escalate) {
         this.recorder.record(
           this.servedFrom(
@@ -526,7 +531,7 @@ export class ProxyService {
       AbortSignal.any([signal, AbortSignal.timeout(c.cheapTimeoutMs)]),
     );
     if (cheap.ok) {
-      const { score, escalate } = this.cascade.shouldEscalate(cheap.response);
+      const { score, escalate } = this.cascade.shouldEscalate(cheap.response, p.structuredDemand);
       const cheapServed: CheapServed = { response: cheap.response, servedIndex: cheap.servedIndex };
       if (!escalate) {
         const replay = await replayBufferedStream(p.client, cheap.response, {
@@ -850,6 +855,7 @@ export class ProxyService {
       client,
       protocol,
       routed: ir, // the model is retargeted per-attempt inside the walker
+      structuredDemand: declaredStructuredOutput(ir),
       created: Math.floor(Date.now() / 1000),
       attempts: primary.attempts,
       meta: primary.meta,

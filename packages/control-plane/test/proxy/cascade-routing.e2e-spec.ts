@@ -197,6 +197,7 @@ describe('cascade routing e2e', () => {
       strongDown: 'oai-srvfail',
       strongMid: 'oai-miderror',
       cheapBadReq: 'oai-badreq',
+      cheapLenstop: 'oai-lenstop',
     };
     for (const [k, ext] of Object.entries(external)) {
       modelId[k] = (await port.models.createForProvider(principal, provider.id, {
@@ -235,6 +236,9 @@ describe('cascade routing e2e', () => {
     ]);
     await port.routingEntries.replaceForTier(principal, await tier('cheap-badreq'), [
       modelId['cheapBadReq']!,
+    ]);
+    await port.routingEntries.replaceForTier(principal, await tier('cheap-lenstop'), [
+      modelId['cheapLenstop']!,
     ]);
     await setBand('auto_high', 'premium');
     await setBand('auto_low', 'cheap-bad');
@@ -282,6 +286,62 @@ describe('cascade routing e2e', () => {
     const logs = await port.requestLogs.list(principal);
     return logs[logs.length - 1]!;
   }
+
+  async function sendWith(
+    system: string,
+    over: Record<string, unknown>,
+    stream = false,
+  ): Promise<request.Response> {
+    const res = await request(server)
+      .post('/v1/chat/completions')
+      .set('Authorization', `Bearer ${key}`)
+      .send({ ...body(system, stream), ...over });
+    if (stream) await new Promise((r) => setTimeout(r, 40));
+    await writer.flush();
+    return res;
+  }
+
+  it('demanded-JSON prose escalates buffered; the same request without the demand serves cheap (harden-cascade-quality-gate)', async () => {
+    await setBand('auto_low', 'cheap-good'); // stub prose 'Hello from stub' — valid answer, invalid JSON
+    const demanded = await sendWith('sysConf', { response_format: { type: 'json_object' } });
+    expect(demanded.status).toBe(200);
+    const row1 = await log();
+    expect(row1.escalated).toBe(true); // prose where JSON was demanded → strong serves
+    expect(row1.qualitySignal).toBe(0);
+    expect(row1.modelId).toBe(modelId['strong']);
+
+    await pool.query('DELETE FROM request_log WHERE owner_user_id = $1', [userId]);
+    const plain = await send('sysConf2');
+    expect(plain.status).toBe(200);
+    const row2 = await log();
+    expect(row2.decisionLayer).toBe('cascade'); // PROVES the gate ran (not an L1-low shortcut)
+    expect(row2.escalated).toBe(false); // the identical prose without the demand passes
+    expect(row2.qualitySignal).toBe(1);
+    expect(row2.modelId).toBe(modelId['cheapGood']);
+    await setBand('auto_low', 'cheap-bad');
+  });
+
+  it('demanded-JSON prose escalates on the STREAMED path too (the second proxy site)', async () => {
+    await setBand('auto_low', 'cheap-good');
+    const res = await sendWith('sysConfS', { response_format: { type: 'json_object' } }, true);
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('data:'); // a served SSE stream
+    const row = await log();
+    expect(row.escalated).toBe(true);
+    expect(row.modelId).toBe(modelId['strong']);
+    await setBand('auto_low', 'cheap-bad');
+  });
+
+  it('length-only truncation serves cheap at the default threshold with quality_signal 0.5', async () => {
+    await setBand('auto_low', 'cheap-lenstop');
+    const res = await send('sysLen');
+    expect(res.status).toBe(200);
+    const row = await log();
+    expect(row.escalated).toBe(false); // 0.5 !< 0.5 — the decision is unchanged
+    expect(row.qualitySignal).toBe(0.5); // the sharper label, visibly recorded
+    expect(row.modelId).toBe(modelId['cheapLenstop']);
+    await setBand('auto_low', 'cheap-bad');
+  });
 
   it('a good cheap answer is served without escalation (one row, no ledger)', async () => {
     await setBand('auto_low', 'cheap-good');

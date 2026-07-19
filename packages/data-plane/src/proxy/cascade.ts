@@ -14,26 +14,50 @@ import type {
 } from './translate';
 
 /**
- * A binary quality score: `0` (structurally unusable → escalate) or `1.0`.
- * Detections are cheap capability failures — no tokenizer, no LLM, no keywords,
- * so the score is language-neutral. A `double precision` result keeps a graded
- * future (verifier/self-consistency) open. Deliberately NOT penalized: a
- * `tool_use`/`pause` stop (a legitimate agentic tool call is a correct response)
- * and a `length` truncation (a valid long answer the same `max_tokens` caps).
+ * A graded quality lattice (harden-cascade-quality-gate): `0` structurally
+ * unusable → escalate; `0.5` uncertain (length truncation with no hard
+ * failure — at the default strictly-below 0.5 threshold the DECISION is
+ * unchanged from the old never-penalized contract, while the persisted
+ * quality_signal visibly sharpens to 0.5; thresholds above 0.5 escalate);
+ * `1` structurally sound. Detections are cheap capability failures — no
+ * tokenizer, no LLM, no keywords, so the score is language-neutral.
+ * Conformance: when the request declared machine-parseable output
+ * (`ctx.structuredDemand`), the final text answer — its text blocks
+ * concatenated in order, trimmed — must `JSON.parse`, else 0. A tool-calling
+ * TURN is exempt from conformance (a `tool_use` block, or a `tool_use`/`pause`
+ * stop — intermediate flow; the demand binds the final answer); those stops
+ * score 1 when no hard failure applies. Hard failures take precedence over the
+ * truncation grade — deliberately: demanded JSON cut off by the token cap is
+ * invalid JSON and escalates. Absent `ctx` disables ONLY the conformance
+ * check; truncation grading always applies.
  */
-export function evaluateQuality(response: NormalizedResponse): number {
+export function evaluateQuality(
+  response: NormalizedResponse,
+  ctx?: { structuredDemand?: boolean },
+): number {
   if (response.stopReason === 'error' || response.stopReason === 'content_filter') return 0;
   let hasText = false;
   let hasTool = false;
+  let text = '';
   for (const b of response.content) {
     if (b.type === 'text') {
       if (b.text.trim().length > 0) hasText = true;
+      text += b.text;
     } else if (b.type === 'tool_use') {
       hasTool = true;
       if ('inputParseError' in b && b.inputParseError) return 0; // malformed JSON args
     }
   }
   if (!hasText && !hasTool) return 0; // empty
+  const toolTurn = hasTool || response.stopReason === 'tool_use' || response.stopReason === 'pause';
+  if (ctx?.structuredDemand === true && hasText && !toolTurn) {
+    try {
+      JSON.parse(text.trim());
+    } catch {
+      return 0; // prose (or a truncated document) where JSON was demanded
+    }
+  }
+  if (response.stopReason === 'length') return 0.5; // uncertainty, not failure
   return 1;
 }
 

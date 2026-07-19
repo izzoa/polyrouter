@@ -1,6 +1,6 @@
 {
-  "updatedAt": "2026-07-17T17:23:32.854Z",
-  "command": "init",
-  "gitHead": "80545fd3b25c7af73124a5894b44985fded64755",
-  "model": "xiaomi/mimo-v2.5-pro"
+  "updatedAt": "2026-07-19T06:53:12.402Z",
+  "command": "update",
+  "gitHead": "1189604cd68bfb968779003f7a42e6d99ec08e01",
+  "model": "moonshotai/kimi-k3"
 }

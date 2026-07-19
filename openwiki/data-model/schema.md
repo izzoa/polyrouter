@@ -8,7 +8,7 @@ resource: packages/shared/src/server/database/
 
 # Data Model & Database Schema
 
-Polyrouter uses PostgreSQL 16 with Drizzle ORM. The schema has 13 core tables organized into four domains: identity, routing, observability, and budgets/notifications.
+Polyrouter uses PostgreSQL 16 with Drizzle ORM. The schema is organized into four domains: identity, routing, observability, and budgets/notifications.
 
 ## Design Principles
 
@@ -24,21 +24,29 @@ Polyrouter uses PostgreSQL 16 with Drizzle ORM. The schema has 13 core tables or
 
 | Table | Purpose | Key Columns |
 |-------|---------|-------------|
-| `user` | Better Auth users | `id`, `email`, `name`, `password_hash` |
+| `user` | Better Auth users | `id`, `email`, `name`, `password_hash`, `role`, `disabled` |
 | `session` | JWT sessions | `id`, `user_id`, `expires_at`, `token` |
 | `account` | OAuth provider links | `id`, `user_id`, `provider`, `provider_account_id` |
 | `agent` | API keys (`poly_...`) | `id`, `owner_user_id`, `name`, `api_key_hash`, `harness_type` |
+| `invite` | Single-use account invites | `id`, `email`, `token_prefix`, `token_hash`, `role`, `expires_at`, `consumed_at` |
+| `instance_settings` | Instance-wide runtime settings (singleton row) | `registration_mode`, `bootstrap_claimed_at` |
+
+`invite` stores only the token prefix + HMAC-style hash (like agent keys) — never the raw token. `instance_settings.bootstrap_claimed_at` decides the first-signup-wins admin race atomically; `registration_mode` (`invite_only`/`open`) is read authoritatively per signup attempt. See [Security & Auth](/openwiki/security/auth.md#dashboard-sessions-web-plane).
 
 ### Routing Configuration
 
 | Table | Purpose | Key Columns |
 |-------|---------|-------------|
-| `provider` | LLM providers | `id`, `owner_user_id`, `name`, `kind`, `protocol`, `base_url`, `credentials_encrypted` |
-| `model` | Available models | `id`, `provider_id`, `external_id`, `capabilities` (tools, vision, reasoning) |
+| `provider` | LLM providers | `id`, `owner_user_id`, `name`, `kind` (api_key/subscription/custom/local), `protocol`, `base_url`, `credentials_encrypted`, `oauth_preset`, `credential_expires_at`, `credential_error` |
+| `model` | Available models | `id`, `provider_id`, `external_id`, `capabilities` (tools, vision, reasoning), `input/output_price_per_1m`, `listed_*` display estimates |
 | `tier` | Routing tiers | `id`, `owner_user_id`, `name`, `is_default` |
 | `routing_entry` | Tier↔model chains | `id`, `tier_id`, `model_id`, `provider_id`, `position` (0-4) |
 | `routing_rule` | Header/default rules | `id`, `owner_user_id`, `priority`, `header_name`, `header_value`, `tier_id` |
 | `routing_settings` | Per-tenant auto-layer prefs | `owner_user_id`, `structural_enabled`, `cascade_enabled` |
+
+**Subscription OAuth columns** (provider): `oauth_preset` names the bundled preset (`claude`/`chatgpt`) for an OAuth-connected provider; `credential_expires_at` mirrors the access token's expiry for the UI (never an auth input — the encrypted envelope is authoritative); `credential_error` is the durable credential state the dashboard reads after reload (`reauthorize_required`). All three are non-secret — tokens live only inside the encrypted envelope. See [Subscription OAuth](/openwiki/providers/subscription-oauth.md#credential-envelope).
+
+**Listed price columns** (model): `listed_input_price_per_1m`, `listed_output_price_per_1m`, `listed_is_free`, `listed_price_captured_at` — a display-only estimate captured from the provider's `/models` endpoint at sync. Deliberately distinct from the user-price columns: these **never** feed `resolveModelPrice`, the `model_price` catalog, or the request-time cost snapshot (recorded cost comes from the bundled catalog, not provider `/models`). Rewritten on every sync; cleared on a base URL or protocol change.
 
 ### Observability
 
@@ -103,7 +111,9 @@ const plaintext = await decryptSecret(encrypted, PROVIDER_CREDENTIAL_KEY);
 
 The encryption key (`PROVIDER_CREDENTIAL_KEY` / `NOTIFY_CREDENTIALS_SECRET`) is a required environment variable. Key rotation is supported via dual-key decryption.
 
-**Source**: `packages/shared/src/server/security/encryption.ts`
+The decrypted provider credential is a **typed envelope** (`polycred:v1:` + JSON, or a legacy raw string read as plain). Plain API keys are wrapped; OAuth tokens from the [Subscription OAuth](/openwiki/providers/subscription-oauth.md#credential-envelope) flow are stored as `kind: 'oauth'` envelopes that only the connect/refresh path can mint. See [Security & Auth](/openwiki/security/auth.md#credential-envelope) for the tamper-safety rules.
+
+**Source**: `packages/shared/src/server/security/encryption.ts`, `packages/shared/src/server/security/credential-envelope.ts`
 
 ## Cascade Cost Ledger
 

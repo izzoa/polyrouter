@@ -62,7 +62,7 @@ Dual-entry package:
 
 ### Frontend (`packages/frontend/`)
 
-SolidJS + Vite SPA with 9 dashboard pages. Communicates with the control plane via a typed fetch client. Uses cookie-based auth with Vite proxy in development and same-origin in production.
+SolidJS + Vite SPA with 12 dashboard pages. Communicates with the control plane via a typed fetch client. Uses cookie-based auth with Vite proxy in development and same-origin in production.
 
 See [Dashboard](/openwiki/dashboard/overview.md) for details.
 

@@ -12,18 +12,22 @@ The polyrouter dashboard is a SolidJS + Vite SPA that provides a complete manage
 
 ## Pages
 
-| Page | Route | Purpose |
-|------|-------|---------|
-| **Overview** | `/` | KPIs, request charts, spend summary, 15s polling |
-| **Requests** | `/requests` | Request log table with decision inspector |
-| **Costs** | `/costs` | Cost breakdowns by model, provider, or agent |
-| **Agents** | `/agents` | Manage API keys, 24h stats, harness selection |
-| **Providers** | `/providers` | Manage providers, health checks, catalog sync |
-| **Routing** | `/routing` | Configure tiers, model assignments, fallback chains |
-| **Limits** | `/limits` | Budget management with alert/block actions |
-| **Settings** | `/settings` | Account, notification channels, OAuth providers |
-| **Setup** | `/setup` | 3-step onboarding wizard |
-| **Login** | `/login` | Authentication gate |
+| Page | Purpose |
+|------|---------|
+| **Overview** | KPIs, request charts, spend summary, 15s polling |
+| **Requests** | Request log table with decision inspector |
+| **Costs** | Cost breakdowns by model, provider, or agent |
+| **Agents** | Manage API keys, 24h stats, harness selection |
+| **Providers** | Manage providers (API key or [subscription OAuth](/openwiki/providers/subscription-oauth.md#how-it-works) connect), health checks, catalog sync, model price edit |
+| **Routing** | Configure tiers, model assignments, fallback chains |
+| **Limits** | Budget management with alert/block actions |
+| **Users** | Admin user management — invite users, assign roles, disable accounts |
+| **Accept Invite** | Redeem a single-use invite token to create an account |
+| **Settings** | Account, notification channels, OAuth providers |
+| **Setup** | 3-step onboarding wizard |
+| **Login** | Authentication gate |
+
+The Providers page surfaces per-model **listed price estimates** (flagged `estimated` when shown instead of a known billing price) and lets users edit model prices directly — see [Provider Adapters](/openwiki/providers/adapters.md#provider-listed-pricing-display-only) for the display-only invariant. OAuth-connected providers show their preset, token expiry, and a reauthorize action when `credential_error` is set.
 
 ## Architecture
 

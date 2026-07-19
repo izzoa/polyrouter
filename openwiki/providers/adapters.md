@@ -1,8 +1,8 @@
 ---
 type: Architecture
 title: Provider Adapters & Protocol Translation
-description: Polyrouter's provider adapter interface, supported LLM providers (OpenAI, Anthropic, custom, local), protocol translation via intermediate representation, and circuit breaker integration.
-tags: [providers, adapters, protocol-translation, circuit-breaker, ssrf]
+description: Polyrouter's provider adapter interface, supported LLM providers (OpenAI, Anthropic, ChatGPT Responses, custom, local, subscription OAuth), protocol translation via intermediate representation, and circuit breaker integration.
+tags: [providers, adapters, protocol-translation, circuit-breaker, ssrf, oauth]
 resource: packages/data-plane/src/providers/adapter.ts
 ---
 
@@ -29,14 +29,25 @@ This abstraction allows the proxy core to be protocol-agnostic — it works enti
 
 | Provider Kind | Auth Method | Endpoint Format | Notes |
 |---------------|------------|-----------------|-------|
-| `openai` | Bearer token | `/chat/completions`, `/models` | Also supports OpenAI-compatible APIs |
-| `anthropic` | `x-api-key` header | `/v1/messages`, `/v1/models` | Cursor-paginated model list |
+| `api_key` | Bearer token / `x-api-key` | `/chat/completions`, `/v1/messages`, `/models` | OpenAI, Anthropic, or any compatible API |
+| `subscription` | OAuth Bearer + preset headers | Pinned by preset | Claude Pro/Max, ChatGPT Plus/Pro — see [Subscription OAuth](/openwiki/providers/subscription-oauth.md) |
 | `custom` | Configurable | User-defined | Any OpenAI-compatible API |
 | `local` | None | Configurable | Loopback-only, SSRF guard relaxed |
 
 Provider credentials are encrypted at rest with AES-256-GCM and decrypted only at call time.
 
 **Source**: `packages/data-plane/src/providers/` — adapter implementations
+
+### Auth Schemes
+
+Adapters receive an `AuthScheme` with the resolved credential:
+
+- `api_key` — Anthropic sends `x-api-key`; OpenAI sends `Authorization: Bearer` (byte-identical to pre-OAuth behavior)
+- `oauth_bearer` — Anthropic sends `Authorization: Bearer` + the preset's `anthropic-beta` value and **no** `x-api-key`; OpenAI-Responses sends `Authorization: Bearer` + `chatgpt-account-id` + the Responses beta header
+
+Credential resolution for `subscription` providers (decrypt → envelope parse → refresh) is handled by the control plane's [Subscription OAuth](/openwiki/providers/subscription-oauth.md#token-refresh--rotation-safety) seam before adapter construction.
+
+**Source**: `packages/data-plane/src/providers/oauth-scheme.spec.ts`, `packages/data-plane/src/providers/anthropic-adapter.ts`
 
 ## Shared HTTP Adapter
 
@@ -50,6 +61,18 @@ The `http-adapter.ts` module provides shared transport for all HTTP-based provid
 - **Response bounds** — caps untrusted provider responses to prevent memory exhaustion
 
 **Source**: `packages/data-plane/src/providers/http-adapter.ts`
+
+### Provider-Listed Pricing (Display Only)
+
+OpenRouter-style `/models` responses carry a per-model `pricing` extension (per-token USD decimal strings). `parseModelList` surfaces these as a per-1M USD **display estimate** stored in the model row's `listed_*` columns — distinct from billing prices, which always come from the bundled catalog or user edits (cost immutability invariant). The dashboard shows listed prices as an `estimated` fallback when no billing price is known, and users can edit model prices directly. Listed prices are rewritten on every catalog sync and cleared when a provider's base URL or protocol changes.
+
+**Source**: `packages/data-plane/src/providers/listed-pricing.spec.ts`, `packages/control-plane/src/providers/providers.service.ts` (`listedColumnsFrom`)
+
+### OpenRouter Attribution
+
+Requests to `openrouter.ai`-hosted providers carry polyrouter's identity headers — `HTTP-Referer: https://polyrouter.app` and `X-OpenRouter-Title: polyrouter` — so polyrouter appears in OpenRouter's app attribution. The host gate matches only the exact `openrouter.ai` host (case, explicit port, and trailing-FQDN-dot tolerant; subdomains and spoofed suffixes excluded). Identity is disclosed only to OpenRouter; auth is never affected.
+
+**Source**: `packages/data-plane/src/providers/http-adapter.ts` (`openRouterAttributionHeaders`), `packages/data-plane/src/providers/attribution.spec.ts`
 
 ## Protocol Translation
 
@@ -96,8 +119,11 @@ The IR uses **content blocks everywhere** — text, images, tool use, and tool r
 
 ### Wire Format Adapters
 
-- **OpenAI** (`openai.ts`) — Chat Completions format with SSE streaming
-- **Anthropic** (`anthropic.ts`) — Messages format with tool-result grouping and cache control
+- **OpenAI** (`openai-adapter.ts`) — Chat Completions format with SSE streaming
+- **Anthropic** (`anthropic-adapter.ts`) — Messages format with tool-result grouping and cache control
+- **OpenAI Responses** (`responses-adapter.ts`) — ChatGPT backend's Responses API (`/backend-api/codex/responses`), OAuth-only. The backend accepts **only streaming** requests, so `chat()` folds the SSE event stream into a buffered `NormalizedResponse`. There is no models endpoint: `listModels()` rejects typed and `testConnection()` probes the preset's trusted `probeModel`. Exactly three identity headers are sent — Bearer, `chatgpt-account-id`, and `responses=experimental` — never `x-api-key` or client fingerprints (no-spoofing rule). `max_output_tokens` and sampling params are dropped (the backend rejects them).
+
+**Source**: `packages/data-plane/src/providers/responses-adapter.ts`, `packages/data-plane/src/proxy/translate/responses.ts`
 
 ### Golden Tests
 

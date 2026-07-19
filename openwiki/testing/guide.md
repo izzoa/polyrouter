@@ -32,7 +32,13 @@ packages/control-plane/test/
 │   ├── stream-lifecycle.e2e-spec.ts   # Stream commit boundary
 │   └── stub-upstream.ts               # Mock upstream server
 ├── providers/
-│   └── provider-management.e2e-spec.ts
+│   ├── provider-management.e2e-spec.ts
+│   └── model-pricing.e2e-spec.ts      # Listed-price display vs billing price invariants
+├── subscription-oauth/
+│   └── oauth-connect.e2e-spec.ts      # Connect/complete/reauthorize flow with stubbed IdP
+├── auth/
+│   ├── auth.e2e-spec.ts               # Session auth, rate limits
+│   └── user-admin.e2e-spec.ts         # First-signup-wins, invites, admin disable
 ├── routing/
 │   └── routing-config.e2e-spec.ts
 ├── notifications/
@@ -64,6 +70,7 @@ Tests verify round-trip fidelity: converting from one protocol to IR and back to
 |-------|------|---------------|
 | SSRF | `packages/shared/test/ssrf.test.ts` | Private IP blocking, DNS rebinding defense |
 | Encryption | `packages/shared/test/encryption.test.ts` | AES-256-GCM encrypt/decrypt, key rotation |
+| Credential envelope | `packages/shared/test/credential-envelope.test.ts` | Typed `polycred:v1:` parse, tamper detection, oauth-kind unforgeability |
 | Network host | `packages/shared/test/network-host.test.ts` | IP classification (private, loopback, link-local) |
 | Tenant isolation | (e2e tests) | Cross-tenant read prevention |
 | Cost immutability | (e2e tests) | Price snapshots never recomputed |

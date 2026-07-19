@@ -15,6 +15,7 @@ Polyrouter is a self-hostable LLM router/gateway. It gives you **one OpenAI- and
 - **One endpoint for every model** — agents send requests to polyrouter; it routes to OpenAI, Anthropic, custom providers, or local models
 - [**Smart routing**](/openwiki/routing/engine.md) — explicit model naming, tier-based routing, and optional auto-routing with cascade escalation
 - [**Fallback chains**](/openwiki/routing/engine.md) — automatic failover through ordered provider chains when upstreams fail
+- [**Subscription OAuth**](/openwiki/providers/subscription-oauth.md) — connect Claude Pro/Max or ChatGPT Plus/Pro subscriptions with automatic token refresh
 - [**Budget enforcement**](/openwiki/data-model/schema.md) — per-agent or global spend limits with alert and block actions
 - [**Metadata-only cost tracking**](/openwiki/data-model/schema.md) — immutable cost records with snapshotted prices; prompt/response bodies are never stored
 - [**Dashboard**](/openwiki/dashboard/overview.md) — SolidJS SPA for monitoring requests, managing providers, configuring routing, and viewing analytics
@@ -80,10 +81,11 @@ See [Architecture Overview](/openwiki/architecture/overview.md) for the full bre
 | [Architecture Overview](/openwiki/architecture/overview.md) | Monorepo structure, dual-plane design, technology stack, core invariants |
 | [Request Flow](/openwiki/architecture/request-flow.md) | Full lifecycle of a request through the proxy |
 | [Routing Engine](/openwiki/routing/engine.md) | Layer 0/1/3 routing, tiers, fallback chains, cascade logic |
-| [Provider Adapters](/openwiki/providers/adapters.md) | Supported providers, protocol translation, circuit breakers |
+| [Provider Adapters](/openwiki/providers/adapters.md) | Supported providers, protocol translation, circuit breakers, listed pricing |
+| [Subscription OAuth](/openwiki/providers/subscription-oauth.md) | Claude/ChatGPT subscription connect, token refresh, credential envelope |
 | [Data Model](/openwiki/data-model/schema.md) | Database schema, tenant isolation, immutable costs |
 | [Dashboard](/openwiki/dashboard/overview.md) | Frontend pages, design system, state management |
-| [Security & Auth](/openwiki/security/auth.md) | Dual auth model, SSRF protection, encryption |
+| [Security & Auth](/openwiki/security/auth.md) | Dual auth model, credential envelope, SSRF protection, encryption |
 | [Deployment](/openwiki/operations/deployment.md) | Docker Compose, environment variables, install script |
 | [Testing](/openwiki/testing/guide.md) | Test types, running tests, CI pipeline |
 

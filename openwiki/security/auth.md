@@ -1,8 +1,8 @@
 ---
 type: Architecture
 title: Security & Authentication
-description: Polyrouter's dual auth model (session + agent keys), SSRF protection, AES-256-GCM credential encryption, tenant isolation, rate limiting, and metadata-only privacy.
-tags: [security, auth, ssrf, encryption, tenant-isolation]
+description: Polyrouter's dual auth model (session + agent keys), SSRF protection, AES-256-GCM credential encryption with typed credential envelopes, tenant isolation, rate limiting, and metadata-only privacy.
+tags: [security, auth, ssrf, encryption, tenant-isolation, oauth]
 resource: packages/control-plane/src/auth/
 ---
 
@@ -21,9 +21,9 @@ Requests to `/api/**` are authenticated via Better Auth 1.6:
 - **JWT sessions** — stateless tokens with expiration
 - **Rate limiting** — Redis-backed rate limiter applied before the Better Auth handler
 
-The auth bootstrap seeds the first admin user on initial startup.
+The first user to sign up becomes the instance admin (**first-signup-wins**): a single atomic claim on the `instance_settings.bootstrap_claimed_at` column decides the race, so multi-instance deployments can't double-crown. A stale claim (crashed winner, still zero users) is stealable after a short window so a failed bootstrap self-heals. After bootstrap, registration is invite-only by default — admins mint single-use, hashed, expiring invite tokens; the registration policy (`invite_only`/`open`) lives in `instance_settings` and is read authoritatively per signup attempt. Admins can disable users, which denies access on **both** planes (session + agent key) and prevents minting new sessions.
 
-**Source**: `packages/control-plane/src/auth/session.guard.ts`, `packages/control-plane/src/auth/auth.bootstrap.ts`
+**Source**: `packages/control-plane/src/auth/session.guard.ts`, `packages/control-plane/src/auth/signup-gate.ts`, `packages/control-plane/src/auth/invites.service.ts`, `packages/control-plane/src/admin/admin.controller.ts`
 
 ### Agent API Keys (API Plane)
 
@@ -90,13 +90,26 @@ const encrypted = await encryptSecret(plaintext, key);
 const plaintext = await decryptSecret(encrypted, key);
 ```
 
+### Credential Envelope
+
+The decrypted content of `provider.encrypted_credentials` is a **typed envelope**:
+
+- **Legacy rows** — a raw string, read as `kind: 'plain'` (unchanged semantics)
+- **New writes** — `polycred:v1:` + JSON, either `{ v:1, kind:'plain', value }` or `{ v:1, kind:'oauth', preset, accessToken, refreshToken, expiresAt, accountId? }`
+
+Plain writes **wrap** user input, so a pasted `polycred:v1:…` lookalike becomes a `plain` credential whose value contains that string — the `oauth` kind is unforgeable through every paste path by construction (only the connect/refresh code path calls `serializeOauthCredential`). Marker-prefixed content that fails to parse throws a typed `TamperedCredentialError`, never a silent fallback to plain. Error messages are fixed — credential content is never logged or echoed (invariant 8).
+
+OAuth envelopes are minted and refreshed by the [Subscription OAuth](/openwiki/providers/subscription-oauth.md) flow; all credential mutations (refresh write, PATCH rotate/clear, reauthorize) serialize on one per-provider advisory lock (`credentialLockKey`, FNV-1a over the provider id) so rotation can never be clobbered.
+
+**Source**: `packages/shared/src/server/security/credential-envelope.ts`
+
 ### Key Management
 
 | Secret | Env Var | Purpose |
 |--------|---------|---------|
 | Auth secret | `BETTER_AUTH_SECRET` | Session signing |
 | API key HMAC | `API_KEY_HMAC_SECRET` | Agent key hashing |
-| Provider credential key | `PROVIDER_CREDENTIAL_KEY` | Provider secret encryption |
+| Provider credential key | `PROVIDER_CREDENTIAL_KEY` | Provider secret encryption (plain API keys and OAuth envelopes) |
 | Notification credential key | `NOTIFY_CREDENTIALS_SECRET` | Notification channel encryption |
 
 Key rotation is supported via dual-key decryption (decrypt with old key, re-encrypt with new key).

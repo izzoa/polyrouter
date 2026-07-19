@@ -9,7 +9,18 @@ import {
 } from '../data/api';
 import { DEFAULT_SESSION, FakeApiClient } from '../test/fakeClient';
 import type { ProviderForm } from '../types';
-import { createAppStore } from './appState';
+import { PROVIDER_KINDS, createAppStore } from './appState';
+
+describe('PROVIDER_KINDS', () => {
+  it("no kind labels its CREDENTIAL input 'Base URL' (the form has a dedicated Base URL field)", () => {
+    // Regression: custom/local once carried field:'Base URL', so the API-key input
+    // rendered as a second Base URL field in the provider modal.
+    for (const k of PROVIDER_KINDS) {
+      expect(k.field).not.toBe('Base URL');
+      expect(k.ph.startsWith('http')).toBe(false); // placeholders are key-shaped, not URLs
+    }
+  });
+});
 
 const NOW = '2026-07-15T00:00:00.000Z';
 /** Let a fire-and-forget optimistic persist settle (macrotask after microtasks). */

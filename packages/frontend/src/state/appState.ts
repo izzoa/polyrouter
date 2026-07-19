@@ -241,18 +241,20 @@ export const PROVIDER_KINDS: ProviderKindDef[] = [
     ph: 'paste from provider',
   },
   {
+    // `field`/`ph` label the CREDENTIAL input — the Base URL has its own dedicated
+    // field in the form (a 'Base URL' value here would label the key field wrongly).
     id: 'custom',
     name: 'Custom endpoint',
     desc: 'Any OpenAI/Anthropic-compatible base URL',
-    field: 'Base URL',
-    ph: 'https://llm.mylab.net/v1',
+    field: 'API key',
+    ph: 'sk-… or bearer token',
   },
   {
     id: 'local',
     name: 'Local',
     desc: 'Ollama, LM Studio, llama.cpp — free, on this box',
-    field: 'Base URL',
-    ph: 'http://127.0.0.1:11434/v1',
+    field: 'API key',
+    ph: 'usually empty for local runtimes',
   },
 ];
 

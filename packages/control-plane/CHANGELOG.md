@@ -1,5 +1,113 @@
 # @polyrouter/control-plane
 
+## 0.4.0
+
+### Minor Changes
+
+- 91e4ea5: Auto-routing decisions become queryable. Every `auto` request the structural
+  layer evaluates now records its verdict as request_log columns —
+  `structural_band` (high/low/ambiguous), `structural_score`, and
+  `structural_band_source` (threshold vs a declared-maximal rule) — on every
+  row the request produces, including cascade rows (the L1 verdict beside the
+  L3 outcome) and the previously-invisible fall-throughs: an ambiguous
+  classification that stayed on the default tier, and a confident band whose
+  auto_high/auto_low target wasn't configured. Fall-through rows' routing
+  reason now carries the classifier verdict as a visible suffix, so the
+  inspector shows WHY auto stayed on default. Requests the layer didn't
+  evaluate record nulls; history is never backfilled; no routing behavior
+  changes.
+- 2fdc5d0: `model: auto` now honors client-declared complexity. OpenAI `reasoning_effort`
+  (including `xhigh`/`max`), Anthropic `thinking` (enabled budgets, `adaptive`,
+  `disabled`), and Anthropic `output_config.effort` become a Layer-1 signal: a
+  maximal declaration routes a request to the `auto_high` target directly, low
+  declarations bias the structural score downward (a declared `none` on an
+  otherwise-ambiguous request takes the cheap path without cascade), and
+  `response_format`/`output_config.format` count as structured-output demand.
+  Requests without declared controls score byte-identically to before — ambient
+  weights, thresholds, and existing `ROUTING_STRUCTURAL_WEIGHTS` overrides are
+  untouched; the new optional `reasoning` key in that JSON tunes the adjustment
+  magnitude ([0, 0.5], default 0.1). Anthropic `output_config` also now passes
+  through same-protocol requests verbatim (dropped, documented, crossing to
+  OpenAI).
+- f7b3d0d: Failed requests now record and display what the provider actually said. The
+  request drawer gains an ERROR card (error kind, upstream HTTP status, the
+  provider's own error message, and the upstream request id) backed by four new
+  `request_log` columns captured at failure time — including mid-stream failures,
+  whose wire error message was previously discarded. Privacy holds by
+  construction: messages persist only from structured provider error fields
+  through a sanitizing factory (exact credential redaction first, then heuristic
+  secret scrubbing; validation and content-policy messages are withheld since
+  they can quote prompt content), raw bodies never persist, and agent-facing
+  error responses are unchanged. Existing rows render exactly as before.
+- 7361e93: Add the "Auto performance" view (add-auto-performance-view): a new owner-scoped
+  `GET /api/analytics/auto` aggregation (band mix with declared/unroutable splits,
+  the disjoint four-way cascade outcome split, fall-through count, per-bucket band
+  series, range-independent telemetry-since, and a signed estimated-savings figure
+  priced at the current `auto_high` basis with per-row exclusion disclosure), plus
+  a Routing-page section rendering it: outcome rates, an unroutable diagnostic
+  callout, net savings with basis label + coverage ("based on N of M
+  quality-passed requests"), a dash-differentiated band-mix chart, a local range
+  control, and honest zero states. Stored request costs are never recomputed —
+  savings are a live, labeled counterfactual.
+- fd63d4a: Per-tenant structural-threshold self-calibration (add-auto-threshold-calibration):
+  an opt-in, scheduled BullMQ sweep nudges each tenant's `auto` high/low
+  thresholds from their OWN quality-decided cascade outcomes inside hard rails —
+  minimum fresh edge-zone samples (epoch-stamped at decision time), bounded step,
+  hysteresis, an anchored max-drift cap (changed instance defaults instantly
+  inert and then rebase stale pairs), a minimum band gap enforced on every final
+  candidate, and per-edge cooldown. Escalations now record WHY they escalated
+  (`escalation_source`: `quality_gate` vs `cheap_error`) so provider faults can
+  never read as routing mistakes. Calibrated pairs ride the existing hot-path
+  settings read (zero new per-request queries) and degrade to instance defaults
+  on any fault. Every move/revert/rebase appends a numbers-only audit event; the
+  Routing page gains the Self-calibration section — toggle, effective thresholds,
+  one-click revert, and the visible threshold-change history — and the
+  auto-layers API reports the instance/calibrated/effective trio. Six new
+  `CALIBRATION_*` env keys with fail-fast validation.
+- d7cafe1: The cascade's quality gate is sharper. When a request declared structured
+  output (`response_format` json, or Anthropic `output_config.format`), a cheap
+  answer that isn't parseable JSON now escalates to the strong tier — prose
+  where JSON was demanded is a capability failure, not a style choice
+  (tool-calling and paused turns are exempt). Truncation (`length` stop) grades
+  0.5 instead of a clean 1: at the default quality threshold the served tier is
+  unchanged (the recorded quality_signal visibly becomes 0.5), and thresholds
+  above 0.5 now meaningfully escalate truncated cheap answers. One deliberate
+  escalation change at defaults: demanded JSON cut off by the token cap is
+  invalid JSON and escalates, where it previously served broken output.
+- 0133f12: feat(pricing): native-family price fallback for aggregator models (flagged estimates)
+
+  Aggregator-routed models (OpenRouter) whose exact channel key is missing from the price
+  catalog no longer record `unpriced` when the SAME model's price exists under its native
+  family (e.g. `openrouter:minimax/minimax-m3` missing → `minimax:minimax-m3` used): the
+  request snapshots the native-family catalog row, **flagged `native_family` end-to-end** —
+  a new `price_source` column on both cost ledgers, a `price source` row plus `· est.`
+  affordances in the request inspector (the combined total is marked whenever a superseded
+  cascade attempt was estimate-priced, via the rolled-up `priceEstimated` flag), an
+  estimate-priced spend split (`nativeFamilySpend`) in the analytics summary and Costs page,
+  and estimate marking in budget alert/block notices and the weekly spend summary. Budgets
+  meter estimate-priced spend identically — recorded cost is recorded cost.
+
+  The derivation is allowlist-only (aggregator families + a verified vendor→family map;
+  unmapped vendors stay unknown; `:free` SKUs never borrow the paid rate), the exact channel
+  key always wins once it exists (new requests only — recorded rows are immutable), and
+  provider-listed `/models` prices still never enter billing: the models UI now shows the
+  listed channel figure **alongside** a native-family estimate (new `listedPrice` on the
+  models API) instead of hiding it. Migration `0011` adds the nullable `price_source`
+  columns; existing rows render exactly as before.
+
+### Patch Changes
+
+- Updated dependencies [91e4ea5]
+- Updated dependencies [2fdc5d0]
+- Updated dependencies [f7b3d0d]
+- Updated dependencies [7361e93]
+- Updated dependencies [fd63d4a]
+- Updated dependencies [d7cafe1]
+- Updated dependencies [0133f12]
+- Updated dependencies [98f3b59]
+  - @polyrouter/shared@0.4.0
+  - @polyrouter/data-plane@0.3.0
+
 ## 0.3.0
 
 ### Minor Changes

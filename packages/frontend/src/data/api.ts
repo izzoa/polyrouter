@@ -480,6 +480,37 @@ export interface RequestRow {
   errorRequestId: string | null;
 }
 
+/** The auto-performance aggregation (add-auto-performance-view) — the AR-3
+ * telemetry columns aggregated server-side; savings is a labeled display
+ * counterfactual or null (never a fabricated zero). */
+export interface AutoPerformance {
+  evaluated: number;
+  bands: {
+    high: { requests: number; declared: number; unroutable: number };
+    low: { requests: number; declared: number; unroutable: number };
+    ambiguous: { requests: number };
+  };
+  cascade: {
+    requests: number;
+    qualityPassed: number;
+    qualityUnknown: number;
+    failedOrCancelled: number;
+    escalated: number;
+  };
+  fallthrough: number;
+  series: { bucket: string; high: number; low: number; ambiguous: number }[];
+  telemetrySince: string | null;
+  savings: {
+    /** Null when zero rows were costable — unknown, never $0. */
+    netUsd: number | null;
+    grossUsd: number | null;
+    excessUsd: number | null;
+    rows: number;
+    uncostedRows: number;
+    basis: { kind: 'tier' | 'model'; label: string; model: string };
+  } | null;
+}
+
 export interface RequestsPage {
   rows: RequestRow[];
   nextCursor: string | null;
@@ -570,6 +601,7 @@ export interface ApiClient {
   testChannel(id: string): Promise<ChannelTestResult>;
   proxyTest(agentKey: string, body: ProxyTestBody): Promise<ChatCompletion>;
   summary(range: AnalyticsRangeParams): Promise<AnalyticsSummary>;
+  autoPerformance(range: AnalyticsRangeParams, bucket: TimeseriesBucket): Promise<AutoPerformance>;
   timeseries(range: AnalyticsRangeParams, bucket: TimeseriesBucket): Promise<TimeseriesPoint[]>;
   breakdown(
     dimension: BreakdownDimension,
@@ -790,6 +822,10 @@ export const realClient: ApiClient = {
   summary: (range) =>
     http<AnalyticsSummary>(
       `${API_BASE}/analytics/summary${queryString({ from: range.from, to: range.to })}`,
+    ),
+  autoPerformance: (range, bucket) =>
+    http<AutoPerformance>(
+      `${API_BASE}/analytics/auto${queryString({ from: range.from, to: range.to, bucket })}`,
     ),
   timeseries: (range, bucket) =>
     http<TimeseriesPoint[]>(

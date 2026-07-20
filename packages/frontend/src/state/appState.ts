@@ -26,6 +26,7 @@ import {
   type ModelPricingInput,
   type OauthPresetDto,
   type ProviderDto,
+  type AutoPerformance,
   type RequestRow,
   type RuleDto,
   type TierDto,
@@ -77,6 +78,13 @@ export interface AppState {
   /** The sidebar setup-guide card was dismissed (persisted per browser). */
   setupDismissed: boolean;
   range: Range;
+  /** Auto-performance section (add-auto-performance-view), Routing-local range. */
+  autoPerf: {
+    data: AutoPerformance | null;
+    loaded: boolean;
+    error: string | null;
+    range: Range;
+  };
   reqFilter: RequestFilter;
   selId: string | null;
   toast: string | null;
@@ -213,7 +221,6 @@ export interface AppState {
   /** Per-channel enable-toggle in-flight guard (coalesce rapid clicks). */
   channelToggling: Record<string, boolean>;
   cf: ChannelForm;
-
 
   // onboarding (realized, failure-aware)
   ob: OnboardingState;
@@ -554,6 +561,7 @@ function initialState(): AppState {
     theme: 'light',
     setupDismissed: readSetupDismissed(),
     range: '24h',
+    autoPerf: { data: null, loaded: false, error: null, range: '7d' },
     reqFilter: 'all',
     selId: null,
     toast: null,
@@ -633,7 +641,6 @@ function initialState(): AppState {
     channelToggling: {},
     cf: emptyChannelForm(),
 
-
     ob: initialOnboarding(),
   };
 }
@@ -646,6 +653,9 @@ export interface AppStore {
   toggleTheme: () => void;
   dismissSetupGuide: () => void;
   setRange: (range: Range) => void;
+  /** Auto-performance section (add-auto-performance-view): Routing-local range. */
+  loadAutoPerf: () => Promise<void>;
+  setAutoPerfRange: (range: Range) => void;
   setFilter: (filter: RequestFilter) => void;
   select: (id: string | null) => void;
   say: (msg: string) => void;
@@ -733,6 +743,8 @@ export interface AppStore {
 export function createAppStore(client: ApiClient = realClient): AppStore {
   const [state, setState] = createStore<AppState>(initialState());
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
+  // Monotonic stamp for auto-performance loads (r3-High-1 race guard).
+  let autoPerfSeq = 0;
 
   const say = (msg: string): void => {
     clearTimeout(toastTimer);
@@ -788,7 +800,10 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     setState('agentStatsLoaded', false); // a failed (re)load shows `—`, never stale figures
     try {
       const now = Date.now();
-      const range = { from: new Date(now - 86_400_000).toISOString(), to: new Date(now).toISOString() };
+      const range = {
+        from: new Date(now - 86_400_000).toISOString(),
+        to: new Date(now).toISOString(),
+      };
       const rows = await client.breakdown('agent', range, 100);
       setState(
         produce((s) => {
@@ -1341,6 +1356,28 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       setState('setupDismissed', true);
     },
     setRange: (range) => setState('range', range),
+    loadAutoPerf: async () => {
+      // Race guard (r3-High-1): stamp each request; commit only if it is still
+      // the newest AND the selected range hasn't moved — a slow older response
+      // must never be labeled as the newly selected range.
+      const requested = state.autoPerf.range;
+      const seq = ++autoPerfSeq;
+      const { from, to, bucket } = rangeToParams(requested, Date.now());
+      try {
+        const data = await client.autoPerformance({ from, to }, bucket);
+        if (seq !== autoPerfSeq || state.autoPerf.range !== requested) return;
+        setState('autoPerf', { data, loaded: true, error: null, range: requested });
+      } catch (e) {
+        if (seq !== autoPerfSeq || state.autoPerf.range !== requested) return;
+        setState('autoPerf', 'error', err(e));
+        setState('autoPerf', 'loaded', true);
+      }
+    },
+    setAutoPerfRange: (range) => {
+      // Clear stale data so the section shows Loading for the new range, never
+      // old-range numbers under a new-range selector (r3-High-1).
+      setState('autoPerf', { range, loaded: false, data: null, error: null });
+    },
     setFilter: (reqFilter) => {
       setState('reqFilter', reqFilter);
       void loadRequests(true);
@@ -1549,9 +1586,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           const updated = await client.updateProvider(editingId, patch);
           setState(
             produce((s) => {
-              s.providers = s.providers.map((p) =>
-                p.id === editingId ? toProvider(updated) : p,
-              );
+              s.providers = s.providers.map((p) => (p.id === editingId ? toProvider(updated) : p));
               s.np = emptyNp();
               s.modal = null;
             }),
@@ -1658,7 +1693,14 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
             s.providers = isReauthorize
               ? s.providers.map((x) => (x.id === provider.id ? provider : x))
               : [...s.providers, provider];
-            s.ow = { presets: s.ow.presets, active: null, pasted: '', busy: false, error: null, advanced: false };
+            s.ow = {
+              presets: s.ow.presets,
+              active: null,
+              pasted: '',
+              busy: false,
+              error: null,
+              advanced: false,
+            };
             s.modal = null;
           }),
         );
@@ -1755,7 +1797,14 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           s.np.error = null;
           // Abandon any open connect wizard (its server session simply expires); the
           // pasted value is credential material and never survives the modal.
-          s.ow = { presets: s.ow.presets, active: null, pasted: '', busy: false, error: null, advanced: false };
+          s.ow = {
+            presets: s.ow.presets,
+            active: null,
+            pasted: '',
+            busy: false,
+            error: null,
+            advanced: false,
+          };
           s.modal = null;
         }),
       );
@@ -2146,7 +2195,10 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           setState('ob', { providerId: created.id, provInput: inputKey });
           setState(
             produce((s) => {
-              s.providers = [...s.providers.filter((p) => p.id !== created.id), toProvider(created)];
+              s.providers = [
+                ...s.providers.filter((p) => p.id !== created.id),
+                toProvider(created),
+              ];
             }),
           );
         }

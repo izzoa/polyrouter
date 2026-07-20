@@ -1,21 +1,42 @@
 import { Inject, Injectable, UnprocessableEntityException } from '@nestjs/common';
+import { ruleOrder } from '@polyrouter/data-plane';
 import {
   PERSISTENCE_PORT,
+  parseRoutingTarget,
   type AnalyticsBreakdownRow,
   type AnalyticsRange,
   type AnalyticsRequestRow,
   type AnalyticsRequestsCursor,
   type AnalyticsSummary,
   type AnalyticsTimeseriesPoint,
+  type AutoCounterfactualRates,
+  type AutoPerformanceData,
   type PersistencePort,
   type Principal,
 } from '@polyrouter/shared/server';
+import { PricingService } from '../pricing/pricing.service';
 import type {
+  AutoQueryDto,
   BreakdownQueryDto,
   RequestsQueryDto,
   SummaryQueryDto,
   TimeseriesQueryDto,
 } from './analytics.dto';
+
+/** The auto-performance response: accessor aggregates + the resolved savings
+ * presentation (USD from micros, discriminated basis) — or null savings when
+ * the `auto_high` basis is unresolvable/unpriced (never a fabricated zero). */
+export interface AutoPerformanceView extends Omit<AutoPerformanceData, 'savings'> {
+  savings: {
+    /** Null when zero rows were costable — unknown, never $0 (r3-High-2). */
+    netUsd: number | null;
+    grossUsd: number | null;
+    excessUsd: number | null;
+    rows: number;
+    uncostedRows: number;
+    basis: { kind: 'tier' | 'model'; label: string; model: string };
+  } | null;
+}
 
 /** Max analytics window — bounds the *range* (not row count) so a pathological
  * request can't span the whole table (400 days). */
@@ -33,7 +54,10 @@ export interface RequestsPageView {
 
 @Injectable()
 export class AnalyticsService {
-  constructor(@Inject(PERSISTENCE_PORT) private readonly db: PersistencePort) {}
+  constructor(
+    @Inject(PERSISTENCE_PORT) private readonly db: PersistencePort,
+    private readonly pricing: PricingService,
+  ) {}
 
   summary(principal: Principal, q: SummaryQueryDto): Promise<AnalyticsSummary> {
     return this.db.analytics.summary(principal, this.parseRange(q.from, q.to));
@@ -45,6 +69,99 @@ export class AnalyticsService {
       this.parseRange(q.from, q.to),
       q.bucket ?? 'day',
     );
+  }
+
+  /** Auto-performance aggregation (add-auto-performance-view). The savings
+   * counterfactual basis is the CURRENT `auto_high` target (the same
+   * deterministic rule ordering the routers use), priced live via the pricing
+   * service — a labeled display hypothetical, never persisted (invariant 4). */
+  async autoPerformance(principal: Principal, q: AutoQueryDto): Promise<AutoPerformanceView> {
+    const range = this.parseRange(q.from, q.to);
+    const basis = await this.resolveAutoHighBasis(principal);
+    const data = await this.db.analytics.autoPerformance(
+      principal,
+      range,
+      q.bucket ?? 'day',
+      basis?.rates ?? null,
+    );
+    return {
+      ...data,
+      savings:
+        data.savings !== null && basis !== null
+          ? {
+              netUsd: data.savings.netMicros === null ? null : data.savings.netMicros / 1_000_000,
+              grossUsd:
+                data.savings.grossMicros === null ? null : data.savings.grossMicros / 1_000_000,
+              excessUsd:
+                data.savings.excessMicros === null ? null : data.savings.excessMicros / 1_000_000,
+              rows: data.savings.rows,
+              uncostedRows: data.savings.uncostedRows,
+              basis: basis.basis,
+            }
+          : null,
+    };
+  }
+
+  /** Resolve the current `auto_high` target to a priced counterfactual basis:
+   * tier target → its position-0 primary model; model target → that model.
+   * Null when no rule / unresolvable target / unpriced model. */
+  private async resolveAutoHighBasis(principal: Principal): Promise<{
+    rates: AutoCounterfactualRates;
+    basis: { kind: 'tier' | 'model'; label: string; model: string };
+  } | null> {
+    const rules = (await this.db.routingRules.list(principal))
+      .filter((r) => r.matchType === 'auto_high')
+      .sort(ruleOrder);
+    const rule = rules[0];
+    if (rule === undefined) return null;
+    const target = parseRoutingTarget(rule.target);
+    if (target === null) return null;
+    let modelId: string | null;
+    let basisMeta: { kind: 'tier' | 'model'; label: string };
+    if (target.kind === 'tier') {
+      const tier = (await this.db.tiers.list(principal)).find((t) => t.key === target.key);
+      if (tier === undefined) return null;
+      const entries = await this.db.routingEntries.listForTier(principal, tier.id);
+      const primary = entries.find((e) => e.position === 0);
+      if (primary === undefined) return null;
+      modelId = primary.modelId;
+      basisMeta = { kind: 'tier', label: target.key };
+    } else {
+      modelId = target.id;
+      basisMeta = { kind: 'model', label: target.id };
+    }
+    if (modelId === null) return null;
+    const model = await this.db.models.findById(principal, modelId);
+    if (model === null) return null;
+    const provider = await this.db.providers.findById(principal, model.providerId);
+    if (provider === null) return null;
+    const price = await this.pricing.resolveForModel(
+      {
+        externalModelId: model.externalModelId,
+        inputPricePer1m: model.inputPricePer1m,
+        outputPricePer1m: model.outputPricePer1m,
+        isFree: model.isFree,
+      },
+      provider.baseUrl,
+      provider.kind,
+      new Date(),
+    );
+    if (price === null || price.inputPricePer1m == null || price.outputPricePer1m == null) {
+      return null; // unpriced basis — unknown never becomes a number
+    }
+    return {
+      rates: {
+        inputPer1m: price.inputPricePer1m,
+        outputPer1m: price.outputPricePer1m,
+        cacheReadPer1m: price.cacheReadPricePer1m ?? null,
+        cacheWritePer1m: price.cacheWritePricePer1m ?? null,
+      },
+      basis: {
+        kind: basisMeta.kind,
+        label: basisMeta.kind === 'model' ? model.externalModelId : basisMeta.label,
+        model: model.externalModelId,
+      },
+    };
   }
 
   breakdown(principal: Principal, q: BreakdownQueryDto): Promise<AnalyticsBreakdownRow[]> {

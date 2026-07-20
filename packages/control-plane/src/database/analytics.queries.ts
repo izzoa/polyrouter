@@ -1,15 +1,4 @@
-import {
-  and,
-  desc,
-  eq,
-  getTableColumns,
-  gte,
-  inArray,
-  lt,
-  or,
-  sql,
-  type SQL,
-} from 'drizzle-orm';
+import { and, desc, eq, getTableColumns, gte, inArray, lt, or, sql, type SQL } from 'drizzle-orm';
 import {
   agents,
   models,
@@ -19,6 +8,8 @@ import {
   requestLogs,
   type AnalyticsAccessor,
   type AnalyticsBreakdownRow,
+  type AutoCounterfactualRates,
+  type AutoPerformanceData,
   type AnalyticsBucket,
   type AnalyticsDimension,
   type AnalyticsRange,
@@ -131,7 +122,9 @@ async function enrich(
     )
     .groupBy(requestAttempts.requestLogId);
   const attemptByLog = new Map(attemptRows.map((r) => [r.requestLogId, Number(r.micros)]));
-  const nativeAttemptByLog = new Map(attemptRows.map((r) => [r.requestLogId, r.hasNative === true]));
+  const nativeAttemptByLog = new Map(
+    attemptRows.map((r) => [r.requestLogId, r.hasNative === true]),
+  );
 
   const uniq = (v: (string | null)[]): string[] => [
     ...new Set(v.filter((x): x is string => x !== null)),
@@ -149,8 +142,7 @@ async function enrich(
     agentLabel: r.agentId !== null ? (agentLabels.get(r.agentId) ?? null) : null,
     attemptCostMicros: attemptByLog.get(r.id) ?? 0,
     // Rolled-up estimate flag: the served row OR any attempt priced native_family.
-    priceEstimated:
-      r.priceSource === 'native_family' || (nativeAttemptByLog.get(r.id) ?? false),
+    priceEstimated: r.priceSource === 'native_family' || (nativeAttemptByLog.get(r.id) ?? false),
   }));
 }
 
@@ -366,6 +358,145 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
         spend: t.spend,
         requests: t.requests,
       }));
+    },
+
+    /** Auto-performance aggregation (add-auto-performance-view): DISJOINT
+     * partitions over the decision-telemetry columns; savings as per-row
+     * integer micro-dollars against caller-resolved counterfactual rates
+     * (tokens × $/1M IS micros — `round(usd × 1e6)` per row by construction,
+     * mirroring `computeCost`'s null-on-missing-cache-component rule). */
+    async autoPerformance(
+      principal: Principal,
+      range: AnalyticsRange,
+      bucket: AnalyticsBucket,
+      counterfactual: AutoCounterfactualRates | null,
+    ): Promise<AutoPerformanceData> {
+      const banded = and(
+        logRange(principal, range),
+        sql`${requestLogs.structuralBand} is not null`,
+      ) as SQL;
+      const cascadeBase = sql`${requestLogs.structuralBand} = 'ambiguous' and ${requestLogs.decisionLayer} = 'cascade'`;
+      const [t] = await db
+        .select({
+          evaluated: intCount(),
+          highRequests: intCount(sql`${requestLogs.structuralBand} = 'high'`),
+          highDeclared: intCount(
+            sql`${requestLogs.structuralBand} = 'high' and ${requestLogs.structuralBandSource} = 'declared'`,
+          ),
+          highUnroutable: intCount(
+            sql`${requestLogs.structuralBand} = 'high' and ${requestLogs.decisionLayer} = 'default'`,
+          ),
+          lowRequests: intCount(sql`${requestLogs.structuralBand} = 'low'`),
+          lowDeclared: intCount(
+            sql`${requestLogs.structuralBand} = 'low' and ${requestLogs.structuralBandSource} = 'declared'`,
+          ),
+          lowUnroutable: intCount(
+            sql`${requestLogs.structuralBand} = 'low' and ${requestLogs.decisionLayer} = 'default'`,
+          ),
+          ambiguous: intCount(sql`${requestLogs.structuralBand} = 'ambiguous'`),
+          cascadeRequests: intCount(cascadeBase),
+          qualityPassed: intCount(
+            sql`${cascadeBase} and not ${requestLogs.escalated} and ${requestLogs.status} in ('success','fallback') and ${requestLogs.qualitySignal} is not null`,
+          ),
+          qualityUnknown: intCount(
+            sql`${cascadeBase} and not ${requestLogs.escalated} and ${requestLogs.status} in ('success','fallback') and ${requestLogs.qualitySignal} is null`,
+          ),
+          failedOrCancelled: intCount(
+            sql`${cascadeBase} and not ${requestLogs.escalated} and ${requestLogs.status} in ('error','cancelled')`,
+          ),
+          cascadeEscalated: intCount(sql`${cascadeBase} and ${requestLogs.escalated}`),
+          fallthrough: intCount(
+            sql`${requestLogs.structuralBand} = 'ambiguous' and ${requestLogs.decisionLayer} = 'default'`,
+          ),
+        })
+        .from(requestLogs)
+        .where(banded);
+
+      const seriesBucket = bucketExpr(requestLogs.createdAt, bucket);
+      const seriesRows = await db
+        .select({
+          bucket: seriesBucket,
+          high: intCount(sql`${requestLogs.structuralBand} = 'high'`),
+          low: intCount(sql`${requestLogs.structuralBand} = 'low'`),
+          ambiguous: intCount(sql`${requestLogs.structuralBand} = 'ambiguous'`),
+        })
+        .from(requestLogs)
+        .where(banded)
+        .groupBy(seriesBucket)
+        .orderBy(seriesBucket);
+
+      // RANGE-INDEPENDENT: the tenant's earliest banded row ever.
+      const [since] = await db
+        .select({ min: sql<Date | null>`min(${requestLogs.createdAt})` })
+        .from(requestLogs)
+        .where(
+          and(
+            ownershipPredicate(requestLogs, principal),
+            sql`${requestLogs.structuralBand} is not null`,
+          ),
+        );
+
+      let savings: AutoPerformanceData['savings'] = null;
+      if (counterfactual !== null) {
+        const c = counterfactual;
+        const qualityPassedCond = sql`${cascadeBase} and not ${requestLogs.escalated} and ${requestLogs.status} in ('success','fallback') and ${requestLogs.qualitySignal} is not null`;
+        const crMissing = c.cacheReadPer1m === null ? sql`true` : sql`false`;
+        const cwMissing = c.cacheWritePer1m === null ? sql`true` : sql`false`;
+        const uncostable = sql`(${requestLogs.cost} is null or (coalesce(${requestLogs.cacheReadTokens}, 0) > 0 and ${crMissing}) or (coalesce(${requestLogs.cacheWriteTokens}, 0) > 0 and ${cwMissing}))`;
+        const cfMicros = sql`round(${requestLogs.inputTokens} * ${c.inputPer1m} + ${requestLogs.outputTokens} * ${c.outputPer1m} + coalesce(${requestLogs.cacheReadTokens}, 0) * ${c.cacheReadPer1m ?? 0} + coalesce(${requestLogs.cacheWriteTokens}, 0) * ${c.cacheWritePer1m ?? 0})`;
+        const deltaMicros = sql`(${cfMicros} - round(${requestLogs.cost} * 1000000))`;
+        const [sums] = await db
+          .select({
+            rows: intCount(sql`not ${uncostable}`),
+            uncostedRows: intCount(uncostable),
+            netMicros: sql<number>`coalesce(sum(case when not ${uncostable} then ${deltaMicros} else 0 end), 0)`,
+            grossMicros: sql<number>`coalesce(sum(case when not ${uncostable} and ${deltaMicros} > 0 then ${deltaMicros} else 0 end), 0)`,
+            excessMicros: sql<number>`coalesce(sum(case when not ${uncostable} and ${deltaMicros} < 0 then -${deltaMicros} else 0 end), 0)`,
+          })
+          .from(requestLogs)
+          .where(and(logRange(principal, range), qualityPassedCond));
+        // Unknown-not-zero (r3-High-2): with no costable row the totals are
+        // null, never a fabricated $0 — coverage still reports the exclusions.
+        const costable = sums!.rows > 0;
+        savings = {
+          rows: sums!.rows,
+          uncostedRows: sums!.uncostedRows,
+          netMicros: costable ? Number(sums!.netMicros) : null,
+          grossMicros: costable ? Number(sums!.grossMicros) : null,
+          excessMicros: costable ? Number(sums!.excessMicros) : null,
+        };
+      }
+
+      const iso = (v: Date | string | null | undefined): string | null =>
+        v == null ? null : v instanceof Date ? v.toISOString() : new Date(v).toISOString();
+      return {
+        evaluated: t!.evaluated,
+        bands: {
+          high: {
+            requests: t!.highRequests,
+            declared: t!.highDeclared,
+            unroutable: t!.highUnroutable,
+          },
+          low: { requests: t!.lowRequests, declared: t!.lowDeclared, unroutable: t!.lowUnroutable },
+          ambiguous: { requests: t!.ambiguous },
+        },
+        cascade: {
+          requests: t!.cascadeRequests,
+          qualityPassed: t!.qualityPassed,
+          qualityUnknown: t!.qualityUnknown,
+          failedOrCancelled: t!.failedOrCancelled,
+          escalated: t!.cascadeEscalated,
+        },
+        fallthrough: t!.fallthrough,
+        series: seriesRows.map((r) => ({
+          bucket: iso(r.bucket)!,
+          high: r.high,
+          low: r.low,
+          ambiguous: r.ambiguous,
+        })),
+        telemetrySince: iso(since?.min),
+        savings,
+      };
     },
 
     async listRequests(principal, query) {

@@ -1,10 +1,13 @@
-import { createSignal, For, onMount, Show } from 'solid-js';
+import { createEffect, createSignal, For, onMount, Show } from 'solid-js';
+import { Chart } from '../components/Chart';
 import { ModelPicker } from '../components/ModelPicker';
+import { RangeSelector } from '../components/RangeSelector';
 import { Toggle } from '../components/Toggle';
 import type { AutoLayers, TierEntryDto } from '../data/api';
+import { autoSeriesToChart, toAutoPerfVm } from '../data/autoPerf';
 import { fmtUsd } from '../data/format';
 import { useApp } from '../state/context';
-import type { Model } from '../types';
+import type { Model, Range } from '../types';
 
 interface DragPos {
   tierId: string;
@@ -53,6 +56,144 @@ export function groupModelsByProvider(
       models: group.sort((a, b) => a.externalModelId.localeCompare(b.externalModelId)),
     }))
     .sort((a, b) => a.label.localeCompare(b.label));
+}
+
+/** The AUTO PERFORMANCE section (add-auto-performance-view): evidence beside
+ * the toggles. Locally-ranged (7d default); every figure comes verbatim from
+ * the aggregation endpoint via the pure view-model. */
+function AutoPerformance() {
+  const app = useApp();
+  const { state } = app;
+  createEffect(() => {
+    if (!state.autoPerf.loaded) void app.loadAutoPerf();
+  });
+  const vm = () => toAutoPerfVm(state.autoPerf.data);
+  const bucketSecs = () => (state.autoPerf.range === '24h' ? 3600 : 86_400);
+  const chartData = () => autoSeriesToChart(state.autoPerf.data?.series ?? [], bucketSecs());
+  const statFont = "font:400 11.5px 'Geist',sans-serif;color:var(--text3)";
+  const valFont = "font:500 12px 'Geist',sans-serif;color:var(--text)";
+  return (
+    <div class="panel card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+        <div class="section-title">Auto performance</div>
+        <RangeSelector
+          value={state.autoPerf.range}
+          onChange={(r: Range) => app.setAutoPerfRange(r)}
+        />
+      </div>
+      <Show when={state.autoPerf.error}>
+        <div style="font:400 11px 'Geist',sans-serif;color:var(--red)">
+          Couldn’t load auto performance — {state.autoPerf.error}
+        </div>
+      </Show>
+      <Show when={state.autoPerf.data === null && state.autoPerf.error === null}>
+        <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3);padding:6px 0">
+          Loading…
+        </div>
+      </Show>
+      <Show when={vm()} keyed>
+        {(v) => (
+          <Show
+            when={v.zeroState === 'none'}
+            fallback={
+              <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3);padding:6px 0">
+                {v.zeroState === 'preCapture'
+                  ? `No evaluated telemetry in this range — telemetry begins ${new Date(v.telemetrySince ?? 0).toLocaleDateString()}.`
+                  : 'No auto telemetry yet — route a request with model "auto" to start measuring.'}
+              </div>
+            }
+          >
+            <div style="display:flex;flex-wrap:wrap;gap:16px;margin:6px 0 10px">
+              <span style={statFont}>
+                evaluated <span style={valFont}>{v.evaluated.toLocaleString()}</span>
+              </span>
+              <span style={statFont}>
+                ambiguous <span style={valFont}>{v.ambiguousPct}</span>
+              </span>
+              <span style={statFont}>
+                declared <span style={valFont}>{v.declaredPct}</span>
+              </span>
+              <Show when={v.cascadeRequests > 0}>
+                <span style={statFont}>
+                  quality-pass <span style={valFont}>{v.passedPct}</span>
+                </span>
+                <span style={statFont}>
+                  escalated <span style={valFont}>{v.escalatedPct}</span>
+                </span>
+                <span style={statFont}>
+                  unknown <span style={valFont}>{v.unknownPct}</span>
+                </span>
+                <span style={statFont}>
+                  failed/cancelled before escalation <span style={valFont}>{v.failedPct}</span>
+                </span>
+              </Show>
+            </div>
+            <Show when={v.unroutable > 0}>
+              <div style="font:400 11px 'Geist',sans-serif;color:var(--amber);margin-bottom:8px">
+                {v.unroutable} confident request{v.unroutable === 1 ? '' : 's'} fell through with no
+                band target — add an{' '}
+                <span class="mono" style="font-size:10.5px">
+                  auto_high
+                </span>
+                {' / '}
+                <span class="mono" style="font-size:10.5px">
+                  auto_low
+                </span>{' '}
+                rule to route them.
+              </div>
+            </Show>
+            <Show when={v.savings} keyed>
+              {(sv) => (
+                <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text2);margin-bottom:10px">
+                  <Show
+                    when={!sv.moneyless}
+                    fallback={
+                      <span style="color:var(--text3)">
+                        savings unavailable — {sv.coverage} were costable
+                      </span>
+                    }
+                  >
+                    <Show
+                      when={!sv.negative}
+                      fallback={
+                        <span style="color:var(--amber)">
+                          cheap routing cost {sv.excess} MORE than {sv.basisLabel} would have —
+                          review the auto_low tier · est.
+                        </span>
+                      }
+                    >
+                      est. net savings <span style={valFont}>{sv.net}</span> · at today’s{' '}
+                      {sv.basisLabel} rate · est.
+                    </Show>
+                  </Show>{' '}
+                  <span style="color:var(--text3);font-size:10.5px">
+                    {sv.coverage}
+                    {sv.incomplete ? ' (some rows uncostable)' : ''}
+                  </span>
+                </div>
+              )}
+            </Show>
+            <Show when={chartData()[0].length > 0}>
+              <Chart
+                data={chartData()}
+                height={110}
+                series={[
+                  { label: 'high' },
+                  { label: 'low', dash: [6, 3] },
+                  { label: 'ambiguous', dash: [2, 3] },
+                ]}
+              />
+              <div style="display:flex;gap:12px;font:400 10.5px 'Geist',sans-serif;color:var(--text3);margin-top:4px">
+                <span style="color:var(--accent-deep)">— high</span>
+                <span>┅ low</span>
+                <span>· · ambiguous</span>
+              </div>
+            </Show>
+          </Show>
+        )}
+      </Show>
+    </div>
+  );
 }
 
 function structuralLayers(al: AutoLayers | null): LayerRow[] {
@@ -374,6 +515,10 @@ export function Routing() {
               degrades to the default tier. Requests never fail because routing got clever.
             </div>
           </div>
+
+          <Show when={state.autoLayers?.structuralAvailable}>
+            <AutoPerformance />
+          </Show>
 
           <div class="panel card">
             <div class="section-title" style="margin-bottom:4px">

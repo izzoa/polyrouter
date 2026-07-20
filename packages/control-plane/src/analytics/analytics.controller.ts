@@ -3,6 +3,7 @@ import type { Principal } from '@polyrouter/shared/server';
 import { CurrentPrincipal } from '../auth/principal.decorator';
 import { AnalyticsService } from './analytics.service';
 import {
+  AutoQueryDto,
   BreakdownQueryDto,
   RequestsQueryDto,
   SummaryQueryDto,
@@ -23,6 +24,11 @@ export class AnalyticsController {
   @Get('timeseries')
   timeseries(@CurrentPrincipal() principal: Principal, @Query() q: TimeseriesQueryDto) {
     return this.svc.timeseries(principal, q);
+  }
+
+  @Get('auto')
+  auto(@CurrentPrincipal() principal: Principal, @Query() q: AutoQueryDto) {
+    return this.svc.autoPerformance(principal, q);
   }
 
   @Get('breakdown')

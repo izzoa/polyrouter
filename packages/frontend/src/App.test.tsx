@@ -262,6 +262,50 @@ describe('dashboard shell (auth-gated)', () => {
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
       expect(host.textContent).toContain('off instance-wide (ROUTING_AUTO_LAYERS)');
+      // add-auto-performance-view: no structural layer -> no performance section
+      expect(host.textContent).not.toContain('Auto performance');
+    } finally {
+      dispose();
+    }
+  });
+
+  it('renders the Auto performance section with rates, savings + coverage, and a local range', async () => {
+    const fake = new FakeApiClient({ tiers: [DEFAULT_TIER] });
+    const { host, store, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Routing');
+      await flush();
+      const text = host.textContent ?? '';
+      expect(text).toContain('Auto performance');
+      // DEFAULT_AUTO_PERF: evaluated 40; cascade 10 with 7 passed / 1 escalated.
+      expect(text).toContain('evaluated');
+      expect(text).toContain('40');
+      expect(text).toContain('70%');
+      // Savings honesty contract: net + basis label + '· est.' + visible coverage.
+      expect(text).toContain('$1.6200');
+      expect(text).toContain('premium');
+      expect(text).toContain('est.');
+      expect(text).toContain('based on 6 of 7 quality-passed requests');
+      // Unroutable diagnostic (1 in the fixture) names the rule kinds to add.
+      expect(text).toContain('auto_high');
+      // The section's range control is LOCAL: clicking 30d must not move the
+      // global Observe range (24h default), only autoPerf.range.
+      expect(store.state.autoPerf.range).toBe('7d');
+      const globalBefore = store.state.range;
+      const section = [...host.querySelectorAll<HTMLElement>('.panel')].find((p) =>
+        p.textContent?.includes('Auto performance'),
+      );
+      if (!section) throw new Error('Auto performance panel missing');
+      const btn = [...section.querySelectorAll<HTMLElement>('button')].find(
+        (b) => b.textContent?.trim() === '30d',
+      );
+      if (!btn) throw new Error('30d range button missing');
+      btn.click();
+      await flush();
+      expect(store.state.autoPerf.range).toBe('30d');
+      expect(store.state.range).toBe(globalBefore);
+      expect(fake.calls.filter((c) => c === 'autoPerformance').length).toBeGreaterThanOrEqual(2);
     } finally {
       dispose();
     }

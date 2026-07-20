@@ -27,6 +27,7 @@ import type {
   ModelPricingInput,
   ProviderDto,
   ProxyTestBody,
+  AutoPerformance,
   RequestRow,
   RequestsPage,
   RequestsQuery,
@@ -197,6 +198,36 @@ export function buildRequestRows(n: number): RequestRow[] {
   return rows;
 }
 
+export const DEFAULT_AUTO_PERF: AutoPerformance = {
+  evaluated: 40,
+  bands: {
+    high: { requests: 12, declared: 2, unroutable: 1 },
+    low: { requests: 16, declared: 0, unroutable: 0 },
+    ambiguous: { requests: 12 },
+  },
+  cascade: {
+    requests: 10,
+    qualityPassed: 7,
+    qualityUnknown: 1,
+    failedOrCancelled: 1,
+    escalated: 1,
+  },
+  fallthrough: 2,
+  series: [
+    { bucket: '2026-07-14T00:00:00.000Z', high: 6, low: 8, ambiguous: 5 },
+    { bucket: '2026-07-15T00:00:00.000Z', high: 6, low: 8, ambiguous: 7 },
+  ],
+  telemetrySince: '2026-07-10T00:00:00.000Z',
+  savings: {
+    netUsd: 1.62,
+    grossUsd: 1.84,
+    excessUsd: 0.22,
+    rows: 6,
+    uncostedRows: 1,
+    basis: { kind: 'tier', label: 'premium', model: 'gpt-x' },
+  },
+};
+
 export interface FakeOptions {
   adminUsers?: AdminUserDto[];
   adminInvites?: AdminInviteDto[];
@@ -222,6 +253,7 @@ export interface FakeOptions {
   timeseries?: TimeseriesPoint[];
   breakdown?: Record<BreakdownDimension, BreakdownRow[]>;
   requestRows?: RequestRow[];
+  autoPerf?: AutoPerformance;
   /** When set, every analytics read rejects (exercise the error/retry states). */
   analyticsFailure?: ApiError | null;
 }
@@ -308,6 +340,7 @@ export class FakeApiClient implements ApiClient {
   proxyResult: ChatCompletion;
   proxyFailure: ApiError | null;
   summaryResult: AnalyticsSummary;
+  autoPerfResult: AutoPerformance;
   timeseriesResult: TimeseriesPoint[];
   breakdownResult: Record<BreakdownDimension, BreakdownRow[]>;
   requestRows: RequestRow[];
@@ -354,6 +387,7 @@ export class FakeApiClient implements ApiClient {
     };
     this.proxyFailure = opts.proxyFailure ?? null;
     this.summaryResult = opts.summary ?? DEFAULT_SUMMARY;
+    this.autoPerfResult = opts.autoPerf ?? DEFAULT_AUTO_PERF;
     this.timeseriesResult = opts.timeseries ?? DEFAULT_TIMESERIES;
     this.breakdownResult = opts.breakdown ?? defaultBreakdown();
     this.requestRows = opts.requestRows ?? buildRequestRows(30);
@@ -971,6 +1005,12 @@ export class FakeApiClient implements ApiClient {
     this.record('summary', range);
     if (this.analyticsFailure) return Promise.reject(this.analyticsFailure);
     return Promise.resolve(this.summaryResult);
+  }
+
+  autoPerformance(range: AnalyticsRangeParams, bucket: TimeseriesBucket): Promise<AutoPerformance> {
+    this.record('autoPerformance', range, bucket);
+    if (this.analyticsFailure) return Promise.reject(this.analyticsFailure);
+    return Promise.resolve(this.autoPerfResult);
   }
 
   timeseries(range: AnalyticsRangeParams, bucket: TimeseriesBucket): Promise<TimeseriesPoint[]> {

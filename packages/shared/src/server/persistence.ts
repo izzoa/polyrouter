@@ -299,6 +299,47 @@ export interface AnalyticsRequestsPage {
 
 /** Owner-scoped analytics aggregation reads (#17). Every method is scoped to the
  * principal (invariant 5) — no unscoped-by-owner fetch, no cross-tenant path. */
+/** Auto-performance aggregation over the decision-telemetry columns
+ * (add-auto-performance-view). Counts are DISJOINT partitions; savings math
+ * happens in the accessor as per-row integer micro-dollars against the
+ * caller-resolved counterfactual rates (null = basis unresolvable → no query). */
+export interface AutoCounterfactualRates {
+  inputPer1m: number;
+  outputPer1m: number;
+  cacheReadPer1m: number | null;
+  cacheWritePer1m: number | null;
+}
+export interface AutoSavingsTotals {
+  /** Monetary totals are null (unknown, never $0) when zero rows were costable
+   * — coverage (`rows`/`uncostedRows`) is still reported (r3-High-2). */
+  rows: number;
+  uncostedRows: number;
+  netMicros: number | null;
+  grossMicros: number | null;
+  excessMicros: number | null;
+}
+export interface AutoPerformanceData {
+  evaluated: number;
+  bands: {
+    high: { requests: number; declared: number; unroutable: number };
+    low: { requests: number; declared: number; unroutable: number };
+    ambiguous: { requests: number };
+  };
+  cascade: {
+    requests: number;
+    qualityPassed: number;
+    qualityUnknown: number;
+    failedOrCancelled: number;
+    escalated: number;
+  };
+  fallthrough: number;
+  series: { bucket: string; high: number; low: number; ambiguous: number }[];
+  /** RANGE-INDEPENDENT: the tenant's earliest banded row ever (ISO), or null. */
+  telemetrySince: string | null;
+  /** Present only when counterfactual rates were supplied. */
+  savings: AutoSavingsTotals | null;
+}
+
 export interface AnalyticsAccessor {
   summary(principal: Principal, range: AnalyticsRange): Promise<AnalyticsSummary>;
   timeseries(
@@ -313,6 +354,12 @@ export interface AnalyticsAccessor {
     limit: number,
   ): Promise<AnalyticsBreakdownRow[]>;
   listRequests(principal: Principal, query: AnalyticsRequestsQuery): Promise<AnalyticsRequestsPage>;
+  autoPerformance(
+    principal: Principal,
+    range: AnalyticsRange,
+    bucket: AnalyticsBucket,
+    counterfactual: AutoCounterfactualRates | null,
+  ): Promise<AutoPerformanceData>;
 }
 
 /** Per-tenant automatic-routing layer preference (#20). Absent = inherit the

@@ -409,7 +409,11 @@ describe('providers (create → test → sync, kind mapping, pricing)', () => {
 
   it('a failed OAuth completion keeps the modal open, clears the paste, and shows the error', async () => {
     const fake = new FakeApiClient({ session: DEFAULT_SESSION });
-    fake.oauthCompleteRejects = new ApiError(422, 'Unprocessable', 'sign-in state mismatch — restart connect');
+    fake.oauthCompleteRejects = new ApiError(
+      422,
+      'Unprocessable',
+      'sign-in state mismatch — restart connect',
+    );
     const s = createAppStore(fake);
     await s.bootstrap();
     s.openModal('newProvider');
@@ -1143,13 +1147,22 @@ describe('E12.2 — copy() only claims success when the clipboard write succeede
 describe('E12.4 — the setup guide does not wipe an existing default-tier chain', () => {
   it('appends the new model, preserving the existing chain (not a single-element replace)', async () => {
     const tiers: TierDto[] = [
-      { id: 'tier-default', key: 'default', displayName: 'Default', description: null, createdAt: NOW },
+      {
+        id: 'tier-default',
+        key: 'default',
+        displayName: 'Default',
+        description: null,
+        createdAt: NOW,
+      },
     ];
     const fake = new FakeApiClient({
       session: DEFAULT_SESSION,
       tiers,
       tierEntries: {
-        'tier-default': [mkEntry('tier-default', 'keep-1', 0), mkEntry('tier-default', 'keep-2', 1)],
+        'tier-default': [
+          mkEntry('tier-default', 'keep-1', 0),
+          mkEntry('tier-default', 'keep-2', 1),
+        ],
       },
     });
     const s = createAppStore(fake);
@@ -1200,5 +1213,46 @@ describe('E12.4 — the setup guide does not wipe an existing default-tier chain
     expect(s.state.ob.done2).toBe(false);
     expect(s.state.ob.error2).toMatch(/already has 5 models/i);
     expect(fake.calls).not.toContain('replaceTierEntries');
+  });
+});
+
+describe('auto-performance range race (add-auto-performance-view r3-High-1)', () => {
+  it('a slow older-range response never overwrites the newer range data', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    const resolvers: ((v: Awaited<ReturnType<FakeApiClient['autoPerformance']>>) => void)[] = [];
+    const base = fake.autoPerfResult;
+    fake.autoPerformance = (range, bucket) => {
+      void range;
+      void bucket;
+      return new Promise((resolve) => resolvers.push(resolve));
+    };
+    const s = createAppStore(fake);
+    const first = s.loadAutoPerf(); // 7d request, held open
+    s.setAutoPerfRange('30d'); // stale data cleared, loading state
+    expect(s.state.autoPerf.data).toBeNull();
+    expect(s.state.autoPerf.loaded).toBe(false);
+    const second = s.loadAutoPerf(); // 30d request
+    expect(resolvers.length).toBe(2);
+    // The newer (30d) request resolves first…
+    resolvers[1]!({ ...base, evaluated: 999 });
+    await second;
+    expect(s.state.autoPerf.data?.evaluated).toBe(999);
+    expect(s.state.autoPerf.range).toBe('30d');
+    // …then the stale 7d response lands and must be DROPPED.
+    resolvers[0]!({ ...base, evaluated: 1 });
+    await first;
+    expect(s.state.autoPerf.data?.evaluated).toBe(999);
+    expect(s.state.autoPerf.loaded).toBe(true);
+  });
+
+  it('switching ranges clears stale data so the loading state shows', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    const s = createAppStore(fake);
+    await s.loadAutoPerf();
+    expect(s.state.autoPerf.data).not.toBeNull();
+    s.setAutoPerfRange('24h');
+    expect(s.state.autoPerf.data).toBeNull();
+    expect(s.state.autoPerf.loaded).toBe(false);
+    expect(s.state.autoPerf.error).toBeNull();
   });
 });

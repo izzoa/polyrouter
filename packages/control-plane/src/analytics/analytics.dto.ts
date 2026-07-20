@@ -47,6 +47,12 @@ export class TimeseriesQueryDto extends RangeQueryDto {
   bucket?: (typeof ANALYTICS_BUCKETS)[number];
 }
 
+export class AutoQueryDto extends RangeQueryDto {
+  @IsOptional()
+  @IsIn(ANALYTICS_BUCKETS)
+  bucket?: (typeof ANALYTICS_BUCKETS)[number];
+}
+
 export class BreakdownQueryDto extends RangeQueryDto {
   @IsIn(ANALYTICS_DIMENSIONS)
   dimension!: (typeof ANALYTICS_DIMENSIONS)[number];

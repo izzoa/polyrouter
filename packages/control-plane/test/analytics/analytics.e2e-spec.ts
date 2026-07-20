@@ -60,6 +60,7 @@ interface LogSeed {
   structuralBand?: string;
   structuralScore?: number;
   structuralBandSource?: string;
+  qualitySignal?: number;
   errorKind?: string;
   errorStatus?: number;
   errorMessage?: string;
@@ -103,8 +104,8 @@ describe('analytics API (#17)', () => {
         (id, owner_user_id, agent_id, provider_id, model_id, tier_assigned, decision_layer,
          routing_reason, input_tokens, output_tokens, usage_estimated, cost, duration_ms, status,
          escalated, created_at, price_source, error_kind, error_status, error_message, error_request_id,
-         structural_band, structural_score, structural_band_source)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,'test',$8,$9,$10,$11,1,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
+         structural_band, structural_score, structural_band_source, quality_signal)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'test',$8,$9,$10,$11,1,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`,
       [
         id,
         owner,
@@ -128,6 +129,7 @@ describe('analytics API (#17)', () => {
         s.structuralBand ?? null,
         s.structuralScore ?? null,
         s.structuralBandSource ?? null,
+        s.qualitySignal ?? null,
       ],
     );
     return id;
@@ -499,6 +501,241 @@ describe('analytics API (#17)', () => {
       priceSource: 'native_family',
       priceEstimated: true,
     });
+  });
+
+  it('auto: the aggregation partitions exactly, savings is signed micro-dollar math with coverage, telemetrySince is range-independent (add-auto-performance-view)', async () => {
+    const pa = userPrincipal(A);
+    // Basis: auto_high → tier premium whose primary is modelA; kind=custom
+    // honors model-own prices (E5.4), so the counterfactual is deterministic.
+    await pool.query(
+      `UPDATE model SET input_price_per_1m = 10, output_price_per_1m = 20 WHERE id = $1`,
+      [modelA],
+    );
+    const premium = await port.tiers.insert(pa, { key: 'premium' });
+    await port.routingEntries.replaceForTier(pa, premium.id, [modelA]);
+    await port.routingRules.insert(pa, {
+      matchType: 'auto_high',
+      headerName: 'x-polyrouter-tier',
+      headerValue: null,
+      target: 'tier:premium',
+      priority: 0,
+    });
+
+    const AT = '2025-03-16T10:00:00.000Z'; // inside RANGE
+    const banded = (over: Partial<Parameters<typeof seedLog>[1]>) =>
+      seedLog(A, {
+        agentId: agentA,
+        providerId: provA,
+        modelId: modelA,
+        cost: 0.001,
+        at: AT,
+        ...over,
+      });
+    // Confident + declared + unroutable highs, a low:
+    await banded({
+      structuralBand: 'high',
+      structuralScore: 0.7,
+      structuralBandSource: 'threshold',
+      layer: 'structural',
+    });
+    await banded({
+      structuralBand: 'high',
+      structuralScore: 0.2,
+      structuralBandSource: 'declared',
+      layer: 'structural',
+    });
+    await banded({
+      structuralBand: 'high',
+      structuralScore: 0.7,
+      structuralBandSource: 'threshold',
+      layer: 'default',
+    }); // unroutable
+    await banded({
+      structuralBand: 'low',
+      structuralScore: 0.1,
+      structuralBandSource: 'threshold',
+      layer: 'structural',
+    });
+    // The cascade partition — qualityPassed ×2 (one NEGATIVE delta), unknown, failed, escalated, escalated-CANCELLED:
+    await banded({
+      structuralBand: 'ambiguous',
+      structuralScore: 0.4,
+      structuralBandSource: 'threshold',
+      layer: 'cascade',
+      qualitySignal: 1,
+      tin: 1000,
+      tout: 500,
+      cost: 0.001,
+    });
+    await banded({
+      structuralBand: 'ambiguous',
+      structuralScore: 0.4,
+      structuralBandSource: 'threshold',
+      layer: 'cascade',
+      qualitySignal: 1,
+      tin: 100,
+      tout: 50,
+      cost: 1.0,
+    }); // cheap cost MORE
+    await banded({
+      structuralBand: 'ambiguous',
+      structuralScore: 0.4,
+      structuralBandSource: 'threshold',
+      layer: 'cascade',
+      qualitySignal: 1,
+      tin: 10,
+      tout: 5,
+      cost: null,
+    }); // uncosted
+    await banded({
+      structuralBand: 'ambiguous',
+      structuralScore: 0.4,
+      structuralBandSource: 'threshold',
+      layer: 'cascade',
+    }); // qualityUnknown (null signal, success)
+    await banded({
+      structuralBand: 'ambiguous',
+      structuralScore: 0.4,
+      structuralBandSource: 'threshold',
+      layer: 'cascade',
+      status: 'cancelled',
+    }); // failedOrCancelled
+    await banded({
+      structuralBand: 'ambiguous',
+      structuralScore: 0.4,
+      structuralBandSource: 'threshold',
+      layer: 'cascade',
+      escalated: true,
+      qualitySignal: 0.2,
+    });
+    await banded({
+      structuralBand: 'ambiguous',
+      structuralScore: 0.4,
+      structuralBandSource: 'threshold',
+      layer: 'cascade',
+      escalated: true,
+      status: 'cancelled',
+    }); // counts ONLY as escalated
+    await banded({
+      structuralBand: 'ambiguous',
+      structuralScore: 0.4,
+      structuralBandSource: 'threshold',
+      layer: 'default',
+    }); // fallthrough
+    // B: isolation — a banded row that must not leak into A's aggregates.
+    await seedLog(B, {
+      agentId: null,
+      providerId: null,
+      modelId: null,
+      cost: 0.001,
+      at: AT,
+      structuralBand: 'high',
+      structuralScore: 0.9,
+      structuralBandSource: 'threshold',
+      layer: 'structural',
+    });
+
+    const res = await q('auto', A, { ...RANGE, bucket: 'day' });
+    expect(res.status).toBe(200);
+    const body = res.body;
+    // 12 rows seeded here + the suite's earlier error-detail row (ambiguous,
+    // default layer, in range) = 13 evaluated, 9 ambiguous, 2 fallthrough.
+    expect(body.evaluated).toBe(13);
+    expect(body.bands.high).toEqual({ requests: 3, declared: 1, unroutable: 1 });
+    expect(body.bands.low).toEqual({ requests: 1, declared: 0, unroutable: 0 });
+    expect(body.bands.ambiguous.requests).toBe(9);
+    // The DISJOINT partition sums exactly; the escalated cancellation counted once.
+    expect(body.cascade).toEqual({
+      requests: 7,
+      qualityPassed: 3,
+      qualityUnknown: 1,
+      failedOrCancelled: 1,
+      escalated: 2,
+    });
+    expect(body.fallthrough).toBe(2);
+    // Savings: rows P1 (cf 20000µ − 1000µ = +19000µ) and P2 (cf 2000µ − 1000000µ = −998000µ);
+    // the null-cost row excluded + disclosed. net = gross − excess EXACTLY.
+    expect(body.savings).toMatchObject({
+      rows: 2,
+      uncostedRows: 1,
+      netUsd: -0.979,
+      grossUsd: 0.019,
+      excessUsd: 0.998,
+      basis: { kind: 'tier', label: 'premium', model: 'gpt-x' },
+    });
+    // telemetrySince is RANGE-INDEPENDENT: a range wholly before the rows still reports it.
+    const before = await q('auto', A, {
+      from: '2025-02-01T00:00:00.000Z',
+      to: '2025-02-02T00:00:00.000Z',
+    });
+    expect(before.status).toBe(200);
+    expect(before.body.evaluated).toBe(0);
+    // The earliest banded row EVER is the suite's earlier error-detail seed
+    // (DAY1B) — range-independence is exactly the point.
+    expect(before.body.telemetrySince).toBe('2025-03-10T11:30:00.000Z');
+    // Isolation: B sees only its own row.
+    const bRes = await q('auto', B, { ...RANGE });
+    expect(bRes.body.evaluated).toBe(1);
+    expect(bRes.body.savings).toBeNull(); // B has no auto_high rule — basis unresolvable
+  });
+
+  it('auto: wholly-uncostable savings are null-money with coverage, cache-rate exclusion works, model basis resolves, guards fire (r3 folds)', async () => {
+    // A fresh window so the big test's seeds stay out of these aggregates.
+    const RANGE5 = { from: '2025-05-01T00:00:00.000Z', to: '2025-06-01T00:00:00.000Z' };
+    const AT5 = '2025-05-10T10:00:00.000Z';
+    const passed = (over: Partial<Parameters<typeof seedLog>[1]> = {}) =>
+      seedLog(A, {
+        agentId: agentA,
+        providerId: provA,
+        modelId: modelA,
+        at: AT5,
+        structuralBand: 'ambiguous',
+        structuralScore: 0.4,
+        structuralBandSource: 'threshold',
+        layer: 'cascade',
+        qualitySignal: 1,
+        tin: 100,
+        tout: 50,
+        cost: 0.001,
+        ...over,
+      });
+    // Two qualityPassed rows, BOTH uncostable: one by null recorded cost, one by
+    // non-zero cache tokens against a basis with NO cache rate (modelA is a
+    // custom model — resolveForModel yields null cache rates).
+    await passed({ cost: null });
+    const cacheRow = await passed(); // costable on its face…
+    await pool.query(`UPDATE request_log SET cache_read_tokens = 500 WHERE id = $1`, [cacheRow]);
+
+    const res = await q('auto', A, { ...RANGE5, bucket: 'day' });
+    expect(res.status).toBe(200);
+    // Unknown-not-zero (r3-High-2): zero costable rows → the THREE monetary
+    // fields are null, never $0 — coverage and basis are retained.
+    expect(res.body.cascade.qualityPassed).toBe(2);
+    expect(res.body.savings).toEqual({
+      rows: 0,
+      uncostedRows: 2,
+      netUsd: null,
+      grossUsd: null,
+      excessUsd: null,
+      basis: { kind: 'tier', label: 'premium', model: 'gpt-x' },
+    });
+
+    // Model-target basis (r3-Medium-3): swap the auto_high rule to a direct
+    // model target — the basis discriminates as kind:'model' labeled by the
+    // external model id; the null-money contract is unchanged.
+    await pool.query(
+      `UPDATE routing_rule SET target = $1 WHERE owner_user_id = $2 AND match_type = 'auto_high'`,
+      [`model:${modelA}`, A],
+    );
+    const modelRes = await q('auto', A, { ...RANGE5 });
+    expect(modelRes.status).toBe(200);
+    expect(modelRes.body.savings.basis).toEqual({ kind: 'model', label: 'gpt-x', model: 'gpt-x' });
+    expect(modelRes.body.savings.netUsd).toBeNull();
+
+    // Endpoint guards, auto-specific: bad bucket enum → 400 (DTO); inverted
+    // range → 422 (service) — same contract as the sibling reads.
+    expect((await q('auto', A, { ...RANGE5, bucket: 'bogus' })).status).toBe(400);
+    expect((await q('auto', A, { from: RANGE5.to, to: RANGE5.from })).status).toBe(422);
   });
 
   it('the (owner, created_at) index the queries rely on exists', async () => {

@@ -9,10 +9,16 @@ import { useApp } from '../state/context';
  * palette re-applies, and the ResizeObserver is disconnected AND the instance
  * destroyed on cleanup. */
 export interface ChartProps {
-  /** `[secs[], counts[]]` — x is epoch SECONDS (uPlot's native unit). */
-  data: [number[], number[]];
+  /** `[secs[], ...ys[][]]` — x is epoch SECONDS (uPlot's native unit). Single
+   * series by default; pass `series` metadata for a multi-series chart. */
+  data: [number[], ...number[][]];
   label?: string;
   height?: number;
+  /** Multi-series mode (add-auto-performance-view): one entry per y-array.
+   * Series 0 uses the locked accent; the rest use neutral tones distinguished
+   * by DASH pattern (never color alone — WCAG 1.4.1); label rendering is the
+   * caller's (direct labels beside the chart). */
+  series?: { label: string; dash?: number[] }[];
 }
 
 const DEFAULT_HEIGHT = 150;
@@ -51,16 +57,29 @@ export function Chart(props: ChartProps) {
       cursor: { show: false },
       scales: { x: { time: true } },
       axes: [axis, { ...axis }],
-      series: [
-        {},
-        {
-          label: props.label ?? 'requests',
-          stroke: cssVar('--accent', '#4f5dff'),
-          fill: cssVar('--accent-bg', '#eff0ff'),
-          width: 2,
-          points: { show: false },
-        },
-      ],
+      series:
+        props.series !== undefined
+          ? [
+              {},
+              ...props.series.map((meta, i) => ({
+                label: meta.label,
+                stroke: i === 0 ? cssVar('--accent', '#4f5dff') : cssVar('--text3', '#6a6c73'),
+                ...(i === 0 ? { fill: cssVar('--accent-bg', '#eff0ff') } : {}),
+                ...(meta.dash !== undefined ? { dash: meta.dash } : {}),
+                width: i === 0 ? 2 : 1.5,
+                points: { show: false },
+              })),
+            ]
+          : [
+              {},
+              {
+                label: props.label ?? 'requests',
+                stroke: cssVar('--accent', '#4f5dff'),
+                fill: cssVar('--accent-bg', '#eff0ff'),
+                width: 2,
+                points: { show: false },
+              },
+            ],
     };
     chart = new uPlot(opts, props.data, container);
   };

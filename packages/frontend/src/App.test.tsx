@@ -710,6 +710,27 @@ describe('dashboard shell (auth-gated)', () => {
     }
   });
 
+  it('Auto performance refreshes on every page visit, not just the first (stale-card bug)', async () => {
+    const fake = new FakeApiClient({ tiers: [DEFAULT_TIER] });
+    const { host, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Routing');
+      await flush();
+      const first = fake.calls.filter((c) => c === 'autoPerformance').length;
+      expect(first).toBeGreaterThanOrEqual(1);
+      clickByText(host, '.nav-item span', 'Requests'); // leave…
+      await flush();
+      clickByText(host, '.nav-item span', 'Routing'); // …and return
+      await flush();
+      // A revisit refetches (stale-while-revalidate: old data stayed visible).
+      expect(fake.calls.filter((c) => c === 'autoPerformance').length).toBeGreaterThan(first);
+      expect(host.textContent).toContain('Auto performance');
+    } finally {
+      dispose();
+    }
+  });
+
   it('shows only header rules in the Header rules panel (auto rules stay read-only)', async () => {
     const rules: RuleDto[] = [
       {

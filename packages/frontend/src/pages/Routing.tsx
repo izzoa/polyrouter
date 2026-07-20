@@ -391,9 +391,11 @@ function SelfCalibration() {
 function AutoPerformance() {
   const app = useApp();
   const { state } = app;
-  createEffect(() => {
-    if (!state.autoPerf.loaded) void app.loadAutoPerf();
-  });
+  // Refresh on EVERY mount (the page convention — loadRouting does the same):
+  // a `loaded`-gated effect froze the card at its first fetch across visits.
+  // Already-loaded data stays visible while the refetch replaces it (the
+  // loader's seq/gen/range guards make late responses harmless).
+  onMount(() => void app.loadAutoPerf());
   const vm = () => toAutoPerfVm(state.autoPerf.data);
   const bucketSecs = () => (state.autoPerf.range === '24h' ? 3600 : 86_400);
   const chartData = () => autoSeriesToChart(state.autoPerf.data?.series ?? [], bucketSecs());

@@ -1205,6 +1205,25 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     }
   };
 
+  const loadAutoPerf = async (): Promise<void> => {
+    // Race guard (r3-High-1): stamp each request; commit only if it is still
+    // the newest AND the selected range hasn't moved — a slow older response
+    // must never be labeled as the newly selected range.
+    const requested = state.autoPerf.range;
+    const seq = ++autoPerfSeq;
+    const gen = identityGen; // never label another account's data (r3-High-1)
+    const { from, to, bucket } = rangeToParams(requested, Date.now());
+    try {
+      const data = await client.autoPerformance({ from, to }, bucket);
+      if (seq !== autoPerfSeq || gen !== identityGen || state.autoPerf.range !== requested) return;
+      setState('autoPerf', { data, loaded: true, error: null, range: requested });
+    } catch (e) {
+      if (seq !== autoPerfSeq || gen !== identityGen || state.autoPerf.range !== requested) return;
+      setState('autoPerf', 'error', err(e));
+      setState('autoPerf', 'loaded', true);
+    }
+  };
+
   const loadBodyCapture = async (): Promise<void> => {
     const gen = identityGen;
     try {
@@ -1624,30 +1643,13 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       setState('setupDismissed', true);
     },
     setRange: (range) => setState('range', range),
-    loadAutoPerf: async () => {
-      // Race guard (r3-High-1): stamp each request; commit only if it is still
-      // the newest AND the selected range hasn't moved — a slow older response
-      // must never be labeled as the newly selected range.
-      const requested = state.autoPerf.range;
-      const seq = ++autoPerfSeq;
-      const gen = identityGen; // never label another account's data (r3-High-1)
-      const { from, to, bucket } = rangeToParams(requested, Date.now());
-      try {
-        const data = await client.autoPerformance({ from, to }, bucket);
-        if (seq !== autoPerfSeq || gen !== identityGen || state.autoPerf.range !== requested)
-          return;
-        setState('autoPerf', { data, loaded: true, error: null, range: requested });
-      } catch (e) {
-        if (seq !== autoPerfSeq || gen !== identityGen || state.autoPerf.range !== requested)
-          return;
-        setState('autoPerf', 'error', err(e));
-        setState('autoPerf', 'loaded', true);
-      }
-    },
+    loadAutoPerf,
     setAutoPerfRange: (range) => {
       // Clear stale data so the section shows Loading for the new range, never
-      // old-range numbers under a new-range selector (r3-High-1).
+      // old-range numbers under a new-range selector (r3-High-1) — then fetch
+      // it HERE (the mount-time load only covers page visits).
       setState('autoPerf', { range, loaded: false, data: null, error: null });
+      void loadAutoPerf();
     },
     setFilter: (reqFilter) => {
       setState('reqFilter', reqFilter);

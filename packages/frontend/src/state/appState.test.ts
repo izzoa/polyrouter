@@ -1229,14 +1229,14 @@ describe('auto-performance range race (add-auto-performance-view r3-High-1)', ()
     };
     const s = createAppStore(fake);
     const first = s.loadAutoPerf(); // 7d request, held open
-    s.setAutoPerfRange('30d'); // stale data cleared, loading state
-    expect(s.state.autoPerf.data).toBeNull();
+    // Range change clears stale data AND issues the 30d request itself
+    // (fix-auto-perf-stale-card: the section no longer refires on `loaded`).
+    s.setAutoPerfRange('30d');
     expect(s.state.autoPerf.loaded).toBe(false);
-    const second = s.loadAutoPerf(); // 30d request
     expect(resolvers.length).toBe(2);
     // The newer (30d) request resolves first…
     resolvers[1]!({ ...base, evaluated: 999 });
-    await second;
+    await tick();
     expect(s.state.autoPerf.data?.evaluated).toBe(999);
     expect(s.state.autoPerf.range).toBe('30d');
     // …then the stale 7d response lands and must be DROPPED.

@@ -15,10 +15,12 @@ import {
 } from '@opentelemetry/api';
 import {
   PERSISTENCE_PORT,
+  encryptSecret,
   type PersistencePort,
   type Principal,
-  type RequestAttemptInsertInput,
+  type RequestBodyInsertItem,
   type RequestLogInsertInput,
+  type RequestAttemptInsertInput,
 } from '@polyrouter/shared/server';
 import {
   computeCost,
@@ -28,6 +30,7 @@ import {
 } from '@polyrouter/data-plane';
 import { ProxyMetrics } from '../observability/proxy-metrics';
 import { TRACER_NAME } from '../observability/tracing';
+import { BODY_CAPTURE_CONFIG, type BodyCaptureConfig } from '../body-capture/body-capture.config';
 import { PricingService } from '../pricing/pricing.service';
 
 /** Pricing inputs captured at request-completion time, resolved later in the
@@ -40,6 +43,18 @@ export interface DraftPricing {
   readonly providerBaseUrl: string | null;
   readonly providerKind: string;
   readonly at: Date;
+}
+
+/** One captured body direction (add-body-capture) — PLAINTEXT held only in
+ * writer memory under the byte budget; encrypted at flush, never logged. */
+export interface CapturedBodyDraft {
+  readonly direction: 'request' | 'response';
+  readonly content: string;
+  readonly bytes: number;
+  readonly truncated: boolean;
+  readonly partial: boolean;
+  readonly epoch: number;
+  readonly capturedAt: Date;
 }
 
 /** A metadata-only request-log job. `id` is pre-allocated so a retry is
@@ -87,6 +102,11 @@ export interface RequestLogDraft {
   /** The originating request's span context (#21 `recording.write` link);
    * absent when tracing is off. Never persisted. */
   readonly spanContext?: SpanContext;
+  /** Captured bodies (add-body-capture) riding their PARENT draft — flushed
+   * only after the log row lands (parent-first by construction; a failed or
+   * evicted parent takes its bodies with it, never orphans). MUTABLE seam:
+   * queue-budget eviction strips this field (drops counted). */
+  bodies?: readonly CapturedBodyDraft[];
 }
 
 /** A per-billable-call ledger job (#14 cascade) — the superseded cheap attempt.
@@ -129,6 +149,10 @@ export const DEFAULT_LOG_WRITER_CONFIG: LogWriterConfig = {
 };
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** Retained plaintext bytes of a draft's bodies (the byte-ledger unit). */
+const bodyBytesOf = (bodies: readonly CapturedBodyDraft[]): number =>
+  bodies.reduce((n, b) => n + Buffer.byteLength(b.content, 'utf8'), 0);
 
 /** Map a draft's terminal-error detail to the four columns. Defense in depth is
  * CREDENTIAL-FREE (add-request-error-detail): the capture layer already ran the
@@ -185,12 +209,19 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
   private flushing = false;
   private flushPromise: Promise<void> | undefined;
   private timer: ReturnType<typeof setInterval> | undefined;
+  /** Total PLAINTEXT bytes of queued body drafts (add-body-capture, D5) — the
+   * body queue is bounded by BYTES, not draft count (a count bound alone
+   * admits GiB at cap-sized bodies). */
+  private bodyBytesQueued = 0;
+  /** Per-owner body drops awaiting best-effort persistence (visible counter). */
+  private readonly bodyDrops = new Map<string, { principal: Principal; n: number }>();
 
   constructor(
     @Inject(PERSISTENCE_PORT) private readonly db: PersistencePort,
     private readonly pricing: PricingService,
     @Inject(LOG_WRITER_CONFIG) private readonly cfg: LogWriterConfig,
     private readonly metrics: ProxyMetrics,
+    @Inject(BODY_CAPTURE_CONFIG) private readonly bodyCfg: BodyCaptureConfig,
   ) {}
 
   onModuleInit(): void {
@@ -203,12 +234,38 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
     await this.drain();
   }
 
-  /** Enqueue a draft — O(1), never throws, never awaits the DB. */
+  /** Enqueue a draft — O(1) amortized, never throws, never awaits the DB. */
   enqueue(draft: RequestLogDraft): void {
     if (this.queue.length >= this.cfg.maxQueue) {
-      this.queue.shift();
+      const evicted = this.queue.shift();
+      // Its bodies leave the ledger AND the visible drop counter (impl-Med-4).
+      if (evicted) this.stripBodies(evicted, true);
       this.dropped += 1;
       this.metrics.logRowsDroppedBy(1);
+    }
+    // Byte-budgeted body admission (D5): evict OLDEST queued bodies until the
+    // new draft's bodies fit; a single over-budget payload drops its own
+    // bodies. The LOG ROW is never evicted for body pressure.
+    if (draft.bodies !== undefined) {
+      const incoming = bodyBytesOf(draft.bodies);
+      if (incoming > this.bodyCfg.queueBudgetBytes) {
+        this.countBodyDrop(draft.principal, draft.bodies.length);
+        delete draft.bodies;
+      } else {
+        for (const queued of this.queue) {
+          if (this.bodyBytesQueued + incoming <= this.bodyCfg.queueBudgetBytes) break;
+          this.stripBodies(queued, true);
+        }
+        if (this.bodyBytesQueued + incoming > this.bodyCfg.queueBudgetBytes) {
+          // Nothing left to evict (an in-flight flush holds the spliced batch's
+          // bytes) — the NEW bodies drop rather than busting the budget
+          // (impl-confirm-Med-a: the bound is a bound, not a suggestion).
+          this.countBodyDrop(draft.principal, draft.bodies.length);
+          delete draft.bodies;
+        } else {
+          this.bodyBytesQueued += incoming;
+        }
+      }
     }
     this.queue.push(draft);
     // Defer the threshold flush to a microtask: a cascade served-log and its attempt(s)
@@ -229,7 +286,8 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
       await this.flushPromise;
       return;
     }
-    if (this.queue.length === 0 && this.attemptQueue.length === 0) return;
+    if (this.queue.length === 0 && this.attemptQueue.length === 0 && this.bodyDrops.size === 0)
+      return;
     this.flushing = true;
     this.flushPromise = this.flushOnce().finally(() => {
       this.flushing = false;
@@ -248,6 +306,9 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
     while (this.flushing || this.queue.length > 0 || this.attemptQueue.length > 0) {
       await this.flush();
     }
+    // Pending drop counts get ONE bounded shutdown attempt (impl-Med-4) — a
+    // dead DB forfeits the counter update, never the shutdown.
+    if (this.bodyDrops.size > 0) await this.flushBodyDropCounts();
   }
 
   private async flushOnce(): Promise<void> {
@@ -282,6 +343,7 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
     for (const [, drafts] of groupByOwner(insertable)) {
       await this.writeAttemptGroup(drafts);
     }
+    await this.flushBodyDropCounts();
   }
 
   /** Resolve prices + insert one principal's rows, with bounded retry wrapping
@@ -308,11 +370,16 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
             writtenLogIds.add(row.id); // parent is now durable → its attempts may insert (A-14)
             this.metrics.recordCost(d.providerName, d.pricing.externalModelId, row.cost ?? null);
           });
+          // Bodies flush ONLY after their parent rows landed (parent-first,
+          // add-body-capture); a body failure never re-runs the log insert.
+          await this.flushBodies(principal, drafts);
           return;
         } catch (err) {
           if (attempt >= this.cfg.maxRetries) {
             this.dropped += drafts.length;
             this.metrics.logRowsDroppedBy(drafts.length);
+            // A dropped parent takes its bodies with it (counted, off the ledger).
+            for (const d of drafts) this.stripBodies(d, true);
             span.setStatus({ code: SpanStatusCode.ERROR });
             span.setAttribute('polyrouter.dropped', drafts.length);
             this.logger.warn(
@@ -377,6 +444,126 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
       structuralEpoch: d.structuralEpoch ?? null,
       ...errorColumns(d),
     };
+  }
+
+  /** Strip a queued draft's bodies (byte-budget eviction / queue eviction);
+   * `count` marks it a visible body drop. */
+  private stripBodies(draft: RequestLogDraft, count = false): void {
+    if (draft.bodies === undefined) return;
+    this.bodyBytesQueued -= bodyBytesOf(draft.bodies);
+    if (count) this.countBodyDrop(draft.principal, draft.bodies.length);
+    delete draft.bodies;
+  }
+
+  private countBodyDrop(principal: Principal, n: number): void {
+    if (n <= 0) return;
+    const key = principal.kind === 'user' ? `u:${principal.userId}` : `o:${principal.orgId}`;
+    const cur = this.bodyDrops.get(key);
+    if (cur) {
+      cur.n += n;
+    } else if (this.bodyDrops.size < 512) {
+      this.bodyDrops.set(key, { principal, n });
+    } else {
+      // Bounded map (impl-Med-4): past the cap the count is forfeited to the
+      // log rather than growing memory during a prolonged DB outage.
+      this.logger.warn(`body-drop counter overflow: forfeited ${String(n)} drop(s)`);
+    }
+  }
+
+  /** Encrypt + guarded-insert the batch's bodies, chunked by the batch byte
+   * budget. NEVER throws (a throw would re-run the parent log insert); every
+   * failure or guard-discard lands in the visible drop counter instead. */
+  private async flushBodies(principal: Principal, drafts: RequestLogDraft[]): Promise<void> {
+    const withBodies = drafts.filter((d) => d.bodies !== undefined && d.bodies.length > 0);
+    if (withBodies.length === 0) return;
+    // Counted BEFORE any stripping so the failure path can't undercount drops
+    // (stripped drafts report zero bodies).
+    const totalBodies = withBodies.reduce((n, d) => n + (d.bodies?.length ?? 0), 0);
+    let settled = 0; // bodies whose insert call completed (inserted OR guard-discarded+counted)
+    try {
+      // ONE byte-limited chunk at a time: form → encrypt → insert → release
+      // (impl-Med-4: the batch budget bounds ciphertext MATERIALIZATION, not
+      // just DB round-trips). Plaintext references release per draft as its
+      // last body is consumed.
+      // Cursor iteration — no retained flat copy (impl-confirm-Med-a): the
+      // ONLY live references to a body's plaintext are the draft's own, and
+      // each draft is stripped the moment its last body's chunk settles.
+      let di = 0;
+      let bi = 0;
+      while (di < withBodies.length) {
+        const chunkRefs: { d: RequestLogDraft; b: CapturedBodyDraft }[] = [];
+        let bytes = 0;
+        while (di < withBodies.length) {
+          const d = withBodies[di]!;
+          const list = d.bodies ?? [];
+          if (bi >= list.length) {
+            di += 1;
+            bi = 0;
+            continue;
+          }
+          const b = list[bi]!;
+          const cost = Buffer.byteLength(b.content, 'utf8');
+          if (chunkRefs.length > 0 && bytes + cost > this.bodyCfg.batchBudgetBytes) break;
+          chunkRefs.push({ d, b });
+          bytes += cost;
+          bi += 1;
+        }
+        if (chunkRefs.length === 0) break;
+        const items: RequestBodyInsertItem[] = chunkRefs.map(({ d, b }) => ({
+          requestLogId: d.id,
+          direction: b.direction,
+          contentEncrypted: encryptSecret(b.content, this.bodyCfg.credentialKey),
+          bytes: b.bytes,
+          truncated: b.truncated,
+          partial: b.partial,
+          epoch: b.epoch,
+          capturedAt: b.capturedAt,
+        }));
+        const r = await withTimeout(
+          this.db.bodyCapture.insertBodies(principal, items),
+          this.cfg.opTimeoutMs,
+          'request-body insert',
+        );
+        settled += items.length;
+        if (r.discarded > 0) this.countBodyDrop(principal, r.discarded);
+        // Release: strip every draft this chunk finished (its cursor moved past
+        // the draft, or it is the current draft with all bodies consumed).
+        for (const d of new Set(chunkRefs.map((c) => c.d))) {
+          const isCurrent = withBodies[di] === d;
+          if (!isCurrent || bi >= (d.bodies?.length ?? 0)) this.stripBodies(d);
+        }
+      }
+    } catch (err) {
+      // Bodies are debug data — count what never settled and continue; the log
+      // rows already landed. NEVER rethrows (a throw would re-run the parent
+      // log insert). The error string carries no body content.
+      this.countBodyDrop(principal, totalBodies - settled);
+      this.logger.warn(`request-body write failed: ${String(err)}`);
+    } finally {
+      for (const d of withBodies) this.stripBodies(d); // idempotent
+    }
+  }
+
+  /** Best-effort persistence of accumulated body-drop counts (the settings
+   * card's visible counter). Failures keep the counts for the next cycle. */
+  private async flushBodyDropCounts(): Promise<void> {
+    for (const [key, entry] of [...this.bodyDrops.entries()]) {
+      // Deleted BEFORE the attempt: a timed-out increment is not cancelled and
+      // may still commit, so retrying a kept count could DOUBLE-apply it
+      // (impl-confirm-2). The counter is advisory — a failure forfeits the
+      // delta (logged): undercount is acceptable, overcount is a lie.
+      this.bodyDrops.delete(key);
+      try {
+        await withTimeout(
+          this.db.bodyCapture.incrementDropped(entry.principal, entry.n),
+          this.cfg.opTimeoutMs,
+          'body-drop counter',
+        );
+      } catch {
+        this.logger.warn(`body-drop counter update forfeited ${String(entry.n)} drop(s)`);
+        break; // DB unhappy — later cycles handle later drops
+      }
+    }
   }
 
   /** Enqueue a per-attempt ledger row (#14) — O(1), never throws. */

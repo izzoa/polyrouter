@@ -178,12 +178,20 @@ export const agents = pgTable(
     apiKeyHash: text('api_key_hash').notNull(),
     apiKeyPrefix: text('api_key_prefix').notNull(),
     harnessType: text('harness_type').notNull(),
+    /** Per-agent body-capture override (add-body-capture): 'always' | 'never';
+     * null = inherit the owner's global mode. INERT while the global mode is
+     * 'off' — the master switch is the consent boundary. */
+    bodyCaptureOverride: text('body_capture_override'),
     createdAt: createdAt(),
     lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
   },
   (t) => [
     uniqueIndex('agent_api_key_prefix_unique').on(t.apiKeyPrefix),
     index('agent_owner_idx').on(t.ownerUserId),
+    check(
+      'agent_body_capture_override_valid',
+      sql`${t.bodyCaptureOverride} IS NULL OR ${t.bodyCaptureOverride} IN ('always', 'never')`,
+    ),
   ],
 );
 
@@ -603,6 +611,87 @@ export const routingSettings = pgTable(
   ],
 );
 
+/** Owner-scoped body-capture settings singleton (add-body-capture, invariant 8's
+ * opt-in door). A MISSING row ≡ mode 'off' (fail-closed); a malformed row reads
+ * as 'off'. `capture_epoch` is the deletion-revocation counter: purge-all /
+ * disable-with-purge bump it under the row's FOR UPDATE lock — the writer's
+ * guarded insert re-reads it post-lock and discards stale drafts. `retention_days`
+ * null = infinite, reachable only through the explicit keep-forever choice. */
+export const bodyCaptureSettings = pgTable(
+  'body_capture_settings',
+  {
+    id: id(),
+    ownerUserId: owned.ownerUserId(),
+    orgId: owned.orgId(),
+    mode: text('mode').default('off').notNull(),
+    retentionDays: integer('retention_days').default(30),
+    captureEpoch: integer('capture_epoch').default(0).notNull(),
+    droppedCount: integer('dropped_count').default(0).notNull(),
+    lastPurgeAt: timestamp('last_purge_at', { withTimezone: true }),
+    lastPurgeCount: integer('last_purge_count').default(0).notNull(),
+    createdAt: createdAt(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex('body_capture_settings_owner_unique').on(t.ownerUserId),
+    check('body_capture_mode_valid', sql`${t.mode} IN ('off', 'errors_only', 'all')`),
+    check(
+      'body_capture_retention_valid',
+      sql`${t.retentionDays} IS NULL OR (${t.retentionDays} >= 1 AND ${t.retentionDays} <= 3650)`,
+    ),
+    check(
+      'body_capture_counters_nonneg',
+      sql`${t.captureEpoch} >= 0 AND ${t.droppedCount} >= 0 AND ${t.lastPurgeCount} >= 0`,
+    ),
+  ],
+);
+
+/** Captured prompt/response bodies (add-body-capture) — CIPHERTEXT ONLY
+ * (encryptSecret output; plaintext never touches the table or logs). Deletable
+ * operational data, NOT audit: FK CASCADE with the request row. `bytes` is the
+ * pre-encryption plaintext size; `truncated` = stopped at the cap; `partial` =
+ * assembly ended early (cancel / post-commit error). */
+export const requestBodies = pgTable(
+  'request_body',
+  {
+    id: id(),
+    ownerUserId: owned.ownerUserId(),
+    orgId: owned.orgId(),
+    requestLogId: text('request_log_id')
+      .notNull()
+      .references(() => requestLogs.id, { onDelete: 'cascade' }),
+    direction: text('direction').notNull(),
+    contentEncrypted: text('content_encrypted').notNull(),
+    bytes: integer('bytes').notNull(),
+    truncated: boolean('truncated').default(false).notNull(),
+    partial: boolean('partial').default(false).notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('request_body_request_direction_unique').on(t.requestLogId, t.direction),
+    index('request_body_owner_created_idx').on(t.ownerUserId, t.createdAt),
+    check('request_body_direction_valid', sql`${t.direction} IN ('request', 'response')`),
+    check('request_body_bytes_nonneg', sql`${t.bytes} >= 0`),
+  ],
+);
+
+/** Per-request deletion tombstone (add-body-capture): the guarded insert checks
+ * it under the owner lock, so a queued/retrying/timed-out write can never
+ * resurrect deleted bodies. Retained for the PARENT ROW'S lifetime (FK CASCADE)
+ * — provably outlives every writer path; never age-GC'd. */
+export const requestBodyTombstones = pgTable(
+  'request_body_tombstone',
+  {
+    requestLogId: text('request_log_id')
+      .primaryKey()
+      .references(() => requestLogs.id, { onDelete: 'cascade' }),
+    ownerUserId: owned.ownerUserId(),
+    orgId: owned.orgId(),
+    createdAt: createdAt(),
+  },
+  (t) => [index('request_body_tombstone_owner_idx').on(t.ownerUserId)],
+);
+
 /** Append-only refresh-run ledger (add-pricing-refresh-ui): one row per
  * COMPLETED refresh-endpoint/scheduler apply, inserted ATOMICALLY with the
  * version apply inside the pricing advisory-lock transaction. Instance-global
@@ -682,6 +771,8 @@ export type RequestAttemptRow = typeof requestAttempts.$inferSelect;
 export type NotificationChannelRow = typeof notificationChannels.$inferSelect;
 export type BudgetRow = typeof budgets.$inferSelect;
 export type RoutingSettingsRow = typeof routingSettings.$inferSelect;
+export type BodyCaptureSettingsRow = typeof bodyCaptureSettings.$inferSelect;
+export type RequestBodyRow = typeof requestBodies.$inferSelect;
 export type PricingRefreshRunRow = typeof pricingRefreshRuns.$inferSelect;
 export type ThresholdCalibrationEventRow = typeof thresholdCalibrationEvents.$inferSelect;
 export type InviteRow = typeof invites.$inferSelect;

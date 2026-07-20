@@ -16,6 +16,7 @@ import { DatabaseModule } from '../database/database.module';
 import { SubscriptionOauthModule } from '../subscription-oauth/subscription-oauth.module';
 import { ObservabilityModule } from '../observability/observability.module';
 import { ProducersModule } from '../producers/producers.module';
+import { BodyCaptureModule } from '../body-capture/body-capture.module';
 import { RecordingModule } from '../recording/recording.module';
 import { RedisModule } from '../redis/redis.module';
 import { ChatCompletionsController } from './chat-completions.controller';
@@ -69,6 +70,7 @@ function boundedBreakerRedis(redis: Redis): BreakerRedis {
     SubscriptionOauthModule,
     AuthModule,
     RecordingModule,
+    BodyCaptureModule,
     RedisModule,
     ProducersModule,
     BudgetsModule,

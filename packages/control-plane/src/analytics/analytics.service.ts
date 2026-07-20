@@ -1,7 +1,13 @@
-import { Inject, Injectable, UnprocessableEntityException } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  NotFoundException,
+  UnprocessableEntityException,
+} from '@nestjs/common';
 import { ruleOrder } from '@polyrouter/data-plane';
 import {
   PERSISTENCE_PORT,
+  decryptSecret,
   parseRoutingTarget,
   type AnalyticsBreakdownRow,
   type AnalyticsRange,
@@ -15,6 +21,7 @@ import {
   type Principal,
 } from '@polyrouter/shared/server';
 import { PricingService } from '../pricing/pricing.service';
+import { BODY_CAPTURE_CONFIG, type BodyCaptureConfig } from '../body-capture/body-capture.config';
 import type {
   AutoQueryDto,
   BreakdownQueryDto,
@@ -45,11 +52,24 @@ const DEFAULT_BREAKDOWN_LIMIT = 10;
 const DEFAULT_REQUESTS_LIMIT = 50;
 
 /** A request-log row for the dashboard — the enriched analytics row minus the
- * ownership columns (never leave the server). */
-export type SafeRequestRow = Omit<AnalyticsRequestRow, 'ownerUserId' | 'orgId'>;
+ * ownership columns (never leave the server), plus the body-capture existence
+ * flag (add-body-capture; content NEVER rides the listing). */
+export type SafeRequestRow = Omit<AnalyticsRequestRow, 'ownerUserId' | 'orgId'> & {
+  hasBodies: boolean;
+};
 export interface RequestsPageView {
   rows: SafeRequestRow[];
   nextCursor: string | null;
+}
+
+/** One stored body direction, decrypted ON READ for the inspector's lazily
+ * fetched Payload section (add-body-capture). */
+export interface RequestBodyContentView {
+  direction: 'request' | 'response';
+  content: string;
+  bytes: number;
+  truncated: boolean;
+  partial: boolean;
 }
 
 @Injectable()
@@ -57,7 +77,12 @@ export class AnalyticsService {
   constructor(
     @Inject(PERSISTENCE_PORT) private readonly db: PersistencePort,
     private readonly pricing: PricingService,
+    @Inject(BODY_CAPTURE_CONFIG) private readonly bodyCfg: BodyCaptureConfig,
   ) {}
+
+  private get credentialKey(): string {
+    return this.bodyCfg.credentialKey;
+  }
 
   summary(principal: Principal, q: SummaryQueryDto): Promise<AnalyticsSummary> {
     return this.db.analytics.summary(principal, this.parseRange(q.from, q.to));
@@ -184,7 +209,35 @@ export class AnalyticsService {
       ...(q.layer !== undefined ? { decisionLayers: q.layer } : {}),
       ...(q.escalated !== undefined ? { escalated: q.escalated } : {}),
     });
-    return { rows: page.rows.map(toSafeRequest), nextCursor: page.nextCursor };
+    // ONE batched existence read for the page (no N+1, no content).
+    const withBodies = await this.db.bodyCapture.existsForRequests(
+      principal,
+      page.rows.map((r) => r.id),
+    );
+    return {
+      rows: page.rows.map((r) => ({ ...toSafeRequest(r), hasBodies: withBodies.has(r.id) })),
+      nextCursor: page.nextCursor,
+    };
+  }
+
+  /** Decrypt-on-read bodies for ONE owned request; 404 when none/foreign. */
+  async requestBodies(principal: Principal, id: string): Promise<RequestBodyContentView[]> {
+    const rows = await this.db.bodyCapture.listForRequest(principal, id);
+    if (rows.length === 0) throw new NotFoundException('no stored bodies for this request');
+    return rows.map((r) => ({
+      direction: r.direction,
+      content: decryptSecret(r.contentEncrypted, this.credentialKey),
+      bytes: r.bytes,
+      truncated: r.truncated,
+      partial: r.partial,
+    }));
+  }
+
+  /** Owner-scoped delete + tombstone; 404 for an unknown/foreign request. */
+  async deleteRequestBodies(principal: Principal, id: string): Promise<{ ok: true }> {
+    const ok = await this.db.bodyCapture.deleteForRequest(principal, id);
+    if (!ok) throw new NotFoundException('request not found');
+    return { ok: true };
   }
 
   /** Semantic range validation (422) — the DTO already guaranteed ISO strings. */
@@ -226,7 +279,7 @@ export class AnalyticsService {
   }
 }
 
-function toSafeRequest(r: AnalyticsRequestRow): SafeRequestRow {
+function toSafeRequest(r: AnalyticsRequestRow): Omit<SafeRequestRow, 'hasBodies'> {
   const { ownerUserId: _owner, orgId: _org, ...safe } = r;
   return safe;
 }

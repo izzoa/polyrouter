@@ -35,6 +35,7 @@ import {
 } from '@polyrouter/shared/server';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { createAnalyticsAccessor } from './analytics.queries';
+import { createBodyCaptureAccessor } from './body-capture.queries';
 import type { Db } from './database.internal';
 import {
   buildFindById,
@@ -820,6 +821,7 @@ export function buildPersistencePort(db: Db): PersistencePort {
     requestAttempts: createRequestAttemptAccessor(db),
     analytics: createAnalyticsAccessor(db),
     routingSettings: createRoutingSettingsAccessor(db),
+    bodyCapture: createBodyCaptureAccessor(db),
     calibrationEvents: createCalibrationEventsAccessor(db),
     pricing: createPricingCatalog(db),
     users: {

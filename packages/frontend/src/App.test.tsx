@@ -385,6 +385,83 @@ describe('dashboard shell (auth-gated)', () => {
     }
   });
 
+  it('body-capture card: consent-gated enable flips the badge; master-kill copy (add-body-capture)', async () => {
+    const { host, dispose } = mount();
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Settings');
+      await flush();
+      const card = () =>
+        [...host.querySelectorAll<HTMLElement>('.panel')].find((p) =>
+          p.textContent?.includes('Prompt & response bodies'),
+        )!;
+      expect(card().textContent).toContain('Metadata-only'); // off = green truth
+      expect(card().textContent).toContain('Off by default');
+      // Picking a capture mode opens the consent modal — nothing applies yet.
+      const radio = [...card().querySelectorAll<HTMLInputElement>('input[type=radio]')][2]!; // All requests
+      radio.click();
+      await flush();
+      const modal = host.querySelector<HTMLElement>('[aria-label="Confirm body capture"]');
+      expect(modal).not.toBeNull();
+      expect(modal!.textContent).toContain('secrets');
+      expect(card().textContent).toContain('Metadata-only'); // still off pre-consent
+      [...modal!.querySelectorAll<HTMLElement>('button')]
+        .find((b) => b.textContent?.trim() === 'Capture bodies')!
+        .click();
+      await flush();
+      expect(card().textContent).toContain('Bodies captured'); // amber, honest
+      // Disable offers keep-or-purge.
+      [...card().querySelectorAll<HTMLInputElement>('input[type=radio]')][0]!.click();
+      await flush();
+      const off = host.querySelector<HTMLElement>('[aria-label="Disable body capture"]');
+      expect(off).not.toBeNull();
+      [...off!.querySelectorAll<HTMLElement>('button')]
+        .find((b) => b.textContent?.trim() === 'Keep until retention')!
+        .click();
+      await flush();
+      expect(card().textContent).toContain('Metadata-only');
+      expect(card().textContent).toContain('Inert while capture is off'); // overrides = master kill
+    } finally {
+      dispose();
+    }
+  });
+
+  it('inspector Payload: lazy fetch, truncation notice, delete collapses; absent rows unchanged (add-body-capture)', async () => {
+    const { host, store, dispose } = mount();
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Requests');
+      await flush();
+      const rows = host.querySelectorAll<HTMLElement>('.req-row');
+      rows[0]?.click(); // req-000: hasBodies fixture
+      await flush();
+      const drawer = () => host.querySelector<HTMLElement>('.drawer')!;
+      expect(drawer().textContent).toContain('Payload');
+      expect(drawer().textContent).not.toContain('prompt for req-000'); // lazy — not yet fetched
+      [...drawer().querySelectorAll<HTMLElement>('button')]
+        .find((b) => b.textContent?.trim() === 'Show bodies')!
+        .click();
+      await flush();
+      expect(drawer().textContent).toContain('prompt for req-000');
+      expect(drawer().textContent).toContain('answer for req-000');
+      // Delete removes the payloads and the section (hasBodies flips).
+      [...drawer().querySelectorAll<HTMLElement>('button')]
+        .find((b) => b.textContent?.trim() === 'Delete')!
+        .click();
+      await flush();
+      expect(drawer().textContent).not.toContain('Payload');
+      expect(store.state.requestList[0]?.hasBodies).toBe(false);
+      // A row with no stored bodies renders no Payload section at all.
+      host.querySelector<HTMLElement>('.overlay')?.click();
+      rows[1]?.click();
+      await flush();
+      expect(store.state.requestList[1]?.hasBodies).toBe(false);
+      expect(drawer().textContent).not.toContain('Payload');
+    } finally {
+      dispose();
+    }
+  });
+
   it('Settings pricing-catalog panel: status, never-refreshed callout, refresh flow (add-pricing-refresh-ui)', async () => {
     const { host, dispose } = mount(); // DEFAULT_SESSION is an admin
     try {

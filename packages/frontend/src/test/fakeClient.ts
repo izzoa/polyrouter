@@ -30,6 +30,8 @@ import type {
   AutoPerformance,
   CalibrationEvent,
   PricingStatus,
+  BodyCaptureStatus,
+  RequestBodyContent,
   RequestRow,
   RequestsPage,
   RequestsQuery,
@@ -176,6 +178,9 @@ export function buildRequestRows(n: number): RequestRow[] {
             : 'x-team'
           : null,
       routingHeaderValue: layer === 'header' && i % 15 === 1 ? 'default' : null,
+      // Bodies stored for a deterministic slice (add-body-capture): every 5th
+      // row starting at 0 — includes success (0), error (15) and req-005.
+      hasBodies: i % 5 === 0 || i === 5,
       status,
       escalated: layer === 'cascade',
       inputTokens: 100 + i * 3,
@@ -285,6 +290,7 @@ export interface FakeOptions {
   autoLayers?: AutoLayers;
   calibrationEvents?: CalibrationEvent[];
   pricingStatus?: PricingStatus;
+  bodyCaptureStatus?: BodyCaptureStatus;
   pricingRefreshAdded?: number;
   channelTestResult?: ChannelTestResult;
   testResult?: ActionResult;
@@ -390,6 +396,8 @@ export class FakeApiClient implements ApiClient {
   breakdownResult: Record<BreakdownDimension, BreakdownRow[]>;
   requestRows: RequestRow[];
   analyticsFailure: ApiError | null;
+  bodyCaptureState: BodyCaptureStatus;
+  storedBodies: Map<string, RequestBodyContent[]>;
 
   private seq = 0;
 
@@ -441,6 +449,39 @@ export class FakeApiClient implements ApiClient {
     this.breakdownResult = opts.breakdown ?? defaultBreakdown();
     this.requestRows = opts.requestRows ?? buildRequestRows(30);
     this.analyticsFailure = opts.analyticsFailure ?? null;
+    this.bodyCaptureState = opts.bodyCaptureStatus ?? {
+      mode: 'off',
+      retentionDays: 30,
+      droppedCount: 0,
+      lastPurgeAt: null,
+      lastPurgeCount: 0,
+      available: true,
+      agents: [{ id: 'agent-0', name: 'agent-0', override: null }],
+    };
+    // Every hasBodies row gets a deterministic stored payload pair.
+    this.storedBodies = new Map(
+      this.requestRows
+        .filter((r) => r.hasBodies)
+        .map((r) => [
+          r.id,
+          [
+            {
+              direction: 'request' as const,
+              content: `{"model":"auto","messages":[{"role":"user","content":"prompt for ${r.id}"}]}`,
+              bytes: 80,
+              truncated: false,
+              partial: false,
+            },
+            {
+              direction: 'response' as const,
+              content: `[{"type":"text","text":"answer for ${r.id}"}]`,
+              bytes: 44,
+              truncated: r.id === 'req-005',
+              partial: r.status === 'error',
+            },
+          ],
+        ]),
+    );
   }
 
   private record(method: string, ...args: unknown[]): void {
@@ -968,6 +1009,65 @@ export class FakeApiClient implements ApiClient {
   calibrationHistory(limit?: number): Promise<CalibrationEvent[]> {
     this.record('calibrationHistory', limit);
     return Promise.resolve(this.calibrationEvents.slice(0, limit ?? 20));
+  }
+
+  bodyCaptureStatus(): Promise<BodyCaptureStatus> {
+    this.record('bodyCaptureStatus');
+    return Promise.resolve({ ...this.bodyCaptureState, agents: [...this.bodyCaptureState.agents] });
+  }
+
+  bodyCaptureUpdate(patch: {
+    mode?: 'off' | 'errors_only' | 'all';
+    retentionDays?: number | null;
+    keepForever?: boolean;
+  }): Promise<BodyCaptureStatus> {
+    this.record('bodyCaptureUpdate', patch);
+    if (patch.retentionDays === null && patch.keepForever !== true) {
+      return Promise.reject(new Error('infinite retention requires the explicit keepForever choice'));
+    }
+    this.bodyCaptureState = {
+      ...this.bodyCaptureState,
+      ...(patch.mode !== undefined ? { mode: patch.mode } : {}),
+      ...(patch.retentionDays !== undefined ? { retentionDays: patch.retentionDays } : {}),
+    };
+    return this.bodyCaptureStatus();
+  }
+
+  bodyCapturePurge(): Promise<{ purged: number }> {
+    this.record('bodyCapturePurge');
+    const purged = this.storedBodies.size;
+    this.storedBodies.clear();
+    this.bodyCaptureState = {
+      ...this.bodyCaptureState,
+      lastPurgeAt: '2026-07-20T00:00:00.000Z',
+      lastPurgeCount: purged,
+    };
+    return Promise.resolve({ purged });
+  }
+
+  bodyCaptureSetOverride(agentId: string, override: 'always' | 'never' | null): Promise<void> {
+    this.record('bodyCaptureSetOverride', agentId, override);
+    this.bodyCaptureState = {
+      ...this.bodyCaptureState,
+      agents: this.bodyCaptureState.agents.map((a) => (a.id === agentId ? { ...a, override } : a)),
+    };
+    return Promise.resolve();
+  }
+
+  requestBodies(requestId: string): Promise<RequestBodyContent[]> {
+    this.record('requestBodies', requestId);
+    const stored = this.storedBodies.get(requestId);
+    if (stored === undefined) return Promise.reject(new Error('no stored bodies for this request'));
+    return Promise.resolve(stored.map((b) => ({ ...b })));
+  }
+
+  deleteRequestBodies(requestId: string): Promise<void> {
+    this.record('deleteRequestBodies', requestId);
+    this.storedBodies.delete(requestId);
+    this.requestRows = this.requestRows.map((r) =>
+      r.id === requestId ? { ...r, hasBodies: false } : r,
+    );
+    return Promise.resolve();
   }
 
   setAutoLayers(input: {

@@ -101,11 +101,22 @@ function makeWriter(overrides: {
   const db = {
     requestLogs: { insertMany },
     requestAttempts: { insertMany: attemptInsertMany },
+    bodyCapture: {
+      insertBodies: jest.fn().mockResolvedValue({ inserted: 0, discarded: 0 }),
+      incrementDropped: jest.fn().mockResolvedValue(undefined),
+    },
   } as unknown as PersistencePort;
   const pricing = { resolveForModel } as unknown as PricingService;
   const metrics = new ProxyMetrics();
+  const bodyCfg = {
+    selfhosted: true,
+    maxBytes: 262_144,
+    queueBudgetBytes: 64 * 1024 * 1024,
+    batchBudgetBytes: 4 * 1024 * 1024,
+    credentialKey: 'c'.repeat(64),
+  };
   return {
-    writer: new LogWriter(db, pricing, { ...CONFIG, ...overrides.config }, metrics),
+    writer: new LogWriter(db, pricing, { ...CONFIG, ...overrides.config }, metrics, bodyCfg),
     insertMany,
     attemptInsertMany,
     resolveForModel,
@@ -241,6 +252,74 @@ describe('LogWriter', () => {
     expect(insertMany).toHaveBeenCalledTimes(2); // NOT a silent no-op
     const secondRows = insertMany.mock.calls[1]![1] as { id: string }[];
     expect(secondRows.map((r) => r.id)).toEqual(['late']); // the late draft survived
+  });
+
+  it('body drafts are BYTE-evicted oldest-first under queue pressure, with counted drops (add-body-capture)', async () => {
+    // Queue budget below two cap-sized bodies: the second enqueue must evict
+    // the FIRST draft's bodies (log rows untouched) and count the drop.
+    const h = makeWriter({});
+    const bodies = (tag: string) => [
+      {
+        direction: 'request' as const,
+        content: tag.repeat(600), // ~600B per body
+        bytes: 600,
+        truncated: false,
+        partial: false,
+        epoch: 0,
+        capturedAt: new Date('2026-07-15T00:00:00Z'),
+      },
+    ];
+    (h.writer as unknown as { bodyCfg: { queueBudgetBytes: number } }).bodyCfg.queueBudgetBytes = 1000;
+    const first = draft({ id: 'B1' });
+    first.bodies = bodies('a');
+    const second = draft({ id: 'B2' });
+    second.bodies = bodies('b');
+    h.writer.enqueue(first);
+    h.writer.enqueue(second);
+    expect(first.bodies).toBeUndefined(); // oldest bodies evicted, draft kept
+    expect(second.bodies).toBeDefined();
+    await h.writer.flush();
+    expect(h.insertMany).toHaveBeenCalledTimes(1); // BOTH log rows still landed
+    const db = (h.writer as unknown as { db: { bodyCapture: { incrementDropped: jest.Mock } } }).db;
+    expect(db.bodyCapture.incrementDropped).toHaveBeenCalledWith(expect.anything(), 1);
+  });
+
+  it('a concurrent enqueue during a blocked flush DROPS its bodies rather than busting the byte budget', async () => {
+    let releaseInsert!: () => void;
+    const gate = new Promise<void>((r) => (releaseInsert = r));
+    const h = makeWriter({
+      insertMany: jest.fn().mockImplementation(async () => {
+        await gate; // the flush holds its spliced batch mid-insert
+      }),
+    });
+    const w = h.writer as unknown as {
+      bodyCfg: { queueBudgetBytes: number };
+      bodyBytesQueued: number;
+    };
+    w.bodyCfg.queueBudgetBytes = 1000;
+    const mk = (id: string) => {
+      const d = draft({ id });
+      d.bodies = [
+        {
+          direction: 'request' as const,
+          content: 'z'.repeat(600),
+          bytes: 600,
+          truncated: false,
+          partial: false,
+          epoch: 0,
+          capturedAt: new Date('2026-07-15T00:00:00Z'),
+        },
+      ];
+      return d;
+    };
+    h.writer.enqueue(mk('F1'));
+    const inFlight = h.writer.flush(); // splices F1; insert blocks on the gate
+    const second = mk('F2');
+    h.writer.enqueue(second); // nothing evictable (queue empty) → must drop, not exceed
+    expect(second.bodies).toBeUndefined();
+    expect(w.bodyBytesQueued).toBeLessThanOrEqual(1000);
+    releaseInsert();
+    await inFlight;
   });
 
   it('the shutdown drain terminates on a hung insert, counting the rows as dropped', async () => {

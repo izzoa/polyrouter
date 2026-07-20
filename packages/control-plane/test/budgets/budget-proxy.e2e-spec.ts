@@ -44,6 +44,7 @@ import {
 } from '../../src/calibration/calibration.config';
 import { ProxyService } from '../../src/proxy/proxy.service';
 import { RequestRecorder } from '../../src/recording/request-recorder';
+import { BodyCaptureService } from '../../src/body-capture/body-capture.service';
 import { ObservabilityModule } from '../../src/observability/observability.module';
 import { StreamDrainRegistry } from '../../src/proxy/stream-drain.registry';
 import { StructuralRouter } from '../../src/proxy/structural/structural-router';
@@ -177,6 +178,14 @@ describe('budget block enforcement — proxy path (#16)', () => {
           },
         },
         StreamDrainRegistry,
+        {
+          provide: BodyCaptureService,
+          useValue: {
+            maxBytes: 262_144,
+            contextFor: () =>
+              Promise.resolve({ mode: 'off', override: null, retentionDays: null, epoch: 0 }),
+          },
+        },
         {
           provide: RequestRecorder,
           useValue: { record: () => undefined, recordAttempt: () => undefined },

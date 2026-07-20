@@ -29,6 +29,8 @@ import {
   type AutoPerformance,
   type CalibrationEvent,
   type PricingStatus,
+  type BodyCaptureStatus,
+  type RequestBodyContent,
   type RequestRow,
   type RuleDto,
   type TierDto,
@@ -218,6 +220,16 @@ export interface AppState {
     refreshError: string | null;
     busy: boolean;
   };
+  /** Body-capture card state (add-body-capture). */
+  bc: {
+    status: BodyCaptureStatus | null;
+    loaded: boolean;
+    error: string | null;
+    busy: boolean;
+  };
+  /** Inspector Payload section (add-body-capture): the SELECTED request's
+   * lazily-fetched bodies; null until expanded, cleared on re-select. */
+  selBodies: { rows: RequestBodyContent[] | null; loading: boolean; error: string | null };
   routingLoading: boolean;
   routingError: string | null;
   /** New header-rule form: a tier-header value routed to a target tier key. */
@@ -651,6 +663,8 @@ function initialState(): AppState {
     autoLayers: null,
     calHistory: { rows: [], loaded: false, error: null },
     pc: { status: null, loaded: false, loadError: null, refreshError: null, busy: false },
+    bc: { status: null, loaded: false, error: null, busy: false },
+    selBodies: { rows: null, loading: false, error: null },
     routingLoading: false,
     routingError: null,
     rf: { value: '', target: '', busy: false, error: null },
@@ -688,6 +702,14 @@ export interface AppStore {
   /** Pricing catalog (add-pricing-refresh-ui). */
   loadPricingStatus: () => Promise<void>;
   runPricingRefresh: () => Promise<void>;
+  /** Body capture (add-body-capture). */
+  loadBodyCapture: () => Promise<void>;
+  setBodyCaptureMode: (mode: 'off' | 'errors_only' | 'all') => Promise<void>;
+  setBodyCaptureRetention: (retentionDays: number | null) => Promise<void>;
+  purgeBodies: () => Promise<void>;
+  setAgentBodyOverride: (agentId: string, override: 'always' | 'never' | null) => Promise<void>;
+  loadSelectedBodies: (id: string) => Promise<void>;
+  deleteSelectedBodies: (id: string) => Promise<void>;
   setCalibration: (on: boolean) => Promise<void>;
   revertCalibration: () => Promise<void>;
   loadCalHistory: () => Promise<void>;
@@ -1183,6 +1205,91 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     }
   };
 
+  const loadBodyCapture = async (): Promise<void> => {
+    const gen = identityGen;
+    try {
+      const status = await client.bodyCaptureStatus();
+      if (gen !== identityGen) return;
+      setState('bc', { status, loaded: true, error: null, busy: false });
+    } catch (e) {
+      if (gen !== identityGen) return;
+      setState('bc', (c) => ({ ...c, loaded: true, error: err(e), busy: false }));
+    }
+  };
+
+  /** One guarded mutation runner for the capture card (single-flight). */
+  const bcMutate = async (fn: () => Promise<unknown>, okMsg?: string): Promise<void> => {
+    if (state.bc.busy) return;
+    const gen = identityGen;
+    setState('bc', (c) => ({ ...c, busy: true, error: null }));
+    try {
+      await fn();
+      if (gen !== identityGen) return;
+      if (okMsg !== undefined) say(okMsg);
+      await loadBodyCapture();
+    } catch (e) {
+      if (gen !== identityGen) return;
+      setState('bc', (c) => ({ ...c, busy: false, error: err(e) }));
+    }
+  };
+
+  const setBodyCaptureMode = (mode: 'off' | 'errors_only' | 'all'): Promise<void> =>
+    bcMutate(
+      () => client.bodyCaptureUpdate({ mode }),
+      mode === 'off' ? 'Body capture off' : 'Body capture on',
+    );
+
+  const setBodyCaptureRetention = (retentionDays: number | null): Promise<void> =>
+    bcMutate(() =>
+      client.bodyCaptureUpdate(
+        retentionDays === null ? { retentionDays: null, keepForever: true } : { retentionDays },
+      ),
+    );
+
+  const purgeBodies = (): Promise<void> =>
+    bcMutate(async () => {
+      const { purged } = await client.bodyCapturePurge();
+      say(`Purged ${String(purged)} stored bod${purged === 1 ? 'y' : 'ies'}`);
+    });
+
+  const setAgentBodyOverride = (
+    agentId: string,
+    override: 'always' | 'never' | null,
+  ): Promise<void> => bcMutate(() => client.bodyCaptureSetOverride(agentId, override));
+
+  const loadSelectedBodies = async (id: string): Promise<void> => {
+    const gen = identityGen;
+    setState('selBodies', { rows: null, loading: true, error: null });
+    try {
+      const rows = await client.requestBodies(id);
+      if (gen !== identityGen || state.selId !== id) return; // stale expand
+      setState('selBodies', { rows, loading: false, error: null });
+    } catch (e) {
+      if (gen !== identityGen || state.selId !== id) return;
+      setState('selBodies', { rows: null, loading: false, error: err(e) });
+    }
+  };
+
+  const deleteSelectedBodies = async (id: string): Promise<void> => {
+    const gen = identityGen;
+    try {
+      await client.deleteRequestBodies(id);
+      if (gen !== identityGen) return;
+      say('Payloads deleted');
+      setState('selBodies', { rows: null, loading: false, error: null });
+      // The row's flag clears so the section disappears (data-driven gate).
+      setState('requestList', (rows) =>
+        rows.map((r) => (r.id === id ? { ...r, hasBodies: false } : r)),
+      );
+      setState('recentRequests', (rows) =>
+        rows.map((r) => (r.id === id ? { ...r, hasBodies: false } : r)),
+      );
+    } catch (e) {
+      if (gen !== identityGen) return;
+      setState('selBodies', (c) => ({ ...c, error: err(e) }));
+    }
+  };
+
   const loadLimits = async (): Promise<void> => {
     setState({ budgetsLoading: true, budgetsError: null });
     // Guard each list independently: a budget mutation must not discard the channel
@@ -1546,7 +1653,8 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       setState('reqFilter', reqFilter);
       void loadRequests(true);
     },
-    select: (id) => setState('selId', id),
+    select: (id) =>
+      setState({ selId: id, selBodies: { rows: null, loading: false, error: null } }),
     say,
     clearToast: () => {
       clearTimeout(toastTimer);
@@ -2238,6 +2346,13 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     loadCalHistory,
     loadPricingStatus,
     runPricingRefresh,
+    loadBodyCapture,
+    setBodyCaptureMode,
+    setBodyCaptureRetention,
+    purgeBodies,
+    setAgentBodyOverride,
+    loadSelectedBodies,
+    deleteSelectedBodies,
 
     loadLimits,
     openBudget: (budget) => {

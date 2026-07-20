@@ -520,6 +520,97 @@ export interface CalibrationEventsAccessor {
   list(principal: Principal, limit: number): Promise<ThresholdCalibrationEventRowView[]>;
 }
 
+/* ---- body-capture (add-body-capture, invariant 8's opt-in door) ---- */
+
+export type BodyCaptureMode = 'off' | 'errors_only' | 'all';
+export type BodyCaptureOverride = 'always' | 'never';
+
+export interface BodyCaptureSettingsValue {
+  mode: BodyCaptureMode;
+  retentionDays: number | null;
+  captureEpoch: number;
+  droppedCount: number;
+  lastPurgeAt: Date | null;
+  lastPurgeCount: number;
+}
+
+export interface BodyCaptureSettingsUpsert {
+  mode: BodyCaptureMode;
+  /** Omitted preserves the stored value; explicit null = infinite (the caller
+   * enforces the keep-forever consent guard before it reaches here). */
+  retentionDays?: number | null;
+}
+
+/** The per-request capture context the proxy loads at prepare time — ONE query
+ * (settings ⟕ agent override). `epoch` is echoed into drafts for revocation. */
+export interface BodyCaptureContext {
+  mode: BodyCaptureMode;
+  override: BodyCaptureOverride | null;
+  retentionDays: number | null;
+  epoch: number;
+}
+
+/** CIPHERTEXT insert item — the writer encrypts before it reaches the port.
+ * `epoch`/`capturedAt` feed the guarded insert's revocation checks. */
+export interface RequestBodyInsertItem {
+  requestLogId: string;
+  direction: 'request' | 'response';
+  contentEncrypted: string;
+  bytes: number;
+  truncated: boolean;
+  partial: boolean;
+  epoch: number;
+  capturedAt: Date;
+}
+
+export interface RequestBodyView {
+  direction: 'request' | 'response';
+  contentEncrypted: string;
+  bytes: number;
+  truncated: boolean;
+  partial: boolean;
+  createdAt: Date;
+}
+
+export interface BodyCaptureAccessor {
+  /** Null = no row = mode 'off' (fail-closed). */
+  getSettings(principal: Principal): Promise<BodyCaptureSettingsValue | null>;
+  upsertSettings(
+    principal: Principal,
+    value: BodyCaptureSettingsUpsert,
+  ): Promise<BodyCaptureSettingsValue>;
+  /** One query: settings row + the agent's override. Missing row ⇒ mode off. */
+  captureContext(principal: Principal, agentId: string | null): Promise<BodyCaptureContext>;
+  /** Batched drop accounting from the writer (upserts the row at 'off'). */
+  incrementDropped(principal: Principal, by: number): Promise<void>;
+  /** GUARDED insert (D9): one transaction locks the owner's settings row FOR
+   * UPDATE, re-reads epoch/tombstones/retention post-lock, discards stale,
+   * tombstoned, or already-expired items (counted), inserts the rest. A missing
+   * settings row discards everything (fail-closed). */
+  insertBodies(
+    principal: Principal,
+    items: readonly RequestBodyInsertItem[],
+  ): Promise<{ inserted: number; discarded: number }>;
+  listForRequest(principal: Principal, requestLogId: string): Promise<RequestBodyView[]>;
+  /** Delete + tombstone under the same owner lock; false when nothing existed
+   * AND no tombstone was needed (unknown/foreign id). */
+  deleteForRequest(principal: Principal, requestLogId: string): Promise<boolean>;
+  /** Batched existence for the listing's `hasBodies` (no N+1). */
+  existsForRequests(principal: Principal, requestLogIds: readonly string[]): Promise<Set<string>>;
+  /** Purge-all / disable-with-purge: bumps the epoch and deletes every body,
+   * stamping last_purge — one locked transaction. Returns the purged count. */
+  purgeAll(principal: Principal): Promise<number>;
+  setAgentOverride(
+    principal: Principal,
+    agentId: string,
+    override: BodyCaptureOverride | null,
+  ): Promise<boolean>;
+  /** PRIVILEGED daily sweep (no principal — the scheduler's seam): one
+   * settings⋈bodies pass deleting rows older than each owner's retention
+   * (infinite skipped), stamping each swept owner's last_purge. */
+  purgeExpiredAllOwners(): Promise<{ owners: number; purged: number }>;
+}
+
 /** The ONLY persistence surface exported outside the database module. By
  * construction it has no query/execute/Pool/drizzle member — unscoped SQL is
  * unwritable against it. */
@@ -541,6 +632,7 @@ export interface PersistencePort {
   analytics: AnalyticsAccessor;
   routingSettings: RoutingSettingsAccessor;
   calibrationEvents: CalibrationEventsAccessor;
+  bodyCapture: BodyCaptureAccessor;
   users: UsersInfra;
   /** Global pricing catalog (#8) — non-owned, append-only. */
   pricing: PricingCatalog;

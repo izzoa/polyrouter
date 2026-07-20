@@ -1,12 +1,48 @@
 import { randomUUID } from 'node:crypto';
 import { Injectable, Logger } from '@nestjs/common';
 import { trace, type SpanContext } from '@opentelemetry/api';
-import { resolveUsage, type PartialUsage, type ResolvedUsage } from '@polyrouter/data-plane';
-import type { ModelRow, Principal, ProviderRow } from '@polyrouter/shared/server';
+import {
+  resolveUsage,
+  serializeResponseContent,
+  type CapturedText,
+  type ContentBlock,
+  type PartialUsage,
+  type ResolvedUsage,
+} from '@polyrouter/data-plane';
+import type {
+  BodyCaptureMode,
+  BodyCaptureOverride,
+  ModelRow,
+  Principal,
+  ProviderRow,
+} from '@polyrouter/shared/server';
+import { shouldPersistBodies } from '../body-capture/effective-mode';
 import { ProxyMetrics } from '../observability/proxy-metrics';
 import { TRACER_NAME } from '../observability/tracing';
 import type { ClientProtocol } from '../proxy/proxy-errors';
-import { LogWriter, type DraftPricing, type RequestLogDraft } from './log-writer';
+import {
+  LogWriter,
+  type CapturedBodyDraft,
+  type DraftPricing,
+  type RequestLogDraft,
+} from './log-writer';
+
+/** Per-request capture state (add-body-capture), carried on the recording
+ * context so EVERY record path — plain, fallback, cascade — makes the persist
+ * decision at ONE site (below), at outcome time. `responseBlocks` is a closure
+ * over the proxy's per-request state (collector or buffered content). */
+export interface RequestCaptureState {
+  readonly mode: BodyCaptureMode;
+  readonly override: BodyCaptureOverride | null;
+  readonly epoch: number;
+  readonly capturedAt: Date;
+  readonly maxBytes: number;
+  readonly request: CapturedText;
+  readonly responseBlocks: () => {
+    blocks: readonly ContentBlock[];
+    truncated: boolean;
+  } | null;
+}
 
 /** The status recorded on a RequestLog. `fallback` = a later chain member served
  * after a predecessor failed (#12). `cancelled` = the CLIENT aborted (disconnected),
@@ -49,6 +85,11 @@ export interface RecordingContext {
   readonly startedAt: number;
   /** Character count of the request body (for the input-token estimate). */
   readonly requestChars: number;
+  /** Armed body capture (add-body-capture); absent = nothing is ever stored.
+   * The recorder — not the call sites — decides persistence from the outcome.
+   * Attempt-ledger rows (`recordAttempt`) deliberately ignore it: only the
+   * served exchange is ever captured. */
+  readonly capture?: RequestCaptureState;
 }
 
 /** Terminal provider-error detail (add-request-error-detail). `providerMessage`
@@ -146,6 +187,9 @@ export class RequestRecorder {
           : {}),
         ...spanContextOf(),
       };
+      // THE capture decision site (add-body-capture): one place, every path.
+      const bodies = bodiesFor(ctx, outcome);
+      if (bodies !== undefined) draft.bodies = bodies;
       this.writer.enqueue(draft);
       // #21: emitted at ENQUEUE time so traffic stays visible during a DB
       // outage; exactly once per finalized inference request.
@@ -214,6 +258,51 @@ export class RequestRecorder {
       outputChars: outcome.outputChars,
     });
   }
+}
+
+/** Build body drafts when the effective mode says this OUTCOME persists
+ * (spec: master kill / override / errors_only matrix). Request always rides
+ * when persisting; the response rides when any content assembled — flagged
+ * `partial` for a cancelled or post-commit-error termination. */
+function bodiesFor(
+  ctx: RecordingContext,
+  outcome: RecordOutcome,
+): CapturedBodyDraft[] | undefined {
+  const cap = ctx.capture;
+  if (cap === undefined) return undefined;
+  const persist = shouldPersistBodies({
+    mode: cap.mode,
+    override: cap.override,
+    status: outcome.status,
+    escalated: outcome.escalated === true,
+  });
+  if (!persist) return undefined;
+  const partial = outcome.status === 'cancelled' || outcome.status === 'error';
+  const drafts: CapturedBodyDraft[] = [
+    {
+      direction: 'request',
+      content: cap.request.content,
+      bytes: cap.request.bytes,
+      truncated: cap.request.truncated,
+      partial: false, // the request always arrived whole
+      epoch: cap.epoch,
+      capturedAt: cap.capturedAt,
+    },
+  ];
+  const resp = cap.responseBlocks();
+  if (resp !== null && resp.blocks.length > 0) {
+    const serialized = serializeResponseContent(resp.blocks, cap.maxBytes);
+    drafts.push({
+      direction: 'response',
+      content: serialized.content,
+      bytes: serialized.bytes,
+      truncated: serialized.truncated || resp.truncated,
+      partial,
+      epoch: cap.epoch,
+      capturedAt: cap.capturedAt,
+    });
+  }
+  return drafts;
 }
 
 function pricingOf(ctx: RecordingContext): DraftPricing {

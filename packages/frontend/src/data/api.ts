@@ -512,6 +512,9 @@ export interface RequestRow {
   errorStatus: number | null;
   errorMessage: string | null;
   errorRequestId: string | null;
+  /** add-body-capture: this request has stored bodies (content NEVER rides the
+   * listing — the inspector fetches lazily via `requestBodies`). */
+  hasBodies: boolean;
 }
 
 /** The auto-performance aggregation (add-auto-performance-view) — the AR-3
@@ -592,6 +595,26 @@ export interface PricingStatus {
   };
 }
 
+/** Body-capture settings + status (add-body-capture). */
+export interface BodyCaptureStatus {
+  mode: 'off' | 'errors_only' | 'all';
+  retentionDays: number | null;
+  droppedCount: number;
+  lastPurgeAt: string | null;
+  lastPurgeCount: number;
+  available: boolean;
+  agents: { id: string; name: string; override: 'always' | 'never' | null }[];
+}
+
+/** One decrypted body direction for the inspector's Payload section. */
+export interface RequestBodyContent {
+  direction: 'request' | 'response';
+  content: string;
+  bytes: number;
+  truncated: boolean;
+  partial: boolean;
+}
+
 export interface ApiClient {
   me(): Promise<SessionInfo>;
   loginConfig(): Promise<LoginConfig>;
@@ -665,6 +688,16 @@ export interface ApiClient {
     limit?: number,
   ): Promise<BreakdownRow[]>;
   requests(query: RequestsQuery): Promise<RequestsPage>;
+  bodyCaptureStatus(): Promise<BodyCaptureStatus>;
+  bodyCaptureUpdate(patch: {
+    mode?: 'off' | 'errors_only' | 'all';
+    retentionDays?: number | null;
+    keepForever?: boolean;
+  }): Promise<BodyCaptureStatus>;
+  bodyCapturePurge(): Promise<{ purged: number }>;
+  bodyCaptureSetOverride(agentId: string, override: 'always' | 'never' | null): Promise<void>;
+  requestBodies(requestId: string): Promise<RequestBodyContent[]>;
+  deleteRequestBodies(requestId: string): Promise<void>;
 }
 
 /** Build a `?a=b&…` query string, omitting undefined params and joining an array
@@ -914,4 +947,25 @@ export const realClient: ApiClient = {
         escalated: query.escalated,
       })}`,
     ),
+  bodyCaptureStatus: () => http<BodyCaptureStatus>(`${API_BASE}/body-capture`),
+  bodyCaptureUpdate: (patch) =>
+    http<BodyCaptureStatus>(`${API_BASE}/body-capture`, jsonInit('PATCH', patch)),
+  bodyCapturePurge: () =>
+    http<{ purged: number }>(`${API_BASE}/body-capture/purge`, jsonInit('POST', {})),
+  bodyCaptureSetOverride: async (agentId, override) => {
+    await http<{ ok: true }>(
+      `${API_BASE}/body-capture/agents/${encodeURIComponent(agentId)}/override`,
+      jsonInit('PATCH', { override }),
+    );
+  },
+  requestBodies: (requestId) =>
+    http<RequestBodyContent[]>(
+      `${API_BASE}/analytics/requests/${encodeURIComponent(requestId)}/bodies`,
+    ),
+  deleteRequestBodies: async (requestId) => {
+    await http<{ ok: true }>(
+      `${API_BASE}/analytics/requests/${encodeURIComponent(requestId)}/bodies`,
+      { method: 'DELETE' },
+    );
+  },
 };

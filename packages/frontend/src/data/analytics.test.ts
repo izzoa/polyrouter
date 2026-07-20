@@ -76,6 +76,7 @@ const ROW: RequestRow = {
   errorStatus: null,
   errorMessage: null,
   errorRequestId: null,
+  hasBodies: false,
 };
 
 describe('summary-derived rates', () => {

@@ -28,6 +28,7 @@ import {
   type ProviderAdapter,
 } from '../providers';
 import { terminalErrorFrame } from './stream-error';
+import type { BoundedBlockCollector } from './body-capture';
 import { responseOutputChars, responseToStreamEvents } from './cascade';
 
 export interface ProxyStreamOptions {
@@ -41,6 +42,10 @@ export interface ProxyStreamOptions {
   readonly includeUsage?: boolean;
   /** Fire-and-forget hook when a provider's shared breaker opens (#15b provider_down). */
   readonly onOpen?: BreakerOpenListener;
+  /** Bounded response assembly (add-body-capture) — present only when the
+   * request's capture is armed; safe to share across chain attempts (only the
+   * committed one ever emits content events). */
+  readonly contentCollector?: BoundedBlockCollector;
   /** Best-effort state observation at each admission decision (#21 metrics). */
   readonly onBreakerState?: BreakerStateListener;
   /** True when the CLIENT went away — a caller-abort teardown is breaker-neutral
@@ -119,10 +124,14 @@ export async function runBuffered(
 interface Accumulator {
   usage: PartialUsage;
   outputChars: number;
+  /** Optional bounded content assembly (add-body-capture) — armed per request
+   * by the caller; fed every event, retention stops at its byte cap. */
+  collector?: BoundedBlockCollector;
 }
 
 /** Fold a streamed IR event into the running usage/output totals (#11). */
 function accumulate(acc: Accumulator, ev: NormalizedStreamEvent): void {
+  acc.collector?.onEvent(ev);
   switch (ev.type) {
     case 'message_start':
     case 'message_delta':
@@ -265,7 +274,11 @@ export async function openAttemptStream(
     return { kind: 'error', error: fromErrorEvent(first.value) };
   }
 
-  const acc: Accumulator = { usage: {}, outputChars: 0 };
+  const acc: Accumulator = {
+    usage: {},
+    outputChars: 0,
+    ...(opts.contentCollector !== undefined ? { collector: opts.contentCollector } : {}),
+  };
   accumulate(acc, first.value);
 
   // Resolve-once outcome, held OUTSIDE the generator so a pre-`next()` return()

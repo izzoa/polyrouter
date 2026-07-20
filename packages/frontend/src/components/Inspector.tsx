@@ -276,6 +276,88 @@ export function Inspector() {
                   </div>
                 </div>
 
+                {/* Payload (add-body-capture): rendered ONLY when bodies are
+                    stored (data-driven, legacy rows byte-identical); content is
+                    fetched lazily on expand, never on the listing. */}
+                <Show when={row().hasBodies}>
+                  <div>
+                    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:9px">
+                      <div class="upper-label">Payload</div>
+                      <Show
+                        when={
+                          state.selBodies.rows !== null ||
+                          state.selBodies.loading ||
+                          state.selBodies.error !== null
+                        }
+                        fallback={
+                          <button
+                            type="button"
+                            class="link-accent"
+                            style="font-size:11.5px"
+                            onClick={() => void app.loadSelectedBodies(row().id)}
+                          >
+                            Show bodies
+                          </button>
+                        }
+                      >
+                        <button
+                          type="button"
+                          class="link-accent"
+                          style="font-size:11.5px;color:var(--red)"
+                          onClick={() => void app.deleteSelectedBodies(row().id)}
+                        >
+                          Delete
+                        </button>
+                      </Show>
+                    </div>
+                    <Show when={state.selBodies.loading}>
+                      <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3)">
+                        Loading…
+                      </div>
+                    </Show>
+                    <Show when={state.selBodies.error} keyed>
+                      {(e) => (
+                        <div style="font:400 11.5px 'Geist',sans-serif;color:var(--red)">{e}</div>
+                      )}
+                    </Show>
+                    <Show when={state.selBodies.rows} keyed>
+                      {(rows) => (
+                        <div style="display:flex;flex-direction:column;gap:8px">
+                          <For each={rows}>
+                            {(b) => (
+                              <div class="kv-box">
+                                <div style="display:flex;justify-content:space-between;align-items:center">
+                                  <span style="color:var(--text3)">
+                                    {b.direction}
+                                    {b.truncated
+                                      ? ` · truncated (${(b.bytes / 1024).toFixed(1)} KB total)`
+                                      : ''}
+                                    {b.partial ? ' · partial' : ''}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    class="link-accent"
+                                    style="font-size:11px"
+                                    onClick={() => app.copy(b.content, 'Body copied')}
+                                  >
+                                    Copy
+                                  </button>
+                                </div>
+                                <pre
+                                  class="mono"
+                                  style="font:400 11px 'Geist Mono',monospace;color:var(--text2);white-space:pre-wrap;word-break:break-word;max-height:220px;overflow-y:auto;margin:0"
+                                >
+                                  {b.content}
+                                </pre>
+                              </div>
+                            )}
+                          </For>
+                        </div>
+                      )}
+                    </Show>
+                  </div>
+                </Show>
+
                 <div>
                   <div class="upper-label" style="margin-bottom:9px">
                     Timing

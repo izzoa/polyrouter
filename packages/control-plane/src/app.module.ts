@@ -6,6 +6,7 @@ import { AdminModule } from './admin/admin.module';
 import { AgentsController } from './agents/agents.controller';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { AuthModule } from './auth/auth.module';
+import { BodyCaptureModule } from './body-capture/body-capture.module';
 import { BudgetsModule } from './budgets/budgets.module';
 import { CalibrationModule } from './calibration/calibration.module';
 import { SessionGuard } from './auth/session.guard';
@@ -37,6 +38,7 @@ import { RoutingConfigModule } from './routing-config/routing-config.module';
     ProducersModule,
     BudgetsModule,
     CalibrationModule,
+    BodyCaptureModule,
     AccountModule,
     AnalyticsModule,
     AdminModule,

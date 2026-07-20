@@ -59,6 +59,7 @@ import { ProxyService } from '../../src/proxy/proxy.service';
 import { NotificationProducers } from '../../src/producers/notification-producers';
 import { BudgetService } from '../../src/budgets/budget-service';
 import { RequestRecorder } from '../../src/recording/request-recorder';
+import { BodyCaptureService } from '../../src/body-capture/body-capture.service';
 import { ObservabilityModule } from '../../src/observability/observability.module';
 import { StreamDrainRegistry } from '../../src/proxy/stream-drain.registry';
 import { StructuralRouter } from '../../src/proxy/structural/structural-router';
@@ -141,6 +142,15 @@ async function bootApp(streamDrainDeadlineMs: number): Promise<BootedApp> {
         },
       },
       StreamDrainRegistry,
+      {
+        // add-body-capture: capture disarmed — this suite doesn't assert capture.
+        provide: BodyCaptureService,
+        useValue: {
+          maxBytes: 262_144,
+          contextFor: () =>
+            Promise.resolve({ mode: 'off', override: null, retentionDays: null, epoch: 0 }),
+        },
+      },
       { provide: RequestRecorder, useValue: { record: recorded } },
       {
         provide: StructuralRouter,

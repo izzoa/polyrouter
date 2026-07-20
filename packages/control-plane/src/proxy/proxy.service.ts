@@ -14,6 +14,7 @@ import {
   type RoutingSettingsValue,
 } from '@polyrouter/shared/server';
 import {
+  BoundedBlockCollector,
   ProviderError,
   declaredStructuredOutput,
   getAdapter,
@@ -22,6 +23,7 @@ import {
   replayBufferedStream,
   resolveRoute,
   runBufferedChain,
+  serializeClientRequest,
   shouldFallback,
   type AttemptFailure,
   type BreakerOpenListener,
@@ -72,7 +74,9 @@ import {
   RequestRecorder,
   type RecordedError,
   type RecordingContext,
+  type RequestCaptureState,
 } from '../recording/request-recorder';
+import { BodyCaptureService } from '../body-capture/body-capture.service';
 import { ProxyMetrics } from '../observability/proxy-metrics';
 import { observeAdapter } from '../observability/observe-adapter';
 import { TRACER_NAME } from '../observability/tracing';
@@ -142,6 +146,14 @@ interface Prepared {
   principal: Principal;
   agentId: string | null;
   cascade?: CascadeBundle;
+  /** Armed body capture (add-body-capture): present ONLY when the effective
+   * mode can persist for this request (off / agent-never never allocate).
+   * Mutable content slots — the served path fills exactly one. */
+  capture?: {
+    readonly state: RequestCaptureState;
+    readonly collector: BoundedBlockCollector;
+    buffered?: readonly ContentBlock[];
+  };
 }
 
 /** Deadline for the per-tenant auto-layer preference read (#20). Generous: the
@@ -187,6 +199,7 @@ export class ProxyService {
     private readonly producers: NotificationProducers,
     private readonly budgets: BudgetService,
     private readonly oauth: SubscriptionOauthService,
+    private readonly bodyCapture: BodyCaptureService,
   ) {
     this.key = rt.key;
     this.mode = rt.mode;
@@ -265,6 +278,7 @@ export class ProxyService {
       signal,
     );
     if (result.ok) {
+      if (p.capture !== undefined) p.capture.buffered = result.response.content;
       this.recorder.record(this.servedContext(p, result.servedIndex, result.failures), {
         status: result.failures.length > 0 ? 'fallback' : 'success',
         ...(result.response.usage !== undefined ? { providerUsage: result.response.usage } : {}),
@@ -303,6 +317,7 @@ export class ProxyService {
       onOpen: this.onOpenFor(p.principal, p.meta),
       onBreakerState: this.onBreakerStateFor(p.meta),
       isCallerAbort: () => signal.aborted,
+      ...(p.capture !== undefined ? { contentCollector: p.capture.collector } : {}),
     });
     if (result.kind === 'error') {
       this.recorder.record(this.failedContext(p, result.failures), {
@@ -386,6 +401,7 @@ export class ProxyService {
     if (cheap.ok) {
       const { score, escalate } = this.cascade.shouldEscalate(cheap.response, p.structuredDemand);
       if (!escalate) {
+        if (p.capture !== undefined) p.capture.buffered = cheap.response.content;
         this.recorder.record(
           this.servedFrom(
             p,
@@ -506,6 +522,7 @@ export class ProxyService {
       if (!result.callerAborted) this.notifyFailed(p.principal); // client hang-up ≠ provider fault (A-3)
       throw toProxyError(result.error);
     }
+    if (p.capture !== undefined) p.capture.buffered = result.response.content;
     const requestId = this.recorder.record(
       this.servedFrom(
         p,
@@ -559,6 +576,7 @@ export class ProxyService {
           ...(p.routed.includeUsage !== undefined ? { includeUsage: p.routed.includeUsage } : {}),
         });
         if (replay.kind === 'stream') {
+          if (p.capture !== undefined) p.capture.buffered = cheap.response.content;
           const ctx = this.servedFrom(
             p,
             c.cheap.meta,
@@ -656,6 +674,7 @@ export class ProxyService {
       onOpen: this.onOpenFor(p.principal, c.escalation.meta),
       onBreakerState: this.onBreakerStateFor(c.escalation.meta),
       isCallerAbort: () => signal.aborted,
+      ...(p.capture !== undefined ? { contentCollector: p.capture.collector } : {}),
     });
     if (result.kind === 'error') {
       const requestId = this.recorder.record(
@@ -903,6 +922,34 @@ export class ProxyService {
     // unit-pinned against regressing to plan-keying.
     decision = withFallthroughSuffix(decision, structuralVerdict, cascade !== undefined);
 
+    // Body capture (add-body-capture): arm ONLY when the effective state can
+    // persist (off / agent-never allocate nothing — the master kill). The
+    // request is serialized NOW (media-stripped, capped); the response slot is
+    // filled by whichever path serves; the recorder decides persistence at
+    // outcome time from this state.
+    const capCtx = await this.bodyCapture.contextFor(principal, agentId);
+    let capture: Prepared['capture'];
+    if (capCtx.mode !== 'off' && capCtx.override !== 'never') {
+      const collector = new BoundedBlockCollector(this.bodyCapture.maxBytes);
+      capture = {
+        state: {
+          mode: capCtx.mode,
+          override: capCtx.override,
+          epoch: capCtx.epoch,
+          capturedAt: new Date(),
+          maxBytes: this.bodyCapture.maxBytes,
+          request: serializeClientRequest(wireBody, this.bodyCapture.maxBytes),
+          responseBlocks: () => {
+            if (collector.hasContent)
+              return { blocks: collector.blocks(), truncated: collector.truncated };
+            const b = capture?.buffered;
+            return b !== undefined ? { blocks: b, truncated: false } : null;
+          },
+        },
+        collector,
+      };
+    }
+
     return {
       client,
       protocol,
@@ -919,6 +966,7 @@ export class ProxyService {
       principal,
       agentId,
       ...(cascade !== undefined ? { cascade } : {}),
+      ...(capture !== undefined ? { capture } : {}),
     };
   }
 
@@ -1019,6 +1067,7 @@ export class ProxyService {
       // The header that chose the route (add-routing-header-visibility); the
       // cascade context (metaContext) never carries one by construction.
       ...(p.decision.matchedHeader !== null ? { routingHeader: p.decision.matchedHeader } : {}),
+      ...(p.capture !== undefined ? { capture: p.capture.state } : {}),
       provider: { baseUrl: m.providerBaseUrl, kind: m.providerKind },
       model: m.model,
       startedAt: p.startedAt,
@@ -1052,6 +1101,7 @@ export class ProxyService {
       decisionLayer: 'cascade',
       routingReason: reason,
       ...verdictFields(p),
+      ...(p.capture !== undefined ? { capture: p.capture.state } : {}),
       provider: { baseUrl: m.providerBaseUrl, kind: m.providerKind },
       model: m.model,
       startedAt: p.startedAt,

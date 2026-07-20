@@ -3,6 +3,7 @@ import { Toggle } from '../components/Toggle';
 import type { ChannelDto } from '../data/api';
 import { BASE_URL } from '../data/catalog';
 import { useApp } from '../state/context';
+import { BodyCaptureCard } from '../components/BodyCaptureCard';
 
 interface TestLine {
   text: string;
@@ -16,6 +17,7 @@ export function Settings() {
 
   onMount(() => {
     void app.loadChannels();
+    void app.loadBodyCapture();
     if (session()?.role === 'admin') void app.loadPricingStatus();
   });
 
@@ -94,27 +96,7 @@ export function Settings() {
         </Show>
       </div>
 
-      <div class="panel card">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:20px">
-          <div>
-            <div class="section-title" style="margin-bottom:3px">
-              Prompt & response bodies
-            </div>
-            <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3);line-height:1.5">
-              polyrouter stores metadata only (tokens, cost, latency, routing decision) — prompt and
-              response bodies are never persisted. This is a property of the build, not a runtime
-              setting.
-            </div>
-          </div>
-          <span
-            class="chip"
-            style="white-space:nowrap;color:var(--green);align-self:center"
-            title="Request/response bodies are never stored"
-          >
-            Metadata-only
-          </span>
-        </div>
-      </div>
+      <BodyCaptureCard />
 
       <div class="panel card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">

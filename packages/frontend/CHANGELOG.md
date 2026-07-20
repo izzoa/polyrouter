@@ -1,5 +1,14 @@
 # @polyrouter/frontend
 
+## 0.5.1
+
+### Patch Changes
+
+- ed54d74: Fix the Band-targets picker showing "default" while nothing is chosen: the
+  placeholder option is now pinned as the select's resting state (at first
+  render and after every apply) — the row's target line, not the picker, is
+  what displays the current target.
+
 ## 0.5.0
 
 ### Minor Changes

@@ -5,6 +5,7 @@ import { RangeSelector } from '../components/RangeSelector';
 import { Toggle } from '../components/Toggle';
 import type { AutoLayers, TierEntryDto } from '../data/api';
 import { autoSeriesToChart, toAutoPerfVm } from '../data/autoPerf';
+import { bandVms, type BandVm } from '../data/bandTargets';
 import { toCalibrationVm, toHistoryRows } from '../data/calibration';
 import { fmtUsd } from '../data/format';
 import { useApp } from '../state/context';
@@ -57,6 +58,212 @@ export function groupModelsByProvider(
       models: group.sort((a, b) => a.externalModelId.localeCompare(b.externalModelId)),
     }))
     .sort((a, b) => a.label.localeCompare(b.label));
+}
+
+/** The BAND TARGETS section (add-band-target-ui): auto_high/auto_low made
+ * dashboard-configurable — the effective rule in the PROXY's order, atomic
+ * retargeting, snapshot-scoped guarantees with post-mutation reconciles, and
+ * every degraded state flagged instead of hidden. */
+function BandTargets() {
+  const app = useApp();
+  const { state } = app;
+  const vm = () =>
+    bandVms({
+      rules: state.rules,
+      tiers: state.routingTiers,
+      tierEntries: state.tierEntries,
+      models: state.allModels,
+      providers: state.providers,
+      cascadeEffective: state.autoLayers?.cascade ?? false,
+      autoPerf: { data: state.autoPerf.data, range: state.autoPerf.range },
+    });
+  const warnFont = "font:400 11px 'Geist',sans-serif;color:var(--amber)";
+  const subFont = "font:400 11.5px 'Geist',sans-serif;color:var(--text3)";
+  const busy = (band: 'auto_high' | 'auto_low') => state.bt.busy[band] || state.bt.unverified;
+
+  const targetLine = (b: BandVm) => {
+    const t = b.target;
+    if (t.kind === 'tier') {
+      return (
+        <span style="font:500 12px 'Geist',sans-serif;color:var(--accent-deep)">
+          tier: {t.key}
+          <Show when={!t.empty}>
+            <span style={subFont}>
+              {' '}
+              ▸ {t.primary}
+              {t.fallbacks > 0
+                ? ` +${String(t.fallbacks)} fallback${t.fallbacks === 1 ? '' : 's'}`
+                : ''}
+              {t.isDefault ? ' · uses the Layer-0 default chain' : ''}
+            </span>
+          </Show>
+        </span>
+      );
+    }
+    if (t.kind === 'model') {
+      return (
+        <span style="font:500 12px 'Geist',sans-serif;color:var(--accent-deep)">
+          {t.label}
+          <span style={subFont}>
+            {' '}
+            {t.provider ?? 'unknown provider'} · {modelPriceLabel(t.model)}
+          </span>
+        </span>
+      );
+    }
+    if (t.kind === 'unresolved') {
+      return (
+        <span class="mono" style="font:400 11.5px 'Geist Mono',monospace;color:var(--text2)">
+          {t.literal}
+        </span>
+      );
+    }
+    return (
+      <span style={subFont}>
+        Not set — confident {b.band === 'auto_high' ? 'high' : 'low'} verdicts fall through to
+        default
+      </span>
+    );
+  };
+
+  const unroutableNote = (b: BandVm) => {
+    const u = b.unroutable;
+    if (u === null || u.count === 0 || b.usable) return null;
+    return (
+      <span style={subFont}>
+        {' '}
+        ({u.count} unroutable in the selected {u.range} range)
+      </span>
+    );
+  };
+
+  const bandRow = (b: BandVm, title: string) => (
+    <div style="padding:8px 0;border-top:1px solid var(--border2)">
+      <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
+        <span style="font:600 10.5px 'Geist',sans-serif;letter-spacing:0.04em;color:var(--text2);min-width:52px">
+          {title}
+        </span>
+        <span class="mono" style="font:400 10px 'Geist Mono',monospace;color:var(--text3)">
+          {b.band}
+        </span>
+        {targetLine(b)}
+        {unroutableNote(b)}
+        <select
+          aria-label={`${title} target`}
+          disabled={busy(b.band)}
+          style="font:400 11px 'Geist',sans-serif;color:var(--text2);background:var(--chip);border:1px solid var(--border);border-radius:5px;padding:2px 6px;max-width:180px"
+          value=""
+          onChange={(e) => {
+            const v = e.currentTarget.value;
+            e.currentTarget.value = '';
+            if (v !== '') void app.setBandTarget(b.band, v);
+          }}
+        >
+          <option value="" disabled>
+            {b.target.kind === 'unset' ? 'Set target…' : 'Change…'}
+          </option>
+          <optgroup label="Tiers">
+            <For each={state.routingTiers}>
+              {(t) => <option value={`tier:${t.key}`}>{t.key}</option>}
+            </For>
+          </optgroup>
+          <For each={groupModelsByProvider(state.allModels, state.providers)}>
+            {(g) => (
+              <optgroup label={`Models — ${g.label}`}>
+                <For each={g.models}>
+                  {(m) => (
+                    <option value={`model:${m.id}`}>
+                      {m.displayName ?? m.externalModelId} · {modelPriceLabel(m)}
+                    </option>
+                  )}
+                </For>
+              </optgroup>
+            )}
+          </For>
+        </select>
+        <Show when={b.effective !== null}>
+          <button
+            type="button"
+            disabled={busy(b.band)}
+            style="font:400 11px 'Geist',sans-serif;color:var(--text3);cursor:pointer;text-decoration:underline"
+            onClick={() => void app.clearBand(b.band)}
+          >
+            Clear
+          </button>
+        </Show>
+      </div>
+      <Show when={state.bt.errors[b.band]}>
+        <div style="font:400 11px 'Geist',sans-serif;color:var(--red)">
+          {state.bt.errors[b.band]}
+        </div>
+      </Show>
+      <Show when={b.target.kind === 'tier' && b.target.empty}>
+        <div style={warnFont}>
+          This tier has no models — the band steers nothing: confident verdicts fall through to
+          default and the cascade cannot plan.
+        </div>
+      </Show>
+      <Show when={b.target.kind === 'unresolved'}>
+        <div style={warnFont}>
+          Target unresolved — requests fall through to default.{' '}
+          {b.target.kind === 'unresolved' && b.target.parsed === 'tier'
+            ? 'Recreating the tier key rebinds this rule.'
+            : b.target.kind === 'unresolved' && b.target.parsed === 'model'
+              ? 'The model no longer exists — pick a new target.'
+              : 'The stored target is malformed — pick a new target.'}
+        </div>
+      </Show>
+      <Show when={b.shadowed.length > 0}>
+        <div style={warnFont}>
+          {b.shadowed.length} shadowed duplicate rule{b.shadowed.length === 1 ? '' : 's'} —{' '}
+          <button
+            type="button"
+            disabled={busy(b.band)}
+            style="font:400 11px 'Geist',sans-serif;color:var(--text2);cursor:pointer;text-decoration:underline"
+            onClick={() => void app.cleanShadowed(b.band)}
+          >
+            clean up
+          </button>
+        </div>
+      </Show>
+    </div>
+  );
+
+  return (
+    <div class="panel card">
+      <div class="section-title" style="margin-bottom:2px">
+        Band targets
+      </div>
+      <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3);margin-bottom:8px">
+        Route confident verdicts directly; the cascade tries cheap first for the rest.
+      </div>
+      <Show when={state.bt.unverified}>
+        <div style="font:400 11px 'Geist',sans-serif;color:var(--red)">
+          Routing may have changed — the refresh failed.{' '}
+          <button
+            type="button"
+            style="font:400 11px 'Geist',sans-serif;color:var(--text2);cursor:pointer;text-decoration:underline"
+            onClick={() => void app.retryRulesReconcile()}
+          >
+            Retry
+          </button>
+        </div>
+      </Show>
+
+      {bandRow(vm().high, 'STRONG')}
+      {bandRow(vm().low, 'CHEAP')}
+      <Show when={vm().cascadeNeedsBoth}>
+        <div style={warnFont}>
+          Cascade needs both bands usable — ambiguous requests stay on the default tier until then.
+        </div>
+      </Show>
+      <Show when={vm().sameDestination}>
+        <div style={warnFont}>
+          Both bands resolve to the same destination — the cascade would retry the same chain.
+        </div>
+      </Show>
+    </div>
+  );
 }
 
 /** The SELF-CALIBRATION section (add-auto-threshold-calibration): the opt-in
@@ -246,16 +453,22 @@ function AutoPerformance() {
             </div>
             <Show when={v.unroutable > 0}>
               <div style="font:400 11px 'Geist',sans-serif;color:var(--amber);margin-bottom:8px">
-                {v.unroutable} confident request{v.unroutable === 1 ? '' : 's'} fell through with no
-                band target — add an{' '}
-                <span class="mono" style="font-size:10.5px">
-                  auto_high
-                </span>
-                {' / '}
-                <span class="mono" style="font-size:10.5px">
-                  auto_low
-                </span>{' '}
-                rule to route them.
+                {v.unroutable} confident request{v.unroutable === 1 ? '' : 's'} fell through to
+                default — check the{' '}
+                {[
+                  ...((state.autoPerf.data?.bands.high.unroutable ?? 0) > 0
+                    ? ['strong (auto_high)']
+                    : []),
+                  ...((state.autoPerf.data?.bands.low.unroutable ?? 0) > 0
+                    ? ['cheap (auto_low)']
+                    : []),
+                ].join(' and ')}{' '}
+                band
+                {(state.autoPerf.data?.bands.high.unroutable ?? 0) > 0 &&
+                (state.autoPerf.data?.bands.low.unroutable ?? 0) > 0
+                  ? 's’'
+                  : '’s'}{' '}
+                missing-or-unusable target in Band targets above.
               </div>
             </Show>
             <Show when={v.savings} keyed>
@@ -633,6 +846,7 @@ export function Routing() {
           </div>
 
           <Show when={state.autoLayers?.structuralAvailable}>
+            <BandTargets />
             <SelfCalibration />
             <AutoPerformance />
           </Show>

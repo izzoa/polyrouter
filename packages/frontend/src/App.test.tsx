@@ -270,6 +270,81 @@ describe('dashboard shell (auth-gated)', () => {
     }
   });
 
+  it('Band targets: set, retarget, clear, shadowed cleanup, warnings, cascade note (add-band-target-ui)', async () => {
+    const mkRule = (over: Partial<RuleDto>): RuleDto => ({
+      id: 'r-b1',
+      matchType: 'auto_high',
+      headerName: 'x-polyrouter-tier',
+      headerValue: null,
+      target: 'tier:premium',
+      priority: 0,
+      createdAt: NOW,
+      ...over,
+    });
+    const premium: TierDto = {
+      id: 't-premium',
+      key: 'premium',
+      displayName: null,
+      description: null,
+      createdAt: NOW,
+    };
+    const fake = new FakeApiClient({
+      tiers: [DEFAULT_TIER, premium],
+      tierEntries: {
+        t1: [mkEntry('m1', 0)],
+        't-premium': [{ id: 'ep1', tierId: 't-premium', modelId: 'm2', position: 0, model: null }],
+      },
+      models: { p1: [mkModel('m1'), mkModel('m2')] },
+      rules: [
+        mkRule({ id: 'r-eff', priority: 5 }),
+        mkRule({ id: 'r-shadow', priority: 0 }), // shadowed duplicate
+      ],
+    });
+    const { host, store, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Routing');
+      await flush();
+      const panel = () =>
+        [...host.querySelectorAll<HTMLElement>('.panel')].find((p) =>
+          p.textContent?.includes('Band targets'),
+        );
+      const text = () => panel()?.textContent ?? '';
+      // Effective (priority 5) shown with chain preview; duplicate disclosed.
+      expect(text()).toContain('tier: premium');
+      expect(text()).toContain('1 shadowed duplicate rule');
+      // The cheap band is unset with its consequence copy; cascade needs both.
+      expect(text()).toContain('Not set — confident low verdicts fall through to default');
+      expect(text()).toContain('Cascade needs both bands usable');
+      // Cleanup removes only the shadowed rule.
+      const cleanup = [...panel()!.querySelectorAll<HTMLElement>('button')].find(
+        (b) => b.textContent?.trim() === 'clean up',
+      );
+      cleanup?.click();
+      await flush();
+      expect(store.state.rules.filter((r) => r.matchType === 'auto_high')).toHaveLength(1);
+      expect(store.state.rules.some((r) => r.id === 'r-eff')).toBe(true);
+      // Keyboard-native picker: setting the cheap band via the select.
+      const selects = panel()!.querySelectorAll<HTMLSelectElement>('select');
+      const cheapSelect = selects[1]!;
+      cheapSelect.value = 'tier:default';
+      cheapSelect.dispatchEvent(new Event('change', { bubbles: true }));
+      await flush();
+      expect(store.state.rules.some((r) => r.matchType === 'auto_low')).toBe(true);
+      expect(text()).not.toContain('Cascade needs both bands usable');
+      expect(text()).toContain('uses the Layer-0 default chain');
+      // Clear removes the whole band again.
+      const clear = [...panel()!.querySelectorAll<HTMLElement>('button')].filter(
+        (b) => b.textContent?.trim() === 'Clear',
+      )[1];
+      clear?.click();
+      await flush();
+      expect(store.state.rules.some((r) => r.matchType === 'auto_low')).toBe(false);
+    } finally {
+      dispose();
+    }
+  });
+
   it('renders Self-calibration: toggle, thresholds line, revert only when calibrated, history', async () => {
     const fake = new FakeApiClient({
       tiers: [DEFAULT_TIER],
@@ -352,8 +427,14 @@ describe('dashboard shell (auth-gated)', () => {
       expect(text).toContain('premium');
       expect(text).toContain('est.');
       expect(text).toContain('based on 6 of 7 quality-passed requests');
-      // Unroutable diagnostic (1 in the fixture) names the rule kinds to add.
-      expect(text).toContain('auto_high');
+      // Unroutable diagnostic (1 in the fixture, high band): the perf panel
+      // names the AFFECTED band and points at Band targets (cause-neutral —
+      // scoped to the panel so the band section's keys can't satisfy it).
+      const perfPanel = [...host.querySelectorAll<HTMLElement>('.panel')].find((p) =>
+        p.textContent?.includes('Auto performance'),
+      );
+      expect(perfPanel?.textContent).toContain('strong (auto_high)');
+      expect(perfPanel?.textContent).toContain('Band targets above');
       // The section's range control is LOCAL: clicking 30d must not move the
       // global Observe range (24h default), only autoPerf.range.
       expect(store.state.autoPerf.range).toBe('7d');
@@ -404,7 +485,17 @@ describe('dashboard shell (auth-gated)', () => {
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
       expect(host.textContent).toContain('tier:heavy'); // the header rule is shown + deletable
-      expect(host.textContent).not.toContain('auto-band-xyz'); // the auto rule is not (no delete)
+      // The auto rule stays OUT of the Header-rules panel — but IS now
+      // presented by Band targets (add-band-target-ui), as unresolved here.
+      const headerPanel = [...host.querySelectorAll<HTMLElement>('.panel')].find((p) =>
+        p.textContent?.includes('Header rules'),
+      );
+      expect(headerPanel?.textContent).not.toContain('auto-band-xyz');
+      const bandPanel = [...host.querySelectorAll<HTMLElement>('.panel')].find((p) =>
+        p.textContent?.includes('Band targets'),
+      );
+      expect(bandPanel?.textContent).toContain('model:auto-band-xyz');
+      expect(bandPanel?.textContent).toContain('Target unresolved');
     } finally {
       dispose();
     }

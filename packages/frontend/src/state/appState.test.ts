@@ -1307,3 +1307,226 @@ describe('identity-scoped cache isolation (add-auto-threshold-calibration r3-Hig
     expect(s.state.calHistory.loaded).toBe(false); // never committed
   });
 });
+
+describe('band-target actions (add-band-target-ui)', () => {
+  const highRule = {
+    id: 'r-high',
+    matchType: 'auto_high',
+    headerName: 'x-polyrouter-tier',
+    headerValue: null,
+    target: 'tier:premium',
+    priority: 0,
+    createdAt: '2026-07-01T00:00:00.000Z',
+  };
+
+  it('setBandTarget PATCHes the effective rule when one exists — never a second rule', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION, rules: [highRule] });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    s.setState('rules', [highRule]); // the Routing page's loaded snapshot
+    await s.setBandTarget('auto_high', 'tier:cheap');
+    expect(fake.calls).toContain('updateRule');
+    expect(fake.calls.filter((c) => c === 'createRule')).toHaveLength(0);
+    expect(s.state.rules.filter((r) => r.matchType === 'auto_high')).toHaveLength(1);
+    expect(s.state.rules[0]!.target).toBe('tier:cheap');
+    expect(s.state.bt).toEqual({
+      busy: { auto_high: false, auto_low: false },
+      errors: { auto_high: null, auto_low: null },
+      unverified: false,
+    });
+  });
+
+  it('setBandTarget creates when unset, and the display commits only via the reconcile', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION, rules: [] });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    await s.setBandTarget('auto_low', 'tier:cheap');
+    expect(fake.calls).toContain('createRule');
+    expect(fake.calls).toContain('listRules'); // the authoritative re-list ran
+    expect(s.state.rules.some((r) => r.matchType === 'auto_low')).toBe(true);
+  });
+
+  it('a failed write reconciles and reports a row error — no optimistic lie', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION, rules: [highRule] });
+    fake.updateRule = () => Promise.reject(new ApiError(422, 'Unprocessable', 'bad target'));
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    s.setState('rules', [highRule]);
+    await s.setBandTarget('auto_high', 'tier:cheap');
+    expect(s.state.rules[0]!.target).toBe('tier:premium'); // unchanged truth
+    expect(s.state.bt.errors.auto_high).toMatch(/bad target/);
+    expect(s.state.bt.unverified).toBe(false); // reconcile succeeded — state IS verified
+  });
+
+  it('write ok + reconcile failed → the visible unverified state disables actions until retry', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION, rules: [highRule] });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    s.setState('rules', [highRule]);
+    let failList = true;
+    const realList = fake.listRules.bind(fake);
+    fake.listRules = () =>
+      failList ? Promise.reject(new ApiError(500, 'Internal', 'list down')) : realList();
+    await s.setBandTarget('auto_high', 'tier:cheap');
+    expect(s.state.bt.unverified).toBe(true); // routing may have changed; we cannot confirm
+    // Snapshot-dependent actions are disabled while unverified.
+    await s.setBandTarget('auto_high', 'tier:premium');
+    expect(fake.calls.filter((c) => c === 'updateRule')).toHaveLength(1);
+    // Retry heals.
+    failList = false;
+    await s.retryRulesReconcile();
+    expect(s.state.bt.unverified).toBe(false);
+    expect(s.state.rules[0]!.target).toBe('tier:cheap'); // the landed write, now confirmed
+  });
+
+  it('clearBand deletes every snapshot rule of the band and reconciles', async () => {
+    const shadowed = { ...highRule, id: 'r-high-2', priority: -1 };
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION, rules: [highRule, shadowed] });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    s.setState('rules', [highRule, shadowed]);
+    await s.clearBand('auto_high');
+    expect(fake.calls.filter((c) => c === 'deleteRule')).toHaveLength(2);
+    expect(s.state.rules.filter((r) => r.matchType === 'auto_high')).toHaveLength(0);
+  });
+
+  it('cleanShadowed removes only the non-effective rules', async () => {
+    const winner = { ...highRule, id: 'r-win', priority: 9 };
+    const shadowed = { ...highRule, id: 'r-shadow', priority: 0 };
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION, rules: [winner, shadowed] });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    s.setState('rules', [winner, shadowed]);
+    await s.cleanShadowed('auto_high');
+    const remaining = s.state.rules.filter((r) => r.matchType === 'auto_high');
+    expect(remaining.map((r) => r.id)).toEqual(['r-win']);
+  });
+
+  it('latest-wins: an older reconcile never overwrites a newer one (header-during-band)', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION, rules: [] });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    // Hold the FIRST list open; let the second complete with newer truth.
+    const realList = fake.listRules.bind(fake);
+    let release: () => void = () => {};
+    let first = true;
+    fake.listRules = () => {
+      if (first) {
+        first = false;
+        return new Promise((resolve) => {
+          release = () => {
+            void realList().then(resolve);
+          };
+        });
+      }
+      return realList();
+    };
+    const bandOp = s.setBandTarget('auto_low', 'tier:cheap'); // starts reconcile #1 (held)
+    await new Promise((r) => setTimeout(r, 0));
+    await s.retryRulesReconcile(); // reconcile #2 — newest, commits
+    const after = s.state.rules.length;
+    release(); // stale #1 lands late — must be DROPPED
+    await bandOp;
+    expect(s.state.rules.length).toBe(after);
+  });
+
+  it('a superseded reconcile never reports success — unverified only clears on a COMMIT (r3-High-1)', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION, rules: [highRule] });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    s.setState('rules', [highRule]);
+    // The band mutation writes OK, but its reconcile is held; a NEWER
+    // reconcile then FAILS — the band op must defer to that newest outcome
+    // and stay unverified, not report its own stale success.
+    const realList = fake.listRules.bind(fake);
+    let call = 0;
+    let releaseFirst: () => void = () => {};
+    fake.listRules = () => {
+      call += 1;
+      if (call === 1) {
+        return new Promise((resolve) => {
+          releaseFirst = () => void realList().then(resolve);
+        });
+      }
+      return Promise.reject(new ApiError(500, 'Internal', 'list down'));
+    };
+    const op = s.setBandTarget('auto_high', 'tier:cheap'); // write ok; reconcile #1 held
+    await new Promise((r) => setTimeout(r, 0));
+    await s.retryRulesReconcile(); // reconcile #2 — newest, FAILS
+    releaseFirst(); // stale #1 resolves late; superseded → must not verify
+    await op;
+    expect(s.state.bt.unverified).toBe(true);
+  });
+
+  it('a successful full loadRouting verifies and cannot be overwritten by a stale reconcile (r3-High-2)', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION, rules: [highRule] });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    s.setState('rules', [highRule]);
+    s.setState('bt', 'unverified', true);
+    await s.loadRouting();
+    expect(s.state.bt.unverified).toBe(false); // authoritative full read verified
+    expect(s.state.rules.some((r) => r.id === 'r-high')).toBe(true);
+  });
+
+  it('a header-rule create during band state converges via the shared reconcile discipline', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION, rules: [] });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    await s.setBandTarget('auto_low', 'tier:cheap');
+    // A header rule created through the header action lands in the SAME
+    // converged rules state (its reconcile re-lists everything).
+    s.setState('rf', { value: 'heavy', target: 'cheap', busy: false, error: null });
+    await s.createRule();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(s.state.rules.some((r) => r.matchType === 'header')).toBe(true);
+    expect(s.state.rules.some((r) => r.matchType === 'auto_low')).toBe(true);
+  });
+
+  it('clearBand aborts on a failed delete — the remainder stays visible and errored', async () => {
+    const shadowed = { ...highRule, id: 'r-high-2', priority: -1 };
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION, rules: [highRule, shadowed] });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    s.setState('rules', [highRule, shadowed]);
+    let deletes = 0;
+    const realDelete = fake.deleteRule.bind(fake);
+    fake.deleteRule = (id: string) => {
+      deletes += 1;
+      if (deletes === 2) return Promise.reject(new ApiError(500, 'Internal', 'delete failed'));
+      return realDelete(id);
+    };
+    await s.clearBand('auto_high');
+    expect(s.state.bt.errors.auto_high).toMatch(/delete failed/);
+    expect(s.state.rules.filter((r) => r.matchType === 'auto_high')).toHaveLength(1); // truthful remainder
+  });
+
+  it('busy is PER BAND: the same band is single-flight while the other stays free', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION, rules: [] });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    let releaseCreate: () => void = () => {};
+    const realCreate = fake.createRule.bind(fake);
+    let held = false;
+    fake.createRule = (input) => {
+      if (!held && input.matchType === 'auto_high') {
+        held = true;
+        return new Promise((resolve) => {
+          releaseCreate = () => void realCreate(input).then(resolve);
+        });
+      }
+      return realCreate(input);
+    };
+    const first = s.setBandTarget('auto_high', 'tier:cheap'); // held in flight
+    await new Promise((r) => setTimeout(r, 0));
+    const dupe = s.setBandTarget('auto_high', 'tier:premium'); // same band → blocked
+    await dupe;
+    await s.setBandTarget('auto_low', 'tier:cheap'); // other band → allowed
+    expect(s.state.rules.some((r) => r.matchType === 'auto_low')).toBe(true);
+    releaseCreate();
+    await first;
+    const highs = s.state.rules.filter((r) => r.matchType === 'auto_high');
+    expect(highs).toHaveLength(1); // the blocked duplicate never wrote
+    expect(highs[0]!.target).toBe('tier:cheap');
+  });
+});

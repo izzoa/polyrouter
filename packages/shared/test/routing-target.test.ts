@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import {
-  formatRoutingTarget,
-  parseRoutingTarget,
-  type RoutingTarget,
-} from '../src/server/routing/target';
-import { TIER_KEY_PATTERN } from '../src/server/routing/constants';
+import { formatRoutingTarget, parseRoutingTarget, type RoutingTarget } from '../src/routing-target';
+import { TIER_KEY_PATTERN } from '../src/routing-constants';
 
 describe('parseRoutingTarget / formatRoutingTarget', () => {
   it('parses tier and model targets to a discriminated value', () => {

@@ -8,6 +8,17 @@ export const PROJECT_URL = 'https://polyrouter.app';
  * what identity we disclose to whom. */
 export const OPENROUTER_HOST = 'openrouter.ai';
 
+export { formatRoutingTarget, parseRoutingTarget } from './routing-target';
+export type { RoutingTarget } from './routing-target';
+export {
+  AUTO_ALIAS,
+  DEFAULT_TIER_KEY,
+  MAX_MODELS_PER_TIER,
+  RULE_MATCH_TYPES,
+  TIER_HEADER_NAME,
+  TIER_KEY_PATTERN,
+} from './routing-constants';
+export type { RuleMatchType } from './routing-constants';
 export { z } from 'zod';
 export {
   ConfigRegistry,

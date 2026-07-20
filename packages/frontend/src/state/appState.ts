@@ -36,6 +36,7 @@ import {
   type UpdateBudgetInput,
   type UpdateChannelInput,
 } from '../data/api';
+import { effectiveRuleOrder } from '../data/bandTargets';
 import { BASE_URL } from '../data/catalog';
 import { rangeToParams } from '../data/range';
 import type {
@@ -197,6 +198,14 @@ export interface AppState {
   confirmedEntries: Record<string, string[]>;
   allModels: Model[];
   rules: RuleDto[];
+  /** Band-targets section state (add-band-target-ui): PER-BAND busy +
+   * row-scoped errors, and the section-level UNVERIFIED flag (a write landed
+   * or may have landed but verification failed — display can't claim truth). */
+  bt: {
+    busy: { auto_high: boolean; auto_low: boolean };
+    errors: { auto_high: string | null; auto_low: string | null };
+    unverified: boolean;
+  };
   autoLayers: AutoLayers | null;
   /** Threshold-calibration history (add-auto-threshold-calibration). */
   calHistory: { rows: CalibrationEvent[]; loaded: boolean; error: string | null };
@@ -625,6 +634,11 @@ function initialState(): AppState {
     confirmedEntries: {},
     allModels: [],
     rules: [],
+    bt: {
+      busy: { auto_high: false, auto_low: false },
+      errors: { auto_high: null, auto_low: null },
+      unverified: false,
+    },
     autoLayers: null,
     calHistory: { rows: [], loaded: false, error: null },
     routingLoading: false,
@@ -727,6 +741,11 @@ export interface AppStore {
   deleteTier: (tierId: string) => Promise<void>;
   createRule: () => Promise<void>;
   deleteRule: (id: string) => Promise<void>;
+  /** Band targets (add-band-target-ui). */
+  setBandTarget: (band: 'auto_high' | 'auto_low', target: string) => Promise<void>;
+  clearBand: (band: 'auto_high' | 'auto_low') => Promise<void>;
+  cleanShadowed: (band: 'auto_high' | 'auto_low') => Promise<void>;
+  retryRulesReconcile: () => Promise<void>;
   toggleAutoLayer: (layer: 'structural' | 'cascade') => Promise<void>;
   // limits (#20)
   loadLimits: () => Promise<void>;
@@ -885,14 +904,60 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
   const bumpRouting = (): void => {
     routingSeq += 1;
   };
+  // Dedicated LATEST-WINS rules generation (add-band-target-ui r2-High-1):
+  // bumped when a reconcile (or a full routing load) STARTS; only the newest
+  // committer wins. The domain-wide routingSeq cannot order concurrent rule
+  // re-lists (any tier mutation bumps it), so rules convergence gets its own
+  // counter. A SUPERSEDED run never reports success of its own (r3-High-1) —
+  // it defers to the newest run's outcome, so `unverified` can only be
+  // cleared by a reconcile that actually committed.
+  let rulesGen = 0;
+  let newestReconcile: Promise<'committed' | 'failed'> | null = null;
+  const reconcileRules = (): Promise<'committed' | 'failed'> => {
+    const gen = ++rulesGen;
+    const idGen = identityGen;
+    const holder: { run: Promise<'committed' | 'failed'> | null } = { run: null };
+    const run: Promise<'committed' | 'failed'> = (async () => {
+      let outcome: 'committed' | 'failed';
+      try {
+        const rows = await client.listRules();
+        if (gen !== rulesGen || idGen !== identityGen) {
+          outcome = 'failed'; // superseded — resolved below via the newest run
+        } else {
+          setState('rules', rows);
+          setState('bt', 'unverified', false);
+          outcome = 'committed';
+        }
+      } catch {
+        outcome = 'failed';
+      }
+      // Superseded (a newer run started): our own result is meaningless —
+      // report the NEWEST authoritative outcome instead (finite chain: each
+      // hop awaits a strictly newer run).
+      if (gen !== rulesGen && newestReconcile !== null && newestReconcile !== holder.run) {
+        return newestReconcile;
+      }
+      return outcome;
+    })();
+    holder.run = run;
+    newestReconcile = run;
+    return run;
+  };
+
   const resetIdentityScoped = (): void => {
     identityGen += 1;
     bumpRouting(); // discard in-flight routing loads captured under the old principal
+    rulesGen += 1; // an old account's in-flight rules reconcile can never commit (r3-High-2)
     setState(
       produce((s) => {
         s.autoLayers = null;
         s.calHistory = { rows: [], loaded: false, error: null };
         s.autoPerf = { data: null, loaded: false, error: null, range: '7d' };
+        s.bt = {
+          busy: { auto_high: false, auto_low: false },
+          errors: { auto_high: null, auto_low: null },
+          unverified: false,
+        };
       }),
     );
   };
@@ -912,6 +977,10 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     // while we load, this GET saw the old config and must be discarded (else it
     // would restore stale visible state AND the stale rollback baseline).
     const seq = routingSeq;
+    // A full routing load is an authoritative rules read too (r3-High-2): it
+    // joins the rules generation so an in-flight reconcile can't overwrite it
+    // (or vice versa), and its successful commit counts as verification.
+    const rGen = ++rulesGen;
     try {
       // Providers ride along so the Routing page can label its model groups by
       // provider name even when the Providers page was never visited.
@@ -928,7 +997,10 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         produce((s) => {
           s.routingTiers = tiers;
           s.allModels = models;
-          s.rules = rules;
+          if (rGen === rulesGen) {
+            s.rules = rules;
+            s.bt.unverified = false; // an authoritative full read verified the truth
+          }
           s.autoLayers = autoLayers;
           s.providers = providerRows.map(toProvider);
           s.tierEntries = {};
@@ -1959,10 +2031,11 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         });
         setState(
           produce((s) => {
-            s.rules = [...s.rules, rule];
+            s.rules = [...s.rules, rule]; // optimistic preview…
             s.rf = { value: '', target: '', busy: false, error: null };
           }),
         );
+        void reconcileRules(); // …converging on the authoritative re-list
         say('Header rule created');
       } catch (e) {
         setState('rf', { busy: false, error: err(e) });
@@ -1971,9 +2044,102 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     deleteRule: async (id) => {
       try {
         await client.deleteRule(id);
-        setState('rules', (rules) => rules.filter((r) => r.id !== id));
+        setState('rules', (rules) => rules.filter((r) => r.id !== id)); // preview
+        void reconcileRules(); // converge (r2-High-1 — one discipline for ALL rule writes)
       } catch (e) {
         say(err(e));
+      }
+    },
+    setBandTarget: async (band, target) => {
+      if (state.bt.busy[band] || state.bt.unverified) return; // per-band single-flight; unverified disables
+      setState('bt', 'busy', band, true);
+      setState('bt', 'errors', band, null);
+      bumpRouting();
+      // The snapshot's effective rule — the proxy's pick (priority DESC,
+      // createdAt, id). PESSIMISTIC: display changes only via the reconcile.
+      // ONE comparator — the VM's exported proxy order (no drift).
+      const ofBand = state.rules.filter((r) => r.matchType === band).sort(effectiveRuleOrder);
+      const effective = ofBand[0];
+      let wrote = false;
+      let mayHaveLanded = false;
+      let failed: string | null = null;
+      try {
+        if (effective !== undefined) {
+          await client.updateRule(effective.id, { target });
+        } else {
+          await client.createRule({ matchType: band, target });
+        }
+        wrote = true;
+      } catch (e) {
+        failed = err(e);
+        // A definitive HTTP response (4xx/5xx) means the server REJECTED the
+        // write — nothing landed. Only a transport-level failure (no
+        // response) is genuinely ambiguous (r3-Med-3).
+        mayHaveLanded = !isApiError(e);
+      }
+      // Reconcile after success AND failure (an ambiguous failure may have
+      // landed — a retry-minted duplicate must surface as shadowed).
+      const verified = (await reconcileRules()) === 'committed';
+      setState('bt', 'busy', band, false);
+      setState('bt', 'errors', band, failed);
+      setState('bt', 'unverified', !verified && (wrote || mayHaveLanded));
+      if (wrote && verified) say('Band target saved');
+    },
+    clearBand: async (band) => {
+      if (state.bt.busy[band] || state.bt.unverified) return;
+      setState('bt', 'busy', band, true);
+      setState('bt', 'errors', band, null);
+      bumpRouting();
+      const snapshot = state.rules.filter((r) => r.matchType === band);
+      let failed: string | null = null;
+      let touched = false;
+      let mayHaveLanded = false;
+      for (const r of snapshot) {
+        try {
+          await client.deleteRule(r.id);
+          touched = true;
+        } catch (e) {
+          failed = err(e); // abort — the remainder stays visible, retry-able
+          mayHaveLanded = !isApiError(e);
+          break;
+        }
+      }
+      const verified = (await reconcileRules()) === 'committed';
+      setState('bt', 'busy', band, false);
+      setState('bt', 'errors', band, failed);
+      setState('bt', 'unverified', !verified && (touched || mayHaveLanded));
+      if (failed === null && verified && snapshot.length > 0) say('Band cleared');
+    },
+    cleanShadowed: async (band) => {
+      if (state.bt.busy[band] || state.bt.unverified) return;
+      setState('bt', 'busy', band, true);
+      setState('bt', 'errors', band, null);
+      bumpRouting();
+      // ONE comparator — the VM's exported proxy order (no drift).
+      const ofBand = state.rules.filter((r) => r.matchType === band).sort(effectiveRuleOrder);
+      let failed: string | null = null;
+      let touched = false;
+      let mayHaveLanded = false;
+      for (const r of ofBand.slice(1)) {
+        try {
+          await client.deleteRule(r.id);
+          touched = true;
+        } catch (e) {
+          failed = err(e);
+          mayHaveLanded = !isApiError(e);
+          break;
+        }
+      }
+      const verified = (await reconcileRules()) === 'committed';
+      setState('bt', 'busy', band, false);
+      setState('bt', 'errors', band, failed);
+      setState('bt', 'unverified', !verified && (touched || mayHaveLanded));
+      if (failed === null && verified && ofBand.length > 1) say('Duplicates removed');
+    },
+    retryRulesReconcile: async () => {
+      const verified = (await reconcileRules()) === 'committed';
+      if (verified) {
+        setState('bt', 'errors', { auto_high: null, auto_low: null });
       }
     },
     toggleAutoLayer: (layer) => {

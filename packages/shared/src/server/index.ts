@@ -83,10 +83,13 @@ export {
   RULE_MATCH_TYPES,
   TIER_HEADER_NAME,
   TIER_KEY_PATTERN,
-} from './routing/constants';
-export type { RuleMatchType } from './routing/constants';
-export { formatRoutingTarget, parseRoutingTarget } from './routing/target';
-export type { RoutingTarget } from './routing/target';
+} from '../routing-constants';
+export type { RuleMatchType } from '../routing-constants';
+// Re-exported verbatim from the shared ROOT (add-band-target-ui): the pure
+// target helpers are browser-safe and the dashboard needs the CANONICAL
+// parser — one source of truth, no server-side churn.
+export { formatRoutingTarget, parseRoutingTarget } from '../routing-target';
+export type { RoutingTarget } from '../routing-target';
 export { decryptSecret, encryptSecret } from './security/encryption';
 export {
   POLYCRED_MARKER,

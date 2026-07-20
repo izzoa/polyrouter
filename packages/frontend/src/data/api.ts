@@ -1,4 +1,4 @@
-import type { HarnessType } from '@polyrouter/shared';
+import type { HarnessType, RuleMatchType } from '@polyrouter/shared';
 import { API_BASE, PROXY_BASE } from './catalog';
 
 /**
@@ -225,15 +225,11 @@ export interface UpdateTierInput {
   description?: string;
 }
 
-/** Client-side mirror of the server tier cap (§7.4) and the tier header (§7.2).
- * Re-declared here because the frontend cannot import `@polyrouter/shared/server`
- * (the module-boundary lint forbids it), where the canonical constants live. */
-export const MAX_MODELS_PER_TIER = 5;
-export const TIER_HEADER_NAME = 'x-polyrouter-tier';
-
-/** Rule match types the proxy (#10) understands. The dashboard authors `header`
- * rules; the auto-band / default kinds are surfaced read-only. */
-export type RuleMatchType = 'header' | 'default' | 'auto_high' | 'auto_low';
+/** The CANONICAL routing constants, re-exported from the browser-safe shared
+ * root (add-band-target-ui) — the client-side mirror is gone: one source of
+ * truth for the cap, the header, and the rule kinds. */
+export { MAX_MODELS_PER_TIER, TIER_HEADER_NAME } from '@polyrouter/shared';
+export type { RuleMatchType } from '@polyrouter/shared';
 
 export interface RuleDto {
   id: string;
@@ -619,6 +615,7 @@ export interface ApiClient {
   replaceTierEntries(tierId: string, modelIds: string[]): Promise<TierEntryDto[]>;
   listRules(): Promise<RuleDto[]>;
   createRule(input: CreateRuleInput): Promise<RuleDto>;
+  updateRule(id: string, patch: { target: string }): Promise<RuleDto>;
   deleteRule(id: string): Promise<{ deleted: boolean }>;
   getAutoLayers(): Promise<AutoLayers>;
   setAutoLayers(input: {
@@ -820,6 +817,8 @@ export const realClient: ApiClient = {
     ),
   listRules: () => http<RuleDto[]>(`${API_BASE}/routing/rules`),
   createRule: (input) => http<RuleDto>(`${API_BASE}/routing/rules`, jsonInit('POST', input)),
+  updateRule: (id, patch) =>
+    http<RuleDto>(`${API_BASE}/routing/rules/${encodeURIComponent(id)}`, jsonInit('PATCH', patch)),
   deleteRule: (id) =>
     http<{ deleted: boolean }>(`${API_BASE}/routing/rules/${encodeURIComponent(id)}`, {
       method: 'DELETE',

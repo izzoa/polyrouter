@@ -850,6 +850,15 @@ export class FakeApiClient implements ApiClient {
     return Promise.resolve(rule);
   }
 
+  updateRule(id: string, patch: { target: string }): Promise<RuleDto> {
+    this.record('updateRule', id, patch);
+    const existing = this.rules.find((r) => r.id === id);
+    if (!existing) return Promise.reject(new ApiError(404, 'NotFound', 'rule not found'));
+    const next = { ...existing, target: patch.target };
+    this.rules = this.rules.map((r) => (r.id === id ? next : r));
+    return Promise.resolve(next);
+  }
+
   deleteRule(id: string): Promise<{ deleted: boolean }> {
     this.record('deleteRule', id);
     this.rules = this.rules.filter((r) => r.id !== id);

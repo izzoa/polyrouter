@@ -240,22 +240,27 @@ export function resolveRoute(
   // Phase 1 made no selection (empty or `auto`): fall through to header/default.
   const rules = [...snap.rules].sort(ruleOrder);
 
-  // Phase 2 — a matching custom `header` rule. The decision carries the rule's
-  // normalized header NAME only: its configured value can itself be a credential
-  // (rules may target authorization/x-api-key/…), so it is never emitted.
-  for (const r of rules) {
-    if (r.matchType !== 'header' || r.headerValue === null) continue;
-    if (parsed.headers[r.headerName.toLowerCase()] === r.headerValue) {
-      const d = resolveTarget(snap, r.target, 'header', `header rule ${r.headerName}`);
-      if (isRouteError(d)) return d;
-      return { ...d, matchedHeader: { name: r.headerName, value: null } };
-    }
-  }
-
-  // Phase 3 — the built-in `x-polyrouter-tier` header naming an owned tier
-  // (before default rules, so it forces a tier even when a default rule exists).
+  // Phase 2 — the tier-header phase (add-tier-header-precedence): a request
+  // carrying a non-empty `x-polyrouter-tier` that RESOLVES here wins
+  // structurally — no rule on another header, of any priority, can shadow the
+  // per-request tier ask. The decision carries a matched rule's normalized
+  // header NAME only: a configured value can itself be a credential, so it is
+  // never emitted.
   const builtin = parsed.headers[TIER_HEADER_NAME];
   if (builtin !== undefined && builtin.length > 0) {
+    // 2a — value remaps: tier-header rules matching the sent value (the
+    // dashboard's Header rules). A remap beats the direct lookup so it stays
+    // effective even when its value collides with a literal tier key.
+    for (const r of rules) {
+      if (r.matchType !== 'header' || r.headerValue === null) continue;
+      if (r.headerName.toLowerCase() !== TIER_HEADER_NAME) continue;
+      if (builtin === r.headerValue) {
+        const d = resolveTarget(snap, r.target, 'header', `header rule ${r.headerName}`);
+        if (isRouteError(d)) return d;
+        return { ...d, matchedHeader: { name: r.headerName, value: null } };
+      }
+    }
+    // 2b — the sent value naming an owned tier directly.
     const tier = snap.tiers.find((t) => t.key === builtin);
     if (tier) {
       const d = resolveTier(snap, tier, 'header', `${TIER_HEADER_NAME}: ${builtin}`);
@@ -264,7 +269,19 @@ export function resolveRoute(
       // matched (identical bytes, config-side provenance).
       return { ...d, matchedHeader: { name: TIER_HEADER_NAME, value: tier.key } };
     }
-    // a header naming a missing tier is advisory — fall through to default.
+    // a value matching no remap and no tier is advisory — fall through.
+  }
+
+  // Phase 3 — rules on OTHER headers (tier-header rules are exclusively
+  // phase-2 remaps; without the tier header they could never match anyway).
+  for (const r of rules) {
+    if (r.matchType !== 'header' || r.headerValue === null) continue;
+    if (r.headerName.toLowerCase() === TIER_HEADER_NAME) continue;
+    if (parsed.headers[r.headerName.toLowerCase()] === r.headerValue) {
+      const d = resolveTarget(snap, r.target, 'header', `header rule ${r.headerName}`);
+      if (isRouteError(d)) return d;
+      return { ...d, matchedHeader: { name: r.headerName, value: null } };
+    }
   }
 
   // Phase 4 — a `default`-match rule.

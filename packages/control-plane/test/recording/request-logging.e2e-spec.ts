@@ -273,6 +273,34 @@ describe('request-logging e2e', () => {
       expect(JSON.stringify(row)).not.toContain('EXTREMELY-SECRET');
     });
 
+    it('an explicit x-polyrouter-tier beats a higher-priority rule on another header (add-tier-header-precedence)', async () => {
+      // High-priority rule on a different header targeting the fallback tier
+      // (whose primary 500s) — if it won, the row would show tier 'fallback'.
+      await port.routingRules.insert(principal, {
+        matchType: 'header',
+        headerName: 'x-env',
+        headerValue: 'prod',
+        target: 'tier:fallback',
+        priority: 100,
+      });
+      const res = await request(server)
+        .post('/v1/chat/completions')
+        .set('Authorization', `Bearer ${key}`)
+        .set('x-env', 'prod')
+        .set('x-polyrouter-tier', 'default')
+        .send({ model: 'auto', messages: [] });
+      expect(res.status).toBe(200);
+      await writer.flush();
+      const row = (await port.requestLogs.list(principal))[0]!;
+      expect(row).toMatchObject({
+        status: 'success',
+        decisionLayer: 'header',
+        tierAssigned: 'default', // the tier header won, not the x-env rule
+        routingHeaderName: 'x-polyrouter-tier',
+        routingHeaderValue: 'default',
+      });
+    });
+
     it('non-header decisions (explicit AND auto/default) record null for both columns', async () => {
       const explicit = await request(server)
         .post('/v1/chat/completions')

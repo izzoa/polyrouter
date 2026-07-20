@@ -205,6 +205,65 @@ describe('resolveRoute — tierKey (tier_assigned producer)', () => {
   });
 });
 
+describe('resolveRoute — tier-header precedence (add-tier-header-precedence)', () => {
+  it('a resolving x-polyrouter-tier beats a HIGHER-priority rule on another header (direct lookup)', () => {
+    const s = snap({
+      rules: [rule({ headerName: 'x-env', headerValue: 'prod', target: 'tier:fast', priority: 999 })],
+    });
+    const r = resolveRoute(s, parse('auto', { 'x-env': 'prod', 'x-polyrouter-tier': 'default' }));
+    expect(r).toMatchObject({
+      tierKey: 'default', // the tier header won, not the x-env rule
+      decisionLayer: 'header',
+      routingReason: 'x-polyrouter-tier: default',
+      matchedHeader: { name: 'x-polyrouter-tier', value: 'default' },
+    });
+  });
+
+  it('a tier-header REMAP also beats a higher-priority other-header rule', () => {
+    const s = snap({
+      rules: [
+        rule({ id: 'a', headerName: 'x-env', headerValue: 'prod', target: 'tier:fast', priority: 999 }),
+        rule({ id: 'b', headerValue: 'shopping', target: 'tier:default', priority: 0 }),
+      ],
+    });
+    const r = resolveRoute(s, parse('auto', { 'x-env': 'prod', 'x-polyrouter-tier': 'shopping' }));
+    expect(r).toMatchObject({
+      tierKey: 'default',
+      routingReason: 'header rule x-polyrouter-tier', // unchanged rule-reason shape
+      matchedHeader: { name: 'x-polyrouter-tier', value: null }, // custom rule stays name-only
+    });
+  });
+
+  it('a remap still beats the direct lookup when its value collides with a real tier key', () => {
+    const s = snap({ rules: [rule({ headerValue: 'fast', target: 'tier:default' })] });
+    const r = resolveRoute(s, parse('auto', { 'x-polyrouter-tier': 'fast' }));
+    expect(r).toMatchObject({ tierKey: 'default', routingReason: 'header rule x-polyrouter-tier' });
+  });
+
+  it('an advisory tier header still lets an other-header rule match, then default', () => {
+    const s = snap({
+      rules: [rule({ headerName: 'x-env', headerValue: 'prod', target: 'tier:fast' })],
+    });
+    const withRule = resolveRoute(
+      s,
+      parse('auto', { 'x-polyrouter-tier': 'no-such-tier', 'x-env': 'prod' }),
+    );
+    expect(withRule).toMatchObject({
+      tierKey: 'fast',
+      matchedHeader: { name: 'x-env', value: null },
+    });
+    expect(JSON.stringify(withRule)).not.toContain('no-such-tier'); // advisory value never captured
+    const noRule = resolveRoute(snap(), parse('auto', { 'x-polyrouter-tier': 'no-such-tier' }));
+    expect(noRule).toMatchObject({ decisionLayer: 'default', tierKey: 'default' });
+  });
+
+  it('a corrupt empty-string tier-header rule no longer matches an empty header (hardening, D4)', () => {
+    const s = snap({ rules: [rule({ headerValue: '', target: 'tier:fast' })] });
+    const r = resolveRoute(s, parse('auto', { 'x-polyrouter-tier': '' }));
+    expect(r).toMatchObject({ tierKey: 'default', decisionLayer: 'default' }); // not tier fast
+  });
+});
+
 describe('resolveRoute — matchedHeader (add-routing-header-visibility)', () => {
   it('the built-in header emits its name + the matched OWNED tier key, reason unchanged', () => {
     const r = resolveRoute(snap(), parse('auto', { 'x-polyrouter-tier': 'fast' }));

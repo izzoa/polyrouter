@@ -467,6 +467,11 @@ export interface RequestRow {
   modelLabel: string | null;
   providerLabel: string | null;
   agentLabel: string | null;
+  /** L1 decision telemetry (add-auto-decision-telemetry): the structural
+   * verdict when the layer evaluated the request; all null otherwise. */
+  structuralBand: string | null;
+  structuralScore: number | null;
+  structuralBandSource: string | null;
   /** Terminal provider-error detail (add-request-error-detail): non-null only on
    * `status='error'` rows recorded after capture landed; all null otherwise. */
   errorKind: string | null;

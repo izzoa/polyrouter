@@ -192,6 +192,64 @@ describe('StructuralRouter.decide', () => {
   });
 });
 
+describe('decision telemetry: the evaluation union (add-auto-decision-telemetry)', () => {
+  it('route / ambiguous / unroutable all carry the FULL verdict; skip carries none', async () => {
+    const r = new StructuralRouter(cfg(), store());
+    const routed = await r.evaluate(
+      PRINCIPAL,
+      'a1',
+      complex,
+      snapshot([rule('r', 'auto_high', 'tier:premium')]),
+    );
+    expect(routed.kind).toBe('route');
+    if (routed.kind === 'route') {
+      expect(routed.verdict.band).toBe('high');
+      expect(routed.verdict.declared).toBe(false);
+      expect(routed.verdict.reason).toContain('structural:high');
+    }
+
+    const amb = await r.evaluate(PRINCIPAL, 'a1', middling, snapshot([]));
+    expect(amb.kind).toBe('ambiguous');
+    if (amb.kind === 'ambiguous') expect(amb.verdict.band).toBe('ambiguous');
+
+    // Confident HIGH with no auto_high target — classified, then unroutable.
+    const unroutableHigh = await r.evaluate(
+      PRINCIPAL,
+      'a1',
+      complex,
+      snapshot([rule('r', 'auto_low', 'tier:cheap')]),
+    );
+    expect(unroutableHigh.kind).toBe('unroutable');
+    if (unroutableHigh.kind === 'unroutable') expect(unroutableHigh.verdict.band).toBe('high');
+
+    // Confident LOW with no auto_low target.
+    const unroutableLow = await r.evaluate(
+      PRINCIPAL,
+      'a1',
+      trivial,
+      snapshot([rule('r', 'auto_high', 'tier:premium')]),
+    );
+    expect(unroutableLow.kind).toBe('unroutable');
+    if (unroutableLow.kind === 'unroutable') expect(unroutableLow.verdict.band).toBe('low');
+
+    // Layer off → verdict-free skip (degradation never fabricates telemetry).
+    const off = new StructuralRouter(cfg({ autoLayers: new Set() }), store());
+    expect((await off.evaluate(PRINCIPAL, 'a1', complex, snapshot([]))).kind).toBe('skip');
+  });
+
+  it('a declared-maximal verdict carries declared=true (band-source provenance)', async () => {
+    const r = new StructuralRouter(cfg(), store());
+    const e = await r.evaluate(
+      PRINCIPAL,
+      'a1',
+      { ...ir('hi'), reasoning: { protocol: 'openai', effort: 'high' } },
+      snapshot([rule('r', 'auto_high', 'tier:premium')]),
+    );
+    expect(e.kind).toBe('route');
+    if (e.kind === 'route') expect(e.verdict.declared).toBe(true);
+  });
+});
+
 describe('declared reasoning hints (add-auto-hint-features)', () => {
   const declaredHigh: NormalizedRequest = {
     ...ir('hi'),
@@ -289,7 +347,7 @@ describe('StructuralRouter.evaluate (the #14 cascade trigger)', () => {
     expect(e.kind).toBe('ambiguous');
   });
 
-  it('returns skip when disabled, and when a confident band has no target', async () => {
+  it('returns skip when disabled; a confident band with no target is UNROUTABLE, verdict intact (add-auto-decision-telemetry)', async () => {
     expect(
       (
         await new StructuralRouter(cfg({ autoLayers: new Set() }), store()).evaluate(
@@ -300,9 +358,14 @@ describe('StructuralRouter.evaluate (the #14 cascade trigger)', () => {
         )
       ).kind,
     ).toBe('skip');
-    expect(
-      (await new StructuralRouter(cfg(), store()).evaluate(PRINCIPAL, 'a1', complex, snapshot([])))
-        .kind,
-    ).toBe('skip');
+    // Previously collapsed into 'skip' — the classified verdict now survives.
+    const e = await new StructuralRouter(cfg(), store()).evaluate(
+      PRINCIPAL,
+      'a1',
+      complex,
+      snapshot([]),
+    );
+    expect(e.kind).toBe('unroutable');
+    if (e.kind === 'unroutable') expect(e.verdict.band).toBe('high');
   });
 });

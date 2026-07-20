@@ -37,6 +37,7 @@ import {
   type RouteDecision,
   type RouteEntry,
   type RoutingSnapshot,
+  type StructuralVerdict,
 } from '@polyrouter/data-plane';
 import type { ClientProtocol } from './proxy-errors';
 import {
@@ -119,6 +120,10 @@ interface Prepared {
    * preparation — before any upstream call — so the cascade gate's demand can
    * never drift with a shared nested reference (harden-cascade-quality-gate). */
   structuredDemand: boolean;
+  /** Layer 1's verdict when it EVALUATED this request (add-auto-decision-
+   * telemetry) — recorded on every parent request_log row; undefined when the
+   * layer did not run (non-auto, disabled, degradation). */
+  structuralVerdict?: StructuralVerdict;
   created: number;
   attempts: ChainAttempt[];
   meta: AttemptMeta[];
@@ -812,6 +817,7 @@ export class ProxyService {
     // Auto routing (#13/#14) refines an `auto` request that fell through to the
     // default tier; explicit models and header tiers already won in Layer 0.
     let cascadePlan: CascadePlan | null = null;
+    let structuralVerdict: StructuralVerdict | undefined;
     if (ir.model === AUTO_ALIAS && decision.decisionLayer === 'default') {
       // Per-tenant opt-out (#20): the effective layers are the instance
       // capability masked by the tenant's preference. A disabled layer is
@@ -819,6 +825,9 @@ export class ProxyService {
       const layers = await this.effectiveAutoLayers(principal);
       if (layers.structural) {
         const evaln = await this.structural.evaluate(principal, agentId, ir, snapshot);
+        // Telemetry (add-auto-decision-telemetry): every EVALUATED request
+        // records its verdict — including ambiguous/unroutable fall-throughs.
+        if (evaln.kind !== 'skip') structuralVerdict = evaln.verdict;
         if (evaln.kind === 'route')
           decision = evaln.decision; // Layer 1 confident band
         else if (evaln.kind === 'ambiguous' && layers.cascade) {
@@ -851,11 +860,19 @@ export class ProxyService {
       throw serviceUnavailable('no usable provider for the route');
     }
 
+    // Fall-through transparency (add-auto-decision-telemetry): keyed on the
+    // FINAL construction (`cascade === undefined` — a resolved plan whose
+    // bundles failed to materialize falls through too, never the earlier
+    // plan-null check). The gate itself is the pure `withFallthroughSuffix`,
+    // unit-pinned against regressing to plan-keying.
+    decision = withFallthroughSuffix(decision, structuralVerdict, cascade !== undefined);
+
     return {
       client,
       protocol,
       routed: ir, // the model is retargeted per-attempt inside the walker
       structuredDemand: declaredStructuredOutput(ir),
+      ...(structuralVerdict !== undefined ? { structuralVerdict } : {}),
       created: Math.floor(Date.now() / 1000),
       attempts: primary.attempts,
       meta: primary.meta,
@@ -958,6 +975,7 @@ export class ProxyService {
       providerId: m.providerId,
       providerName: m.providerName,
       modelId: m.modelId,
+      ...verdictFields(p),
       tierAssigned: p.decision.tierKey,
       decisionLayer: p.decision.decisionLayer,
       routingReason: reasonWithTrail(p.decision.routingReason, failures, p.meta),
@@ -993,6 +1011,7 @@ export class ProxyService {
       tierAssigned: m.tierKey,
       decisionLayer: 'cascade',
       routingReason: reason,
+      ...verdictFields(p),
       provider: { baseUrl: m.providerBaseUrl, kind: m.providerKind },
       model: m.model,
       startedAt: p.startedAt,
@@ -1093,6 +1112,38 @@ export class ProxyService {
       idleTimeoutMs: this.rt.idleTimeoutMs,
     });
   }
+}
+
+/** The fall-through reason suffix (add-auto-decision-telemetry), PURE and
+ * unit-pinned: applied ONLY when the layer evaluated (`verdict`), the Layer-0
+ * default ultimately stands, and NO cascade was finally constructed. The
+ * caller keys `hasCascade` on the FINAL bundle (`cascade !== undefined`). */
+export function withFallthroughSuffix(
+  decision: RouteDecision,
+  verdict: StructuralVerdict | undefined,
+  hasCascade: boolean,
+): RouteDecision {
+  if (verdict === undefined || decision.decisionLayer !== 'default' || hasCascade) {
+    return decision;
+  }
+  return { ...decision, routingReason: `${decision.routingReason}; ${verdict.reason}` };
+}
+
+/** The request-level L1 verdict as recording-context fields (add-auto-
+ * decision-telemetry): every parent request_log row of an evaluated request
+ * carries the same band/score/source; absent verdict = all null. */
+function verdictFields(p: Prepared): {
+  structuralBand?: string;
+  structuralScore?: number;
+  structuralBandSource?: string;
+} {
+  const v = p.structuralVerdict;
+  if (v === undefined) return {};
+  return {
+    structuralBand: v.band,
+    structuralScore: v.score,
+    structuralBandSource: v.declared ? 'declared' : 'threshold',
+  };
 }
 
 /** Terminal-error detail for the recorder (add-request-error-detail): the

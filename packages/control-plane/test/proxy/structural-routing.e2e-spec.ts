@@ -244,6 +244,9 @@ describe('structural routing e2e', () => {
     modelId: string | null;
     decisionLayer: string;
     routingReason: string;
+    structuralBand: string | null;
+    structuralScore: number | null;
+    structuralBandSource: string | null;
   }> {
     const logs = await port.requestLogs.list(principal);
     return logs[logs.length - 1]!;
@@ -255,7 +258,59 @@ describe('structural routing e2e', () => {
     expect(row.modelId).toBe(idPremium);
     expect(row.decisionLayer).toBe('structural');
     expect(row.routingReason).toContain('structural:high');
+    // Decision telemetry (add-auto-decision-telemetry): the verdict as columns.
+    expect(row.structuralBand).toBe('high');
+    expect(row.structuralBandSource).toBe('threshold');
+    expect(row.structuralScore).toBeGreaterThanOrEqual(0.6);
     expect(JSON.stringify(row)).not.toContain('Z'.repeat(50)); // metadata only — no prompt body
+  });
+
+  it('an ambiguous fall-through records the verdict it used to discard (add-auto-decision-telemetry)', async () => {
+    // Middling: size-only signal → ambiguous; cascade is not enabled in this
+    // suite, so the Layer-0 default stands — with the verdict now recorded.
+    await send(body({ system: 'sysAmb', userChars: 9_000 }));
+    const row = await lastLog();
+    expect(row.decisionLayer).toBe('default');
+    expect(row.modelId).toBe(idDefault);
+    expect(row.structuralBand).toBe('ambiguous');
+    expect(row.structuralBandSource).toBe('threshold');
+    expect(row.structuralScore).not.toBeNull();
+    expect(row.routingReason).toContain('; structural:ambiguous'); // the suffix
+  });
+
+  it('an unroutable confident band records its verdict (add-auto-decision-telemetry)', async () => {
+    // Remove the auto_low rule: a trivial request classifies LOW confidently but
+    // has no target — previously a silent skip, now corpus data.
+    const rules = await port.routingRules.list(principal);
+    const low = rules.find((r) => r.matchType === 'auto_low')!;
+    await port.routingRules.remove(principal, low.id);
+    try {
+      await send(body({ system: 'sysUnr', userChars: 3 }));
+      const row = await lastLog();
+      expect(row.decisionLayer).toBe('default');
+      expect(row.structuralBand).toBe('low');
+      expect(row.structuralBandSource).toBe('threshold');
+      expect(row.routingReason).toContain('; structural:low');
+    } finally {
+      await port.routingRules.insert(principal, {
+        matchType: 'auto_low',
+        headerName: 'x-polyrouter-tier',
+        headerValue: null,
+        target: 'tier:cheap',
+        priority: 0,
+      });
+    }
+  });
+
+  it('a declared-max row records the declared band source (add-auto-decision-telemetry)', async () => {
+    await send({
+      model: 'auto',
+      reasoning_effort: 'high',
+      messages: [{ role: 'user', content: 'yo' }],
+    });
+    const row = await lastLog();
+    expect(row.structuralBand).toBe('high');
+    expect(row.structuralBandSource).toBe('declared');
   });
 
   it('steers a trivial auto request to the auto_low tier', async () => {
@@ -320,6 +375,19 @@ describe('structural routing e2e', () => {
     expect((await lastLog()).modelId).toBe(idPremium);
   });
 
+  it('a non-auto request and a header-forced auto request record null telemetry', async () => {
+    await send({ model: 'gpt-4o', messages: [{ role: 'user', content: 'hi' }] });
+    const explicit = await lastLog();
+    expect(explicit.structuralBand).toBeNull();
+    expect(explicit.structuralScore).toBeNull();
+    expect(explicit.structuralBandSource).toBeNull();
+    await send(body({ system: 'sysHdr', userChars: 3 }), 'premium');
+    const header = await lastLog();
+    expect(header.structuralBand).toBeNull(); // Layer 0 won — evaluate never ran
+    expect(header.structuralScore).toBeNull();
+    expect(header.structuralBandSource).toBeNull();
+  });
+
   it('an x-polyrouter-tier header on an auto request still forces that tier (Layer 0 wins)', async () => {
     await send(body({ system: 'sysD', userChars: 9_000, code: true, tools: 8 }), 'cheap');
     const row = await lastLog();
@@ -344,5 +412,9 @@ describe('structural routing e2e', () => {
       await disabled.app.close();
       process.env['ROUTING_AUTO_LAYERS'] = 'structural';
     }
+    const disabledRow = await lastLog();
+    expect(disabledRow.structuralBand).toBeNull(); // layer off — no fabricated telemetry
+    expect(disabledRow.structuralScore).toBeNull();
+    expect(disabledRow.structuralBandSource).toBeNull();
   });
 });

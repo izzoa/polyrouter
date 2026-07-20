@@ -183,6 +183,9 @@ export function buildRequestRows(n: number): RequestRow[] {
       modelLabel: `Model ${String(i % 4)}`,
       providerLabel: `Provider ${String(i % 2)}`,
       agentLabel: `agent-${String(i % 3)}`,
+      structuralBand: null,
+      structuralScore: null,
+      structuralBandSource: null,
       // Error rows carry terminal detail (add-request-error-detail); every other
       // status — and every legacy-shaped row — is all-null.
       errorKind: status === 'error' ? 'rate_limit' : null,

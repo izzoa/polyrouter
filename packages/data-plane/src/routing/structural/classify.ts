@@ -70,6 +70,10 @@ export interface StructuralVerdict {
   readonly band: StructuralBand;
   readonly score: number;
   readonly reason: string;
+  /** True when the declared-maximal band rule forced `high` (the band is then
+   * rule-forced and may sit below the high threshold — telemetry provenance,
+   * add-auto-decision-telemetry). */
+  readonly declared: boolean;
 }
 
 /** Coerce to a finite, non-negative number (NaN/±∞/undefined/negative → 0). */
@@ -139,5 +143,5 @@ export function classifyStructural(
     `code=${sub.code.toFixed(2)} tools=${sub.tools.toFixed(2)} schema=${sub.schema.toFixed(2)} ` +
     `depth=${sub.depth.toFixed(2)} mm=${sub.multimodal.toFixed(2)} maxtok=${sub.maxTokens.toFixed(2)} ` +
     `think=${demand === null ? '--' : demand.toFixed(2)} rf=${f.responseFormatDemand ? '1.00' : '0.00'}`;
-  return { band, score, reason };
+  return { band, score, reason, declared: declaredMax };
 }

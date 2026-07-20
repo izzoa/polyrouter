@@ -59,6 +59,10 @@ export interface RequestLogDraft {
   readonly status: 'success' | 'error' | 'fallback' | 'cancelled';
   readonly usage: ResolvedUsage;
   readonly pricing: DraftPricing;
+  /** L1 decision telemetry (add-auto-decision-telemetry); absent = null columns. */
+  readonly structuralBand?: string;
+  readonly structuralScore?: number;
+  readonly structuralBandSource?: string;
   /** #14 cascade: whether the request escalated cheap→strong. */
   readonly escalated?: boolean;
   /** #14 cascade: the numeric quality score (or null on a fail-open error). */
@@ -357,6 +361,9 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
       status: d.status,
       escalated: d.escalated ?? false,
       qualitySignal: d.qualitySignal ?? null,
+      structuralBand: d.structuralBand ?? null,
+      structuralScore: d.structuralScore ?? null,
+      structuralBandSource: d.structuralBandSource ?? null,
       ...errorColumns(d),
     };
   }

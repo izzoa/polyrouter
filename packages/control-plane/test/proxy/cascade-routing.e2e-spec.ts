@@ -282,6 +282,10 @@ describe('cascade routing e2e', () => {
     qualitySignal: number | null;
     tierAssigned: string | null;
     inputTokens: number | null;
+    structuralBand: string | null;
+    structuralScore: number | null;
+    structuralBandSource: string | null;
+    routingReason: string;
   }> {
     const logs = await port.requestLogs.list(principal);
     return logs[logs.length - 1]!;
@@ -343,6 +347,24 @@ describe('cascade routing e2e', () => {
     await setBand('auto_low', 'cheap-bad');
   });
 
+  it('a resolved plan whose strong target is missing falls through with the verdict recorded (add-auto-decision-telemetry)', async () => {
+    // Remove the auto_high rule: cascade.plan() returns null (no strong target)
+    // → the ambiguous request falls through to default WITH its verdict.
+    const rules = await port.routingRules.list(principal);
+    const high = rules.find((r) => r.matchType === 'auto_high')!;
+    await port.routingRules.remove(principal, high.id);
+    try {
+      const res = await send('sysPlanNull');
+      expect(res.status).toBe(200);
+      const row = await log();
+      expect(row.decisionLayer).toBe('default');
+      expect(row.structuralBand).toBe('ambiguous');
+      expect(row.routingReason).toContain('; structural:ambiguous');
+    } finally {
+      await setBand('auto_high', 'premium');
+    }
+  });
+
   it('a good cheap answer is served without escalation (one row, no ledger)', async () => {
     await setBand('auto_low', 'cheap-good');
     const res = await send('sysGood');
@@ -352,6 +374,10 @@ describe('cascade routing e2e', () => {
     expect(row.decisionLayer).toBe('cascade');
     expect(row.escalated).toBe(false);
     expect(row.qualitySignal).toBe(1);
+    // The full two-layer story on one row (add-auto-decision-telemetry).
+    expect(row.structuralBand).toBe('ambiguous');
+    expect(row.structuralBandSource).toBe('threshold');
+    expect(row.structuralScore).not.toBeNull();
     expect(await port.requestAttempts.listForRequest(principal, row.id)).toHaveLength(0);
     await setBand('auto_low', 'cheap-bad');
   });
@@ -390,6 +416,24 @@ describe('cascade routing e2e', () => {
     await setBand('auto_low', 'cheap-bad');
   });
 
+  it('cancelled and post-commit rows carry the verdict too (add-auto-decision-telemetry)', async () => {
+    // The streamed escalation to strong-mid commits then fails post-commit: the
+    // deferred outcome-callback row must carry the request-level verdict.
+    await setBand('auto_low', 'cheap-bad');
+    await setBand('auto_high', 'strong-mid');
+    try {
+      const res = await send('sysMidTel', true);
+      expect(res.status).toBe(200);
+      await new Promise((r) => setTimeout(r, 60));
+      await writer.flush();
+      const row = await log();
+      expect(row.structuralBand).toBe('ambiguous');
+      expect(row.structuralBandSource).toBe('threshold');
+    } finally {
+      await setBand('auto_high', 'premium');
+    }
+  });
+
   it('records exactly one cancelled row when the client disconnects during the cheap leg (E5.2/A-3)', async () => {
     await setBand('auto_low', 'cheap-hang'); // cheap upstream hangs; ~600ms cheap deadline
     // A UNIQUE system prompt → no per-agent baseline → guaranteed ambiguous → cascade.
@@ -412,6 +456,11 @@ describe('cascade routing e2e', () => {
     expect(row.escalated).toBe(false);
     expect(row.decisionLayer).toBe('cascade');
     expect(row.modelId).toBe(modelId['cheapHang']); // the cheap model — NO strong-tier escalation
+    // The verdict existed before the outcome — a cancelled row carries it too
+    // (add-auto-decision-telemetry).
+    expect(row.structuralBand).toBe('ambiguous');
+    expect(row.structuralScore).not.toBeNull();
+    expect(row.structuralBandSource).toBe('threshold');
     // No billable-attempt ledger rows (the cheap leg itself was aborted); the branch
     // also does not notifyFailed (a client disconnect is breaker-neutral, not a fault).
     expect(await port.requestAttempts.listForRequest(principal, row.id)).toHaveLength(0);

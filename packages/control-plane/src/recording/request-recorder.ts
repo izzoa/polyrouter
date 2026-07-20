@@ -28,6 +28,11 @@ export interface RecordingContext {
   readonly decisionLayer: string;
   /** Human-readable reason, including the fallback trail (#12). */
   readonly routingReason: string;
+  /** L1 decision telemetry (add-auto-decision-telemetry) — the request-level
+   * verdict; all absent when the layer did not evaluate. */
+  readonly structuralBand?: string;
+  readonly structuralScore?: number;
+  readonly structuralBandSource?: string;
   readonly provider: Pick<ProviderRow, 'baseUrl' | 'kind'>;
   readonly model: Pick<
     ModelRow,
@@ -102,6 +107,11 @@ export class RequestRecorder {
         tierAssigned: ctx.tierAssigned,
         decisionLayer: ctx.decisionLayer,
         routingReason: ctx.routingReason,
+        ...(ctx.structuralBand !== undefined ? { structuralBand: ctx.structuralBand } : {}),
+        ...(ctx.structuralScore !== undefined ? { structuralScore: ctx.structuralScore } : {}),
+        ...(ctx.structuralBandSource !== undefined
+          ? { structuralBandSource: ctx.structuralBandSource }
+          : {}),
         durationMs,
         status: outcome.status,
         usage,

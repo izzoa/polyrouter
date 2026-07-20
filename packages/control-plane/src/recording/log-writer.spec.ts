@@ -266,10 +266,12 @@ describe('LogWriter', () => {
         order.push(`log:${rows.map((r) => r.id).join(',')}`);
         return Promise.resolve();
       });
-    const attemptInsertMany = jest.fn().mockImplementation((_p: unknown, rows: { id: string }[]) => {
-      order.push(`attempt:${rows.map((r) => r.id).join(',')}`);
-      return Promise.resolve();
-    });
+    const attemptInsertMany = jest
+      .fn()
+      .mockImplementation((_p: unknown, rows: { id: string }[]) => {
+        order.push(`attempt:${rows.map((r) => r.id).join(',')}`);
+        return Promise.resolve();
+      });
     const { writer } = makeWriter({ insertMany, attemptInsertMany });
     writer.enqueue(draft({ id: 'L1' }));
     const first = writer.flush(); // flush #1 — pending on L1

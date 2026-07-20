@@ -379,6 +379,13 @@ export const requestLogs = pgTable(
     cost: doublePrecision('cost'),
     durationMs: integer('duration_ms').notNull(),
     status: text('status').notNull(), // success | error (fallback/escalated: #12/#13)
+    // L1 decision telemetry (add-auto-decision-telemetry): the verdict of the
+    // structural layer when it EVALUATED the request — band high|low|ambiguous,
+    // the final adjusted score, and the band's provenance threshold|declared.
+    // Null = not evaluated (non-auto, disabled, degradation) or pre-capture.
+    structuralBand: text('structural_band'),
+    structuralScore: doublePrecision('structural_score'),
+    structuralBandSource: text('structural_band_source'),
     // Terminal provider-error detail (add-request-error-detail): set ONLY on
     // status='error' rows; null for non-error rows and rows predating capture
     // (unknown-not-wrong, never backfilled). `error_message` is the factory-

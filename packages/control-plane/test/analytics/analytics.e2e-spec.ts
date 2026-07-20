@@ -57,6 +57,9 @@ interface LogSeed {
   estimated?: boolean;
   at: string;
   priceSource?: string;
+  structuralBand?: string;
+  structuralScore?: number;
+  structuralBandSource?: string;
   errorKind?: string;
   errorStatus?: number;
   errorMessage?: string;
@@ -99,8 +102,9 @@ describe('analytics API (#17)', () => {
       `INSERT INTO request_log
         (id, owner_user_id, agent_id, provider_id, model_id, tier_assigned, decision_layer,
          routing_reason, input_tokens, output_tokens, usage_estimated, cost, duration_ms, status,
-         escalated, created_at, price_source, error_kind, error_status, error_message, error_request_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,'test',$8,$9,$10,$11,1,$12,$13,$14,$15,$16,$17,$18,$19)`,
+         escalated, created_at, price_source, error_kind, error_status, error_message, error_request_id,
+         structural_band, structural_score, structural_band_source)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'test',$8,$9,$10,$11,1,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
       [
         id,
         owner,
@@ -121,6 +125,9 @@ describe('analytics API (#17)', () => {
         s.errorStatus ?? null,
         s.errorMessage ?? null,
         s.errorRequestId ?? null,
+        s.structuralBand ?? null,
+        s.structuralScore ?? null,
+        s.structuralBandSource ?? null,
       ],
     );
     return id;
@@ -128,7 +135,14 @@ describe('analytics API (#17)', () => {
   async function seedAttempt(
     logId: string,
     owner: string,
-    s: { cost: number; modelId?: string; providerId?: string; tierKey?: string; at: string; priceSource?: string },
+    s: {
+      cost: number;
+      modelId?: string;
+      providerId?: string;
+      tierKey?: string;
+      at: string;
+      priceSource?: string;
+    },
   ): Promise<void> {
     await pool.query(
       `INSERT INTO request_attempt
@@ -240,6 +254,9 @@ describe('analytics API (#17)', () => {
       errorStatus: 429,
       errorMessage: 'Rate limit exceeded: free-models-per-day',
       errorRequestId: 'req_e2e_1',
+      structuralBand: 'ambiguous',
+      structuralScore: 0.41,
+      structuralBandSource: 'threshold',
     });
 
     // B: an unrelated request (isolation) + an A-owned attempt pointing at B's log (adversarial).
@@ -348,14 +365,27 @@ describe('analytics API (#17)', () => {
       errorStatus: 429,
       errorMessage: 'Rate limit exceeded: free-models-per-day',
       errorRequestId: 'req_e2e_1',
+      structuralBand: 'ambiguous',
+      structuralScore: 0.41,
+      structuralBandSource: 'threshold',
     });
     expect(errRow).not.toHaveProperty('ownerUserId'); // safe view unchanged
+    // Decision telemetry rides the same safe view (add-auto-decision-telemetry).
+    expect(errRow).toMatchObject({
+      structuralBand: 'ambiguous',
+      structuralScore: 0.41,
+      structuralBandSource: 'threshold',
+    });
     const all = await q('requests', A, { ...RANGE });
     for (const row of all.body.rows) {
       if (row.status !== 'error') {
         // non-error rows carry all-null detail
         expect(row.errorKind).toBeNull();
         expect(row.errorMessage).toBeNull();
+        // non-evaluated rows carry all-null telemetry
+        expect(row.structuralBand).toBeNull();
+        expect(row.structuralScore).toBeNull();
+        expect(row.structuralBandSource).toBeNull();
       }
     }
   });
@@ -461,7 +491,10 @@ describe('analytics API (#17)', () => {
     const byLayer = new Map(rows.map((r) => [r.decisionLayer, r]));
     // The mixed case: served source stays exact, the ATTEMPT estimate marks the roll-up.
     expect(byLayer.get('nf-mixed')).toMatchObject({ priceSource: 'bundled', priceEstimated: true });
-    expect(byLayer.get('nf-exact')).toMatchObject({ priceSource: 'refresh', priceEstimated: false });
+    expect(byLayer.get('nf-exact')).toMatchObject({
+      priceSource: 'refresh',
+      priceEstimated: false,
+    });
     expect(byLayer.get('nf-native')).toMatchObject({
       priceSource: 'native_family',
       priceEstimated: true,

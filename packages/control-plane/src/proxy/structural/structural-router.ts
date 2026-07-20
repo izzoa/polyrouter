@@ -7,6 +7,7 @@ import {
   type NormalizedRequest,
   type RouteDecision,
   type RoutingSnapshot,
+  type StructuralVerdict,
 } from '@polyrouter/data-plane';
 import type { Principal } from '@polyrouter/shared/server';
 import { ROUTING_CONFIG, type RoutingConfig } from '../routing.config';
@@ -14,10 +15,22 @@ import { StructuralBaselineStore } from './structural-baseline.store';
 
 /** The outcome of Layer-1 classification. `route` = confident band with a
  * resolvable target; `ambiguous` = classified between thresholds (the trigger
- * for Layer 3 cascade, #14); `skip` = disabled / error / no band target. */
+ * for Layer 3 cascade, #14); `unroutable` = successfully classified but no
+ * resolvable target (verdict intact — telemetry); `skip` = disabled or a
+ * classification degradation (no verdict — never fabricated). */
 export type StructuralEvaluation =
-  | { readonly kind: 'route'; readonly decision: RouteDecision }
-  | { readonly kind: 'ambiguous' }
+  | {
+      readonly kind: 'route';
+      readonly decision: RouteDecision;
+      readonly verdict: StructuralVerdict;
+    }
+  | { readonly kind: 'ambiguous'; readonly verdict: StructuralVerdict }
+  /** A CONFIDENT/declared band whose `auto_high`/`auto_low` target is missing
+   * or unresolvable — classification succeeded; the default stands but the
+   * verdict is corpus data (add-auto-decision-telemetry), never a bare skip. */
+  | { readonly kind: 'unroutable'; readonly verdict: StructuralVerdict }
+  /** No successful classification: layer off, or the classify-throw
+   * degradation — degradation never fabricates telemetry. */
   | { readonly kind: 'skip' };
 
 /**
@@ -83,11 +96,14 @@ export class StructuralRouter {
         /* best-effort */
       }
 
-      if (verdict.band === 'ambiguous') return { kind: 'ambiguous' };
+      if (verdict.band === 'ambiguous') return { kind: 'ambiguous', verdict };
       const matchType = verdict.band === 'high' ? 'auto_high' : 'auto_low';
       const decision = resolveBandTarget(snapshot, matchType, 'structural', verdict.reason);
-      // A confident band with no configured/resolvable target degrades to Layer 0.
-      return decision === null ? { kind: 'skip' } : { kind: 'route', decision };
+      // A confident band with no configured/resolvable target degrades to Layer 0
+      // — carrying its verdict (add-auto-decision-telemetry).
+      return decision === null
+        ? { kind: 'unroutable', verdict }
+        : { kind: 'route', decision, verdict };
     } catch {
       return { kind: 'skip' }; // degrade to Layer 0 — never fail or stall
     }

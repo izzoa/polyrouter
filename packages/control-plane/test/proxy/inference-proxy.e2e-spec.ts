@@ -35,6 +35,12 @@ import {
   loadProxyRuntime,
 } from '../../src/proxy/proxy.config';
 import { ROUTING_CONFIG, loadRoutingConfig } from '../../src/proxy/routing.config';
+import {
+  CALIBRATION_RAILS,
+  loadCalibrationConfig,
+  railsOf,
+  type CalibrationRails,
+} from '../../src/calibration/calibration.config';
 import { ProxyService } from '../../src/proxy/proxy.service';
 import { NotificationProducers } from '../../src/producers/notification-producers';
 import { BudgetService } from '../../src/budgets/budget-service';
@@ -181,6 +187,7 @@ describe('inference proxy e2e', () => {
         { provide: PROXY_ADAPTER_FACTORY, useValue: createProviderAdapter },
         { provide: PROXY_BREAKER, useValue: new CircuitBreaker(new InMemoryBreakerStore()) },
         { provide: ROUTING_CONFIG, useFactory: loadRoutingConfig },
+      { provide: CALIBRATION_RAILS, useFactory: (): CalibrationRails => railsOf(loadCalibrationConfig()) },
         { provide: APP_FILTER, useClass: ProxyExceptionFilter },
       ],
     }).compile();

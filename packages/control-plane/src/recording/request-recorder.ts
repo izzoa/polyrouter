@@ -33,6 +33,9 @@ export interface RecordingContext {
   readonly structuralBand?: string;
   readonly structuralScore?: number;
   readonly structuralBandSource?: string;
+  /** The tenant's calibration epoch at DECISION time (add-auto-threshold-
+   * calibration) — the calibrator's freshness stamp; absent when unevaluated. */
+  readonly structuralEpoch?: number;
   readonly provider: Pick<ProviderRow, 'baseUrl' | 'kind'>;
   readonly model: Pick<
     ModelRow,
@@ -61,6 +64,11 @@ export interface RecordOutcome {
   readonly escalated?: boolean;
   /** #14 cascade: the numeric quality score (or null on a fail-open error). */
   readonly qualitySignal?: number | null;
+  /** WHY an escalated request escalated (add-auto-threshold-calibration):
+   * `quality_gate` = the gate scored the cheap answer bad; `cheap_error` =
+   * every other pre-commit escalation. Recorded only with `escalated=true`
+   * (the recorder gates centrally — the DB CHECK backstops). */
+  readonly escalationSource?: 'quality_gate' | 'cheap_error';
   /** Terminal error detail — persisted ONLY when `status === 'error'` (the
    * recorder centrally discards it otherwise; a served or cancelled request
    * records no provider fault). */
@@ -112,12 +120,18 @@ export class RequestRecorder {
         ...(ctx.structuralBandSource !== undefined
           ? { structuralBandSource: ctx.structuralBandSource }
           : {}),
+        ...(ctx.structuralEpoch !== undefined ? { structuralEpoch: ctx.structuralEpoch } : {}),
         durationMs,
         status: outcome.status,
         usage,
         pricing: pricingOf(ctx),
         ...(outcome.escalated !== undefined ? { escalated: outcome.escalated } : {}),
         ...(outcome.qualitySignal !== undefined ? { qualitySignal: outcome.qualitySignal } : {}),
+        // Provenance only ever rides an escalated row (fail-closed; DB CHECK
+        // backstops the same rule).
+        ...(outcome.escalated === true && outcome.escalationSource !== undefined
+          ? { escalationSource: outcome.escalationSource }
+          : {}),
         // Central exclusivity gate (add-request-error-detail): error detail is
         // dropped here unless the row IS an error — belt and suspenders over
         // the call sites.

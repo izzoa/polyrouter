@@ -1,5 +1,10 @@
 import { DEFAULT_STRUCTURAL_WEIGHTS } from '@polyrouter/data-plane';
-import { buildRoutingConfig, parseStructuralWeights, type RoutingEnv } from './routing.config';
+import {
+  buildRoutingConfig,
+  effectiveThresholds,
+  parseStructuralWeights,
+  type RoutingEnv,
+} from './routing.config';
 
 const base: RoutingEnv = {
   ROUTING_AUTO_LAYERS: 'structural',
@@ -93,5 +98,71 @@ describe('parseStructuralWeights', () => {
     ).toThrow();
     expect(() => parseStructuralWeights('not json')).toThrow();
     expect(() => parseStructuralWeights('[1,2,3]')).toThrow();
+  });
+});
+
+describe('effectiveThresholds (add-auto-threshold-calibration)', () => {
+  const cfg = { high: 0.6, low: 0.25 };
+  const rails = { maxDrift: 0.1, minGap: 0.1 };
+  const instance = { high: 0.6, low: 0.25 };
+  /** A valid, anchored, rail-clean pair over the default instance config. */
+  const pref = (over: Partial<Parameters<typeof effectiveThresholds>[1] & object> = {}) => ({
+    calibratedHigh: 0.55,
+    calibratedLow: 0.3,
+    calibratedAnchorHigh: 0.6,
+    calibratedAnchorLow: 0.25,
+    ...over,
+  });
+
+  it('applies a valid anchored rail-clean pair', () => {
+    expect(effectiveThresholds(cfg, pref(), rails)).toEqual({ high: 0.55, low: 0.3 });
+  });
+
+  it('null pref (no row / timed-out read) → instance', () => {
+    expect(effectiveThresholds(cfg, null, rails)).toEqual(instance);
+  });
+
+  it('a partial pair → instance (the quad travels together)', () => {
+    expect(effectiveThresholds(cfg, pref({ calibratedLow: null }), rails)).toEqual(instance);
+    expect(effectiveThresholds(cfg, pref({ calibratedAnchorHigh: null }), rails)).toEqual(instance);
+  });
+
+  it('a poisoned pair (non-finite, out of range, inverted) → instance', () => {
+    expect(effectiveThresholds(cfg, pref({ calibratedHigh: Number.NaN }), rails)).toEqual(instance);
+    expect(effectiveThresholds(cfg, pref({ calibratedHigh: 1.2 }), rails)).toEqual(instance);
+    expect(effectiveThresholds(cfg, pref({ calibratedLow: -0.1 }), rails)).toEqual(instance);
+    expect(
+      effectiveThresholds(cfg, pref({ calibratedHigh: 0.3, calibratedLow: 0.4 }), rails),
+    ).toEqual(instance);
+  });
+
+  it('an anchor mismatch (changed instance defaults) inerts the pair immediately', () => {
+    expect(effectiveThresholds(cfg, pref({ calibratedAnchorHigh: 0.7 }), rails)).toEqual(instance);
+    expect(effectiveThresholds(cfg, pref({ calibratedAnchorLow: 0.2 }), rails)).toEqual(instance);
+  });
+
+  it('expansion beyond the anchor (contraction only) → instance', () => {
+    expect(effectiveThresholds(cfg, pref({ calibratedHigh: 0.65 }), rails)).toEqual(instance);
+    expect(effectiveThresholds(cfg, pref({ calibratedLow: 0.2 }), rails)).toEqual(instance);
+  });
+
+  it('over-drift under the CURRENT rails → instance (a rail change is never grandfathered)', () => {
+    // 0.6 − 0.45 = 0.15 drift: fine at maxDrift 0.2, inert at 0.1.
+    const wide = pref({ calibratedHigh: 0.45, calibratedLow: 0.3 });
+    expect(effectiveThresholds(cfg, wide, { maxDrift: 0.2, minGap: 0.1 })).toEqual({
+      high: 0.45,
+      low: 0.3,
+    });
+    expect(effectiveThresholds(cfg, wide, rails)).toEqual(instance);
+  });
+
+  it('a gap breach → instance', () => {
+    expect(
+      effectiveThresholds(
+        cfg,
+        pref({ calibratedHigh: 0.52, calibratedLow: 0.45, calibratedAnchorHigh: 0.6 }),
+        { maxDrift: 0.2, minGap: 0.1 },
+      ),
+    ).toEqual(instance);
   });
 });

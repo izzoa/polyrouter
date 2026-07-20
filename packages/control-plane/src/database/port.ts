@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, lte, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, lte, sql } from 'drizzle-orm';
 import {
   agents,
   assertUserPrincipal,
@@ -13,6 +13,7 @@ import {
   routingEntries,
   routingRules,
   routingSettings,
+  thresholdCalibrationEvents,
   tiers,
   users,
   type ModelAccessor,
@@ -28,6 +29,7 @@ import {
   type RequestLogAccessor,
   type RoutingEntryAccessor,
   type RoutingSettingsAccessor,
+  type CalibrationEventsAccessor,
   type TierRow,
 } from '@polyrouter/shared/server';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
@@ -143,7 +145,8 @@ function createModelAccessor(db: Db): ModelAccessor {
         // Provider-listed DISPLAY estimate (add-provider-price-sync-and-edit): always
         // rewritten on sync (present-with-null CLEARS a stale estimate). Never the
         // billing user-price columns (those stay #8's, untouched here).
-        if ('listedInputPricePer1m' in rest) set['listedInputPricePer1m'] = rest['listedInputPricePer1m'];
+        if ('listedInputPricePer1m' in rest)
+          set['listedInputPricePer1m'] = rest['listedInputPricePer1m'];
         if ('listedOutputPricePer1m' in rest)
           set['listedOutputPricePer1m'] = rest['listedOutputPricePer1m'];
         if ('listedIsFree' in rest) set['listedIsFree'] = rest['listedIsFree'];
@@ -176,7 +179,9 @@ function createModelAccessor(db: Db): ModelAccessor {
         await lockOwnerTiers(tx, principal); // tier-first lock order (no deadlock w/ replaceForTier)
         const rows = await tx
           .delete(models)
-          .where(and(eq(models.id, id), inArray(models.providerId, ownedProviderIds(tx, principal))))
+          .where(
+            and(eq(models.id, id), inArray(models.providerId, ownedProviderIds(tx, principal))),
+          )
           .returning({ id: models.id });
         if (rows.length === 0) return false;
         await compactTiers(tx, principal); // E10.2: keep tier positions contiguous after the cascade
@@ -263,7 +268,10 @@ async function compactTiers(db: Db, principal: Principal): Promise<void> {
       .orderBy(routingEntries.position);
     for (let i = 0; i < entries.length; i += 1) {
       if (entries[i]!.position !== i) {
-        await db.update(routingEntries).set({ position: i }).where(eq(routingEntries.id, entries[i]!.id));
+        await db
+          .update(routingEntries)
+          .set({ position: i })
+          .where(eq(routingEntries.id, entries[i]!.id));
       }
     }
   }
@@ -511,16 +519,29 @@ function createRequestAttemptAccessor(db: Db): RequestAttemptAccessor {
   };
 }
 
-/** Per-tenant auto-layer preference (#20). Owner-scoped read + one-row-per-owner
- * upsert (owner forced from the principal; conflict on the unique owner index). */
+/** The full settings value selection (auto-layer flags + calibration). */
+const SETTINGS_VALUE_COLUMNS = {
+  structuralEnabled: routingSettings.structuralEnabled,
+  cascadeEnabled: routingSettings.cascadeEnabled,
+  calibrationEnabled: routingSettings.calibrationEnabled,
+  calibratedHigh: routingSettings.calibratedHigh,
+  calibratedLow: routingSettings.calibratedLow,
+  calibratedAnchorHigh: routingSettings.calibratedAnchorHigh,
+  calibratedAnchorLow: routingSettings.calibratedAnchorLow,
+  calibrationEpoch: routingSettings.calibrationEpoch,
+};
+
+/** Per-tenant auto-layer preference (#20) + threshold calibration
+ * (add-auto-threshold-calibration). Owner-scoped read + one-row-per-owner
+ * upsert (owner forced from the principal; conflict on the unique owner
+ * index). The upsert NEVER touches the calibrated quad or epoch, and an
+ * omitted `calibrationEnabled` preserves the stored flag (older clients
+ * replaying only the layer flags cannot silently disable calibration). */
 function createRoutingSettingsAccessor(db: Db): RoutingSettingsAccessor {
   return {
     async get(principal) {
       const rows = await db
-        .select({
-          structuralEnabled: routingSettings.structuralEnabled,
-          cascadeEnabled: routingSettings.cascadeEnabled,
-        })
+        .select(SETTINGS_VALUE_COLUMNS)
         .from(routingSettings)
         .where(ownershipPredicate(routingSettings, principal))
         .limit(1);
@@ -533,6 +554,9 @@ function createRoutingSettingsAccessor(db: Db): RoutingSettingsAccessor {
           buildInsertValues(principal, {
             structuralEnabled: value.structuralEnabled,
             cascadeEnabled: value.cascadeEnabled,
+            ...(value.calibrationEnabled !== undefined
+              ? { calibrationEnabled: value.calibrationEnabled }
+              : {}),
           }) as typeof routingSettings.$inferInsert,
         )
         .onConflictDoUpdate({
@@ -540,16 +564,178 @@ function createRoutingSettingsAccessor(db: Db): RoutingSettingsAccessor {
           set: {
             structuralEnabled: value.structuralEnabled,
             cascadeEnabled: value.cascadeEnabled,
+            // Omission preserves; the quad/epoch are NEVER touched here.
+            ...(value.calibrationEnabled !== undefined
+              ? { calibrationEnabled: value.calibrationEnabled }
+              : {}),
             updatedAt: new Date(),
           },
         })
-        .returning({
-          structuralEnabled: routingSettings.structuralEnabled,
-          cascadeEnabled: routingSettings.cascadeEnabled,
-        });
+        .returning(SETTINGS_VALUE_COLUMNS);
       const row = rows[0];
       if (!row) throw new Error('routingSettings upsert returned no row');
       return row;
+    },
+    async setCalibrated(principal, quad, expected, events) {
+      // Conditional row-locked write: the transaction re-reads FOR UPDATE and
+      // writes ONLY when the row still matches the observed state — a
+      // concurrent disable/revert/rebase wins and this returns false.
+      return db.transaction(async (tx) => {
+        const current = await tx
+          .select(SETTINGS_VALUE_COLUMNS)
+          .from(routingSettings)
+          .where(ownershipPredicate(routingSettings, principal))
+          .limit(1)
+          .for('update');
+        const row = current[0];
+        if (!row) return false;
+        if (row.calibrationEpoch !== expected.epoch) return false;
+        if (expected.enabled !== null && row.calibrationEnabled !== expected.enabled) return false;
+        if (
+          row.calibratedHigh !== expected.high ||
+          row.calibratedLow !== expected.low ||
+          row.calibratedAnchorHigh !== expected.anchorHigh ||
+          row.calibratedAnchorLow !== expected.anchorLow
+        ) {
+          return false;
+        }
+        const resolved = typeof events === 'function' ? events(row) : events;
+        const list = Array.isArray(resolved) ? resolved : [resolved];
+        await tx
+          .update(routingSettings)
+          .set({
+            calibratedHigh: quad === null ? null : quad.high,
+            calibratedLow: quad === null ? null : quad.low,
+            calibratedAnchorHigh: quad === null ? null : quad.anchorHigh,
+            calibratedAnchorLow: quad === null ? null : quad.anchorLow,
+            // The epoch bumps per threshold EVENT (r3-Med-5): a two-edge move
+            // advances it twice — evidence staleness is per event, per contract.
+            calibrationEpoch: row.calibrationEpoch + list.length,
+            updatedAt: new Date(),
+          })
+          .where(ownershipPredicate(routingSettings, principal));
+        // One audit row per applied edge, in order, SAME transaction — a move
+        // without its evidence can never be observed.
+        // Ordinal = within-transaction apply order (r3-Med-5): both events
+        // share one txn timestamp, so it is the deterministic secondary sort.
+        for (const [i, input] of list.entries()) {
+          await tx.insert(thresholdCalibrationEvents).values(
+            buildInsertValues(principal, {
+              trigger: input.trigger,
+              oldHigh: input.oldHigh,
+              oldLow: input.oldLow,
+              newHigh: input.newHigh,
+              newLow: input.newLow,
+              anchorHigh: input.anchorHigh,
+              anchorLow: input.anchorLow,
+              windowFrom: input.windowFrom ?? null,
+              windowTo: input.windowTo ?? null,
+              edge: input.edge ?? null,
+              edgeSamples: input.edgeSamples ?? null,
+              edgeFailures: input.edgeFailures ?? null,
+              reason: input.reason,
+              ordinal: i,
+            }) as typeof thresholdCalibrationEvents.$inferInsert,
+          );
+        }
+        return true;
+      });
+    },
+    async clearCalibrated(principal, eventOf) {
+      // USER-WINS revert (r3-Med-2): lock, clear whatever pair is present,
+      // event from the LOCKED values — a mid-flight calibrator move cannot
+      // turn the user's revert into a silent no-op.
+      return db.transaction(async (tx) => {
+        const current = await tx
+          .select(SETTINGS_VALUE_COLUMNS)
+          .from(routingSettings)
+          .where(ownershipPredicate(routingSettings, principal))
+          .limit(1)
+          .for('update');
+        const row = current[0];
+        if (!row || row.calibratedHigh === null) return false; // nothing to clear — no event
+        await tx
+          .update(routingSettings)
+          .set({
+            calibratedHigh: null,
+            calibratedLow: null,
+            calibratedAnchorHigh: null,
+            calibratedAnchorLow: null,
+            calibrationEpoch: row.calibrationEpoch + 1,
+            updatedAt: new Date(),
+          })
+          .where(ownershipPredicate(routingSettings, principal));
+        const input = eventOf(row);
+        await tx.insert(thresholdCalibrationEvents).values(
+          buildInsertValues(principal, {
+            trigger: input.trigger,
+            oldHigh: input.oldHigh,
+            oldLow: input.oldLow,
+            newHigh: input.newHigh,
+            newLow: input.newLow,
+            anchorHigh: input.anchorHigh,
+            anchorLow: input.anchorLow,
+            windowFrom: input.windowFrom ?? null,
+            windowTo: input.windowTo ?? null,
+            edge: input.edge ?? null,
+            edgeSamples: input.edgeSamples ?? null,
+            edgeFailures: input.edgeFailures ?? null,
+            reason: input.reason,
+            ordinal: 0,
+          }) as typeof thresholdCalibrationEvents.$inferInsert,
+        );
+        return true;
+      });
+    },
+    async listCalibrationEnabled() {
+      const rows = await db
+        .select({ ownerUserId: routingSettings.ownerUserId, ...SETTINGS_VALUE_COLUMNS })
+        .from(routingSettings)
+        .where(eq(routingSettings.calibrationEnabled, true));
+      return rows.map(({ ownerUserId, ...value }) => ({ ownerUserId, value }));
+    },
+    async listWithCalibratedPair() {
+      const rows = await db
+        .select({ ownerUserId: routingSettings.ownerUserId, ...SETTINGS_VALUE_COLUMNS })
+        .from(routingSettings)
+        .where(isNotNull(routingSettings.calibratedHigh));
+      return rows.map(({ ownerUserId, ...value }) => ({ ownerUserId, value }));
+    },
+  };
+}
+
+/** Owner-scoped calibration history reads; the writes ride `setCalibrated`. */
+function createCalibrationEventsAccessor(db: Db): CalibrationEventsAccessor {
+  const iso = (v: Date | string | null): string | null =>
+    v == null ? null : v instanceof Date ? v.toISOString() : new Date(v).toISOString();
+  return {
+    async list(principal, limit) {
+      const rows = await db
+        .select()
+        .from(thresholdCalibrationEvents)
+        .where(ownershipPredicate(thresholdCalibrationEvents, principal))
+        .orderBy(
+          desc(thresholdCalibrationEvents.createdAt),
+          desc(thresholdCalibrationEvents.ordinal),
+        )
+        .limit(limit);
+      return rows.map((r) => ({
+        id: r.id,
+        trigger: r.trigger,
+        oldHigh: r.oldHigh,
+        oldLow: r.oldLow,
+        newHigh: r.newHigh,
+        newLow: r.newLow,
+        anchorHigh: r.anchorHigh,
+        anchorLow: r.anchorLow,
+        windowFrom: iso(r.windowFrom),
+        windowTo: iso(r.windowTo),
+        edge: r.edge,
+        edgeSamples: r.edgeSamples,
+        edgeFailures: r.edgeFailures,
+        reason: r.reason,
+        createdAt: iso(r.createdAt) ?? '',
+      }));
     },
   };
 }
@@ -584,6 +770,7 @@ export function buildPersistencePort(db: Db): PersistencePort {
     requestAttempts: createRequestAttemptAccessor(db),
     analytics: createAnalyticsAccessor(db),
     routingSettings: createRoutingSettingsAccessor(db),
+    calibrationEvents: createCalibrationEventsAccessor(db),
     pricing: createPricingCatalog(db),
     users: {
       async count() {

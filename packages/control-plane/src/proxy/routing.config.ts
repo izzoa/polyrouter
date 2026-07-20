@@ -141,6 +141,14 @@ export function buildRoutingConfig(env: RoutingEnv): RoutingConfig {
       'ROUTING_STRUCTURAL_LOW_THRESHOLD must be strictly less than ROUTING_STRUCTURAL_HIGH_THRESHOLD',
     );
   }
+  // The thresholds anchor per-tenant calibration (add-auto-threshold-
+  // calibration): one canonical 4-decimal precision keeps the writer's rails,
+  // the stored anchors' exact-equality check, and the hot path's rounded
+  // difference comparisons in agreement (r3-Med-3).
+  const is4dp = (n: number): boolean => Math.round(n * 10_000) / 10_000 === n;
+  if (!is4dp(high) || !is4dp(low)) {
+    throw new Error('ROUTING_STRUCTURAL_*_THRESHOLD must have at most 4 decimal places');
+  }
   const alpha = env.ROUTING_STRUCTURAL_BASELINE_ALPHA;
   if (!(alpha > 0 && alpha <= 1)) {
     throw new Error('ROUTING_STRUCTURAL_BASELINE_ALPHA must be in (0, 1]');
@@ -172,6 +180,42 @@ export function loadRoutingConfig(): RoutingConfig {
  * dashboard's reported capability can't drift from what the routers enforce. */
 export function autoLayerCapability(cfg: RoutingConfig): { structural: boolean; cascade: boolean } {
   return { structural: cfg.autoLayers.has('structural'), cascade: cfg.cascade.enabled };
+}
+
+/** Per-tenant effective structural thresholds (add-auto-threshold-
+ * calibration), PURE and degrade-shaped (invariant 1): a calibrated pair
+ * applies ONLY when complete, finite, ordered, ANCHORED to the current
+ * instance defaults (exact float equality — persisted, uncomputed boot
+ * scalars), and clean under the CURRENT rails (contraction direction, drift
+ * cap, minimum gap — a rail-config change is never grandfathered). Anything
+ * else → the instance defaults; a poisoned or stale row can never fail or
+ * stall routing. */
+export function effectiveThresholds(
+  cfg: Pick<StructuralConfig, 'high' | 'low'>,
+  pref: {
+    calibratedHigh: number | null;
+    calibratedLow: number | null;
+    calibratedAnchorHigh: number | null;
+    calibratedAnchorLow: number | null;
+  } | null,
+  rails: { maxDrift: number; minGap: number },
+): { high: number; low: number } {
+  const instance = { high: cfg.high, low: cfg.low };
+  if (pref === null) return instance;
+  const { calibratedHigh: h, calibratedLow: l } = pref;
+  const { calibratedAnchorHigh: ah, calibratedAnchorLow: al } = pref;
+  if (h === null || l === null || ah === null || al === null) return instance;
+  if (!Number.isFinite(h) || !Number.isFinite(l)) return instance;
+  if (h < 0 || h > 1 || l < 0 || l > 1 || l >= h) return instance;
+  if (ah !== cfg.high || al !== cfg.low) return instance; // anchor mismatch — stale pair is inert
+  if (h > ah || l < al) return instance; // expansion beyond the anchor — contraction only
+  // Derived DIFFERENCES are rounded to 4 decimals before rail comparison:
+  // binary floats make 0.58 − 0.48 come out below 0.1 and would wrongly
+  // inert a rail-clean pair (the calibrator persists 4-decimal values).
+  const r4 = (n: number): number => Math.round(n * 10_000) / 10_000;
+  if (r4(ah - h) > rails.maxDrift || r4(l - al) > rails.maxDrift) return instance; // over-drift
+  if (r4(h - l) < rails.minGap) return instance; // gap breach
+  return { high: h, low: l };
 }
 
 /** The single "effective layers" formula (A-45): a layer is on iff the instance

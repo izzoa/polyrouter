@@ -63,10 +63,14 @@ export interface RequestLogDraft {
   readonly structuralBand?: string;
   readonly structuralScore?: number;
   readonly structuralBandSource?: string;
+  /** Decision-time calibration epoch (add-auto-threshold-calibration). */
+  readonly structuralEpoch?: number;
   /** #14 cascade: whether the request escalated cheap→strong. */
   readonly escalated?: boolean;
   /** #14 cascade: the numeric quality score (or null on a fail-open error). */
   readonly qualitySignal?: number | null;
+  /** Escalation provenance (add-auto-threshold-calibration); only on escalated drafts. */
+  readonly escalationSource?: 'quality_gate' | 'cheap_error';
   /** Terminal provider-error detail (add-request-error-detail) — present only
    * on `status='error'` drafts (the recorder enforces exclusivity). The message
    * arrives factory-sanitized; the writer re-applies the CREDENTIAL-FREE scrub
@@ -361,9 +365,11 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
       status: d.status,
       escalated: d.escalated ?? false,
       qualitySignal: d.qualitySignal ?? null,
+      escalationSource: d.escalationSource ?? null,
       structuralBand: d.structuralBand ?? null,
       structuralScore: d.structuralScore ?? null,
       structuralBandSource: d.structuralBandSource ?? null,
+      structuralEpoch: d.structuralEpoch ?? null,
       ...errorColumns(d),
     };
   }

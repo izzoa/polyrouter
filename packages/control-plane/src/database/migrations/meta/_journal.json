@@ -99,6 +99,13 @@
       "when": 1784505229880,
       "tag": "0013_condemned_maestro",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1784515816035,
+      "tag": "0014_closed_steel_serpent",
+      "breakpoints": true
     }
   ]
 }

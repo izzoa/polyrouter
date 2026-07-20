@@ -360,20 +360,145 @@ export interface AnalyticsAccessor {
     bucket: AnalyticsBucket,
     counterfactual: AutoCounterfactualRates | null,
   ): Promise<AutoPerformanceData>;
+  /** Edge-zone calibration evidence (add-auto-threshold-calibration): counts
+   * over the tenant's quality-DECIDED, threshold-source, CURRENT-EPOCH
+   * ambiguous cascade rows in the window. Fail-closed populations — a pass is
+   * served+scored+non-escalated with a null escalation source; a failure is
+   * `escalation_source = 'quality_gate'`; everything else is invisible. */
+  calibrationStats(
+    principal: Principal,
+    range: AnalyticsRange,
+    args: { high: number; low: number; edgeWidth: number; epoch: number },
+  ): Promise<CalibrationEdgeStats>;
 }
 
-/** Per-tenant automatic-routing layer preference (#20). Absent = inherit the
- * instance capability. */
+export interface CalibrationEdgeStats {
+  highEdge: { samples: number; failures: number };
+  lowEdge: { samples: number; failures: number };
+}
+
+/** Per-tenant automatic-routing layer preference (#20) + threshold
+ * calibration (add-auto-threshold-calibration). Absent = inherit the
+ * instance capability. The calibrated quad travels together (all null or
+ * all set); `calibrationEpoch` bumps on every threshold event and is
+ * stamped onto evaluated request rows at decision time. */
 export interface RoutingSettingsValue {
   structuralEnabled: boolean;
   cascadeEnabled: boolean;
+  calibrationEnabled: boolean;
+  calibratedHigh: number | null;
+  calibratedLow: number | null;
+  calibratedAnchorHigh: number | null;
+  calibratedAnchorLow: number | null;
+  calibrationEpoch: number;
+}
+
+/** The upsert input: layer flags required (the existing PUT contract);
+ * `calibrationEnabled` optional — OMISSION PRESERVES the stored flag, and
+ * the upsert NEVER touches the calibrated quad or epoch. */
+export interface RoutingSettingsUpsert {
+  structuralEnabled: boolean;
+  cascadeEnabled: boolean;
+  calibrationEnabled?: boolean;
+}
+
+/** The calibrated quad as written by the calibrator (all four together). */
+export interface CalibratedQuad {
+  high: number;
+  low: number;
+  anchorHigh: number;
+  anchorLow: number;
+}
+
+/** The observed state a conditional calibration write is predicated on —
+ * any mismatch (concurrent disable/revert/rebase) skips the write. */
+export interface CalibrationExpectedState {
+  enabled: boolean | null; // null = don't require the flag (revert/rebase)
+  high: number | null;
+  low: number | null;
+  anchorHigh: number | null;
+  anchorLow: number | null;
+  epoch: number;
+}
+
+/** A tenant surfaced by the calibration sweeps. */
+export interface CalibrationSweepTenant {
+  ownerUserId: string;
+  value: RoutingSettingsValue;
+}
+
+export interface ThresholdCalibrationEventInput {
+  trigger: 'calibrator' | 'revert' | 'rebase';
+  oldHigh: number;
+  oldLow: number;
+  newHigh: number;
+  newLow: number;
+  anchorHigh: number;
+  anchorLow: number;
+  windowFrom?: Date | null;
+  windowTo?: Date | null;
+  edge?: 'high' | 'low' | null;
+  edgeSamples?: number | null;
+  edgeFailures?: number | null;
+  reason: string;
+}
+
+export interface ThresholdCalibrationEventRowView {
+  id: string;
+  trigger: string;
+  oldHigh: number;
+  oldLow: number;
+  newHigh: number;
+  newLow: number;
+  anchorHigh: number;
+  anchorLow: number;
+  windowFrom: string | null;
+  windowTo: string | null;
+  edge: string | null;
+  edgeSamples: number | null;
+  edgeFailures: number | null;
+  reason: string;
+  createdAt: string;
 }
 
 /** Owner-scoped read/upsert of the tenant's auto-layer preference (one row per
- * owner). `get` returns null when the tenant has no preference. */
+ * owner) + the calibration write/sweep surface. `get` returns null when the
+ * tenant has no preference. `setCalibrated` is the CONDITIONAL row-locked
+ * write (calibrator move / revert / rebase): it applies `quad` (or clears on
+ * null), bumps the epoch, and returns false — writing nothing — when the row
+ * no longer matches `expected`. The two list methods are system-scope sweep
+ * enumerations (trusted scheduler); every per-tenant statement elsewhere is
+ * ownership-predicated. */
 export interface RoutingSettingsAccessor {
   get(principal: Principal): Promise<RoutingSettingsValue | null>;
-  upsert(principal: Principal, value: RoutingSettingsValue): Promise<RoutingSettingsValue>;
+  upsert(principal: Principal, value: RoutingSettingsUpsert): Promise<RoutingSettingsValue>;
+  setCalibrated(
+    principal: Principal,
+    quad: CalibratedQuad | null,
+    expected: CalibrationExpectedState,
+    events:
+      | ThresholdCalibrationEventInput
+      | ThresholdCalibrationEventInput[]
+      | ((
+          observed: RoutingSettingsValue,
+        ) => ThresholdCalibrationEventInput | ThresholdCalibrationEventInput[]),
+  ): Promise<boolean>;
+  /** The USER-WINS clear (revert, r3-Med-2): one transaction that locks the
+   * row and clears WHATEVER pair is present — no pre-read expected state, so
+   * a calibrator move landing mid-flight cannot make the user's revert a
+   * silent no-op. Returns false (no event) only when no pair existed. */
+  clearCalibrated(
+    principal: Principal,
+    eventOf: (observed: RoutingSettingsValue) => ThresholdCalibrationEventInput,
+  ): Promise<boolean>;
+  listCalibrationEnabled(): Promise<CalibrationSweepTenant[]>;
+  listWithCalibratedPair(): Promise<CalibrationSweepTenant[]>;
+}
+
+/** Owner-scoped calibration history reads (the writes ride `setCalibrated`'s
+ * transaction). */
+export interface CalibrationEventsAccessor {
+  list(principal: Principal, limit: number): Promise<ThresholdCalibrationEventRowView[]>;
 }
 
 /** The ONLY persistence surface exported outside the database module. By
@@ -396,6 +521,7 @@ export interface PersistencePort {
   requestAttempts: RequestAttemptAccessor;
   analytics: AnalyticsAccessor;
   routingSettings: RoutingSettingsAccessor;
+  calibrationEvents: CalibrationEventsAccessor;
   users: UsersInfra;
   /** Global pricing catalog (#8) — non-owned, append-only. */
   pricing: PricingCatalog;

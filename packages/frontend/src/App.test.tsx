@@ -5,7 +5,7 @@ import type { ChannelDto, ModelDto, RuleDto, TierDto, TierEntryDto } from './dat
 import { App } from './App';
 import { createAppStore, type AppStore } from './state/appState';
 import { AppProvider } from './state/context';
-import { FakeApiClient } from './test/fakeClient';
+import { DEFAULT_CALIBRATION, FakeApiClient } from './test/fakeClient';
 
 const flush = async (): Promise<void> => {
   for (let i = 0; i < 4; i++) await new Promise((r) => setTimeout(r, 0));
@@ -254,6 +254,7 @@ describe('dashboard shell (auth-gated)', () => {
         cascade: false,
         structuralAvailable: false,
         cascadeAvailable: false,
+        calibration: DEFAULT_CALIBRATION,
       },
     });
     const { host, dispose } = mount(createAppStore(fake));
@@ -264,6 +265,70 @@ describe('dashboard shell (auth-gated)', () => {
       expect(host.textContent).toContain('off instance-wide (ROUTING_AUTO_LAYERS)');
       // add-auto-performance-view: no structural layer -> no performance section
       expect(host.textContent).not.toContain('Auto performance');
+    } finally {
+      dispose();
+    }
+  });
+
+  it('renders Self-calibration: toggle, thresholds line, revert only when calibrated, history', async () => {
+    const fake = new FakeApiClient({
+      tiers: [DEFAULT_TIER],
+      autoLayers: {
+        structural: true,
+        cascade: true,
+        structuralAvailable: true,
+        cascadeAvailable: true,
+        calibration: {
+          enabled: true,
+          calibratedHigh: 0.58,
+          calibratedLow: 0.27,
+          instanceHigh: 0.6,
+          instanceLow: 0.25,
+          effectiveHigh: 0.58,
+          effectiveLow: 0.27,
+        },
+      },
+      calibrationEvents: [
+        {
+          id: 'ev1',
+          trigger: 'calibrator',
+          oldHigh: 0.6,
+          oldLow: 0.27,
+          newHigh: 0.58,
+          newLow: 0.27,
+          anchorHigh: 0.6,
+          anchorLow: 0.25,
+          windowFrom: null,
+          windowTo: null,
+          edge: 'high',
+          edgeSamples: 57,
+          edgeFailures: 43,
+          reason: 'r',
+          createdAt: '2026-07-19T04:00:00.000Z',
+        },
+      ],
+    });
+    const { host, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Routing');
+      await flush();
+      const text = host.textContent ?? '';
+      expect(text).toContain('Self-calibration');
+      expect(text).toContain('high 0.58 · low 0.27');
+      expect(text).toContain('calibrated');
+      expect(text).toContain('Revert to defaults');
+      expect(text).toContain('0.6 → 0.58 (high)');
+      expect(text).toContain('57 samples · 75% failed');
+      // Revert: one click clears the pair; the section returns to defaults.
+      const btn = [...host.querySelectorAll<HTMLElement>('button')].find(
+        (b) => b.textContent?.trim() === 'Revert to defaults',
+      );
+      btn?.click();
+      await flush();
+      expect(fake.calls).toContain('calibrationRevert');
+      expect(host.textContent).toContain('instance defaults');
+      expect(host.textContent).not.toContain('Revert to defaults');
     } finally {
       dispose();
     }

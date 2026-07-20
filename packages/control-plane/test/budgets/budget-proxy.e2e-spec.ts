@@ -36,6 +36,12 @@ import {
   loadProxyRuntime,
 } from '../../src/proxy/proxy.config';
 import { ROUTING_CONFIG, loadRoutingConfig } from '../../src/proxy/routing.config';
+import {
+  CALIBRATION_RAILS,
+  loadCalibrationConfig,
+  railsOf,
+  type CalibrationRails,
+} from '../../src/calibration/calibration.config';
 import { ProxyService } from '../../src/proxy/proxy.service';
 import { RequestRecorder } from '../../src/recording/request-recorder';
 import { ObservabilityModule } from '../../src/observability/observability.module';
@@ -200,6 +206,7 @@ describe('budget block enforcement — proxy path (#16)', () => {
         { provide: PROXY_ADAPTER_FACTORY, useValue: createProviderAdapter },
         { provide: PROXY_BREAKER, useValue: new CircuitBreaker(new InMemoryBreakerStore()) },
         { provide: ROUTING_CONFIG, useFactory: loadRoutingConfig },
+      { provide: CALIBRATION_RAILS, useFactory: (): CalibrationRails => railsOf(loadCalibrationConfig()) },
         { provide: APP_FILTER, useClass: ProxyExceptionFilter },
       ],
     }).compile();

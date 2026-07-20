@@ -30,6 +30,12 @@ import {
   loadProxyRuntime,
 } from './proxy.config';
 import { ROUTING_CONFIG, loadRoutingConfig } from './routing.config';
+import {
+  CALIBRATION_RAILS,
+  loadCalibrationConfig,
+  railsOf,
+  type CalibrationRails,
+} from '../calibration/calibration.config';
 import { ProxyService } from './proxy.service';
 import { ProxyMetrics } from '../observability/proxy-metrics';
 import { breakerStoreErrorHandler } from './breaker-observability';
@@ -77,6 +83,9 @@ function boundedBreakerRedis(redis: Redis): BreakerRedis {
     { provide: PROXY_RUNTIME, useFactory: loadProxyRuntime },
     { provide: PROXY_ADAPTER_FACTORY, useValue: createProviderAdapter },
     { provide: ROUTING_CONFIG, useFactory: loadRoutingConfig },
+    // The hot path re-validates stored calibrated pairs against the ACTIVE
+    // rails on every read (add-auto-threshold-calibration).
+    { provide: CALIBRATION_RAILS, useFactory: (): CalibrationRails => railsOf(loadCalibrationConfig()) },
     {
       // Structural baseline (#13): a dedicated fail-fast Redis connection, keyed
       // by an HMAC derived from the resolved agent-key secret.

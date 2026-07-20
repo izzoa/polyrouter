@@ -5,6 +5,7 @@ import { RangeSelector } from '../components/RangeSelector';
 import { Toggle } from '../components/Toggle';
 import type { AutoLayers, TierEntryDto } from '../data/api';
 import { autoSeriesToChart, toAutoPerfVm } from '../data/autoPerf';
+import { toCalibrationVm, toHistoryRows } from '../data/calibration';
 import { fmtUsd } from '../data/format';
 import { useApp } from '../state/context';
 import type { Model, Range } from '../types';
@@ -56,6 +57,121 @@ export function groupModelsByProvider(
       models: group.sort((a, b) => a.externalModelId.localeCompare(b.externalModelId)),
     }))
     .sort((a, b) => a.label.localeCompare(b.label));
+}
+
+/** The SELF-CALIBRATION section (add-auto-threshold-calibration): the opt-in
+ * toggle, the effective thresholds line (instance vs calibrated), one-click
+ * revert, and the threshold-change history — every move with its evidence. */
+function SelfCalibration() {
+  const app = useApp();
+  const { state } = app;
+  createEffect(() => {
+    if (!state.calHistory.loaded) void app.loadCalHistory();
+  });
+  const vm = () => toCalibrationVm(state.autoLayers);
+  const rows = () => toHistoryRows(state.calHistory.rows);
+  return (
+    <Show when={vm()} keyed>
+      {(v) => (
+        <div class="panel card">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+            <div class="section-title">Self-calibration</div>
+            <Toggle
+              on={v.enabled}
+              size="sm"
+              label="Self-calibration"
+              onToggle={() => void app.setCalibration(!v.enabled)}
+            />
+          </div>
+          <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3);line-height:1.5;margin-bottom:8px">
+            Conservatively narrows the ambiguous band from your own cascade outcomes — never a fix
+            for confident-band mistakes. Every change is listed below and one click from undone.
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+            <span class="mono" style="font:500 12px 'Geist Mono',monospace;color:var(--text)">
+              {v.thresholdsLine}
+            </span>
+            <span
+              style={{
+                font: "400 10.5px 'Geist',sans-serif",
+                color: v.tag === 'calibrated' ? 'var(--accent-deep)' : 'var(--text3)',
+                background: v.tag === 'calibrated' ? 'var(--accent-bg)' : 'var(--chip)',
+                padding: '2px 7px',
+                'border-radius': '5px',
+              }}
+            >
+              {v.tag}
+            </span>
+            <Show when={v.showRevert}>
+              <button
+                type="button"
+                class="btn-ghost"
+                style="font:400 11px 'Geist',sans-serif;color:var(--text2);cursor:pointer;text-decoration:underline"
+                onClick={() => void app.revertCalibration()}
+              >
+                Revert to defaults
+              </button>
+            </Show>
+          </div>
+          <Show when={state.calHistory.error}>
+            <div style="font:400 11px 'Geist',sans-serif;color:var(--red)">
+              Couldn’t load calibration history — {state.calHistory.error}{' '}
+              <button
+                type="button"
+                style="font:400 11px 'Geist',sans-serif;color:var(--text2);cursor:pointer;text-decoration:underline"
+                onClick={() => void app.loadCalHistory()}
+              >
+                Retry
+              </button>
+            </div>
+          </Show>
+          <Show
+            when={rows().length > 0}
+            fallback={
+              /* Loading, error, and truly-empty are mutually exclusive: an
+                 errored load never masquerades as an empty history (r3-Low-6). */
+              <Show when={state.calHistory.error === null}>
+                <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3);padding:2px 0">
+                  {state.calHistory.loaded ? 'No calibration changes yet.' : 'Loading…'}
+                </div>
+              </Show>
+            }
+          >
+            <For each={rows()}>
+              {(r) => (
+                <div style="display:flex;align-items:baseline;gap:10px;padding:4px 0;border-top:1px solid var(--border2)">
+                  <span
+                    class="mono"
+                    style="font:400 10.5px 'Geist Mono',monospace;color:var(--text3);min-width:70px"
+                  >
+                    {r.date}
+                  </span>
+                  <span
+                    style={{
+                      font: "400 11.5px 'Geist',sans-serif",
+                      color: r.kind === 'move' ? 'var(--text)' : 'var(--text2)',
+                    }}
+                  >
+                    {r.movement}
+                  </span>
+                  <Show when={r.evidence !== ''}>
+                    <span style="font:400 10.5px 'Geist',sans-serif;color:var(--text3)">
+                      {r.evidence}
+                    </span>
+                  </Show>
+                  <Show when={r.kind !== 'move'}>
+                    <span style="font:400 10px 'Geist',sans-serif;color:var(--text3);background:var(--chip);padding:1px 6px;border-radius:4px">
+                      {r.kind}
+                    </span>
+                  </Show>
+                </div>
+              )}
+            </For>
+          </Show>
+        </div>
+      )}
+    </Show>
+  );
 }
 
 /** The AUTO PERFORMANCE section (add-auto-performance-view): evidence beside
@@ -517,6 +633,7 @@ export function Routing() {
           </div>
 
           <Show when={state.autoLayers?.structuralAvailable}>
+            <SelfCalibration />
             <AutoPerformance />
           </Show>
 

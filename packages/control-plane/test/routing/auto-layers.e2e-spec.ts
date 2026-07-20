@@ -89,6 +89,17 @@ describe('auto-layers endpoint e2e', () => {
     request(server)[m](path).set('x-test-user', bUserId);
 
   const URL = '/api/routing/auto-layers';
+  /** The calibration state block for an uncalibrated tenant on instance
+   * defaults (add-auto-threshold-calibration) — appended to every view. */
+  const CAL = {
+    enabled: false,
+    calibratedHigh: null,
+    calibratedLow: null,
+    instanceHigh: 0.6,
+    instanceLow: 0.25,
+    effectiveHigh: 0.6,
+    effectiveLow: 0.25,
+  };
 
   it('requires a session (401 without a principal)', async () => {
     expect((await request(server).get(URL)).status).toBe(401);
@@ -103,6 +114,7 @@ describe('auto-layers endpoint e2e', () => {
       cascade: true,
       structuralAvailable: true,
       cascadeAvailable: true,
+      calibration: CAL,
     });
   });
 
@@ -116,6 +128,7 @@ describe('auto-layers endpoint e2e', () => {
       cascade: true,
       structuralAvailable: true,
       cascadeAvailable: true,
+      calibration: CAL,
     });
     // Persisted — a later GET returns the same.
     expect((await asA('get', URL)).body).toEqual(put.body);
@@ -127,12 +140,14 @@ describe('auto-layers endpoint e2e', () => {
       cascade: false,
       structuralAvailable: true,
       cascadeAvailable: true,
+      calibration: CAL,
     });
     expect((await asA('put', URL).send({ structural: true, cascade: false })).body).toEqual({
       structural: true,
       cascade: false,
       structuralAvailable: true,
       cascadeAvailable: true,
+      calibration: CAL,
     });
   });
 

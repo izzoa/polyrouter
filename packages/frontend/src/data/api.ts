@@ -355,6 +355,38 @@ export interface AutoLayers {
   cascade: boolean;
   structuralAvailable: boolean;
   cascadeAvailable: boolean;
+  /** Threshold-calibration state (add-auto-threshold-calibration): the pair
+   * is null when uncalibrated OR inert; effective always reflects what the
+   * router actually uses. */
+  calibration: {
+    enabled: boolean;
+    calibratedHigh: number | null;
+    calibratedLow: number | null;
+    instanceHigh: number;
+    instanceLow: number;
+    effectiveHigh: number;
+    effectiveLow: number;
+  };
+}
+
+/** One threshold-change audit row — full numeric before/after pairs (never
+ * null-as-instance), newest first from the API. */
+export interface CalibrationEvent {
+  id: string;
+  trigger: 'calibrator' | 'revert' | 'rebase';
+  oldHigh: number;
+  oldLow: number;
+  newHigh: number;
+  newLow: number;
+  anchorHigh: number;
+  anchorLow: number;
+  windowFrom: string | null;
+  windowTo: string | null;
+  edge: 'high' | 'low' | null;
+  edgeSamples: number | null;
+  edgeFailures: number | null;
+  reason: string;
+  createdAt: string;
 }
 
 export interface ChatMessage {
@@ -589,7 +621,13 @@ export interface ApiClient {
   createRule(input: CreateRuleInput): Promise<RuleDto>;
   deleteRule(id: string): Promise<{ deleted: boolean }>;
   getAutoLayers(): Promise<AutoLayers>;
-  setAutoLayers(input: { structural: boolean; cascade: boolean }): Promise<AutoLayers>;
+  setAutoLayers(input: {
+    structural: boolean;
+    cascade: boolean;
+    calibration?: boolean;
+  }): Promise<AutoLayers>;
+  calibrationRevert(): Promise<AutoLayers>;
+  calibrationHistory(limit?: number): Promise<CalibrationEvent[]>;
   listBudgets(): Promise<BudgetDto[]>;
   createBudget(input: CreateBudgetInput): Promise<BudgetDto>;
   updateBudget(id: string, patch: UpdateBudgetInput): Promise<BudgetDto>;
@@ -789,6 +827,12 @@ export const realClient: ApiClient = {
   getAutoLayers: () => http<AutoLayers>(`${API_BASE}/routing/auto-layers`),
   setAutoLayers: (input) =>
     http<AutoLayers>(`${API_BASE}/routing/auto-layers`, jsonInit('PUT', input)),
+  calibrationRevert: () =>
+    http<AutoLayers>(`${API_BASE}/routing/calibration/revert`, { method: 'POST' }),
+  calibrationHistory: (limit) =>
+    http<CalibrationEvent[]>(
+      `${API_BASE}/routing/calibration/history${limit !== undefined ? `?limit=${String(limit)}` : ''}`,
+    ),
   listBudgets: () => http<BudgetDto[]>(`${API_BASE}/budgets`),
   createBudget: (input) => http<BudgetDto>(`${API_BASE}/budgets`, jsonInit('POST', input)),
   updateBudget: (id, patch) =>

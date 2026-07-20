@@ -62,6 +62,7 @@ export class StructuralRouter {
     agentId: string | null,
     ir: NormalizedRequest,
     snapshot: RoutingSnapshot,
+    thresholds?: { high: number; low: number },
   ): Promise<StructuralEvaluation> {
     if (!this.enabled) return { kind: 'skip' };
     try {
@@ -77,9 +78,12 @@ export class StructuralRouter {
       } catch {
         baseline = null;
       }
+      // Per-tenant calibrated thresholds (add-auto-threshold-calibration):
+      // the caller passes the pre-resolved effective pair (zero extra reads);
+      // absent → the instance config, byte-identical to the pre-change path.
       const verdict = classifyStructural(features, baseline, {
-        high: this.cfg.structural.high,
-        low: this.cfg.structural.low,
+        high: thresholds?.high ?? this.cfg.structural.high,
+        low: thresholds?.low ?? this.cfg.structural.low,
         weights: this.cfg.structural.weights,
         reasoningAdjust: this.cfg.structural.reasoningAdjust,
       });

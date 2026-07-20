@@ -499,6 +499,40 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
       };
     },
 
+    async calibrationStats(principal, range, args) {
+      // The DECIDED population, fail-closed on provenance (r2-High-2): a pass
+      // is served+scored+non-escalated with a NULL escalation source; a
+      // failure is a quality-gate escalation regardless of the strong leg's
+      // terminal status. Epoch equality is the freshness rail (r2-Med-3) —
+      // rows decided under an earlier pair never re-qualify, whatever the
+      // async writer's insertion clock says.
+      const base = and(
+        logRange(principal, range),
+        sql`${requestLogs.structuralBand} = 'ambiguous'`,
+        sql`${requestLogs.decisionLayer} = 'cascade'`,
+        sql`${requestLogs.structuralBandSource} = 'threshold'`,
+        sql`${requestLogs.structuralEpoch} = ${args.epoch}`,
+      );
+      const pass = sql`(not ${requestLogs.escalated} and ${requestLogs.escalationSource} is null and ${requestLogs.status} in ('success','fallback') and ${requestLogs.qualitySignal} is not null)`;
+      const failure = sql`(${requestLogs.escalated} and ${requestLogs.escalationSource} = 'quality_gate')`;
+      const decided = sql`(${pass} or ${failure})`;
+      const highZone = sql`(${requestLogs.structuralScore} >= ${args.high - args.edgeWidth} and ${requestLogs.structuralScore} < ${args.high})`;
+      const lowZone = sql`(${requestLogs.structuralScore} > ${args.low} and ${requestLogs.structuralScore} <= ${args.low + args.edgeWidth})`;
+      const [t] = await db
+        .select({
+          highSamples: intCount(sql`${decided} and ${highZone}`),
+          highFailures: intCount(sql`${failure} and ${highZone}`),
+          lowSamples: intCount(sql`${decided} and ${lowZone}`),
+          lowFailures: intCount(sql`${failure} and ${lowZone}`),
+        })
+        .from(requestLogs)
+        .where(base);
+      return {
+        highEdge: { samples: t!.highSamples, failures: t!.highFailures },
+        lowEdge: { samples: t!.lowSamples, failures: t!.lowFailures },
+      };
+    },
+
     async listRequests(principal, query) {
       const conds: SQL[] = [
         ownershipPredicate(requestLogs, principal),

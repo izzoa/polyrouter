@@ -27,6 +27,7 @@ import {
   type OauthPresetDto,
   type ProviderDto,
   type AutoPerformance,
+  type CalibrationEvent,
   type RequestRow,
   type RuleDto,
   type TierDto,
@@ -197,6 +198,8 @@ export interface AppState {
   allModels: Model[];
   rules: RuleDto[];
   autoLayers: AutoLayers | null;
+  /** Threshold-calibration history (add-auto-threshold-calibration). */
+  calHistory: { rows: CalibrationEvent[]; loaded: boolean; error: string | null };
   routingLoading: boolean;
   routingError: string | null;
   /** New header-rule form: a tier-header value routed to a target tier key. */
@@ -623,6 +626,7 @@ function initialState(): AppState {
     allModels: [],
     rules: [],
     autoLayers: null,
+    calHistory: { rows: [], loaded: false, error: null },
     routingLoading: false,
     routingError: null,
     rf: { value: '', target: '', busy: false, error: null },
@@ -656,6 +660,10 @@ export interface AppStore {
   /** Auto-performance section (add-auto-performance-view): Routing-local range. */
   loadAutoPerf: () => Promise<void>;
   setAutoPerfRange: (range: Range) => void;
+  /** Threshold calibration (add-auto-threshold-calibration). */
+  setCalibration: (on: boolean) => Promise<void>;
+  revertCalibration: () => Promise<void>;
+  loadCalHistory: () => Promise<void>;
   setFilter: (filter: RequestFilter) => void;
   select: (id: string | null) => void;
   say: (msg: string) => void;
@@ -869,8 +877,24 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
   let routingSeq = 0;
   let budgetsSeq = 0;
   let channelsSeq = 0;
+  // Identity generation (add-auto-threshold-calibration r3-High-1): bumped on
+  // sign-out and on session replacement, so identity-scoped routing/telemetry
+  // caches can neither survive an account change nor be repopulated by an
+  // in-flight response captured under the previous principal.
+  let identityGen = 0;
   const bumpRouting = (): void => {
     routingSeq += 1;
+  };
+  const resetIdentityScoped = (): void => {
+    identityGen += 1;
+    bumpRouting(); // discard in-flight routing loads captured under the old principal
+    setState(
+      produce((s) => {
+        s.autoLayers = null;
+        s.calHistory = { rows: [], loaded: false, error: null };
+        s.autoPerf = { data: null, loaded: false, error: null, range: '7d' };
+      }),
+    );
   };
   const bumpBudgets = (): void => {
     budgetsSeq += 1;
@@ -1024,6 +1048,18 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       }
     } finally {
       autoLayersInFlight = false;
+    }
+  };
+
+  const loadCalHistory = async (): Promise<void> => {
+    const gen = identityGen;
+    try {
+      const rows = await client.calibrationHistory();
+      if (gen !== identityGen) return; // a different account signed in mid-flight
+      setState('calHistory', { rows, loaded: true, error: null });
+    } catch (e) {
+      if (gen !== identityGen) return;
+      setState('calHistory', (c) => ({ ...c, loaded: true, error: err(e) }));
     }
   };
 
@@ -1248,6 +1284,11 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       }
       return;
     }
+    // A DIFFERENT principal than the one whose data is cached → hard reset of
+    // identity-scoped slices before anything renders (r3-High-1).
+    if (state.session !== null && state.session.userId !== session.userId) {
+      resetIdentityScoped();
+    }
     setState('session', session);
     await Promise.all([loadAgents(), loadProviders()]);
     setState({ authView: 'ready', authError: null });
@@ -1362,13 +1403,16 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       // must never be labeled as the newly selected range.
       const requested = state.autoPerf.range;
       const seq = ++autoPerfSeq;
+      const gen = identityGen; // never label another account's data (r3-High-1)
       const { from, to, bucket } = rangeToParams(requested, Date.now());
       try {
         const data = await client.autoPerformance({ from, to }, bucket);
-        if (seq !== autoPerfSeq || state.autoPerf.range !== requested) return;
+        if (seq !== autoPerfSeq || gen !== identityGen || state.autoPerf.range !== requested)
+          return;
         setState('autoPerf', { data, loaded: true, error: null, range: requested });
       } catch (e) {
-        if (seq !== autoPerfSeq || state.autoPerf.range !== requested) return;
+        if (seq !== autoPerfSeq || gen !== identityGen || state.autoPerf.range !== requested)
+          return;
         setState('autoPerf', 'error', err(e));
         setState('autoPerf', 'loaded', true);
       }
@@ -1480,6 +1524,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           s.ai = { name: '', password: '', busy: false, error: null };
         }),
       );
+      resetIdentityScoped(); // calibration/telemetry caches never outlive the account (r3-High-1)
       try {
         await client.signOut();
       } catch {
@@ -1951,6 +1996,32 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       scheduleAutoLayers({ structural, cascade });
       return Promise.resolve();
     },
+    setCalibration: async (on) => {
+      const cur = state.autoLayers;
+      if (!cur || !cur.structuralAvailable) return;
+      try {
+        // Sends the CURRENT layer flags + the new calibration flag — the
+        // server preserves the pair and, on omission elsewhere, the flag.
+        const next = await client.setAutoLayers({
+          structural: cur.structural,
+          cascade: cur.cascade,
+          calibration: on,
+        });
+        setState('autoLayers', next);
+      } catch (e) {
+        say(err(e));
+      }
+    },
+    revertCalibration: async () => {
+      try {
+        const next = await client.calibrationRevert();
+        setState('autoLayers', next);
+        await loadCalHistory(); // the revert appended an event — refresh
+      } catch (e) {
+        say(err(e));
+      }
+    },
+    loadCalHistory,
 
     loadLimits,
     openBudget: (budget) => {

@@ -1,7 +1,7 @@
-import { Body, Controller, Get, Header, Put } from '@nestjs/common';
-import type { Principal } from '@polyrouter/shared/server';
+import { Body, Controller, Get, Header, HttpCode, Post, Put, Query } from '@nestjs/common';
+import type { Principal, ThresholdCalibrationEventRowView } from '@polyrouter/shared/server';
 import { CurrentPrincipal } from '../auth/principal.decorator';
-import { AutoLayersDto } from './auto-layers.dto';
+import { AutoLayersDto, CalibrationHistoryQueryDto } from './auto-layers.dto';
 import { AutoLayersService, type AutoLayersView } from './auto-layers.service';
 
 /** `/api/routing/auto-layers` — the tenant's auto-routing preference (#20).
@@ -24,5 +24,31 @@ export class AutoLayersController {
     @Body() dto: AutoLayersDto,
   ): Promise<AutoLayersView> {
     return this.svc.set(principal, dto);
+  }
+}
+
+/** `/api/routing/calibration` (add-auto-threshold-calibration): the revert
+ * action and the audit history. Session-guarded, owner-scoped through the
+ * service; the calibrator itself never rides this surface. */
+@Controller('api/routing/calibration')
+export class CalibrationController {
+  constructor(private readonly svc: AutoLayersService) {}
+
+  /** Idempotent: reverting while already on instance defaults is a 200 no-op
+   * (and appends no event). */
+  @Post('revert')
+  @HttpCode(200)
+  @Header('Cache-Control', 'no-store')
+  revert(@CurrentPrincipal() principal: Principal): Promise<AutoLayersView> {
+    return this.svc.revert(principal);
+  }
+
+  @Get('history')
+  @Header('Cache-Control', 'no-store')
+  history(
+    @CurrentPrincipal() principal: Principal,
+    @Query() q: CalibrationHistoryQueryDto,
+  ): Promise<ThresholdCalibrationEventRowView[]> {
+    return this.svc.history(principal, q.limit);
   }
 }

@@ -7,7 +7,7 @@ import {
   type TierDto,
   type TierEntryDto,
 } from '../data/api';
-import { DEFAULT_SESSION, FakeApiClient } from '../test/fakeClient';
+import { DEFAULT_CALIBRATION, DEFAULT_SESSION, FakeApiClient } from '../test/fakeClient';
 import type { ProviderForm } from '../types';
 import { PROVIDER_KINDS, createAppStore } from './appState';
 
@@ -706,6 +706,7 @@ describe('routing config (real CRUD)', () => {
         cascade: false,
         structuralAvailable: false,
         cascadeAvailable: false,
+        calibration: DEFAULT_CALIBRATION,
       },
     });
     const s = createAppStore(fake);
@@ -1254,5 +1255,55 @@ describe('auto-performance range race (add-auto-performance-view r3-High-1)', ()
     expect(s.state.autoPerf.data).toBeNull();
     expect(s.state.autoPerf.loaded).toBe(false);
     expect(s.state.autoPerf.error).toBeNull();
+  });
+});
+
+describe('identity-scoped cache isolation (add-auto-threshold-calibration r3-High-1)', () => {
+  it('sign-out clears calibration history, auto-layers, and auto-perf caches', async () => {
+    const fake = new FakeApiClient({
+      session: DEFAULT_SESSION,
+      calibrationEvents: [
+        {
+          id: 'e1',
+          trigger: 'calibrator',
+          oldHigh: 0.6,
+          oldLow: 0.25,
+          newHigh: 0.58,
+          newLow: 0.25,
+          anchorHigh: 0.6,
+          anchorLow: 0.25,
+          windowFrom: null,
+          windowTo: null,
+          edge: 'high',
+          edgeSamples: 57,
+          edgeFailures: 43,
+          reason: 'r',
+          createdAt: '2026-07-19T04:00:00.000Z',
+        },
+      ],
+    });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    await s.loadCalHistory();
+    await s.loadAutoPerf();
+    expect(s.state.calHistory.rows).toHaveLength(1);
+    expect(s.state.autoPerf.data).not.toBeNull();
+    await s.signOut();
+    // Tenant A's metadata never survives into the next account's session.
+    expect(s.state.calHistory).toEqual({ rows: [], loaded: false, error: null });
+    expect(s.state.autoPerf.data).toBeNull();
+    expect(s.state.autoLayers).toBeNull();
+  });
+
+  it('an in-flight history response from the previous account is discarded', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    let release: (v: never[]) => void = () => {};
+    fake.calibrationHistory = () => new Promise((resolve) => (release = resolve));
+    const s = createAppStore(fake);
+    const inflight = s.loadCalHistory(); // captured under account A
+    await s.signOut(); // identity generation bumps
+    release([]); // A's response lands late
+    await inflight;
+    expect(s.state.calHistory.loaded).toBe(false); // never committed
   });
 });

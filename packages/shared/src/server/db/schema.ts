@@ -396,6 +396,15 @@ export const requestLogs = pgTable(
     errorRequestId: text('error_request_id'),
     escalated: boolean('escalated').default(false).notNull(),
     qualitySignal: doublePrecision('quality_signal'),
+    /** WHY the cascade escalated (add-auto-threshold-calibration):
+     * 'quality_gate' = the gate SCORED the cheap answer below threshold;
+     * 'cheap_error' = every other pre-commit escalation (retryable failure,
+     * timeout, replay-materialization failure after a passing verdict).
+     * Null = not escalated or predates the column (never backfilled). */
+    escalationSource: text('escalation_source'),
+    /** The tenant's calibration_epoch at DECISION time for evaluated rows —
+     * the calibrator's freshness stamp (immune to async writer lag). */
+    structuralEpoch: integer('structural_epoch'),
     createdAt: createdAt(),
   },
   (t) => [
@@ -413,6 +422,11 @@ export const requestLogs = pgTable(
       sql`${t.inputTokens} >= 0 AND ${t.outputTokens} >= 0
         AND (${t.cacheReadTokens} IS NULL OR ${t.cacheReadTokens} >= 0)
         AND (${t.cacheWriteTokens} IS NULL OR ${t.cacheWriteTokens} >= 0)`,
+    ),
+    // Provenance is binary and only ever on escalated rows (fail-closed).
+    check(
+      'request_log_escalation_source_valid',
+      sql`${t.escalationSource} IS NULL OR (${t.escalationSource} IN ('quality_gate', 'cheap_error') AND ${t.escalated})`,
     ),
   ],
 );
@@ -542,6 +556,19 @@ export const routingSettings = pgTable(
     orgId: owned.orgId(),
     structuralEnabled: boolean('structural_enabled').notNull(),
     cascadeEnabled: boolean('cascade_enabled').notNull(),
+    /** Threshold calibration (add-auto-threshold-calibration). The enabled
+     * flag gates the calibrator's MOVES only; a stored pair applies while
+     * anchor- and rail-valid regardless (disable = stop moving, keep values).
+     * The anchor is the instance defaults the pair was calibrated against —
+     * a mismatch inerts the pair until the hygiene pass rebases it. The
+     * epoch bumps on EVERY threshold event; evaluated request rows stamp it
+     * (decision-time freshness for calibration evidence). */
+    calibrationEnabled: boolean('calibration_enabled').default(false).notNull(),
+    calibratedHigh: doublePrecision('calibrated_high'),
+    calibratedLow: doublePrecision('calibrated_low'),
+    calibratedAnchorHigh: doublePrecision('calibrated_anchor_high'),
+    calibratedAnchorLow: doublePrecision('calibrated_anchor_low'),
+    calibrationEpoch: integer('calibration_epoch').default(0).notNull(),
     createdAt: createdAt(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
@@ -550,6 +577,57 @@ export const routingSettings = pgTable(
     check(
       'routing_settings_cascade_implies_structural',
       sql`NOT ${t.cascadeEnabled} OR ${t.structuralEnabled}`,
+    ),
+    // The four calibrated_* columns travel together (all null or all set).
+    check(
+      'routing_settings_calibration_quad',
+      sql`(${t.calibratedHigh} IS NULL) = (${t.calibratedLow} IS NULL) AND (${t.calibratedHigh} IS NULL) = (${t.calibratedAnchorHigh} IS NULL) AND (${t.calibratedHigh} IS NULL) = (${t.calibratedAnchorLow} IS NULL)`,
+    ),
+    check(
+      'routing_settings_calibration_range',
+      sql`${t.calibratedHigh} IS NULL OR (${t.calibratedLow} >= 0 AND ${t.calibratedHigh} <= 1 AND ${t.calibratedLow} < ${t.calibratedHigh})`,
+    ),
+  ],
+);
+
+/** Append-only threshold-calibration audit (add-auto-threshold-calibration).
+ * old/new are the FULL numeric effective pairs before/after the event (never
+ * null-as-instance); anchor_* is the anchor governing AFTER the event. The
+ * reason is a numbers-only serialization (invariant 8). */
+export const thresholdCalibrationEvents = pgTable(
+  'threshold_calibration_event',
+  {
+    id: id(),
+    ownerUserId: owned.ownerUserId(),
+    orgId: owned.orgId(),
+    trigger: text('trigger').notNull(),
+    oldHigh: doublePrecision('old_high').notNull(),
+    oldLow: doublePrecision('old_low').notNull(),
+    newHigh: doublePrecision('new_high').notNull(),
+    newLow: doublePrecision('new_low').notNull(),
+    anchorHigh: doublePrecision('anchor_high').notNull(),
+    anchorLow: doublePrecision('anchor_low').notNull(),
+    windowFrom: timestamp('window_from', { withTimezone: true }),
+    windowTo: timestamp('window_to', { withTimezone: true }),
+    edge: text('edge'),
+    edgeSamples: integer('edge_samples'),
+    edgeFailures: integer('edge_failures'),
+    reason: text('reason').notNull(),
+    /** Within-transaction apply order (r3-Med-5): a two-edge move's events
+     * share one transaction timestamp — the ordinal is the deterministic
+     * secondary sort so the high→low chain always replays in order. */
+    ordinal: integer('ordinal').default(0).notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index('threshold_calibration_event_owner_created_idx').on(t.ownerUserId, t.createdAt),
+    check(
+      'threshold_calibration_event_trigger_valid',
+      sql`${t.trigger} IN ('calibrator', 'revert', 'rebase')`,
+    ),
+    check(
+      'threshold_calibration_event_edge_valid',
+      sql`${t.edge} IS NULL OR ${t.edge} IN ('high', 'low')`,
     ),
   ],
 );
@@ -569,5 +647,6 @@ export type RequestAttemptRow = typeof requestAttempts.$inferSelect;
 export type NotificationChannelRow = typeof notificationChannels.$inferSelect;
 export type BudgetRow = typeof budgets.$inferSelect;
 export type RoutingSettingsRow = typeof routingSettings.$inferSelect;
+export type ThresholdCalibrationEventRow = typeof thresholdCalibrationEvents.$inferSelect;
 export type InviteRow = typeof invites.$inferSelect;
 export type InstanceSettingsRow = typeof instanceSettings.$inferSelect;

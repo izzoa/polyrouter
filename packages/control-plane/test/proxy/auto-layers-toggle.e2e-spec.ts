@@ -45,6 +45,12 @@ import {
   loadProxyRuntime,
 } from '../../src/proxy/proxy.config';
 import { ROUTING_CONFIG, loadRoutingConfig } from '../../src/proxy/routing.config';
+import {
+  CALIBRATION_RAILS,
+  loadCalibrationConfig,
+  railsOf,
+  type CalibrationRails,
+} from '../../src/calibration/calibration.config';
 import { ProxyService } from '../../src/proxy/proxy.service';
 import { AutoLayersController } from '../../src/routing-config/auto-layers.controller';
 import { AutoLayersService } from '../../src/routing-config/auto-layers.service';
@@ -152,6 +158,7 @@ async function buildApp(): Promise<{ app: INestApplication; server: App }> {
       { provide: PROXY_ADAPTER_FACTORY, useValue: createProviderAdapter },
       { provide: PROXY_BREAKER, useValue: new CircuitBreaker(new InMemoryBreakerStore()) },
       { provide: ROUTING_CONFIG, useFactory: loadRoutingConfig },
+      { provide: CALIBRATION_RAILS, useFactory: (): CalibrationRails => railsOf(loadCalibrationConfig()) },
       {
         provide: StructuralBaselineStore,
         inject: [REDIS_CLIENT],

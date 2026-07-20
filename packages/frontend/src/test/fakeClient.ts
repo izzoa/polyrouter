@@ -28,6 +28,7 @@ import type {
   ProviderDto,
   ProxyTestBody,
   AutoPerformance,
+  CalibrationEvent,
   RequestRow,
   RequestsPage,
   RequestsQuery,
@@ -198,6 +199,17 @@ export function buildRequestRows(n: number): RequestRow[] {
   return rows;
 }
 
+/** An uncalibrated tenant on instance defaults (add-auto-threshold-calibration). */
+export const DEFAULT_CALIBRATION: AutoLayers['calibration'] = {
+  enabled: false,
+  calibratedHigh: null,
+  calibratedLow: null,
+  instanceHigh: 0.6,
+  instanceLow: 0.25,
+  effectiveHigh: 0.6,
+  effectiveLow: 0.25,
+};
+
 export const DEFAULT_AUTO_PERF: AutoPerformance = {
   evaluated: 40,
   bands: {
@@ -244,6 +256,7 @@ export interface FakeOptions {
   budgets?: BudgetDto[];
   channels?: ChannelDto[];
   autoLayers?: AutoLayers;
+  calibrationEvents?: CalibrationEvent[];
   channelTestResult?: ChannelTestResult;
   testResult?: ActionResult;
   syncResult?: ActionResult;
@@ -334,6 +347,7 @@ export class FakeApiClient implements ApiClient {
   budgets: BudgetDto[];
   channels: ChannelDto[];
   autoLayers: AutoLayers;
+  calibrationEvents: CalibrationEvent[];
   channelTestResult: ChannelTestResult;
   testResult: ActionResult;
   syncResult: ActionResult;
@@ -376,7 +390,9 @@ export class FakeApiClient implements ApiClient {
       cascade: true,
       structuralAvailable: true,
       cascadeAvailable: true,
+      calibration: { ...DEFAULT_CALIBRATION },
     };
+    this.calibrationEvents = opts.calibrationEvents ?? [];
     this.channelTestResult = opts.channelTestResult ?? { ok: true };
     this.testResult = opts.testResult ?? okResult();
     this.syncResult = opts.syncResult ?? okResult(2);
@@ -846,19 +862,53 @@ export class FakeApiClient implements ApiClient {
     return this.gate().then(() => snapshot);
   }
 
-  private applyAutoLayers(input: { structural: boolean; cascade: boolean }): AutoLayers {
-    // Mirror the server: cascade implies structural; effective = available × pref.
+  private applyAutoLayers(input: {
+    structural: boolean;
+    cascade: boolean;
+    calibration?: boolean;
+  }): AutoLayers {
+    // Mirror the server: cascade implies structural; effective = available × pref;
+    // an OMITTED calibration flag preserves the stored one, the pair untouched.
     const structuralEnabled = input.structural || input.cascade;
     this.autoLayers = {
       structuralAvailable: this.autoLayers.structuralAvailable,
       cascadeAvailable: this.autoLayers.cascadeAvailable,
       structural: this.autoLayers.structuralAvailable && structuralEnabled,
       cascade: this.autoLayers.cascadeAvailable && input.cascade,
+      calibration: {
+        ...this.autoLayers.calibration,
+        enabled: input.calibration ?? this.autoLayers.calibration.enabled,
+      },
     };
     return { ...this.autoLayers };
   }
 
-  setAutoLayers(input: { structural: boolean; cascade: boolean }): Promise<AutoLayers> {
+  calibrationRevert(): Promise<AutoLayers> {
+    this.record('calibrationRevert');
+    // Mirror the server: clear the pair, effective returns to instance.
+    this.autoLayers = {
+      ...this.autoLayers,
+      calibration: {
+        ...this.autoLayers.calibration,
+        calibratedHigh: null,
+        calibratedLow: null,
+        effectiveHigh: this.autoLayers.calibration.instanceHigh,
+        effectiveLow: this.autoLayers.calibration.instanceLow,
+      },
+    };
+    return Promise.resolve({ ...this.autoLayers });
+  }
+
+  calibrationHistory(limit?: number): Promise<CalibrationEvent[]> {
+    this.record('calibrationHistory', limit);
+    return Promise.resolve(this.calibrationEvents.slice(0, limit ?? 20));
+  }
+
+  setAutoLayers(input: {
+    structural: boolean;
+    cascade: boolean;
+    calibration?: boolean;
+  }): Promise<AutoLayers> {
     this.record('setAutoLayers', input);
     if (!this.deferAutoLayers) return Promise.resolve(this.applyAutoLayers(input));
     return new Promise<AutoLayers>((resolve, reject) => {

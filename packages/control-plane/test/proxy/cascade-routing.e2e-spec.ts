@@ -37,6 +37,12 @@ import {
   loadProxyRuntime,
 } from '../../src/proxy/proxy.config';
 import { ROUTING_CONFIG, loadRoutingConfig } from '../../src/proxy/routing.config';
+import {
+  CALIBRATION_RAILS,
+  loadCalibrationConfig,
+  railsOf,
+  type CalibrationRails,
+} from '../../src/calibration/calibration.config';
 import { ProxyService } from '../../src/proxy/proxy.service';
 import { NotificationProducers } from '../../src/producers/notification-producers';
 import { BudgetService } from '../../src/budgets/budget-service';
@@ -110,6 +116,7 @@ async function buildApp(): Promise<{ app: INestApplication; server: App }> {
       { provide: PROXY_ADAPTER_FACTORY, useValue: createProviderAdapter },
       { provide: PROXY_BREAKER, useValue: new CircuitBreaker(new InMemoryBreakerStore()) },
       { provide: ROUTING_CONFIG, useFactory: loadRoutingConfig },
+      { provide: CALIBRATION_RAILS, useFactory: (): CalibrationRails => railsOf(loadCalibrationConfig()) },
       {
         provide: StructuralBaselineStore,
         inject: [REDIS_CLIENT],
@@ -280,6 +287,7 @@ describe('cascade routing e2e', () => {
     decisionLayer: string;
     escalated: boolean;
     qualitySignal: number | null;
+    escalationSource: string | null;
     tierAssigned: string | null;
     inputTokens: number | null;
     structuralBand: string | null;
@@ -312,6 +320,7 @@ describe('cascade routing e2e', () => {
     const row1 = await log();
     expect(row1.escalated).toBe(true); // prose where JSON was demanded → strong serves
     expect(row1.qualitySignal).toBe(0);
+    expect(row1.escalationSource).toBe('quality_gate'); // scored verdict (add-auto-threshold-calibration)
     expect(row1.modelId).toBe(modelId['strong']);
 
     await pool.query('DELETE FROM request_log WHERE owner_user_id = $1', [userId]);
@@ -321,6 +330,7 @@ describe('cascade routing e2e', () => {
     expect(row2.decisionLayer).toBe('cascade'); // PROVES the gate ran (not an L1-low shortcut)
     expect(row2.escalated).toBe(false); // the identical prose without the demand passes
     expect(row2.qualitySignal).toBe(1);
+    expect(row2.escalationSource).toBeNull(); // provenance only ever on escalated rows
     expect(row2.modelId).toBe(modelId['cheapGood']);
     await setBand('auto_low', 'cheap-bad');
   });
@@ -332,6 +342,7 @@ describe('cascade routing e2e', () => {
     expect(res.text).toContain('data:'); // a served SSE stream
     const row = await log();
     expect(row.escalated).toBe(true);
+    expect(row.escalationSource).toBe('quality_gate'); // the streamed gate scored it too
     expect(row.modelId).toBe(modelId['strong']);
     await setBand('auto_low', 'cheap-bad');
   });
@@ -343,6 +354,7 @@ describe('cascade routing e2e', () => {
     const row = await log();
     expect(row.escalated).toBe(false); // 0.5 !< 0.5 — the decision is unchanged
     expect(row.qualitySignal).toBe(0.5); // the sharper label, visibly recorded
+    expect(row.escalationSource).toBeNull(); // a decided pass carries no provenance
     expect(row.modelId).toBe(modelId['cheapLenstop']);
     await setBand('auto_low', 'cheap-bad');
   });
@@ -389,6 +401,7 @@ describe('cascade routing e2e', () => {
     expect(row.modelId).toBe(modelId['strong']); // served by strong
     expect(row.escalated).toBe(true);
     expect(row.qualitySignal).toBe(0);
+    expect(row.escalationSource).toBe('quality_gate'); // the answer was judged bad
     const attempts = await port.requestAttempts.listForRequest(principal, row.id);
     expect(attempts).toHaveLength(1);
     expect(attempts[0]!.modelId).toBe(modelId['cheapBad']); // the superseded cheap call
@@ -413,6 +426,10 @@ describe('cascade routing e2e', () => {
     const row = await log();
     expect(row.modelId).toBe(modelId['strong']); // cheap timed out → strong served
     expect(row.escalated).toBe(true);
+    // Provider fault, never quality evidence (add-auto-threshold-calibration):
+    // a timeout escalation is cheap_error even though quality_signal reads 0.
+    expect(row.escalationSource).toBe('cheap_error');
+    expect(row.qualitySignal).toBe(0); // the unchanged legacy semantics
     await setBand('auto_low', 'cheap-bad');
   });
 

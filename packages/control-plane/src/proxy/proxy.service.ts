@@ -11,6 +11,7 @@ import {
   type PersistencePort,
   type Principal,
   type ProviderRow,
+  type RoutingSettingsValue,
 } from '@polyrouter/shared/server';
 import {
   ProviderError,
@@ -57,9 +58,14 @@ import {
   type ProxyRuntime,
 } from './proxy.config';
 import {
+  CALIBRATION_RAILS,
+  type CalibrationRails,
+} from '../calibration/calibration.config';
+import {
   ROUTING_CONFIG,
   autoLayerCapability,
   effectiveAutoLayers as computeEffectiveLayers,
+  effectiveThresholds,
   type RoutingConfig,
 } from './routing.config';
 import {
@@ -124,6 +130,9 @@ interface Prepared {
    * telemetry) — recorded on every parent request_log row; undefined when the
    * layer did not run (non-auto, disabled, degradation). */
   structuralVerdict?: StructuralVerdict;
+  /** The tenant's calibration epoch at decision time (add-auto-threshold-
+   * calibration) — set exactly when the verdict is (evaluated requests). */
+  structuralEpoch?: number;
   created: number;
   attempts: ChainAttempt[];
   meta: AttemptMeta[];
@@ -170,6 +179,7 @@ export class ProxyService {
     @Inject(PROXY_ADAPTER_FACTORY) private readonly factory: ProxyAdapterFactory,
     @Inject(PROXY_BREAKER) private readonly breaker: CircuitBreaker,
     @Inject(ROUTING_CONFIG) private readonly routingConfig: RoutingConfig,
+    @Inject(CALIBRATION_RAILS) private readonly calibrationRails: CalibrationRails,
     private readonly recorder: RequestRecorder,
     private readonly metrics: ProxyMetrics,
     private readonly structural: StructuralRouter,
@@ -400,6 +410,7 @@ export class ProxyService {
         c,
         { response: cheap.response, servedIndex: cheap.servedIndex },
         score,
+        'quality_gate',
         signal,
       );
     }
@@ -445,7 +456,8 @@ export class ProxyService {
       );
       throw toProxyError(cheap.error);
     }
-    return this.escalateBuffered(p, c, null, 0, signal); // cheap failed/timed out — escalate, score 0
+    // Cheap failed/timed out — provider fault, never quality evidence.
+    return this.escalateBuffered(p, c, null, 0, 'cheap_error', signal);
   }
 
   private async escalateBuffered(
@@ -453,6 +465,7 @@ export class ProxyService {
     c: CascadeBundle,
     cheapServed: CheapServed | null,
     score: number | null,
+    source: 'quality_gate' | 'cheap_error',
     signal: AbortSignal,
   ): Promise<unknown> {
     const result = await runBufferedChain(
@@ -483,6 +496,7 @@ export class ProxyService {
           outputChars: 0,
           escalated: true,
           qualitySignal: score,
+          escalationSource: source,
           error: recordedError(result.error),
         },
       );
@@ -507,6 +521,7 @@ export class ProxyService {
         outputChars: countOutputChars(result.response.content),
         escalated: true,
         qualitySignal: score,
+        escalationSource: source,
       },
     );
     if (cheapServed !== null) this.recordCheapAttempt(p, c, requestId, cheapServed);
@@ -577,7 +592,10 @@ export class ProxyService {
         }
         // replay materialization failed before any byte → safe to escalate.
       }
-      return this.escalateStream(p, c, cheapServed, score, signal);
+      // Provenance (add-auto-threshold-calibration): reaching here with a
+      // PASSING verdict means the replay failed — an infrastructure fault,
+      // never quality evidence (r2-High-2).
+      return this.escalateStream(p, c, cheapServed, score, escalate ? 'quality_gate' : 'cheap_error', signal);
     }
     if (cheap.callerAborted) {
       // Client disconnected during the cheap leg (pre-commit — no bytes sent). Record
@@ -619,7 +637,7 @@ export class ProxyService {
       );
       throw providerErrorToProxy(cheap.error);
     }
-    return this.escalateStream(p, c, null, 0, signal);
+    return this.escalateStream(p, c, null, 0, 'cheap_error', signal); // retryable cheap failure
   }
 
   private async escalateStream(
@@ -627,6 +645,7 @@ export class ProxyService {
     c: CascadeBundle,
     cheapServed: CheapServed | null,
     score: number | null,
+    source: 'quality_gate' | 'cheap_error',
     signal: AbortSignal,
   ): Promise<AsyncGenerator<string>> {
     const result = await openStreamChain(this.breaker, c.escalation.attempts, p.client, p.routed, {
@@ -653,6 +672,7 @@ export class ProxyService {
           outputChars: 0,
           escalated: true,
           qualitySignal: score,
+          escalationSource: source,
           error: recordedError(result.error),
         },
       );
@@ -687,6 +707,7 @@ export class ProxyService {
         outputChars: o.outputChars,
         escalated: true,
         qualitySignal: score,
+        escalationSource: source,
         ...(o.error !== undefined ? { error: recordedError(o.error) } : {}),
       });
       if (o.status === 'error' && !o.callerAborted) this.notifyFailed(p.principal);
@@ -727,11 +748,11 @@ export class ProxyService {
    * degrade to the raw instance capability (the read is deadline-bounded). */
   private async effectiveAutoLayers(
     principal: Principal,
-  ): Promise<{ structural: boolean; cascade: boolean }> {
+  ): Promise<{ structural: boolean; cascade: boolean; settings: RoutingSettingsValue | null }> {
     const cap = autoLayerCapability(this.routingConfig);
     // Cascade implies structural, so structural off instance-wide leaves nothing
     // for a preference to gate — skip the read entirely.
-    if (!cap.structural) return cap;
+    if (!cap.structural) return { ...cap, settings: null };
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const pref = await Promise.race([
@@ -744,9 +765,12 @@ export class ProxyService {
           timer.unref();
         }),
       ]);
-      return computeEffectiveLayers(cap, pref); // A-45: shared formula (also used by AutoLayersService)
+      // A-45: shared formula (also used by AutoLayersService). The raw row
+      // rides along so calibrated thresholds + the epoch stamp reuse this ONE
+      // read (add-auto-threshold-calibration — zero additional hot-path I/O).
+      return { ...computeEffectiveLayers(cap, pref), settings: pref };
     } catch {
-      return cap;
+      return { ...cap, settings: null };
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
@@ -818,16 +842,28 @@ export class ProxyService {
     // default tier; explicit models and header tiers already won in Layer 0.
     let cascadePlan: CascadePlan | null = null;
     let structuralVerdict: StructuralVerdict | undefined;
+    let structuralEpoch: number | undefined;
     if (ir.model === AUTO_ALIAS && decision.decisionLayer === 'default') {
       // Per-tenant opt-out (#20): the effective layers are the instance
       // capability masked by the tenant's preference. A disabled layer is
       // skipped; the Layer-0 default then stands (invariant 1).
       const layers = await this.effectiveAutoLayers(principal);
       if (layers.structural) {
-        const evaln = await this.structural.evaluate(principal, agentId, ir, snapshot);
+        // Per-tenant calibrated thresholds (add-auto-threshold-calibration):
+        // resolved from the SAME settings read as the layer gates, degrade-
+        // shaped (any invalid/stale pair → instance defaults).
+        const thresholds = effectiveThresholds(
+          this.routingConfig.structural,
+          layers.settings,
+          this.calibrationRails,
+        );
+        const evaln = await this.structural.evaluate(principal, agentId, ir, snapshot, thresholds);
         // Telemetry (add-auto-decision-telemetry): every EVALUATED request
         // records its verdict — including ambiguous/unroutable fall-throughs.
-        if (evaln.kind !== 'skip') structuralVerdict = evaln.verdict;
+        if (evaln.kind !== 'skip') {
+          structuralVerdict = evaln.verdict;
+          structuralEpoch = layers.settings?.calibrationEpoch ?? 0;
+        }
         if (evaln.kind === 'route')
           decision = evaln.decision; // Layer 1 confident band
         else if (evaln.kind === 'ambiguous' && layers.cascade) {
@@ -873,6 +909,7 @@ export class ProxyService {
       routed: ir, // the model is retargeted per-attempt inside the walker
       structuredDemand: declaredStructuredOutput(ir),
       ...(structuralVerdict !== undefined ? { structuralVerdict } : {}),
+      ...(structuralEpoch !== undefined ? { structuralEpoch } : {}),
       created: Math.floor(Date.now() / 1000),
       attempts: primary.attempts,
       meta: primary.meta,
@@ -1136,6 +1173,7 @@ function verdictFields(p: Prepared): {
   structuralBand?: string;
   structuralScore?: number;
   structuralBandSource?: string;
+  structuralEpoch?: number;
 } {
   const v = p.structuralVerdict;
   if (v === undefined) return {};
@@ -1143,6 +1181,8 @@ function verdictFields(p: Prepared): {
     structuralBand: v.band,
     structuralScore: v.score,
     structuralBandSource: v.declared ? 'declared' : 'threshold',
+    // Decision-time freshness stamp (add-auto-threshold-calibration).
+    ...(p.structuralEpoch !== undefined ? { structuralEpoch: p.structuralEpoch } : {}),
   };
 }
 

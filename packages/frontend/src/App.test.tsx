@@ -167,6 +167,35 @@ describe('dashboard shell (auth-gated)', () => {
     }
   });
 
+  it('shows the matched routing header row only when recorded (add-routing-header-visibility)', async () => {
+    const { host, store, dispose } = mount();
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Requests');
+      await flush();
+      const rows = host.querySelectorAll<HTMLElement>('.req-row');
+      // buildRequestRows: header rows are i ≡ 1 (mod 5); i%15 cycles the shape —
+      // 1 → built-in (name+value), 6 → custom rule (name only), 11 → legacy (null).
+      rows[1]?.click();
+      expect(store.state.requestList[1]?.routingHeaderName).toBe('x-polyrouter-tier');
+      expect(host.querySelector('.drawer')?.textContent).toContain('x-polyrouter-tier: default');
+      host.querySelector<HTMLElement>('.overlay')?.click();
+      rows[6]?.click(); // custom rule → bare name, never a trailing colon/value
+      expect(store.state.requestList[6]?.routingHeaderValue).toBeNull();
+      const drawer = host.querySelector('.drawer');
+      expect(drawer?.textContent).toContain('x-team');
+      expect(drawer?.textContent).not.toContain('x-team:');
+      host.querySelector<HTMLElement>('.overlay')?.click();
+      rows[11]?.click(); // legacy header-layer row (pre-capture) → no header row at all
+      expect(store.state.requestList[11]?.routingHeaderName).toBeNull();
+      const drawer2 = host.querySelector('.drawer');
+      expect(drawer2?.textContent).not.toContain('x-polyrouter-tier');
+      expect(drawer2?.textContent).not.toContain('x-team');
+    } finally {
+      dispose();
+    }
+  });
+
   it('shows the ERROR card for a detailed error row and hides it for others (add-request-error-detail)', async () => {
     const { host, store, dispose } = mount();
     try {

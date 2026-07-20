@@ -1,5 +1,6 @@
 import {
   resolveRoute,
+  resolveBandTarget,
   isRouteError,
   type RouteModel,
   type RouteRule,
@@ -201,6 +202,62 @@ describe('resolveRoute — tierKey (tier_assigned producer)', () => {
       rules: [rule({ headerName: 'x', headerValue: 'v', target: 'model:m_fast' })],
     });
     expect(resolveRoute(modelRule, parse('auto', { x: 'v' }))).toMatchObject({ tierKey: null }); // model-target rule
+  });
+});
+
+describe('resolveRoute — matchedHeader (add-routing-header-visibility)', () => {
+  it('the built-in header emits its name + the matched OWNED tier key, reason unchanged', () => {
+    const r = resolveRoute(snap(), parse('auto', { 'x-polyrouter-tier': 'fast' }));
+    expect(r).toMatchObject({
+      decisionLayer: 'header',
+      matchedHeader: { name: 'x-polyrouter-tier', value: 'fast' },
+      routingReason: 'x-polyrouter-tier: fast', // byte-for-byte as before
+    });
+  });
+
+  it('a custom rule emits its name with a NULL value — the configured value appears nowhere', () => {
+    const secret = 'Bearer sk-live-EXTREMELY-SECRET';
+    const s = snap({
+      rules: [rule({ headerName: 'authorization', headerValue: secret, target: 'tier:fast' })],
+    });
+    const r = resolveRoute(s, parse('auto', { authorization: secret }));
+    expect(r).toMatchObject({
+      decisionLayer: 'header',
+      matchedHeader: { name: 'authorization', value: null },
+      routingReason: 'header rule authorization', // unchanged, value-free
+    });
+    // Fail-closed: the secret is in NO field of the decision.
+    expect(JSON.stringify(r)).not.toContain(secret);
+  });
+
+  it('a model-target custom rule also emits name-only', () => {
+    const s = snap({
+      rules: [rule({ headerName: 'x-tenant', headerValue: 'vip', target: 'model:m_fast' })],
+    });
+    expect(resolveRoute(s, parse('auto', { 'x-tenant': 'vip' }))).toMatchObject({
+      matchedHeader: { name: 'x-tenant', value: null },
+    });
+  });
+
+  it('is null for explicit, default-rule, default-tier, and auto paths', () => {
+    expect(resolveRoute(snap(), parse('gpt-4o'))).toMatchObject({ matchedHeader: null });
+    expect(resolveRoute(snap(), parse('fast'))).toMatchObject({ matchedHeader: null }); // explicit tier
+    expect(resolveRoute(snap(), parse('auto'))).toMatchObject({ matchedHeader: null });
+    expect(resolveRoute(snap(), parse(''))).toMatchObject({ matchedHeader: null });
+    const s = snap({ rules: [rule({ id: 'd', matchType: 'default', target: 'tier:fast' })] });
+    expect(resolveRoute(s, parse(''))).toMatchObject({ matchedHeader: null }); // default rule
+  });
+
+  it('is null on the advisory fall-through — the non-matching client value is never captured', () => {
+    const r = resolveRoute(snap(), parse('auto', { 'x-polyrouter-tier': 'no-such-tier' }));
+    expect(r).toMatchObject({ decisionLayer: 'default', matchedHeader: null });
+    expect(JSON.stringify(r)).not.toContain('no-such-tier');
+  });
+
+  it('is null on band-target decisions (structural/cascade reuse)', () => {
+    const s = snap({ rules: [rule({ id: 'h', matchType: 'auto_high', target: 'tier:fast' })] });
+    const d = resolveBandTarget(s, 'auto_high', 'structural', 'structural:high');
+    expect(d).toMatchObject({ matchedHeader: null });
   });
 });
 

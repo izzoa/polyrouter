@@ -473,6 +473,12 @@ export interface RequestRow {
   tierAssigned: string | null;
   decisionLayer: string;
   routingReason: string;
+  /** The header that CHOSE the route (add-routing-header-visibility): name +
+   * matched tier key for the built-in header; name with null value for a custom
+   * rule (its configured value is never recorded); both null for other layers
+   * and legacy rows. */
+  routingHeaderName: string | null;
+  routingHeaderValue: string | null;
   status: RequestStatus;
   escalated: boolean;
   inputTokens: number;

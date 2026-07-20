@@ -1016,6 +1016,9 @@ export class ProxyService {
       tierAssigned: p.decision.tierKey,
       decisionLayer: p.decision.decisionLayer,
       routingReason: reasonWithTrail(p.decision.routingReason, failures, p.meta),
+      // The header that chose the route (add-routing-header-visibility); the
+      // cascade context (metaContext) never carries one by construction.
+      ...(p.decision.matchedHeader !== null ? { routingHeader: p.decision.matchedHeader } : {}),
       provider: { baseUrl: m.providerBaseUrl, kind: m.providerKind },
       model: m.model,
       startedAt: p.startedAt,

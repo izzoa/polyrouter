@@ -132,6 +132,11 @@ export interface InspectorView {
   tier: string | null;
   decisionLayer: string;
   routingReason: string;
+  /** The matched routing header rendered as `name: value` (built-in) or the bare
+   * name (custom rule — value never recorded); null hides the row entirely
+   * (legacy + non-header layers). Gated on the NAME: a stray value without a
+   * name (type- and CHECK-impossible) is never rendered. */
+  matchedHeader: string | null;
   escalated: boolean;
   qualitySignal: number | null;
   inputTokens: number;
@@ -200,6 +205,12 @@ export function toInspectorView(r: RequestRow): InspectorView {
     tier: r.tierAssigned,
     decisionLayer: r.decisionLayer,
     routingReason: r.routingReason,
+    matchedHeader:
+      r.routingHeaderName === null
+        ? null
+        : r.routingHeaderValue === null
+          ? r.routingHeaderName
+          : `${r.routingHeaderName}: ${r.routingHeaderValue}`,
     escalated: r.escalated,
     qualitySignal: r.qualitySignal,
     inputTokens: r.inputTokens,

@@ -12,6 +12,7 @@ export type {
   RouteRule,
   RouteModel,
   RouteTarget,
+  MatchedHeader,
   RouteDecision,
   RouteError,
   RouteErrorKind,

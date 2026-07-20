@@ -28,6 +28,11 @@ export interface RecordingContext {
   readonly decisionLayer: string;
   /** Human-readable reason, including the fallback trail (#12). */
   readonly routingReason: string;
+  /** The header that CHOSE the route (add-routing-header-visibility) — one
+   * grouped pair so a value can never be drafted without its name; absent for
+   * every non-`header` layer. `value` is null for custom rules (their
+   * configured value can be a credential — never recorded). */
+  readonly routingHeader?: { readonly name: string; readonly value: string | null };
   /** L1 decision telemetry (add-auto-decision-telemetry) — the request-level
    * verdict; all absent when the layer did not evaluate. */
   readonly structuralBand?: string;
@@ -115,6 +120,7 @@ export class RequestRecorder {
         tierAssigned: ctx.tierAssigned,
         decisionLayer: ctx.decisionLayer,
         routingReason: ctx.routingReason,
+        ...(ctx.routingHeader !== undefined ? { routingHeader: ctx.routingHeader } : {}),
         ...(ctx.structuralBand !== undefined ? { structuralBand: ctx.structuralBand } : {}),
         ...(ctx.structuralScore !== undefined ? { structuralScore: ctx.structuralScore } : {}),
         ...(ctx.structuralBandSource !== undefined

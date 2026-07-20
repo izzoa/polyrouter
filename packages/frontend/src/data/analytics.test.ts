@@ -47,6 +47,8 @@ const ROW: RequestRow = {
   tierAssigned: 'default',
   decisionLayer: 'structural',
   routingReason: 'auto → L1 structural → default',
+  routingHeaderName: null,
+  routingHeaderValue: null,
   status: 'success',
   escalated: false,
   inputTokens: 1000,
@@ -229,6 +231,34 @@ describe('toInspectorView', () => {
     );
     expect(toInspectorView({ ...ROW, cost: 0 }).servedCost).toBe('$0.0000');
     expect(toInspectorView({ ...ROW, cost: 0 }).totalCost).toBe('$0.0000');
+  });
+
+  it('renders the matched header: name+value, bare name, or hidden (add-routing-header-visibility)', () => {
+    // built-in tier header → `name: value`
+    expect(
+      toInspectorView({
+        ...ROW,
+        decisionLayer: 'header',
+        routingHeaderName: 'x-polyrouter-tier',
+        routingHeaderValue: 'heavy',
+      }).matchedHeader,
+    ).toBe('x-polyrouter-tier: heavy');
+    // custom rule → bare name (its configured value is never recorded)
+    expect(
+      toInspectorView({
+        ...ROW,
+        decisionLayer: 'header',
+        routingHeaderName: 'x-team',
+        routingHeaderValue: null,
+      }).matchedHeader,
+    ).toBe('x-team');
+    // legacy header-layer row (pre-capture) and non-header layers → hidden
+    expect(toInspectorView({ ...ROW, decisionLayer: 'header' }).matchedHeader).toBeNull();
+    expect(toInspectorView(ROW).matchedHeader).toBeNull();
+    // a stray value without a name (type/CHECK-impossible) never renders
+    expect(
+      toInspectorView({ ...ROW, routingHeaderValue: 'orphan' }).matchedHeader,
+    ).toBeNull();
   });
 });
 

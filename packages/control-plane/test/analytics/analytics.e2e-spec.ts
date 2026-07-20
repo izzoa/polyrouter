@@ -65,6 +65,8 @@ interface LogSeed {
   errorStatus?: number;
   errorMessage?: string;
   errorRequestId?: string;
+  routingHeaderName?: string;
+  routingHeaderValue?: string;
 }
 
 describe('analytics API (#17)', () => {
@@ -104,8 +106,9 @@ describe('analytics API (#17)', () => {
         (id, owner_user_id, agent_id, provider_id, model_id, tier_assigned, decision_layer,
          routing_reason, input_tokens, output_tokens, usage_estimated, cost, duration_ms, status,
          escalated, created_at, price_source, error_kind, error_status, error_message, error_request_id,
-         structural_band, structural_score, structural_band_source, quality_signal)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,'test',$8,$9,$10,$11,1,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`,
+         structural_band, structural_score, structural_band_source, quality_signal,
+         routing_header_name, routing_header_value)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'test',$8,$9,$10,$11,1,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)`,
       [
         id,
         owner,
@@ -130,6 +133,8 @@ describe('analytics API (#17)', () => {
         s.structuralScore ?? null,
         s.structuralBandSource ?? null,
         s.qualitySignal ?? null,
+        s.routingHeaderName ?? null,
+        s.routingHeaderValue ?? null,
       ],
     );
     return id;
@@ -467,6 +472,48 @@ describe('analytics API (#17)', () => {
     // an empty / whitespace-only segment is rejected at the DTO (400)
     expect((await q('requests', c, { ...RANGE, layer: 'explicit,' })).status).toBe(400);
     expect((await q('requests', c, { ...RANGE, layer: ' , ' })).status).toBe(400);
+    await pool.query('DELETE FROM "user" WHERE id = $1', [c]);
+  });
+
+  it('requests: the matched routing header rides the safe view (add-routing-header-visibility)', async () => {
+    const c = await mkUser();
+    await seedLog(c, {
+      layer: 'header',
+      cost: 1,
+      at: DAY1,
+      routingHeaderName: 'x-polyrouter-tier',
+      routingHeaderValue: 'heavy',
+    });
+    await seedLog(c, { layer: 'header', cost: 1, at: DAY1, routingHeaderName: 'x-team' }); // custom rule: name only
+    await seedLog(c, { layer: 'default', cost: 1, at: DAY1 }); // non-header / legacy shape
+    const res = await q('requests', c, { ...RANGE, limit: 50 });
+    expect(res.status).toBe(200);
+    const rows = res.body.rows as {
+      routingHeaderName: string | null;
+      routingHeaderValue: string | null;
+      decisionLayer: string;
+    }[];
+    expect(rows.find((r) => r.routingHeaderValue === 'heavy')).toMatchObject({
+      routingHeaderName: 'x-polyrouter-tier',
+    });
+    expect(rows.find((r) => r.routingHeaderName === 'x-team')).toMatchObject({
+      routingHeaderValue: null,
+    });
+    expect(rows.find((r) => r.decisionLayer === 'default')).toMatchObject({
+      routingHeaderName: null,
+      routingHeaderValue: null,
+    });
+    for (const row of rows) expect(row).not.toHaveProperty('ownerUserId'); // safe view unchanged
+    // The DB CHECK rejects a value without a name (pair invariant).
+    await expect(
+      pool.query(
+        `INSERT INTO request_log
+          (id, owner_user_id, decision_layer, routing_reason, input_tokens, output_tokens,
+           duration_ms, status, routing_header_value)
+         VALUES ($1,$2,'header','test',0,0,1,'success','orphan-value')`,
+        [randomUUID(), c],
+      ),
+    ).rejects.toThrow(/request_log_routing_header_pair/);
     await pool.query('DELETE FROM "user" WHERE id = $1', [c]);
   });
 

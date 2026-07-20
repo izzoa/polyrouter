@@ -6,6 +6,7 @@ const decision = (layer: string): RouteDecision =>
     decisionLayer: layer,
     routingReason: 'auto \u2192 default tier',
     tierKey: 'default',
+    matchedHeader: null,
     chain: [],
   }) as unknown as RouteDecision;
 
@@ -20,6 +21,9 @@ describe('withFallthroughSuffix (add-auto-decision-telemetry) \u2014 the FINAL-c
   it('appends the verdict reason when the default stands with no FINAL cascade', () => {
     const d = withFallthroughSuffix(decision('default'), verdict, false);
     expect(d.routingReason).toBe('auto \u2192 default tier; structural:ambiguous score=0.41');
+    // The suffix spread preserves the rest of the decision \u2014 matchedHeader
+    // included (add-routing-header-visibility).
+    expect(d.matchedHeader).toBeNull();
   });
 
   it('does NOT append when a cascade was finally constructed \u2014 even though a plan alone would have existed', () => {

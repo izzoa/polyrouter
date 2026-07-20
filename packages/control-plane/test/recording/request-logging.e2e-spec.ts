@@ -226,6 +226,79 @@ describe('request-logging e2e', () => {
     expect(row!.errorRequestId).toBeNull();
   });
 
+  describe('matched routing header (add-routing-header-visibility)', () => {
+    it('a built-in-header request records the header name + the matched tier key', async () => {
+      const res = await request(server)
+        .post('/v1/chat/completions')
+        .set('Authorization', `Bearer ${key}`)
+        .set('x-polyrouter-tier', 'default')
+        .send({ model: 'auto', messages: [] });
+      expect(res.status).toBe(200);
+      await writer.flush();
+      const row = (await port.requestLogs.list(principal))[0]!;
+      expect(row).toMatchObject({
+        decisionLayer: 'header',
+        routingHeaderName: 'x-polyrouter-tier',
+        routingHeaderValue: 'default',
+        tierAssigned: 'default',
+      });
+    });
+
+    it('a custom-rule request records the header NAME only — the configured value lands in no column', async () => {
+      // A credential-bearing header (cookie won't collide with the agent-key
+      // auth headers) with a secret-shaped configured value.
+      const secret = 'session=sk-live-EXTREMELY-SECRET-token';
+      await port.routingRules.insert(principal, {
+        matchType: 'header',
+        headerName: 'cookie',
+        headerValue: secret,
+        target: 'tier:default',
+        priority: 0,
+      });
+      const res = await request(server)
+        .post('/v1/chat/completions')
+        .set('Authorization', `Bearer ${key}`)
+        .set('cookie', secret)
+        .send({ model: 'auto', messages: [] });
+      expect(res.status).toBe(200);
+      await writer.flush();
+      const row = (await port.requestLogs.list(principal))[0]!;
+      expect(row).toMatchObject({
+        decisionLayer: 'header',
+        routingHeaderName: 'cookie',
+        routingHeaderValue: null,
+      });
+      // Fail-closed (invariant 8 / never log secrets): the configured value is
+      // in NO column of the recorded row.
+      expect(JSON.stringify(row)).not.toContain('EXTREMELY-SECRET');
+    });
+
+    it('non-header decisions (explicit AND auto/default) record null for both columns', async () => {
+      const explicit = await request(server)
+        .post('/v1/chat/completions')
+        .set('Authorization', `Bearer ${key}`)
+        .send({ model: 'gpt-4o', messages: [] });
+      expect(explicit.status).toBe(200);
+      // auto with NO matching header falls through to the default tier.
+      const auto = await request(server)
+        .post('/v1/chat/completions')
+        .set('Authorization', `Bearer ${key}`)
+        .send({ model: 'auto', messages: [] });
+      expect(auto.status).toBe(200);
+      await writer.flush();
+      // Same-batch rows share one now() timestamp — select by layer, not index.
+      const rows = await port.requestLogs.list(principal);
+      expect(rows.find((r) => r.decisionLayer === 'explicit')).toMatchObject({
+        routingHeaderName: null,
+        routingHeaderValue: null,
+      });
+      expect(rows.find((r) => r.decisionLayer === 'default')).toMatchObject({
+        routingHeaderName: null,
+        routingHeaderValue: null,
+      });
+    });
+  });
+
   describe('terminal error detail (add-request-error-detail)', () => {
     it('a whole-chain failure records kind/status and the provider-verbatim operational message', async () => {
       const res = await request(server)

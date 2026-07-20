@@ -129,6 +129,17 @@ export function Inspector() {
                       <span style="color:var(--text3);flex:none">routing reason</span>
                       <span style="color:var(--text);text-align:right">{view().routingReason}</span>
                     </div>
+                    <Show when={view().matchedHeader !== null}>
+                      <div style="display:flex;justify-content:space-between;gap:16px">
+                        <span style="color:var(--text3);flex:none">header</span>
+                        <span
+                          class="mono"
+                          style="font:500 11.5px 'Geist Mono',monospace;color:var(--text);text-align:right;word-break:break-all"
+                        >
+                          {view().matchedHeader}
+                        </span>
+                      </div>
+                    </Show>
                     <Show when={view().escalated}>
                       <div style="display:flex;justify-content:space-between">
                         <span style="color:var(--text3)">escalated</span>

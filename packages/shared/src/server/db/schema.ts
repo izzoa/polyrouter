@@ -362,6 +362,13 @@ export const requestLogs = pgTable(
     tierAssigned: text('tier_assigned'),
     decisionLayer: text('decision_layer').notNull(),
     routingReason: text('routing_reason').notNull(),
+    // The header that CHOSE the route (add-routing-header-visibility): set only
+    // on decision_layer='header' rows. Built-in x-polyrouter-tier records name +
+    // the matched OWNED tier key; a custom rule records its normalized name with
+    // a NULL value (a configured header_value can itself be a credential — never
+    // persisted). Null = other layers or rows predating the columns.
+    routingHeaderName: text('routing_header_name'),
+    routingHeaderValue: text('routing_header_value'),
     inputTokens: integer('input_tokens').notNull(),
     outputTokens: integer('output_tokens').notNull(),
     cacheReadTokens: integer('cache_read_tokens'),
@@ -422,6 +429,12 @@ export const requestLogs = pgTable(
       sql`${t.inputTokens} >= 0 AND ${t.outputTokens} >= 0
         AND (${t.cacheReadTokens} IS NULL OR ${t.cacheReadTokens} >= 0)
         AND (${t.cacheWriteTokens} IS NULL OR ${t.cacheWriteTokens} >= 0)`,
+    ),
+    // A header VALUE never exists without its NAME (value-requires-name; the
+    // name-only state is legitimate — custom rules record no value).
+    check(
+      'request_log_routing_header_pair',
+      sql`${t.routingHeaderValue} IS NULL OR ${t.routingHeaderName} IS NOT NULL`,
     ),
     // Provenance is binary and only ever on escalated rows (fail-closed).
     check(

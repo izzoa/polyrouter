@@ -55,6 +55,9 @@ export interface RequestLogDraft {
   readonly tierAssigned: string | null;
   readonly decisionLayer: string;
   readonly routingReason: string;
+  /** The header that chose the route (add-routing-header-visibility) — grouped
+   * pair, split into the two columns only at the row mapping; absent ⇒ nulls. */
+  readonly routingHeader?: { readonly name: string; readonly value: string | null };
   readonly durationMs: number;
   readonly status: 'success' | 'error' | 'fallback' | 'cancelled';
   readonly usage: ResolvedUsage;
@@ -349,6 +352,8 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
       tierAssigned: d.tierAssigned,
       decisionLayer: d.decisionLayer,
       routingReason: d.routingReason,
+      routingHeaderName: d.routingHeader?.name ?? null,
+      routingHeaderValue: d.routingHeader?.value ?? null,
       inputTokens: d.usage.inputTokens,
       outputTokens: d.usage.outputTokens,
       cacheReadTokens: d.usage.cacheReadTokens ?? null,

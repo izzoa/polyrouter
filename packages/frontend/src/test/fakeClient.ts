@@ -166,6 +166,16 @@ export function buildRequestRows(n: number): RequestRow[] {
       tierAssigned: i % 5 === 0 ? null : 'default',
       decisionLayer: layer,
       routingReason: `reason for ${layer} #${String(i)}`,
+      // Header rows (i ≡ 1 mod 5) cycle three shapes via i mod 15: 1 → built-in
+      // (name+value), 6 → custom rule (name only), 11 → legacy (all-null);
+      // every other layer is null.
+      routingHeaderName:
+        layer === 'header' && i % 15 !== 11
+          ? i % 15 === 1
+            ? 'x-polyrouter-tier'
+            : 'x-team'
+          : null,
+      routingHeaderValue: layer === 'header' && i % 15 === 1 ? 'default' : null,
       status,
       escalated: layer === 'cascade',
       inputTokens: 100 + i * 3,

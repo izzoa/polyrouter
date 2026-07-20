@@ -57,6 +57,16 @@ export interface RouteTarget {
   readonly externalModelId: string;
 }
 
+/** The header that CHOSE the route (add-routing-header-visibility). `value` is
+ * persisted only when provably non-secret: the built-in tier header carries the
+ * matched OWNED tier key (already recorded as tier_assigned); a custom rule
+ * carries its normalized name with a null value — a configured header_value can
+ * itself be a credential ("never log secrets", fail-closed, no denylist). */
+export interface MatchedHeader {
+  readonly name: string;
+  readonly value: string | null;
+}
+
 export interface RouteDecision {
   readonly providerId: string;
   readonly modelId: string;
@@ -65,6 +75,9 @@ export interface RouteDecision {
   readonly tierKey: string | null;
   readonly decisionLayer: DecisionLayer;
   readonly routingReason: string;
+  /** Non-null ONLY for `header`-layer decisions; null everywhere else, including
+   * the advisory fall-through (a non-matching client value is never captured). */
+  readonly matchedHeader: MatchedHeader | null;
   /** The ordered fallback chain (#12); `chain[0]` is the primary (= the fields
    * above). A tier resolves to all its entries in position order; a direct model
    * to a single-element chain. */
@@ -104,6 +117,7 @@ function modelDecision(
     tierKey,
     decisionLayer,
     routingReason,
+    matchedHeader: null, // only resolveRoute's header phases override
     chain: [target(model)], // a directly-named model has no fallback
   };
 }
@@ -137,6 +151,7 @@ function resolveTier(
     tierKey: tier.key,
     decisionLayer: layer,
     routingReason: reason,
+    matchedHeader: null, // only resolveRoute's header phases override
     chain,
   };
 }
@@ -225,11 +240,15 @@ export function resolveRoute(
   // Phase 1 made no selection (empty or `auto`): fall through to header/default.
   const rules = [...snap.rules].sort(ruleOrder);
 
-  // Phase 2 — a matching custom `header` rule.
+  // Phase 2 — a matching custom `header` rule. The decision carries the rule's
+  // normalized header NAME only: its configured value can itself be a credential
+  // (rules may target authorization/x-api-key/…), so it is never emitted.
   for (const r of rules) {
     if (r.matchType !== 'header' || r.headerValue === null) continue;
     if (parsed.headers[r.headerName.toLowerCase()] === r.headerValue) {
-      return resolveTarget(snap, r.target, 'header', `header rule ${r.headerName}`);
+      const d = resolveTarget(snap, r.target, 'header', `header rule ${r.headerName}`);
+      if (isRouteError(d)) return d;
+      return { ...d, matchedHeader: { name: r.headerName, value: null } };
     }
   }
 
@@ -238,7 +257,13 @@ export function resolveRoute(
   const builtin = parsed.headers[TIER_HEADER_NAME];
   if (builtin !== undefined && builtin.length > 0) {
     const tier = snap.tiers.find((t) => t.key === builtin);
-    if (tier) return resolveTier(snap, tier, 'header', `${TIER_HEADER_NAME}: ${builtin}`);
+    if (tier) {
+      const d = resolveTier(snap, tier, 'header', `${TIER_HEADER_NAME}: ${builtin}`);
+      if (isRouteError(d)) return d;
+      // tier.key, not the client string — the value is the OWNED tier key that
+      // matched (identical bytes, config-side provenance).
+      return { ...d, matchedHeader: { name: TIER_HEADER_NAME, value: tier.key } };
+    }
     // a header naming a missing tier is advisory — fall through to default.
   }
 

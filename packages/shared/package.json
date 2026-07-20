@@ -1,6 +1,6 @@
 {
   "name": "@polyrouter/shared",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "license": "AGPL-3.0-only",
   "private": true,
   "description": "Shared types, constants, and the config-schema registry for polyrouter",

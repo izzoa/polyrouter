@@ -1,5 +1,54 @@
 # @polyrouter/control-plane
 
+## 0.5.0
+
+### Minor Changes
+
+- fdb6930: Opt-in prompt/response body capture (add-body-capture) — the invariant-8 door,
+  **off by default**. A selfhosted owner can enable a three-way mode (off /
+  errors-&-escalations-only / all) behind an explicit consent confirm, refine it
+  per agent (inherit/always/never — inert while the global mode is off: the
+  master switch is the consent boundary), and see the state honestly (green
+  `Metadata-only` ↔ amber `Bodies captured`). Captured bodies are client-wire
+  (media-stripped, 256 KiB/direction cap with honest truncation), stored
+  **encrypted** in a separate `request_body` table off the hot path (byte-budgeted
+  writer queue; a dropped body never touches the request), retained 30 days by
+  default (infinite only as an explicit "keep forever" choice) with a daily purge
+  job, per-request delete + purge-all + keep-or-purge on disable — all race-proof
+  against in-flight writes (owner-locked inserts, epochs, tombstones). The
+  inspector gains a lazily-fetched Payload section; the request listing exposes
+  only a `hasBodies` flag. Cloud instances never capture.
+- 0dea2a0: Pricing stays current by itself (add-pricing-refresh-ui): a **daily automatic
+  LiteLLM catalog refresh — on by default** (self-host only; one env line opts
+  out: `PRICING_REFRESH_SCHED_ENABLED=false`) on its own BullMQ queue riding the
+  existing guarded refresh path, plus a Settings **Pricing catalog** panel for
+  admins — entry count, newest version, a literal "never refreshed" callout, the
+  schedule state, and a Refresh-now button. Refresh completions land in a new
+  append-only run ledger (recorded atomically with the version apply; a `+0`
+  unchanged pull counts as fresh; garbage bodies fail instead of advancing
+  freshness), `GET /api/pricing/status` exposes it, and cloud instances neither
+  schedule nor allow catalog mutations (enforced at the service boundary; boot
+  seeding exempt). New prices apply to new requests only — recorded costs never
+  change.
+
+### Patch Changes
+
+- 0c3fa53: The request inspector shows which header chose the route
+  (add-routing-header-visibility): a header-routed request (`decision_layer =
+header`) now records the matched header structurally — the built-in
+  `x-polyrouter-tier` header records its name plus the matched owned tier key;
+  a custom header rule records its header **name only** (a configured rule value
+  can itself be a credential and is never persisted — fail-closed) — in two new
+  nullable `request_log` columns, exposed on the analytics request listing and
+  rendered as a dedicated `header` row in the inspector's DECISION section.
+  Non-header decisions and rows predating the columns render exactly as before.
+- Updated dependencies [fdb6930]
+- Updated dependencies [0dea2a0]
+- Updated dependencies [0c3fa53]
+- Updated dependencies [a7e41c5]
+  - @polyrouter/data-plane@0.4.0
+  - @polyrouter/shared@0.5.0
+
 ## 0.4.0
 
 ### Minor Changes

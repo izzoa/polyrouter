@@ -47,6 +47,7 @@ export function buildPricingSchedulerConfig(cfg: PricingConfig): PricingSchedule
   } catch (err) {
     throw new Error(
       `PRICING_REFRESH_SCHED_CRON is not a valid cron expression: ${(err as Error).message}`,
+      { cause: err },
     );
   }
   return {

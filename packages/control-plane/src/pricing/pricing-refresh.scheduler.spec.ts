@@ -107,8 +107,8 @@ interface BullmqTestHooks {
 }
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const bullmqTest = (require('bullmq') as { __test: BullmqTestHooks }).__test;
-// eslint-disable-next-line @typescript-eslint/no-require-imports
 const { PricingRefreshScheduler } =
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   require('./pricing-refresh.scheduler') as typeof import('./pricing-refresh.scheduler');
 
 const fakeRedis = {

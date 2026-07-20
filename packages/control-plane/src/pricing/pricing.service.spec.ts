@@ -12,6 +12,7 @@ const AT = new Date('2026-08-01T00:00:00Z');
 
 function makeStore() {
   const versions: ModelPriceRow[] = [];
+  const runs: { kind: string; added: number; skipped: number }[] = [];
   let seq = 0;
   const desc = (a: ModelPriceRow, b: ModelPriceRow) =>
     b.validFrom.getTime() - a.validFrom.getTime();
@@ -51,13 +52,29 @@ function makeStore() {
       versions.push(row);
       return Promise.resolve(row);
     },
+    insertRefreshRun: (input: { kind: string; added: number; skipped: number }) => {
+      runs.push(input);
+      return Promise.resolve();
+    },
   };
   const port = { pricing } as unknown as PersistencePort;
   const facilities = {
-    withAdvisoryLock: <T>(_key: number, fn: (tx: PersistencePort) => Promise<T>) => fn(port),
+    // Transactional semantics for the fake (r3-Med-5a): a thrown callback
+    // restores both stores, so rollback assertions are REAL, not vacuous.
+    withAdvisoryLock: async <T>(_key: number, fn: (tx: PersistencePort) => Promise<T>) => {
+      const vSnap = versions.length;
+      const rSnap = runs.length;
+      try {
+        return await fn(port);
+      } catch (err) {
+        versions.length = vSnap;
+        runs.length = rSnap;
+        throw err;
+      }
+    },
     withTransaction: <T>(fn: (tx: PersistencePort) => Promise<T>) => fn(port),
   } as unknown as PersistenceFacilities;
-  return { versions, port, facilities };
+  return { versions, runs, port, facilities };
 }
 
 const runtime: PricingRuntime = {
@@ -292,9 +309,91 @@ describe('PricingService — refresh validation resilience (A-13)', () => {
     const svc = new PricingService(port, facilities, runtime, noFetch);
     await expect(
       svc.refresh(
-        { source: 'body', entries: [{ modelKey: 'x:y', inputPricePer1m: -1, outputPricePer1m: 1 }] },
+        {
+          source: 'body',
+          entries: [{ modelKey: 'x:y', inputPricePer1m: -1, outputPricePer1m: 1 }],
+        },
         new Date(),
       ),
     ).rejects.toBeInstanceOf(UnprocessableEntityException);
+  });
+});
+
+describe('PricingService — refresh-run ledger + gates (add-pricing-refresh-ui)', () => {
+  it('a litellm pull records a run ATOMICALLY with its counts — incl. a +0 unchanged completion', async () => {
+    const { runs, port, facilities } = makeStore();
+    const catalog = {
+      'gpt-4o': {
+        litellm_provider: 'openai',
+        mode: 'chat',
+        input_cost_per_token: 1e-6,
+        output_cost_per_token: 2e-6,
+      },
+    };
+    const fetch: PricingFetch = () => Promise.resolve(catalog);
+    const svc = new PricingService(port, facilities, runtime, fetch);
+    const added = await svc.refresh({ source: 'litellm' }, new Date('2026-01-02T00:00:00Z'));
+    expect(added).toBe(1);
+    expect(runs).toEqual([{ kind: 'litellm', added: 1, skipped: 0 }]);
+    // Unchanged repeat: zero versions, but STILL a completed refresh run.
+    const again = await svc.refresh({ source: 'litellm' }, new Date('2026-01-03T00:00:00Z'));
+    expect(again).toBe(0);
+    expect(runs[1]).toEqual({ kind: 'litellm', added: 0, skipped: 0 });
+  });
+
+  it('garbage bodies FAIL the run — no ledger row, no versions (r2-Med-4)', async () => {
+    for (const body of [{}, [], 'nope', { error: 'x' }]) {
+      const { versions, runs, port, facilities } = makeStore();
+      const fetch: PricingFetch = () => Promise.resolve(body);
+      const svc = new PricingService(port, facilities, runtime, fetch);
+      await expect(svc.refresh({ source: 'litellm' }, new Date())).rejects.toThrow(
+        /no accepted entries/,
+      );
+      expect(versions).toHaveLength(0);
+      expect(runs).toHaveLength(0);
+    }
+  });
+
+  it('an endpoint bundled re-apply records a bundled-kind run; boot seed records none', async () => {
+    const { runs, port, facilities } = makeStore();
+    const svc = new PricingService(port, facilities, runtime, noFetch);
+    await svc.seed();
+    expect(runs).toHaveLength(0); // boot seeding is not a run
+    await svc.refresh({ source: 'bundled' }, new Date());
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.kind).toBe('bundled');
+  });
+
+  it('a ledger-insert failure rolls back with the versions (atomicity, r2-High-1)', async () => {
+    const { versions, port, facilities } = makeStore();
+    // Simulate a transactional failure surfacing from the run insert: the
+    // whole advisory-lock callback rejects — nothing may be reported applied.
+    (port.pricing as unknown as { insertRefreshRun: () => Promise<void> }).insertRefreshRun = () =>
+      Promise.reject(new Error('ledger down'));
+    const catalog = {
+      'gpt-4o': {
+        litellm_provider: 'openai',
+        mode: 'chat',
+        input_cost_per_token: 1e-6,
+        output_cost_per_token: 2e-6,
+      },
+    };
+    const fetch: PricingFetch = () => Promise.resolve(catalog);
+    const svc = new PricingService(port, facilities, runtime, fetch);
+    await expect(svc.refresh({ source: 'litellm' }, new Date())).rejects.toThrow(/ledger down/);
+    // Rollback is REAL: the transactional fake restored both stores — no
+    // version survives a failed ledger insert, and no run was recorded.
+    expect(versions).toHaveLength(0);
+  });
+
+  it('cloud mode refuses refresh and override at the service boundary — seed still works (r2-High-2)', async () => {
+    const { port, facilities } = makeStore();
+    const cloud: PricingRuntime = { ...runtime, mode: 'cloud' };
+    const svc = new PricingService(port, facilities, cloud, noFetch);
+    await expect(svc.refresh({ source: 'bundled' }, new Date())).rejects.toThrow(/cloud mode/);
+    await expect(
+      svc.override('openai:x', { inputPricePer1m: 1, outputPricePer1m: 2 }, new Date()),
+    ).rejects.toThrow(/cloud mode/);
+    await expect(svc.seed()).resolves.toBeGreaterThan(0); // boot seeding exempt
   });
 });

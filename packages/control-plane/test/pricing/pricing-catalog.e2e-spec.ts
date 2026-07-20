@@ -59,6 +59,7 @@ async function buildApp(mode: 'selfhosted' | 'cloud'): Promise<INestApplication>
     // Reset the GLOBAL catalog so boot re-seeds fresh — it isn't owned by a
     // user, so it survives cross-run and would otherwise leak prior overrides.
     await probe.query('DELETE FROM model_price');
+    await probe.query('DELETE FROM pricing_refresh_run'); // the run ledger is instance-global too (r3-Med-5b)
   } catch (error) {
     throw new Error(`${COMPOSE_HINT}\n(${(error as Error).message})`);
   } finally {
@@ -113,6 +114,16 @@ describe('pricing catalog (self-host)', () => {
     expect(res.body.length).toBeGreaterThan(5);
     expect(res.body.some((r: { modelKey: string }) => r.modelKey === 'openai:gpt-4o')).toBe(true);
     expect(res.body.some((r: { isFree: boolean }) => r.isFree === true)).toBe(true);
+  });
+
+  it('status starts at the seed truth: bundled newest, NEVER refreshed (add-pricing-refresh-ui)', async () => {
+    // Ordered BEFORE any refresh in this suite — provable because setup
+    // resets BOTH global tables (model_price + pricing_refresh_run).
+    const res = await request(server).get('/api/pricing/status').set('x-test-user', user);
+    expect(res.status).toBe(200);
+    expect(res.body.entryCount).toBeGreaterThan(0);
+    expect(res.body.newest.source).toBe('bundled');
+    expect(res.body.lastRefresh).toBeNull(); // the literal never-refreshed state
   });
 
   it('seeds ≥1 priced row per §8 BYOK family, resolvable to a USD price (E5.3)', async () => {
@@ -174,6 +185,43 @@ describe('pricing catalog (self-host)', () => {
     expect(row.body.inputPricePer1m).toBe(9);
   });
 
+  it('status reports the catalog truth: seed shape, run-ledger kinds, litellm-only lastRefresh (add-pricing-refresh-ui)', async () => {
+    // NOTE: ordered after the litellm-refresh test above — a litellm-kind run
+    // exists by now; the body/bundled kinds must not move lastRefresh further.
+    const before = await request(server).get('/api/pricing/status').set('x-test-user', user);
+    expect(before.status).toBe(200);
+    expect(before.body.entryCount).toBeGreaterThan(0);
+    expect(before.body.scheduler).toMatchObject({
+      configuredEnabled: true, // DEFAULT ON — the recorded user decision
+      modePermitted: true,
+      effectiveEnabled: true,
+    });
+    const lastRefreshAt = before.body.lastRefresh?.at as string;
+    expect(lastRefreshAt).toBeTruthy(); // the earlier litellm test completed a run
+    // A BODY-sourced apply moves `newest` (stored source `refresh`, the
+    // archived vocabulary) and records a body-kind run — lastRefresh stays.
+    const body = await request(server)
+      .post('/api/pricing/refresh')
+      .set('x-test-user', admin)
+      .send({
+        source: 'body',
+        entries: [{ modelKey: 'openai:status-probe', inputPricePer1m: 1, outputPricePer1m: 2 }],
+      });
+    expect(body.status).toBe(200);
+    const after = await request(server).get('/api/pricing/status').set('x-test-user', user);
+    expect(after.body.newest.source).toBe('refresh');
+    expect(after.body.lastRefresh.at).toBe(lastRefreshAt); // body kind ≠ live pull
+    // An endpoint bundled re-apply records a bundled-kind run — likewise inert.
+    await request(server)
+      .post('/api/pricing/refresh')
+      .set('x-test-user', admin)
+      .send({ source: 'bundled' });
+    const after2 = await request(server).get('/api/pricing/status').set('x-test-user', user);
+    expect(after2.body.lastRefresh.at).toBe(lastRefreshAt);
+    // Unauthenticated status is refused; any session may read.
+    expect((await request(server).get('/api/pricing/status')).status).toBe(401);
+  });
+
   it('a non-admin cannot mutate; reads still work', async () => {
     expect(
       (
@@ -224,5 +272,17 @@ describe('pricing catalog (cloud disables mutations)', () => {
       .set('x-test-user', admin)
       .send({ inputPricePer1m: 1, outputPricePer1m: 1 });
     expect(res.status).toBe(403);
+  });
+
+  it('cloud still SEEDS on boot, and status reports the mode-blocked schedule (add-pricing-refresh-ui)', async () => {
+    // Boot seeding ran in this cloud app's init — the exemption holds.
+    const status = await request(server).get('/api/pricing/status').set('x-test-user', admin);
+    expect(status.status).toBe(200);
+    expect(status.body.entryCount).toBeGreaterThan(0); // seeded in cloud
+    expect(status.body.scheduler).toMatchObject({
+      configuredEnabled: true,
+      modePermitted: false,
+      effectiveEnabled: false, // flag ∧ mode — cloud never schedules
+    });
   });
 });

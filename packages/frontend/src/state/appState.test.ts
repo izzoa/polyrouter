@@ -1530,3 +1530,55 @@ describe('band-target actions (add-band-target-ui)', () => {
     expect(highs[0]!.target).toBe('tier:cheap');
   });
 });
+
+describe('pricing-catalog slice (add-pricing-refresh-ui)', () => {
+  it('loads status, refreshes with a +N toast, and re-fetches — single-flight', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    await s.loadPricingStatus();
+    expect(s.state.pc.status?.lastRefresh).toBeNull(); // never refreshed
+    await s.runPricingRefresh();
+    expect(fake.calls.filter((c) => c === 'pricingRefresh')).toHaveLength(1);
+    expect(s.state.pc.status?.lastRefresh?.added).toBe(124); // re-fetched truth
+    expect(s.state.pc.busy).toBe(false);
+    expect(s.state.toast).toBe('+124 price versions');
+  });
+
+  it('a failed refresh reports inline and leaves the status untouched', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    fake.pricingRefresh = () => Promise.reject(new ApiError(502, 'BadGateway', 'source down'));
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    await s.loadPricingStatus();
+    await s.runPricingRefresh();
+    expect(s.state.pc.refreshError).toMatch(/source down/); // refresh error, NOT the load error
+    expect(s.state.pc.status?.lastRefresh).toBeNull(); // unchanged truth
+    expect(s.state.pc.busy).toBe(false);
+  });
+
+  it('an identity change orphans a pending refresh — no toast, no writes (r1-Med-5)', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    let release: () => void = () => {};
+    const real = fake.pricingRefresh.bind(fake);
+    fake.pricingRefresh = () =>
+      new Promise((resolve) => {
+        release = () => void real().then(resolve);
+      });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    await s.loadPricingStatus();
+    const pending = s.runPricingRefresh(); // held in flight
+    await s.signOut(); // identity bump + pc reset
+    release();
+    await pending;
+    expect(s.state.pc).toEqual({
+      status: null,
+      loaded: false,
+      loadError: null,
+      refreshError: null,
+      busy: false,
+    });
+    expect(s.state.toast).not.toBe('+124 price versions');
+  });
+});

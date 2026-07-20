@@ -13,6 +13,7 @@ import {
   type PersistenceFacilities,
   type PersistencePort,
   type PriceSnapshot,
+  type PricingStatusMeta,
 } from '@polyrouter/shared/server';
 import { BUNDLED_CATALOG_VERSION, BUNDLED_PRICES } from './bundled-catalog';
 import type { fetchLiteLlmCatalog } from './litellm-fetch';
@@ -160,7 +161,8 @@ export class PricingService {
     validFrom: Date,
     source: string,
     skipInvalid = false,
-  ): Promise<number> {
+    run?: { kind: 'litellm' | 'body' | 'bundled' },
+  ): Promise<{ added: number; skipped: number }> {
     // Every entry is validated before it is written. A trusted/explicit source (bundled
     // snapshot, manual override, admin-supplied body) fails-fast on an invalid entry — a
     // real bug or bad operator input worth surfacing. Only the untrusted LIVE LiteLLM pull
@@ -196,17 +198,30 @@ export class PricingService {
         written += 1;
       }
       if (skipped > 0) {
-        this.logger.warn(`pricing refresh (${source}): skipped ${String(skipped)} invalid entr(ies)`);
+        this.logger.warn(
+          `pricing refresh (${source}): skipped ${String(skipped)} invalid entr(ies)`,
+        );
       }
-      return written;
+      // Run-ledger row (add-pricing-refresh-ui): INSIDE the same advisory-lock
+      // transaction as the version apply — the catalog and the ledger commit
+      // together or not at all (a completed refresh is never unrecorded, and
+      // a recorded one is never uncommitted).
+      if (run !== undefined) {
+        await tx.pricing.insertRefreshRun({ kind: run.kind, added: written, skipped });
+      }
+      return { added: written, skipped };
     });
   }
 
-  seed(): Promise<number> {
-    return this.applyVersions(BUNDLED_PRICES, BUNDLED_CATALOG_VERSION, 'bundled');
+  async seed(): Promise<number> {
+    // Boot seeding is deterministic and runs in EVERY mode (the cloud gate
+    // below covers only the OPERATOR entrypoints); it is not a refresh run.
+    const { added } = await this.applyVersions(BUNDLED_PRICES, BUNDLED_CATALOG_VERSION, 'bundled');
+    return added;
   }
 
   async override(modelKey: string, prices: OverrideInput, now: Date): Promise<number> {
+    this.assertMutable(); // FIRST (r3-Low-6): the mode refusal is deterministic, never shadowed by validation
     const entry: BundledPrice = {
       modelKey,
       inputPricePer1m: prices.inputPricePer1m,
@@ -226,15 +241,41 @@ export class PricingService {
       ...(prices.isFree !== undefined ? { isFree: prices.isFree } : {}),
     };
     validate(entry);
-    return this.applyVersions([entry], now, 'manual');
+    const { added } = await this.applyVersions([entry], now, 'manual');
+    return added;
+  }
+
+  /** Operator-mutation gate (add-pricing-refresh-ui): the archived contract
+   * disables global-catalog mutations in cloud mode; enforced HERE so no
+   * internal caller (the scheduler included) can bypass the HTTP guard.
+   * Boot `seed()` is deliberately exempt. */
+  private assertMutable(): void {
+    if (this.runtime.mode !== 'selfhosted') {
+      throw new Error('catalog mutations are disabled in cloud mode');
+    }
   }
 
   async refresh(input: RefreshInput, now: Date): Promise<number> {
-    if (input.source === 'bundled') return this.seed();
+    this.assertMutable(); // cloud never mutates the global catalog (defense in depth)
+    if (input.source === 'bundled') {
+      // An ENDPOINT-invoked bundled re-apply is an operator action — recorded
+      // as a bundled-kind run (boot seeding records nothing).
+      const { added } = await this.applyVersions(
+        BUNDLED_PRICES,
+        BUNDLED_CATALOG_VERSION,
+        'bundled',
+        false,
+        { kind: 'bundled' },
+      );
+      return added;
+    }
     if (input.source === 'body') {
       // Admin-supplied body: fail-fast in applyVersions on any invalid entry (bad operator
       // input is worth surfacing, not silently dropping).
-      return this.applyVersions(input.entries ?? [], now, 'refresh');
+      const { added } = await this.applyVersions(input.entries ?? [], now, 'refresh', false, {
+        kind: 'body',
+      });
+      return added;
     }
     // litellm: guarded fetch → parse → apply. `skipInvalid`: one malformed UPSTREAM row is
     // skipped+logged, not fatal, so it can't abort the whole refresh (A-13).
@@ -244,8 +285,20 @@ export class PricingService {
       maxBytes: this.runtime.maxBytes,
     });
     const entries = parseLiteLlmCatalog(json);
-    const written = await this.applyVersions(entries, now, 'refresh', true);
-    this.logger.log(`pricing refresh (litellm): ${String(written)} version(s) appended`);
-    return written;
+    // A live pull COMPLETES only with a populated, accepted catalog: valid
+    // JSON that parses to zero entries ({}, [], scalars, all-malformed) is a
+    // FAILED run — garbage must never advance freshness as "+0 — no changes".
+    if (entries.length === 0) {
+      throw new Error('pricing refresh (litellm): catalog yielded no accepted entries');
+    }
+    const { added } = await this.applyVersions(entries, now, 'refresh', true, {
+      kind: 'litellm',
+    });
+    this.logger.log(`pricing refresh (litellm): ${String(added)} version(s) appended`);
+    return added;
+  }
+
+  status(now: Date): Promise<PricingStatusMeta> {
+    return this.db.pricing.statusMeta(now);
   }
 }

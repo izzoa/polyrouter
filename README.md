@@ -60,7 +60,8 @@ every request actually cost — while storing **metadata only**, never your prom
 - **Immutable cost records** — every request stores its **unit-price snapshot** at request
   time; later catalog updates never rewrite history. Missing provider usage is flagged
   `~estimated`, never silently nulled. Prices come from a bundled versioned catalog
-  (opt-in refresh from LiteLLM's), with per-model overrides for custom/local endpoints.
+  (auto-refreshed daily from LiteLLM's — one env line opts out), with per-model
+  overrides for custom/local endpoints.
 - **Budgets that actually block** — day/week/month windows, global or per-agent,
   alert-or-block at the threshold, enforced via **atomic Redis counters** that stay
   correct across multiple proxy instances.
@@ -328,7 +329,8 @@ public, or set `METRICS_ENABLED=false`.
 | `BUDGET_FAIL_OPEN`                                                                                  | `true`                  | On a Redis/enforcement fault, block budgets **admit** the request (availability-first). Set `false` for a hard cap that returns `503` instead |
 | `TRUSTED_PROXY_CIDRS`                                                                               | unset                   | CIDRs of reverse proxies allowed to set `X-Forwarded-For` (rate-limit client-IP trust) — set it when behind a proxy |
 | `NOTIFY_APPRISE_EGRESS_CONFIRMED`                                                                   | `false`                 | Cloud-mode (`MODE=cloud`) acknowledgement before Apprise delivery runs — the SSRF allowlist (`NOTIFY_ALLOWED_ENDPOINTS`) is still enforced independently |
-| `PRICING_REFRESH_URL`                                                                               | LiteLLM catalog         | Source for the admin pricing refresh (a bundled snapshot ships by default; refresh is opt-in from the dashboard) |
+| `PRICING_REFRESH_URL`                                                                               | LiteLLM catalog         | Source for pricing refreshes (a bundled snapshot ships by default; the Settings page shows catalog status + a Refresh-now button for admins) |
+| `PRICING_REFRESH_SCHED_ENABLED` / `PRICING_REFRESH_SCHED_CRON`                                      | `true` / `30 4 * * *`   | **Daily automatic pricing refresh — ON by default** (self-host only): one outbound GET of LiteLLM's public price catalog per day; no tenant data is sent. Set `PRICING_REFRESH_SCHED_ENABLED=false` to opt out; manual refresh keeps working |
 | `PROXY_FIRST_EVENT_TIMEOUT_MS` / `PROXY_IDLE_TIMEOUT_MS`                                            | `30000` / `30000`       | Time-to-first-token / buffered-read idle bound — **raise both for slow local models** (a 30s prefill would otherwise 503 and trip the breaker) |
 | `POLYROUTER_SUBNET` / `POLYROUTER_IMAGE`                                                            | `172.28.5.0/24` / built | Compose network CIDR (change on a collision) / prebuilt image override                                       |
 

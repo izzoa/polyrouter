@@ -29,6 +29,7 @@ import type {
   ProxyTestBody,
   AutoPerformance,
   CalibrationEvent,
+  PricingStatus,
   RequestRow,
   RequestsPage,
   RequestsQuery,
@@ -210,6 +211,22 @@ export const DEFAULT_CALIBRATION: AutoLayers['calibration'] = {
   effectiveLow: 0.25,
 };
 
+export const DEFAULT_PRICING_STATUS: PricingStatus = {
+  entryCount: 67,
+  newest: {
+    source: 'bundled',
+    validFrom: '2026-07-01T00:00:00.000Z',
+    appliedAt: '2026-07-10T00:00:00.000Z',
+  },
+  lastRefresh: null, // never refreshed — the panel's callout case
+  scheduler: {
+    configuredEnabled: true,
+    modePermitted: true,
+    effectiveEnabled: true,
+    cron: '30 4 * * *',
+  },
+};
+
 export const DEFAULT_AUTO_PERF: AutoPerformance = {
   evaluated: 40,
   bands: {
@@ -257,6 +274,8 @@ export interface FakeOptions {
   channels?: ChannelDto[];
   autoLayers?: AutoLayers;
   calibrationEvents?: CalibrationEvent[];
+  pricingStatus?: PricingStatus;
+  pricingRefreshAdded?: number;
   channelTestResult?: ChannelTestResult;
   testResult?: ActionResult;
   syncResult?: ActionResult;
@@ -348,6 +367,8 @@ export class FakeApiClient implements ApiClient {
   channels: ChannelDto[];
   autoLayers: AutoLayers;
   calibrationEvents: CalibrationEvent[];
+  pricingStatusResult: PricingStatus;
+  pricingRefreshAdded: number;
   channelTestResult: ChannelTestResult;
   testResult: ActionResult;
   syncResult: ActionResult;
@@ -393,6 +414,8 @@ export class FakeApiClient implements ApiClient {
       calibration: { ...DEFAULT_CALIBRATION },
     };
     this.calibrationEvents = opts.calibrationEvents ?? [];
+    this.pricingStatusResult = opts.pricingStatus ?? { ...DEFAULT_PRICING_STATUS };
+    this.pricingRefreshAdded = opts.pricingRefreshAdded ?? 124;
     this.channelTestResult = opts.channelTestResult ?? { ok: true };
     this.testResult = opts.testResult ?? okResult();
     this.syncResult = opts.syncResult ?? okResult(2);
@@ -906,6 +929,30 @@ export class FakeApiClient implements ApiClient {
       },
     };
     return Promise.resolve({ ...this.autoLayers });
+  }
+
+  pricingStatus(): Promise<PricingStatus> {
+    this.record('pricingStatus');
+    return Promise.resolve({ ...this.pricingStatusResult });
+  }
+
+  pricingRefresh(): Promise<{ added: number }> {
+    this.record('pricingRefresh');
+    const added = this.pricingRefreshAdded;
+    // Mirror the server: a completed live pull moves lastRefresh (even +0).
+    this.pricingStatusResult = {
+      ...this.pricingStatusResult,
+      newest:
+        added > 0
+          ? {
+              source: 'refresh',
+              validFrom: '2026-07-20T00:00:00.000Z',
+              appliedAt: '2026-07-20T00:00:00.000Z',
+            }
+          : this.pricingStatusResult.newest,
+      lastRefresh: { at: '2026-07-20T00:00:00.000Z', added, skipped: added > 0 ? 2 : 0 },
+    };
+    return Promise.resolve({ added });
   }
 
   calibrationHistory(limit?: number): Promise<CalibrationEvent[]> {

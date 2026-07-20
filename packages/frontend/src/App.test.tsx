@@ -1,11 +1,17 @@
 import { APP_NAME } from '@polyrouter/shared';
 import { render } from 'solid-js/web';
+import { ApiError } from './data/api';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { ChannelDto, ModelDto, RuleDto, TierDto, TierEntryDto } from './data/api';
 import { App } from './App';
 import { createAppStore, type AppStore } from './state/appState';
 import { AppProvider } from './state/context';
-import { DEFAULT_CALIBRATION, FakeApiClient } from './test/fakeClient';
+import {
+  DEFAULT_PRICING_STATUS,
+  DEFAULT_SESSION,
+  DEFAULT_CALIBRATION,
+  FakeApiClient,
+} from './test/fakeClient';
 
 const flush = async (): Promise<void> => {
   for (let i = 0; i < 4; i++) await new Promise((r) => setTimeout(r, 0));
@@ -347,6 +353,142 @@ describe('dashboard shell (auth-gated)', () => {
       expect(store.state.rules.some((r) => r.matchType === 'auto_low')).toBe(false);
     } finally {
       dispose();
+    }
+  });
+
+  it('Settings pricing-catalog panel: status, never-refreshed callout, refresh flow (add-pricing-refresh-ui)', async () => {
+    const { host, dispose } = mount(); // DEFAULT_SESSION is an admin
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Settings');
+      await flush();
+      const panel = () =>
+        [...host.querySelectorAll<HTMLElement>('.panel')].find((p) =>
+          p.textContent?.includes('Pricing catalog'),
+        );
+      const text = () => panel()?.textContent ?? '';
+      expect(text()).toContain('67 models');
+      expect(text()).toContain('newest: bundled');
+      expect(text()).toContain('never'); // the literal never-refreshed callout
+      expect(text()).toContain('scheduled — 30 4 * * * (UTC)'); // cadence-neutral copy (r3-Low-7)
+      expect(text()).toContain('recorded costs never change');
+      const btn = [...panel()!.querySelectorAll<HTMLElement>('button')].find(
+        (b) => b.textContent?.trim() === 'Refresh now',
+      );
+      btn?.click();
+      await flush();
+      expect(text()).not.toContain('Last refreshed: never');
+      expect(text()).toContain('+124');
+    } finally {
+      dispose();
+    }
+  });
+
+  it('pricing panel branches: +0 toast, empty catalog, opted-out line, refresh error (add-pricing-refresh-ui)', async () => {
+    // +0 completion is a SUCCESS with its own honest toast.
+    const zero = new FakeApiClient({ pricingRefreshAdded: 0 });
+    const a = mount(createAppStore(zero));
+    try {
+      await flush();
+      clickByText(a.host, '.nav-item span', 'Settings');
+      await flush();
+      const btn = [...a.host.querySelectorAll<HTMLElement>('button')].find(
+        (b) => b.textContent?.trim() === 'Refresh now',
+      );
+      btn?.click();
+      await flush();
+      expect(a.store.state.toast).toBe('+0 — no changes');
+      expect(a.host.textContent).not.toContain('Last refreshed: never');
+    } finally {
+      a.dispose();
+    }
+    // Empty catalog → neutral copy, no diagnosed cause.
+    const empty = new FakeApiClient({
+      pricingStatus: { ...DEFAULT_PRICING_STATUS, entryCount: 0, newest: null },
+    });
+    const b = mount(createAppStore(empty));
+    try {
+      await flush();
+      clickByText(b.host, '.nav-item span', 'Settings');
+      await flush();
+      expect(b.host.textContent).toContain('Catalog is empty; pricing is unavailable.');
+    } finally {
+      b.dispose();
+    }
+    // Opted out → the off state names the flag; refresh failure → inline
+    // report, the button itself re-enabled as the retry.
+    const err = new FakeApiClient({
+      pricingStatus: {
+        ...DEFAULT_PRICING_STATUS,
+        scheduler: {
+          configuredEnabled: false,
+          modePermitted: true,
+          effectiveEnabled: false,
+          cron: '30 4 * * *',
+        },
+      },
+    });
+    err.pricingRefresh = () => Promise.reject(new ApiError(502, 'BadGateway', 'source down'));
+    const c = mount(createAppStore(err));
+    try {
+      await flush();
+      clickByText(c.host, '.nav-item span', 'Settings');
+      await flush();
+      expect(c.host.textContent).toContain('off — PRICING_REFRESH_SCHED_ENABLED=false is set');
+      const btn = [...c.host.querySelectorAll<HTMLElement>('button')].find(
+        (x) => x.textContent?.trim() === 'Refresh now',
+      );
+      btn?.click();
+      await flush();
+      expect(c.host.textContent).toContain('Refresh failed — source down');
+      expect((btn as HTMLButtonElement).disabled).toBe(false); // the retry IS the button
+    } finally {
+      c.dispose();
+    }
+  });
+
+  it('the pricing panel hides for non-admins and drops the button in cloud mode', async () => {
+    // Non-admin: no panel at all.
+    const nonAdmin = new FakeApiClient({
+      session: { ...DEFAULT_SESSION, role: null },
+    });
+    const a = mount(createAppStore(nonAdmin));
+    try {
+      await flush();
+      clickByText(a.host, '.nav-item span', 'Settings');
+      await flush();
+      expect(a.host.textContent).not.toContain('Pricing catalog');
+    } finally {
+      a.dispose();
+    }
+    // Cloud admin: read-only status, no doomed button.
+    const cloud = new FakeApiClient({
+      pricingStatus: {
+        ...DEFAULT_PRICING_STATUS,
+        scheduler: {
+          configuredEnabled: true,
+          modePermitted: false,
+          effectiveEnabled: false,
+          cron: '30 4 * * *',
+        },
+      },
+    });
+    const b = mount(createAppStore(cloud));
+    try {
+      await flush();
+      clickByText(b.host, '.nav-item span', 'Settings');
+      await flush();
+      const panel = [...b.host.querySelectorAll<HTMLElement>('.panel')].find((p) =>
+        p.textContent?.includes('Pricing catalog'),
+      );
+      expect(panel?.textContent).toContain('unavailable in cloud mode');
+      expect(
+        [...(panel?.querySelectorAll<HTMLElement>('button') ?? [])].some(
+          (x) => x.textContent?.trim() === 'Refresh now',
+        ),
+      ).toBe(false);
+    } finally {
+      b.dispose();
     }
   });
 

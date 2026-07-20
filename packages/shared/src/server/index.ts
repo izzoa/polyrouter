@@ -51,6 +51,8 @@ export type {
   CalibrationExpectedState,
   CalibrationSweepTenant,
   CalibrationEdgeStats,
+  PricingRefreshRunInput,
+  PricingStatusMeta,
   CalibrationEventsAccessor,
   ThresholdCalibrationEventInput,
   ThresholdCalibrationEventRowView,

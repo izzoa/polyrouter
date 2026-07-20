@@ -1,9 +1,11 @@
 import { Module } from '@nestjs/common';
 import { DatabaseModule } from '../database/database.module';
-import { loadPricingConfig } from './pricing.config';
+import { RedisModule } from '../redis/redis.module';
+import { buildPricingSchedulerConfig, loadPricingConfig } from './pricing.config';
 import { fetchLiteLlmCatalog } from './litellm-fetch';
 import { PricingBootstrap } from './pricing.bootstrap';
 import { PricingController } from './pricing.controller';
+import { PRICING_SCHEDULER_CONFIG, PricingRefreshScheduler } from './pricing-refresh.scheduler';
 import {
   PRICING_FETCH,
   PRICING_RUNTIME,
@@ -15,11 +17,16 @@ import {
  * management API. `PRICING_RUNTIME` resolves the LiteLLM refresh URL/limits +
  * mode from config; `PRICING_FETCH` is the guarded fetch (overridable in tests). */
 @Module({
-  imports: [DatabaseModule],
+  imports: [DatabaseModule, RedisModule],
   controllers: [PricingController],
   providers: [
     PricingService,
     PricingBootstrap,
+    PricingRefreshScheduler,
+    {
+      provide: PRICING_SCHEDULER_CONFIG,
+      useFactory: () => buildPricingSchedulerConfig(loadPricingConfig().pricing),
+    },
     { provide: PRICING_FETCH, useValue: fetchLiteLlmCatalog },
     {
       provide: PRICING_RUNTIME,

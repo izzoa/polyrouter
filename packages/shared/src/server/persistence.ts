@@ -156,6 +156,19 @@ export type ModelPriceInput = {
 /** The GLOBAL (non-tenant) pricing catalog (#8, §7.7). Append-only reference
  * data — no owner, no update/delete. The single write path is #8's locked
  * `applyVersions`, which reads `latest` and appends via `insertVersion`. */
+export interface PricingRefreshRunInput {
+  kind: 'litellm' | 'body' | 'bundled';
+  added: number;
+  skipped: number;
+}
+
+/** Catalog status metadata (add-pricing-refresh-ui): the panel's truth. */
+export interface PricingStatusMeta {
+  entryCount: number;
+  newest: { source: string; validFrom: string; appliedAt: string } | null;
+  lastRefresh: { at: string; added: number; skipped: number } | null;
+}
+
 export interface PricingCatalog {
   /** The version in effect at `at` (greatest `valid_from ≤ at`), or null. */
   priceAt(modelKey: string, at: Date): Promise<ModelPriceRow | null>;
@@ -167,6 +180,12 @@ export interface PricingCatalog {
   /** The current version per `model_key` (latest with `valid_from ≤ now`). */
   listLatest(now: Date): Promise<ModelPriceRow[]>;
   insertVersion(entry: ModelPriceInput): Promise<ModelPriceRow>;
+  /** Append a COMPLETED refresh run — called inside the same advisory-lock
+   * transaction as the version apply (add-pricing-refresh-ui). */
+  insertRefreshRun(input: PricingRefreshRunInput): Promise<void>;
+  /** Status metadata: current-key count, newest applied version, newest
+   * litellm-kind run. */
+  statusMeta(now: Date): Promise<PricingStatusMeta>;
 }
 
 /** A request-log row ready to insert. `id` is PRE-ALLOCATED by the recorder (so

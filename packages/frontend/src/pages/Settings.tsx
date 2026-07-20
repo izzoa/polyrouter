@@ -14,10 +14,19 @@ export function Settings() {
   const { state } = app;
   const session = () => state.session;
 
-  onMount(() => void app.loadChannels());
+  onMount(() => {
+    void app.loadChannels();
+    if (session()?.role === 'admin') void app.loadPricingStatus();
+  });
+
+  const fmtDate = (iso: string): string => new Date(iso).toLocaleDateString();
 
   const removeChannel = (c: ChannelDto): void => {
-    if (globalThis.confirm(`Delete channel "${c.name}"? Future alerts will no longer be delivered to it.`)) {
+    if (
+      globalThis.confirm(
+        `Delete channel "${c.name}"? Future alerts will no longer be delivered to it.`,
+      )
+    ) {
       void app.deleteChannel(c.id);
     }
   };
@@ -73,12 +82,14 @@ export function Settings() {
             </button>
           </div>
           <div style="color:var(--text3)">Version</div>
-          <div class="mono" style="font-size:11.5px">v{__APP_VERSION__}</div>
+          <div class="mono" style="font-size:11.5px">
+            v{__APP_VERSION__}
+          </div>
         </div>
         <Show when={session()?.mode === 'selfhosted'}>
           <div style="font:400 11px 'Geist',sans-serif;color:var(--text3);margin-top:10px;line-height:1.5">
-            Self-hosted loopback uses auto-login with no session cookie — “Log out” (in the
-            account menu, bottom of the sidebar) is inert here and you’ll land straight back in.
+            Self-hosted loopback uses auto-login with no session cookie — “Log out” (in the account
+            menu, bottom of the sidebar) is inert here and you’ll land straight back in.
           </div>
         </Show>
       </div>
@@ -90,9 +101,9 @@ export function Settings() {
               Prompt & response bodies
             </div>
             <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3);line-height:1.5">
-              polyrouter stores metadata only (tokens, cost, latency, routing decision) — prompt
-              and response bodies are never persisted. This is a property of the build, not a
-              runtime setting.
+              polyrouter stores metadata only (tokens, cost, latency, routing decision) — prompt and
+              response bodies are never persisted. This is a property of the build, not a runtime
+              setting.
             </div>
           </div>
           <span
@@ -205,6 +216,103 @@ export function Settings() {
           </For>
         </div>
       </div>
+
+      <Show when={session()?.role === 'admin'}>
+        <div class="panel card">
+          <div class="section-title" style="margin-bottom:3px">
+            Pricing catalog
+          </div>
+          <Show
+            when={state.pc.status}
+            keyed
+            fallback={
+              /* Loading, error, and loaded are mutually exclusive: the error
+                 block below owns the failure state. */
+              <Show when={state.pc.loadError === null}>
+                <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3)">Loading…</div>
+              </Show>
+            }
+          >
+            {(st) => (
+              <>
+                <Show
+                  when={st.entryCount > 0}
+                  fallback={
+                    <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text2)">
+                      Catalog is empty; pricing is unavailable.
+                    </div>
+                  }
+                >
+                  <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text2)">
+                    {st.entryCount.toLocaleString()} models
+                    <Show when={st.newest} keyed>
+                      {(n) => (
+                        <span style="color:var(--text3)">
+                          {' '}
+                          · newest: {n.source} · effective {fmtDate(n.validFrom)} · applied{' '}
+                          {fmtDate(n.appliedAt)}
+                        </span>
+                      )}
+                    </Show>
+                  </div>
+                </Show>
+                <div style="display:flex;align-items:center;gap:10px;margin-top:6px">
+                  <span style="font:400 11.5px 'Geist',sans-serif;color:var(--text2)">
+                    Last refreshed:{' '}
+                    <Show when={st.lastRefresh} keyed fallback={<b>never</b>}>
+                      {(r) => (
+                        <span>
+                          {fmtDate(r.at)}{' '}
+                          <span style="color:var(--text3)">
+                            (+{r.added}
+                            {r.skipped > 0 ? ` · ${String(r.skipped)} skipped` : ''})
+                          </span>
+                        </span>
+                      )}
+                    </Show>
+                  </span>
+                  <Show when={st.scheduler.modePermitted}>
+                    <button
+                      type="button"
+                      class="btn-ghost"
+                      disabled={state.pc.busy}
+                      onClick={() => void app.runPricingRefresh()}
+                    >
+                      {state.pc.busy ? 'Refreshing…' : 'Refresh now'}
+                    </button>
+                  </Show>
+                </div>
+                <div style="font:400 11px 'Geist',sans-serif;color:var(--text3);margin-top:4px">
+                  Auto-refresh:{' '}
+                  {st.scheduler.effectiveEnabled
+                    ? `scheduled — ${st.scheduler.cron} (UTC) · opt out: PRICING_REFRESH_SCHED_ENABLED=false`
+                    : st.scheduler.configuredEnabled && !st.scheduler.modePermitted
+                      ? 'unavailable in cloud mode'
+                      : 'off — PRICING_REFRESH_SCHED_ENABLED=false is set'}
+                </div>
+                <div style="font:400 11px 'Geist',sans-serif;color:var(--text3);margin-top:2px">
+                  New prices apply to new requests; recorded costs never change.
+                </div>
+              </>
+            )}
+          </Show>
+          <Show when={state.pc.loadError}>
+            <div style="font:400 11px 'Geist',sans-serif;color:var(--red);margin-top:4px">
+              {state.pc.loadError}{' '}
+              <button type="button" class="btn-ghost" onClick={() => void app.loadPricingStatus()}>
+                Retry
+              </button>
+            </div>
+          </Show>
+          <Show when={state.pc.refreshError}>
+            {/* The refresh's retry is the Refresh-now button itself — this
+                line only reports why the last attempt failed (r3-Med-4). */}
+            <div style="font:400 11px 'Geist',sans-serif;color:var(--red);margin-top:4px">
+              Refresh failed — {state.pc.refreshError}
+            </div>
+          </Show>
+        </div>
+      </Show>
     </div>
   );
 }

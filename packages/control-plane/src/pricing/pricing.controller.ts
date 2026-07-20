@@ -4,6 +4,7 @@ import {
   Controller,
   ForbiddenException,
   Get,
+  Header,
   HttpCode,
   Inject,
   NotFoundException,
@@ -20,6 +21,8 @@ import {
 } from '@polyrouter/shared/server';
 import { CurrentPrincipal } from '../auth/principal.decorator';
 import { OverrideDto, RefreshDto } from './pricing.dto';
+import { PRICING_SCHEDULER_CONFIG } from './pricing-refresh.scheduler';
+import type { PricingSchedulerConfig } from './pricing.config';
 import {
   PRICING_RUNTIME,
   PricingService,
@@ -36,11 +39,41 @@ export class PricingController {
     private readonly pricing: PricingService,
     @Inject(IDENTITY_PORT) private readonly identity: IdentityPort,
     @Inject(PRICING_RUNTIME) private readonly runtime: PricingRuntime,
+    @Inject(PRICING_SCHEDULER_CONFIG) private readonly schedCfg: PricingSchedulerConfig,
   ) {}
 
   @Get()
   list(@CurrentPrincipal() _p: Principal): Promise<ModelPriceRow[]> {
     return this.pricing.listCatalog(new Date());
+  }
+
+  /** Catalog status (add-pricing-refresh-ui): session-read — global,
+   * non-secret metadata; the scheduler trio lets the panel say exactly why a
+   * schedule is or isn't running. */
+  @Get('status')
+  @Header('Cache-Control', 'no-store')
+  async status(): Promise<{
+    entryCount: number;
+    newest: { source: string; validFrom: string; appliedAt: string } | null;
+    lastRefresh: { at: string; added: number; skipped: number } | null;
+    scheduler: {
+      configuredEnabled: boolean;
+      modePermitted: boolean;
+      effectiveEnabled: boolean;
+      cron: string;
+    };
+  }> {
+    const meta = await this.pricing.status(new Date());
+    const modePermitted = this.runtime.mode === 'selfhosted';
+    return {
+      ...meta,
+      scheduler: {
+        configuredEnabled: this.schedCfg.configuredEnabled,
+        modePermitted,
+        effectiveEnabled: this.schedCfg.configuredEnabled && modePermitted,
+        cron: this.schedCfg.cron,
+      },
+    };
   }
 
   @Get(':modelKey')

@@ -573,6 +573,19 @@ export function labelOf(label: string | null, id: string | null): string {
   return label ?? id ?? 'unknown';
 }
 
+/** Catalog status (add-pricing-refresh-ui) — global, non-secret metadata. */
+export interface PricingStatus {
+  entryCount: number;
+  newest: { source: string; validFrom: string; appliedAt: string } | null;
+  lastRefresh: { at: string; added: number; skipped: number } | null;
+  scheduler: {
+    configuredEnabled: boolean;
+    modePermitted: boolean;
+    effectiveEnabled: boolean;
+    cron: string;
+  };
+}
+
 export interface ApiClient {
   me(): Promise<SessionInfo>;
   loginConfig(): Promise<LoginConfig>;
@@ -625,6 +638,8 @@ export interface ApiClient {
   }): Promise<AutoLayers>;
   calibrationRevert(): Promise<AutoLayers>;
   calibrationHistory(limit?: number): Promise<CalibrationEvent[]>;
+  pricingStatus(): Promise<PricingStatus>;
+  pricingRefresh(): Promise<{ added: number }>;
   listBudgets(): Promise<BudgetDto[]>;
   createBudget(input: CreateBudgetInput): Promise<BudgetDto>;
   updateBudget(id: string, patch: UpdateBudgetInput): Promise<BudgetDto>;
@@ -828,6 +843,9 @@ export const realClient: ApiClient = {
     http<AutoLayers>(`${API_BASE}/routing/auto-layers`, jsonInit('PUT', input)),
   calibrationRevert: () =>
     http<AutoLayers>(`${API_BASE}/routing/calibration/revert`, { method: 'POST' }),
+  pricingStatus: () => http<PricingStatus>(`${API_BASE}/pricing/status`),
+  pricingRefresh: () =>
+    http<{ added: number }>(`${API_BASE}/pricing/refresh`, jsonInit('POST', { source: 'litellm' })),
   calibrationHistory: (limit) =>
     http<CalibrationEvent[]>(
       `${API_BASE}/routing/calibration/history${limit !== undefined ? `?limit=${String(limit)}` : ''}`,

@@ -12,6 +12,7 @@ import {
   requestLogs,
   routingEntries,
   routingRules,
+  pricingRefreshRuns,
   routingSettings,
   thresholdCalibrationEvents,
   tiers,
@@ -461,6 +462,55 @@ function createPricingCatalog(db: Db): PricingCatalog {
       const row = rows[0];
       if (!row) throw new Error('insertVersion returned no row');
       return row;
+    },
+    async insertRefreshRun(input) {
+      // clock_timestamp() = COMPLETION time (r3-Med-3): the column default
+      // now() is the transaction's START, which can precede a long advisory
+      // lock wait — the ledger must record when the refresh finished.
+      await db.insert(pricingRefreshRuns).values({
+        kind: input.kind,
+        added: input.added,
+        skipped: input.skipped,
+        createdAt: sql`clock_timestamp()`,
+      });
+    },
+    async statusMeta(now) {
+      const iso = (v: Date | string): string =>
+        v instanceof Date ? v.toISOString() : new Date(v).toISOString();
+      // ONE transaction (r3-Med-3): the three reads see a single snapshot —
+      // a refresh committing mid-read can't pair an old count with a new
+      // newest/lastRefresh. (Nested calls become a savepoint — harmless.)
+      const [countRow, newest, lastRun] = await db.transaction(async (tx) => {
+        const [c] = await tx
+          .select({ value: sql<number>`count(distinct ${modelPrices.modelKey})::int` })
+          .from(modelPrices)
+          .where(lte(modelPrices.validFrom, now));
+        const [n] = await tx
+          .select()
+          .from(modelPrices)
+          .orderBy(desc(modelPrices.createdAt), desc(modelPrices.id))
+          .limit(1);
+        const [r] = await tx
+          .select()
+          .from(pricingRefreshRuns)
+          .where(eq(pricingRefreshRuns.kind, 'litellm'))
+          .orderBy(desc(pricingRefreshRuns.createdAt))
+          .limit(1);
+        return [c, n, r] as const;
+      });
+      return {
+        entryCount: countRow?.value ?? 0,
+        newest: newest
+          ? {
+              source: newest.source,
+              validFrom: iso(newest.validFrom),
+              appliedAt: iso(newest.createdAt),
+            }
+          : null,
+        lastRefresh: lastRun
+          ? { at: iso(lastRun.createdAt), added: lastRun.added, skipped: lastRun.skipped }
+          : null,
+      };
     },
   };
 }

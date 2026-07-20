@@ -590,6 +590,28 @@ export const routingSettings = pgTable(
   ],
 );
 
+/** Append-only refresh-run ledger (add-pricing-refresh-ui): one row per
+ * COMPLETED refresh-endpoint/scheduler apply, inserted ATOMICALLY with the
+ * version apply inside the pricing advisory-lock transaction. Instance-global
+ * (no owner — the catalog is shared); `kind` is the endpoint's full source
+ * vocabulary; boot seeding records nothing. `lastRefresh` status derives from
+ * the newest `litellm`-kind row. */
+export const pricingRefreshRuns = pgTable(
+  'pricing_refresh_run',
+  {
+    id: id(),
+    kind: text('kind').notNull(),
+    added: integer('added').notNull(),
+    skipped: integer('skipped').notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index('pricing_refresh_run_kind_created_idx').on(t.kind, t.createdAt),
+    check('pricing_refresh_run_kind_valid', sql`${t.kind} IN ('litellm', 'body', 'bundled')`),
+    check('pricing_refresh_run_counts_nonneg', sql`${t.added} >= 0 AND ${t.skipped} >= 0`),
+  ],
+);
+
 /** Append-only threshold-calibration audit (add-auto-threshold-calibration).
  * old/new are the FULL numeric effective pairs before/after the event (never
  * null-as-instance); anchor_* is the anchor governing AFTER the event. The
@@ -647,6 +669,7 @@ export type RequestAttemptRow = typeof requestAttempts.$inferSelect;
 export type NotificationChannelRow = typeof notificationChannels.$inferSelect;
 export type BudgetRow = typeof budgets.$inferSelect;
 export type RoutingSettingsRow = typeof routingSettings.$inferSelect;
+export type PricingRefreshRunRow = typeof pricingRefreshRuns.$inferSelect;
 export type ThresholdCalibrationEventRow = typeof thresholdCalibrationEvents.$inferSelect;
 export type InviteRow = typeof invites.$inferSelect;
 export type InstanceSettingsRow = typeof instanceSettings.$inferSelect;

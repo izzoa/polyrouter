@@ -28,6 +28,7 @@ import {
   type ProviderDto,
   type AutoPerformance,
   type CalibrationEvent,
+  type PricingStatus,
   type RequestRow,
   type RuleDto,
   type TierDto,
@@ -209,6 +210,14 @@ export interface AppState {
   autoLayers: AutoLayers | null;
   /** Threshold-calibration history (add-auto-threshold-calibration). */
   calHistory: { rows: CalibrationEvent[]; loaded: boolean; error: string | null };
+  /** Pricing-catalog panel state (add-pricing-refresh-ui). */
+  pc: {
+    status: PricingStatus | null;
+    loaded: boolean;
+    loadError: string | null;
+    refreshError: string | null;
+    busy: boolean;
+  };
   routingLoading: boolean;
   routingError: string | null;
   /** New header-rule form: a tier-header value routed to a target tier key. */
@@ -641,6 +650,7 @@ function initialState(): AppState {
     },
     autoLayers: null,
     calHistory: { rows: [], loaded: false, error: null },
+    pc: { status: null, loaded: false, loadError: null, refreshError: null, busy: false },
     routingLoading: false,
     routingError: null,
     rf: { value: '', target: '', busy: false, error: null },
@@ -675,6 +685,9 @@ export interface AppStore {
   loadAutoPerf: () => Promise<void>;
   setAutoPerfRange: (range: Range) => void;
   /** Threshold calibration (add-auto-threshold-calibration). */
+  /** Pricing catalog (add-pricing-refresh-ui). */
+  loadPricingStatus: () => Promise<void>;
+  runPricingRefresh: () => Promise<void>;
   setCalibration: (on: boolean) => Promise<void>;
   revertCalibration: () => Promise<void>;
   loadCalHistory: () => Promise<void>;
@@ -958,6 +971,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           errors: { auto_high: null, auto_low: null },
           unverified: false,
         };
+        s.pc = { status: null, loaded: false, loadError: null, refreshError: null, busy: false };
       }),
     );
   };
@@ -1132,6 +1146,40 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     } catch (e) {
       if (gen !== identityGen) return;
       setState('calHistory', (c) => ({ ...c, loaded: true, error: err(e) }));
+    }
+  };
+
+  const loadPricingStatus = async (): Promise<void> => {
+    const gen = identityGen;
+    try {
+      const status = await client.pricingStatus();
+      if (gen !== identityGen) return;
+      setState('pc', (c) => ({ ...c, status, loaded: true, loadError: null }));
+    } catch (e) {
+      if (gen !== identityGen) return;
+      setState('pc', (c) => ({ ...c, loaded: true, loadError: err(e) }));
+    }
+  };
+
+  const runPricingRefresh = async (): Promise<void> => {
+    if (state.pc.busy) return; // single-flight
+    // Identity captured BEFORE the POST: every completion-side write below is
+    // guarded, so a sign-out/replacement mid-flight discards the effects
+    // entirely (add-pricing-refresh-ui r1-Med-5).
+    const gen = identityGen;
+    setState('pc', (c) => ({ ...c, busy: true, refreshError: null }));
+    try {
+      const { added } = await client.pricingRefresh();
+      if (gen !== identityGen) return;
+      say(added > 0 ? `+${String(added)} price versions` : '+0 — no changes');
+      await loadPricingStatus();
+      if (gen !== identityGen) return;
+      setState('pc', 'busy', false);
+    } catch (e) {
+      if (gen !== identityGen) return;
+      // The REFRESH failed — its retry is the Refresh button itself, never a
+      // status GET masquerading as one (r3-Med-4).
+      setState('pc', (c) => ({ ...c, busy: false, refreshError: err(e) }));
     }
   };
 
@@ -2188,6 +2236,8 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       }
     },
     loadCalHistory,
+    loadPricingStatus,
+    runPricingRefresh,
 
     loadLimits,
     openBudget: (budget) => {

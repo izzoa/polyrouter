@@ -326,11 +326,16 @@ describe('dashboard shell (auth-gated)', () => {
       expect(store.state.rules.some((r) => r.id === 'r-eff')).toBe(true);
       // Keyboard-native picker: setting the cheap band via the select.
       const selects = panel()!.querySelectorAll<HTMLSelectElement>('select');
+      // The pickers REST on their placeholder — never on a real option (the
+      // v0.5.0 bug showed "default" because nothing selected the placeholder).
+      expect(selects[0]!.value).toBe('');
+      expect(selects[1]!.value).toBe('');
       const cheapSelect = selects[1]!;
       cheapSelect.value = 'tier:default';
       cheapSelect.dispatchEvent(new Event('change', { bubbles: true }));
       await flush();
       expect(store.state.rules.some((r) => r.matchType === 'auto_low')).toBe(true);
+      expect(cheapSelect.value).toBe(''); // back on the placeholder after applying
       expect(text()).not.toContain('Cascade needs both bands usable');
       expect(text()).toContain('uses the Layer-0 default chain');
       // Clear removes the whole band again.

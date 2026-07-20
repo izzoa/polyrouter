@@ -152,14 +152,18 @@ function BandTargets() {
           aria-label={`${title} target`}
           disabled={busy(b.band)}
           style="font:400 11px 'Geist',sans-serif;color:var(--text2);background:var(--chip);border:1px solid var(--border);border-radius:5px;padding:2px 6px;max-width:180px"
-          value=""
           onChange={(e) => {
             const v = e.currentTarget.value;
-            e.currentTarget.value = '';
+            // Snap back to the placeholder — this is an ACTION picker, not a
+            // value display (the row's target line shows the current state).
+            e.currentTarget.selectedIndex = 0;
             if (v !== '') void app.setBandTarget(b.band, v);
           }}
         >
-          <option value="" disabled>
+          {/* `selected` pins the placeholder at first render — without it the
+              browser displays the first REAL option ("default") while nothing
+              is actually chosen (the v0.5.0 display bug). */}
+          <option value="" disabled selected>
             {b.target.kind === 'unset' ? 'Set target…' : 'Change…'}
           </option>
           <optgroup label="Tiers">

@@ -262,6 +262,48 @@ describe('resolveRoute — tier-header precedence (add-tier-header-precedence)',
     const r = resolveRoute(s, parse('auto', { 'x-polyrouter-tier': '' }));
     expect(r).toMatchObject({ tierKey: 'default', decisionLayer: 'default' }); // not tier fast
   });
+
+  // Fail-closed error precedence (clink re-review 2026-07-20): a MATCHED tier
+  // header that cannot serve surfaces its error — never a silent reroute via an
+  // other-header rule or default.
+  it('an empty explicitly-asked tier errors even when an other-header rule matches', () => {
+    const s = snap({
+      tiers: [
+        { id: 't_default', key: 'default' },
+        { id: 't_empty', key: 'empty' },
+      ],
+      entriesByTierId: new Map([['t_default', [{ modelId: 'm_def', position: 0 }]]]),
+      rules: [rule({ headerName: 'x-env', headerValue: 'prod', target: 'tier:default', priority: 999 })],
+    });
+    expect(
+      resolveRoute(s, parse('auto', { 'x-polyrouter-tier': 'empty', 'x-env': 'prod' })),
+    ).toEqual({ error: 'empty_tier', detail: 'empty' }); // the x-env rule did not rescue it
+  });
+
+  it('a matched remap with an unresolved target errors — no direct-lookup or other-rule rescue', () => {
+    const s = snap({
+      rules: [
+        rule({ id: 'remap', headerValue: 'fast', target: 'tier:ghost' }), // target deleted
+        rule({ id: 'other', headerName: 'x-env', headerValue: 'prod', target: 'tier:default', priority: 999 }),
+      ],
+    });
+    // 'fast' is ALSO a real tier — the broken remap still owns the match.
+    expect(
+      resolveRoute(s, parse('auto', { 'x-polyrouter-tier': 'fast', 'x-env': 'prod' })),
+    ).toMatchObject({ error: 'unresolved_target' });
+  });
+
+  it('two remaps matching the same sent value are ordered by priority', () => {
+    const s = snap({
+      rules: [
+        rule({ id: 'lo', headerValue: 'shopping', target: 'tier:default', priority: 1 }),
+        rule({ id: 'hi', headerValue: 'shopping', target: 'tier:fast', priority: 5 }),
+      ],
+    });
+    expect(resolveRoute(s, parse('auto', { 'x-polyrouter-tier': 'shopping' }))).toMatchObject({
+      tierKey: 'fast', // priority still totally orders WITHIN the phase
+    });
+  });
 });
 
 describe('resolveRoute — matchedHeader (add-routing-header-visibility)', () => {

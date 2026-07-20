@@ -220,8 +220,10 @@ export class RoutingConfigService {
 
   async listRules(principal: Principal): Promise<SafeRule[]> {
     const rows = await this.db.routingRules.list(principal);
-    // The proxy's (#10) evaluation order — the SAME shared `ruleOrder` comparator
-    // the resolver uses (A-45), so display and evaluation can't drift.
+    // The SAME shared `ruleOrder` comparator the resolver applies WITHIN each of
+    // its phases (A-45) — a deterministic display order, NOT the end-to-end
+    // evaluation order: since add-tier-header-precedence, tier-header remaps
+    // execute before rules on other headers regardless of priority.
     rows.sort(ruleOrder);
     return rows.map(toSafeRule);
   }

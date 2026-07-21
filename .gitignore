@@ -47,3 +47,7 @@ ds-bundle/
 .design-sync/learnings/
 .design-sync/node_modules
 .design-sync/wrapper/solid/
+
+# Local working docs — not part of the published repo
+TODOS.md
+FABLE_AUDIT.md

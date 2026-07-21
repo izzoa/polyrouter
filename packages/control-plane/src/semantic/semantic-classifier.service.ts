@@ -15,9 +15,27 @@ import {
   hashAnchorContent,
   type ClassificationSourceProvider,
   type ClassificationState,
+  type LearningGate,
 } from './classification-source';
 import { SemanticRuntimeService } from './semantic-runtime.service';
 import type { SemanticConfig } from './semantic.config';
+
+/**
+ * The classifier-side inputs to the LEARNING-evidence revision + the bundled
+ * centroids the sweep folds against (add-semantic-learning task 4.2). It carries
+ * everything the digest needs EXCEPT the two routing-owned inputs — the
+ * quality-gate threshold and the per-tenant resolved `auto_low` chain — which the
+ * sweep supplies. `null` when Layer 2 is unavailable, so the sweep no-ops.
+ */
+export interface LearningProvenance {
+  readonly bundled: SemanticCentroids;
+  readonly embedderId: string;
+  readonly dims: number;
+  readonly anchorSetId: string;
+  readonly extractorVersion: number;
+  readonly highThreshold: number;
+  readonly lowThreshold: number;
+}
 
 /**
  * The Layer-2 classifier lifecycle (add-semantic-routing D5). A distinct
@@ -35,6 +53,14 @@ export class SemanticClassifierService
 {
   private readonly logger = new Logger('SemanticClassifier');
   private state: ClassificationState | null = null;
+  private provenance: LearningProvenance | null = null;
+  /** The `computeRevision` inputs (minus source/sourceRevision) captured at
+   * bootstrap, so a LEARNED classification can be stamped with a distinct,
+   * generation-versioned provenance digest (add-semantic-learning). */
+  private revisionInputs: Omit<
+    Parameters<typeof computeRevision>[0],
+    'source' | 'sourceRevision'
+  > | null = null;
 
   constructor(private readonly runtime: SemanticRuntimeService) {}
 
@@ -43,9 +69,34 @@ export class SemanticClassifierService
     return this.state !== null;
   }
 
-  forPrincipal(_principal: Principal): ClassificationState {
-    if (this.state === null) throw new Error('semantic classifier not ready');
+  /** The bundled centroids + revision provenance the learning sweep folds
+   * against (add-semantic-learning). `null` when Layer 2 is unavailable. */
+  get learningProvenance(): LearningProvenance | null {
+    return this.provenance;
+  }
+
+  /** The bundled classification state (add-semantic-learning): the learned
+   * decorator's fall-back when a gate fails. `null` when unavailable. */
+  bundledState(): ClassificationState | null {
     return this.state;
+  }
+
+  /** The provenance digest for a LEARNED classification at `(epoch, generation)`
+   * — distinct from bundled so telemetry attributes the verdict. `null` when
+   * unavailable. */
+  learnedRevision(epoch: number, generation: number): string | null {
+    if (this.revisionInputs === null) return null;
+    return computeRevision({
+      ...this.revisionInputs,
+      source: 'learned',
+      sourceRevision: `${String(epoch)}.${String(generation)}`,
+    });
+  }
+
+  // eslint-disable-next-line @typescript-eslint/require-await
+  async resolve(_principal: Principal, _gate: LearningGate): Promise<ClassificationState> {
+    if (this.state === null) throw new Error('semantic classifier not ready');
+    return this.state; // the base source is always bundled; the decorator layers learned
   }
 
   async onApplicationBootstrap(): Promise<void> {
@@ -64,7 +115,7 @@ export class SemanticClassifierService
     try {
       const centroids = await this.buildBundledCentroids(embedder, cfg);
       validateCentroids(centroids, embedder.dims);
-      const revision = computeRevision({
+      this.revisionInputs = {
         embedderId: embedder.id,
         dims: embedder.dims,
         anchorSetId: ANCHOR_SET_ID,
@@ -72,10 +123,22 @@ export class SemanticClassifierService
         extractorVersion: SEMANTIC_EXTRACTOR_VERSION,
         highThreshold: cfg.highThreshold,
         lowThreshold: cfg.lowThreshold,
+      };
+      const revision = computeRevision({
+        ...this.revisionInputs,
         source: 'bundled',
         sourceRevision: ANCHOR_SET_ID,
       });
       this.state = { centroids, source: 'bundled', revision };
+      this.provenance = {
+        bundled: centroids,
+        embedderId: embedder.id,
+        dims: embedder.dims,
+        anchorSetId: ANCHOR_SET_ID,
+        extractorVersion: SEMANTIC_EXTRACTOR_VERSION,
+        highThreshold: cfg.highThreshold,
+        lowThreshold: cfg.lowThreshold,
+      };
       this.logger.log(
         `semantic classifier ready: anchors=${ANCHOR_SET_ID} high=${String(HIGH_ANCHORS.length)} low=${String(LOW_ANCHORS.length)} revision=${revision}`,
       );
@@ -93,7 +156,16 @@ export class SemanticClassifierService
   ): Promise<SemanticCentroids> {
     const caps = { totalChars: cfg.maxInputChars };
     const embedAnchor = (text: string): Promise<Float32Array> =>
-      embedder.embed(extractSemanticInput({ model: 'auto', messages: [{ role: 'user', content: [{ type: 'text', text }] }], params: {} }, caps));
+      embedder.embed(
+        extractSemanticInput(
+          {
+            model: 'auto',
+            messages: [{ role: 'user', content: [{ type: 'text', text }] }],
+            params: {},
+          },
+          caps,
+        ),
+      );
     // Build the two bands SEQUENTIALLY (clink r2 Med-1): concurrent chains
     // would issue two embeds at once and deterministically saturate a
     // `SEMANTIC_CONCURRENCY=1` no-queue embedder, disabling the classifier.

@@ -31,6 +31,10 @@ export interface AutoLayersView {
   /** add-semantic-routing: flag ∧ the WHOLE classifier ready (embedder +
    * centroids). false = the honest "off instance-wide" affordance. */
   semanticAvailable: boolean;
+  /** add-semantic-learning: the effective learning preference (enabled ∧ semantic
+   * effective) and whether the instance can learn (= semanticAvailable). */
+  semanticLearning: boolean;
+  semanticLearningAvailable: boolean;
   calibration: {
     enabled: boolean;
     calibratedHigh: number | null;
@@ -75,6 +79,10 @@ export class AutoLayersService {
       structuralEnabled,
       cascadeEnabled: dto.cascade,
       ...(dto.semantic !== undefined ? { semanticEnabled: dto.semantic } : {}),
+      // Learning depends on the EFFECTIVE semantic; the upsert normalizes down.
+      ...(dto.semanticLearning !== undefined
+        ? { semanticLearningEnabled: dto.semanticLearning }
+        : {}),
       ...(dto.calibration !== undefined ? { calibrationEnabled: dto.calibration } : {}),
     });
     return this.effective(saved);
@@ -116,11 +124,16 @@ export class AutoLayersService {
     // A pair is presented ONLY while it is the pair actually routing — an
     // inert (stale/poisoned) pair reads as uncalibrated.
     const active = eff.high !== instanceHigh || eff.low !== instanceLow;
+    const layers = effectiveAutoLayers(cap, pref); // A-45: one shared formula (also used by the proxy)
     return {
-      ...effectiveAutoLayers(cap, pref), // A-45: one shared formula (also used by the proxy)
+      ...layers,
       structuralAvailable: cap.structural,
       cascadeAvailable: cap.cascade,
       semanticAvailable: cap.semantic,
+      // Learning is effective only when semantic is (and the tenant opted in);
+      // available only when the classifier is (learning rides the same stack).
+      semanticLearning: layers.semantic && (pref?.semanticLearningEnabled ?? false),
+      semanticLearningAvailable: cap.semantic,
       calibration: {
         enabled: pref?.calibrationEnabled ?? false,
         calibratedHigh: active ? eff.high : null,

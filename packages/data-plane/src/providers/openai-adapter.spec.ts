@@ -107,3 +107,52 @@ describe('OpenAI provider adapter', () => {
     expect((await adapter.testConnection()).ok).toBe(false);
   });
 });
+
+describe('OpenAI provider adapter — max-tokens spelling (add-max-tokens-spelling)', () => {
+  const capped: NormalizedRequest = {
+    model: 'gpt-4o',
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+    params: { maxOutputTokens: 100 },
+  };
+  const stopChunk = {
+    id: 's',
+    object: 'chat.completion.chunk',
+    created: 1,
+    model: 'gpt-4o',
+    choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+  };
+
+  it('chat: the max_tokens quirk emits max_tokens, not max_completion_tokens', async () => {
+    const { client, calls } = recordingClient(() => jsonResponse(OAI_RESPONSE));
+    const adapter = createOpenaiProviderAdapter(
+      { ...config, quirks: { maxTokensSpelling: 'max_tokens' } },
+      { httpClient: client },
+    );
+    await adapter.chat(capped);
+    const body = JSON.parse(calls[0]!.init.body!) as Record<string, unknown>;
+    expect(body.max_tokens).toBe(100);
+    expect(body.max_completion_tokens).toBeUndefined();
+  });
+
+  it('chat: the default (no quirk) emits max_completion_tokens', async () => {
+    const { client, calls } = recordingClient(() => jsonResponse(OAI_RESPONSE));
+    const adapter = createOpenaiProviderAdapter(config, { httpClient: client });
+    await adapter.chat(capped);
+    const body = JSON.parse(calls[0]!.init.body!) as Record<string, unknown>;
+    expect(body.max_completion_tokens).toBe(100);
+    expect(body.max_tokens).toBeUndefined();
+  });
+
+  it('chatStream: the max_tokens quirk emits max_tokens on the streamed request body', async () => {
+    const { client, calls } = recordingClient(() => sseResponse(oaiSse([stopChunk])));
+    const adapter = createOpenaiProviderAdapter(
+      { ...config, quirks: { maxTokensSpelling: 'max_tokens' } },
+      { httpClient: client },
+    );
+    for await (const ev of adapter.chatStream(capped)) void ev; // drain
+    const body = JSON.parse(calls[0]!.init.body!) as Record<string, unknown>;
+    expect(body.max_tokens).toBe(100);
+    expect(body.max_completion_tokens).toBeUndefined();
+    expect(body.stream).toBe(true);
+  });
+});

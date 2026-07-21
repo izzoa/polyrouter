@@ -36,8 +36,19 @@ const cfg = (modelPath: string): SemanticConfig => ({
   timeoutMs: 1000, // generous: CI machines JIT the first inference slowly
   maxInputChars: 2000,
   concurrency: 2,
-    highThreshold: 0.15,
-    lowThreshold: 0.15,
+  highThreshold: 0.15,
+  lowThreshold: 0.15,
+  learning: {
+    minCohort: 8,
+    minSamples: 50,
+    alpha: 0.2,
+    maxDrift: 0.35,
+    cooldownH: 24,
+    stateTtlD: 30,
+    maxCohorts: 4096,
+    schedEnabled: true,
+    schedCron: '0 3 * * *',
+  },
 });
 
 /** Realm-safe fake ORT: run() emits `[id_t × dims]` per token, like the fixture graph. */
@@ -46,7 +57,9 @@ const fakeOrt = (): OrtLike => ({
     create: (bytes) => {
       if (bytes.length < 8) return Promise.reject(new Error('model too small'));
       return Promise.resolve({
-        run: (feeds: Record<string, { data: ArrayLike<number | bigint>; dims: readonly number[] }>) => {
+        run: (
+          feeds: Record<string, { data: ArrayLike<number | bigint>; dims: readonly number[] }>,
+        ) => {
           const ids = Array.from(feeds['input_ids']?.data ?? [], Number);
           const dims = FIXTURE_MANIFEST.model.dims;
           const data = new Float32Array(ids.length * dims);

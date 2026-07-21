@@ -237,7 +237,7 @@ function requestIn(wireInput: unknown, quirks: AdapterQuirks): NormalizedRequest
   };
 }
 
-function requestOut(ir: NormalizedRequest): OaiRequest {
+function requestOut(ir: NormalizedRequest, quirks: AdapterQuirks): OaiRequest {
   const messages: OaiMessage[] = [];
   if (ir.system !== undefined && ir.system.length > 0) {
     // A multi-block system prompt emits parts (no fusion, E2.3); a single block
@@ -292,8 +292,13 @@ function requestOut(ir: NormalizedRequest): OaiRequest {
     ...(tools !== undefined ? { tools } : {}),
     ...(toolChoice !== undefined ? { tool_choice: toolChoice } : {}),
     ...(ir.allowParallelTools !== undefined ? { parallel_tool_calls: ir.allowParallelTools } : {}),
+    // Emit exactly ONE token-cap spelling — the field named by the quirk (default
+    // `max_completion_tokens`). Never both: reasoning models reject the mere
+    // presence of `max_tokens`, and legacy endpoints don't know the modern field.
     ...(ir.params.maxOutputTokens !== undefined
-      ? { max_completion_tokens: ir.params.maxOutputTokens }
+      ? (quirks.maxTokensSpelling ?? 'max_completion_tokens') === 'max_tokens'
+        ? { max_tokens: ir.params.maxOutputTokens }
+        : { max_completion_tokens: ir.params.maxOutputTokens }
       : {}),
     ...(ir.params.temperature !== undefined ? { temperature: ir.params.temperature } : {}),
     ...(ir.params.topP !== undefined ? { top_p: ir.params.topP } : {}),
@@ -645,7 +650,7 @@ export function createOpenaiAdapter(quirks: AdapterQuirks = {}): ProtocolAdapter
   return {
     protocol: 'openai',
     requestIn: (wire) => requestIn(wire, quirks),
-    requestOut,
+    requestOut: (ir) => requestOut(ir, quirks),
     responseIn: (wire) => responseIn(wire, quirks),
     responseOut,
     streamParse: (chunks) => streamParse(chunks, quirks),

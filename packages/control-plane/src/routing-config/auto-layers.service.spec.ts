@@ -22,6 +22,9 @@ function pref(v: {
     structuralEnabled: v.structuralEnabled,
     cascadeEnabled: v.cascadeEnabled,
     semanticEnabled: v.semanticEnabled ?? v.structuralEnabled,
+    semanticLearningEnabled: false,
+    semanticLearningEpoch: 0,
+    semanticLearningGeneration: 0,
     calibrationEnabled: false,
     calibratedHigh: null,
     calibratedLow: null,
@@ -154,6 +157,8 @@ describe('AutoLayersService.get — effective = capability × preference', () =>
         cascadeAvailable: autoLayerCapability(cfg(c.layers)).cascade,
         semantic: false,
         semanticAvailable: false,
+        semanticLearning: false,
+        semanticLearningAvailable: false,
         calibration: UNCAL_VIEW,
       });
     });
@@ -178,6 +183,8 @@ describe('AutoLayersService.set — normalizes cascade → structural', () => {
       cascadeAvailable: true,
       semantic: false,
       semanticAvailable: false,
+      semanticLearning: false,
+      semanticLearningAvailable: false,
       calibration: UNCAL_VIEW,
     });
   });
@@ -211,6 +218,8 @@ describe('AutoLayersService.set — normalizes cascade → structural', () => {
       cascadeAvailable: false,
       semantic: false,
       semanticAvailable: false,
+      semanticLearning: false,
+      semanticLearningAvailable: false,
       calibration: UNCAL_VIEW,
     });
   });

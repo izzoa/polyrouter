@@ -559,6 +559,22 @@ Prefer to keep the key out of the YAML? Hermes supports env substitution — use
 `api_key: ${POLYROUTER_KEY}` in `~/.hermes/config.yaml` and put `POLYROUTER_KEY=poly_your_key`
 in `~/.hermes/.env`.
 
+### Max-tokens field for OpenAI-compatible providers
+
+Each **OpenAI-compatible** provider has a `maxTokensSpelling` setting (DB `max_tokens_spelling`)
+that controls which wire field polyrouter sends the output-token cap under:
+
+- `auto` (default) — kind-derived: a **local** provider emits `max_tokens` (older self-hosted
+  runtimes like llama.cpp / LM Studio accept only that and **silently ignore** the newer field,
+  which would drop your cap); every other kind emits `max_completion_tokens`, required by
+  OpenAI's o-series and other reasoning models.
+- `max_completion_tokens` / `max_tokens` — force one field. Set `max_tokens` for a **custom**
+  endpoint that only understands the legacy field; `max_completion_tokens` for a reasoning
+  endpoint reached through a custom `base_url`.
+
+It only applies to OpenAI-compatible providers (Anthropic-compatible always uses `max_tokens`),
+and is set on the provider create/update API (a dashboard control is a follow-up).
+
 ## Development
 
 Requirements: **Node.js 24.x** (see `.nvmrc`), npm 10–11, Docker (for the dev database).

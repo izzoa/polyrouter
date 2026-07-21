@@ -406,6 +406,11 @@ export interface RoutingSettingsValue {
   cascadeEnabled: boolean;
   /** L2 preference (add-semantic-routing); semantic⇒structural holds. */
   semanticEnabled: boolean;
+  /** L2 learning preference (add-semantic-learning); learning⇒semantic holds.
+   * `epoch` = revocation counter, `generation` = active learned-state version. */
+  semanticLearningEnabled: boolean;
+  semanticLearningEpoch: number;
+  semanticLearningGeneration: number;
   calibrationEnabled: boolean;
   calibratedHigh: number | null;
   calibratedLow: number | null;
@@ -424,6 +429,10 @@ export interface RoutingSettingsUpsert {
    * value — except `structuralEnabled:false`, which also clears semantic in
    * the same atomic upsert (dependency-down; add-semantic-routing D7). */
   semanticEnabled?: boolean;
+  /** Optional (pre-change clients omit it): omission PRESERVES the stored
+   * value — except when `semanticEnabled` resolves false, which also clears
+   * learning in the same atomic upsert (dependency-down; add-semantic-learning). */
+  semanticLearningEnabled?: boolean;
   calibrationEnabled?: boolean;
 }
 
@@ -518,12 +527,99 @@ export interface RoutingSettingsAccessor {
   ): Promise<boolean>;
   listCalibrationEnabled(): Promise<CalibrationSweepTenant[]>;
   listWithCalibratedPair(): Promise<CalibrationSweepTenant[]>;
+  /** The learning sweep's APPLY (add-semantic-learning D5): in ONE row-locked
+   * transaction, CAS the tenant's `(epoch, generation)` against `expected`, insert
+   * the audit under its unique `occurrenceId`, and advance `generation` to
+   * `event.generation` (= expected.generation + 1). Idempotent — see
+   * {@link SemanticLearningApplyResult}. */
+  recordLearningApply(
+    principal: Principal,
+    expected: SemanticLearningExpectedState,
+    event: SemanticLearningEventInput,
+  ): Promise<SemanticLearningApplyResult>;
+  /** Audit a `discard_revision` (D9): insert the scalars-only row idempotently on
+   * its `occurrenceId`; NO generation/epoch change. Returns false when this
+   * occurrence was already audited. */
+  recordLearningDiscard(principal: Principal, event: SemanticLearningEventInput): Promise<boolean>;
+  /** System-scope sweep enumeration (trusted scheduler) — the learning-enabled tenants. */
+  listSemanticLearningEnabled(): Promise<SemanticLearningSweepTenant[]>;
+  /** User revert (D4/5.2): in one row-locked transaction bump the revocation
+   * epoch (E→E+1), reset the generation to 0, and audit `revert`. Postgres-FIRST:
+   * the bump makes any in-flight sweep's CAS fail and every reader's `readActive`
+   * gate out the old epoch, so the Redis delete that follows is best-effort. Returns
+   * the NEW `(epoch, generation)` coordinates, or null when the tenant has no row. */
+  revertLearning(
+    principal: Principal,
+    reason: string,
+  ): Promise<{ epoch: number; generation: number } | null>;
 }
 
 /** Owner-scoped calibration history reads (the writes ride `setCalibrated`'s
  * transaction). */
 export interface CalibrationEventsAccessor {
   list(principal: Principal, limit: number): Promise<ThresholdCalibrationEventRowView[]>;
+}
+
+/* ---- semantic learning (add-semantic-learning: the sweep's Postgres half) ---- */
+
+/** The `(epoch, generation)` an apply is predicated on (D5 CAS). */
+export interface SemanticLearningExpectedState {
+  epoch: number;
+  generation: number;
+}
+
+/** A scalars-only sweep audit row input (invariant 8 — never a vector). Drift /
+ * similarity are cosine scalars in [0, 2]; `occurrenceId` is the deterministic
+ * idempotency key. For an `apply`, `epoch`/`generation` are the RESULTING coords
+ * (generation = G+1); for a `discard_revision`, the unchanged current coords. */
+export interface SemanticLearningEventInput {
+  occurrenceId: string;
+  trigger: 'apply' | 'discard_revision' | 'revert';
+  epoch: number;
+  generation: number;
+  highSamples?: number;
+  lowSamples?: number;
+  highDrift?: number | null;
+  lowDrift?: number | null;
+  highSimilarity?: number | null;
+  lowSimilarity?: number | null;
+  reason: string;
+}
+
+/** A tenant surfaced by the learning sweep. */
+export interface SemanticLearningSweepTenant {
+  ownerUserId: string;
+  value: RoutingSettingsValue;
+}
+
+/** `applied` = CAS held, generation bumped, audited. `duplicate` = this
+ * occurrence already committed (crash-after-commit retry) — the caller promotes.
+ * `stale` = a concurrent revert/apply moved the coordinates — the caller skips. */
+export type SemanticLearningApplyResult = 'applied' | 'duplicate' | 'stale';
+
+export interface SemanticLearningEventRowView {
+  id: string;
+  occurrenceId: string;
+  trigger: string;
+  epoch: number;
+  generation: number;
+  highSamples: number;
+  lowSamples: number;
+  highDrift: number | null;
+  lowDrift: number | null;
+  highSimilarity: number | null;
+  lowSimilarity: number | null;
+  reason: string;
+  createdAt: string;
+}
+
+/** Owner-scoped learning history reads (the writes ride the sweep's transaction). */
+export interface SemanticLearningEventsAccessor {
+  list(principal: Principal, limit: number): Promise<SemanticLearningEventRowView[]>;
+  /** The newest `apply` row (or null) — a TARGETED query (not a top-N scan) so a
+   * flurry of discard/revert rows can never hide the last apply from the sweep's
+   * crash-recovery + cooldown checks (clink impl High-1/Med-6). */
+  lastApply(principal: Principal): Promise<SemanticLearningEventRowView | null>;
 }
 
 /* ---- body-capture (add-body-capture, invariant 8's opt-in door) ---- */
@@ -638,6 +734,7 @@ export interface PersistencePort {
   analytics: AnalyticsAccessor;
   routingSettings: RoutingSettingsAccessor;
   calibrationEvents: CalibrationEventsAccessor;
+  semanticLearningEvents: SemanticLearningEventsAccessor;
   bodyCapture: BodyCaptureAccessor;
   users: UsersInfra;
   /** Global pricing catalog (#8) — non-owned, append-only. */

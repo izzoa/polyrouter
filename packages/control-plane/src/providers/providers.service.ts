@@ -44,9 +44,11 @@ import {
 import type {
   CreateProviderDto,
   ListModelsQueryDto,
+  MaxTokensSpelling,
   UpdateModelPricingDto,
   UpdateProviderDto,
 } from './providers.dto';
+import { providerMaxTokensQuirks } from './providers.dto';
 import { SubscriptionOauthService } from '../subscription-oauth/subscription-oauth.service';
 
 export type ProviderAdapterFactory = typeof createProviderAdapter;
@@ -76,6 +78,9 @@ export interface SafeProvider {
   protocol: string;
   baseUrl: string | null;
   status: string;
+  /** Outbound token-cap spelling (add-max-tokens-spelling): `auto` (kind-derived) or
+   * the literal OpenAI wire field. Meaningful only for `openai_compatible` providers. */
+  maxTokensSpelling: MaxTokensSpelling;
   hasCredential: boolean;
   // Subscription-OAuth display/state metadata (add-subscription-oauth) — NON-SECRET;
   // never token material. `credentialError` is the durable 'reauthorize_required' state.
@@ -181,6 +186,7 @@ export function toSafe(p: ProviderRow): SafeProvider {
     protocol: p.protocol,
     baseUrl: p.baseUrl,
     status: p.status,
+    maxTokensSpelling: p.maxTokensSpelling as MaxTokensSpelling,
     hasCredential: p.encryptedCredentials !== null,
     oauthPreset: p.oauthPreset,
     credentialExpiresAt: p.credentialExpiresAt,
@@ -329,6 +335,8 @@ export class ProvidersService {
         : {}),
       ...(dto.firstByteTimeoutMs !== undefined ? { firstByteTimeoutMs: dto.firstByteTimeoutMs } : {}),
       ...(dto.idleTimeoutMs !== undefined ? { idleTimeoutMs: dto.idleTimeoutMs } : {}),
+      // Mapped by hand (like every field here) — omit to take the schema `auto` default.
+      ...(dto.maxTokensSpelling !== undefined ? { maxTokensSpelling: dto.maxTokensSpelling } : {}),
     };
     return toSafe(await this.db.providers.insert(principal, values));
   }
@@ -381,6 +389,8 @@ export class ProvidersService {
       // inherit; omitted preserves.
       ...(dto.firstByteTimeoutMs !== undefined ? { firstByteTimeoutMs: dto.firstByteTimeoutMs } : {}),
       ...(dto.idleTimeoutMs !== undefined ? { idleTimeoutMs: dto.idleTimeoutMs } : {}),
+      // Omitted preserves the stored value (an explicit null was already rejected at the DTO).
+      ...(dto.maxTokensSpelling !== undefined ? { maxTokensSpelling: dto.maxTokensSpelling } : {}),
       // Present-but-empty clears; omitted (undefined) preserves the envelope. New
       // plain values are WRAPPED in the typed envelope (forgery-proof by construction).
       ...(dto.credential !== undefined
@@ -686,6 +696,14 @@ export class ProvidersService {
       throw new UnprocessableEntityException('provider base_url is required');
     }
     const kind = provider.kind as ProviderKind;
+    // Resolve the per-provider outbound token-cap spelling to the data-plane quirk
+    // (add-max-tokens-spelling) — the SAME helper the proxy hot path uses, so both
+    // paths agree. Inert (undefined) for non-`openai_compatible` protocols.
+    const quirks = providerMaxTokensQuirks(
+      provider.protocol,
+      kind,
+      provider.maxTokensSpelling as MaxTokensSpelling,
+    );
     // Subscription providers resolve through the subscription-oauth seam: a plain
     // paste unwraps; an OAuth envelope refreshes pre-request and supplies
     // authScheme/oauthBeta — so test-connection exercises the REAL token path.
@@ -701,6 +719,7 @@ export class ProvidersService {
         ...(r.oauthBeta !== undefined ? { oauthBeta: r.oauthBeta } : {}),
         ...(r.oauthAccountId !== undefined ? { oauthAccountId: r.oauthAccountId } : {}),
         ...(r.probeModel !== undefined ? { probeModel: r.probeModel } : {}),
+        ...(quirks !== undefined ? { quirks } : {}),
         defaultMaxOutputTokens: 4096,
       };
     }
@@ -721,6 +740,7 @@ export class ProvidersService {
       credential,
       kind,
       mode: this.mode,
+      ...(quirks !== undefined ? { quirks } : {}),
       defaultMaxOutputTokens: 4096,
     };
   }

@@ -1,6 +1,6 @@
 // E2 request-fidelity: no block fusion (E2.3), cache_control passthrough (E2.4),
 // response_format + source-tagged reasoning (E2.5), temperature clamp (E2.9).
-import { openaiAdapter } from './openai';
+import { openaiAdapter, createOpenaiAdapter } from './openai';
 import { anthropicAdapter } from './anthropic';
 import { canonRequest } from './canon';
 import type { AntRequest } from './wire/anthropic';
@@ -172,5 +172,63 @@ describe('E2.9 — temperature clamp to Anthropic range', () => {
       messages: [{ role: 'user', content: 'hi' }],
     });
     expect((ant.requestOut(warm) as AntRequest).temperature).toBe(0.7);
+  });
+});
+
+describe('max-tokens spelling — per-provider outbound field (add-max-tokens-spelling)', () => {
+  const ir = oai.requestIn({
+    model: 'gpt',
+    max_completion_tokens: 256,
+    messages: [{ role: 'user', content: 'hi' }],
+  });
+
+  it('defaults to max_completion_tokens and never emits max_tokens', () => {
+    const out = oai.requestOut(ir) as OaiRequest;
+    expect(out.max_completion_tokens).toBe(256);
+    expect(out.max_tokens).toBeUndefined();
+  });
+
+  it('the max_tokens option emits max_tokens and never max_completion_tokens', () => {
+    const legacy = createOpenaiAdapter({ maxTokensSpelling: 'max_tokens' });
+    const out = legacy.requestOut(ir) as OaiRequest;
+    expect(out.max_tokens).toBe(256);
+    expect(out.max_completion_tokens).toBeUndefined();
+  });
+
+  it('an explicit max_completion_tokens option matches the default', () => {
+    const modern = createOpenaiAdapter({ maxTokensSpelling: 'max_completion_tokens' });
+    const out = modern.requestOut(ir) as OaiRequest;
+    expect(out.max_completion_tokens).toBe(256);
+    expect(out.max_tokens).toBeUndefined();
+  });
+
+  it('never emits BOTH spellings, for either option', () => {
+    for (const spelling of ['max_completion_tokens', 'max_tokens'] as const) {
+      const out = createOpenaiAdapter({ maxTokensSpelling: spelling }).requestOut(ir) as OaiRequest;
+      expect(out.max_tokens !== undefined && out.max_completion_tokens !== undefined).toBe(false);
+    }
+  });
+
+  it('requestIn accepts either inbound spelling, independent of the outbound option', () => {
+    expect(
+      oai.requestIn({ model: 'gpt', max_tokens: 128, messages: [] }).params.maxOutputTokens,
+    ).toBe(128);
+    const legacy = createOpenaiAdapter({ maxTokensSpelling: 'max_tokens' });
+    expect(
+      legacy.requestIn({ model: 'gpt', max_completion_tokens: 64, messages: [] }).params
+        .maxOutputTokens,
+    ).toBe(64);
+  });
+
+  it('when both inbound spellings are present, max_completion_tokens wins (incl. 0)', () => {
+    expect(
+      oai.requestIn({ model: 'gpt', max_completion_tokens: 10, max_tokens: 999, messages: [] })
+        .params.maxOutputTokens,
+    ).toBe(10);
+    // A modern value of 0 still wins over a legacy value (nullish-coalescing, not truthiness).
+    expect(
+      oai.requestIn({ model: 'gpt', max_completion_tokens: 0, max_tokens: 999, messages: [] }).params
+        .maxOutputTokens,
+    ).toBe(0);
   });
 });

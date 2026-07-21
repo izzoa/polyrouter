@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { trace, type SpanContext } from '@opentelemetry/api';
 import {
   resolveUsage,
@@ -96,6 +96,17 @@ export interface RecordingContext {
    * Attempt-ledger rows (`recordAttempt`) deliberately ignore it: only the
    * served exchange is ever captured. */
   readonly capture?: RequestCaptureState;
+  /** The L2-ambiguous request's IN-MEMORY embedding + its decision-time learning
+   * gate (add-semantic-learning D1/D3). Set ONLY by the proxy's `servedFrom()`
+   * (cascade-settle) — NEVER by any other context builder — and consumed ONLY by
+   * the learning sink below; the vector never enters the draft, a log, or a
+   * metric (invariant 8). */
+  readonly learning?: {
+    readonly evidence: Float32Array;
+    readonly enabled: boolean;
+    readonly epoch: number;
+    readonly revision: string;
+  };
 }
 
 /** Terminal provider-error detail (add-request-error-detail). `providerMessage`
@@ -127,6 +138,25 @@ export interface RecordOutcome {
   readonly error?: RecordedError;
 }
 
+/** DI token for the OPTIONAL learning-evidence sink (add-semantic-learning task
+ * 3.3). The flag-gated semantic module binds it globally; when absent the
+ * recorder simply never contributes. Kept as an interface of PRIMITIVES so the
+ * recording module never depends on the semantic module. */
+export const LEARNING_EVIDENCE_SINK = 'polyrouter:learning-evidence-sink';
+
+/** Contributes a served L2-ambiguous request's embedding to per-tenant learning
+ * evidence. Implementations MUST be bounded-synchronous, never throw, never
+ * await, and never persist/log the vector (invariant 8). */
+export interface LearningEvidenceSink {
+  contribute(
+    principal: Principal,
+    epoch: number,
+    evidence: Float32Array,
+    revision: string,
+    outcome: RecordOutcome,
+  ): void;
+}
+
 /**
  * Builds a metadata-only request-log draft and enqueues it (#11). Fire-and-forget:
  * does NO DB work (no price lookup here — the writer resolves price under bounded
@@ -141,6 +171,9 @@ export class RequestRecorder {
   constructor(
     private readonly writer: LogWriter,
     private readonly metrics: ProxyMetrics,
+    @Optional()
+    @Inject(LEARNING_EVIDENCE_SINK)
+    private readonly learningSink?: LearningEvidenceSink,
   ) {}
 
   /** Record the served `request_log` row; returns its pre-allocated id. */
@@ -201,6 +234,24 @@ export class RequestRecorder {
       const bodies = bodiesFor(ctx, outcome);
       if (bodies !== undefined) draft.bodies = bodies;
       this.writer.enqueue(draft);
+      // Learning contribution (add-semantic-learning task 3.3): the ONE
+      // cascade-settle site. The vector rode `ctx.learning` (set only by
+      // servedFrom, never in the draft above); the sink labels the outcome and
+      // accumulates, then drops it. Gated on the decision-time toggle; a fault
+      // must never touch the request.
+      if (ctx.learning?.enabled === true && this.learningSink !== undefined) {
+        try {
+          this.learningSink.contribute(
+            ctx.principal,
+            ctx.learning.epoch,
+            ctx.learning.evidence,
+            ctx.learning.revision,
+            outcome,
+          );
+        } catch (err) {
+          this.logger.warn(`learning contribution skipped: ${String(err)}`);
+        }
+      }
       // #21: emitted at ENQUEUE time so traffic stays visible during a DB
       // outage; exactly once per finalized inference request.
       this.metrics.recordRequest(
@@ -274,10 +325,7 @@ export class RequestRecorder {
  * (spec: master kill / override / errors_only matrix). Request always rides
  * when persisting; the response rides when any content assembled — flagged
  * `partial` for a cancelled or post-commit-error termination. */
-function bodiesFor(
-  ctx: RecordingContext,
-  outcome: RecordOutcome,
-): CapturedBodyDraft[] | undefined {
+function bodiesFor(ctx: RecordingContext, outcome: RecordOutcome): CapturedBodyDraft[] | undefined {
   const cap = ctx.capture;
   if (cap === undefined) return undefined;
   const persist = shouldPersistBodies({

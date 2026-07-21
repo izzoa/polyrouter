@@ -210,6 +210,11 @@ export const providers = pgTable(
     baseUrl: text('base_url'),
     encryptedCredentials: text('encrypted_credentials'),
     status: text('status').default('unknown').notNull(),
+    // Per-provider outbound token-cap spelling (add-max-tokens-spelling). Value is the
+    // literal OpenAI wire field (`max_completion_tokens` | `max_tokens`) or `auto`
+    // (kind-derived: local→max_tokens, else max_completion_tokens). openai_compatible
+    // only; inert on other protocols. NOT NULL so the resolver never sees a fourth state.
+    maxTokensSpelling: text('max_tokens_spelling').default('auto').notNull(),
     // Subscription-OAuth display/state metadata (add-subscription-oauth). NON-SECRET:
     // tokens live only inside encrypted_credentials (invariant 8). `oauth_preset` names
     // the bundled preset for an OAuth-connected provider; `credential_expires_at` mirrors
@@ -623,6 +628,14 @@ export const routingSettings = pgTable(
      * migration (a full opt-out stays a full opt-out); semantic⇒structural
      * is DB-checked; PUT normalization is atomic in the upsert. */
     semanticEnabled: boolean('semantic_enabled').default(true).notNull(),
+    /** L2 learning preference (add-semantic-learning; default OFF, opt-in).
+     * `learning ⇒ semantic ⇒ structural` (DB-checked). The REVOCATION epoch
+     * bumps only on revert/config change (invalidates all older learned
+     * state); the ACTIVE generation bumps on each successful sweep apply
+     * (versions the readable state) — the two are distinct (clink r1 High-3). */
+    semanticLearningEnabled: boolean('semantic_learning_enabled').default(false).notNull(),
+    semanticLearningEpoch: integer('semantic_learning_epoch').default(0).notNull(),
+    semanticLearningGeneration: integer('semantic_learning_generation').default(0).notNull(),
     /** Threshold calibration (add-auto-threshold-calibration). The enabled
      * flag gates the calibrator's MOVES only; a stored pair applies while
      * anchor- and rail-valid regardless (disable = stop moving, keep values).
@@ -648,6 +661,10 @@ export const routingSettings = pgTable(
     check(
       'routing_settings_semantic_implies_structural',
       sql`NOT ${t.semanticEnabled} OR ${t.structuralEnabled}`,
+    ),
+    check(
+      'routing_settings_learning_implies_semantic',
+      sql`NOT ${t.semanticLearningEnabled} OR ${t.semanticEnabled}`,
     ),
     // The four calibrated_* columns travel together (all null or all set).
     check(
@@ -806,6 +823,54 @@ export const thresholdCalibrationEvents = pgTable(
   ],
 );
 
+/**
+ * Semantic-learning sweep audit (add-semantic-learning D8/D9). SCALARS ONLY —
+ * by construction NO vector column exists anywhere in the schema (invariant 8);
+ * learned centroids live exclusively in Redis. `occurrence_id` is the
+ * deterministic idempotency key (`ownerUserId:sweepDay`), globally unique so a
+ * crash-retried occurrence appends exactly one row. `trigger`: `apply` advances
+ * the generation and refreshes freshness; `discard_revision` records a
+ * stale-revision discard (no generation bump, no refresh — D9); `revert` records
+ * a user revocation. Drift/similarity are cosine scalars in [0, 2]; `reason` is a
+ * numbers-only serialization (never a vector, never a prompt).
+ */
+export const semanticLearningEvents = pgTable(
+  'semantic_learning_event',
+  {
+    id: id(),
+    ownerUserId: owned.ownerUserId(),
+    orgId: owned.orgId(),
+    occurrenceId: text('occurrence_id').notNull(),
+    trigger: text('trigger').notNull(),
+    epoch: integer('epoch').notNull(),
+    generation: integer('generation').notNull(),
+    highSamples: integer('high_samples').default(0).notNull(),
+    lowSamples: integer('low_samples').default(0).notNull(),
+    highDrift: doublePrecision('high_drift'),
+    lowDrift: doublePrecision('low_drift'),
+    highSimilarity: doublePrecision('high_similarity'),
+    lowSimilarity: doublePrecision('low_similarity'),
+    reason: text('reason').notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('semantic_learning_event_occurrence_unique').on(t.occurrenceId),
+    index('semantic_learning_event_owner_created_idx').on(t.ownerUserId, t.createdAt),
+    check(
+      'semantic_learning_event_trigger_valid',
+      sql`${t.trigger} IN ('apply', 'discard_revision', 'revert')`,
+    ),
+    check(
+      'semantic_learning_event_counts_nonneg',
+      sql`${t.highSamples} >= 0 AND ${t.lowSamples} >= 0`,
+    ),
+    check(
+      'semantic_learning_event_drift_finite',
+      sql`(${t.highDrift} IS NULL OR (${t.highDrift} >= 0 AND ${t.highDrift} <= 2)) AND (${t.lowDrift} IS NULL OR (${t.lowDrift} >= 0 AND ${t.lowDrift} <= 2))`,
+    ),
+  ],
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
 export type AccountRow = typeof accounts.$inferSelect;
@@ -825,5 +890,6 @@ export type BodyCaptureSettingsRow = typeof bodyCaptureSettings.$inferSelect;
 export type RequestBodyRow = typeof requestBodies.$inferSelect;
 export type PricingRefreshRunRow = typeof pricingRefreshRuns.$inferSelect;
 export type ThresholdCalibrationEventRow = typeof thresholdCalibrationEvents.$inferSelect;
+export type SemanticLearningEventRow = typeof semanticLearningEvents.$inferSelect;
 export type InviteRow = typeof invites.$inferSelect;
 export type InstanceSettingsRow = typeof instanceSettings.$inferSelect;

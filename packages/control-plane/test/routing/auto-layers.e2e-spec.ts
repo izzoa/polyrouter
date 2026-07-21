@@ -116,6 +116,8 @@ describe('auto-layers endpoint e2e', () => {
       structuralAvailable: true,
       cascadeAvailable: true,
       semanticAvailable: false,
+      semanticLearning: false,
+      semanticLearningAvailable: false,
       calibration: CAL,
     });
   });
@@ -132,6 +134,8 @@ describe('auto-layers endpoint e2e', () => {
       structuralAvailable: true,
       cascadeAvailable: true,
       semanticAvailable: false,
+      semanticLearning: false,
+      semanticLearningAvailable: false,
       calibration: CAL,
     });
     // Persisted — a later GET returns the same.
@@ -146,6 +150,8 @@ describe('auto-layers endpoint e2e', () => {
       structuralAvailable: true,
       cascadeAvailable: true,
       semanticAvailable: false,
+      semanticLearning: false,
+      semanticLearningAvailable: false,
       calibration: CAL,
     });
     expect((await asA('put', URL).send({ structural: true, cascade: false })).body).toEqual({
@@ -155,6 +161,8 @@ describe('auto-layers endpoint e2e', () => {
       structuralAvailable: true,
       cascadeAvailable: true,
       semanticAvailable: false,
+      semanticLearning: false,
+      semanticLearningAvailable: false,
       calibration: CAL,
     });
   });

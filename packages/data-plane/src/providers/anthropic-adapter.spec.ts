@@ -153,4 +153,16 @@ describe('Anthropic provider adapter', () => {
     const adapter = createAnthropicProviderAdapter(config, { httpClient: client });
     await expect(adapter.chat(request)).rejects.toMatchObject({ kind: 'rate_limit' });
   });
+
+  it('ignores the maxTokensSpelling quirk — always emits max_tokens (add-max-tokens-spelling)', async () => {
+    const { client, calls } = recordingClient(() => jsonResponse(ANT_RESPONSE));
+    const adapter = createAnthropicProviderAdapter(
+      { ...config, quirks: { maxTokensSpelling: 'max_tokens' } },
+      { httpClient: client },
+    );
+    await adapter.chat({ ...request, params: { maxOutputTokens: 100 } });
+    const body = JSON.parse(calls[0]!.init.body!) as Record<string, unknown>;
+    expect(body.max_tokens).toBe(100);
+    expect(body.max_completion_tokens).toBeUndefined();
+  });
 });

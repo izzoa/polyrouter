@@ -12,8 +12,9 @@ import type { Principal } from '@polyrouter/shared/server';
 import {
   CLASSIFICATION_SOURCE,
   type ClassificationSourceProvider,
+  type LearningGate,
 } from './classification-source';
-import { SemanticClassifierService } from './semantic-classifier.service';
+import { SemanticClassifierService, type LearningProvenance } from './semantic-classifier.service';
 import { SemanticRuntimeService } from './semantic-runtime.service';
 
 /** The Layer-2 verdict (add-semantic-routing). Carried on `Prepared` and
@@ -35,7 +36,14 @@ export interface SemanticVerdict {
  * fabricated). */
 export type SemanticEvaluation =
   | { readonly kind: 'route'; readonly decision: RouteDecision; readonly verdict: SemanticVerdict }
-  | { readonly kind: 'ambiguous'; readonly verdict: SemanticVerdict }
+  | {
+      readonly kind: 'ambiguous';
+      readonly verdict: SemanticVerdict;
+      /** The request's IN-MEMORY embedding (add-semantic-learning D1). Rides this
+       * ephemeral field ONLY — never a telemetry column, writer draft, or log —
+       * to the recorder's learning contributor at cascade-settle, then dropped. */
+      readonly evidence: Float32Array;
+    }
   | { readonly kind: 'unroutable'; readonly verdict: SemanticVerdict }
   | { readonly kind: 'skip' };
 
@@ -61,16 +69,24 @@ export class SemanticRouter {
     return this.classifier.available;
   }
 
+  /** The bundled centroids + revision provenance for the learning-evidence
+   * revision (add-semantic-learning); `null` when Layer 2 is unavailable. */
+  get provenance(): LearningProvenance | null {
+    return this.classifier.learningProvenance;
+  }
+
   async evaluate(
     principal: Principal,
     ir: NormalizedRequest,
     snapshot: RoutingSnapshot,
+    gate: LearningGate,
     opts?: { signal?: AbortSignal },
   ): Promise<SemanticEvaluation> {
     const embedder = this.runtime.embedder;
     if (!this.classifier.available || embedder === null) return { kind: 'skip' };
 
     let verdict: SemanticVerdict;
+    let evidence: Float32Array;
     try {
       const cfg = this.runtime.config;
       const text = extractSemanticInput(ir, { totalChars: cfg.maxInputChars });
@@ -79,12 +95,15 @@ export class SemanticRouter {
       // (clink r2 Med-2).
       if (text.trim().length === 0) return { kind: 'skip' };
       const vector = await embedder.embed(text, opts?.signal ? { signal: opts.signal } : undefined);
-      const state = this.source.forPrincipal(principal);
+      // Learned centroids supersede bundled ONLY under the decision-time gate;
+      // ANY failure (incl. Redis) returns bundled, never skip (D4).
+      const state = await this.source.resolve(principal, gate);
       const result = classifySemantic(vector, state.centroids, {
         high: cfg.highThreshold,
         low: cfg.lowThreshold,
       });
       if (result.kind === 'invalid') return { kind: 'skip' }; // degenerate = fault, no telemetry
+      evidence = vector;
       verdict = {
         band: result.band,
         score: round4(result.score),
@@ -99,7 +118,7 @@ export class SemanticRouter {
       return { kind: 'skip' };
     }
 
-    if (verdict.band === 'ambiguous') return { kind: 'ambiguous', verdict };
+    if (verdict.band === 'ambiguous') return { kind: 'ambiguous', verdict, evidence };
     const matchType = verdict.band === 'high' ? 'auto_high' : 'auto_low';
     const decision = resolveBandTarget(snapshot, matchType, 'semantic', verdict.reason);
     if (decision === null) return { kind: 'unroutable', verdict };

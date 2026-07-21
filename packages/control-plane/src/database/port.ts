@@ -14,6 +14,7 @@ import {
   routingRules,
   pricingRefreshRuns,
   routingSettings,
+  semanticLearningEvents,
   thresholdCalibrationEvents,
   tiers,
   users,
@@ -31,6 +32,9 @@ import {
   type RoutingEntryAccessor,
   type RoutingSettingsAccessor,
   type CalibrationEventsAccessor,
+  type SemanticLearningEventsAccessor,
+  type SemanticLearningEventInput,
+  type SemanticLearningEventRowView,
   type TierRow,
 } from '@polyrouter/shared/server';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
@@ -575,6 +579,9 @@ const SETTINGS_VALUE_COLUMNS = {
   structuralEnabled: routingSettings.structuralEnabled,
   cascadeEnabled: routingSettings.cascadeEnabled,
   semanticEnabled: routingSettings.semanticEnabled,
+  semanticLearningEnabled: routingSettings.semanticLearningEnabled,
+  semanticLearningEpoch: routingSettings.semanticLearningEpoch,
+  semanticLearningGeneration: routingSettings.semanticLearningGeneration,
   calibrationEnabled: routingSettings.calibrationEnabled,
   calibratedHigh: routingSettings.calibratedHigh,
   calibratedLow: routingSettings.calibratedLow,
@@ -608,8 +615,10 @@ function createRoutingSettingsAccessor(db: Db): RoutingSettingsAccessor {
             cascadeEnabled: value.cascadeEnabled,
             // First write from a legacy client (semantic omitted): inherit
             // the structural intent, keeping the semantic⇒structural check
-            // true by construction (add-semantic-routing D7).
+            // true by construction (add-semantic-routing D7). Learning always
+            // defaults OFF — never inherited (add-semantic-learning).
             semanticEnabled: value.semanticEnabled ?? value.structuralEnabled,
+            semanticLearningEnabled: value.semanticLearningEnabled ?? false,
             ...(value.calibrationEnabled !== undefined
               ? { calibrationEnabled: value.calibrationEnabled }
               : {}),
@@ -624,11 +633,23 @@ function createRoutingSettingsAccessor(db: Db): RoutingSettingsAccessor {
             // omitted → preserve the STORED value AND the new structural flag
             // (a legacy full opt-out clears semantic; stored semantic can
             // never silently re-enable structural). One statement, no
-            // unlocked pre-read.
+            // unlocked pre-read. Learning depends on the EFFECTIVE semantic
+            // (add-semantic-learning): omitted learning is preserved unless
+            // the effective semantic falls to false, which clears it too. The
+            // learning epoch/generation are managed by the sweep/revert — never
+            // touched here.
             semanticEnabled:
               value.semanticEnabled !== undefined
                 ? value.semanticEnabled
                 : sql`${routingSettings.semanticEnabled} AND ${value.structuralEnabled}`,
+            semanticLearningEnabled:
+              value.semanticLearningEnabled !== undefined
+                ? value.semanticLearningEnabled
+                : sql`${routingSettings.semanticLearningEnabled} AND ${
+                    value.semanticEnabled !== undefined
+                      ? sql`${value.semanticEnabled}`
+                      : sql`(${routingSettings.semanticEnabled} AND ${value.structuralEnabled})`
+                  }`,
             // Omission preserves; the quad/epoch are NEVER touched here.
             ...(value.calibrationEnabled !== undefined
               ? { calibrationEnabled: value.calibrationEnabled }
@@ -766,6 +787,170 @@ function createRoutingSettingsAccessor(db: Db): RoutingSettingsAccessor {
         .where(isNotNull(routingSettings.calibratedHigh));
       return rows.map(({ ownerUserId, ...value }) => ({ ownerUserId, value }));
     },
+    async recordLearningApply(principal, expected, event) {
+      // The sweep's Postgres-authoritative apply (add-semantic-learning D5): CAS
+      // the learning coords under a row lock and advance the generation, with the
+      // audit insert in the SAME transaction so a move without its evidence can
+      // never be observed. Idempotent across the two crash-recovery paths.
+      return db.transaction(async (tx) => {
+        const current = await tx
+          .select(SETTINGS_VALUE_COLUMNS)
+          .from(routingSettings)
+          .where(ownershipPredicate(routingSettings, principal))
+          .limit(1)
+          .for('update');
+        const row = current[0];
+        if (!row) return 'stale';
+        const atExpected =
+          row.semanticLearningEpoch === expected.epoch &&
+          row.semanticLearningGeneration === expected.generation;
+        // The RESULTING coords this occurrence would produce (generation = G+1).
+        const atApplied =
+          row.semanticLearningEpoch === event.epoch &&
+          row.semanticLearningGeneration === event.generation;
+        // Neither the pre- nor post-apply coords ⇒ a concurrent revert/apply won.
+        if (!atExpected && !atApplied) return 'stale';
+        const inserted = await tx
+          .insert(semanticLearningEvents)
+          .values(learningEventValues(principal, event))
+          .onConflictDoNothing({ target: semanticLearningEvents.occurrenceId })
+          .returning({ id: semanticLearningEvents.id });
+        if (atExpected) {
+          if (inserted.length === 0) return 'duplicate'; // already audited (defensive)
+          await tx
+            .update(routingSettings)
+            .set({
+              semanticLearningGeneration: row.semanticLearningGeneration + 1,
+              updatedAt: new Date(),
+            })
+            .where(ownershipPredicate(routingSettings, principal));
+          return 'applied';
+        }
+        // atApplied: a prior attempt already committed this occurrence — the
+        // caller (sweep) still needs to (idempotently) promote the Redis stage.
+        return 'duplicate';
+      });
+    },
+    async recordLearningDiscard(principal, event) {
+      // A discard changes no coordinates (D9) — just an idempotent audit note.
+      const inserted = await db
+        .insert(semanticLearningEvents)
+        .values(learningEventValues(principal, event))
+        .onConflictDoNothing({ target: semanticLearningEvents.occurrenceId })
+        .returning({ id: semanticLearningEvents.id });
+      return inserted.length > 0;
+    },
+    async listSemanticLearningEnabled() {
+      const rows = await db
+        .select({ ownerUserId: routingSettings.ownerUserId, ...SETTINGS_VALUE_COLUMNS })
+        .from(routingSettings)
+        .where(eq(routingSettings.semanticLearningEnabled, true));
+      return rows.map(({ ownerUserId, ...value }) => ({ ownerUserId, value }));
+    },
+    async revertLearning(principal, reason) {
+      // USER-WINS: lock, bump the epoch (fences in-flight sweeps + inert reads),
+      // reset the generation, audit — all in one transaction. The Redis delete is
+      // a best-effort follow-up (the caller does it); the epoch bump is the fence.
+      return db.transaction(async (tx) => {
+        const current = await tx
+          .select(SETTINGS_VALUE_COLUMNS)
+          .from(routingSettings)
+          .where(ownershipPredicate(routingSettings, principal))
+          .limit(1)
+          .for('update');
+        const row = current[0];
+        if (!row) return null;
+        const epoch = row.semanticLearningEpoch + 1;
+        await tx
+          .update(routingSettings)
+          .set({
+            semanticLearningEpoch: epoch,
+            semanticLearningGeneration: 0,
+            updatedAt: new Date(),
+          })
+          .where(ownershipPredicate(routingSettings, principal));
+        const userId = principal.kind === 'user' ? principal.userId : principal.orgId;
+        await tx
+          .insert(semanticLearningEvents)
+          .values(
+            learningEventValues(principal, {
+              occurrenceId: `${userId}:revert:${String(epoch)}`,
+              trigger: 'revert',
+              epoch,
+              generation: 0,
+              reason,
+            }),
+          )
+          .onConflictDoNothing({ target: semanticLearningEvents.occurrenceId });
+        return { epoch, generation: 0 };
+      });
+    },
+  };
+}
+
+/** Scalars-only insert values for a learning audit row (invariant 8). */
+function learningEventValues(
+  principal: Principal,
+  event: SemanticLearningEventInput,
+): typeof semanticLearningEvents.$inferInsert {
+  return buildInsertValues(principal, {
+    occurrenceId: event.occurrenceId,
+    trigger: event.trigger,
+    epoch: event.epoch,
+    generation: event.generation,
+    highSamples: event.highSamples ?? 0,
+    lowSamples: event.lowSamples ?? 0,
+    highDrift: event.highDrift ?? null,
+    lowDrift: event.lowDrift ?? null,
+    highSimilarity: event.highSimilarity ?? null,
+    lowSimilarity: event.lowSimilarity ?? null,
+    reason: event.reason,
+  }) as typeof semanticLearningEvents.$inferInsert;
+}
+
+/** Owner-scoped learning history reads; the writes ride the sweep's transaction. */
+function createSemanticLearningEventsAccessor(db: Db): SemanticLearningEventsAccessor {
+  const iso = (v: Date | string | null): string =>
+    v == null ? '' : v instanceof Date ? v.toISOString() : new Date(v).toISOString();
+  const view = (r: typeof semanticLearningEvents.$inferSelect): SemanticLearningEventRowView => ({
+    id: r.id,
+    occurrenceId: r.occurrenceId,
+    trigger: r.trigger,
+    epoch: r.epoch,
+    generation: r.generation,
+    highSamples: r.highSamples,
+    lowSamples: r.lowSamples,
+    highDrift: r.highDrift,
+    lowDrift: r.lowDrift,
+    highSimilarity: r.highSimilarity,
+    lowSimilarity: r.lowSimilarity,
+    reason: r.reason,
+    createdAt: iso(r.createdAt),
+  });
+  return {
+    async list(principal, limit) {
+      const rows = await db
+        .select()
+        .from(semanticLearningEvents)
+        .where(ownershipPredicate(semanticLearningEvents, principal))
+        .orderBy(desc(semanticLearningEvents.createdAt))
+        .limit(limit);
+      return rows.map(view);
+    },
+    async lastApply(principal) {
+      const rows = await db
+        .select()
+        .from(semanticLearningEvents)
+        .where(
+          and(
+            ownershipPredicate(semanticLearningEvents, principal),
+            eq(semanticLearningEvents.trigger, 'apply'),
+          ),
+        )
+        .orderBy(desc(semanticLearningEvents.createdAt))
+        .limit(1);
+      return rows[0] ? view(rows[0]) : null;
+    },
   };
 }
 
@@ -837,6 +1022,7 @@ export function buildPersistencePort(db: Db): PersistencePort {
     routingSettings: createRoutingSettingsAccessor(db),
     bodyCapture: createBodyCaptureAccessor(db),
     calibrationEvents: createCalibrationEventsAccessor(db),
+    semanticLearningEvents: createSemanticLearningEventsAccessor(db),
     pricing: createPricingCatalog(db),
     users: {
       async count() {

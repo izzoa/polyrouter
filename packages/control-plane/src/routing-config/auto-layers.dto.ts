@@ -18,6 +18,12 @@ export class AutoLayersDto {
   @IsBoolean()
   semantic?: boolean;
 
+  /** L2 learning (add-semantic-learning) — OPTIONAL, default OFF; requires
+   * semantic effective (dependency-down normalized in the upsert). */
+  @IsOptional()
+  @IsBoolean()
+  semanticLearning?: boolean;
+
   @IsOptional()
   @IsBoolean()
   calibration?: boolean;

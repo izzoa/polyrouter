@@ -19,6 +19,36 @@ export const PROVIDER_PROTOCOLS = ['openai_compatible', 'anthropic_compatible'] 
 export type ProviderKind = (typeof PROVIDER_KINDS)[number];
 export type ProviderProtocol = (typeof PROVIDER_PROTOCOLS)[number];
 
+// Per-provider outbound token-cap spelling (add-max-tokens-spelling). Each non-`auto`
+// value IS the literal OpenAI wire field to emit; `auto` is kind-derived at resolution.
+export const MAX_TOKENS_SPELLINGS = ['auto', 'max_completion_tokens', 'max_tokens'] as const;
+export type MaxTokensSpelling = (typeof MAX_TOKENS_SPELLINGS)[number];
+
+/** Resolve the persisted per-provider preference to the concrete data-plane quirk.
+ * A non-`auto` value passes through as the literal wire field; `auto` derives from
+ * kind — a `local` endpoint gets legacy `max_tokens` (it accepts only that and
+ * silently ignores the modern field, which would drop the caller's cap), everything
+ * else keeps the modern `max_completion_tokens` that o-series/reasoning models require. */
+export function resolveMaxTokensSpelling(
+  kind: ProviderKind,
+  pref: MaxTokensSpelling,
+): 'max_completion_tokens' | 'max_tokens' {
+  if (pref !== 'auto') return pref;
+  return kind === 'local' ? 'max_tokens' : 'max_completion_tokens';
+}
+
+/** The resolved `AdapterQuirks` fragment for a provider — populated ONLY for
+ * `openai_compatible` (Anthropic always emits `max_tokens`; Responses drops the cap),
+ * so the option is inert elsewhere. Applied at every `ProviderConfig` assembly site. */
+export function providerMaxTokensQuirks(
+  protocol: string,
+  kind: ProviderKind,
+  pref: MaxTokensSpelling,
+): { readonly maxTokensSpelling: 'max_completion_tokens' | 'max_tokens' } | undefined {
+  if (protocol !== 'openai_compatible') return undefined;
+  return { maxTokensSpelling: resolveMaxTokensSpelling(kind, pref) };
+}
+
 // `require_tld: false` accepts a single-label host like `localhost:11434` (the
 // canonical Ollama endpoint, A-42). This is a SHAPE check only — address safety
 // (private/loopback/metadata, loopback gated on MODE=selfhosted) is enforced by the
@@ -61,6 +91,13 @@ export class CreateProviderDto {
   @Min(1000)
   @Max(3_600_000)
   idleTimeoutMs?: number | null;
+
+  /** Outbound token-cap spelling: an OpenAI wire field or `auto` (kind-derived).
+   * `ValidateIf(!undefined)` rejects an explicit `null` (a fourth state the resolver
+   * can't take) with 400 while letting an omitted field fall to the `auto` default. */
+  @ValidateIf((_, v) => v !== undefined)
+  @IsIn(MAX_TOKENS_SPELLINGS)
+  maxTokensSpelling?: MaxTokensSpelling;
 }
 
 export class UpdateProviderDto {
@@ -102,6 +139,11 @@ export class UpdateProviderDto {
   @Min(1000)
   @Max(3_600_000)
   idleTimeoutMs?: number | null;
+
+  /** Omitted preserves the stored value; an explicit `null` is rejected (400). */
+  @ValidateIf((_, v) => v !== undefined)
+  @IsIn(MAX_TOKENS_SPELLINGS)
+  maxTokensSpelling?: MaxTokensSpelling;
 }
 
 const asBool = ({ value }: { value: unknown }): unknown =>

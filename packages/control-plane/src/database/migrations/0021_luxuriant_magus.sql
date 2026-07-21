@@ -1,0 +1,1 @@
+ALTER TABLE "provider" ADD COLUMN "max_tokens_spelling" text DEFAULT 'auto' NOT NULL;

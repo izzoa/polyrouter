@@ -82,16 +82,26 @@ const INT64 = 7;
 
 /** The complete model bytes. Inputs: input_ids/attention_mask int64 [1, seq]. */
 export function buildFixtureModel(): Buffer {
-  const axes = tensor('axes', INT64, [1], (() => {
-    const b = Buffer.alloc(8);
-    b.writeBigInt64LE(2n);
-    return b;
-  })());
-  const ones = tensor('ones', FLOAT, [8], (() => {
-    const b = Buffer.alloc(32);
-    for (let i = 0; i < 8; i += 1) b.writeFloatLE(1, i * 4);
-    return b;
-  })());
+  const axes = tensor(
+    'axes',
+    INT64,
+    [1],
+    (() => {
+      const b = Buffer.alloc(8);
+      b.writeBigInt64LE(2n);
+      return b;
+    })(),
+  );
+  const ones = tensor(
+    'ones',
+    FLOAT,
+    [8],
+    (() => {
+      const b = Buffer.alloc(32);
+      for (let i = 0; i < 8; i += 1) b.writeFloatLE(1, i * 4);
+      return b;
+    })(),
+  );
 
   const graph = Buffer.concat([
     lenDelim(1, node('Cast', ['input_ids'], ['castf'], [intAttribute('to', FLOAT)])),
@@ -106,11 +116,7 @@ export function buildFixtureModel(): Buffer {
   ]);
 
   // ModelProto: ir_version(1)=8, opset_import(8){version(2)=13}, graph(7).
-  return Buffer.concat([
-    vint(1, 8),
-    lenDelim(7, graph),
-    lenDelim(8, vint(2, 13)),
-  ]);
+  return Buffer.concat([vint(1, 8), lenDelim(7, graph), lenDelim(8, vint(2, 13))]);
 }
 
 export const FIXTURE_VOCAB = ['[PAD]', '[UNK]', '[CLS]', '[SEP]', 'route', 'this', 'request'].join(

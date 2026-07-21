@@ -99,4 +99,57 @@ describe('RequestRecorder', () => {
       expect((call[0] as RequestLogDraft).error).toBeUndefined();
     }
   });
+
+  describe('learning contribution (add-semantic-learning task 3.3)', () => {
+    const vec = new Float32Array([0.1, 0.2, 0.3]);
+    const withSink = (): { recorder: RequestRecorder; enqueue: jest.Mock; contribute: jest.Mock } => {
+      const enqueue = jest.fn();
+      const contribute = jest.fn();
+      const writer = { enqueue } as unknown as LogWriter;
+      const recorder = new RequestRecorder(writer, new ProxyMetrics(), { contribute });
+      return { recorder, enqueue, contribute };
+    };
+    const learning = (enabled: boolean) => ({ evidence: vec, enabled, epoch: 0, revision: 'sha256:rev' });
+
+    it('contributes the served vector at settle, and NEVER puts it in the draft (invariant 8)', () => {
+      const { recorder, enqueue, contribute } = withSink();
+      recorder.record(ctx({ learning: learning(true) }), {
+        status: 'success',
+        outputChars: 10,
+        escalated: false,
+        qualitySignal: 0.9,
+      });
+      expect(contribute).toHaveBeenCalledTimes(1);
+      expect(contribute.mock.calls[0]![2]).toBe(vec); // arg[2] = the vector (arg[1] = epoch)
+      // The enqueued draft has NO vector anywhere.
+      const d = enqueue.mock.calls[0]![0] as RequestLogDraft;
+      expect(Object.values(d).some((v) => v instanceof Float32Array)).toBe(false);
+      expect(JSON.stringify(d)).not.toContain('0.1');
+    });
+
+    it('does NOT contribute when the decision-time gate was disabled', () => {
+      const { recorder, contribute } = withSink();
+      recorder.record(ctx({ learning: learning(false) }), { status: 'success', outputChars: 0 });
+      expect(contribute).not.toHaveBeenCalled();
+    });
+
+    it('does NOT contribute when no learning context rode (non-ambiguous path)', () => {
+      const { recorder, contribute } = withSink();
+      recorder.record(ctx(), { status: 'success', outputChars: 0 });
+      expect(contribute).not.toHaveBeenCalled();
+    });
+
+    it('a throwing sink never breaks recording', () => {
+      const enqueue = jest.fn();
+      const recorder = new RequestRecorder({ enqueue } as unknown as LogWriter, new ProxyMetrics(), {
+        contribute: () => {
+          throw new Error('sink boom');
+        },
+      });
+      expect(() =>
+        recorder.record(ctx({ learning: learning(true) }), { status: 'success', outputChars: 0 }),
+      ).not.toThrow();
+      expect(enqueue).toHaveBeenCalledTimes(1); // the row was still enqueued
+    });
+  });
 });

@@ -13,3 +13,12 @@ export {
   type ExtractCaps,
 } from './extract';
 export { ANCHOR_SET_ID, HIGH_ANCHORS, LOW_ANCHORS } from './anchors';
+export {
+  labelForOutcome,
+  foldEvidence,
+  clampDriftSpherical,
+  cosineDistance,
+  evidenceMean,
+  foldBothLabels,
+  type LearningLabel,
+} from './learning';

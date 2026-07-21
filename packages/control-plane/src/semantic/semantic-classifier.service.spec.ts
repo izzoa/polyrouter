@@ -1,4 +1,5 @@
 import { stubEmbedder, type Embedder } from '@polyrouter/data-plane';
+import { DISABLED_LEARNING_GATE } from './classification-source';
 import { SemanticClassifierService } from './semantic-classifier.service';
 import { SemanticRuntimeService } from './semantic-runtime.service';
 import type { SemanticConfig } from './semantic.config';
@@ -10,6 +11,17 @@ const CFG: SemanticConfig = {
   concurrency: 2,
   highThreshold: 0.15,
   lowThreshold: 0.15,
+  learning: {
+    minCohort: 8,
+    minSamples: 50,
+    alpha: 0.2,
+    maxDrift: 0.35,
+    cooldownH: 24,
+    stateTtlD: 30,
+    maxCohorts: 4096,
+    schedEnabled: true,
+    schedCron: '0 3 * * *',
+  },
 };
 
 function fakeRuntime(embedder: Embedder | null): SemanticRuntimeService {
@@ -25,7 +37,9 @@ describe('SemanticClassifierService lifecycle', () => {
     const svc = new SemanticClassifierService(fakeRuntime(null));
     await svc.onApplicationBootstrap();
     expect(svc.available).toBe(false);
-    expect(() => svc.forPrincipal({ kind: 'user', userId: 'u' })).toThrow('not ready');
+    await expect(
+      svc.resolve({ kind: 'user', userId: 'u' }, DISABLED_LEARNING_GATE),
+    ).rejects.toThrow('not ready');
   });
 
   it('a real (separating) embedder builds centroids and becomes available with a revision', async () => {
@@ -34,7 +48,7 @@ describe('SemanticClassifierService lifecycle', () => {
     const svc = new SemanticClassifierService(fakeRuntime(stubEmbedder(384)));
     await svc.onApplicationBootstrap();
     expect(svc.available).toBe(true);
-    const state = svc.forPrincipal({ kind: 'user', userId: 'u' });
+    const state = await svc.resolve({ kind: 'user', userId: 'u' }, DISABLED_LEARNING_GATE);
     expect(state.source).toBe('bundled');
     expect(state.revision).toMatch(/^sha256:/);
     expect(state.centroids.high).toHaveLength(384);

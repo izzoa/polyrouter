@@ -17,6 +17,13 @@ heading is started.
 
 ### Added
 
+- Per-provider **max-tokens field** for OpenAI-compatible providers: a
+  `maxTokensSpelling` setting (`auto` | `max_completion_tokens` | `max_tokens`,
+  default `auto`) chooses which wire field the output-token cap is sent under.
+  `auto` is kind-derived — `local` providers emit `max_tokens`, every other kind
+  emits `max_completion_tokens` (required by OpenAI o-series / reasoning models).
+  Inbound still accepts either spelling; outbound emits exactly one. Set via the
+  provider create/update API (a dashboard control is a follow-up).
 - Optional Layer-2 semantic-embedder runtime (`SEMANTIC_MODEL_PATH` + a local
   model bundle): bounded local ONNX embedding with boot warmup, fail-fast on
   broken bundles, a content-derived model revision, and an ORT- and
@@ -33,6 +40,25 @@ heading is started.
   tenant `semantic` layer toggle (semantic⇒structural), and a
   `decision_layer=semantic` analytics filter. Opt-in, off unless an embedder is
   loaded; no prompt text or vectors are ever logged.
+- Layer-2 **learning loop**: per-tenant learned centroids that track each tenant's
+  own outcome-labeled traffic (opt-in, default OFF). Cascade outcomes weakly label
+  the L2-ambiguous requests (quality-passed → `low`, quality-gate escalation →
+  `high`); embeddings accumulate in bounded volatile memory and flush to Redis only
+  as a ≥ `MIN_COHORT` sum — never a single raw embedding. A daily sweep folds fresh
+  evidence into learned centroids under rails (min samples, capped EMA, spherical
+  drift clamp toward bundled, cooldown, evidence-revision match), crash-atomically
+  across Redis + Postgres (rotate → stage → CAS + scalars-only audit → promote).
+  Learned supersedes bundled only under read-time gates; any failure or Redis fault
+  falls back to bundled, never skip. One-action revert; a status view (counts /
+  source / generation / last-applied). No vector ever reaches Postgres, a log, a
+  metric, or an API response.
+
+### Fixed
+
+- Local / legacy OpenAI-compatible endpoints that accept only `max_tokens` no
+  longer silently lose the caller's output-token cap — the proxy now sends the
+  field each endpoint accepts (see the max-tokens field setting above). Existing
+  `local` providers switch to `max_tokens` on upgrade; all others are unchanged.
 
 ## [0.7.0] — 2026-07-21
 

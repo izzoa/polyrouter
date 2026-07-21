@@ -91,6 +91,9 @@ export interface AgentReveal extends AgentDto {
 
 export type ApiProviderKind = 'api_key' | 'subscription' | 'custom' | 'local';
 export type ApiProviderProtocol = 'openai_compatible' | 'anthropic_compatible';
+/** Outbound token-cap spelling (add-max-tokens-spelling): `auto` (kind-derived) or the
+ * literal OpenAI wire field the cap is emitted under. openai_compatible only. */
+export type ApiMaxTokensSpelling = 'auto' | 'max_completion_tokens' | 'max_tokens';
 export type ProviderStatus = 'unknown' | 'ok' | 'error';
 
 export interface ProviderDto {
@@ -100,6 +103,8 @@ export interface ProviderDto {
   protocol: string;
   baseUrl: string | null;
   status: string;
+  /** Outbound token-cap spelling (add-max-tokens-spelling); `auto` or a literal wire field. */
+  maxTokensSpelling: ApiMaxTokensSpelling;
   hasCredential: boolean;
   /** Subscription-OAuth display/state metadata (non-secret; add-subscription-oauth). */
   oauthPreset: string | null;
@@ -135,6 +140,8 @@ export interface CreateProviderInput {
   protocol: ApiProviderProtocol;
   baseUrl: string;
   credential?: string;
+  /** Optional; server defaults to `auto` (kind-derived) when omitted. */
+  maxTokensSpelling?: ApiMaxTokensSpelling;
   firstByteTimeoutMs?: number | null;
   idleTimeoutMs?: number | null;
 }
@@ -145,6 +152,8 @@ export interface UpdateProviderInput {
   protocol?: ApiProviderProtocol;
   baseUrl?: string;
   credential?: string;
+  /** Omitted preserves the stored value; the server rejects an explicit null. */
+  maxTokensSpelling?: ApiMaxTokensSpelling;
   /** Explicit null clears back to inherit; omitted preserves. */
   firstByteTimeoutMs?: number | null;
   idleTimeoutMs?: number | null;

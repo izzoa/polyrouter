@@ -70,6 +70,7 @@ function makePort(): FakePort {
     baseUrl: values.baseUrl ?? null,
     encryptedCredentials: values.encryptedCredentials ?? null,
     status: values.status ?? 'unknown',
+    maxTokensSpelling: values.maxTokensSpelling ?? 'auto',
     oauthPreset: values.oauthPreset ?? null,
     credentialExpiresAt: values.credentialExpiresAt ?? null,
     credentialError: values.credentialError ?? null,
@@ -452,5 +453,74 @@ describe('listModels — native-family display batch (add-native-price-fallback)
     });
     // ...with the provider-listed channel figure carried ALONGSIDE, not replaced.
     expect(out[0]!.listedPrice).toMatchObject({ inputPricePer1m: 0.3, outputPricePer1m: 1.1 });
+  });
+});
+
+describe('ProvidersService — max-tokens spelling resolution (add-max-tokens-spelling)', () => {
+  function trackingSvc() {
+    const { port } = makePort();
+    const cfgs: { quirks?: { maxTokensSpelling?: string } }[] = [];
+    const trackingFactory = ((cfg: unknown) => {
+      cfgs.push(cfg as { quirks?: { maxTokensSpelling?: string } });
+      return factory()(cfg as never);
+    }) as unknown as ProviderAdapterFactory;
+    return { svc: mkProvidersService(port, trackingFactory, runtime('selfhosted')), cfgs };
+  }
+
+  it('auto resolves openai_compatible by kind (local→max_tokens, api_key→max_completion_tokens)', async () => {
+    const { svc, cfgs } = trackingSvc();
+    const local = await svc.create(principal, {
+      ...baseCreate,
+      kind: 'local',
+      baseUrl: 'http://localhost:11434/v1',
+    });
+    const hosted = await svc.create(principal, {
+      ...baseCreate,
+      kind: 'api_key',
+      baseUrl: 'https://1.1.1.1/v1',
+      credential: 'sk-x',
+    });
+    await svc.testConnection(principal, local.id);
+    await svc.testConnection(principal, hosted.id);
+    expect(cfgs[0]!.quirks?.maxTokensSpelling).toBe('max_tokens');
+    expect(cfgs[1]!.quirks?.maxTokensSpelling).toBe('max_completion_tokens');
+  });
+
+  it('an explicit spelling overrides the kind default and round-trips on the safe shape', async () => {
+    const { svc, cfgs } = trackingSvc();
+    const p = await svc.create(principal, {
+      ...baseCreate,
+      kind: 'local',
+      baseUrl: 'http://localhost:11434/v1',
+      maxTokensSpelling: 'max_completion_tokens',
+    });
+    expect(p.maxTokensSpelling).toBe('max_completion_tokens'); // persisted + returned on the safe shape
+    expect((await svc.get(principal, p.id)).maxTokensSpelling).toBe('max_completion_tokens');
+    await svc.testConnection(principal, p.id);
+    expect(cfgs[0]!.quirks?.maxTokensSpelling).toBe('max_completion_tokens');
+  });
+
+  it('defaults the persisted value to auto', async () => {
+    const { svc } = trackingSvc();
+    const p = await svc.create(principal, {
+      ...baseCreate,
+      kind: 'api_key',
+      baseUrl: 'https://1.1.1.1/v1',
+      credential: 'sk-z',
+    });
+    expect(p.maxTokensSpelling).toBe('auto');
+  });
+
+  it('is inert for anthropic_compatible providers (undefined quirks)', async () => {
+    const { svc, cfgs } = trackingSvc();
+    const p = await svc.create(principal, {
+      ...baseCreate,
+      protocol: 'anthropic_compatible' as const,
+      kind: 'api_key',
+      baseUrl: 'https://1.1.1.1',
+      credential: 'sk-y',
+    });
+    await svc.testConnection(principal, p.id);
+    expect(cfgs[0]!.quirks).toBeUndefined();
   });
 });

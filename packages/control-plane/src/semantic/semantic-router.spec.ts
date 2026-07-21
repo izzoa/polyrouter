@@ -6,12 +6,13 @@ import {
   type RoutingSnapshot,
 } from '@polyrouter/data-plane';
 import type { Principal } from '@polyrouter/shared/server';
-import type { ClassificationState } from './classification-source';
+import { DISABLED_LEARNING_GATE, type ClassificationState } from './classification-source';
 import { SemanticClassifierService } from './semantic-classifier.service';
 import { SemanticRouter } from './semantic-router';
 import { SemanticRuntimeService } from './semantic-runtime.service';
 
 const principal: Principal = { kind: 'user', userId: 'u1' };
+const GATE = DISABLED_LEARNING_GATE;
 const ir = (text: string): NormalizedRequest => ({
   model: 'auto',
   messages: [{ role: 'user', content: [{ type: 'text', text }] }],
@@ -21,7 +22,12 @@ const ir = (text: string): NormalizedRequest => ({
 /** A snapshot whose auto_high/auto_low rules resolve to a tier (or not). */
 const snapshot = (withTargets: boolean): RoutingSnapshot =>
   ({
-    tiers: withTargets ? [{ id: 't-strong', key: 'strong' }, { id: 't-cheap', key: 'cheap' }] : [],
+    tiers: withTargets
+      ? [
+          { id: 't-strong', key: 'strong' },
+          { id: 't-cheap', key: 'cheap' },
+        ]
+      : [],
     entriesByTierId: new Map(
       withTargets
         ? [
@@ -60,7 +66,10 @@ const snapshot = (withTargets: boolean): RoutingSnapshot =>
       : [],
   }) as unknown as RoutingSnapshot;
 
-function fakeRuntime(embedder: Embedder | null, over?: { highThreshold?: number; lowThreshold?: number }): SemanticRuntimeService {
+function fakeRuntime(
+  embedder: Embedder | null,
+  over?: { highThreshold?: number; lowThreshold?: number },
+): SemanticRuntimeService {
   return {
     embedder,
     config: {
@@ -77,10 +86,10 @@ function fakeRuntime(embedder: Embedder | null, over?: { highThreshold?: number;
 function fakeClassifier(state: ClassificationState | null): SemanticClassifierService {
   return {
     available: state !== null,
-    forPrincipal: () => {
-      if (state === null) throw new Error('not ready');
-      return state;
-    },
+    // Doubles as both the classifier (`available`) and the classification SOURCE
+    // (`resolve`) constructor args; the base source is always the given state.
+    resolve: () =>
+      state === null ? Promise.reject(new Error('not ready')) : Promise.resolve(state),
   } as unknown as SemanticClassifierService;
 }
 
@@ -96,23 +105,30 @@ describe('SemanticRouter.evaluate', () => {
   // Centroids are built through the SAME extractor the router uses, so a
   // request equal to an anchor lands squarely in that band (the stub hashes
   // the serialized text, `user: …` framing included).
-  const serialized = (text: string): string =>
-    extractSemanticInput(ir(text), { totalChars: 2000 });
+  const serialized = (text: string): string => extractSemanticInput(ir(text), { totalChars: 2000 });
 
   beforeAll(async () => {
     highVec = await embedder.embed(serialized(HIGH_TEXT));
     lowVec = await embedder.embed(serialized(LOW_TEXT));
-    state = { centroids: { high: highVec, low: lowVec }, source: 'bundled', revision: 'sha256:rev' };
+    state = {
+      centroids: { high: highVec, low: lowVec },
+      source: 'bundled',
+      revision: 'sha256:rev',
+    };
   });
 
   it('skips when the classifier is not ready', async () => {
     const r = new SemanticRouter(fakeRuntime(embedder), fakeClassifier(null), fakeClassifier(null));
-    expect(await r.evaluate(principal, ir('x'), snapshot(true))).toEqual({ kind: 'skip' });
+    expect(await r.evaluate(principal, ir('x'), snapshot(true), GATE)).toEqual({ kind: 'skip' });
   });
 
   it('routes a confident-high request to auto_high with decision_layer=semantic', async () => {
-    const r = new SemanticRouter(fakeRuntime(embedder), fakeClassifier(state), fakeClassifier(state));
-    const res = await r.evaluate(principal, ir(HIGH_TEXT), snapshot(true));
+    const r = new SemanticRouter(
+      fakeRuntime(embedder),
+      fakeClassifier(state),
+      fakeClassifier(state),
+    );
+    const res = await r.evaluate(principal, ir(HIGH_TEXT), snapshot(true), GATE);
     expect(res.kind).toBe('route');
     if (res.kind === 'route') {
       expect(res.decision.decisionLayer).toBe('semantic');
@@ -123,16 +139,29 @@ describe('SemanticRouter.evaluate', () => {
   });
 
   it('is unroutable (verdict kept) when the confident band has no target', async () => {
-    const r = new SemanticRouter(fakeRuntime(embedder), fakeClassifier(state), fakeClassifier(state));
-    const res = await r.evaluate(principal, ir(HIGH_TEXT), snapshot(false));
+    const r = new SemanticRouter(
+      fakeRuntime(embedder),
+      fakeClassifier(state),
+      fakeClassifier(state),
+    );
+    const res = await r.evaluate(principal, ir(HIGH_TEXT), snapshot(false), GATE);
     expect(res.kind).toBe('unroutable');
     if (res.kind === 'unroutable') expect(res.verdict.band).toBe('high');
   });
 
   it('returns ambiguous for a middling request', async () => {
     // A text near neither centroid → score in the wide ambiguous band.
-    const r = new SemanticRouter(fakeRuntime(embedder, { highThreshold: 0.9, lowThreshold: 0.9 }), fakeClassifier(state), fakeClassifier(state));
-    const res = await r.evaluate(principal, ir('some unrelated neutral text here'), snapshot(true));
+    const r = new SemanticRouter(
+      fakeRuntime(embedder, { highThreshold: 0.9, lowThreshold: 0.9 }),
+      fakeClassifier(state),
+      fakeClassifier(state),
+    );
+    const res = await r.evaluate(
+      principal,
+      ir('some unrelated neutral text here'),
+      snapshot(true),
+      GATE,
+    );
     expect(res.kind).toBe('ambiguous');
   });
 
@@ -148,7 +177,7 @@ describe('SemanticRouter.evaluate', () => {
     } as unknown as Embedder;
     const r = new SemanticRouter(fakeRuntime(spy), fakeClassifier(state), fakeClassifier(state));
     const systemOnly: NormalizedRequest = { model: 'auto', messages: [], params: {} };
-    expect(await r.evaluate(principal, systemOnly, snapshot(true))).toEqual({ kind: 'skip' });
+    expect(await r.evaluate(principal, systemOnly, snapshot(true), GATE)).toEqual({ kind: 'skip' });
     expect(embedCalls).toBe(0);
   });
 
@@ -158,8 +187,12 @@ describe('SemanticRouter.evaluate', () => {
       dims: 64,
       embed: () => Promise.reject(new Error('boom')),
     } as unknown as Embedder;
-    const r = new SemanticRouter(fakeRuntime(throwing), fakeClassifier(state), fakeClassifier(state));
-    expect(await r.evaluate(principal, ir('x'), snapshot(true))).toEqual({ kind: 'skip' });
+    const r = new SemanticRouter(
+      fakeRuntime(throwing),
+      fakeClassifier(state),
+      fakeClassifier(state),
+    );
+    expect(await r.evaluate(principal, ir('x'), snapshot(true), GATE)).toEqual({ kind: 'skip' });
   });
 
   it('passes the caller signal into embed (disconnect → skip)', async () => {
@@ -174,7 +207,7 @@ describe('SemanticRouter.evaluate', () => {
     } as unknown as Embedder;
     const ctl = new AbortController();
     const r = new SemanticRouter(fakeRuntime(spy), fakeClassifier(state), fakeClassifier(state));
-    const res = await r.evaluate(principal, ir('x'), snapshot(true), { signal: ctl.signal });
+    const res = await r.evaluate(principal, ir('x'), snapshot(true), GATE, { signal: ctl.signal });
     expect(res).toEqual({ kind: 'skip' });
     expect(sawSignal).toBe(ctl.signal);
   });

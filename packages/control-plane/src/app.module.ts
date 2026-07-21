@@ -9,6 +9,8 @@ import { AuthModule } from './auth/auth.module';
 import { BodyCaptureModule } from './body-capture/body-capture.module';
 import { BudgetsModule } from './budgets/budgets.module';
 import { CalibrationModule } from './calibration/calibration.module';
+import { SemanticLearningModule } from './semantic/semantic-learning.module';
+import { LearningContributionModule } from './semantic/learning-contribution.module';
 import { SessionGuard } from './auth/session.guard';
 import { DatabaseModule } from './database/database.module';
 import { HealthController } from './health/health.controller';
@@ -38,6 +40,8 @@ import { RoutingConfigModule } from './routing-config/routing-config.module';
     ProducersModule,
     BudgetsModule,
     CalibrationModule,
+    SemanticLearningModule,
+    LearningContributionModule,
     BodyCaptureModule,
     AccountModule,
     AnalyticsModule,

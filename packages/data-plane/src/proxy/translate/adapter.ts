@@ -17,6 +17,13 @@ export interface AdapterQuirks {
   /** Provider already returns tool-call arguments as a parsed object, not a
    * JSON string — skip the parse step. */
   readonly toolArgumentsAlreadyObject?: boolean;
+  /** Which spelling `requestOut` emits the output-token cap under — the value IS
+   * the OpenAI wire field. `'max_completion_tokens'` (default; current OpenAI,
+   * required by o-series/reasoning models) or `'max_tokens'` (legacy; for
+   * OpenAI-compatible endpoints that only accept the old field). Exactly one is
+   * ever emitted, never both; `requestIn` still accepts either. The sole quirk
+   * that influences `requestOut`. */
+  readonly maxTokensSpelling?: 'max_completion_tokens' | 'max_tokens';
 }
 
 /** Pure, caller-supplied context for fields a target protocol requires but the

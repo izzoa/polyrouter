@@ -128,6 +128,17 @@ const SEMANTIC_CFG: SemanticConfig = {
   concurrency: 2,
   highThreshold: 0.15,
   lowThreshold: 0.15,
+  learning: {
+    minCohort: 8,
+    minSamples: 50,
+    alpha: 0.2,
+    maxDrift: 0.35,
+    cooldownH: 24,
+    stateTtlD: 30,
+    maxCohorts: 4096,
+    schedEnabled: true,
+    schedCron: '0 3 * * *',
+  },
 };
 
 /** An AMBIGUOUS `auto` turn (size + one tool schema lands between the L1

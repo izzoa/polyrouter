@@ -720,6 +720,7 @@ describe('dashboard shell (auth-gated)', () => {
           protocol: 'openai_compatible',
           baseUrl: 'https://openrouter.ai/api/v1',
           status: 'ok',
+          maxTokensSpelling: 'auto',
           hasCredential: true,
           oauthPreset: null,
           credentialExpiresAt: null,

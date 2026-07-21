@@ -12,10 +12,32 @@ export interface ClassificationState {
   readonly revision: string;
 }
 
-/** The seam the router reads. Bundled-only in this change; the interface is
- * the single point change 3 substitutes learned state through. */
+/** The decision-time learning gate (add-semantic-learning D3/D4), computed once
+ * at resolvePlan from the tenant's settings row + snapshot and passed to the
+ * source so a learned state is served ONLY under the coordinates the request was
+ * decided against. `enabled:false` (default / any fail-closed path) means bundled. */
+export interface LearningGate {
+  readonly enabled: boolean;
+  readonly epoch: number;
+  readonly generation: number;
+  readonly evidenceRevision: string;
+}
+
+/** A disabled gate — the fail-closed default (missing settings, learning off,
+ * classifier unavailable). */
+export const DISABLED_LEARNING_GATE: LearningGate = {
+  enabled: false,
+  epoch: 0,
+  generation: 0,
+  evidenceRevision: '',
+};
+
+/** The seam the router reads. ASYNC + context-aware (add-semantic-learning
+ * D4): `resolve` receives the decision-time gate and MAY substitute learned
+ * per-tenant centroids for the bundled ones — but ANY failure returns bundled,
+ * NEVER the router's skip path. */
 export interface ClassificationSourceProvider {
-  forPrincipal(principal: Principal): ClassificationState;
+  resolve(principal: Principal, gate: LearningGate): Promise<ClassificationState>;
 }
 
 /** DI token for the classification source (add-semantic-routing). Bound to

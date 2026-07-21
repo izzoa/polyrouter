@@ -141,6 +141,27 @@
       "when": 1784650296299,
       "tag": "0019_vengeful_sentry",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1784657281212,
+      "tag": "0020_lame_kronos",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1784662245595,
+      "tag": "0021_luxuriant_magus",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1784665944790,
+      "tag": "0022_dashing_queen_noir",
+      "breakpoints": true
     }
   ]
 }

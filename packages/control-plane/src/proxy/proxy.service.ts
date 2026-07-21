@@ -38,10 +38,10 @@ import {
   type ProviderKind,
   type ProviderProtocol,
   type RouteDecision,
-  type RouteEntry,
   type RoutingSnapshot,
   type StructuralVerdict,
 } from '@polyrouter/data-plane';
+import { providerMaxTokensQuirks, type MaxTokensSpelling } from '../providers/providers.dto';
 import type { ClientProtocol } from './proxy-errors';
 import {
   badRequest,
@@ -59,10 +59,7 @@ import {
   type ProxyAdapterFactory,
   type ProxyRuntime,
 } from './proxy.config';
-import {
-  CALIBRATION_RAILS,
-  type CalibrationRails,
-} from '../calibration/calibration.config';
+import { CALIBRATION_RAILS, type CalibrationRails } from '../calibration/calibration.config';
 import {
   ROUTING_CONFIG,
   autoLayerCapability,
@@ -80,10 +77,13 @@ import { BodyCaptureService } from '../body-capture/body-capture.service';
 import { ProxyMetrics } from '../observability/proxy-metrics';
 import { observeAdapter } from '../observability/observe-adapter';
 import { TRACER_NAME } from '../observability/tracing';
+import { loadRoutingSnapshot } from './routing-snapshot';
 import { StructuralRouter } from './structural/structural-router';
 import { CascadeRouter, type CascadePlan } from './cascade/cascade-router';
 import { SemanticRouter, type SemanticVerdict } from '../semantic/semantic-router';
 import { SemanticClassifierService } from '../semantic/semantic-classifier.service';
+import { DISABLED_LEARNING_GATE, type LearningGate } from '../semantic/classification-source';
+import { resolveLearningEvidenceRevision } from '../semantic/learning-evidence';
 import { NotificationProducers } from '../producers/notification-producers';
 import { BudgetService, BudgetEnforcementUnavailableError } from '../budgets/budget-service';
 import { SubscriptionOauthService } from '../subscription-oauth/subscription-oauth.service';
@@ -143,6 +143,13 @@ interface Prepared {
    * recorded on every parent row alongside the structural verdict; undefined
    * when L2 did not run or faulted (fail-open never fabricates telemetry). */
   semanticVerdict?: SemanticVerdict;
+  /** The decision-time learning gate + the L2-ambiguous request's IN-MEMORY
+   * embedding (add-semantic-learning D1/D3). The gate is default-disabled; the
+   * evidence is present ONLY for the L2-ambiguous slice. Both reach the recorder's
+   * learning contributor via `servedFrom()` alone — NEVER a persisted field or
+   * log — and the vector is dropped after contribution (invariant 8). */
+  learningGate: LearningGate;
+  learningEvidence: Float32Array | null;
   created: number;
   attempts: ChainAttempt[];
   meta: AttemptMeta[];
@@ -621,7 +628,14 @@ export class ProxyService {
       // Provenance (add-auto-threshold-calibration): reaching here with a
       // PASSING verdict means the replay failed — an infrastructure fault,
       // never quality evidence (r2-High-2).
-      return this.escalateStream(p, c, cheapServed, score, escalate ? 'quality_gate' : 'cheap_error', signal);
+      return this.escalateStream(
+        p,
+        c,
+        cheapServed,
+        score,
+        escalate ? 'quality_gate' : 'cheap_error',
+        signal,
+      );
     }
     if (cheap.callerAborted) {
       // Client disconnected during the cheap leg (pre-commit — no bytes sent). Record
@@ -808,6 +822,30 @@ export class ProxyService {
     }
   }
 
+  /** The decision-time learning gate (add-semantic-learning D3, task 2.2),
+   * computed from the SAME settings read + snapshot the layers used — no extra
+   * hot-path I/O. Fail-CLOSED: a missing row, learning-off tenant, or unavailable
+   * classifier ⇒ disabled (bundled). Only reached when semantic is effective. */
+  private learningGate(
+    settings: RoutingSettingsValue | null,
+    snapshot: RoutingSnapshot,
+  ): LearningGate {
+    const prov = this.semantic.provenance;
+    if (settings === null || !settings.semanticLearningEnabled || prov === null) {
+      return DISABLED_LEARNING_GATE;
+    }
+    return {
+      enabled: true,
+      epoch: settings.semanticLearningEpoch,
+      generation: settings.semanticLearningGeneration,
+      evidenceRevision: resolveLearningEvidenceRevision(
+        snapshot,
+        prov,
+        this.routingConfig.cascade.qualityThreshold,
+      ),
+    };
+  }
+
   private async prepare(
     principal: Principal,
     protocol: ClientProtocol,
@@ -876,6 +914,8 @@ export class ProxyService {
     let structuralVerdict: StructuralVerdict | undefined;
     let structuralEpoch: number | undefined;
     let semanticVerdict: SemanticVerdict | undefined;
+    let learningGate: LearningGate = DISABLED_LEARNING_GATE;
+    let learningEvidence: Float32Array | null = null;
     if (ir.model === AUTO_ALIAS && decision.decisionLayer === 'default') {
       // Per-tenant opt-out (#20): the effective layers are the instance
       // capability masked by the tenant's preference. A disabled layer is
@@ -904,10 +944,20 @@ export class ProxyService {
           // semantic-routing D1). A confident L2 band routes; a still-
           // ambiguous or unroutable L2 verdict hands to cascade/default. Every
           // L2 fault degrades to exactly today's L1-ambiguous flow.
+          const gate = layers.semantic
+            ? this.learningGate(layers.settings, snapshot)
+            : DISABLED_LEARNING_GATE;
           const sem = layers.semantic
-            ? await this.semantic.evaluate(principal, ir, snapshot, { signal })
+            ? await this.semantic.evaluate(principal, ir, snapshot, gate, { signal })
             : ({ kind: 'skip' } as const);
           if (sem.kind !== 'skip') semanticVerdict = sem.verdict;
+          // The vector + gate for the learning contributor ride Prepared, set ONLY
+          // for the L2-ambiguous slice (add-semantic-learning D1/D3) — the exact
+          // requests whose cascade outcome becomes a weak label.
+          if (sem.kind === 'ambiguous') {
+            learningGate = gate;
+            learningEvidence = sem.evidence;
+          }
           if (sem.kind === 'route') {
             decision = sem.decision; // Layer 2 confident band — never cascades
           } else if (sem.kind === 'unroutable') {
@@ -954,7 +1004,12 @@ export class ProxyService {
     // never the earlier plan-null check). The gate carries the ORDERED L1→L2
     // classification trail onto a default fall-through reason; the cascade
     // path threads the same trail through its own recorder construction.
-    decision = withFallthroughSuffix(decision, structuralVerdict, semanticVerdict, cascade !== undefined);
+    decision = withFallthroughSuffix(
+      decision,
+      structuralVerdict,
+      semanticVerdict,
+      cascade !== undefined,
+    );
 
     // Body capture (add-body-capture): arm ONLY when the effective state can
     // persist (off / agent-never allocate nothing — the master kill). The
@@ -992,6 +1047,8 @@ export class ProxyService {
       ...(structuralVerdict !== undefined ? { structuralVerdict } : {}),
       ...(structuralEpoch !== undefined ? { structuralEpoch } : {}),
       ...(semanticVerdict !== undefined ? { semanticVerdict } : {}),
+      learningGate,
+      learningEvidence,
       created: Math.floor(Date.now() / 1000),
       attempts: primary.attempts,
       meta: primary.meta,
@@ -1148,7 +1205,23 @@ export class ProxyService {
   ): RecordingContext {
     const reason = reasonWithTrail(`${baseReason} (q=${fmtQ(score)})`, failures, meta);
     const trail = classificationTrail(p);
-    return this.metaContext(p, meta[servedIndex]!, trail === '' ? reason : `${reason}; ${trail}`);
+    const ctx = this.metaContext(
+      p,
+      meta[servedIndex]!,
+      trail === '' ? reason : `${reason}; ${trail}`,
+    );
+    // The learning vector rides the SERVED context ONLY (add-semantic-learning
+    // D1/3.1) — the recorder's sink contributes it at settle, then drops it.
+    if (p.learningEvidence === null) return ctx;
+    return {
+      ...ctx,
+      learning: {
+        evidence: p.learningEvidence,
+        enabled: p.learningGate.enabled,
+        epoch: p.learningGate.epoch,
+        revision: p.learningGate.evidenceRevision,
+      },
+    };
   }
 
   private metaContext(p: Prepared, m: AttemptMeta, reason: string): RecordingContext {
@@ -1171,43 +1244,12 @@ export class ProxyService {
     };
   }
 
-  private async loadSnapshot(
+  private loadSnapshot(
     principal: Principal,
   ): Promise<{ snapshot: RoutingSnapshot; models: ModelRow[] }> {
-    const [tiers, rules, models] = await Promise.all([
-      this.db.tiers.list(principal),
-      this.db.routingRules.list(principal),
-      this.db.models.listForPrincipal(principal),
-    ]);
-    const entriesByTierId = new Map<string, RouteEntry[]>();
-    await Promise.all(
-      tiers.map(async (t) => {
-        const entries = await this.db.routingEntries.listForTier(principal, t.id);
-        entriesByTierId.set(
-          t.id,
-          entries.map((e) => ({ modelId: e.modelId, position: e.position })),
-        );
-      }),
-    );
-    const snapshot: RoutingSnapshot = {
-      tiers: tiers.map((t) => ({ id: t.id, key: t.key })),
-      entriesByTierId,
-      rules: rules.map((r) => ({
-        id: r.id,
-        matchType: r.matchType,
-        headerName: r.headerName,
-        headerValue: r.headerValue,
-        target: r.target,
-        priority: r.priority,
-        createdAt: r.createdAt,
-      })),
-      models: models.map((m) => ({
-        id: m.id,
-        providerId: m.providerId,
-        externalModelId: m.externalModelId,
-      })),
-    };
-    return { snapshot, models };
+    // Extracted to a shared loader so the learning sweep builds each tenant's
+    // snapshot through the EXACT same code the hot path does (revision parity).
+    return loadRoutingSnapshot(this.db, principal);
   }
 
   private async buildAdapter(
@@ -1216,6 +1258,14 @@ export class ProxyService {
   ): Promise<ProviderAdapter> {
     if (provider.baseUrl === null) throw serviceUnavailable('provider has no base_url');
     const kind = provider.kind as ProviderKind;
+    // Resolve the outbound token-cap spelling to the data-plane quirk — the SAME
+    // helper providers.service uses, so proxy and test-connection never diverge
+    // (add-max-tokens-spelling). Inert for non-`openai_compatible` protocols.
+    const quirks = providerMaxTokensQuirks(
+      provider.protocol,
+      kind,
+      provider.maxTokensSpelling as MaxTokensSpelling,
+    );
     try {
       await assertUrlSafe(provider.baseUrl, { context: { mode: this.mode, providerKind: kind } });
     } catch (err) {
@@ -1238,6 +1288,7 @@ export class ProxyService {
         ...(r.oauthBeta !== undefined ? { oauthBeta: r.oauthBeta } : {}),
         ...(r.oauthAccountId !== undefined ? { oauthAccountId: r.oauthAccountId } : {}),
         ...(r.probeModel !== undefined ? { probeModel: r.probeModel } : {}),
+        ...(quirks !== undefined ? { quirks } : {}),
         defaultMaxOutputTokens: this.rt.defaultMaxOutputTokens,
         ...this.effectiveBounds(provider),
       });
@@ -1258,6 +1309,7 @@ export class ProxyService {
       credential,
       kind,
       mode: this.mode,
+      ...(quirks !== undefined ? { quirks } : {}),
       defaultMaxOutputTokens: this.rt.defaultMaxOutputTokens,
       ...this.effectiveBounds(provider),
     });

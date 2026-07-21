@@ -15,6 +15,11 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-07-21
+
+[Release](https://github.com/izzoa/polyrouter/releases/tag/v0.7.0) ·
+[Compare](https://github.com/izzoa/polyrouter/compare/v0.6.0...v0.7.0)
+
 ### Added
 
 - Per-provider upstream-timeout overrides (1s–1h, provider form → Advanced),

@@ -40,6 +40,14 @@
     "rxjs": "^7.8.2",
     "undici": "^8.7.0"
   },
+  "peerDependencies": {
+    "onnxruntime-node": "1.27.0"
+  },
+  "peerDependenciesMeta": {
+    "onnxruntime-node": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@nestjs/cli": "^11.0.24",
     "@nestjs/testing": "^11.1.28",
@@ -53,6 +61,7 @@
     "cross-env": "^10.1.0",
     "drizzle-kit": "^0.31.10",
     "jest": "^30.4.2",
+    "onnxruntime-node": "1.27.0",
     "supertest": "^7.2.2",
     "ts-jest": "^29.4.11"
   }

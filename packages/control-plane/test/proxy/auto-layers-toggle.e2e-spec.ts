@@ -54,6 +54,7 @@ import {
 import { ProxyService } from '../../src/proxy/proxy.service';
 import { AutoLayersController } from '../../src/routing-config/auto-layers.controller';
 import { AutoLayersService } from '../../src/routing-config/auto-layers.service';
+import { SemanticModule } from '../../src/semantic/semantic.module';
 import { NotificationProducers } from '../../src/producers/notification-producers';
 import { BudgetService } from '../../src/budgets/budget-service';
 import { StreamDrainRegistry } from '../../src/proxy/stream-drain.registry';
@@ -129,7 +130,15 @@ class PermissivePrincipalGuard implements CanActivate {
 
 async function buildApp(): Promise<{ app: INestApplication; server: App }> {
   const moduleRef = await Test.createTestingModule({
-    imports: [DatabaseModule, PricingModule, RecordingModule, RedisModule, ObservabilityModule],
+    imports: [
+      DatabaseModule,
+      PricingModule,
+      RecordingModule,
+      RedisModule,
+      ObservabilityModule,
+      // add-semantic-embedder: AutoLayersService reads the semantic capability.
+      SemanticModule,
+    ],
     controllers: [ChatCompletionsController, AutoLayersController],
     providers: [
       AgentApiKeyGuard,

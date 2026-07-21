@@ -332,6 +332,8 @@ public, or set `METRICS_ENABLED=false`.
 | `PRICING_REFRESH_URL`                                                                               | LiteLLM catalog         | Source for pricing refreshes (a bundled snapshot ships by default; the Settings page shows catalog status + a Refresh-now button for admins) |
 | `PRICING_REFRESH_SCHED_ENABLED` / `PRICING_REFRESH_SCHED_CRON`                                      | `true` / `30 4 * * *`   | **Daily automatic pricing refresh — ON by default** (self-host only): one outbound GET of LiteLLM's public price catalog per day; no tenant data is sent. Set `PRICING_REFRESH_SCHED_ENABLED=false` to opt out; manual refresh keeps working |
 | `PROXY_FIRST_EVENT_TIMEOUT_MS` / `PROXY_IDLE_TIMEOUT_MS`                                            | `30000` / `30000`       | Time-to-first-token / buffered-read idle bound — **raise both for slow local models** (a 30s prefill would otherwise 503 and trip the breaker) |
+| `SEMANTIC_MODEL_PATH`                                                                               | unset                   | Opt-in **Layer 2 semantic embedder**: path to a local model bundle (see the semantic-layer section) — pair it with `semantic` in `ROUTING_AUTO_LAYERS`. Unset = the module is absent entirely; a set-but-broken path fails boot loudly |
+| `SEMANTIC_TIMEOUT_MS` / `SEMANTIC_MAX_INPUT_CHARS` / `SEMANTIC_CONCURRENCY`                         | `50` / `2000` / `2`     | Embedder bounds: per-embed hard timeout, input cap before tokenization, concurrent-inference cap (saturation skips the layer for that request). Out-of-bounds values reject boot |
 | `POLYROUTER_SUBNET` / `POLYROUTER_IMAGE`                                                            | `172.28.5.0/24` / built | Compose network CIDR (change on a collision) / prebuilt image override                                       |
 
 > The optional tunables are compose pass-through: set one in `.env` and it reaches the
@@ -343,6 +345,62 @@ public, or set `METRICS_ENABLED=false`.
 **Secret rotation caveat:** `PROVIDER_CREDENTIAL_KEY` and `NOTIFY_CREDENTIALS_SECRET`
 encrypt stored provider/channel credentials — rotating them orphans those rows (you
 would re-enter the credentials). This is why the installer never regenerates `.env`.
+
+### Optional: the semantic embedder (Layer 2 foundation)
+
+The optional semantic stack embeds request text locally (CPU ONNX, ~5–20 ms)
+so the auto-router can classify what the structural layer finds ambiguous.
+It is **never part of the baseline install**: the runtime is an optional peer
+dependency and no model ships in the baseline image (CI asserts this). The
+routing behavior that consumes it arrives with the semantic-routing
+capability; a **batteries-included `-semantic` image variant** (runtime +
+reference model pre-baked) ships with the semantic dashboard change.
+
+To enable it on a source install today:
+
+```sh
+npm install onnxruntime-node@1.27.0        # the optional peer, exact-pinned
+```
+
+Then set BOTH the model path and the capability flag (`semanticAvailable`
+requires the layer token as well as a loaded bundle):
+
+```sh
+SEMANTIC_MODEL_PATH=/path/to/models/minilm
+ROUTING_AUTO_LAYERS=structural,semantic
+```
+
+The **model bundle** directory looks like:
+
+```
+models/minilm/
+  manifest.json    # the v1 bundle contract (below)
+  vocab.txt        # WordPiece vocabulary, one token per line
+  model.onnx       # the embedding model (MiniLM/bge-small class, 384-dim)
+```
+
+```json
+{
+  "schemaVersion": 1,
+  "tokenizer": {
+    "type": "wordpiece", "vocabFile": "vocab.txt", "lowercase": true,
+    "unkToken": "[UNK]", "clsToken": "[CLS]", "sepToken": "[SEP]",
+    "padToken": "[PAD]", "maxTokens": 256
+  },
+  "model": {
+    "file": "model.onnx",
+    "inputNames": { "inputIds": "input_ids", "attentionMask": "attention_mask", "tokenTypeIds": "token_type_ids" },
+    "outputName": "last_hidden_state", "outputKind": "token_embeddings",
+    "dims": 384, "pooling": "mean", "normalize": true
+  }
+}
+```
+
+Boot semantics: unset path → module absent, zero overhead; valid bundle →
+load + warmup at startup (requests never pay first-inference JIT); broken
+bundle → **boot fails fast** naming the file and reason (an explicit opt-in
+never runs silently degraded). Nothing is fetched over the network at boot or
+runtime; embedded text and vectors are never logged or persisted.
 
 ### Optional: Apprise notifications
 

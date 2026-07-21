@@ -14,6 +14,15 @@ import {
 
 export const ROUTING_CONFIG = 'polyrouter:routing-config';
 
+/** The complete set of recognizable `ROUTING_AUTO_LAYERS` tokens.
+ * `semantic` is accepted from add-semantic-embedder onward (capability
+ * requires a loaded embedder; consumed by routing from add-semantic-routing). */
+export const AUTO_LAYER_TOKENS: ReadonlySet<string> = new Set([
+  'structural',
+  'cascade',
+  'semantic',
+]);
+
 registerConfig(
   'routing',
   z.object({
@@ -132,6 +141,16 @@ export function buildRoutingConfig(env: RoutingEnv): RoutingConfig {
       .map((s) => s.trim().toLowerCase())
       .filter(Boolean),
   );
+  // Validated token list (add-semantic-embedder): an unknown layer name is an
+  // operator typo that would otherwise silently disable routing layers —
+  // reject boot naming the offending token (fail-fast-on-typo precedent).
+  for (const layer of autoLayers) {
+    if (!AUTO_LAYER_TOKENS.has(layer)) {
+      throw new Error(
+        `ROUTING_AUTO_LAYERS contains unknown layer "${layer}" (allowed: ${[...AUTO_LAYER_TOKENS].join(', ')})`,
+      );
+    }
+  }
   // Cascade consumes Layer 1's ambiguity signal, so enabling it implies structural.
   if (autoLayers.has('cascade')) autoLayers.add('structural');
   const high = env.ROUTING_STRUCTURAL_HIGH_THRESHOLD;

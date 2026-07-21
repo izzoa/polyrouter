@@ -6,3 +6,4 @@ export * from './proxy/core';
 export * from './proxy/cascade';
 export * from './proxy/body-capture';
 export * from './recording';
+export * from './semantic';

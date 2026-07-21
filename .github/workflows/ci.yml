@@ -32,6 +32,10 @@ jobs:
     env:
       CI: 'true'
       REDIS_URL: redis://127.0.0.1:6379
+      # add-semantic-embedder (impl-clink Med-4): the ORT devDependency's
+      # postinstall fetches CUDA blobs on linux-x64 — skip it regardless of
+      # npm version/allowScripts posture (CPU prebuilts ship in the tarball).
+      ONNXRUNTIME_NODE_INSTALL: skip
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -99,3 +103,27 @@ jobs:
             echo "::warning title=e2e retried::first attempt failed; re-running once on a fresh process (documented auth.e2e ESM module-load flake)"
             npm run test:e2e
           fi
+
+  baseline-image-neutrality:
+    # add-semantic-embedder D7: the optional semantic stack must NEVER reach
+    # the baseline image — no onnxruntime artifact, no model/vocab files.
+    # (An optional PEER dependency is never auto-installed; this proves it.)
+    name: baseline image stays ORT- and model-free
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the production image (baseline)
+        run: docker build -t polyrouter-baseline:ci .
+      - name: Assert no ONNX runtime or model artifacts exist in the image
+        run: |
+          docker run --rm --entrypoint sh polyrouter-baseline:ci -c '
+            set -e
+            fail=0
+            pkgs=$(find /app -type d -name "onnxruntime*" | head -20)
+            if [ -n "$pkgs" ]; then echo "FORBIDDEN runtime packages:"; echo "$pkgs"; fail=1; fi
+            models=$(find /app -name "*.onnx" -o -name "*.ort" | head -20)
+            if [ -n "$models" ]; then echo "FORBIDDEN model files:"; echo "$models"; fail=1; fi
+            if [ -d /app/models ]; then echo "FORBIDDEN baked model directory /app/models"; fail=1; fi
+            [ "$fail" = 0 ] || exit 1
+            echo "baseline image is ORT- and model-free"'

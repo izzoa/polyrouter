@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { DatabaseModule } from '../database/database.module';
+import { SemanticModule } from '../semantic/semantic.module';
 import { ROUTING_CONFIG, loadRoutingConfig } from '../proxy/routing.config';
 import {
   CALIBRATION_RAILS,
@@ -19,7 +20,7 @@ import { TiersController } from './tiers.controller';
  * preference (#20), which the proxy reads at request time; `ROUTING_CONFIG`
  * supplies the boot capability the preference is masked against. */
 @Module({
-  imports: [DatabaseModule],
+  imports: [DatabaseModule, SemanticModule],
   controllers: [TiersController, RulesController, AutoLayersController, CalibrationController],
   providers: [
     RoutingConfigService,

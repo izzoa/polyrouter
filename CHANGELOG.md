@@ -15,6 +15,16 @@ heading is started.
 
 ## [Unreleased]
 
+### Added
+
+- Optional Layer-2 semantic-embedder runtime (`SEMANTIC_MODEL_PATH` + a local
+  model bundle): bounded local ONNX embedding with boot warmup, fail-fast on
+  broken bundles, a content-derived model revision, and an ORT- and
+  model-free baseline image (CI-asserted). `ROUTING_AUTO_LAYERS` becomes a
+  validated token list and accepts an inert `semantic`; the auto-layers API
+  reports `semanticAvailable`. Routing consumption arrives with the
+  semantic-routing change.
+
 ## [0.7.0] — 2026-07-21
 
 [Release](https://github.com/izzoa/polyrouter/releases/tag/v0.7.0) ·

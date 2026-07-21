@@ -6,6 +6,10 @@ import {
   type RoutingEnv,
 } from '../proxy/routing.config';
 import { AutoLayersService } from './auto-layers.service';
+import type { SemanticRuntimeService } from '../semantic/semantic-runtime.service';
+
+/** add-semantic-embedder: no embedder loaded in these tests. */
+const SEMANTIC_OFF = { available: false } as SemanticRuntimeService;
 
 /** Fixture: a settings value with the calibration fields at their defaults
  * (add-auto-threshold-calibration) — these tests exercise the layer flags. */
@@ -136,12 +140,13 @@ describe('AutoLayersService.get — effective = capability × preference', () =>
 
   for (const c of cases) {
     it(c.name, async () => {
-      const svc = new AutoLayersService(fakePort({ get: c.pref }), cfg(c.layers), RAILS);
+      const svc = new AutoLayersService(fakePort({ get: c.pref }), cfg(c.layers), RAILS, SEMANTIC_OFF);
       const view = await svc.get(principal);
       expect(view).toEqual({
         ...c.expected,
         structuralAvailable: autoLayerCapability(cfg(c.layers)).structural,
         cascadeAvailable: autoLayerCapability(cfg(c.layers)).cascade,
+        semanticAvailable: false,
         calibration: UNCAL_VIEW,
       });
     });
@@ -155,6 +160,7 @@ describe('AutoLayersService.set — normalizes cascade → structural', () => {
       fakePort({ onUpsert: (v) => (stored = v) }),
       cfg('cascade'),
       RAILS,
+      SEMANTIC_OFF,
     );
     const view = await svc.set(principal, { structural: false, cascade: true });
     expect(stored).toEqual({ structuralEnabled: true, cascadeEnabled: true });
@@ -163,6 +169,7 @@ describe('AutoLayersService.set — normalizes cascade → structural', () => {
       cascade: true,
       structuralAvailable: true,
       cascadeAvailable: true,
+      semanticAvailable: false,
       calibration: UNCAL_VIEW,
     });
   });
@@ -173,6 +180,7 @@ describe('AutoLayersService.set — normalizes cascade → structural', () => {
       fakePort({ onUpsert: (v) => (stored = v) }),
       cfg('cascade'),
       RAILS,
+      SEMANTIC_OFF,
     );
     await svc.set(principal, { structural: false, cascade: false });
     expect(stored).toEqual({ structuralEnabled: false, cascadeEnabled: false });
@@ -184,6 +192,7 @@ describe('AutoLayersService.set — normalizes cascade → structural', () => {
       fakePort({ onUpsert: (v) => (stored = v) }),
       cfg('structural'), // cascade not available instance-wide
       RAILS,
+      SEMANTIC_OFF,
     );
     const view = await svc.set(principal, { structural: true, cascade: true });
     expect(stored).toEqual({ structuralEnabled: true, cascadeEnabled: true });
@@ -192,6 +201,7 @@ describe('AutoLayersService.set — normalizes cascade → structural', () => {
       cascade: false, // masked by capability
       structuralAvailable: true,
       cascadeAvailable: false,
+      semanticAvailable: false,
       calibration: UNCAL_VIEW,
     });
   });

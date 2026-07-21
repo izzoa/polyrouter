@@ -54,6 +54,27 @@ describe('buildRoutingConfig', () => {
   it('cascade disabled when not in the layer list', () => {
     expect(buildRoutingConfig(base).cascade.enabled).toBe(false);
   });
+
+  it('rejects unknown layer tokens naming the offender (add-semantic-embedder)', () => {
+    expect(() => buildRoutingConfig({ ...base, ROUTING_AUTO_LAYERS: 'structural,bogus' })).toThrow(
+      /unknown layer "bogus"/,
+    );
+    // The typo case the validator exists for — previously silently inert:
+    expect(() => buildRoutingConfig({ ...base, ROUTING_AUTO_LAYERS: 'semantci' })).toThrow(
+      /semantci/,
+    );
+  });
+
+  it('accepts semantic (inert until add-semantic-routing); existing deploy strings still parse', () => {
+    expect(
+      buildRoutingConfig({ ...base, ROUTING_AUTO_LAYERS: 'structural,semantic' }).autoLayers.has(
+        'semantic',
+      ),
+    ).toBe(true);
+    for (const legacy of ['structural', 'structural,cascade', 'cascade', '']) {
+      expect(() => buildRoutingConfig({ ...base, ROUTING_AUTO_LAYERS: legacy })).not.toThrow();
+    }
+  });
 });
 
 describe('parseStructuralWeights', () => {

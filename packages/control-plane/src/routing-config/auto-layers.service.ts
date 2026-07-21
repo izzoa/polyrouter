@@ -14,6 +14,7 @@ import {
   effectiveThresholds,
   type RoutingConfig,
 } from '../proxy/routing.config';
+import { SemanticRuntimeService } from '../semantic/semantic-runtime.service';
 import type { AutoLayersDto } from './auto-layers.dto';
 
 /** The tenant's effective auto-layer state plus what the instance is capable of
@@ -25,6 +26,10 @@ export interface AutoLayersView {
   cascade: boolean;
   structuralAvailable: boolean;
   cascadeAvailable: boolean;
+  /** add-semantic-embedder: flag ∧ loaded embedder. Inert this change — no
+   * router consumes it until add-semantic-routing; false = the honest
+   * "off instance-wide" affordance. */
+  semanticAvailable: boolean;
   calibration: {
     enabled: boolean;
     calibratedHigh: number | null;
@@ -50,6 +55,7 @@ export class AutoLayersService {
     @Inject(PERSISTENCE_PORT) private readonly db: PersistencePort,
     @Inject(ROUTING_CONFIG) private readonly cfg: RoutingConfig,
     @Inject(CALIBRATION_RAILS) private readonly rails: CalibrationRails,
+    private readonly semantic: SemanticRuntimeService,
   ) {}
 
   async get(principal: Principal): Promise<AutoLayersView> {
@@ -109,6 +115,7 @@ export class AutoLayersService {
       ...effectiveAutoLayers(cap, pref), // A-45: one shared formula (also used by the proxy)
       structuralAvailable: cap.structural,
       cascadeAvailable: cap.cascade,
+      semanticAvailable: this.cfg.autoLayers.has('semantic') && this.semantic.available,
       calibration: {
         enabled: pref?.calibrationEnabled ?? false,
         calibratedHigh: active ? eff.high : null,

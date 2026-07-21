@@ -7,6 +7,9 @@
 # ---- build ----
 FROM node:24-alpine AS build
 WORKDIR /app
+# add-semantic-embedder: the ORT devDependency (tests only; pruned from the
+# runtime stage) must never fetch CUDA blobs during image builds.
+ENV ONNXRUNTIME_NODE_INSTALL=skip
 
 # Manifests first: the npm ci layer caches until a lockfile/manifest changes.
 COPY package.json package-lock.json turbo.json .npmrc ./

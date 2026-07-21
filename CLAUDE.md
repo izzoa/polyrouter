@@ -30,7 +30,7 @@ Build in this order; each is roughly one capability/change:
 9. **Dashboard SPA** — SolidJS + uPlot; connect-agent flow, routing UI, **routing-decision inspector**, limits/notifications UI.
 10. **Observability** — OTel traces + Prometheus metrics on the proxy.
 11. **Packaging** — single-container Docker + compose (app/postgres/redis/optional apprise) + install script.
-12. **Cloud graduations (deferred; only when flagged)** — Layer 2 embedding classifier + learning loop, split data-plane to Hono/Go, events to Timescale/ClickHouse.
+12. **Cloud graduations (deferred; only when flagged)** — split data-plane to Hono/Go, events to Timescale/ClickHouse. (The Layer 2 embedding classifier + learning loop graduated via the add-semantic-* changes: it is a **flag-gated optional module** — see the tech-stack note — not cloud-tier.)
 
 ## Tech stack — canonical, do not re-litigate (spec §3)
 Pin these versions; do not substitute without a change proposal that says why.
@@ -41,7 +41,7 @@ Pin these versions; do not substitute without a change proposal that says why.
 - **Proxy contract:** OpenAI-compatible `/v1/chat/completions` + `/v1/models`; Anthropic-compatible `/v1/messages`.
 - **Frontend:** **SolidJS** + **Vite**, **uPlot** for charts, custom CSS.
 - **Monorepo/build:** **Turborepo** + npm workspaces. **Docker** is the primary distribution (single container: NestJS serves SPA + API + proxy on one port).
-- **Data-plane split, embedding classifier, Timescale/ClickHouse are CLOUD-TIER ONLY** — do not add them to the baseline build.
+- **Data-plane split and Timescale/ClickHouse are CLOUD-TIER ONLY** — do not add them to the baseline build. The **semantic stack (embedder, classifier, learning) is a FLAG-GATED OPTIONAL MODULE**: never in the baseline build/image; activates only via `SEMANTIC_MODEL_PATH` + `ROUTING_AUTO_LAYERS`.
 
 ## Repository layout (spec §4)
 ```
@@ -98,7 +98,7 @@ packages/
 - Hardcode a closed provider allow-list (custom OpenAI/Anthropic endpoints must always be addable).
 - Lead with a brittle rule-based auto-classifier, or call a generative LLM to classify every request.
 - Swap models mid-stream after bytes are sent; recompute historical cost against current prices.
-- Add cloud-tier infrastructure (data-plane split, embedding classifier, ClickHouse/Timescale) to the baseline build.
+- Add cloud-tier infrastructure (data-plane split, ClickHouse/Timescale) to the baseline build — or ship the optional semantic stack (embedder/classifier/learning) in the BASELINE build/image (it is opt-in via `SEMANTIC_MODEL_PATH`; the baseline image must stay ORT- and model-free).
 - **Compliance note:** reusing flat-rate *subscriptions* (ChatGPT Plus, Claude Max) programmatically likely violates those providers' ToS. Support it as a provider kind, but surface the risk to users; BYOK/API-key and local models don't carry it. (spec §16)
 
 <!-- OPENWIKI:START -->

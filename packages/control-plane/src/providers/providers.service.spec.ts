@@ -73,6 +73,8 @@ function makePort(): FakePort {
     oauthPreset: values.oauthPreset ?? null,
     credentialExpiresAt: values.credentialExpiresAt ?? null,
     credentialError: values.credentialError ?? null,
+    firstByteTimeoutMs: values.firstByteTimeoutMs ?? null,
+    idleTimeoutMs: values.idleTimeoutMs ?? null,
     createdAt: new Date(),
   });
   const upsert = jest.fn(

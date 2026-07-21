@@ -52,9 +52,11 @@ Polyrouter uses PostgreSQL 16 with Drizzle ORM. The schema is organized into fou
 
 | Table | Purpose | Key Columns |
 |-------|---------|-------------|
-| `request_log` | Immutable cost records | `id`, `owner_user_id`, `agent_id`, `provider_id`, `model_id`, `input_tokens`, `output_tokens`, `cost_micro_usd`, `price_snapshot`, `decision_layer`, `latency_ms`, `status` |
+| `request_log` | Immutable cost records | `id`, `owner_user_id`, `agent_id`, `provider_id`, `model_id`, `input_tokens`, `output_tokens`, `cost_micro_usd`, `price_snapshot`, `decision_layer`, `routing_header_name`, `routing_header_value`, `latency_ms`, `status` |
 | `request_attempt` | Per-attempt cost ledger | `id`, `request_log_id`, `provider_id`, `model_id`, `outcome`, `latency_ms` |
 | `model_price` | Effective-dated pricing | `id`, `model_id`, `effective_at`, `input_price_per_mtok`, `output_price_per_mtok` |
+
+**Routing header visibility** (add-routing-header-visibility): `request_log.routing_header_name` and `routing_header_value` record which header chose the route. Set only on `decision_layer='header'` rows. The built-in tier header records name + matched tier key; custom rules record name only (value is null — a configured header value can be a credential and is never persisted). A CHECK constraint enforces value-requires-name.
 
 ### Budgets & Notifications
 
@@ -62,6 +64,11 @@ Polyrouter uses PostgreSQL 16 with Drizzle ORM. The schema is organized into fou
 |-------|---------|-------------|
 | `budget` | Spend limits | `id`, `owner_user_id`, `scope` (global/agent), `scope_id`, `window` (day/week/month), `action` (alert/block), `limit_micro_usd` |
 | `notification_channel` | Alert channels | `id`, `owner_user_id`, `type` (smtp/apprise), `name`, `config_encrypted`, `events_subscribed` |
+| `body_capture_settings` | Per-tenant body capture config | `owner_user_id`, `mode` (off/errors_only/all), `retention_days`, `capture_epoch`, `dropped_count`, `last_purge_at`, `last_purge_count` |
+| `request_body` | Captured prompt/response bodies | `id`, `request_log_id` (FK CASCADE), `direction` (request/response), `content_encrypted`, `bytes`, `truncated`, `partial` |
+| `request_body_tombstone` | Deletion tombstones | `request_log_id` (PK, FK CASCADE), `owner_user_id` |
+
+**Body capture** (add-body-capture) is an opt-in feature, off by default. When enabled (`errors_only` or `all`), prompt and response bodies are captured, encrypted with the same `PROVIDER_CREDENTIAL_KEY` as provider credentials, and stored alongside the request log. The `request_body` rows are deletable operational data (not audit) — FK CASCADE with the parent `request_log`. The `capture_epoch` column is a deletion-revocation counter: purge-all or disable-with-purge bumps it under a `FOR UPDATE` lock, and the writer's guarded insert re-reads it post-lock to discard stale drafts. A `request_body_tombstone` prevents queued/retrying writes from resurrecting deleted bodies. Bodies are purged daily by a BullMQ scheduler (03:30 UTC) per-owner retention window; infinite retention requires an explicit `keepForever` choice. The feature is selfhosted-only (`MODE=selfhosted`) — cloud instances never arm capture.
 
 ## Tenant Isolation
 

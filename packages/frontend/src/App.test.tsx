@@ -710,6 +710,68 @@ describe('dashboard shell (auth-gated)', () => {
     }
   });
 
+  it('provider patience fields: server-fetched placeholders, set + clear round-trip (fix-long-call-timeouts)', async () => {
+    const fake = new FakeApiClient({
+      providers: [
+        {
+          id: 'prov-1',
+          name: 'OpenRouter',
+          kind: 'api_key',
+          protocol: 'openai_compatible',
+          baseUrl: 'https://openrouter.ai/api/v1',
+          status: 'ok',
+          hasCredential: true,
+          oauthPreset: null,
+          credentialExpiresAt: null,
+          credentialError: null,
+          firstByteTimeoutMs: null,
+          idleTimeoutMs: null,
+          createdAt: '2026-07-15T00:00:00.000Z',
+        },
+      ],
+    });
+    const { host, store, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Providers');
+      await flush();
+      // Edit the first provider — the modal's advanced section shows the
+      // SERVER default as the placeholder (never a hard-coded value).
+      const editBtn = [...host.querySelectorAll<HTMLElement>('button')].find(
+        (b) => b.textContent?.trim() === 'Edit',
+      );
+      if (!editBtn) throw new Error('provider Edit button missing');
+      editBtn.click();
+      await flush();
+      const fb = host.querySelector<HTMLInputElement>('#f-np-firstbyte');
+      expect(fb).not.toBeNull();
+      expect(fb!.placeholder).toContain('30 · instance default'); // fake default 30000ms
+      expect(fake.calls).toContain('providerTimeoutDefaults');
+      // Set 1800s and save → the PATCH carries ms; idle stays blank → null (inherit).
+      fb!.value = '1800';
+      fb!.dispatchEvent(new Event('input', { bubbles: true }));
+      clickByText(host, 'button', 'Save changes');
+      await flush();
+      const edited = store.state.providers[0]!;
+      expect(edited.firstByteTimeoutMs).toBe(1_800_000);
+      expect(edited.idleTimeoutMs).toBeNull();
+      // Re-open: the field shows the stored seconds; blanking it clears to inherit.
+      [...host.querySelectorAll<HTMLElement>('button')]
+        .find((b) => b.textContent?.trim() === 'Edit')!
+        .click();
+      await flush();
+      const fb2 = host.querySelector<HTMLInputElement>('#f-np-firstbyte')!;
+      expect(fb2.value).toBe('1800');
+      fb2.value = '';
+      fb2.dispatchEvent(new Event('input', { bubbles: true }));
+      clickByText(host, 'button', 'Save changes');
+      await flush();
+      expect(store.state.providers[0]!.firstByteTimeoutMs).toBeNull();
+    } finally {
+      dispose();
+    }
+  });
+
   it('Auto performance refreshes on every page visit, not just the first (stale-card bug)', async () => {
     const fake = new FakeApiClient({ tiers: [DEFAULT_TIER] });
     const { host, dispose } = mount(createAppStore(fake));

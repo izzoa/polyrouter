@@ -45,8 +45,12 @@ packages/control-plane/test/
 │   └── notification-channels.e2e-spec.ts
 ├── producers/
 │   └── notification-producers.e2e-spec.ts
-└── budgets/
-    └── budget-enforcement.e2e-spec.ts
+├── budgets/
+│   └── budget-enforcement.e2e-spec.ts
+├── body-capture/
+│   └── body-capture.e2e-spec.ts         # Body capture opt-in, purge, tombstone
+└── pricing/
+    └── pricing-catalog.e2e-spec.ts      # Catalog refresh, status endpoint
 ```
 
 ### Contract Tests (Golden Files)

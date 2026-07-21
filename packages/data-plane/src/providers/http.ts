@@ -48,12 +48,18 @@ export interface GuardedClientOptions {
   /** Byte cap for a raw buffered drain off this client (e.g. a stream request's
    * error body). Defaults to `DEFAULT_MAX_RESPONSE_BYTES` (E11.1). */
   readonly maxResponseBytes?: number;
+  /** Dispatcher timeouts (fix-long-call-timeouts) — derived by the adapter
+   * ABOVE its typed bounds; omitted = undici defaults. */
+  readonly headersTimeoutMs?: number;
+  readonly bodyTimeoutMs?: number;
 }
 
 function guardOptions(o: GuardedClientOptions): UrlGuardOptions {
   return {
     context: { mode: o.mode, providerKind: o.providerKind },
     ...(o.resolve !== undefined ? { resolve: o.resolve } : {}),
+    ...(o.headersTimeoutMs !== undefined ? { headersTimeoutMs: o.headersTimeoutMs } : {}),
+    ...(o.bodyTimeoutMs !== undefined ? { bodyTimeoutMs: o.bodyTimeoutMs } : {}),
   };
 }
 
@@ -189,7 +195,10 @@ export function createGuardedHttpClient(options: GuardedClientOptions): HttpClie
 /** Decode an SSE byte body into string chunks through ONE persistent decoder so
  * a multibyte UTF-8 character split across chunk boundaries is not corrupted.
  * (#5's `sseFrames` reassembles the frames.) */
-export async function* readSseChunks(res: HttpResponse): AsyncGenerator<string> {
+export async function* readSseChunks(
+  res: HttpResponse,
+  onBytes?: () => void,
+): AsyncGenerator<string> {
   const body = res.body;
   if (body === null) return;
   const reader = body.getReader();
@@ -198,7 +207,12 @@ export async function* readSseChunks(res: HttpResponse): AsyncGenerator<string> 
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      if (value) yield decoder.decode(value, { stream: true });
+      if (value) {
+        // Liveness (fix-long-call-timeouts): EVERY byte arrival — including SSE
+        // comment keepalives that parse to no event — marks the stream alive.
+        onBytes?.();
+        yield decoder.decode(value, { stream: true });
+      }
     }
     const tail = decoder.decode();
     if (tail) yield tail;

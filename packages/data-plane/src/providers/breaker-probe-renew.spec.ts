@@ -257,3 +257,59 @@ describe('renewProbe — fire-and-forget containment', () => {
     }
   });
 });
+
+describe('withBreakerStream — BYTE liveness renews the probe lease (fix-long-call-timeouts)', () => {
+  it('an event-quiet stream renews via renewOnActivity so the lease outlives keepalive-only gaps', async () => {
+    const clock = { t: 0 };
+    const store = new InMemoryBreakerStore();
+    const breaker = new CircuitBreaker(store, { config: cfg, now: () => clock.t });
+    await openThenReachCooldown(breaker, clock); // clock.t = 1000
+
+    // The generator captures the renewal hook and simulates keepalive bytes
+    // during a long gap BETWEEN events (no event flows while renewing).
+    let renewHook: (() => void) | undefined;
+    // eslint-disable-next-line @typescript-eslint/require-await -- AsyncGenerator by contract
+    async function* quietUpstream(): AsyncGenerator<NormalizedStreamEvent> {
+      yield { type: 'message_start', id: 'm', model: 'x', role: 'assistant' };
+      // keepalive-only window: bytes at 1150 and 1400 (each ≥ renewEveryMs apart)
+      clock.t = 1150;
+      renewHook?.();
+      clock.t = 1400;
+      renewHook?.();
+      yield { type: 'text_delta', index: 0, text: 't' };
+      yield { type: 'message_delta', stopReason: 'stop' };
+    }
+    const gen = withBreakerStream(
+      breaker,
+      PID,
+      (renewOnActivity) => {
+        renewHook = renewOnActivity;
+        return quietUpstream();
+      },
+      undefined,
+      undefined,
+      () => false,
+    );
+
+    const first = await gen.next(); // admits the probe: lease = 1000 + 300 = 1300
+    expect(first.value).toMatchObject({ type: 'message_start' });
+
+    // Pull the next event — the generator's keepalive marks ran at 1150/1400.
+    // WITHOUT byte renewal the lease would have lapsed at 1300; the 1150 renewal
+    // moved it to 1450, and the 1400 one to 1700 — a concurrent admission at
+    // 1450 (past the ORIGINAL expiry) must still skip.
+    await gen.next();
+    clock.t = 1450;
+    const concurrent = await store.decide(PID, clock.t, cfg);
+    expect(concurrent.decision).toBe('skip');
+    expect(concurrent.isProbe).toBe(false);
+
+    for (;;) {
+      const r = await gen.next();
+      if (r.done) break;
+    }
+    // Probe success closed the breaker.
+    const after = await store.decide(PID, clock.t, cfg);
+    expect(after).toMatchObject({ decision: 'allow', isProbe: false });
+  });
+});

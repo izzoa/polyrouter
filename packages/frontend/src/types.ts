@@ -63,6 +63,9 @@ export interface Provider {
   oauthPreset: string | null;
   credentialExpiresAt: string | null;
   credentialError: string | null;
+  /** Upstream patience overrides (fix-long-call-timeouts); null = inherit. */
+  firstByteTimeoutMs: number | null;
+  idleTimeoutMs: number | null;
   createdAt: string;
 }
 
@@ -110,6 +113,10 @@ export interface ProviderForm {
   protocol: 'openai_compatible' | 'anthropic_compatible' | 'openai_responses';
   baseUrl: string;
   credential: string;
+  /** Patience overrides in SECONDS as text (fix-long-call-timeouts); blank =
+   * inherit the instance default (shown as the field placeholder). */
+  firstByteTimeoutS: string;
+  idleTimeoutS: string;
 }
 
 /** The create/edit budget form (#20 Limits page). `id` null = create. `amount`

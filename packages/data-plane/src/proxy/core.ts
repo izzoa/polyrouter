@@ -159,7 +159,7 @@ export async function openStream(
   opts: ProxyStreamOptions,
 ): Promise<OpenStreamResult> {
   const r = await openAttemptStream(
-    (signal) => provider.chatStream(request, { signal }),
+    (signal, onBytes) => provider.chatStream(request, { signal, onBytes }),
     client,
     opts,
   );
@@ -225,13 +225,21 @@ async function* arrayGen(
   for (const e of events) yield e;
 }
 
+/** Per-attempt byte-liveness token (fix-long-call-timeouts): the adapter's
+ * `onBytes` marks it; `nextWithTimeout` extends its deadline from the mark.
+ * One token per attempt — a settled attempt's stale callback marks an object
+ * nothing consults anymore (inert by construction). */
+interface LivenessToken {
+  lastByteAt: number;
+}
+
 /**
  * Commit-gate ONE attempt. Creates the AbortController first, then builds the
  * generator with that signal (so the first-event timeout can cancel the
  * upstream). Returns the RAW error pre-commit so the chain can classify it.
  */
 export async function openAttemptStream(
-  streamFactory: (signal: AbortSignal) => AsyncGenerator<NormalizedStreamEvent>,
+  streamFactory: (signal: AbortSignal, onBytes: () => void) => AsyncGenerator<NormalizedStreamEvent>,
   client: ProtocolAdapter,
   opts: ProxyStreamOptions,
 ): Promise<AttemptResult> {
@@ -241,7 +249,11 @@ export async function openAttemptStream(
     if (opts.signal.aborted) abort.abort();
     else opts.signal.addEventListener('abort', onCallerAbort, { once: true });
   }
-  const iterator = streamFactory(abort.signal)[Symbol.asyncIterator]();
+  const liveness: LivenessToken = { lastByteAt: 0 };
+  const markBytes = (): void => {
+    liveness.lastByteAt = Date.now();
+  };
+  const iterator = streamFactory(abort.signal, markBytes)[Symbol.asyncIterator]();
   let cleaned = false;
   const cleanup = async (): Promise<void> => {
     if (cleaned) return;
@@ -257,7 +269,7 @@ export async function openAttemptStream(
 
   let first: IteratorResult<NormalizedStreamEvent>;
   try {
-    first = await nextWithTimeout(iterator, opts.firstEventTimeoutMs, abort);
+    first = await nextWithTimeout(iterator, opts.firstEventTimeoutMs, abort, liveness);
   } catch (err) {
     await cleanup();
     return { kind: 'error', error: err }; // raw — the chain classifies eligibility
@@ -303,7 +315,17 @@ export async function openAttemptStream(
     });
   };
 
-  const inner = buildFrames(client, iterator, first.value, opts, abort, acc, cleanup, settle);
+  const inner = buildFrames(
+    client,
+    iterator,
+    first.value,
+    opts,
+    abort,
+    acc,
+    cleanup,
+    settle,
+    liveness,
+  );
   // A consumer `return()` before the generator settles is the client going away — a
   // caller abort, not a provider fault (A-3).
   const frames = wrapWithSettle(inner, cleanup, () => settle('error', true));
@@ -335,29 +357,44 @@ function wrapWithSettle(
   return wrapper;
 }
 
+/** Await the next event under a RE-ARMABLE deadline (fix-long-call-timeouts):
+ * each upstream byte arrival (the liveness mark) restarts the full budget, so a
+ * keepalive-fed stream with a long gap between parsed events is never aborted
+ * as stalled, while TRUE byte-silence still trips at exactly `ms`. */
 async function nextWithTimeout(
   iterator: AsyncIterator<NormalizedStreamEvent>,
   ms: number,
   abort: AbortController,
+  liveness?: { lastByteAt: number },
 ): Promise<IteratorResult<NormalizedStreamEvent>> {
   const nextP = iterator.next();
   const settled = nextP.then(
     (r) => ({ ok: true as const, r }),
     (e: unknown) => ({ ok: false as const, e }),
   );
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timed = new Promise<'timeout'>((resolve) => {
-    timer = setTimeout(() => resolve('timeout'), ms);
-  });
-  const winner = await Promise.race([settled, timed]);
-  if (timer) clearTimeout(timer);
-  if (winner === 'timeout') {
+  let armedAt = Date.now();
+  for (;;) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timed = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), ms - (Date.now() - armedAt));
+    });
+    const winner = await Promise.race([settled, timed]);
+    if (timer) clearTimeout(timer);
+    if (winner !== 'timeout') {
+      if (!winner.ok) throw winner.e;
+      return winner.r;
+    }
+    // Deadline fired — bytes since the last arm re-arm the budget from THEIR
+    // arrival (deadline = lastByteAt + ms), never extend past it.
+    const lastByteAt = liveness?.lastByteAt ?? 0;
+    if (lastByteAt > armedAt && lastByteAt + ms > Date.now()) {
+      armedAt = lastByteAt;
+      continue;
+    }
     abort.abort();
     await nextP.catch(() => undefined);
     throw new ProviderError('unavailable', 'upstream event timeout');
   }
-  if (!winner.ok) throw winner.e;
-  return winner.r;
 }
 
 async function* buildFrames(
@@ -369,12 +406,13 @@ async function* buildFrames(
   acc: Accumulator,
   cleanup: () => Promise<void>,
   settle: (status: 'success' | 'error', callerAborted: boolean, error?: ProviderError) => void,
+  liveness?: { lastByteAt: number },
 ): AsyncGenerator<string> {
   let clean = false;
   let callerAborted = false;
   try {
     for await (const frame of client.streamSerialize(
-      replay(iterator, firstValue, opts.firstEventTimeoutMs, abort, acc),
+      replay(iterator, firstValue, opts.firstEventTimeoutMs, abort, acc, liveness),
       {
         created: opts.created,
         ...(opts.includeUsage !== undefined ? { includeUsage: opts.includeUsage } : {}),
@@ -409,10 +447,11 @@ async function* replay(
   ms: number,
   abort: AbortController,
   acc: Accumulator,
+  liveness?: { lastByteAt: number },
 ): AsyncGenerator<NormalizedStreamEvent> {
   yield firstValue; // already accumulated by the caller
   for (;;) {
-    const r = await nextWithTimeout(iterator, ms, abort);
+    const r = await nextWithTimeout(iterator, ms, abort, liveness);
     if (r.done) return;
     if (r.value.type === 'error') throw fromErrorEvent(r.value);
     accumulate(acc, r.value);
@@ -428,6 +467,10 @@ export interface ChainAttempt {
   readonly providerId: string;
   readonly externalModelId: string;
   readonly buildAdapter: () => Promise<ProviderAdapter>;
+  /** THIS member's core first/inter-event bound (fix-long-call-timeouts):
+   * a fallback chain can mix providers with different patience, so the walker
+   * applies each member's own bound. Absent = the chain-wide `opts` value. */
+  readonly firstEventTimeoutMs?: number;
 }
 
 export interface AttemptFailure {
@@ -574,17 +617,28 @@ export async function openStreamChain(
     const attempt = attempts[i]!;
     const req: NormalizedRequest = { ...request, model: attempt.externalModelId };
     const result = await openAttemptStream(
-      (signal) =>
+      (signal, onBytes) =>
         withBreakerStream(
           breaker,
           attempt.providerId,
-          () => buildThenStream(attempt, req, signal),
+          // Byte liveness feeds BOTH watchdogs: core's inter-event deadline
+          // (onBytes) and the breaker's half-open probe lease (renewOnActivity)
+          // — an event-quiet but byte-alive probe keeps its single-probe lease.
+          (renewOnActivity) =>
+            buildThenStream(attempt, req, signal, () => {
+              onBytes();
+              renewOnActivity();
+            }),
           opts.onOpen,
           opts.onBreakerState,
           opts.isCallerAbort,
         ),
       client,
-      opts,
+      // THIS member's bound (fix-long-call-timeouts): a per-provider override
+      // must reach the streaming watchdog even mid-chain.
+      attempt.firstEventTimeoutMs !== undefined
+        ? { ...opts, firstEventTimeoutMs: attempt.firstEventTimeoutMs }
+        : opts,
     );
     if (result.kind === 'stream') {
       return {
@@ -621,7 +675,8 @@ async function* buildThenStream(
   attempt: ChainAttempt,
   request: NormalizedRequest,
   signal: AbortSignal,
+  onBytes: () => void,
 ): AsyncGenerator<NormalizedStreamEvent> {
   const adapter = await attempt.buildAdapter();
-  yield* adapter.chatStream(request, { signal });
+  yield* adapter.chatStream(request, { signal, onBytes });
 }

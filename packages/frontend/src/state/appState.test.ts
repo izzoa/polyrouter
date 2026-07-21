@@ -99,6 +99,8 @@ const LOCAL_FORM: ProviderForm = {
   protocol: 'openai_compatible',
   baseUrl: 'http://127.0.0.1:11434/v1',
   credential: '',
+  firstByteTimeoutS: '',
+  idleTimeoutS: '',
 };
 
 afterEach(() => {
@@ -249,10 +251,11 @@ describe('agents (real CRUD)', () => {
 describe('providers (create → test → sync, kind mapping, pricing)', () => {
   async function addProvider(
     s: ReturnType<typeof createAppStore>,
-    form: ProviderForm,
+    form: Omit<ProviderForm, 'firstByteTimeoutS' | 'idleTimeoutS'> &
+      Partial<Pick<ProviderForm, 'firstByteTimeoutS' | 'idleTimeoutS'>>,
   ): Promise<void> {
     s.openModal('newProvider');
-    s.setState('np', { ...form });
+    s.setState('np', { firstByteTimeoutS: '', idleTimeoutS: '', ...form });
     await s.addProvider();
   }
 
@@ -350,7 +353,9 @@ describe('providers (create → test → sync, kind mapping, pricing)', () => {
     s.setState('np', 'name', 'My ChatGPT');
     await s.addProvider();
     const patch = fake.lastArgs('updateProvider')?.[1] as Record<string, unknown>;
-    expect(patch).toEqual({ name: 'My ChatGPT' });
+    // Endpoint/kind/protocol stay pinned; the patience overrides ride along
+    // (fix-long-call-timeouts impl-Med-2 — blank = clear-to-inherit null).
+    expect(patch).toEqual({ name: 'My ChatGPT', firstByteTimeoutMs: null, idleTimeoutMs: null });
     expect(s.state.providers.find((p) => p.id === row.id)?.name).toBe('My ChatGPT');
 
     // The SO-1 credential rules still apply on the locked form: an explicit clear
@@ -359,7 +364,7 @@ describe('providers (create → test → sync, kind mapping, pricing)', () => {
     s.setState('np', 'clearCredential', true);
     await s.addProvider();
     const clearPatch = fake.lastArgs('updateProvider')?.[1] as Record<string, unknown>;
-    expect(clearPatch).toEqual({ name: 'My ChatGPT', credential: '' });
+    expect(clearPatch).toEqual({ name: 'My ChatGPT', credential: '', firstByteTimeoutMs: null, idleTimeoutMs: null });
 
     // A non-OAuth row's edit payload is UNCHANGED (regression guard).
     await addProvider(s, {

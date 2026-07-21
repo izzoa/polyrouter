@@ -105,7 +105,17 @@ export interface ProviderDto {
   oauthPreset: string | null;
   credentialExpiresAt: string | null;
   credentialError: string | null;
+  /** Upstream patience overrides (fix-long-call-timeouts); null = inherit. */
+  firstByteTimeoutMs: number | null;
+  idleTimeoutMs: number | null;
   createdAt: string;
+}
+
+/** The instance timeout defaults (fix-long-call-timeouts) — for honest
+ * inherit display in the provider form. */
+export interface TimeoutDefaults {
+  firstByteTimeoutMs: number;
+  idleTimeoutMs: number;
 }
 
 /** An enabled subscription-OAuth preset (server-driven card list). */
@@ -125,6 +135,8 @@ export interface CreateProviderInput {
   protocol: ApiProviderProtocol;
   baseUrl: string;
   credential?: string;
+  firstByteTimeoutMs?: number | null;
+  idleTimeoutMs?: number | null;
 }
 
 export interface UpdateProviderInput {
@@ -133,6 +145,9 @@ export interface UpdateProviderInput {
   protocol?: ApiProviderProtocol;
   baseUrl?: string;
   credential?: string;
+  /** Explicit null clears back to inherit; omitted preserves. */
+  firstByteTimeoutMs?: number | null;
+  idleTimeoutMs?: number | null;
 }
 
 /** Provenance of a model's effective display price. `listed` is the display-only
@@ -637,6 +652,7 @@ export interface ApiClient {
   rotateAgentKey(id: string): Promise<AgentReveal>;
   deleteAgent(id: string): Promise<{ deleted: boolean }>;
   listProviders(): Promise<ProviderDto[]>;
+  providerTimeoutDefaults(): Promise<TimeoutDefaults>;
   createProvider(input: CreateProviderInput): Promise<ProviderDto>;
   updateProvider(id: string, patch: UpdateProviderInput): Promise<ProviderDto>;
   listOauthPresets(): Promise<OauthPresetDto[]>;
@@ -815,6 +831,7 @@ export const realClient: ApiClient = {
       method: 'DELETE',
     }),
   listProviders: () => http<ProviderDto[]>(`${API_BASE}/providers`),
+  providerTimeoutDefaults: () => http<TimeoutDefaults>(`${API_BASE}/providers/timeout-defaults`),
   createProvider: (input) => http<ProviderDto>(`${API_BASE}/providers`, jsonInit('POST', input)),
   updateProvider: (id, patch) =>
     http<ProviderDto>(`${API_BASE}/providers/${encodeURIComponent(id)}`, jsonInit('PATCH', patch)),

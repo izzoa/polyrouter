@@ -39,8 +39,10 @@ The control plane is a NestJS 11 application responsible for:
 - **Notifications** — SMTP and Apprise channels via BullMQ queue
 - **Observability** — Prometheus metrics and OpenTelemetry traces
 - **Request recording** — immutable cost records with price snapshots
+- **Body capture** — opt-in encrypted prompt/response body storage (selfhosted only)
+- **Pricing refresh** — scheduled catalog pulls from LiteLLM (daily, on by default)
 
-Key modules: `proxy`, `routing-config`, `providers`, `budgets`, `pricing`, `notifications`, `observability`, `recording`, `auth`, `redis`, `database`.
+Key modules: `proxy`, `routing-config`, `providers`, `budgets`, `pricing`, `notifications`, `observability`, `recording`, `auth`, `redis`, `database`, `body-capture`.
 
 ### Data Plane (`packages/data-plane/`)
 

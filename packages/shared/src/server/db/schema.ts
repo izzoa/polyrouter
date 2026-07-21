@@ -195,6 +195,9 @@ export const agents = pgTable(
   ],
 );
 
+/** Per-provider upstream-timeout overrides (fix-long-call-timeouts): null =
+ * inherit the instance defaults; set = 1s–1h patience for slow/long-thinking
+ * models (research-class), resolved `override ?? env` per chain attempt. */
 export const providers = pgTable(
   'provider',
   {
@@ -216,9 +219,21 @@ export const providers = pgTable(
     oauthPreset: text('oauth_preset'),
     credentialExpiresAt: timestamp('credential_expires_at', { withTimezone: true }),
     credentialError: text('credential_error'),
+    firstByteTimeoutMs: integer('first_byte_timeout_ms'),
+    idleTimeoutMs: integer('idle_timeout_ms'),
     createdAt: createdAt(),
   },
-  (t) => [index('provider_owner_idx').on(t.ownerUserId)],
+  (t) => [
+    index('provider_owner_idx').on(t.ownerUserId),
+    check(
+      'provider_first_byte_timeout_range',
+      sql`${t.firstByteTimeoutMs} IS NULL OR (${t.firstByteTimeoutMs} >= 1000 AND ${t.firstByteTimeoutMs} <= 3600000)`,
+    ),
+    check(
+      'provider_idle_timeout_range',
+      sql`${t.idleTimeoutMs} IS NULL OR (${t.idleTimeoutMs} >= 1000 AND ${t.idleTimeoutMs} <= 3600000)`,
+    ),
+  ],
 );
 
 export const models = pgTable(

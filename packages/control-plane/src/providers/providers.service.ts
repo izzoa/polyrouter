@@ -82,6 +82,9 @@ export interface SafeProvider {
   oauthPreset: string | null;
   credentialExpiresAt: Date | null;
   credentialError: string | null;
+  /** Upstream patience overrides (fix-long-call-timeouts); null = inherit. */
+  firstByteTimeoutMs: number | null;
+  idleTimeoutMs: number | null;
   createdAt: Date;
 }
 
@@ -182,6 +185,8 @@ export function toSafe(p: ProviderRow): SafeProvider {
     oauthPreset: p.oauthPreset,
     credentialExpiresAt: p.credentialExpiresAt,
     credentialError: p.credentialError,
+    firstByteTimeoutMs: p.firstByteTimeoutMs,
+    idleTimeoutMs: p.idleTimeoutMs,
     createdAt: p.createdAt,
   };
 }
@@ -322,6 +327,8 @@ export class ProvidersService {
       ...(dto.credential !== undefined && dto.credential !== ''
         ? { encryptedCredentials: encryptSecret(serializePlainCredential(dto.credential), this.key) }
         : {}),
+      ...(dto.firstByteTimeoutMs !== undefined ? { firstByteTimeoutMs: dto.firstByteTimeoutMs } : {}),
+      ...(dto.idleTimeoutMs !== undefined ? { idleTimeoutMs: dto.idleTimeoutMs } : {}),
     };
     return toSafe(await this.db.providers.insert(principal, values));
   }
@@ -370,6 +377,10 @@ export class ProvidersService {
       ...(dto.name !== undefined ? { name: dto.name } : {}),
       ...(dto.kind !== undefined ? { kind: dto.kind } : {}),
       ...(dto.protocol !== undefined ? { protocol: dto.protocol } : {}),
+      // Timeout overrides (fix-long-call-timeouts): explicit null clears to
+      // inherit; omitted preserves.
+      ...(dto.firstByteTimeoutMs !== undefined ? { firstByteTimeoutMs: dto.firstByteTimeoutMs } : {}),
+      ...(dto.idleTimeoutMs !== undefined ? { idleTimeoutMs: dto.idleTimeoutMs } : {}),
       // Present-but-empty clears; omitted (undefined) preserves the envelope. New
       // plain values are WRAPPED in the typed envelope (forgery-proof by construction).
       ...(dto.credential !== undefined

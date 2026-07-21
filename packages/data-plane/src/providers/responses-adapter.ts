@@ -25,12 +25,89 @@ import type {
 } from '../proxy/translate';
 import { SsrfError } from '@polyrouter/shared/server';
 import { CallCancelledError, ProviderError, classifyStreamError } from './errors';
-import type { CallContext, ConnectionResult, ProviderAdapter, ProviderConfig } from './adapter';
+import {
+  DEFAULT_FIRST_BYTE_TIMEOUT_MS,
+  type CallContext,
+  type ConnectionResult,
+  type ProviderAdapter,
+  type ProviderConfig,
+} from './adapter';
 import { createHttpProviderAdapter, type AdapterDeps } from './http-adapter';
 
 /** Ecosystem-established Responses beta header (verified live, 6.2). */
 const RESPONSES_BETA = 'responses=experimental';
 const CHAT_PATH = '/backend-api/codex/responses';
+
+/** Byte-re-armable idle guard for the buffered facade (fix-long-call-timeouts).
+ * The streaming-only wire's buffered `chat` folds a stream OUTSIDE core, so
+ * core's watchdog never sees it — without this, post-headers silence was
+ * bounded only by undici's wider untyped backstop. Each event wait is a
+ * deadline the composed `onBytes` re-arms (keepalives count as liveness); TRUE
+ * byte-silence aborts with the typed, trip-eligible `unavailable`. Mirrors
+ * core's `nextWithTimeout` loop (private to the proxy layer, which imports
+ * this package — duplicated to avoid a cycle). Exported for unit tests. */
+export async function* guardEventIdle(
+  open: (ctx: CallContext) => AsyncGenerator<NormalizedStreamEvent>,
+  idleMs: number,
+  ctx?: CallContext,
+): AsyncGenerator<NormalizedStreamEvent> {
+  const abort = new AbortController();
+  const onCallerAbort = (): void => abort.abort();
+  if (ctx?.signal) {
+    if (ctx.signal.aborted) abort.abort();
+    else ctx.signal.addEventListener('abort', onCallerAbort, { once: true });
+  }
+  const liveness = { lastByteAt: 0 };
+  const inner = open({
+    ...ctx,
+    signal: abort.signal,
+    onBytes: () => {
+      liveness.lastByteAt = Date.now();
+      ctx?.onBytes?.();
+    },
+  })[Symbol.asyncIterator]();
+  try {
+    for (;;) {
+      const nextP = inner.next();
+      const settled = nextP.then(
+        (r) => ({ ok: true as const, r }),
+        (e: unknown) => ({ ok: false as const, e }),
+      );
+      let armedAt = Date.now();
+      let result: IteratorResult<NormalizedStreamEvent> | undefined;
+      for (;;) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const timed = new Promise<'timeout'>((resolve) => {
+          timer = setTimeout(() => resolve('timeout'), idleMs - (Date.now() - armedAt));
+        });
+        const winner = await Promise.race([settled, timed]);
+        if (timer) clearTimeout(timer);
+        if (winner !== 'timeout') {
+          if (!winner.ok) throw winner.e;
+          result = winner.r;
+          break;
+        }
+        const lastByteAt = liveness.lastByteAt;
+        if (lastByteAt > armedAt && lastByteAt + idleMs > Date.now()) {
+          armedAt = lastByteAt;
+          continue;
+        }
+        abort.abort();
+        await nextP.catch(() => undefined);
+        throw new ProviderError('unavailable', 'upstream event timeout');
+      }
+      if (result.done) return;
+      yield result.value;
+    }
+  } finally {
+    ctx?.signal?.removeEventListener('abort', onCallerAbort);
+    try {
+      await inner.return?.(undefined);
+    } catch {
+      // best-effort teardown
+    }
+  }
+}
 
 /** Fold a normalized event stream into a buffered NormalizedResponse (the wire has
  * no non-streaming mode). An in-stream `error` event — including the parser's
@@ -157,9 +234,13 @@ export function createResponsesProviderAdapter(
       'OpenAI-Beta': RESPONSES_BETA,
     }),
   });
-  // Streaming-only wire: buffered chat rides the SSE path and folds the events.
+  // Streaming-only wire: buffered chat rides the SSE path and folds the events —
+  // under the byte-re-armable idle guard (fix-long-call-timeouts), since core's
+  // stream watchdog never sees this fold.
+  const idleTimeoutMs =
+    config.idleTimeoutMs ?? config.firstByteTimeoutMs ?? DEFAULT_FIRST_BYTE_TIMEOUT_MS;
   const chat = (request: NormalizedRequest, ctx?: CallContext): Promise<NormalizedResponse> =>
-    collectStream(inner.chatStream(request, ctx));
+    collectStream(guardEventIdle((c) => inner.chatStream(request, c), idleTimeoutMs, ctx));
   // The designated validating probe (the backend has no cap param — the prompt
   // itself keeps the answer minimal; subscription usage is flat-rate). Mirrors the
   // shared adapter's testConnection error mapping.

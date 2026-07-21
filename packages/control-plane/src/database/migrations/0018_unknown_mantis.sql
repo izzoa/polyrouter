@@ -1,0 +1,4 @@
+ALTER TABLE "provider" ADD COLUMN "first_byte_timeout_ms" integer;--> statement-breakpoint
+ALTER TABLE "provider" ADD COLUMN "idle_timeout_ms" integer;--> statement-breakpoint
+ALTER TABLE "provider" ADD CONSTRAINT "provider_first_byte_timeout_range" CHECK ("provider"."first_byte_timeout_ms" IS NULL OR ("provider"."first_byte_timeout_ms" >= 1000 AND "provider"."first_byte_timeout_ms" <= 3600000));--> statement-breakpoint
+ALTER TABLE "provider" ADD CONSTRAINT "provider_idle_timeout_range" CHECK ("provider"."idle_timeout_ms" IS NULL OR ("provider"."idle_timeout_ms" >= 1000 AND "provider"."idle_timeout_ms" <= 3600000));

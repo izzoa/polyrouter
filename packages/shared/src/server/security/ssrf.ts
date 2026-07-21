@@ -164,6 +164,11 @@ export interface UrlGuardOptions {
   /** Resolve a hostname to IPs; default DNS. Injected in tests / at connect time. */
   resolve?: (hostname: string) => Promise<string[]>;
   maxRedirects?: number;
+  /** Explicit dispatcher timeouts (fix-long-call-timeouts): derived by the
+   * caller ABOVE its own typed bounds so undici's defaults (300s) are never the
+   * binding constraint. Omitted = undici defaults (pre-existing behavior). */
+  headersTimeoutMs?: number;
+  bodyTimeoutMs?: number;
 }
 
 function loopbackAllowed(ctx: GuardContext): boolean {
@@ -389,7 +394,18 @@ export function createGuardedDispatcher(options: UrlGuardOptions): Dispatcher {
       })
       .catch((err: unknown) => callback(err as Error, null));
   };
-  return new Agent({ connect });
+  return new Agent({ connect, ...dispatcherTimeoutOptions(options) });
+}
+
+/** The Agent timeout options derived from the guard options — pure and exported
+ * so the mapping is unit-testable without introspecting an Agent instance. */
+export function dispatcherTimeoutOptions(
+  options: Pick<UrlGuardOptions, 'headersTimeoutMs' | 'bodyTimeoutMs'>,
+): { headersTimeout?: number; bodyTimeout?: number } {
+  return {
+    ...(options.headersTimeoutMs !== undefined ? { headersTimeout: options.headersTimeoutMs } : {}),
+    ...(options.bodyTimeoutMs !== undefined ? { bodyTimeout: options.bodyTimeoutMs } : {}),
+  };
 }
 
 /**

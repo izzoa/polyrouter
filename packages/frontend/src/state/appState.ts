@@ -220,6 +220,9 @@ export interface AppState {
     refreshError: string | null;
     busy: boolean;
   };
+  /** Instance timeout defaults (fix-long-call-timeouts) — provider-form
+   * placeholders; null until fetched. */
+  tdefaults: { firstByteTimeoutMs: number; idleTimeoutMs: number } | null;
   /** Body-capture card state (add-body-capture). */
   bc: {
     status: BodyCaptureStatus | null;
@@ -373,6 +376,8 @@ function toProvider(p: ProviderDto): Provider {
     oauthPreset: p.oauthPreset,
     credentialExpiresAt: p.credentialExpiresAt,
     credentialError: p.credentialError,
+    firstByteTimeoutMs: p.firstByteTimeoutMs,
+    idleTimeoutMs: p.idleTimeoutMs,
     createdAt: p.createdAt,
   };
 }
@@ -384,7 +389,15 @@ function errMessage(e: unknown): string {
 }
 
 function emptyProviderForm(): ProviderForm {
-  return { name: '', kind: 'api', protocol: 'openai_compatible', baseUrl: '', credential: '' };
+  return {
+    name: '',
+    kind: 'api',
+    protocol: 'openai_compatible',
+    baseUrl: '',
+    credential: '',
+    firstByteTimeoutS: '',
+    idleTimeoutS: '',
+  };
 }
 
 /** Fresh create/edit-provider modal state (shared `np`). */
@@ -410,17 +423,33 @@ function emptyNp(): AppState['np'] {
   };
 }
 
+/** Parse a patience field (SECONDS text) → ms; '' = absent; invalid/out-of-range
+ * throws the inline-error message (fix-long-call-timeouts). */
+function parseTimeoutS(raw: string, label: string): number | undefined {
+  const t = raw.trim();
+  if (t === '') return undefined;
+  const n = Number(t);
+  if (!Number.isInteger(n) || n < 1 || n > 3600) {
+    throw new Error(`${label} must be a whole number of seconds between 1 and 3600`);
+  }
+  return n * 1000;
+}
+
 function buildProviderInput(form: ProviderForm): CreateProviderInput {
   if (form.protocol === 'openai_responses') {
     // Unreachable: the connect-only protocol appears only on edit-seeded forms,
     // never in the create UI — and the server would reject it anyway.
     throw new Error('ChatGPT providers are created through the subscription connect flow');
   }
+  const firstByteTimeoutMs = parseTimeoutS(form.firstByteTimeoutS, 'First-byte patience');
+  const idleTimeoutMs = parseTimeoutS(form.idleTimeoutS, 'Idle patience');
   const base: CreateProviderInput = {
     name: form.name.trim(),
     kind: UI_TO_API_KIND[form.kind],
     protocol: form.protocol,
     baseUrl: form.baseUrl.trim(),
+    ...(firstByteTimeoutMs !== undefined ? { firstByteTimeoutMs } : {}),
+    ...(idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}),
   };
   const credential = form.credential.trim();
   return credential ? { ...base, credential } : base;
@@ -663,6 +692,7 @@ function initialState(): AppState {
     autoLayers: null,
     calHistory: { rows: [], loaded: false, error: null },
     pc: { status: null, loaded: false, loadError: null, refreshError: null, busy: false },
+    tdefaults: null,
     bc: { status: null, loaded: false, error: null, busy: false },
     selBodies: { rows: null, loading: false, error: null },
     routingLoading: false,
@@ -748,6 +778,8 @@ export interface AppStore {
   deleteAgent: (agent: Agent) => Promise<void>;
   // providers (realized)
   loadProviders: () => Promise<void>;
+  /** Instance timeout defaults for the provider form (fix-long-call-timeouts). */
+  loadTimeoutDefaults: () => Promise<void>;
   addProvider: () => Promise<void>;
   /** Open the shared provider modal in edit mode, prefilled from `p`. */
   openEditProvider: (p: Provider) => void;
@@ -1221,6 +1253,16 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       if (seq !== autoPerfSeq || gen !== identityGen || state.autoPerf.range !== requested) return;
       setState('autoPerf', 'error', err(e));
       setState('autoPerf', 'loaded', true);
+    }
+  };
+
+  const loadTimeoutDefaults = async (): Promise<void> => {
+    if (state.tdefaults !== null) return; // instance-constant — fetch once
+    try {
+      const d = await client.providerTimeoutDefaults();
+      setState('tdefaults', d);
+    } catch {
+      // Placeholder-only data — the form falls back to neutral copy.
     }
   };
 
@@ -1823,6 +1865,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     },
 
     loadProviders,
+    loadTimeoutDefaults,
     addProvider: async () => {
       if (state.np.busy) return; // single-flight — no double-submit duplicates (A-27)
       const form = state.np;
@@ -1846,7 +1889,15 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           // public enum) — submit a NAME-ONLY patch for those rows.
           const patch: UpdateProviderInput =
             form.oauthPreset !== null
-              ? { name: form.name.trim() }
+              ? {
+                  // OAuth rows pin endpoint/kind/protocol server-side; name AND the
+                  // patience overrides are freely editable (fix-long-call-timeouts
+                  // impl-Med-2 — silently discarding a rendered field is a lie).
+                  name: form.name.trim(),
+                  firstByteTimeoutMs:
+                    parseTimeoutS(form.firstByteTimeoutS, 'First-byte patience') ?? null,
+                  idleTimeoutMs: parseTimeoutS(form.idleTimeoutS, 'Idle patience') ?? null,
+                }
               : {
                   name: form.name.trim(),
                   kind: UI_TO_API_KIND[form.kind],
@@ -1854,6 +1905,11 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
                   // (unchangeable anyway) so a rename still works on such a row.
                   ...(form.protocol !== 'openai_responses' ? { protocol: form.protocol } : {}),
                   baseUrl: form.baseUrl.trim(),
+                  // Patience: blank = clear to inherit (explicit null), value = set
+                  // (fix-long-call-timeouts).
+                  firstByteTimeoutMs:
+                    parseTimeoutS(form.firstByteTimeoutS, 'First-byte patience') ?? null,
+                  idleTimeoutMs: parseTimeoutS(form.idleTimeoutS, 'Idle patience') ?? null,
                 };
           const typed = form.credential.trim();
           if (form.clearCredential) patch.credential = '';
@@ -1898,8 +1954,11 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           clearCredential: false,
           origKind: apiKindToUi(p.kind),
           oauthPreset: p.oauthPreset,
+          firstByteTimeoutS: p.firstByteTimeoutMs === null ? '' : String(p.firstByteTimeoutMs / 1000),
+          idleTimeoutS: p.idleTimeoutMs === null ? '' : String(p.idleTimeoutMs / 1000),
         },
       });
+      void loadTimeoutDefaults();
     },
 
     loadOauthPresets,
@@ -2044,6 +2103,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     },
 
     openModal: (modal) => {
+      if (modal === 'newProvider') void loadTimeoutDefaults();
       if (modal === 'newAgent') {
         setState({ modal, na: { name: '', harness: 'openai_sdk', busy: false, error: null } });
       } else if (modal === 'newProvider') {

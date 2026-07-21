@@ -458,6 +458,57 @@ export function Modals() {
                     prices you set are cleared on save.
                   </div>
                 </Show>
+                {/* Advanced patience (fix-long-call-timeouts): blank = inherit the
+                    instance defaults — shown honestly as placeholders from the
+                    server's timeout-defaults read, never hard-coded. */}
+                <div>
+                  <div class="upper-label" style="margin-bottom:6px">
+                    Advanced — patience for slow models
+                  </div>
+                  <div style="display:flex;gap:8px">
+                    <div style="flex:1">
+                      <label class="field-label" for="f-np-firstbyte" style="display:block">
+                        First response (s)
+                      </label>
+                      <input
+                        class="input mono"
+                        id="f-np-firstbyte"
+                        style="font:400 12px 'Geist Mono',monospace"
+                        inputmode="numeric"
+                        value={state.np.firstByteTimeoutS}
+                        placeholder={
+                          state.tdefaults !== null
+                            ? `${String(state.tdefaults.firstByteTimeoutMs / 1000)} · instance default`
+                            : 'instance default'
+                        }
+                        onInput={(e) => setState('np', 'firstByteTimeoutS', e.currentTarget.value)}
+                      />
+                    </div>
+                    <div style="flex:1">
+                      <label class="field-label" for="f-np-idle" style="display:block">
+                        Between chunks (s)
+                      </label>
+                      <input
+                        class="input mono"
+                        id="f-np-idle"
+                        style="font:400 12px 'Geist Mono',monospace"
+                        inputmode="numeric"
+                        value={state.np.idleTimeoutS}
+                        placeholder={
+                          state.tdefaults !== null
+                            ? `${String(state.tdefaults.idleTimeoutMs / 1000)} · instance default`
+                            : 'instance default'
+                        }
+                        onInput={(e) => setState('np', 'idleTimeoutS', e.currentTarget.value)}
+                      />
+                    </div>
+                  </div>
+                  <div style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);line-height:1.5;margin-top:4px">
+                    For research/long-thinking models: raise patience here (up to 3600s), prefer
+                    streaming, and size your client SDK’s own timeout — the one bound the router
+                    can’t lift. Blank inherits the instance default.
+                  </div>
+                </div>
                 <div style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);line-height:1.5">
                   Custom base URLs are SSRF-checked — private and metadata ranges are rejected.
                   Credentials are encrypted at rest.

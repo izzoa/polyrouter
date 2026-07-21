@@ -40,6 +40,7 @@ import type {
   SessionInfo,
   TierDto,
   TierEntryDto,
+  TimeoutDefaults,
   TimeseriesBucket,
   TimeseriesPoint,
   UpdateBudgetInput,
@@ -674,10 +675,19 @@ export class FakeApiClient implements ApiClient {
       oauthPreset: null,
       credentialExpiresAt: null,
       credentialError: null,
+      firstByteTimeoutMs: input.firstByteTimeoutMs ?? null,
+      idleTimeoutMs: input.idleTimeoutMs ?? null,
       createdAt: NOW,
     };
     this.providers = [...this.providers, provider];
     return Promise.resolve(provider);
+  }
+
+  timeoutDefaults: TimeoutDefaults = { firstByteTimeoutMs: 30_000, idleTimeoutMs: 30_000 };
+
+  providerTimeoutDefaults(): Promise<TimeoutDefaults> {
+    this.record('providerTimeoutDefaults');
+    return Promise.resolve({ ...this.timeoutDefaults });
   }
 
   updateProvider(id: string, patch: UpdateProviderInput): Promise<ProviderDto> {
@@ -724,6 +734,8 @@ export class FakeApiClient implements ApiClient {
       status: 'unknown',
       hasCredential: true,
       oauthPreset: chatgpt ? 'chatgpt' : 'claude',
+      firstByteTimeoutMs: null,
+      idleTimeoutMs: null,
       credentialExpiresAt: NOW,
       credentialError: null,
       createdAt: NOW,

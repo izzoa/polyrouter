@@ -17,7 +17,7 @@ Polyrouter is a self-hostable LLM router/gateway. It gives you **one OpenAI- and
 - [**Fallback chains**](/openwiki/routing/engine.md) — automatic failover through ordered provider chains when upstreams fail
 - [**Subscription OAuth**](/openwiki/providers/subscription-oauth.md) — connect Claude Pro/Max or ChatGPT Plus/Pro subscriptions with automatic token refresh
 - [**Budget enforcement**](/openwiki/data-model/schema.md) — per-agent or global spend limits with alert and block actions
-- [**Metadata-only cost tracking**](/openwiki/data-model/schema.md) — immutable cost records with snapshotted prices; prompt/response bodies are never stored
+- [**Metadata-only cost tracking**](/openwiki/data-model/schema.md) — immutable cost records with snapshotted prices; prompt/response bodies are never stored by default (opt-in encrypted body capture available on selfhosted)
 - [**Dashboard**](/openwiki/dashboard/overview.md) — SolidJS SPA for monitoring requests, managing providers, configuring routing, and viewing analytics
 
 ## Install (One Command)
@@ -84,8 +84,8 @@ See [Architecture Overview](/openwiki/architecture/overview.md) for the full bre
 | [Provider Adapters](/openwiki/providers/adapters.md) | Supported providers, protocol translation, circuit breakers, listed pricing |
 | [Subscription OAuth](/openwiki/providers/subscription-oauth.md) | Claude/ChatGPT subscription connect, token refresh, credential envelope |
 | [Data Model](/openwiki/data-model/schema.md) | Database schema, tenant isolation, immutable costs |
-| [Dashboard](/openwiki/dashboard/overview.md) | Frontend pages, design system, state management |
-| [Security & Auth](/openwiki/security/auth.md) | Dual auth model, credential envelope, SSRF protection, encryption |
+| [Dashboard](/openwiki/dashboard/overview.md) | Frontend pages, design system, state management, body capture controls |
+| [Security & Auth](/openwiki/security/auth.md) | Dual auth model, credential envelope, SSRF protection, encryption, body capture privacy |
 | [Deployment](/openwiki/operations/deployment.md) | Docker Compose, environment variables, install script |
 | [Testing](/openwiki/testing/guide.md) | Test types, running tests, CI pipeline |
 

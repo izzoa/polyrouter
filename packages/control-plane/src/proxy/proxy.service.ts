@@ -1002,9 +1002,31 @@ export class ProxyService {
         providerId: t.providerId,
         externalModelId: t.externalModelId,
         buildAdapter: () => this.chainAdapter(principal, provider, signal),
+        // THIS member's stream watchdog bound (fix-long-call-timeouts): a
+        // per-provider override must reach core even mid-chain beside
+        // un-overridden members.
+        firstEventTimeoutMs: this.effectiveBounds(provider).streamEventTimeoutMs,
       });
     }
     return { attempts, meta };
+  }
+
+  /** Effective per-provider timeout bounds (fix-long-call-timeouts):
+   * `override ?? instance default`, with the core stream bound derived at the
+   * SAME fixed margin above the effective first-byte bound (E1.3 — the
+   * adapter's typed timer must keep winning pre-headers races). */
+  private effectiveBounds(provider: Pick<ProviderRow, 'firstByteTimeoutMs' | 'idleTimeoutMs'>): {
+    firstByteTimeoutMs: number;
+    idleTimeoutMs: number;
+    streamEventTimeoutMs: number;
+  } {
+    const margin = this.rt.firstEventTimeoutMs - this.rt.firstByteTimeoutMs;
+    const firstByteTimeoutMs = provider.firstByteTimeoutMs ?? this.rt.firstByteTimeoutMs;
+    return {
+      firstByteTimeoutMs,
+      idleTimeoutMs: provider.idleTimeoutMs ?? this.rt.idleTimeoutMs,
+      streamEventTimeoutMs: firstByteTimeoutMs + margin,
+    };
   }
 
   /** Build a chain member's adapter; a setup failure (SSRF/config/decrypt)
@@ -1177,8 +1199,7 @@ export class ProxyService {
         ...(r.oauthAccountId !== undefined ? { oauthAccountId: r.oauthAccountId } : {}),
         ...(r.probeModel !== undefined ? { probeModel: r.probeModel } : {}),
         defaultMaxOutputTokens: this.rt.defaultMaxOutputTokens,
-        firstByteTimeoutMs: this.rt.firstByteTimeoutMs,
-        idleTimeoutMs: this.rt.idleTimeoutMs,
+        ...this.effectiveBounds(provider),
       });
     }
     let credential = '';
@@ -1198,8 +1219,7 @@ export class ProxyService {
       kind,
       mode: this.mode,
       defaultMaxOutputTokens: this.rt.defaultMaxOutputTokens,
-      firstByteTimeoutMs: this.rt.firstByteTimeoutMs,
-      idleTimeoutMs: this.rt.idleTimeoutMs,
+      ...this.effectiveBounds(provider),
     });
   }
 }

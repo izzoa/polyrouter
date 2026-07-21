@@ -131,9 +131,9 @@ The `userPrincipal` type makes it a compile error to run a query without tenant 
 
 **Source**: `packages/shared/src/server/database/tenancy.ts`
 
-## Metadata-Only Privacy
+## Metadata-Only Privacy (Default)
 
-By design, polyrouter **never stores prompt or response bodies**. The `request_log` table contains only:
+By design, polyrouter **never stores prompt or response bodies** by default. The `request_log` table contains only:
 
 - Token counts (input/output)
 - Model and provider IDs
@@ -142,6 +142,8 @@ By design, polyrouter **never stores prompt or response bodies**. The `request_l
 - Latency measurements
 
 This means even a full database breach exposes no conversation content.
+
+**Opt-in body capture** (add-body-capture): selfhosted instances can enable prompt/response body capture via the dashboard Settings page. When enabled (`errors_only` or `all` mode), bodies are encrypted with the same `PROVIDER_CREDENTIAL_KEY` as provider credentials and stored in `request_body` rows alongside the request log. The feature is off by default, selfhosted-only (`MODE=selfhosted`), and gated behind an explicit consent confirm. Bodies are purged daily per the configured retention window (default 30 days); infinite retention requires an explicit keep-forever choice. Per-agent overrides (`always`/`never`) refine the global mode. A `capture_epoch` deletion-revocation counter and `request_body_tombstone` table prevent stale writes from resurrecting deleted bodies. See [Data Model](/openwiki/data-model/schema.md#budgets--notifications) for schema details.
 
 ## Input Validation
 

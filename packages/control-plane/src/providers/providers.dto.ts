@@ -2,13 +2,16 @@ import { Transform } from 'class-transformer';
 import {
   IsBoolean,
   IsIn,
+  IsInt,
   IsNumber,
   IsOptional,
   IsString,
   IsUrl,
+  Max,
   MaxLength,
   Min,
   MinLength,
+  ValidateIf,
 } from 'class-validator';
 
 export const PROVIDER_KINDS = ['api_key', 'subscription', 'custom', 'local'] as const;
@@ -43,6 +46,21 @@ export class CreateProviderDto {
   @IsString()
   @MaxLength(8192)
   credential?: string;
+
+  /** Upstream patience overrides (fix-long-call-timeouts): 1s–1h; null = inherit. */
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @IsInt()
+  @Min(1000)
+  @Max(3_600_000)
+  firstByteTimeoutMs?: number | null;
+
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @IsInt()
+  @Min(1000)
+  @Max(3_600_000)
+  idleTimeoutMs?: number | null;
 }
 
 export class UpdateProviderDto {
@@ -69,6 +87,21 @@ export class UpdateProviderDto {
   @IsString()
   @MaxLength(8192)
   credential?: string;
+
+  /** Explicit null clears back to inherit; omitted preserves (fix-long-call-timeouts). */
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @IsInt()
+  @Min(1000)
+  @Max(3_600_000)
+  firstByteTimeoutMs?: number | null;
+
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @IsInt()
+  @Min(1000)
+  @Max(3_600_000)
+  idleTimeoutMs?: number | null;
 }
 
 const asBool = ({ value }: { value: unknown }): unknown =>

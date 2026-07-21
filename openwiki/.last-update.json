@@ -1,6 +1,6 @@
 {
-  "updatedAt": "2026-07-19T06:53:12.402Z",
+  "updatedAt": "2026-07-20T23:35:03.485Z",
   "command": "update",
-  "gitHead": "1189604cd68bfb968779003f7a42e6d99ec08e01",
+  "gitHead": "ff3dbe404167dd8a623479df909b16f3bfb11aa7",
   "model": "moonshotai/kimi-k3"
 }

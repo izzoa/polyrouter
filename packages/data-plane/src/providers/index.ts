@@ -38,7 +38,7 @@ export { createHttpProviderAdapter, parseModelList } from './http-adapter';
 export type { AdapterDeps, HttpAdapterSpec } from './http-adapter';
 export { createOpenaiProviderAdapter } from './openai-adapter';
 export { createAnthropicProviderAdapter } from './anthropic-adapter';
-export { createResponsesProviderAdapter } from './responses-adapter';
+export { createResponsesProviderAdapter, guardEventIdle } from './responses-adapter';
 export { createProviderAdapter } from './factory';
 export {
   CircuitBreaker,

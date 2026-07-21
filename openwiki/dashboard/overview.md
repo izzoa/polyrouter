@@ -23,7 +23,7 @@ The polyrouter dashboard is a SolidJS + Vite SPA that provides a complete manage
 | **Limits** | Budget management with alert/block actions |
 | **Users** | Admin user management — invite users, assign roles, disable accounts |
 | **Accept Invite** | Redeem a single-use invite token to create an account |
-| **Settings** | Account, notification channels, OAuth providers |
+| **Settings** | Account, notification channels, OAuth providers, prompt/response body capture, pricing catalog |
 | **Setup** | 3-step onboarding wizard |
 | **Login** | Authentication gate |
 
@@ -132,11 +132,12 @@ All UI changes must pass the `/ss-score` agent skill gate (score ≥ 80). The sc
 | `Topbar` | Theme toggle, user menu |
 | `Chart` | uPlot-based request/spend charts |
 | `RequestTable` | Paginated request log with sorting |
-| `Inspector` | Routing decision detail view |
+| `Inspector` | Routing decision detail view (including matched routing header) |
 | `RangeSelector` | Date range picker for analytics |
 | `Modals` | Dialog system with focus management |
 | `Toast` | Notification toasts |
 | `Toggle` | Accessible toggle switch |
+| `BodyCaptureCard` | Prompt/response body capture controls (Settings) |
 
 ## Pages Detail
 
@@ -146,7 +147,7 @@ Displays KPIs (total requests, spend, success rate), request volume charts, and 
 
 ### Requests
 
-Paginated table of all LLM requests with filtering. The **Inspector** shows the full routing decision: which tier was selected, which provider served the request, fallback chain attempts, and cost breakdown.
+Paginated table of all LLM requests with filtering. The **Inspector** shows the full routing decision: which tier was selected, which provider served the request, which header chose the route (when applicable), fallback chain attempts, and cost breakdown.
 
 ### Costs
 
@@ -170,7 +171,11 @@ Create and manage budgets with configurable scopes (global or per-agent), window
 
 ### Settings
 
-Account management, notification channel configuration (SMTP and Apprise), and OAuth provider settings.
+Account management, notification channel configuration (SMTP and Apprise), OAuth provider settings, prompt/response body capture controls, and pricing catalog status.
+
+**Body Capture** (selfhosted only): opt-in prompt/response body capture with three modes — `off` (metadata only, default), `errors_only` (errors and cascade escalations), `all` (every request). Per-agent overrides (`always`/`never`) refine the global mode. Captured bodies are encrypted with the same `PROVIDER_CREDENTIAL_KEY` as provider credentials, stored alongside the request log, and purged daily per the configured retention window (7/30/90/365 days, or explicit keep-forever). The card shows drop count, last purge time, and a consent gate for enabling. See [Data Model](/openwiki/data-model/schema.md#budgets--notifications) for schema details.
+
+**Pricing Catalog** (add-pricing-refresh-ui): shows catalog entry count, newest version, last refresh result, and scheduler status (configured enabled, mode permitted, effective enabled, cron). The daily auto-refresh pulls the LiteLLM catalog and appends effective-dated versions. On by default; opt out with `PRICING_REFRESH_SCHED_ENABLED=false`.
 
 ### Setup
 

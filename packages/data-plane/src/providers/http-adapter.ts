@@ -169,6 +169,33 @@ export function openRouterAttributionHeaders(baseUrl: string): Record<string, st
     : {};
 }
 
+/** Fixed headroom the dispatcher timeouts sit ABOVE the typed bounds — undici
+ * must only ever be a backstop, never the binding constraint (E1.3, one layer
+ * down; fix-long-call-timeouts). */
+export const DISPATCHER_MARGIN_MS = 5_000;
+
+/** Ceiling stand-in for core's stream bound when the caller didn't supply it:
+ * first-byte + the config schema's maximum event margin (60s) — always ≥ the
+ * real derived bound, so undici can never beat the typed stream watchdog. */
+const MAX_EVENT_MARGIN_MS = 60_000;
+
+/** Derive the dispatcher's explicit timeouts from the effective typed bounds
+ * (fix-long-call-timeouts). Headers must clear the first-byte timer; body (a
+ * socket-level inter-chunk timer shared by BOTH paths) must clear the wider of
+ * the buffered idle bound and the stream first/inter-event bound. Pure —
+ * unit-tested directly. */
+export function dispatcherTimeouts(
+  firstByteTimeoutMs: number,
+  idleTimeoutMs: number,
+  streamEventTimeoutMs?: number,
+): { headersTimeoutMs: number; bodyTimeoutMs: number } {
+  const streamBound = streamEventTimeoutMs ?? firstByteTimeoutMs + MAX_EVENT_MARGIN_MS;
+  return {
+    headersTimeoutMs: firstByteTimeoutMs + DISPATCHER_MARGIN_MS,
+    bodyTimeoutMs: Math.max(idleTimeoutMs, streamBound) + DISPATCHER_MARGIN_MS,
+  };
+}
+
 export function createHttpProviderAdapter(
   config: ProviderConfig,
   deps: AdapterDeps,
@@ -183,9 +210,20 @@ export function createHttpProviderAdapter(
   // handed to the default guarded client so a stream request's buffered *error*
   // body honors the same cap (not just the 10 MiB backstop).
   const maxResponseBytes = config.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
+  const dispatcher = dispatcherTimeouts(
+    firstByteTimeoutMs,
+    idleTimeoutMs,
+    config.streamEventTimeoutMs,
+  );
   const httpClient =
     deps.httpClient ??
-    createGuardedHttpClient({ mode: config.mode, providerKind: config.kind, maxResponseBytes });
+    createGuardedHttpClient({
+      mode: config.mode,
+      providerKind: config.kind,
+      maxResponseBytes,
+      headersTimeoutMs: dispatcher.headersTimeoutMs,
+      bodyTimeoutMs: dispatcher.bodyTimeoutMs,
+    });
   const chatUrl = joinUrl(config.baseUrl, spec.chatPath);
   const modelsUrl = spec.modelsPath !== undefined ? joinUrl(config.baseUrl, spec.modelsPath) : null;
   // Computed once — base_url is fixed per adapter (add-openrouter-attribution).
@@ -249,7 +287,7 @@ export function createHttpProviderAdapter(
       // Adapter-stage error-detail sanitization (add-request-error-detail): THIS
       // layer holds the credential, so raw wire fields must not leave it.
       yield* sanitizeStreamErrors(
-        spec.translate.streamParse(readSseChunks(res)),
+        spec.translate.streamParse(readSseChunks(res, ctx?.onBytes)),
         [config.credential],
         errMeta(res).requestId,
       );

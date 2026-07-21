@@ -119,6 +119,7 @@ export {
   assertEndpointsSafe,
   assertUrlSafe,
   createGuardedDispatcher,
+  dispatcherTimeoutOptions,
   guardedFetch,
 } from './security/ssrf';
 export type {

@@ -598,7 +598,7 @@ export async function withBreaker<T>(
 export async function* withBreakerStream(
   breaker: CircuitBreaker,
   providerId: string,
-  gen: () => AsyncGenerator<NormalizedStreamEvent>,
+  gen: (renewOnActivity: () => void) => AsyncGenerator<NormalizedStreamEvent>,
   onOpen?: BreakerOpenListener,
   onState?: BreakerStateListener,
   isCallerAbort?: () => boolean,
@@ -620,14 +620,28 @@ export async function* withBreakerStream(
   // forget (never awaited) so it adds no token-path latency and cannot stall the
   // stream; throttled to ~once per third of a lease so a fast stream doesn't issue
   // one store op per token. The store's own expiry/generation guards make a
-  // late-landing renewal a harmless no-op.
+  // late-landing renewal a harmless no-op. `renewOnActivity` hands the SAME
+  // throttled renewal to the byte-liveness path (fix-long-call-timeouts): an
+  // event-quiet but byte-alive probe (keepalive comments) keeps its single-probe
+  // lease instead of expiring it and admitting overlapping probes.
   const renewEveryMs = Math.max(1, Math.floor(breaker.probeLeaseMs / 3));
   let lastRenewAt = breaker.nowMs();
+  const renewOnActivity = (): void => {
+    if (!token.isProbe || settled) return;
+    const t = breaker.nowMs();
+    // Throttle by elapsed time; `t < lastRenewAt` catches a BACKWARD wall-clock
+    // step (NTP correction) — renew at once and re-baseline, so renewals never
+    // stall against the store's independent (server) clock still advancing.
+    if (t - lastRenewAt >= renewEveryMs || t < lastRenewAt) {
+      lastRenewAt = t;
+      void breaker.renewProbe(token);
+    }
+  };
 
   let sawTerminalStop = false;
   let sawError = false;
   try {
-    for await (const ev of gen()) {
+    for await (const ev of gen(renewOnActivity)) {
       if (ev.type === 'message_delta' && ev.stopReason !== undefined) sawTerminalStop = true;
       if (ev.type === 'error') {
         // Settle BEFORE yielding: a commit-gated consumer may `.return()` the
@@ -636,16 +650,7 @@ export async function* withBreakerStream(
         sawError = true;
         await settle(breakerImpact(classifyStreamError(ev.error.type)) ? 'trip' : 'success');
       }
-      if (token.isProbe && !settled) {
-        const t = breaker.nowMs();
-        // Throttle by elapsed time; `t < lastRenewAt` catches a BACKWARD wall-clock
-        // step (NTP correction) — renew at once and re-baseline, so renewals never
-        // stall against the store's independent (server) clock still advancing.
-        if (t - lastRenewAt >= renewEveryMs || t < lastRenewAt) {
-          lastRenewAt = t;
-          void breaker.renewProbe(token);
-        }
-      }
+      renewOnActivity();
       yield ev;
     }
     if (!sawError) {

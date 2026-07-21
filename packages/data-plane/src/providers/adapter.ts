@@ -24,6 +24,10 @@ export type RuntimeMode = 'selfhosted' | 'cloud';
 export interface CallContext {
   readonly signal?: AbortSignal;
   readonly traceId?: string;
+  /** Per-attempt liveness callback (fix-long-call-timeouts): invoked on
+   * upstream body-byte arrival (keepalive comments included). Inert once its
+   * attempt settles — a stale callback never re-arms a later attempt. */
+  readonly onBytes?: () => void;
 }
 
 /** How the credential authenticates (add-subscription-oauth). `api_key` (default) is
@@ -58,6 +62,11 @@ export interface ProviderConfig {
   readonly firstByteTimeoutMs?: number;
   /** Optional bound on inter-event gaps for a stream (not an overall deadline). */
   readonly idleTimeoutMs?: number;
+  /** Core's stream first/inter-event bound for THIS provider's calls
+   * (fix-long-call-timeouts): informs the dispatcher body-timeout derivation
+   * (`max(idle, this) + margin`). Set by the proxy; a conservative ceiling
+   * applies when absent. */
+  readonly streamEventTimeoutMs?: number;
   /** Cap on a buffered (non-streaming) response body; defaults to
    * `DEFAULT_MAX_RESPONSE_BYTES`. Overridable mainly for tests (E11.1). */
   readonly maxResponseBytes?: number;

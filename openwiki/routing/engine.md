@@ -33,25 +33,49 @@ The `model` field in the request body is parsed for three patterns:
 | Provider-prefixed | `p1:gpt-4o` | Route to specific provider's model |
 | Tier name | `fast` | Use the named tier's entry chain |
 
-### Phase 2: Header Rules
+### Phase 2: Tier Header (Highest Precedence)
 
-Routing rules match on request headers:
+The built-in `x-polyrouter-tier` header has **structural precedence** over all other header rules. A non-empty `x-polyrouter-tier` that resolves to a tier or remap rule wins regardless of other header rules' priority values.
 
 ```
 x-polyrouter-tier: fast
 ```
 
-Rules have priority ordering; the first match wins. Rules can also match on custom headers for advanced routing policies.
+Phase 2 has two sub-steps:
+1. **Remap rules** — tier-header rules matching the sent value (dashboard Header rules)
+2. **Direct tier lookup** — the sent value naming an owned tier directly
 
-### Phase 3: Default Rule
+### Phase 3: Other Header Rules
+
+Routing rules on headers *other than* `x-polyrouter-tier` match in priority order. The first match wins. Rules can match on custom headers for advanced routing policies.
+
+**Source**: `packages/data-plane/src/routing/resolve.ts` — Phase 2/3 separation (add-tier-header-precedence)
+
+### Phase 4: Default Rule
 
 If no model field or header rule matches, the system's default routing rule applies.
 
-### Phase 4: Default Tier Fallback
+### Phase 5: Default Tier Fallback
 
 As the final fallback, the default tier's entry chain is used.
 
 **Source**: `packages/data-plane/src/routing/resolve.ts` — `resolveRoute()` function
+
+## Matched Routing Header
+
+When a request is routed by a header (Phase 2 or 3), the `RouteDecision` carries a `matchedHeader` field identifying which header chose the route:
+
+| Scenario | `matchedHeader.name` | `matchedHeader.value` |
+|----------|----------------------|----------------------|
+| Built-in tier header (`x-polyrouter-tier: fast`) | `x-polyrouter-tier` | `fast` (the owned tier key) |
+| Custom header rule (`x-env: prod` → tier `fast`) | `x-env` | `null` (never recorded) |
+| Non-header decision (explicit model, default rule, etc.) | `null` | `null` |
+
+The value is recorded only when provably non-secret: the built-in tier header carries the matched owned tier key (already recorded as `tier_assigned`). A custom rule's configured `header_value` can itself be a credential, so only the normalized header name is persisted — never the value. This is fail-closed by design.
+
+The matched header is persisted to `request_log.routing_header_name` / `routing_header_value` and displayed in the dashboard's [Inspector](/openwiki/dashboard/overview.md#requests) when a request row is selected.
+
+**Source**: `packages/data-plane/src/routing/resolve.ts` — `MatchedHeader` interface (add-routing-header-visibility)
 
 ## Tiers and Routing Entries
 

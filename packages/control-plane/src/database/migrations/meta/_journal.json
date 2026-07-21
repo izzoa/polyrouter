@@ -127,6 +127,13 @@
       "when": 1784576491060,
       "tag": "0017_glossy_agent_brand",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1784617014104,
+      "tag": "0018_unknown_mantis",
+      "breakpoints": true
     }
   ]
 }

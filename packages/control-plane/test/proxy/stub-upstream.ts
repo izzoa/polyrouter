@@ -234,6 +234,19 @@ export async function startStubUpstream(): Promise<StubUpstream> {
         res.writeHead(200, { 'content-type': 'application/json' });
         return; // never end — the caller's deadline aborts it
       }
+      // `*slowhead*` → a PRE-HEADERS delay (fix-long-call-timeouts): trips the
+      // effective first-byte bound unless the provider's override raised it.
+      if (model.includes('slowhead')) {
+        setTimeout(() => {
+          if (res.socket?.destroyed) return; // the adapter already aborted
+          if (path.endsWith('/chat/completions')) {
+            return stream ? openaiStream(res, model) : void openaiJson(res, model);
+          }
+          res.writeHead(404);
+          res.end();
+        }, 1_000);
+        return;
+      }
       if (path.endsWith('/chat/completions')) {
         if (stream && model.includes('bigframes'))
           return openaiStreamBigFrames(res, model, () => bigFramesSent++);

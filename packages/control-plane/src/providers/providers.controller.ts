@@ -9,8 +9,10 @@ import {
   Patch,
   Post,
 } from '@nestjs/common';
+import { loadConfig } from '@polyrouter/shared';
 import type { Principal } from '@polyrouter/shared/server';
 import { CurrentPrincipal } from '../auth/principal.decorator';
+import { resolveProxyBounds, type ProxyRawConfig } from '../proxy/proxy.config';
 import { CreateProviderDto, UpdateProviderDto } from './providers.dto';
 import { ProvidersService, type ActionResult, type SafeProvider } from './providers.service';
 
@@ -33,6 +35,16 @@ export class ProvidersController {
     @Body() dto: CreateProviderDto,
   ): Promise<SafeProvider> {
     return this.svc.create(principal, dto);
+  }
+
+  /** The INSTANCE timeout defaults (fix-long-call-timeouts) — non-secret, for
+   * the provider form's honest inherit display. Declared BEFORE `:id` so the
+   * literal path wins route matching. */
+  @Get('timeout-defaults')
+  @Header('Cache-Control', 'no-store')
+  timeoutDefaults(): { firstByteTimeoutMs: number; idleTimeoutMs: number } {
+    const bounds = resolveProxyBounds(loadConfig<ProxyRawConfig>());
+    return { firstByteTimeoutMs: bounds.firstByteTimeoutMs, idleTimeoutMs: bounds.idleTimeoutMs };
   }
 
   @Get(':id')

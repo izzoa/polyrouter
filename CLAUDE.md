@@ -82,7 +82,7 @@ packages/
 - Tasks in `tasks.md` complete; code matches the approved delta spec.
 - Tests written/updated and green — including the relevant **contract / SSRF / tenant-isolation / cost-immutability** checks where the change touches those areas.
 - Migration generated if the schema changed; `npm run build` passes; lint clean; strict TS with no `any` escapes.
-- Changeset added if user-facing.
+- Changeset added if user-facing — **plus a one-line entry under `[Unreleased]` in [`CHANGELOG.md`](./CHANGELOG.md)** (Added/Changed/Fixed; the release flow retitles the section — see the file's header for the contract).
 - Spec/deltas updated and the change archived (source of truth stays current).
 
 ## Coding standards

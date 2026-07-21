@@ -65,6 +65,7 @@ import { StreamDrainRegistry } from '../../src/proxy/stream-drain.registry';
 import { StructuralRouter } from '../../src/proxy/structural/structural-router';
 import { CascadeRouter } from '../../src/proxy/cascade/cascade-router';
 import { DatabaseModule } from '../../src/database/database.module';
+import { SemanticModule } from '../../src/semantic/semantic.module';
 import { COMPOSE_HINT } from '../tenancy/harness';
 import '../../src/database/database.config';
 import '../../src/auth/auth.config';
@@ -128,7 +129,7 @@ async function bootApp(streamDrainDeadlineMs: number): Promise<BootedApp> {
   const recorded = jest.fn<string, [unknown, { status: string }]>(() => 'rec-id');
   const onRequestFailed = jest.fn(() => Promise.resolve());
   const moduleRef = await Test.createTestingModule({
-    imports: [DatabaseModule, ObservabilityModule],
+    imports: [SemanticModule, DatabaseModule, ObservabilityModule],
     controllers: [ChatCompletionsController, MessagesController, ModelsController],
     providers: [
       AgentApiKeyGuard,

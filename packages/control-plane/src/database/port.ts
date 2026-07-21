@@ -574,6 +574,7 @@ function createRequestAttemptAccessor(db: Db): RequestAttemptAccessor {
 const SETTINGS_VALUE_COLUMNS = {
   structuralEnabled: routingSettings.structuralEnabled,
   cascadeEnabled: routingSettings.cascadeEnabled,
+  semanticEnabled: routingSettings.semanticEnabled,
   calibrationEnabled: routingSettings.calibrationEnabled,
   calibratedHigh: routingSettings.calibratedHigh,
   calibratedLow: routingSettings.calibratedLow,
@@ -605,6 +606,10 @@ function createRoutingSettingsAccessor(db: Db): RoutingSettingsAccessor {
           buildInsertValues(principal, {
             structuralEnabled: value.structuralEnabled,
             cascadeEnabled: value.cascadeEnabled,
+            // First write from a legacy client (semantic omitted): inherit
+            // the structural intent, keeping the semantic⇒structural check
+            // true by construction (add-semantic-routing D7).
+            semanticEnabled: value.semanticEnabled ?? value.structuralEnabled,
             ...(value.calibrationEnabled !== undefined
               ? { calibrationEnabled: value.calibrationEnabled }
               : {}),
@@ -615,6 +620,15 @@ function createRoutingSettingsAccessor(db: Db): RoutingSettingsAccessor {
           set: {
             structuralEnabled: value.structuralEnabled,
             cascadeEnabled: value.cascadeEnabled,
+            // ATOMIC dependency-down normalization (D7): provided → write;
+            // omitted → preserve the STORED value AND the new structural flag
+            // (a legacy full opt-out clears semantic; stored semantic can
+            // never silently re-enable structural). One statement, no
+            // unlocked pre-read.
+            semanticEnabled:
+              value.semanticEnabled !== undefined
+                ? value.semanticEnabled
+                : sql`${routingSettings.semanticEnabled} AND ${value.structuralEnabled}`,
             // Omission preserves; the quad/epoch are NEVER touched here.
             ...(value.calibrationEnabled !== undefined
               ? { calibrationEnabled: value.calibrationEnabled }

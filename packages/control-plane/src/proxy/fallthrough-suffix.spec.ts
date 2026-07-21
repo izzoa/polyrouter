@@ -19,7 +19,7 @@ const verdict: StructuralVerdict = {
 
 describe('withFallthroughSuffix (add-auto-decision-telemetry) \u2014 the FINAL-cascade gate', () => {
   it('appends the verdict reason when the default stands with no FINAL cascade', () => {
-    const d = withFallthroughSuffix(decision('default'), verdict, false);
+    const d = withFallthroughSuffix(decision('default'), verdict, undefined, false);
     expect(d.routingReason).toBe('auto \u2192 default tier; structural:ambiguous score=0.41');
     // The suffix spread preserves the rest of the decision \u2014 matchedHeader
     // included (add-routing-header-visibility).
@@ -30,22 +30,22 @@ describe('withFallthroughSuffix (add-auto-decision-telemetry) \u2014 the FINAL-c
     // Pins the gate against regressing to plan-null keying (r2-Medium-2): a
     // resolved plan whose bundles FAILED to materialize passes hasCascade=false
     // (suffix applies); a materialized cascade passes true (no suffix).
-    expect(withFallthroughSuffix(decision('default'), verdict, true).routingReason).toBe(
+    expect(withFallthroughSuffix(decision('default'), verdict, undefined, true).routingReason).toBe(
       'auto \u2192 default tier',
     );
-    expect(withFallthroughSuffix(decision('default'), verdict, false).routingReason).toContain(
+    expect(withFallthroughSuffix(decision('default'), verdict, undefined, false).routingReason).toContain(
       '; structural:ambiguous',
     );
   });
 
   it('does NOT append on a non-default decision or without a verdict, and never double-appends', () => {
-    expect(withFallthroughSuffix(decision('structural'), verdict, false).routingReason).toBe(
+    expect(withFallthroughSuffix(decision('structural'), verdict, undefined, false).routingReason).toBe(
       'auto \u2192 default tier',
     );
-    expect(withFallthroughSuffix(decision('default'), undefined, false).routingReason).toBe(
+    expect(withFallthroughSuffix(decision('default'), undefined, undefined, false).routingReason).toBe(
       'auto \u2192 default tier',
     );
-    const once = withFallthroughSuffix(decision('default'), verdict, false);
-    expect(withFallthroughSuffix(once, undefined, false).routingReason).toBe(once.routingReason);
+    const once = withFallthroughSuffix(decision('default'), verdict, undefined, false);
+    expect(withFallthroughSuffix(once, undefined, undefined, false).routingReason).toBe(once.routingReason);
   });
 });

@@ -53,6 +53,7 @@ import { ObservabilityModule } from '../../src/observability/observability.modul
 import { LogWriter } from '../../src/recording/log-writer';
 import { PricingModule } from '../../src/pricing/pricing.module';
 import { DatabaseModule } from '../../src/database/database.module';
+import { SemanticModule } from '../../src/semantic/semantic.module';
 import { COMPOSE_HINT } from '../tenancy/harness';
 import '../../src/database/database.config';
 import '../../src/auth/auth.config';
@@ -63,7 +64,7 @@ const HMAC = 'a'.repeat(64);
 
 async function buildApp(): Promise<{ app: INestApplication; server: App }> {
   const moduleRef = await Test.createTestingModule({
-    imports: [DatabaseModule, PricingModule, RecordingModule, ObservabilityModule],
+    imports: [SemanticModule, DatabaseModule, PricingModule, RecordingModule, ObservabilityModule],
     controllers: [ChatCompletionsController],
     providers: [
       AgentApiKeyGuard,

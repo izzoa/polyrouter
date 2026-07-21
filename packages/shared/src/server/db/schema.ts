@@ -416,6 +416,14 @@ export const requestLogs = pgTable(
     structuralBand: text('structural_band'),
     structuralScore: doublePrecision('structural_score'),
     structuralBandSource: text('structural_band_source'),
+    // L2 decision telemetry (add-semantic-routing): the semantic verdict when
+    // Layer 2 EVALUATED the request — band, 4-decimal score in [-2,2], the
+    // active classification source, and the opaque provenance digest. ALL
+    // FOUR travel together (CHECK below); null = not evaluated / pre-capture.
+    semanticBand: text('semantic_band'),
+    semanticScore: doublePrecision('semantic_score'),
+    semanticSource: text('semantic_source'),
+    semanticRevision: text('semantic_revision'),
     // Terminal provider-error detail (add-request-error-detail): set ONLY on
     // status='error' rows; null for non-error rows and rows predating capture
     // (unknown-not-wrong, never backfilled). `error_message` is the factory-
@@ -463,6 +471,25 @@ export const requestLogs = pgTable(
     check(
       'request_log_escalation_source_valid',
       sql`${t.escalationSource} IS NULL OR (${t.escalationSource} IN ('quality_gate', 'cheap_error') AND ${t.escalated})`,
+    ),
+    // The four semantic columns travel together; band/source are enums-or-
+    // null; the score is DB-bounded to the classifier's [-2, 2] range
+    // (add-semantic-routing D4).
+    check(
+      'request_log_semantic_quad',
+      sql`(${t.semanticBand} IS NULL) = (${t.semanticScore} IS NULL) AND (${t.semanticBand} IS NULL) = (${t.semanticSource} IS NULL) AND (${t.semanticBand} IS NULL) = (${t.semanticRevision} IS NULL)`,
+    ),
+    check(
+      'request_log_semantic_band_valid',
+      sql`${t.semanticBand} IS NULL OR ${t.semanticBand} IN ('high', 'low', 'ambiguous')`,
+    ),
+    check(
+      'request_log_semantic_source_valid',
+      sql`${t.semanticSource} IS NULL OR ${t.semanticSource} IN ('bundled', 'learned')`,
+    ),
+    check(
+      'request_log_semantic_score_range',
+      sql`${t.semanticScore} IS NULL OR (${t.semanticScore} >= -2 AND ${t.semanticScore} <= 2)`,
     ),
   ],
 );
@@ -592,6 +619,10 @@ export const routingSettings = pgTable(
     orgId: owned.orgId(),
     structuralEnabled: boolean('structural_enabled').notNull(),
     cascadeEnabled: boolean('cascade_enabled').notNull(),
+    /** L2 preference (add-semantic-routing). Backfilled from structural at
+     * migration (a full opt-out stays a full opt-out); semantic⇒structural
+     * is DB-checked; PUT normalization is atomic in the upsert. */
+    semanticEnabled: boolean('semantic_enabled').default(true).notNull(),
     /** Threshold calibration (add-auto-threshold-calibration). The enabled
      * flag gates the calibrator's MOVES only; a stored pair applies while
      * anchor- and rail-valid regardless (disable = stop moving, keep values).
@@ -613,6 +644,10 @@ export const routingSettings = pgTable(
     check(
       'routing_settings_cascade_implies_structural',
       sql`NOT ${t.cascadeEnabled} OR ${t.structuralEnabled}`,
+    ),
+    check(
+      'routing_settings_semantic_implies_structural',
+      sql`NOT ${t.semanticEnabled} OR ${t.structuralEnabled}`,
     ),
     // The four calibrated_* columns travel together (all null or all set).
     check(

@@ -57,6 +57,7 @@ import { BUDGETS_CONFIG, resolveBudgetsConfig } from '../../src/budgets/budgets.
 import { BUDGET_READER, type BudgetReader } from '../../src/database/budget.reader';
 import { runBudgetOccurrence } from '../../src/budgets/budget.scheduler';
 import { DatabaseModule } from '../../src/database/database.module';
+import { SemanticModule } from '../../src/semantic/semantic.module';
 import { RedisModule } from '../../src/redis/redis.module';
 import { COMPOSE_HINT } from '../tenancy/harness';
 import { startStubUpstream, type StubUpstream } from '../proxy/stub-upstream';
@@ -164,7 +165,7 @@ describe('budget block enforcement — proxy path (#16)', () => {
     }
 
     const moduleRef = await Test.createTestingModule({
-      imports: [DatabaseModule, RedisModule, ObservabilityModule],
+      imports: [SemanticModule, DatabaseModule, RedisModule, ObservabilityModule],
       controllers: [ChatCompletionsController, MessagesController],
       providers: [
         AgentApiKeyGuard,

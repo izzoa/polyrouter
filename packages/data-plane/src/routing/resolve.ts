@@ -48,7 +48,18 @@ export interface ParsedRoute {
   readonly headers: Readonly<Record<string, string | undefined>>;
 }
 
-export type DecisionLayer = 'explicit' | 'header' | 'default' | 'structural' | 'cascade';
+export type DecisionLayer = 'explicit' | 'header' | 'default' | 'structural' | 'cascade' | 'semantic';
+
+/** The complete decision-layer value list (add-semantic-routing): the one
+ * source the analytics `layer` filter validates against per-element. */
+export const DECISION_LAYERS: readonly DecisionLayer[] = [
+  'explicit',
+  'header',
+  'default',
+  'structural',
+  'cascade',
+  'semantic',
+];
 
 /** One member of a fallback chain (#12). */
 export interface RouteTarget {

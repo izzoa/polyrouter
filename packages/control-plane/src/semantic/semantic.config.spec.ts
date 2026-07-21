@@ -6,6 +6,8 @@ describe('buildSemanticConfig (add-semantic-embedder)', () => {
     SEMANTIC_TIMEOUT_MS: 50,
     SEMANTIC_MAX_INPUT_CHARS: 2000,
     SEMANTIC_CONCURRENCY: 2,
+    SEMANTIC_HIGH_THRESHOLD: 0.15,
+    SEMANTIC_LOW_THRESHOLD: 0.15,
   };
 
   it('unset/blank path means the module is absent', () => {
@@ -21,7 +23,15 @@ describe('buildSemanticConfig (add-semantic-embedder)', () => {
       timeoutMs: 50,
       maxInputChars: 2000,
       concurrency: 2,
+      highThreshold: 0.15,
+      lowThreshold: 0.15,
     });
+  });
+
+  it('rejects thresholds finer than 4 decimals', () => {
+    expect(() => buildSemanticConfig({ ...BASE, SEMANTIC_HIGH_THRESHOLD: 0.12345 })).toThrow(
+      /4 decimal/,
+    );
   });
 });
 

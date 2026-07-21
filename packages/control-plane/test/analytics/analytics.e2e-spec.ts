@@ -60,6 +60,10 @@ interface LogSeed {
   structuralBand?: string;
   structuralScore?: number;
   structuralBandSource?: string;
+  semanticBand?: string;
+  semanticScore?: number;
+  semanticSource?: string;
+  semanticRevision?: string;
   qualitySignal?: number;
   errorKind?: string;
   errorStatus?: number;
@@ -107,8 +111,9 @@ describe('analytics API (#17)', () => {
          routing_reason, input_tokens, output_tokens, usage_estimated, cost, duration_ms, status,
          escalated, created_at, price_source, error_kind, error_status, error_message, error_request_id,
          structural_band, structural_score, structural_band_source, quality_signal,
-         routing_header_name, routing_header_value)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,'test',$8,$9,$10,$11,1,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)`,
+         routing_header_name, routing_header_value,
+         semantic_band, semantic_score, semantic_source, semantic_revision)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'test',$8,$9,$10,$11,1,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)`,
       [
         id,
         owner,
@@ -135,6 +140,10 @@ describe('analytics API (#17)', () => {
         s.qualitySignal ?? null,
         s.routingHeaderName ?? null,
         s.routingHeaderValue ?? null,
+        s.semanticBand ?? null,
+        s.semanticScore ?? null,
+        s.semanticSource ?? null,
+        s.semanticRevision ?? null,
       ],
     );
     return id;
@@ -395,6 +404,49 @@ describe('analytics API (#17)', () => {
         expect(row.structuralBandSource).toBeNull();
       }
     }
+  });
+
+  it('requests: semantic telemetry rides the safe view; layer=semantic filters; unknown layer is 400 (add-semantic-routing)', async () => {
+    const c = await mkUser();
+    await seedLog(c, {
+      layer: 'semantic',
+      cost: 1,
+      at: DAY1,
+      structuralBand: 'ambiguous',
+      structuralScore: 0.41,
+      structuralBandSource: 'threshold',
+      semanticBand: 'high',
+      semanticScore: 0.31,
+      semanticSource: 'bundled',
+      semanticRevision: 'sha256:e2erev',
+    });
+    await seedLog(c, { layer: 'default', cost: 1, at: DAY1 }); // legacy shape → null semantic cols
+    const semRes = await q('requests', c, { ...RANGE, layer: 'semantic', limit: 50 });
+    expect(semRes.status).toBe(200);
+    expect(semRes.body.rows.length).toBe(1);
+    const semRow = semRes.body.rows[0];
+    expect(semRow).toMatchObject({
+      decisionLayer: 'semantic',
+      semanticBand: 'high',
+      semanticScore: 0.31,
+      semanticSource: 'bundled',
+      semanticRevision: 'sha256:e2erev',
+    });
+    expect(semRow).not.toHaveProperty('ownerUserId'); // safe view unchanged
+    // The legacy row carries all-null semantic columns.
+    const all = await q('requests', c, { ...RANGE, limit: 50 });
+    const legacy = all.body.rows.find(
+      (r: { decisionLayer: string }) => r.decisionLayer === 'default',
+    );
+    expect(legacy).toMatchObject({
+      semanticBand: null,
+      semanticScore: null,
+      semanticSource: null,
+      semanticRevision: null,
+    });
+    // An unknown layer value is a 400, not a silently-empty filter (clink r1 Low-1).
+    expect((await q('requests', c, { ...RANGE, layer: 'nonsense' })).status).toBe(400);
+    await pool.query('DELETE FROM "user" WHERE id = $1', [c]);
   });
 
   it('listRequests: a microsecond-precision batch pages exactly once (E3)', async () => {

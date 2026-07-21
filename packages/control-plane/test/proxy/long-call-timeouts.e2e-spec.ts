@@ -56,6 +56,7 @@ import { CascadeRouter } from '../../src/proxy/cascade/cascade-router';
 import { RecordingModule } from '../../src/recording/recording.module';
 import { ObservabilityModule } from '../../src/observability/observability.module';
 import { DatabaseModule } from '../../src/database/database.module';
+import { SemanticModule } from '../../src/semantic/semantic.module';
 import { ProvidersModule } from '../../src/providers/providers.module';
 import { COMPOSE_HINT } from '../tenancy/harness';
 import '../../src/database/database.config';
@@ -116,7 +117,7 @@ describe('long-call timeouts e2e (fix-long-call-timeouts)', () => {
     }
 
     const moduleRef = await Test.createTestingModule({
-      imports: [DatabaseModule, RecordingModule, ObservabilityModule, ProvidersModule],
+      imports: [SemanticModule, DatabaseModule, RecordingModule, ObservabilityModule, ProvidersModule],
       controllers: [ChatCompletionsController],
       providers: [
         AgentApiKeyGuard,

@@ -404,6 +404,8 @@ export interface CalibrationEdgeStats {
 export interface RoutingSettingsValue {
   structuralEnabled: boolean;
   cascadeEnabled: boolean;
+  /** L2 preference (add-semantic-routing); semantic⇒structural holds. */
+  semanticEnabled: boolean;
   calibrationEnabled: boolean;
   calibratedHigh: number | null;
   calibratedLow: number | null;
@@ -418,6 +420,10 @@ export interface RoutingSettingsValue {
 export interface RoutingSettingsUpsert {
   structuralEnabled: boolean;
   cascadeEnabled: boolean;
+  /** Optional (pre-change clients omit it): omission PRESERVES the stored
+   * value — except `structuralEnabled:false`, which also clears semantic in
+   * the same atomic upsert (dependency-down; add-semantic-routing D7). */
+  semanticEnabled?: boolean;
   calibrationEnabled?: boolean;
 }
 

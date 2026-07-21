@@ -521,6 +521,12 @@ export interface RequestRow {
   structuralBand: string | null;
   structuralScore: number | null;
   structuralBandSource: string | null;
+  /** L2 decision telemetry (add-semantic-routing): the semantic verdict when
+   * Layer 2 evaluated the request; all four null otherwise. */
+  semanticBand: string | null;
+  semanticScore: number | null;
+  semanticSource: string | null;
+  semanticRevision: string | null;
   /** Terminal provider-error detail (add-request-error-detail): non-null only on
    * `status='error'` rows recorded after capture landed; all null otherwise. */
   errorKind: string | null;

@@ -57,6 +57,7 @@ import { ObservabilityModule } from '../../src/observability/observability.modul
 import { LogWriter } from '../../src/recording/log-writer';
 import { PricingModule } from '../../src/pricing/pricing.module';
 import { DatabaseModule } from '../../src/database/database.module';
+import { SemanticModule } from '../../src/semantic/semantic.module';
 import { AnalyticsModule } from '../../src/analytics/analytics.module';
 import { BodyCaptureModule } from '../../src/body-capture/body-capture.module';
 import { BodyCaptureService } from '../../src/body-capture/body-capture.service';
@@ -137,7 +138,7 @@ describe('body-capture e2e', () => {
 
     const moduleRef = await Test.createTestingModule({
       imports: [
-        DatabaseModule,
+        SemanticModule,        DatabaseModule,
         PricingModule,
         RecordingModule,
         ObservabilityModule,

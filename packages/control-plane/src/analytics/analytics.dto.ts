@@ -1,3 +1,4 @@
+import { DECISION_LAYERS } from '@polyrouter/data-plane';
 import { Transform } from 'class-transformer';
 import {
   ArrayMaxSize,
@@ -7,11 +8,9 @@ import {
   IsIn,
   IsInt,
   IsISO8601,
-  IsNotEmpty,
   IsOptional,
   IsString,
   Max,
-  MaxLength,
   Min,
 } from 'class-validator';
 
@@ -86,9 +85,9 @@ export class RequestsQueryDto extends RangeQueryDto {
   @IsArray()
   @ArrayNotEmpty()
   @ArrayMaxSize(16)
-  @IsString({ each: true })
-  @IsNotEmpty({ each: true })
-  @MaxLength(64, { each: true })
+  // Each element must be a known decision layer (add-semantic-routing Low-1):
+  // an unknown value is a 400, not a silently-empty filter.
+  @IsIn(DECISION_LAYERS, { each: true })
   layer?: string[];
 
   @IsOptional()

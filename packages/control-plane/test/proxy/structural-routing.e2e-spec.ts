@@ -55,6 +55,7 @@ import { ObservabilityModule } from '../../src/observability/observability.modul
 import { LogWriter } from '../../src/recording/log-writer';
 import { PricingModule } from '../../src/pricing/pricing.module';
 import { DatabaseModule } from '../../src/database/database.module';
+import { SemanticModule } from '../../src/semantic/semantic.module';
 import { RedisModule } from '../../src/redis/redis.module';
 import { COMPOSE_HINT } from '../tenancy/harness';
 import '../../src/database/database.config';
@@ -95,7 +96,7 @@ function body(opts: {
 
 async function buildApp(): Promise<{ app: INestApplication; server: App }> {
   const moduleRef = await Test.createTestingModule({
-    imports: [DatabaseModule, PricingModule, RecordingModule, RedisModule, ObservabilityModule],
+    imports: [SemanticModule, DatabaseModule, PricingModule, RecordingModule, RedisModule, ObservabilityModule],
     controllers: [ChatCompletionsController],
     providers: [
       AgentApiKeyGuard,

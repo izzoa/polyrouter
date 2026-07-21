@@ -54,6 +54,7 @@ import { LogWriter } from '../../src/recording/log-writer';
 import { PricingModule } from '../../src/pricing/pricing.module';
 import { PricingService } from '../../src/pricing/pricing.service';
 import { DatabaseModule } from '../../src/database/database.module';
+import { SemanticModule } from '../../src/semantic/semantic.module';
 import { COMPOSE_HINT } from '../tenancy/harness';
 import '../../src/database/database.config';
 import '../../src/auth/auth.config';
@@ -93,7 +94,7 @@ describe('request-logging e2e', () => {
     }
 
     const moduleRef = await Test.createTestingModule({
-      imports: [DatabaseModule, PricingModule, RecordingModule, ObservabilityModule],
+      imports: [SemanticModule, DatabaseModule, PricingModule, RecordingModule, ObservabilityModule],
       controllers: [ChatCompletionsController],
       providers: [
         AgentApiKeyGuard,

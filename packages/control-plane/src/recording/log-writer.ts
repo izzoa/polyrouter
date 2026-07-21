@@ -83,6 +83,11 @@ export interface RequestLogDraft {
   readonly structuralBandSource?: string;
   /** Decision-time calibration epoch (add-auto-threshold-calibration). */
   readonly structuralEpoch?: number;
+  /** L2 decision telemetry (add-semantic-routing); absent = null columns. */
+  readonly semanticBand?: string;
+  readonly semanticScore?: number;
+  readonly semanticSource?: string;
+  readonly semanticRevision?: string;
   /** #14 cascade: whether the request escalated cheap→strong. */
   readonly escalated?: boolean;
   /** #14 cascade: the numeric quality score (or null on a fail-open error). */
@@ -442,6 +447,10 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
       structuralScore: d.structuralScore ?? null,
       structuralBandSource: d.structuralBandSource ?? null,
       structuralEpoch: d.structuralEpoch ?? null,
+      semanticBand: d.semanticBand ?? null,
+      semanticScore: d.semanticScore ?? null,
+      semanticSource: d.semanticSource ?? null,
+      semanticRevision: d.semanticRevision ?? null,
       ...errorColumns(d),
     };
   }

@@ -24,6 +24,15 @@ heading is started.
   validated token list and accepts an inert `semantic`; the auto-layers API
   reports `semanticAvailable`. Routing consumption arrives with the
   semantic-routing change.
+- Layer-2 semantic routing: a Layer-1-ambiguous `auto` request is embedded and
+  classified against bundled anchor centroids — a confident band routes via the
+  existing `auto_high`/`auto_low` targets with `decision_layer='semantic'`, and
+  anything ambiguous or faulted degrades to cascade/default unchanged. Four
+  nullable telemetry columns (band/score/source/revision) with all-or-none DB
+  checks, the ordered L1→L2 reason trail on default and cascade rows, a per-
+  tenant `semantic` layer toggle (semantic⇒structural), and a
+  `decision_layer=semantic` analytics filter. Opt-in, off unless an embedder is
+  loaded; no prompt text or vectors are ever logged.
 
 ## [0.7.0] — 2026-07-21
 

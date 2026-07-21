@@ -153,6 +153,8 @@ export function buildRoutingConfig(env: RoutingEnv): RoutingConfig {
   }
   // Cascade consumes Layer 1's ambiguity signal, so enabling it implies structural.
   if (autoLayers.has('cascade')) autoLayers.add('structural');
+  // Semantic consumes the same ambiguity signal (add-semantic-routing).
+  if (autoLayers.has('semantic')) autoLayers.add('structural');
   const high = env.ROUTING_STRUCTURAL_HIGH_THRESHOLD;
   const low = env.ROUTING_STRUCTURAL_LOW_THRESHOLD;
   if (!(low < high)) {
@@ -197,8 +199,17 @@ export function loadRoutingConfig(): RoutingConfig {
 /** The instance's auto-layer CAPABILITY, from the boot-resolved config (#20).
  * Pure over the injected `ROUTING_CONFIG` singleton (NOT a fresh env read) so the
  * dashboard's reported capability can't drift from what the routers enforce. */
-export function autoLayerCapability(cfg: RoutingConfig): { structural: boolean; cascade: boolean } {
-  return { structural: cfg.autoLayers.has('structural'), cascade: cfg.cascade.enabled };
+export function autoLayerCapability(
+  cfg: RoutingConfig,
+  /** add-semantic-routing: the WHOLE classifier ready (embedder + centroids)
+   * — not merely the flag. Callers pass SemanticClassifierService.ready. */
+  semanticClassifierReady = false,
+): { structural: boolean; cascade: boolean; semantic: boolean } {
+  return {
+    structural: cfg.autoLayers.has('structural'),
+    cascade: cfg.cascade.enabled,
+    semantic: cfg.autoLayers.has('semantic') && semanticClassifierReady,
+  };
 }
 
 /** Per-tenant effective structural thresholds (add-auto-threshold-
@@ -242,10 +253,15 @@ export function effectiveThresholds(
  * Shared by the dashboard's `AutoLayersService` and the proxy's per-request read so
  * the two can never drift. `structuralAvailable`/`cascadeAvailable` come from `cap`. */
 export function effectiveAutoLayers(
-  cap: { structural: boolean; cascade: boolean },
-  pref: { structuralEnabled: boolean; cascadeEnabled: boolean } | null,
-): { structural: boolean; cascade: boolean } {
+  cap: { structural: boolean; cascade: boolean; semantic: boolean },
+  pref: {
+    structuralEnabled: boolean;
+    cascadeEnabled: boolean;
+    semanticEnabled?: boolean;
+  } | null,
+): { structural: boolean; cascade: boolean; semantic: boolean } {
   return {
+    semantic: cap.semantic && (pref?.semanticEnabled ?? true),
     structural: cap.structural && (pref?.structuralEnabled ?? true),
     cascade: cap.cascade && (pref?.cascadeEnabled ?? true),
   };

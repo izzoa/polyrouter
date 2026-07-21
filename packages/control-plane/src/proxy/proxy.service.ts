@@ -82,6 +82,8 @@ import { observeAdapter } from '../observability/observe-adapter';
 import { TRACER_NAME } from '../observability/tracing';
 import { StructuralRouter } from './structural/structural-router';
 import { CascadeRouter, type CascadePlan } from './cascade/cascade-router';
+import { SemanticRouter, type SemanticVerdict } from '../semantic/semantic-router';
+import { SemanticClassifierService } from '../semantic/semantic-classifier.service';
 import { NotificationProducers } from '../producers/notification-producers';
 import { BudgetService, BudgetEnforcementUnavailableError } from '../budgets/budget-service';
 import { SubscriptionOauthService } from '../subscription-oauth/subscription-oauth.service';
@@ -137,6 +139,10 @@ interface Prepared {
   /** The tenant's calibration epoch at decision time (add-auto-threshold-
    * calibration) — set exactly when the verdict is (evaluated requests). */
   structuralEpoch?: number;
+  /** Layer 2's verdict when it EVALUATED this request (add-semantic-routing) —
+   * recorded on every parent row alongside the structural verdict; undefined
+   * when L2 did not run or faulted (fail-open never fabricates telemetry). */
+  semanticVerdict?: SemanticVerdict;
   created: number;
   attempts: ChainAttempt[];
   meta: AttemptMeta[];
@@ -196,6 +202,8 @@ export class ProxyService {
     private readonly metrics: ProxyMetrics,
     private readonly structural: StructuralRouter,
     private readonly cascade: CascadeRouter,
+    private readonly semantic: SemanticRouter,
+    private readonly semanticClassifier: SemanticClassifierService,
     private readonly producers: NotificationProducers,
     private readonly budgets: BudgetService,
     private readonly oauth: SubscriptionOauthService,
@@ -765,12 +773,17 @@ export class ProxyService {
    * `auto`→default request. A settings-read fault must NOT fail or stall the
    * request (invariant 1) — a throw, rejection, OR a never-settling read all
    * degrade to the raw instance capability (the read is deadline-bounded). */
-  private async effectiveAutoLayers(
-    principal: Principal,
-  ): Promise<{ structural: boolean; cascade: boolean; settings: RoutingSettingsValue | null }> {
-    const cap = autoLayerCapability(this.routingConfig);
-    // Cascade implies structural, so structural off instance-wide leaves nothing
-    // for a preference to gate — skip the read entirely.
+  private async effectiveAutoLayers(principal: Principal): Promise<{
+    structural: boolean;
+    cascade: boolean;
+    semantic: boolean;
+    settings: RoutingSettingsValue | null;
+  }> {
+    // Capability = the boot flags masked by the WHOLE classifier readiness for
+    // semantic (add-semantic-routing) — flag ∧ embedder ∧ centroids.
+    const cap = autoLayerCapability(this.routingConfig, this.semanticClassifier.available);
+    // Cascade/semantic imply structural, so structural off instance-wide leaves
+    // nothing for a preference to gate — skip the read entirely.
     if (!cap.structural) return { ...cap, settings: null };
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -862,6 +875,7 @@ export class ProxyService {
     let cascadePlan: CascadePlan | null = null;
     let structuralVerdict: StructuralVerdict | undefined;
     let structuralEpoch: number | undefined;
+    let semanticVerdict: SemanticVerdict | undefined;
     if (ir.model === AUTO_ALIAS && decision.decisionLayer === 'default') {
       // Per-tenant opt-out (#20): the effective layers are the instance
       // capability masked by the tenant's preference. A disabled layer is
@@ -883,10 +897,29 @@ export class ProxyService {
           structuralVerdict = evaln.verdict;
           structuralEpoch = layers.settings?.calibrationEpoch ?? 0;
         }
-        if (evaln.kind === 'route')
+        if (evaln.kind === 'route') {
           decision = evaln.decision; // Layer 1 confident band
-        else if (evaln.kind === 'ambiguous' && layers.cascade) {
-          cascadePlan = this.cascade.plan(snapshot); // Layer 3 candidate
+        } else if (evaln.kind === 'ambiguous') {
+          // Layer 2 (semantic) refines ONLY the L1-ambiguous slice (add-
+          // semantic-routing D1). A confident L2 band routes; a still-
+          // ambiguous or unroutable L2 verdict hands to cascade/default. Every
+          // L2 fault degrades to exactly today's L1-ambiguous flow.
+          const sem = layers.semantic
+            ? await this.semantic.evaluate(principal, ir, snapshot, { signal })
+            : ({ kind: 'skip' } as const);
+          if (sem.kind !== 'skip') semanticVerdict = sem.verdict;
+          if (sem.kind === 'route') {
+            decision = sem.decision; // Layer 2 confident band — never cascades
+          } else if (sem.kind === 'unroutable') {
+            // A CONFIDENT L2 band whose target is missing/empty: the verdict
+            // stands (recorded), the Layer-0 default serves — it does NOT
+            // cascade (mirrors L1's unroutable; clink r2 High-1).
+          } else if (layers.cascade) {
+            // Only a still-AMBIGUOUS verdict or a SKIP (L2 not evaluated /
+            // faulted) hands to the existing cascade candidate.
+            cascadePlan = this.cascade.plan(snapshot);
+          }
+          // else: the Layer-0 default decision stands (invariant 1)
         }
         // else: the Layer-0 default decision stands (invariant 1)
       }
@@ -915,12 +948,13 @@ export class ProxyService {
       throw serviceUnavailable('no usable provider for the route');
     }
 
-    // Fall-through transparency (add-auto-decision-telemetry): keyed on the
-    // FINAL construction (`cascade === undefined` — a resolved plan whose
-    // bundles failed to materialize falls through too, never the earlier
-    // plan-null check). The gate itself is the pure `withFallthroughSuffix`,
-    // unit-pinned against regressing to plan-keying.
-    decision = withFallthroughSuffix(decision, structuralVerdict, cascade !== undefined);
+    // Fall-through transparency (add-auto-decision-telemetry / add-semantic-
+    // routing): keyed on the FINAL construction (`cascade === undefined` — a
+    // resolved plan whose bundles failed to materialize falls through too,
+    // never the earlier plan-null check). The gate carries the ORDERED L1→L2
+    // classification trail onto a default fall-through reason; the cascade
+    // path threads the same trail through its own recorder construction.
+    decision = withFallthroughSuffix(decision, structuralVerdict, semanticVerdict, cascade !== undefined);
 
     // Body capture (add-body-capture): arm ONLY when the effective state can
     // persist (off / agent-never allocate nothing — the master kill). The
@@ -957,6 +991,7 @@ export class ProxyService {
       structuredDemand: declaredStructuredOutput(ir),
       ...(structuralVerdict !== undefined ? { structuralVerdict } : {}),
       ...(structuralEpoch !== undefined ? { structuralEpoch } : {}),
+      ...(semanticVerdict !== undefined ? { semanticVerdict } : {}),
       created: Math.floor(Date.now() / 1000),
       attempts: primary.attempts,
       meta: primary.meta,
@@ -1098,7 +1133,11 @@ export class ProxyService {
   }
 
   /** A cascade recording context for `meta[servedIndex]` (per-member tier + price),
-   * `decision_layer='cascade'`, with the score + fallback trail in the reason. */
+   * `decision_layer='cascade'`, with the score + fallback trail in the reason.
+   * The ordered L1→L2 classification trail is APPENDED (add-semantic-routing):
+   * a cascaded request reached cascade THROUGH those verdicts, so its reason
+   * carries them as a `; `-joined suffix — the same convention
+   * `withFallthroughSuffix` uses for a default fall-through (clink set-Med-2). */
   private servedFrom(
     p: Prepared,
     meta: readonly AttemptMeta[],
@@ -1108,7 +1147,8 @@ export class ProxyService {
     failures: readonly AttemptFailure[],
   ): RecordingContext {
     const reason = reasonWithTrail(`${baseReason} (q=${fmtQ(score)})`, failures, meta);
-    return this.metaContext(p, meta[servedIndex]!, reason);
+    const trail = classificationTrail(p);
+    return this.metaContext(p, meta[servedIndex]!, trail === '' ? reason : `${reason}; ${trail}`);
   }
 
   private metaContext(p: Prepared, m: AttemptMeta, reason: string): RecordingContext {
@@ -1231,12 +1271,19 @@ export class ProxyService {
 export function withFallthroughSuffix(
   decision: RouteDecision,
   verdict: StructuralVerdict | undefined,
+  semantic: SemanticVerdict | undefined,
   hasCascade: boolean,
 ): RouteDecision {
-  if (verdict === undefined || decision.decisionLayer !== 'default' || hasCascade) {
-    return decision;
-  }
-  return { ...decision, routingReason: `${decision.routingReason}; ${verdict.reason}` };
+  // Only a DEFAULT fall-through with no cascade gets the trail suffix (a
+  // cascade decision carries its own recorder-built trail; a semantic-routed
+  // decision is not `default`). The trail is ORDERED L1→L2: the structural
+  // verdict first, then the semantic verdict when Layer 2 evaluated.
+  if (decision.decisionLayer !== 'default' || hasCascade) return decision;
+  const parts: string[] = [];
+  if (verdict !== undefined) parts.push(verdict.reason);
+  if (semantic !== undefined) parts.push(semantic.reason);
+  if (parts.length === 0) return decision;
+  return { ...decision, routingReason: `${decision.routingReason}; ${parts.join('; ')}` };
 }
 
 /** The request-level L1 verdict as recording-context fields (add-auto-
@@ -1247,15 +1294,33 @@ function verdictFields(p: Prepared): {
   structuralScore?: number;
   structuralBandSource?: string;
   structuralEpoch?: number;
+  semanticBand?: string;
+  semanticScore?: number;
+  semanticSource?: string;
+  semanticRevision?: string;
 } {
   const v = p.structuralVerdict;
-  if (v === undefined) return {};
+  const s = p.semanticVerdict;
   return {
-    structuralBand: v.band,
-    structuralScore: v.score,
-    structuralBandSource: v.declared ? 'declared' : 'threshold',
-    // Decision-time freshness stamp (add-auto-threshold-calibration).
-    ...(p.structuralEpoch !== undefined ? { structuralEpoch: p.structuralEpoch } : {}),
+    ...(v !== undefined
+      ? {
+          structuralBand: v.band,
+          structuralScore: v.score,
+          structuralBandSource: v.declared ? 'declared' : 'threshold',
+          // Decision-time freshness stamp (add-auto-threshold-calibration).
+          ...(p.structuralEpoch !== undefined ? { structuralEpoch: p.structuralEpoch } : {}),
+        }
+      : {}),
+    // Layer 2 telemetry (add-semantic-routing): the four columns travel
+    // together — recorded on every parent row of an L2-evaluated request.
+    ...(s !== undefined
+      ? {
+          semanticBand: s.band,
+          semanticScore: s.score,
+          semanticSource: s.source,
+          semanticRevision: s.revision,
+        }
+      : {}),
   };
 }
 
@@ -1270,6 +1335,17 @@ function recordedError(err: ProviderError): RecordedError {
     ...(err.providerMessage !== undefined ? { providerMessage: err.providerMessage } : {}),
     ...(err.requestId !== undefined ? { requestId: err.requestId } : {}),
   };
+}
+
+/** The ordered L1→L2 classification trail as a reason fragment (add-semantic-
+ * routing): the structural verdict reason, then the semantic verdict reason,
+ * `; `-joined — the same ordering `withFallthroughSuffix` appends to a default
+ * fall-through. Empty when neither layer evaluated. Numbers-only (invariant 8). */
+function classificationTrail(p: Prepared): string {
+  const parts: string[] = [];
+  if (p.structuralVerdict !== undefined) parts.push(p.structuralVerdict.reason);
+  if (p.semanticVerdict !== undefined) parts.push(p.semanticVerdict.reason);
+  return parts.join('; ');
 }
 
 /** The routing reason plus a sanitized fallback trail (kind@model — no raw

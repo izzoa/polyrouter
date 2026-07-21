@@ -36,6 +36,8 @@ const cfg = (modelPath: string): SemanticConfig => ({
   timeoutMs: 1000, // generous: CI machines JIT the first inference slowly
   maxInputChars: 2000,
   concurrency: 2,
+    highThreshold: 0.15,
+    lowThreshold: 0.15,
 });
 
 /** Realm-safe fake ORT: run() emits `[id_t × dims]` per token, like the fixture graph. */

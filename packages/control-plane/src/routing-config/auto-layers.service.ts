@@ -14,7 +14,7 @@ import {
   effectiveThresholds,
   type RoutingConfig,
 } from '../proxy/routing.config';
-import { SemanticRuntimeService } from '../semantic/semantic-runtime.service';
+import { SemanticClassifierService } from '../semantic/semantic-classifier.service';
 import type { AutoLayersDto } from './auto-layers.dto';
 
 /** The tenant's effective auto-layer state plus what the instance is capable of
@@ -24,11 +24,12 @@ import type { AutoLayersDto } from './auto-layers.dto';
 export interface AutoLayersView {
   structural: boolean;
   cascade: boolean;
+  /** add-semantic-routing: the effective L2 preference (capability × pref). */
+  semantic: boolean;
   structuralAvailable: boolean;
   cascadeAvailable: boolean;
-  /** add-semantic-embedder: flag ∧ loaded embedder. Inert this change — no
-   * router consumes it until add-semantic-routing; false = the honest
-   * "off instance-wide" affordance. */
+  /** add-semantic-routing: flag ∧ the WHOLE classifier ready (embedder +
+   * centroids). false = the honest "off instance-wide" affordance. */
   semanticAvailable: boolean;
   calibration: {
     enabled: boolean;
@@ -55,7 +56,7 @@ export class AutoLayersService {
     @Inject(PERSISTENCE_PORT) private readonly db: PersistencePort,
     @Inject(ROUTING_CONFIG) private readonly cfg: RoutingConfig,
     @Inject(CALIBRATION_RAILS) private readonly rails: CalibrationRails,
-    private readonly semantic: SemanticRuntimeService,
+    private readonly semantic: SemanticClassifierService,
   ) {}
 
   async get(principal: Principal): Promise<AutoLayersView> {
@@ -64,14 +65,16 @@ export class AutoLayersService {
   }
 
   async set(principal: Principal, dto: AutoLayersDto): Promise<AutoLayersView> {
-    // Full replacement of the LAYER flags; cascade consumes structural's
-    // ambiguity signal, so enabling cascade forces structural on (mirrors the
-    // DB check + the boot `cascade implies structural` rule). The calibration
-    // flag is optional — omission preserves (r1-Med-7).
-    const structuralEnabled = dto.structural || dto.cascade;
+    // Full replacement of the LAYER flags; cascade AND semantic consume
+    // structural's ambiguity signal, so enabling either forces structural on
+    // (mirrors the DB checks + the boot implication rules). semantic and
+    // calibration are optional — omission preserves (the atomic dependency-
+    // down normalization lives in the upsert; add-semantic-routing D7).
+    const structuralEnabled = dto.structural || dto.cascade || (dto.semantic ?? false);
     const saved = await this.db.routingSettings.upsert(principal, {
       structuralEnabled,
       cascadeEnabled: dto.cascade,
+      ...(dto.semantic !== undefined ? { semanticEnabled: dto.semantic } : {}),
       ...(dto.calibration !== undefined ? { calibrationEnabled: dto.calibration } : {}),
     });
     return this.effective(saved);
@@ -105,7 +108,9 @@ export class AutoLayersService {
   }
 
   private effective(pref: RoutingSettingsValue | null): AutoLayersView {
-    const cap = autoLayerCapability(this.cfg);
+    // Capability includes the WHOLE classifier readiness (add-semantic-
+    // routing): flag ∧ embedder ∧ centroids — never merely a loaded embedder.
+    const cap = autoLayerCapability(this.cfg, this.semantic.available);
     const { high: instanceHigh, low: instanceLow } = this.cfg.structural;
     const eff = effectiveThresholds(this.cfg.structural, pref, this.rails);
     // A pair is presented ONLY while it is the pair actually routing — an
@@ -115,7 +120,7 @@ export class AutoLayersService {
       ...effectiveAutoLayers(cap, pref), // A-45: one shared formula (also used by the proxy)
       structuralAvailable: cap.structural,
       cascadeAvailable: cap.cascade,
-      semanticAvailable: this.cfg.autoLayers.has('semantic') && this.semantic.available,
+      semanticAvailable: cap.semantic,
       calibration: {
         enabled: pref?.calibrationEnabled ?? false,
         calibratedHigh: active ? eff.high : null,

@@ -77,6 +77,12 @@ export interface RecordingContext {
   /** The tenant's calibration epoch at DECISION time (add-auto-threshold-
    * calibration) — the calibrator's freshness stamp; absent when unevaluated. */
   readonly structuralEpoch?: number;
+  /** L2 decision telemetry (add-semantic-routing) — the request-level semantic
+   * verdict; all four absent when Layer 2 did not evaluate. */
+  readonly semanticBand?: string;
+  readonly semanticScore?: number;
+  readonly semanticSource?: string;
+  readonly semanticRevision?: string;
   readonly provider: Pick<ProviderRow, 'baseUrl' | 'kind'>;
   readonly model: Pick<
     ModelRow,
@@ -168,6 +174,10 @@ export class RequestRecorder {
           ? { structuralBandSource: ctx.structuralBandSource }
           : {}),
         ...(ctx.structuralEpoch !== undefined ? { structuralEpoch: ctx.structuralEpoch } : {}),
+        ...(ctx.semanticBand !== undefined ? { semanticBand: ctx.semanticBand } : {}),
+        ...(ctx.semanticScore !== undefined ? { semanticScore: ctx.semanticScore } : {}),
+        ...(ctx.semanticSource !== undefined ? { semanticSource: ctx.semanticSource } : {}),
+        ...(ctx.semanticRevision !== undefined ? { semanticRevision: ctx.semanticRevision } : {}),
         durationMs,
         status: outcome.status,
         usage,

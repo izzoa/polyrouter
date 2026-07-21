@@ -18,6 +18,7 @@ import { ObservabilityModule } from '../observability/observability.module';
 import { ProducersModule } from '../producers/producers.module';
 import { BodyCaptureModule } from '../body-capture/body-capture.module';
 import { RecordingModule } from '../recording/recording.module';
+import { SemanticModule } from '../semantic/semantic.module';
 import { RedisModule } from '../redis/redis.module';
 import { ChatCompletionsController } from './chat-completions.controller';
 import { MessagesController } from './messages.controller';
@@ -75,6 +76,9 @@ function boundedBreakerRedis(redis: Redis): BreakerRedis {
     ProducersModule,
     BudgetsModule,
     ObservabilityModule,
+    // Layer 2 (add-semantic-routing): supplies SemanticRouter +
+    // SemanticClassifierService to ProxyService.
+    SemanticModule,
   ],
   controllers: [ChatCompletionsController, MessagesController, ModelsController],
   providers: [

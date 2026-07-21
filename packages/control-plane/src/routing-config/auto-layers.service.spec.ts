@@ -6,16 +6,22 @@ import {
   type RoutingEnv,
 } from '../proxy/routing.config';
 import { AutoLayersService } from './auto-layers.service';
-import type { SemanticRuntimeService } from '../semantic/semantic-runtime.service';
+import type { SemanticClassifierService } from '../semantic/semantic-classifier.service';
 
-/** add-semantic-embedder: no embedder loaded in these tests. */
-const SEMANTIC_OFF = { available: false } as SemanticRuntimeService;
+/** add-semantic-routing: the classifier is not ready in these tests. */
+const SEMANTIC_OFF = { available: false } as SemanticClassifierService;
 
 /** Fixture: a settings value with the calibration fields at their defaults
  * (add-auto-threshold-calibration) — these tests exercise the layer flags. */
-function pref(v: { structuralEnabled: boolean; cascadeEnabled: boolean }): RoutingSettingsValue {
+function pref(v: {
+  structuralEnabled: boolean;
+  cascadeEnabled: boolean;
+  semanticEnabled?: boolean;
+}): RoutingSettingsValue {
   return {
-    ...v,
+    structuralEnabled: v.structuralEnabled,
+    cascadeEnabled: v.cascadeEnabled,
+    semanticEnabled: v.semanticEnabled ?? v.structuralEnabled,
     calibrationEnabled: false,
     calibratedHigh: null,
     calibratedLow: null,
@@ -75,13 +81,13 @@ function fakePort(opts: {
 
 describe('autoLayerCapability', () => {
   it('reports both layers when cascade is enabled (cascade implies structural)', () => {
-    expect(autoLayerCapability(cfg('cascade'))).toEqual({ structural: true, cascade: true });
+    expect(autoLayerCapability(cfg('cascade'))).toEqual({ structural: true, cascade: true, semantic: false });
   });
   it('reports structural-only when only structural is enabled', () => {
-    expect(autoLayerCapability(cfg('structural'))).toEqual({ structural: true, cascade: false });
+    expect(autoLayerCapability(cfg('structural'))).toEqual({ structural: true, cascade: false, semantic: false });
   });
   it('reports neither when no smart layers are enabled', () => {
-    expect(autoLayerCapability(cfg(''))).toEqual({ structural: false, cascade: false });
+    expect(autoLayerCapability(cfg(''))).toEqual({ structural: false, cascade: false, semantic: false });
   });
 });
 
@@ -146,6 +152,7 @@ describe('AutoLayersService.get — effective = capability × preference', () =>
         ...c.expected,
         structuralAvailable: autoLayerCapability(cfg(c.layers)).structural,
         cascadeAvailable: autoLayerCapability(cfg(c.layers)).cascade,
+        semantic: false,
         semanticAvailable: false,
         calibration: UNCAL_VIEW,
       });
@@ -169,6 +176,7 @@ describe('AutoLayersService.set — normalizes cascade → structural', () => {
       cascade: true,
       structuralAvailable: true,
       cascadeAvailable: true,
+      semantic: false,
       semanticAvailable: false,
       calibration: UNCAL_VIEW,
     });
@@ -201,6 +209,7 @@ describe('AutoLayersService.set — normalizes cascade → structural', () => {
       cascade: false, // masked by capability
       structuralAvailable: true,
       cascadeAvailable: false,
+      semantic: false,
       semanticAvailable: false,
       calibration: UNCAL_VIEW,
     });

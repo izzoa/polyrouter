@@ -134,6 +134,13 @@
       "when": 1784617014104,
       "tag": "0018_unknown_mantis",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1784650296299,
+      "tag": "0019_vengeful_sentry",
+      "breakpoints": true
     }
   ]
 }

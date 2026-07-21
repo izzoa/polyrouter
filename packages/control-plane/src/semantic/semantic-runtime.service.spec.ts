@@ -8,6 +8,8 @@ const cfg = (modelPath?: string): SemanticConfig => ({
   timeoutMs: 50,
   maxInputChars: 2000,
   concurrency: 2,
+    highThreshold: 0.15,
+    lowThreshold: 0.15,
 });
 
 const stubLoader =

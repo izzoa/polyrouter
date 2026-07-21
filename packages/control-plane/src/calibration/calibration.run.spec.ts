@@ -25,6 +25,7 @@ const DAY = 86_400_000;
 const uncalibrated = (over: Partial<RoutingSettingsValue> = {}): RoutingSettingsValue => ({
   structuralEnabled: true,
   cascadeEnabled: true,
+  semanticEnabled: true,
   calibrationEnabled: true,
   calibratedHigh: null,
   calibratedLow: null,

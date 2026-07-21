@@ -205,6 +205,10 @@ export function buildRequestRows(n: number): RequestRow[] {
       structuralBand: null,
       structuralScore: null,
       structuralBandSource: null,
+      semanticBand: null,
+      semanticScore: null,
+      semanticSource: null,
+      semanticRevision: null,
       // Error rows carry terminal detail (add-request-error-detail); every other
       // status — and every legacy-shaped row — is all-null.
       errorKind: status === 'error' ? 'rate_limit' : null,

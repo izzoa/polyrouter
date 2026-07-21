@@ -180,7 +180,7 @@ export function BodyCaptureCard() {
             <div style="display:flex;align-items:center;gap:10px">
               <button
                 type="button"
-                class="btn"
+                class="btn-ghost btn-ghost--amber"
                 disabled={state.bc.busy}
                 onClick={() => {
                   if (globalThis.confirm('Delete ALL stored request/response bodies now?')) {
@@ -222,12 +222,12 @@ export function BodyCaptureCard() {
                 <strong>{MODE_LABEL[mode]}</strong>.
               </div>
               <div style="display:flex;gap:8px;justify-content:flex-end">
-                <button type="button" class="btn" onClick={() => setConfirmMode(null)}>
+                <button type="button" class="btn-cancel" onClick={() => setConfirmMode(null)}>
                   Keep metadata-only
                 </button>
                 <button
                   type="button"
-                  class="btn btn-primary"
+                  class="btn-primary"
                   onClick={() => {
                     setConfirmMode(null);
                     void app.setBodyCaptureMode(mode);
@@ -259,12 +259,12 @@ export function BodyCaptureCard() {
               stored?
             </div>
             <div style="display:flex;gap:8px;justify-content:flex-end">
-              <button type="button" class="btn" onClick={() => setDisableChoice(false)}>
+              <button type="button" class="btn-cancel" onClick={() => setDisableChoice(false)}>
                 Cancel
               </button>
               <button
                 type="button"
-                class="btn"
+                class="btn-ghost"
                 onClick={() => {
                   setDisableChoice(false);
                   void app.setBodyCaptureMode('off');
@@ -274,7 +274,7 @@ export function BodyCaptureCard() {
               </button>
               <button
                 type="button"
-                class="btn btn-primary"
+                class="btn-primary"
                 onClick={() => {
                   setDisableChoice(false);
                   void (async () => {

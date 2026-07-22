@@ -72,7 +72,16 @@ describe('semantic boot matrix (add-semantic-embedder D5)', () => {
         PATH: process.env['PATH'],
         SEMANTIC_MODEL_PATH: dir,
       });
-      expect(stderr).toBe('');
+      // onnxruntime-node emits benign device-discovery WARNINGS to stderr on some
+      // hardware (e.g. CI runners whose PCI bus path doesn't match ORT's expected
+      // pattern: `[W:onnxruntime:… GetPciBusId] Skipping pci_bus_id …`). Those are
+      // not failures — drop ORT warning lines (and blanks) before asserting the
+      // boot produced no error output.
+      const stderrErrors = stderr
+        .split('\n')
+        .filter((line) => line.trim() !== '' && !line.includes('[W:onnxruntime:'))
+        .join('\n');
+      expect(stderrErrors).toBe('');
       expect(code).toBe(0);
       expect(stdout).toContain('LISTENING');
       expect(stdout).toContain('AVAILABLE:true');

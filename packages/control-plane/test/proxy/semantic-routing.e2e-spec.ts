@@ -136,7 +136,11 @@ const SEMANTIC_CFG: SemanticConfig = {
     cooldownH: 24,
     stateTtlD: 30,
     maxCohorts: 4096,
-    schedEnabled: true,
+    // OFF: this suite tests routing, not scheduling. A live BullMQ Worker leaks
+    // handles + a late module import past `app.close()` (jest reports "import a
+    // file after the environment has been torn down"), destabilizing the shared
+    // --runInBand process and tipping the documented auth.e2e ESM flake.
+    schedEnabled: false,
     schedCron: '0 3 * * *',
   },
 };

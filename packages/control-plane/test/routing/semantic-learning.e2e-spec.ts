@@ -74,7 +74,9 @@ const CFG: SemanticLearningConfig = {
   cooldownH: 24,
   stateTtlD: 30,
   maxCohorts: 4096,
-  schedEnabled: true,
+  // OFF: this suite drives the sweep directly (queue-free); it never exercises
+  // the BullMQ scheduler, so a live Worker would only leak handles.
+  schedEnabled: false,
   schedCron: '0 3 * * *',
 };
 const silent = { warn: () => {}, log: () => {} };

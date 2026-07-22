@@ -1,5 +1,47 @@
 # @polyrouter/control-plane
 
+## 0.8.0
+
+### Minor Changes
+
+- 4d9cbd5: Record a provider-listed price fallback for models the catalog doesn't cover
+  (record-listed-price-fallback). The cost resolver `resolveModelPrice` gains a final
+  `listed` tier — below the bundled/LiteLLM catalog and the native-family estimate, above
+  `unpriced` — so a model whose catalog paths all miss but whose provider (e.g. OpenRouter)
+  reported a per-token price at `sync-models` time now records that captured listed price
+  with `source: 'listed'` instead of `unpriced`. LiteLLM always wins: listed is consulted
+  only when the catalog (exact + native-family) is unknown, and never overrides it. The
+  listed price is snapshotted onto the RequestLog at request time (immutable, like every
+  source) and marked as an estimate everywhere — `priceEstimated: true`, the inspector's
+  `provider-listed · estimate` label and `· est.` marker, the request-table `~`, budget-alert
+  provenance, and the weekly-summary estimate caveat — never presented as an authoritative
+  cost. A 0/0 listed price that is not asserted free (token rates zero but a per-request/image
+  charge) records `unpriced` rather than a misleading "free", since the non-token cost can't
+  be captured. The display and recorded-cost paths now share one resolver (the Models-page
+  effective price and the RequestLog resolve identically). This deliberately
+  relaxes invariant 4 (recorded cost may now come from a provider estimate) under three
+  guardrails: the catalog always wins, the estimate is clearly marked, and it is snapshotted
+  immutably. No schema/migration change — the value flows through the existing
+  `routing`/`listed_*` columns and `price_source`.
+
+### Patch Changes
+
+- 8fee339: Record the matched value for `x-polyrouter-tier` remap rules (record-tier-header-value).
+  The routing resolver now records the matched owned rule value for a request routed by
+  an `x-polyrouter-tier` remap rule (a dashboard Header rule on the tier header) — the
+  tier-ask category the client sent (e.g. `shopping`) — so the request inspector's DECISION
+  `header` row renders `x-polyrouter-tier: shopping` instead of the header name alone. The
+  value flows through the existing `routing_header_value` column and the inspector's
+  existing `<name>: <value>` rendering; no schema, migration, API, or frontend change. The
+  recorded value is the OWNED config string that matched (config-side provenance, identical
+  to the direct-tier lookup's tier key), never arbitrary client bytes — so invariant 8 holds.
+  Rules on any OTHER header are unchanged: they still record the header name only, because a
+  configured value on an arbitrary header can be a credential (fail-closed, no denylist).
+- Updated dependencies [4d9cbd5]
+- Updated dependencies [8fee339]
+  - @polyrouter/shared@0.8.0
+  - @polyrouter/data-plane@0.6.1
+
 ## 0.7.0
 
 ### Minor Changes

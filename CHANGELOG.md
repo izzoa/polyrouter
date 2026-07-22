@@ -15,6 +15,11 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.8.1] — 2026-07-22
+
+[Release](https://github.com/izzoa/polyrouter/releases/tag/v0.8.1) ·
+[Compare](https://github.com/izzoa/polyrouter/compare/v0.8.0...v0.8.1)
+
 ### Changed
 
 - The request inspector header now shows the **date** alongside the time (e.g.
@@ -35,6 +40,17 @@ heading is started.
   value recorded is the matched rule's owned config value (never raw client
   bytes); rules on any other header still record the name only, since a configured
   value there could be a credential.
+
+### Upgrade notes
+
+- No migrations, no new env, no config changes — a drop-in upgrade.
+- **Recorded cost for uncatalogued provider-listed models changes** from
+  `unpriced` to a marked estimate. If your provider (e.g. OpenRouter) lists a
+  price for a model the LiteLLM catalog doesn't cover, new requests now record
+  that listed price — clearly flagged `provider-listed · estimate` (never an
+  authoritative cost, and never overriding the catalog). Historical rows are
+  unchanged (cost is immutable). Run a pricing refresh to prefer authoritative
+  LiteLLM rates where available.
 
 ## [0.8.0] — 2026-07-21
 
@@ -312,7 +328,8 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/izzoa/polyrouter/releases/tag/v0.8.1
 [0.8.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.8.0
 [0.7.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.7.0
 [0.6.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.6.0

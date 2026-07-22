@@ -351,6 +351,21 @@ describe('toInspectorView — native-family provenance (add-native-price-fallbac
     expect(v.totalCost.endsWith(' · est.')).toBe(true);
   });
 
+  it('a provider-listed snapshot is marked as an estimate (record-listed-price-fallback)', () => {
+    const v = toInspectorView({
+      ...base,
+      cost: 0.02,
+      inputPriceSnapshot: 4,
+      outputPriceSnapshot: 16,
+      priceSource: 'listed',
+      priceEstimated: true,
+    });
+    expect(v.priceSourceLabel).toBe('provider-listed · estimate');
+    expect(v.prices[0]!.value).toBe('$4 / 1M · est.');
+    expect(v.prices[1]!.value).toBe('$16 / 1M · est.');
+    expect(v.totalCost.endsWith(' · est.')).toBe(true);
+  });
+
   it('an attempt-only estimate marks the TOTAL while the served source stays plain', () => {
     const v = toInspectorView({
       ...base,

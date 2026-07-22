@@ -19,6 +19,13 @@ heading is started.
 
 - The request inspector header now shows the **date** alongside the time (e.g.
   `2026-07-22 10:01:58`), so a request's timestamp is unambiguous across days.
+- **Recorded cost now falls back to a provider's listed price** when the bundled/
+  LiteLLM catalog (exact + native-family) doesn't cover a model: a model whose
+  provider (e.g. OpenRouter) reported a per-token price at sync time records that
+  captured `listed` price instead of `unpriced`. LiteLLM always wins (listed is
+  last-resort, never overrides the catalog); the estimate is snapshotted immutably
+  and marked everywhere (`provider-listed · estimate`, `· est.`), never shown as an
+  authoritative cost.
 
 ### Fixed
 

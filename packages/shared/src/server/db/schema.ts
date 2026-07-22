@@ -257,11 +257,13 @@ export const models = pgTable(
     inputPricePer1m: doublePrecision('input_price_per_1m'),
     outputPricePer1m: doublePrecision('output_price_per_1m'),
     isFree: boolean('is_free').default(false).notNull(),
-    // Provider-listed price captured at sync as a DISPLAY-ONLY estimate
-    // (add-provider-price-sync-and-edit). Deliberately DISTINCT from the user-price
-    // columns above: these NEVER feed `resolveModelPrice`, the `model_prices` catalog,
-    // or the request-time cost snapshot (invariant 4 — recorded cost comes from the
-    // bundled catalog, not provider `/models`). Per-provider; rewritten on every sync
+    // Provider-listed price captured at sync as an estimate (add-provider-price-
+    // sync-and-edit). Deliberately DISTINCT from the user-price columns above: these
+    // never enter the `model_prices` catalog. They DO feed `resolveModelPrice` as a
+    // clearly-marked, LAST-resort fallback (`source: listed`) when the catalog
+    // (exact + native-family) is unknown — never overriding it, snapshotted immutably
+    // (invariant 4's listed-fallback exception; record-listed-price-fallback).
+    // Per-provider; rewritten on every sync
     // (set from the listed price, or cleared to null when none is listed); cleared on a
     // base_url/protocol change. `listed_is_free` is null when no estimate exists and is
     // true only when every monetary dimension the provider lists is zero.

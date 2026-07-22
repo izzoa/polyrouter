@@ -17,7 +17,7 @@ export interface WeeklySpendReader {
   weeklySpendByOwner(
     start: Date,
     endExclusive: Date,
-  ): Promise<{ ownerUserId: string; total: number; nativeFamilySpend: number }[]>;
+  ): Promise<{ ownerUserId: string; total: number; estimatedSpend: number }[]>;
 }
 
 /** Built inside DatabaseModule (which alone holds the private drizzle handle);
@@ -29,14 +29,15 @@ export function buildWeeklySpendReader(db: NodePgDatabase): WeeklySpendReader {
       // identical arithmetic the budget and analytics readers use — then convert to
       // dollars once, so this summary reconciles exactly with those figures instead
       // of drifting at the sub-µ$ margin a raw float `sum(cost)` would introduce (A-15).
+      // Estimate-priced spend — native-family OR listed (record-listed-price-
+      // fallback) — so the weekly summary's estimate caveat covers both.
+      const estimatedPredicate = sql`${requestLogs.priceSource} in ('native_family', 'listed')`;
+      const estimatedAttemptPredicate = sql`${requestAttempts.priceSource} in ('native_family', 'listed')`;
       const logs = await db
         .select({
           ownerUserId: requestLogs.ownerUserId,
           micros: microsSum(requestLogs.cost),
-          nativeMicros: microsSumIf(
-            requestLogs.cost,
-            sql`${requestLogs.priceSource} = 'native_family'`,
-          ),
+          estimatedMicros: microsSumIf(requestLogs.cost, estimatedPredicate),
         })
         .from(requestLogs)
         .where(and(gte(requestLogs.createdAt, start), lt(requestLogs.createdAt, endExclusive)))
@@ -45,10 +46,7 @@ export function buildWeeklySpendReader(db: NodePgDatabase): WeeklySpendReader {
         .select({
           ownerUserId: requestAttempts.ownerUserId,
           micros: microsSum(requestAttempts.cost),
-          nativeMicros: microsSumIf(
-            requestAttempts.cost,
-            sql`${requestAttempts.priceSource} = 'native_family'`,
-          ),
+          estimatedMicros: microsSumIf(requestAttempts.cost, estimatedAttemptPredicate),
         })
         .from(requestAttempts)
         .where(
@@ -56,17 +54,20 @@ export function buildWeeklySpendReader(db: NodePgDatabase): WeeklySpendReader {
         )
         .groupBy(requestAttempts.ownerUserId);
 
-      const microsByOwner = new Map<string, { micros: number; native: number }>();
-      const bump = (owner: string, micros: number, native: number): void => {
-        const cur = microsByOwner.get(owner) ?? { micros: 0, native: 0 };
-        microsByOwner.set(owner, { micros: cur.micros + micros, native: cur.native + native });
+      const microsByOwner = new Map<string, { micros: number; estimated: number }>();
+      const bump = (owner: string, micros: number, estimated: number): void => {
+        const cur = microsByOwner.get(owner) ?? { micros: 0, estimated: 0 };
+        microsByOwner.set(owner, {
+          micros: cur.micros + micros,
+          estimated: cur.estimated + estimated,
+        });
       };
-      for (const r of logs) bump(r.ownerUserId, Number(r.micros), Number(r.nativeMicros));
-      for (const r of attempts) bump(r.ownerUserId, Number(r.micros), Number(r.nativeMicros));
+      for (const r of logs) bump(r.ownerUserId, Number(r.micros), Number(r.estimatedMicros));
+      for (const r of attempts) bump(r.ownerUserId, Number(r.micros), Number(r.estimatedMicros));
       return [...microsByOwner].map(([ownerUserId, v]) => ({
         ownerUserId,
         total: v.micros / 1_000_000,
-        nativeFamilySpend: v.native / 1_000_000,
+        estimatedSpend: v.estimated / 1_000_000,
       }));
     },
   };

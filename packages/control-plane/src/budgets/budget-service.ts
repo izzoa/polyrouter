@@ -181,7 +181,7 @@ export class BudgetService {
             setTimeout(() => reject(new Error('provenance deadline')), PROVENANCE_DEADLINE_MS),
           ),
         ]);
-        spendEstimated = s.nativeMicros > 0;
+        spendEstimated = s.estimatedMicros > 0;
       } catch {
         /* provenance only — the emit proceeds with 'unknown' */
       }

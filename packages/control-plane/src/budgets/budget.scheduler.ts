@@ -119,7 +119,7 @@ export async function runBudgetOccurrence(
             spent: micros,
             threshold: toMicros(b.amount),
             // Display provenance only — metering is identical either way.
-            spendEstimated: spend.nativeMicros > 0,
+            spendEstimated: spend.estimatedMicros > 0,
             channelIds: parseCsv(b.notifyChannelIds),
           });
         }

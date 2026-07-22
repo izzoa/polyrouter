@@ -38,9 +38,9 @@ describe('renderEvent — estimate-priced spend provenance', () => {
     );
   });
 
-  it('weekly summary includes the native-family split only when present', () => {
+  it('weekly summary includes the estimated-spend split only when present', () => {
     const marked = renderEvent(
-      ev('weekly_spend_summary', { total: '$10.00', nativeFamilySpend: '$1.00' }),
+      ev('weekly_spend_summary', { total: '$10.00', estimatedSpend: '$1.00' }),
     );
     expect(marked.body).toContain('Known spend this week: $10.00.');
     expect(marked.body).toContain('Includes $1.00 priced by estimate');

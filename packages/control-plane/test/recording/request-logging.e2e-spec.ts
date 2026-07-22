@@ -439,6 +439,9 @@ describe('request-logging e2e', () => {
         inputPricePer1m: null,
         outputPricePer1m: null,
         isFree: false,
+        listedInputPricePer1m: null,
+        listedOutputPricePer1m: null,
+        listedIsFree: null,
       },
       startedAt: Date.now(),
       requestChars: 0,
@@ -494,7 +497,15 @@ describe('request-logging e2e', () => {
       decisionLayer: 'native-family-e2e',
       routingReason: 'native-family e2e',
       provider: { baseUrl: 'https://openrouter.ai/api/v1', kind: 'api_key' },
-      model: { externalModelId, inputPricePer1m: null, outputPricePer1m: null, isFree: false },
+      model: {
+        externalModelId,
+        inputPricePer1m: null,
+        outputPricePer1m: null,
+        isFree: false,
+        listedInputPricePer1m: null,
+        listedOutputPricePer1m: null,
+        listedIsFree: null,
+      },
       startedAt: Date.now(),
       requestChars: 0,
     });
@@ -549,6 +560,72 @@ describe('request-logging e2e', () => {
     );
     expect(unmapped).toBeDefined();
     expect(unmapped!.priceSource).toBeNull();
+  });
+
+  it('listed fallback prices an aggregator model the catalog does not cover — flagged, immutable (record-listed-price-fallback)', async () => {
+    // The catalog is GLOBAL — clear the key so a rerun can't hijack the resolution.
+    await pool.query(`DELETE FROM model_price WHERE model_key = $1`, ['openrouter:sakana/fugu-ultra']);
+    // An unmapped vendor (`sakana` is not in the native allowlist) → exact AND
+    // native-family both miss; but the model carries a captured listed price.
+    const listedCtx: RecordingContext = {
+      principal,
+      agentId: null,
+      protocol: 'openai',
+      providerId: 'p-openrouter',
+      providerName: 'openrouter',
+      modelId: gpt4oModelId,
+      tierAssigned: null,
+      decisionLayer: 'listed-fallback-e2e',
+      routingReason: 'listed fallback e2e',
+      provider: { baseUrl: 'https://openrouter.ai/api/v1', kind: 'api_key' },
+      model: {
+        externalModelId: 'sakana/fugu-ultra',
+        inputPricePer1m: null,
+        outputPricePer1m: null,
+        isFree: false,
+        listedInputPricePer1m: 4,
+        listedOutputPricePer1m: 16,
+        listedIsFree: false,
+      },
+      startedAt: Date.now(),
+      requestChars: 0,
+    };
+    recorder.record(listedCtx, {
+      status: 'success',
+      providerUsage: { inputTokens: 1_000_000, outputTokens: 1_000_000 },
+      outputChars: 0,
+    });
+    await writer.flush();
+    const row = (await port.requestLogs.list(principal)).find(
+      (r) => r.decisionLayer === 'listed-fallback-e2e' && r.cost !== null,
+    );
+    expect(row).toBeDefined();
+    expect(row!.priceSource).toBe('listed'); // the provider's own estimate, marked
+    expect(row!.inputPriceSnapshot).toBe(4);
+    expect(row!.outputPriceSnapshot).toBe(16);
+    expect(row!.cost).toBeCloseTo(20, 6); // 1M in ×4 + 1M out ×16
+    expect(row!.priceVersionId).toBeNull(); // a captured estimate, not a catalog version
+
+    // A LATER catalog append never rewrites the recorded listed cost (immutable);
+    // AND it means the catalog now WINS for a fresh request (listed is last-resort).
+    await pricing.override(
+      'openrouter:sakana/fugu-ultra',
+      { inputPricePer1m: 99, outputPricePer1m: 99 },
+      new Date(),
+    );
+    const again = await port.requestLogs.findById(principal, row!.id);
+    expect(again!.cost).toBe(row!.cost);
+    expect(again!.priceSource).toBe('listed');
+    recorder.record(listedCtx, {
+      status: 'success',
+      providerUsage: { inputTokens: 1_000_000, outputTokens: 0 },
+      outputChars: 0,
+    });
+    await writer.flush();
+    const afterCatalog = (await port.requestLogs.list(principal)).find(
+      (r) => r.decisionLayer === 'listed-fallback-e2e' && r.id !== row!.id && r.cost !== null,
+    );
+    expect(afterCatalog!.priceSource).toBe('manual'); // catalog beats listed once present
   });
 
   it('a log-write failure never fails the request or throws', async () => {

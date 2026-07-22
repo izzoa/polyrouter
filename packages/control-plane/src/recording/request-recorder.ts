@@ -86,7 +86,13 @@ export interface RecordingContext {
   readonly provider: Pick<ProviderRow, 'baseUrl' | 'kind'>;
   readonly model: Pick<
     ModelRow,
-    'externalModelId' | 'inputPricePer1m' | 'outputPricePer1m' | 'isFree'
+    | 'externalModelId'
+    | 'inputPricePer1m'
+    | 'outputPricePer1m'
+    | 'isFree'
+    | 'listedInputPricePer1m'
+    | 'listedOutputPricePer1m'
+    | 'listedIsFree'
   >;
   readonly startedAt: number;
   /** Character count of the request body (for the input-token estimate). */
@@ -369,6 +375,9 @@ function pricingOf(ctx: RecordingContext): DraftPricing {
     modelInputPricePer1m: ctx.model.inputPricePer1m,
     modelOutputPricePer1m: ctx.model.outputPricePer1m,
     modelIsFree: ctx.model.isFree,
+    listedInputPricePer1m: ctx.model.listedInputPricePer1m,
+    listedOutputPricePer1m: ctx.model.listedOutputPricePer1m,
+    listedIsFree: ctx.model.listedIsFree ?? false,
     providerBaseUrl: ctx.provider.baseUrl,
     providerKind: ctx.provider.kind,
     at: new Date(), // request-completion time — used for the immutable price lookup

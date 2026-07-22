@@ -77,13 +77,16 @@ export interface ProviderConfig {
 }
 
 /**
- * A provider-listed price for DISPLAY only (add-provider-price-sync-and-edit) —
- * surfaced from a models endpoint that carries per-model prices (OpenRouter and
+ * A provider-listed price estimate (add-provider-price-sync-and-edit) — surfaced
+ * from a models endpoint that carries per-model prices (OpenRouter and
  * OpenAI-compatible aggregators). Normalized to per-1M USD at the adapter boundary.
- * NEVER a billing/cost source (invariant 4): recorded cost comes from the bundled
- * catalog, not provider `/models`. `isFree` is set only when every monetary dimension
- * the provider lists is zero — a zero-token model with a per-request/image charge is
- * `$0` but not free.
+ * NOT an authoritative rate: the cost resolver uses the captured value as a
+ * clearly-marked, LAST-resort fallback (`source: listed`) only when the catalog
+ * (exact + native-family) is unknown, never overriding it (invariant 4's
+ * listed-fallback exception; record-listed-price-fallback). `isFree` is set only
+ * when every monetary dimension the provider lists is zero — a zero-token model
+ * with a per-request/image charge is `$0` but not free (so the resolver records it
+ * as unknown, not free).
  */
 export interface ProviderListedPricing {
   readonly inputPricePer1m: number;

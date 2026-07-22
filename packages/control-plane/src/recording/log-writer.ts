@@ -40,6 +40,11 @@ export interface DraftPricing {
   readonly modelInputPricePer1m: number | null;
   readonly modelOutputPricePer1m: number | null;
   readonly modelIsFree: boolean;
+  /** The model's captured provider-listed estimate (record-listed-price-fallback)
+   * — the resolver's last-resort fallback when the catalog is unknown. */
+  readonly listedInputPricePer1m: number | null;
+  readonly listedOutputPricePer1m: number | null;
+  readonly listedIsFree: boolean;
   readonly providerBaseUrl: string | null;
   readonly providerKind: string;
   readonly at: Date;
@@ -408,6 +413,9 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
           inputPricePer1m: d.pricing.modelInputPricePer1m,
           outputPricePer1m: d.pricing.modelOutputPricePer1m,
           isFree: d.pricing.modelIsFree,
+          listedInputPricePer1m: d.pricing.listedInputPricePer1m,
+          listedOutputPricePer1m: d.pricing.listedOutputPricePer1m,
+          listedIsFree: d.pricing.listedIsFree,
         },
         d.pricing.providerBaseUrl,
         d.pricing.providerKind,
@@ -632,6 +640,9 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
           inputPricePer1m: d.pricing.modelInputPricePer1m,
           outputPricePer1m: d.pricing.modelOutputPricePer1m,
           isFree: d.pricing.modelIsFree,
+          listedInputPricePer1m: d.pricing.listedInputPricePer1m,
+          listedOutputPricePer1m: d.pricing.listedOutputPricePer1m,
+          listedIsFree: d.pricing.listedIsFree,
         },
         d.pricing.providerBaseUrl,
         d.pricing.providerKind,

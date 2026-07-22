@@ -42,9 +42,9 @@ export async function runWeeklyOccurrence(
       scope: { ownerUserId: r.ownerUserId, lifecycleId: occurrenceKey },
       fields: {
         total: formatMoney(r.total),
-        // Present only when the week includes estimate-priced spend — the renderer
-        // marks the total accordingly (add-native-price-fallback).
-        ...(r.nativeFamilySpend > 0 ? { nativeFamilySpend: formatMoney(r.nativeFamilySpend) } : {}),
+        // Present only when the week includes estimate-priced spend (native-family
+        // OR listed) — the renderer marks the total accordingly.
+        ...(r.estimatedSpend > 0 ? { estimatedSpend: formatMoney(r.estimatedSpend) } : {}),
       },
     });
   }

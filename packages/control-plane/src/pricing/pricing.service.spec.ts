@@ -195,6 +195,9 @@ describe('PricingService — resolveForModel', () => {
       inputPricePer1m: null,
       outputPricePer1m: null,
       isFree: false,
+      listedInputPricePer1m: null,
+      listedOutputPricePer1m: null,
+      listedIsFree: null,
     };
     const known = await svc.resolveForModel(model, 'https://api.openai.com/v1', 'api_key', AT);
     expect(known).toMatchObject({ source: 'bundled', inputPricePer1m: 2.5 });
@@ -222,6 +225,9 @@ describe('PricingService — resolveForModel', () => {
       inputPricePer1m: null,
       outputPricePer1m: null,
       isFree: false,
+      listedInputPricePer1m: null,
+      listedOutputPricePer1m: null,
+      listedIsFree: null,
     };
     const snap = await svc.resolveForModel(model, 'https://openrouter.ai/api/v1', 'api_key', AT);
     expect(snap).toMatchObject({
@@ -270,6 +276,9 @@ describe('PricingService — resolveForModel', () => {
           inputPricePer1m: null,
           outputPricePer1m: null,
           isFree: false,
+          listedInputPricePer1m: null,
+          listedOutputPricePer1m: null,
+          listedIsFree: null,
         },
         'https://openrouter.ai/api/v1',
         'api_key',

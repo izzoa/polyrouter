@@ -149,7 +149,7 @@ export function renderEvent(event: NotificationEvent): { title: string; body: st
         // "Known spend": unknown-price rows count as 0, so an all-unknown owner
         // isn't shown a misleading total (#15b).
         title: 'polyrouter — weekly spend summary',
-        body: `Known spend this week: ${f['total'] ?? '0'}.${f['nativeFamilySpend'] !== undefined ? ` Includes ${f['nativeFamilySpend']} priced by estimate (native-family rates).` : ''}`,
+        body: `Known spend this week: ${f['total'] ?? '0'}.${f['estimatedSpend'] !== undefined ? ` Includes ${f['estimatedSpend']} priced by estimate (native-family or provider-listed rates).` : ''}`,
       };
   }
 }

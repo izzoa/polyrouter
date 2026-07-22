@@ -100,7 +100,13 @@ interface AttemptMeta {
   readonly providerKind: string;
   readonly model: Pick<
     ModelRow,
-    'externalModelId' | 'inputPricePer1m' | 'outputPricePer1m' | 'isFree'
+    | 'externalModelId'
+    | 'inputPricePer1m'
+    | 'outputPricePer1m'
+    | 'isFree'
+    | 'listedInputPricePer1m'
+    | 'listedOutputPricePer1m'
+    | 'listedIsFree'
   >;
 }
 
@@ -1088,6 +1094,11 @@ export class ProxyService {
           inputPricePer1m: model.inputPricePer1m,
           outputPricePer1m: model.outputPricePer1m,
           isFree: model.isFree,
+          // The captured provider-listed estimate feeds the resolver's last-resort
+          // fallback for recorded cost (record-listed-price-fallback).
+          listedInputPricePer1m: model.listedInputPricePer1m,
+          listedOutputPricePer1m: model.listedOutputPricePer1m,
+          listedIsFree: model.listedIsFree,
         },
       });
       attempts.push({

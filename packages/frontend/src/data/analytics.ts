@@ -98,9 +98,11 @@ export function filterToRequestParams(filter: RequestFilter): RequestFilterParam
   }
 }
 
-/** The table's total-cost cell: micros-exact total, `~` when usage was estimated. */
+/** The table's total-cost cell: micros-exact total, `~` when the cost is an
+ * estimate — usage estimated OR the price is estimated (native-family/listed),
+ * matching the inspector's `· est.` marking. */
 export function rowCostLabel(row: RequestRow): string {
-  return `${fmtMicros(totalCostMicros(row))}${row.usageEstimated ? '~' : ''}`;
+  return `${fmtMicros(totalCostMicros(row))}${row.usageEstimated || row.priceEstimated ? '~' : ''}`;
 }
 
 export interface PriceSnapshotView {
@@ -117,9 +119,9 @@ function priceView(
   source: string | null = null,
 ): PriceSnapshotView {
   if (v === null) return { label, value: 'unpriced', free: false, unpriced: true };
-  // A native-family snapshot is an adjacent channel's rate — marked on EVERY
-  // priced row, the zero-priced (free) case included.
-  const est = source === 'native_family' ? ' · est.' : '';
+  // native-family (adjacent channel) and listed (provider's own) snapshots are
+  // estimates — marked on EVERY priced row, the zero-priced (free) case included.
+  const est = source === 'native_family' || source === 'listed' ? ' · est.' : '';
   if (v === 0) return { label, value: `$0 free${est}`, free: true, unpriced: false };
   return { label, value: `$${String(v)} / 1M${est}`, free: false, unpriced: false };
 }
@@ -245,7 +247,9 @@ export function toInspectorView(r: RequestRow): InspectorView {
         ? null
         : r.priceSource === 'native_family'
           ? 'native family · estimate'
-          : r.priceSource,
+          : r.priceSource === 'listed'
+            ? 'provider-listed · estimate'
+            : r.priceSource,
     priceEstimated: r.priceEstimated,
     durationMs: r.durationMs,
     errorView: toErrorView(r),

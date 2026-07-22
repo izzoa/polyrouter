@@ -23,7 +23,7 @@ export interface BudgetReader {
     agentId: string | null,
     start: Date,
     endExclusive: Date,
-  ): Promise<{ micros: number; nativeMicros: number }>;
+  ): Promise<{ micros: number; estimatedMicros: number }>;
 }
 
 /** Built inside DatabaseModule (which alone holds the private drizzle handle);
@@ -40,11 +40,14 @@ export function buildBudgetReader(db: NodePgDatabase): BudgetReader {
         lt(requestLogs.createdAt, endExclusive),
         ...(agentId !== null ? [eq(requestLogs.agentId, agentId)] : []),
       ];
-      const nativeLog = sql`${requestLogs.priceSource} = 'native_family'`;
+      // Estimate-priced spend — native-family OR listed (record-listed-price-
+      // fallback), both non-authoritative — so a budget alert's provenance caveat
+      // covers either.
+      const estimatedLog = sql`${requestLogs.priceSource} in ('native_family', 'listed')`;
       const logs = await db
         .select({
           total: microsSum(requestLogs.cost),
-          native: microsSumIf(requestLogs.cost, nativeLog),
+          estimated: microsSumIf(requestLogs.cost, estimatedLog),
         })
         .from(requestLogs)
         .where(and(...logWhere));
@@ -54,13 +57,13 @@ export function buildBudgetReader(db: NodePgDatabase): BudgetReader {
         gte(requestAttempts.createdAt, start),
         lt(requestAttempts.createdAt, endExclusive),
       ];
-      const nativeAttempt = sql`${requestAttempts.priceSource} = 'native_family'`;
+      const estimatedAttempt = sql`${requestAttempts.priceSource} in ('native_family', 'listed')`;
       const attemptQuery =
         agentId !== null
           ? db
               .select({
                 total: microsSum(requestAttempts.cost),
-                native: microsSumIf(requestAttempts.cost, nativeAttempt),
+                estimated: microsSumIf(requestAttempts.cost, estimatedAttempt),
               })
               .from(requestAttempts)
               .innerJoin(requestLogs, eq(requestAttempts.requestLogId, requestLogs.id))
@@ -68,7 +71,7 @@ export function buildBudgetReader(db: NodePgDatabase): BudgetReader {
           : db
               .select({
                 total: microsSum(requestAttempts.cost),
-                native: microsSumIf(requestAttempts.cost, nativeAttempt),
+                estimated: microsSumIf(requestAttempts.cost, estimatedAttempt),
               })
               .from(requestAttempts)
               .where(and(...attemptWhere));
@@ -76,7 +79,7 @@ export function buildBudgetReader(db: NodePgDatabase): BudgetReader {
 
       return {
         micros: Number(logs[0]?.total ?? 0) + Number(attempts[0]?.total ?? 0),
-        nativeMicros: Number(logs[0]?.native ?? 0) + Number(attempts[0]?.native ?? 0),
+        estimatedMicros: Number(logs[0]?.estimated ?? 0) + Number(attempts[0]?.estimated ?? 0),
       };
     },
   };

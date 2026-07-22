@@ -89,6 +89,9 @@ describe('resolveModelPrice', () => {
     modelInputPricePer1m: null,
     modelOutputPricePer1m: null,
     modelIsFree: false,
+    listedInputPricePer1m: null,
+    listedOutputPricePer1m: null,
+    listedIsFree: false,
   };
 
   it('prefers explicit Model-own prices for a custom/local provider', () => {
@@ -225,6 +228,9 @@ describe('resolveModelPrice — native-family fallback', () => {
     modelInputPricePer1m: null,
     modelOutputPricePer1m: null,
     modelIsFree: false,
+    listedInputPricePer1m: null,
+    listedOutputPricePer1m: null,
+    listedIsFree: false,
   };
   const nativeRow = catalogRow({
     id: 'v-native',
@@ -256,17 +262,102 @@ describe('resolveModelPrice — native-family fallback', () => {
 
   it('model-own and local precedence are unaffected; both-miss stays null', () => {
     const own = resolveModelPrice(
-      { providerKind: 'custom', modelInputPricePer1m: 1, modelOutputPricePer1m: 2, modelIsFree: false },
+      {
+        providerKind: 'custom',
+        modelInputPricePer1m: 1,
+        modelOutputPricePer1m: 2,
+        modelIsFree: false,
+        listedInputPricePer1m: null,
+        listedOutputPricePer1m: null,
+        listedIsFree: false,
+      },
       null,
       nativeRow,
     );
     expect(own?.source).toBe('model');
     const local = resolveModelPrice(
-      { providerKind: 'local', modelInputPricePer1m: null, modelOutputPricePer1m: null, modelIsFree: false },
+      {
+        providerKind: 'local',
+        modelInputPricePer1m: null,
+        modelOutputPricePer1m: null,
+        modelIsFree: false,
+        listedInputPricePer1m: null,
+        listedOutputPricePer1m: null,
+        listedIsFree: false,
+      },
       null,
       nativeRow,
     );
     expect(local?.source).toBe('local');
     expect(resolveModelPrice(input, null, null)).toBeNull();
+  });
+});
+
+describe('resolveModelPrice — listed fallback (record-listed-price-fallback)', () => {
+  const withListed = {
+    providerKind: 'api_key',
+    modelInputPricePer1m: null,
+    modelOutputPricePer1m: null,
+    modelIsFree: false,
+    listedInputPricePer1m: 3,
+    listedOutputPricePer1m: 15,
+    listedIsFree: false,
+  };
+  const nativeRow = catalogRow({ id: 'v-native', modelKey: 'openai:gpt-4o', source: 'refresh' });
+
+  it('is the LAST resort: used only when exact + native both miss', () => {
+    const snap = resolveModelPrice(withListed, null, null);
+    expect(snap?.source).toBe('listed');
+    expect(snap?.inputPricePer1m).toBe(3);
+    expect(snap?.outputPricePer1m).toBe(15);
+    // A per-model captured estimate, not a catalog version.
+    expect(snap?.priceVersionId).toBeNull();
+    expect(snap?.validFrom).toBeNull();
+  });
+
+  it('never beats an exact catalog hit', () => {
+    const snap = resolveModelPrice(withListed, catalogRow(), null);
+    expect(snap?.source).not.toBe('listed');
+    expect(['bundled', 'refresh', 'manual']).toContain(snap?.source);
+  });
+
+  it('never beats the native-family estimate', () => {
+    const snap = resolveModelPrice(withListed, null, nativeRow);
+    expect(snap?.source).toBe('native_family');
+  });
+
+  it('never beats a custom model-own price', () => {
+    const snap = resolveModelPrice(
+      { ...withListed, providerKind: 'custom', modelInputPricePer1m: 1, modelOutputPricePer1m: 2 },
+      null,
+      null,
+    );
+    expect(snap?.source).toBe('model');
+  });
+
+  it('a half listed price (one rate null) is skipped → null', () => {
+    expect(resolveModelPrice({ ...withListed, listedOutputPricePer1m: null }, null, null)).toBeNull();
+    expect(resolveModelPrice({ ...withListed, listedInputPricePer1m: null }, null, null)).toBeNull();
+  });
+
+  it('carries listedIsFree for a zero-priced listed estimate', () => {
+    const snap = resolveModelPrice(
+      { ...withListed, listedInputPricePer1m: 0, listedOutputPricePer1m: 0, listedIsFree: true },
+      null,
+      null,
+    );
+    expect(snap?.source).toBe('listed');
+    expect(snap?.isFree).toBe(true);
+  });
+
+  it('a 0/0 listed price that is NOT free is skipped (uncapturable non-token charge) → null', () => {
+    // e.g. token rates 0 but a per-request charge → not free, and we can't
+    // capture the real cost, so record unknown rather than a false "$0 free".
+    const snap = resolveModelPrice(
+      { ...withListed, listedInputPricePer1m: 0, listedOutputPricePer1m: 0, listedIsFree: false },
+      null,
+      null,
+    );
+    expect(snap).toBeNull();
   });
 });

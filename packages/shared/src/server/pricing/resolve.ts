@@ -6,7 +6,14 @@
  */
 import type { ModelPriceRow } from '../db/schema';
 
-export type PriceSource = 'model' | 'local' | 'bundled' | 'refresh' | 'manual' | 'native_family';
+export type PriceSource =
+  | 'model'
+  | 'local'
+  | 'bundled'
+  | 'refresh'
+  | 'manual'
+  | 'native_family'
+  | 'listed';
 
 /** A resolved unit-price snapshot. `priceVersionId`/`validFrom` are set for a
  * catalog hit so #11 can record exactly which version priced the request. */
@@ -29,6 +36,13 @@ export interface PriceResolutionInput {
   readonly modelInputPricePer1m: number | null;
   readonly modelOutputPricePer1m: number | null;
   readonly modelIsFree: boolean;
+  /** The per-model provider-`listed` estimate captured at `sync-models`
+   * (record-listed-price-fallback) — the LAST-resort fallback, consulted ONLY
+   * after every catalog path misses, and marked as an estimate. Null when the
+   * provider listed no price for this model. */
+  readonly listedInputPricePer1m: number | null;
+  readonly listedOutputPricePer1m: number | null;
+  readonly listedIsFree: boolean;
 }
 
 /** A catalog row ready to seed/append (no id/createdAt). */
@@ -221,6 +235,31 @@ export function resolveModelPrice(
       source: 'native_family',
       validFrom: nativeCatalogRow.validFrom,
     };
+  }
+  // LAST resort (record-listed-price-fallback): the provider's OWN listed
+  // estimate, captured on the model at sync time. Catalog-loses-never — reached
+  // only when every catalog path above missed, and marked `listed` (an estimate,
+  // no catalog version id). A half price (one rate null) is never used.
+  if (input.listedInputPricePer1m !== null && input.listedOutputPricePer1m !== null) {
+    // A 0/0 listed price that is NOT asserted free means the provider charges
+    // elsewhere (per-request/image) — the adapter reads only token rates, so we
+    // CANNOT capture the real cost. Record unknown rather than a misleading
+    // "$0 free" (clink record-listed-price-fallback Med-2). A genuinely-free
+    // listed model (listedIsFree) still records 0/0.
+    const bothZero = input.listedInputPricePer1m === 0 && input.listedOutputPricePer1m === 0;
+    if (!bothZero || input.listedIsFree) {
+      return {
+        priceVersionId: null,
+        modelKey: null,
+        inputPricePer1m: input.listedInputPricePer1m,
+        outputPricePer1m: input.listedOutputPricePer1m,
+        cacheReadPricePer1m: null,
+        cacheWritePricePer1m: null,
+        isFree: input.listedIsFree,
+        source: 'listed',
+        validFrom: null,
+      };
+    }
   }
   return null;
 }

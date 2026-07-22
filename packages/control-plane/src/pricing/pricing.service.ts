@@ -121,7 +121,16 @@ export class PricingService {
   }
 
   async resolveForModel(
-    model: Pick<ModelRow, 'externalModelId' | 'inputPricePer1m' | 'outputPricePer1m' | 'isFree'>,
+    model: Pick<
+      ModelRow,
+      | 'externalModelId'
+      | 'inputPricePer1m'
+      | 'outputPricePer1m'
+      | 'isFree'
+      | 'listedInputPricePer1m'
+      | 'listedOutputPricePer1m'
+      | 'listedIsFree'
+    >,
     providerBaseUrl: string | null,
     providerKind: string,
     at: Date,
@@ -147,6 +156,9 @@ export class PricingService {
         modelInputPricePer1m: model.inputPricePer1m,
         modelOutputPricePer1m: model.outputPricePer1m,
         modelIsFree: model.isFree,
+        listedInputPricePer1m: model.listedInputPricePer1m,
+        listedOutputPricePer1m: model.listedOutputPricePer1m,
+        listedIsFree: model.listedIsFree ?? false,
       },
       catalogRow,
       nativeRow,

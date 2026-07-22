@@ -12,8 +12,8 @@ describe('runWeeklyOccurrence (#15b)', () => {
       weeklySpendByOwner: (start, end) => {
         seen.push({ start, end });
         return Promise.resolve([
-          { ownerUserId: 'a', total: 12.5, nativeFamilySpend: 0 },
-          { ownerUserId: 'b', total: 0, nativeFamilySpend: 0 },
+          { ownerUserId: 'a', total: 12.5, estimatedSpend: 0 },
+          { ownerUserId: 'b', total: 0, estimatedSpend: 0 },
         ]);
       },
     };
@@ -39,12 +39,12 @@ describe('runWeeklyOccurrence (#15b)', () => {
 });
 
 describe('weekly summary — native-family split field (add-native-price-fallback)', () => {
-  it('includes nativeFamilySpend only for owners whose week has estimate-priced spend', async () => {
+  it('includes estimatedSpend only for owners whose week has estimate-priced spend', async () => {
     const reader: WeeklySpendReader = {
       weeklySpendByOwner: () =>
         Promise.resolve([
-          { ownerUserId: 'a', total: 10, nativeFamilySpend: 1 },
-          { ownerUserId: 'b', total: 5, nativeFamilySpend: 0 },
+          { ownerUserId: 'a', total: 10, estimatedSpend: 1 },
+          { ownerUserId: 'b', total: 5, estimatedSpend: 0 },
         ]),
     };
     const emit = jest.fn().mockResolvedValue(undefined);
@@ -55,7 +55,7 @@ describe('weekly summary — native-family split field (add-native-price-fallbac
         (c[0] as { fields: Record<string, string> }).fields,
       ]),
     );
-    expect(byOwner.get('a')).toMatchObject({ total: '$10.00', nativeFamilySpend: '$1.00' });
+    expect(byOwner.get('a')).toMatchObject({ total: '$10.00', estimatedSpend: '$1.00' });
     expect(byOwner.get('b')).toEqual({ total: '$5.00' }); // no field when zero
   });
 });

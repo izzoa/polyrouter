@@ -70,7 +70,7 @@ function row(p: Partial<BudgetRow>): BudgetRow {
 function make(
   rows: BudgetRow[],
   failOpen = true,
-  spendMicrosFor: jest.Mock = jest.fn().mockResolvedValue({ micros: 0, nativeMicros: 0 }),
+  spendMicrosFor: jest.Mock = jest.fn().mockResolvedValue({ micros: 0, estimatedMicros: 0 }),
 ) {
   const conn = new FakeConn();
   const counter = new SpendCounter({ duplicate: () => conn } as unknown as Redis, BASE_CFG);
@@ -263,7 +263,7 @@ describe('BudgetService.emitBlock — provenance (add-native-price-fallback)', (
     (svc as unknown as { emitBlock: (p: typeof PRINCIPAL, h: BudgetHit) => Promise<void> }).emitBlock;
 
   it('queries the HIT period bounds (never new Date()) and marks native spend', async () => {
-    const spend = jest.fn().mockResolvedValue({ micros: toMicros(12), nativeMicros: 5 });
+    const spend = jest.fn().mockResolvedValue({ micros: toMicros(12), estimatedMicros: 5 });
     const { svc, budgetBlock } = make([b], true, spend);
     await emitOf(svc).call(svc, PRINCIPAL, hit);
     expect(spend).toHaveBeenCalledWith('u1', b.agentId, hit.periodStart, hit.resetAt);
@@ -279,7 +279,7 @@ describe('BudgetService.emitBlock — provenance (add-native-price-fallback)', (
   });
 
   it('an all-exact period emits spendEstimated: false', async () => {
-    const spend = jest.fn().mockResolvedValue({ micros: toMicros(12), nativeMicros: 0 });
+    const spend = jest.fn().mockResolvedValue({ micros: toMicros(12), estimatedMicros: 0 });
     const { svc, budgetBlock } = make([b], true, spend);
     await emitOf(svc).call(svc, PRINCIPAL, hit);
     expect(budgetBlock.mock.calls[0]![0]).toMatchObject({ spendEstimated: false });

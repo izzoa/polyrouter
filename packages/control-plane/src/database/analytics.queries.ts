@@ -111,7 +111,9 @@ async function enrich(
     .select({
       requestLogId: requestAttempts.requestLogId,
       micros: microsSum(requestAttempts.cost),
-      hasNative: sql<boolean>`bool_or(${requestAttempts.priceSource} = 'native_family')`,
+      // Any attempt priced by an ESTIMATE source — native-family OR listed
+      // (record-listed-price-fallback), both non-authoritative.
+      hasEstimated: sql<boolean>`bool_or(${requestAttempts.priceSource} in ('native_family', 'listed'))`,
     })
     .from(requestAttempts)
     .where(
@@ -122,8 +124,8 @@ async function enrich(
     )
     .groupBy(requestAttempts.requestLogId);
   const attemptByLog = new Map(attemptRows.map((r) => [r.requestLogId, Number(r.micros)]));
-  const nativeAttemptByLog = new Map(
-    attemptRows.map((r) => [r.requestLogId, r.hasNative === true]),
+  const estimatedAttemptByLog = new Map(
+    attemptRows.map((r) => [r.requestLogId, r.hasEstimated === true]),
   );
 
   const uniq = (v: (string | null)[]): string[] => [
@@ -141,8 +143,12 @@ async function enrich(
     providerLabel: r.providerId !== null ? (providerLabels.get(r.providerId) ?? null) : null,
     agentLabel: r.agentId !== null ? (agentLabels.get(r.agentId) ?? null) : null,
     attemptCostMicros: attemptByLog.get(r.id) ?? 0,
-    // Rolled-up estimate flag: the served row OR any attempt priced native_family.
-    priceEstimated: r.priceSource === 'native_family' || (nativeAttemptByLog.get(r.id) ?? false),
+    // Rolled-up estimate flag: the served row OR any attempt priced by an estimate
+    // source (native_family or listed).
+    priceEstimated:
+      r.priceSource === 'native_family' ||
+      r.priceSource === 'listed' ||
+      (estimatedAttemptByLog.get(r.id) ?? false),
   }));
 }
 

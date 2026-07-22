@@ -104,11 +104,12 @@ export type EffectivePriceSource =
   | 'native_family'
   | 'listed';
 
-/** A model's current effective price for DISPLAY (add-provider-price-sync-and-edit).
- * Resolved read-time: the pure billing resolver first, then the per-provider `listed`
- * estimate ONLY when billing is unknown. `estimated` is true only for the `listed`
- * fallback. This is never a billing/cost value — historical RequestLog cost is the
- * request-time snapshot and is unaffected (invariant 4). */
+/** A model's current effective price for display (add-provider-price-sync-and-edit).
+ * Resolved read-time through the SAME pure resolver the recorded-cost path uses
+ * (record-listed-price-fallback): catalog → native-family → the per-provider `listed`
+ * estimate, whichever wins. `estimated` is true for the `native_family` and `listed`
+ * fallbacks. Historical RequestLog cost is the immutable request-time snapshot and is
+ * unaffected by later price changes (invariant 4). */
 export interface EffectivePrice {
   inputPricePer1m: number;
   outputPricePer1m: number;
@@ -235,37 +236,32 @@ function toEffectivePrice(
   catalogRow: ModelPriceRow | null,
   nativeCatalogRow: ModelPriceRow | null = null,
 ): EffectivePrice | null {
+  // The listed fallback now lives in the shared resolver (record-listed-price-
+  // fallback), so display + recorded cost resolve identically — this supplies the
+  // model's captured listed estimate and maps whatever source wins.
   const snap = resolveModelPrice(
     {
       providerKind,
       modelInputPricePer1m: model.inputPricePer1m,
       modelOutputPricePer1m: model.outputPricePer1m,
       modelIsFree: model.isFree,
+      listedInputPricePer1m: model.listedInputPricePer1m,
+      listedOutputPricePer1m: model.listedOutputPricePer1m,
+      listedIsFree: model.listedIsFree ?? false,
     },
     catalogRow,
     nativeCatalogRow,
   );
-  if (snap !== null) {
-    return {
-      inputPricePer1m: snap.inputPricePer1m,
-      outputPricePer1m: snap.outputPricePer1m,
-      isFree: snap.isFree,
-      source: snap.source,
-      // The native-family fallback is an adjacent channel's rate — an estimate.
-      estimated: snap.source === 'native_family',
-    };
-  }
-  // Billing unknown → fall back to the per-provider listed estimate (display only).
-  if (model.listedInputPricePer1m !== null && model.listedOutputPricePer1m !== null) {
-    return {
-      inputPricePer1m: model.listedInputPricePer1m,
-      outputPricePer1m: model.listedOutputPricePer1m,
-      isFree: model.listedIsFree ?? false,
-      source: 'listed',
-      estimated: true,
-    };
-  }
-  return null;
+  if (snap === null) return null;
+  return {
+    inputPricePer1m: snap.inputPricePer1m,
+    outputPricePer1m: snap.outputPricePer1m,
+    isFree: snap.isFree,
+    source: snap.source,
+    // Both the native-family (adjacent channel) and listed (provider's own
+    // estimate) fallbacks are estimates, not authoritative catalog rates.
+    estimated: snap.source === 'native_family' || snap.source === 'listed',
+  };
 }
 
 function toSafeModel(m: ModelRow, effectivePrice: EffectivePrice | null = null): SafeModel {

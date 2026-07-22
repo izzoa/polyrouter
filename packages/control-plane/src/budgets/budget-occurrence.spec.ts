@@ -63,7 +63,7 @@ class FakeCounter {
 function makeReader(
   rows: BudgetRow[],
   spend: number | number[],
-  nativeMicros = 0,
+  estimatedMicros = 0,
 ): { reader: BudgetReader; calls: SpendCall[] } {
   const calls: SpendCall[] = [];
   let i = 0;
@@ -72,7 +72,7 @@ function makeReader(
     spendMicrosFor: (owner, agentId, start, endExclusive) => {
       calls.push({ owner, agentId, start: start.getTime(), end: endExclusive.getTime() });
       const v = Array.isArray(spend) ? (spend[i++] ?? 0) : spend;
-      return Promise.resolve({ micros: v, nativeMicros });
+      return Promise.resolve({ micros: v, estimatedMicros });
     },
   };
   return { reader, calls };

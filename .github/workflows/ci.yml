@@ -89,19 +89,28 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
-      # Root script runs `turbo run build` first, then the control-plane e2e suite.
-      # One fresh-process retry absorbs the documented Better-Auth ESM/jest
-      # module-load flake (`auth.e2e` intermittently gets `undefined … 'identifier'`
-      # from jest's --experimental-vm-modules loader under runner memory pressure;
-      # the auth stack itself is proven by prod-topology booting the real server).
-      # A fresh jest process gets a clean module registry — the in-process
-      # jest.retryTimes cannot, since --runInBand shares one registry. A genuine
+      # Build the workspace deps once (turbo-cached); both e2e passes reuse it.
+      - run: npm run build
+      # The Better-Auth ESM e2e suites (auth.e2e, user-admin.e2e) intermittently
+      # fail jest's --experimental-vm-modules loader (`undefined … 'identifier'`/
+      # `'close'`) under the accumulated module-registry pressure of the full
+      # --runInBand run — they pass in their OWN fresh process (the auth stack is
+      # also proven by prod-topology booting the real server). The L2 semantic work
+      # added ~10 e2e suites, tipping this from intermittent to frequent, so split
+      # the run: the 37 stable suites in one jest process, the two flaky auth suites
+      # isolated in another. Each pass keeps one fresh-process retry — a genuine
       # failure fails both attempts and still reds the job.
-      - name: e2e (fresh-process retry once on the documented auth ESM flake)
+      - name: e2e — all suites except the ESM-flaky auth suites
         run: |
-          if ! npm run test:e2e; then
-            echo "::warning title=e2e retried::first attempt failed; re-running once on a fresh process (documented auth.e2e ESM module-load flake)"
-            npm run test:e2e
+          if ! npm run test:e2e -w packages/control-plane -- --testPathIgnorePatterns '/node_modules/' 'test/auth/'; then
+            echo "::warning title=e2e retried::non-auth e2e failed; re-running once on a fresh process"
+            npm run test:e2e -w packages/control-plane -- --testPathIgnorePatterns '/node_modules/' 'test/auth/'
+          fi
+      - name: e2e — auth suites, isolated in their own jest process
+        run: |
+          if ! npm run test:e2e -w packages/control-plane -- 'test/auth/'; then
+            echo "::warning title=e2e retried::auth e2e failed alone; re-running once on a fresh process (documented Better-Auth ESM flake)"
+            npm run test:e2e -w packages/control-plane -- 'test/auth/'
           fi
 
   baseline-image-neutrality:

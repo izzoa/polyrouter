@@ -302,6 +302,34 @@ describe('request-logging e2e', () => {
       });
     });
 
+    it('a tier-header REMAP rule records the sent tier-ask value (record-tier-header-value)', async () => {
+      // A dashboard Header rule on x-polyrouter-tier remapping a category ('shopping',
+      // not a tier key) to a tier. The recorded value is the tier-ask, distinct from
+      // the assigned tier — the useful bit the inspector now shows.
+      await port.routingRules.insert(principal, {
+        matchType: 'header',
+        headerName: 'x-polyrouter-tier',
+        headerValue: 'shopping',
+        target: 'tier:default',
+        priority: 0,
+      });
+      const res = await request(server)
+        .post('/v1/chat/completions')
+        .set('Authorization', `Bearer ${key}`)
+        .set('x-polyrouter-tier', 'shopping')
+        .send({ model: 'auto', messages: [] });
+      expect(res.status).toBe(200);
+      await writer.flush();
+      const row = (await port.requestLogs.list(principal))[0]!;
+      expect(row).toMatchObject({
+        decisionLayer: 'header',
+        routingReason: 'header rule x-polyrouter-tier',
+        tierAssigned: 'default',
+        routingHeaderName: 'x-polyrouter-tier',
+        routingHeaderValue: 'shopping', // the remap's owned value is now recorded
+      });
+    });
+
     it('non-header decisions (explicit AND auto/default) record null for both columns', async () => {
       const explicit = await request(server)
         .post('/v1/chat/completions')

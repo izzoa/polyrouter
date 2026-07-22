@@ -230,7 +230,9 @@ describe('resolveRoute — tier-header precedence (add-tier-header-precedence)',
     expect(r).toMatchObject({
       tierKey: 'default',
       routingReason: 'header rule x-polyrouter-tier', // unchanged rule-reason shape
-      matchedHeader: { name: 'x-polyrouter-tier', value: null }, // custom rule stays name-only
+      // record-tier-header-value: a tier-header remap records the matched OWNED
+      // rule value (the tier-ask category), not name-only.
+      matchedHeader: { name: 'x-polyrouter-tier', value: 'shopping' },
     });
   });
 

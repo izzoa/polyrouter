@@ -391,10 +391,12 @@ export const requestLogs = pgTable(
     decisionLayer: text('decision_layer').notNull(),
     routingReason: text('routing_reason').notNull(),
     // The header that CHOSE the route (add-routing-header-visibility): set only
-    // on decision_layer='header' rows. Built-in x-polyrouter-tier records name +
-    // the matched OWNED tier key; a custom rule records its normalized name with
-    // a NULL value (a configured header_value can itself be a credential — never
-    // persisted). Null = other layers or rows predating the columns.
+    // on decision_layer='header' rows. x-polyrouter-tier records name + the
+    // matched OWNED value — the tier key on a direct lookup, or the remap rule's
+    // header_value (the tier-ask category) on a remap (record-tier-header-value).
+    // A rule on any OTHER header records its normalized name with a NULL value (a
+    // configured header_value there can itself be a credential — never persisted).
+    // Null = other layers or rows predating the columns.
     routingHeaderName: text('routing_header_name'),
     routingHeaderValue: text('routing_header_value'),
     inputTokens: integer('input_tokens').notNull(),

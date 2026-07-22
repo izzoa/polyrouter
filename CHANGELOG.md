@@ -15,6 +15,15 @@ heading is started.
 
 ## [Unreleased]
 
+### Fixed
+
+- The request inspector's DECISION section now shows the **value** a client sent
+  with `x-polyrouter-tier` when the request matched a tier-header remap rule (e.g.
+  `x-polyrouter-tier: shopping`) — previously only the header name was shown. The
+  value recorded is the matched rule's owned config value (never raw client
+  bytes); rules on any other header still record the name only, since a configured
+  value there could be a credential.
+
 ## [0.8.0] — 2026-07-21
 
 [Release](https://github.com/izzoa/polyrouter/releases/tag/v0.8.0) ·

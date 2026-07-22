@@ -69,10 +69,13 @@ export interface RouteTarget {
 }
 
 /** The header that CHOSE the route (add-routing-header-visibility). `value` is
- * persisted only when provably non-secret: the built-in tier header carries the
- * matched OWNED tier key (already recorded as tier_assigned); a custom rule
- * carries its normalized name with a null value — a configured header_value can
- * itself be a credential ("never log secrets", fail-closed, no denylist). */
+ * the matched OWNED config string, never raw client bytes, and only for the
+ * `x-polyrouter-tier` header (a routing-category selector, record-tier-header-value):
+ * a direct tier lookup carries the matched tier key (already recorded as
+ * tier_assigned), a tier-header remap carries the matched rule's header_value
+ * (the tier-ask category). A rule on ANY OTHER header carries its normalized name
+ * with a null value — a configured header_value there can itself be a credential
+ * ("never log secrets", fail-closed, no denylist). */
 export interface MatchedHeader {
   readonly name: string;
   readonly value: string | null;
@@ -254,9 +257,10 @@ export function resolveRoute(
   // Phase 2 — the tier-header phase (add-tier-header-precedence): a request
   // carrying a non-empty `x-polyrouter-tier` that RESOLVES here wins
   // structurally — no rule on another header, of any priority, can shadow the
-  // per-request tier ask. The decision carries a matched rule's normalized
-  // header NAME only: a configured value can itself be a credential, so it is
-  // never emitted.
+  // per-request tier ask. The decision carries the matched OWNED config value
+  // (never raw client bytes): `x-polyrouter-tier` is a routing-CATEGORY header,
+  // so its tier-ask value is recorded (record-tier-header-value). Rules on any
+  // OTHER header still emit the name only — a value there can be a credential.
   const builtin = parsed.headers[TIER_HEADER_NAME];
   if (builtin !== undefined && builtin.length > 0) {
     // 2a — value remaps: tier-header rules matching the sent value (the
@@ -268,7 +272,11 @@ export function resolveRoute(
       if (builtin === r.headerValue) {
         const d = resolveTarget(snap, r.target, 'header', `header rule ${r.headerName}`);
         if (isRouteError(d)) return d;
-        return { ...d, matchedHeader: { name: r.headerName, value: null } };
+        // Record the matched OWNED rule value (the tier-ask category, e.g.
+        // `shopping`) — the same config-side provenance the direct lookup uses for
+        // its tier.key, though the string differs (a remap's value ≠ its target
+        // tier). Never the raw client string.
+        return { ...d, matchedHeader: { name: r.headerName, value: r.headerValue } };
       }
     }
     // 2b — the sent value naming an owned tier directly.

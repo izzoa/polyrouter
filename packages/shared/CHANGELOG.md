@@ -1,5 +1,65 @@
 # @polyrouter/shared
 
+## 0.7.0
+
+### Minor Changes
+
+- 6c11c59: Layer-2 learning loop (add-semantic-learning): per-tenant learned centroids that
+  track each tenant's own outcome-labeled traffic, opt-in and default OFF. When a
+  cascade outcome settles for a request Layer 2 found ambiguous AND whose tenant had
+  learning ON at decision time, the request's in-memory embedding is labeled from the
+  cascade result (quality-passed → `low`, quality-gate escalation → `high`, everything
+  else → nothing) and accumulated in bounded volatile memory, flushing to Redis only a
+  ≥ `SEMANTIC_LEARNING_MIN_COHORT` sum — no persisted value is ever a single raw
+  embedding. A daily BullMQ sweep folds fixed-window pending evidence into learned
+  centroids under rails (min fresh samples, capped EMA, SPHERICAL drift clamp toward the
+  bundled anchors, cooldown, exact evidence-revision match), crash-atomically across
+  Redis + Postgres via separate revocation-epoch and active-generation counters (rotate
+  → stage → Postgres `FOR UPDATE` CAS + idempotent scalars-only audit → promote).
+  Classification supersedes bundled with learned centroids only when every read-time gate
+  passes (learning on, `(epoch, generation)` match, TTL, evidence-revision, both labels
+  validate); any gate failure or Redis fault falls back to bundled — never the layer's
+  skip. A one-action revert bumps the revocation epoch (Postgres-first, race-proof) then
+  clears Redis. Privacy is absolute: raw embeddings live only in request-scoped or
+  bounded volatile memory; the only persisted artifacts are aggregates, Redis-only, under
+  domain-separated HMAC tenant digests, never in Postgres, a log, a metric, or an API
+  response. Gated entirely on the optional semantic stack — the baseline image is
+  unaffected. New env: `SEMANTIC_LEARNING_{MIN_COHORT,MIN_SAMPLES,ALPHA,MAX_DRIFT,COOLDOWN_H,STATE_TTL_D,MAX_COHORTS,SCHED_ENABLED,SCHED_CRON}`.
+- 6c11c59: Per-provider outbound max-tokens spelling (add-max-tokens-spelling). OpenAI-compatible
+  providers gain a `maxTokensSpelling` setting (`auto` | `max_completion_tokens` |
+  `max_tokens`, default `auto`) that controls which wire field the output-token cap is
+  sent under. `auto` is kind-derived: a `local` provider emits `max_tokens` (older
+  self-hosted runtimes accept only that and **silently ignore** `max_completion_tokens`,
+  which would drop the caller's cap), while every other kind emits `max_completion_tokens`
+  (required by OpenAI o-series and other reasoning models). The translation IR still
+  accepts both spellings inbound and always emits **exactly one** outbound — never both,
+  since reasoning models reject the mere presence of `max_tokens`. The choice is a
+  per-provider `AdapterQuirks` resolved once and applied at every adapter-construction site
+  (proxy hot path and test-connection alike). Fixes local/legacy OpenAI-compatible
+  endpoints silently dropping the token cap; existing `local` providers switch to
+  `max_tokens` on migration (their endpoints accept it) while all other providers are
+  byte-identical to before.
+- 8020976: Layer 2 semantic routing (add-semantic-routing) turns the embedder foundation
+  into real routing. When a `model:"auto"` request is Layer-1 ambiguous and the
+  semantic layer is effectively enabled (instance flag + a loaded embedder +
+  built anchor centroids + tenant preference), polyrouter embeds a versioned,
+  newest-first serialization of the request and classifies it against bundled
+  anchor centroids: a confident **high**/**low** band routes through the same
+  `auto_high`/`auto_low` targets with `decision_layer='semantic'`, while a still-
+  ambiguous verdict hands to cascade or the default tier exactly as before. Every
+  Layer-2 fault — not ready, embed timeout, caller disconnect, a degenerate
+  vector — degrades to that same flow with no delay beyond one bounded embed
+  attempt and no fabricated telemetry (invariant 1). Four nullable telemetry columns
+  (`semantic_band`/`semantic_score`/`semantic_source`/`semantic_revision`, an
+  opaque provenance digest) ride the parent request rows with all-or-none +
+  score-range DB checks, and the ordered Layer-1→Layer-2 classification trail is
+  recorded on both the default-fall-through and cascade reasons. The auto-layers
+  API and settings gain a `semantic` preference (backfilled from the structural
+  preference, semantic⇒structural enforced, atomic dependency-aware normalization
+  for older clients); the analytics request listing exposes the four fields
+  verbatim and its `decision_layer` filter accepts `semantic`. No prompt text or
+  vectors are ever logged or persisted.
+
 ## 0.6.0
 
 ### Minor Changes

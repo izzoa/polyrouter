@@ -15,6 +15,11 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-07-21
+
+[Release](https://github.com/izzoa/polyrouter/releases/tag/v0.8.0) ·
+[Compare](https://github.com/izzoa/polyrouter/compare/v0.7.0...v0.8.0)
+
 ### Added
 
 - Per-provider **max-tokens field** for OpenAI-compatible providers: a
@@ -74,6 +79,25 @@ heading is started.
   longer silently lose the caller's output-token cap — the proxy now sends the
   field each endpoint accepts (see the max-tokens field setting above). Existing
   `local` providers switch to `max_tokens` on upgrade; all others are unchanged.
+
+### Upgrade notes
+
+- **Migrations run on boot** (`0020` semantic telemetry columns on `request_log`;
+  `0022` the `semantic_learning_event` table). No manual step — but back up
+  before upgrading a production database, as always.
+- **Layer-2 semantic routing is opt-in and off by default.** The baseline image
+  is unchanged (no ONNX runtime, no model). To turn it on, either run the new
+  **`ghcr.io/izzoa/polyrouter:0.8.0-semantic`** image (batteries-included: ORT +
+  reference model pre-baked, `SEMANTIC_MODEL_PATH` preset) or install the
+  `onnxruntime-node@1.27.0` peer and point `SEMANTIC_MODEL_PATH` at a model
+  bundle. Add `semantic` to `ROUTING_AUTO_LAYERS` to expose the capability;
+  tenants still opt in per-account. New knobs: `SEMANTIC_*` and
+  `SEMANTIC_LEARNING_*` (all defaulted; learning is off until a tenant enables
+  it). Nothing is fetched at runtime; no prompt text or embedding vector is ever
+  logged or persisted.
+- **`local` providers now emit `max_tokens`** (not `max_completion_tokens`) —
+  a fix for endpoints that reject the newer spelling. Override per provider via
+  the max-tokens field if your local gateway expects the other spelling.
 
 ## [0.7.0] — 2026-07-21
 
@@ -267,7 +291,9 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.8.0
+[0.7.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.7.0
 [0.6.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.6.0
 [0.5.1]: https://github.com/izzoa/polyrouter/releases/tag/v0.5.1
 [0.5.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.5.0

@@ -21,7 +21,11 @@ jobs:
   publish:
     name: build & push ghcr image
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # The arm64 leg builds under QEMU emulation with no cache pre-warm (unlike the
+    # -semantic job, which builds each arch to --load first) and is borderline at
+    # 45m on slower runners — v0.8.1's baseline hit exactly that and was cancelled.
+    # Match the -semantic job's headroom.
+    timeout-minutes: 90
     permissions:
       contents: read
       packages: write

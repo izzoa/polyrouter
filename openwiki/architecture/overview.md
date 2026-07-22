@@ -42,7 +42,7 @@ The control plane is a NestJS 11 application responsible for:
 - **Body capture** — opt-in encrypted prompt/response body storage (selfhosted only)
 - **Pricing refresh** — scheduled catalog pulls from LiteLLM (daily, on by default)
 
-Key modules: `proxy`, `routing-config`, `providers`, `budgets`, `pricing`, `notifications`, `observability`, `recording`, `auth`, `redis`, `database`, `body-capture`.
+Key modules: `proxy`, `routing-config`, `providers`, `budgets`, `pricing`, `notifications`, `observability`, `recording`, `auth`, `redis`, `database`, `body-capture`, `semantic` (Layer 2 ONNX embedder + classifier), `semantic-learning` (learning sweep scheduler).
 
 ### Data Plane (`packages/data-plane/`)
 
@@ -50,6 +50,7 @@ The data plane is a pure TypeScript library with **no Nest, no DB, no I/O depend
 
 - **Proxy core** — stream orchestration with circuit breaker integration
 - **Routing resolution** — Layer 0 explicit routing (framework-agnostic)
+- **Semantic classification** — Layer 2 embedding extraction, cosine classifier, and learning math (pure functions, no I/O)
 - **Protocol translation** — OpenAI ↔ Anthropic normalization via intermediate representation (IR)
 - **Provider adapters** — HTTP adapters with SSRF protection, pagination, and timeout handling
 
@@ -142,4 +143,4 @@ The project follows a strict 12-phase build order (from `CLAUDE.md`):
 11. Dashboard
 12. Packaging & CI
 
-Each phase is an independent OpenSpec change with its own proposal, design, specs, and tasks. Changes are archived after completion.
+Each phase is an independent OpenSpec change with its own proposal, design, specs, and tasks. Changes are archived after completion. Subsequent OpenSpec changes added Layer 2 semantic routing (embedder, classifier, learning loop) on top of the initial 12 phases.

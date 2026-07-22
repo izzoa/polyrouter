@@ -1,8 +1,8 @@
 ---
 type: Architecture
 title: Routing Engine
-description: Polyrouter's layered routing engine — Layer 0 explicit routing, Layer 1 structural classification, Layer 3 cascade routing with cheap-first escalation and quality-gated fallbacks.
-tags: [routing, tiers, cascade, fallback, auto-routing]
+description: Polyrouter's layered routing engine — Layer 0 explicit routing, Layer 1 structural classification, Layer 2 semantic embedding classification, Layer 3 cascade routing with cheap-first escalation and quality-gated fallbacks.
+tags: [routing, tiers, cascade, fallback, auto-routing, semantic, onnx, embedding]
 resource: packages/data-plane/src/routing/resolve.ts
 ---
 
@@ -119,9 +119,96 @@ Features are compared against a learned baseline (exponential moving average of 
 
 **Source**: `packages/data-plane/src/routing/structural.ts`
 
+## Layer 2 — Semantic Embedding Classification
+
+Layer 2 is an **opt-in** ONNX-based embedding classifier that sits between Layer 1 (structural) and Layer 3 (cascade). It uses cosine similarity against per-band centroids to classify `auto` model requests as `high`, `low`, or `ambiguous` — mirroring Layer 1's three-band contract but with semantic understanding instead of structural heuristics.
+
+### Activation and Degradation
+
+Layer 2 activates only when all of the following hold:
+1. `SEMANTIC_MODEL_PATH` is set (pointing to a valid ONNX model bundle)
+2. The embedder runtime loaded and warmed successfully during boot
+3. The tenant has opted in via routing settings
+
+If any condition fails, Layer 2 degrades to `skip` — it never blocks or stalls a request (invariant 1). An unset `SEMANTIC_MODEL_PATH` means the module is entirely absent (no ONNX import, no capability). An invalid or broken path **fails boot** with a loud error naming the env var — an operator who explicitly opted in never gets a silently-inert layer.
+
+### Embedding Pipeline
+
+The pipeline lives in the data plane (`packages/data-plane/src/semantic/`):
+
+1. **Input extraction** (`extract.ts`) — serializes the normalized request to a single text string, newest-user-turn-first, system prompts excluded. Budget-aware with hard caps. Versioned (`SEMANTIC_EXTRACTOR_VERSION`); any change to this algorithm is a new embedding space.
+2. **Embedding** (`embedder.ts`) — the `Embedder` interface resolves a unit-norm `Float32Array` of exactly `dims` entries, or rejects typed (timeout, saturation, invalid output). The control-plane runtime uses ONNX Runtime; tests use a deterministic SHA-256-seeded stub embedder.
+3. **Classification** (`classify.ts`) — pure cosine three-band classification over unit-norm centroids. The score is `clamp(cos(v, high)) − clamp(cos(v, low))` ∈ [−2, 2]. Degenerate inputs return a discriminated `invalid` (never a band, never telemetry).
+
+### Bundled Anchors and Centroids
+
+At boot, the classifier service serializes a curated set of anchor prompts (`anchors.ts`) through the same extractor, embeds them, and averages per-band centroids. The anchor set is versioned (`ANCHOR_SET_ID = 'bundled-v1'`) — any edit is a new revision. The classifier validates centroids (unit-norm, non-cancelling) and fails boot on a broken anchor set.
+
+### Learned Centroids (Semantic Learning)
+
+When the tenant enables semantic learning, a scheduled daily sweep folds accumulated evidence into learned per-tenant centroids that **decorate** (not replace) the bundled source:
+
+- **Evidence accumulator** (`evidence-accumulator.ts`) — a bounded, in-process volatile accumulator that collects embeddings from settled cascade outcomes. Only a cohort of ≥ `SEMANTIC_LEARNING_MIN_COHORT` embeddings is ever flushed to Redis; a single embedding is never persisted (privacy invariant).
+- **Labeling** (`learning.ts`) — a quality-passed cheap answer is a `low` exemplar; a quality-gate escalation is a `high` exemplar; everything else (provider faults, cancellations, fail-open unknown quality) is discarded as non-evidence.
+- **Sweep** (`learning.run.ts`, `learning.scheduler.ts`) — a BullMQ-scheduled daily occurrence (`SEMANTIC_LEARNING_SCHED_CRON`, default `0 3 * * *`) that rotates pending buckets, folds evidence onto centroids via EMA with spherical drift clamping, and promotes the new generation atomically (Postgres CAS + audit first, then Redis promote). Crash-atomic: Postgres is authoritative.
+- **Classification source** (`classification-source.ts`, `learned-classification-source.ts`) — a decorator pattern. The `ClassificationSourceProvider` seam returns bundled centroids by default; the learned decorator substitutes per-tenant learned centroids when the decision-time `LearningGate` matches the request's coordinates. Any failure falls back to bundled centroids — never to the router's skip path.
+
+### API Surface
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/routing/semantic-learning/status` | GET | Learning status (enabled, source, epoch, generation, fresh counts, history) |
+| `/api/routing/semantic-learning/revert` | POST | Idempotent revert: bumps revocation epoch (Postgres-first), clears Redis |
+| `/api/routing/auto-layers` | PUT | Toggle semantic learning via `semanticLearning` field |
+
+### Configuration
+
+| Env Var | Default | Purpose |
+|---------|---------|---------|
+| `SEMANTIC_MODEL_PATH` | (unset) | Path to ONNX model bundle; unset = module absent |
+| `SEMANTIC_TIMEOUT_MS` | 50 | Embed timeout (ms); out-of-bounds fails boot |
+| `SEMANTIC_MAX_INPUT_CHARS` | 2000 | Max text fed to embedder |
+| `SEMANTIC_CONCURRENCY` | 2 | Max concurrent embeddings |
+| `SEMANTIC_HIGH_THRESHOLD` | 0.15 | Cosine threshold for `high` band |
+| `SEMANTIC_LOW_THRESHOLD` | 0.15 | Cosine threshold for `low` band |
+| `SEMANTIC_LEARNING_MIN_COHORT` | 8 | Min embeddings per label before flush to Redis |
+| `SEMANTIC_LEARNING_MIN_SAMPLES` | 50 | Min samples before a sweep can apply |
+| `SEMANTIC_LEARNING_ALPHA` | 0.2 | EMA weight for centroid folding |
+| `SEMANTIC_LEARNING_MAX_DRIFT` | 0.35 | Max spherical drift per fold |
+| `SEMANTIC_LEARNING_COOLDOWN_H` | 24 | Hours between sweeps for a tenant |
+| `SEMANTIC_LEARNING_STATE_TTL_D` | 30 | Redis state TTL (days) |
+| `SEMANTIC_LEARNING_SCHED_ENABLED` | true | Whether the sweep worker runs |
+| `SEMANTIC_LEARNING_SCHED_CRON` | `0 3 * * *` | Sweep schedule |
+
+All numeric values are validated with Zod min/max; out-of-bounds values **fail boot** rather than silently clamping.
+
+### Key Source Files
+
+| File | Role |
+|------|------|
+| `packages/data-plane/src/semantic/embedder.ts` | `Embedder` interface + stub embedder |
+| `packages/data-plane/src/semantic/classify.ts` | Pure cosine three-band classifier |
+| `packages/data-plane/src/semantic/extract.ts` | Canonical semantic-input extractor |
+| `packages/data-plane/src/semantic/anchors.ts` | Bundled anchor exemplars |
+| `packages/data-plane/src/semantic/learning.ts` | Pure learning math (EMA, drift, folding) |
+| `packages/control-plane/src/semantic/semantic-runtime.service.ts` | ONNX runtime lifecycle + readiness |
+| `packages/control-plane/src/semantic/semantic-classifier.service.ts` | Classifier lifecycle (boot, centroids, provenance) |
+| `packages/control-plane/src/semantic/semantic-router.ts` | Layer-2 router (mirrors StructuralRouter) |
+| `packages/control-plane/src/semantic/classification-source.ts` | `ClassificationSourceProvider` seam + `LearningGate` |
+| `packages/control-plane/src/semantic/learned-classification-source.ts` | Decorator layering learned state over bundled |
+| `packages/control-plane/src/semantic/evidence-accumulator.ts` | Bounded volatile in-process accumulator |
+| `packages/control-plane/src/semantic/learning-store.ts` | Redis learning store (rotate, stage, promote) |
+| `packages/control-plane/src/semantic/learning.run.ts` | One sweep occurrence (per-tenant fold + promote) |
+| `packages/control-plane/src/semantic/learning.scheduler.ts` | BullMQ scheduler + reconcile loop |
+| `packages/control-plane/src/semantic/semantic-learning.service.ts` | Status + revert API surface |
+| `packages/control-plane/src/semantic/semantic-learning.controller.ts` | `/api/routing/semantic-learning` controller |
+| `packages/control-plane/src/semantic/bundle.ts` | Model-bundle manifest schema (Zod) |
+| `packages/control-plane/src/semantic/onnx-loader.ts` | ONNX Runtime dynamic import + bundle load |
+| `packages/control-plane/src/semantic/semantic-learning-contributor.ts` | Recorder hook at cascade-settle (evidence sink) |
+
 ## Layer 3 — Cascade Routing
 
-Cascade routing activates when Layer 1 returns `ambiguous`. It implements a **cheap-first with escalation** strategy:
+Cascade routing activates when Layer 1 or Layer 2 returns `ambiguous`. It implements a **cheap-first with escalation** strategy:
 
 ```
 ① Try cheap tier (auto_low) with timeout
@@ -162,7 +249,7 @@ The cascade follows the same commit boundary as the main proxy: once the first t
 The routing system reports its capabilities per instance:
 
 ```typescript
-function autoLayerCapability(): { structural: boolean; cascade: boolean } {
+function autoLayerCapability(): { structural: boolean; semantic: boolean; cascade: boolean } {
   // Returns what this instance can do based on config
 }
 ```
@@ -172,6 +259,7 @@ Tenant preferences are combined with instance capabilities:
 ```typescript
 function effectiveAutoLayers(capability, tenantPrefs): AutoLayerSelection {
   // Structural enabled only if both instance and tenant agree
+  // Semantic enabled only if structural is enabled AND the ONNX model is loaded
   // Cascade enabled only if structural is enabled and tenant agrees
 }
 ```
@@ -207,3 +295,5 @@ const ROUTING_CONFIG = defineConfig('ROUTING', {
 ```
 
 Structural weights are validated for semantic correctness (LOW values < HIGH values) and normalized to sum to 1.0.
+
+Semantic routing config (`SEMANTIC_*` env vars) is validated separately in `packages/control-plane/src/semantic/semantic.config.ts`. See the [Layer 2](#layer-2--semantic-embedding-classification) section above for the full table.

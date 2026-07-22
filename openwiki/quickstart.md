@@ -80,7 +80,7 @@ See [Architecture Overview](/openwiki/architecture/overview.md) for the full bre
 |---------|---------------|
 | [Architecture Overview](/openwiki/architecture/overview.md) | Monorepo structure, dual-plane design, technology stack, core invariants |
 | [Request Flow](/openwiki/architecture/request-flow.md) | Full lifecycle of a request through the proxy |
-| [Routing Engine](/openwiki/routing/engine.md) | Layer 0/1/3 routing, tiers, fallback chains, cascade logic |
+| [Routing Engine](/openwiki/routing/engine.md) | Layer 0/1/2/3 routing, tiers, fallback chains, cascade logic, semantic embedding classification |
 | [Provider Adapters](/openwiki/providers/adapters.md) | Supported providers, protocol translation, circuit breakers, listed pricing |
 | [Subscription OAuth](/openwiki/providers/subscription-oauth.md) | Claude/ChatGPT subscription connect, token refresh, credential envelope |
 | [Data Model](/openwiki/data-model/schema.md) | Database schema, tenant isolation, immutable costs |
@@ -120,7 +120,6 @@ See [Architecture Overview](/openwiki/architecture/overview.md) for the full bre
 
 The following areas are deferred or pending future work:
 
-- **Cloud Tier** (Layer 2 embedding classifier + learning loop) — deferred per spec; requires training data and ML infrastructure
 - **Data-Plane Split** (extract proxy to Hono/Go) — performance optimization deferred until profiling shows need
 - **Events Store** (Timescale/ClickHouse for high-volume logs) — deferred until `request_log` scale demands it
 - **Organization/Workspace** (multi-seat teams) — schema stubs exist but features deferred

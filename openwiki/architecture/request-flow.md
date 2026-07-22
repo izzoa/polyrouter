@@ -25,7 +25,7 @@ Client Request (OpenAI or Anthropic format)
 ③ Parse & Normalize ─── ProviderAdapter.parseRequest() → NormalizedRequest (IR)
     │
     ▼
-④ Route Resolution ─── Layer 0 → Layer 1 → Layer 3
+④ Route Resolution ─── Layer 0 → Layer 1 → Layer 2 (optional) → Layer 3
     │                     Produces RouteDecision (tier + entry chain)
     ▼
 ⑤ Build Provider Chain ─── ChainAttempt[] with lazy adapter construction
@@ -95,7 +95,8 @@ The routing engine resolves which provider/model to use. This is a layered pipel
 
 1. **Layer 0** (always on) — explicit routing from model field, tier headers, default rules
 2. **Layer 1** (opt-in) — structural classification based on request features
-3. **Layer 3** (opt-in) — cascade routing with cheap-first escalation
+3. **Layer 2** (opt-in, requires ONNX model) — semantic embedding classification using cosine similarity against learned or bundled centroids; see [Routing Engine](/openwiki/routing/engine.md#layer-2--semantic-embedding-classification)
+4. **Layer 3** (opt-in) — cascade routing with cheap-first escalation
 
 The output is a `RouteDecision` containing the target tier and ordered entry chain.
 

@@ -30,6 +30,7 @@ packages/control-plane/test/
 ├── proxy/
 │   ├── cascade-routing.e2e-spec.ts    # Cascade routing with real providers
 │   ├── stream-lifecycle.e2e-spec.ts   # Stream commit boundary
+│   ├── semantic-routing.e2e-spec.ts   # Layer-2 semantic routing end-to-end
 │   └── stub-upstream.ts               # Mock upstream server
 ├── providers/
 │   ├── provider-management.e2e-spec.ts
@@ -40,7 +41,9 @@ packages/control-plane/test/
 │   ├── auth.e2e-spec.ts               # Session auth, rate limits
 │   └── user-admin.e2e-spec.ts         # First-signup-wins, invites, admin disable
 ├── routing/
-│   └── routing-config.e2e-spec.ts
+│   ├── routing-config.e2e-spec.ts
+│   ├── semantic-learning.e2e-spec.ts    # Semantic learning sweep, revert, status
+│   └── calibration.e2e-spec.ts          # Calibration scheduling
 ├── notifications/
 │   └── notification-channels.e2e-spec.ts
 ├── producers/
@@ -49,6 +52,7 @@ packages/control-plane/test/
 │   └── budget-enforcement.e2e-spec.ts
 ├── body-capture/
 │   └── body-capture.e2e-spec.ts         # Body capture opt-in, purge, tombstone
+├── semantic-boot.e2e-spec.ts            # Semantic ONNX boot matrix (unset, broken, valid paths)
 └── pricing/
     └── pricing-catalog.e2e-spec.ts      # Catalog refresh, status endpoint
 ```
@@ -194,6 +198,19 @@ expect(res.attempts).toHaveLength(2);
 expect(res.attempts[0].outcome).toBe('superseded');
 expect(res.attempts[1].outcome).toBe('accepted');
 ```
+
+### Semantic Routing Tests
+
+Layer-2 semantic routing has unit and integration coverage across both planes:
+
+- **Data-plane unit tests** (`packages/data-plane/src/semantic/`) — `classify.spec.ts` (cosine three-band classifier), `embedder.spec.ts` (stub embedder contract), `extract.spec.ts` (semantic input extractor with budget caps), `learning.spec.ts` (pure learning math: EMA fold, drift clamp, label-for-outcome)
+- **Control-plane unit tests** (`packages/control-plane/src/semantic/`) — `bundle.spec.ts` (manifest schema, file-name traversal rejection), `embed-core.spec.ts` (WordPiece tokenizer + ONNX feed), `semantic-router.spec.ts` (Layer-2 verdict→evaluation mapping, skip-on-fault), `learning.run.spec.ts` (sweep occurrence: discard + apply passes), `learning-store.spec.ts` / `learning-store-redis.spec.ts` (Redis store atomic primitives), `semantic-learning-contributor.spec.ts` (evidence labelling + accumulation)
+- **ONNX fixture** (`packages/control-plane/src/semantic/testing/onnx-fixture.ts`) — builds a tiny in-memory ONNX model + vocab for tests, no real model download needed
+- **Boot e2e** (`test/semantic-boot.e2e-spec.ts`) — spawns a child process with `PATH`, `SEMANTIC_MODEL_PATH` unset/broken/valid and asserts boot behavior (fail-fast on broken, no-op on unset, capability true on valid)
+- **Semantic routing e2e** (`test/proxy/semantic-routing.e2e-spec.ts`) — end-to-end Layer-2 routing with a real fixture model
+- **Learning e2e** (`test/routing/semantic-learning.e2e-spec.ts`) — scheduled sweep, status endpoint, revert
+
+The boot e2e tolerates ORT device-discovery stderr on Linux CI runners (onnxruntime-node emits `[W:onnxruntime:… GetPciBusId]` warnings on hardware whose PCI path doesn't match the expected pattern). ORT warning lines are filtered before asserting no boot error output.
 
 ## Adding New Tests
 

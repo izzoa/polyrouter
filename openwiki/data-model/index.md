@@ -1,9 +1,3 @@
----
-type: Documentation Index
-title: "Data Model"
-description: "Files and subdirectories in Data Model."
----
-
 # Files
 
-- [Data Model & Database Schema](schema.md) - Polyrouter's PostgreSQL schema — 13 core tables covering identity, routing configuration, request logging, pricing, budgets, and notifications with tenant isolation and immutable cost records.
+- [Data Model & Database Schema](schema.md) - Polyrouter's PostgreSQL schema — identity, routing configuration, request logging, pricing, budgets, notifications, body capture, semantic learning, and L2 telemetry with tenant isolation, immutable cost records, and the all-or-none semantic telemetry quartet.

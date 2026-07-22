@@ -170,7 +170,17 @@ describe('semantic loader pipeline (fake ORT, full path incl. warmup + content i
       encoding: 'utf8',
       timeout: 60_000,
     });
-    expect(result.stderr).toBe('');
+    // onnxruntime-node emits benign device-discovery WARNINGS to stderr on some
+    // hardware (e.g. CI runners whose PCI bus path doesn't match ORT's expected
+    // pattern: `[W:onnxruntime:… GetPciBusId] Skipping pci_bus_id …`, ANSI-wrapped
+    // on ONE line). Those are not failures — drop ORT warning lines (and blanks)
+    // and assert nothing else remains, so a real error (`[E:`/`[F:`, a stack, our
+    // catch's message) still fails the check while the CPU-only run stays clean.
+    const stderrErrors = result.stderr
+      .split('\n')
+      .filter((line) => line.trim() !== '' && !line.includes('[W:onnxruntime:'))
+      .join('\n');
+    expect(stderrErrors).toBe('');
     expect(result.status).toBe(0);
     const out = JSON.parse(result.stdout) as { dims: number[]; data: number[] };
     expect(out.dims).toEqual([1, 5, 8]);

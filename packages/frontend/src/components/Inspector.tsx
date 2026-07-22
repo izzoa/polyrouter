@@ -2,7 +2,7 @@ import { createMemo, For, onCleanup, onMount, Show } from 'solid-js';
 import { dialogKeyboard } from '../a11y';
 import { toInspectorView } from '../data/analytics';
 import type { RequestRow, RequestStatus } from '../data/api';
-import { fmtTime } from '../data/catalog';
+import { fmtDateTime } from '../data/catalog';
 import { useApp } from '../state/context';
 
 /** label / bg / fg per served status. */
@@ -75,7 +75,7 @@ export function Inspector() {
                     class="mono"
                     style="font:400 11px 'Geist Mono',monospace;color:var(--text3);margin-top:2px"
                   >
-                    {view().id} · {fmtTime(view().createdAtMs)}
+                    {view().id} · {fmtDateTime(view().createdAtMs)}
                   </div>
                 </div>
                 <div style="display:flex;align-items:center;gap:10px">

@@ -15,6 +15,11 @@ heading is started.
 
 ## [Unreleased]
 
+### Changed
+
+- The request inspector header now shows the **date** alongside the time (e.g.
+  `2026-07-22 10:01:58`), so a request's timestamp is unambiguous across days.
+
 ### Fixed
 
 - The request inspector's DECISION section now shows the **value** a client sent

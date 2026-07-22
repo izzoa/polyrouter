@@ -15,6 +15,19 @@ export function fmtTime(ts: number): string {
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
+/** Local calendar date as `YYYY-MM-DD` — unambiguous + sortable, matching the
+ * inspector's technical mono treatment. */
+export function fmtDate(ts: number): string {
+  const d = new Date(ts);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${String(d.getFullYear())}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+/** `YYYY-MM-DD HH:MM:SS` — date + time for the request inspector header. */
+export function fmtDateTime(ts: number): string {
+  return `${fmtDate(ts)} ${fmtTime(ts)}`;
+}
+
 export function fmtTokens(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1).replace(/\.0$/, '')}k` : String(n);
 }

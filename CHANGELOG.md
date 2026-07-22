@@ -52,6 +52,21 @@ heading is started.
   falls back to bundled, never skip. One-action revert; a status view (counts /
   source / generation / last-applied). No vector ever reaches Postgres, a log, a
   metric, or an API response.
+- Layer-2 semantic **dashboard**: the permanently-locked "L2 · Semantic" stub
+  becomes a real driven toggle — honest available/unavailable copy naming
+  `SEMANTIC_MODEL_PATH`, no dead control. A **learning card** (shown when L2 is
+  effective) carries the opt-in learning toggle, fresh-sample / source / last-
+  applied status, the numeric audit history, and a confirmed one-click revert —
+  honest under degradation (a stale learned centroid shows `bundled` with the
+  reason). Auto-performance gains the semantic slice (evaluated, routed-per-band,
+  the four-way outcome split, bundled/learned source) with residual-cascade
+  labeling so pre/post-enable cascade figures stay comparable, plus a
+  `semantic_source` provenance chip in the request inspector. A
+  **batteries-included `-semantic` image variant** ships beside the baseline:
+  same Dockerfile (glibc base, exact-pinned ONNX runtime, reference MiniLM model
+  pre-baked and checksum-pinned at build time, `SEMANTIC_MODEL_PATH` preset), a
+  compose override with bring-your-own-model support, and a dual-arch release
+  smoke test — the baseline image stays ORT- and model-free.
 
 ### Fixed
 

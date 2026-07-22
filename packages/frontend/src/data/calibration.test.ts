@@ -8,6 +8,10 @@ function layers(cal: Partial<AutoLayers['calibration']> = {}): AutoLayers {
     cascade: true,
     structuralAvailable: true,
     cascadeAvailable: true,
+    semantic: false,
+    semanticAvailable: false,
+    semanticLearning: false,
+    semanticLearningAvailable: false,
     calibration: {
       enabled: false,
       calibratedHigh: null,

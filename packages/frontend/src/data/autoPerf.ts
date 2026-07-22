@@ -14,6 +14,28 @@ export interface AutoPerfVm {
   unknownPct: string;
   failedPct: string;
   cascadeRequests: number;
+  /** True when L2 actually routed traffic (routed > 0): every cascade-derived
+   * figure is then RESIDUAL-only, since semantically-routed requests never
+   * cascade (add-semantic-dashboard D4). Drives the denominator footnote. */
+  cascadeIsResidual: boolean;
+  /** The L2 semantic slice — null when nothing was evaluated (legacy/never-run
+   * rows show the section's honest empty affordance, never fabricated zeros). */
+  semantic: {
+    evaluated: number;
+    routedHigh: number;
+    routedLow: number;
+    routed: number;
+    /** DISJOINT + EXHAUSTIVE outcome shares of the routed total (sum to 100%). */
+    successPct: string;
+    fallbackPct: string;
+    errorPct: string;
+    cancelledPct: string;
+    /** Source shares of evaluated rows — provenance, NOT effectiveness. */
+    bundled: number;
+    learned: number;
+    bundledPct: string;
+    learnedPct: string;
+  } | null;
   /** Total unroutable rows (confident bands with no target). */
   unroutable: number;
   savings: {
@@ -42,6 +64,8 @@ export function toAutoPerfVm(data: AutoPerformance | null): AutoPerfVm | null {
   const declared = data.bands.high.declared + data.bands.low.declared;
   const s = data.savings;
   const eligible = s === null ? 0 : s.rows + s.uncostedRows;
+  const sem = data.semantic;
+  const semRouted = sem.routed.high + sem.routed.low;
   return {
     evaluated: data.evaluated,
     ambiguousPct: pct(data.bands.ambiguous.requests, data.evaluated),
@@ -51,6 +75,24 @@ export function toAutoPerfVm(data: AutoPerformance | null): AutoPerfVm | null {
     unknownPct: pct(c.qualityUnknown, c.requests),
     failedPct: pct(c.failedOrCancelled, c.requests),
     cascadeRequests: c.requests,
+    cascadeIsResidual: semRouted > 0,
+    semantic:
+      sem.evaluated === 0
+        ? null
+        : {
+            evaluated: sem.evaluated,
+            routedHigh: sem.routed.high,
+            routedLow: sem.routed.low,
+            routed: semRouted,
+            successPct: pct(sem.outcomes.success, semRouted),
+            fallbackPct: pct(sem.outcomes.fallback, semRouted),
+            errorPct: pct(sem.outcomes.error, semRouted),
+            cancelledPct: pct(sem.outcomes.cancelled, semRouted),
+            bundled: sem.source.bundled,
+            learned: sem.source.learned,
+            bundledPct: pct(sem.source.bundled, sem.evaluated),
+            learnedPct: pct(sem.source.learned, sem.evaluated),
+          },
     unroutable: data.bands.high.unroutable + data.bands.low.unroutable,
     savings:
       s === null

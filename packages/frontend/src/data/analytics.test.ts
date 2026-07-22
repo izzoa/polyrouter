@@ -163,7 +163,9 @@ describe('filterToRequestParams', () => {
     expect(filterToRequestParams('explicit')).toEqual({
       decisionLayers: ['explicit', 'header', 'default'],
     });
-    expect(filterToRequestParams('auto')).toEqual({ decisionLayers: ['structural', 'cascade'] });
+    expect(filterToRequestParams('auto')).toEqual({
+      decisionLayers: ['structural', 'semantic', 'cascade'],
+    });
     expect(filterToRequestParams('fallback')).toEqual({ status: 'fallback' });
     expect(filterToRequestParams('escalated')).toEqual({ escalated: true });
   });
@@ -215,6 +217,16 @@ describe('toInspectorView', () => {
     expect(v.totalMicros).toBe(2000);
     expect(v.servedCost).toBe('$0.0020');
     expect(v.totalCost).toBe('$0.0020');
+  });
+
+  it('passes the semantic provenance through only when L2 evaluated the row (add-semantic-dashboard 3.2)', () => {
+    // Legacy / non-semantic rows carry null → the inspector chip stays hidden.
+    expect(toInspectorView(ROW).semanticSource).toBeNull();
+    expect(toInspectorView(ROW).semanticBand).toBeNull();
+    // An L2-evaluated row surfaces the source + band verbatim.
+    const v = toInspectorView({ ...ROW, semanticSource: 'learned', semanticBand: 'high' });
+    expect(v.semanticSource).toBe('learned');
+    expect(v.semanticBand).toBe('high');
   });
 
   it('keeps a `0` snapshot ("$0 free") distinct from a `null` snapshot ("unpriced")', () => {

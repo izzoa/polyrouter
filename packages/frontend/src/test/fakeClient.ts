@@ -29,6 +29,7 @@ import type {
   ProxyTestBody,
   AutoPerformance,
   CalibrationEvent,
+  SemanticLearningStatus,
   PricingStatus,
   BodyCaptureStatus,
   RequestBodyContent,
@@ -231,6 +232,18 @@ export const DEFAULT_CALIBRATION: AutoLayers['calibration'] = {
   effectiveLow: 0.25,
 };
 
+export const DEFAULT_SEMANTIC_LEARNING_STATUS: SemanticLearningStatus = {
+  enabled: false,
+  available: false,
+  epoch: 0,
+  generation: 0,
+  source: 'bundled',
+  freshHigh: 0,
+  freshLow: 0,
+  lastAppliedAt: null,
+  history: [],
+};
+
 export const DEFAULT_PRICING_STATUS: PricingStatus = {
   entryCount: 67,
   newest: {
@@ -260,6 +273,12 @@ export const DEFAULT_AUTO_PERF: AutoPerformance = {
     qualityUnknown: 1,
     failedOrCancelled: 1,
     escalated: 1,
+  },
+  semantic: {
+    evaluated: 8,
+    routed: { high: 3, low: 2 },
+    outcomes: { success: 3, fallback: 1, error: 1, cancelled: 0 },
+    source: { bundled: 6, learned: 2 },
   },
   fallthrough: 2,
   series: [
@@ -294,6 +313,7 @@ export interface FakeOptions {
   channels?: ChannelDto[];
   autoLayers?: AutoLayers;
   calibrationEvents?: CalibrationEvent[];
+  semanticLearningStatus?: SemanticLearningStatus;
   pricingStatus?: PricingStatus;
   bodyCaptureStatus?: BodyCaptureStatus;
   pricingRefreshAdded?: number;
@@ -353,7 +373,13 @@ export class FakeApiClient implements ApiClient {
   deferTierWrites = false;
   tierWriteQueue: DeferredCall<{ tierId: string; modelIds: string[] }>[] = [];
   deferAutoLayers = false;
-  autoLayersQueue: DeferredCall<{ structural: boolean; cascade: boolean }>[] = [];
+  autoLayersQueue: DeferredCall<{
+    structural: boolean;
+    cascade: boolean;
+    semantic?: boolean;
+    semanticLearning?: boolean;
+    calibration?: boolean;
+  }>[] = [];
 
   // When `gateReads` is set, config GET reads snapshot state at call time and then
   // WAIT for `openGate()` — so a test can land a mutation mid-load and assert the
@@ -388,6 +414,7 @@ export class FakeApiClient implements ApiClient {
   channels: ChannelDto[];
   autoLayers: AutoLayers;
   calibrationEvents: CalibrationEvent[];
+  semanticLearningStatusResult: SemanticLearningStatus;
   pricingStatusResult: PricingStatus;
   pricingRefreshAdded: number;
   channelTestResult: ChannelTestResult;
@@ -434,9 +461,15 @@ export class FakeApiClient implements ApiClient {
       cascade: true,
       structuralAvailable: true,
       cascadeAvailable: true,
+      semantic: false,
+      semanticAvailable: false,
+      semanticLearning: false,
+      semanticLearningAvailable: false,
       calibration: { ...DEFAULT_CALIBRATION },
     };
     this.calibrationEvents = opts.calibrationEvents ?? [];
+    this.semanticLearningStatusResult =
+      opts.semanticLearningStatus ?? { ...DEFAULT_SEMANTIC_LEARNING_STATUS };
     this.pricingStatusResult = opts.pricingStatus ?? { ...DEFAULT_PRICING_STATUS };
     this.pricingRefreshAdded = opts.pricingRefreshAdded ?? 124;
     this.channelTestResult = opts.channelTestResult ?? { ok: true };
@@ -966,16 +999,24 @@ export class FakeApiClient implements ApiClient {
   private applyAutoLayers(input: {
     structural: boolean;
     cascade: boolean;
+    semantic?: boolean;
+    semanticLearning?: boolean;
     calibration?: boolean;
   }): AutoLayers {
     // Mirror the server: cascade implies structural; effective = available × pref;
-    // an OMITTED calibration flag preserves the stored one, the pair untouched.
+    // an OMITTED semantic/semanticLearning/calibration flag preserves the stored one.
     const structuralEnabled = input.structural || input.cascade;
     this.autoLayers = {
       structuralAvailable: this.autoLayers.structuralAvailable,
       cascadeAvailable: this.autoLayers.cascadeAvailable,
+      semanticAvailable: this.autoLayers.semanticAvailable,
+      semanticLearningAvailable: this.autoLayers.semanticLearningAvailable,
       structural: this.autoLayers.structuralAvailable && structuralEnabled,
       cascade: this.autoLayers.cascadeAvailable && input.cascade,
+      semantic: this.autoLayers.semanticAvailable && (input.semantic ?? this.autoLayers.semantic),
+      semanticLearning:
+        this.autoLayers.semanticLearningAvailable &&
+        (input.semanticLearning ?? this.autoLayers.semanticLearning),
       calibration: {
         ...this.autoLayers.calibration,
         enabled: input.calibration ?? this.autoLayers.calibration.enabled,
@@ -998,6 +1039,34 @@ export class FakeApiClient implements ApiClient {
       },
     };
     return Promise.resolve({ ...this.autoLayers });
+  }
+
+  semanticLearningStatus(): Promise<SemanticLearningStatus> {
+    this.record('semanticLearningStatus');
+    const snapshot: SemanticLearningStatus = {
+      ...this.semanticLearningStatusResult,
+      history: [...this.semanticLearningStatusResult.history],
+    };
+    return this.gate().then(() => snapshot);
+  }
+
+  semanticLearningRevert(): Promise<SemanticLearningStatus> {
+    this.record('semanticLearningRevert');
+    // Mirror the server: revert bumps the epoch and drops learned state —
+    // source falls back to bundled, fresh counts clear.
+    this.semanticLearningStatusResult = {
+      ...this.semanticLearningStatusResult,
+      epoch: this.semanticLearningStatusResult.epoch + 1,
+      generation: 0,
+      source: 'bundled',
+      freshHigh: 0,
+      freshLow: 0,
+    };
+    const snapshot: SemanticLearningStatus = {
+      ...this.semanticLearningStatusResult,
+      history: [...this.semanticLearningStatusResult.history],
+    };
+    return Promise.resolve(snapshot);
   }
 
   pricingStatus(): Promise<PricingStatus> {
@@ -1091,6 +1160,8 @@ export class FakeApiClient implements ApiClient {
   setAutoLayers(input: {
     structural: boolean;
     cascade: boolean;
+    semantic?: boolean;
+    semanticLearning?: boolean;
     calibration?: boolean;
   }): Promise<AutoLayers> {
     this.record('setAutoLayers', input);

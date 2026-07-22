@@ -7,6 +7,7 @@ import type { AutoLayers, TierEntryDto } from '../data/api';
 import { autoSeriesToChart, toAutoPerfVm } from '../data/autoPerf';
 import { bandVms, type BandVm } from '../data/bandTargets';
 import { toCalibrationVm, toHistoryRows } from '../data/calibration';
+import { toLearningHistoryRows, toLearningVm } from '../data/semanticLearning';
 import { fmtUsd } from '../data/format';
 import { useApp } from '../state/context';
 import type { Model, Range } from '../types';
@@ -17,12 +18,14 @@ interface DragPos {
 }
 
 interface LayerRow {
-  id: 'structural' | 'cascade';
+  id: 'structural' | 'cascade' | 'semantic';
   name: string;
   tag: string;
   desc: string;
   on: boolean;
   available: boolean;
+  /** The amber line shown when `!available` — names the env that enables it. */
+  unavailableHint: string;
 }
 
 export function posStyle(i: number): [string, string, string] {
@@ -385,6 +388,176 @@ function SelfCalibration() {
   );
 }
 
+/** The L2 SEMANTIC LEARNING card (add-semantic-dashboard D3) — the calibration
+ * card's twin, shown only while the semantic layer is EFFECTIVE. Opt-in toggle,
+ * scope-honest copy, the learned/bundled source + fresh-sample status, the
+ * numeric audit history, and a confirmed one-click Revert to bundled. Honest
+ * under degradation: a stale learned centroid shows `bundled` WITH its reason. */
+function SemanticLearning() {
+  const app = useApp();
+  const { state } = app;
+  const [confirming, setConfirming] = createSignal(false);
+  createEffect(() => {
+    // Fetch once the card goes live (semantic effective); cheap + always honest.
+    if (state.autoLayers?.semantic === true && !state.semLearn.loaded) {
+      void app.loadSemanticLearning();
+    }
+  });
+  const vm = () => toLearningVm(state.semLearn.status);
+  const rows = () => toLearningHistoryRows(state.semLearn.status?.history ?? []);
+  // The toggle's truth is the auto-layers response (always present when the card
+  // shows), NOT the status GET — so a failed status load never blanks the control
+  // or its Retry (clink change-4 Med-4). vm() gates only the status FIGURES.
+  const learningOn = () => state.autoLayers?.semanticLearning ?? false;
+  return (
+    <Show when={state.autoLayers?.semantic === true}>
+      <div class="panel card">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+          <div class="section-title">Semantic learning</div>
+          <Toggle
+            on={learningOn()}
+            size="sm"
+            label="Semantic learning"
+            onToggle={() => void app.setSemanticLearning(!learningOn())}
+          />
+        </div>
+        <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3);line-height:1.5;margin-bottom:8px">
+          Learns only from your own cascade outcomes — nudges the ambiguous-slice centroids to orbit
+          the bundled anchors, never beyond. Off by default and one click from reverted; it never
+          measures whether learning helps, only what it has absorbed.
+        </div>
+        <Show when={state.semLearn.error}>
+          <div style="font:400 11px 'Geist',sans-serif;color:var(--red);margin-bottom:8px">
+            Couldn’t load learning status — {state.semLearn.error}{' '}
+            <button
+              type="button"
+              style="font:400 11px 'Geist',sans-serif;color:var(--text2);cursor:pointer;text-decoration:underline"
+              onClick={() => void app.loadSemanticLearning()}
+            >
+              Retry
+            </button>
+          </div>
+        </Show>
+        <Show when={vm()} keyed>
+          {(v) => (
+            <>
+              <div style="display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:8px">
+                <span class="mono" style="font:500 12px 'Geist Mono',monospace;color:var(--text)">
+                  {v.samplesLine}
+                </span>
+                <span
+                  style={{
+                    font: "400 10.5px 'Geist',sans-serif",
+                    color: 'var(--text3)',
+                    background: 'var(--chip)',
+                    padding: '2px 7px',
+                    'border-radius': '5px',
+                  }}
+                >
+                  {v.sourceLine}
+                </span>
+                <span style="font:400 10.5px 'Geist',sans-serif;color:var(--text3)">
+                  {v.lastAppliedLine}
+                </span>
+                <Show when={v.showRevert}>
+                  <Show
+                    when={confirming()}
+                    fallback={
+                      <button
+                        type="button"
+                        class="btn-ghost"
+                        style="font:400 11px 'Geist',sans-serif;color:var(--text2);cursor:pointer;text-decoration:underline"
+                        onClick={() => setConfirming(true)}
+                      >
+                        Revert to bundled
+                      </button>
+                    }
+                  >
+                    <span style="font:400 11px 'Geist',sans-serif;color:var(--text2)">
+                      Revert all learned centroids?
+                    </span>
+                    <button
+                      type="button"
+                      class="btn-ghost btn-ghost--amber"
+                      style="font:400 11px 'Geist',sans-serif;cursor:pointer"
+                      onClick={() => {
+                        setConfirming(false);
+                        void app.revertSemanticLearning();
+                      }}
+                    >
+                      Confirm revert
+                    </button>
+                    <button
+                      type="button"
+                      class="btn-cancel"
+                      style="font:400 11px 'Geist',sans-serif;cursor:pointer"
+                      onClick={() => setConfirming(false)}
+                    >
+                      Cancel
+                    </button>
+                  </Show>
+                </Show>
+              </div>
+              <Show when={v.staleReason} keyed>
+                {(reason) => (
+                  <div
+                    class="mono"
+                    style="font:400 10.5px 'Geist Mono',monospace;color:var(--amber);margin-bottom:8px"
+                  >
+                    {reason}
+                  </div>
+                )}
+              </Show>
+            </>
+          )}
+        </Show>
+        <Show when={state.semLearn.error === null}>
+          <Show
+            when={rows().length > 0}
+            fallback={
+              <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3);padding:2px 0">
+                {state.semLearn.loaded ? 'No learning events yet.' : 'Loading…'}
+              </div>
+            }
+          >
+            <For each={rows()}>
+              {(r) => (
+                <div style="display:flex;align-items:baseline;gap:10px;padding:4px 0;border-top:1px solid var(--border2)">
+                  <span
+                    class="mono"
+                    style="font:400 10.5px 'Geist Mono',monospace;color:var(--text3);min-width:70px"
+                  >
+                    {r.date}
+                  </span>
+                  <span style="font:400 10px 'Geist',sans-serif;color:var(--text3);background:var(--chip);padding:1px 6px;border-radius:4px">
+                    {r.trigger}
+                  </span>
+                  <span class="mono" style="font:400 11px 'Geist Mono',monospace;color:var(--text2)">
+                    {r.samples}
+                  </span>
+                  <Show when={r.evidence !== ''}>
+                    <span
+                      class="mono"
+                      style="font:400 10.5px 'Geist Mono',monospace;color:var(--text3)"
+                    >
+                      {r.evidence}
+                    </span>
+                  </Show>
+                  <Show when={r.reason !== ''}>
+                    <span style="font:400 10.5px 'Geist',sans-serif;color:var(--text3)">
+                      {r.reason}
+                    </span>
+                  </Show>
+                </div>
+              )}
+            </For>
+          </Show>
+        </Show>
+      </div>
+    </Show>
+  );
+}
+
 /** The AUTO PERFORMANCE section (add-auto-performance-view): evidence beside
  * the toggles. Locally-ranged (7d default); every figure comes verbatim from
  * the aggregation endpoint via the pure view-model. */
@@ -444,6 +617,11 @@ function AutoPerformance() {
               </span>
               <Show when={v.cascadeRequests > 0}>
                 <span style={statFont}>
+                  <Show when={v.cascadeIsResidual}>
+                    <span style="font:400 10px 'Geist',sans-serif;color:var(--amber)">
+                      residual cascade ·{' '}
+                    </span>
+                  </Show>
                   quality-pass <span style={valFont}>{v.passedPct}</span>
                 </span>
                 <span style={statFont}>
@@ -457,6 +635,50 @@ function AutoPerformance() {
                 </span>
               </Show>
             </div>
+            <Show when={v.semantic} keyed>
+              {(sm) => (
+                <div style="display:flex;flex-wrap:wrap;gap:16px;margin:0 0 10px">
+                  <span style={statFont}>
+                    L2 evaluated <span style={valFont}>{sm.evaluated.toLocaleString()}</span>
+                  </span>
+                  <span style={statFont}>
+                    L2 routed <span style={valFont}>{sm.routed.toLocaleString()}</span>{' '}
+                    <span
+                      class="mono"
+                      style="font:400 10.5px 'Geist Mono',monospace;color:var(--text3)"
+                    >
+                      ({sm.routedHigh} high / {sm.routedLow} low)
+                    </span>
+                  </span>
+                  <Show when={sm.routed > 0}>
+                    <span style={statFont}>
+                      success <span style={valFont}>{sm.successPct}</span>
+                    </span>
+                    <span style={statFont}>
+                      fallback <span style={valFont}>{sm.fallbackPct}</span>
+                    </span>
+                    <span style={statFont}>
+                      error <span style={valFont}>{sm.errorPct}</span>
+                    </span>
+                    <span style={statFont}>
+                      cancelled <span style={valFont}>{sm.cancelledPct}</span>
+                    </span>
+                  </Show>
+                  <span style={statFont}>
+                    source <span style={valFont}>{sm.learned.toLocaleString()}</span> learned ·{' '}
+                    <span style={valFont}>{sm.bundled.toLocaleString()}</span> bundled
+                  </span>
+                </div>
+              )}
+            </Show>
+            <Show when={v.cascadeIsResidual}>
+              <div style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);margin:-4px 0 10px;line-height:1.5">
+                Semantically-routed requests never enter the cascade — the residual-cascade rates and
+                estimated savings above cover only the traffic L2 left behind, so pre-/post-enable
+                comparisons aren’t like-for-like. No figure here measures whether learning improves
+                routing.
+              </div>
+            </Show>
             <Show when={v.unroutable > 0}>
               <div style="font:400 11px 'Geist',sans-serif;color:var(--amber);margin-bottom:8px">
                 {v.unroutable} confident request{v.unroutable === 1 ? '' : 's'} fell through to
@@ -540,6 +762,16 @@ function structuralLayers(al: AutoLayers | null): LayerRow[] {
       desc: 'Language-neutral features; system prompts fingerprinted & subtracted.',
       on: al?.structural ?? false,
       available: al?.structuralAvailable ?? false,
+      unavailableHint: 'off instance-wide (ROUTING_AUTO_LAYERS)',
+    },
+    {
+      id: 'semantic',
+      name: 'L2 · Semantic',
+      tag: 'local embed',
+      desc: "Embedding classifier over the ambiguous slice — routes what structural can't read.",
+      on: al?.semantic ?? false,
+      available: al?.semanticAvailable ?? false,
+      unavailableHint: 'off instance-wide — optional module; set SEMANTIC_MODEL_PATH to enable',
     },
     {
       id: 'cascade',
@@ -548,6 +780,7 @@ function structuralLayers(al: AutoLayers | null): LayerRow[] {
       desc: 'Ambiguous requests try the cheap model, escalate on a failed quality check.',
       on: al?.cascade ?? false,
       available: al?.cascadeAvailable ?? false,
+      unavailableHint: 'off instance-wide (ROUTING_AUTO_LAYERS)',
     },
   ];
 }
@@ -803,44 +1036,13 @@ export function Routing() {
                           class="mono"
                           style="font:400 10px 'Geist Mono',monospace;color:var(--amber);margin-top:2px"
                         >
-                          off instance-wide (ROUTING_AUTO_LAYERS)
+                          {l.unavailableHint}
                         </div>
                       </Show>
                     </div>
                   </div>
                 )}
               </For>
-              <div
-                style={{
-                  display: 'flex',
-                  'align-items': 'flex-start',
-                  gap: '10px',
-                  opacity: '0.45',
-                }}
-              >
-                <div style="margin-top:1px">
-                  <Toggle
-                    on={false}
-                    locked={true}
-                    label="Toggle L2 · Semantic (cloud tier only)"
-                    onToggle={() => undefined}
-                  />
-                </div>
-                <div>
-                  <div style="font:500 12px 'Geist',sans-serif;color:var(--text)">
-                    L2 · Semantic{' '}
-                    <span
-                      class="mono"
-                      style="font:400 10.5px 'Geist Mono',monospace;color:var(--text3)"
-                    >
-                      cloud tier
-                    </span>
-                  </div>
-                  <div style="font:400 11px 'Geist',sans-serif;color:var(--text3);line-height:1.45">
-                    Local embedding classifier — not part of the self-host baseline.
-                  </div>
-                </div>
-              </div>
             </div>
             <div style="margin-top:12px;padding:9px 11px;background:var(--accent-bg);border-radius:7px;font:400 11px 'Geist',sans-serif;color:var(--text2);line-height:1.5">
               If a smart layer is down,{' '}
@@ -854,6 +1056,7 @@ export function Routing() {
           <Show when={state.autoLayers?.structuralAvailable}>
             <BandTargets />
             <SelfCalibration />
+            <SemanticLearning />
             <AutoPerformance />
           </Show>
 

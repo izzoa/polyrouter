@@ -28,6 +28,7 @@ import {
   type ProviderDto,
   type AutoPerformance,
   type CalibrationEvent,
+  type SemanticLearningStatus,
   type PricingStatus,
   type BodyCaptureStatus,
   type RequestBodyContent,
@@ -212,6 +213,8 @@ export interface AppState {
   autoLayers: AutoLayers | null;
   /** Threshold-calibration history (add-auto-threshold-calibration). */
   calHistory: { rows: CalibrationEvent[]; loaded: boolean; error: string | null };
+  /** L2 semantic-learning card state (add-semantic-dashboard). */
+  semLearn: { status: SemanticLearningStatus | null; loaded: boolean; error: string | null };
   /** Pricing-catalog panel state (add-pricing-refresh-ui). */
   pc: {
     status: PricingStatus | null;
@@ -691,6 +694,7 @@ function initialState(): AppState {
     },
     autoLayers: null,
     calHistory: { rows: [], loaded: false, error: null },
+    semLearn: { status: null, loaded: false, error: null },
     pc: { status: null, loaded: false, loadError: null, refreshError: null, busy: false },
     tdefaults: null,
     bc: { status: null, loaded: false, error: null, busy: false },
@@ -743,6 +747,9 @@ export interface AppStore {
   setCalibration: (on: boolean) => Promise<void>;
   revertCalibration: () => Promise<void>;
   loadCalHistory: () => Promise<void>;
+  setSemanticLearning: (on: boolean) => Promise<void>;
+  revertSemanticLearning: () => Promise<void>;
+  loadSemanticLearning: () => Promise<void>;
   setFilter: (filter: RequestFilter) => void;
   select: (id: string | null) => void;
   say: (msg: string) => void;
@@ -813,7 +820,7 @@ export interface AppStore {
   clearBand: (band: 'auto_high' | 'auto_low') => Promise<void>;
   cleanShadowed: (band: 'auto_high' | 'auto_low') => Promise<void>;
   retryRulesReconcile: () => Promise<void>;
-  toggleAutoLayer: (layer: 'structural' | 'cascade') => Promise<void>;
+  toggleAutoLayer: (layer: 'structural' | 'cascade' | 'semantic') => Promise<void>;
   // limits (#20)
   loadLimits: () => Promise<void>;
   openBudget: (budget?: BudgetDto) => void;
@@ -952,7 +959,12 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
 
   // Auto-layer single-flight: serialize `setAutoLayers` so rapid toggles apply in
   // order, sending the latest desired state; roll back to the last confirmed view.
-  let autoLayersDesired: { structural: boolean; cascade: boolean } | null = null;
+  let autoLayersDesired: {
+    structural: boolean;
+    cascade: boolean;
+    semantic?: boolean;
+    semanticLearning?: boolean;
+  } | null = null;
   let autoLayersInFlight = false;
   let autoLayersConfirmed: AutoLayers | null = null;
 
@@ -1019,6 +1031,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       produce((s) => {
         s.autoLayers = null;
         s.calHistory = { rows: [], loaded: false, error: null };
+        s.semLearn = { status: null, loaded: false, error: null };
         s.autoPerf = { data: null, loaded: false, error: null, range: '7d' };
         s.bt = {
           busy: { auto_high: false, auto_low: false },
@@ -1161,7 +1174,12 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     }
   };
 
-  const scheduleAutoLayers = (desired: { structural: boolean; cascade: boolean }): void => {
+  const scheduleAutoLayers = (desired: {
+    structural: boolean;
+    cascade: boolean;
+    semantic?: boolean;
+    semanticLearning?: boolean;
+  }): void => {
     bumpRouting(); // an auto-layer mutation is starting — invalidate in-flight loads
     autoLayersDesired = desired;
     if (!autoLayersInFlight) void drainAutoLayers();
@@ -1189,6 +1207,12 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     } finally {
       autoLayersInFlight = false;
     }
+    // Any layer mutation can change L2 effectiveness (a dependency-down clears
+    // learning server-side); refresh the card so it never shows a stale enabled/
+    // source (clink change-4 Med-3). Guarded on capability so non-semantic
+    // instances never fetch. All auto-layer writes serialize through this drain,
+    // so semantic-learning toggles ride the same queue (clink change-4 Med-2).
+    if (autoLayersConfirmed?.semanticAvailable === true) void loadSemanticLearning();
   };
 
   const loadCalHistory = async (): Promise<void> => {
@@ -1200,6 +1224,18 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     } catch (e) {
       if (gen !== identityGen) return;
       setState('calHistory', (c) => ({ ...c, loaded: true, error: err(e) }));
+    }
+  };
+
+  const loadSemanticLearning = async (): Promise<void> => {
+    const gen = identityGen;
+    try {
+      const status = await client.semanticLearningStatus();
+      if (gen !== identityGen) return; // a different account signed in mid-flight
+      setState('semLearn', { status, loaded: true, error: null });
+    } catch (e) {
+      if (gen !== identityGen) return;
+      setState('semLearn', (c) => ({ ...c, loaded: true, error: err(e) }));
     }
   };
 
@@ -2363,21 +2399,33 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     toggleAutoLayer: (layer) => {
       const cur = state.autoLayers;
       if (!cur) return Promise.resolve();
-      const available = layer === 'structural' ? cur.structuralAvailable : cur.cascadeAvailable;
+      const available =
+        layer === 'structural'
+          ? cur.structuralAvailable
+          : layer === 'cascade'
+            ? cur.cascadeAvailable
+            : cur.semanticAvailable;
       // Off instance-wide — the toggle is inert (greyed in the UI); no write.
       if (!available) return Promise.resolve();
       let structural = cur.structural;
       let cascade = cur.cascade;
+      let semantic = cur.semantic;
       if (layer === 'structural') {
         structural = !structural;
-        if (!structural) cascade = false; // cascade requires structural
-      } else {
+        if (!structural) {
+          cascade = false; // cascade requires structural
+          semantic = false; // semantic requires structural (dependency-down)
+        }
+      } else if (layer === 'cascade') {
         cascade = !cascade;
         if (cascade) structural = true; // enabling cascade forces structural (mirrors the server)
+      } else {
+        semantic = !semantic;
+        if (semantic) structural = true; // enabling semantic forces structural (mirrors the server)
       }
       // Optimistic update + serialized write (rapid toggles send the latest state).
-      setState('autoLayers', { ...cur, structural, cascade });
-      scheduleAutoLayers({ structural, cascade });
+      setState('autoLayers', { ...cur, structural, cascade, semantic });
+      scheduleAutoLayers({ structural, cascade, semantic });
       return Promise.resolve();
     },
     setCalibration: async (on) => {
@@ -2406,6 +2454,34 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       }
     },
     loadCalHistory,
+    setSemanticLearning: (on) => {
+      const cur = state.autoLayers;
+      if (!cur || !cur.semanticAvailable) return Promise.resolve();
+      // Optimistic, then serialize through the SAME drain as every other
+      // auto-layer write (clink change-4 Med-2) — a direct PUT could land after
+      // a later structural-off and stale-re-enable the layers. The drain's
+      // post-settle reload reconciles source/counts/enabled with the server
+      // (which normalizes learning ⇒ effective semantic). The card is only
+      // visible when semantic is already effective, so the pair is untouched.
+      setState('autoLayers', { ...cur, semanticLearning: on });
+      setState('semLearn', 'status', (s) => (s ? { ...s, enabled: on } : s));
+      scheduleAutoLayers({
+        structural: cur.structural,
+        cascade: cur.cascade,
+        semantic: cur.semantic,
+        semanticLearning: on,
+      });
+      return Promise.resolve();
+    },
+    revertSemanticLearning: async () => {
+      try {
+        const status = await client.semanticLearningRevert();
+        setState('semLearn', { status, loaded: true, error: null });
+      } catch (e) {
+        say(err(e));
+      }
+    },
+    loadSemanticLearning,
     loadPricingStatus,
     runPricingRefresh,
     loadBodyCapture,

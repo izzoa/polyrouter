@@ -837,6 +837,50 @@ describe('analytics API (#17)', () => {
     expect((await q('auto', A, { from: RANGE5.to, to: RANGE5.from })).status).toBe(422);
   });
 
+  it('auto: the semantic slice partitions routed outcomes + source, and legacy (null) rows stay invisible (add-semantic-dashboard)', async () => {
+    const C = await mkUser();
+    const at = '2025-03-10T00:00:00.000Z';
+    // All L2 rows have structural_band='ambiguous' (L2 runs only on the ambiguous
+    // slice). The semantic quad is all-set-or-all-null (change-2 DB CHECK), so a
+    // seeded band carries a score + revision too.
+    const sem = (over: Partial<LogSeed>): Promise<string> =>
+      seedLog(C, {
+        at,
+        cost: 0.001,
+        structuralBand: 'ambiguous',
+        ...(over.semanticBand !== undefined
+          ? { semanticScore: 0.1, semanticRevision: 'sha256:rev' }
+          : {}),
+        ...over,
+      });
+    // 5 semantically-ROUTED rows (decision_layer='semantic'): outcome + source split.
+    await sem({ layer: 'semantic', semanticBand: 'high', semanticSource: 'learned', status: 'success' });
+    await sem({ layer: 'semantic', semanticBand: 'high', semanticSource: 'learned', status: 'success' });
+    await sem({ layer: 'semantic', semanticBand: 'low', semanticSource: 'bundled', status: 'fallback' });
+    await sem({ layer: 'semantic', semanticBand: 'high', semanticSource: 'learned', status: 'error' });
+    await sem({ layer: 'semantic', semanticBand: 'low', semanticSource: 'bundled', status: 'cancelled' });
+    // Evaluated-but-not-routed (L2 ran, handed to cascade): counts in evaluated + source, NOT routed.
+    await sem({ layer: 'cascade', semanticBand: 'high', semanticSource: 'bundled', status: 'success' });
+    // Adversarial (clink change-4 Med-1): decision_layer='semantic' but band NOT
+    // high/low. The routed predicate is shared with the outcome split, so this row
+    // counts in evaluated + source but NEITHER routed NOR any outcome — the old
+    // outcome-only `decision_layer='semantic'` predicate would have over-counted it.
+    await sem({ layer: 'semantic', semanticBand: 'ambiguous', semanticSource: 'bundled', status: 'success' });
+    // Legacy: no L2 (semantic_band null) → invisible to the whole slice.
+    await sem({ layer: 'cascade', status: 'success' });
+
+    const s = (await q('auto', C, { ...RANGE, bucket: 'day' })).body.semantic;
+    expect(s.evaluated).toBe(7); // 5 routed + 1 not-routed + 1 ambiguous-semantic; legacy null excluded
+    expect(s.routed).toEqual({ high: 3, low: 2 });
+    // DISJOINT + EXHAUSTIVE over the 5 ROUTED rows — the ambiguous-semantic row is excluded.
+    expect(s.outcomes).toEqual({ success: 2, fallback: 1, error: 1, cancelled: 1 });
+    expect(s.outcomes.success + s.outcomes.fallback + s.outcomes.error + s.outcomes.cancelled).toBe(
+      s.routed.high + s.routed.low,
+    );
+    // Source over evaluated: 3 learned (2 success + 1 error), 4 bundled (2 low + not-routed + ambiguous).
+    expect(s.source).toEqual({ bundled: 4, learned: 3 });
+  });
+
   it('the (owner, created_at) index the queries rely on exists', async () => {
     const idx = await pool.query(
       `SELECT 1 FROM pg_indexes WHERE indexname = 'request_log_owner_created_idx'`,

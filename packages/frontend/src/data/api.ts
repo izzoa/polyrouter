@@ -373,6 +373,14 @@ export interface ChannelTestResult {
 export interface AutoLayers {
   structural: boolean;
   cascade: boolean;
+  /** L2 semantic layer (add-semantic-routing): effective preference + capability
+   * (the whole classifier ready). */
+  semantic: boolean;
+  semanticAvailable: boolean;
+  /** L2 learning (add-semantic-learning): effective preference (learning ∧
+   * semantic effective) + capability (= semanticAvailable). */
+  semanticLearning: boolean;
+  semanticLearningAvailable: boolean;
   structuralAvailable: boolean;
   cascadeAvailable: boolean;
   /** Threshold-calibration state (add-auto-threshold-calibration): the pair
@@ -387,6 +395,37 @@ export interface AutoLayers {
     effectiveHigh: number;
     effectiveLow: number;
   };
+}
+
+/** L2 learning status (add-semantic-learning task 5.3): scalars only, for the
+ * learning card. `source` is what the CURRENT classification serves. */
+export interface SemanticLearningStatus {
+  enabled: boolean;
+  available: boolean;
+  epoch: number;
+  generation: number;
+  source: 'learned' | 'bundled';
+  freshHigh: number;
+  freshLow: number;
+  lastAppliedAt: string | null;
+  history: SemanticLearningEvent[];
+}
+
+/** One learning-sweep audit row (apply / discard_revision / revert), newest first. */
+export interface SemanticLearningEvent {
+  id: string;
+  occurrenceId: string;
+  trigger: string;
+  epoch: number;
+  generation: number;
+  highSamples: number;
+  lowSamples: number;
+  highDrift: number | null;
+  lowDrift: number | null;
+  highSimilarity: number | null;
+  lowSimilarity: number | null;
+  reason: string;
+  createdAt: string;
 }
 
 /** One threshold-change audit row — full numeric before/after pairs (never
@@ -564,6 +603,13 @@ export interface AutoPerformance {
     failedOrCancelled: number;
     escalated: number;
   };
+  /** L2 semantic slice (add-semantic-dashboard D4). Zero on legacy rows. */
+  semantic: {
+    evaluated: number;
+    routed: { high: number; low: number };
+    outcomes: { success: number; fallback: number; error: number; cancelled: number };
+    source: { bundled: number; learned: number };
+  };
   fallthrough: number;
   series: { bucket: string; high: number; low: number; ambiguous: number }[];
   telemetrySince: string | null;
@@ -694,10 +740,14 @@ export interface ApiClient {
   setAutoLayers(input: {
     structural: boolean;
     cascade: boolean;
+    semantic?: boolean;
+    semanticLearning?: boolean;
     calibration?: boolean;
   }): Promise<AutoLayers>;
   calibrationRevert(): Promise<AutoLayers>;
   calibrationHistory(limit?: number): Promise<CalibrationEvent[]>;
+  semanticLearningStatus(): Promise<SemanticLearningStatus>;
+  semanticLearningRevert(): Promise<SemanticLearningStatus>;
   pricingStatus(): Promise<PricingStatus>;
   pricingRefresh(): Promise<{ added: number }>;
   listBudgets(): Promise<BudgetDto[]>;
@@ -914,6 +964,10 @@ export const realClient: ApiClient = {
     http<AutoLayers>(`${API_BASE}/routing/auto-layers`, jsonInit('PUT', input)),
   calibrationRevert: () =>
     http<AutoLayers>(`${API_BASE}/routing/calibration/revert`, { method: 'POST' }),
+  semanticLearningStatus: () =>
+    http<SemanticLearningStatus>(`${API_BASE}/routing/semantic-learning/status`),
+  semanticLearningRevert: () =>
+    http<SemanticLearningStatus>(`${API_BASE}/routing/semantic-learning/revert`, { method: 'POST' }),
   pricingStatus: () => http<PricingStatus>(`${API_BASE}/pricing/status`),
   pricingRefresh: () =>
     http<{ added: number }>(`${API_BASE}/pricing/refresh`, jsonInit('POST', { source: 'litellm' })),

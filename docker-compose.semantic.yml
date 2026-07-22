@@ -1,0 +1,49 @@
+# polyrouter -semantic variant override (add-semantic-dashboard 4.1).
+#
+# Layer it over the base stack to run the batteries-included semantic image —
+# the ONNX runtime and the reference embedding model are pre-baked, so L2 is
+# available on first boot with zero manual steps:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.semantic.yml up -d
+#
+# `docker compose ... build` builds the `runtime-semantic` Dockerfile target;
+# to run a PUBLISHED variant instead, set POLYROUTER_IMAGE to the `-semantic`
+# tag (e.g. ghcr.io/izzoa/polyrouter:latest-semantic) and skip the build.
+
+services:
+  app:
+    build:
+      context: .
+      target: runtime-semantic
+    image: ${POLYROUTER_IMAGE:-polyrouter:latest-semantic}
+    environment:
+      # Turn the L2 capability on instance-wide so `semanticAvailable` is true
+      # out of the box (the baked model satisfies the embedder half). Tenants
+      # still opt in per-account via the dashboard.
+      ROUTING_AUTO_LAYERS: ${ROUTING_AUTO_LAYERS:-structural,semantic,cascade}
+      # The image bakes SEMANTIC_MODEL_PATH=/app/models/reference. Override it to
+      # a mounted path for bring-your-own-model (see the volume below).
+      SEMANTIC_MODEL_PATH: ${SEMANTIC_MODEL_PATH:-/app/models/reference}
+      SEMANTIC_HIGH_THRESHOLD:
+      SEMANTIC_LOW_THRESHOLD:
+      SEMANTIC_CONCURRENCY:
+      SEMANTIC_TIMEOUT_MS:
+      SEMANTIC_MAX_INPUT_CHARS:
+      # Optional L2 learning loop (default off; opt-in PER TENANT in the UI —
+      # there is no global enable env). These tune the sweep + its bounds.
+      SEMANTIC_LEARNING_ALPHA:
+      SEMANTIC_LEARNING_MAX_DRIFT:
+      SEMANTIC_LEARNING_MIN_SAMPLES:
+      SEMANTIC_LEARNING_MIN_COHORT:
+      SEMANTIC_LEARNING_MAX_COHORTS:
+      SEMANTIC_LEARNING_COOLDOWN_H:
+      SEMANTIC_LEARNING_STATE_TTL_D:
+      SEMANTIC_LEARNING_SCHED_ENABLED:
+      SEMANTIC_LEARNING_SCHED_CRON:
+    # Bring-your-own-model: mount a bundle (model.onnx + vocab + manifest.json)
+    # and point SEMANTIC_MODEL_PATH at it in .env to override the baked default:
+    #   SEMANTIC_MODEL_DIR=/abs/path/to/your/bundle
+    #   SEMANTIC_MODEL_PATH=/app/models/custom
+    # then uncomment:
+    # volumes:
+    #   - ${SEMANTIC_MODEL_DIR}:/app/models/custom:ro

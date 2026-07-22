@@ -21,6 +21,9 @@ CLAUDE.md
 AGENTS.md
 docker-compose.dev.yml
 docker-compose.yml
+docker-compose.semantic.yml
 install.sh
 scripts
+# …except the model-bake script the -semantic image variant COPYs at build time.
+!scripts/bake-semantic-model.sh
 README.md

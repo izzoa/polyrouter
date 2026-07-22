@@ -695,10 +695,18 @@ describe('routing config (real CRUD)', () => {
     const s = createAppStore(fake);
     await s.loadRouting();
     await s.toggleAutoLayer('structural');
-    expect(fake.lastArgs('setAutoLayers')?.[0]).toEqual({ structural: false, cascade: false });
+    expect(fake.lastArgs('setAutoLayers')?.[0]).toEqual({
+      structural: false,
+      cascade: false,
+      semantic: false,
+    });
     expect(s.state.autoLayers?.structural).toBe(false);
     await s.toggleAutoLayer('cascade');
-    expect(fake.lastArgs('setAutoLayers')?.[0]).toEqual({ structural: true, cascade: true });
+    expect(fake.lastArgs('setAutoLayers')?.[0]).toEqual({
+      structural: true,
+      cascade: true,
+      semantic: false,
+    });
     expect(s.state.autoLayers?.structural).toBe(true);
     expect(s.state.autoLayers?.cascade).toBe(true);
   });
@@ -711,6 +719,10 @@ describe('routing config (real CRUD)', () => {
         cascade: false,
         structuralAvailable: false,
         cascadeAvailable: false,
+        semantic: false,
+        semanticAvailable: false,
+        semanticLearning: false,
+        semanticLearningAvailable: false,
         calibration: DEFAULT_CALIBRATION,
       },
     });
@@ -916,14 +928,22 @@ describe('config write serialization & single-flight guards (#20 review)', () =>
     fake.deferAutoLayers = true;
     const s = createAppStore(fake);
     await s.loadRouting();
-    await s.toggleAutoLayer('structural'); // desired {structural:false, cascade:false}
-    await s.toggleAutoLayer('structural'); // desired {structural:true, cascade:false}
+    await s.toggleAutoLayer('structural'); // desired {structural:false, cascade:false, semantic:false}
+    await s.toggleAutoLayer('structural'); // desired {structural:true, cascade:false, semantic:false}
     expect(fake.autoLayersQueue).toHaveLength(1);
-    expect(fake.autoLayersQueue[0]?.input).toEqual({ structural: false, cascade: false });
+    expect(fake.autoLayersQueue[0]?.input).toEqual({
+      structural: false,
+      cascade: false,
+      semantic: false,
+    });
     fake.autoLayersQueue[0]?.settle('reject');
     await tick();
     expect(fake.autoLayersQueue).toHaveLength(2);
-    expect(fake.autoLayersQueue[1]?.input).toEqual({ structural: true, cascade: false });
+    expect(fake.autoLayersQueue[1]?.input).toEqual({
+      structural: true,
+      cascade: false,
+      semantic: false,
+    });
     fake.autoLayersQueue[1]?.settle('resolve');
     await tick();
     expect(s.state.autoLayers?.structural).toBe(true);

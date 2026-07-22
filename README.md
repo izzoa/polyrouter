@@ -356,7 +356,42 @@ routing behavior that consumes it arrives with the semantic-routing
 capability; a **batteries-included `-semantic` image variant** (runtime +
 reference model pre-baked) ships with the semantic dashboard change.
 
-To enable it on a source install today:
+#### Batteries-included: the `-semantic` image (zero setup)
+
+Every tagged release also publishes a multi-arch `-semantic` image with the
+ONNX runtime **and** the reference embedding model
+(`sentence-transformers/all-MiniLM-L6-v2`, Apache-2.0, 384-dim) baked in at
+build time and `SEMANTIC_MODEL_PATH` preset. It boots with `semanticAvailable`
+already true — nothing is downloaded at runtime. Layer it over the base stack:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.semantic.yml up -d
+```
+
+or run the published image directly (set the capability so `semanticAvailable`
+is on):
+
+```sh
+docker run … -e ROUTING_AUTO_LAYERS=structural,semantic,cascade \
+  ghcr.io/izzoa/polyrouter:latest-semantic
+```
+
+The baseline image is unchanged — it carries no ONNX runtime and no model
+files, and CI gates that on every build. The model's weights are the glibc
+build's only reason for a Debian base (the runtime's prebuilt binaries do not
+run on Alpine/musl).
+
+**Bring your own model:** mount a bundle over the baked one and repoint the env
+— the same fail-fast boot contract applies:
+
+```sh
+# in .env
+SEMANTIC_MODEL_DIR=/abs/path/to/your/bundle   # holds model.onnx + vocab + manifest.json
+SEMANTIC_MODEL_PATH=/app/models/custom
+# then uncomment the `volumes:` mount in docker-compose.semantic.yml
+```
+
+To enable it on a source install instead:
 
 ```sh
 npm install onnxruntime-node@1.27.0        # the optional peer, exact-pinned

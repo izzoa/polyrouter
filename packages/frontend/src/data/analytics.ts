@@ -85,7 +85,9 @@ export function filterToRequestParams(filter: RequestFilter): RequestFilterParam
     case 'explicit':
       return { decisionLayers: ['explicit', 'header', 'default'] };
     case 'auto':
-      return { decisionLayers: ['structural', 'cascade'] };
+      // L2-routed requests carry decision_layer='semantic' — include it or the
+      // Auto filter silently drops them (clink change-4 Med-5).
+      return { decisionLayers: ['structural', 'semantic', 'cascade'] };
     case 'fallback':
       return { status: 'fallback' };
     case 'escalated':
@@ -139,6 +141,11 @@ export interface InspectorView {
   matchedHeader: string | null;
   escalated: boolean;
   qualitySignal: number | null;
+  /** L2 provenance (add-semantic-dashboard D4): the active classification source
+   * (`learned`/`bundled`) and the verdict band when Layer 2 evaluated this
+   * request; both null otherwise — the chip is hidden, never a fabricated value. */
+  semanticSource: string | null;
+  semanticBand: string | null;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number | null;
@@ -213,6 +220,8 @@ export function toInspectorView(r: RequestRow): InspectorView {
           : `${r.routingHeaderName}: ${r.routingHeaderValue}`,
     escalated: r.escalated,
     qualitySignal: r.qualitySignal,
+    semanticSource: r.semanticSource,
+    semanticBand: r.semanticBand,
     inputTokens: r.inputTokens,
     outputTokens: r.outputTokens,
     cacheReadTokens: r.cacheReadTokens,

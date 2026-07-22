@@ -76,3 +76,96 @@ jobs:
           # Plain manifest list: default provenance attestations still confuse
           # some simple clients/UIs self-hosters use. Revisit with cosign.
           provenance: false
+
+  publish-semantic:
+    # add-semantic-dashboard 4.1: the batteries-included `-semantic` variant is
+    # built from the SAME Dockerfile (`--target runtime-semantic`, glibc base,
+    # exact-pinned ORT, reference model baked in) and SMOKE-TESTED on BOTH arches
+    # — load the baked model + one warmup inference — BEFORE it is published.
+    # A failure here never touches the baseline (a separate job); the baseline's
+    # ORT/model neutrality is gated independently by CI's baseline-image job.
+    name: build · smoke · push -semantic variant
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: validate release tag format
+        if: github.ref_type == 'tag'
+        run: |
+          echo "${GITHUB_REF_NAME}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            || { echo "::error::tag '${GITHUB_REF_NAME}' is not strict semver (vX.Y.Z)"; exit 1; }
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
+        with:
+          images: ghcr.io/${{ github.repository }}
+          # The `-semantic` suffix rides every tag, including latest → latest-semantic.
+          flavor: |
+            latest=auto
+            suffix=-semantic,onlatest=true
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,enable=${{ github.event_name == 'workflow_dispatch' }}
+          labels: |
+            org.opencontainers.image.licenses=AGPL-3.0-only
+
+      # Build each arch to the local daemon and SMOKE it before any push: load
+      # the baked bundle through the real ORT loader and run one warmup inference,
+      # asserting a 384-dim finite unit vector. arm64 runs under QEMU emulation.
+      - name: build + smoke each arch against the baked weights
+        run: |
+          set -eu
+          for arch in amd64 arm64; do
+            echo "::group::build linux/${arch}"
+            docker buildx build --target runtime-semantic \
+              --platform "linux/${arch}" \
+              --build-arg SEMANTIC_BASE_IMAGE=node:24-bookworm-slim \
+              --load -t "polyrouter-semantic-smoke:${arch}" \
+              --cache-from type=gha --cache-to type=gha,mode=max .
+            echo "::endgroup::"
+            echo "::group::smoke linux/${arch}"
+            docker run --rm --platform "linux/${arch}" \
+              --entrypoint node "polyrouter-semantic-smoke:${arch}" -e '
+                const { loadOnnxRuntime } = require("/app/packages/control-plane/dist/semantic/onnx-loader.js");
+                loadOnnxRuntime({ modelPath: process.env.SEMANTIC_MODEL_PATH, maxInputChars: 8000, concurrency: 2, timeoutMs: 60000 })
+                  .then(async ({ embedder, warmupMs }) => {
+                    const v = await embedder.embed("release smoke warmup");
+                    const n = Math.sqrt(v.reduce((s, x) => s + x * x, 0));
+                    if (v.length !== 384 || !v.every(Number.isFinite) || Math.abs(n - 1) > 1e-3) {
+                      console.error("SMOKE FAIL len=" + v.length + " norm=" + n); process.exit(1);
+                    }
+                    console.log("SMOKE OK dims=" + v.length + " warmupMs=" + warmupMs);
+                  })
+                  .catch((e) => { console.error("SMOKE ERROR", e && e.message); process.exit(1); });'
+            echo "::endgroup::"
+          done
+
+      # Only reached when BOTH arches smoked green — cache reuse makes this fast.
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          target: runtime-semantic
+          build-args: |
+            SEMANTIC_BASE_IMAGE=node:24-bookworm-slim
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false

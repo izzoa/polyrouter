@@ -2,11 +2,12 @@ import { APP_NAME } from '@polyrouter/shared';
 import { render } from 'solid-js/web';
 import { ApiError } from './data/api';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { ChannelDto, ModelDto, RuleDto, TierDto, TierEntryDto } from './data/api';
+import type { AutoLayers, ChannelDto, ModelDto, RuleDto, TierDto, TierEntryDto } from './data/api';
 import { App } from './App';
 import { createAppStore, type AppStore } from './state/appState';
 import { AppProvider } from './state/context';
 import {
+  DEFAULT_AUTO_PERF,
   DEFAULT_PRICING_STATUS,
   DEFAULT_SESSION,
   DEFAULT_CALIBRATION,
@@ -289,6 +290,10 @@ describe('dashboard shell (auth-gated)', () => {
         cascade: false,
         structuralAvailable: false,
         cascadeAvailable: false,
+        semantic: false,
+        semanticAvailable: false,
+        semanticLearning: false,
+        semanticLearningAvailable: false,
         calibration: DEFAULT_CALIBRATION,
       },
     });
@@ -300,6 +305,265 @@ describe('dashboard shell (auth-gated)', () => {
       expect(host.textContent).toContain('off instance-wide (ROUTING_AUTO_LAYERS)');
       // add-auto-performance-view: no structural layer -> no performance section
       expect(host.textContent).not.toContain('Auto performance');
+    } finally {
+      dispose();
+    }
+  });
+
+  it('L2 · Semantic is a real driven toggle when available (add-semantic-dashboard 1.2)', async () => {
+    const fake = new FakeApiClient({
+      tiers: [DEFAULT_TIER],
+      autoLayers: {
+        structural: true,
+        cascade: false,
+        structuralAvailable: true,
+        cascadeAvailable: true,
+        semantic: false,
+        semanticAvailable: true,
+        semanticLearning: false,
+        semanticLearningAvailable: true,
+        calibration: DEFAULT_CALIBRATION,
+      },
+    });
+    const { host, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Routing');
+      await flush();
+      // Honest available copy — no "cloud tier" contradiction survives.
+      expect(host.textContent).toContain(
+        "Embedding classifier over the ambiguous slice — routes what structural can't read",
+      );
+      expect(host.textContent).not.toContain('cloud tier');
+      const sw = host.querySelector<HTMLButtonElement>('[aria-label="Toggle L2 · Semantic"]');
+      expect(sw).not.toBeNull();
+      expect(sw?.getAttribute('aria-disabled')).not.toBe('true');
+      sw?.click();
+      await flush();
+      // Enabling semantic forces structural on and carries the pair (mirrors the server).
+      expect(fake.lastArgs('setAutoLayers')?.[0]).toEqual({
+        structural: true,
+        cascade: false,
+        semantic: true,
+      });
+    } finally {
+      dispose();
+    }
+  });
+
+  it('L2 · Semantic renders the SEMANTIC_MODEL_PATH affordance when unavailable — inert, not dead (add-semantic-dashboard 1.2)', async () => {
+    const fake = new FakeApiClient({
+      tiers: [DEFAULT_TIER],
+      autoLayers: {
+        structural: true,
+        cascade: true,
+        structuralAvailable: true,
+        cascadeAvailable: true,
+        semantic: false,
+        semanticAvailable: false,
+        semanticLearning: false,
+        semanticLearningAvailable: false,
+        calibration: DEFAULT_CALIBRATION,
+      },
+    });
+    const { host, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Routing');
+      await flush();
+      // The affordance explains its own absence and names the enabling env.
+      expect(host.textContent).toContain('set SEMANTIC_MODEL_PATH to enable');
+      // No inert-control contradiction (the deleted stub) remains anywhere.
+      expect(host.textContent).not.toContain('cloud tier');
+      const sw = host.querySelector<HTMLButtonElement>('[aria-label="Toggle L2 · Semantic"]');
+      expect(sw).not.toBeNull();
+      expect(sw?.getAttribute('aria-disabled')).toBe('true');
+      // Inert: activating an unavailable layer sends no write.
+      sw?.click();
+      await flush();
+      expect(fake.calls).not.toContain('setAutoLayers');
+    } finally {
+      dispose();
+    }
+  });
+
+  const learningLayers = (over: Partial<AutoLayers> = {}): AutoLayers => ({
+    structural: true,
+    cascade: false,
+    structuralAvailable: true,
+    cascadeAvailable: true,
+    semantic: true,
+    semanticAvailable: true,
+    semanticLearning: false,
+    semanticLearningAvailable: true,
+    calibration: DEFAULT_CALIBRATION,
+    ...over,
+  });
+
+  it('learning card is hidden until the semantic layer is EFFECTIVE (add-semantic-dashboard 2.1)', async () => {
+    const fake = new FakeApiClient({
+      tiers: [DEFAULT_TIER],
+      autoLayers: { ...learningLayers(), semantic: false }, // available but not enabled
+    });
+    const { host, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Routing');
+      await flush();
+      expect(host.textContent).not.toContain('Semantic learning');
+    } finally {
+      dispose();
+    }
+  });
+
+  it('learning card: off state, then toggling on writes semanticLearning (add-semantic-dashboard 2.1)', async () => {
+    const fake = new FakeApiClient({
+      tiers: [DEFAULT_TIER],
+      autoLayers: learningLayers(),
+      semanticLearningStatus: {
+        enabled: false,
+        available: true,
+        epoch: 0,
+        generation: 0,
+        source: 'bundled',
+        freshHigh: 0,
+        freshLow: 0,
+        lastAppliedAt: null,
+        history: [],
+      },
+    });
+    const { host, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Routing');
+      await flush();
+      expect(host.textContent).toContain('Semantic learning');
+      expect(host.textContent).toContain('active: bundled anchors');
+      expect(host.textContent).toContain('No learning events yet.');
+      const sw = host.querySelector<HTMLButtonElement>('[aria-label="Semantic learning"]');
+      expect(sw?.getAttribute('aria-checked')).toBe('false');
+      sw?.click();
+      await flush();
+      expect(fake.lastArgs('setAutoLayers')?.[0]).toEqual({
+        structural: true,
+        cascade: false,
+        semantic: true,
+        semanticLearning: true,
+      });
+    } finally {
+      dispose();
+    }
+  });
+
+  it('learning card: applied learned state offers a confirmed revert (add-semantic-dashboard 2.1)', async () => {
+    const fake = new FakeApiClient({
+      tiers: [DEFAULT_TIER],
+      autoLayers: { ...learningLayers(), semanticLearning: true },
+      semanticLearningStatus: {
+        enabled: true,
+        available: true,
+        epoch: 1,
+        generation: 2,
+        source: 'learned',
+        freshHigh: 5,
+        freshLow: 12,
+        lastAppliedAt: '2026-07-03T00:00:00.000Z',
+        history: [
+          {
+            id: 'ev1',
+            occurrenceId: 'occ:1',
+            trigger: 'apply',
+            epoch: 1,
+            generation: 2,
+            highSamples: 5,
+            lowSamples: 12,
+            highDrift: 0.05,
+            lowDrift: 0.03,
+            highSimilarity: 0.95,
+            lowSimilarity: 0.97,
+            reason: 'promoted',
+            createdAt: '2026-07-03T00:00:00.000Z',
+          },
+        ],
+      },
+    });
+    const { host, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Routing');
+      await flush();
+      expect(host.textContent).toContain('active: learned centroids');
+      expect(host.textContent).toContain('learning from 12 low · 5 high');
+      expect(host.textContent).toContain('drift 0.03/0.05 · sim 0.97/0.95');
+      // Two-step confirm: the ghost reveals the confirm affordance; no write yet.
+      clickByText(host, 'button', 'Revert to bundled');
+      await flush();
+      expect(host.textContent).toContain('Revert all learned centroids?');
+      expect(fake.calls).not.toContain('semanticLearningRevert');
+      clickByText(host, 'button', 'Confirm revert');
+      await flush();
+      expect(fake.calls).toContain('semanticLearningRevert');
+    } finally {
+      dispose();
+    }
+  });
+
+  it('learning card: a stale learned centroid shows bundled WITH the reason, never a wrong badge (add-semantic-dashboard 2.1)', async () => {
+    const fake = new FakeApiClient({
+      tiers: [DEFAULT_TIER],
+      autoLayers: { ...learningLayers(), semanticLearning: true },
+      semanticLearningStatus: {
+        enabled: true,
+        available: true,
+        epoch: 1,
+        generation: 2,
+        source: 'bundled', // promoted but inactive — embedder/revision moved
+        freshHigh: 0,
+        freshLow: 0,
+        lastAppliedAt: '2026-07-03T00:00:00.000Z',
+        history: [],
+      },
+    });
+    const { host, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Routing');
+      await flush();
+      expect(host.textContent).toContain('active: bundled anchors');
+      expect(host.textContent).toContain('inactive');
+      expect(host.textContent).not.toContain('active: learned centroids');
+      // Revert is still reachable for the stale centroid.
+      expect(host.textContent).toContain('Revert to bundled');
+    } finally {
+      dispose();
+    }
+  });
+
+  it('learning card: a failed initial status load still shows the card + toggle + Retry (add-semantic-dashboard 2.1, clink Med-4)', async () => {
+    const fake = new FakeApiClient({
+      tiers: [DEFAULT_TIER],
+      autoLayers: { ...learningLayers(), semanticLearning: true },
+    });
+    // The status GET fails — the card must not vanish (its own Retry lives inside).
+    fake.semanticLearningStatus = () =>
+      Promise.reject(new ApiError(500, 'Internal', 'learning status boom'));
+    const { host, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Routing');
+      await flush();
+      // Shell renders: title + a toggle reflecting the auto-layers truth (on).
+      expect(host.textContent).toContain('Semantic learning');
+      const sw = host.querySelector<HTMLButtonElement>('[aria-label="Semantic learning"]');
+      expect(sw).not.toBeNull();
+      expect(sw?.getAttribute('aria-checked')).toBe('true'); // from autoLayers, not the failed GET
+      // The error + its own Retry are present (not hidden behind the null VM).
+      expect(host.textContent).toContain('Couldn’t load learning status');
+      expect(host.textContent).toContain('learning status boom');
+      const retry = [...host.querySelectorAll<HTMLElement>('button')].find(
+        (b) => b.textContent?.trim() === 'Retry',
+      );
+      expect(retry).not.toBeUndefined();
     } finally {
       dispose();
     }
@@ -606,6 +870,10 @@ describe('dashboard shell (auth-gated)', () => {
         cascade: true,
         structuralAvailable: true,
         cascadeAvailable: true,
+        semantic: false,
+        semanticAvailable: false,
+        semanticLearning: false,
+        semanticLearningAvailable: false,
         calibration: {
           enabled: true,
           calibratedHigh: 0.58,
@@ -705,6 +973,64 @@ describe('dashboard shell (auth-gated)', () => {
       expect(store.state.autoPerf.range).toBe('30d');
       expect(store.state.range).toBe(globalBefore);
       expect(fake.calls.filter((c) => c === 'autoPerformance').length).toBeGreaterThanOrEqual(2);
+    } finally {
+      dispose();
+    }
+  });
+
+  it('Auto performance renders the semantic slice + residual-cascade footnote (add-semantic-dashboard 3.2)', async () => {
+    const fake = new FakeApiClient({ tiers: [DEFAULT_TIER] });
+    const { host, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Routing');
+      await flush();
+      const perfPanel = [...host.querySelectorAll<HTMLElement>('.panel')].find((p) =>
+        p.textContent?.includes('Auto performance'),
+      );
+      const text = perfPanel?.textContent ?? '';
+      // DEFAULT_AUTO_PERF.semantic: evaluated 8, routed 5 (3 high / 2 low),
+      // source 2 learned / 6 bundled, outcomes 3/1/1/0.
+      expect(text).toContain('L2 evaluated');
+      expect(text).toContain('L2 routed');
+      expect(text).toContain('3 high / 2 low');
+      expect(text).toContain('learned');
+      expect(text).toContain('bundled');
+      // Routed traffic ⇒ residual-cascade labeling + the denominator footnote.
+      expect(text).toContain('residual cascade');
+      expect(text).toContain('never enter the cascade');
+    } finally {
+      dispose();
+    }
+  });
+
+  it('Auto performance hides the semantic row when nothing was evaluated — zero-data honesty (add-semantic-dashboard 3.2)', async () => {
+    const fake = new FakeApiClient({
+      tiers: [DEFAULT_TIER],
+      autoPerf: {
+        ...DEFAULT_AUTO_PERF,
+        semantic: {
+          evaluated: 0,
+          routed: { high: 0, low: 0 },
+          outcomes: { success: 0, fallback: 0, error: 0, cancelled: 0 },
+          source: { bundled: 0, learned: 0 },
+        },
+      },
+    });
+    const { host, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Routing');
+      await flush();
+      const perfPanel = [...host.querySelectorAll<HTMLElement>('.panel')].find((p) =>
+        p.textContent?.includes('Auto performance'),
+      );
+      const text = perfPanel?.textContent ?? '';
+      // No fabricated zeros; no residual labeling when nothing was routed.
+      expect(text).not.toContain('L2 evaluated');
+      expect(text).not.toContain('residual cascade');
+      // The rest of the section still renders.
+      expect(text).toContain('Auto performance');
     } finally {
       dispose();
     }

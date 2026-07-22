@@ -351,6 +351,17 @@ export interface AutoPerformanceData {
     failedOrCancelled: number;
     escalated: number;
   };
+  /** L2 semantic slice (add-semantic-dashboard D4). `evaluated` = `semantic_band`
+   * non-null; `routed` = `decision_layer='semantic'` by band; `outcomes` = the
+   * routed terminal-status split (DISJOINT + EXHAUSTIVE — sums to the routed
+   * total); `source` = bundled/learned over evaluated. All zero on legacy rows
+   * (semantic columns null), so the view stays invisible until L2 runs. */
+  semantic: {
+    evaluated: number;
+    routed: { high: number; low: number };
+    outcomes: { success: number; fallback: number; error: number; cancelled: number };
+    source: { bundled: number; learned: number };
+  };
   fallthrough: number;
   series: { bucket: string; high: number; low: number; ambiguous: number }[];
   /** RANGE-INDEPENDENT: the tenant's earliest banded row ever (ISO), or null. */

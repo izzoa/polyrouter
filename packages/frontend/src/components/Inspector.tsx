@@ -152,6 +152,15 @@ export function Inspector() {
                         <span style="color:var(--text)">{view().qualitySignal?.toFixed(2)}</span>
                       </div>
                     </Show>
+                    <Show when={view().semanticSource !== null}>
+                      <div style="display:flex;justify-content:space-between;align-items:center;gap:16px">
+                        <span style="color:var(--text3)">semantic source</span>
+                        <span style="padding:2px 8px;background:var(--chip);border-radius:5px;font:500 10.5px 'Geist',sans-serif;color:var(--text2)">
+                          {view().semanticSource}
+                          {view().semanticBand !== null ? ` · ${String(view().semanticBand)}` : ''}
+                        </span>
+                      </div>
+                    </Show>
                   </div>
                 </div>
 

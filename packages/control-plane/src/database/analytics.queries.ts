@@ -376,6 +376,11 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
         sql`${requestLogs.structuralBand} is not null`,
       ) as SQL;
       const cascadeBase = sql`${requestLogs.structuralBand} = 'ambiguous' and ${requestLogs.decisionLayer} = 'cascade'`;
+      // ONE routed predicate shared by the routed-per-band counts AND the outcome
+      // split (clink change-4 Med-1): a `decision_layer='semantic'` row with a
+      // null/ambiguous band must contribute to NEITHER, so the four outcomes stay
+      // disjoint + exhaustive over — and sum exactly to — the routed total.
+      const semanticRouted = sql`${requestLogs.decisionLayer} = 'semantic' and ${requestLogs.semanticBand} in ('high','low')`;
       const [t] = await db
         .select({
           evaluated: intCount(),
@@ -405,6 +410,24 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
             sql`${cascadeBase} and not ${requestLogs.escalated} and ${requestLogs.status} in ('error','cancelled')`,
           ),
           cascadeEscalated: intCount(sql`${cascadeBase} and ${requestLogs.escalated}`),
+          // L2 semantic slice (add-semantic-dashboard D4). semantic_band non-null
+          // ⊆ structural_band='ambiguous' ⊆ banded, so these are within `banded`.
+          semanticEvaluated: intCount(sql`${requestLogs.semanticBand} is not null`),
+          semanticRoutedHigh: intCount(sql`${semanticRouted} and ${requestLogs.semanticBand} = 'high'`),
+          semanticRoutedLow: intCount(sql`${semanticRouted} and ${requestLogs.semanticBand} = 'low'`),
+          // Routed outcome split — DISJOINT + EXHAUSTIVE over the SAME routed
+          // population, so success+fallback+error+cancelled == routed total.
+          semanticSuccess: intCount(sql`${semanticRouted} and ${requestLogs.status} = 'success'`),
+          semanticFallback: intCount(sql`${semanticRouted} and ${requestLogs.status} = 'fallback'`),
+          semanticError: intCount(sql`${semanticRouted} and ${requestLogs.status} = 'error'`),
+          semanticCancelled: intCount(sql`${semanticRouted} and ${requestLogs.status} = 'cancelled'`),
+          // Source split over EVALUATED rows.
+          semanticBundled: intCount(
+            sql`${requestLogs.semanticBand} is not null and ${requestLogs.semanticSource} = 'bundled'`,
+          ),
+          semanticLearned: intCount(
+            sql`${requestLogs.semanticBand} is not null and ${requestLogs.semanticSource} = 'learned'`,
+          ),
           fallthrough: intCount(
             sql`${requestLogs.structuralBand} = 'ambiguous' and ${requestLogs.decisionLayer} = 'default'`,
           ),
@@ -486,6 +509,17 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
           qualityUnknown: t!.qualityUnknown,
           failedOrCancelled: t!.failedOrCancelled,
           escalated: t!.cascadeEscalated,
+        },
+        semantic: {
+          evaluated: t!.semanticEvaluated,
+          routed: { high: t!.semanticRoutedHigh, low: t!.semanticRoutedLow },
+          outcomes: {
+            success: t!.semanticSuccess,
+            fallback: t!.semanticFallback,
+            error: t!.semanticError,
+            cancelled: t!.semanticCancelled,
+          },
+          source: { bundled: t!.semanticBundled, learned: t!.semanticLearned },
         },
         fallthrough: t!.fallthrough,
         series: seriesRows.map((r) => ({

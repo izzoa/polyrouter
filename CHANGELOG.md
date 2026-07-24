@@ -15,6 +15,11 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-07-24
+
+[Release](https://github.com/izzoa/polyrouter/releases/tag/v0.9.0) ·
+[Compare](https://github.com/izzoa/polyrouter/compare/v0.8.1...v0.9.0)
+
 ### Added
 
 - **Per-page icons in the dashboard.** Each nav page (Overview, Requests, Costs,
@@ -52,6 +57,24 @@ heading is started.
   out of order and falsely mark a running request as finished; and live-view state
   is now cleared and invalidated on any account change — including a mid-session
   session expiry — so one account's rows can never appear under another's.
+
+### Upgrade notes
+
+- **No migrations, no required config changes** — a drop-in upgrade.
+- **If you front polyrouter with a reverse proxy, do not buffer `/api/events`.** The
+  dashboard's live updates ride Server-Sent Events on that one path. polyrouter already
+  sends `X-Accel-Buffering: no` / `Cache-Control: no-transform` and heartbeats every
+  25s, but nginx/Traefik/Cloudflare may still need response buffering disabled for it
+  (nginx: `proxy_buffering off;`). If the stream is blocked nothing breaks — the
+  dashboard shows **Polling** instead of **Live** and keeps refreshing normally.
+- **New optional env, all defaulted:** `EVENTS_ENABLED` (set `false` to turn the stream
+  off entirely and stay on polling) and `EVENTS_HEARTBEAT_MS`, plus reconciliation /
+  per-owner-cap / queue-bound / coalesce-window knobs. Boot fails fast on an
+  out-of-range combination rather than silently loosening a bound.
+- **The dashboard is quieter by default.** It stops polling while its tab is hidden and
+  refreshes immediately on return; an idle, visible Overview drops from ~40 to ~28
+  requests/min, and a connected stream makes an idle instance cost essentially nothing.
+  Still **one app replica only** — the event stream fans out in-process.
 
 ## [0.8.1] — 2026-07-22
 
@@ -366,7 +389,8 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.9.0
 [0.8.1]: https://github.com/izzoa/polyrouter/releases/tag/v0.8.1
 [0.8.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.8.0
 [0.7.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.7.0

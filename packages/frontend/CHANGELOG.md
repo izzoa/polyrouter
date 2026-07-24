@@ -1,5 +1,84 @@
 # @polyrouter/frontend
 
+## 0.9.0
+
+### Minor Changes
+
+- 5f01470: The dashboard now receives live updates over a **push stream** instead of only asking.
+  One multiplexed, session-guarded, owner-scoped SSE endpoint (`GET /api/events`) carries
+  in-flight presence as data and analytics staleness as a thin nudge, so an in-flight
+  request appears the moment it starts and its handoff to the completed row happens on an
+  explicit `settled` event rather than being inferred from a row's absence in a later poll.
+
+  Polling remains the reliable core: if the stream can't be established, is refused, drops,
+  is buffered by a proxy, or the browser has no `EventSource`, the dashboard falls back to
+  its normal refresh and keeps working — and says **Polling** rather than **Live**, so a
+  buffered deployment is visible instead of silently frozen.
+
+  Push can never cost more than the polling it supplements: nudges are coalesced server-side
+  and share one refresh budget with the analytics poll (a nudge consumes the next scheduled
+  poll rather than adding to it), so a burst of thousands of settled requests cannot turn
+  into a query storm, while an idle instance adds no queries at all.
+
+  Operationally: dashboard streams are closed immediately at shutdown and never wait on the
+  inference drain (restarts stay fast), new streams are refused while draining, per-connection
+  queues are bounded and collapse to a resync rather than buffering for a slow client,
+  concurrent streams are capped per owner, and authorization is revalidated for the life of
+  each stream so disabling a user cuts this plane too. New env: `EVENTS_ENABLED`,
+  `EVENTS_HEARTBEAT_MS` (plus reconciliation/cap/queue/coalesce knobs, all defaulted).
+  Reverse proxies must not buffer `/api/events` — see the README operations note.
+
+- 4282ffd: The dashboard now shows requests that are **running right now**. Until now the
+  Overview's "Recent requests" card was completed-only — a request stayed invisible
+  for its entire life (often 7–12s on reasoning models) because the `request_log`
+  row is written once, at the terminal outcome. An ephemeral, owner-scoped, metadata-
+  only in-flight registry in Redis now records live presence: the proxy publishes an
+  entry once the route resolves (naming the model actually executing — the cheap tier
+  for a cascade) and clears it when the request settles. Live rows render above the
+  completed rows with a pulsing "Running" status and a latency that ticks client-side,
+  with `—` for tokens/cost (those values do not exist until settle).
+
+  The registry never touches the request path: every write is fire-and-forget, and a
+  Redis fault — down _or_ hung — degrades to exactly the old behavior (no live view)
+  without inference ever awaiting it. The RequestLog contract is unchanged: nothing is
+  written to `request_log`, cost stays immutable, and `running` is not a stored status.
+  The served row's id is now allocated at admission so the live entry and the durable
+  row share one id, letting the dashboard hand off between them without ever showing a
+  request twice. `GET /api/analytics/inflight` returns the owner's live snapshot with
+  `available`/`truncated` completeness flags, so a degraded or capped poll is never
+  mistaken for "this request finished".
+
+### Patch Changes
+
+- d7f58b3: Each primary nav page now has an identifying line-icon in the left-rail nav, carried
+  into the page header when selected. A single `Record<Page, …>` registry
+  (`components/PageIcon.tsx`) is the sole source of the glyph, consumed by both the Sidebar
+  and the Topbar so the two can never drift. Icons are decorative inline SVG (lucide
+  geometry, `currentColor`) — no icon-library dependency and nothing fetched at runtime; in
+  the rail they ride the nav button's `text2 → accent-deep` color (no new hue, single-accent
+  lock preserved) and in the header they sit at a quiet `--text3`. `setup` keeps its rail
+  progress ring (which encodes progress, not identity) and shows its icon in the header only.
+- 9498dab: The dashboard no longer polls while its tab is hidden, and refreshes immediately when
+  you come back. Every recurring poller (Overview analytics + live in-flight rows, Costs
+  analytics) is now gated on document visibility as well as page scope, so a backgrounded
+  tab costs nothing instead of ~40 requests/min forever; on return each poller performs
+  exactly one catch-up fetch, so the view is never stale. The live in-flight poll also
+  relaxes from 2.5 s to 5 s while there is provably nothing in flight and snaps straight
+  back on the first live row, leaving the settle handoff at full speed. Measured on an
+  idle, visible Overview: 28 requests/min, down from 40; hidden: zero.
+
+  Two correctness fixes fall out of the same rewiring. Pollers are now **single-flight** —
+  a pending fetch is never overlapped (a resume or elapsed interval defers to exactly one
+  trailing catch-up), because the in-flight loader applies every response unconditionally
+  and out-of-order snapshots could otherwise falsely settle a live row. And live-view state
+  is now **identity-scoped**: the in-flight loader discards a response captured under a
+  previous account, and an account change — including a mid-session session expiry —
+  clears cached live rows and invalidates the in-flight durable refresh, so one account's
+  rows can never appear under another's.
+
+- Updated dependencies [4282ffd]
+  - @polyrouter/shared@0.9.0
+
 ## 0.8.1
 
 ### Patch Changes

@@ -1,5 +1,58 @@
 # @polyrouter/control-plane
 
+## 0.9.0
+
+### Minor Changes
+
+- 5f01470: The dashboard now receives live updates over a **push stream** instead of only asking.
+  One multiplexed, session-guarded, owner-scoped SSE endpoint (`GET /api/events`) carries
+  in-flight presence as data and analytics staleness as a thin nudge, so an in-flight
+  request appears the moment it starts and its handoff to the completed row happens on an
+  explicit `settled` event rather than being inferred from a row's absence in a later poll.
+
+  Polling remains the reliable core: if the stream can't be established, is refused, drops,
+  is buffered by a proxy, or the browser has no `EventSource`, the dashboard falls back to
+  its normal refresh and keeps working — and says **Polling** rather than **Live**, so a
+  buffered deployment is visible instead of silently frozen.
+
+  Push can never cost more than the polling it supplements: nudges are coalesced server-side
+  and share one refresh budget with the analytics poll (a nudge consumes the next scheduled
+  poll rather than adding to it), so a burst of thousands of settled requests cannot turn
+  into a query storm, while an idle instance adds no queries at all.
+
+  Operationally: dashboard streams are closed immediately at shutdown and never wait on the
+  inference drain (restarts stay fast), new streams are refused while draining, per-connection
+  queues are bounded and collapse to a resync rather than buffering for a slow client,
+  concurrent streams are capped per owner, and authorization is revalidated for the life of
+  each stream so disabling a user cuts this plane too. New env: `EVENTS_ENABLED`,
+  `EVENTS_HEARTBEAT_MS` (plus reconciliation/cap/queue/coalesce knobs, all defaulted).
+  Reverse proxies must not buffer `/api/events` — see the README operations note.
+
+- 4282ffd: The dashboard now shows requests that are **running right now**. Until now the
+  Overview's "Recent requests" card was completed-only — a request stayed invisible
+  for its entire life (often 7–12s on reasoning models) because the `request_log`
+  row is written once, at the terminal outcome. An ephemeral, owner-scoped, metadata-
+  only in-flight registry in Redis now records live presence: the proxy publishes an
+  entry once the route resolves (naming the model actually executing — the cheap tier
+  for a cascade) and clears it when the request settles. Live rows render above the
+  completed rows with a pulsing "Running" status and a latency that ticks client-side,
+  with `—` for tokens/cost (those values do not exist until settle).
+
+  The registry never touches the request path: every write is fire-and-forget, and a
+  Redis fault — down _or_ hung — degrades to exactly the old behavior (no live view)
+  without inference ever awaiting it. The RequestLog contract is unchanged: nothing is
+  written to `request_log`, cost stays immutable, and `running` is not a stored status.
+  The served row's id is now allocated at admission so the live entry and the durable
+  row share one id, letting the dashboard hand off between them without ever showing a
+  request twice. `GET /api/analytics/inflight` returns the owner's live snapshot with
+  `available`/`truncated` completeness flags, so a degraded or capped poll is never
+  mistaken for "this request finished".
+
+### Patch Changes
+
+- Updated dependencies [4282ffd]
+  - @polyrouter/shared@0.9.0
+
 ## 0.8.0
 
 ### Minor Changes

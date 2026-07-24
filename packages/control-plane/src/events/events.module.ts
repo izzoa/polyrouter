@@ -3,6 +3,7 @@ import { AuthModule } from '../auth/auth.module';
 import { InflightModule } from '../inflight/inflight.module';
 import { EventsBusModule } from './events-bus.module';
 import { EventsController } from './events.controller';
+import { GuardStreamAuthorizer, STREAM_AUTHORIZER } from './stream-authorizer';
 
 /**
  * The dashboard event-stream ENDPOINT (phase2-add-dashboard-event-stream). The bus
@@ -12,5 +13,9 @@ import { EventsController } from './events.controller';
 @Module({
   imports: [EventsBusModule, AuthModule, InflightModule],
   controllers: [EventsController],
+  providers: [
+    GuardStreamAuthorizer,
+    { provide: STREAM_AUTHORIZER, useExisting: GuardStreamAuthorizer },
+  ],
 })
 export class EventsModule {}

@@ -20,8 +20,10 @@ registerConfig(
     EVENTS_MAX_STREAMS_PER_OWNER: z.coerce.number().int().min(1).max(64).default(6),
     EVENTS_QUEUE_LIMIT: z.coerce.number().int().min(8).max(10_000).default(256),
     EVENTS_NUDGE_COALESCE_MS: z.coerce.number().int().min(1_000).default(1_000),
-    /** Server-side authorization revalidation bound; never above the heartbeat. */
-    EVENTS_REVALIDATE_MS: z.coerce.number().int().positive().default(15_000),
+    /** Server-side authorization revalidation bound; never above the heartbeat.
+     * DEFAULTS from the heartbeat rather than a fixed number, so lowering the
+     * heartbeat for a strict proxy cannot fail boot on an unrelated knob. */
+    EVENTS_REVALIDATE_MS: z.coerce.number().int().positive().optional(),
   }),
 );
 
@@ -32,7 +34,7 @@ type EventsEnv = {
   EVENTS_MAX_STREAMS_PER_OWNER: number;
   EVENTS_QUEUE_LIMIT: number;
   EVENTS_NUDGE_COALESCE_MS: number;
-  EVENTS_REVALIDATE_MS: number;
+  EVENTS_REVALIDATE_MS?: number;
 };
 
 export interface EventsConfig {
@@ -55,7 +57,11 @@ export function buildEventsConfig(env: EventsEnv): EventsConfig {
       `EVENTS_HEARTBEAT_MS must be below the ~${String(INTERMEDIARY_REAP_FLOOR_MS)}ms intermediary idle-reap window`,
     );
   }
-  if (env.EVENTS_REVALIDATE_MS > env.EVENTS_HEARTBEAT_MS) {
+  // Derived when unset: at most 15s, and never looser than the heartbeat.
+  const revalidateMs = env.EVENTS_REVALIDATE_MS ?? Math.min(15_000, env.EVENTS_HEARTBEAT_MS);
+  if (revalidateMs > env.EVENTS_HEARTBEAT_MS) {
+    // Only reachable for an EXPLICIT value: fail fast rather than silently loosening
+    // the revocation-detection bound.
     throw new Error('EVENTS_REVALIDATE_MS must be <= EVENTS_HEARTBEAT_MS (the detection bound)');
   }
   if (env.EVENTS_RECONCILE_MS < SUPERSEDED_FAST_POLL_MS) {
@@ -70,7 +76,7 @@ export function buildEventsConfig(env: EventsEnv): EventsConfig {
     maxStreamsPerOwner: env.EVENTS_MAX_STREAMS_PER_OWNER,
     queueLimit: env.EVENTS_QUEUE_LIMIT,
     nudgeCoalesceMs: env.EVENTS_NUDGE_COALESCE_MS,
-    revalidateMs: env.EVENTS_REVALIDATE_MS,
+    revalidateMs,
   };
 }
 

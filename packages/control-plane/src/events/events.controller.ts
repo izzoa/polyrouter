@@ -3,12 +3,12 @@ import type { Principal } from '@polyrouter/shared/server';
 import type { Request, Response } from 'express';
 import { CurrentPrincipal } from '../auth/principal.decorator';
 import type { AuthedRequest } from '../auth/principal.decorator';
-import { SessionGuard } from '../auth/session.guard';
 import { InflightRegistry } from '../inflight/inflight-registry';
 import { DashboardEvents, ownerKeyOf, type DashboardEvent, type DashboardSubscriber } from './dashboard-events';
 import { DashboardStreamRegistry } from './dashboard-stream.registry';
 import { EVENTS_CONFIG, type EventsConfig } from './events.config';
 import { SseConnection } from './sse-connection';
+import { STREAM_AUTHORIZER, type StreamAuthorizer } from './stream-authorizer';
 
 /**
  * `GET /api/events` — the ONE multiplexed dashboard event stream
@@ -26,7 +26,7 @@ export class EventsController {
     private readonly events: DashboardEvents,
     private readonly streams: DashboardStreamRegistry,
     private readonly inflight: InflightRegistry,
-    private readonly guard: SessionGuard,
+    @Inject(STREAM_AUTHORIZER) private readonly authorizer: StreamAuthorizer,
     @Inject(EVENTS_CONFIG) private readonly cfg: EventsConfig,
   ) {}
 
@@ -147,7 +147,7 @@ export class EventsController {
     own.revalidate = setInterval(() => {
       void (async () => {
         try {
-          const still = await this.guard.resolvePrincipal(req as AuthedRequest);
+          const still = await this.authorizer.revalidate(req as AuthedRequest);
           if (still !== null && ownerKeyOf(still) === key) return;
           this.events.revoke(key, 'authorization_revoked');
         } catch {

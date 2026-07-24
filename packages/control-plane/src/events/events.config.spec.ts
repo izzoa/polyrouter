@@ -26,11 +26,20 @@ describe('buildEventsConfig', () => {
     ).toThrow(/idle-reap/);
   });
 
-  it('rejects a revalidation bound looser than the heartbeat', () => {
+  it('rejects an EXPLICIT revalidation bound looser than the heartbeat', () => {
     // Revalidation IS the revocation-detection bound; it must not lag the heartbeat.
     expect(() => buildEventsConfig({ ...base, EVENTS_REVALIDATE_MS: 30_000 })).toThrow(
       /EVENTS_REVALIDATE_MS/,
     );
+  });
+
+  it('DERIVES the revalidation bound from the heartbeat when unset', () => {
+    // Lowering the heartbeat for a strict proxy must not fail boot on an unrelated knob.
+    const { EVENTS_REVALIDATE_MS: _drop, ...noRevalidate } = base;
+    expect(buildEventsConfig({ ...noRevalidate, EVENTS_HEARTBEAT_MS: 1_000 }).revalidateMs).toBe(
+      1_000,
+    );
+    expect(buildEventsConfig(noRevalidate).revalidateMs).toBe(15_000); // capped at 15s
   });
 
   it('rejects a reconciliation read faster than the poll it supersedes', () => {

@@ -1602,9 +1602,35 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     force = false,
   ): Promise<void> => {
     const t = Date.now();
+    // `force` is phase 1's mandatory hidden→visible catch-up: it RESETS the shared
+    // floor, so a nudge racing a visibility transition can neither fetch while hidden
+    // nor suppress the catch-up.
     if (!force && t - lastAggregateAt < AGGREGATE_FLOOR_MS) return;
     lastAggregateAt = t;
     await load();
+  };
+  /** The loader for whichever aggregate page is on screen, or null elsewhere. */
+  const currentAggregateLoader = (): (() => Promise<void>) | null =>
+    state.page === 'costs' ? loadCosts : state.page === 'overview' ? loadOverview : null;
+  /** A nudge NEVER fetches while hidden — the stream is closed then anyway, and phase
+   * 1's single catch-up owns the return. */
+  const onAnalyticsNudge = (): void => {
+    const load = currentAggregateLoader();
+    if (load === null) return;
+    // CANCELLED, not queued: the stream is closed while hidden anyway, and phase 1's
+    // single mandatory catch-up on return covers the staleness.
+    if (globalThis.document?.visibilityState === 'hidden') return;
+    void requestAggregateRefresh(load);
+  };
+
+  /** A cheap authorization probe for stream failures: on success nothing changes (no
+   * shell remount, no flicker); only a real `401` escalates to the full re-gate. */
+  const probeSession = async (): Promise<void> => {
+    try {
+      await client.me();
+    } catch (e) {
+      if (isApiError(e) && e.status === 401) await bootstrap();
+    }
   };
 
   // --- dashboard event stream ---
@@ -1658,8 +1684,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       },
       onInvalidated: () => {
         if (!fresh()) return;
-        const load = state.page === 'costs' ? loadCosts : state.page === 'overview' ? loadOverview : null;
-        if (load !== null) void requestAggregateRefresh(load);
+        onAnalyticsNudge();
       },
       onResync: () => {
         if (!fresh()) return;
@@ -1670,8 +1695,10 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       onUnexpectedFailure: () => {
         // A native EventSource reports no status or reason, so an auth-driven close is
         // indistinguishable from any other failure — probe unconditionally, which is
-        // what makes the mid-session re-gate reliable.
-        void bootstrap();
+        // what makes the mid-session re-gate reliable. Use the LIGHT probe: a full
+        // bootstrap would flip `authView` to 'loading' and remount the whole shell on
+        // every transient stream hiccup.
+        void probeSession();
       },
       onHealth: (h) => {
         if (fresh()) setState('streamHealth', h);

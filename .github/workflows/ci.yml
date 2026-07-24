@@ -3,6 +3,13 @@ name: CI
 # Enforces the CLAUDE.md Definition of done on every push and pull request:
 # build, lint, typecheck (test files included), unit suites, and the e2e suite
 # against real Postgres 16 + Redis 7. See openspec/specs/ci-pipeline.
+#
+# CI-hygiene note: GitHub honours the `[skip ci]` token ANYWHERE in a commit
+# message — subject OR body. Two real incidents came from that: a hardening commit
+# that skipped CI hid a broken installer test until the next release ran it, and
+# the commit fixing that test skipped its own CI merely for QUOTING the token while
+# explaining the first. Never let the literal token appear in a message you want
+# built; write it as "skip-ci" in prose.
 on:
   push:
   pull_request:

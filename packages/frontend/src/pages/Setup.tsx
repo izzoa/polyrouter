@@ -335,7 +335,7 @@ export function Setup() {
             </Show>
             <Show when={ob().verifyReply}>
               <div style="display:flex;flex-direction:column;gap:6px;background:var(--green-bg);border-radius:8px;padding:12px 14px">
-                <div style="font:500 11px 'Geist',sans-serif;color:var(--green)">
+                <div style="font:500 11px 'Geist',sans-serif;color:var(--green-text)">
                   Routed{ob().verifyModel ? ` → ${ob().verifyModel ?? ''}` : ''}
                 </div>
                 <div style="font:400 12.5px 'Geist',sans-serif;color:var(--text);line-height:1.5;white-space:pre-wrap">

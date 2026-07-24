@@ -114,7 +114,7 @@ export function Limits() {
                       'margin-left': 'auto',
                       'align-self': 'center',
                       font: "400 11px 'Geist',sans-serif",
-                      color: b.enabled ? 'var(--green)' : 'var(--text3)',
+                      color: b.enabled ? 'var(--green-text)' : 'var(--text3)',
                     }}
                   >
                     {b.enabled ? 'enabled' : 'disabled'}

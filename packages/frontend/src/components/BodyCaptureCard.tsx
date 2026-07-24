@@ -69,7 +69,7 @@ export function BodyCaptureCard() {
           style={{
             'white-space': 'nowrap',
             'align-self': 'center',
-            color: on() ? 'var(--amber)' : 'var(--green)',
+            color: on() ? 'var(--amber)' : 'var(--green-text)',
           }}
           title={on() ? 'Prompt/response bodies are being captured' : 'Bodies are never stored'}
         >

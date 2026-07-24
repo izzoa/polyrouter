@@ -102,7 +102,7 @@ export function Costs(props: { live: boolean }) {
           </div>
           <div style="display:flex;gap:12px;font:400 11px 'Geist',sans-serif;color:var(--text3);flex-wrap:wrap">
             <span>
-              <span style="color:var(--green)">■</span> {segPct(free())}% free
+              <span style="color:var(--green-text)">■</span> {segPct(free())}% free
             </span>
             <span>
               <span style="color:var(--accent)">■</span> {segPct(paid())}% paid

@@ -49,7 +49,7 @@ export function Topbar() {
             border: '1px solid var(--border)',
             'border-radius': '7px',
             font: "500 12px 'Geist',sans-serif",
-            color: streaming() ? 'var(--green)' : 'var(--text3)',
+            color: streaming() ? 'var(--green-text)' : 'var(--text3)',
           }}
           title={
             streaming()

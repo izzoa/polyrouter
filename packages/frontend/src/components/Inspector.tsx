@@ -7,7 +7,7 @@ import { useApp } from '../state/context';
 
 /** label / bg / fg per served status. */
 const STATUS_BADGE: Record<RequestStatus, [string, string, string]> = {
-  success: ['OK · served', 'var(--green-bg)', 'var(--green)'],
+  success: ['OK · served', 'var(--green-bg)', 'var(--green-text)'],
   fallback: ['Fallback · served', 'var(--amber-bg)', 'var(--amber)'],
   error: ['Error', 'var(--red-bg)', 'var(--red)'],
   // A client-cancelled request (disconnect) — neutral, not a provider error.
@@ -250,7 +250,7 @@ export function Inspector() {
                               color: p.unpriced
                                 ? 'var(--text3)'
                                 : p.free
-                                  ? 'var(--green)'
+                                  ? 'var(--green-text)'
                                   : 'var(--text)',
                             }}
                           >

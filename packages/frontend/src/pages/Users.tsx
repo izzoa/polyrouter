@@ -211,7 +211,7 @@ export function Users() {
                           font: "500 10.5px 'Geist',sans-serif",
                           color:
                             inviteStatus(i) === 'accepted'
-                              ? 'var(--green)'
+                              ? 'var(--green-text)'
                               : inviteStatus(i) === 'expired'
                                 ? 'var(--text3)'
                                 : 'var(--text2)',
@@ -290,7 +290,7 @@ export function Users() {
                       <span
                         style={{
                           font: "500 10.5px 'Geist',sans-serif",
-                          color: u.disabled ? 'var(--red)' : 'var(--green)',
+                          color: u.disabled ? 'var(--red)' : 'var(--green-text)',
                         }}
                       >
                         {u.disabled ? 'disabled' : 'active'}

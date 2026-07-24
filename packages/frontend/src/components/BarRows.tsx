@@ -13,7 +13,7 @@ export function BarRows(props: { data: SpendDatum[] }) {
           <div>
             <div style="display:flex;justify-content:space-between;font:400 11.5px 'Geist Mono',monospace;color:var(--text2);margin-bottom:4px">
               <span>{d.n}</span>
-              <span style={{ color: (d.free ?? false) ? 'var(--green)' : 'var(--text)' }}>
+              <span style={{ color: (d.free ?? false) ? 'var(--green-text)' : 'var(--text)' }}>
                 {(d.free ?? false) ? 'free' : `$${d.v.toFixed(2)}`}
               </span>
             </div>

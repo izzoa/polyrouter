@@ -163,7 +163,7 @@ export function Settings() {
                           font: "400 11px 'Geist',sans-serif",
                           color:
                             line.ok === true
-                              ? 'var(--green)'
+                              ? 'var(--green-text)'
                               : line.ok === false
                                 ? 'var(--red)'
                                 : 'var(--text3)',

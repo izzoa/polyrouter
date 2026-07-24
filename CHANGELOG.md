@@ -15,6 +15,14 @@ heading is started.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Small green status text is now legible in light mode.** Labels like "OK · served",
+  "Live", "free", "accepted" and "enabled" used the same green as the status dots — only
+  2.7:1 against white, below the WCAG AA 4.5:1 floor for text. They now use a darkened
+  green (5.4:1); dots, bars and chip fills keep the original colour, so the only visible
+  change is that the text is readable. Dark mode already passed and is unchanged.
+
 ## [0.9.0] — 2026-07-24
 
 [Release](https://github.com/izzoa/polyrouter/releases/tag/v0.9.0) ·

@@ -5,8 +5,15 @@ import { isPriceEditableKind, providerKindLabel } from '../state/appState';
 import { useApp } from '../state/context';
 import type { Model, Provider, ProviderStatus } from '../types';
 
-function statusColor(s: ProviderStatus): string {
+/** The status DOT's fill — appearance unchanged. */
+function statusDotColor(s: ProviderStatus): string {
   return s === 'ok' ? 'var(--green)' : s === 'error' ? 'var(--red)' : 'var(--text3)';
+}
+
+/** The status LABEL's text colour. Split from the dot because the fill green is only
+ * 2.7:1 on white — fine for a 6px dot, a WCAG failure for an 11.5px label. */
+function statusTextColor(s: ProviderStatus): string {
+  return s === 'ok' ? 'var(--green-text)' : s === 'error' ? 'var(--red)' : 'var(--text3)';
 }
 
 function statusLabel(s: ProviderStatus): string {
@@ -163,7 +170,7 @@ function ProviderCard(props: { p: Provider }) {
               width: '8px',
               height: '8px',
               'border-radius': '50%',
-              background: statusColor(props.p.status),
+              background: statusDotColor(props.p.status),
               flex: 'none',
             }}
           />
@@ -173,7 +180,7 @@ function ProviderCard(props: { p: Provider }) {
           {providerKindLabel(props.p.kind)}
         </span>
       </div>
-      <div style={{ font: "400 11.5px 'Geist',sans-serif", color: statusColor(props.p.status) }}>
+      <div style={{ font: "400 11.5px 'Geist',sans-serif", color: statusTextColor(props.p.status) }}>
         {statusLabel(props.p.status)}
       </div>
       <div
@@ -190,7 +197,7 @@ function ProviderCard(props: { p: Provider }) {
         <Show
           when={props.p.credentialError === 'reauthorize_required'}
           fallback={
-            <div style="font:400 11px 'Geist',sans-serif;color:var(--green)">
+            <div style="font:400 11px 'Geist',sans-serif;color:var(--green-text)">
               ● Connected · auto-refreshes{expiresLabel(props.p.credentialExpiresAt)}
             </div>
           }
@@ -266,7 +273,7 @@ function ProviderCard(props: { p: Provider }) {
                       class="mono"
                       style={{
                         font: "400 10.5px 'Geist Mono',monospace",
-                        color: m.effectivePrice?.isFree ? 'var(--green)' : 'var(--text3)',
+                        color: m.effectivePrice?.isFree ? 'var(--green-text)' : 'var(--text3)',
                       }}
                     >
                       {priceText(m)}

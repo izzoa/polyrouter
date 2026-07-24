@@ -18,6 +18,10 @@
   --text3: #6a6c73;
   --faint: #b4b6bc;
   --green: #3bb273;
+  /* Green as TEXT needs 4.5:1; the fill green is only 2.7:1 on white, so small
+     "OK"/"Live"/"free" labels get a darkened variant. Dots, bars and chip fills keep
+     `--green` — their appearance is unchanged. */
+  --green-text: #22794c;
   --green-bg: #e9f6ef;
   --amber: #c8901a;
   --amber-bg: #fbf3dc;
@@ -45,6 +49,8 @@
   --text3: #898b93;
   --faint: #4e5058;
   --green: #46c482;
+  /* Dark mode already clears 4.5:1 (8.1:1 on --panel), so text matches the fill. */
+  --green-text: #46c482;
   --green-bg: #12291d;
   --amber: #e7b03c;
   --amber-bg: #2e2712;

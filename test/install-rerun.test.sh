@@ -47,12 +47,23 @@ make_archive() {
 }
 make_archive "SENTINEL-FIRST"
 
-# --- stub `curl`: emit the fixture archive regardless of args ------------------
+# --- stub `curl`/`wget`: deliver the fixture archive -------------------------
+# The installer downloads to a FILE and extracts separately (POSIX sh has no
+# pipefail, so `curl | tar` would report only tar's status and could mask a
+# truncated download). So the stub must honour `-o` (curl) / `-O` (wget) and only
+# fall back to stdout when no output path is given.
 cat >"$STUBBIN/curl" <<STUB
 #!/bin/sh
-cat "$WORK/archive.tgz"
+out=""
+prev=""
+for a in "\$@"; do
+  case "\$prev" in -o|-O) out="\$a" ;; esac
+  prev="\$a"
+done
+if [ -n "\$out" ]; then cp "$WORK/archive.tgz" "\$out"; else cat "$WORK/archive.tgz"; fi
 STUB
 chmod +x "$STUBBIN/curl"
+cp "$STUBBIN/curl" "$STUBBIN/wget"
 
 PATH="$STUBBIN:$PATH"
 export PATH

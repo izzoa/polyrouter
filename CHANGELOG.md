@@ -15,6 +15,11 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-07-24
+
+[Release](https://github.com/izzoa/polyrouter/releases/tag/v0.9.1) ·
+[Compare](https://github.com/izzoa/polyrouter/compare/v0.9.0...v0.9.1)
+
 ### Fixed
 
 - **Small green status text is now legible in light mode.** Labels like "OK · served",
@@ -22,6 +27,11 @@ heading is started.
   2.7:1 against white, below the WCAG AA 4.5:1 floor for text. They now use a darkened
   green (5.4:1); dots, bars and chip fills keep the original colour, so the only visible
   change is that the text is readable. Dark mode already passed and is unchanged.
+
+### Upgrade notes
+
+- **Nothing to do** — no migrations, no config, no behaviour change beyond the colour of
+  small green labels. A drop-in upgrade from 0.9.0.
 
 ## [0.9.0] — 2026-07-24
 
@@ -397,7 +407,8 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/izzoa/polyrouter/releases/tag/v0.9.1
 [0.9.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.9.0
 [0.8.1]: https://github.com/izzoa/polyrouter/releases/tag/v0.8.1
 [0.8.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.8.0

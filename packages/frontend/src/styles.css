@@ -269,6 +269,14 @@ select:focus {
 .nav-item:hover {
   background: var(--hover);
 }
+/* icon + label as one left group so the count badge stays right-aligned under
+   the button's space-between; icon inherits the button currentColor. */
+.nav-item-label {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
 
 .setup-card {
   margin: 14px 10px 0;

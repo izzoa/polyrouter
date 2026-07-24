@@ -15,6 +15,14 @@ heading is started.
 
 ## [Unreleased]
 
+### Added
+
+- **Per-page icons in the dashboard.** Each nav page (Overview, Requests, Costs,
+  …) now has a line-icon in the left-rail nav, and the same icon carries into the
+  page header when you select it. Icons are greyscale and follow the single-accent
+  theme (they tint to the accent on the active item); the Setup card keeps its
+  progress ring (its icon shows in the header only).
+
 ## [0.8.1] — 2026-07-22
 
 [Release](https://github.com/izzoa/polyrouter/releases/tag/v0.8.1) ·

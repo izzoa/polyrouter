@@ -1,6 +1,7 @@
 import { For, Show } from 'solid-js';
 import { useApp } from '../state/context';
 import type { Page } from '../types';
+import { PageIcon } from './PageIcon';
 import { UserMenu } from './UserMenu';
 
 const NAV: [Page, string][] = [
@@ -55,7 +56,10 @@ export function Sidebar() {
               }}
               onClick={() => app.go(id)}
             >
-              <span>{label}</span>
+              <span class="nav-item-label">
+                <PageIcon page={id} />
+                <span>{label}</span>
+              </span>
               <Show when={badge(id)}>
                 {(b) => (
                   <span style="font:500 10px 'Geist Mono',monospace;color:var(--text3);background:var(--chip);border-radius:8px;padding:1px 6px">

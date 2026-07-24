@@ -1,6 +1,7 @@
 import { useApp } from '../state/context';
 import { BASE_URL } from '../data/catalog';
 import type { Page } from '../types';
+import { PageIcon } from './PageIcon';
 
 const TITLES: Record<Page, [string, string]> = {
   overview: ['Overview', 'last 24 hours'],
@@ -21,8 +22,13 @@ export function Topbar() {
   return (
     <div style="flex:none;display:flex;align-items:center;justify-content:space-between;padding:14px 26px;border-bottom:1px solid var(--border);background:var(--bg)">
       <div style="display:flex;align-items:baseline;gap:10px">
-        <div style="font:600 16px 'Geist',sans-serif;letter-spacing:-.02em">
-          {TITLES[state.page][0]}
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="display:flex;color:var(--text3)" aria-hidden="true">
+            <PageIcon page={state.page} size={17} />
+          </span>
+          <div style="font:600 16px 'Geist',sans-serif;letter-spacing:-.02em">
+            {TITLES[state.page][0]}
+          </div>
         </div>
         <div style="font:400 12px 'Geist',sans-serif;color:var(--text3)">
           {TITLES[state.page][1]}

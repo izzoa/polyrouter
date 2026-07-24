@@ -157,11 +157,17 @@ flowchart LR
   D --> PG
 ```
 
+The smart routing layers all run **inside** the proxy (not as separate services): L1
+structural and L3 cascade ship in the baseline; the optional **L2 semantic** embedder and
+its background learning loop — which adapts thresholds from recorded request outcomes — are
+a flag-gated add-on that reuses the same Redis/PostgreSQL, **never** in the baseline image
+(see [the semantic embedder](#optional-the-semantic-embedder-layer-2-foundation)).
+
 Monorepo (Turborepo + npm workspaces): `packages/shared` (types),
 `packages/control-plane` (NestJS — dashboard API, auth, CRUD, analytics),
 `packages/data-plane` (the proxy: routing, translation, recording),
 `packages/frontend` (SolidJS SPA). Architecture overview: the code wiki in
-[`openwiki/`](./openwiki/); build history: [`TODOS.md`](./TODOS.md).
+[`openwiki/`](./openwiki/); release history: [`CHANGELOG.md`](./CHANGELOG.md).
 
 ## Self-hosting
 
@@ -670,9 +676,9 @@ Useful commands (see [`CLAUDE.md`](./CLAUDE.md) for the full set):
 
 Development is **spec-driven** (OpenSpec change proposals):
 [`CLAUDE.md`](./CLAUDE.md) pins the stack and the non-negotiable invariants,
-[`TODOS.md`](./TODOS.md) records every shipped change with its review history, and
-[`STYLESEED.md`](./STYLESEED.md) locks the dashboard's visual language (UI changes must
-pass its `/ss-score` gate). CI enforces build, lint, typecheck, the unit suites, and e2e
+[`CHANGELOG.md`](./CHANGELOG.md) records every user-facing change (each release links its
+GitHub notes), and [`STYLESEED.md`](./STYLESEED.md) locks the dashboard's visual language
+(UI changes must pass its `/ss-score` gate). CI enforces build, lint, typecheck, the unit suites, and e2e
 — including the protocol-contract (golden files), SSRF, tenant-isolation, and
 cost-immutability suites — on every push.
 

@@ -6,7 +6,7 @@
   "license": "AGPL-3.0-only",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/OWNER/polyrouter.git"
+    "url": "git+https://github.com/izzoa/polyrouter.git"
   },
   "workspaces": [
     "packages/*"

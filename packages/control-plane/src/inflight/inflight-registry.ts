@@ -1,4 +1,11 @@
-import { Inject, Injectable, Logger, type OnApplicationShutdown, type OnModuleInit } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  Logger,
+  Optional,
+  type OnApplicationShutdown,
+  type OnModuleInit,
+} from '@nestjs/common';
 import { REDIS_CLIENT, type InflightSnapshot, type Principal } from '@polyrouter/shared/server';
 import type { Redis } from 'ioredis';
 
@@ -28,6 +35,23 @@ export interface InflightEntry {
 export interface InflightLease {
   settle(): void;
 }
+
+/**
+ * Optional transition sink (phase2-add-dashboard-event-stream), so a connected
+ * dashboard learns of a mark/settle without polling. Publication is stage (i) of the
+ * three-stage model: bounded O(1) scheduling that NEVER awaits dispatch, on exactly
+ * the same best-effort terms as the registry's Redis writes — a failure can never
+ * fail, block, delay, or reorder the request, nor alter the durable row.
+ *
+ * Injected as an interface (not the concrete bus) so the registry keeps no dependency
+ * on the events module and stays usable — and testable — without it.
+ */
+export interface InflightTransitions {
+  started(principal: Principal, entry: InflightEntry): void;
+  settled(principal: Principal, requestId: string): void;
+}
+
+export const INFLIGHT_TRANSITIONS = 'polyrouter:inflight-transitions';
 
 export interface InflightConfig {
   /** Immutable horizon (`startedAt + admissionLifetimeMs`) bounding a stale FIRST
@@ -151,7 +175,12 @@ export class InflightRegistry implements OnModuleInit, OnApplicationShutdown {
   private readonly cmds: RegistryCommands;
   private sweepTimer: ReturnType<typeof setInterval> | undefined;
 
-  constructor(@Inject(REDIS_CLIENT) private readonly redis: Redis) {
+  constructor(
+    @Inject(REDIS_CLIENT) private readonly redis: Redis,
+    @Optional()
+    @Inject(INFLIGHT_TRANSITIONS)
+    private readonly transitions: InflightTransitions | null = null,
+  ) {
     // defineCommand is idempotent per name — safe on the shared client.
     this.redis.defineCommand('inflightMark', { numberOfKeys: 3, lua: MARK_LUA });
     this.redis.defineCommand('inflightRenew', { numberOfKeys: 2, lua: RENEW_LUA });
@@ -162,6 +191,18 @@ export class InflightRegistry implements OnModuleInit, OnApplicationShutdown {
   onModuleInit(): void {
     this.sweepTimer = setInterval(() => void this.sweepOnce(), this.cfg.sweepIntervalMs);
     this.sweepTimer.unref?.();
+  }
+
+  /** Stage (i) of publication: bounded, synchronous, and it can NEVER escape — a
+   * broken or absent sink must be indistinguishable from no sink at all from the
+   * request's point of view (same terms as the registry's Redis writes). */
+  private publishTransition(emit: () => void): void {
+    if (this.transitions === null) return;
+    try {
+      emit();
+    } catch (err) {
+      this.logger.warn(`inflight transition publish failed: ${String((err as Error).message)}`);
+    }
   }
 
   onApplicationShutdown(): void {
@@ -200,6 +241,8 @@ export class InflightRegistry implements OnModuleInit, OnApplicationShutdown {
         this.cfg.indexTtlMs,
       ),
     );
+    // Stage (i): O(1), synchronous, never awaited, never throws out of here.
+    this.publishTransition(() => this.transitions?.started(principal, entry));
     let closed = false;
     const timer = setInterval(
       () => {
@@ -215,6 +258,7 @@ export class InflightRegistry implements OnModuleInit, OnApplicationShutdown {
         closed = true; // synchronous close: no renewal fires after this returns
         clearInterval(timer);
         this.fire(() => this.cmds.inflightClear(eKey, iKey, mKey, entry.requestId, admissionCutoff));
+        this.publishTransition(() => this.transitions?.settled(principal, entry.requestId));
       },
     };
   }

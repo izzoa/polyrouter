@@ -99,3 +99,102 @@ export function inflightDisplay(s: InflightState, recentIds: ReadonlySet<string>
   }
   return out.sort((a, b) => b.startedAt - a.startedAt);
 }
+
+// ---------------------------------------------------------------------------
+// Stream delta appliers (phase2-add-dashboard-event-stream).
+//
+// `foldInflight` above is SNAPSHOT-shaped: it wholly replaces the live set, so it
+// cannot express "one entry started" or "this id settled". These appliers add that,
+// reusing the same evidence rules — settlement only ever comes from an explicit
+// settled event or an authoritative, non-truncated snapshot, whatever transport
+// carried it.
+// ---------------------------------------------------------------------------
+
+/** Ids that have settled recently, so a REORDERED late `started` cannot resurrect a
+ * ghost row. Ordering is guaranteed server-side (synchronous serialized enqueue per
+ * owner); this is defense-in-depth, not the primary mechanism — publication delay has
+ * no stated bound, so no finite marker lifetime would suffice on its own. */
+export interface StreamState extends InflightState {
+  /** id → epoch ms when its settle was observed. */
+  readonly terminal: Readonly<Record<string, number>>;
+}
+
+export const emptyStream = (): StreamState => ({ live: [], settling: [], terminal: {} });
+
+/** How long a terminal marker is kept (bounded — same order as the settling grace). */
+export const TERMINAL_MARKER_MS = INFLIGHT_GRACE_MS;
+
+const pruneTerminal = (terminal: Readonly<Record<string, number>>, now: number): Record<string, number> => {
+  const out: Record<string, number> = {};
+  for (const [id, at] of Object.entries(terminal)) if (now - at < TERMINAL_MARKER_MS) out[id] = at;
+  return out;
+};
+
+/** An entry started. A late/duplicate start for an already-settled or already-live id
+ * is a NO-OP (never a duplicate row, never a resurrected ghost). */
+export function applyStarted(
+  prev: StreamState,
+  row: InflightRow,
+  recentIds: ReadonlySet<string>,
+  now: number,
+): StreamState {
+  const terminal = pruneTerminal(prev.terminal, now);
+  if (terminal[row.id] !== undefined) return { ...prev, terminal }; // settled already
+  if (recentIds.has(row.id)) return { ...prev, terminal }; // durable row wins
+  if (prev.live.some((r) => r.id === row.id)) return { ...prev, terminal }; // duplicate
+  return { ...prev, live: [...prev.live, row], terminal };
+}
+
+/** An explicit settle: POSITIVE evidence, no inference needed. The row moves into the
+ * settling bridge (retained until its durable row appears or the grace expires) and a
+ * durable refresh is requested. Idempotent — a duplicate or late settle for an id
+ * already handed off changes nothing. */
+export function applySettled(
+  prev: StreamState,
+  id: string,
+  now: number,
+): { next: StreamState; refresh: boolean } {
+  const terminal = { ...pruneTerminal(prev.terminal, now), [id]: now };
+  const row = prev.live.find((r) => r.id === id);
+  if (row === undefined) {
+    // Not currently displayed (already handed off, or never seen) → nothing to bridge.
+    return { next: { ...prev, terminal }, refresh: false };
+  }
+  return {
+    next: {
+      live: prev.live.filter((r) => r.id !== id),
+      settling: [...prev.settling, { row, at: now }],
+      terminal,
+    },
+    refresh: true,
+  };
+}
+
+/**
+ * An authoritative view arrived over the stream (the initial `snapshot`, a `resync`
+ * re-snapshot, or a periodic reconciliation read). Applied through the SAME rules as a
+ * poll — so a degraded or truncated snapshot never settles an absent id — and applied
+ * ATOMICALLY, PRESERVING rows already in the settling bridge so a resync landing
+ * mid-handoff cannot blink a row to empty.
+ */
+export function applyStreamSnapshot(
+  prev: StreamState,
+  snap: InflightSnapshot,
+  recentIds: ReadonlySet<string>,
+  now: number,
+): { next: StreamState; refresh: boolean } {
+  const { next, refresh } = foldInflight(
+    { live: prev.live, settling: prev.settling },
+    snap,
+    recentIds,
+    now,
+  );
+  const terminal = pruneTerminal(prev.terminal, now);
+  // Ids the snapshot proves settled also earn a terminal marker, so a reordered
+  // `started` for them afterwards stays a no-op.
+  if (snap.available && !snap.truncated) {
+    const present = new Set(snap.items.map((r) => r.id));
+    for (const r of prev.live) if (!present.has(r.id)) terminal[r.id] = now;
+  }
+  return { next: { ...next, terminal }, refresh };
+}

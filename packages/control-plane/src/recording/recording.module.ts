@@ -1,9 +1,16 @@
 import { Module } from '@nestjs/common';
+import { EventsBusModule } from '../events/events-bus.module';
+import { AnalyticsNudgeAdapter } from '../events/analytics-nudge.adapter';
 import { BodyCaptureModule } from '../body-capture/body-capture.module';
 import { DatabaseModule } from '../database/database.module';
 import { ObservabilityModule } from '../observability/observability.module';
 import { PricingModule } from '../pricing/pricing.module';
-import { DEFAULT_LOG_WRITER_CONFIG, LOG_WRITER_CONFIG, LogWriter } from './log-writer';
+import {
+  ANALYTICS_INVALIDATION,
+  DEFAULT_LOG_WRITER_CONFIG,
+  LOG_WRITER_CONFIG,
+  LogWriter,
+} from './log-writer';
 import { RequestRecorder } from './request-recorder';
 
 /** Request logging (#11): the async, failure-isolated writer + the recorder the
@@ -13,9 +20,13 @@ import { RequestRecorder } from './request-recorder';
  * `BodyCaptureModule` the writer's body config + guarded-insert seam
  * (add-body-capture). */
 @Module({
-  imports: [DatabaseModule, PricingModule, ObservabilityModule, BodyCaptureModule],
+  imports: [DatabaseModule, PricingModule, ObservabilityModule, BodyCaptureModule, EventsBusModule],
   providers: [
     LogWriter,
+    // Post-insert analytics nudges reach the dashboard bus through this adapter;
+    // LogWriter itself only knows the `AnalyticsInvalidationSink` interface.
+    AnalyticsNudgeAdapter,
+    { provide: ANALYTICS_INVALIDATION, useExisting: AnalyticsNudgeAdapter },
     RequestRecorder,
     { provide: LOG_WRITER_CONFIG, useValue: DEFAULT_LOG_WRITER_CONFIG },
   ],

@@ -4,6 +4,7 @@ import {
   Logger,
   type OnApplicationShutdown,
   type OnModuleInit,
+  Optional,
 } from '@nestjs/common';
 import {
   ROOT_CONTEXT,
@@ -210,6 +211,18 @@ async function withTimeout<T>(op: Promise<T>, ms: number, label: string): Promis
  * poison another tenant). Best-effort durability: overflow / past-budget drops
  * are counted and logged, never silent.
  */
+/**
+ * Optional analytics-invalidation sink (phase2-add-dashboard-event-stream). Called
+ * from a SUCCESSFUL flush — i.e. post-insert — so a pushed aggregate refetch can
+ * actually observe the row. Best-effort and synchronous-O(1): it can never fail,
+ * block, or delay the flush.
+ */
+export interface AnalyticsInvalidationSink {
+  invalidated(principal: Principal): void;
+}
+
+export const ANALYTICS_INVALIDATION = 'polyrouter:analytics-invalidation';
+
 @Injectable()
 export class LogWriter implements OnModuleInit, OnApplicationShutdown {
   private readonly logger = new Logger(LogWriter.name);
@@ -232,6 +245,9 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
     @Inject(LOG_WRITER_CONFIG) private readonly cfg: LogWriterConfig,
     private readonly metrics: ProxyMetrics,
     @Inject(BODY_CAPTURE_CONFIG) private readonly bodyCfg: BodyCaptureConfig,
+    @Optional()
+    @Inject(ANALYTICS_INVALIDATION)
+    private readonly invalidation: AnalyticsInvalidationSink | null = null,
   ) {}
 
   onModuleInit(): void {
@@ -380,6 +396,16 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
             writtenLogIds.add(row.id); // parent is now durable → its attempts may insert (A-14)
             this.metrics.recordCost(d.providerName, d.pricing.externalModelId, row.cost ?? null);
           });
+          // The aggregates for this owner are now genuinely stale (the rows are
+          // durable), so nudge here and nowhere earlier. Best-effort: a broken sink
+          // must be indistinguishable from no sink at all.
+          if (this.invalidation !== null) {
+            try {
+              this.invalidation.invalidated(principal);
+            } catch (err) {
+              this.logger.warn(`analytics nudge failed: ${String((err as Error).message)}`);
+            }
+          }
           // Bodies flush ONLY after their parent rows landed (parent-first,
           // add-body-capture); a body failure never re-runs the log insert.
           await this.flushBodies(principal, drafts);

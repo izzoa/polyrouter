@@ -5,6 +5,7 @@ import { AccountModule } from './account/account.module';
 import { AdminModule } from './admin/admin.module';
 import { AgentsController } from './agents/agents.controller';
 import { AnalyticsModule } from './analytics/analytics.module';
+import { EventsModule } from './events/events.module';
 import { AuthModule } from './auth/auth.module';
 import { BodyCaptureModule } from './body-capture/body-capture.module';
 import { BudgetsModule } from './budgets/budgets.module';
@@ -45,6 +46,7 @@ import { RoutingConfigModule } from './routing-config/routing-config.module';
     BodyCaptureModule,
     AccountModule,
     AnalyticsModule,
+    EventsModule,
     AdminModule,
   ],
   controllers: [HealthController, AgentsController],

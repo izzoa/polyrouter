@@ -27,6 +27,15 @@ heading is started.
   latency — above the completed rows, instead of leaving them invisible until they
   finish. Presence is tracked in Redis, metadata-only and per-owner; if Redis is
   unavailable the card simply shows no live rows and nothing else changes.
+- **Live push updates in the dashboard.** A single owner-scoped SSE endpoint
+  (`GET /api/events`) streams in-flight presence and analytics-staleness nudges, so a
+  running request appears as soon as it starts and hands off to its completed row on an
+  explicit event instead of being inferred from a later poll. Polling remains the
+  reliable fallback — if the stream is unavailable, refused, dropped, or buffered by a
+  reverse proxy the dashboard keeps working and shows **Polling** instead of **Live**.
+  Nudges share one refresh budget with the analytics poll, so push is never more
+  expensive than the polling it supplements. New env `EVENTS_ENABLED` /
+  `EVENTS_HEARTBEAT_MS`; **reverse proxies must not buffer `/api/events`**.
 
 ### Changed
 

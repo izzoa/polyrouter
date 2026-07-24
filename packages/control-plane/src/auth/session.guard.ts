@@ -6,7 +6,12 @@ import {
   type ExecutionContext,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { IDENTITY_PORT, userPrincipal, type IdentityPort } from '@polyrouter/shared/server';
+import {
+  IDENTITY_PORT,
+  userPrincipal,
+  type IdentityPort,
+  type Principal,
+} from '@polyrouter/shared/server';
 import type { BaseConfig } from '@polyrouter/shared';
 import { AUTH_INSTANCE } from './auth.tokens';
 import { autoLoginEligible } from './auto-login';
@@ -48,16 +53,28 @@ export class SessionGuard implements CanActivate {
     // before Nest routing, so it never reaches here.
     if (!isApiPath(req.path)) return true;
 
+    const principal = await this.resolvePrincipal(req);
+    if (principal === null) throw new UnauthorizedException();
+    req.principal = principal;
+    return true;
+  }
+
+  /**
+   * Resolve the authorized principal for a request, or `null` if it is not
+   * authorized. THE single authorization path — `canActivate` uses it, and the
+   * dashboard event stream re-runs it periodically to revalidate a long-lived
+   * connection (phase2-add-dashboard-event-stream). Sharing one code path is what
+   * makes "revalidation applies the same rules as the guard, including loopback
+   * auto-login" true by construction rather than by careful duplication.
+   */
+  async resolvePrincipal(req: AuthedRequest): Promise<Principal | null> {
     const session = await this.auth.getSession(req.headers);
     if (session) {
       // Disabled users are denied fail-closed even with an otherwise-valid
       // session (user-administration; their session rows are also deleted on
       // disable, so this is defense-in-depth for the race window).
-      if (await this.identity.isDisabled(session.user.id)) {
-        throw new UnauthorizedException();
-      }
-      req.principal = userPrincipal(session.user.id);
-      return true;
+      if (await this.identity.isDisabled(session.user.id)) return null;
+      return userPrincipal(session.user.id);
     }
 
     // No session: hardened localhost auto-login (self-host only).
@@ -69,12 +86,9 @@ export class SessionGuard implements CanActivate {
       })
     ) {
       const adminId = await this.identity.findAdminUserId();
-      if (adminId) {
-        req.principal = userPrincipal(adminId);
-        return true;
-      }
+      if (adminId) return userPrincipal(adminId);
     }
 
-    throw new UnauthorizedException();
+    return null;
   }
 }

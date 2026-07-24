@@ -42,7 +42,7 @@ export function Costs(props: { live: boolean }) {
     ),
   );
   createPoller({
-    fn: () => app.loadCosts(),
+    fn: (reason) => app.requestAggregateRefresh(() => app.loadCosts(), reason === 'resume'),
     intervalMs: () => POLL_MS,
     enabled: () => props.live,
     runImmediately: false,

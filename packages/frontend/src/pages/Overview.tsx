@@ -28,7 +28,10 @@ export function Overview(props: { live: boolean }) {
   // Both pollers are visibility-gated and single-flight, and stop on unmount
   // (phase1-tune-dashboard-polling).
   createPoller({
-    fn: () => app.loadOverview(),
+    // Routed through the SHARED poll+nudge budget so a stream nudge consumes this
+    // slot rather than adding to it; `resume` is forced so phase 1's mandatory
+    // hidden→visible catch-up is never suppressed by the floor.
+    fn: (reason) => app.requestAggregateRefresh(() => app.loadOverview(), reason === 'resume'),
     intervalMs: () => POLL_MS,
     enabled: () => props.live,
     runImmediately: false, // the range effect above already loaded at mount
@@ -40,7 +43,10 @@ export function Overview(props: { live: boolean }) {
   createPoller({
     fn: () => app.loadInflight(),
     intervalMs: () => inflightCadenceMs(state.inflightRows.length),
-    enabled: () => props.live,
+    // A HEALTHY stream supersedes this poll — exactly one continuous driver feeds the
+    // live rows at a time (the stream's low-rate authoritative reconciliation read is
+    // a verifier, not a second driver). Any degradation resumes it automatically.
+    enabled: () => props.live && state.streamHealth !== 'live',
   });
 
   const spend = () => state.analyticsSummary?.spend ?? 0;

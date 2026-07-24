@@ -1,4 +1,10 @@
 import { connectionSnippet, isHarnessType, type HarnessType } from '@polyrouter/shared';
+import {
+  createEventStream,
+  type EventSourceFactory,
+  type EventStreamHandle,
+  type StreamHealth,
+} from '../data/eventStream';
 import { createStore, produce, type SetStoreFunction } from 'solid-js/store';
 import { filterToRequestParams } from '../data/analytics';
 import {
@@ -43,11 +49,13 @@ import {
   type UpdateChannelInput,
 } from '../data/api';
 import {
-  emptyInflight,
-  foldInflight,
+  applySettled,
+  applyStarted,
+  applyStreamSnapshot,
+  emptyStream,
   inflightDisplay,
   reconcile as reconcileInflightState,
-  type InflightState,
+  type StreamState,
 } from '../data/inflight';
 import { effectiveRuleOrder } from '../data/bandTargets';
 import { BASE_URL } from '../data/catalog';
@@ -198,6 +206,8 @@ export interface AppState {
   recentRequestsError: string | null;
   /** add-inflight-requests: live in-flight rows merged above the recent list. */
   inflightRows: InflightRow[];
+  /** Live-view transport health (phase2-add-dashboard-event-stream). */
+  streamHealth: StreamHealth;
   requestList: RequestRow[];
   requestListLoading: boolean;
   requestListError: string | null;
@@ -688,6 +698,7 @@ function initialState(): AppState {
     recentRequestsLoading: false,
     recentRequestsError: null,
     inflightRows: [],
+    streamHealth: 'polling',
     requestList: [],
     requestListLoading: false,
     requestListError: null,
@@ -772,6 +783,16 @@ export interface AppStore {
   loadCosts: () => Promise<void>;
   loadRecentRequests: () => Promise<void>;
   loadInflight: () => Promise<void>;
+  /** Dashboard event stream (phase2-add-dashboard-event-stream): the app shell opens
+   * it while visible + live and closes it when hidden, releasing its slot in the
+   * SHARED per-origin connection pool rather than merely pausing a timer. */
+  connectStream: () => void;
+  disconnectStream: () => void;
+  /** Test seam: inject a transport factory before connecting. */
+  setStreamFactory: (factory: EventSourceFactory) => void;
+  /** Aggregate refresh through the shared poll+nudge budget. `force` is the mandatory
+   * hidden→visible catch-up, which the floor must never suppress. */
+  requestAggregateRefresh: (load: () => Promise<void>, force?: boolean) => Promise<void>;
   loadRequests: (reset: boolean) => Promise<void>;
   // auth / account
   bootstrap: () => Promise<void>;
@@ -1047,12 +1068,13 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     // the previous owner can never commit under the new one. At an identity boundary
     // tenant isolation overrides handoff continuity — dropping a row mid-settling-grace
     // is correct and required.
-    inflightState = emptyInflight();
+    inflightState = emptyStream();
     bump('recent');
     setState(
       produce((s) => {
         s.inflightRows = [];
         s.recentRequests = [];
+        s.streamHealth = 'polling';
         s.autoLayers = null;
         s.calHistory = { rows: [], loaded: false, error: null };
         s.semLearn = { status: null, loaded: false, error: null };
@@ -1518,11 +1540,13 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
 
   // add-inflight-requests: the live-view fold state is closure-held; only the
   // derived display array `inflightRows` lives in the reactive store.
-  let inflightState: InflightState = emptyInflight();
+  // ONE fold state for both drivers (phase2-add-dashboard-event-stream): the stream
+  // and the poll must never diverge, so the appliers and the poll fold share it.
+  let inflightState: StreamState = emptyStream();
   const recentIdSet = (): ReadonlySet<string> => new Set(state.recentRequests.map((r) => r.id));
   const reconcileInflightDisplay = (): void => {
     const ids = recentIdSet();
-    inflightState = reconcileInflightState(inflightState, ids);
+    inflightState = { ...inflightState, ...reconcileInflightState(inflightState, ids) };
     setState('inflightRows', inflightDisplay(inflightState, ids));
   };
 
@@ -1556,10 +1580,114 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     }
     if (idGen !== identityGen) return; // a different account signed in mid-flight
     const ids = recentIdSet();
-    const { next, refresh } = foldInflight(inflightState, snap, ids, Date.now());
+    const { next, refresh } = applyStreamSnapshot(inflightState, snap, ids, Date.now());
     inflightState = next;
     setState('inflightRows', inflightDisplay(next, ids));
     if (refresh) void loadRecentRequests(); // a settle was observed → durable refresh
+  };
+
+  /**
+   * The SHARED aggregate-refresh budget (phase2-add-dashboard-event-stream).
+   *
+   * A nudge must not ADD to the analytics poll — it CONSUMES the next scheduled one, so
+   * the COMBINED poll+nudge rate can never exceed the poll cadence. Routing both through
+   * one floored gate is what makes that a property rather than a hope: a burst of 10k
+   * settles cannot turn into a query storm. `force` is the mandatory hidden→visible
+   * catch-up, which must never be suppressed.
+   */
+  const AGGREGATE_FLOOR_MS = 15_000;
+  let lastAggregateAt = 0;
+  const requestAggregateRefresh = async (
+    load: () => Promise<void>,
+    force = false,
+  ): Promise<void> => {
+    const t = Date.now();
+    if (!force && t - lastAggregateAt < AGGREGATE_FLOOR_MS) return;
+    lastAggregateAt = t;
+    await load();
+  };
+
+  // --- dashboard event stream ---
+  let stream: EventStreamHandle | null = null;
+  let reconcileTimer: ReturnType<typeof setInterval> | undefined;
+  let streamFactory: EventSourceFactory | undefined;
+
+  const stopReconcile = (): void => {
+    if (reconcileTimer !== undefined) {
+      clearInterval(reconcileTimer);
+      reconcileTimer = undefined;
+    }
+  };
+
+  const disconnectStream = (): void => {
+    stopReconcile();
+    stream?.close();
+    stream = null;
+    setState('streamHealth', 'polling');
+  };
+
+  const connectStream = (): void => {
+    if (stream !== null) return;
+    // Every handler is bound to the identity generation: a frame from the previous
+    // owner is DISCARDED, never folded (invariant 5).
+    const idGen = identityGen;
+    const fresh = (): boolean => idGen === identityGen;
+    const handle = createEventStream({
+      ...(streamFactory === undefined ? {} : { factory: streamFactory }),
+      onSnapshot: (snap) => {
+        if (!fresh()) return;
+        const ids = recentIdSet();
+        const { next, refresh } = applyStreamSnapshot(inflightState, snap, ids, Date.now());
+        inflightState = next;
+        setState('inflightRows', inflightDisplay(next, ids));
+        if (refresh) void loadRecentRequests();
+      },
+      onStarted: (row) => {
+        if (!fresh()) return;
+        const ids = recentIdSet();
+        inflightState = applyStarted(inflightState, row, ids, Date.now());
+        setState('inflightRows', inflightDisplay(inflightState, ids));
+      },
+      onSettled: (id) => {
+        if (!fresh()) return;
+        const { next, refresh } = applySettled(inflightState, id, Date.now());
+        inflightState = next;
+        setState('inflightRows', inflightDisplay(next, recentIdSet()));
+        // An explicit settle is POSITIVE evidence — no waiting for a poll interval.
+        if (refresh) void loadRecentRequests();
+      },
+      onInvalidated: () => {
+        if (!fresh()) return;
+        const load = state.page === 'costs' ? loadCosts : state.page === 'overview' ? loadOverview : null;
+        if (load !== null) void requestAggregateRefresh(load);
+      },
+      onResync: () => {
+        if (!fresh()) return;
+        // Drop delta state and re-establish authoritatively. The settling bridge is
+        // preserved by the applier, so a resync mid-handoff never blinks a row.
+        void loadInflight();
+      },
+      onUnexpectedFailure: () => {
+        // A native EventSource reports no status or reason, so an auth-driven close is
+        // indistinguishable from any other failure — probe unconditionally, which is
+        // what makes the mid-session re-gate reliable.
+        void bootstrap();
+      },
+      onHealth: (h) => {
+        if (fresh()) setState('streamHealth', h);
+      },
+      onReconcileMs: (ms) => {
+        // While streaming, verify CONTENT (not just liveness) on a bounded low-rate
+        // read: publication is best-effort, so a dropped started/settled must
+        // self-correct rather than leave a heart-beating stream showing a wrong set.
+        stopReconcile();
+        reconcileTimer = setInterval(() => {
+          if (fresh() && stream?.health() === 'live') void loadInflight();
+        }, ms);
+        reconcileTimer.unref?.();
+      },
+    });
+    stream = handle;
   };
 
   const loadOverview = async (): Promise<void> => {
@@ -1812,6 +1940,12 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     loadCosts,
     loadRecentRequests,
     loadInflight,
+    connectStream,
+    disconnectStream,
+    setStreamFactory: (factory: EventSourceFactory) => {
+      streamFactory = factory;
+    },
+    requestAggregateRefresh,
     loadRequests,
 
     bootstrap,

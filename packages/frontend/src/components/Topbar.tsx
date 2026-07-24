@@ -19,6 +19,7 @@ const TITLES: Record<Page, [string, string]> = {
 export function Topbar() {
   const app = useApp();
   const { state } = app;
+  const streaming = (): boolean => state.streamHealth === 'live';
   return (
     <div style="flex:none;display:flex;align-items:center;justify-content:space-between;padding:14px 26px;border-bottom:1px solid var(--border);background:var(--bg)">
       <div style="display:flex;align-items:baseline;gap:10px">
@@ -35,12 +36,39 @@ export function Topbar() {
         </div>
       </div>
       <div style="display:flex;align-items:center;gap:10px">
-        <div style="display:flex;align-items:center;gap:6px;padding:5px 11px;background:var(--panel);border:1px solid var(--border);border-radius:7px;font:500 12px 'Geist',sans-serif;color:var(--green)">
+        {/* HONEST transport state (phase2-add-dashboard-event-stream): a buffering
+            proxy or a dropped stream must be diagnosable, not look like an idle
+            instance. Greyscale for the fallback — no second accent hue. */}
+        <div
+          style={{
+            display: 'flex',
+            'align-items': 'center',
+            gap: '6px',
+            padding: '5px 11px',
+            background: 'var(--panel)',
+            border: '1px solid var(--border)',
+            'border-radius': '7px',
+            font: "500 12px 'Geist',sans-serif",
+            color: streaming() ? 'var(--green)' : 'var(--text3)',
+          }}
+          title={
+            streaming()
+              ? 'Live updates are streaming from the server'
+              : 'Streaming unavailable — falling back to periodic polling (the dashboard still updates)'
+          }
+        >
+          {/* Only the live state pulses; the polling fallback is deliberately static. */}
           <span
             aria-hidden="true"
-            style="width:6px;height:6px;border-radius:50%;background:var(--green);animation:pulse 2s infinite"
+            classList={{ 'live-dot': streaming() }}
+            style={{
+              width: '6px',
+              height: '6px',
+              'border-radius': '50%',
+              background: streaming() ? 'var(--green)' : 'var(--faint)',
+            }}
           />
-          Live
+          {streaming() ? 'Live' : 'Polling'}
         </div>
         <button
           type="button"

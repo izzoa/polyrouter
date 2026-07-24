@@ -1,6 +1,7 @@
-import { Match, onMount, Show, Switch, type ParentProps } from 'solid-js';
+import { Match, onMount, Show, Switch, type ParentProps, createEffect, onCleanup } from 'solid-js';
 import { Inspector } from './components/Inspector';
 import { Modals } from './components/Modals';
+import { createVisibility } from './data/poller';
 import { Sidebar } from './components/Sidebar';
 import { Toast } from './components/Toast';
 import { Topbar } from './components/Topbar';
@@ -26,6 +27,18 @@ export interface AppProps {
 function Shell(props: { live: boolean }) {
   const app = useApp();
   const { state } = app;
+  const visible = createVisibility();
+
+  // The event stream is ONE app-wide connection (phase2-add-dashboard-event-stream),
+  // held only while the shell is mounted, `live`, and the document is VISIBLE. Hiding
+  // CLOSES it rather than pausing it: on HTTP/1.1 the ~6 connections per origin are
+  // shared across every tab, so a hidden tab holding one starves the others.
+  createEffect(() => {
+    if (props.live && visible()) app.connectStream();
+    else app.disconnectStream();
+  });
+  onCleanup(() => app.disconnectStream());
+
   return (
     <div style="display:flex;height:100vh;overflow:hidden;background:var(--bg);color:var(--text);font-family:'Geist',sans-serif">
       <Sidebar />

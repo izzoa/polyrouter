@@ -1,4 +1,4 @@
-import { createEffect, createSignal, onCleanup } from 'solid-js';
+import { createEffect, createSignal, onCleanup, type Accessor } from 'solid-js';
 
 /**
  * A visibility-gated, single-flight recurring poller (phase1-tune-dashboard-polling).
@@ -32,10 +32,14 @@ export const documentVisibility: VisibilitySource = {
   },
 };
 
+/** Why a run fired. `resume` is the mandatory hidden→visible catch-up, which callers
+ * may treat as forced (it must never be suppressed by a rate floor). */
+export type PollReason = 'initial' | 'resume' | 'interval';
+
 export interface PollerOptions {
   /** The loader. Errors are the loader's own concern (these are `void`-returning
    * store loaders that record their own error state). */
-  fn: () => Promise<void> | void;
+  fn: (reason: PollReason) => Promise<void> | void;
   /** Cadence, as a THUNK so a reactive cadence re-arms without rebuilding the poller. */
   intervalMs: () => number;
   /** Caller-owned gate (the `live` prop, page scope), as a thunk so it stays reactive. */
@@ -50,6 +54,15 @@ export interface PollerOptions {
    */
   runImmediately?: boolean;
   visibility?: VisibilitySource;
+}
+
+/** A reactive "is the document visible" accessor, cleaned up with its owner. Shared
+ * by the pollers and by the event stream, so both gate on exactly one definition. */
+export function createVisibility(source: VisibilitySource = documentVisibility): Accessor<boolean> {
+  const [visible, setVisible] = createSignal(source.isVisible());
+  const off = source.subscribe(() => setVisible(source.isVisible()));
+  onCleanup(off);
+  return visible;
 }
 
 export function createPoller(opts: PollerOptions): void {
@@ -98,11 +111,11 @@ export function createPoller(opts: PollerOptions): void {
     timer = setTimeout(() => {
       timer = undefined;
       armedMs = undefined;
-      void run();
+      void run('interval');
     }, ms);
   };
 
-  const run = async (): Promise<void> => {
+  const run = async (reason: PollReason): Promise<void> => {
     if (disposed) return;
     // SINGLE-FLIGHT. `loadInflight` folds every response with no generation guard,
     // so two overlapping runs could apply snapshots out of completion order and
@@ -114,7 +127,7 @@ export function createPoller(opts: PollerOptions): void {
     if (!gateOpen()) return;
     running = true;
     try {
-      await opts.fn();
+      await opts.fn(reason);
     } finally {
       running = false;
       const wantTrailing = trailing;
@@ -125,7 +138,7 @@ export function createPoller(opts: PollerOptions): void {
       } else if (!gateOpen()) {
         clearTimer();
       } else if (wantTrailing) {
-        void run(); // exactly one catch-up; it arms on its own completion
+        void run('interval'); // exactly one catch-up; it arms on its own completion
       } else {
         arm(opts.intervalMs());
       }
@@ -144,9 +157,10 @@ export function createPoller(opts: PollerOptions): void {
     const justOpened = !wasOpen;
     wasOpen = true;
     if (justOpened) {
-      const immediate = everOpened || runOnFirstArm; // resume always; mount per option
+      const isResume = everOpened;
+      const immediate = isResume || runOnFirstArm; // resume always; mount per option
       everOpened = true;
-      if (immediate) void run(); // arms itself when it settles
+      if (immediate) void run(isResume ? 'resume' : 'initial'); // arms when it settles
       else arm(ms);
     } else if (!running && ms !== armedMs) {
       // The cadence VALUE changed while open and idle: re-arm, WITHOUT an extra

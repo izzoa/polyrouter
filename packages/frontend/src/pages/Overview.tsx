@@ -1,38 +1,46 @@
-import { createEffect, For, on, onCleanup, onMount, Show } from 'solid-js';
+import { createEffect, For, on, Show } from 'solid-js';
 import { BarRows } from '../components/BarRows';
 import { Chart } from '../components/Chart';
 import { RangeSelector } from '../components/RangeSelector';
 import { InflightRows, RequestRows, RequestTableHead } from '../components/RequestTable';
 import { breakdownToSpend, bucketSeconds, pct, timeseriesToChart } from '../data/analytics';
+import { inflightCadenceMs } from '../data/inflight';
+import { createPoller } from '../data/poller';
 import { rangeToParams } from '../data/range';
 import { useApp } from '../state/context';
 
 const POLL_MS = 15_000;
-const INFLIGHT_POLL_MS = 2_500;
 
 export function Overview(props: { live: boolean }) {
   const app = useApp();
   const { state } = app;
 
-  // Load on mount + on range change; poll on a bounded interval (gated by `live`,
-  // cleared on unmount). The requests list is not polled.
+  // Load on mount + on range change (this effect is NOT deferred, so it covers the
+  // mount load — which is why the analytics poller below passes
+  // `runImmediately: false`). The requests list is not polled.
   createEffect(
     on(
       () => state.range,
       () => void app.loadOverview(),
     ),
   );
-  onMount(() => {
-    if (!props.live) return;
-    const timer = setInterval(() => void app.loadOverview(), POLL_MS);
-    // Fast, separate poll for live in-flight rows (add-inflight-requests); stops on
-    // unmount, so it never runs off the Overview.
-    void app.loadInflight();
-    const inflightTimer = setInterval(() => void app.loadInflight(), INFLIGHT_POLL_MS);
-    onCleanup(() => {
-      clearInterval(timer);
-      clearInterval(inflightTimer);
-    });
+
+  // Both pollers are visibility-gated and single-flight, and stop on unmount
+  // (phase1-tune-dashboard-polling).
+  createPoller({
+    fn: () => app.loadOverview(),
+    intervalMs: () => POLL_MS,
+    enabled: () => props.live,
+    runImmediately: false, // the range effect above already loaded at mount
+  });
+  // Fast, separate poll for live in-flight rows (add-inflight-requests). This one DOES
+  // run immediately — it subsumes the former mount-time `void app.loadInflight()` call
+  // rather than adding to it, so mount issues exactly one in-flight fetch. Its cadence
+  // relaxes only while provably empty and snaps back on the first observed row.
+  createPoller({
+    fn: () => app.loadInflight(),
+    intervalMs: () => inflightCadenceMs(state.inflightRows.length),
+    enabled: () => props.live,
   });
 
   const spend = () => state.analyticsSummary?.spend ?? 0;

@@ -28,6 +28,22 @@ heading is started.
   finish. Presence is tracked in Redis, metadata-only and per-owner; if Redis is
   unavailable the card simply shows no live rows and nothing else changes.
 
+### Changed
+
+- **The dashboard stops polling while its tab is hidden** and refreshes immediately
+  on return. A backgrounded tab now costs nothing instead of ~40 requests/min; an
+  idle, visible Overview drops to 28/min (the live in-flight poll relaxes to 5 s
+  while nothing is in flight and snaps back to 2.5 s on the first live row, so the
+  settle handoff stays at full speed).
+
+### Fixed
+
+- **Live in-flight rows can no longer be corrupted by overlapping or cross-account
+  responses.** Pollers are single-flight, so a slow response can never be applied
+  out of order and falsely mark a running request as finished; and live-view state
+  is now cleared and invalidated on any account change — including a mid-session
+  session expiry — so one account's rows can never appear under another's.
+
 ## [0.8.1] — 2026-07-22
 
 [Release](https://github.com/izzoa/polyrouter/releases/tag/v0.8.1) ·

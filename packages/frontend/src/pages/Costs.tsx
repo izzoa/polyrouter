@@ -1,8 +1,9 @@
-import { createEffect, on, onCleanup, onMount, Show } from 'solid-js';
+import { createEffect, on, Show } from 'solid-js';
 import { BarRows } from '../components/BarRows';
 import { RangeSelector } from '../components/RangeSelector';
 import { breakdownToSpend } from '../data/analytics';
 import type { BreakdownRow } from '../data/api';
+import { createPoller } from '../data/poller';
 import { useApp } from '../state/context';
 
 const POLL_MS = 15_000;
@@ -33,16 +34,18 @@ export function Costs(props: { live: boolean }) {
   const app = useApp();
   const { state } = app;
 
+  // Not deferred → this covers the mount load, hence `runImmediately: false` below.
   createEffect(
     on(
       () => state.range,
       () => void app.loadCosts(),
     ),
   );
-  onMount(() => {
-    if (!props.live) return;
-    const timer = setInterval(() => void app.loadCosts(), POLL_MS);
-    onCleanup(() => clearInterval(timer));
+  createPoller({
+    fn: () => app.loadCosts(),
+    intervalMs: () => POLL_MS,
+    enabled: () => props.live,
+    runImmediately: false,
   });
 
   const spend = () => state.analyticsSummary?.spend ?? 0;

@@ -4,6 +4,27 @@ import type { InflightRow, InflightSnapshot } from './api';
  * while its durable row loads, before it is dropped (add-inflight-requests). */
 export const INFLIGHT_GRACE_MS = 8_000;
 
+/** Live-poll cadences (phase1-tune-dashboard-polling). */
+export const INFLIGHT_FAST_MS = 2_500;
+export const INFLIGHT_IDLE_MS = 5_000;
+
+/**
+ * The live poll's state-dependent cadence: a shallow relaxation while provably
+ * empty, snapping back to fast the moment any row is observed. PURE, so the
+ * predicate is unit-testable.
+ *
+ * `rowCount` is the reactive display count (`state.inflightRows.length`). That
+ * satisfies the spec's "no live rows AND no cached live rows": the fold state is
+ * closure-private and non-reactive, and the only cached rows `inflightDisplay`
+ * hides are ids already present as durable rows — i.e. already settled. So no
+ * reachable state with a still-running cached row reads as idle, and the
+ * settle-observed handoff (which by definition has a cached row) always runs at
+ * the fast cadence.
+ */
+export function inflightCadenceMs(rowCount: number): number {
+  return rowCount === 0 ? INFLIGHT_IDLE_MS : INFLIGHT_FAST_MS;
+}
+
 export interface InflightState {
   /** Items from the last AUTHORITATIVE (`available`) poll — the current live set. */
   live: InflightRow[];

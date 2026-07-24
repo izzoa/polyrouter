@@ -437,7 +437,11 @@ export class FakeApiClient implements ApiClient {
   private seq = 0;
 
   constructor(opts: FakeOptions = {}) {
-    this.session = opts.session === undefined ? DEFAULT_SESSION : opts.session;
+    // COPY the default: handing out the shared `DEFAULT_SESSION` object means the
+    // Solid store ends up holding that very object, and a later session write
+    // mutates the module-level fixture in place — silently bleeding one test's
+    // identity into every test that runs after it.
+    this.session = opts.session === undefined ? { ...DEFAULT_SESSION } : opts.session;
     this.meFailure = opts.meFailure ?? null;
     this.loginConfigResult = opts.loginConfig ?? DEFAULT_LOGIN_CONFIG;
     this.adminUsers = opts.adminUsers ?? [];

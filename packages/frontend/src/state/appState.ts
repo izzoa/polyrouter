@@ -1040,8 +1040,19 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     identityGen += 1;
     bumpRouting(); // discard in-flight routing loads captured under the old principal
     rulesGen += 1; // an old account's in-flight rules reconcile can never commit (r3-High-2)
+    // Live-view state is identity-scoped too (phase1-tune-dashboard-polling): the fold
+    // state is closure-held, and the settle handoff's durable refresh is guarded only by
+    // its SLICE generation (which orders requests *within* one identity and cannot detect
+    // an identity change). Clear both, and invalidate `recent` so a refresh started under
+    // the previous owner can never commit under the new one. At an identity boundary
+    // tenant isolation overrides handoff continuity — dropping a row mid-settling-grace
+    // is correct and required.
+    inflightState = emptyInflight();
+    bump('recent');
     setState(
       produce((s) => {
+        s.inflightRows = [];
+        s.recentRequests = [];
         s.autoLayers = null;
         s.calHistory = { rows: [], loaded: false, error: null };
         s.semLearn = { status: null, loaded: false, error: null };
@@ -1532,12 +1543,18 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
   /** Poll the live in-flight snapshot (add-inflight-requests). Any error degrades to
    * an unavailable snapshot — retain cached rows, never settle on it. */
   const loadInflight = async (): Promise<void> => {
+    // Identity guard (phase1-tune-dashboard-polling): the fold applies EVERY response
+    // unconditionally, so without this a response captured under the previous owner
+    // could commit under the new one (invariant 5). Same discipline as the routing and
+    // rules loaders.
+    const idGen = identityGen;
     let snap: InflightSnapshot;
     try {
       snap = await client.inflight();
     } catch {
       snap = { items: [], available: false, truncated: false };
     }
+    if (idGen !== identityGen) return; // a different account signed in mid-flight
     const ids = recentIdSet();
     const { next, refresh } = foldInflight(inflightState, snap, ids, Date.now());
     inflightState = next;
@@ -1638,6 +1655,13 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       session = await client.me();
     } catch (e) {
       if (isApiError(e) && e.status === 401) {
+        // Clear identity-scoped state EAGERLY, while we still have the previous
+        // session (phase1-tune-dashboard-polling). The detect-a-change reset below
+        // requires a non-null previous session — so once this branch nulls it, a
+        // later sign-in as a DIFFERENT user is undetectable and `identityGen` would
+        // never bump, leaving the old owner's cached rows and in-flight responses
+        // able to commit under the new one.
+        if (state.session !== null) resetIdentityScoped();
         let cfg: LoginConfig | null = null;
         try {
           cfg = await client.loginConfig();

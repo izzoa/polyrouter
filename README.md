@@ -19,13 +19,20 @@
   <img src="https://img.shields.io/badge/node-24.x-5FA04E?logo=node.js&logoColor=white" alt="Node 24.x">
 </p>
 
+<p align="center">
+  <a href="https://polyrouter.app"><img src="assets/dashboard-preview.svg" width="900" alt="polyrouter dashboard — the overview: KPI tiles for requests, spend, latency and success rate; a requests-over-time chart; spend by model; and the live request log"></a>
+  <br>
+  <sub>The dashboard overview — KPI tiles, a requests-per-hour chart, spend by model, and the live request log (each row shows its routing layer, tokens, snapshot-priced cost, and latency).</sub>
+</p>
+
 ---
 
 polyrouter sits between your AI agents and your LLM providers. Agents talk to **one**
 endpoint with **one** key; polyrouter routes each request to the right model across your
 providers (BYOK API keys, custom OpenAI/Anthropic-compatible endpoints, local models),
 retries down a fallback chain when a provider fails, enforces budgets, and records what
-every request actually cost — while storing **metadata only**, never your prompts.
+every request actually cost — storing **metadata only** by default, never your prompt or
+response bodies unless you opt in.
 
 ## Features
 
@@ -58,10 +65,12 @@ every request actually cost — while storing **metadata only**, never your prom
 **Cost & limits**
 
 - **Immutable cost records** — every request stores its **unit-price snapshot** at request
-  time; later catalog updates never rewrite history. Missing provider usage is flagged
-  `~estimated`, never silently nulled. Prices come from a bundled versioned catalog
-  (auto-refreshed daily from LiteLLM's — one env line opts out), with per-model
-  overrides for custom/local endpoints.
+  time; later catalog updates never rewrite history. Missing provider usage is flagged as
+  estimated (`~est`), never silently nulled. Prices come from a bundled versioned catalog
+  (auto-refreshed daily from LiteLLM's — one env line opts out), with per-model overrides
+  for custom/local endpoints. When the catalog has no exact match, polyrouter falls back to
+  an adjacent native-family rate, then to the provider's own **listed** price — each
+  snapshotted as a clearly-marked estimate that never overrides a real catalog price.
 - **Budgets that actually block** — day/week/month windows, global or per-agent,
   alert-or-block at the threshold, enforced via **atomic Redis counters** that stay
   correct across multiple proxy instances.
@@ -84,8 +93,9 @@ every request actually cost — while storing **metadata only**, never your prom
 
 **Security & privacy**
 
-- **Metadata only** — prompt/response bodies are never persisted (a property of the
-  build, not a setting). Provider and channel credentials are **encrypted at rest**.
+- **Metadata only by default** — prompt/response bodies are never persisted unless you
+  explicitly opt in (self-host only, off by default, stored encrypted at rest with
+  retention controls). Provider and channel credentials are **encrypted at rest**.
 - **First-signup-wins, then invite-only** — the first account becomes the admin and
   public registration closes; teammates join via single-use, 72-hour, hash-stored
   invite links (emailed when SMTP is configured). Admins manage users, roles, and the
@@ -188,7 +198,7 @@ name: polyrouter-selfhost
 
 services:
   app:
-    image: ghcr.io/izzoa/polyrouter:0.1.0        # or :latest
+    image: ghcr.io/izzoa/polyrouter:0.8.1        # or :latest
     restart: unless-stopped
     ports:
       - '${POLYROUTER_HOST:-127.0.0.1}:${POLYROUTER_PORT:-3001}:3001'  # loopback by default
@@ -196,6 +206,7 @@ services:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
     stop_grace_period: 45s                        # drain in-flight streams on stop
+    env_file: .env                                # optional tunables from the .env reference reach the container
     environment:
       NODE_ENV: production
       MODE: selfhosted
@@ -233,9 +244,22 @@ services:
       timeout: 3s
       retries: 12
 
+  apprise:                                        # optional notification fan-out (see below)
+    image: caronc/apprise:latest
+    profiles: ['apprise']                         # only starts with `--profile apprise`
+    restart: unless-stopped
+    volumes: ['polyrouter-apprise:/config']
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: ${POLYROUTER_SUBNET:-172.28.5.0/24}   # deterministic CIDR for NOTIFY_ALLOWED_ENDPOINTS
+
 volumes:
   polyrouter-pg:
   polyrouter-redis:
+  polyrouter-apprise:
 ```
 
 **`.env`** — the app aborts at boot if any of the five secrets is missing. Generate real
@@ -265,11 +289,12 @@ Upgrade by bumping the `image:` tag (or tracking `:latest`) and pulling:
 docker compose pull && docker compose up -d      # migrations run on boot
 ```
 
-> These are the same service definitions as the repo's `docker-compose.yml`, trimmed to the
-> **required** env — every other variable is optional and defaults when unset (see the
-> `.env` reference below), and the volume/name match so the **Operations** notes below
-> (backup, drain, one-replica) apply unchanged. To go public, expose the port and set
-> `APP_URL` as in **Claim the instance** below.
+> This is the repo's `docker-compose.yml` with two doc-friendly changes: a pinned `image:`
+> tag instead of a local `build:`, and the long list of optional pass-through vars collapsed
+> into `env_file: .env`. The service names, volumes, pinned subnet, and `apprise` profile all
+> match, so the **Operations** and **Apprise** notes below apply unchanged — every variable in
+> the `.env` reference is optional and defaults when unset. To go public, expose the port and
+> set `APP_URL` as in **Claim the instance** below.
 >
 > If `docker compose pull` returns `unauthorized`/`denied`, the image is private — either
 > the maintainer hasn't flipped the GHCR package to public yet, or run

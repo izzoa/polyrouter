@@ -20,6 +20,7 @@ import { BodyCaptureModule } from '../body-capture/body-capture.module';
 import { RecordingModule } from '../recording/recording.module';
 import { SemanticModule } from '../semantic/semantic.module';
 import { RedisModule } from '../redis/redis.module';
+import { InflightModule } from '../inflight/inflight.module';
 import { ChatCompletionsController } from './chat-completions.controller';
 import { MessagesController } from './messages.controller';
 import { ModelsController } from './models.controller';
@@ -73,6 +74,7 @@ function boundedBreakerRedis(redis: Redis): BreakerRedis {
     RecordingModule,
     BodyCaptureModule,
     RedisModule,
+    InflightModule,
     ProducersModule,
     BudgetsModule,
     ObservabilityModule,

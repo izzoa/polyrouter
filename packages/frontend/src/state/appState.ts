@@ -32,6 +32,8 @@ import {
   type PricingStatus,
   type BodyCaptureStatus,
   type RequestBodyContent,
+  type InflightRow,
+  type InflightSnapshot,
   type RequestRow,
   type RuleDto,
   type TierDto,
@@ -40,6 +42,13 @@ import {
   type UpdateBudgetInput,
   type UpdateChannelInput,
 } from '../data/api';
+import {
+  emptyInflight,
+  foldInflight,
+  inflightDisplay,
+  reconcile as reconcileInflightState,
+  type InflightState,
+} from '../data/inflight';
 import { effectiveRuleOrder } from '../data/bandTargets';
 import { BASE_URL } from '../data/catalog';
 import { rangeToParams } from '../data/range';
@@ -187,6 +196,8 @@ export interface AppState {
   recentRequests: RequestRow[];
   recentRequestsLoading: boolean;
   recentRequestsError: string | null;
+  /** add-inflight-requests: live in-flight rows merged above the recent list. */
+  inflightRows: InflightRow[];
   requestList: RequestRow[];
   requestListLoading: boolean;
   requestListError: string | null;
@@ -676,6 +687,7 @@ function initialState(): AppState {
     recentRequests: [],
     recentRequestsLoading: false,
     recentRequestsError: null,
+    inflightRows: [],
     requestList: [],
     requestListLoading: false,
     requestListError: null,
@@ -759,6 +771,7 @@ export interface AppStore {
   loadOverview: () => Promise<void>;
   loadCosts: () => Promise<void>;
   loadRecentRequests: () => Promise<void>;
+  loadInflight: () => Promise<void>;
   loadRequests: (reset: boolean) => Promise<void>;
   // auth / account
   bootstrap: () => Promise<void>;
@@ -1492,6 +1505,16 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     }
   };
 
+  // add-inflight-requests: the live-view fold state is closure-held; only the
+  // derived display array `inflightRows` lives in the reactive store.
+  let inflightState: InflightState = emptyInflight();
+  const recentIdSet = (): ReadonlySet<string> => new Set(state.recentRequests.map((r) => r.id));
+  const reconcileInflightDisplay = (): void => {
+    const ids = recentIdSet();
+    inflightState = reconcileInflightState(inflightState, ids);
+    setState('inflightRows', inflightDisplay(inflightState, ids));
+  };
+
   const loadRecentRequests = async (): Promise<void> => {
     const { from, to } = currentRange();
     await runSlice(
@@ -1499,8 +1522,27 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       (v) => setState('recentRequestsLoading', v),
       (v) => setState('recentRequestsError', v),
       () => client.requests({ from, to, limit: 6 }),
-      (page) => setState('recentRequests', page.rows),
+      (page) => {
+        setState('recentRequests', page.rows);
+        reconcileInflightDisplay(); // durable rows arrived → drop covered live rows
+      },
     );
+  };
+
+  /** Poll the live in-flight snapshot (add-inflight-requests). Any error degrades to
+   * an unavailable snapshot — retain cached rows, never settle on it. */
+  const loadInflight = async (): Promise<void> => {
+    let snap: InflightSnapshot;
+    try {
+      snap = await client.inflight();
+    } catch {
+      snap = { items: [], available: false, truncated: false };
+    }
+    const ids = recentIdSet();
+    const { next, refresh } = foldInflight(inflightState, snap, ids, Date.now());
+    inflightState = next;
+    setState('inflightRows', inflightDisplay(next, ids));
+    if (refresh) void loadRecentRequests(); // a settle was observed → durable refresh
   };
 
   const loadOverview = async (): Promise<void> => {
@@ -1745,6 +1787,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     loadOverview,
     loadCosts,
     loadRecentRequests,
+    loadInflight,
     loadRequests,
 
     bootstrap,

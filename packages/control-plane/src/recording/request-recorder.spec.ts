@@ -10,6 +10,7 @@ function makeRecorder(enqueue = jest.fn()): { recorder: RequestRecorder; enqueue
 
 const ctx = (over: Partial<RecordingContext> = {}): RecordingContext => ({
   principal: userPrincipal('u1'),
+  requestId: 'req-1',
   agentId: 'a1',
   protocol: 'openai',
   providerId: 'p1',

@@ -1,5 +1,5 @@
-import { For } from 'solid-js';
-import { labelOf, type RequestRow, type RequestStatus } from '../data/api';
+import { createSignal, For, onCleanup, onMount } from 'solid-js';
+import { labelOf, type InflightRow, type RequestRow, type RequestStatus } from '../data/api';
 import { rowCostLabel } from '../data/analytics';
 import { fmtTime, fmtTokens } from '../data/catalog';
 import { useApp } from '../state/context';
@@ -118,4 +118,83 @@ export function RequestRow(props: { r: RequestRow }) {
 
 export function RequestRows(props: { rows: RequestRow[] }) {
   return <For each={props.rows}>{(r) => <RequestRow r={r} />}</For>;
+}
+
+/** One shared 1s ticker for the live latency column (not per-row). */
+function useNow(): () => number {
+  const [now, setNow] = createSignal(Date.now());
+  onMount(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    onCleanup(() => clearInterval(t));
+  });
+  return now;
+}
+
+/** Live in-flight rows (add-inflight-requests): rendered ABOVE the completed rows.
+ * Non-selectable (no terminal detail yet); a pulsing "Running" status and a latency
+ * that ticks client-side from `startedAt`; token/cost cells are neutral placeholders. */
+export function InflightRows(props: { rows: InflightRow[] }) {
+  const now = useNow();
+  return <For each={props.rows}>{(r) => <InflightRunningRow r={r} now={now()} />}</For>;
+}
+
+function InflightRunningRow(props: { r: InflightRow; now: number }) {
+  const chip = (): { bg: string; fg: string } => CHIP[props.r.decisionLayer] ?? NEUTRAL_CHIP;
+  const elapsed = (): number => Math.max(0, (props.now - props.r.startedAt) / 1000);
+  return (
+    // Non-interactive by design (no terminal detail to inspect yet). No aria-label:
+    // a bare div has no role to hang one on, and the row's own text already reads
+    // out completely — time, model, provider, tier, layer, and "Running".
+    <div class="req-row" style={{ 'grid-template-columns': GRID, cursor: 'default' }}>
+      <span class="mono" style="font-size:11px;color:var(--text3)">
+        {fmtTime(props.r.startedAt)}
+      </span>
+      <span class="mono" style="font-size:11.5px;color:var(--text)">
+        {props.r.modelLabel ?? '—'}
+      </span>
+      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+        {props.r.providerLabel ?? '—'}
+      </span>
+      <span>{props.r.tierAssigned ?? '—'}</span>
+      <span>
+        <span
+          style={{
+            padding: '2px 8px',
+            background: chip().bg,
+            color: chip().fg,
+            'border-radius': '10px',
+            'font-size': '11px',
+            'font-weight': '500',
+          }}
+        >
+          {props.r.decisionLayer}
+        </span>
+      </span>
+      <span class="mono" style="font-size:11px;color:var(--text3)">
+        —
+      </span>
+      <span class="mono" style="font-size:11px;color:var(--text3)">
+        —
+      </span>
+      <span class="mono" style="font-size:11px;color:var(--text2)">
+        {elapsed().toFixed(1)}s
+      </span>
+      <span style="display:flex;align-items:center;gap:5px;color:var(--text2)">
+        <span
+          aria-hidden="true"
+          style={{
+            width: '6px',
+            height: '6px',
+            'border-radius': '50%',
+            background: 'var(--accent)',
+            flex: 'none',
+            // Reuses the global `pulse` keyframe; the app's reduced-motion media
+            // query forces iteration-count 1, so it settles to a static dot.
+            animation: 'pulse 1.5s ease-in-out infinite',
+          }}
+        />
+        Running
+      </span>
+    </div>
+  );
 }

@@ -35,6 +35,7 @@ import type {
   RequestBodyContent,
   RequestRow,
   RequestsPage,
+  InflightSnapshot,
   RequestsQuery,
   RequestStatus,
   RuleDto,
@@ -326,6 +327,7 @@ export interface FakeOptions {
   timeseries?: TimeseriesPoint[];
   breakdown?: Record<BreakdownDimension, BreakdownRow[]>;
   requestRows?: RequestRow[];
+  inflight?: InflightSnapshot;
   autoPerf?: AutoPerformance;
   /** When set, every analytics read rejects (exercise the error/retry states). */
   analyticsFailure?: ApiError | null;
@@ -427,6 +429,7 @@ export class FakeApiClient implements ApiClient {
   timeseriesResult: TimeseriesPoint[];
   breakdownResult: Record<BreakdownDimension, BreakdownRow[]>;
   requestRows: RequestRow[];
+  inflightResult: InflightSnapshot;
   analyticsFailure: ApiError | null;
   bodyCaptureState: BodyCaptureStatus;
   storedBodies: Map<string, RequestBodyContent[]>;
@@ -486,6 +489,7 @@ export class FakeApiClient implements ApiClient {
     this.timeseriesResult = opts.timeseries ?? DEFAULT_TIMESERIES;
     this.breakdownResult = opts.breakdown ?? defaultBreakdown();
     this.requestRows = opts.requestRows ?? buildRequestRows(30);
+    this.inflightResult = opts.inflight ?? { items: [], available: true, truncated: false };
     this.analyticsFailure = opts.analyticsFailure ?? null;
     this.bodyCaptureState = opts.bodyCaptureStatus ?? {
       mode: 'off',
@@ -1354,5 +1358,10 @@ export class FakeApiClient implements ApiClient {
     const last = page[page.length - 1];
     const nextCursor = startIdx + limit < rows.length && last !== undefined ? last.id : null;
     return Promise.resolve({ rows: page, nextCursor });
+  }
+
+  inflight(): Promise<InflightSnapshot> {
+    this.record('inflight');
+    return Promise.resolve(this.inflightResult);
   }
 }

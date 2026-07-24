@@ -1,6 +1,7 @@
 import { Controller, Delete, Get, Header, Param, Query } from '@nestjs/common';
-import type { Principal } from '@polyrouter/shared/server';
+import type { InflightSnapshot, Principal } from '@polyrouter/shared/server';
 import { CurrentPrincipal } from '../auth/principal.decorator';
+import { InflightRegistry } from '../inflight/inflight-registry';
 import { AnalyticsService } from './analytics.service';
 import {
   AutoQueryDto,
@@ -14,7 +15,10 @@ import {
  * log (#17, spec §9). Powers the dashboard's Observe pages (#19). Read-only. */
 @Controller('api/analytics')
 export class AnalyticsController {
-  constructor(private readonly svc: AnalyticsService) {}
+  constructor(
+    private readonly svc: AnalyticsService,
+    private readonly inflight: InflightRegistry,
+  ) {}
 
   @Get('summary')
   summary(@CurrentPrincipal() principal: Principal, @Query() q: SummaryQueryDto) {
@@ -39,6 +43,15 @@ export class AnalyticsController {
   @Get('requests')
   requests(@CurrentPrincipal() principal: Principal, @Query() q: RequestsQueryDto) {
     return this.svc.listRequests(principal, q);
+  }
+
+  /** add-inflight-requests: the live in-flight snapshot for the Overview card —
+   * owner-scoped, bounded, `no-store`; `{items:[],available:false}` when the
+   * registry is down/hung, never a 5xx and never a stall. */
+  @Get('inflight')
+  @Header('Cache-Control', 'no-store')
+  inflightSnapshot(@CurrentPrincipal() principal: Principal): Promise<InflightSnapshot> {
+    return this.inflight.list(principal);
   }
 
   /** add-body-capture: the inspector's lazily-fetched payloads — decrypt-on-

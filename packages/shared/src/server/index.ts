@@ -24,6 +24,8 @@ export type {
   AnalyticsRequestsQuery,
   AnalyticsSummary,
   AnalyticsTimeseriesPoint,
+  InflightRequestRow,
+  InflightSnapshot,
   BodyCaptureAccessor,
   BodyCaptureContext,
   BodyCaptureMode,

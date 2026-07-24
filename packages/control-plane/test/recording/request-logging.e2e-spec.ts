@@ -49,7 +49,10 @@ import { StructuralRouter } from '../../src/proxy/structural/structural-router';
 import { CascadeRouter } from '../../src/proxy/cascade/cascade-router';
 import { RecordingModule } from '../../src/recording/recording.module';
 import { ObservabilityModule } from '../../src/observability/observability.module';
+import { randomUUID } from 'node:crypto';
 import { RequestRecorder, type RecordingContext } from '../../src/recording/request-recorder';
+import { InflightModule } from '../../src/inflight/inflight.module';
+import { InflightRegistry } from '../../src/inflight/inflight-registry';
 import { LogWriter } from '../../src/recording/log-writer';
 import { PricingModule } from '../../src/pricing/pricing.module';
 import { PricingService } from '../../src/pricing/pricing.service';
@@ -94,7 +97,16 @@ describe('request-logging e2e', () => {
     }
 
     const moduleRef = await Test.createTestingModule({
-      imports: [SemanticModule, DatabaseModule, PricingModule, RecordingModule, ObservabilityModule],
+      imports: [
+        SemanticModule,
+        DatabaseModule,
+        PricingModule,
+        RecordingModule,
+        ObservabilityModule,
+        // add-inflight-requests: the REAL registry, so the admit→settle wiring is
+        // asserted end-to-end against the real recorder (not a stub).
+        InflightModule,
+      ],
       controllers: [ChatCompletionsController],
       providers: [
         AgentApiKeyGuard,
@@ -164,6 +176,11 @@ describe('request-logging e2e', () => {
     });
     await port.models.createForProvider(principal, provider.id, {
       externalModelId: 'oai-miderror',
+    });
+    // add-inflight-requests: commits then finishes after ~400ms — a deterministic
+    // window in which the live entry must be observable.
+    await port.models.createForProvider(principal, provider.id, {
+      externalModelId: 'oai-slowtail',
     });
     await port.ensureDefaultTier(principal);
     const tier = (await port.tiers.list(principal)).find((t) => t.key === 'default')!;
@@ -420,11 +437,56 @@ describe('request-logging e2e', () => {
     });
   });
 
+  /** add-inflight-requests §3.1/3.2: the admit→settle WIRING through the real
+   * proxy and the real recorder — presence appears once the route resolves and is
+   * gone once the parent row records, sharing the row's id. */
+  it('publishes live presence at admission and clears it at settle, sharing the row id', async () => {
+    const reg = app.get(InflightRegistry);
+    const waitFor = async (cond: () => Promise<boolean>, ms = 4_000): Promise<boolean> => {
+      const deadline = Date.now() + ms;
+      for (;;) {
+        if (await cond()) return true;
+        if (Date.now() > deadline) return false;
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    };
+
+    expect((await reg.list(principal)).items).toEqual([]); // clean slate
+    // Fire WITHOUT awaiting: `oai-slowtail` commits then finishes ~400ms later.
+    // `.then()` is what DISPATCHES a supertest request (they are lazy) — the
+    // promise must be created here, not just the builder.
+    const pending = request(server)
+      .post('/v1/chat/completions')
+      .set('Authorization', `Bearer ${key}`)
+      .send({ model: 'oai-slowtail', stream: true, messages: [] })
+      .then((r) => r);
+
+    const appeared = await waitFor(async () => (await reg.list(principal)).items.length === 1);
+    expect(appeared).toBe(true); // mark fired at admission
+    const live = (await reg.list(principal)).items[0]!;
+    expect(live).toMatchObject({
+      status: 'running',
+      modelLabel: 'oai-slowtail',
+      protocol: 'openai',
+      decisionLayer: 'explicit',
+    });
+
+    await pending; // stream completes → record() → onSettle
+    expect(await waitFor(async () => (await reg.list(principal)).items.length === 0)).toBe(true);
+
+    // The live entry's id IS the durable row's id (the shared-id handoff).
+    await writer.flush();
+    const row = await port.requestLogs.findById(principal, live.id);
+    expect(row).not.toBeNull();
+    expect(row!.status).toBe('success');
+  });
+
   it('cost is immutable: a later catalog price change does not move a recorded cost', async () => {
     // Record via the pipeline with a KNOWN-host provider so the bundled catalog
     // price (openai:gpt-4o) resolves — deriveModelKey is pure (no network).
     const ctx: RecordingContext = {
       principal,
+      requestId: randomUUID(),
       agentId: null,
       protocol: 'openai',
       providerId: 'p-known',
@@ -488,6 +550,7 @@ describe('request-logging e2e', () => {
     );
     const mkCtx = (externalModelId: string): RecordingContext => ({
       principal,
+      requestId: randomUUID(),
       agentId: null,
       protocol: 'openai',
       providerId: 'p-openrouter',
@@ -569,6 +632,7 @@ describe('request-logging e2e', () => {
     // native-family both miss; but the model carries a captured listed price.
     const listedCtx: RecordingContext = {
       principal,
+      requestId: randomUUID(),
       agentId: null,
       protocol: 'openai',
       providerId: 'p-openrouter',
@@ -616,7 +680,7 @@ describe('request-logging e2e', () => {
     const again = await port.requestLogs.findById(principal, row!.id);
     expect(again!.cost).toBe(row!.cost);
     expect(again!.priceSource).toBe('listed');
-    recorder.record(listedCtx, {
+    recorder.record({ ...listedCtx, requestId: randomUUID() }, {
       status: 'success',
       providerUsage: { inputTokens: 1_000_000, outputTokens: 0 },
       outputChars: 0,

@@ -1,4 +1,5 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { SpanStatusCode, trace } from '@opentelemetry/api';
 import {
   AUTO_ALIAS,
@@ -73,6 +74,7 @@ import {
   type RecordingContext,
   type RequestCaptureState,
 } from '../recording/request-recorder';
+import { InflightRegistry, type InflightEntry } from '../inflight/inflight-registry';
 import { BodyCaptureService } from '../body-capture/body-capture.service';
 import { ProxyMetrics } from '../observability/proxy-metrics';
 import { observeAdapter } from '../observability/observe-adapter';
@@ -132,6 +134,12 @@ interface CheapServed {
 
 interface Prepared {
   client: ProtocolAdapter;
+  /** Row id pre-allocated at admission (add-inflight-requests): shared by the
+   * served request_log row and the in-flight registry entry. */
+  requestId: string;
+  /** Set after the in-flight `mark` (add-inflight-requests); invoked by the
+   * recorder at settle to clear the entry + stop its lease. */
+  onSettle?: () => void;
   protocol: ClientProtocol;
   routed: NormalizedRequest;
   /** The request's declared machine-parseable-output flag, captured ONCE at
@@ -221,6 +229,10 @@ export class ProxyService {
     private readonly budgets: BudgetService,
     private readonly oauth: SubscriptionOauthService,
     private readonly bodyCapture: BodyCaptureService,
+    // OPTIONAL (add-inflight-requests): the live-presence registry. Absent (a
+    // harness that assembles the proxy without it) ⇒ no presence is published and
+    // NOTHING else changes — the feature is strictly additive (invariant 1).
+    @Optional() private readonly inflight?: InflightRegistry,
   ) {
     this.key = rt.key;
     this.mode = rt.mode;
@@ -283,6 +295,20 @@ export class ProxyService {
   ): Promise<unknown> {
     await this.enforceBudgets(principal, agentId);
     const p = await this.prepare(principal, protocol, wireBody, headers, agentId, signal);
+    // Publish in-flight presence (add-inflight-requests): fire-and-forget after
+    // routing, settled via `onSettle` when the parent row records. The catch is a
+    // backstop for an unexpected throw that bypassed record().
+    const lease = this.beginInflight(p);
+    try {
+      return await this.completionServed(p, signal);
+    } catch (err) {
+      lease.settle();
+      throw err;
+    }
+  }
+
+  /** Buffered served flow (extracted so the in-flight lease can wrap it). */
+  private async completionServed(p: Prepared, signal: AbortSignal): Promise<unknown> {
     if (p.cascade !== undefined) return this.cascadeCompletion(p, p.cascade, signal);
 
     const result = await runBufferedChain(
@@ -328,6 +354,18 @@ export class ProxyService {
   ): Promise<AsyncGenerator<string>> {
     await this.enforceBudgets(principal, agentId);
     const p = await this.prepare(principal, protocol, wireBody, headers, agentId, signal);
+    const lease = this.beginInflight(p);
+    try {
+      return await this.streamServed(p, signal);
+    } catch (err) {
+      lease.settle();
+      throw err;
+    }
+  }
+
+  /** Streaming served flow (extracted so the in-flight lease can wrap it; the lease
+   * settles via `onSettle` when the stream outcome resolves, i.e. at drain end). */
+  private async streamServed(p: Prepared, signal: AbortSignal): Promise<AsyncGenerator<string>> {
     if (p.cascade !== undefined) return this.cascadeStream(p, p.cascade, signal);
 
     const result = await openStreamChain(this.breaker, p.attempts, p.client, p.routed, {
@@ -889,6 +927,9 @@ export class ProxyService {
     signal: AbortSignal,
   ): Promise<Prepared> {
     const startedAt = Date.now();
+    // Pre-allocate the row id at admission so the in-flight registry entry and the
+    // eventual request_log row share it (add-inflight-requests).
+    const requestId = randomUUID();
     // n>1 is rejected before normalization (the IR is n=1 and discards `n`), so
     // its explanatory message isn't overwritten by the generic body-parse catch
     // below. OpenAI-only: Anthropic has no `n` (E2.10).
@@ -1047,6 +1088,7 @@ export class ProxyService {
 
     return {
       client,
+      requestId,
       protocol,
       routed: ir, // the model is retargeted per-attempt inside the walker
       structuredDemand: declaredStructuredOutput(ir),
@@ -1180,6 +1222,8 @@ export class ProxyService {
     const m = p.meta[metaIndex]!;
     return {
       principal: p.principal,
+      requestId: p.requestId,
+      ...(p.onSettle !== undefined ? { onSettle: p.onSettle } : {}),
       agentId: p.agentId,
       protocol: p.protocol,
       providerId: m.providerId,
@@ -1238,6 +1282,8 @@ export class ProxyService {
   private metaContext(p: Prepared, m: AttemptMeta, reason: string): RecordingContext {
     return {
       principal: p.principal,
+      requestId: p.requestId,
+      ...(p.onSettle !== undefined ? { onSettle: p.onSettle } : {}),
       agentId: p.agentId,
       protocol: p.protocol,
       providerId: m.providerId,
@@ -1252,6 +1298,34 @@ export class ProxyService {
       model: m.model,
       startedAt: p.startedAt,
       requestChars: p.requestChars,
+    };
+  }
+
+  /** Publish live presence for an admitted request (add-inflight-requests) and arm
+   * its settle hook — the ONE admit-write site, after `prepare()` and before any
+   * cascade delegation. Fire-and-forget; a no-op lease when the registry is absent. */
+  private beginInflight(p: Prepared): { settle: () => void } {
+    const lease = this.inflight?.mark(p.principal, this.inflightEntryOf(p)) ?? {
+      settle: (): void => undefined,
+    };
+    p.onSettle = () => lease.settle();
+    return lease;
+  }
+
+  /** The in-flight entry for this request (add-inflight-requests): the FIRST
+   * planned member of the bundle that executes first — the cheap bundle for a
+   * cascade, the primary chain otherwise. A best-effort label; the durable row
+   * corrects a fallback/escalation/breaker-skip. */
+  private inflightEntryOf(p: Prepared): InflightEntry {
+    const m = (p.cascade?.cheap.meta ?? p.meta)[0];
+    return {
+      requestId: p.requestId,
+      startedAt: p.startedAt,
+      decisionLayer: p.cascade !== undefined ? 'cascade' : p.decision.decisionLayer,
+      tierAssigned: m?.tierKey ?? null,
+      modelLabel: m?.model.externalModelId ?? null,
+      providerLabel: m?.providerName ?? null,
+      protocol: p.protocol,
     };
   }
 

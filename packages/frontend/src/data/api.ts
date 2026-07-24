@@ -629,6 +629,29 @@ export interface RequestsPage {
   nextCursor: string | null;
 }
 
+/** A live, in-flight request from `GET /analytics/inflight` (add-inflight-requests).
+ * DISTINCT partial shape — `status` is always `'running'`; no token/cost/latency
+ * fields exist yet. `startedAt` is epoch milliseconds (drives the live latency tick). */
+export interface InflightRow {
+  id: string;
+  startedAt: number;
+  decisionLayer: string;
+  tierAssigned: string | null;
+  modelLabel: string | null;
+  providerLabel: string | null;
+  protocol: string;
+  status: 'running';
+}
+
+/** The in-flight read envelope with completeness flags, so a consumer never treats
+ * a degraded (`available:false`) or capped (`truncated:true`) poll as authoritative
+ * evidence that an absent request has settled (add-inflight-requests). */
+export interface InflightSnapshot {
+  items: InflightRow[];
+  available: boolean;
+  truncated: boolean;
+}
+
 /** A `GET /requests` query. `decisionLayers` is sent as a comma-separated `layer`
  * param (the dashboard's multi-value chips); undefined fields are omitted. */
 export interface RequestsQuery {
@@ -769,6 +792,8 @@ export interface ApiClient {
     limit?: number,
   ): Promise<BreakdownRow[]>;
   requests(query: RequestsQuery): Promise<RequestsPage>;
+  /** add-inflight-requests: the owner's live in-flight snapshot for the Overview card. */
+  inflight(): Promise<InflightSnapshot>;
   bodyCaptureStatus(): Promise<BodyCaptureStatus>;
   bodyCaptureUpdate(patch: {
     mode?: 'off' | 'errors_only' | 'all';
@@ -1033,6 +1058,7 @@ export const realClient: ApiClient = {
         escalated: query.escalated,
       })}`,
     ),
+  inflight: () => http<InflightSnapshot>(`${API_BASE}/analytics/inflight`),
   bodyCaptureStatus: () => http<BodyCaptureStatus>(`${API_BASE}/body-capture`),
   bodyCaptureUpdate: (patch) =>
     http<BodyCaptureStatus>(`${API_BASE}/body-capture`, jsonInit('PATCH', patch)),

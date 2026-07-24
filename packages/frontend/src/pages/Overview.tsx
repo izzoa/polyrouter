@@ -2,12 +2,13 @@ import { createEffect, For, on, onCleanup, onMount, Show } from 'solid-js';
 import { BarRows } from '../components/BarRows';
 import { Chart } from '../components/Chart';
 import { RangeSelector } from '../components/RangeSelector';
-import { RequestRows, RequestTableHead } from '../components/RequestTable';
+import { InflightRows, RequestRows, RequestTableHead } from '../components/RequestTable';
 import { breakdownToSpend, bucketSeconds, pct, timeseriesToChart } from '../data/analytics';
 import { rangeToParams } from '../data/range';
 import { useApp } from '../state/context';
 
 const POLL_MS = 15_000;
+const INFLIGHT_POLL_MS = 2_500;
 
 export function Overview(props: { live: boolean }) {
   const app = useApp();
@@ -24,7 +25,14 @@ export function Overview(props: { live: boolean }) {
   onMount(() => {
     if (!props.live) return;
     const timer = setInterval(() => void app.loadOverview(), POLL_MS);
-    onCleanup(() => clearInterval(timer));
+    // Fast, separate poll for live in-flight rows (add-inflight-requests); stops on
+    // unmount, so it never runs off the Overview.
+    void app.loadInflight();
+    const inflightTimer = setInterval(() => void app.loadInflight(), INFLIGHT_POLL_MS);
+    onCleanup(() => {
+      clearInterval(timer);
+      clearInterval(inflightTimer);
+    });
   });
 
   const spend = () => state.analyticsSummary?.spend ?? 0;
@@ -192,15 +200,16 @@ export function Overview(props: { live: boolean }) {
           </button>
         </div>
         <RequestTableHead />
-        <Show
-          when={state.recentRequests.length > 0}
-          fallback={
-            <div style="padding:16px 18px;font:400 12px 'Geist',sans-serif;color:var(--text3)">
-              {state.recentRequestsLoading ? 'Loading…' : 'No requests in this range yet.'}
-            </div>
-          }
-        >
+        <Show when={state.inflightRows.length > 0}>
+          <InflightRows rows={state.inflightRows} />
+        </Show>
+        <Show when={state.recentRequests.length > 0}>
           <RequestRows rows={state.recentRequests} />
+        </Show>
+        <Show when={state.recentRequests.length === 0 && state.inflightRows.length === 0}>
+          <div style="padding:16px 18px;font:400 12px 'Geist',sans-serif;color:var(--text3)">
+            {state.recentRequestsLoading ? 'Loading…' : 'No requests in this range yet.'}
+          </div>
         </Show>
       </div>
     </div>

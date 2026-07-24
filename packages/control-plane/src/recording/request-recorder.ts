@@ -53,6 +53,13 @@ export type RecordStatus = 'success' | 'error' | 'fallback' | 'cancelled';
  * member (which may differ from the primary when a fallback served, #12). */
 export interface RecordingContext {
   readonly principal: Principal;
+  /** The row id, pre-allocated at admission (add-inflight-requests) so the served
+   * request_log row and its in-flight registry entry share one id. */
+  readonly requestId: string;
+  /** Fires once at settle (add-inflight-requests): clears the in-flight registry
+   * entry + stops its lease. Set by the proxy; invoked by `record()` only (never
+   * `recordAttempt`, which is a sub-attempt, not a request-settle point). */
+  readonly onSettle?: () => void;
   readonly agentId: string | null;
   /** Client protocol — a #21 metric label, never persisted. */
   readonly protocol: ClientProtocol;
@@ -184,7 +191,9 @@ export class RequestRecorder {
 
   /** Record the served `request_log` row; returns its pre-allocated id. */
   record(ctx: RecordingContext, outcome: RecordOutcome): string {
-    const id = randomUUID();
+    // Pre-allocated at admission (add-inflight-requests); still exactly one parent
+    // request_log row per request, so this id never collides.
+    const id = ctx.requestId;
     // #21 `recording.enqueue` span — explicitly the request-path enqueue; the
     // durable batch insert is traced separately in the writer.
     const span = trace.getTracer(TRACER_NAME).startSpan('recording.enqueue', {
@@ -276,6 +285,14 @@ export class RequestRecorder {
       // Recording must never affect the request; swallow and log.
       this.logger.warn(`failed to record request log: ${String(err)}`);
     } finally {
+      // Settle the in-flight registry entry (add-inflight-requests): fires exactly
+      // once per request — record() is the single parent-row site — and never
+      // throws into recording.
+      try {
+        ctx.onSettle?.();
+      } catch {
+        /* best-effort; settle must never affect recording */
+      }
       span.end();
     }
     return id;

@@ -22,6 +22,11 @@ heading is started.
   page header when you select it. Icons are greyscale and follow the single-accent
   theme (they tint to the accent on the active item); the Setup card keeps its
   progress ring (its icon shows in the header only).
+- **In-progress requests on the Overview.** The "Recent requests" card now shows
+  requests that are still running — model, provider, tier and a live-ticking
+  latency — above the completed rows, instead of leaving them invisible until they
+  finish. Presence is tracked in Redis, metadata-only and per-owner; if Redis is
+  unavailable the card simply shows no live rows and nothing else changes.
 
 ## [0.8.1] — 2026-07-22
 

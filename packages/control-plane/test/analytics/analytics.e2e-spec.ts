@@ -21,6 +21,7 @@ import { Pool } from 'pg';
 import { configureApp } from '../../src/app.setup';
 import type { AuthedRequest } from '../../src/auth/principal.decorator';
 import { AnalyticsModule } from '../../src/analytics/analytics.module';
+import { InflightRegistry } from '../../src/inflight/inflight-registry';
 import { COMPOSE_HINT } from '../tenancy/harness';
 import '../../src/database/database.config';
 
@@ -886,5 +887,60 @@ describe('analytics API (#17)', () => {
       `SELECT 1 FROM pg_indexes WHERE indexname = 'request_log_owner_created_idx'`,
     );
     expect(idx.rowCount).toBe(1);
+  });
+
+  /** add-inflight-requests §4.2: the live read is owner-scoped, `no-store`, and
+   * carries only route/timing metadata — never a payload. */
+  describe('GET /inflight', () => {
+    const waitFor = async (cond: () => Promise<boolean>, ms = 3_000): Promise<boolean> => {
+      const deadline = Date.now() + ms;
+      for (;;) {
+        if (await cond()) return true;
+        if (Date.now() > deadline) return false;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+    };
+
+    it('returns only the caller’s live requests, as running rows, no-store', async () => {
+      const reg = app.get(InflightRegistry);
+      const idA = randomUUID();
+      reg.mark(userPrincipal(A), {
+        requestId: idA,
+        startedAt: Date.now(),
+        decisionLayer: 'cascade',
+        tierAssigned: 'utility',
+        modelLabel: 'minimax/minimax-m3',
+        providerLabel: 'Openrouter',
+        protocol: 'openai',
+      });
+      reg.mark(userPrincipal(B), {
+        requestId: randomUUID(),
+        startedAt: Date.now(),
+        decisionLayer: 'default',
+        tierAssigned: null,
+        modelLabel: 'b-model',
+        providerLabel: 'B',
+        protocol: 'anthropic',
+      });
+      expect(
+        await waitFor(async () => (await request(server).get('/api/analytics/inflight').set('x-test-user', A)).body.items.length === 1),
+      ).toBe(true);
+
+      const res = await request(server).get('/api/analytics/inflight').set('x-test-user', A);
+      expect(res.status).toBe(200);
+      expect(res.headers['cache-control']).toBe('no-store');
+      expect(res.body.available).toBe(true);
+      expect(res.body.items).toHaveLength(1); // tenant isolation: never B's row
+      expect(res.body.items[0]).toMatchObject({
+        id: idA,
+        status: 'running',
+        modelLabel: 'minimax/minimax-m3',
+        tierAssigned: 'utility',
+      });
+      // No durable/settled fields and no payload ride the live read.
+      expect(res.body.items[0]).not.toHaveProperty('cost');
+      expect(res.body.items[0]).not.toHaveProperty('inputTokens');
+      expect(JSON.stringify(res.body)).not.toMatch(/messages|prompt|authorization/i);
+    });
   });
 });

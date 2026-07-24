@@ -316,6 +316,35 @@ export interface AnalyticsRequestsPage {
   nextCursor: string | null;
 }
 
+/** A live, in-flight request surfaced from the ephemeral registry (add-inflight-
+ * requests). A DISTINCT partial shape — metadata only, NEVER the durable
+ * `RequestLogRow` with its fields optionalized, and `running` is not a durable
+ * status. `startedAt` is epoch milliseconds (it drives the client-side latency
+ * tick and the newest-first ordering). */
+export interface InflightRequestRow {
+  id: string;
+  startedAt: number;
+  decisionLayer: string;
+  tierAssigned: string | null;
+  modelLabel: string | null;
+  providerLabel: string | null;
+  protocol: string;
+  status: 'running';
+}
+
+/** The in-flight read envelope: a bounded, newest-first item list plus
+ * completeness flags so a consumer never mistakes a degraded/capped poll for
+ * "settled" — a live row absent from a non-authoritative snapshot must be
+ * retained, not settled (add-inflight-requests). */
+export interface InflightSnapshot {
+  items: InflightRequestRow[];
+  /** False when the snapshot could not be taken from a healthy registry (Redis
+   * down/hung) — distinguishes an authoritative empty from a degraded empty. */
+  available: boolean;
+  /** True when the owner has more live entries than the returned cap. */
+  truncated: boolean;
+}
+
 /** Owner-scoped analytics aggregation reads (#17). Every method is scoped to the
  * principal (invariant 5) — no unscoped-by-owner fetch, no cross-tenant path. */
 /** Auto-performance aggregation over the decision-telemetry columns

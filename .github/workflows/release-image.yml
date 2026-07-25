@@ -1,8 +1,80 @@
 # Publishes the production image to GHCR on release tags (spec: packaging).
 # Releases are human-gated: tag v*.*.* after CI is green — no branch push ever
 # publishes. Auth is the job-scoped GITHUB_TOKEN; no standing registry secrets.
-# Actions are pinned to full commit SHAs (this job holds packages:write — a
+# Actions are pinned to full commit SHAs (these jobs hold packages:write — a
 # moved tag must not be able to substitute the publisher).
+#
+# ---- WHY THIS IS A MATRIX OF NATIVE RUNNERS, NOT ONE EMULATING RUNNER ----
+# Through v0.9.1 each variant was ONE multi-platform build on ONE amd64 runner,
+# with the linux/arm64 leg executed under QEMU (docker/setup-qemu-action). That
+# emulation is a nondeterministic-failure generator, and it broke 2 of the last
+# 3 releases:
+#   * v0.9.1 — `#22 [linux/arm64 build 8/10] RUN npm ci` (Dockerfile's npm ci)
+#     printed "qemu: uncaught target signal 4 (Illegal instruction) - core
+#     dumped" 68s in and then WEDGED: the step never failed, it just emitted
+#     "#22 ..." progress heartbeats for another 88 minutes until timeout-minutes
+#     killed the job. A retry on byte-identical inputs passed with zero crashes.
+#   * v0.8.1 — the same wedge. It was misdiagnosed then as "arm64 under QEMU is
+#     merely borderline at 45m", and b8e9588 raised the timeout 45→90m. That
+#     diagnosis was wrong and the fix could not work: a timeout never fixes a
+#     hang, it only chooses how long you wait for it. (Corrected below.)
+# Fault class: under qemu-aarch64 this build runs five or six independent
+# JIT/native workloads at once — Node/V8 across libuv threads, esbuild's Go
+# runtime, and the rollup / rolldown / lightningcss / unrs-resolver Rust N-API
+# modules — on musl. QEMU's TCG has documented races invalidating translation
+# blocks for multi-threaded self-modifying code, which is precisely the
+# signature of a nondeterministic SIGILL. You cannot retry your way out of it.
+#
+# So: every architecture is built on its OWN native runner (arm64 GitHub-hosted
+# runners are free and unlimited on public repos, same 4 vCPU / 16 GB spec as
+# the amd64 one), and the per-arch digests are merged into a single manifest
+# list at the end. setup-qemu-action is GONE from every job, deliberately.
+# Do NOT re-add it, and do NOT "simplify" this back to one runner with
+# `platforms: linux/amd64,linux/arm64` — that is the bug. Its absence is also
+# what makes a mis-mapped matrix fail loudly instead of quietly publishing an
+# emulated wrong-arch image.
+#
+# ---- THE ONE NEW OPERATIONAL DEPENDENCY: ARM64 RUNNER CAPACITY ----
+# `ubuntu-24.04-arm` is GitHub-hosted and free ONLY while this repository stays
+# PUBLIC (it fails outright on a private repo), and an org admin disabling
+# standard hosted runners switches it off. timeout-minutes bounds EXECUTION,
+# not queue time, so an arm64 capacity incident parks the arm64 leg in the queue
+# (up to GitHub's ~24h job limit) and — because the concurrency group below is
+# serialized and never cancels — parks every later tag push behind it.
+# RECOVERY, for that incident only: cancel the stuck run, temporarily set the
+# arm64 matrix entry's `runner:` to `ubuntu-24.04` and add
+# `docker/setup-qemu-action` back to that job for one release (accepting the
+# wedge risk documented above), then REVERT both in the same PR. That is a
+# deliberate, logged exception — not a licence to keep emulation around.
+#
+# ---- THE PUBLISHED CONTRACT IS UNCHANGED ----
+#   baseline -> :X.Y.Z, :X.Y, :latest              (+ :sha-… on dispatch only)
+#   semantic -> the same set, -semantic suffixed, incl. :latest-semantic
+# Splitting the build changes WHERE metadata is applied, never WHAT ships:
+#   * labels and `manifest:` annotations -> BUILD time. They live in the
+#     per-arch image config/manifest, and `imagetools create` copies those by
+#     digest, untouched. There is no --label flag on imagetools create, so a
+#     label dropped here (e.g. AGPL-3.0-only) is gone for good.
+#   * tags and `index:` annotations -> MERGE time. imagetools create synthesises
+#     a BRAND-NEW index; index annotations on the source manifests do not
+#     propagate. And a single-platform build asked for `index:` annotations
+#     FAILS outright ("the build must produce the component you specify"), which
+#     is why the per-arch legs pin the level to `manifest`.
+#   * org.opencontainers.image.created -> pinned from ONE stamp computed in the
+#     `validate` job and handed to all four metadata-action calls. Without that
+#     pin each call takes its own `new Date()` on its own runner, so the amd64
+#     config, the arm64 config and the index would each carry a different
+#     timestamp where the single-build era had one. metadata-action has no date
+#     input; the override works because custom `labels:`/`annotations:` entries
+#     are appended after the defaults and deduped through a Map (last wins).
+# The index annotations are the sole source of the GHCR package page's
+# description, and `imagetools create` DROPS every `--annotation index:…`
+# without a word if all its sources carry Docker (non-OCI) media types
+# (util/imagetools/create.go gates the whole annotation block on
+# `mt == ocispecs.MediaTypeImageIndex`). Today's default happens to be OCI, but
+# `provenance: false` removes the attestation that otherwise forces OCI types —
+# so the per-arch pushes below pin `oci-mediatypes=true` explicitly rather than
+# relying on a BuildKit default. Verified again at merge time, before and after.
 name: Release image
 
 on:
@@ -12,36 +84,111 @@ on:
   workflow_dispatch:
 
 # ONE global group, no cancellation: concurrent tag pushes queue instead of
-# racing each other's writes to the shared `latest` tag.
+# racing each other's writes to the shared `latest` tag. Stays workflow-level
+# on purpose — per-job groups would let two runs interleave their merges.
 concurrency:
   group: release-image
   cancel-in-progress: false
 
 jobs:
-  publish:
-    name: build & push ghcr image
-    runs-on: ubuntu-latest
-    # The arm64 leg builds under QEMU emulation with no cache pre-warm (unlike the
-    # -semantic job, which builds each arch to --load first) and is borderline at
-    # 45m on slower runners — v0.8.1's baseline hit exactly that and was cancelled.
-    # Match the -semantic job's headroom.
-    timeout-minutes: 90
-    permissions:
-      contents: read
-      packages: write
+  # The v*.*.* glob also matches junk like vfoo.bar.baz, which would reach
+  # build-push with zero tags. One gating job instead of a copy of this guard in
+  # every builder: it now provably runs BEFORE anything is built or pushed, and
+  # there is exactly one copy to keep correct. It also mints the single
+  # build-timestamp every downstream metadata-action call is pinned to.
+  validate:
+    name: validate release tag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    # Reads GITHUB_REF_NAME and the clock; touches no API. Needs nothing.
+    permissions: {}
+    outputs:
+      created: ${{ steps.stamp.outputs.created }}
     steps:
-      # The v*.*.* glob also matches junk like vfoo.bar.baz, which would reach
-      # build-push with zero tags; fail fast with a clear message instead.
       - name: validate release tag format
         if: github.ref_type == 'tag'
         run: |
           echo "${GITHUB_REF_NAME}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' \
             || { echo "::error::tag '${GITHUB_REF_NAME}' is not strict semver (vX.Y.Z)"; exit 1; }
 
+      # One RFC3339/ISO-8601 instant for the whole release, so every arch's
+      # labels, every child manifest's annotations and the index all agree.
+      - id: stamp
+        name: mint the release build timestamp
+        run: |
+          set -eu
+          created=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+          # An empty value would still WIN the dedupe downstream and blank
+          # org.opencontainers.image.created on every published artifact.
+          case "${created}" in
+            [0-9][0-9][0-9][0-9]-*T*Z) ;;
+            *) echo "::error::refusing to stamp a malformed timestamp '${created}'"; exit 1 ;;
+          esac
+          echo "created=${created}" >> "$GITHUB_OUTPUT"
+
+  baseline-build:
+    name: build baseline · ${{ matrix.platform }}
+    needs: validate
+    strategy:
+      # No fail-fast: if one arch dies we want the sibling's log to say whether
+      # the fault is arch-specific — that is exactly the diagnostic v0.9.1
+      # lacked. It is also safe: these legs push UNTAGGED digests only, so a
+      # completed sibling publishes nothing on its own, and cancelling mid-push
+      # is what leaves half-written uploads behind.
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          # There is no `ubuntu-latest-arm` alias — the OS version must be
+          # pinned. ubuntu-22.04-arm starts deprecating 2026-09-17; 26.04-arm is
+          # still public preview (no SLA). 24.04-arm is the GA choice today.
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    # 40m. ci.yml budgets 25m for ONE cold `docker build .` of this same default
+    # target on the same runner class; this leg does that build plus a --load
+    # export, then a second (locally cache-warm) build and a registry push. 40
+    # keeps real headroom over that only local datapoint while staying far under
+    # the old 90m — 90 was pure emulation slack, and a generous timeout on a
+    # wedged build just means waiting 90 minutes to learn nothing. Natively
+    # there is nothing left to wedge. WATCH the first run's duration: if the
+    # amd64 leg lands near 20m, this number needs revisiting, not the build.
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: derive names and prove this runner is NATIVE for the platform
+        run: |
+          set -eu
+          platform='${{ matrix.platform }}'
+          case "${platform}" in
+            linux/amd64) want_arch=X64;   want_uname=x86_64 ;;
+            linux/arm64) want_arch=ARM64; want_uname=aarch64 ;;
+            *) echo "::error::unsupported platform ${platform}"; exit 1 ;;
+          esac
+          # QEMU is deliberately absent (see the header), so a wrong mapping
+          # would explode deep inside the build with a confusing error. Catch it
+          # here, in one second, with a readable one.
+          [ "${want_arch}" = "${{ runner.arch }}" ] || {
+            echo "::error::${platform} is not native to this ${{ runner.arch }} runner (${{ matrix.runner }}) and QEMU is not installed"
+            exit 1
+          }
+          # metadata-action lowercases `images:` for us; the raw name we hand to
+          # buildx and imagetools has to do it itself or uppercase fork owners
+          # break. Also: `/` is illegal in an artifact name, hence PLATFORM_PAIR.
+          {
+            echo "PLATFORM_PAIR=${platform//\//-}"
+            echo "EXPECTED_UNAME=${want_uname}"
+            echo "REGISTRY_IMAGE=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
+          } >> "$GITHUB_ENV"
+
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      # arm64 is built under QEMU emulation — slow but tag-cadence only.
-      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      # No setup-qemu-action, on purpose. Buildx builds this platform natively.
+      # This one builder instance serves BOTH build steps below, which is what
+      # makes the second one a re-export instead of a rebuild (see there).
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -50,15 +197,20 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Resolves to ghcr.io/izzoa/polyrouter on the canonical repo (the action
-      # lowercases, so uppercase fork owners are safe). Index-level annotations
-      # give the GHCR package page its description on multi-arch images.
+      # Same inputs as the merge job's meta step, verbatim — that is what makes
+      # the labels (org.opencontainers.image.version) and the published tag set
+      # provably consistent, even though this job pushes no tag at all. The
+      # created= override goes in BOTH lists because labels and annotations are
+      # rendered from separate inputs; pinning only one would desynchronise the
+      # image config from its own manifest.
       - id: meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         env:
-          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
+          # `manifest` ONLY. A single-platform build produces no index (we keep
+          # provenance off), so asking for `index:` here fails the build.
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ${{ env.REGISTRY_IMAGE }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -66,44 +218,339 @@ jobs:
             type=sha,enable=${{ github.event_name == 'workflow_dispatch' }}
           labels: |
             org.opencontainers.image.licenses=AGPL-3.0-only
+            org.opencontainers.image.created=${{ needs.validate.outputs.created }}
+          annotations: |
+            org.opencontainers.image.created=${{ needs.validate.outputs.created }}
 
-      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+      # Verify-then-publish, mirroring the -semantic job's shape. No `target:`:
+      # the BASELINE is the Dockerfile's last stage and therefore its default,
+      # and passing no target keeps "the baseline never names the semantic
+      # stage" true by construction. Loading it locally is what lets the next
+      # step inspect the REAL arm64 artifact — under QEMU that assertion would
+      # have been slow and flaky, so it only ever ran on amd64 (in ci.yml).
+      #
+      # No BuildKit cache import/export anywhere in this workflow, deliberately:
+      #   * intra-job reuse (this build -> the push below) comes from the LOCAL
+      #     cache of the single docker-container builder created above, not from
+      #     any registry/gha cache;
+      #   * cross-release reuse is impossible — the Actions cache is ref-scoped,
+      #     this workflow only ever runs on a tag ref, and nothing on `main`
+      #     warms a scope it could read (ci.yml uses plain `docker build`);
+      #   * so `cache-to: type=gha,mode=max` would export multi-GB scopes (the
+      #     semantic target alone unpacks ~270 MB of ORT plus a ~90 MB model)
+      #     that no run can ever read, burning minutes against the timeouts and
+      #     evicting CI's npm caches from the shared 10 GB repo budget.
+      # If someone later adds a main-branch warming job, add `cache-from` (and
+      # only then `cache-to`) with a per-(variant × platform) scope — never the
+      # default `buildkit` scope, which all four legs would clobber.
+      - name: build the baseline image for this arch (local, for verification)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          platforms: ${{ matrix.platform }}
+          load: true
+          tags: polyrouter-baseline-verify:${{ env.PLATFORM_PAIR }}
+
+      # Same assertion ci.yml's baseline-image-neutrality job makes on amd64 —
+      # the optional semantic stack must NEVER reach the baseline image — except
+      # this one runs against the actual per-arch artifact we are about to push.
+      # `uname -m` doubles as the arch-correctness check: a wrong-arch image can
+      # never be published as this leg's digest, which is also why the merge job
+      # does not need to re-derive architectures from the source configs.
+      - name: assert this arch's baseline image is the right arch, ORT- and model-free
+        run: |
+          set -eu
+          docker run --rm --entrypoint sh \
+            "polyrouter-baseline-verify:${PLATFORM_PAIR}" -c '
+              set -e
+              got=$(uname -m)
+              if [ "$got" != "'"${EXPECTED_UNAME}"'" ]; then
+                echo "WRONG ARCH: image reports $got, expected '"${EXPECTED_UNAME}"'"; exit 1
+              fi
+              fail=0
+              pkgs=$(find /app -type d -name "onnxruntime*" | head -20)
+              if [ -n "$pkgs" ]; then echo "FORBIDDEN runtime packages:"; echo "$pkgs"; fail=1; fi
+              models=$(find /app -name "*.onnx" -o -name "*.ort" | head -20)
+              if [ -n "$models" ]; then echo "FORBIDDEN model files:"; echo "$models"; fail=1; fi
+              if [ -d /app/models ]; then echo "FORBIDDEN baked model directory /app/models"; fail=1; fi
+              [ "$fail" = 0 ] || exit 1
+              echo "baseline image is $got and ORT- and model-free"'
+
+      # Push UNTAGGED, by digest: two arch legs cannot both write `latest` (they
+      # would clobber), so tagging is the merge job's job alone. `tags:` here
+      # carries only the repository NAME, which name-canonical=true requires;
+      # push-by-digest=true suppresses the tag write. Served from the builder's
+      # local cache — this is a re-export, not a rebuild.
+      #
+      # oci-mediatypes=true is NOT decoration: `imagetools create` silently
+      # discards every `--annotation index:…` unless at least one source
+      # manifest is OCI, and with provenance off BuildKit's own default is not
+      # guaranteed to give us OCI types. One token here is what keeps the GHCR
+      # package page's description working.
+      - id: push
+        name: push this arch by digest (no tags)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: ${{ env.REGISTRY_IMAGE }}
+          outputs: type=image,oci-mediatypes=true,push-by-digest=true,name-canonical=true,push=true
           # Plain manifest list: default provenance attestations still confuse
           # some simple clients/UIs self-hosters use. Revisit with cosign.
+          # Now doubly load-bearing — with provenance on, buildx would wrap even
+          # this single-platform push in an index, and merging two indexes gives
+          # the `unknown/unknown` entries that pollute the package page. The
+          # merge job asserts this before it moves any tag.
           provenance: false
 
-  publish-semantic:
+      # The docs' idiom: the digest is the FILE NAME (an empty file named after
+      # the digest minus `sha256:`), not the file's contents. The merge job
+      # rebuilds the refs by globbing those names.
+      - name: export digest
+        run: |
+          set -eu
+          mkdir -p "${{ runner.temp }}/digests"
+          digest='${{ steps.push.outputs.digest }}'
+          [ -n "${digest}" ] || { echo "::error::build-push reported no digest"; exit 1; }
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - name: upload digest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          # One name per leg. `overwrite` matters for re-runs: GitHub carries an
+          # existing artifact forward into the new attempt instead of deleting
+          # it, so re-running an already-successful leg would 409 on upload
+          # AFTER it had pushed a second digest.
+          name: digests-baseline-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
+
+  baseline-merge:
+    name: merge & push ghcr image
+    # No `if: always()` — every arch must have pushed a digest before anything
+    # gets tagged. `validate` is only here for its timestamp output (it is
+    # already a transitive dependency through baseline-build).
+    needs: [validate, baseline-build]
+    runs-on: ubuntu-24.04
+    # 10m: imagetools create copies manifests and configs by digest and uploads
+    # a few KB of index JSON. No layer ever moves. This is pure network-stall
+    # headroom for a step that normally takes seconds.
+    timeout-minutes: 10
+    # packages: write only. This job never checks out the repo; download-artifact
+    # authenticates same-run artifacts with ACTIONS_RUNTIME_TOKEN, and
+    # metadata-action's repo read (description/licenses) rides the always-granted
+    # metadata scope. Restore `contents: read` only with a comment saying why.
+    permissions:
+      packages: write
+    steps:
+      - name: derive registry name
+        run: echo "REGISTRY_IMAGE=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      # imagetools create reads both source manifests and writes a new index, so
+      # this job needs the registry credential too.
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: download digests
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: ${{ runner.temp }}/digests
+          # `pattern` is mandatory, not tidiness: build-push-action also uploads
+          # *.dockerbuild build records, and an unfiltered download fails on
+          # them. `merge-multiple` flattens the per-leg artifacts into one dir —
+          # without it the glob below would expand to directories.
+          pattern: digests-baseline-*
+          merge-multiple: true
+
+      # PRE-publish gate. Everything that can be checked before a tag moves is
+      # checked here, because `imagetools create` writes :X.Y.Z, :X.Y and
+      # :latest in one shot — an assertion after that can only report damage.
+      - name: verify the source digests BEFORE any tag moves
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          set -euo pipefail
+          # Hard-fail on a short digest set. imagetools create will happily
+          # publish a one-entry "multi-arch" image: arm64 users would simply get
+          # no image, and nothing downstream would notice.
+          count=$(find . -maxdepth 1 -type f | wc -l | tr -d ' ')
+          [ "${count}" = "2" ] || { echo "::error::expected 2 per-arch digests, found ${count}"; exit 1; }
+          # Each source must be a single image MANIFEST, not an index. An index
+          # here means provenance:false was lost upstream, and merging indexes is
+          # what produces the `unknown/unknown` entries on the package page.
+          # (Architecture coverage is already proven: each build leg asserted
+          # `uname -m` inside the image it pushed, and both legs are required.)
+          for d in *; do
+            ref="${REGISTRY_IMAGE}@sha256:${d}"
+            mt=$(docker buildx imagetools inspect --raw "${ref}" | jq -r '.mediaType // ""')
+            case "${mt}" in
+              application/vnd.oci.image.manifest.v1+json) ;;
+              application/vnd.docker.distribution.manifest.v2+json)
+                echo "::warning::${ref} is a Docker-media-type manifest; imagetools create drops index annotations when NO source is OCI (oci-mediatypes=true was expected)" ;;
+              *)
+                echo "::error::${ref} is '${mt}', not a single image manifest — provenance:false was lost and this must not be merged"
+                exit 1 ;;
+            esac
+          done
+
+      # Identical inputs to the arch legs' meta step, except the annotation
+      # level: this job creates the new index, so `index:` belongs here (and
+      # ONLY here — imagetools create rejects `manifest:` annotations).
+      - id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: index
+        with:
+          images: ${{ env.REGISTRY_IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,enable=${{ github.event_name == 'workflow_dispatch' }}
+          labels: |
+            org.opencontainers.image.licenses=AGPL-3.0-only
+            org.opencontainers.image.created=${{ needs.validate.outputs.created }}
+          annotations: |
+            org.opencontainers.image.created=${{ needs.validate.outputs.created }}
+
+      - name: create the manifest list and push every tag
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          set -euo pipefail
+          md="$DOCKER_METADATA_OUTPUT_JSON"
+          # Extract OUTSIDE process substitution: in `while read < <(jq …)` jq's
+          # exit status is discarded and pipefail does not apply, so a missing
+          # `.annotations` would print "Cannot iterate over null" and publish
+          # every tag with zero annotations. Assignment propagates the failure.
+          tag_list=$(jq -r '.tags[]' <<< "${md}")
+          [ -n "${tag_list}" ] || { echo "::error::metadata-action produced no tags"; exit 1; }
+          ann_list=$(jq -r '(.annotations // [])[] | select(startswith("index:"))' <<< "${md}")
+          # Index annotations are the sole source of the GHCR package page's
+          # description. Fail HERE, before anything is tagged, if they are gone.
+          [ -n "${ann_list}" ] || {
+            echo "::error::metadata-action produced no index: annotations — refusing to publish a description-less package"
+            exit 1
+          }
+          # Built as an array, not via word-splitting: annotation VALUES contain
+          # spaces (description, title), so the docs' `$(jq … | join(" "))`
+          # idiom — safe for tags — would shred them.
+          args=()
+          while IFS= read -r t; do
+            if [ -n "${t}" ]; then args+=(--tag "${t}"); fi
+          done <<< "${tag_list}"
+          while IFS= read -r a; do
+            if [ -n "${a}" ]; then args+=(--annotation "${a}"); fi
+          done <<< "${ann_list}"
+          srcs=()
+          for d in *; do srcs+=("${REGISTRY_IMAGE}@sha256:${d}"); done
+          docker buildx imagetools create "${args[@]}" "${srcs[@]}"
+
+      # POST-publish. Every tag is already live at this point, so this step
+      # reports, it cannot prevent. The platform assertion stays a hard error
+      # (deterministic: buildx normalises arm64 with variant v8 but
+      # .platform.architecture is still "arm64", so it only fires on a genuinely
+      # broken index). The annotation check is a WARNING on purpose: the
+      # pre-publish gate above already fails on the real regression, and a
+      # wrong assertion about where GHCR surfaces index annotations must not
+      # turn a correct, fully-published release into a red run with no rollback.
+      - name: inspect the published manifest list
+        run: |
+          set -euo pipefail
+          ref="${REGISTRY_IMAGE}:${{ steps.meta.outputs.version }}"
+          docker buildx imagetools inspect "${ref}"
+          raw=$(docker buildx imagetools inspect --raw "${ref}")
+          got=$(jq -r '[.manifests[].platform | "\(.os)/\(.architecture)"] | sort | join(",")' <<< "${raw}")
+          # Exactly two clean entries — an `unknown/unknown` here means an
+          # attestation leaked back in and provenance:false was lost.
+          [ "${got}" = "linux/amd64,linux/arm64" ] || {
+            echo "::error::published index platforms are '${got}', expected linux/amd64,linux/arm64 — NOTE: every tag is already live, this needs a new patch release, not a re-run"
+            exit 1
+          }
+          # Presence, not a specific key: metadata-action always emits several
+          # (created/revision/source/version/licenses), and description only when
+          # the repo has one.
+          if [ "$(jq '.annotations // {} | length' <<< "${raw}")" -gt 0 ]; then
+            jq -r '.annotations // {} | keys[]' <<< "${raw}" | sed 's/^/  index annotation: /'
+            echo "published ${ref} as a plain 2-platform manifest list with index annotations"
+          else
+            echo "::warning::published index reports no top-level annotations — the tags ARE live and correct; check the GHCR package description, and if it is fine this check is looking in the wrong place"
+          fi
+
+  semantic-build:
     # add-semantic-dashboard 4.1: the batteries-included `-semantic` variant is
-    # built from the SAME Dockerfile (`--target runtime-semantic`, glibc base,
-    # exact-pinned ORT, reference model baked in) and SMOKE-TESTED on BOTH arches
-    # — load the baked model + one warmup inference — BEFORE it is published.
-    # A failure here never touches the baseline (a separate job); the baseline's
-    # ORT/model neutrality is gated independently by CI's baseline-image job.
-    name: build · smoke · push -semantic variant
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # built from the SAME Dockerfile (`--target runtime-semantic`, glibc base
+    # because onnxruntime-node's prebuilts are glibc-only, exact-pinned ORT,
+    # reference model baked in) and SMOKE-TESTED on BOTH arches — load the baked
+    # model + one warmup inference — BEFORE it is published. A failure here
+    # never blocks or alters the baseline: the dependency between the two halves
+    # runs ONE WAY (semantic-merge waits on baseline-merge), so a semantic smoke
+    # failure leaves the baseline release untouched, while `latest-semantic` can
+    # never end up newer than `latest` — which is exactly the half-published
+    # state v0.9.1 shipped.
+    #
+    # The smoke test is strictly STRONGER natively than it was under QEMU: ORT's
+    # CPU EP picks its arm64 GEMM/dot-product kernels from AT_HWCAP at runtime,
+    # so an emulated pass green-lit a different kernel set than users actually
+    # run; the 384-dim unit-vector assertion was validating QEMU's softfloat;
+    # and the concurrency:2 session path was never really threaded.
+    name: build · smoke -semantic · ${{ matrix.platform }}
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    # 45m rather than the baseline's 40: this target adds apt-get, a ~100 MB ORT
+    # install that unpacks to ~270 MB, the ~90 MB model fetch (curl has a
+    # per-file --max-time 600 ceiling of its own), an ORT session warmup, and a
+    # ~1 GB push. Native, that is minutes; 45 keeps real headroom on a
+    # completely cold cache without letting a hung leg burn an hour.
+    timeout-minutes: 45
     permissions:
       contents: read
       packages: write
     steps:
-      - name: validate release tag format
-        if: github.ref_type == 'tag'
+      - name: derive names and prove this runner is NATIVE for the platform
         run: |
-          echo "${GITHUB_REF_NAME}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' \
-            || { echo "::error::tag '${GITHUB_REF_NAME}' is not strict semver (vX.Y.Z)"; exit 1; }
+          set -eu
+          platform='${{ matrix.platform }}'
+          case "${platform}" in
+            linux/amd64) want_arch=X64;   want_uname=x86_64 ;;
+            linux/arm64) want_arch=ARM64; want_uname=aarch64 ;;
+            *) echo "::error::unsupported platform ${platform}"; exit 1 ;;
+          esac
+          [ "${want_arch}" = "${{ runner.arch }}" ] || {
+            echo "::error::${platform} is not native to this ${{ runner.arch }} runner (${{ matrix.runner }}) and QEMU is not installed"
+            exit 1
+          }
+          {
+            echo "PLATFORM_PAIR=${platform//\//-}"
+            echo "EXPECTED_UNAME=${want_uname}"
+            echo "REGISTRY_IMAGE=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
+          } >> "$GITHUB_ENV"
 
+      # context: . at the repo root is required — .dockerignore excludes
+      # scripts/ except scripts/bake-semantic-model.sh, which the semantic stage
+      # COPYs; a narrower context breaks the bake with a missing-COPY error.
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+
+      # No setup-qemu-action here either: the whole point is that the arm64
+      # ORT binding, its HWCAP kernel dispatch, and the model bake's TLS
+      # handshake (another SIGILL surface — OpenSSL dispatches on the crypto
+      # extensions) all run on real hardware now.
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
@@ -113,9 +560,9 @@ jobs:
       - id: meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         env:
-          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ${{ env.REGISTRY_IMAGE }}
           # The `-semantic` suffix rides every tag, including latest → latest-semantic.
           flavor: |
             latest=auto
@@ -126,50 +573,208 @@ jobs:
             type=sha,enable=${{ github.event_name == 'workflow_dispatch' }}
           labels: |
             org.opencontainers.image.licenses=AGPL-3.0-only
+            org.opencontainers.image.created=${{ needs.validate.outputs.created }}
+          annotations: |
+            org.opencontainers.image.created=${{ needs.validate.outputs.created }}
 
-      # Build each arch to the local daemon and SMOKE it before any push: load
-      # the baked bundle through the real ORT loader and run one warmup inference,
-      # asserting a 384-dim finite unit vector. arm64 runs under QEMU emulation.
-      - name: build + smoke each arch against the baked weights
-        run: |
-          set -eu
-          for arch in amd64 arm64; do
-            echo "::group::build linux/${arch}"
-            docker buildx build --target runtime-semantic \
-              --platform "linux/${arch}" \
-              --build-arg SEMANTIC_BASE_IMAGE=node:24-bookworm-slim \
-              --load -t "polyrouter-semantic-smoke:${arch}" \
-              --cache-from type=gha --cache-to type=gha,mode=max .
-            echo "::endgroup::"
-            echo "::group::smoke linux/${arch}"
-            docker run --rm --platform "linux/${arch}" \
-              --entrypoint node "polyrouter-semantic-smoke:${arch}" -e '
-                const { loadOnnxRuntime } = require("/app/packages/control-plane/dist/semantic/onnx-loader.js");
-                loadOnnxRuntime({ modelPath: process.env.SEMANTIC_MODEL_PATH, maxInputChars: 8000, concurrency: 2, timeoutMs: 60000 })
-                  .then(async ({ embedder, warmupMs }) => {
-                    const v = await embedder.embed("release smoke warmup");
-                    const n = Math.sqrt(v.reduce((s, x) => s + x * x, 0));
-                    if (v.length !== 384 || !v.every(Number.isFinite) || Math.abs(n - 1) > 1e-3) {
-                      console.error("SMOKE FAIL len=" + v.length + " norm=" + n); process.exit(1);
-                    }
-                    console.log("SMOKE OK dims=" + v.length + " warmupMs=" + warmupMs);
-                  })
-                  .catch((e) => { console.error("SMOKE ERROR", e && e.message); process.exit(1); });'
-            echo "::endgroup::"
-          done
-
-      # Only reached when BOTH arches smoked green — cache reuse makes this fast.
-      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+      # Build to the local daemon FIRST so the smoke test gates the push. --load
+      # still applies for the same reason it always did: one platform per build.
+      # `platforms:` stays explicit rather than defaulting to the host so a
+      # mis-mapped matrix fails instead of silently building amd64 on the arm64
+      # runner and pushing it as the arm64 digest. No cache import/export — see
+      # the long note in baseline-build; it matters more here, because a
+      # mode=max export of THIS target is multiple GB nothing can ever read.
+      - name: build the -semantic image for this arch (local, for the smoke test)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           target: runtime-semantic
+          platforms: ${{ matrix.platform }}
           build-args: |
             SEMANTIC_BASE_IMAGE=node:24-bookworm-slim
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          load: true
+          tags: polyrouter-semantic-smoke:${{ env.PLATFORM_PAIR }}
+
+      # No --platform on docker run any more: with QEMU gone there is no binfmt
+      # handler to select, the loaded image is native by construction, and an
+      # interpolated platform there would only mask a mis-mapped matrix.
+      - name: smoke this arch against the baked weights
+        run: |
+          set -eu
+          img="polyrouter-semantic-smoke:${PLATFORM_PAIR}"
+          got=$(docker run --rm --entrypoint uname "$img" -m)
+          [ "$got" = "${EXPECTED_UNAME}" ] \
+            || { echo "::error::image reports $got, expected ${EXPECTED_UNAME}"; exit 1; }
+          docker run --rm --entrypoint node "$img" -e '
+            const { loadOnnxRuntime } = require("/app/packages/control-plane/dist/semantic/onnx-loader.js");
+            loadOnnxRuntime({ modelPath: process.env.SEMANTIC_MODEL_PATH, maxInputChars: 8000, concurrency: 2, timeoutMs: 60000 })
+              .then(async ({ embedder, warmupMs }) => {
+                const v = await embedder.embed("release smoke warmup");
+                const n = Math.sqrt(v.reduce((s, x) => s + x * x, 0));
+                if (v.length !== 384 || !v.every(Number.isFinite) || Math.abs(n - 1) > 1e-3) {
+                  console.error("SMOKE FAIL len=" + v.length + " norm=" + n); process.exit(1);
+                }
+                console.log("SMOKE OK dims=" + v.length + " warmupMs=" + warmupMs);
+              })
+              .catch((e) => { console.error("SMOKE ERROR", e && e.message); process.exit(1); });'
+
+      # Only reached when THIS arch smoked green, and the merge job only runs
+      # when both did — so a smoke failure can never publish the variant. Note
+      # the one semantics change from the single-job era: the arch that finishes
+      # first pushes its digest before its sibling has smoked, so a failure can
+      # leave an orphan UNTAGGED manifest in GHCR. No tag is ever created here,
+      # so nothing publishable ships un-smoked; the registry just accumulates a
+      # dangling digest. Avoiding that entirely would mean shuttling ~1 GB OCI
+      # tarballs through artifacts, which is far worse.
+      # ⚠️ Do NOT "clean up" by bulk-deleting untagged package versions: the
+      # per-arch children of every SUCCESSFULLY published index are untagged
+      # too, and deleting them breaks live releases. Prune by digest, by hand.
+      - id: push
+        name: push this arch by digest (no tags)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          target: runtime-semantic
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            SEMANTIC_BASE_IMAGE=node:24-bookworm-slim
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: ${{ env.REGISTRY_IMAGE }}
+          # oci-mediatypes=true for the same reason as the baseline leg: without
+          # an OCI source manifest, imagetools create drops the index
+          # annotations silently and the package page loses its description.
+          # Served from the builder's local cache — a re-export, not a rebuild.
+          outputs: type=image,oci-mediatypes=true,push-by-digest=true,name-canonical=true,push=true
           provenance: false
+
+      - name: export digest
+        run: |
+          set -eu
+          mkdir -p "${{ runner.temp }}/digests"
+          digest='${{ steps.push.outputs.digest }}'
+          [ -n "${digest}" ] || { echo "::error::build-push reported no digest"; exit 1; }
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - name: upload digest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: digests-semantic-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
+
+  semantic-merge:
+    name: merge & push -semantic variant
+    # ORDERING INVARIANT: the semantic variant is tagged only AFTER the baseline
+    # variant is tagged. The dependency is one-way — a semantic failure never
+    # blocks the baseline — but it makes the v0.9.1 harm mode impossible:
+    # `latest-semantic`/`X.Y.Z-semantic` can no longer be published while
+    # `latest`/`X.Y.Z` stay stale on the previous release.
+    needs: [validate, semantic-build, baseline-merge]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # packages: write only — same reasoning as baseline-merge (no checkout).
+    permissions:
+      packages: write
+    steps:
+      - name: derive registry name
+        run: echo "REGISTRY_IMAGE=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: download digests
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-semantic-*
+          merge-multiple: true
+
+      - name: verify the source digests BEFORE any tag moves
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          set -euo pipefail
+          count=$(find . -maxdepth 1 -type f | wc -l | tr -d ' ')
+          [ "${count}" = "2" ] || { echo "::error::expected 2 per-arch digests, found ${count}"; exit 1; }
+          for d in *; do
+            ref="${REGISTRY_IMAGE}@sha256:${d}"
+            mt=$(docker buildx imagetools inspect --raw "${ref}" | jq -r '.mediaType // ""')
+            case "${mt}" in
+              application/vnd.oci.image.manifest.v1+json) ;;
+              application/vnd.docker.distribution.manifest.v2+json)
+                echo "::warning::${ref} is a Docker-media-type manifest; imagetools create drops index annotations when NO source is OCI (oci-mediatypes=true was expected)" ;;
+              *)
+                echo "::error::${ref} is '${mt}', not a single image manifest — provenance:false was lost and this must not be merged"
+                exit 1 ;;
+            esac
+          done
+
+      # The flavor block MUST match the arch legs' verbatim — it is the only
+      # thing that produces `latest-semantic`, and any drift here silently
+      # changes the published tag set.
+      - id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: index
+        with:
+          images: ${{ env.REGISTRY_IMAGE }}
+          flavor: |
+            latest=auto
+            suffix=-semantic,onlatest=true
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,enable=${{ github.event_name == 'workflow_dispatch' }}
+          labels: |
+            org.opencontainers.image.licenses=AGPL-3.0-only
+            org.opencontainers.image.created=${{ needs.validate.outputs.created }}
+          annotations: |
+            org.opencontainers.image.created=${{ needs.validate.outputs.created }}
+
+      - name: create the manifest list and push every -semantic tag
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          set -euo pipefail
+          md="$DOCKER_METADATA_OUTPUT_JSON"
+          tag_list=$(jq -r '.tags[]' <<< "${md}")
+          [ -n "${tag_list}" ] || { echo "::error::metadata-action produced no tags"; exit 1; }
+          ann_list=$(jq -r '(.annotations // [])[] | select(startswith("index:"))' <<< "${md}")
+          [ -n "${ann_list}" ] || {
+            echo "::error::metadata-action produced no index: annotations — refusing to publish a description-less package"
+            exit 1
+          }
+          args=()
+          while IFS= read -r t; do
+            if [ -n "${t}" ]; then args+=(--tag "${t}"); fi
+          done <<< "${tag_list}"
+          while IFS= read -r a; do
+            if [ -n "${a}" ]; then args+=(--annotation "${a}"); fi
+          done <<< "${ann_list}"
+          srcs=()
+          for d in *; do srcs+=("${REGISTRY_IMAGE}@sha256:${d}"); done
+          docker buildx imagetools create "${args[@]}" "${srcs[@]}"
+
+      - name: inspect the published manifest list
+        run: |
+          set -euo pipefail
+          ref="${REGISTRY_IMAGE}:${{ steps.meta.outputs.version }}"
+          docker buildx imagetools inspect "${ref}"
+          raw=$(docker buildx imagetools inspect --raw "${ref}")
+          got=$(jq -r '[.manifests[].platform | "\(.os)/\(.architecture)"] | sort | join(",")' <<< "${raw}")
+          [ "${got}" = "linux/amd64,linux/arm64" ] || {
+            echo "::error::published index platforms are '${got}', expected linux/amd64,linux/arm64 — NOTE: every -semantic tag is already live, this needs a new patch release, not a re-run"
+            exit 1
+          }
+          if [ "$(jq '.annotations // {} | length' <<< "${raw}")" -gt 0 ]; then
+            jq -r '.annotations // {} | keys[]' <<< "${raw}" | sed 's/^/  index annotation: /'
+            echo "published ${ref} as a plain 2-platform manifest list with index annotations"
+          else
+            echo "::warning::published index reports no top-level annotations — the tags ARE live and correct; check the GHCR package description, and if it is fine this check is looking in the wrong place"
+          fi

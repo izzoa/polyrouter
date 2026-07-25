@@ -15,6 +15,11 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.9.2] — 2026-07-25
+
+[Release](https://github.com/izzoa/polyrouter/releases/tag/v0.9.2) ·
+[Compare](https://github.com/izzoa/polyrouter/compare/v0.9.1...v0.9.2)
+
 ### Changed
 
 - **Release images are built on native runners per architecture instead of emulating arm64.**

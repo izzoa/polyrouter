@@ -153,7 +153,7 @@ Features are scored against per-tenant **calibrated thresholds** (resolved from 
 | `low` | Simple request | Route to `auto_low`; `decision_layer='structural'` |
 | `ambiguous` | Uncertain | Hand to Layer 2 (then Layer 3 if still ambiguous) |
 
-Telemetry is recorded for every evaluated row (`structural_band`/`structural_score`/`structural_dimension`/`structural_reason`), even when the row falls through to cascade — no silent telemetry.
+Telemetry is recorded for every evaluated row (`structural_band`/`structural_score`/`structural_band_source`/`structural_epoch`), even when the row falls through to cascade — no silent telemetry. The reason text is not its own column: it is appended to `routing_reason`.
 
 ## Layer 2 — Semantic Classification
 
@@ -298,8 +298,10 @@ When a provider in the entry chain fails:
 3. **Check circuit breaker** — if the next provider's breaker is open, skip it
 4. **Try next entry** — walk the chain until success or exhaustion
 
-Fallback-eligible errors: `auth`, `rate_limit`, `unavailable`, `unknown` (upstream)
-Non-fallback errors: `bad_request`, `unknown_model` (routing-level), `provider_credential_required` (config-driven)
+The provider-error taxonomy is exactly `auth | rate_limit | unavailable | bad_request | unknown_model | credential` (`packages/data-plane/src/providers/errors.ts`), and `shouldFallback` is a single negation: `kind !== 'bad_request'`.
+
+Fallback-eligible errors: `auth`, `rate_limit`, `unavailable`, `unknown_model` (a model retired at one provider must not fail the whole request), `credential` (fallback-eligible but breaker-**neutral** — a revoked OAuth grant or an identity-provider outage is not upstream provider health), plus a `ProviderCircuitOpenError` skip.
+Non-fallback errors: `bad_request` only — plus a caller cancellation (`CallCancelledError`, `AbortError`) and **any error the router cannot classify**, which `fallbackEligible` rejects outright (`return false; // unknown → don't retry`, `packages/data-plane/src/proxy/core.ts`). The routing-level `unknown_model` — a model name that resolves to nothing in the tenant's catalog — is a separate, terminal 404 raised before any provider is dialed.
 
 ## Configuration
 

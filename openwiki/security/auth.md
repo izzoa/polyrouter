@@ -114,7 +114,7 @@ Source: `packages/shared/src/server/security/credential-envelope.ts`.
 | Provider credential key | `PROVIDER_CREDENTIAL_KEY` | Provider secret encryption (plain API keys and OAuth envelopes) |
 | Notification credential key | `NOTIFY_CREDENTIALS_SECRET` | Notification channel encryption |
 
-Key rotation is supported via dual-key decryption (decrypt with old key, re-encrypt with new key).
+There is no dual-key or previous-key decryption path: `decryptSecret(envelope, keyHex)` takes exactly one key, and no keyring or old-key env var exists. These four secrets are generated once by the installer and are never rotated automatically — rotating `PROVIDER_CREDENTIAL_KEY` or `NOTIFY_CREDENTIALS_SECRET` orphans every stored provider/channel credential (you re-enter them), which is why `install.sh` refuses to regenerate an existing `.env`.
 
 Source: `packages/shared/src/server/security/encryption.ts`.
 
@@ -195,19 +195,19 @@ Source: `packages/control-plane/src/auth/rate-limit.ts`.
 
 ## Security Audit
 
-The [`FABLE_AUDIT.md`](/FABLE_AUDIT.md) file documents a 19-surface multi-agent security audit. Key verified areas:
+The [`FABLE_AUDIT.md`](/FABLE_AUDIT.md) file documents a 19-surface multi-agent audit, **generated 2026-07-16 against commit `8abd4b6`**. Areas it confirmed sound and load-bearing:
 
 - ✅ Tenancy seam — no cross-tenant data leaks
 - ✅ Mid-stream commit rule — no model swap after first token
-- ✅ SSRF pinning — full IPv4 + IPv6 range blocking
-- ✅ Append-only pricing — immutable cost records
-- ✅ Budget counters — monotonic reconcile
-- ✅ Breaker settling — generation-stamped state
-- ✅ Auto-layer gating — opt-in only (semantic requires capability ∧ preference)
+- ✅ SSRF pinning — connect-time resolve → validate → pin, with a post-connect re-check
+- ✅ Append-only pricing — immutable cost records, per-row snapshots
+- ✅ Budget counters — single-writer, monotonic reconcile
+- ✅ Breaker settling — outcome settles before the error event is yielded
+- ✅ Auto-layer gating — smart layers only refine `model === 'auto' && decisionLayer === 'default'`
 - ✅ Notification isolation — fire-and-forget, no request-path blocking
-- ✅ L2 telemetry all-or-none — no fabricated semantic columns
-- ✅ L2 evidence bounds — no single embedding ever flushed
-- ✅ L2 stale-state honesty — promoted centroid with changed revision shows bundled
-- ✅ L2 revert atomicity — epoch bump before Redis clear, idempotent
+- ✅ Boot fail-fast config registry — names, never values, in errors
+- ✅ Frontend key handling — raw agent key transient, shown once, no `innerHTML`
 
-0 critical findings. All high and medium findings resolved.
+It reported **0 critical, 9 high, ~37 medium** confirmed findings, organized into 15 executable epics.
+
+**Scope caveat:** the audit predates Layer 2. Its surface 9 is *"Routing engine (L0/L1/L3)"* — the word "semantic" does not appear in the document at all, because L2 did not ship until 2026-07-21 (`0.8.0`). The L2 invariants (telemetry all-or-none, evidence bounds, stale-state honesty, revert atomicity) are enforced in code and pinned by their own dedicated suites — `evidence-accumulator.spec.ts`, `learning-store-redis.spec.ts`, `learning.run.spec.ts`, `semantic-learning.e2e-spec.ts` — not by this audit.

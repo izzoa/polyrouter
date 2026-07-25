@@ -133,7 +133,7 @@ Per-tenant calibrated thresholds are resolved from the **same** settings read (n
 | `low` | Routes to `auto_low`; **Layer 2 is skipped** |
 | `ambiguous` | Hand to Layer 2 (then Layer 3 if still ambiguous) |
 
-**Telemetry**: the verdict is recorded on every evaluated row via `structural_band`/`structural_score`/`structural_dimension`/`structural_reason`, even when the row falls through to cascade (no silent telemetry).
+**Telemetry**: the verdict is recorded on every evaluated row via `structural_band`/`structural_score`/`structural_band_source`/`structural_epoch`, even when the row falls through to cascade (no silent telemetry). The reason text has no column of its own — it is appended to `routing_reason`.
 
 #### ⑤b — Layer 2 Semantic (opt-in)
 
@@ -236,18 +236,26 @@ Recording is enqueue-based — the request path enqueues metadata, and a backgro
 
 ## Error Mapping
 
+Routing-level errors are raised before any provider is dialed and are always terminal. Provider errors carry a `ProviderErrorKind` and are fallback-eligible unless they are the caller's fault — `shouldFallback(kind)` is `kind !== 'bad_request'`.
+
 | Error kind | HTTP status | Fallback eligible |
 |------------|-------------|-------------------|
-| `unknown_model` | 404 | No |
+| `unknown_model` (routing-level) | 404 | No |
 | `ambiguous_model` | 404 | No |
 | `empty_tier` | 400 | No |
+| `unresolved_target` | 400 | No |
+| `no_default` | 500 | No |
 | `auth` (upstream) | 502 | Yes |
-| `rate_limit` | 429 | Yes |
-| `unavailable` | 503 | Yes |
-| `bad_request` | 400 | No |
-| `budgetBlocked` | 429 | No |
+| `rate_limit` (upstream) | 429 | Yes |
+| `unavailable` (upstream) | 503 | Yes |
+| `unknown_model` (upstream) | 404 | Yes |
+| `credential` (upstream) | 503 | Yes (breaker-neutral) |
+| `bad_request` (upstream) | 400 | No |
+| circuit open (provider skipped) | 503 | Yes |
+| `budgetBlocked` | 402 | No |
 | `budgetEnforcementUnavailable` | 503 | No |
-| `provider_credential_required` | 503 | Yes (config-driven) |
+
+Two distinct concepts share the name `unknown_model`: the **routing-level** one is a model name that matches nothing in the tenant's catalog (terminal 404 `model_not_found`), while the **provider** kind is a 404 from an upstream that retired the model — that one falls back to the next entry in the chain. An unclassified throw is never retried (`return false; // unknown → don't retry`, `packages/data-plane/src/proxy/core.ts`); there is no `provider_credential_required` kind.
 
 ## Stream Error Handling
 

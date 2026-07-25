@@ -15,6 +15,12 @@ heading is started.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`CALIBRATION_*` and `EVENTS_*` set in `.env` now reach the container.** The shipped
+  `docker-compose.yml` is an explicit `environment:` allow-list and neither namespace was on
+  it, so all thirteen knobs silently kept their defaults. Unset behaviour is unchanged.
+
 ## [0.9.2] — 2026-07-25
 
 [Release](https://github.com/izzoa/polyrouter/releases/tag/v0.9.2) ·

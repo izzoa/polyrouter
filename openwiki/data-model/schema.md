@@ -70,9 +70,9 @@ Polyrouter uses PostgreSQL 16 with Drizzle ORM. The schema is organized into six
 | `request_attempt` | Per-attempt cost ledger | `id`, `request_log_id`, `provider_id`, `model_id`, `outcome`, `latency_ms` |
 | `model_price` | Effective-dated pricing | `id`, `model_id`, `effective_at`, `input_price_per_mtok`, `output_price_per_mtok` |
 
-**Routing header visibility** (`add-routing-header-visibility`): `request_log.routing_header_name` and `routing_header_value` record which header chose the route. Set only on `decision_layer='header'` rows. The built-in tier header records name + matched tier key; custom rules record name only (value is null — a configured header value can be a credential and is never persisted). A CHECK constraint enforces value-requires-name.
+**Routing header visibility** (`add-routing-header-visibility`): `request_log.routing_header_name` and `routing_header_value` record which header chose the route. Set only on `decision_layer='header'` rows. The built-in tier header records name + the owned config value that matched — the tier key on a direct lookup, or the remap rule's own `header_value` (e.g. `shopping`) when a tier-header remap matched; never raw client bytes. Rules on any other header record name only (value is null — a configured header value can be a credential and is never persisted). A CHECK constraint enforces value-requires-name.
 
-**Structural telemetry** (`add-auto-decision-telemetry`): `request_log.structural_band`, `structural_score`, `structural_dimension`, `structural_reason` — written on every evaluated row (including ambiguous/unroutable fall-throughs), no silent telemetry. `structural_epoch` records the decision-time calibration epoch.
+**Structural telemetry** (`add-auto-decision-telemetry`): `request_log.structural_band`, `structural_score`, `structural_band_source` (`threshold` | `declared`) — written on every evaluated row (including ambiguous/unroutable fall-throughs), no silent telemetry. `structural_epoch` records the decision-time calibration epoch. There is no `structural_reason` column; the L1 reason string is appended to `routing_reason`.
 
 **Semantic telemetry quartet** (`add-semantic-routing`): `request_log.semantic_band`, `semantic_score`, `semantic_source`, `semantic_revision` — written on every Layer-2-evaluated row. **All-or-none**: a CHECK constraint enforces that all four are populated together or all are null. The bundle/content-derived revision identifies the embedder and anchor set that produced the verdict; `source` distinguishes `bundled` from `learned`.
 
@@ -152,7 +152,7 @@ const encrypted = await encryptSecret(plaintext, PROVIDER_CREDENTIAL_KEY);
 const plaintext = await decryptSecret(encrypted, PROVIDER_CREDENTIAL_KEY);
 ```
 
-The encryption key (`PROVIDER_CREDENTIAL_KEY` / `NOTIFY_CREDENTIALS_SECRET`) is a required environment variable. Key rotation is supported via dual-key decryption.
+The encryption key (`PROVIDER_CREDENTIAL_KEY` / `NOTIFY_CREDENTIALS_SECRET`) is a required environment variable. `decryptSecret` takes exactly one key — there is no dual-key or previous-key fallback. Each key is generated once at install and never rotated automatically; rotating one orphans every row it encrypted (the credentials must be re-entered).
 
 The decrypted provider credential is a **typed envelope** (`polycred:v1:` + JSON, or a legacy raw string read as plain). Plain API keys are wrapped; OAuth tokens from the [Subscription OAuth](/openwiki/providers/subscription-oauth.md#credential-envelope) flow are stored as `kind: 'oauth'` envelopes that only the connect/refresh path can mint. See [Security & Auth](/openwiki/security/auth.md#credential-envelope) for the tamper-safety rules.
 

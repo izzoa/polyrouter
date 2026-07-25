@@ -172,8 +172,7 @@ Nothing is fetched over the network at boot or runtime; embedded text and vector
 |----------|---------|---------|
 | `PORT` | `3001` | HTTP server port |
 | `NODE_ENV` | `production` | Runtime environment |
-| `LOG_LEVEL` | `info` | Logging verbosity |
-| `CORS_ORIGIN` | (none) | Allowed CORS origins |
+| `DASHBOARD_ORIGIN` | `http://localhost:3000` | Origin trusted for dashboard sessions — better-auth `trustedOrigins` and the session-guard `Origin` check. Also the CORS allow-list, but CORS is only enabled when `NODE_ENV=development` (Compose pins `production`). |
 | `MODE` | `selfhosted` | `selfhosted` (default) or `cloud` — gates local-model / loopback / body-capture / localhost-login / SSRF-loopback-exception |
 | `BIND_ADDRESS` | `127.0.0.1` | HTTP bind (set to `0.0.0.0` inside the container so published ports work; the host-side exposure is controlled by `ports`) |
 

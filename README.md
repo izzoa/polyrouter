@@ -204,7 +204,7 @@ name: polyrouter-selfhost
 
 services:
   app:
-    image: ghcr.io/izzoa/polyrouter:0.8.1        # or :latest
+    image: ghcr.io/izzoa/polyrouter:0.9.2        # or :latest
     restart: unless-stopped
     ports:
       - '${POLYROUTER_HOST:-127.0.0.1}:${POLYROUTER_PORT:-3001}:3001'  # loopback by default
@@ -369,9 +369,15 @@ public, or set `METRICS_ENABLED=false`.
 | `SEMANTIC_TIMEOUT_MS` / `SEMANTIC_MAX_INPUT_CHARS` / `SEMANTIC_CONCURRENCY`                         | `50` / `2000` / `2`     | Embedder bounds: per-embed hard timeout, input cap before tokenization, concurrent-inference cap (saturation skips the layer for that request). Out-of-bounds values reject boot |
 | `POLYROUTER_SUBNET` / `POLYROUTER_IMAGE`                                                            | `172.28.5.0/24` / built | Compose network CIDR (change on a collision) / prebuilt image override                                       |
 
-> The optional tunables are compose pass-through: set one in `.env` and it reaches the
-> container (the compose file sets the deploy-invariant ones — bind address, mode,
-> `NODE_ENV`, DB/Redis URLs — itself). The config registry in the source
+> The optional tunables above are compose pass-through: set one in `.env` and it reaches
+> the container (the compose file sets the deploy-invariant ones — bind address, mode,
+> `NODE_ENV`, DB/Redis URLs — itself). That hand-off is an **explicit allowlist**, not a
+> blanket one: the app service's `environment:` block in `docker-compose.yml` is the list
+> of what actually crosses into the container, and a key you put in `.env` without adding
+> it there is silently ignored. The `SEMANTIC_*` knobs are the one deliberate exception —
+> they are declared in `docker-compose.semantic.yml`, so layer that override file to tune
+> them (`SEMANTIC_MODEL_PATH` is baked into the `-semantic` image either way, so Layer 2
+> still runs without it — just untunable). The config registry in the source
 > (`packages/*/src/**` config schemas) is the exhaustive list — defaults,
 > required-in-production secrets, and dev fallbacks are declared there.
 
@@ -491,7 +497,7 @@ change both places if it collides with your network.
 
 - **Upgrade:** pull/re-download the source, then `docker compose -p polyrouter-selfhost up -d --build` — or, on the prebuilt image, `docker compose -p polyrouter-selfhost pull && docker compose -p polyrouter-selfhost up -d`. Migrations run on boot either way.
 - **Backup:** the `polyrouter-pg` volume is the data; `docker compose exec postgres pg_dump -U polyrouter polyrouter > backup.sql`.
-- **Stop/restart:** in-flight streaming responses are drained on `docker stop` (45s grace period) — deploys don't sever live completions.
+- **Stop/restart:** in-flight streaming responses are drained on `docker stop` — new inference is refused and the app waits up to **15s** for open streams to finish (`streamDrainDeadlineMs`), aborting any still running at that deadline; Compose separately allows 45s (`stop_grace_period`) before SIGKILL. Deploys don't sever live completions.
 - **One app replica only:** boot migrations take no advisory lock — do not `--scale app`. The dashboard's live event stream also fans out **in-process** for this reason; multi-instance fanout (Redis pub/sub) is a documented graduation, not a supported topology today.
 - **Reverse proxies must not buffer `/api/events`.** The dashboard receives live updates over Server-Sent Events on that one path. polyrouter already sends `X-Accel-Buffering: no` and `Cache-Control: no-cache, no-transform` and heartbeats every 25s (under the usual ~60s idle-reap), but if you front it with nginx/Traefik/Cloudflare you may need to disable response buffering and raise the read timeout for it (nginx: `proxy_buffering off;`). If the stream is blocked the dashboard says **Polling** instead of **Live** and keeps working on its normal refresh — you lose push, never function.
 - **Verify an install:** `scripts/selfhost-smoke.sh` runs the end-to-end smoke pass (health, admin bootstrap, live-stream drain, metadata-only persistence) against a throwaway stack.

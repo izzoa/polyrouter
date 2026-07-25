@@ -34,6 +34,12 @@
 # what makes a mis-mapped matrix fail loudly instead of quietly publishing an
 # emulated wrong-arch image.
 #
+# MEASURED, first native run (workflow_dispatch rehearsal on cd0ac30, all caches
+# cold): the arm64 baseline leg that wedged for 88 minutes finished in 1m45s, and
+# the ENTIRE release — both variants, four builds, two merges — took 3m40s wall
+# clock against 20m42s on the best previous run. Zero QEMU faults, and no arm64
+# queue wait (every leg started within 5s of `validate`).
+#
 # ---- THE ONE NEW OPERATIONAL DEPENDENCY: ARM64 RUNNER CAPACITY ----
 # `ubuntu-24.04-arm` is GitHub-hosted and free ONLY while this repository stays
 # PUBLIC (it fails outright on a private repo), and an org admin disabling
@@ -146,14 +152,14 @@ jobs:
           - platform: linux/arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
-    # 40m. ci.yml budgets 25m for ONE cold `docker build .` of this same default
-    # target on the same runner class; this leg does that build plus a --load
-    # export, then a second (locally cache-warm) build and a registry push. 40
-    # keeps real headroom over that only local datapoint while staying far under
-    # the old 90m — 90 was pure emulation slack, and a generous timeout on a
-    # wedged build just means waiting 90 minutes to learn nothing. Natively
-    # there is nothing left to wedge. WATCH the first run's duration: if the
-    # amd64 leg lands near 20m, this number needs revisiting, not the build.
+    # 40m, deliberately loose. MEASURED on the first native run (dispatch
+    # rehearsal, cd0ac30, both legs cold): amd64 1m55s, arm64 1m45s — the same
+    # arm64 leg that wedged for 88 minutes under QEMU. So 40 is ~20x the observed
+    # cost, not a tuned budget: it is there to catch a pathological stall while
+    # never being the thing that fails a release. Do not tighten it toward the
+    # measurement — a cold base-image pull or a slow GHCR day is the case it
+    # exists for, and the old 90m taught us that a generous timeout on a WEDGED
+    # build only buys a longer wait. Natively there is nothing left to wedge.
     timeout-minutes: 40
     permissions:
       contents: read
@@ -219,7 +225,14 @@ jobs:
           labels: |
             org.opencontainers.image.licenses=AGPL-3.0-only
             org.opencontainers.image.created=${{ needs.validate.outputs.created }}
+          # licenses is repeated here, not just in `labels:`. A custom `labels:`
+          # entry does NOT propagate to annotations — only a custom `annotations:`
+          # one does — so through v0.9.1 every published image carried the label
+          # `AGPL-3.0-only` while its annotation kept metadata-action's
+          # API-derived `AGPL-3.0` (the deprecated SPDX id GitHub reports for the
+          # repo licence). Same value in both lists now.
           annotations: |
+            org.opencontainers.image.licenses=AGPL-3.0-only
             org.opencontainers.image.created=${{ needs.validate.outputs.created }}
 
       # Verify-then-publish, mirroring the -semantic job's shape. No `target:`:
@@ -417,7 +430,14 @@ jobs:
           labels: |
             org.opencontainers.image.licenses=AGPL-3.0-only
             org.opencontainers.image.created=${{ needs.validate.outputs.created }}
+          # licenses is repeated here, not just in `labels:`. A custom `labels:`
+          # entry does NOT propagate to annotations — only a custom `annotations:`
+          # one does — so through v0.9.1 every published image carried the label
+          # `AGPL-3.0-only` while its annotation kept metadata-action's
+          # API-derived `AGPL-3.0` (the deprecated SPDX id GitHub reports for the
+          # repo licence). Same value in both lists now.
           annotations: |
+            org.opencontainers.image.licenses=AGPL-3.0-only
             org.opencontainers.image.created=${{ needs.validate.outputs.created }}
 
       - name: create the manifest list and push every tag
@@ -514,8 +534,10 @@ jobs:
     # 45m rather than the baseline's 40: this target adds apt-get, a ~100 MB ORT
     # install that unpacks to ~270 MB, the ~90 MB model fetch (curl has a
     # per-file --max-time 600 ceiling of its own), an ORT session warmup, and a
-    # ~1 GB push. Native, that is minutes; 45 keeps real headroom on a
-    # completely cold cache without letting a hung leg burn an hour.
+    # ~1 GB push. MEASURED cold on the first native run (cd0ac30): amd64 3m08s,
+    # arm64 2m37s — so this is ~15x observed, same reasoning as the baseline's.
+    # Note the arm64 leg is FASTER than amd64 here despite doing identical work,
+    # which is the clearest possible sign the emulation tax is gone.
     timeout-minutes: 45
     permissions:
       contents: read
@@ -574,7 +596,14 @@ jobs:
           labels: |
             org.opencontainers.image.licenses=AGPL-3.0-only
             org.opencontainers.image.created=${{ needs.validate.outputs.created }}
+          # licenses is repeated here, not just in `labels:`. A custom `labels:`
+          # entry does NOT propagate to annotations — only a custom `annotations:`
+          # one does — so through v0.9.1 every published image carried the label
+          # `AGPL-3.0-only` while its annotation kept metadata-action's
+          # API-derived `AGPL-3.0` (the deprecated SPDX id GitHub reports for the
+          # repo licence). Same value in both lists now.
           annotations: |
+            org.opencontainers.image.licenses=AGPL-3.0-only
             org.opencontainers.image.created=${{ needs.validate.outputs.created }}
 
       # Build to the local daemon FIRST so the smoke test gates the push. --load
@@ -735,7 +764,14 @@ jobs:
           labels: |
             org.opencontainers.image.licenses=AGPL-3.0-only
             org.opencontainers.image.created=${{ needs.validate.outputs.created }}
+          # licenses is repeated here, not just in `labels:`. A custom `labels:`
+          # entry does NOT propagate to annotations — only a custom `annotations:`
+          # one does — so through v0.9.1 every published image carried the label
+          # `AGPL-3.0-only` while its annotation kept metadata-action's
+          # API-derived `AGPL-3.0` (the deprecated SPDX id GitHub reports for the
+          # repo licence). Same value in both lists now.
           annotations: |
+            org.opencontainers.image.licenses=AGPL-3.0-only
             org.opencontainers.image.created=${{ needs.validate.outputs.created }}
 
       - name: create the manifest list and push every -semantic tag

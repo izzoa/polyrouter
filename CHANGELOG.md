@@ -15,6 +15,21 @@ heading is started.
 
 ## [Unreleased]
 
+### Changed
+
+- **Release images are built on native runners per architecture instead of emulating arm64.**
+  The `linux/arm64` half was cross-built under QEMU, which broke two of the last three
+  releases — crashing inside `npm ci` and then wedging for 88 minutes until the job timeout,
+  which is how v0.9.1 came to publish its `-semantic` variant while the baseline was missing
+  and `latest` stayed on 0.9.0. Each arch now builds natively and a merge job assembles the
+  manifest list, so tagging happens once at the end. Same tags, same two platforms, no
+  attestation entries; the whole release now takes 3m40s instead of 20m42s.
+
+### Fixed
+
+- **`org.opencontainers.image.licenses` annotations reported the deprecated `AGPL-3.0`** while
+  the matching label correctly said `AGPL-3.0-only`. Both now agree.
+
 ## [0.9.1] — 2026-07-24
 
 [Release](https://github.com/izzoa/polyrouter/releases/tag/v0.9.1) ·

@@ -85,7 +85,10 @@ describe('--faint stays decorative-only in TSX', () => {
   const ALLOWED: Record<string, number> = {
     'components/Topbar.tsx': 1, // ⧉ copy glyph
     'components/Inspector.tsx': 2, // → flow arrows
-    'pages/Routing.tsx': 2, // ⋮⋮ drag glyph + → rule arrow
+    // The ⋮⋮ drag glyph left this list in fix-tier-chain-drag-reorder: it became a real
+    // reorder BUTTON, so it is an interactive control and takes --text3 (≥ 3:1), styled
+    // in styles.css. Only the → rule arrow remains decorative here.
+    'pages/Routing.tsx': 1, // → rule arrow
     'pages/Costs.tsx': 1, // ■ legend key for the faint bar segment
   };
 

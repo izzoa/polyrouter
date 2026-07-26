@@ -842,6 +842,12 @@ export interface AppStore {
   loadRouting: () => Promise<void>;
   moveTierEntry: (tierId: string, from: number, to: number) => void;
   commitTierOrder: (tierId: string) => Promise<void>;
+  /** Hold this tier's visible chain against async server state for the drag's duration. */
+  beginTierDrag: (tierId: string) => void;
+  /** Resolve a hold. `changed` commits the user's order and drops deferred state;
+   *  `unchanged` applies deferred state without writing; `abandon` discards both
+   *  (page teardown, tier deletion, sign-out) — a boolean cannot express that third case. */
+  endTierDrag: (tierId: string, outcome: 'changed' | 'unchanged' | 'abandon') => void;
   addTierModel: (tierId: string, modelId: string) => void;
   removeTierModel: (tierId: string, modelId: string) => void;
   setPrimaryTierModel: (tierId: string, modelId: string) => void;
@@ -988,8 +994,28 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
   // the latest desired order — so overlapping edits can't lose a newer edit or roll
   // back across a later success. Rollback restores `confirmedEntries` (the last
   // SERVER-confirmed order), never a mid-drag optimistic order (blockers #1/#2).
-  const tierDesired = new Map<string, string[]>();
+  // Orders are generation-tagged: a queued order belongs to the identity that queued it,
+  // so an old principal's write can never be sent (or applied) under a new session.
+  const tierDesired = new Map<string, { modelIds: string[]; gen: number }>();
   const tierInFlight = new Set<string>();
+  // ── Drag hold (fix-tier-chain-drag-reorder) ────────────────────────────────────────
+  // `<For>` is keyed by reference, so ANY write that installs fresh server objects
+  // disposes and rebuilds every row — destructive mid-drag. While a tier is held, writes
+  // to its VISIBLE state are deferred as an immutable snapshot (never a thunk: a thunk
+  // would re-read live state at apply time and could paint something never suppressed).
+  // The confirmed baseline is server truth and keeps updating regardless.
+  let dragHold: string | null = null;
+  const tierPending = new Map<string, TierEntryDto[]>();
+  const isHeld = (tierId: string): boolean => dragHold === tierId;
+  /** Paint a deferred snapshot, unless the tier has since been deleted. */
+  const applyPending = (tierId: string): void => {
+    const pending = tierPending.get(tierId);
+    tierPending.delete(tierId);
+    if (pending === undefined || deletedTiers.has(tierId)) return;
+    if (state.tierEntries[tierId] === undefined) return; // tier no longer present
+    setState('tierEntries', tierId, pending);
+  };
+  const dropPending = (tierId: string): void => void tierPending.delete(tierId);
 
   // Auto-layer single-flight: serialize `setAutoLayers` so rapid toggles apply in
   // order, sending the latest desired state; roll back to the last confirmed view.
@@ -1060,6 +1086,14 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
   const resetIdentityScoped = (): void => {
     identityGen += 1;
     bumpRouting(); // discard in-flight routing loads captured under the old principal
+    // The tier writer's bookkeeping is identity-scoped too: a queued order, a tombstone
+    // or a deferred drag snapshot from the previous principal must never be sent or
+    // painted under the new session. `tierInFlight` is not cleared — its drain loop owns
+    // it and self-clears; the generation check makes those completions inert.
+    tierDesired.clear();
+    deletedTiers.clear();
+    tierPending.clear();
+    dragHold = null;
     rulesGen += 1; // an old account's in-flight rules reconcile can never commit (r3-High-2)
     // Live-view state is identity-scoped too (phase1-tune-dashboard-polling): the fold
     // state is closure-held, and the settle handoff's durable refresh is guarded only by
@@ -1130,13 +1164,37 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           }
           s.autoLayers = autoLayers;
           s.providers = providerRows.map(toProvider);
+          // A refresh rebuilds every chain — which would rip the rows out from under a
+          // live drag. The held tier keeps its visible order; its loaded list is deferred
+          // and applied when the drag ends. Everything else loads normally, and the
+          // confirmed baseline always tracks server truth.
+          const held = dragHold;
+          const heldVisible = held !== null ? s.tierEntries[held] : undefined;
           s.tierEntries = {};
           s.confirmedEntries = {};
           tiers.forEach((t, i) => {
             const list = entries[i] ?? [];
-            s.tierEntries[t.id] = list;
             s.confirmedEntries[t.id] = list.map((e) => e.modelId);
+            if (t.id === held && heldVisible !== undefined) {
+              s.tierEntries[t.id] = heldVisible;
+              tierPending.set(t.id, list);
+            } else {
+              s.tierEntries[t.id] = list;
+            }
           });
+          // The held tier is GONE from an authoritative load — deleted by another
+          // session. Preserving entries for a tier the load no longer lists would strand
+          // an orphan array for a card that is no longer rendered, so abandon the drag
+          // outright and let the load apply in full.
+          if (held !== null && !tiers.some((t) => t.id === held)) {
+            dragHold = null;
+            tierPending.delete(held);
+            tierDesired.delete(held);
+            // Tombstone it exactly as a local delete would: an authoritative load saying
+            // the tier is gone must also make a late `dragend` a no-op rather than PUT a
+            // chain to a tier that no longer exists.
+            deletedTiers.add(held);
+          }
         }),
       );
       autoLayersConfirmed = autoLayers;
@@ -1181,7 +1239,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
   const scheduleTierWrite = (tierId: string, modelIds: string[]): void => {
     if (deletedTiers.has(tierId)) return; // tombstoned — no writes for a deleted tier
     bumpRouting(); // a mutation is starting — invalidate any in-flight loadRouting
-    tierDesired.set(tierId, modelIds);
+    tierDesired.set(tierId, { modelIds, gen: identityGen });
     if (!tierInFlight.has(tierId)) void drainTierWrites(tierId);
   };
 
@@ -1189,12 +1247,17 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     tierInFlight.add(tierId);
     try {
       while (tierDesired.has(tierId)) {
-        const desired = tierDesired.get(tierId) ?? [];
+        const queued = tierDesired.get(tierId);
         tierDesired.delete(tierId);
-        // Capture the confirmed order BEFORE this PUT — the rollback target.
-        const confirmed = [...(state.confirmedEntries[tierId] ?? [])];
+        if (queued === undefined) continue;
+        // An order queued by a PREVIOUS principal must never be sent under this session.
+        // Skipping only the state writes would not be enough: the send itself happens
+        // below, and the loop keeps draining.
+        if (queued.gen !== identityGen) continue;
+        const gen = queued.gen;
         try {
-          const entries = await client.replaceTierEntries(tierId, desired);
+          const entries = await client.replaceTierEntries(tierId, queued.modelIds);
+          if (gen !== identityGen) continue; // identity changed mid-flight — inert
           if (deletedTiers.has(tierId)) continue; // deleted mid-flight — don't resurrect
           bumpRouting();
           setState(
@@ -1204,13 +1267,22 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           );
           // Reconcile the visible chain to the server truth ONLY when no newer edit
           // is queued — else the newer optimistic state stays and the next PUT wins.
-          if (!tierDesired.has(tierId)) setState('tierEntries', tierId, entries);
+          // A live drag counts as a queued edit: defer rather than repaint under it.
+          if (!tierDesired.has(tierId)) {
+            if (isHeld(tierId)) tierPending.set(tierId, entries);
+            else setState('tierEntries', tierId, entries);
+          }
         } catch (e) {
+          if (gen !== identityGen) continue; // stale: no state write AND no toast
           if (deletedTiers.has(tierId)) continue; // deleted — no misleading 404 toast
           // Roll back to the last CONFIRMED order (never the failed optimistic one),
-          // and only when no newer edit is queued.
+          // and only when no newer edit is queued. Read the baseline HERE, after the
+          // await — a value captured before it can be older than a reconcile that
+          // landed while this PUT was in flight, and would then overwrite it.
           if (!tierDesired.has(tierId)) {
-            setState('tierEntries', tierId, buildEntries(tierId, confirmed));
+            const rollback = buildEntries(tierId, [...(state.confirmedEntries[tierId] ?? [])]);
+            if (isHeld(tierId)) tierPending.set(tierId, rollback);
+            else setState('tierEntries', tierId, rollback);
           }
           say(err(e));
         }
@@ -2430,6 +2502,35 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       scheduleTierWrite(tierId, currentModelIds(tierId));
       return Promise.resolve();
     },
+    beginTierDrag: (tierId) => {
+      // A drag is a single pointer, so at most one tier is ever held. Replacing the hold
+      // must RESOLVE the previous one — leaving its snapshot pending would strand that
+      // tier's visible state until its next write.
+      if (dragHold !== null && dragHold !== tierId) applyPending(dragHold);
+      dragHold = tierId;
+    },
+    endTierDrag: (tierId, outcome) => {
+      // Only the drag that CURRENTLY owns the hold may complete. Anything that abandons a
+      // drag out from under the component (sign-out, tier deletion, a refresh that dropped
+      // the tier, a drag starting elsewhere) clears the hold — and the still-live pointer
+      // drag will then fire its own drop/dragend afterwards. Without this guard that late
+      // completion falls into the `changed` branch and schedules a write for an abandoned
+      // drag, which is exactly what "abandoned means no-op" forbids.
+      if (dragHold !== tierId) return;
+      dragHold = null;
+      if (outcome === 'abandon' || deletedTiers.has(tierId)) {
+        dropPending(tierId);
+        return;
+      }
+      if (outcome === 'changed') {
+        // The user's post-drag order is newer intent than a response to a request they
+        // already superseded — the same rule the `tierDesired` guard encodes.
+        dropPending(tierId);
+        scheduleTierWrite(tierId, currentModelIds(tierId));
+        return;
+      }
+      applyPending(tierId); // unchanged: converge to server truth, issue no write
+    },
     addTierModel: (tierId, modelId) => {
       const ids = currentModelIds(tierId);
       if (ids.includes(modelId)) return;
@@ -2476,12 +2577,18 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       }
     },
     deleteTier: async (tierId) => {
+      const gen = identityGen;
       try {
         await client.deleteTier(tierId);
+        if (gen !== identityGen) return; // completed under a previous principal — inert
         // Retire any queued/in-flight writer for this tier and tombstone it so a late
         // PUT response can't resurrect its snapshot or raise a misleading 404 toast.
         tierDesired.delete(tierId);
         deletedTiers.add(tierId);
+        // Drop any drag hold on this tier BEFORE its state goes: applying a deferred
+        // snapshot afterwards would resurrect a tombstoned tier's entries.
+        if (dragHold === tierId) dragHold = null;
+        tierPending.delete(tierId);
         bumpRouting();
         setState(
           produce((s) => {
@@ -2492,6 +2599,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         );
         say('Tier deleted');
       } catch (e) {
+        if (gen !== identityGen) return; // stale: the old session's error is not this one's
         say(err(e));
       }
     },

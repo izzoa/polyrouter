@@ -637,6 +637,31 @@ select:focus {
 .chain-row:hover {
   background: var(--hover);
 }
+/* While a drag is live the rows move under a stationary pointer, so a live hover band
+   chases them and reads as flicker on top of the reorder itself. */
+.panel[data-dragging='true'] .chain-row:hover {
+  background: transparent;
+}
+
+/* The reorder handle. Visually identical at rest to the glyph it replaced — it gains
+   semantics and keyboard operation, not chrome (dashboard-core: a11y conversions must
+   not alter the rendered design beyond the focus indicator). */
+.drag-handle {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  /* `--text3`, not the decorative `--faint` the glyph used to carry: the handle is now
+     an interactive control, and SS-2 holds those to the ≥ 3:1 non-text floor. */
+  color: var(--text3);
+  font-size: 13px;
+  letter-spacing: 1px;
+  line-height: 1;
+  cursor: grab;
+}
+.drag-handle:hover {
+  color: var(--text);
+}
 
 .pos-badge {
   flex: none;

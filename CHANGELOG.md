@@ -15,8 +15,22 @@ heading is started.
 
 ## [Unreleased]
 
+### Added
+
+- **Keyboard reordering for tier chains.** The `⋮⋮` handle is a real button —
+  `Alt`+`Arrow Up`/`Down` moves an entry, focus follows it, and the new position is
+  announced. `Make primary` was previously the only keyboard path and could only reach
+  position 0.
+
 ### Fixed
 
+- **Dragging models to reorder a tier chain no longer flickers, and the dropped order
+  sticks.** Drag state was keyed by a list index re-read after the reorder had been applied,
+  so it tracked the wrong row — for an adjacent swap it oscillated at the browser's
+  drag-event rate with the pointer held still. Separately, a chain write's response or a
+  routing refresh arriving mid-drag repainted the chain from server state and discarded the
+  reorder. Also: reorders now commit past the row midpoint, the drop is accepted instead of
+  animating a snap-back, and drag data is set so Firefox will start the drag at all.
 - **`CALIBRATION_*` and `EVENTS_*` set in `.env` now reach the container.** The shipped
   `docker-compose.yml` is an explicit `environment:` allow-list and neither namespace was on
   it, so all thirteen knobs silently kept their defaults. Unset behaviour is unchanged.

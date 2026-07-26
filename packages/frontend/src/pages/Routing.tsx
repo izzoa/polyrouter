@@ -1,4 +1,4 @@
-import { createEffect, createSignal, For, onMount, Show } from 'solid-js';
+import { createEffect, createSignal, For, onCleanup, onMount, Show } from 'solid-js';
 import { Chart } from '../components/Chart';
 import { ModelPicker } from '../components/ModelPicker';
 import { RangeSelector } from '../components/RangeSelector';
@@ -12,9 +12,17 @@ import { fmtUsd } from '../data/format';
 import { useApp } from '../state/context';
 import type { Model, Range } from '../types';
 
+/** In-progress drag, keyed by MODEL IDENTITY rather than list index.
+ *
+ * An index here would have to be kept equal to the dragged row's current index by hand
+ * at every mutation site — and Solid's `<For>` index accessor updates synchronously
+ * inside the store mutation, so a re-read after the move returns the DROP TARGET's new
+ * index, not the dragged row's. That desync is what made the chain oscillate. With model
+ * identity there is no index to go stale: the source position is derived on demand.
+ * `modelId` is unique within a tier (the API rejects duplicates with a 422). */
 interface DragPos {
   tierId: string;
-  index: number;
+  modelId: string;
 }
 
 interface LayerRow {
@@ -789,13 +797,62 @@ export function Routing() {
   const app = useApp();
   const { state } = app;
   const [drag, setDrag] = createSignal<DragPos | null>(null);
+  // The order captured at drag start — `changed` is decided against this, not against
+  // whatever a suppressed server response happened to carry.
+  let dragStartOrder: string[] = [];
+  // Scoped to the tier it happened in: every tier renders its own live region, so a
+  // page-global message would announce the same move once per tier.
+  const [announce, setAnnounce] = createSignal<{ tierId: string; message: string } | null>(null);
 
   onMount(() => void app.loadRouting());
+  // A drag that never completes (page torn down mid-drag) must not leave the store
+  // holding this tier's reconciliation for the rest of the session.
+  onCleanup(() => {
+    const d = drag();
+    if (d !== null) app.endTierDrag(d.tierId, 'abandon');
+  });
 
   const modelById = (id: string): Model | undefined => state.allModels.find((m) => m.id === id);
   const entryLabel = (e: TierEntryDto): string =>
     e.model?.externalModelId ?? modelById(e.modelId)?.externalModelId ?? e.modelId;
   const entries = (tierId: string): TierEntryDto[] => state.tierEntries[tierId] ?? [];
+  const indexOfModel = (tierId: string, modelId: string): number =>
+    entries(tierId).findIndex((e) => e.modelId === modelId);
+  const orderOf = (tierId: string): string[] => entries(tierId).map((e) => e.modelId);
+
+  /** Single completion path for drop AND dragend — idempotent via the drag signal. */
+  const finishDrag = (): void => {
+    const d = drag();
+    if (d === null) return;
+    setDrag(null);
+    const now = orderOf(d.tierId);
+    const changed =
+      now.length !== dragStartOrder.length || now.some((id, i) => id !== dragStartOrder[i]);
+    app.endTierDrag(d.tierId, changed ? 'changed' : 'unchanged');
+  };
+
+  /** Move an entry one position and keep keyboard focus on the entry that moved. */
+  const keyboardMove = (tierId: string, modelId: string, delta: -1 | 1): boolean => {
+    const from = indexOfModel(tierId, modelId);
+    const to = from + delta;
+    if (from < 0 || to < 0 || to >= entries(tierId).length) return false;
+    app.moveTierEntry(tierId, from, to);
+    void app.commitTierOrder(tierId);
+    setAnnounce({
+      tierId,
+      message: `${entryLabel(entries(tierId)[to]!)} moved to ${posStyle(to)[0]}`,
+    });
+    // `moveTierEntry` splices in place so `<For>` MOVES the node rather than recreating
+    // it — but the node moves, so re-assert focus after the render has flushed.
+    queueMicrotask(() => {
+      document
+        .querySelector<HTMLButtonElement>(
+          `[data-tier-id="${tierId}"] [data-model-id="${modelId}"] .drag-handle`,
+        )
+        ?.focus();
+    });
+    return true;
+  };
   const addableModels = (tierId: string): Model[] => {
     const used = new Set(entries(tierId).map((e) => e.modelId));
     return state.allModels.filter((m) => !used.has(m.id));
@@ -864,7 +921,12 @@ export function Routing() {
           >
             <For each={state.routingTiers}>
               {(t) => (
-                <div class="panel" style="overflow:hidden;border-radius:10px">
+                <div
+                  class="panel"
+                  style="overflow:hidden;border-radius:10px"
+                  data-tier-id={t.id}
+                  data-dragging={drag()?.tierId === t.id ? 'true' : undefined}
+                >
                   <div style="display:flex;align-items:baseline;justify-content:space-between;padding:13px 18px;border-bottom:1px solid var(--border2)">
                     <div style="display:flex;align-items:baseline;gap:10px">
                       <span
@@ -900,37 +962,68 @@ export function Routing() {
                     {(entry, mi) => {
                       const dragging = (): boolean => {
                         const d = drag();
-                        return d !== null && d.tierId === t.id && d.index === mi();
+                        return d !== null && d.tierId === t.id && d.modelId === entry.modelId;
                       };
                       return (
                         <div
                           class="chain-row"
                           draggable={true}
+                          data-model-id={entry.modelId}
+                          data-dragging={dragging() ? 'true' : undefined}
                           style={{ opacity: dragging() ? '0.4' : '1' }}
                           onDragStart={(e) => {
-                            setDrag({ tierId: t.id, index: mi() });
-                            if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
-                          }}
-                          onDragOver={(e) => {
-                            e.preventDefault();
-                            const d = drag();
-                            if (d !== null && d.tierId === t.id && d.index !== mi()) {
-                              app.moveTierEntry(t.id, d.index, mi());
-                              setDrag({ tierId: t.id, index: mi() });
+                            dragStartOrder = orderOf(t.id);
+                            setAnnounce(null); // a pointer drag retires the last keyboard move
+                            setDrag({ tierId: t.id, modelId: entry.modelId });
+                            app.beginTierDrag(t.id);
+                            if (e.dataTransfer) {
+                              e.dataTransfer.effectAllowed = 'move';
+                              // Firefox refuses to START a drag unless drag data is set.
+                              // The displayed model id is not credential material.
+                              e.dataTransfer.setData('text/plain', entryLabel(entry));
                             }
                           }}
-                          onDragEnd={() => {
+                          onDragOver={(e) => {
+                            // Unconditional — the row stays a valid drop target even when
+                            // the midpoint threshold is not met.
+                            e.preventDefault();
+                            if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
                             const d = drag();
-                            if (d !== null) void app.commitTierOrder(t.id);
-                            setDrag(null);
+                            if (d === null || d.tierId !== t.id) return;
+                            const from = indexOfModel(t.id, d.modelId);
+                            const to = mi();
+                            if (from < 0 || from === to) return;
+                            // Hysteresis: commit to the hovered row only once the pointer
+                            // has crossed ITS midpoint in the direction of travel. Without
+                            // this, jitter on a row boundary re-triggers every dragover.
+                            const r = e.currentTarget.getBoundingClientRect();
+                            const mid = r.top + r.height / 2;
+                            if (from < to ? e.clientY <= mid : e.clientY >= mid) return;
+                            app.moveTierEntry(t.id, from, to);
                           }}
+                          onDrop={(e) => {
+                            // Without this the drop resolves as CANCELLED and the browser
+                            // plays its snap-back animation — reading as "it didn't take".
+                            e.preventDefault();
+                            finishDrag();
+                          }}
+                          onDragEnd={finishDrag}
                         >
-                          <span
-                            aria-hidden="true"
-                            style="color:var(--faint);font-size:13px;letter-spacing:1px;flex:none"
+                          <button
+                            type="button"
+                            class="drag-handle"
+                            aria-label={`Reorder ${entryLabel(entry)}, position ${String(mi() + 1)} of ${String(entries(t.id).length)}. Press Alt with Arrow Up or Arrow Down to move.`}
+                            onKeyDown={(e) => {
+                              // Alt is required: swallowing a bare arrow from a focused
+                              // control would eat the user's page scroll.
+                              if (!e.altKey) return;
+                              if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+                              e.preventDefault();
+                              keyboardMove(t.id, entry.modelId, e.key === 'ArrowUp' ? -1 : 1);
+                            }}
                           >
-                            ⋮⋮
-                          </span>
+                            <span aria-hidden="true">⋮⋮</span>
+                          </button>
                           <span
                             class="pos-badge"
                             style={{ background: posStyle(mi())[1], color: posStyle(mi())[2] }}
@@ -977,6 +1070,11 @@ export function Routing() {
                       No models — add one below.
                     </div>
                   </Show>
+                  {/* Keyboard-reorder announcements. Separate from the ModelPicker's own
+                      sr-only result-count status node, which shares this card. */}
+                  <div role="status" aria-atomic="true" class="sr-only" data-testid="reorder-status">
+                    {announce()?.tierId === t.id ? announce()?.message : ''}
+                  </div>
                   <div style="padding:8px 18px">
                     <ModelPicker
                       groups={groupModelsByProvider(addableModels(t.id), state.providers)}

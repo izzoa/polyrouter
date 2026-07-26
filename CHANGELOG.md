@@ -15,6 +15,11 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.9.3] — 2026-07-26
+
+[Release](https://github.com/izzoa/polyrouter/releases/tag/v0.9.3) ·
+[Compare](https://github.com/izzoa/polyrouter/compare/v0.9.2...v0.9.3)
+
 ### Added
 
 - **Keyboard reordering for tier chains.** The `⋮⋮` handle is a real button —
@@ -447,7 +452,9 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.9.3...HEAD
+[0.9.3]: https://github.com/izzoa/polyrouter/releases/tag/v0.9.3
+[0.9.2]: https://github.com/izzoa/polyrouter/releases/tag/v0.9.2
 [0.9.1]: https://github.com/izzoa/polyrouter/releases/tag/v0.9.1
 [0.9.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.9.0
 [0.8.1]: https://github.com/izzoa/polyrouter/releases/tag/v0.8.1

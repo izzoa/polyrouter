@@ -39,12 +39,35 @@ function Shell(props: { live: boolean }) {
   });
   onCleanup(() => app.disconnectStream());
 
+  // Shell sizing and containment (fix-shell-scroll-containment):
+  //
+  // `100dvh` with a `100vh` fallback — the static `vh` unit resolves against the viewport
+  // with mobile browser chrome RETRACTED, so a `100vh` shell is taller than what is
+  // actually visible and the page scrolls past the window. An engine that cannot parse
+  // `dvh` drops that declaration and keeps `100vh`, i.e. today's behaviour.
+  //
+  // `overflow:hidden` then `overflow:clip` — `hidden` suppresses a scrollbar but still
+  // makes the shell a scroll CONTAINER: it cannot be wheel-scrolled (the spec forbids
+  // that), but it can still be translated by `focus()`/`scrollIntoView` on a clipped
+  // control, by CSSOM `scrollTop`, or by scroll anchoring — each of which moves every
+  // pane at once. `clip` creates no scroll container at all, so the shell can never move
+  // by ANY mechanism. It does not affect scrolling inside the panes: the sidebar and
+  // `<main>` are their own scroll containers and keep working normally.
+  //
+  // Every in-flow child carries `data-pane` and must contain its own overflow — the
+  // sidebar shipped without that, which is how its spill reached the shell at all.
   return (
-    <div style="display:flex;height:100vh;overflow:hidden;background:var(--bg);color:var(--text);font-family:'Geist',sans-serif">
+    <div
+      data-shell="true"
+      style="display:flex;height:100vh;height:100dvh;overflow:hidden;overflow:clip;background:var(--bg);color:var(--text);font-family:'Geist',sans-serif"
+    >
       <Sidebar />
-      <div style="flex:1;min-width:0;display:flex;flex-direction:column">
+      <div data-pane="content" style="flex:1;min-width:0;display:flex;flex-direction:column">
         <Topbar />
-        <main style="flex:1;min-height:0;overflow-y:auto">
+        {/* `overscroll-behavior-Y`, not the shorthand: the shorthand applies to both axes
+            and would suppress the horizontal swipe-back/forward navigation gesture across
+            most of the app. Only vertical chaining needs containing. */}
+        <main style="flex:1;min-height:0;overflow-y:auto;overscroll-behavior-y:contain">
           <Switch>
             <Match when={state.page === 'overview'}>
               <Overview live={props.live} />

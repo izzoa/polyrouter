@@ -15,6 +15,17 @@ heading is started.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The dashboard no longer slides off the top of the window, and the sidebar's lower items
+  stay reachable on a short viewport.** The sidebar owned no overflow of its own, so on a
+  viewport shorter than its content (~520px) the spill enlarged the app shell's scroll
+  range — leaving the shell translatable (moving every pane at once, topbar included) and
+  the account menu clipped out of reach. The sidebar now scrolls internally, and the shell
+  is `overflow: clip` so it cannot be moved by any mechanism. Vertical scroll chaining is
+  contained without disabling horizontal swipe-back navigation, and the shell is sized in
+  `dvh` so a mobile URL bar can't make it taller than the visible viewport either.
+
 ## [0.9.3] — 2026-07-26
 
 [Release](https://github.com/izzoa/polyrouter/releases/tag/v0.9.3) ·

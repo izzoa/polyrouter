@@ -28,8 +28,20 @@ export function Sidebar() {
   const nav = (): [Page, string][] =>
     state.session?.role === 'admin' ? [...NAV, ['users', 'Users'] as [Page, string]] : NAV;
 
+  // The sidebar MUST own its overflow. It is a stretched flex item in a viewport-height
+  // shell, and its content (logo + up to 9 nav items + setup card + account footer, ~520px)
+  // is taller than a short viewport. Left at `overflow:visible` that spill enlarged the
+  // SHELL's scrollable-overflow area — which the shell can then be translated by, moving
+  // every pane at once — and left the lower nav and the account menu unreachable. Scrolling
+  // internally fixes both. `overscroll-behavior-y` (not the shorthand — that would also
+  // suppress horizontal swipe-back navigation) keeps a scroll past either end from chaining
+  // out. `min-height:0` is belt-and-braces: height is the cross axis here so it is not
+  // load-bearing today, but it costs nothing and states the intent explicitly.
   return (
-    <div style="width:208px;flex:none;border-right:1px solid var(--border);display:flex;flex-direction:column;background:var(--panel)">
+    <div
+      data-pane="sidebar"
+      style="width:208px;flex:none;border-right:1px solid var(--border);display:flex;flex-direction:column;background:var(--panel);min-height:0;overflow-y:auto;overscroll-behavior-y:contain"
+    >
       <div style="display:flex;align-items:center;gap:9px;padding:20px 18px 16px">
         <svg width="20" height="20" viewBox="0 0 20 20" style="flex:none" aria-hidden="true">
           <circle cx="4" cy="10" r="2.4" fill="var(--text)" />

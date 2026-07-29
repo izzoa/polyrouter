@@ -15,6 +15,11 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-07-29
+
+[Release](https://github.com/izzoa/polyrouter/releases/tag/v0.10.0) ·
+[Compare](https://github.com/izzoa/polyrouter/compare/v0.9.3...v0.10.0)
+
 ### Changed
 
 - **Subscription usage is no longer counted as money spent.** Requests served by a Claude
@@ -479,7 +484,8 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.9.3...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.10.0
 [0.9.3]: https://github.com/izzoa/polyrouter/releases/tag/v0.9.3
 [0.9.2]: https://github.com/izzoa/polyrouter/releases/tag/v0.9.2
 [0.9.1]: https://github.com/izzoa/polyrouter/releases/tag/v0.9.1

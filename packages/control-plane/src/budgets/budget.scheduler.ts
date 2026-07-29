@@ -11,6 +11,7 @@ import { Redis } from 'ioredis';
 import { withDeadline } from '../notifications/notify.queue';
 import { BUDGET_READER, type BudgetReader } from '../database/budget.reader';
 import { NotificationProducers } from '../producers/notification-producers';
+import type { MeteringBasis } from '../database/budget.reader';
 import { SpendCounter } from './spend-counter';
 import { periodInfo, toMicros, type BudgetWindow } from './period';
 import { BUDGETS_CONFIG, type BudgetsConfig } from './budgets.config';
@@ -36,6 +37,7 @@ interface KeyGroup {
   readonly scope: string;
   readonly scopeId: string;
   readonly window: BudgetWindow;
+  readonly basis: MeteringBasis;
   readonly periodId: string;
   readonly startMs: number;
   readonly endMs: number;
@@ -71,7 +73,10 @@ export async function runBudgetOccurrence(
     const window = b.window as BudgetWindow;
     const { periodId, startMs, endMs } = periodInfo(window, at);
     const scopeId = b.scope === 'agent' ? (b.agentId ?? 'global') : 'global';
-    const key = counter.key(b.ownerUserId, b.scope, scopeId, window, periodId);
+    // Budgets on DIFFERENT bases meter different amounts, so the basis is part of the
+    // key and therefore part of the group — they cannot share a ledger scan.
+    const basis = b.meteringBasis as MeteringBasis;
+    const key = counter.key(b.ownerUserId, b.scope, scopeId, window, periodId, basis);
     let g = groups.get(key);
     if (g === undefined) {
       g = {
@@ -80,6 +85,7 @@ export async function runBudgetOccurrence(
         scope: b.scope,
         scopeId,
         window,
+        basis,
         periodId,
         startMs,
         endMs,
@@ -97,6 +103,7 @@ export async function runBudgetOccurrence(
       agentId,
       new Date(g.startMs),
       new Date(g.endMs),
+      g.basis,
     );
     const micros = spend.micros;
     const ttlMs = g.endMs - atMs + GRACE_MS;
@@ -120,6 +127,9 @@ export async function runBudgetOccurrence(
             threshold: toMicros(b.amount),
             // Display provenance only — metering is identical either way.
             spendEstimated: spend.estimatedMicros > 0,
+            // What this budget metered, so a `notional` notice cannot be misread as a
+            // claim about money spent (split-subscription-spend).
+            meteringBasis: g.basis,
             channelIds: parseCsv(b.notifyChannelIds),
           });
         }

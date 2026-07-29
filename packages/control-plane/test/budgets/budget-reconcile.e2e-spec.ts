@@ -116,9 +116,9 @@ describe('budget reconcile + enforcement — real infra (#16)', () => {
   }
 
   const globalKey = (owner: string, w: 'day' | 'week' | 'month') =>
-    counter.key(owner, 'global', 'global', w, periodInfo(w, new Date()).periodId);
+    counter.key(owner, 'global', 'global', w, periodInfo(w, new Date()).periodId, 'notional');
   const agentKey = (owner: string, agentId: string, w: 'day' | 'week' | 'month') =>
-    counter.key(owner, 'agent', agentId, w, periodInfo(w, new Date()).periodId);
+    counter.key(owner, 'agent', agentId, w, periodInfo(w, new Date()).periodId, 'notional');
 
   beforeAll(async () => {
     const databaseUrl = loadConfig<{ DATABASE_URL: string }>().DATABASE_URL;

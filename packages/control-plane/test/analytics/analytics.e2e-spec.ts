@@ -45,6 +45,9 @@ class TestPrincipalGuard implements CanActivate {
 }
 
 interface LogSeed {
+  /** The serving provider's kind snapshot; null = predates the column
+   * (split-subscription-spend). */
+  providerKind?: string | null;
   agentId?: string | null;
   modelId?: string | null;
   providerId?: string | null;
@@ -113,8 +116,8 @@ describe('analytics API (#17)', () => {
          escalated, created_at, price_source, error_kind, error_status, error_message, error_request_id,
          structural_band, structural_score, structural_band_source, quality_signal,
          routing_header_name, routing_header_value,
-         semantic_band, semantic_score, semantic_source, semantic_revision)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,'test',$8,$9,$10,$11,1,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)`,
+         semantic_band, semantic_score, semantic_source, semantic_revision, provider_kind)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'test',$8,$9,$10,$11,1,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30)`,
       [
         id,
         owner,
@@ -145,6 +148,7 @@ describe('analytics API (#17)', () => {
         s.semanticScore ?? null,
         s.semanticSource ?? null,
         s.semanticRevision ?? null,
+        s.providerKind ?? null,
       ],
     );
     return id;
@@ -159,13 +163,14 @@ describe('analytics API (#17)', () => {
       tierKey?: string;
       at: string;
       priceSource?: string;
+      providerKind?: string;
     },
   ): Promise<void> {
     await pool.query(
       `INSERT INTO request_attempt
         (id, request_log_id, owner_user_id, attempt_index, tier_key, provider_id, model_id,
-         input_tokens, output_tokens, cost, status, created_at, price_source)
-       VALUES ($1,$2,$3,0,$4,$5,$6,20,5,$7,'success',$8,$9)`,
+         input_tokens, output_tokens, cost, status, created_at, price_source, provider_kind)
+       VALUES ($1,$2,$3,0,$4,$5,$6,20,5,$7,'success',$8,$9,$10)`,
       [
         randomUUID(),
         logId,
@@ -176,6 +181,7 @@ describe('analytics API (#17)', () => {
         s.cost,
         s.at,
         s.priceSource ?? null,
+        s.providerKind ?? null,
       ],
     );
   }
@@ -941,6 +947,79 @@ describe('analytics API (#17)', () => {
       expect(res.body.items[0]).not.toHaveProperty('cost');
       expect(res.body.items[0]).not.toHaveProperty('inputTokens');
       expect(JSON.stringify(res.body)).not.toMatch(/messages|prompt|authorization/i);
+    });
+  });
+
+  describe('subscription spend is reported but never counted (split-subscription-spend)', () => {
+    let S: string;
+
+    beforeAll(async () => {
+      S = await mkUser();
+      // $2 cash + $5 catalog-priced subscription + a zero-cost and an unpriced
+      // subscription row + an unclassified legacy row.
+      await seedLog(S, { cost: 2, at: DAY1, providerKind: 'api_key' });
+      await seedLog(S, { cost: 5, at: DAY1, providerKind: 'subscription' });
+      await seedLog(S, { cost: 0, at: DAY1, providerKind: 'subscription' });
+      await seedLog(S, { cost: null, at: DAY1, providerKind: 'subscription' });
+      await seedLog(S, { cost: 3, at: DAY2, providerKind: null }); // predates the snapshot
+    });
+
+    it('excludes subscription from spend and reports it as its own component', async () => {
+      const res = await q('summary', S, RANGE).expect(200);
+      // cash ($2) + unclassified ($3) — NOT the $5 already paid for at a flat rate.
+      expect(res.body.spend).toBeCloseTo(5, 9);
+      expect(res.body.cashSpend).toBeCloseTo(2, 9);
+      expect(res.body.subscriptionSpend).toBeCloseTo(5, 9);
+      // Unclassified rows count toward spend but are never described as known cash.
+      expect(res.body.unknownSpend).toBeCloseTo(3, 9);
+    });
+
+    it('classifies cost before component: null is unpriced, zero is free', async () => {
+      const res = await q('summary', S, RANGE).expect(200);
+      expect(res.body.unpricedRequests).toBe(1); // the null-cost subscription row
+      expect(res.body.freeRequests).toBe(1); // the zero-cost subscription row
+      // Only POSITIVE-cost rows split by kind: $5 subscription, $2 cash + $3 unclassified.
+      expect(res.body.subscriptionPricedRequests).toBe(1);
+      expect(res.body.cashPricedRequests).toBe(2);
+      // The priced total is retained so existing consumers keep working.
+      expect(res.body.paidRequests).toBe(3);
+    });
+
+    it('applies the exclusion to timeseries and breakdowns, not just the headline', async () => {
+      const ts = await q('timeseries', S, { ...RANGE, bucket: 'day' }).expect(200);
+      const day1 = (ts.body as { bucket: string; spend: number }[]).find((p) =>
+        p.bucket.startsWith('2025-03-10'),
+      );
+      // $2 cash on DAY1 — the $5 subscription row must not inflate the chart.
+      expect(day1?.spend).toBeCloseTo(2, 9);
+      const bd = await q('breakdown', S, { ...RANGE, dimension: 'provider' }).expect(200);
+      const total = (bd.body as { spend: number }[]).reduce((a, r) => a + r.spend, 0);
+      expect(total).toBeCloseTo(5, 9);
+    });
+
+    it('excludes a subscription-backed attempt on the attempt ledger too', async () => {
+      const T = await mkUser();
+      const log = await seedLog(T, { cost: 4, at: DAY1, providerKind: 'subscription' });
+      await seedAttempt(log, T, { cost: 6, at: DAY1, providerKind: 'subscription' });
+      const res = await q('summary', T, RANGE).expect(200);
+      expect(res.body.spend).toBeCloseTo(0, 9);
+      // BOTH ledgers contribute to the reported component.
+      expect(res.body.subscriptionSpend).toBeCloseTo(10, 9);
+      expect(res.body.requests).toBe(1);
+    });
+
+    it('keeps a subscription row out of the cash-only estimate split', async () => {
+      const U = await mkUser();
+      await seedLog(U, {
+        cost: 7,
+        at: DAY1,
+        providerKind: 'subscription',
+        priceSource: 'native_family',
+      });
+      const res = await q('summary', U, RANGE).expect(200);
+      // Provenance is a separate axis and must not move the row between components.
+      expect(res.body.subscriptionSpend).toBeCloseTo(7, 9);
+      expect(res.body.nativeFamilySpend).toBeCloseTo(0, 9);
     });
   });
 });

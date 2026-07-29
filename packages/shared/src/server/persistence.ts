@@ -250,12 +250,26 @@ export interface AnalyticsSummary {
   estimatedCount: number;
   /** Served-request classification by served cost: 0 / >0 / null. */
   freeRequests: number;
+  /** Total priced (cost > 0) requests — retained so existing consumers keep working;
+   * the subscription/cash split below is additive beside it. */
   paidRequests: number;
   unpricedRequests: number;
+  /** Priced requests served by a `subscription`-kind provider. */
+  subscriptionPricedRequests: number;
+  /** Priced requests that are money owed (includes unclassified rows). */
+  cashPricedRequests: number;
   /** USD: the portion of `spend` whose components (either ledger) were priced
    * `native_family` — component-only arithmetic, same µ$ rounding
    * (add-native-price-fallback). Zero when none. */
+  /** Estimate-priced spend within the CASH component only — deliberately narrower than
+   * the budget reader's per-basis estimate figure; do not unify them. */
   nativeFamilySpend: number;
+  /** Spend components. `spend` above is cash + unknown (what a `cash`-basis budget
+   * meters); these expose the partition so any basis can be reconstructed and so a
+   * presentation layer can show a pure-cash figure without inferring one. */
+  cashSpend: number;
+  subscriptionSpend: number;
+  unknownSpend: number;
 }
 
 export interface AnalyticsTimeseriesPoint {

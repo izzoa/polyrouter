@@ -4,6 +4,7 @@ import { NotificationProducers } from '../producers/notification-producers';
 import { ProxyMetrics } from '../observability/proxy-metrics';
 import { BUDGET_READER, type BudgetReader } from '../database/budget.reader';
 import { BudgetCache } from './budget-cache';
+import type { MeteringBasis } from '../database/budget.reader';
 import { SpendCounter } from './spend-counter';
 import { periodInfo, toMicros, type BudgetWindow } from './period';
 import { BUDGETS_CONFIG, type BudgetsConfig } from './budgets.config';
@@ -103,7 +104,14 @@ export class BudgetService {
     const { periodId, startMs, endMs } = periodInfo(window, at);
     const scopeId = b.scope === 'agent' ? (b.agentId ?? 'global') : 'global';
     return {
-      key: this.counter.key(owner, b.scope, scopeId, window, periodId),
+      key: this.counter.key(
+        owner,
+        b.scope,
+        scopeId,
+        window,
+        periodId,
+        b.meteringBasis as MeteringBasis,
+      ),
       periodId,
       periodStart: new Date(startMs),
       resetAt: new Date(endMs),
@@ -176,6 +184,8 @@ export class BudgetService {
             hit.budget.agentId,
             hit.periodStart,
             hit.resetAt,
+            // Provenance must describe what THIS budget metered, not a fixed subset.
+            hit.budget.meteringBasis as MeteringBasis,
           ),
           new Promise<never>((_, reject) =>
             setTimeout(() => reject(new Error('provenance deadline')), PROVENANCE_DEADLINE_MS),
@@ -194,6 +204,7 @@ export class BudgetService {
         spent: hit.spentMicros,
         threshold: toMicros(hit.budget.amount),
         spendEstimated,
+        meteringBasis: hit.budget.meteringBasis,
         channelIds: parseCsv(hit.budget.notifyChannelIds),
       });
     } catch {

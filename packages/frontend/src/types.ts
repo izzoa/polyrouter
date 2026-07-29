@@ -122,6 +122,8 @@ export interface ProviderForm {
 /** The create/edit budget form (#20 Limits page). `id` null = create. `amount`
  * is a text field (parsed on save); an agent-scoped budget needs an `agentId`
  * (surfaced as an inline 422 from the server otherwise). */
+export type MeteringBasis = 'cash' | 'notional';
+
 export interface BudgetForm {
   id: string | null;
   name: string;
@@ -129,6 +131,9 @@ export interface BudgetForm {
   agentId: string;
   window: BudgetWindow;
   action: BudgetAction;
+  /** What the budget meters: `cash` (money owed) or `notional` (also counts prepaid
+   * subscription usage at API rates). */
+  meteringBasis: MeteringBasis;
   amount: string;
   notifyChannelIds: string[];
   enabled: boolean;

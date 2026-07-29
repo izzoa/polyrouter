@@ -18,6 +18,7 @@ function row(p: Partial<BudgetRow>): BudgetRow {
     agentId: null,
     window: 'day',
     action: 'block',
+    meteringBasis: 'notional',
     amount: 10,
     notifyChannelIds: '',
     enabled: true,
@@ -72,7 +73,7 @@ function makeReader(
     spendMicrosFor: (owner, agentId, start, endExclusive) => {
       calls.push({ owner, agentId, start: start.getTime(), end: endExclusive.getTime() });
       const v = Array.isArray(spend) ? (spend[i++] ?? 0) : spend;
-      return Promise.resolve({ micros: v, estimatedMicros });
+      return Promise.resolve({ subscriptionMicros: 0, micros: v, estimatedMicros });
     },
   };
   return { reader, calls };

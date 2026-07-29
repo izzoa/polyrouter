@@ -36,6 +36,11 @@ const SUMMARY: AnalyticsSummary = {
   paidRequests: 20,
   unpricedRequests: 2,
   nativeFamilySpend: 0,
+  subscriptionPricedRequests: 0,
+  cashPricedRequests: 0,
+  cashSpend: 0,
+  subscriptionSpend: 0,
+  unknownSpend: 0,
 };
 
 const ROW: RequestRow = {

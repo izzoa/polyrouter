@@ -2,6 +2,7 @@ import { Inject, Injectable, Logger, type OnApplicationShutdown } from '@nestjs/
 import { REDIS_CLIENT } from '@polyrouter/shared/server';
 import { Redis } from 'ioredis';
 import { BUDGETS_CONFIG, type BudgetsConfig } from './budgets.config';
+import type { MeteringBasis } from '../database/budget.reader';
 import type { BudgetWindow } from './period';
 
 const HEARTBEAT_KEY = 'budget:reconcile:heartbeat';
@@ -14,11 +15,15 @@ const CONN_WARN_WINDOW_MS = 30_000;
  * current value, then (re)apply the TTL. Single-writer + an append-only period
  * ledger means a later snapshot is always ≥ an earlier one, so `max` makes an
  * out-of-order / retried occurrence a safe no-op instead of lowering the counter.
+ * A MISSING key is materialized even at v=0, so "seeded, and the total really is zero"
+ * is distinguishable from "never reconciled" — which matters when a basis switch seeds
+ * a fresh key (a missing key reads as an authoritative 0 in `read()`).
  * KEYS[1]=counter; ARGV[1]=µ$ snapshot; ARGV[2]=ttlMs. Returns the resulting µ$. */
 const RECONCILE_MAX_LUA = `
+local exists = redis.call('EXISTS', KEYS[1])
 local c = tonumber(redis.call('GET', KEYS[1]) or '0')
 local v = tonumber(ARGV[1])
-if v > c then redis.call('SET', KEYS[1], v) end
+if v > c or exists == 0 then redis.call('SET', KEYS[1], v) end
 redis.call('PEXPIRE', KEYS[1], ARGV[2])
 if v > c then return v else return c end
 `;
@@ -91,14 +96,30 @@ export class SpendCounter implements OnApplicationShutdown {
     });
   }
 
+  /** The per-period counter key. The METERING BASIS is part of the key
+   * (split-subscription-spend): `reconcileMax` below only ever RAISES a counter, so a
+   * budget switching from `notional` to `cash` — whose true total is smaller — would
+   * otherwise stay pinned at the old higher value and keep blocking for the rest of the
+   * period. A separate key per basis preserves that monotonic guarantee instead of
+   * weakening it. (The block/alert dedupe markers are deliberately NOT keyed by basis:
+   * their contract is at most one notification per budget per period.) */
   key(
     ownerUserId: string,
     scope: string,
     scopeId: string,
     window: BudgetWindow,
     periodId: string,
+    basis: MeteringBasis,
   ): string {
-    return `budget:${ownerUserId}:${scope}:${scopeId}:${window}:${periodId}`;
+    // `notional` deliberately keeps the LEGACY key shape. Every budget predating this
+    // change meters notional, so namespacing it would move every existing counter to a
+    // cold key on upgrade — and a missing counter reads as an authoritative zero while
+    // the global heartbeat stays fresh from other budgets' reconciles, silently
+    // admitting requests against an already-blocked budget until its next reconcile.
+    // Only `cash` — a genuinely different quantity, and a basis no budget had before —
+    // gets its own namespace.
+    const suffix = basis === 'cash' ? 'cash:' : '';
+    return `budget:${ownerUserId}:${scope}:${scopeId}:${window}:${suffix}${periodId}`;
   }
 
   /** The block-check read: current µ$ for each key (a missing key = 0). Throws

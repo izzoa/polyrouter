@@ -15,6 +15,22 @@ heading is started.
 
 ## [Unreleased]
 
+### Changed
+
+- **Subscription usage is no longer counted as money spent.** Requests served by a Claude
+  Pro/Max provider were priced at Anthropic's API list rate and treated as ordinary cost —
+  overstating spend, drawing prepaid traffic as "paid" on the Costs page, and letting a
+  `block` budget refuse requests over money that was never spent. Each ledger row now
+  snapshots its serving provider's kind, and every spend figure — headline, chart and
+  breakdowns — excludes the prepaid component, reporting it separately as value served on
+  subscription. **Your Spend figure will drop** if you use a subscription provider.
+- **Budgets now declare what they count.** Existing budgets are migrated to `notional` and
+  meter exactly what they metered before, so no enforcement changes on upgrade; new budgets
+  default to counting money spent. Notional metering is a crude proxy for a flat-rate plan's
+  capacity, but it is the only usage throttle available today, so it stays as an explicit
+  choice in the Limits form rather than being removed. Budget alerts state which basis they
+  metered.
+
 ### Fixed
 
 - **The dashboard no longer slides off the top of the window, and the sidebar's lower items

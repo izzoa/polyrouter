@@ -31,6 +31,10 @@ export interface BudgetEventArgs {
    * when the best-effort lookup failed/timed out: rendered as provenance
    * unavailable, never as confirmed-exact. */
   readonly spendEstimated: boolean | 'unknown';
+  /** What this budget meters — `notional` includes prepaid subscription traffic priced
+   * at API rates, so the renderer must not present the figure as money spent
+   * (split-subscription-spend). */
+  readonly meteringBasis: string;
   readonly channelIds: string[];
 }
 
@@ -96,6 +100,9 @@ export class NotificationProducers {
             : a.spendEstimated === 'unknown'
               ? { spendEstimated: 'unknown' }
               : {}),
+          // Only carried when it changes the meaning of the figure: a `cash` budget
+          // meters money spent, which is what a reader already assumes.
+          ...(a.meteringBasis === 'notional' ? { meteringBasis: 'notional' } : {}),
         },
         ...(a.channelIds.length > 0 ? { channelIds: a.channelIds } : {}),
       });

@@ -285,6 +285,9 @@ export interface BudgetDto {
   agentId: string | null;
   window: string;
   action: string;
+  /** `cash` meters money owed; `notional` also counts prepaid subscription usage priced
+   * at API rates. Budgets predating this field were migrated to `notional`. */
+  meteringBasis: string;
   amount: number;
   notifyChannelIds: string[];
   enabled: boolean;
@@ -297,6 +300,7 @@ export interface CreateBudgetInput {
   agentId?: string;
   window: BudgetWindow;
   action: BudgetAction;
+  meteringBasis?: 'cash' | 'notional';
   amount: number;
   notifyChannelIds?: string[];
   enabled?: boolean;
@@ -495,10 +499,22 @@ export interface AnalyticsSummary {
   escalatedCount: number;
   estimatedCount: number;
   freeRequests: number;
+  /** Priced total, retained for compatibility; the split below is additive. */
   paidRequests: number;
   unpricedRequests: number;
+  /** Priced requests served by a `subscription`-kind provider (prepaid). */
+  subscriptionPricedRequests: number;
+  /** Priced requests that are money owed (includes unclassified rows). */
+  cashPricedRequests: number;
   /** USD portion of `spend` priced by the native-family estimate (component-only). */
   nativeFamilySpend: number;
+  /** Strictly-known cash spend — `spend` itself is cash + unclassified. */
+  cashSpend: number;
+  /** Notional value served by subscription providers. NOT part of `spend`. */
+  subscriptionSpend: number;
+  /** Spend on rows recorded before subscription tracking; inside `spend`, but not
+   * classifiable, so never presented as known cash. */
+  unknownSpend: number;
 }
 
 /** `GET /timeseries` — one point per non-empty bucket, ascending. `bucket` is an

@@ -59,6 +59,7 @@ function row(p: Partial<BudgetRow>): BudgetRow {
     agentId: null,
     window: 'day',
     action: 'block',
+    meteringBasis: 'notional',
     amount: 10,
     notifyChannelIds: '',
     enabled: true,
@@ -91,7 +92,14 @@ function seed(conn: FakeConn, counter: SpendCounter, b: BudgetRow, spentMicros: 
   const { periodId } = periodInfo(b.window as 'day' | 'week' | 'month', new Date(NOW));
   const scopeId = b.scope === 'agent' ? (b.agentId ?? 'global') : 'global';
   conn.store.set(
-    counter.key(b.ownerUserId, b.scope, scopeId, b.window as 'day', periodId),
+    counter.key(
+      b.ownerUserId,
+      b.scope,
+      scopeId,
+      b.window as 'day',
+      periodId,
+      b.meteringBasis as 'cash' | 'notional',
+    ),
     String(spentMicros),
   );
   conn.store.set('budget:reconcile:heartbeat', String(NOW)); // fresh
@@ -266,7 +274,15 @@ describe('BudgetService.emitBlock — provenance (add-native-price-fallback)', (
     const spend = jest.fn().mockResolvedValue({ micros: toMicros(12), estimatedMicros: 5 });
     const { svc, budgetBlock } = make([b], true, spend);
     await emitOf(svc).call(svc, PRINCIPAL, hit);
-    expect(spend).toHaveBeenCalledWith('u1', b.agentId, hit.periodStart, hit.resetAt);
+    // The budget's OWN basis is passed through, so provenance describes what this
+    // budget actually metered rather than a fixed subset (split-subscription-spend).
+    expect(spend).toHaveBeenCalledWith(
+      'u1',
+      b.agentId,
+      hit.periodStart,
+      hit.resetAt,
+      b.meteringBasis,
+    );
     expect(budgetBlock.mock.calls[0]![0]).toMatchObject({ spendEstimated: true });
   });
 

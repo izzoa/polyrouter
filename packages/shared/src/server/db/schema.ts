@@ -414,6 +414,17 @@ export const requestLogs = pgTable(
     // model|local|bundled|refresh|manual|native_family; null = unpriced or predates
     // the column. 'native_family' is the estimate marker.
     priceSource: text('price_source'),
+    // The SERVING provider's kind, snapshotted immutably (split-subscription-spend).
+    // Decides whether this row's cost is money owed (`api_key`/`custom`/`local` → cash)
+    // or traffic already paid for at a flat rate (`subscription` → notional, excluded
+    // from reported spend). NULL = unknown, i.e. predates this column.
+    //
+    // Do NOT "simplify" this by joining `providers`: `provider_id` above is denormalized
+    // with no FK, the provider may be deleted, and `kind` is mutable — a join would let
+    // today's configuration reclassify a past request's billing character, which is the
+    // same rewrite-history failure cost immutability exists to prevent (invariant 4).
+    // Divergence from the current providers row IS the historical record.
+    providerKind: text('provider_kind'),
     usageEstimated: boolean('usage_estimated').default(false).notNull(),
     cost: doublePrecision('cost'),
     durationMs: integer('duration_ms').notNull(),
@@ -476,6 +487,13 @@ export const requestLogs = pgTable(
       'request_log_routing_header_pair',
       sql`${t.routingHeaderValue} IS NULL OR ${t.routingHeaderName} IS NOT NULL`,
     ),
+    // `providers.kind` has no CHECK of its own, so constrain it HERE: the spend
+    // classification partitions on this value, and an unexpected one would land in no
+    // defined component. NULL stays legal — it is the honest "predates the column".
+    check(
+      'request_log_provider_kind_known',
+      sql`${t.providerKind} IS NULL OR ${t.providerKind} IN ('api_key','subscription','custom','local')`,
+    ),
     // Provenance is binary and only ever on escalated rows (fail-closed).
     check(
       'request_log_escalation_source_valid',
@@ -534,6 +552,10 @@ export const requestAttempts = pgTable(
     // Same provenance on the attempt ledger — an estimate hiding in a superseded
     // attempt must be discoverable (add-native-price-fallback).
     priceSource: text('price_source'),
+    // Same snapshot on the attempt ledger — a superseded attempt can be served by a
+    // provider of a different kind than the one that finally served the request, so each
+    // row records its OWN serving provider's kind (split-subscription-spend).
+    providerKind: text('provider_kind'),
     usageEstimated: boolean('usage_estimated').default(false).notNull(),
     cost: doublePrecision('cost'),
     status: text('status').notNull(),
@@ -551,6 +573,10 @@ export const requestAttempts = pgTable(
       sql`${t.inputTokens} >= 0 AND ${t.outputTokens} >= 0
         AND (${t.cacheReadTokens} IS NULL OR ${t.cacheReadTokens} >= 0)
         AND (${t.cacheWriteTokens} IS NULL OR ${t.cacheWriteTokens} >= 0)`,
+    ),
+    check(
+      'request_attempt_provider_kind_known',
+      sql`${t.providerKind} IS NULL OR ${t.providerKind} IN ('api_key','subscription','custom','local')`,
     ),
   ],
 );
@@ -599,6 +625,13 @@ export const budgets = pgTable(
     agentId: text('agent_id'), // set iff scope='agent'
     window: text('window').notNull(), // day | week | month
     action: text('action').notNull(), // alert | block
+    // What this budget meters (split-subscription-spend). `cash` counts money owed
+    // (the cash + unknown components); `notional` additionally counts subscription
+    // traffic priced at the vendor's API rate — an imperfect but real proxy for a
+    // flat-rate plan's finite capacity, and the ONLY usage throttle the product has.
+    // Existing budgets are backfilled to `notional` so upgrading changes nobody's
+    // enforcement; new budgets default to `cash` at the application layer.
+    meteringBasis: text('metering_basis').default('notional').notNull(),
     amount: doublePrecision('amount').notNull(), // USD threshold
     notifyChannelIds: text('notify_channel_ids').default('').notNull(), // csv
     enabled: boolean('enabled').default(true).notNull(),
@@ -610,6 +643,7 @@ export const budgets = pgTable(
     check('budget_scope_valid', sql`${t.scope} IN ('global', 'agent')`),
     check('budget_window_valid', sql`${t.window} IN ('day', 'week', 'month')`),
     check('budget_action_valid', sql`${t.action} IN ('alert', 'block')`),
+    check('budget_metering_basis_valid', sql`${t.meteringBasis} IN ('cash', 'notional')`),
     // An agent budget has an agent; a global budget has none.
     check('budget_agent_iff_scope', sql`(${t.scope} = 'agent') = (${t.agentId} IS NOT NULL)`),
   ],

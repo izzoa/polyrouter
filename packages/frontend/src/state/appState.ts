@@ -491,6 +491,9 @@ function emptyBudgetForm(): BudgetForm {
     agentId: '',
     window: 'day',
     action: 'alert',
+    // New budgets meter money owed; existing ones were migrated to `notional` so their
+    // enforcement did not change under them (split-subscription-spend).
+    meteringBasis: 'cash',
     amount: '10.00',
     notifyChannelIds: [],
     enabled: true,
@@ -508,6 +511,7 @@ function budgetFormFrom(b: BudgetDto): BudgetForm {
     agentId: b.agentId ?? '',
     window: b.window === 'week' ? 'week' : b.window === 'month' ? 'month' : 'day',
     action: b.action === 'block' ? 'block' : 'alert',
+    meteringBasis: b.meteringBasis === 'notional' ? 'notional' : 'cash',
     amount: String(b.amount),
     notifyChannelIds: [...b.notifyChannelIds],
     enabled: b.enabled,
@@ -2851,6 +2855,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         scope: f.scope,
         window: f.window,
         action: f.action,
+        meteringBasis: f.meteringBasis,
         amount,
         notifyChannelIds: f.notifyChannelIds,
         enabled: f.enabled,

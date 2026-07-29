@@ -45,8 +45,91 @@ function ratio(fg: string, bg: string, label: string): number {
   return (hi + 0.05) / (lo + 0.05);
 }
 
+/* ── color-mix(in oklab, …) evaluation ────────────────────────────────────────────
+ * `--accent-bg` is a mix, not a hex, so the parser above cannot read it — and the two
+ * Costs mix-bar segments (`--accent-bg` beside `--accent`) must be shown to be
+ * distinguishable NUMERICALLY, in both themes, rather than by eye
+ * (split-subscription-spend). Adjacent tints of one hue are exactly where that fails.
+ */
+function srgbToLinear(c: number): number {
+  return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+}
+function linearToSrgb(c: number): number {
+  return c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+}
+function hexToRgb(hex: string): [number, number, number] {
+  const int = parseInt(hex.replace('#', ''), 16);
+  return [((int >> 16) & 0xff) / 255, ((int >> 8) & 0xff) / 255, (int & 0xff) / 255];
+}
+function rgbToOklab([r, g, b]: [number, number, number]): [number, number, number] {
+  const [lr, lg, lb] = [srgbToLinear(r), srgbToLinear(g), srgbToLinear(b)];
+  const l = Math.cbrt(0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb);
+  const m = Math.cbrt(0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb);
+  const s2 = Math.cbrt(0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb);
+  return [
+    0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s2,
+    1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s2,
+    0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s2,
+  ];
+}
+function oklabToHex([L, a, b]: [number, number, number]): string {
+  const l = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3;
+  const m = (L - 0.1055613458 * a - 0.0638541728 * b) ** 3;
+  const s2 = (L - 0.0894841775 * a - 1.291485548 * b) ** 3;
+  const rgb = [
+    4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s2,
+    -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s2,
+    -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s2,
+  ].map((v) => Math.round(Math.min(1, Math.max(0, linearToSrgb(v))) * 255));
+  return `#${rgb.map((v) => v.toString(16).padStart(2, '0')).join('')}`;
+}
+/** Evaluate `color-mix(in oklab, <a> P%, <b>)` to a hex. */
+function mixOklab(aHex: string, pct: number, bHex: string): string {
+  const A = rgbToOklab(hexToRgb(aHex));
+  const B = rgbToOklab(hexToRgb(bHex));
+  const t = pct / 100;
+  return oklabToHex([0, 1, 2].map((i) => A[i]! * t + B[i]! * (1 - t)) as [number, number, number]);
+}
+
 const TEXT_TOKENS = ['text', 'text2', 'text3'] as const;
 const SURFACE_TOKENS = ['bg', 'panel', 'chip'] as const;
+
+describe('the Costs mix-bar accent intensities are numerically distinguishable', () => {
+  const themes = {
+    light: themeBlock(':root'),
+    dark: themeBlock("[data-theme='dark']"),
+  };
+  themes.dark = { ...themes.light, ...themes.dark };
+
+  // Self-check: if the mix implementation is wrong, every assertion below is worthless.
+  // Asserted against the mix's own invariants rather than a recorded constant — the
+  // `#eff0ff` fallback in Chart.tsx is a hand-approximation (the true oklab value is
+  // #edf2ff), so pinning to it would encode the approximation as ground truth.
+  it('round-trips a colour through oklab exactly', () => {
+    for (const hex of ['#4f5dff', '#ffffff', '#16171b', '#fafafa']) {
+      expect(mixOklab(hex, 100, '#000000')).toBe(hex);
+    }
+  });
+  it('lands exactly on both endpoints of a mix', () => {
+    expect(mixOklab('#4f5dff', 100, '#ffffff')).toBe('#4f5dff');
+    expect(mixOklab('#4f5dff', 0, '#ffffff')).toBe('#ffffff');
+  });
+
+  for (const [themeName, vars] of Object.entries(themes)) {
+    it(`${themeName}: --accent-bg and --accent differ enough to read as two segments`, () => {
+      const accent = vars['accent'] as string;
+      const panel = vars['panel'] as string;
+      const tint = mixOklab(accent, 9, panel);
+      const r = ratio(tint, accent, `${themeName} accent-bg/accent`);
+      // 3:1 is the WCAG floor for a meaningful non-text object. Colour is never the SOLE
+      // channel here — each segment also carries a text label and a count — but two
+      // adjacent tints of one hue must still be separable at a 10px bar height.
+      expect(r, `${themeName} --accent-bg vs --accent = ${r.toFixed(2)}:1`).toBeGreaterThanOrEqual(
+        3,
+      );
+    });
+  }
+});
 
 describe('theme token contrast floors', () => {
   const themes = {

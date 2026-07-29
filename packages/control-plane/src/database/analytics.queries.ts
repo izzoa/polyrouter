@@ -21,7 +21,15 @@ import {
 } from '@polyrouter/shared/server';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import type { Db } from './database.internal';
-import { microsSum, microsSumIf } from './cost-sql';
+import {
+  cashMicrosSum,
+  isCashLike,
+  knownCashMicrosSum,
+  microsSum,
+  microsSumIf,
+  subscriptionMicrosSum,
+  unknownMicrosSum,
+} from './cost-sql';
 
 function intCount(filter?: SQL): SQL<number> {
   return filter
@@ -110,6 +118,11 @@ async function enrich(
   const attemptRows = await db
     .select({
       requestLogId: requestAttempts.requestLogId,
+      // Deliberately the UNFILTERED sum: this is per-request detail for the listing and
+      // inspector — what THIS request's attempts actually cost — not a range spend
+      // aggregate. A subscription request must still show its recorded notional cost
+      // here, or the inspector would claim it was free. Only aggregate spend figures
+      // exclude the subscription component (split-subscription-spend).
       micros: microsSum(requestAttempts.cost),
       // Any attempt priced by an ESTIMATE source — native-family OR listed
       // (record-listed-price-fallback), both non-authoritative.
@@ -173,7 +186,9 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
       const [log] = await db
         .select({
           requests: intCount(),
-          spendMicros: microsSum(requestLogs.cost),
+          // Reported spend EXCLUDES prepaid subscription traffic (split-subscription-
+          // spend) — this is what a `cash`-basis budget meters, so the two reconcile.
+          spendMicros: cashMicrosSum(requestLogs.cost, requestLogs.providerKind),
           inputTokens: sql<number>`coalesce(sum(${requestLogs.inputTokens}), 0)`,
           outputTokens: sql<number>`coalesce(sum(${requestLogs.outputTokens}), 0)`,
           cacheReadTokens: sql<number>`coalesce(sum(coalesce(${requestLogs.cacheReadTokens}, 0)), 0)`,
@@ -183,29 +198,66 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
           errorCount: intCount(sql`${requestLogs.status} = 'error'`),
           escalatedCount: intCount(sql`${requestLogs.escalated}`),
           estimatedCount: intCount(sql`${requestLogs.usageEstimated}`),
+          // Cost classification runs BEFORE the component: null = unpriced, 0 = free
+          // (including a zero-cost subscription or local row). Only positive-cost rows
+          // are split by provider kind. `paidRequests` is retained as the priced TOTAL
+          // so existing consumers are not broken; the split is additive beside it.
           freeRequests: intCount(sql`${requestLogs.cost} = 0`),
           paidRequests: intCount(sql`${requestLogs.cost} > 0`),
           unpricedRequests: intCount(sql`${requestLogs.cost} is null`),
+          subscriptionPricedRequests: intCount(
+            sql`${requestLogs.cost} > 0 and ${requestLogs.providerKind} = 'subscription'`,
+          ),
+          cashPricedRequests: intCount(
+            sql`${requestLogs.cost} > 0 and ${requestLogs.providerKind} is distinct from 'subscription'`,
+          ),
+          // Estimate provenance is a SEPARATE axis from the component. Scoped to the
+          // REPORTED-SPEND population (cash + unknown) — the same rows `spend` above
+          // sums — because this field is documented as a portion OF that total.
+          // Narrowing it to known-cash would let a range whose spend is entirely
+          // unclassified-and-estimated report `nativeFamilySpend: 0`, hiding that the
+          // headline is estimate-priced. Subscription rows are excluded because they are
+          // not in the total either. (The budget reader computes its own estimate figure
+          // over whatever ITS basis meters — deliberately different; do not unify.)
           nativeMicros: microsSumIf(
             requestLogs.cost,
-            sql`${requestLogs.priceSource} = 'native_family'`,
+            sql`${requestLogs.priceSource} = 'native_family' and ${isCashLike(requestLogs.providerKind)}`,
           ),
+          subscriptionMicros: subscriptionMicrosSum(requestLogs.cost, requestLogs.providerKind),
+          unknownMicros: unknownMicrosSum(requestLogs.cost, requestLogs.providerKind),
+          knownCashMicros: knownCashMicrosSum(requestLogs.cost, requestLogs.providerKind),
         })
         .from(requestLogs)
         .where(logRange(principal, range));
       const [attempt] = await db
         .select({
-          spendMicros: microsSum(requestAttempts.cost),
+          spendMicros: cashMicrosSum(requestAttempts.cost, requestAttempts.providerKind),
           nativeMicros: microsSumIf(
             requestAttempts.cost,
-            sql`${requestAttempts.priceSource} = 'native_family'`,
+            sql`${requestAttempts.priceSource} = 'native_family' and ${isCashLike(requestAttempts.providerKind)}`,
+          ),
+          subscriptionMicros: subscriptionMicrosSum(
+            requestAttempts.cost,
+            requestAttempts.providerKind,
+          ),
+          unknownMicros: unknownMicrosSum(requestAttempts.cost, requestAttempts.providerKind),
+          knownCashMicros: knownCashMicrosSum(
+            requestAttempts.cost,
+            requestAttempts.providerKind,
           ),
         })
         .from(requestAttempts)
         .where(attemptRange(principal, range));
 
+      // Each component sums BOTH ledgers, each filtered by its own `created_at` —
+      // identical per-row micro-dollar arithmetic to the total it is a portion of.
       const micros = Number(log?.spendMicros ?? 0) + Number(attempt?.spendMicros ?? 0);
       const nativeMicros = Number(log?.nativeMicros ?? 0) + Number(attempt?.nativeMicros ?? 0);
+      const subscriptionMicros =
+        Number(log?.subscriptionMicros ?? 0) + Number(attempt?.subscriptionMicros ?? 0);
+      const unknownMicros = Number(log?.unknownMicros ?? 0) + Number(attempt?.unknownMicros ?? 0);
+      const knownCashMicros =
+        Number(log?.knownCashMicros ?? 0) + Number(attempt?.knownCashMicros ?? 0);
       return {
         spend: micros / 1_000_000,
         requests: Number(log?.requests ?? 0),
@@ -221,7 +273,15 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
         freeRequests: Number(log?.freeRequests ?? 0),
         paidRequests: Number(log?.paidRequests ?? 0),
         unpricedRequests: Number(log?.unpricedRequests ?? 0),
+        subscriptionPricedRequests: Number(log?.subscriptionPricedRequests ?? 0),
+        cashPricedRequests: Number(log?.cashPricedRequests ?? 0),
         nativeFamilySpend: nativeMicros / 1_000_000,
+        // `spend` above is cash + unknown. These expose the partition so a consumer can
+        // reconstruct any basis, and so the UI can show a pure-cash figure without
+        // inferring one by subtraction.
+        cashSpend: knownCashMicros / 1_000_000,
+        subscriptionSpend: subscriptionMicros / 1_000_000,
+        unknownSpend: unknownMicros / 1_000_000,
       };
     },
 
@@ -231,7 +291,9 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
         .select({
           bucket: logBucket,
           requests: intCount(),
-          spendMicros: microsSum(requestLogs.cost),
+          // Reported spend EXCLUDES prepaid subscription traffic (split-subscription-
+          // spend) — this is what a `cash`-basis budget meters, so the two reconcile.
+          spendMicros: cashMicrosSum(requestLogs.cost, requestLogs.providerKind),
           inputTokens: sql<number>`coalesce(sum(${requestLogs.inputTokens}), 0)`,
           outputTokens: sql<number>`coalesce(sum(${requestLogs.outputTokens}), 0)`,
           errorCount: intCount(sql`${requestLogs.status} = 'error'`),
@@ -244,7 +306,10 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
 
       const attemptBucket = bucketExpr(requestAttempts.createdAt, bucket);
       const attemptRows = await db
-        .select({ bucket: attemptBucket, spendMicros: microsSum(requestAttempts.cost) })
+        .select({
+          bucket: attemptBucket,
+          spendMicros: cashMicrosSum(requestAttempts.cost, requestAttempts.providerKind),
+        })
         .from(requestAttempts)
         .where(attemptRange(principal, range))
         .groupBy(attemptBucket);
@@ -296,7 +361,11 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
               ? requestLogs.agentId
               : requestLogs.tierAssigned;
       const logRows = await db
-        .select({ key: logKey, requests: intCount(), spendMicros: microsSum(requestLogs.cost) })
+        .select({
+          key: logKey,
+          requests: intCount(),
+          spendMicros: cashMicrosSum(requestLogs.cost, requestLogs.providerKind),
+        })
         .from(requestLogs)
         .where(logRange(principal, range))
         .groupBy(logKey);
@@ -306,7 +375,10 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
       let attemptRows: { key: string | null; spendMicros: number }[];
       if (dimension === 'agent') {
         attemptRows = await db
-          .select({ key: requestLogs.agentId, spendMicros: microsSum(requestAttempts.cost) })
+          .select({
+          key: requestLogs.agentId,
+          spendMicros: cashMicrosSum(requestAttempts.cost, requestAttempts.providerKind),
+        })
           .from(requestAttempts)
           .innerJoin(requestLogs, eq(requestAttempts.requestLogId, requestLogs.id))
           .where(
@@ -326,7 +398,10 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
               ? requestAttempts.providerId
               : requestAttempts.tierKey;
         attemptRows = await db
-          .select({ key: attKey, spendMicros: microsSum(requestAttempts.cost) })
+          .select({
+          key: attKey,
+          spendMicros: cashMicrosSum(requestAttempts.cost, requestAttempts.providerKind),
+        })
           .from(requestAttempts)
           .where(attemptRange(principal, range))
           .groupBy(attKey);

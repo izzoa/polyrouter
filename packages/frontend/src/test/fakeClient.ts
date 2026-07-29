@@ -84,6 +84,11 @@ export const DEFAULT_SUMMARY: AnalyticsSummary = {
   paidRequests: 20,
   unpricedRequests: 2,
   nativeFamilySpend: 0,
+  subscriptionPricedRequests: 0,
+  cashPricedRequests: 0,
+  cashSpend: 0,
+  subscriptionSpend: 0,
+  unknownSpend: 0,
 };
 
 export const DEFAULT_TIMESERIES: TimeseriesPoint[] = [
@@ -1205,6 +1210,7 @@ export class FakeApiClient implements ApiClient {
       agentId: input.scope === 'agent' ? (input.agentId ?? null) : null,
       window: input.window,
       action: input.action,
+      meteringBasis: input.meteringBasis ?? 'cash',
       amount: input.amount,
       notifyChannelIds: input.notifyChannelIds ?? [],
       enabled: input.enabled ?? true,

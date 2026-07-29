@@ -72,8 +72,13 @@ describe('Observe pages render real analytics', () => {
       clickNav(host, 'Costs');
       await flush();
       expect(host.textContent).toContain('$12.50');
-      expect(host.textContent).toContain('% free');
-      expect(host.textContent).toContain('% unpriced');
+      // Four-way mix with counts beside percentages (split-subscription-spend).
+      expect(host.textContent).toContain('free 80% (8)');
+      expect(host.textContent).toContain('subscription');
+      expect(host.textContent).toContain('other priced');
+      expect(host.textContent).toContain('unpriced 20% (2)');
+      // The headline says what it excludes rather than presenting an unqualified total.
+      expect(host.textContent).toContain('excludes subscription');
     } finally {
       dispose();
     }

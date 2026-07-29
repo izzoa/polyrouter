@@ -38,10 +38,14 @@ class FakeConn {
     this.store.set(k, String(v));
     return Promise.resolve('OK');
   }
+  /** Mirrors RECONCILE_MAX_LUA — including materializing the key at v=0, so a seeded
+   * zero is distinguishable from "never reconciled" (split-subscription-spend). Real
+   * Redis parity for the script itself is covered by the reconcile e2e. */
   eval(_s: string, _n: number, key: string, micros: string, _ttl: string): Promise<number> {
+    const exists = this.store.has(key);
     const cur = Number(this.store.get(key) ?? '0');
     const v = Number(micros);
-    if (v > cur) this.store.set(key, String(v));
+    if (v > cur || !exists) this.store.set(key, String(v));
     return Promise.resolve(Math.max(cur, v));
   }
 }
@@ -53,10 +57,42 @@ function make(): { counter: SpendCounter; conn: FakeConn } {
 }
 
 describe('SpendCounter', () => {
+  it('materializes a key even when the reconciled total is zero', async () => {
+    const { counter, conn } = make();
+    const key = counter.key('u1', 'global', 'global', 'day', '2026-03-15', 'cash');
+    await counter.reconcileMax(key, 0, 60_000);
+    // A MISSING key reads as an authoritative zero, so a seeded-zero counter must exist
+    // — otherwise a just-switched budget is indistinguishable from an unreconciled one.
+    expect(conn.store.has(key)).toBe(true);
+  });
+
+  it('keeps each metering basis on its own counter', async () => {
+    const { counter } = make();
+    const notional = counter.key('u1', 'global', 'global', 'day', '2026-03-15', 'notional');
+    const cash = counter.key('u1', 'global', 'global', 'day', '2026-03-15', 'cash');
+    expect(notional).not.toBe(cash);
+    // ...and an upgrading deployment finds its existing counter exactly where it left it.
+    expect(notional).toBe('budget:u1:global:global:day:2026-03-15');
+    await counter.reconcileMax(notional, 9_000_000, 60_000);
+    // The monotonic write only ever RAISES a counter, so a switch to a smaller cash
+    // total would be pinned at the notional maximum if they shared a key.
+    await counter.reconcileMax(cash, 2_000_000, 60_000);
+    expect(await counter.read([notional, cash])).toEqual([9_000_000, 2_000_000]);
+  });
+
   it('builds a stable owner/scope/window/period key', () => {
     const { counter } = make();
-    expect(counter.key('u1', 'agent', 'a1', 'day', '2026-03-15')).toBe(
+    // `notional` keeps the LEGACY shape: every budget predating the metering basis
+    // meters notional, so namespacing it would strand their counters on upgrade — and a
+    // cold key reads as zero spend, silently un-blocking an already-blocked budget.
+    expect(counter.key('u1', 'agent', 'a1', 'day', '2026-03-15', 'notional')).toBe(
       'budget:u1:agent:a1:day:2026-03-15',
+    );
+    // `cash` is a genuinely different quantity and a basis no budget had before, so it
+    // gets its own namespace — which is also what keeps the monotonic reconcile from
+    // pinning a lowered cash total at the old notional maximum.
+    expect(counter.key('u1', 'agent', 'a1', 'day', '2026-03-15', 'cash')).toBe(
+      'budget:u1:agent:a1:day:cash:2026-03-15',
     );
   });
 

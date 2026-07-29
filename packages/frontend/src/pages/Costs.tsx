@@ -52,10 +52,19 @@ export function Costs(props: { live: boolean }) {
   const estimated = () => state.analyticsSummary?.estimatedCount ?? 0;
   const nativeSpend = () => state.analyticsSummary?.nativeFamilySpend ?? 0;
   const free = () => state.analyticsSummary?.freeRequests ?? 0;
-  const paid = () => state.analyticsSummary?.paidRequests ?? 0;
   const unpriced = () => state.analyticsSummary?.unpricedRequests ?? 0;
-  const total = () => free() + paid() + unpriced();
+  // Priced requests split by what actually costs money. `paidRequests` remains the
+  // priced TOTAL for API consumers; the card shows the two halves.
+  const subPriced = () => state.analyticsSummary?.subscriptionPricedRequests ?? 0;
+  const cashPriced = () => state.analyticsSummary?.cashPricedRequests ?? 0;
+  const total = () => free() + subPriced() + cashPriced() + unpriced();
   const segPct = (n: number): number => (total() === 0 ? 0 : Math.round((n / total()) * 100));
+  /** A non-zero category must stay visible rather than rounding to an invisible sliver. */
+  const segWidth = (n: number): number => (n > 0 ? Math.max(segPct(n), 2) : 0);
+  // `spend` is cash + unclassified; `cashSpend` is strictly-known cash. Showing the
+  // unclassified part separately keeps the headline from claiming precision it lacks.
+  const subSpend = () => state.analyticsSummary?.subscriptionSpend ?? 0;
+  const unknownSpend = () => state.analyticsSummary?.unknownSpend ?? 0;
 
   return (
     <div style="padding:22px 26px;display:flex;flex-direction:column;gap:14px;max-width:1200px">
@@ -85,34 +94,70 @@ export function Costs(props: { live: boolean }) {
           <div class="stat-label">Spend · {state.range}</div>
           <div class="stat-value">${spend().toFixed(2)}</div>
           <div class="stat-sub">
-            both ledgers · <span style="color:var(--text3)">{estimated()} requests ~estimated</span>
+            both ledgers, excludes subscription ·{' '}
+            <span style="color:var(--text3)">{estimated()} requests ~estimated</span>
             <Show when={nativeSpend() > 0}>
               <span style="color:var(--text3)">
                 {' '}· includes ${nativeSpend().toFixed(4)} estimate-priced
               </span>
             </Show>
+            {/* Prepaid traffic is NOT added to the headline — it is money already spent
+                on a flat-rate plan. Shown beside it so the figure stays visible and the
+                old combined total is still reconstructable. Absent, not "$0.00", when
+                the range has none. */}
+            <Show when={subSpend() > 0}>
+              <div style="color:var(--accent-deep);margin-top:2px">
+                + ${subSpend().toFixed(4)} served on subscription
+              </div>
+            </Show>
+            <Show when={unknownSpend() > 0}>
+              <div style="color:var(--text3);margin-top:2px">
+                includes ${unknownSpend().toFixed(4)} recorded before subscription
+                tracking — cannot be classified
+              </div>
+            </Show>
           </div>
         </div>
         <div class="panel card">
-          <div class="stat-label">Free vs paid vs unpriced</div>
-          <div style="display:flex;height:10px;border-radius:5px;overflow:hidden;margin:14px 0 8px;background:var(--chip)">
-            <div style={{ width: `${String(segPct(free()))}%`, background: 'var(--green)' }} />
-            <div style={{ width: `${String(segPct(paid()))}%`, background: 'var(--accent)' }} />
-            <div style={{ width: `${String(segPct(unpriced()))}%`, background: 'var(--faint)' }} />
+          <div class="stat-label">Free vs prepaid vs paid</div>
+          {/* The two PRICED categories are two intensities of the one accent, adjacent,
+              so they still read as a single "paid" block subdivided — a second hue would
+              break the single-accent lock (green/amber/red are semantic status only). */}
+          <div
+            data-testid="mix-bar"
+            style="display:flex;height:10px;border-radius:5px;overflow:hidden;margin:14px 0 8px;background:var(--chip)"
+          >
+            <div style={{ width: `${String(segWidth(free()))}%`, background: 'var(--green)' }} />
+            <div
+              style={{ width: `${String(segWidth(subPriced()))}%`, background: 'var(--accent-bg)' }}
+            />
+            <div
+              style={{ width: `${String(segWidth(cashPriced()))}%`, background: 'var(--accent)' }}
+            />
+            <div style={{ width: `${String(segWidth(unpriced()))}%`, background: 'var(--faint)' }} />
           </div>
+          {/* Counts beside percentages: this card is routinely rendered over samples
+              small enough that a percentage alone implies precision the sample lacks. */}
           <div style="display:flex;gap:12px;font:400 11px 'Geist',sans-serif;color:var(--text3);flex-wrap:wrap">
             <span>
-              <span style="color:var(--green-text)">■</span> {segPct(free())}% free
+              <span style="color:var(--green-text)">■</span> free {segPct(free())}% ({free()})
             </span>
             <span>
-              <span style="color:var(--accent)">■</span> {segPct(paid())}% paid
+              <span style="color:var(--accent-deep)">■</span> subscription{' '}
+              {segPct(subPriced())}% ({subPriced()})
             </span>
             <span>
-              <span style="color:var(--faint)">■</span> {segPct(unpriced())}% unpriced
+              <span style="color:var(--accent)">■</span> other priced {segPct(cashPriced())}% (
+              {cashPriced()})
+            </span>
+            <span>
+              <span style="color:var(--faint)">■</span> unpriced {segPct(unpriced())}% (
+              {unpriced()})
             </span>
           </div>
           <div style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);margin-top:6px">
-            By request count. Subscription/API split lands in a later change.
+            By request count. Subscription requests are prepaid at a flat rate, so their
+            cost is reported separately rather than counted as spend.
           </div>
         </div>
         <div class="panel card">

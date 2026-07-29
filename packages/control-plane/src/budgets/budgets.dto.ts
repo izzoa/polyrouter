@@ -14,9 +14,13 @@ import {
 const SCOPES = ['global', 'agent'] as const;
 const WINDOWS = ['day', 'week', 'month'] as const;
 const ACTIONS = ['alert', 'block'] as const;
+/** What a budget meters (split-subscription-spend). `cash` = money owed; `notional`
+ * additionally counts prepaid subscription traffic at the vendor's API rate. */
+const BASES = ['cash', 'notional'] as const;
 type BudgetScope = (typeof SCOPES)[number];
 type BudgetWindow = (typeof WINDOWS)[number];
 type BudgetAction = (typeof ACTIONS)[number];
+type MeteringBasis = (typeof BASES)[number];
 
 /** USD ceiling matching the DB `budget_amount_range` check — `round(amount×1e6)`
  * stays a JS-safe integer (µ$). */
@@ -43,6 +47,12 @@ export class CreateBudgetDto {
 
   @IsIn(ACTIONS)
   action!: BudgetAction;
+
+  /** Omitted → `cash`. Existing budgets were migrated to `notional` to preserve their
+   * enforcement; a NEW budget defaults to metering money owed. */
+  @IsOptional()
+  @IsIn(BASES)
+  meteringBasis?: MeteringBasis;
 
   @IsNumber()
   @IsPositive()
@@ -81,6 +91,10 @@ export class UpdateBudgetDto {
   @IsOptional()
   @IsIn(ACTIONS)
   action?: BudgetAction;
+
+  @IsOptional()
+  @IsIn(BASES)
+  meteringBasis?: MeteringBasis;
 
   @IsOptional()
   @IsNumber()

@@ -1,7 +1,10 @@
 import {
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
+  Optional,
+  ServiceUnavailableException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import {
@@ -11,8 +14,11 @@ import {
   type PersistencePort,
   type Principal,
 } from '@polyrouter/shared/server';
+import { BUDGET_READER, type BudgetReader, type MeteringBasis } from '../database/budget.reader';
 import { BudgetCache } from './budget-cache';
 import type { CreateBudgetDto, UpdateBudgetDto } from './budgets.dto';
+import { periodInfo, type BudgetWindow } from './period';
+import { SpendCounter } from './spend-counter';
 
 /** The API view of a budget (no secrets to hide; channel ids as an array). */
 export interface SafeBudget {
@@ -22,6 +28,9 @@ export interface SafeBudget {
   agentId: string | null;
   window: string;
   action: string;
+  /** What this budget meters: `cash` (money owed) or `notional` (also counts prepaid
+   * subscription traffic at API rates). */
+  meteringBasis: string;
   amount: number;
   notifyChannelIds: string[];
   enabled: boolean;
@@ -43,6 +52,7 @@ function toSafe(r: BudgetRow): SafeBudget {
     agentId: r.agentId,
     window: r.window,
     action: r.action,
+    meteringBasis: r.meteringBasis,
     amount: r.amount,
     notifyChannelIds: r.notifyChannelIds ? r.notifyChannelIds.split(',').filter((s) => s) : [],
     enabled: r.enabled,
@@ -55,10 +65,58 @@ function toSafe(r: BudgetRow): SafeBudget {
  * owner's block-check cache so enforcement picks up the change promptly. */
 @Injectable()
 export class BudgetsCrudService {
+  private static readonly log = new Logger(BudgetsCrudService.name);
+
   constructor(
     @Inject(PERSISTENCE_PORT) private readonly db: PersistencePort,
     private readonly cache: BudgetCache,
+    // OPTIONAL on purpose: these serve only the best-effort counter seed on a
+    // metering-basis change. Budget CRUD is a Postgres concern — editing a budget must
+    // not fail because Redis is unavailable, and the scheduler's next reconcile fills
+    // the counter in regardless. Production wiring provides both (BudgetsModule).
+    @Optional() private readonly counter?: SpendCounter,
+    @Optional() @Inject(BUDGET_READER) private readonly reader?: BudgetReader,
   ) {}
+
+  /** Populate the counter key a basis change moves this budget onto, so it is never
+   * read as an authoritative zero before the scheduler's next reconcile. Reconciliation
+   * recomputes the WHOLE period from the ledgers, so nothing is lost by the move — the
+   * seed carries the complete total for the new basis. */
+  private async seedCounterForBasis(b: BudgetRow): Promise<void> {
+    if (this.counter === undefined || this.reader === undefined) {
+      BudgetsCrudService.log.warn('metering-basis change refused: counter seed unwired');
+      throw new ServiceUnavailableException(
+        'cannot change what this budget counts right now — spend metering is unavailable',
+      );
+    }
+    try {
+      const window = b.window as BudgetWindow;
+      const { periodId, startMs, endMs } = periodInfo(window, new Date());
+      const scopeId = b.scope === 'agent' ? (b.agentId ?? 'global') : 'global';
+      const owner = b.ownerUserId;
+      const basis = b.meteringBasis as MeteringBasis;
+      const spend = await this.reader.spendMicrosFor(
+        owner,
+        b.scope === 'agent' ? b.agentId : null,
+        new Date(startMs),
+        new Date(endMs),
+        basis,
+      );
+      await this.counter.reconcileMax(
+        this.counter.key(owner, b.scope, scopeId, window, periodId, basis),
+        spend.micros,
+        Math.max(1, endMs - Date.now()),
+      );
+    } catch (err) {
+      // NOT best-effort. An unseeded key reads as zero spend, so letting the basis
+      // change land anyway would silently disable this budget until the next reconcile.
+      // Refuse the change instead and leave the budget metering exactly as it was.
+      BudgetsCrudService.log.warn(`metering-basis seed failed: ${String((err as Error).message)}`);
+      throw new ServiceUnavailableException(
+        'could not switch what this budget counts — try again shortly',
+      );
+    }
+  }
 
   async list(principal: Principal): Promise<SafeBudget[]> {
     return (await this.db.budgets.list(principal)).map(toSafe);
@@ -81,6 +139,10 @@ export class BudgetsCrudService {
       agentId,
       window: dto.window,
       action: dto.action,
+      // New budgets meter money owed. The DB column defaults to `notional` so the
+      // migration could preserve EXISTING budgets' enforcement; a new one is always
+      // written explicitly so that backfill default never applies to it.
+      meteringBasis: dto.meteringBasis ?? 'cash',
       amount: dto.amount,
       notifyChannelIds: (dto.notifyChannelIds ?? []).join(','),
       enabled: dto.enabled ?? true,
@@ -110,9 +172,22 @@ export class BudgetsCrudService {
     if (dto.scope !== undefined) patch.scope = dto.scope;
     if (dto.window !== undefined) patch.window = dto.window;
     if (dto.action !== undefined) patch.action = dto.action;
+    if (dto.meteringBasis !== undefined) patch.meteringBasis = dto.meteringBasis;
     if (dto.amount !== undefined) patch.amount = dto.amount;
     if (dto.notifyChannelIds !== undefined) patch.notifyChannelIds = dto.notifyChannelIds.join(',');
     if (dto.enabled !== undefined) patch.enabled = dto.enabled;
+
+    // A basis change moves this budget onto a different counter key, which does not
+    // exist yet — and a missing counter reads as an authoritative ZERO (not as
+    // "enforcement unavailable") while the global reconcile heartbeat stays fresh from
+    // other budgets. So the new key must be populated BEFORE the change is visible:
+    // seeding after the commit leaves a window where a concurrent request loads the new
+    // basis and meters against nothing.
+    const changingBasis =
+      dto.meteringBasis !== undefined && dto.meteringBasis !== existing.meteringBasis;
+    if (changingBasis) {
+      await this.seedCounterForBasis({ ...existing, ...patch } as BudgetRow);
+    }
 
     const row = await this.db.budgets.update(principal, id, patch);
     if (row === null) throw new NotFoundException();

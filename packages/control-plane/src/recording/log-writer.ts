@@ -470,6 +470,10 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
       cacheWritePriceSnapshot: price?.cacheWritePricePer1m ?? null,
       priceVersionId: price?.priceVersionId ?? null,
       priceSource: price?.source ?? null,
+      // Immutable snapshot of the SERVING provider's kind — decides whether this row's
+      // cost is money owed or prepaid subscription traffic. Taken from the same context
+      // that priced the row, so it can never disagree with the price snapshot.
+      providerKind: d.pricing.providerKind,
       usageEstimated: d.usage.estimated,
       cost: computeCost(d.usage, price),
       durationMs: d.durationMs,
@@ -694,6 +698,10 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
       cacheWritePriceSnapshot: price?.cacheWritePricePer1m ?? null,
       priceVersionId: price?.priceVersionId ?? null,
       priceSource: price?.source ?? null,
+      // Each attempt records the kind of the provider that served THAT attempt — a
+      // cascade can escalate from a subscription provider to an api_key one, and the
+      // two rows must classify independently.
+      providerKind: d.pricing.providerKind,
       usageEstimated: d.usage.estimated,
       cost: computeCost(d.usage, price),
       status: d.status,

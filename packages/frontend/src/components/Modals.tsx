@@ -665,6 +665,60 @@ export function Modals() {
                     </div>
                   </div>
                 </div>
+                {/* The basis is only meaningful if it is visible — a budget silently
+                    metering prepaid subscription usage would look like it was metering
+                    money (split-subscription-spend). */}
+                <div>
+                  <div class="field-label">Counts</div>
+                  <div
+                    role="group"
+                    aria-label="What this budget counts"
+                    style="display:flex;background:var(--bg);border:1px solid var(--border);border-radius:7px;padding:2px"
+                  >
+                    <button
+                      type="button"
+                      aria-pressed={state.bf.meteringBasis === 'cash'}
+                      style={{
+                        flex: '1',
+                        'text-align': 'center',
+                        padding: '5px 0',
+                        'border-radius': '5px',
+                        font: "500 12px 'Geist',sans-serif",
+                        cursor: 'pointer',
+                        background:
+                          state.bf.meteringBasis === 'cash' ? 'var(--chip)' : 'transparent',
+                        color: state.bf.meteringBasis === 'cash' ? 'var(--text)' : 'var(--text3)',
+                      }}
+                      onClick={() => setState('bf', 'meteringBasis', 'cash')}
+                    >
+                      Money spent
+                    </button>
+                    <button
+                      type="button"
+                      aria-pressed={state.bf.meteringBasis === 'notional'}
+                      style={{
+                        flex: '1',
+                        'text-align': 'center',
+                        padding: '5px 0',
+                        'border-radius': '5px',
+                        font: "500 12px 'Geist',sans-serif",
+                        cursor: 'pointer',
+                        background:
+                          state.bf.meteringBasis === 'notional' ? 'var(--chip)' : 'transparent',
+                        color:
+                          state.bf.meteringBasis === 'notional' ? 'var(--text)' : 'var(--text3)',
+                      }}
+                      onClick={() => setState('bf', 'meteringBasis', 'notional')}
+                    >
+                      + subscription usage
+                    </button>
+                  </div>
+                  <div style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);margin-top:5px;line-height:1.45">
+                    {state.bf.meteringBasis === 'cash'
+                      ? 'Counts only what you are billed for. Subscription requests are prepaid, so they never use up this budget.'
+                      : 'Also counts subscription requests priced at the provider’s API rate — a rough way to cap usage of a flat-rate plan, not money spent.'}
+                  </div>
+                </div>
                 <div>
                   <div class="field-label">Notify channels</div>
                   <Show

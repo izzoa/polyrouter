@@ -17,6 +17,7 @@ const BUDGET: BudgetDto = {
   agentId: null,
   window: 'month',
   action: 'block',
+  meteringBasis: 'cash',
   amount: 10,
   notifyChannelIds: [],
   enabled: true,

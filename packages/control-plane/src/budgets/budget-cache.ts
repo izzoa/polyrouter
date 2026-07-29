@@ -29,7 +29,13 @@ export class BudgetCache {
   private readonly ttlMs: number;
   private readonly max: number;
   private readonly cache = new Map<string, Entry>(); // owner -> entry (Map order = LRU)
-  private readonly inflight = new Map<string, Promise<BudgetRow[]>>();
+  private readonly inflight = new Map<string, { gen: number; rows: Promise<BudgetRow[]> }>();
+  /** Per-owner load generation. `invalidate()` bumps it; a `store()` from an older
+   * generation is dropped (split-subscription-spend). Without this, a load already in
+   * flight when a write lands would `store()` the PRE-write rows afterwards and serve
+   * them for a full TTL — which for a metering-basis change means the budget keeps
+   * building its old basis key, and keeps blocking, until the entry expires. */
+  private readonly generation = new Map<string, number>();
 
   constructor(
     @Inject(PERSISTENCE_PORT) private readonly db: PersistencePort,
@@ -47,14 +53,17 @@ export class BudgetCache {
       this.cache.set(owner, hit); // LRU touch
       return hit.rows;
     }
+    const gen = this.generation.get(owner) ?? 0;
     const existing = this.inflight.get(owner);
-    if (existing !== undefined) return existing;
-
+    // Join only a load from the CURRENT generation. Refusing to cache a superseded
+    // load is not enough on its own — a caller arriving after `invalidate()` would
+    // still be handed the pre-write rows directly by joining the old promise.
+    if (existing !== undefined && existing.gen === gen) return existing.rows;
     const load = this.db.budgets
       .list(principal)
       .then(
         (rows) => {
-          this.store(owner, rows);
+          this.store(owner, rows, gen);
           return rows;
         },
         (err: unknown) => {
@@ -63,17 +72,24 @@ export class BudgetCache {
         },
       )
       .finally(() => {
-        this.inflight.delete(owner);
+        // Only clear our OWN entry — a newer generation's load must survive.
+        if (this.inflight.get(owner)?.gen === gen) this.inflight.delete(owner);
       });
-    this.inflight.set(owner, load);
+    this.inflight.set(owner, { gen, rows: load });
     return load;
   }
 
   invalidate(principal: Principal): void {
-    this.cache.delete(ownerOf(principal));
+    const owner = ownerOf(principal);
+    this.cache.delete(owner);
+    // Also invalidate loads already in flight: they read state older than this write.
+    this.generation.set(owner, (this.generation.get(owner) ?? 0) + 1);
   }
 
-  private store(owner: string, rows: BudgetRow[]): void {
+  private store(owner: string, rows: BudgetRow[], gen: number): void {
+    // Superseded by a write that landed while this load was in flight — the rows are
+    // already stale, so caching them would undo the invalidation.
+    if ((this.generation.get(owner) ?? 0) !== gen) return;
     this.cache.delete(owner);
     this.cache.set(owner, { at: Date.now(), rows });
     if (this.cache.size > this.max) {

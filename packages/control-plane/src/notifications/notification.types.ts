@@ -108,6 +108,15 @@ export function channelMatchesEvent(
 /** Render the human title/body from the structured fields (in the worker). */
 /** Spend-provenance sentence (add-native-price-fallback): 'true' = includes
  * estimates; 'unknown' = the lookup failed — say so rather than implying exact. */
+/** A `notional`-basis budget meters prepaid subscription traffic priced at the vendor's
+ * API rate, so its figure is NOT money spent — say so rather than letting a dollar
+ * amount imply it (split-subscription-spend). */
+function basisNote(v: unknown): string {
+  return v === 'notional'
+    ? ' This budget meters subscription usage at API rates as well as money spent.'
+    : '';
+}
+
 function estimateNote(v: unknown): string {
   if (v === 'true') return ' The metered spend includes estimate-priced components (native-family rates).';
   if (v === 'unknown') return ' Price provenance was unavailable for this notice.';
@@ -137,12 +146,12 @@ export function renderEvent(event: NotificationEvent): { title: string; body: st
         title: `polyrouter — budget alert: ${f['limitName'] ?? 'a budget'}`,
         // Estimate provenance (add-native-price-fallback): never present
         // estimate-priced spend as exact. Metering itself is identical.
-        body: `Spend ${f['spent'] ?? '?'} crossed the alert threshold ${f['threshold'] ?? '?'}.${estimateNote(f['spendEstimated'])}`,
+        body: `Spend ${f['spent'] ?? '?'} crossed the alert threshold ${f['threshold'] ?? '?'}.${estimateNote(f['spendEstimated'])}${basisNote(f['meteringBasis'])}`,
       };
     case 'budget_block':
       return {
         title: `polyrouter — budget block: ${f['limitName'] ?? 'a budget'}`,
-        body: `The budget ${f['limitName'] ?? ''} is blocking new requests until the window resets.${estimateNote(f['spendEstimated'])}`,
+        body: `The budget ${f['limitName'] ?? ''} is blocking new requests until the window resets.${estimateNote(f['spendEstimated'])}${basisNote(f['meteringBasis'])}`,
       };
     case 'weekly_spend_summary':
       return {

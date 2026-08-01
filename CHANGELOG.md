@@ -24,10 +24,13 @@ heading is started.
   summaries open Costs). Invite and password-reset emails share the layout. The design
   is deliberately asset-free — a text wordmark, no images, web fonts, or externally
   hosted anything — so it renders on an instance that isn't publicly reachable and
-  triggers no remote fetches. **Links appear only when the instance has a routable
-  address:** if `BETTER_AUTH_URL` is still the loopback default they are omitted rather
-  than sending a useless `127.0.0.1` link, so set it to your real address to enable
-  them. Chat channels (Apprise) additionally carry a per-event severity, so a
+  triggers no remote fetches. **To get the links, set `APP_URL` to the address your
+  users actually reach the dashboard at, then restart** — they appear only from a
+  routable origin, so with the default (`http://localhost:3001`) they are omitted
+  rather than sending a `127.0.0.1` link that would be dead in a recipient's inbox,
+  and setting `APP_URL` to a loopback value explicitly does the same, deliberately
+  (a LAN or `.local` address works and is often right for a self-hosted instance).
+  Chat channels (Apprise) additionally carry a per-event severity, so a
   provider-down or budget-block notification is visually distinct from an
   informational summary.
 

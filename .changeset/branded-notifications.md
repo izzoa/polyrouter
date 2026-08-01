@@ -13,10 +13,13 @@ The layout is deliberately asset-free — a text wordmark, no images, web fonts,
 or externally hosted anything — so it renders identically on an instance that
 isn't publicly reachable and triggers no remote fetches.
 
-Links appear only when the instance has a routable address. If `BETTER_AUTH_URL`
-is still the loopback default, links are omitted rather than sending a
-`127.0.0.1` URL that would be useless in a recipient's inbox. Set it to your
-instance's real address to enable them.
+**To get the links, set `APP_URL` to the address your users actually reach the
+dashboard at, then restart.** They appear only from a routable origin: with the
+default (`http://localhost:3001`) the link is omitted rather than sending a
+`127.0.0.1` URL that would be dead in a recipient's inbox — and setting `APP_URL`
+to a loopback value explicitly does the same, deliberately. A LAN or `.local`
+address works and is often the right one for a self-hosted instance. The value is
+read at boot, so a restart is required after changing it.
 
 Chat channels (Apprise) now carry a per-event severity, so a provider-down or
 budget-block notification is visually distinct from an informational summary at

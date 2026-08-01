@@ -347,7 +347,7 @@ public, or set `METRICS_ENABLED=false`.
 | `BETTER_AUTH_SECRET`, `API_KEY_HMAC_SECRET`, `PROVIDER_CREDENTIAL_KEY`, `NOTIFY_CREDENTIALS_SECRET` | generated               | Required 32-byte-hex secrets (sessions, agent-key HMAC, credential + channel encryption at rest)             |
 | `POSTGRES_PASSWORD`                                                                                 | generated               | Database password — **initialization-only**: changing it later does NOT rotate the role password in postgres |
 | `POLYROUTER_HOST` / `POLYROUTER_PORT`                                                               | `127.0.0.1` / `3001`    | Host interface/port the app is published on                                                                  |
-| `APP_URL`                                                                                           | `http://localhost:3001` | Public origin (Better Auth base URL) — set it when exposing                                                  |
+| `APP_URL`                                                                                           | `http://localhost:3001` | Public origin (Better Auth base URL) — set it when exposing. Also gates **links in notification emails**: a loopback value omits them (see Notification emails) |
 | `METRICS_ENABLED`                                                                                   | `true`                  | Prometheus `/metrics` (404 when `false`)                                                                     |
 | `OTEL_ENABLED` / `OTEL_EXPORTER_OTLP_ENDPOINT`                                                      | `false` / SDK default   | OpenTelemetry traces for the proxy path (batched OTLP/HTTP export)                                           |
 | `GOOGLE_/GITHUB_/DISCORD_CLIENT_ID`+`_SECRET`                                                       | unset                   | Optional OAuth sign-in providers                                                                             |
@@ -492,6 +492,39 @@ NOTIFY_ALLOWED_ENDPOINTS=apprise,172.28.5.0/24,8000
 
 The compose network is pinned to `172.28.5.0/24` so that CIDR is deterministic;
 change both places if it collides with your network.
+
+### Notification emails and their links
+
+Emails are sent as both plain text and branded HTML — a text-only client sees
+the same wording it always did; an HTML client gets a laid-out message with a
+button through to the relevant page (a provider alert opens Providers, a budget
+alert opens Limits, and so on). The layout is deliberately **asset-free**: no
+images, web fonts, or externally hosted anything, so it renders identically on
+an instance that isn't publicly reachable and triggers no remote fetches.
+
+**Those buttons appear only when `APP_URL` is an address your recipients can
+actually reach.** With the default (`http://localhost:3001`) the link is omitted
+entirely rather than sending a `127.0.0.1` URL that would be dead in someone's
+inbox — or worse, on a phone, resolve to the phone. Setting `APP_URL` to a
+loopback value explicitly does the same thing; that is deliberate, not a bug.
+
+| `APP_URL` | Links in email |
+|---|---|
+| unset, or `http://localhost:3001` (default) | omitted |
+| any `localhost` / `127.0.0.1` / `[::1]` value | omitted |
+| `http://192.168.1.50:3001`, `http://polyrouter.local:3001` | **yes** — a LAN address is often exactly right for a self-hosted instance |
+| `https://polyrouter.example.com` | **yes** |
+| a value carrying credentials, or a non-`http(s)` scheme | omitted (it is never rendered as a link) |
+
+Two practical notes: the value is read **at boot**, so restart after changing it
+(`docker compose -p polyrouter-selfhost up -d`); and only the *origin* is used, so
+an `APP_URL` with a path (`https://host/polyrouter/`) produces links at the domain
+root. Serving the dashboard under a subpath is not currently supported for email
+links.
+
+Chat channels (Apprise) additionally carry a per-event severity, so a
+provider-down or budget-block notification is visually distinct from an
+informational summary at the target, with the page link on its own line.
 
 ### Operations
 

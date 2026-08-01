@@ -20,6 +20,15 @@
 </p>
 
 <p align="center">
+  <a href="#self-hosting"><b>Self-hosting</b></a> ·
+  <a href="#connect-an-agent"><b>Connect an agent</b></a> ·
+  <a href="./ROADMAP.md"><b>Roadmap</b></a> ·
+  <a href="./CHANGELOG.md"><b>Changelog</b></a> ·
+  <a href="https://github.com/izzoa/polyrouter/releases"><b>Releases</b></a> ·
+  <a href="./CONTRIBUTING.md"><b>Contributing</b></a>
+</p>
+
+<p align="center">
   <a href="https://polyrouter.app"><img src="assets/dashboard-preview.svg" width="900" alt="polyrouter dashboard — the overview: KPI tiles for requests, spend, latency and success rate; a requests-over-time chart; spend by model; and the live request log"></a>
   <br>
   <sub>The dashboard overview — KPI tiles, a requests-per-hour chart, spend by model, and the live request log (each row shows its routing layer, tokens, snapshot-priced cost, and latency).</sub>

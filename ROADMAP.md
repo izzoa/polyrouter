@@ -1,76 +1,132 @@
 # ROADMAP — polyrouter
 
-Direction and parked thinking. This file is **not** the build plan.
+Where polyrouter is going, what's actually open, and what's been explored but not
+committed to. This file is **direction, not a schedule** — nothing here carries a date,
+and nothing here is a promise.
 
-| File | Holds |
-|---|---|
-| [`TODOS.md`](./TODOS.md) | The **committed** plan — the spec decomposed into proposable OpenSpec changes, in dependency order, with a status board. Its "Deferred" section is work we've **decided** to do later. |
-| **`ROADMAP.md`** (this file) | Direction, and a **parking lot** for ideas that have been explored but **not** committed to. Nothing here is scheduled, and nothing here has a proposal. |
-| `openspec/specs/` | The archived capability contracts — what the system actually promises today. |
-| [`CLAUDE.md`](./CLAUDE.md) | Operating rules, pinned stack, the 12 non-negotiable invariants. |
+For what has already shipped, see [`CHANGELOG.md`](./CHANGELOG.md) — it is the record of
+record. For the engineering rules everything here is bound by (pinned stack, the 12
+non-negotiable invariants, build order), see [`CLAUDE.md`](./CLAUDE.md).
 
-**Promotion path.** A parked item leaves this file by becoming a TODOS.md entry, then an
-OpenSpec change (`/opsx:propose`). Until then it is thinking, not a commitment — do not
-implement from this file.
+**No feature code is written from this file.** Work reaches the codebase only as an
+approved, spec-delta-carrying change proposal. An item here is thinking; an item that has
+graduated has a proposal behind it.
 
 ---
 
-## Now / Next
+## Prioritization
 
-Everything in the build plan is shipped: **91 archived changes** as of 2026-07-31 — the
-22-entry baseline, both review gates, all 15 audit epics + 10 A-batches, StyleSeed
-conformance, Epic AR (auto-routing), Epic L2 (semantic), and the out-of-band tail.
+How anything moves. Four bands, and the axes that decide which band something sits in.
 
-**Exactly two committed items remain open, and neither is buildable yet.** Both are
-*evidence-gated* — deliberately not scheduled, because the evidence can only come from
-real traffic on a deployed instance.
+### Bands
 
-| Item | Gate — build only when this is observed |
+| Band | Meaning |
 |---|---|
-| **AR-6** `add-auto-band-ladder` — generalize high/low/ambiguous into a configured N-band ladder | Calibrated 3-band **saturates**: ambiguous share stays **> 50%** in the Auto-performance view *after* calibration converges (history shows moves, then quiet), **AND** edge-zone rates are bimodal (both edges keep qualifying against opposite bounds) |
-| **AR-7′** band-ladder's successor question — *does structure have anything left to give?* | AR-6's gate **plus** a negative result: calibration converged, band mix stable, yet quality-escalation in the ambiguous **middle** (not the edges) stays high |
+| **Now** | Committed and unblocked. A proposal exists; it is being built. |
+| **Next** | Committed, but **blocked on a named condition**. Deliberately unscheduled — the condition decides when, not a calendar. |
+| **Candidate** | Parked. The design is understood well enough to scope; would be taken up on a clear demand signal. |
+| **Speculative** | Parked. Needs a spike or an external trigger before it can even be scoped honestly. |
 
-Gate status as last evaluated (2026-07-20): **UNASSESSABLE pre-deployment** — both need
-weeks of real traffic under AR-5 calibration. Both gates are evaluated by a read-only
-query against a deployed instance's Postgres, whose thresholds mirror
-`calibrationStats` / `effectiveThresholds` / `autoPerformance` exactly; it emits a
-per-tenant `MET | NOT_MET | INSUFFICIENT_DATA` verdict. Run it after a few weeks of
-calibrated traffic. (Local maintainer tooling — see `TODOS.md` for the invocation.)
+### Axes
 
-> **Note on AR-7.** The original AR-7 (`add-local-semantic-l2`) is **closed — superseded**.
-> The L2 semantic stack was built on user direction 2026-07-21/22 as the four-change Epic
-> L2 and released in v0.8.0, *without* its evidence gate ever being evaluated. The
-> constitution amendment that gate demanded did happen first and explicitly
-> (`add-semantic-embedder` amended `CLAUDE.md` + `openspec/project.md`, reclassifying L2
-> from cloud-tier-only to a flag-gated optional module). What remains open is only the
-> narrower successor question in the table above.
+| Axis | The question | Why it carries weight here |
+|---|---|---|
+| **Reach** | How many self-hosters does this unblock — and is it a hard block or a convenience? | Self-hosting is the product. A hard block for a few beats a nicety for many. |
+| **Cost** | Rough size, XS → XL. | — |
+| **Confidence** | Is the design known, or is there a load-bearing unknown? | An unknown is answered by a spike, not by a proposal. |
+| **Invariant pressure** | Does this require loosening one of the 12 invariants? | The invariants are the quality bar. Loosening one costs disproportionate review and leaves lasting risk, so it is priced separately from effort. |
 
-**Also deferred, not gated** (`TODOS.md` → Deferred): `add-org-workspaces` (multi-seat
-Organization/Workspace), and the two genuine cloud-tier graduations — `split-data-plane`
-and `add-events-store`.
+### Rules
+
+1. **Invariant pressure is a veto, not a weight.** Anything that needs an invariant relaxed
+   gets that decision made *on its own merits, first* — never as a side effect of shipping
+   a feature that happens to need it.
+2. **Low confidence caps the band at Speculative**, however high the reach. The remedy is
+   a cheap experiment that converts the unknown, not a more detailed plan.
+3. **Reach breaks ties.** Between two Candidates of similar cost, the one that unblocks a
+   hard stop wins over the one that removes friction.
+4. **Cheap and reversible beats correct and total.** A slice that ships behind a flag and
+   can be withdrawn outranks a complete design that cannot.
+5. **Nothing enters Now without a written proposal and spec deltas.**
+
+### Promotion
+
+```
+  Speculative ──spike answers the unknown──▶ Candidate
+   Candidate ──demand signal + open decisions settled──▶ Next
+        Next ──named condition met──▶ Now ──proposal ▸ implement ▸ archive──▶ CHANGELOG
+```
+
+A **demand signal** is a real one: an issue, a user report, or a deployment that is
+actually blocked. Anticipated demand is not a signal — that is what the parking lot is
+for.
+
+---
+
+## Next — committed, blocked on evidence
+
+The build plan is otherwise complete; the release history in
+[`CHANGELOG.md`](./CHANGELOG.md) is current through v0.10.0.
+
+Two committed items remain open. Both are **evidence-gated**: the evidence can only come
+from real traffic on a deployed instance, so neither is scheduled, and building either one
+early would be guessing.
+
+| Item | Build only when this is observed | Cost · Confidence · Invariant pressure |
+|---|---|---|
+| **Auto-routing band ladder** — generalize the `high` / `low` / `ambiguous` split into a configured N-band ladder | The calibrated 3-band scheme **saturates**: ambiguous share stays **> 50%** in the Auto-performance view *after* calibration converges (history shows moves, then goes quiet), **AND** edge-zone rates are bimodal — both edges keep qualifying against opposite bounds | M · high · none |
+| **Does structure have anything left to give?** — the successor question to the ladder | The ladder's condition, **plus** a negative result: calibration converged and band mix stable, yet quality-escalation in the ambiguous **middle** — not the edges — stays high | — · low · none |
+
+**Gate status, last evaluated 2026-07-20: `UNASSESSABLE` pre-deployment.** Both need weeks
+of real traffic under threshold calibration. The gates are evaluated by a read-only query
+against a deployed instance's Postgres, with thresholds mirroring the shipped
+`calibrationStats` / `effectiveThresholds` / `autoPerformance` definitions exactly, emitting
+a per-tenant `MET | NOT_MET | INSUFFICIENT_DATA` verdict.
+
+> **On the Layer-2 semantic classifier.** An earlier gated item proposed a local embedding
+> classifier between the structural and cascade layers. It is **closed — superseded**: the
+> L2 semantic stack was built and released in **v0.8.0** as a four-change epic (embedder →
+> routing → learning → dashboard). Its evidence gate was never evaluated; the build was
+> directed rather than triggered. The constitution amendment that gate required *did*
+> happen first and explicitly — [`CLAUDE.md`](./CLAUDE.md) was amended to reclassify the L2
+> stack from cloud-tier-only to a **flag-gated optional module** (the baseline image stays
+> ONNX-runtime- and model-free; it activates only via `SEMANTIC_MODEL_PATH` +
+> `ROUTING_AUTO_LAYERS`). What remains open is only the narrower successor question above.
+
+**Also deferred, not gated:** multi-seat organizations/workspaces, and the two genuine
+cloud-tier graduations — splitting the data plane into its own service, and moving request
+analytics to a time-series store. All three are forward-compatible stubs in the schema
+today; none is scheduled.
 
 ---
 
 ## Potential — parking lot
 
-Explored, written down so the reasoning isn't lost, **not** committed. Each entry is
-written to be picked up cold: what we verified, what's still unknown, what decisions
-are outstanding, and the shape it would take if pursued.
+Explored and written down so the reasoning isn't lost. **Not committed**, no proposal.
+Each entry is written to be picked up cold: what was verified, what is still unknown, what
+decisions are outstanding, and the shape it would take if pursued.
 
-Vendor facts recorded here carry the date they were verified — cloud provider APIs move,
-and a stale fact is worse than no fact. Re-verify before proposing.
+Vendor facts carry the date they were verified — cloud APIs move, and a stale fact is
+worse than no fact. **Re-verify before proposing.**
 
 ---
 
 ### Enterprise providers — Azure OpenAI, Google Vertex AI, Amazon Bedrock
 
-*Explored 2026-07-31. No proposal. No commitment.*
+*Explored 2026-07-31.*
+
+| Slice | Band | Reach | Cost | Confidence | Invariant pressure |
+|---|---|---|---|---|---|
+| **1 · Azure + Bedrock via their OpenAI-compatible endpoints** | **Candidate** | High — unblocks the two most-asked enterprise backends | XS/S | High — nothing unverified | **Low**, but non-zero: pricing host-matching (see decisions) |
+| **2 · Credential minting** (Vertex service-account JWT; Bedrock short-term keys) | Speculative | Medium — Vertex is unusable without it | M | Medium | **Veto-class** if ambient cloud credentials are in scope — see invariant 6 below |
+| **3 · Native partner models** (Claude on Vertex / Bedrock) | Speculative | Medium | M/L | Low — gated on experiment 2 | Low |
+| **4 · Bedrock streaming** (binary `eventstream` framing) | Speculative | Low | M | Low — may evaporate entirely | Low |
 
 **The short version:** this is very likely **not** three new provider adapters. All three
-now ship an OpenAI-compatible front door that `openai_compatible` already speaks, so the
-first useful slice needs **zero data-plane code**. The real work is credential lifecycle,
-pricing host-matching, and onboarding UX — plus a genuine long tail for partner models
-(Claude on Vertex/Bedrock).
+now ship an OpenAI-compatible front door that polyrouter's existing `openai_compatible`
+protocol already speaks, so the first useful slice needs **zero data-plane code**. The real
+work is credential lifecycle, pricing host-matching, and onboarding UX — plus a genuine
+long tail for partner models.
 
 #### What was verified (2026-07-31)
 
@@ -127,8 +183,8 @@ the left three columns runs on today's code **unmodified**.
 
 1. **Credential lifecycle.** Vertex access tokens live ~1h; Bedrock *short-term* keys ~12h.
    Azure keys and Bedrock *long-term* keys never expire (paste-once — effectively free).
-   Refresh rails already exist from `add-subscription-oauth`: `credentialExpiresAt`,
-   `credentialError`, the `oauth_bearer` auth scheme.
+   Refresh rails already exist from the subscription-OAuth work: `credentialExpiresAt`,
+   `credentialError`, and the `oauth_bearer` auth scheme.
 2. **Pricing / host matching.** `PROVIDER_FAMILY_HOSTS`
    (`packages/shared/src/server/pricing/resolve.ts:64`) is an **exact-host** map by design.
    Enterprise hosts are per-tenant/per-region wildcards. Without a fix, every enterprise
@@ -145,9 +201,9 @@ the left three columns runs on today's code **unmodified**.
 
 - **Pricing host patterns vs. cost-correctness.** `resolve.ts:149` documents the exact-host
   map as a deliberate guard: *"an unknown/reseller host NEVER inherits a well-known
-  provider's price."* Enterprise hosts force pattern matching — a real loosening of an
-  invariant-4-adjacent guard. Doable conservatively (anchored suffix allowlist,
-  `unknown` still the default), but it deserves its own scrutiny.
+  provider's price."* Enterprise hosts force pattern matching — a real loosening of a
+  guard adjacent to the cost-immutability invariant. Doable conservatively (anchored
+  suffix allowlist, `unknown` still the default), but it deserves its own scrutiny.
 - **Azure deployment names are arbitrary.** A deployment called `prod-chat` derives
   `azure:prod-chat` → catalog miss → cost unknown, permanently. Correct pricing needs the
   deployment→model mapping read off the models listing. This is the one part of the
@@ -158,27 +214,27 @@ the left three columns runs on today's code **unmodified**.
   and GCP metadata live at `169.254.169.254` — the link-local range invariant 6 blocks.
   Reading: the invariant governs *user-supplied* URLs, and IMDS is a fixed constant like
   the OAuth token endpoints already are, so this is an implementation gate rather than an
-  invariant violation. But it needs a deliberate, narrow carve-out on the
-  **credential-minting client only** — never on the provider transport — as its own
-  reviewed decision, not a side effect of a Vertex task.
+  invariant violation. But per prioritization rule 1 it needs a deliberate, narrow
+  carve-out on the **credential-minting client only** — never on the provider transport —
+  decided on its own merits, not as a side effect of a Vertex task.
 - **Where structured credentials live.** A GCP service-account JSON or an AWS key pair
   isn't a string. The OAuth envelope already carries structured credentials, so extending
   it with machine grant types (e.g. `gcp_service_account`) reuses refresh, expiry display,
-  and `reauthorize_required`. It's a conceptual stretch — no user consent, no `state`, no
-  authorize URL — but the alternative is a parallel credential-provider abstraction.
-  Current lean: reuse the existing rails.
+  and the reauthorize-required state. It's a conceptual stretch — no user consent, no
+  `state`, no authorize URL — but the alternative is a parallel credential-provider
+  abstraction. Current lean: reuse the existing rails.
 - **Kind taxonomy.** `kind ∈ {api_key, subscription, custom, local}` drives both the SSRF
-  `GuardContext` and the "model-own price honored only for `custom`/`local`" rule. Adding
+  guard context and the "model-own price honored only for `custom`/`local`" rule. Adding
   an `enterprise` kind ripples through both; `api_key` plus a separate vendor/preset field
   is probably cleaner.
 
 #### Shape if pursued
 
 ```
-Phase 1  Azure + Bedrock, OpenAI-compat         presets + pricing hosts.  0 data-plane LOC
-Phase 2  Credential minting                     Vertex SA-JWT, Bedrock short-term keys
-Phase 3  Native partner models                  per-request URL + body shaping
-Phase 4  Bedrock streaming                      eventstream frame decoder
+Slice 1  Azure + Bedrock, OpenAI-compat        presets + pricing hosts.  0 data-plane LOC
+Slice 2  Credential minting                    Vertex SA-JWT, Bedrock short-term keys
+Slice 3  Native partner models                 per-request URL + body shaping
+Slice 4  Bedrock streaming                     eventstream frame decoder
 ```
 
 Dependency-ordered, each independently shippable. Note this **inverts the intuitive
@@ -188,16 +244,19 @@ IAM tokens only.
 
 #### Two experiments to run before writing any proposal
 
+Both are cheap, and each one converts a Speculative slice into a scoped one — the
+prioritization rule 2 remedy.
+
 1. **Add Azure today through the existing custom-provider form** —
    `base_url = https://{res}.openai.azure.com/openai/v1`, kind `custom`, protocol
    `openai_compatible`, paste the key. The path was traced (DTO → `joinUrl` →
    `Authorization: Bearer` → `/models` → SSRF-public) and nothing appears to block it.
-   If it works, Phase 1 for Azure is documentation plus a pricing-host entry.
+   If it works, slice 1 for Azure is documentation plus a pricing-host entry.
 2. **Does Bedrock's `/openai/v1/chat/completions` accept a non-`openai.*` model id?**
    AWS documents it under "OpenAI models" with only `openai.gpt-oss-*` in every example,
    but the Mantle-engine references suggest it may be broader. If Claude works through
-   that path, **Phases 3 and 4 collapse entirely for Bedrock** — no per-request URLs, no
+   that path, **slices 3 and 4 collapse entirely for Bedrock** — no per-request URLs, no
    binary framing. Highest-leverage single test on the board.
 
-Both fit the pattern already used for OAuth presets: ship `enabled: false`, verify live,
-then flip.
+Both fit the pattern already used for the OAuth presets: ship disabled, verify live, then
+flip the enablement gate.

@@ -1,5 +1,15 @@
 /** Vitest setup: minimal headless (happy-dom) shims so the uPlot `<Chart>` wrapper
  * smoke-mounts without swallowing real constructor errors in production. */
+import { beforeEach } from 'vitest';
+
+// The URL is real store input now (add-dashboard-hash-routing): the router reads
+// the fragment on mount to select the initial page. Tests share one global
+// `location`, so a page fragment written by one test would otherwise decide the
+// starting page of the next. Reset to a clean root before each test — the
+// equivalent of a fresh browser visit, which is what every test assumes.
+beforeEach(() => {
+  globalThis.history.replaceState(null, '', '/');
+});
 
 // happy-dom has no canvas 2D context; uPlot only needs one that doesn't throw for
 // a smoke mount. A Proxy returns a no-op for any method and swallows property

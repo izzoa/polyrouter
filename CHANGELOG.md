@@ -17,6 +17,14 @@ heading is started.
 
 ### Added
 
+- **Dashboard pages are addressable by URL.** Every page now has a `#/<page>`
+  fragment: pages are bookmarkable, Back/Forward move along the page axis, and an
+  external link can open a specific page. Unrecognized fragments fall back to the
+  default page. The admin-only Users area cannot be reached by URL as a non-admin —
+  the requested page is held until the session resolves, then admitted only if
+  permitted — and the accept-invite token fragment is never parsed as a page or
+  written to history.
+
 - **Per-agent L1 signal quality on the Auto-performance card.** A stable agent whose
   structural score collapses to a near-constant (one two-decimal score bucket covering
   ≥ 50% of its ambiguous requests, over a ≥ 50-request evidence floor) is now named on

@@ -6,6 +6,7 @@ import {
   type StreamHealth,
 } from '../data/eventStream';
 import { createStore, produce, type SetStoreFunction } from 'solid-js/store';
+import { DEFAULT_PAGE, hashForPage, pageFromHash } from './route';
 import { filterToRequestParams } from '../data/analytics';
 import {
   EVENT_TYPES,
@@ -753,6 +754,17 @@ export interface AppStore {
   setState: SetStoreFunction<AppState>;
   // navigation & chrome
   go: (page: Page) => void;
+  /** Start URL routing (add-dashboard-hash-routing): captures the requested
+   * page from the fragment and subscribes the browser-navigation listeners.
+   * Owned by `App`'s lifecycle, NOT the store constructor — production has one
+   * store while the test suites build many, so a constructor-attached global
+   * listener would leak handlers across tests. Returns its unsubscribe.
+   * Inert on the public `accept-invite` route (that fragment holds a secret). */
+  startRouting: () => () => void;
+  /** Browser-originated transition: back/forward, a manually edited URL, or
+   * admitting a held page. NEVER pushes; replaces ONLY to canonicalize an
+   * unrecognized or unauthorized location. Idempotent. */
+  applyLocation: () => void;
   toggleTheme: () => void;
   dismissSetupGuide: () => void;
   setRange: (range: Range) => void;
@@ -1868,6 +1880,125 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     }
   };
 
+  // --- URL routing (add-dashboard-hash-routing) ---
+
+  /** Pages gated on a predicate over the CURRENT state. A URL must not reach a
+   * surface the chrome hides: the Users area is admin-only
+   * (`user-administration`), enforced today only by the sidebar omitting its
+   * nav entry — which a fragment walks straight around. Generic by design, so
+   * a future gated page inherits the rule by adding one entry. */
+  const PAGE_ALLOWED: Partial<Record<Page, () => boolean>> = {
+    users: () => state.session?.role === 'admin',
+  };
+  const pageAllowed = (page: Page): boolean => PAGE_ALLOWED[page]?.() ?? true;
+
+  /** The page requested by URL but not yet adjudicated. Held (not rendered)
+   * until the authorization probe resolves, so a gated surface never mounts on
+   * a guess. Retained across the login gate — authenticating re-runs
+   * `bootstrap`, which adjudicates again — and cleared once decided. */
+  let heldPage: Page | null = null;
+  /** False on the public accept-invite route: the router never runs there, so
+   * it can neither parse the token fragment as a page nor write over it. */
+  let routingActive = false;
+
+  /** Write the canonical fragment for `page` IN PLACE, and only when it differs.
+   * `replaceState` edits the current entry, so it never disturbs the forward
+   * stack — which is why browser-originated transitions may use it. */
+  const canonicalize = (page: Page): void => {
+    if (!routingActive) return;
+    const want = hashForPage(page);
+    if (globalThis.location.hash !== want) {
+      globalThis.history.replaceState(null, '', want);
+    }
+  };
+
+  /** Set the page and clear the page-local selection. Both directions share
+   * this, so a record inspector opened on one page is never left open over
+   * another however the change arrived. */
+  const setPage = (page: Page): void => {
+    if (state.page !== page || state.selId !== null) setState({ page, selId: null });
+  };
+
+  /** APP-originated transition (nav click, onboarding reset). May write
+   * history: pushes on a real change, replaces when already on that page so
+   * repeat clicks accumulate nothing. */
+  const navigate = (page: Page): void => {
+    const target = pageAllowed(page) ? page : DEFAULT_PAGE;
+    if (routingActive) {
+      const want = hashForPage(target);
+      if (target === state.page) globalThis.history.replaceState(null, '', want);
+      else globalThis.history.pushState(null, '', want);
+    }
+    setPage(target);
+  };
+
+  /** BROWSER-originated transition. Never pushes. Writes nothing when the
+   * location is recognized AND admitted; replaces only to canonicalize an
+   * unrecognized or unauthorized one. Idempotent, so `hashchange` and
+   * `popstate` both firing for one traversal is harmless. */
+  function applyLocation(): void {
+    if (!routingActive) return;
+    const want = pageFromHash(globalThis.location.hash);
+    if (want === null) {
+      setPage(DEFAULT_PAGE);
+      canonicalize(DEFAULT_PAGE);
+      return;
+    }
+    // Unresolved authorization: hold rather than decide. `bootstrap` will
+    // adjudicate once a session (or its absence) is known.
+    if (state.authView !== 'ready') {
+      heldPage = want;
+      return;
+    }
+    if (!pageAllowed(want)) {
+      setPage(DEFAULT_PAGE);
+      canonicalize(DEFAULT_PAGE);
+      return;
+    }
+    setPage(want); // recognized + admitted → no history write at all
+  }
+
+  /** Adjudicate a held (or currently-rendered) page against the resolved
+   * session, just before the shell renders. Three states, not two:
+   * unresolved/unauthenticated retains (handled by not calling this), admitted
+   * lands with no history write, denied is replaced with the default. Also
+   * re-runs on every identity change, so an admin's Users page is not left
+   * rendered after re-authenticating as a non-admin. */
+  const adjudicateRoute = (): void => {
+    const target = heldPage ?? state.page;
+    heldPage = null;
+    if (!routingActive) {
+      // No URL to reconcile (accept-invite): still enforce the predicate.
+      if (!pageAllowed(target)) setPage(DEFAULT_PAGE);
+      return;
+    }
+    if (pageAllowed(target)) {
+      setPage(target);
+      canonicalize(target); // no-op when the fragment already matches
+    } else {
+      setPage(DEFAULT_PAGE);
+      canonicalize(DEFAULT_PAGE);
+    }
+  };
+
+  function startRouting(): () => void {
+    // The accept-invite fragment carries a SECRET that `bootstrap` scrubs. The
+    // router does not start here at all: it never parses that fragment as a
+    // page and never writes over it.
+    if (globalThis.location.pathname === '/accept-invite') return () => undefined;
+    routingActive = true;
+    heldPage = pageFromHash(globalThis.location.hash);
+    const onNav = (): void => applyLocation();
+    globalThis.addEventListener('hashchange', onNav);
+    globalThis.addEventListener('popstate', onNav);
+    return () => {
+      globalThis.removeEventListener('hashchange', onNav);
+      globalThis.removeEventListener('popstate', onNav);
+      routingActive = false;
+      heldPage = null;
+    };
+  }
+
   // --- auth bootstrap / gate ---
 
   const bootstrap = async (): Promise<void> => {
@@ -1912,6 +2043,11 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     }
     setState('session', session);
     await Promise.all([loadAgents(), loadProviders()]);
+    // Adjudicate the requested/current page BEFORE the shell renders: `App`
+    // gates `Shell` on `authView === 'ready'`, so deciding first means a gated
+    // surface never mounts, not even for a frame. Re-runs on every successful
+    // probe, which is also every identity change.
+    adjudicateRoute();
     setState({ authView: 'ready', authError: null });
   };
 
@@ -1998,7 +2134,9 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     state,
     setState,
 
-    go: (page) => setState({ page, selId: null }),
+    go: (page) => navigate(page),
+    startRouting,
+    applyLocation,
     toggleTheme: () => {
       const theme: Theme = state.theme === 'light' ? 'dark' : 'light';
       document.documentElement.dataset['theme'] = theme;
@@ -3178,7 +3316,9 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           s.ob.provInput = null;
         }),
       );
-      setState('page', 'overview');
+      // Through the seam, not a direct setState — otherwise state and URL
+      // desynchronize on this non-navigation transition.
+      navigate('overview');
       say('You’re live — point your agent at /v1');
     },
   };

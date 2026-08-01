@@ -133,6 +133,12 @@ export function App(props: AppProps) {
       document.documentElement.dataset['theme'] = stored;
       app.setState('theme', stored);
     }
+    // Routing starts BEFORE the probe so the requested page is captured and
+    // held while authorization resolves (add-dashboard-hash-routing). The
+    // listener lives on App's lifecycle, not the store constructor: production
+    // has one store while the test suites build many, and a constructor-owned
+    // global listener would leak handlers across them.
+    onCleanup(app.startRouting());
     // Authorization probe before anything else renders the shell.
     void app.bootstrap();
   });

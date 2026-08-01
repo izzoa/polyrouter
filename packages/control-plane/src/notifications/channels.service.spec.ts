@@ -34,6 +34,7 @@ function makeSvc(rtOver?: Partial<NotifyRuntime>) {
     appriseApiUrl: undefined,
     allowedEndpoints: [],
     appriseEgressConfirmed: false,
+    appOrigin: null,
     ...rtOver,
   };
   // A fake Redis whose eval always reports "1st hit" → the test-send rate check

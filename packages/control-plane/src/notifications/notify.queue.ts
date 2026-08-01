@@ -18,6 +18,17 @@ import {
   type NotificationEvent,
 } from './notification.types';
 import { parseStoredConfig, type AppriseConfig, type SmtpConfig } from './channel-config';
+import {
+  defaultRenderContext,
+  renderNotificationChat,
+  renderNotificationEmail,
+} from './render';
+
+/** Sanitized code for a render fault — never the message (it could carry a
+ * field value), only the constructor name. */
+function codeOf(err: unknown): string {
+  return err instanceof Error ? err.constructor.name : 'unknown';
+}
 import { deliverSmtp } from './delivery/smtp.adapter';
 import { deliverApprise } from './delivery/apprise.adapter';
 
@@ -167,10 +178,30 @@ export class NotifyQueue implements OnApplicationShutdown {
       ch.kind,
       decryptSecret(ch.encryptedConfig, this.rt.notifySecret),
     );
-    const rendered = renderEvent(data.event);
-    if (ch.kind === 'smtp')
-      await deliverSmtp(config as SmtpConfig, rendered, this.rt, SEND_TIMEOUT_MS);
-    else await deliverApprise(config as AppriseConfig, rendered, this.rt, SEND_TIMEOUT_MS);
+    // Presentation runs on the DELIVERY path, where a throw is retried and can
+    // end as a failed delivery. Branding must never convert a working
+    // notification into a lost one (invariant 11), so every render is guarded
+    // and degrades to the pre-change plain-text form.
+    const ctx = defaultRenderContext(this.rt.appOrigin);
+    const legacy = renderEvent(data.event);
+    if (ch.kind === 'smtp') {
+      let mail: { title: string; body: string; html?: string } = legacy;
+      try {
+        const r = renderNotificationEmail(data.event, ctx);
+        mail = { title: r.subject, body: r.text, html: r.html };
+      } catch (err) {
+        this.logger.warn(`branded email render failed; sending plain text: ${codeOf(err)}`);
+      }
+      await deliverSmtp(config as SmtpConfig, mail, this.rt, SEND_TIMEOUT_MS);
+    } else {
+      let chat: { title: string; body: string; type?: string; format?: string } = legacy;
+      try {
+        chat = renderNotificationChat(data.event, ctx);
+      } catch (err) {
+        this.logger.warn(`chat render failed; sending plain text: ${codeOf(err)}`);
+      }
+      await deliverApprise(config as AppriseConfig, chat, this.rt, SEND_TIMEOUT_MS);
+    }
     // A throw → BullMQ retries; final failure is logged in the 'failed' handler.
   }
 

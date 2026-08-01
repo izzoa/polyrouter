@@ -230,6 +230,57 @@ describe('notification channels — delivery core (#15a)', () => {
     expect(await lastTestStatusOf(smtp.id)).toBe('success');
   });
 
+  /** add-branded-notifications §3.3: the WIRE format, end to end. The unit
+   * specs cover the renderers exhaustively; this proves what actually reaches
+   * an inbox — multipart, escaped, text-part-unchanged — and that the shipped
+   * loopback default emits NO link (a `127.0.0.1` URL in a real inbox is worse
+   * than none, and loopback is what `BETTER_AUTH_URL` defaults to). */
+  it('delivers branded multipart with an escaped HTML part, no external resource, and no loopback link', async () => {
+    const principal = await newUser('branded');
+    // A hostile channel name: inert in text, an injection vector in HTML.
+    const hostile = `Ops <script>alert("x")</script>&'`;
+    const ch = await svc.create(principal, {
+      name: hostile,
+      kind: 'smtp',
+      eventsSubscribed: ['test'],
+      config: smtpConfig(smtpAccept.port),
+    });
+    const before = smtpAccept.messages.length;
+    expect((await svc.testSend(principal, ch.id)).ok).toBe(true);
+    expect(smtpAccept.messages.length).toBe(before + 1);
+    const raw = smtpAccept.messages[smtpAccept.messages.length - 1]!.data;
+
+    // Multipart with both parts present.
+    expect(raw).toMatch(/Content-Type:\s*multipart\/alternative/i);
+    expect(raw).toMatch(/Content-Type:\s*text\/plain/i);
+    expect(raw).toMatch(/Content-Type:\s*text\/html/i);
+
+    // Un-fold quoted-printable, then isolate EACH part: the text part carries
+    // the hostile name RAW (correct — inert there, and byte-identical to what
+    // shipped before), while only the HTML part must be escaped. Asserting
+    // over the whole message would conflate the two.
+    const decoded = raw.replace(/=\r?\n/g, '').replace(/=3D/g, '=');
+    const htmlPart = decoded.slice(decoded.search(/Content-Type:\s*text\/html/i));
+    const textPart = decoded.slice(
+      decoded.search(/Content-Type:\s*text\/plain/i),
+      decoded.search(/Content-Type:\s*text\/html/i),
+    );
+
+    // Text part: raw, exactly as a text-only recipient saw before this change.
+    expect(textPart).toContain('<script>');
+
+    // HTML part: escaped — no live markup reaches a client.
+    expect(htmlPart).toContain('&lt;script&gt;');
+    expect(htmlPart).not.toMatch(/<script>alert/i);
+
+    // Asset-free: no fetchable resource reference of any kind.
+    expect(htmlPart).not.toMatch(/\ssrc\s*=|\ssrcset\s*=|<link\b|url\s*\(|cid:|<img\b|<iframe\b/i);
+
+    // Loopback default ⇒ no anchor anywhere, in either part.
+    expect(decoded).not.toMatch(/<a\s|href=/i);
+    expect(decoded).not.toContain('127.0.0.1');
+  });
+
   it('rate-limits the test-send route per user — 429 past the threshold (E14.2)', async () => {
     const principal = await newUser('ratelimit'); // fresh user → fresh per-user window
     const ch = await svc.create(principal, {

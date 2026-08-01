@@ -199,7 +199,11 @@ describe('notification producers — real infra (#15b)', () => {
     );
     expect(mailer.configured).toBe(true);
     const before = smtp.messages.length;
-    await mailer.send('user@x.z', 'Reset your polyrouter password', 'Reset link: https://x/z');
+    await mailer.send({
+      to: 'user@x.z',
+      subject: 'Reset your polyrouter password',
+      text: 'Reset link: https://x/z',
+    });
     expect(await waitFor(() => smtp.messages.length === before + 1)).toBe(true);
   });
 

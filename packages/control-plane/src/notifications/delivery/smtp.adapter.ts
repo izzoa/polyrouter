@@ -10,7 +10,11 @@ import type { SmtpConfig } from '../channel-config';
  */
 export async function deliverSmtp(
   config: SmtpConfig,
-  rendered: { title: string; body: string },
+  /** `html` is OPTIONAL (add-branded-notifications): supplying it makes
+   * nodemailer emit `multipart/alternative`, so an HTML client sees the
+   * branded layout while a text client sees `body` unchanged. Omitting it
+   * leaves the message byte-identical to before this change. */
+  rendered: { title: string; body: string; html?: string },
   rt: Pick<NotifyRuntime, 'mode' | 'allowedEndpoints'>,
   timeoutMs: number,
 ): Promise<void> {
@@ -44,6 +48,7 @@ export async function deliverSmtp(
       to: [...config.to],
       subject: rendered.title,
       text: rendered.body,
+      ...(rendered.html !== undefined ? { html: rendered.html } : {}),
     });
   } catch {
     throw new Error('smtp_send_failed');

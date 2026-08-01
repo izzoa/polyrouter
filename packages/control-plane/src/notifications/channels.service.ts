@@ -30,6 +30,11 @@ import {
 } from './channel-config';
 import { NOTIFY_RUNTIME, type NotifyRuntime } from './notify.config';
 import { renderEvent } from './notification.types';
+import {
+  defaultRenderContext,
+  renderNotificationChat,
+  renderNotificationEmail,
+} from './render';
 import { deliverApprise } from './delivery/apprise.adapter';
 import { deliverSmtp } from './delivery/smtp.adapter';
 import type { CreateChannelDto, UpdateChannelDto } from './channels.dto';
@@ -170,17 +175,37 @@ export class ChannelsService {
       row.kind,
       decryptSecret(row.encryptedConfig, this.rt.notifySecret),
     );
-    const rendered = renderEvent({
-      type: 'test',
+    const event = {
+      type: 'test' as const,
       scope: { ownerUserId: ownerOf(principal) },
       fields: { channelName: row.name },
-    });
+    };
+    // Same guard as the queue path: a test send must report the CHANNEL's
+    // health, so a presentation fault degrades to plain text rather than
+    // reporting a false channel failure.
+    const ctx = defaultRenderContext(this.rt.appOrigin);
+    const rendered = renderEvent(event);
     let ok = true;
     let error: string | undefined;
     try {
-      if (row.kind === 'smtp')
-        await deliverSmtp(config as SmtpConfig, rendered, this.rt, TEST_SEND_TIMEOUT_MS);
-      else await deliverApprise(config as AppriseConfig, rendered, this.rt, TEST_SEND_TIMEOUT_MS);
+      if (row.kind === 'smtp') {
+        let mail: { title: string; body: string; html?: string } = rendered;
+        try {
+          const r = renderNotificationEmail(event, ctx);
+          mail = { title: r.subject, body: r.text, html: r.html };
+        } catch {
+          /* plain-text fallback */
+        }
+        await deliverSmtp(config as SmtpConfig, mail, this.rt, TEST_SEND_TIMEOUT_MS);
+      } else {
+        let chat: { title: string; body: string; type?: string; format?: string } = rendered;
+        try {
+          chat = renderNotificationChat(event, ctx);
+        } catch {
+          /* plain-text fallback */
+        }
+        await deliverApprise(config as AppriseConfig, chat, this.rt, TEST_SEND_TIMEOUT_MS);
+      }
     } catch (e) {
       ok = false;
       error = (e as Error).message; // already a sanitized code

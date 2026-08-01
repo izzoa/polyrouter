@@ -44,11 +44,17 @@ export class InvitesService {
     let emailSent = false;
     if (this.mailer.configured) {
       try {
-        await this.mailer.send(
-          invite.email,
-          'You have been invited to polyrouter',
-          `You've been invited to a polyrouter instance.\n\nAccept the invite and set your password here (link expires in 72 hours):\n${link}\n\nIf you weren't expecting this, ignore this email.`,
-        );
+        await this.mailer.send({
+          to: invite.email,
+          subject: 'You have been invited to polyrouter',
+          // Verbatim — the link stays inline so a text-only recipient sees
+          // exactly today's mail; `action` only drives the HTML anchor.
+          text: `You've been invited to a polyrouter instance.\n\nAccept the invite and set your password here (link expires in 72 hours):\n${link}\n\nIf you weren't expecting this, ignore this email.`,
+          action: link,
+          actionLabel: 'Accept invite',
+          footerNote:
+            'Sent by polyrouter because an administrator invited you to this instance.',
+        });
         emailSent = true;
       } catch {
         // Sanitized: never the link/token. The admin still gets the copyable link.

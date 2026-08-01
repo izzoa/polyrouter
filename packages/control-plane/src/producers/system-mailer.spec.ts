@@ -38,16 +38,16 @@ describe('SystemMailer', () => {
       }),
     );
     expect(mailer.configured).toBe(true);
-    await mailer.send('to@x.z', 'Subj', 'Body');
+    await mailer.send({ to: 'to@x.z', subject: 'Subj', text: 'Body' });
     expect(deliverSmtpMock).toHaveBeenCalledTimes(1);
     const [config, rendered, rt] = deliverSmtpMock.mock.calls[0]!;
     expect(config).toMatchObject({ host: 'mail.example.com', from: 'a@b.c', to: ['to@x.z'] });
-    expect(rendered).toEqual({ title: 'Subj', body: 'Body' });
+    expect(rendered).toMatchObject({ title: 'Subj', body: 'Body' });
     expect(rt).toEqual({ mode: 'selfhosted', allowedEndpoints: [] });
   });
 
   it('throws a sanitized code when unconfigured (never reaches SMTP)', async () => {
-    await expect(new SystemMailer(cfg(undefined)).send('to@x.z', 's', 'b')).rejects.toThrow(
+    await expect(new SystemMailer(cfg(undefined)).send({ to: 'to@x.z', subject: 's', text: 'b' })).rejects.toThrow(
       'smtp_not_configured',
     );
     expect(deliverSmtpMock).not.toHaveBeenCalled();

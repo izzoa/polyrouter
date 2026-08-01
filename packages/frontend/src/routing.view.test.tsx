@@ -199,6 +199,26 @@ describe('dashboard hash routing', () => {
     expect(globalThis.location.hash).toBe('#/overview');
   });
 
+  /**
+   * add-branded-notifications §4.1, browser half. A recipient clicks a
+   * `provider_down` email link while signed out, then authenticates as an
+   * ORDINARY (non-admin) user and must land on Providers — this exercises the
+   * held-route retention across the gate, which is how a real recipient
+   * actually arrives. The backend half (that the email carries exactly
+   * `<origin>/#/providers`) is asserted in the control-plane render specs;
+   * the two compose because both pin the same literal fragment.
+   */
+  it('an emailed link followed while signed out lands on the page after login (non-admin)', async () => {
+    const fake = new FakeApiClient({ session: null });
+    h = await mountAt('/#/providers', fake); // the exact fragment the email emits
+    expect(h.store.state.authView).toBe('gate');
+    fake.session = { ...DEFAULT_SESSION, role: null }; // an ordinary recipient
+    await h.store.bootstrap();
+    await flush();
+    expect(h.store.state.page).toBe('providers');
+    expect(globalThis.location.hash).toBe('#/providers');
+  });
+
   // ---- listener lifecycle ----
 
   it('unsubscribes on unmount, so remounting leaves no duplicate listener', async () => {

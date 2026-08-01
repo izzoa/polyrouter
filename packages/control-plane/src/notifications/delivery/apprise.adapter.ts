@@ -15,7 +15,11 @@ import type { AppriseConfig } from '../channel-config';
  */
 export async function deliverApprise(
   config: AppriseConfig,
-  rendered: { title: string; body: string },
+  /** The RENDERED chat value (add-branded-notifications). The adapter resolves
+   * nothing — no event type reaches it, and no severity map lives here — so
+   * exactly one mapping exists, in the renderer. `type`/`format` are optional
+   * so a caller that supplies neither behaves exactly as before. */
+  rendered: { title: string; body: string; type?: string; format?: string },
   rt: NotifyRuntime,
   timeoutMs: number,
 ): Promise<void> {
@@ -35,6 +39,10 @@ export async function deliverApprise(
           urls: config.urls.join(','),
           title: rendered.title,
           body: rendered.body,
+          // Presentation only — neither field names a host, so no new egress
+          // target is introduced (the SSRF contract is unchanged).
+          ...(rendered.type !== undefined ? { type: rendered.type } : {}),
+          ...(rendered.format !== undefined ? { format: rendered.format } : {}),
         }),
         signal: AbortSignal.timeout(timeoutMs),
       },

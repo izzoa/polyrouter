@@ -66,3 +66,30 @@ describe('deliverSmtp — connect-time SSRF refusal (E14.1)', () => {
     expect(opts.tls.servername).toBe('mail.internal.test'); // cert checked against the real host
   });
 });
+
+/** add-branded-notifications: the OPTIONAL `html` part. deliverSmtp's job here
+ * is passthrough — that `{text, html}` becomes `multipart/alternative` is
+ * nodemailer's, pinned separately in `smtp.multipart.spec.ts` against a real
+ * transport (this file mocks nodemailer, so it cannot see a raw message). */
+describe('deliverSmtp — optional html passthrough', () => {
+  it('forwards html when supplied, alongside the unchanged text', async () => {
+    const sendMail = jest.fn().mockResolvedValue(undefined);
+    mockCreate.mockReturnValue({ sendMail, close: jest.fn() });
+    await deliverSmtp(cfg('93.184.216.34'), { ...rendered, html: '<p>hi</p>' }, rt('selfhosted'), 1_000);
+    expect(sendMail).toHaveBeenCalledTimes(1);
+    expect(sendMail.mock.calls[0]![0]).toMatchObject({
+      subject: 'test',
+      text: 'body',
+      html: '<p>hi</p>',
+    });
+  });
+
+  it('omits the html KEY ENTIRELY when not supplied (byte-identical to before)', async () => {
+    const sendMail = jest.fn().mockResolvedValue(undefined);
+    mockCreate.mockReturnValue({ sendMail, close: jest.fn() });
+    await deliverSmtp(cfg('93.184.216.34'), rendered, rt('selfhosted'), 1_000);
+    const payload = sendMail.mock.calls[0]![0] as Record<string, unknown>;
+    expect('html' in payload).toBe(false); // not `html: undefined` — absent
+    expect(payload).toMatchObject({ subject: 'test', text: 'body' });
+  });
+});

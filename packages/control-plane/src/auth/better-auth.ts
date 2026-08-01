@@ -67,7 +67,16 @@ export function buildResetPasswordSender(
       return;
     }
     void mailer
-      .send(data.user.email, 'Reset your polyrouter password', `Reset your password: ${data.url}`)
+      .send({
+        to: data.user.email,
+        subject: 'Reset your polyrouter password',
+        // Verbatim — the URL stays inline in the sentence exactly as before.
+        text: `Reset your password: ${data.url}`,
+        action: data.url,
+        actionLabel: 'Reset password',
+        footerNote:
+          'Sent by polyrouter because a password reset was requested for this account. If that was not you, you can ignore this email.',
+      })
       .catch(() => logger.warn('password-reset email failed to send'));
   };
 }

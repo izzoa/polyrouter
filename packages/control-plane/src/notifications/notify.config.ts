@@ -1,7 +1,8 @@
 import { loadConfig, registerConfig, z } from '@polyrouter/shared';
 import type { BaseConfig } from '@polyrouter/shared';
 import { assertNetworkHostSafe, SsrfError, type AllowedEndpoint } from '@polyrouter/shared/server';
-import { isLoopbackAddress } from '../auth/auth.config';
+import { isLoopbackAddress, loadAuthConfig } from '../auth/auth.config';
+import { normalizeOrigin } from './render';
 
 /** Notification config (#15a, spec §10.1/§12). `NOTIFY_CREDENTIALS_SECRET`
  * encrypts channel config at rest (gated like `PROVIDER_CREDENTIAL_KEY`);
@@ -45,6 +46,9 @@ export interface NotifyRuntime {
   readonly appriseApiUrl: string | undefined;
   readonly allowedEndpoints: AllowedEndpoint[];
   readonly appriseEgressConfirmed: boolean;
+  /** Normalized instance origin for message deep links, or null when there is
+   * no usable one (add-branded-notifications). */
+  readonly appOrigin: string | null;
 }
 
 /** Fixed dev fallback ONLY on a loopback-bound, non-production self-host; never
@@ -113,5 +117,11 @@ export async function resolveNotifyRuntime(): Promise<NotifyRuntime> {
     appriseApiUrl: all.APPRISE_API_URL,
     allowedEndpoints,
     appriseEgressConfirmed: all.NOTIFY_APPRISE_EGRESS_CONFIRMED,
+    // The instance's own origin for message deep links
+    // (add-branded-notifications). Normalized HERE, once, at boot: null when
+    // unset, non-HTTP, credential-bearing, or loopback — the shipped default
+    // is `http://127.0.0.1:3001`, and a localhost link in someone's inbox is
+    // worse than no link. Renderers never read config themselves.
+    appOrigin: normalizeOrigin(loadAuthConfig().auth.BETTER_AUTH_URL),
   };
 }

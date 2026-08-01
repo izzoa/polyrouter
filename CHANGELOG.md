@@ -17,6 +17,20 @@ heading is started.
 
 ### Added
 
+- **Branded HTML notification emails with links back into the dashboard.** Every
+  notification now ships as `multipart/alternative` — a text-only client sees exactly
+  the previous wording, an HTML client sees a laid-out message with a link to the
+  relevant page (provider alerts open Providers, budget alerts open Limits, spend
+  summaries open Costs). Invite and password-reset emails share the layout. The design
+  is deliberately asset-free — a text wordmark, no images, web fonts, or externally
+  hosted anything — so it renders on an instance that isn't publicly reachable and
+  triggers no remote fetches. **Links appear only when the instance has a routable
+  address:** if `BETTER_AUTH_URL` is still the loopback default they are omitted rather
+  than sending a useless `127.0.0.1` link, so set it to your real address to enable
+  them. Chat channels (Apprise) additionally carry a per-event severity, so a
+  provider-down or budget-block notification is visually distinct from an
+  informational summary.
+
 - **Dashboard pages are addressable by URL.** Every page now has a `#/<page>`
   fragment: pages are bookmarkable, Back/Forward move along the page axis, and an
   external link can open a specific page. Unrecognized fragments fall back to the

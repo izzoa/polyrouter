@@ -30,6 +30,7 @@ import {
   subscriptionMicrosSum,
   unknownMicrosSum,
 } from './cost-sql';
+import { computeSignalQuality } from './signal-quality';
 
 function intCount(filter?: SQL): SQL<number> {
   return filter
@@ -571,6 +572,40 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
         };
       }
 
+      // Per-agent signal quality (add-auto-signal-honesty): two grouped scans
+      // over the SAME all-epoch banded population (half-open range — never
+      // BETWEEN), judgments in the pure module. The bucket cardinality is
+      // bounded (≤ 101 two-decimal buckets per agent), so the merge is tiny.
+      const ambiguousOnly = sql`${requestLogs.structuralBand} = 'ambiguous'`;
+      const sqPerAgent = await db
+        .select({
+          agentId: requestLogs.agentId,
+          bandedRows: intCount(),
+          ambiguousRows: intCount(ambiguousOnly),
+          distinctScores: sql<number>`cast(count(distinct ${requestLogs.structuralScore}) filter (where ${ambiguousOnly}) as int)`,
+        })
+        .from(requestLogs)
+        .where(banded)
+        .groupBy(requestLogs.agentId);
+      // The operator-facing 2-decimal bucket (numeric rounding DEFINES the
+      // bucket; ::float8 so node-pg hands back a number, not a string).
+      const sqBucket = sql<number>`(round((${requestLogs.structuralScore})::numeric, 2))::float8`;
+      const sqPerBucket = await db
+        .select({ agentId: requestLogs.agentId, bucket: sqBucket, rows: intCount() })
+        .from(requestLogs)
+        .where(and(banded, ambiguousOnly, sql`${requestLogs.structuralScore} is not null`))
+        .groupBy(requestLogs.agentId, sqBucket);
+      // Owner-scoped labels via the SAME resolver the breakdown uses: a
+      // denormalized foreign agent_id simply misses (null label) — another
+      // tenant's name can never appear here.
+      const sqLabels = await resolveLabels(
+        db,
+        principal,
+        'agent',
+        sqPerAgent.map((r) => r.agentId).filter((v): v is string => v !== null),
+      );
+      const signalQuality = computeSignalQuality(sqPerAgent, sqPerBucket, sqLabels);
+
       const iso = (v: Date | string | null | undefined): string | null =>
         v == null ? null : v instanceof Date ? v.toISOString() : new Date(v).toISOString();
       return {
@@ -611,6 +646,7 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
         })),
         telemetrySince: iso(since?.min),
         savings,
+        signalQuality,
       };
     },
 

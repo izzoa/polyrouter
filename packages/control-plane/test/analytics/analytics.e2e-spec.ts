@@ -888,6 +888,126 @@ describe('analytics API (#17)', () => {
     expect(s.source).toEqual({ bundled: 4, learned: 3 });
   });
 
+  it('auto: per-agent signal quality — binned modal, tri-state verdicts, label-safe foreign id, half-open boundary (add-auto-signal-honesty)', async () => {
+    // FRESH range: nothing else in this suite seeds July, so counts are exact.
+    const R6 = { from: '2025-07-01T00:00:00.000Z', to: '2025-08-01T00:00:00.000Z' };
+    const AT6 = '2025-07-10T10:00:00.000Z';
+    const sqAgent = await mkAgent(A, 'SigAgent');
+    const diverse = await mkAgent(A, 'DiverseAgent');
+    const sparse = await mkAgent(A, 'SparseAgent');
+    const zeroAmb = await mkAgent(A, 'ZeroAmbAgent');
+    const amb = (agentId: string, structuralScore: number, at = AT6) =>
+      seedLog(A, {
+        agentId,
+        cost: null,
+        at,
+        layer: 'cascade',
+        structuralBand: 'ambiguous',
+        structuralScore,
+        structuralBandSource: 'threshold',
+      });
+    // SigAgent: 52 ambiguous — an EWMA-drift family (0.45/0.4501/0.45405, all
+    // binning to 0.45: 40 rows) + 12 spread; 2 high-band rows for context.
+    for (let i = 0; i < 20; i++) await amb(sqAgent, 0.45);
+    for (let i = 0; i < 10; i++) await amb(sqAgent, 0.4501);
+    for (let i = 0; i < 10; i++) await amb(sqAgent, 0.45405);
+    for (let i = 0; i < 6; i++) await amb(sqAgent, 0.31);
+    for (let i = 0; i < 6; i++) await amb(sqAgent, 0.52);
+    for (let i = 0; i < 2; i++) {
+      await seedLog(A, {
+        agentId: sqAgent,
+        cost: null,
+        at: AT6,
+        layer: 'structural',
+        structuralBand: 'high',
+        structuralScore: 0.7,
+        structuralBandSource: 'threshold',
+      });
+    }
+    // Boundary row at EXACTLY `to` — must be excluded (half-open range).
+    await amb(sqAgent, 0.45, R6.to);
+    // DiverseAgent: 50 ambiguous over 20 buckets (max share 3/50) — assessed false.
+    for (let b = 0; b < 20; b++) {
+      const n = b < 10 ? 3 : 2;
+      for (let i = 0; i < n; i++) await amb(diverse, 0.3 + b * 0.01);
+    }
+    // SparseAgent: 20 one-bucket rows — below the floor, verdict null.
+    for (let i = 0; i < 20; i++) await amb(sparse, 0.44);
+    // ZeroAmbAgent: banded but zero ambiguous — defined null shape.
+    for (let i = 0; i < 3; i++) {
+      await seedLog(A, {
+        agentId: zeroAmb,
+        cost: null,
+        at: AT6,
+        layer: 'structural',
+        structuralBand: 'low',
+        structuralScore: 0.1,
+        structuralBandSource: 'threshold',
+      });
+    }
+    // Adversarial: an A-OWNED row carrying B's denormalized agent_id (no FK
+    // stops this). The owner-scoped resolver must leave it label-null.
+    for (let i = 0; i < 3; i++) await amb(bAgent as never as string, 0.4).catch(() => undefined);
+    await seedLog(A, {
+      agentId: bAgent,
+      cost: null,
+      at: AT6,
+      layer: 'cascade',
+      structuralBand: 'ambiguous',
+      structuralScore: 0.4,
+      structuralBandSource: 'threshold',
+    });
+
+    const res = await q('auto', A, { ...R6 });
+    expect(res.status).toBe(200);
+    const list = res.body.signalQuality as {
+      agentId: string | null;
+      label: string | null;
+      bandedRows: number;
+      ambiguousRows: number;
+      distinctScores: number;
+      modalScore: number | null;
+      modalShare: number | null;
+      collapsed: boolean | null;
+    }[];
+    const by = (id: string) => list.find((r) => r.agentId === id)!;
+
+    // The drift family binned into ONE bucket → collapse detected.
+    expect(by(sqAgent)).toMatchObject({
+      label: 'SigAgent',
+      bandedRows: 54,
+      ambiguousRows: 52, // the boundary row at `to` is NOT counted
+      distinctScores: 5,
+      modalScore: 0.45,
+      collapsed: true,
+    });
+    expect(by(sqAgent).modalShare).toBeCloseTo(40 / 52, 9);
+    // Diverse: assessed, not collapsed.
+    expect(by(diverse)).toMatchObject({ ambiguousRows: 50, collapsed: false });
+    expect(by(diverse).modalShare!).toBeLessThan(0.5);
+    // Sparse: stats present, verdict withheld.
+    expect(by(sparse)).toMatchObject({
+      ambiguousRows: 20,
+      modalScore: 0.44,
+      collapsed: null,
+    });
+    // Zero-ambiguous: defined null shape, never NaN.
+    expect(by(zeroAmb)).toMatchObject({
+      ambiguousRows: 0,
+      distinctScores: 0,
+      modalScore: null,
+      modalShare: null,
+      collapsed: null,
+    });
+    // The foreign denormalized id appears (A owns those rows) but label-null —
+    // and B's agent NAME appears nowhere in A's whole response.
+    expect(by(bAgent)).toMatchObject({ label: null });
+    expect(JSON.stringify(res.body)).not.toContain('AgentB');
+    // B's own July view holds nothing — none of A's seeding leaked.
+    const resB = await q('auto', B, { ...R6 });
+    expect(resB.body.signalQuality).toEqual([]);
+  }, 30_000);
+
   it('the (owner, created_at) index the queries rely on exists', async () => {
     const idx = await pool.query(
       `SELECT 1 FROM pg_indexes WHERE indexname = 'request_log_owner_created_idx'`,

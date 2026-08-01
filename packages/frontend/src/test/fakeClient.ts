@@ -300,6 +300,7 @@ export const DEFAULT_AUTO_PERF: AutoPerformance = {
     uncostedRows: 1,
     basis: { kind: 'tier', label: 'premium', model: 'gpt-x' },
   },
+  signalQuality: [],
 };
 
 export interface FakeOptions {

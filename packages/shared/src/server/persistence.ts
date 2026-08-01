@@ -380,6 +380,29 @@ export interface AutoSavingsTotals {
   grossMicros: number | null;
   excessMicros: number | null;
 }
+/** Per-agent L1 signal quality (add-auto-signal-honesty): modal 2-decimal
+ * score-bucket concentration over the agent's AMBIGUOUS rows in range (all
+ * epochs — threshold moves change bands, not scores). `collapsed` is a
+ * tri-state verdict: true (>= SIGNAL_QUALITY_MIN_ROWS ambiguous rows AND
+ * modal share >= SIGNAL_QUALITY_COLLAPSE_SHARE), false (assessed, below the
+ * share), null (insufficient evidence — never an accusation). Modal fields
+ * are null at zero ambiguous rows (defined shape, never NaN). `label` is
+ * owner-scoped; keyless/deleted/foreign ids resolve to null. */
+export interface AgentSignalQuality {
+  agentId: string | null;
+  label: string | null;
+  bandedRows: number;
+  ambiguousRows: number;
+  distinctScores: number;
+  modalScore: number | null;
+  modalShare: number | null;
+  collapsed: boolean | null;
+}
+/** v1 DISPLAY heuristics (add-auto-signal-honesty) — conservative product
+ * choices, NOT statistical bounds (codex r1-Low-7). Centralized so a future
+ * tuning change edits one place. */
+export const SIGNAL_QUALITY_MIN_ROWS = 50;
+export const SIGNAL_QUALITY_COLLAPSE_SHARE = 0.5;
 export interface AutoPerformanceData {
   evaluated: number;
   bands: {
@@ -411,6 +434,9 @@ export interface AutoPerformanceData {
   telemetrySince: string | null;
   /** Present only when counterfactual rates were supplied. */
   savings: AutoSavingsTotals | null;
+  /** Per-agent signal quality over the SAME range-bounded banded population
+   * (add-auto-signal-honesty) — one entry per agent with a banded row. */
+  signalQuality: AgentSignalQuality[];
 }
 
 export interface AnalyticsAccessor {

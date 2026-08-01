@@ -638,6 +638,19 @@ export interface AutoPerformance {
     uncostedRows: number;
     basis: { kind: 'tier' | 'model'; label: string; model: string };
   } | null;
+  /** Per-agent L1 signal quality (add-auto-signal-honesty): modal 2-decimal
+   * score-bucket share over the agent's AMBIGUOUS rows; `collapsed` is a
+   * tri-state verdict (null = below the evidence floor — no verdict). */
+  signalQuality: {
+    agentId: string | null;
+    label: string | null;
+    bandedRows: number;
+    ambiguousRows: number;
+    distinctScores: number;
+    modalScore: number | null;
+    modalShare: number | null;
+    collapsed: boolean | null;
+  }[];
 }
 
 export interface RequestsPage {

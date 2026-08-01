@@ -4,7 +4,7 @@ import { ModelPicker } from '../components/ModelPicker';
 import { RangeSelector } from '../components/RangeSelector';
 import { Toggle } from '../components/Toggle';
 import type { AutoLayers, TierEntryDto } from '../data/api';
-import { autoSeriesToChart, toAutoPerfVm } from '../data/autoPerf';
+import { autoSeriesToChart, signalQualityGuidance, toAutoPerfVm } from '../data/autoPerf';
 import { bandVms, type BandVm } from '../data/bandTargets';
 import { toCalibrationVm, toHistoryRows } from '../data/calibration';
 import { toLearningHistoryRows, toLearningVm } from '../data/semanticLearning';
@@ -705,6 +705,36 @@ function AutoPerformance() {
                   ? 's’'
                   : '’s'}{' '}
                 missing-or-unusable target in Band targets above.
+              </div>
+            </Show>
+            <Show when={v.signalQuality.show}>
+              <div data-testid="signal-quality" style="margin-bottom:10px">
+                <Show when={v.signalQuality.flagged.length > 0}>
+                  <div style="font:500 11px 'Geist',sans-serif;color:var(--text2);margin-bottom:4px">
+                    Signal quality
+                  </div>
+                  <For each={v.signalQuality.flagged}>
+                    {(f) => (
+                      <div style="font:400 11px 'Geist',sans-serif;color:var(--amber);line-height:1.5">
+                        <span style="font-weight:500">{f.label}</span> — {f.detail}{' '}
+                        <span class="mono" style="font:400 10.5px 'Geist Mono',monospace;color:var(--text3)">
+                          ({f.distinctScores} distinct score{f.distinctScores === 1 ? '' : 's'})
+                        </span>
+                        <div style="color:var(--text3);font-size:10.5px">
+                          {signalQualityGuidance(state.autoLayers)}
+                        </div>
+                      </div>
+                    )}
+                  </For>
+                </Show>
+                <Show when={v.signalQuality.coverage}>
+                  <div
+                    data-testid="signal-quality-coverage"
+                    style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);line-height:1.5"
+                  >
+                    {v.signalQuality.coverage}
+                  </div>
+                </Show>
               </div>
             </Show>
             <Show when={v.savings} keyed>

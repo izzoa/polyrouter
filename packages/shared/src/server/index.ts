@@ -6,7 +6,13 @@
 export * from './db/schema';
 export { assertUserPrincipal, ownershipPredicate, userPrincipal } from './tenancy';
 export type { OwnedTableColumns, Principal } from './tenancy';
-export { PERSISTENCE_FACILITIES, PERSISTENCE_PORT, REDIS_CLIENT } from './persistence';
+export {
+  PERSISTENCE_FACILITIES,
+  PERSISTENCE_PORT,
+  REDIS_CLIENT,
+  SIGNAL_QUALITY_COLLAPSE_SHARE,
+  SIGNAL_QUALITY_MIN_ROWS,
+} from './persistence';
 export type {
   AgentInsertInput,
   AgentPatch,
@@ -15,6 +21,7 @@ export type {
   AutoCounterfactualRates,
   AutoPerformanceData,
   AutoSavingsTotals,
+  AgentSignalQuality,
   AnalyticsBucket,
   AnalyticsDimension,
   AnalyticsRange,

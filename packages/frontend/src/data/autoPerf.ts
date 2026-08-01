@@ -1,4 +1,4 @@
-import type { AutoPerformance } from './api';
+import type { AutoLayers, AutoPerformance } from './api';
 import { fmtMicros } from './api';
 
 /** View-model for the Routing page's AUTO PERFORMANCE section
@@ -53,6 +53,22 @@ export interface AutoPerfVm {
   /** Which zero state to render when evaluated === 0. */
   zeroState: 'none' | 'preCapture' | 'empty';
   telemetrySince: string | null;
+  /** Signal quality (add-auto-signal-honesty). Two INDEPENDENT parts — a
+   * flagged list and a coverage disclosure — so a flag never hides that
+   * other agents are unassessed; `show` is false only when BOTH are empty
+   * (all assessed healthy → no section, no empty scaffolding). */
+  signalQuality: {
+    show: boolean;
+    flagged: {
+      label: string;
+      /** "score 0.45 · 85% of 272 ambiguous requests" */
+      detail: string;
+      distinctScores: number;
+    }[];
+    /** "3 of 5 agents have enough evaluated traffic to assess", or null
+     * when every agent met the floor. */
+    coverage: string | null;
+  };
 }
 
 const pct = (part: number, whole: number): string =>
@@ -108,7 +124,49 @@ export function toAutoPerfVm(data: AutoPerformance | null): AutoPerfVm | null {
           },
     zeroState: data.evaluated > 0 ? 'none' : data.telemetrySince !== null ? 'preCapture' : 'empty',
     telemetrySince: data.telemetrySince,
+    signalQuality: toSignalQualityVm(data.signalQuality ?? []),
   };
+}
+
+/** Pure signal-quality view derivation (add-auto-signal-honesty): flagged
+ * rows + the below-floor coverage line are INDEPENDENT (a flag never hides
+ * unassessed agents); both empty → section hidden. Exported for tests. */
+export function toSignalQualityVm(
+  list: AutoPerformance['signalQuality'],
+): AutoPerfVm['signalQuality'] {
+  const flagged = list
+    .filter((a) => a.collapsed === true)
+    .map((a) => ({
+      label: a.label ?? '(no agent)',
+      detail: `score ${a.modalScore === null ? '—' : a.modalScore.toFixed(2)} · ${
+        a.modalShare === null ? '—' : `${(a.modalShare * 100).toFixed(0)}%`
+      } of ${String(a.ambiguousRows)} ambiguous requests`,
+      distinctScores: a.distinctScores,
+    }));
+  const assessed = list.filter((a) => a.collapsed !== null).length;
+  const coverage =
+    list.length > 0 && assessed < list.length
+      ? `${String(assessed)} of ${String(list.length)} agents have enough evaluated traffic to assess`
+      : null;
+  return { show: flagged.length > 0 || coverage !== null, flagged, coverage };
+}
+
+/** The availability-aware guidance line for a flagged agent
+ * (add-auto-signal-honesty). TRUTHFUL under every state (codex r1-High-3):
+ * with semantic unavailable it names the whole configuration surface —
+ * never asserting WHICH piece is missing (capability = layer token + model
+ * path + a ready classifier); with L2 active it claims evaluation, never
+ * success. A null `layers` (not yet loaded) uses the unavailable variant —
+ * the only one that recommends nothing the instance might lack. */
+export function signalQualityGuidance(layers: AutoLayers | null): string {
+  const pin = 'Pin it to a tier';
+  if (layers === null || !layers.semanticAvailable) {
+    return `L1 sees near-constant structure in this agent's ambiguous traffic. ${pin}, or configure the semantic layer (ROUTING_AUTO_LAYERS + SEMANTIC_MODEL_PATH, and a valid model bundle) to let L2 read content.`;
+  }
+  if (!layers.semantic) {
+    return `L1 sees near-constant structure in this agent's ambiguous traffic. ${pin}, or enable L2 · Semantic — it evaluates exactly this ambiguous slice.`;
+  }
+  return `L1 sees near-constant structure in this agent's ambiguous traffic; L2 · Semantic evaluates it. ${pin} if you'd rather route it explicitly.`;
 }
 
 /** Chart arrays: epoch-second buckets zero-filled at the bucket interval

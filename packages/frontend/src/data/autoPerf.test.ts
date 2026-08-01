@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import type { AutoPerformance } from './api';
-import { autoSeriesToChart, toAutoPerfVm } from './autoPerf';
+import type { AutoLayers, AutoPerformance } from './api';
+import {
+  autoSeriesToChart,
+  signalQualityGuidance,
+  toAutoPerfVm,
+  toSignalQualityVm,
+} from './autoPerf';
 
 /** Baseline fixture mirroring the fakeClient default — mutated per case. */
 function fixture(over: Partial<AutoPerformance> = {}): AutoPerformance {
@@ -35,6 +40,7 @@ function fixture(over: Partial<AutoPerformance> = {}): AutoPerformance {
       uncostedRows: 1,
       basis: { kind: 'tier', label: 'premium', model: 'gpt-x' },
     },
+    signalQuality: [],
     ...over,
   };
 }
@@ -223,6 +229,98 @@ describe('toAutoPerfVm', () => {
       )!;
       expect(vm.zeroState).toBe('empty');
     });
+  });
+});
+
+describe('signal quality (add-auto-signal-honesty)', () => {
+  const entry = (over: Partial<AutoPerformance['signalQuality'][number]> = {}) => ({
+    agentId: 'a1',
+    label: 'markus',
+    bandedRows: 272,
+    ambiguousRows: 272,
+    distinctScores: 24,
+    modalScore: 0.45,
+    modalShare: 0.85,
+    collapsed: true as boolean | null,
+    ...over,
+  });
+
+  it('flagged agent renders label, modal bucket, share, and ambiguous denominator', () => {
+    const vm = toSignalQualityVm([entry()]);
+    expect(vm.show).toBe(true);
+    expect(vm.flagged).toHaveLength(1);
+    expect(vm.flagged[0]!.label).toBe('markus');
+    expect(vm.flagged[0]!.detail).toBe('score 0.45 · 85% of 272 ambiguous requests');
+    expect(vm.coverage).toBeNull();
+  });
+
+  it('MIXED state: a flag never hides the coverage disclosure (codex r2 item-6)', () => {
+    const vm = toSignalQualityVm([
+      entry(),
+      entry({ agentId: 'a2', label: 'small', ambiguousRows: 10, collapsed: null }),
+      entry({ agentId: 'a3', label: 'quiet', ambiguousRows: 8, collapsed: null }),
+    ]);
+    expect(vm.flagged).toHaveLength(1);
+    expect(vm.coverage).toBe('1 of 3 agents have enough evaluated traffic to assess');
+    expect(vm.show).toBe(true);
+  });
+
+  it('coverage-only when nothing is flagged but agents sit below the floor', () => {
+    const vm = toSignalQualityVm([
+      entry({ collapsed: false }),
+      entry({ agentId: 'a2', collapsed: null }),
+    ]);
+    expect(vm.flagged).toHaveLength(0);
+    expect(vm.coverage).toBe('1 of 2 agents have enough evaluated traffic to assess');
+    expect(vm.show).toBe(true);
+  });
+
+  it('hidden entirely when every agent is assessed healthy (no empty scaffolding)', () => {
+    const vm = toSignalQualityVm([entry({ collapsed: false }), entry({ agentId: 'a2', collapsed: false })]);
+    expect(vm).toEqual({ show: false, flagged: [], coverage: null });
+    // And with no agents at all:
+    expect(toSignalQualityVm([]).show).toBe(false);
+  });
+
+  it('null label renders the keyless fallback; null modal fields render em-dashes', () => {
+    const vm = toSignalQualityVm([
+      entry({ agentId: null, label: null, modalScore: null, modalShare: null }),
+    ]);
+    expect(vm.flagged[0]!.label).toBe('(no agent)');
+    expect(vm.flagged[0]!.detail).toContain('score —');
+  });
+
+  it('guidance is availability-aware and never claims L2 success', () => {
+    const layers = (over: Partial<AutoLayers>): AutoLayers =>
+      ({
+        structural: true,
+        cascade: true,
+        semantic: false,
+        semanticAvailable: false,
+        semanticLearning: false,
+        semanticLearningAvailable: false,
+        structuralAvailable: true,
+        cascadeAvailable: true,
+        ...over,
+      }) as AutoLayers;
+    // Unavailable → the whole configuration surface, no specific-missing-piece claim.
+    const unavailable = signalQualityGuidance(layers({}));
+    expect(unavailable).toContain('ROUTING_AUTO_LAYERS');
+    expect(unavailable).toContain('SEMANTIC_MODEL_PATH');
+    expect(unavailable).toContain('Pin it to a tier');
+    // Not-yet-loaded state uses the same safe variant.
+    expect(signalQualityGuidance(null)).toBe(unavailable);
+    // Available but off → points at the toggle.
+    const off = signalQualityGuidance(layers({ semanticAvailable: true }));
+    expect(off).toContain('enable L2 · Semantic');
+    expect(off).toContain('evaluates exactly this ambiguous slice');
+    // Active → evaluation claim only; the word "success" never appears.
+    const active = signalQualityGuidance(layers({ semanticAvailable: true, semantic: true }));
+    expect(active).toContain('L2 · Semantic evaluates it');
+    for (const g of [unavailable, off, active]) {
+      expect(g.toLowerCase()).not.toContain('success');
+      expect(g.toLowerCase()).not.toContain('discriminat');
+    }
   });
 });
 

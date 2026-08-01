@@ -15,6 +15,17 @@ heading is started.
 
 ## [Unreleased]
 
+### Added
+
+- **Per-agent L1 signal quality on the Auto-performance card.** A stable agent whose
+  structural score collapses to a near-constant (one two-decimal score bucket covering
+  ≥ 50% of its ambiguous requests, over a ≥ 50-request evidence floor) is now named on
+  the Routing page with its modal score and share, plus guidance that fits the
+  instance: pin the agent to a tier, or enable/configure L2 · Semantic — the layer that
+  evaluates exactly that ambiguous slice. Agents below the evidence floor are disclosed
+  in a neutral coverage line rather than silently looking healthy. The
+  `/api/analytics/auto` response gains a per-agent `signalQuality` block.
+
 ## [0.10.0] — 2026-07-29
 
 [Release](https://github.com/izzoa/polyrouter/releases/tag/v0.10.0) ·

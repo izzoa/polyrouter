@@ -27,9 +27,36 @@
 | `density-narrow` | `.card` `16px 18px` → **`14px 14px`**; gaps unchanged | The only density steps that change below `narrow` |
 | `target-base` | **24px** in BOTH axes | Minimum hit target at **every** width (WCAG 2.5.8 AA) |
 | `target-comfort` | **44px in the block axis**, and 44px in the inline axis for icon-only controls | Below `narrow`, and under `pointer: coarse` at any width |
+| `sheet-strip` | **56px** | Page left visible above a sheet. An absolute strip, not a `vh` fraction, so it reads the same on a 568px phone and an 844px one |
+| `sheet-radius` | **16px**, top corners only | Drawer, modal and confirmation sheets below `narrow` |
+| `sheet-padding` | **20px 18px**, plus the safe area on the bottom | Modal and confirmation sheets (the drawer keeps its own `18px 20px` body) |
+| `toast-narrow` | **12px** each side, full width | Below `narrow`. It has no width of its own, so `left: 50%` had it shrink-wrapping into half the screen |
+| `safe-area` | `calc(<design value> + var(--safe-area-bottom))` | Every bottom-anchored surface |
 | Verification matrix | 320×568 · 390×844 · 768×1024 · 1025×768 · 1440×900, plus a coarse-pointer context above 768px | Where responsive assertions run |
 
 **These are literals in `styles.css`, not custom properties.** `@media (max-width: var(--narrow))` is invalid CSS and fails silently, so the query preludes carry the numbers directly — the lock and the stylesheet must therefore be changed together, never one alone.
+
+**Overlays are not exempt from `narrow`.** Phase 1 excluded them; phase 2 does not. Below the
+threshold the drawer, all six modal kinds and both confirmation dialogs are presented as
+**bottom sheets** — same DOM, restyled, so the dismissal path, focus trap, layer registration
+and accessible name stay the same objects at both widths and cannot drift apart. Above the
+threshold every one of them renders exactly as before, verified against geometry pinned from
+the pre-change tree.
+
+**Safe-area insets are `calc`, not `max`, and require `viewport-fit=cover`.** `calc(design +
+inset)` keeps the design's breathing room on a notched device; `max(design, inset)` would
+absorb the padding into the inset and leave content clearing the home indicator by nothing.
+`env()` is read once into `--safe-area-bottom` and every consumer uses that variable —
+`env()` cannot be overridden from a test, so consuming it directly would leave the
+positive-inset case permanently unverifiable while the zero case passed vacuously. Without
+`viewport-fit=cover` on the viewport meta, `env()` reports 0 on every device.
+
+**A bottom sheet is anchored to `--vv-occluded-bottom`, never to 0.** A `position: fixed`
+element resolves against the *layout* viewport, which does not shrink when the on-screen
+keyboard opens, so a sheet at `bottom: 0` sits behind the keyboard however tall it is. The
+variable is published by `visualViewport.ts` and is 0 whenever nothing is covering the
+screen. It divides the pinch-zoom scale back out — without that, zooming to 2× is
+indistinguishable from a 422px keyboard and the sheet leaps up the screen.
 
 **Table thresholds are per table and were measured, not chosen** — see `measurements.md` in the responsive change. They are container widths, not viewport widths: a table cares about the space it actually gets, which is roughly `viewport − 208px sidebar − gutters`.
 

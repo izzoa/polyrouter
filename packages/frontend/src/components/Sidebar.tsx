@@ -108,6 +108,7 @@ export function Sidebar() {
         {/* eslint-disable-next-line a11y-guard/no-noninteractive-click -- pointer-only backdrop redundancy; Escape and the toggle are the keyboard paths */}
         <div
           class="overlay rs-nav-scrim"
+          // eslint-disable-next-line a11y-guard/no-inline-sheet-geometry -- see above: the in-flow-pane guard reads element.style.position, so this one must stay inline
           style={{ position: 'fixed', 'z-index': String(surface.z().backdrop) }}
           aria-hidden="true"
           onClick={() => app.setNavExpanded(false)}

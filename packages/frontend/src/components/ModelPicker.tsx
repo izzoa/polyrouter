@@ -9,6 +9,7 @@ import {
 } from 'solid-js';
 import { useLayer } from '../a11y';
 import { useAppOptional } from '../state/context';
+import { visibleBounds } from '../visualViewport';
 import type { Model } from '../types';
 
 export interface ModelGroup {
@@ -82,26 +83,52 @@ export function ModelPicker(props: ModelPickerProps) {
   const measure = (): void => {
     if (!inputEl) return;
     const rect = inputEl.getBoundingClientRect();
-    const vh = window.innerHeight;
-    const vw = window.innerWidth;
+    // The VISIBLE region, not the layout viewport. `window.innerHeight` does not shrink
+    // when the on-screen keyboard opens, so measuring against it placed this panel
+    // underneath the keyboard — the panel fits perfectly into space the user cannot see.
+    // Both these bounds and `rect` are in layout coordinates, so they compare directly;
+    // with no keyboard and no zoom they equal the layout viewport and nothing changes.
+    const vis = visibleBounds();
     const MARGIN = 8;
     const GAP = 4;
     const DESIRED = 360; // listbox max (320) + footer + gap
-    const below = vh - rect.bottom - MARGIN;
-    const above = rect.top - MARGIN;
+    const below = vis.bottom - rect.bottom - MARGIN;
+    const above = rect.top - vis.top - MARGIN;
     // Below unless it can't fit the desired height AND above has more room.
     const side = below >= DESIRED || below >= above ? 'below' : 'above';
     const avail = side === 'below' ? below : above;
-    const width = Math.min(Math.max(rect.width, 320), Math.max(160, vw - 2 * MARGIN));
-    const left = Math.min(Math.max(MARGIN, rect.left), Math.max(MARGIN, vw - width - MARGIN));
+    const visWidth = vis.right - vis.left;
+    const width = Math.min(Math.max(rect.width, 320), Math.max(160, visWidth - 2 * MARGIN));
+    const left = Math.min(
+      Math.max(vis.left + MARGIN, rect.left),
+      Math.max(vis.left + MARGIN, vis.right - width - MARGIN),
+    );
     setPos({
       left,
       width,
       top: side === 'below' ? rect.bottom + GAP : null,
-      bottom: side === 'above' ? vh - rect.top + GAP : null,
+      // `bottom` is an inset from the LAYOUT viewport's bottom edge, which is what a fixed
+      // element resolves against — not from the visible region's.
+      bottom: side === 'above' ? document.documentElement.clientHeight - rect.top + GAP : null,
       listMax: Math.max(96, Math.min(320, avail - 40)),
     });
   };
+
+  // Re-measure while OPEN (task 4.8). `openPanel` measures once, so a keyboard raised
+  // after the panel is already up — the ordinary case, since the panel opens on focus and
+  // the keyboard follows — would otherwise leave it stranded behind the keyboard.
+  createEffect(() => {
+    if (!open()) return;
+    const vv = globalThis.visualViewport;
+    if (!vv) return;
+    const onChange = (): void => { measure(); };
+    vv.addEventListener('resize', onChange);
+    vv.addEventListener('scroll', onChange);
+    onCleanup(() => {
+      vv.removeEventListener('resize', onChange);
+      vv.removeEventListener('scroll', onChange);
+    });
+  });
 
   const openPanel = (initial: 'first' | 'last'): void => {
     measure();

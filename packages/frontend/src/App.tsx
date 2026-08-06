@@ -19,6 +19,7 @@ import { Settings } from './pages/Settings';
 import { Setup } from './pages/Setup';
 import { Users } from './pages/Users';
 import { useApp } from './state/context';
+import { installViewportPublisher } from './visualViewport';
 
 export interface AppProps {
   /** Disable the aggregate-page polling interval (tests). */
@@ -44,6 +45,14 @@ function Shell(props: { live: boolean }) {
   // test suites construct many stores and would otherwise accumulate document listeners.
   onMount(() => {
     onCleanup(installLayerArbiter({ layers: () => state.layers }));
+  });
+
+  // Publishes the visual viewport to CSS custom properties, so sheets can be sized and
+  // lifted against what the user can actually see rather than the layout viewport, which
+  // does not shrink when the on-screen keyboard opens. Mounted here for the same reason as
+  // the arbiter: one shell, one set of listeners.
+  onMount(() => {
+    onCleanup(installViewportPublisher().dispose);
   });
 
   // Shell sizing and containment (fix-shell-scroll-containment):

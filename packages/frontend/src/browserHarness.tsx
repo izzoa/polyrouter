@@ -105,6 +105,19 @@ render(
   host,
 );
 
+// Store handle for the overlay suite (phase2-responsive-overlays, task 9.1).
+//
+// Driving every overlay through the UI is not viable for an ENUMERATION: the six modal
+// kinds are reached from six different pages behind buttons whose labels change, and a
+// selector that silently matches nothing yields a test that passes without opening
+// anything — which is exactly how a first pass at this measured only `newAgent` and
+// concluded the modals were fine.
+//
+// Deliberately only on the harness, which the production build excludes
+// (`rollupOptions.input`), so this cannot reach a shipped bundle. Assertions still run
+// against the real rendered surface; this only decides WHICH surface is on screen.
+(globalThis as unknown as { __harnessStore?: unknown }).__harnessStore = store;
+
 // Signals readiness to Playwright. Waits for FONTS, not just a paint: Geist's metrics
 // decide every height and wrap point in this suite, and measuring against the fallback
 // face silently produces different numbers.

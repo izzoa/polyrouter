@@ -219,9 +219,9 @@ export function BodyCaptureCard() {
           return (
           <div class="overlay" style={{ 'z-index': String(surface.z().backdrop) }}>
             <div
-              class="panel card"
+              class="panel card confirm-card"
               {...surface.props}
-              style={{ position: 'fixed', top: '30%', left: '50%', transform: 'translateX(-50%)', 'max-width': '440px', 'z-index': String(surface.z().surface) }}
+              style={{ 'z-index': String(surface.z().surface) }}
             >
               <div class="section-title" style="margin-bottom:8px">
                 Capture prompt &amp; response bodies?
@@ -268,9 +268,9 @@ export function BodyCaptureCard() {
           return (
         <div class="overlay" style={{ 'z-index': String(surface.z().backdrop) }}>
           <div
-            class="panel card"
+            class="panel card confirm-card"
             {...surface.props}
-            style={{ position: 'fixed', top: '30%', left: '50%', transform: 'translateX(-50%)', 'max-width': '440px', 'z-index': String(surface.z().surface) }}
+            style={{ 'z-index': String(surface.z().surface) }}
           >
             <div class="section-title" style="margin-bottom:8px">
               Turn capture off

@@ -6,6 +6,18 @@
 }
 
 :root {
+  /* Safe-area inset, read ONCE (phase2-responsive-overlays, task 3.2a).
+   *
+   * Every consumer uses this variable rather than `env()` directly, because `env()` cannot
+   * be overridden from a test: consuming it inline would leave the positive-inset case
+   * permanently unverifiable, and — worse — a check written against the zero case would
+   * pass for an implementation that ignores insets entirely. Overriding this one property
+   * is what lets the browser suite exercise a notched device.
+   *
+   * Requires `viewport-fit=cover` on the viewport meta; without it `env()` reports 0 on
+   * every device. */
+  --safe-area-bottom: env(safe-area-inset-bottom, 0px);
+
   --accent: #4f5dff;
   --bg: #fafafa;
   --panel: #ffffff;
@@ -483,6 +495,45 @@ select:focus {
   display: grid;
   place-items: center;
 }
+/* The drawer's own header and body (phase2-responsive-overlays, task 2.2).
+ *
+ * Extracted from inline styles for the same reason as `.confirm-card` below: the sheet
+ * presentation restates this padding at narrow width and adds the safe-area inset to the
+ * body's bottom edge, neither of which an inline declaration would allow. */
+.drawer-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border2);
+}
+.drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+/* Confirmation dialog geometry (phase2-responsive-overlays, task 2.1).
+ *
+ * Held here rather than inline, and that is the whole point: these two surfaces shipped
+ * with `position/top/left/transform/max-width` in an inline `style={{…}}`, where they
+ * outrank any class. A narrow-width rule aimed at them would have parsed, matched, and
+ * silently done nothing — the same trap that has caught this project seven times. Only the
+ * derived z-index stays inline, matching `.drawer` and `.modal-backdrop`.
+ *
+ * Declared after `.panel`/`.card` so it wins on source order at equal specificity. */
+.confirm-card {
+  position: fixed;
+  top: 30%;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 440px;
+}
+
 .modal-card {
   width: 480px;
   max-width: 92vw;
@@ -1033,6 +1084,98 @@ select:focus {
      rule only lifts it above the drawer's z-index so the nav stacks correctly. */
   .rs-nav-scrim {
     z-index: 44;
+  }
+
+  /* ── Overlays become sheets (phase2-responsive-overlays) ──────────────────────────
+   *
+   * Same DOM, restyled. Not a second component: one DOM means the dismissal path, the
+   * focus trap, the layer registration and the accessible name are literally the same
+   * objects at both widths, so they cannot drift apart.
+   *
+   * `bottom` is `--vv-occluded-bottom`, not 0. A fixed element resolves against the
+   * LAYOUT viewport, which does not shrink when the on-screen keyboard opens, so a sheet
+   * anchored at 0 sits behind the keyboard however tall it is. The variable is published
+   * by `visualViewport.ts` and is 0 whenever nothing is covering the screen.
+   *
+   * The height cap leaves a strip of page visible above the sheet. An absolute strip
+   * rather than a percentage, so it reads the same on a short phone and a tall one —
+   * a `vh` fraction would leave 68px at 568 tall and 101px at 844. */
+  .drawer,
+  .modal-card,
+  .confirm-card {
+    --sheet-strip: 56px;
+    --sheet-radius: 16px;
+    position: fixed;
+    top: auto;
+    left: 0;
+    right: 0;
+    bottom: var(--vv-occluded-bottom, 0px);
+    width: auto;
+    max-width: none;
+    /* Against the VISIBLE height, so an open keyboard shrinks the sheet instead of
+       pushing its actions out of reach. Falls back to the layout viewport. */
+    max-height: calc(var(--vv-height, 100dvh) - var(--sheet-strip));
+    border-radius: var(--sheet-radius) var(--sheet-radius) 0 0;
+    /* Undoes the centring translate the confirmation cards carry at desktop; a sheet is
+       full-width and needs no horizontal correction. */
+    transform: none;
+    /* 0.18s ease-out, matching `slidein` and `slideinleft` — the Snap seed's established
+       duration. A third value here would be an off-scale one-off for no reason. */
+    animation: sheetin 0.18s ease-out;
+  }
+
+  .drawer {
+    border-left: none;
+    border-top: 1px solid var(--border);
+  }
+
+  /* The drawer's body already scrolls; it only needs the safe-area inset so its last row
+     clears the home indicator. */
+  .drawer-body {
+    padding-bottom: calc(18px + var(--safe-area-bottom));
+  }
+
+  /* Modals and confirmations had NO internal scrolling at all — neither `.modal-card` nor
+     `.panel` declares a max-height or an overflow — which is why three modal kinds put
+     their actions past the bottom of a 320x568 screen with no way to reach them. */
+  .modal-card,
+  .confirm-card {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 20px 18px calc(20px + var(--safe-area-bottom));
+  }
+
+  /* The backdrop stops centring its card, or the sheet would be pinned mid-screen. */
+  .modal-backdrop {
+    place-items: end stretch;
+  }
+
+  /* The expanded nav is bottom-anchored in the same sense — its last entry must clear the
+     home indicator even though it is a full-height panel. */
+  .rs-sidebar.rs-nav-open {
+    padding-bottom: var(--safe-area-bottom);
+  }
+
+  /* The toast has no width of its own, so `left: 50%` left it shrink-wrapping into half
+     the screen — a one-line message became a 160x103 block at 320 wide. */
+  .toast {
+    left: 12px;
+    right: 12px;
+    transform: none;
+    max-width: none;
+    text-align: center;
+    bottom: calc(22px + var(--safe-area-bottom) + var(--vv-occluded-bottom, 0px));
+  }
+}
+
+@keyframes sheetin {
+  from {
+    transform: translateY(12px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
   }
 }
 

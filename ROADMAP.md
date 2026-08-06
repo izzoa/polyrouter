@@ -84,8 +84,8 @@ change would run past anything shipped here (the largest to date is 50 tasks).
 
 | Phase | Scope | Cost · Confidence · Invariant pressure |
 |---|---|---|
-| **1 — pages** (**built**, pending a human read of the result) | Media layer + per-table container queries at measured thresholds; `STYLESEED.md` gained a locked Responsive section and the `/ss-score` gate enforces it; sidebar → **expandable** icon rail; 9 grid templates across 13 page sites; **all four** tables → stacked records; 24px/44px target floors | M · high · none |
-| **2 — overlays** | `.modal-card`, the inspector `.drawer` (still fixed 440px after phase 1 — wider than a 390px screen), and the `ModelPicker` fixed-position panel become sheet-like at narrow width; soft-keyboard and safe-area handling; target floor extended to overlay controls | M · medium · none |
+| **1 — pages** ✅ **shipped** (archived 2026-08-06) | Media layer + per-table container queries at measured thresholds; `STYLESEED.md` gained a locked Responsive section and the `/ss-score` gate enforces it; sidebar → **expandable** icon rail; 9 grid templates across 13 page sites; **all four** tables → stacked records; 24px/44px target floors | M · high · none |
+| **2 — overlays** ✅ **shipped** (archived 2026-08-06) | The inspector drawer (440px on a 390px screen, 120px off-edge at 320px), all six modal kinds and both confirmation dialogs become bottom sheets below 768px, scrolling internally — three modal kinds previously put their actions past a fixed backdrop where no scroll reached them. First handling of the on-screen keyboard (visual-viewport seam, pinch-zoom distinguished from a keyboard) and safe-area insets; toast given a width | M · high · none |
 | **3 — touch reorder** | The tier chain reorders via HTML5 drag-and-drop (`draggable` + `dataTransfer`), which never fires on touch — so chain reordering does not exist on a phone today. Adds a touch transport, or explicit ↑/↓ controls | S · high · none |
 
 **Why this order.** Phase 1 pays the one-time costs the others inherit: where breakpoints
@@ -99,9 +99,18 @@ per-surface Escape predicates with one arbiter, because phase 2 adds overlay sur
 old mechanism cost a hand-written relationship per pair. It also fixed a live accessibility
 defect it uncovered — two body-capture dialogs claiming `aria-modal` with no focus trap — and
 narrowed the `<dialog>` question below: deriving paint order made the drawer's backdrop cover
-the sidebar, so **the expanded nav and an open drawer can no longer be reached together through
-the UI at all.** Mutual exclusion now appears to be what the code wants; phase 2 should still
-decide it deliberately rather than inherit it.
+the sidebar, so the expanded nav and an open drawer can no longer be reached together through
+the UI.
+
+**Phase 2 checked that and found the premise false.** Visually exclusive is not the same as
+exclusive: in *state* the two coexist deliberately, and the archived contract requires it —
+"Dismissing an underlying layer leaves the ones above it alone", with `navRail.test.tsx:218`
+guarding the nav+drawer instance ("the drawer must survive the nav closing"). Making them
+exclusive would therefore be a behaviour change contradicting an archived requirement, not
+the free clarification it looked like, and it buys only the *option* of a native `<dialog>`
+migration. Phase 2 did not need it, so **the question stays open** — now with the evidence
+attached instead of a wrong assumption. Whoever migrates to `<dialog>` must settle it first:
+a `position: fixed` nav can never paint above the top layer.
 
 **What phase 1 actually left phase 2.** More than planned, and in phase 2's favour: a
 Playwright suite with a `FakeApiClient`-backed harness and the locked viewport matrix

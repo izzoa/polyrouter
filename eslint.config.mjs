@@ -97,6 +97,91 @@ export default tseslint.config(
               };
             },
           },
+          // An inline style beats any class on the properties it declares, so a media or
+          // container query aimed at them parses, matches, and silently does nothing. That
+          // trap has caught this project seven times — most recently on the two confirmation
+          // dialogs, whose geometry sat in an object-form `style={{…}}` that an earlier
+          // sweep missed because it only searched the string form.
+          //
+          // Scope covers registered overlay roots AND the sheet-layout descendants: the
+          // drawer's header and body are not registered surfaces, so a rule watching only
+          // roots would miss inline padding returning there.
+          'no-inline-sheet-geometry': {
+            meta: {
+              type: 'problem',
+              schema: [],
+              messages: {
+                inline:
+                  'Inline `{{prop}}` on .{{cls}} — responsive CSS owns this surface’s geometry, and an inline style would silently outrank it. Move it to the class; keep only `z-index` inline.',
+              },
+            },
+            create(context) {
+              // Surfaces whose geometry responsive CSS owns.
+              const GUARDED = new Set([
+                'drawer',
+                'drawer-head',
+                'drawer-body',
+                'modal-card',
+                'modal-backdrop',
+                'confirm-card',
+                'overlay',
+                'toast',
+              ]);
+              // `.mp-panel` is deliberately NOT guarded: the picker computes its position
+              // at runtime against the viewport, so JS owns that geometry, not CSS. The
+              // rule exists to catch inline styles that shadow a stylesheet rule — not to
+              // ban runtime positioning that has nowhere else to live.
+              // Everything that decides where a sheet is and how big. `z-index` is
+              // deliberately absent: it is derived per-render from the layer registry and
+              // has to be inline.
+              const GEOMETRY =
+                /^(position|top|right|bottom|left|inset(-\w+)?|width|height|(max|min)-(width|height)|transform|padding(-\w+)?|margin(-\w+)?|border-radius)$/;
+
+              const classesOf = (opening) => {
+                const attr = opening.attributes.find(
+                  (a) => a.type === 'JSXAttribute' && String(a.name.name) === 'class',
+                );
+                if (!attr?.value) return [];
+                if (attr.value.type === 'Literal') return String(attr.value.value).split(/\s+/);
+                // Template/expression class lists: read the literal chunks, which is where
+                // a guarded class name would appear.
+                const src = context.sourceCode.getText(attr.value);
+                return src.split(/[^\w-]+/);
+              };
+
+              const report = (node, prop, cls) =>
+                context.report({ node, messageId: 'inline', data: { prop, cls } });
+
+              return {
+                JSXOpeningElement(node) {
+                  const cls = classesOf(node).find((c) => GUARDED.has(c));
+                  if (!cls) return;
+                  const style = node.attributes.find(
+                    (a) => a.type === 'JSXAttribute' && String(a.name.name) === 'style',
+                  );
+                  if (!style?.value) return;
+
+                  // String form: style="position:fixed;padding:16px 20px"
+                  if (style.value.type === 'Literal') {
+                    for (const decl of String(style.value.value).split(';')) {
+                      const prop = decl.split(':')[0]?.trim();
+                      if (prop && GEOMETRY.test(prop)) report(style, prop, cls);
+                    }
+                    return;
+                  }
+                  // Object form: style={{ position: 'fixed', 'max-width': '440px' }}
+                  const expr = style.value.expression;
+                  if (expr?.type !== 'ObjectExpression') return;
+                  for (const p of expr.properties) {
+                    if (p.type !== 'Property') continue;
+                    const prop =
+                      p.key.type === 'Literal' ? String(p.key.value) : String(p.key.name ?? '');
+                    if (GEOMETRY.test(prop)) report(p, prop, cls);
+                  }
+                },
+              };
+            },
+          },
           'no-noninteractive-click': {
             meta: {
               type: 'problem',
@@ -193,6 +278,7 @@ export default tseslint.config(
     },
     rules: {
       'a11y-guard/modal-surface-only': 'error',
+      'a11y-guard/no-inline-sheet-geometry': 'error',
       'a11y-guard/no-noninteractive-click': 'error',
       'a11y-guard/label-association': 'error',
     },

@@ -61,7 +61,9 @@ export function Inspector() {
               {...surface.props}
               ref={surface.props['ref'] as (n: HTMLElement) => void}
             >
-              <div style="flex:none;display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border2)">
+              {/* Layout in classes, not inline: the sheet presentation has to restate this
+                  padding at narrow width, and an inline style would outrank the rule. */}
+              <div class="drawer-head">
                 <div>
                   <div
                     class="mono"
@@ -98,7 +100,7 @@ export function Inspector() {
                   </button>
                 </div>
               </div>
-              <div style="flex:1;overflow-y:auto;padding:18px 20px;display:flex;flex-direction:column;gap:18px">
+              <div class="drawer-body">
                 <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
                   <span style="padding:5px 10px;background:var(--chip);border-radius:7px;font:500 11.5px 'Geist',sans-serif;color:var(--text2)">
                     {view().agentLabel}

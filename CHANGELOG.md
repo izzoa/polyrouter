@@ -34,6 +34,17 @@ heading is started.
 
 ### Added
 
+- **The dashboard's overlays work on a phone.** Phase 1 adapted the pages but left the
+  drawers and dialogs, so a request opened a 440px inspector on a 390px screen (120px
+  off-screen at 320px), and the provider form put its Save button 310px past the bottom of a
+  fixed backdrop where no scroll could reach it. Below 768px the inspector, all six modal
+  kinds and both confirmation dialogs are now bottom sheets that scroll internally — the same
+  DOM restyled, so dismissal, focus and layer ordering are unchanged. The on-screen keyboard
+  is handled for the first time (sheets and the model picker measure the visible viewport,
+  and pinch-zoom is not mistaken for a keyboard), safe-area insets keep actions clear of the
+  home indicator, and the toast now spans the screen instead of shrink-wrapping into a
+  160×103px block. Desktop rendering is unchanged, pinned against geometry captured before
+  the work began.
 - **The dashboard works on a phone.** Every page previously rendered a desktop layout at any
   width — the sidebar alone took 53% of a phone screen and the requests table needed ~1020px
   to stay legible. Below 768px the sidebar is now an icon rail that expands into a labelled

@@ -21,7 +21,10 @@ export function Topbar() {
   const { state } = app;
   const streaming = (): boolean => state.streamHealth === 'live';
   return (
-    <div style="flex:none;display:flex;align-items:center;justify-content:space-between;padding:14px 26px;border-bottom:1px solid var(--border);background:var(--bg)">
+    <div
+      class="rs-topbar rs-wrap"
+      style="flex:none;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);background:var(--bg)"
+    >
       <div style="display:flex;align-items:baseline;gap:10px">
         <div style="display:flex;align-items:center;gap:8px">
           <span style="display:flex;color:var(--text3)" aria-hidden="true">

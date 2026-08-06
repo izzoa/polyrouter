@@ -43,8 +43,10 @@ export function Inspector() {
             root: () => drawerEl,
             onClose: () => app.select(null),
             // A modal stacked above owns the keyboard entirely (Escape AND Tab loop);
-            // the drawer resumes when it closes.
-            suspended: () => state.modal !== null,
+            // the drawer resumes when it closes. The narrow-width nav overlay counts for
+            // the same reason: without this, one Escape would close the nav AND the
+            // drawer, because both handlers sit on `document` and neither would know.
+            suspended: () => state.modal !== null || state.navExpanded,
           });
           onCleanup(dispose);
         });
@@ -54,6 +56,7 @@ export function Inspector() {
             <div class="overlay" onClick={() => app.select(null)} />
             <div
               class="drawer"
+              inert={state.navExpanded ? true : undefined}
               id="inspector-drawer"
               role="dialog"
               aria-modal="true"

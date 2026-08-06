@@ -20,9 +20,9 @@ export function Requests() {
   onMount(() => void app.loadRequests(true));
 
   return (
-    <div style="padding:22px 26px;display:flex;flex-direction:column;gap:14px;max-width:1200px">
-      <div style="display:flex;align-items:center;gap:10px">
-        <div style="display:flex;gap:6px">
+    <div class="rs-page" style="display:flex;flex-direction:column;gap:14px;max-width:1200px">
+      <div class="rs-wrap" style="display:flex;align-items:center;gap:10px">
+        <div class="rs-wrap" style="display:flex;gap:6px">
           <For each={FILTERS}>
             {([id, label]) => (
               <button
@@ -66,7 +66,7 @@ export function Requests() {
         )}
       </Show>
 
-      <div class="panel" style="overflow:hidden;border-radius:10px">
+      <div class="panel rs-table-panel rs-table-requests" style="overflow:hidden;border-radius:10px">
         <RequestTableHead />
         <Show
           when={state.requestList.length > 0}

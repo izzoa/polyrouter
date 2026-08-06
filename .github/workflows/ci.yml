@@ -54,6 +54,17 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
+      # Responsive layout is only provable in a real browser — happy-dom performs no
+      # layout, so the vitest suites can assert declarations and nothing more. Without
+      # this step the dashboard-core requirement that "an automated check fails" when a
+      # control ships undersized, or a page overflows, is simply not enforced anywhere.
+      # Chromium only: the assertions are geometry, not engine-specific behaviour.
+      - name: install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+        working-directory: packages/frontend
+      - name: responsive browser suite
+        run: npm run test:browser
+        working-directory: packages/frontend
       - name: install.sh re-run idempotency (E13)
         run: sh test/install-rerun.test.sh
 

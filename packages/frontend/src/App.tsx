@@ -62,7 +62,13 @@ function Shell(props: { live: boolean }) {
       style="display:flex;height:100vh;height:100dvh;overflow:hidden;overflow:clip;background:var(--bg);color:var(--text);font-family:'Geist',sans-serif"
     >
       <Sidebar />
-      <div data-pane="content" style="flex:1;min-width:0;display:flex;flex-direction:column">
+      {/* `inert` while the narrow-width nav overlay is open: `aria-modal` + the focus
+          trap cover keyboard and assistive tech, but pointer input needs this too. */}
+      <div
+        data-pane="content"
+        inert={state.navExpanded ? true : undefined}
+        style="flex:1;min-width:0;display:flex;flex-direction:column"
+      >
         <Topbar />
         {/* `overscroll-behavior-Y`, not the shorthand: the shorthand applies to both axes
             and would suppress the horizontal swipe-back/forward navigation gesture across

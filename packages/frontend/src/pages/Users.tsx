@@ -55,14 +55,14 @@ export function Users() {
   );
 
   return (
-    <div style="padding:22px 26px;display:flex;flex-direction:column;gap:14px;max-width:1200px">
+    <div class="rs-page" style="display:flex;flex-direction:column;gap:14px;max-width:1200px">
       <Show when={state.ua.error}>
         <div role="alert" style="font:400 11.5px 'Geist',sans-serif;color:var(--red)">
           {state.ua.error}
         </div>
       </Show>
 
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start">
+      <div class="rs-grid-2" style="display:grid;gap:12px;align-items:start">
         {/* Registration mode */}
         <div class="panel card">
           <div class="section-title" style="color:var(--text);margin-bottom:6px">
@@ -180,7 +180,7 @@ export function Users() {
 
       {/* Invites */}
       <Show when={state.ua.invites.length > 0}>
-        <div class="panel card" style="padding:0">
+        <div class="panel card rs-table-panel rs-table-users" style="padding:0">
           <div class="section-title" style="color:var(--text);padding:14px 16px 8px">
             Invites
           </div>
@@ -198,14 +198,14 @@ export function Users() {
               <For each={state.ua.invites}>
                 {(i) => (
                   <tr style="border-top:1px solid var(--border2);font:400 12px 'Geist',sans-serif">
-                    <td style="padding:8px 16px;color:var(--text)">{i.email}</td>
-                    <td style="padding:8px 8px;font:400 11px 'Geist Mono',monospace;color:var(--text3)">
+                    <td style="padding:8px 16px;color:var(--text)"><span class="rs-cell-label">Email</span>{i.email}</td>
+                    <td style="padding:8px 8px;font:400 11px 'Geist Mono',monospace;color:var(--text3)"><span class="rs-cell-label">Token</span>
                       {i.tokenPrefix}…
                     </td>
-                    <td style="padding:8px 8px;color:var(--text3)">
+                    <td style="padding:8px 8px;color:var(--text3)"><span class="rs-cell-label">Expires</span>
                       {new Date(i.expiresAt).toLocaleString()}
                     </td>
-                    <td style="padding:8px 8px">
+                    <td style="padding:8px 8px"><span class="rs-cell-label">Status</span>
                       <span
                         style={{
                           font: "500 10.5px 'Geist',sans-serif",
@@ -220,7 +220,7 @@ export function Users() {
                         {inviteStatus(i)}
                       </span>
                     </td>
-                    <td style="padding:8px 16px;text-align:right">
+                    <td style="padding:8px 16px;text-align:right"><span class="rs-cell-label">Actions</span>
                       <Show when={inviteStatus(i) === 'pending'}>
                         <button
                           type="button"
@@ -240,7 +240,7 @@ export function Users() {
       </Show>
 
       {/* Users */}
-      <div class="panel card" style="padding:0">
+      <div class="panel card rs-table-panel rs-table-users" style="padding:0">
         <div class="section-title" style="color:var(--text);padding:14px 16px 8px">
           Users
         </div>
@@ -266,7 +266,7 @@ export function Users() {
               <For each={state.ua.users}>
                 {(u) => (
                   <tr style="border-top:1px solid var(--border2);font:400 12px 'Geist',sans-serif">
-                    <td style="padding:8px 16px">
+                    <td style="padding:8px 16px"><span class="rs-cell-label">User</span>
                       {/* Disabled rows mute via the AA-safe muted token, never
                           opacity (which sinks text below 4.5:1). */}
                       <span
@@ -282,11 +282,11 @@ export function Users() {
                         {u.id === state.session?.userId ? ' (you)' : ''}
                       </span>
                     </td>
-                    <td style="padding:8px 8px">{roleChip(u)}</td>
-                    <td style="padding:8px 8px;color:var(--text3)">
+                    <td style="padding:8px 8px"><span class="rs-cell-label">Role</span>{roleChip(u)}</td>
+                    <td style="padding:8px 8px;color:var(--text3)"><span class="rs-cell-label">Joined</span>
                       {new Date(u.createdAt).toLocaleDateString()}
                     </td>
-                    <td style="padding:8px 8px">
+                    <td style="padding:8px 8px"><span class="rs-cell-label">Status</span>
                       <span
                         style={{
                           font: "500 10.5px 'Geist',sans-serif",
@@ -296,7 +296,7 @@ export function Users() {
                         {u.disabled ? 'disabled' : 'active'}
                       </span>
                     </td>
-                    <td style="padding:8px 16px">
+                    <td style="padding:8px 16px"><span class="rs-cell-label">Actions</span>
                       <div style="display:flex;gap:6px;justify-content:flex-end">
                         <button
                           type="button"

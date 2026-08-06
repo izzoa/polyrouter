@@ -306,7 +306,7 @@ export function Providers() {
   const app = useApp();
   const { state } = app;
   return (
-    <div style="padding:22px 26px;display:flex;flex-direction:column;gap:14px;max-width:1200px">
+    <div class="rs-page" style="display:flex;flex-direction:column;gap:14px;max-width:1200px">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <div style="font:400 12.5px 'Geist',sans-serif;color:var(--text3)">
           Your keys, your accounts — requests go straight from this box to the provider.
@@ -328,7 +328,7 @@ export function Providers() {
           </div>
         }
       >
-        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">
+        <div class="rs-grid-3" style="display:grid;gap:12px">
           <For each={state.providers}>{(p) => <ProviderCard p={p} />}</For>
         </div>
       </Show>

@@ -27,7 +27,7 @@ export function Limits() {
     b.scope === 'agent' ? `Agent · ${agentName(b.agentId)}` : 'Global';
 
   return (
-    <div style="padding:22px 26px;display:flex;flex-direction:column;gap:14px;max-width:1200px">
+    <div class="rs-page" style="display:flex;flex-direction:column;gap:14px;max-width:1200px">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <div style="font:400 12.5px 'Geist',sans-serif;color:var(--text3)">
           Spend counters are atomic across instances — a blocked budget stops requests everywhere at
@@ -52,7 +52,7 @@ export function Limits() {
           </div>
         }
       >
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="rs-grid-2" style="display:grid;gap:12px">
           <For each={state.budgets}>
             {(b) => (
               <div class="panel card" style={{ opacity: b.enabled ? '1' : '0.6' }}>

@@ -29,8 +29,18 @@ export default defineConfig({
       '/v1': backendProxy,
     },
   },
+  build: {
+    // Explicit input so the responsive browser harness never reaches a shipped bundle.
+    // Vite's default is `index.html` alone, which already excludes it — stating it here
+    // makes that a decision rather than a coincidence, since adding `browser-harness.html`
+    // would otherwise silently ship the FakeApiClient into production.
+    rollupOptions: { input: 'index.html' },
+  },
   test: {
     environment: 'happy-dom',
     setupFiles: ['./src/test/setup.ts'],
+    // The Playwright suite lives in `browser/` and uses `@playwright/test`, whose imports
+    // vitest cannot run. Without this, `*.spec.ts` there is collected and fails on import.
+    exclude: ['node_modules/**', 'dist/**', 'browser/**'],
   },
 });

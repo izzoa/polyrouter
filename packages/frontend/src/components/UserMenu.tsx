@@ -1,4 +1,4 @@
-import { createSignal, onCleanup, Show } from 'solid-js';
+import { onCleanup, Show } from 'solid-js';
 import { useApp } from '../state/context';
 
 /** The signed-in identity + account menu (user-administration): always-visible
@@ -8,7 +8,12 @@ import { useApp } from '../state/context';
 export function UserMenu() {
   const app = useApp();
   const { state } = app;
-  const [open, setOpen] = createSignal(false);
+  // Open state lives in the store, not a local signal: the account menu renders INSIDE
+  // the narrow-width nav overlay, and that overlay decides whether to stand down from
+  // Escape by reading this. Layering is a state decision, never a listener-order one
+  // (the contract `dialogKeyboard` states).
+  const open = (): boolean => state.accountMenuOpen;
+  const setOpen = (v: boolean): void => app.setAccountMenuOpen(v);
   let rootEl: HTMLDivElement | undefined;
   let menuEl: HTMLDivElement | undefined;
   let triggerEl: HTMLButtonElement | undefined;
@@ -33,6 +38,11 @@ export function UserMenu() {
   const onDocKeydown = (e: KeyboardEvent): void => {
     if (!open()) return;
     if (e.key === 'Escape') {
+      // Inside the narrow-width nav overlay, that overlay owns dismissal ordering and
+      // closes this menu itself — see the comment on its `onClose`. Handling Escape here
+      // as well would close the menu AND let the nav's handler close the nav, because
+      // this listener runs first and would clear the state the nav arbitrates on.
+      if (state.navExpanded) return;
       close(true); // focus returns to the trigger
       return;
     }

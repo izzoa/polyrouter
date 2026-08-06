@@ -114,6 +114,17 @@ export interface AppState {
   toast: string | null;
   modal: ModalKind | null;
 
+  /** Narrow-width navigation (phase1-responsive-dashboard-layout). Below the locked
+   * `narrow` threshold the sidebar collapses to an icon rail; this is the user-driven
+   * expanded state, which overlays the page content. It is UI state, not layout — the
+   * layout adaptation itself is declarative CSS. */
+  navExpanded: boolean;
+  /** The account menu's open state, lifted out of `UserMenu` so overlay layering can be
+   * decided by STATE rather than by document-listener registration order (the contract
+   * `dialogKeyboard` states). The account menu lives inside the expanded nav, so the nav's
+   * Escape handling must stand down while the menu owns the key. */
+  accountMenuOpen: boolean;
+
   // auth / account (realized)
   authView: AuthView;
   authError: string | null;
@@ -657,6 +668,8 @@ function initialState(): AppState {
     selId: null,
     toast: null,
     modal: null,
+    navExpanded: false,
+    accountMenuOpen: false,
 
     authView: 'loading',
     authError: null,
@@ -767,6 +780,9 @@ export interface AppStore {
   applyLocation: () => void;
   toggleTheme: () => void;
   dismissSetupGuide: () => void;
+  /** Narrow-width nav overlay. Collapsing also closes the account menu inside it. */
+  setNavExpanded: (open: boolean) => void;
+  setAccountMenuOpen: (open: boolean) => void;
   setRange: (range: Range) => void;
   /** Auto-performance section (add-auto-performance-view): Routing-local range. */
   loadAutoPerf: () => Promise<void>;
@@ -1101,6 +1117,10 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
 
   const resetIdentityScoped = (): void => {
     identityGen += 1;
+    // Overlay state is identity-scoped: an expanded narrow-width nav that outlives a
+    // sign-out would greet the next session with a scrim over `inert` content.
+    setState('navExpanded', false);
+    setState('accountMenuOpen', false);
     bumpRouting(); // discard in-flight routing loads captured under the old principal
     // The tier writer's bookkeeping is identity-scoped too: a queued order, a tombstone
     // or a deferred drag snapshot from the previous principal must never be sent or
@@ -2155,6 +2175,14 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       }
       setState('setupDismissed', true);
     },
+    setNavExpanded: (open) => {
+      // Collapsing the nav takes the account menu with it: the menu lives inside the
+      // expanded panel, so leaving it "open" behind a collapsed rail would strand a
+      // dismissible surface with nothing to dismiss it.
+      setState('navExpanded', open);
+      if (!open) setState('accountMenuOpen', false);
+    },
+    setAccountMenuOpen: (open) => setState('accountMenuOpen', open),
     setRange: (range) => setState('range', range),
     loadAutoPerf,
     setAutoPerfRange: (range) => {

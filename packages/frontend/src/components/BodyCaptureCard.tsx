@@ -97,7 +97,7 @@ export function BodyCaptureCard() {
               </For>
             </div>
 
-            <div style="display:grid;grid-template-columns:140px 1fr;gap:8px 16px;font:400 12px 'Geist',sans-serif;color:var(--text2);align-items:center">
+            <div class="rs-grid-label" style="display:grid;gap:8px 16px;font:400 12px 'Geist',sans-serif;color:var(--text2);align-items:center">
               <div style="color:var(--text3)">Retention</div>
               <div style="display:flex;align-items:center;gap:8px">
                 <select
@@ -151,7 +151,7 @@ export function BodyCaptureCard() {
                 <For each={s.agents}>
                   {(a) => (
                     <div style="display:flex;align-items:center;gap:10px;font:400 12px 'Geist',sans-serif;color:var(--text2)">
-                      <span class="mono" style="font-size:11.5px;min-width:120px">
+                      <span class="mono" style="font-size:11.5px;min-width:0">
                         {a.name}
                       </span>
                       <select

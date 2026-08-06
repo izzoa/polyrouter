@@ -12,6 +12,12 @@ coverage/
 *.log
 .DS_Store
 
+# Playwright run artifacts (the responsive browser suite). The specs and config ARE
+# committed; only per-run traces, screenshots and reports are local.
+test-results/
+playwright-report/
+.playwright/
+
 # local env files (never commit secrets)
 .env
 .env.*

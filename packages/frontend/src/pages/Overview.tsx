@@ -65,7 +65,7 @@ export function Overview(props: { live: boolean }) {
     state.recentRequestsError;
 
   return (
-    <div style="padding:22px 26px;display:flex;flex-direction:column;gap:14px;max-width:1200px">
+    <div class="rs-page" style="display:flex;flex-direction:column;gap:14px;max-width:1200px">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <div class="section-title">Overview · {state.range}</div>
         <RangeSelector />
@@ -87,7 +87,7 @@ export function Overview(props: { live: boolean }) {
         )}
       </Show>
 
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
+      <div class="rs-grid-4" style="display:grid;gap:12px">
         <div class="panel card">
           <div class="stat-label">Spend · {state.range}</div>
           <div class="stat-value">${spend().toFixed(2)}</div>
@@ -120,7 +120,7 @@ export function Overview(props: { live: boolean }) {
         </div>
       </div>
 
-      <div style="display:grid;grid-template-columns:1fr 300px;gap:12px">
+      <div class="rs-grid-main-side" style="display:grid;gap:12px">
         <div class="panel card">
           <div class="section-title" style="margin-bottom:12px">
             Requests · {state.range}
@@ -201,7 +201,7 @@ export function Overview(props: { live: boolean }) {
         </Show>
       </div>
 
-      <div class="panel" style="overflow:hidden;border-radius:10px">
+      <div class="panel rs-table-panel rs-table-requests" style="overflow:hidden;border-radius:10px">
         <div style="display:flex;justify-content:space-between;align-items:center;padding:13px 18px;border-bottom:1px solid var(--border2)">
           <div class="section-title">Recent requests</div>
           <button

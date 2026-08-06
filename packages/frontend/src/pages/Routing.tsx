@@ -892,21 +892,21 @@ export function Routing() {
   const headerRules = () => state.rules.filter((r) => r.matchType === 'header');
 
   return (
-    <div style="padding:22px 26px;display:flex;flex-direction:column;gap:14px;max-width:1200px">
+    <div class="rs-page" style="display:flex;flex-direction:column;gap:14px;max-width:1200px">
       <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:16px">
         <div style="font:400 12.5px 'Geist',sans-serif;color:var(--text3)">
           Tier chains route explicit and auto requests; position 0 is the primary, the rest are
           ordered fallbacks (max {String(5)}). Explicit model requests always win.
         </div>
-        <div style="display:flex;align-items:flex-end;gap:6px">
-          <div>
+        <div class="rs-wrap" style="display:flex;align-items:flex-end;gap:6px">
+          <div style="flex:1 1 150px;min-width:0">
             <label class="field-label" for="f-tf-key" style="display:block">
               New tier key
             </label>
             <input
               class="input mono"
               id="f-tf-key"
-              style="font:400 12px 'Geist Mono',monospace;width:150px"
+              style="font:400 12px 'Geist Mono',monospace;max-width:150px;width:100%"
               placeholder="e.g. heavy"
               value={state.tf.key}
               onInput={(e) => app.setState('tf', 'key', e.currentTarget.value)}
@@ -939,7 +939,7 @@ export function Routing() {
         </div>
       </Show>
 
-      <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px;align-items:start">
+      <div class="rs-grid-2-1" style="display:grid;gap:12px;align-items:start">
         <div style="display:flex;flex-direction:column;gap:12px">
           <Show
             when={state.routingTiers.length > 0}
@@ -1062,7 +1062,7 @@ export function Routing() {
                           </span>
                           <span
                             class="mono"
-                            style="font:500 12px 'Geist Mono',monospace;color:var(--text);min-width:150px"
+                            style="font:500 12px 'Geist Mono',monospace;color:var(--text);min-width:0"
                           >
                             {entryLabel(entry)}
                           </span>

@@ -67,7 +67,7 @@ export function Costs(props: { live: boolean }) {
   const unknownSpend = () => state.analyticsSummary?.unknownSpend ?? 0;
 
   return (
-    <div style="padding:22px 26px;display:flex;flex-direction:column;gap:14px;max-width:1200px">
+    <div class="rs-page" style="display:flex;flex-direction:column;gap:14px;max-width:1200px">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <div class="section-title">Costs · {state.range}</div>
         <RangeSelector />
@@ -89,7 +89,7 @@ export function Costs(props: { live: boolean }) {
         )}
       </Show>
 
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+      <div class="rs-grid-3" style="display:grid;gap:12px">
         <div class="panel card">
           <div class="stat-label">Spend · {state.range}</div>
           <div class="stat-value">${spend().toFixed(2)}</div>
@@ -173,7 +173,7 @@ export function Costs(props: { live: boolean }) {
         </div>
       </div>
 
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="rs-grid-2" style="display:grid;gap:12px">
         <BreakdownPanel
           title={`Spend by model · ${state.range}`}
           rows={state.analyticsBreakdown.model}

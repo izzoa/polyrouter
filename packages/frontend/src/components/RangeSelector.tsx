@@ -23,9 +23,9 @@ export function RangeSelector(props: { value?: Range; onChange?: (r: Range) => v
         {(rg) => (
           <button
             type="button"
+            class="rs-seg"
             aria-pressed={current() === rg}
             style={{
-              padding: '4px 12px',
               font: `${current() === rg ? '500' : '400'} 12px 'Geist',sans-serif`,
               color: current() === rg ? 'var(--text)' : 'var(--text3)',
               background: current() === rg ? 'var(--chip)' : 'transparent',

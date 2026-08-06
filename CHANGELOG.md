@@ -15,6 +15,23 @@ heading is started.
 
 ## [Unreleased]
 
+### Added
+
+- **The dashboard works on a phone.** Every page previously rendered a desktop layout at any
+  width — the sidebar alone took 53% of a phone screen and the requests table needed ~1020px
+  to stay legible. Below 768px the sidebar is now an icon rail that expands into a labelled
+  navigation panel (carrying the account menu and setup guide), multi-column layouts drop to
+  fewer columns, control rows wrap rather than overflow, and gutters tighten. Tables adapt to
+  the width **they** get rather than the viewport's — at a 1025px window the requests table
+  actually receives ~765px — so each of the four tables reflows to stacked records at its own
+  measured threshold, keeping every field, every row action, and, for a request row, the same
+  single control with the same accessible name and the same link into the inspector.
+  Interactive controls now meet a 24px minimum target at every width and 44px below the narrow
+  threshold or on a touch pointer, so a tablet gets comfortable targets too. **Desktop
+  rendering is unchanged** apart from three controls that shipped below the 24px accessibility
+  minimum and grew to meet it; that parity is pinned by a browser test measured against the
+  released v0.11.0 build. Detail drawers and dialogs keep their current geometry for now.
+
 ## [0.11.0] — 2026-08-05
 
 [Release](https://github.com/izzoa/polyrouter/releases/tag/v0.11.0) ·

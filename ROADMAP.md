@@ -63,12 +63,82 @@ for.
 
 ---
 
-## Next — committed, blocked on evidence
+## Now — committed and building
+
+### Mobile parity for the dashboard — a three-phase epic
+
+The dashboard shell is mobile-aware; the layout inside it is not. `styles.css` carries
+exactly one `@media` rule and it is `prefers-reduced-motion` — there are zero width-based
+breakpoints, so every page is laid out for a desktop viewport. On a phone the sidebar alone
+takes 53% of the width and the requests table needs ~1020px to be legible.
+
+The work is much smaller than the frontend's 743 inline style attributes suggest. Of their
+2,065 declarations only **46** are breakpoint-relevant, 13 of those are `max-width` values
+that already shrink correctly, and the remaining 33 reduce to **8 grid patterns**. The
+decisive lever: of 186 inline `display:flex` declarations, **none** declares
+`flex-direction: row`, so a breakpoint class can stack 137 implicit rows with no specificity
+fight and no JSX edit.
+
+Split into three phases because each answers a different question, and because a single
+change would run past anything shipped here (the largest to date is 50 tasks).
+
+| Phase | Scope | Cost · Confidence · Invariant pressure |
+|---|---|---|
+| **1 — pages** (**built**, pending a human read of the result) | Media layer + per-table container queries at measured thresholds; `STYLESEED.md` gained a locked Responsive section and the `/ss-score` gate enforces it; sidebar → **expandable** icon rail; 9 grid templates across 13 page sites; **all four** tables → stacked records; 24px/44px target floors | M · high · none |
+| **2 — overlays** | `.modal-card`, the inspector `.drawer` (still fixed 440px after phase 1 — wider than a 390px screen), and the `ModelPicker` fixed-position panel become sheet-like at narrow width; soft-keyboard and safe-area handling; target floor extended to overlay controls | M · medium · none |
+| **3 — touch reorder** | The tier chain reorders via HTML5 drag-and-drop (`draggable` + `dataTransfer`), which never fires on touch — so chain reordering does not exist on a phone today. Adds a touch transport, or explicit ↑/↓ controls | S · high · none |
+
+**Why this order.** Phase 1 pays the one-time costs the others inherit: where breakpoints
+live, the class vocabulary, the lock extension, the table→card pattern, and how to test
+layout in a harness that performs no layout. Phases 2 and 3 are then "apply the established
+pattern," not new decisions. Nothing in phase 1 creates rework for the others — it is a
+strict prefix, not a divergent path.
+
+**What phase 1 actually left phase 2.** More than planned, and in phase 2's favour: a
+Playwright suite with a `FakeApiClient`-backed harness and the locked viewport matrix
+already exists, so phase 2 writes assertions rather than infrastructure. The expandable
+rail also built a real modal surface — scrim, focus trap via the existing `dialogKeyboard`,
+`inert` content behind, and a resolved dismissal order across stacked overlays — which is
+the groundwork the drawer and modals need. The one thing phase 1 could NOT resolve is that
+`Inspector` and `UserMenu` both handle Escape on `document`: phase 1 fixed the two
+collisions it created, but a third overlay will hit the same class of problem, so phase 2
+should consider a single topmost-overlay owner rather than a third pairwise fix.
+
+**Phase 3 is cheaper than it looks.** The reorder model is already transport-agnostic
+(`moveTierEntry` / `beginTierDrag` / `endTierDrag`, plus `keyboardMove`) and already has two
+consumers — pointer drag and an `Alt`+Arrow keyboard path. A touch path is a third consumer
+of the same functions, and the expensive part (deferred writes, rollback to the latest
+confirmed order, refresh-can't-repaint-mid-drag, sign-out discard) is built and covered by
+`routingDrag.test.tsx`'s 835 lines. Those invariants are transport-independent. Explicit
+↑/↓ controls would reuse `keyboardMove` verbatim — no new reorder logic at all — and are
+arguably better touch UX than drag inside a scrolling list.
+
+**Open decisions, to settle in the phase they belong to.** Whether the narrow-width nav
+should ultimately be a bottom tab bar rather than the icon rail phase 1 ships (a bottom bar
+inverts the shell from a flex row to a column and cannot hold 9 entries without new IA —
+deliberately deferred, not rejected). Whether container queries should supersede viewport
+media queries once the shell's pane containment can be touched safely — attractive because
+it would also fix the desktop case of the inspector drawer squeezing the requests table,
+which a media query cannot see.
+
+**The cost that is not one-time:** after phase 3 every future UI change must be checked at
+two widths, and the `/ss-score` gate has to enforce it or the work decays within a few
+features. That ongoing tax is the strongest argument for stopping after a phase if the
+later ones stop earning their keep — each phase is independently shippable.
+
+---
+
+## Next — committed, blocked on a named condition
 
 The build plan is otherwise complete; the release history in
-[`CHANGELOG.md`](./CHANGELOG.md) is current through v0.10.0.
+[`CHANGELOG.md`](./CHANGELOG.md) is current through v0.11.0.
 
-Two committed items remain open. Both are **evidence-gated**: the evidence can only come
+**Mobile parity phases 2 and 3** sit here, blocked on a condition that is not evidence but
+sequence: **phase 1 archived**. They are scoped in the epic above and get proposals of their
+own when that condition is met — drafting their specs now would bake in assumptions about a
+breakpoint layer that does not exist yet.
+
+Two further committed items remain open. Both are **evidence-gated**: the evidence can only come
 from real traffic on a deployed instance, so neither is scheduled, and building either one
 early would be guessing.
 

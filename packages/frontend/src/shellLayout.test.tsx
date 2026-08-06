@@ -77,7 +77,12 @@ describe('app shell scroll containment', () => {
     const h = await mountShell();
     try {
       const sidebar = paneOf(h.host, 'sidebar');
-      expect(sidebar?.style.width).toBe('208px'); // sanity: this really is the sidebar
+      // Sanity: this really is the sidebar. Identified by its marker class, NOT by an
+      // inline `width: 208px` as it once was — that width moved into `.rs-sidebar` so the
+      // narrow-width rail could override it (an inline width outranks any media query).
+      // The pane's scrolling contract below is what this suite actually guards, and it is
+      // unchanged.
+      expect(sidebar?.classList.contains('rs-sidebar')).toBe(true);
       expect(sidebar?.style.overflowY).toBe('auto');
       expect(['0', '0px']).toContain(sidebar?.style.minHeight);
       // Y only — the shorthand would also suppress horizontal swipe-back navigation.

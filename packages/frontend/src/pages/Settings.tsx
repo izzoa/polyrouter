@@ -48,12 +48,12 @@ export function Settings() {
   };
 
   return (
-    <div style="padding:22px 26px;display:flex;flex-direction:column;gap:12px;max-width:760px">
+    <div class="rs-page" style="display:flex;flex-direction:column;gap:12px;max-width:760px">
       <div class="panel card">
         <div class="section-title" style="margin-bottom:12px">
           Instance
         </div>
-        <div style="display:grid;grid-template-columns:140px 1fr;gap:8px 16px;font:400 12.5px 'Geist',sans-serif;color:var(--text2);align-items:center">
+        <div class="rs-grid-label" style="display:grid;gap:8px 16px;font:400 12.5px 'Geist',sans-serif;color:var(--text2);align-items:center">
           <div style="color:var(--text3)">Account</div>
           <div>
             {session()?.email ?? '—'}

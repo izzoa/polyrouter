@@ -1,10 +1,42 @@
-import { createSignal, For, onCleanup, onMount } from 'solid-js';
+import { createSignal, For, onCleanup, onMount, type JSX } from 'solid-js';
 import { labelOf, type InflightRow, type RequestRow, type RequestStatus } from '../data/api';
 import { rowCostLabel } from '../data/analytics';
 import { fmtTime, fmtTokens } from '../data/catalog';
 import { useApp } from '../state/context';
 
-const GRID = '66px 1.5fr 1.1fr 0.8fr 1.1fr 0.9fr 0.7fr 0.6fr 0.8fr';
+/** The single column definition for this table. The head and the row cells used to be
+ * two independent lists of literals with nothing keeping them aligned; below the locked
+ * `table-fit` the stacked record repeats these names per field, so a drift would now be
+ * visible to users rather than merely latent. One list, consumed by both. */
+const COLUMNS = [
+  'Time',
+  'Model',
+  'Provider',
+  'Tier',
+  'Decided by',
+  'Tokens',
+  'Cost',
+  'Latency',
+  'Status',
+] as const;
+
+/** One cell, carrying its field name for the stacked presentation.
+ *
+ * The label is `aria-hidden` deliberately. A completed request row is a single
+ * `<button>` whose accessible name is its flattened text content — visible label text
+ * would prepend "Time"/"Model"/… to that name and break the parity the spec requires.
+ * Sighted users get the names; assistive technology gets the same name it got at desktop
+ * width, where the head is a separate element with no association to the cells anyway. */
+function Cell(props: { label: string; children: JSX.Element }): JSX.Element {
+  return (
+    <span class="rs-cell">
+      <span class="rs-cell-label" aria-hidden="true">
+        {props.label}
+      </span>
+      {props.children}
+    </span>
+  );
+}
 
 /** Decision-layer chip palette. Any unknown layer renders neutral (invariant 1 —
  * the table is layer-agnostic). */
@@ -36,16 +68,8 @@ const textFor = (s: string): string => STATUS_TEXT[s as RequestStatus] ?? (s || 
 
 export function RequestTableHead() {
   return (
-    <div class="table-head" style={{ 'grid-template-columns': GRID }}>
-      <div>Time</div>
-      <div>Model</div>
-      <div>Provider</div>
-      <div>Tier</div>
-      <div>Decided by</div>
-      <div>Tokens</div>
-      <div>Cost</div>
-      <div>Latency</div>
-      <div>Status</div>
+    <div class="table-head">
+      <For each={COLUMNS}>{(c) => <div>{c}</div>}</For>
     </div>
   );
 }
@@ -59,59 +83,75 @@ export function RequestRow(props: { r: RequestRow }) {
     <button
       type="button"
       class="req-row row-hover"
-      style={{
-        'grid-template-columns': GRID,
-        background: selected() ? 'var(--accent-bg)' : 'transparent',
-      }}
+      style={{ background: selected() ? 'var(--accent-bg)' : 'transparent' }}
       aria-expanded={selected()}
       aria-controls="inspector-drawer"
       onClick={() => app.select(selected() ? null : props.r.id)}
     >
-      <span class="mono" style="font-size:11px;color:var(--text3)">
-        {fmtTime(new Date(props.r.createdAt).getTime())}
-      </span>
-      <span class="mono" style="font-size:11.5px;color:var(--text)">
-        {labelOf(props.r.modelLabel, props.r.modelId)}
-      </span>
-      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-        {labelOf(props.r.providerLabel, props.r.providerId)}
-      </span>
-      <span>{props.r.tierAssigned ?? '—'}</span>
-      <span>
-        <span
-          style={{
-            padding: '2px 8px',
-            background: chip().bg,
-            color: chip().fg,
-            'border-radius': '10px',
-            'font-size': '11px',
-            'font-weight': '500',
-          }}
-        >
-          {props.r.escalated ? `${props.r.decisionLayer} ↗` : props.r.decisionLayer}
+            <Cell label="Time">
+        <span class="mono" style="font-size:11px;color:var(--text3)">
+          {fmtTime(new Date(props.r.createdAt).getTime())}
         </span>
-      </span>
-      <span class="mono" style="font-size:11px">
-        {fmtTokens(props.r.inputTokens)} → {fmtTokens(props.r.outputTokens)}
-      </span>
-      <span class="mono" style="font-size:11px;color:var(--text)">
-        {rowCostLabel(props.r)}
-      </span>
-      <span class="mono" style="font-size:11px">
-        {(props.r.durationMs / 1000).toFixed(1)}s
-      </span>
-      <span style="display:flex;align-items:center;gap:5px">
-        <span
-          style={{
-            width: '6px',
-            height: '6px',
-            'border-radius': '50%',
-            background: dotFor(props.r.status),
-            flex: 'none',
-          }}
-        />
-        {textFor(props.r.status)}
-      </span>
+      </Cell>
+      <Cell label="Model">
+        <span class="mono" style="font-size:11.5px;color:var(--text)">
+          {labelOf(props.r.modelLabel, props.r.modelId)}
+        </span>
+      </Cell>
+      <Cell label="Provider">
+        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+          {labelOf(props.r.providerLabel, props.r.providerId)}
+        </span>
+      </Cell>
+      <Cell label="Tier">
+        <span>{props.r.tierAssigned ?? '—'}</span>
+      </Cell>
+      <Cell label="Decided by">
+        <span>
+          <span
+            style={{
+              padding: '2px 8px',
+              background: chip().bg,
+              color: chip().fg,
+              'border-radius': '10px',
+              'font-size': '11px',
+              'font-weight': '500',
+            }}
+          >
+            {props.r.escalated ? `${props.r.decisionLayer} ↗` : props.r.decisionLayer}
+          </span>
+        </span>
+      </Cell>
+      <Cell label="Tokens">
+        <span class="mono" style="font-size:11px">
+          {fmtTokens(props.r.inputTokens)} → {fmtTokens(props.r.outputTokens)}
+        </span>
+      </Cell>
+      <Cell label="Cost">
+        <span class="mono" style="font-size:11px;color:var(--text)">
+          {rowCostLabel(props.r)}
+        </span>
+      </Cell>
+      <Cell label="Latency">
+        <span class="mono" style="font-size:11px">
+          {(props.r.durationMs / 1000).toFixed(1)}s
+        </span>
+      </Cell>
+      <Cell label="Status">
+        <span style="display:flex;align-items:center;gap:5px">
+          <span
+            style={{
+              width: '6px',
+              height: '6px',
+              'border-radius': '50%',
+              background: dotFor(props.r.status),
+              flex: 'none',
+            }}
+          />
+          {textFor(props.r.status)}
+        </span>
+      </Cell>
+
     </button>
   );
 }
@@ -145,56 +185,75 @@ function InflightRunningRow(props: { r: InflightRow; now: number }) {
     // Non-interactive by design (no terminal detail to inspect yet). No aria-label:
     // a bare div has no role to hang one on, and the row's own text already reads
     // out completely — time, model, provider, tier, layer, and "Running".
-    <div class="req-row" style={{ 'grid-template-columns': GRID, cursor: 'default' }}>
-      <span class="mono" style="font-size:11px;color:var(--text3)">
-        {fmtTime(props.r.startedAt)}
-      </span>
-      <span class="mono" style="font-size:11.5px;color:var(--text)">
-        {props.r.modelLabel ?? '—'}
-      </span>
-      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-        {props.r.providerLabel ?? '—'}
-      </span>
-      <span>{props.r.tierAssigned ?? '—'}</span>
-      <span>
-        <span
-          style={{
-            padding: '2px 8px',
-            background: chip().bg,
-            color: chip().fg,
-            'border-radius': '10px',
-            'font-size': '11px',
-            'font-weight': '500',
-          }}
-        >
-          {props.r.decisionLayer}
+    <div class="req-row" style={{ cursor: 'default' }}>
+            <Cell label="Time">
+        <span class="mono" style="font-size:11px;color:var(--text3)">
+          {fmtTime(props.r.startedAt)}
         </span>
-      </span>
-      <span class="mono" style="font-size:11px;color:var(--text3)">
-        —
-      </span>
-      <span class="mono" style="font-size:11px;color:var(--text3)">
-        —
-      </span>
-      <span class="mono" style="font-size:11px;color:var(--text2)">
-        {elapsed().toFixed(1)}s
-      </span>
-      <span style="display:flex;align-items:center;gap:5px;color:var(--text2)">
-        <span
-          aria-hidden="true"
-          style={{
-            width: '6px',
-            height: '6px',
-            'border-radius': '50%',
-            background: 'var(--accent)',
-            flex: 'none',
-            // Reuses the global `pulse` keyframe; the app's reduced-motion media
-            // query forces iteration-count 1, so it settles to a static dot.
-            animation: 'pulse 1.5s ease-in-out infinite',
-          }}
-        />
-        Running
-      </span>
+      </Cell>
+      <Cell label="Model">
+        <span class="mono" style="font-size:11.5px;color:var(--text)">
+          {props.r.modelLabel ?? '—'}
+        </span>
+      </Cell>
+      <Cell label="Provider">
+        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+          {props.r.providerLabel ?? '—'}
+        </span>
+      </Cell>
+      <Cell label="Tier">
+        <span>{props.r.tierAssigned ?? '—'}</span>
+      </Cell>
+      <Cell label="Decided by">
+        <span>
+          <span
+            style={{
+              padding: '2px 8px',
+              background: chip().bg,
+              color: chip().fg,
+              'border-radius': '10px',
+              'font-size': '11px',
+              'font-weight': '500',
+            }}
+          >
+            {props.r.decisionLayer}
+          </span>
+        </span>
+      </Cell>
+      <Cell label="Tokens">
+        <span class="mono" style="font-size:11px;color:var(--text3)">
+          —
+        </span>
+      </Cell>
+      <Cell label="Cost">
+        <span class="mono" style="font-size:11px;color:var(--text3)">
+          —
+        </span>
+      </Cell>
+      <Cell label="Latency">
+        <span class="mono" style="font-size:11px;color:var(--text2)">
+          {elapsed().toFixed(1)}s
+        </span>
+      </Cell>
+      <Cell label="Status">
+        <span style="display:flex;align-items:center;gap:5px;color:var(--text2)">
+          <span
+            aria-hidden="true"
+            style={{
+              width: '6px',
+              height: '6px',
+              'border-radius': '50%',
+              background: 'var(--accent)',
+              flex: 'none',
+              // Reuses the global `pulse` keyframe; the app's reduced-motion media
+              // query forces iteration-count 1, so it settles to a static dot.
+              animation: 'pulse 1.5s ease-in-out infinite',
+            }}
+          />
+          Running
+        </span>
+      </Cell>
+
     </div>
   );
 }

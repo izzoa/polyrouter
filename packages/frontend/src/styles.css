@@ -135,6 +135,16 @@ select:focus {
     opacity: 0.3;
   }
 }
+@keyframes slideinleft {
+  from {
+    transform: translateX(-24px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
 @keyframes slidein {
   from {
     transform: translateX(24px);
@@ -672,6 +682,569 @@ select:focus {
   font:
     500 10.5px 'Geist',
     sans-serif;
+}
+
+/* ---- responsive layer (phase1-responsive-dashboard-layout) ----
+ *
+ * The thresholds below are LITERALS, deliberately. `@media (max-width: var(--narrow))` is
+ * invalid CSS and fails SILENTLY — the block simply never matches — so a custom property
+ * cannot carry them. STYLESEED.md is the source of truth for what these numbers must be;
+ * change the lock and this file together, never one alone.
+ *
+ * Locked values (STYLESEED.md § Responsive):
+ *   narrow 768px viewport · table-fit 960/680/660px container
+ *   rail-collapsed 56px · gutter-narrow 18px 16px · target-base 24px · target-comfort 44px
+ *
+ * WHY CLASSES, NOT ELEMENT SELECTORS: layout lives in 783 inline style attributes, and an
+ * inline style beats any class — but ONLY on the properties it actually declares. No
+ * element in this app declares `flex-direction: row` (all 49 explicit directions are
+ * `column`), so `.rs-stack` below wins on 137 implicit flex rows with no `!important` and
+ * no JSX edit. Grids are the exception: `grid-template-columns` IS declared inline at every
+ * site, so those declarations move out to the `.rs-grid-*` classes.
+ */
+
+/* The page container's gutter. Held here rather than inline for the same reason as the
+   grids below: an inline `padding` would outrank the narrow override and the media query
+   would silently do nothing. */
+.rs-page {
+  padding: 22px 26px;
+}
+
+/* Setup uses a centred column rather than the standard page container, but its gutter
+   costs the same 52px on a phone. */
+.rs-setup-page {
+  padding: 34px 26px 60px;
+  display: flex;
+  justify-content: center;
+}
+
+/* The topbar's gutter, held in a class for the same reason as the page container's: an
+   inline padding cannot be narrowed by a media query. */
+.rs-topbar {
+  padding: 14px 26px;
+  gap: 10px;
+}
+
+/* The nav list. Its gutter is held here, not inline — inline it would defeat the rail's
+   attempt to reclaim that space, leaving each destination 35px wide in a 56px rail. */
+.rs-nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 10px;
+}
+
+/* The sidebar header (wordmark + rail toggle). Layout held here, not inline, because the
+   collapsed rail has to restack it — at 56px wide with 18px gutters the row had 19px of
+   content box, so the toggle rendered outside the rail entirely and could not be tapped. */
+.rs-nav-header {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 20px 18px 16px;
+}
+
+/* The sidebar's setup-guide wrapper and account footer. Their `display` lives here rather
+   than inline so the collapsed rail can hide them — an inline `display:flex` outranks any
+   class, which is why hiding `.setup-card` alone once left its absolutely-positioned
+   dismiss button stranded in a 56px rail. */
+.rs-setup-wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+.rs-sidebar-footer {
+  display: flex;
+  flex-direction: column;
+}
+
+/* The sidebar's desktop width, moved out of its inline style so the narrow rail can reach
+   it. `shellLayout.test.tsx` used to assert the inline `208px` and now asserts the pane
+   marker instead — the value did not change, only where it is declared. */
+.rs-sidebar {
+  width: 208px;
+}
+
+/* The rail's expand/collapse control does not exist above the narrow threshold — which is
+   also what keeps `navExpanded` from ever being set on a desktop viewport. */
+.rs-nav-toggle {
+  display: none;
+  flex: none;
+  margin-left: auto;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  color: var(--text3);
+  cursor: pointer;
+  font-size: 14px;
+  border-radius: 6px;
+}
+.rs-nav-toggle:hover {
+  color: var(--text);
+}
+
+/* Desktop grid templates. These carry the values that used to sit in each site's inline
+   `style` attribute — moving them out is what lets a media query reach them at all. The
+   narrow block below overrides only the column count; every other grid property (gap,
+   align-items) stays inline at the call site where it reads. */
+.rs-grid-2 {
+  grid-template-columns: 1fr 1fr;
+}
+.rs-grid-2-1 {
+  grid-template-columns: 2fr 1fr;
+}
+.rs-grid-label {
+  grid-template-columns: 140px 1fr;
+}
+.rs-grid-3 {
+  grid-template-columns: repeat(3, 1fr);
+}
+.rs-grid-4 {
+  grid-template-columns: repeat(4, 1fr);
+}
+.rs-grid-main-side {
+  grid-template-columns: 1fr 300px;
+}
+
+/* Baseline hit target — every width, no exceptions. WCAG 2.5.8 AA is 24px; several
+   controls shipped at 19–27px. This is the ONLY floor that touches desktop, because an
+   accessibility minimum is not a density preference (STYLESEED.md). */
+.nav-item,
+.btn-primary,
+.btn-ghost,
+.btn-cancel,
+.icon-x,
+.drag-handle,
+.theme-toggle,
+.endpoint-chip,
+.setup-card,
+.link-accent,
+.drawer-close,
+.mp-option,
+.rs-seg,
+.input,
+.select,
+.req-row,
+.rs-nav-toggle {
+  min-height: 24px;
+}
+
+/* The range segmented control. Its padding moved out of the inline object style so a
+   floor can reach it at all — the rendered result is identical. */
+.rs-seg {
+  padding: 4px 12px;
+}
+
+/* The switch's VISUAL size is locked design (30×17 sm / 34×19 md); growing it would
+   restyle the control, which this change has no mandate to do. So the hit target is
+   expanded by a centred, invisible ::before instead — the target grows, not one drawn
+   pixel moves. `.toggle` is already position:relative, and the overlay sits inside the
+   button so every click still resolves to it. */
+.toggle::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 24px;
+  height: 24px;
+}
+
+@media (max-width: 768px) {
+  /* Implicit flex rows stack or wrap. Opt-in per site — some rows must stay rows
+     (a status dot beside its label, an icon beside its title). */
+  .rs-wrap {
+    flex-wrap: wrap;
+  }
+
+  /* Page grids drop to a single column, or to two where four is the desktop shape. */
+  .rs-grid-2,
+  .rs-grid-2-1,
+  .rs-grid-label,
+  .rs-grid-main-side {
+    grid-template-columns: 1fr;
+  }
+  .rs-grid-3,
+  .rs-grid-4 {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  /* A `1fr` track's minimum is its content's min-content width, so a child wider than the
+     column forces the TRACK wider than its container — the grid blows out and the panel
+     overflows even though the template says 1fr. `min-width: 0` restores the intent. */
+  .rs-grid-2 > *,
+  .rs-grid-2-1 > *,
+  .rs-grid-3 > *,
+  .rs-grid-4 > *,
+  .rs-grid-label > *,
+  .rs-grid-main-side > * {
+    min-width: 0;
+  }
+
+  /* Narrow gutters: `22px 26px` spends 52px of a 390px viewport. */
+  .rs-page {
+    padding: 18px 16px;
+  }
+  .rs-topbar {
+    padding: 12px 16px;
+  }
+  .rs-setup-page {
+    padding: 20px 16px 40px;
+  }
+  .card {
+    padding: 14px 14px;
+  }
+
+  /* Comfort target — 44px (iOS HIG). Padding and min-height only: touching font-size
+     would move the type scale and every contrast assertion with it. */
+  .nav-item,
+  .btn-primary,
+  .btn-ghost,
+  .btn-cancel,
+  .icon-x,
+  .drag-handle,
+  .theme-toggle,
+  .endpoint-chip,
+  .setup-card,
+  .link-accent,
+  .drawer-close,
+  .rs-seg,
+  .rs-nav-toggle {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+  }
+  /* Form controls get the floor but NOT `display:flex` — they are replaced elements and
+     flex would change how they lay out their own content. */
+  .input,
+  .select {
+    min-height: 44px;
+  }
+
+  /* The switch keeps its locked visual size; only its hit target grows. */
+  .toggle::before {
+    width: 44px;
+    height: 44px;
+  }
+
+  /* Native controls, floored by ELEMENT rather than by class. The class list could only
+     ever cover controls someone remembered to class — the Requests filter buttons, the
+     Routing selects and the Setup stepper all render as bare `<button>`/`<select>` with
+     inline padding and were shipping at 22-28px tall.
+
+     `.toggle` is excluded: its 30x17 visual is locked design and its hit target is
+     already expanded by a ::before. Checkboxes and radios are excluded because a floor
+     would stretch the control itself rather than its tap area. */
+  button:not(.toggle),
+  select,
+  textarea,
+  input:not([type='checkbox']):not([type='radio']) {
+    min-height: 44px;
+  }
+
+  /* A minimum target is two-dimensional. Icon-only controls have no text to widen them,
+     so they need the inline floor explicitly — the rail toggle was 24x44. */
+  .rs-nav-toggle,
+  .icon-x,
+  .drag-handle,
+  .drawer-close {
+    min-width: 44px;
+    justify-content: center;
+  }
+
+  /* The rail's nav items were 35px wide inside a 56px rail because the <nav> keeps a
+     10px gutter. Drop it below narrow so each destination is a full-width target. */
+  .rs-sidebar:not(.rs-nav-open) .rs-nav-list {
+    padding: 0 2px;
+  }
+
+  /* Fixed widths that cannot survive a phone. `.mp-input`'s 220px is the last one held
+     in this stylesheet; the rest were inline and are relaxed at their call sites. */
+  .mp-input {
+    width: 100%;
+  }
+
+  /* ---- the narrow-width nav ---- */
+
+  /* Collapsed: a 56px icon rail (44px target + 6px either side), reclaiming the 53% of a
+     390px viewport the 208px sidebar was taking. */
+  .rs-sidebar {
+    width: 56px;
+  }
+  .rs-nav-toggle {
+    display: flex;
+  }
+
+  /* Labels are hidden VISUALLY, never from assistive technology — `display:none` would
+     strip the accessible name off every nav entry. This is the .sr-only treatment,
+     applied only while the rail is collapsed. */
+  .rs-sidebar:not(.rs-nav-open) .rs-nav-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  /* The setup card and account footer do not fit a 56px rail. They stay reachable in the
+     EXPANDED state, which is what the shell contract requires. */
+  .rs-sidebar:not(.rs-nav-open) .rs-setup-wrap,
+  .rs-sidebar:not(.rs-nav-open) .rs-sidebar-footer {
+    display: none;
+  }
+  /* Collapsed: stack the mark above the toggle and drop the gutters, so both fit the
+     56px rail instead of overflowing it. */
+  .rs-sidebar:not(.rs-nav-open) .rs-nav-header {
+    flex-direction: column;
+    gap: 6px;
+    padding: 12px 4px 10px;
+  }
+  .rs-sidebar:not(.rs-nav-open) .rs-nav-toggle {
+    margin-left: 0;
+  }
+  .rs-sidebar:not(.rs-nav-open) .nav-item {
+    justify-content: center;
+    padding: 7px 0;
+  }
+
+  /* Expanded: a 208px panel over the content. A 208px rail cannot sit BESIDE content at
+     390px, so expanding necessarily overlays — the one new overlay surface in this phase. */
+  .rs-sidebar.rs-nav-open {
+    animation: slideinleft 0.18s ease-out;
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 208px;
+    /* overlay 40 · drawer 41 · nav scrim 44 · nav panel 45 · modal 50 · picker 55 · toast 60.
+       Sharing the drawer's 41 let it paint above the scrim on DOM order alone. */
+    z-index: 45;
+    box-shadow: var(--shadow-pop);
+  }
+  /* Reuses `.overlay` for the backdrop itself — one scrim language, one alpha. This
+     rule only lifts it above the drawer's z-index so the nav stacks correctly. */
+  .rs-nav-scrim {
+    z-index: 44;
+  }
+}
+
+/* Coarse pointers deserve the comfort target at ANY width — a 1024px tablet is touch-first
+   even though it is nowhere near the narrow threshold. */
+@media (pointer: coarse) {
+  .nav-item,
+  .btn-primary,
+  .btn-ghost,
+  .btn-cancel,
+  .icon-x,
+  .drag-handle,
+  .theme-toggle,
+  .endpoint-chip,
+  .setup-card,
+  .link-accent,
+  .drawer-close,
+  .rs-seg,
+  .rs-nav-toggle,
+  .input,
+  .select {
+    min-height: 44px;
+  }
+
+  .toggle::before {
+    width: 44px;
+    height: 44px;
+  }
+}
+
+/* Tables adapt to the width THEY get, not the viewport's — a table sits inside the content
+   pane minus the sidebar and gutters, so at a 1025px viewport it receives ~765px. Only a
+   container query can see that.
+ *
+ * The container is the TABLE PANEL, never a page wrapper: `.mp-panel` and the two
+ * `BodyCaptureCard` overlays are `position: fixed` and render inline in the page tree, and
+ * establishing a query container on an ancestor risks changing what they position against.
+ * Named containers so a future nested container cannot capture these queries. */
+.rs-table-panel {
+  container-type: inline-size;
+}
+.rs-table-requests {
+  container-name: rs-requests;
+}
+.rs-table-agents {
+  container-name: rs-agents;
+}
+.rs-table-users {
+  container-name: rs-users;
+}
+
+/* The two grid tables' column templates, scoped by their container class. These were
+   inline `style={{ 'grid-template-columns': GRID }}` on both the head and every row —
+   which no container query could have reached. Scoping by container is also what lets
+   `.table-head` and `.req-row` stay shared classes while the two tables keep different
+   templates (9 columns vs 7 — they were never the same, despite both being called GRID). */
+.rs-table-requests .table-head,
+.rs-table-requests .req-row {
+  grid-template-columns: 66px 1.5fr 1.1fr 0.8fr 1.1fr 0.9fr 0.7fr 0.6fr 0.8fr;
+}
+.rs-table-agents .table-head,
+.rs-table-agents .rs-agent-row {
+  grid-template-columns: 1.3fr 1fr 1.2fr 0.9fr 0.8fr 0.9fr 1.2fr;
+}
+.rs-agent-row {
+  display: grid;
+  gap: 0 14px;
+  padding: 11px 18px;
+  border-bottom: 1px solid var(--border2);
+}
+/* The Actions cell's alignment lives here for the same reason — inline it would defeat
+   the stacked card's label/value row. */
+.rs-agent-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+/* The per-cell wrapper contributes NO box at desktop: `display: contents` makes the inner
+   content span the grid item again, exactly as it was before the wrapper existed. Without
+   this the extra nesting level added a line to every request row (35px -> 51px measured
+   against v0.11.0) — a desktop regression, and this change is only allowed to grow
+   controls that were under the target floor. The container query below gives it a real
+   box, which is the only place it needs one. */
+.rs-cell {
+  display: contents;
+}
+
+/* Field labels are inert at desktop: the head row (or the semantic <thead>) names the
+   columns there, so a per-cell label would be duplicate noise. They appear only in the
+   stacked presentation, where there is no head left to do the naming. */
+.rs-cell-label {
+  display: none;
+}
+
+/* ---- stacked records ----
+ *
+ * Same DOM, restyled. Not a second component behind a viewport signal: one DOM means a
+ * request row stays ONE <button> with ONE accessible name at every width, which is the
+ * spec's semantics guarantee held by construction rather than by two implementations
+ * agreeing to it.
+ *
+ * The thresholds are the measured per-table container widths (measurements.md), not
+ * viewport widths — at a 1025px viewport the requests table receives only ~765px. */
+
+/* Shared stacked-row shape for the two grid tables. */
+@container rs-requests (max-width: 960px) {
+  .table-head {
+    display: none;
+  }
+  .req-row {
+    display: block;
+    padding: 12px 16px;
+  }
+  .rs-cell {
+    display: flex;
+    gap: 10px;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 3px 0;
+    text-align: left;
+  }
+  .rs-cell-label {
+    display: block;
+    flex: none;
+    font:
+      500 10.5px 'Geist',
+      sans-serif;
+    color: var(--text3);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  /* Long values — a 50-character email, a model id, a token — have a min-content width a
+     flex row cannot shrink below, which pushed the cell past its table. Let them break. */
+  .rs-cell > *,
+  .rs-agent-row > div > *,
+  .rs-table-users td > * {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+}
+
+@container rs-agents (max-width: 680px) {
+  .table-head {
+    display: none;
+  }
+  .rs-agent-row {
+    display: block;
+    padding: 12px 16px;
+  }
+  .rs-agent-row > div,
+  .rs-agent-actions {
+    display: flex;
+    gap: 10px;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 3px 0;
+  }
+  .rs-cell-label {
+    display: block;
+    flex: none;
+    font:
+      500 10.5px 'Geist',
+      sans-serif;
+    color: var(--text3);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  /* Long values — a 50-character email, a model id, a token — have a min-content width a
+     flex row cannot shrink below, which pushed the cell past its table. Let them break. */
+  .rs-cell > *,
+  .rs-agent-row > div > *,
+  .rs-table-users td > * {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+}
+
+/* The semantic tables. `display: block` on table elements drops the table role, so the
+   <thead> association goes with it — which is exactly why `.rs-cell-label` is REAL
+   content here and not `aria-hidden`. Hiding the head AND the labels would leave every
+   value unnamed, which the spec forbids outright. */
+@container rs-users (max-width: 660px) {
+  .rs-table-users thead {
+    display: none;
+  }
+  .rs-table-users tr {
+    display: block;
+    padding: 8px 0;
+    border-top: 1px solid var(--border2);
+  }
+  .rs-table-users td {
+    display: flex;
+    gap: 10px;
+    justify-content: space-between;
+    align-items: baseline;
+    border: 0;
+    padding: 3px 16px !important;
+  }
+  .rs-table-users .rs-cell-label {
+    display: block;
+    flex: none;
+    font:
+      500 10.5px 'Geist',
+      sans-serif;
+    color: var(--text3);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  /* Long values — a 50-character email, a model id, a token — have a min-content width a
+     flex row cannot shrink below, which pushed the cell past its table. Let them break. */
+  .rs-cell > *,
+  .rs-agent-row > div > *,
+  .rs-table-users td > * {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
 }
 
 /* Reduced-motion guard (dashboard-core spec): collapse ALL motion — including future

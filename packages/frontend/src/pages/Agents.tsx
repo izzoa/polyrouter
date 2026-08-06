@@ -9,7 +9,9 @@ function fmtSpend(v: number): string {
   return v < 0.01 ? `$${v.toFixed(4)}` : `$${v.toFixed(2)}`;
 }
 
-const GRID = '1.3fr 1fr 1.2fr 0.9fr 0.8fr 0.9fr 1.2fr';
+/** One column definition, consumed by the head and by each stacked record's field
+ * labels — the two used to be independent literals with nothing keeping them aligned. */
+const COLUMNS = ['Agent', 'Harness', 'Key', 'Requests · 24h', 'Spend · 24h', 'Last used', 'Actions'] as const;
 
 function fmtWhen(iso: string | null): string {
   if (!iso) return 'never';
@@ -35,7 +37,7 @@ export function Agents() {
   };
 
   return (
-    <div style="padding:22px 26px;display:flex;flex-direction:column;gap:14px;max-width:1200px">
+    <div class="rs-page" style="display:flex;flex-direction:column;gap:14px;max-width:1200px">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <div style="font:400 12.5px 'Geist',sans-serif;color:var(--text3)">
           Each agent gets its own API key — point it at{' '}
@@ -52,15 +54,11 @@ export function Agents() {
           Couldn’t load agents: {state.agentsError}
         </div>
       </Show>
-      <div class="panel" style="overflow:hidden;border-radius:10px">
-        <div class="table-head" style={{ 'grid-template-columns': GRID }}>
-          <div>Agent</div>
-          <div>Harness</div>
-          <div>Key</div>
-          <div>Requests · 24h</div>
-          <div>Spend · 24h</div>
-          <div>Last used</div>
-          <div style="text-align:right">Actions</div>
+      <div class="panel rs-table-panel rs-table-agents" style="overflow:hidden;border-radius:10px">
+        <div class="table-head">
+          <For each={COLUMNS}>
+            {(c, i) => <div style={i() === COLUMNS.length - 1 ? 'text-align:right' : undefined}>{c}</div>}
+          </For>
         </div>
         <Show
           when={state.agents.length > 0}
@@ -73,33 +71,28 @@ export function Agents() {
           <For each={state.agents}>
             {(a) => (
               <div
-                class="row-hover"
+                class="row-hover rs-agent-row"
                 style={{
-                  display: 'grid',
-                  'grid-template-columns': GRID,
-                  gap: '0 14px',
-                  padding: '11px 18px',
-                  'border-bottom': '1px solid var(--border2)',
                   font: "400 12.5px 'Geist',sans-serif",
                   color: 'var(--text2)',
                   'align-items': 'center',
                 }}
               >
-                <div style="font-weight:500;color:var(--text)">{a.name}</div>
-                <div>
+                <div style="font-weight:500;color:var(--text)"><span class="rs-cell-label">Agent</span>{a.name}</div>
+                <div><span class="rs-cell-label">Harness</span>
                   <span class="chip">{a.harness}</span>
                 </div>
-                <div class="mono" style="font-size:11px;color:var(--text3)">
+                <div class="mono" style="font-size:11px;color:var(--text3)"><span class="rs-cell-label">Key</span>
                   {a.prefix}…
                 </div>
-                <div class="mono" style="font-size:11.5px;color:var(--text2)">
+                <div class="mono" style="font-size:11.5px;color:var(--text2)"><span class="rs-cell-label">Requests · 24h</span>
                   {state.agentStatsLoaded ? (state.agentStats[a.id]?.requests ?? 0) : '—'}
                 </div>
-                <div class="mono" style="font-size:11.5px;color:var(--text2)">
+                <div class="mono" style="font-size:11.5px;color:var(--text2)"><span class="rs-cell-label">Spend · 24h</span>
                   {state.agentStatsLoaded ? fmtSpend(state.agentStats[a.id]?.spend ?? 0) : '—'}
                 </div>
-                <div style="font-size:11.5px;color:var(--text3)">{fmtWhen(a.lastUsedAt)}</div>
-                <div style="display:flex;gap:6px;justify-content:flex-end">
+                <div style="font-size:11.5px;color:var(--text3)"><span class="rs-cell-label">Last used</span>{fmtWhen(a.lastUsedAt)}</div>
+                <div class="rs-agent-actions"><span class="rs-cell-label">Actions</span>
                   <button type="button" class="btn-ghost" onClick={() => void app.rotateKey(a)}>
                     Rotate key
                   </button>

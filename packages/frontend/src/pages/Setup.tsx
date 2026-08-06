@@ -21,9 +21,9 @@ export function Setup() {
     });
 
   return (
-    <div style="padding:34px 26px 60px;display:flex;justify-content:center">
+    <div class="rs-setup-page">
       <div style="width:680px;max-width:100%;display:flex;flex-direction:column;gap:18px">
-        <div style="display:flex;align-items:center;gap:0">
+        <div class="rs-wrap" style="display:flex;align-items:center;gap:0">
           <For each={steps()}>
             {(s) => (
               <div
@@ -87,7 +87,7 @@ export function Setup() {
                 gets its own key so you can track and limit it.
               </div>
             </div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+            <div class="rs-grid-2" style="display:grid;gap:12px">
               <div>
                 <label class="field-label" for="f-ob-name" style="display:block">
                   Agent name
@@ -191,7 +191,7 @@ export function Setup() {
                 onInput={(e) => setState('ob', 'prov', 'name', e.currentTarget.value)}
               />
             </div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+            <div class="rs-grid-2" style="display:grid;gap:10px">
               <For each={PROVIDER_KINDS}>
                 {(k) => (
                   <button
@@ -218,7 +218,7 @@ export function Setup() {
                 )}
               </For>
             </div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+            <div class="rs-grid-2" style="display:grid;gap:10px">
               <div>
                 <label class="field-label" for="f-ob-protocol" style="display:block">
                   Protocol

@@ -21,12 +21,12 @@ coverage/
 .polyrouter-install
 .polyrouter-secrets-created
 
-# per-user agent settings (project agent config itself is committed)
+# per-user agent settings
 .claude/settings.local.json
 
-# per-tool skill/command mirrors for agent tools this project doesn't use
-# (committed agent config: .agents/skills is the skill source of truth, plus the
-# Claude Code (.claude) and Codex (.codex) dirs — the tools actually in use here)
+# per-tool skill/command mirrors for agent tools this project doesn't use.
+# The only agent config this repo commits is the StyleSeed design skills:
+# .agents/skills is the source of truth, and .claude/skills/ss-* symlink into it.
 .agent/
 .augment/
 .crush/
@@ -37,6 +37,13 @@ coverage/
 
 # OpenSpec planning workspace (proposals, deltas, archives) — machine-local
 openspec/
+
+# OpenSpec-generated agent instructions — `openspec update` re-emits these from
+# whichever CLI version is installed, so they belong to the machine, not the repo
+# (same reasoning as the workspace above). Run `openspec update` to restore them.
+.claude/commands/opsx/
+.claude/skills/openspec-*/
+.codex/skills/openspec-*/
 
 # design-sync (claude.ai/design): staged converter scripts, regenerated bundle,
 # machine-local verification state, and the wrapper's stage-1 compiled output.

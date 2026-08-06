@@ -77,10 +77,39 @@ const INVITES: AdminInviteDto[] = [
   },
 ];
 
+// A populated default tier, so the Routing page renders real chain rows
+// (phase3-touch-reorder). The fake defaults to an EMPTY chain, which meant the row that
+// carries the reorder controls did not exist in the browser fixture at all — a suite
+// asserting it would have found nothing and passed.
+//
+// Three entries, not one: the reorder boundaries (first, last) and the middle behave
+// differently, and a single-entry chain exercises none of them.
+//
+// OPT-IN via `?chain=1`, not the default. Populating the chain makes the Routing page
+// ~96px taller, which moves everything below it — enough to invalidate the picker's pinned
+// desktop geometry and to push the auto-layer switch out of reach of a hit test. Those
+// suites are asserting other things entirely, so the fixture this change needs is scoped
+// to the suite that needs it rather than perturbing them.
+const TIER_ENTRIES = ['claude-sonnet-4-5-20250929', 'gpt-5-mini-2025-08-07', 'llama-3.3-70b'].map(
+  (externalModelId, i) => ({
+    id: `te-${String(i)}`,
+    tierId: 'tier-default',
+    modelId: `m-${String(i)}`,
+    position: i,
+    model: {
+      id: `m-${String(i)}`,
+      providerId: 'p1',
+      externalModelId,
+      displayName: null,
+    },
+  }),
+);
+
 const client = new FakeApiClient({
   agents: AGENTS,
   adminUsers: ADMIN_USERS,
   adminInvites: INVITES,
+  ...(params.get('chain') === '1' ? { tierEntries: { 'tier-default': TIER_ENTRIES } } : {}),
 });
 if (client.session) client.session = { ...client.session, role, email: LONG_EMAIL };
 // Keep the fake's own well-formed rows and lengthen only what drives overflow: a long

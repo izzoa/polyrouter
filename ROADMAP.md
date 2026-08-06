@@ -86,7 +86,7 @@ change would run past anything shipped here (the largest to date is 50 tasks).
 |---|---|---|
 | **1 — pages** ✅ **shipped** (archived 2026-08-06) | Media layer + per-table container queries at measured thresholds; `STYLESEED.md` gained a locked Responsive section and the `/ss-score` gate enforces it; sidebar → **expandable** icon rail; 9 grid templates across 13 page sites; **all four** tables → stacked records; 24px/44px target floors | M · high · none |
 | **2 — overlays** ✅ **shipped** (archived 2026-08-06) | The inspector drawer (440px on a 390px screen, 120px off-edge at 320px), all six modal kinds and both confirmation dialogs become bottom sheets below 768px, scrolling internally — three modal kinds previously put their actions past a fixed backdrop where no scroll reached them. First handling of the on-screen keyboard (visual-viewport seam, pinch-zoom distinguished from a keyboard) and safe-area insets; toast given a width | M · high · none |
-| **3 — touch reorder** | The tier chain reorders via HTML5 drag-and-drop (`draggable` + `dataTransfer`), which never fires on touch — so chain reordering does not exist on a phone today. Adds a touch transport, or explicit ↑/↓ controls | S · high · none |
+| **3 — touch reorder** ✅ **shipped** (archived 2026-08-06) | Explicit ↑/↓ controls per chain row, sharing the mover with the keyboard path so the three transports cannot drift; shown below `narrow` **or** on `any-pointer: coarse` (a touch laptop reports `pointer: fine` while being exactly the device that cannot drag). Measuring the row also found it was **already broken**: at 320px it had 194px of space and put 253px in it, so the model id computed to zero width with the price painted over it — fixed by separating information from actions | S · high · none |
 
 **Why this order.** Phase 1 pays the one-time costs the others inherit: where breakpoints
 live, the class vocabulary, the lock extension, the table→card pattern, and how to test
@@ -121,7 +121,14 @@ modals need. The one thing phase 1 could not resolve — that a third overlay wo
 same class of Escape collision — is what `centralize-overlay-layering` then went and fixed,
 so phase 2 inherits a single arbiter rather than a third pairwise patch.
 
-**Phase 3 is cheaper than it looks.** The reorder model is already transport-agnostic
+**Epic complete.** All three phases shipped 2026-08-06. What each phase actually cost, versus
+the estimate: phase 1 as expected; phase 2 larger, because the keyboard/safe-area work was new
+capability rather than a layout fix, and because three modal kinds were unreachable rather than
+merely cramped; phase 3 larger too, because the chain row was already broken before a control
+was added to it. The recurring lesson is in that pattern — every phase found something by
+**measuring the thing** that reading the code had not suggested.
+
+**Phase 3 was cheaper than it looks.** The reorder model is already transport-agnostic
 (`moveTierEntry` / `beginTierDrag` / `endTierDrag`, plus `keyboardMove`) and already has two
 consumers — pointer drag and an `Alt`+Arrow keyboard path. A touch path is a third consumer
 of the same functions, and the expensive part (deferred writes, rollback to the latest

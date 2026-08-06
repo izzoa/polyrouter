@@ -701,6 +701,60 @@ select:focus {
 .chain-row:hover {
   background: var(--hover);
 }
+
+/* The row's action group. `display: contents` above the threshold, so it contributes no
+   box and the row lays out exactly as it did before it existed — the same device phase 1
+   used to add a table-cell wrapper without moving desktop geometry. */
+.chain-actions {
+  display: contents;
+}
+
+/* The tier card's header. Held here rather than inline so the narrow layer can let it
+   wrap — at 320px the tier name and the reorder hint ran together into "Defaultdrag to
+   reorder" on one unwrappable line. */
+.chain-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 13px 18px;
+  border-bottom: 1px solid var(--border2);
+}
+/* The hint names an affordance, so only the one that exists may show. */
+.chain-hint-tap {
+  display: none;
+}
+
+/* Explicit reorder controls. Hidden by default: a drag works with a fine pointer, and
+   showing them everywhere would change the desktop row. */
+.chain-move {
+  display: none;
+  /* The 24px AA baseline, declared even though this is `display: none` here — the floor
+     is a property of the control, not of the width it happens to render at, and phase 1's
+     guard is right to demand it of anything carrying `cursor: pointer`. */
+  min-width: 24px;
+  min-height: 24px;
+  /* `.btn-ghost`'s treatment — the existing idiom for a bordered action button under the
+     flat-borders lock. Matching it rather than inventing a radius keeps one fewer value in
+     the system; the drag handle beside it is deliberately borderless, being a grip rather
+     than a discrete action. */
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text2);
+  cursor: pointer;
+  font: 400 13px 'Geist', sans-serif;
+  line-height: 1;
+  align-items: center;
+  justify-content: center;
+}
+.chain-move:hover:not(:disabled) {
+  background: var(--hover);
+}
+.chain-move:disabled {
+  color: var(--faint);
+  cursor: default;
+}
 /* While a drag is live the rows move under a stationary pointer, so a live hover band
    chases them and reads as flicker on top of the reorder itself. */
 .panel[data-dragging='true'] .chain-row:hover {
@@ -1165,6 +1219,71 @@ select:focus {
     max-width: none;
     text-align: center;
     bottom: calc(22px + var(--safe-area-bottom) + var(--vv-occluded-bottom, 0px));
+  }
+}
+
+/* The chain row where a drag is unavailable (phase3-touch-reorder).
+ *
+ * `any-pointer: coarse`, NOT `pointer: coarse`: `pointer` describes only the PRIMARY
+ * pointing device, so a laptop with a mouse and a touchscreen reports `fine` — while being
+ * exactly the device that cannot drag with a finger. `any-pointer` asks whether ANY
+ * available pointer is coarse, which is the actual question.
+ *
+ * The row also has to be restructured here, not merely extended. Measured at 320px it had
+ * 194px of content width and put 253px in it: the model id rendered at ZERO width, the
+ * price label was painted over it, and the row action was clipped. It was broken before
+ * this change added anything, and no arrangement of one non-wrapping line fits five 44px
+ * controls into 194px. */
+@media (max-width: 768px), (any-pointer: coarse) {
+  .chain-row {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+
+  /* The model id takes its own line. It is the thing being reordered, so it is the one
+     child that must never be the one that collapses. */
+  .chain-id {
+    flex: 1 1 100%;
+    order: 1;
+    overflow-wrap: anywhere;
+  }
+  .chain-price {
+    order: 0;
+  }
+
+  /* The actions become a real box on their own line, wrapping within it — a fallback row
+     carries five controls (handle, up, down, "Make primary", remove) and they do not fit
+     one line at 320px however they are arranged. */
+  .chain-actions {
+    display: flex;
+    order: 2;
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+
+  /* The header wraps rather than jamming the tier name against the hint. */
+  .chain-head {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+
+  /* Swap which affordance the hint names: there is no drag here. */
+  .chain-hint-drag {
+    display: none;
+  }
+  .chain-hint-tap {
+    display: inline;
+  }
+
+  .chain-move {
+    display: inline-flex;
+    /* The locked comfort target, applied to these controls only. Widening phase 1's
+       existing `pointer: coarse` block to `any-pointer` would resize controls that already
+       ship, on hybrid desktops — a desktop rendering change, and not this change's to make. */
+    min-width: 44px;
+    min-height: 44px;
   }
 }
 

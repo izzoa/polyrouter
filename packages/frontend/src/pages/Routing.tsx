@@ -830,6 +830,17 @@ export function Routing() {
   // The order captured at drag start — `changed` is decided against this, not against
   // whatever a suppressed server response happened to carry.
   let dragStartOrder: string[] = [];
+  /**
+   * Set while a press is live on a move control, and consumed by the row's `dragstart`.
+   *
+   * The row is `draggable`, and drag-and-drop selects the nearest draggable ANCESTOR of
+   * wherever the gesture began — so pressing a nested button starts the row's drag, and
+   * neither `draggable={false}` on the button nor a listener attached to it can stop that
+   * (the row, not the button, is the drag source). Cancelling the row's own `dragstart` is
+   * the only thing that does. The drag handle deliberately never sets this, which is what
+   * keeps it able to start a drag.
+   */
+  let suppressDrag = false;
   // Scoped to the tier it happened in: every tier renders its own live region, so a
   // page-global message would announce the same move once per tier.
   const [announce, setAnnounce] = createSignal<{ tierId: string; message: string } | null>(null);
@@ -861,8 +872,19 @@ export function Routing() {
     app.endTierDrag(d.tierId, changed ? 'changed' : 'unchanged');
   };
 
-  /** Move an entry one position and keep keyboard focus on the entry that moved. */
-  const keyboardMove = (tierId: string, modelId: string, delta: -1 | 1): boolean => {
+  /**
+   * Move an entry one position and persist it. Transport-agnostic: the caller supplies
+   * what to focus afterwards, because that is the only part that differs between a
+   * keypress (focus follows the handle the user was on) and a tap (focus stays on the
+   * button the user pressed). Everything above it — resolve, move, commit, announce,
+   * refuse at the boundaries — is shared, so the two paths cannot drift.
+   */
+  const moveEntry = (
+    tierId: string,
+    modelId: string,
+    delta: -1 | 1,
+    refocus: (tierId: string, modelId: string, movedTo: number) => void,
+  ): boolean => {
     const from = indexOfModel(tierId, modelId);
     const to = from + delta;
     if (from < 0 || to < 0 || to >= entries(tierId).length) return false;
@@ -875,14 +897,39 @@ export function Routing() {
     // `moveTierEntry` splices in place so `<For>` MOVES the node rather than recreating
     // it — but the node moves, so re-assert focus after the render has flushed.
     queueMicrotask(() => {
-      document
-        .querySelector<HTMLButtonElement>(
-          `[data-tier-id="${tierId}"] [data-model-id="${modelId}"] .drag-handle`,
-        )
-        ?.focus();
+      refocus(tierId, modelId, to);
     });
     return true;
   };
+
+  const rowControl = (tierId: string, modelId: string, sel: string): HTMLButtonElement | null =>
+    document.querySelector<HTMLButtonElement>(
+      `[data-tier-id="${tierId}"] [data-model-id="${modelId}"] ${sel}`,
+    );
+
+  /** Move an entry one position and keep keyboard focus on the entry that moved. */
+  const keyboardMove = (tierId: string, modelId: string, delta: -1 | 1): boolean =>
+    moveEntry(tierId, modelId, delta, (tid, mid) => {
+      rowControl(tid, mid, '.drag-handle')?.focus();
+    });
+
+  /**
+   * Move by tapping. Focus stays on the button pressed — yanking it to the drag handle,
+   * which is what the keyboard path wants, would move focus off the control the user just
+   * touched. When the move lands on a boundary the pressed button becomes disabled, so
+   * focus goes to the opposite direction instead; that button is always enabled there,
+   * because a successful move implies the chain has at least two entries.
+   */
+  const buttonMove = (tierId: string, modelId: string, delta: -1 | 1): boolean =>
+    moveEntry(tierId, modelId, delta, (tid, mid) => {
+      const dir = delta === -1 ? 'up' : 'down';
+      const pressed = rowControl(tid, mid, `.chain-move[data-dir="${dir}"]`);
+      if (pressed && !pressed.disabled) {
+        pressed.focus();
+        return;
+      }
+      rowControl(tid, mid, `.chain-move[data-dir="${dir === 'up' ? 'down' : 'up'}"]`)?.focus();
+    });
   const addableModels = (tierId: string): Model[] => {
     const used = new Set(entries(tierId).map((e) => e.modelId));
     return state.allModels.filter((m) => !used.has(m.id));
@@ -957,8 +1004,8 @@ export function Routing() {
                   data-tier-id={t.id}
                   data-dragging={drag()?.tierId === t.id ? 'true' : undefined}
                 >
-                  <div style="display:flex;align-items:baseline;justify-content:space-between;padding:13px 18px;border-bottom:1px solid var(--border2)">
-                    <div style="display:flex;align-items:baseline;gap:10px">
+                  <div class="chain-head">
+                    <div style="display:flex;align-items:baseline;gap:10px;min-width:0">
                       <span
                         class="mono"
                         id={`tier-h-${t.id}`}
@@ -973,8 +1020,16 @@ export function Routing() {
                       </Show>
                     </div>
                     <div style="display:flex;align-items:center;gap:10px">
-                      <span style="font:400 11px 'Geist',sans-serif;color:var(--text3)">
-                        drag to reorder · max {String(5)}
+                      <span
+                        class="chain-hint"
+                        style="font:400 11px 'Geist',sans-serif;color:var(--text3)"
+                      >
+                        {/* The affordance named here has to be the one that exists. On a
+                            touch device there is no drag — saying so would send the user
+                            looking for a gesture the platform never fires. */}
+                        <span class="chain-hint-drag">drag to reorder</span>
+                        <span class="chain-hint-tap">use ↑ ↓ to reorder</span> · max{' '}
+                        {String(5)}
                       </span>
                       <Show when={t.key !== 'default'}>
                         <button
@@ -1002,6 +1057,13 @@ export function Routing() {
                           data-dragging={dragging() ? 'true' : undefined}
                           style={{ opacity: dragging() ? '0.4' : '1' }}
                           onDragStart={(e) => {
+                            // A press that began on a move control must not drag the row.
+                            // Checked FIRST, before any drag state is entered.
+                            if (suppressDrag) {
+                              suppressDrag = false;
+                              e.preventDefault();
+                              return;
+                            }
                             dragStartOrder = orderOf(t.id);
                             setAnnounce(null); // a pointer drag retires the last keyboard move
                             setDrag({ tierId: t.id, modelId: entry.modelId });
@@ -1061,36 +1123,79 @@ export function Routing() {
                             {posStyle(mi())[0]}
                           </span>
                           <span
-                            class="mono"
+                            class="mono chain-id"
                             style="font:500 12px 'Geist Mono',monospace;color:var(--text);min-width:0"
                           >
                             {entryLabel(entry)}
                           </span>
                           <span
-                            class="mono"
+                            class="mono chain-price"
                             style="margin-left:auto;font:400 11px 'Geist Mono',monospace;color:var(--text3)"
                           >
                             {modelPriceLabel(modelById(entry.modelId))}
                           </span>
-                          <Show when={mi() > 0}>
+                          {/* Action region. `display: contents` above the threshold, so at
+                              desktop these contribute no box and the row renders exactly as
+                              it always has; below it, its own wrapping line. */}
+                          <div class="chain-actions">
+                            {/* Explicit move controls. Present only where a drag is
+                                unavailable — HTML drag-and-drop never fires for touch, so
+                                without these a chain cannot be reordered on a phone at all. */}
+                            <For each={[-1, 1] as const}>
+                              {(delta) => (
+                                <button
+                                  type="button"
+                                  class="chain-move"
+                                  data-dir={delta === -1 ? 'up' : 'down'}
+                                  disabled={
+                                    drag() !== null ||
+                                    mi() + delta < 0 ||
+                                    mi() + delta >= entries(t.id).length
+                                  }
+                                  aria-label={`Move ${entryLabel(entry)} ${delta === -1 ? 'up' : 'down'}`}
+                                  // Suppresses the ROW's drag, which would otherwise start
+                                  // from a press here: drag-and-drop selects the nearest
+                                  // draggable ancestor, so neither `draggable={false}` nor a
+                                  // listener on this button can prevent it — only cancelling
+                                  // the row's own dragstart can. The handle never sets this,
+                                  // which is what keeps its drag path working.
+                                  onPointerDown={() => {
+                                    suppressDrag = true;
+                                  }}
+                                  onPointerUp={() => {
+                                    suppressDrag = false;
+                                  }}
+                                  onPointerCancel={() => {
+                                    suppressDrag = false;
+                                  }}
+                                  onClick={() => {
+                                    buttonMove(t.id, entry.modelId, delta);
+                                  }}
+                                >
+                                  <span aria-hidden="true">{delta === -1 ? '↑' : '↓'}</span>
+                                </button>
+                              )}
+                            </For>
+                            <Show when={mi() > 0}>
+                              <button
+                                type="button"
+                                class="link-accent"
+                                style="font:400 11px 'Geist',sans-serif"
+                                onClick={() => app.setPrimaryTierModel(t.id, entry.modelId)}
+                              >
+                                Make primary
+                              </button>
+                            </Show>
                             <button
                               type="button"
-                              class="link-accent"
-                              style="font:400 11px 'Geist',sans-serif"
-                              onClick={() => app.setPrimaryTierModel(t.id, entry.modelId)}
+                              class="icon-x"
+                              style="font-size:14px;padding:0 2px"
+                              aria-label={`Remove ${entryLabel(entry)} from tier ${t.key}`}
+                              onClick={() => app.removeTierModel(t.id, entry.modelId)}
                             >
-                              Make primary
+                              ×
                             </button>
-                          </Show>
-                          <button
-                            type="button"
-                            class="icon-x"
-                            style="font-size:14px;padding:0 2px"
-                            aria-label={`Remove ${entryLabel(entry)} from tier ${t.key}`}
-                            onClick={() => app.removeTierModel(t.id, entry.modelId)}
-                          >
-                            ×
-                          </button>
+                          </div>
                         </div>
                       );
                     }}

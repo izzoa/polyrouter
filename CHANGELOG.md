@@ -34,6 +34,18 @@ heading is started.
 
 ### Added
 
+- **Tier chains can be reordered by touch, and the chain row is readable on a phone.**
+  Reordering was wired to HTML5 drag-and-drop, which browsers never fire for touch — so the
+  Routing page rendered on a phone and could not do its job. Each row now carries explicit
+  move-up/move-down controls, disabled at the chain's ends, sharing the mover with the
+  keyboard path so the three transports cannot drift (a test reorders by drag, by keyboard
+  and by tap and asserts an identical result). They appear below 768px or wherever *any*
+  pointer is coarse — a laptop with a mouse and a touchscreen reports a fine pointer while
+  being exactly the device that cannot drag. Measuring the row also turned up that it was
+  already broken: at 320px it had 194px of space and put 253px in it, so the model
+  identifier computed to **zero width** with the price label painted over it and the row
+  action clipped — none of which registered as document overflow. The row now separates
+  information from actions and wraps. Desktop rendering is unchanged.
 - **The dashboard's overlays work on a phone.** Phase 1 adapted the pages but left the
   drawers and dialogs, so a request opened a 440px inspector on a 390px screen (120px
   off-screen at 320px), and the provider form put its Save button 310px past the bottom of a

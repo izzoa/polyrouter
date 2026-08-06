@@ -18,6 +18,8 @@ export type {
   AgentPatch,
   AnalyticsAccessor,
   AnalyticsBreakdownRow,
+  AnalyticsMetric,
+  AnalyticsTokens,
   AutoCounterfactualRates,
   AutoPerformanceData,
   AutoSavingsTotals,

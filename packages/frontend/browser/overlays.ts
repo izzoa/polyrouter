@@ -25,9 +25,9 @@ async function store(page: Page, fn: string, ...args: unknown[]): Promise<void> 
       const s = (globalThis as unknown as { __harnessStore?: Record<string, unknown> })
         .__harnessStore;
       if (!s) throw new Error('harness store missing');
-      const call = s[f as string];
-      if (typeof call !== 'function') throw new Error(`store.${String(f)} is not a function`);
-      (call as (...p: unknown[]) => unknown)(...(a as unknown[]));
+      const call = s[f];
+      if (typeof call !== 'function') throw new Error(`store.${f} is not a function`);
+      (call as (...p: unknown[]) => unknown)(...a);
     },
     [fn, args] as [string, unknown[]],
   );

@@ -525,18 +525,37 @@ export interface TimeseriesPoint {
   spend: number;
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
   errorCount: number;
   fallbackCount: number;
   escalatedCount: number;
 }
 
-/** `GET /breakdown` — top-N by spend desc. `key` is the dimension id (`''` for a
- * null dimension); `label` is the owner-scoped human label (null if deleted). */
+/** What a breakdown is ranked — and TRUNCATED — by. Ranking has to reach the server: it
+ * returns a top-N, so re-sorting the response would silently omit anything that leads on
+ * the chosen metric and trails on spend. */
+export type BreakdownMetric = 'spend' | 'tokens';
+
+/** `GET /breakdown` — top-N by the requested metric, desc. `key` is the dimension id
+ * (`''` for a null dimension); `label` is the owner-scoped human label (null if deleted).
+ *
+ * Token components are reported separately and summed over BOTH ledgers: `inputTokens` is
+ * recorded as *uncached* input, so a total that dropped the cache components would
+ * under-report a cached workload. Note this is not the same population as `spend`, which
+ * additionally excludes subscription-backed rows. */
 export interface BreakdownRow {
   key: string;
   label: string | null;
   spend: number;
+  /** Served requests only — an attempt is a billable call, not a user request. */
   requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  /** A disclosed COMPONENT of the token totals, never subtracted from them. */
+  estimatedTokens: number;
 }
 
 /** One `GET /requests` row — #17's safe view EXACTLY (no owner columns). Ids,
@@ -819,6 +838,7 @@ export interface ApiClient {
     dimension: BreakdownDimension,
     range: AnalyticsRangeParams,
     limit?: number,
+    metric?: BreakdownMetric,
   ): Promise<BreakdownRow[]>;
   requests(query: RequestsQuery): Promise<RequestsPage>;
   /** add-inflight-requests: the owner's live in-flight snapshot for the Overview card. */
@@ -1071,9 +1091,9 @@ export const realClient: ApiClient = {
     http<TimeseriesPoint[]>(
       `${API_BASE}/analytics/timeseries${queryString({ from: range.from, to: range.to, bucket })}`,
     ),
-  breakdown: (dimension, range, limit) =>
+  breakdown: (dimension, range, limit, metric) =>
     http<BreakdownRow[]>(
-      `${API_BASE}/analytics/breakdown${queryString({ dimension, from: range.from, to: range.to, limit })}`,
+      `${API_BASE}/analytics/breakdown${queryString({ dimension, from: range.from, to: range.to, limit, metric })}`,
     ),
   requests: (query) =>
     http<RequestsPage>(

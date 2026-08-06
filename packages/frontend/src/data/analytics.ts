@@ -74,6 +74,30 @@ export function breakdownToSpend(rows: BreakdownRow[]): SpendDatum[] {
   return rows.map((r) => ({ n: labelOf(r.label, r.key === '' ? null : r.key), v: r.spend }));
 }
 
+/** All four recorded components. `inputTokens` is *uncached* input — the adapters record
+ * cached tokens separately — so summing only input+output would under-report a cached
+ * workload while looking exact. */
+export function totalTokens(r: {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+}): number {
+  return r.inputTokens + r.outputTokens + r.cacheReadTokens + r.cacheWriteTokens;
+}
+
+export function breakdownToTokens(rows: BreakdownRow[]): SpendDatum[] {
+  // No `free` flag: it means a price of zero, which says nothing about tokens consumed.
+  return rows.map((r) => ({ n: labelOf(r.label, r.key === '' ? null : r.key), v: totalTokens(r) }));
+}
+
+/** Compact token counts — a bar label has no room for `1,234,567`. */
+export function fmtTokens(v: number): string {
+  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(2)}M`;
+  if (v >= 1_000) return `${(v / 1_000).toFixed(1)}K`;
+  return String(Math.round(v));
+}
+
 export type RequestFilterParams = Pick<RequestsQuery, 'status' | 'escalated' | 'decisionLayers'>;
 
 /** The dashboard's filter chip → server-side query params (Decision 1). All chips

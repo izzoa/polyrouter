@@ -12,6 +12,7 @@ import type {
   ApiClient,
   AutoLayers,
   BreakdownDimension,
+  BreakdownMetric,
   BreakdownRow,
   BudgetDto,
   ChannelDto,
@@ -98,6 +99,8 @@ export const DEFAULT_TIMESERIES: TimeseriesPoint[] = [
     spend: 2,
     inputTokens: 20_000,
     outputTokens: 8_000,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
     errorCount: 0,
     fallbackCount: 1,
     escalatedCount: 1,
@@ -108,6 +111,8 @@ export const DEFAULT_TIMESERIES: TimeseriesPoint[] = [
     spend: 3.5,
     inputTokens: 32_000,
     outputTokens: 12_000,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
     errorCount: 1,
     fallbackCount: 0,
     escalatedCount: 2,
@@ -118,6 +123,8 @@ export const DEFAULT_TIMESERIES: TimeseriesPoint[] = [
     spend: 2.4,
     inputTokens: 24_000,
     outputTokens: 9_000,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
     errorCount: 0,
     fallbackCount: 2,
     escalatedCount: 1,
@@ -128,29 +135,45 @@ export const DEFAULT_TIMESERIES: TimeseriesPoint[] = [
     spend: 4.6,
     inputTokens: 44_000,
     outputTokens: 16_000,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
     errorCount: 1,
     fallbackCount: 1,
     escalatedCount: 2,
   },
 ];
 
+/** Token components for a fixture row.
+ *
+ * Deliberately NOT proportional to spend: the metric switch exists because the two
+ * rankings differ, so a fixture where they agree would let a broken switch pass. */
+function tokens(inTok: number, outTok = Math.round(inTok / 4), estimated = 0) {
+  return {
+    inputTokens: inTok,
+    outputTokens: outTok,
+    cacheReadTokens: Math.round(inTok / 10),
+    cacheWriteTokens: 0,
+    estimatedTokens: estimated,
+  };
+}
+
 function defaultBreakdown(): Record<BreakdownDimension, BreakdownRow[]> {
   return {
     model: [
-      { key: 'model-0', label: 'Model 0', spend: 6.2, requests: 12 },
-      { key: 'model-1', label: 'Model 1', spend: 3.1, requests: 8 },
-      { key: 'model-2', label: 'Model 2', spend: 1.9, requests: 6 },
+      { key: 'model-0', label: 'Model 0', spend: 6.2, requests: 12, ...tokens(40_000) },
+      { key: 'model-1', label: 'Model 1', spend: 3.1, requests: 8, ...tokens(120_000, 30_000, 5_000) },
+      { key: 'model-2', label: 'Model 2', spend: 1.9, requests: 6, ...tokens(9_000) },
     ],
     provider: [
-      { key: 'prov-0', label: 'Provider 0', spend: 7.4, requests: 16 },
-      { key: 'prov-1', label: 'Provider 1', spend: 5.1, requests: 14 },
+      { key: 'prov-0', label: 'Provider 0', spend: 7.4, requests: 16, ...tokens(50_000) },
+      { key: 'prov-1', label: 'Provider 1', spend: 5.1, requests: 14, ...tokens(150_000) },
     ],
     agent: [
-      { key: 'agent-0', label: 'agent-0', spend: 5.0, requests: 11 },
-      { key: 'agent-1', label: 'agent-1', spend: 4.2, requests: 10 },
-      { key: '', label: null, spend: 3.3, requests: 9 },
+      { key: 'agent-0', label: 'agent-0', spend: 5.0, requests: 11, ...tokens(30_000) },
+      { key: 'agent-1', label: 'agent-1', spend: 4.2, requests: 10, ...tokens(80_000) },
+      { key: '', label: null, spend: 3.3, requests: 9, ...tokens(12_000) },
     ],
-    tier: [{ key: 'default', label: 'default', spend: 12.5, requests: 30 }],
+    tier: [{ key: 'default', label: 'default', spend: 12.5, requests: 30, ...tokens(200_000) }],
   };
 }
 
@@ -1343,10 +1366,20 @@ export class FakeApiClient implements ApiClient {
     dimension: BreakdownDimension,
     range: AnalyticsRangeParams,
     limit?: number,
+    metric?: BreakdownMetric,
   ): Promise<BreakdownRow[]> {
-    this.record('breakdown', dimension, range, limit);
+    this.record('breakdown', dimension, range, limit, metric);
     if (this.analyticsFailure) return Promise.reject(this.analyticsFailure);
-    return Promise.resolve((this.breakdownResult[dimension] ?? []).slice(0, limit ?? 10));
+    // Ranks THEN truncates, like the server. A fake that always returned spend order
+    // would let a client-side re-sort pass the very tests written to forbid it.
+    const total = (r: BreakdownRow): number =>
+      r.inputTokens + r.outputTokens + r.cacheReadTokens + r.cacheWriteTokens;
+    const rank = (r: BreakdownRow): number => (metric === 'tokens' ? total(r) : r.spend);
+    return Promise.resolve(
+      [...(this.breakdownResult[dimension] ?? [])]
+        .sort((a, b) => rank(b) - rank(a) || a.key.localeCompare(b.key))
+        .slice(0, limit ?? 10),
+    );
   }
 
   /** Honors the frozen `cursor` + server-side `status`/`escalated`/`decisionLayers`

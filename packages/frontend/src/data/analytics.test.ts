@@ -112,6 +112,8 @@ describe('timeseriesToChart', () => {
         spend: 1,
         inputTokens: 0,
         outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
         errorCount: 0,
         fallbackCount: 0,
         escalatedCount: 0,
@@ -122,6 +124,8 @@ describe('timeseriesToChart', () => {
         spend: 2,
         inputTokens: 0,
         outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
         errorCount: 0,
         fallbackCount: 0,
         escalatedCount: 0,
@@ -142,6 +146,8 @@ describe('timeseriesToChart', () => {
       spend: 0,
       inputTokens: 0,
       outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
       errorCount: 0,
       fallbackCount: 0,
       escalatedCount: 0,
@@ -197,13 +203,22 @@ describe('cost helpers', () => {
   });
 });
 
+/** Token components a breakdown row needs but this suite does not exercise. */
+const T = {
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheReadTokens: 0,
+  cacheWriteTokens: 0,
+  estimatedTokens: 0,
+};
+
 describe('breakdownToSpend', () => {
   it('maps rows to bar data with the label fallback', () => {
     expect(
       breakdownToSpend([
-        { key: 'm1', label: 'GPT', spend: 5, requests: 3 },
-        { key: 'x', label: null, spend: 1, requests: 1 },
-        { key: '', label: null, spend: 2, requests: 1 },
+        { key: 'm1', label: 'GPT', spend: 5, requests: 3, ...T },
+        { key: 'x', label: null, spend: 1, requests: 1, ...T },
+        { key: '', label: null, spend: 2, requests: 1, ...T },
       ]),
     ).toEqual([
       { n: 'GPT', v: 5 },

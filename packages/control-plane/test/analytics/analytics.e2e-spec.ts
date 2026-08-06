@@ -164,13 +164,16 @@ describe('analytics API (#17)', () => {
       at: string;
       priceSource?: string;
       providerKind?: string;
+      /** Defaulted to the original hardcoded 20/5 so existing callers are unchanged. */
+      tin?: number;
+      tout?: number;
     },
   ): Promise<void> {
     await pool.query(
       `INSERT INTO request_attempt
         (id, request_log_id, owner_user_id, attempt_index, tier_key, provider_id, model_id,
          input_tokens, output_tokens, cost, status, created_at, price_source, provider_kind)
-       VALUES ($1,$2,$3,0,$4,$5,$6,20,5,$7,'success',$8,$9,$10)`,
+       VALUES ($1,$2,$3,0,$4,$5,$6,$11,$12,$7,'success',$8,$9,$10)`,
       [
         randomUUID(),
         logId,
@@ -182,6 +185,8 @@ describe('analytics API (#17)', () => {
         s.at,
         s.priceSource ?? null,
         s.providerKind ?? null,
+        s.tin ?? 20,
+        s.tout ?? 5,
       ],
     );
   }
@@ -309,8 +314,12 @@ describe('analytics API (#17)', () => {
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({
       requests: 4,
-      inputTokens: 330,
-      outputTokens: 135,
+      // Tokens now sum BOTH ledgers (was 330/135 over served rows only). The delta is
+      // exactly this fixture's two attempt rows at 20/5 each — an escalated cascade
+      // attempt consumed tokens the user was billed for. `requests` stays 4: an attempt
+      // is a billable call, not a user request.
+      inputTokens: 370,
+      outputTokens: 145,
       successCount: 2,
       fallbackCount: 1,
       errorCount: 1,
@@ -348,6 +357,84 @@ describe('analytics API (#17)', () => {
     const cheap = tier.find((r: { key: string }) => r.key === 'cheap');
     expect(cheap).toMatchObject({ label: 'cheap', requests: 0 }); // attempt-only tier
     expect(cheap.spend).toBeCloseTo(0.5, 9);
+  });
+
+  it('breakdown: RANKS AND TRUNCATES by the requested metric, not always by spend', async () => {
+    // The defect this exists to prevent: the server takes the top N and throws the rest
+    // away, so ranking by spend and re-sorting in the client renders "top by tokens" while
+    // silently omitting anything that leads on tokens and trails on spend.
+    //
+    // The fixture is shaped deliberately — a big cheap-token model against a small
+    // expensive one — and MUST stay that way. Level the numbers and this test still
+    // passes while proving nothing.
+    const owner = await mkUser();
+    const p = userPrincipal(owner);
+    const prov = (
+      await port.providers.insert(p, {
+        name: 'RankProv',
+        kind: 'custom',
+        protocol: 'openai_compatible',
+        baseUrl: 'https://1.1.1.2/v1',
+      })
+    ).id;
+    const pricey = (await port.models.createForProvider(p, prov, { externalModelId: 'pricey' }))!.id;
+    const bulk = (await port.models.createForProvider(p, prov, { externalModelId: 'bulk' }))!.id;
+
+    // Expensive, barely any tokens.
+    await seedLog(owner, { providerId: prov, modelId: pricey, cost: 100, tin: 5, tout: 5, at: DAY1 });
+    // Nearly free, enormous token volume.
+    await seedLog(owner, { providerId: prov, modelId: bulk, cost: 0.01, tin: 900_000, tout: 100_000, at: DAY1 });
+
+    const bySpend = (await q('breakdown', owner, { ...RANGE, dimension: 'model', limit: 1 })).body;
+    expect(bySpend).toHaveLength(1);
+    expect(bySpend[0].key).toBe(pricey); // spend ranking must not regress
+
+    const byTokens = (
+      await q('breakdown', owner, { ...RANGE, dimension: 'model', limit: 1, metric: 'tokens' })
+    ).body;
+    expect(byTokens).toHaveLength(1);
+    // If this returns `pricey`, ranking happened before truncation and the top row by
+    // tokens was discarded — the whole defect this change exists to prevent.
+    expect(byTokens[0].key).toBe(bulk);
+    expect(byTokens[0].inputTokens).toBe(900_000);
+    expect(byTokens[0].outputTokens).toBe(100_000);
+  });
+
+  it('breakdown: token components sum BOTH ledgers, and estimated usage is disclosed not excluded', async () => {
+    const owner = await mkUser();
+    const p = userPrincipal(owner);
+    const prov = (
+      await port.providers.insert(p, {
+        name: 'TokProv',
+        kind: 'custom',
+        protocol: 'openai_compatible',
+        baseUrl: 'https://1.1.1.3/v1',
+      })
+    ).id;
+    const m = (await port.models.createForProvider(p, prov, { externalModelId: 'tok' }))!.id;
+
+    // A served row whose usage was ESTIMATED, plus a superseded attempt on the same model.
+    const logId = await seedLog(owner, {
+      providerId: prov,
+      modelId: m,
+      cost: 1,
+      tin: 100,
+      tout: 20,
+      estimated: true,
+      at: DAY1,
+    });
+    await seedAttempt(logId, owner, { cost: 0.5, modelId: m, providerId: prov, tin: 7, tout: 3, at: DAY1 });
+
+    const rows = (await q('breakdown', owner, { ...RANGE, dimension: 'model' })).body;
+    const row = rows.find((r: { key: string }) => r.key === m);
+    // Both ledgers: 100+7 in, 20+3 out. The attempt's tokens were billed.
+    expect(row.inputTokens).toBe(107); // attempt tokens must not be dropped
+    expect(row.outputTokens).toBe(23);
+    // Served requests only — an attempt is a billable call, not a user request.
+    expect(row.requests).toBe(1);
+    // Estimated tokens are a DISCLOSED component of the total, never subtracted from it.
+    expect(row.estimatedTokens).toBe(120);
+    expect(row.inputTokens + row.outputTokens).toBeGreaterThan(row.estimatedTokens);
   });
 
   it('listRequests: keyset pagination walks every row once, with labels + attempt cost, no owner cols', async () => {

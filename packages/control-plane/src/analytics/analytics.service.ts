@@ -198,6 +198,7 @@ export class AnalyticsService {
       this.parseRange(q.from, q.to),
       q.dimension,
       q.limit ?? DEFAULT_BREAKDOWN_LIMIT,
+      q.metric ?? 'spend',
     );
   }
 

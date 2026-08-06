@@ -1,8 +1,12 @@
-import { For } from 'solid-js';
 import { useApp } from '../state/context';
+import { Segmented } from './Segmented';
 import type { Range } from '../types';
 
-const RANGES: Range[] = ['24h', '7d', '30d'];
+const RANGE_OPTIONS = [
+  { id: '24h' as Range, label: '24h' },
+  { id: '7d' as Range, label: '7d' },
+  { id: '30d' as Range, label: '30d' },
+];
 
 /** The `24h`/`7d`/`30d` segmented control. Uncontrolled (no props) it drives the
  * global Observe range (`setRange`) exactly as before; controlled via
@@ -17,27 +21,5 @@ export function RangeSelector(props: { value?: Range; onChange?: (r: Range) => v
     if (props.onChange) props.onChange(rg);
     else app.setRange(rg);
   };
-  return (
-    <div style="display:flex;background:var(--panel);border:1px solid var(--border);border-radius:7px;padding:2px">
-      <For each={RANGES}>
-        {(rg) => (
-          <button
-            type="button"
-            class="rs-seg"
-            aria-pressed={current() === rg}
-            style={{
-              font: `${current() === rg ? '500' : '400'} 12px 'Geist',sans-serif`,
-              color: current() === rg ? 'var(--text)' : 'var(--text3)',
-              background: current() === rg ? 'var(--chip)' : 'transparent',
-              'border-radius': '5px',
-              cursor: 'pointer',
-            }}
-            onClick={() => set(rg)}
-          >
-            {rg}
-          </button>
-        )}
-      </For>
-    </div>
-  );
+  return <Segmented options={RANGE_OPTIONS} value={current()} onChange={set} />;
 }

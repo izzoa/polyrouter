@@ -34,6 +34,20 @@ heading is started.
 
 ### Added
 
+- **Costs breakdowns can be ranked by tokens, not just spend — and "tokens" now means what
+  you were billed for.** The three Costs panels share a spend/tokens selector; switching it
+  refetches rather than re-sorts, because the API returns a top-N and re-ordering the rows
+  already on screen would have shown "top by tokens" while silently dropping any provider
+  that leads on tokens and trails on spend. Two corrections come with it, and both move
+  numbers: token totals now sum **both cost ledgers** (an escalated cascade attempt consumes
+  tokens that are metered and billed — spend counted them, tokens did not), and they now
+  include **cached tokens** (`input_tokens` is recorded as *uncached* input, so input+output
+  omitted a cached workload's largest component). Summary, timeseries and breakdowns move
+  together, so no two token figures can disagree. **The Overview's token headline reads
+  higher for the same range** — that is the fix, not a display change. Nothing that decides
+  anything reads these figures: budgets, alerts and routing use their own spend-only paths.
+  `GET /api/analytics/breakdown` gains an optional `metric` parameter (defaults to `spend`)
+  and returns the four token components plus `estimatedTokens`.
 - **Tier chains can be reordered by touch, and the chain row is readable on a phone.**
   Reordering was wired to HTML5 drag-and-drop, which browsers never fire for touch — so the
   Routing page rendered on a phone and could not do its job. Each row now carries explicit

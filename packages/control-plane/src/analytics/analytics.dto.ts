@@ -16,6 +16,9 @@ import {
 
 export const ANALYTICS_BUCKETS = ['hour', 'day', 'week', 'month'] as const;
 export const ANALYTICS_DIMENSIONS = ['model', 'provider', 'agent', 'tier'] as const;
+/** What a breakdown is RANKED and truncated by. Defaults to spend, so a caller that
+ * predates this parameter is unaffected. */
+export const ANALYTICS_METRICS = ['spend', 'tokens'] as const;
 
 /** Query-string int → number (validated by `@IsInt` after). */
 const toInt = ({ value }: { value: unknown }): unknown =>
@@ -55,6 +58,10 @@ export class AutoQueryDto extends RangeQueryDto {
 export class BreakdownQueryDto extends RangeQueryDto {
   @IsIn(ANALYTICS_DIMENSIONS)
   dimension!: (typeof ANALYTICS_DIMENSIONS)[number];
+
+  @IsOptional()
+  @IsIn(ANALYTICS_METRICS)
+  metric?: (typeof ANALYTICS_METRICS)[number];
 
   @IsOptional()
   @Transform(toInt)

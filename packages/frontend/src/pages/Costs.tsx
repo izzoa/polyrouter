@@ -1,38 +1,67 @@
 import { createEffect, on, Show } from 'solid-js';
 import { BarRows } from '../components/BarRows';
 import { RangeSelector } from '../components/RangeSelector';
-import { breakdownToSpend } from '../data/analytics';
-import type { BreakdownRow } from '../data/api';
+import { Segmented } from '../components/Segmented';
+import { breakdownToSpend, breakdownToTokens, fmtTokens } from '../data/analytics';
+import type { BreakdownMetric, BreakdownRow } from '../data/api';
 import { createPoller } from '../data/poller';
 import { useApp } from '../state/context';
 
 const POLL_MS = 15_000;
 
-/** A reactive spend-breakdown panel (props are Solid getters, so it re-renders as
- * the breakdown slice loads / the range changes). */
-function BreakdownPanel(props: { title: string; rows: BreakdownRow[]; loading: boolean }) {
+/** A reactive breakdown panel (props are Solid getters, so it re-renders as the breakdown
+ * slice loads / the range or metric changes).
+ *
+ * `stale` blanks the rows while a refetch is in flight for a DIFFERENT metric: the rows
+ * stay mounted during loading, so without it flipping the selector would show dollar
+ * values under a "tokens" heading until the response landed. */
+function BreakdownPanel(props: {
+  title: string;
+  rows: BreakdownRow[];
+  loading: boolean;
+  metric: BreakdownMetric;
+  stale: boolean;
+}) {
+  const tokens = (): boolean => props.metric === 'tokens';
+  const data = () => (tokens() ? breakdownToTokens(props.rows) : breakdownToSpend(props.rows));
   return (
     <div class="panel card">
       <div class="section-title" style="margin-bottom:14px">
         {props.title}
       </div>
       <Show
-        when={props.rows.length > 0}
+        when={props.rows.length > 0 && !props.stale}
         fallback={
           <div style="font:400 12px 'Geist',sans-serif;color:var(--text3)">
-            {props.loading ? 'Loading…' : 'No spend in this range'}
+            {props.loading || props.stale
+              ? 'Loading…'
+              : tokens()
+                ? 'No usage in this range'
+                : 'No spend in this range'}
           </div>
         }
       >
-        <BarRows data={breakdownToSpend(props.rows)} />
+        <BarRows data={data()} {...(tokens() ? { format: fmtTokens } : {})} />
       </Show>
     </div>
   );
 }
 
+const METRIC_OPTIONS = [
+  { id: 'spend' as BreakdownMetric, label: 'spend' },
+  { id: 'tokens' as BreakdownMetric, label: 'tokens' },
+];
+
 export function Costs(props: { live: boolean }) {
   const app = useApp();
   const { state } = app;
+  const metric = (): BreakdownMetric => state.breakdownMetric;
+  /** True while the rows on screen belong to a different range/metric than the one
+   * selected — they are not merely old, they are labelled wrongly. */
+  const stale = (): boolean => {
+    const l = state.breakdownLoadedFor;
+    return l === null || l.metric !== state.breakdownMetric || l.range !== state.range;
+  };
 
   // Not deferred → this covers the mount load, hence `runImmediately: false` below.
   createEffect(
@@ -173,22 +202,46 @@ export function Costs(props: { live: boolean }) {
         </div>
       </div>
 
+      {/* ONE selector for all three panels: re-ranking model, provider and agent together
+          is what makes the comparison legible, and three independent metric states on one
+          screen is more machinery than the question deserves. */}
+      <div class="rs-wrap" style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+        <div style="font:400 12px 'Geist',sans-serif;color:var(--text3)">
+          {metric() === 'tokens'
+            ? 'Ranked by tokens consumed — all recorded work, including cached and superseded cascade attempts.'
+            : 'Ranked by spend — excludes subscription-backed traffic.'}
+        </div>
+        <Segmented
+          options={METRIC_OPTIONS}
+          value={metric()}
+          onChange={(m) => {
+            app.setBreakdownMetric(m);
+          }}
+        />
+      </div>
+
       <div class="rs-grid-2" style="display:grid;gap:12px">
         <BreakdownPanel
-          title={`Spend by model · ${state.range}`}
+          title={`${metric() === 'tokens' ? 'Tokens' : 'Spend'} by model · ${state.range}`}
           rows={state.analyticsBreakdown.model}
           loading={state.analyticsBreakdownLoading}
+          metric={metric()}
+          stale={stale()}
         />
         <div style="display:flex;flex-direction:column;gap:12px">
           <BreakdownPanel
             title="By provider"
             rows={state.analyticsBreakdown.provider}
             loading={state.analyticsBreakdownLoading}
+            metric={metric()}
+            stale={stale()}
           />
           <BreakdownPanel
             title="By agent"
             rows={state.analyticsBreakdown.agent}
             loading={state.analyticsBreakdownLoading}
+            metric={metric()}
+            stale={stale()}
           />
         </div>
       </div>

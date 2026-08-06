@@ -24,6 +24,7 @@ import {
   type ApiClient,
   type ApiProviderKind,
   type AutoLayers,
+  type BreakdownMetric,
   type BreakdownRow,
   type BudgetDto,
   type ChannelConfigInput,
@@ -219,6 +220,16 @@ export interface AppState {
   analyticsBreakdown: { model: BreakdownRow[]; provider: BreakdownRow[]; agent: BreakdownRow[] };
   analyticsBreakdownLoading: boolean;
   analyticsBreakdownError: string | null;
+  /** What the Costs breakdown panels are ranked by. ONE selection for all three: three
+   * independent metric states on one screen is more machinery than the question deserves,
+   * and re-ranking model/provider/agent together is what makes the comparison legible. */
+  breakdownMetric: BreakdownMetric;
+  /** The `{range, metric}` the loaded rows actually belong to.
+   *
+   * Rows stay on screen while a refetch is in flight, so without this a flip of the
+   * selector would relabel dollar values under a "tokens" heading until the new response
+   * landed. The panel renders only when this matches the current selection. */
+  breakdownLoadedFor: { range: Range; metric: BreakdownMetric } | null;
   /** Overview's unfiltered first-6 — independent of the Requests page's window. */
   recentRequests: RequestRow[];
   recentRequestsLoading: boolean;
@@ -720,6 +731,8 @@ function initialState(): AppState {
     analyticsBreakdown: { model: [], provider: [], agent: [] },
     analyticsBreakdownLoading: false,
     analyticsBreakdownError: null,
+    breakdownMetric: 'spend',
+    breakdownLoadedFor: null,
     recentRequests: [],
     recentRequestsLoading: false,
     recentRequestsError: null,
@@ -805,6 +818,8 @@ export interface AppStore {
   setNavExpanded: (open: boolean) => void;
   setAccountMenuOpen: (open: boolean) => void;
   setRange: (range: Range) => void;
+  /** Refetches; it does not re-sort. See `loadBreakdowns`. */
+  setBreakdownMetric: (metric: BreakdownMetric) => void;
   /** Auto-performance section (add-auto-performance-view): Routing-local range. */
   loadAutoPerf: () => Promise<void>;
   setAutoPerfRange: (range: Range) => void;
@@ -1648,19 +1663,28 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
 
   // The breakdowns are one shared slice (Overview loads `model`; Costs loads all
   // three) — one generation so a stale reply is discarded wholesale.
-  const loadBreakdowns = async (dims: CostDimension[]): Promise<void> => {
+  const loadBreakdowns = async (
+    dims: CostDimension[],
+    /** Overview passes `spend` EXPLICITLY: it shares this slice with Costs and must stay
+     * spend-only, rather than inheriting whatever the Costs panels last selected. */
+    metric: BreakdownMetric = 'spend',
+  ): Promise<void> => {
     const { from, to } = currentRange();
     const range = { from, to };
+    // Snapshot the axes BEFORE awaiting — a reply must be attributed to the selection it
+    // was made under, not to whatever is selected when it lands.
+    const forKey = { range: state.range, metric };
     const token = bump('breakdown');
     setState({ analyticsBreakdownLoading: true, analyticsBreakdownError: null });
     try {
-      const results = await Promise.all(dims.map((d) => client.breakdown(d, range)));
+      const results = await Promise.all(dims.map((d) => client.breakdown(d, range, undefined, metric)));
       if (!isCurrent('breakdown', token)) return;
       setState(
         produce((s) => {
           dims.forEach((d, i) => {
             s.analyticsBreakdown[d] = results[i] ?? [];
           });
+          s.breakdownLoadedFor = forKey;
         }),
       );
     } catch (e) {
@@ -1862,14 +1886,25 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         () => client.timeseries(range, bucket),
         (data) => setState('analyticsSeries', data),
       ),
-      loadBreakdowns(['model']),
+      loadBreakdowns(['model'], 'spend'),
       loadRecentRequests(),
     ]);
   };
 
   const loadCosts = async (): Promise<void> => {
     const { from, to } = currentRange();
-    await Promise.all([loadSummary({ from, to }), loadBreakdowns(['model', 'provider', 'agent'])]);
+    await Promise.all([
+      loadSummary({ from, to }),
+      loadBreakdowns(['model', 'provider', 'agent'], state.breakdownMetric),
+    ]);
+  };
+
+  /** Switching the metric REFETCHES rather than re-sorting: the server returns a top-N, so
+   * the rows for one metric are not the rows for the other. */
+  const setBreakdownMetric = (metric: BreakdownMetric): void => {
+    if (state.breakdownMetric === metric) return;
+    setState('breakdownMetric', metric);
+    void loadBreakdowns(['model', 'provider', 'agent'], metric);
   };
 
   // On `reset` FREEZE {from,to}+filter into `requestWindow` and fetch page 1; on
@@ -2235,6 +2270,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     },
     setAccountMenuOpen: (open) => setState('accountMenuOpen', open),
     setRange: (range) => setState('range', range),
+    setBreakdownMetric,
     loadAutoPerf,
     setAutoPerfRange: (range) => {
       // Clear stale data so the section shows Loading for the new range, never

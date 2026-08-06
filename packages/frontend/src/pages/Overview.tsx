@@ -53,6 +53,12 @@ export function Overview(props: { live: boolean }) {
   const reqs = () => state.analyticsSummary?.requests ?? 0;
   const tin = () => state.analyticsSummary?.inputTokens ?? 0;
   const tout = () => state.analyticsSummary?.outputTokens ?? 0;
+  /** Cache is part of the work. `inputTokens` is recorded as *uncached* input — the
+   * adapters subtract cached tokens out and record them separately — so the headline used
+   * to omit a cached workload's largest component while looking exact. */
+  const tcache = () =>
+    (state.analyticsSummary?.cacheReadTokens ?? 0) +
+    (state.analyticsSummary?.cacheWriteTokens ?? 0);
   const successCount = () => state.analyticsSummary?.successCount ?? 0;
   const fallbackCount = () => state.analyticsSummary?.fallbackCount ?? 0;
   const escalatedCount = () => state.analyticsSummary?.escalatedCount ?? 0;
@@ -104,9 +110,10 @@ export function Overview(props: { live: boolean }) {
         </div>
         <div class="panel card">
           <div class="stat-label">Tokens</div>
-          <div class="stat-value">{((tin() + tout()) / 1e6).toFixed(2)}M</div>
+          <div class="stat-value">{((tin() + tout() + tcache()) / 1e6).toFixed(2)}M</div>
           <div class="stat-sub">
             {(tin() / 1e6).toFixed(2)}M in · {(tout() / 1e6).toFixed(2)}M out
+            <Show when={tcache() > 0}> · {(tcache() / 1e6).toFixed(2)}M cached</Show>
           </div>
         </div>
         <div class="panel card">

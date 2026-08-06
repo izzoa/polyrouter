@@ -16,6 +16,7 @@ import {
   type AnalyticsRequestRow,
   type AnalyticsSummary,
   type AnalyticsTimeseriesPoint,
+  type AnalyticsTokens,
   type Principal,
   type RequestLogRow,
 } from '@polyrouter/shared/server';
@@ -182,6 +183,40 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
       lt(requestAttempts.createdAt, r.to),
     ) as SQL;
 
+  /** The four recorded token components for a ledger.
+   *
+   * Reported as components, never collapsed: `input_tokens` is recorded as *uncached*
+   * input (the adapters subtract cached tokens out — `translate/usage.ts`), so a single
+   * total that dropped cache would under-report a cached workload while looking exact.
+   * Null cache coalesces to zero, matching how the summary has always aggregated it. */
+  const tokenSums = (t: typeof requestLogs | typeof requestAttempts) => ({
+    inputTokens: sql<number>`coalesce(sum(${t.inputTokens}), 0)`,
+    outputTokens: sql<number>`coalesce(sum(${t.outputTokens}), 0)`,
+    cacheReadTokens: sql<number>`coalesce(sum(coalesce(${t.cacheReadTokens}, 0)), 0)`,
+    cacheWriteTokens: sql<number>`coalesce(sum(coalesce(${t.cacheWriteTokens}, 0)), 0)`,
+  });
+
+  /** Tokens from rows whose usage was ESTIMATED. A component of the totals, never
+   * subtracted from them — excluding estimated rows would understate real work and make a
+   * ranking depend on how completely each provider reports usage. */
+  const estimatedTokenSum = (t: typeof requestLogs | typeof requestAttempts) =>
+    sql<number>`coalesce(sum(case when ${t.usageEstimated} then ${t.inputTokens} + ${t.outputTokens} + coalesce(${t.cacheReadTokens}, 0) + coalesce(${t.cacheWriteTokens}, 0) else 0 end), 0)`;
+
+  const addTokens = (a: AnalyticsTokens, b: Partial<AnalyticsTokens> | undefined): AnalyticsTokens => ({
+    inputTokens: a.inputTokens + Number(b?.inputTokens ?? 0),
+    outputTokens: a.outputTokens + Number(b?.outputTokens ?? 0),
+    cacheReadTokens: a.cacheReadTokens + Number(b?.cacheReadTokens ?? 0),
+    cacheWriteTokens: a.cacheWriteTokens + Number(b?.cacheWriteTokens ?? 0),
+  });
+  const ZERO_TOKENS: AnalyticsTokens = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+  };
+  const totalTokens = (t: AnalyticsTokens): number =>
+    t.inputTokens + t.outputTokens + t.cacheReadTokens + t.cacheWriteTokens;
+
   return {
     async summary(principal, range): Promise<AnalyticsSummary> {
       const [log] = await db
@@ -233,6 +268,11 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
       const [attempt] = await db
         .select({
           spendMicros: cashMicrosSum(requestAttempts.cost, requestAttempts.providerKind),
+          // Tokens now sum BOTH ledgers: an escalated cascade attempt consumed tokens the
+          // user was billed for, so counting only the served row under-reports usage.
+          // (Request counts stay served-only — an attempt is a billable call, not a user
+          // request.)
+          ...tokenSums(requestAttempts),
           nativeMicros: microsSumIf(
             requestAttempts.cost,
             sql`${requestAttempts.priceSource} = 'native_family' and ${isCashLike(requestAttempts.providerKind)}`,
@@ -259,13 +299,11 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
       const unknownMicros = Number(log?.unknownMicros ?? 0) + Number(attempt?.unknownMicros ?? 0);
       const knownCashMicros =
         Number(log?.knownCashMicros ?? 0) + Number(attempt?.knownCashMicros ?? 0);
+      const tokens = addTokens(addTokens(ZERO_TOKENS, log), attempt);
       return {
         spend: micros / 1_000_000,
         requests: Number(log?.requests ?? 0),
-        inputTokens: Number(log?.inputTokens ?? 0),
-        outputTokens: Number(log?.outputTokens ?? 0),
-        cacheReadTokens: Number(log?.cacheReadTokens ?? 0),
-        cacheWriteTokens: Number(log?.cacheWriteTokens ?? 0),
+        ...tokens,
         successCount: Number(log?.successCount ?? 0),
         fallbackCount: Number(log?.fallbackCount ?? 0),
         errorCount: Number(log?.errorCount ?? 0),
@@ -295,8 +333,7 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
           // Reported spend EXCLUDES prepaid subscription traffic (split-subscription-
           // spend) — this is what a `cash`-basis budget meters, so the two reconcile.
           spendMicros: cashMicrosSum(requestLogs.cost, requestLogs.providerKind),
-          inputTokens: sql<number>`coalesce(sum(${requestLogs.inputTokens}), 0)`,
-          outputTokens: sql<number>`coalesce(sum(${requestLogs.outputTokens}), 0)`,
+          ...tokenSums(requestLogs),
           errorCount: intCount(sql`${requestLogs.status} = 'error'`),
           fallbackCount: intCount(sql`${requestLogs.status} = 'fallback'`),
           escalatedCount: intCount(sql`${requestLogs.escalated}`),
@@ -310,6 +347,9 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
         .select({
           bucket: attemptBucket,
           spendMicros: cashMicrosSum(requestAttempts.cost, requestAttempts.providerKind),
+          // Tokens on this ledger too. Without them a bucket containing ONLY attempt rows
+          // reported zero tokens beside a non-zero spend.
+          ...tokenSums(requestAttempts),
         })
         .from(requestAttempts)
         .where(attemptRange(principal, range))
@@ -323,8 +363,7 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
           requests: Number(r.requests),
           spend: 0,
           micros: Number(r.spendMicros),
-          inputTokens: Number(r.inputTokens),
-          outputTokens: Number(r.outputTokens),
+          ...addTokens(ZERO_TOKENS, r),
           errorCount: Number(r.errorCount),
           fallbackCount: Number(r.fallbackCount),
           escalatedCount: Number(r.escalatedCount),
@@ -333,15 +372,17 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
       for (const r of attemptRows) {
         const at = new Date(r.bucket).getTime();
         const p = points.get(at);
-        if (p) p.micros += Number(r.spendMicros);
-        else
+        if (p) {
+          p.micros += Number(r.spendMicros);
+          Object.assign(p, addTokens(p, r));
+        } else
           points.set(at, {
             bucket: new Date(at),
             requests: 0,
             spend: 0,
             micros: Number(r.spendMicros),
-            inputTokens: 0,
-            outputTokens: 0,
+            // An attempt-only bucket now carries its tokens instead of zero.
+            ...addTokens(ZERO_TOKENS, r),
             errorCount: 0,
             fallbackCount: 0,
             escalatedCount: 0,
@@ -352,7 +393,7 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
         .map(({ micros, ...p }) => ({ ...p, spend: micros / 1_000_000 }));
     },
 
-    async breakdown(principal, range, dimension, limit): Promise<AnalyticsBreakdownRow[]> {
+    async breakdown(principal, range, dimension, limit, metric): Promise<AnalyticsBreakdownRow[]> {
       const logKey =
         dimension === 'model'
           ? requestLogs.modelId
@@ -366,6 +407,8 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
           key: logKey,
           requests: intCount(),
           spendMicros: cashMicrosSum(requestLogs.cost, requestLogs.providerKind),
+          ...tokenSums(requestLogs),
+          estimatedTokens: estimatedTokenSum(requestLogs),
         })
         .from(requestLogs)
         .where(logRange(principal, range))
@@ -373,12 +416,14 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
 
       // Attempt-ledger spend by the same dimension. The agent breakdown joins
       // attempts to their PARENT log for agent_id — BOTH sides owner-scoped.
-      let attemptRows: { key: string | null; spendMicros: number }[];
+      let attemptRows: ({ key: string | null; spendMicros: number; estimatedTokens: number } & AnalyticsTokens)[];
       if (dimension === 'agent') {
         attemptRows = await db
           .select({
           key: requestLogs.agentId,
           spendMicros: cashMicrosSum(requestAttempts.cost, requestAttempts.providerKind),
+          ...tokenSums(requestAttempts),
+          estimatedTokens: estimatedTokenSum(requestAttempts),
         })
           .from(requestAttempts)
           .innerJoin(requestLogs, eq(requestAttempts.requestLogId, requestLogs.id))
@@ -402,31 +447,55 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
           .select({
           key: attKey,
           spendMicros: cashMicrosSum(requestAttempts.cost, requestAttempts.providerKind),
+          ...tokenSums(requestAttempts),
+          estimatedTokens: estimatedTokenSum(requestAttempts),
         })
           .from(requestAttempts)
           .where(attemptRange(principal, range))
           .groupBy(attKey);
       }
 
-      const agg = new Map<string, { micros: number; requests: number }>();
+      type Agg = AnalyticsTokens & { micros: number; requests: number; estimatedTokens: number };
+      const blank = (): Agg => ({ ...ZERO_TOKENS, micros: 0, requests: 0, estimatedTokens: 0 });
+      const agg = new Map<string, Agg>();
       for (const r of logRows) {
         const k = r.key ?? '';
-        const e = agg.get(k) ?? { micros: 0, requests: 0 };
+        const e = agg.get(k) ?? blank();
         e.micros += Number(r.spendMicros);
         e.requests += Number(r.requests);
+        Object.assign(e, addTokens(e, r));
+        e.estimatedTokens += Number(r.estimatedTokens);
         agg.set(k, e);
       }
       for (const r of attemptRows) {
         const k = r.key ?? '';
-        const e = agg.get(k) ?? { micros: 0, requests: 0 };
+        const e = agg.get(k) ?? blank();
         e.micros += Number(r.spendMicros);
+        // Tokens from BOTH ledgers; `requests` deliberately not incremented — an attempt
+        // is a billable call, not a user request.
+        Object.assign(e, addTokens(e, r));
+        e.estimatedTokens += Number(r.estimatedTokens);
         agg.set(k, e);
       }
 
+      // Rank by the metric being ASKED for, then truncate. Doing it the other way round —
+      // taking the top N by spend and re-sorting — silently drops a dimension value that
+      // leads on tokens and trails on spend, producing a chart that is wrong only in what
+      // is missing from it. Ties break on key so the row set is stable between requests.
+      const rank = (v: Agg): number => (metric === 'tokens' ? totalTokens(v) : v.micros);
       const top = [...agg.entries()]
-        .sort((a, b) => b[1].micros - a[1].micros)
+        .sort((a, b) => rank(b[1]) - rank(a[1]) || a[0].localeCompare(b[0]))
         .slice(0, limit)
-        .map(([key, v]) => ({ key, spend: v.micros / 1_000_000, requests: v.requests }));
+        .map(([key, v]) => ({
+          key,
+          spend: v.micros / 1_000_000,
+          requests: v.requests,
+          inputTokens: v.inputTokens,
+          outputTokens: v.outputTokens,
+          cacheReadTokens: v.cacheReadTokens,
+          cacheWriteTokens: v.cacheWriteTokens,
+          estimatedTokens: v.estimatedTokens,
+        }));
 
       const labels = await resolveLabels(
         db,
@@ -435,10 +504,8 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
         top.map((t) => t.key).filter((k) => k !== ''),
       );
       return top.map((t) => ({
-        key: t.key,
+        ...t,
         label: t.key === '' ? null : (labels.get(t.key) ?? null),
-        spend: t.spend,
-        requests: t.requests,
       }));
     },
 

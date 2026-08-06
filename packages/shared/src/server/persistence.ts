@@ -272,26 +272,52 @@ export interface AnalyticsSummary {
   unknownSpend: number;
 }
 
-export interface AnalyticsTimeseriesPoint {
+/** The four recorded token components, summed over BOTH ledgers.
+ *
+ * Reported as components rather than one total, matching how the summary has always
+ * exposed them: `input_tokens` is recorded as *uncached* input (the adapter subtracts
+ * cached tokens out — see `translate/usage.ts`), so a single "tokens" figure that dropped
+ * the cache components would badly under-report a cached workload while looking precise.
+ *
+ * Both ledgers, because an escalated cascade attempt consumed tokens the user was billed
+ * for. Note this is NOT the same population reported spend uses — spend additionally
+ * excludes subscription-backed rows — so a cost-per-token reading is cash spend against
+ * all work. */
+export interface AnalyticsTokens {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+}
+
+export interface AnalyticsTimeseriesPoint extends AnalyticsTokens {
   /** UTC-aligned bucket start. */
   bucket: Date;
   requests: number;
   spend: number;
-  inputTokens: number;
-  outputTokens: number;
   errorCount: number;
   fallbackCount: number;
   escalatedCount: number;
 }
 
-export interface AnalyticsBreakdownRow {
+export interface AnalyticsBreakdownRow extends AnalyticsTokens {
   /** Dimension id / tier key (`''` when the dimension is null on the row). */
   key: string;
   /** Owner-scoped human label, null if the catalog row was deleted. */
   label: string | null;
   spend: number;
+  /** Served requests only — an attempt is a billable call, not a user request. */
   requests: number;
+  /** Tokens from rows whose usage was ESTIMATED rather than reported by the provider.
+   * A component of the totals above, never subtracted from them: excluding them would
+   * understate real work and make the ranking depend on how well a provider reports. */
+  estimatedTokens: number;
 }
+
+/** What a breakdown is ranked — and therefore TRUNCATED — by. The ranking has to happen
+ * where rows are discarded: selecting the top N by spend and re-sorting them by tokens
+ * silently omits anything that ranks highly on tokens and poorly on spend. */
+export type AnalyticsMetric = 'spend' | 'tokens';
 
 export interface AnalyticsRequestsCursor {
   /** Full-precision `created_at::text` (µs), NOT a millisecond-truncated JS Date —
@@ -451,6 +477,9 @@ export interface AnalyticsAccessor {
     range: AnalyticsRange,
     dimension: AnalyticsDimension,
     limit: number,
+    /** Ranks AND truncates by this. Ranking after truncation would drop rows that lead on
+     * the chosen metric but not on spend — see `AnalyticsMetric`. */
+    metric: AnalyticsMetric,
   ): Promise<AnalyticsBreakdownRow[]>;
   listRequests(principal: Principal, query: AnalyticsRequestsQuery): Promise<AnalyticsRequestsPage>;
   autoPerformance(

@@ -278,7 +278,11 @@ export function Users() {
                         {u.name}
                       </span>{' '}
                       <span style="color:var(--text3)">
-                        · {u.email}
+                        {/* The separator only makes sense while name and email share a
+                            line. In the stacked record the email wraps onto its own line,
+                            where a leading "·" reads as a stray bullet. */}
+                        <span class="rs-inline-sep">· </span>
+                        {u.email}
                         {u.id === state.session?.userId ? ' (you)' : ''}
                       </span>
                     </td>

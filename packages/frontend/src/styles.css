@@ -1149,7 +1149,8 @@ select:focus {
   }
   .rs-cell {
     display: flex;
-    gap: 10px;
+    flex-wrap: wrap;
+    gap: 2px 12px;
     justify-content: space-between;
     align-items: baseline;
     padding: 3px 0;
@@ -1165,13 +1166,30 @@ select:focus {
     text-transform: uppercase;
     letter-spacing: 0.05em;
   }
-  /* Long values — a 50-character email, a model id, a token — have a min-content width a
-     flex row cannot shrink below, which pushed the cell past its table. Let them break. */
+  /* Long values take their OWN LINE; short ones stay beside their label.
+   *
+   * `flex-wrap` plus an auto basis floored at `min-content` is what discriminates: a value
+   * whose natural width does not fit beside the label wraps to a full-width line, while
+   * "pending" or a date stays inline where it reads better. A fixed percentage cannot tell
+   * those apart — it would either wrap everything or nothing.
+   *
+   * `break-word`, NOT `anywhere`: `anywhere` breaks at any character, which rendered a
+   * display name as "Alexandr / a / Hartman / n". `break-word` breaks a long unbroken
+   * token only when it has to, and prefers word boundaries — so an email splits at its
+   * hyphen and a name does not split at all. */
   .rs-cell > *,
   .rs-agent-row > div > *,
   .rs-table-users td > * {
+    flex: 0 1 auto;
+    min-width: min-content;
+    max-width: 100%;
+    overflow-wrap: break-word;
+  }
+  .rs-cell > .rs-cell-label,
+  .rs-agent-row > div > .rs-cell-label,
+  .rs-table-users td > .rs-cell-label {
+    flex: none;
     min-width: 0;
-    overflow-wrap: anywhere;
   }
 }
 
@@ -1186,7 +1204,8 @@ select:focus {
   .rs-agent-row > div,
   .rs-agent-actions {
     display: flex;
-    gap: 10px;
+    flex-wrap: wrap;
+    gap: 2px 12px;
     justify-content: space-between;
     align-items: baseline;
     padding: 3px 0;
@@ -1201,13 +1220,30 @@ select:focus {
     text-transform: uppercase;
     letter-spacing: 0.05em;
   }
-  /* Long values — a 50-character email, a model id, a token — have a min-content width a
-     flex row cannot shrink below, which pushed the cell past its table. Let them break. */
+  /* Long values take their OWN LINE; short ones stay beside their label.
+   *
+   * `flex-wrap` plus an auto basis floored at `min-content` is what discriminates: a value
+   * whose natural width does not fit beside the label wraps to a full-width line, while
+   * "pending" or a date stays inline where it reads better. A fixed percentage cannot tell
+   * those apart — it would either wrap everything or nothing.
+   *
+   * `break-word`, NOT `anywhere`: `anywhere` breaks at any character, which rendered a
+   * display name as "Alexandr / a / Hartman / n". `break-word` breaks a long unbroken
+   * token only when it has to, and prefers word boundaries — so an email splits at its
+   * hyphen and a name does not split at all. */
   .rs-cell > *,
   .rs-agent-row > div > *,
   .rs-table-users td > * {
+    flex: 0 1 auto;
+    min-width: min-content;
+    max-width: 100%;
+    overflow-wrap: break-word;
+  }
+  .rs-cell > .rs-cell-label,
+  .rs-agent-row > div > .rs-cell-label,
+  .rs-table-users td > .rs-cell-label {
+    flex: none;
     min-width: 0;
-    overflow-wrap: anywhere;
   }
 }
 
@@ -1219,6 +1255,12 @@ select:focus {
   .rs-table-users thead {
     display: none;
   }
+  /* Separators that only exist to join two values on one line. Once the value wraps to
+     its own line in a stacked record they read as stray punctuation. */
+  .rs-inline-sep {
+    display: none;
+  }
+
   .rs-table-users tr {
     display: block;
     padding: 8px 0;
@@ -1226,7 +1268,8 @@ select:focus {
   }
   .rs-table-users td {
     display: flex;
-    gap: 10px;
+    flex-wrap: wrap;
+    gap: 2px 12px;
     justify-content: space-between;
     align-items: baseline;
     border: 0;
@@ -1242,13 +1285,30 @@ select:focus {
     text-transform: uppercase;
     letter-spacing: 0.05em;
   }
-  /* Long values — a 50-character email, a model id, a token — have a min-content width a
-     flex row cannot shrink below, which pushed the cell past its table. Let them break. */
+  /* Long values take their OWN LINE; short ones stay beside their label.
+   *
+   * `flex-wrap` plus an auto basis floored at `min-content` is what discriminates: a value
+   * whose natural width does not fit beside the label wraps to a full-width line, while
+   * "pending" or a date stays inline where it reads better. A fixed percentage cannot tell
+   * those apart — it would either wrap everything or nothing.
+   *
+   * `break-word`, NOT `anywhere`: `anywhere` breaks at any character, which rendered a
+   * display name as "Alexandr / a / Hartman / n". `break-word` breaks a long unbroken
+   * token only when it has to, and prefers word boundaries — so an email splits at its
+   * hyphen and a name does not split at all. */
   .rs-cell > *,
   .rs-agent-row > div > *,
   .rs-table-users td > * {
+    flex: 0 1 auto;
+    min-width: min-content;
+    max-width: 100%;
+    overflow-wrap: break-word;
+  }
+  .rs-cell > .rs-cell-label,
+  .rs-agent-row > div > .rs-cell-label,
+  .rs-table-users td > .rs-cell-label {
+    flex: none;
     min-width: 0;
-    overflow-wrap: anywhere;
   }
 }
 

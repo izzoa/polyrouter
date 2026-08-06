@@ -15,6 +15,11 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-08-05
+
+[Release](https://github.com/izzoa/polyrouter/releases/tag/v0.11.0) ·
+[Compare](https://github.com/izzoa/polyrouter/compare/v0.10.0...v0.11.0)
+
 ### Added
 
 - **Branded HTML notification emails with links back into the dashboard.** Every
@@ -50,6 +55,17 @@ heading is started.
   evaluates exactly that ambiguous slice. Agents below the evidence floor are disclosed
   in a neutral coverage line rather than silently looking healthy. The
   `/api/analytics/auto` response gains a per-agent `signalQuality` block.
+
+### Upgrade notes
+
+- **No migrations and no schema change** — a drop-in upgrade from 0.10.0.
+- **`APP_URL` now also gates the links in notification emails.** The variable is not new
+  and its auth behaviour is unchanged, but it now decides whether a notification carries
+  a link to the dashboard: set it to the address your users actually reach the dashboard
+  at, then restart. On the default (`http://localhost:3001`), or any loopback value, links
+  are deliberately omitted rather than sending a `127.0.0.1` URL that is dead in a
+  recipient's inbox. A LAN or `.local` address works and is often right for a self-hosted
+  instance. The value is read at boot, so a restart is required after changing it.
 
 ## [0.10.0] — 2026-07-29
 
@@ -520,7 +536,8 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.11.0
 [0.10.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.10.0
 [0.9.3]: https://github.com/izzoa/polyrouter/releases/tag/v0.9.3
 [0.9.2]: https://github.com/izzoa/polyrouter/releases/tag/v0.9.2

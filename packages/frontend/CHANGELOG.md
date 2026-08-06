@@ -1,5 +1,35 @@
 # @polyrouter/frontend
 
+## 0.11.0
+
+### Minor Changes
+
+- 5ff4c44: Auto-performance now surfaces per-agent L1 signal quality. When a stable
+  agent's structural score collapses to a near-constant (its modal two-decimal
+  score bucket covers ≥ 50% of ≥ 50 ambiguous-band requests in range), the
+  Auto-performance card names the agent, the score, and the share — with
+  availability-aware guidance (pin a tier, or enable/configure L2 · Semantic,
+  which evaluates exactly that ambiguous slice). Below the evidence floor no
+  verdict is rendered, and a neutral coverage line discloses unassessed agents
+  so insufficient evidence never reads as healthy. `GET /api/analytics/auto`
+  gains the per-agent `signalQuality` block. Read-time aggregation only — no
+  routing behavior, hot-path, or schema change.
+- 26a7d58: Dashboard pages are now addressable by URL. Each page has a `#/<page>`
+  fragment, so pages can be bookmarked, the browser's Back/Forward buttons move
+  along the page axis, and a link from outside the product can open a specific
+  page. An unrecognized fragment falls back to the default page as before.
+
+  Authorization is unchanged and now enforced on the route itself: the
+  admin-only Users area cannot be reached by URL as a non-admin — the requested
+  page is held until the session resolves, then admitted only if permitted. The
+  accept-invite link flow is untouched; its token fragment is never parsed as a
+  page nor written to history.
+
+### Patch Changes
+
+- Updated dependencies [5ff4c44]
+  - @polyrouter/shared@0.11.0
+
 ## 0.10.0
 
 ### Minor Changes

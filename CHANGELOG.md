@@ -15,6 +15,23 @@ heading is started.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The body-capture confirmation dialogs are real dialogs.** "Capture prompt & response
+  bodies?" and "Turn capture off" carried `role="dialog" aria-modal="true"` while implementing
+  none of the behaviour it promises: focus could Tab straight out into the page behind, and
+  Escape did not dismiss them — while assistive technology was told the rest of the page was
+  hidden. Both now trap focus, close on Escape, and restore focus to the control that opened
+  them.
+
+### Changed
+
+- **The account menu closes on Tab**, letting focus continue into the page, which is how
+  menus are expected to behave; previously Tab moved focus through the page behind while the
+  menu stayed open. Underneath both entries, overlay layering is now decided in one place —
+  which surface takes Escape, which traps Tab, and which paints on top all derive from one
+  ordering, so they can no longer disagree.
+
 ### Added
 
 - **The dashboard works on a phone.** Every page previously rendered a desktop layout at any

@@ -247,3 +247,97 @@ describe('stacked overlays dismiss one surface per Escape', () => {
     }
   });
 });
+
+describe('layer arbitration replaces the per-pair workarounds', () => {
+  it('closes the account menu on Tab and lets focus travel on', async () => {
+    // BEHAVIOUR CHANGE, deliberate (task 2.4). The menu had no Tab handling at all, so Tab
+    // moved focus through the page behind it while it stayed open. Registering it as a
+    // `menu` adopts the WAI-ARIA menu pattern: Tab dismisses and focus continues. It must
+    // NOT trap Tab — that is a dialog's behaviour, and this is not a dialog.
+    const h = await mount();
+    try {
+      h.store.setAccountMenuOpen(true);
+      await flush();
+      const e = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+      document.body.dispatchEvent(e);
+      await flush();
+      expect(h.store.state.accountMenuOpen).toBe(false);
+      expect(e.defaultPrevented, 'a menu must not trap Tab the way a dialog does').toBe(false);
+    } finally {
+      h.dispose();
+    }
+  });
+
+  it('no longer needs UserMenu to stand down when the nav is expanded', async () => {
+    // Phase 1 patched the double-dismiss by making UserMenu skip Escape while the nav was
+    // open. That guard is gone; the ordering now does the work, so the outcome must be
+    // unchanged — menu first, nav second.
+    const h = await mount();
+    try {
+      h.store.setNavExpanded(true);
+      h.store.setAccountMenuOpen(true);
+      await flush();
+      escape();
+      await flush();
+      expect(h.store.state.accountMenuOpen).toBe(false);
+      expect(h.store.state.navExpanded).toBe(true);
+      escape();
+      await flush();
+      expect(h.store.state.navExpanded).toBe(false);
+    } finally {
+      h.dispose();
+    }
+  });
+
+  it('registers the expanded nav as a layer and removes it on collapse', async () => {
+    const h = await mount();
+    try {
+      expect(h.store.state.layers).toHaveLength(0);
+      h.store.setNavExpanded(true);
+      await flush();
+      expect(h.store.state.layers.map((l) => l.kind)).toEqual(['dialog']);
+      h.store.setNavExpanded(false);
+      await flush();
+      expect(h.store.state.layers, 'the layer outlived its surface').toHaveLength(0);
+    } finally {
+      h.dispose();
+    }
+  });
+});
+
+describe('opening a dialog over a transient does not strand focus outside it', () => {
+  it('leaves focus INSIDE the dialog when it supersedes the account menu', async () => {
+    // The ordering bug the round-3 review found: `useLayer` focused the new dialog BEFORE
+    // registering it, and registration synchronously supersedes open transients — whose
+    // dismissal restores focus to their own trigger. So the dialog was focused and then
+    // immediately had focus yanked back out to the account-menu button behind it.
+    //
+    // Registration now happens first, so the supersession has already settled by the time
+    // the dialog takes focus.
+    const h = await mount();
+    try {
+      h.store.setAccountMenuOpen(true);
+      await flush();
+      const trigger = h.host.querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]');
+      trigger?.focus();
+      expect(document.activeElement, 'fixture precondition: focus starts on the menu').toBe(
+        trigger,
+      );
+
+      h.store.openModal('newAgent');
+      await flush();
+
+      const card = h.host.querySelector<HTMLElement>('.modal-card');
+      expect(card, 'modal did not open').not.toBeNull();
+      // The menu is superseded…
+      expect(h.store.state.accountMenuOpen).toBe(false);
+      // …and focus is in the dialog, NOT back on the trigger it restored to.
+      expect(
+        card?.contains(document.activeElement) || document.activeElement === card,
+        'focus was stranded outside the dialog by the superseded menu restoring its trigger',
+      ).toBe(true);
+    } finally {
+      h.dispose();
+    }
+  });
+});

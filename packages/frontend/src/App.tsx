@@ -1,4 +1,5 @@
 import { Match, onMount, Show, Switch, type ParentProps, createEffect, onCleanup } from 'solid-js';
+import { installLayerArbiter } from './a11y';
 import { Inspector } from './components/Inspector';
 import { Modals } from './components/Modals';
 import { createVisibility } from './data/poller';
@@ -38,6 +39,12 @@ function Shell(props: { live: boolean }) {
     else app.disconnectStream();
   });
   onCleanup(() => app.disconnectStream());
+
+  // The overlay arbiter is installed by the mounted shell, NOT by `createAppStore` — the
+  // test suites construct many stores and would otherwise accumulate document listeners.
+  onMount(() => {
+    onCleanup(installLayerArbiter({ layers: () => state.layers }));
+  });
 
   // Shell sizing and containment (fix-shell-scroll-containment):
   //

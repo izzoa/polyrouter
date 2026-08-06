@@ -75,6 +75,28 @@ export default tseslint.config(
     plugins: {
       'a11y-guard': {
         rules: {
+          // `aria-modal` asserts that the rest of the page is hidden from assistive tech.
+          // Writing it by hand is how two BodyCaptureCard dialogs came to claim it with no
+          // focus trap, no Escape and no focus restore — the attributes without any of the
+          // behaviour. `useModalSurface` supplies the attributes and the layer registration
+          // together, so the two cannot come apart.
+          'modal-surface-only': {
+            meta: {
+              type: 'problem',
+              schema: [],
+              messages: {
+                raw: 'Raw `aria-modal` — use `useModalSurface()` and spread its props, so the registration and focus trap come with it.',
+              },
+            },
+            create(context) {
+              return {
+                JSXAttribute(node) {
+                  if (String(node.name.name) !== 'aria-modal') return;
+                  context.report({ node, messageId: 'raw' });
+                },
+              };
+            },
+          },
           'no-noninteractive-click': {
             meta: {
               type: 'problem',
@@ -170,6 +192,7 @@ export default tseslint.config(
       },
     },
     rules: {
+      'a11y-guard/modal-surface-only': 'error',
       'a11y-guard/no-noninteractive-click': 'error',
       'a11y-guard/label-association': 'error',
     },

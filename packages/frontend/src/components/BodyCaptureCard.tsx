@@ -1,4 +1,5 @@
 import { createSignal, For, Show } from 'solid-js';
+import { useModalSurface } from '../a11y';
 import { useApp } from '../state/context';
 
 type Mode = 'off' | 'errors_only' | 'all';
@@ -202,14 +203,25 @@ export function BodyCaptureCard() {
 
       {/* Consent confirm (enable transitions only) */}
       <Show when={confirmMode()} keyed>
-        {(mode) => (
-          <div class="overlay" style="z-index:40">
+        {(mode) => {
+          // These two dialogs claimed `role="dialog" aria-modal="true"` while implementing
+          // NONE of it — no focus trap, no Escape, no restore. A keyboard user could Tab
+          // straight out into the page behind while `aria-modal` told assistive tech the
+          // rest of the page was hidden. The contract forbidding that was a comment.
+          // Attributes and registration in one call — the shape that makes claiming
+          // `aria-modal` without a focus trap difficult to write rather than merely
+          // detectable. Both of these dialogs shipped doing exactly that.
+          const surface = useModalSurface(app, {
+            when: () => true, // this branch only renders while the dialog is open
+            label: 'Confirm body capture',
+            onDismiss: () => setConfirmMode(null),
+          });
+          return (
+          <div class="overlay" style={{ 'z-index': String(surface.z().backdrop) }}>
             <div
               class="panel card"
-              role="dialog"
-              aria-modal="true"
-              aria-label="Confirm body capture"
-              style="position:fixed;top:30%;left:50%;transform:translateX(-50%);max-width:440px;z-index:41"
+              {...surface.props}
+              style={{ position: 'fixed', top: '30%', left: '50%', transform: 'translateX(-50%)', 'max-width': '440px', 'z-index': String(surface.z().surface) }}
             >
               <div class="section-title" style="margin-bottom:8px">
                 Capture prompt &amp; response bodies?
@@ -238,18 +250,27 @@ export function BodyCaptureCard() {
               </div>
             </div>
           </div>
-        )}
+          );
+        }}
       </Show>
 
       {/* Disable: keep-or-purge */}
       <Show when={disableChoice()}>
-        <div class="overlay" style="z-index:40">
+        {(() => {
+          // Attributes and registration in one call — the shape that makes claiming
+          // `aria-modal` without a focus trap difficult to write rather than merely
+          // detectable. Both of these dialogs shipped doing exactly that.
+          const surface = useModalSurface(app, {
+            when: () => true, // this branch only renders while the dialog is open
+            label: 'Disable body capture',
+            onDismiss: () => setDisableChoice(false),
+          });
+          return (
+        <div class="overlay" style={{ 'z-index': String(surface.z().backdrop) }}>
           <div
             class="panel card"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Disable body capture"
-            style="position:fixed;top:30%;left:50%;transform:translateX(-50%);max-width:440px;z-index:41"
+            {...surface.props}
+            style={{ position: 'fixed', top: '30%', left: '50%', transform: 'translateX(-50%)', 'max-width': '440px', 'z-index': String(surface.z().surface) }}
           >
             <div class="section-title" style="margin-bottom:8px">
               Turn capture off
@@ -288,6 +309,8 @@ export function BodyCaptureCard() {
             </div>
           </div>
         </div>
+          );
+        })()}
       </Show>
     </div>
   );

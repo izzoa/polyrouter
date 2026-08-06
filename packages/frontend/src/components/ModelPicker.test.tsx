@@ -1,4 +1,7 @@
 import { render } from 'solid-js/web';
+import { createAppStore, type AppStore } from '../state/appState';
+import { AppProvider } from '../state/context';
+import { FakeApiClient } from '../test/fakeClient';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Model } from '../types';
 import { filterModelGroups, ModelPicker, type ModelGroup } from './ModelPicker';
@@ -71,9 +74,13 @@ function mountPicker(groups: ModelGroup[] = GROUPS): Mounted {
   document.body.appendChild(host);
   const onCommit = vi.fn();
   const hdrId = `hdr-${String(mountSeq++)}`; // distinct per tier, as in Routing.tsx
+  // Wrapped in a provider so the picker actually REGISTERS as a layer. Mounted bare, its
+  // `useAppOptional()` returns undefined and every assertion below exercises the component
+  // in a configuration the app never runs it in.
+  const store: AppStore = createAppStore(new FakeApiClient());
   const dispose = render(
     () => (
-      <>
+      <AppProvider store={store}>
         <span id={hdrId}>default</span>
         <ModelPicker
           groups={groups}
@@ -81,7 +88,7 @@ function mountPicker(groups: ModelGroup[] = GROUPS): Mounted {
           priceLabel={() => '$1 / $2 per 1M'}
           onCommit={onCommit}
         />
-      </>
+      </AppProvider>
     ),
     host,
   );

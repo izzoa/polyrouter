@@ -1,6 +1,6 @@
 import { HARNESS_LABELS, HARNESS_TYPES } from '@polyrouter/shared';
-import { createEffect, For, on, onCleanup, onMount, Show } from 'solid-js';
-import { dialogKeyboard } from '../a11y';
+import { createEffect, For, on, Show } from 'solid-js';
+import { useModalSurface } from '../a11y';
 import {
   EVENT_TYPES,
   type BudgetScope,
@@ -74,12 +74,12 @@ export function Modals() {
     <Show when={state.modal}>
       {(_kind) => {
         let cardEl: HTMLDivElement | undefined;
-        onMount(() => {
-          const dispose = dialogKeyboard({
-            root: () => cardEl,
-            onClose: () => app.closeModal(),
-          });
-          onCleanup(dispose);
+        // Registers as a `dialog`: it claims aria-modal, so it owes the trapping contract.
+        // Ordering, suspension and dispatch all come from the arbiter now.
+        const surface = useModalSurface(app, {
+          when: () => true, // this branch only renders while a modal is open
+          labelledBy: 'modal-title',
+          onDismiss: () => app.closeModal(),
         });
         // A kind switch (e.g. newAgent → keyReveal) keeps this branch mounted but unmounts
         // the focused control; refocus the card so keyboard/SR users aren't dropped on body.
@@ -94,18 +94,17 @@ export function Modals() {
           // eslint-disable-next-line a11y-guard/no-noninteractive-click -- pointer-only backdrop redundancy; Escape is the keyboard path
           <div
             class="modal-backdrop"
+            style={{ 'z-index': String(surface.z().backdrop) }}
             onClick={(e) => {
               if (e.target === e.currentTarget) app.closeModal();
             }}
           >
             <div
               class="modal-card"
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="modal-title"
-              tabindex="-1"
-              ref={(el) => {
+              {...surface.props}
+              ref={(el: HTMLDivElement) => {
                 cardEl = el;
+                (surface.props['ref'] as (n: HTMLElement) => void)(el);
               }}
             >
               <Show when={state.modal === 'newAgent'}>

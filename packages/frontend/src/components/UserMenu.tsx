@@ -1,4 +1,5 @@
 import { onCleanup, Show } from 'solid-js';
+import { useLayer } from '../a11y';
 import { useApp } from '../state/context';
 
 /** The signed-in identity + account menu (user-administration): always-visible
@@ -35,17 +36,15 @@ export function UserMenu() {
   // Menu-pattern keyboard support while open: Escape restores the trigger,
   // arrows cycle the items, Home/End jump (document-level — the menuitems
   // themselves are plain buttons).
+  // Escape is NOT handled here. The arbiter dismisses the topmost layer, and this menu
+  // registers above whatever it sits inside — so the phase-1 workaround (standing down
+  // when the nav was expanded, because this listener ran first and cleared the state the
+  // nav read) is gone along with the problem it patched.
+  //
+  // Arrow/Home/End stay: they are menu navigation, not dismissal, and the arbiter takes
+  // only Escape and Tab.
   const onDocKeydown = (e: KeyboardEvent): void => {
     if (!open()) return;
-    if (e.key === 'Escape') {
-      // Inside the narrow-width nav overlay, that overlay owns dismissal ordering and
-      // closes this menu itself — see the comment on its `onClose`. Handling Escape here
-      // as well would close the menu AND let the nav's handler close the nav, because
-      // this listener runs first and would clear the state the nav arbitrates on.
-      if (state.navExpanded) return;
-      close(true); // focus returns to the trigger
-      return;
-    }
     const list = items();
     if (list.length === 0) return;
     const idx = list.indexOf(document.activeElement as HTMLButtonElement);
@@ -66,6 +65,16 @@ export function UserMenu() {
   const onDocClick = (e: MouseEvent): void => {
     if (open() && rootEl && !rootEl.contains(e.target as Node)) close();
   };
+  // `menu`, not `dialog`: it must NOT trap Tab. Registering makes Tab close it and let
+  // focus travel on, which it did not do before — a deliberate accessibility fix (WAI-ARIA
+  // menu pattern), called out in the changeset rather than passed off as no change.
+  const z = useLayer(app, {
+    when: () => open(),
+    kind: 'menu',
+    root: () => menuEl,
+    onDismiss: () => close(true), // focus returns to the trigger
+  });
+
   document.addEventListener('keydown', onDocKeydown);
   document.addEventListener('click', onDocClick);
   onCleanup(() => {
@@ -113,7 +122,7 @@ export function UserMenu() {
           ref={(el) => {
             menuEl = el;
           }}
-          style="position:absolute;bottom:calc(100% + 6px);left:0;right:0;padding:5px;display:flex;flex-direction:column;gap:1px;z-index:30"
+          style={`position:absolute;bottom:calc(100% + 6px);left:0;right:0;padding:5px;display:flex;flex-direction:column;gap:1px;z-index:${String(z().surface)}`}
         >
           {item('Settings', () => app.go('settings'))}
           {item(state.theme === 'light' ? 'Switch to dark' : 'Switch to light', () =>

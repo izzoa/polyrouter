@@ -13,6 +13,17 @@ export function AppProvider(props: ParentProps<{ store: AppStore }>) {
   return <AppContext.Provider value={props.store}>{props.children}</AppContext.Provider>;
 }
 
+/** The store if one is provided, else undefined.
+ *
+ * The test seam for components that are deliberately store-independent: `ModelPicker`'s
+ * suite mounts it standalone, and requiring a provider there would rewrite 24 passing specs
+ * to test the harness rather than the component. A component using this must behave
+ * correctly with no store — for the picker that means its own keyboard handling still
+ * works; it simply does not participate in layer ordering when there is no registry. */
+export function useAppOptional(): AppStore | undefined {
+  return useContext(AppContext);
+}
+
 export function useApp(): AppStore {
   const store = useContext(AppContext);
   if (!store) throw new Error('useApp must be used within an AppProvider');

@@ -342,3 +342,95 @@ test.describe('desktop parity against the released v0.11.0 baseline (task 8.8)',
     expect(display).toBe('contents');
   });
 });
+
+test.describe('overlay paint order follows the layer registry', () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  test('z-index is derived from the registry, not hand-assigned', async ({ page }) => {
+    // Only a real browser can check this. The element carrying z-index is usually NOT the
+    // registered dialog root — the modal's is its PARENT backdrop, the drawer's a SIBLING —
+    // and an ancestor stacking context can trap a child's z-index entirely.
+    await open(page, '#/requests');
+    await page.locator('button.req-row').first().click();
+    await expect(page.locator('.drawer')).toBeVisible();
+
+    const z = await page.evaluate(() => {
+      const of = (s: string): number | null => {
+        const el = document.querySelector(s);
+        return el ? Number(getComputedStyle(el).zIndex) : null;
+      };
+      return { backdrop: of('.overlay'), surface: of('.drawer') };
+    });
+    // One open layer → the first slot of the band, backdrop then surface.
+    expect(z.backdrop).toBe(40);
+    expect(z.surface).toBe(41);
+    expect(z.surface! - z.backdrop!, 'a layer is a backdrop AND a surface').toBe(1);
+  });
+
+  test('an open drawer isolates the page beneath it, including the nav', async ({ page }) => {
+    // Consequence of deriving paint order rather than hand-assigning it: the drawer is a
+    // modal layer, so its backdrop covers the sidebar and the rail toggle cannot be
+    // clicked through it. That is correct isolation — and it means the expanded nav and an
+    // open drawer can no longer be reached together through the UI at all, which bears on
+    // the phase-2 coexistence question recorded in the change's design.
+    await open(page, '#/requests');
+    await page.locator('button.req-row').first().click();
+    await expect(page.locator('.drawer')).toBeVisible();
+
+    const covered = await page.evaluate(() => {
+      const t = document.querySelector('.rs-nav-toggle');
+      if (!t) return null;
+      const r = t.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return hit !== null && !t.contains(hit) && hit !== t;
+    });
+    expect(covered, 'the drawer backdrop does not cover the sidebar').toBe(true);
+  });
+
+  test('a popover opened inside a dialog paints above it', async ({ page }) => {
+    // Task 4.3's other half. The combobox lives inside the Routing tier editor; its panel
+    // used to carry a hardcoded z-index 55 chosen to sit above modals. It now derives from
+    // the registry, so this asserts the DERIVATION produces the same outcome — by
+    // hit-testing, because an ancestor stacking context can trap a child's z-index and a
+    // declaration check would not notice.
+    test.setTimeout(30_000);
+    await open(page, '#/routing');
+    const input = page.locator('.mp-input').first();
+    if ((await input.count()) === 0) test.skip(true, 'no tier editor on this fixture');
+    await input.click();
+    const panel = page.locator('.mp-panel').first();
+    await expect(panel).toBeVisible();
+
+    const result = await page.evaluate(() => {
+      const p = document.querySelector('.mp-panel');
+      if (!p) return null;
+      const r = p.getBoundingClientRect();
+      const hit = document.elementFromPoint(
+        Math.round(r.left + r.width / 2),
+        Math.round(r.top + 10),
+      );
+      return {
+        panelOnTop: hit !== null && (p.contains(hit) || hit === p),
+        z: Number(getComputedStyle(p).zIndex),
+      };
+    });
+    expect(result, 'picker panel missing').not.toBeNull();
+    expect(result?.panelOnTop, 'the popover is not hit-testing on top').toBe(true);
+    // Derived, not the old hardcoded 55.
+    expect(result?.z).toBeLessThan(60);
+  });
+
+  test('no layer can overtake the toast', async ({ page }) => {
+    // The band is bounded on purpose: the toast is not a dismissible layer and must stay
+    // above everything, so a dynamically-ordered layer must never reach it.
+    await open(page);
+    await page.locator('.rs-nav-toggle').click();
+    await page.waitForTimeout(200);
+    const zs = await page.evaluate(() =>
+      [...document.querySelectorAll<HTMLElement>('.overlay, .drawer, .modal-backdrop')]
+        .map((el) => Number(getComputedStyle(el).zIndex))
+        .filter((n) => Number.isFinite(n)),
+    );
+    for (const z of zs) expect(z, 'a layer reached the toast band').toBeLessThan(60);
+  });
+});

@@ -1,5 +1,5 @@
-import { createMemo, For, onCleanup, onMount, Show } from 'solid-js';
-import { dialogKeyboard } from '../a11y';
+import { createMemo, For, Show } from 'solid-js';
+import { useModalSurface } from '../a11y';
 import { toInspectorView } from '../data/analytics';
 import type { RequestRow, RequestStatus } from '../data/api';
 import { fmtDateTime } from '../data/catalog';
@@ -37,34 +37,29 @@ export function Inspector() {
     <Show when={selected()}>
       {(row) => {
         const view = createMemo(() => toInspectorView(row()));
-        let drawerEl: HTMLDivElement | undefined;
-        onMount(() => {
-          const dispose = dialogKeyboard({
-            root: () => drawerEl,
-            onClose: () => app.select(null),
-            // A modal stacked above owns the keyboard entirely (Escape AND Tab loop);
-            // the drawer resumes when it closes. The narrow-width nav overlay counts for
-            // the same reason: without this, one Escape would close the nav AND the
-            // drawer, because both handlers sit on `document` and neither would know.
-            suspended: () => state.modal !== null || state.navExpanded,
-          });
-          onCleanup(dispose);
+        // No `suspended` predicate any more. Which layer owns the keyboard is the
+        // arbiter's single derivation, so the drawer no longer has to enumerate every
+        // surface that might stack above it — the enumeration that grew a term per phase.
+        const surface = useModalSurface(app, {
+          when: () => true, // this branch only renders while a row is selected
+          label: 'Request inspector',
+          onDismiss: () => app.select(null),
         });
         return (
           <>
             {/* eslint-disable-next-line a11y-guard/no-noninteractive-click -- pointer-only backdrop redundancy; Escape is the keyboard path */}
-            <div class="overlay" onClick={() => app.select(null)} />
+            <div
+              class="overlay"
+              style={{ 'z-index': String(surface.z().backdrop) }}
+              onClick={() => app.select(null)}
+            />
             <div
               class="drawer"
+              style={{ 'z-index': String(surface.z().surface) }}
               inert={state.navExpanded ? true : undefined}
               id="inspector-drawer"
-              role="dialog"
-              aria-modal="true"
-              aria-label="Request inspector"
-              tabindex="-1"
-              ref={(el) => {
-                drawerEl = el;
-              }}
+              {...surface.props}
+              ref={surface.props['ref'] as (n: HTMLElement) => void}
             >
               <div style="flex:none;display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border2)">
                 <div>

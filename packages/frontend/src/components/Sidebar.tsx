@@ -1,9 +1,14 @@
 import { createEffect, For, onCleanup, onMount, Show } from 'solid-js';
-import { dialogKeyboard } from '../a11y';
+import { useModalSurface } from '../a11y';
 import { useApp } from '../state/context';
 import type { Page } from '../types';
 import { PageIcon } from './PageIcon';
 import { UserMenu } from './UserMenu';
+
+/** Held as a constant so the narrow-width z-index can be appended without restating it —
+ * and without converting it to an object, which mangles the border shorthand. */
+const SIDEBAR_STYLE =
+  'flex:none;border-right:1px solid var(--border);display:flex;flex-direction:column;background:var(--panel);min-height:0;overflow-y:auto;overscroll-behavior-y:contain';
 
 const NAV: [Page, string][] = [
   ['overview', 'Overview'],
@@ -46,7 +51,6 @@ export function Sidebar() {
   // width outranks any class, so a media query could never have reached it. The shell
   // contract is untouched — `data-pane`, internal scrolling and axis-scoped
   // `overscroll-behavior-y` all stay exactly as they were.
-  let panelEl: HTMLDivElement | undefined;
 
   // The expanded rail must not survive leaving narrow width. Above the threshold the
   // toggle is `display:none`, so an expanded nav that outlives a resize leaves a
@@ -82,35 +86,17 @@ export function Sidebar() {
     }
   });
 
-  createEffect(() => {
-    if (!state.navExpanded) return;
-    const dispose = dialogKeyboard({
-      root: () => panelEl,
-      // The nav is the OUTER surface, so it resolves the dismissal order itself rather
-      // than trying to stand down for the inner one.
-      //
-      // A `suspended: () => state.accountMenuOpen` guard reads correct and does not work:
-      // `UserMenu` registered its document listener first, so on Escape it closes and
-      // clears that flag BEFORE this handler runs — which then sees a closed menu and
-      // shuts the nav too, dismissing both surfaces on one keypress. State-based layering
-      // cannot arbitrate an event that mutates the state it arbitrates on.
-      //
-      // So the outer surface decides: close the inner one if it is open, else close
-      // itself. Focus returns to the menu trigger, matching what `UserMenu` does when it
-      // handles its own Escape at desktop width.
-      // A modal stacked above owns the keyboard entirely — the same guard the drawer
-      // uses. Without it, one Escape closes the modal AND the nav.
-      suspended: () => state.modal !== null,
-      onClose: () => {
-        if (state.accountMenuOpen) {
-          app.setAccountMenuOpen(false);
-          panelEl?.querySelector<HTMLElement>('[aria-haspopup="menu"]')?.focus();
-          return;
-        }
-        app.setNavExpanded(false);
-      },
-    });
-    onCleanup(dispose);
+  // The expanded nav is a `dialog` — it claims aria-modal at narrow width. The
+  // account-menu ordering that used to live in its `onClose` is gone: the menu registers
+  // as a layer ABOVE the nav, so the arbiter dismisses it first by construction rather
+  // than by this surface knowing about it.
+  // Conditionally modal: an ordinary in-flow pane above the narrow threshold, a dialog
+  // below it. The primitive's attributes track `when()`, so it claims `aria-modal` exactly
+  // while it is a registered layer — never on the collapsed rail.
+  const surface = useModalSurface(app, {
+    when: () => state.navExpanded,
+    label: 'Navigation',
+    onDismiss: () => app.setNavExpanded(false),
   });
 
   return (
@@ -122,7 +108,7 @@ export function Sidebar() {
         {/* eslint-disable-next-line a11y-guard/no-noninteractive-click -- pointer-only backdrop redundancy; Escape and the toggle are the keyboard paths */}
         <div
           class="overlay rs-nav-scrim"
-          style="position:fixed"
+          style={{ position: 'fixed', 'z-index': String(surface.z().backdrop) }}
           aria-hidden="true"
           onClick={() => app.setNavExpanded(false)}
         />
@@ -130,14 +116,17 @@ export function Sidebar() {
       <div
         data-pane="sidebar"
         classList={{ 'rs-sidebar': true, 'rs-nav-open': state.navExpanded }}
-        role={state.navExpanded ? 'dialog' : undefined}
-        aria-modal={state.navExpanded ? 'true' : undefined}
-        aria-label={state.navExpanded ? 'Navigation' : undefined}
-        tabindex={state.navExpanded ? -1 : undefined}
-        ref={(el) => {
-          panelEl = el;
-        }}
-        style="flex:none;border-right:1px solid var(--border);display:flex;flex-direction:column;background:var(--panel);min-height:0;overflow-y:auto;overscroll-behavior-y:contain"
+        {...surface.props}
+        ref={surface.props['ref'] as (n: HTMLElement) => void}
+        style={
+          // String form deliberately: as an object, happy-dom expands the `border-right`
+          // shorthand into longhands carrying the wrong values, and the serialisation the
+          // shell contract test pins changes. The z-index is appended only while the panel
+          // is a layer.
+          state.navExpanded
+            ? `${SIDEBAR_STYLE};z-index:${String(surface.z().surface)}`
+            : SIDEBAR_STYLE
+        }
       >
       <div class="rs-nav-header">
         <svg width="20" height="20" viewBox="0 0 20 20" style="flex:none" aria-hidden="true">

@@ -5,6 +5,8 @@ import {
   type EventStreamHandle,
   type StreamHealth,
 } from '../data/eventStream';
+import { untrack } from 'solid-js';
+import { layerZ as zForIndex, supersededByDialog, type LayerEntry, type LayerKind, type LayerToken } from '../a11y';
 import { createStore, produce, type SetStoreFunction } from 'solid-js/store';
 import { DEFAULT_PAGE, hashForPage, pageFromHash } from './route';
 import { filterToRequestParams } from '../data/analytics';
@@ -118,6 +120,11 @@ export interface AppState {
    * `narrow` threshold the sidebar collapses to an icon rail; this is the user-driven
    * expanded state, which overlays the page content. It is UI state, not layout — the
    * layout adaptation itself is declarative CSS. */
+  /** Open overlay layers, most-recently-registered LAST — the registry the arbiter
+   * resolves "topmost" from (centralize-overlay-layering). Not reactive-rendered; held
+   * here so one fact drives keyboard, pointer and paint order. */
+  layers: LayerEntry[];
+
   navExpanded: boolean;
   /** The account menu's open state, lifted out of `UserMenu` so overlay layering can be
    * decided by STATE rather than by document-listener registration order (the contract
@@ -668,6 +675,7 @@ function initialState(): AppState {
     selId: null,
     toast: null,
     modal: null,
+    layers: [],
     navExpanded: false,
     accountMenuOpen: false,
 
@@ -781,6 +789,19 @@ export interface AppStore {
   toggleTheme: () => void;
   dismissSetupGuide: () => void;
   /** Narrow-width nav overlay. Collapsing also closes the account menu inside it. */
+  /** Register an overlay layer; returns its token. Opening a `dialog` supersedes every
+   * transient not opened from it. */
+  registerLayer: (opts: {
+    kind: LayerKind;
+    root: () => HTMLElement | undefined;
+    onDismiss: () => void;
+  }) => LayerToken;
+  /** Remove by TOKEN, from anywhere in the registry. Idempotent. */
+  removeLayer: (token: LayerToken) => void;
+  /** Paint order for a registered layer, derived from the SAME ordering the keyboard uses.
+   * Returns the base band for an unregistered token so a surface rendering before its
+   * effect runs is never invisible. */
+  layerZ: (token: LayerToken) => { backdrop: number; surface: number };
   setNavExpanded: (open: boolean) => void;
   setAccountMenuOpen: (open: boolean) => void;
   setRange: (range: Range) => void;
@@ -912,6 +933,10 @@ export interface AppStore {
   obVerify: () => Promise<void>;
   obFinish: () => void;
 }
+
+/** Monotonic layer tokens. Module-level so tokens stay unique across the many stores the
+ * test suites construct — a token must never collide with one from another store. */
+let nextLayerToken = 1;
 
 export function createAppStore(client: ApiClient = realClient): AppStore {
   const [state, setState] = createStore<AppState>(initialState());
@@ -2174,6 +2199,32 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         // storage unavailable — the dismissal just won't survive a reload
       }
       setState('setupDismissed', true);
+    },
+    registerLayer: ({ kind, root, onDismiss }) => {
+      const token = nextLayerToken++;
+      // UNTRACKED read. `useLayer` calls this from a `createEffect`; reading `state.layers`
+      // tracked would make that effect depend on the very array it is about to write,
+      // re-running it forever. The registry is a side-effect target here, never an input.
+      const current = untrack(() => state.layers);
+      // A dialog asserts isolation, so any transient not opened FROM it is superseded —
+      // otherwise a page-level menu stays above a modal opened after it.
+      if (kind === 'dialog') {
+        for (const t of supersededByDialog(current)) t.onDismiss();
+      }
+      setState('layers', (ls) => [
+        ...ls.filter((l) => l.token !== token),
+        { token, kind, root, onDismiss },
+      ]);
+      return token;
+    },
+    layerZ: (token) => {
+      const i = state.layers.findIndex((l) => l.token === token);
+      return zForIndex(i < 0 ? 0 : i);
+    },
+    removeLayer: (token) => {
+      // By token, from anywhere — a layer beneath an open one can be removed, and a pop()
+      // would take the wrong entry.
+      setState('layers', (ls) => ls.filter((l) => l.token !== token));
     },
     setNavExpanded: (open) => {
       // Collapsing the nav takes the account menu with it: the menu lives inside the

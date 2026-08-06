@@ -7,6 +7,8 @@ import {
   onCleanup,
   Show,
 } from 'solid-js';
+import { useLayer } from '../a11y';
+import { useAppOptional } from '../state/context';
 import type { Model } from '../types';
 
 export interface ModelGroup {
@@ -106,6 +108,29 @@ export function ModelPicker(props: ModelPickerProps) {
     setActiveIdx(initial === 'last' ? Math.max(0, flat().length - 1) : 0);
     setOpen(true);
   };
+  // Registers as a `popover`: it takes part in layer ordering (so a dialog opening
+  // supersedes it, and it out-ranks the dialog it was opened from), but it is NOT a dialog
+  // and must not trap Tab.
+  //
+  // Its Escape handling deliberately STAYS on the input. The two-stage behaviour — first
+  // Escape closes the popup keeping the text, second clears the query — cannot survive
+  // being moved into `onDismiss`, because after the first Escape this layer is no longer
+  // registered and the second press would reach whatever is beneath it. The input's
+  // handler consumes the event, so the arbiter stands down.
+  const app = useAppOptional();
+  // Paint order from the SAME registry the keyboard uses. Without this the popup's z-index
+  // stayed a hardcoded 55 in the stylesheet, leaving keyboard order and paint order with
+  // separate owners — the split this whole change exists to close.
+  let layerZ: (() => { backdrop: number; surface: number }) | undefined;
+  if (app) {
+    layerZ = useLayer(app, {
+      when: () => open(),
+      kind: 'popover',
+      root: () => rootEl,
+      onDismiss: () => close(),
+    });
+  }
+
   const close = (): void => {
     setOpen(false);
   };
@@ -244,6 +269,7 @@ export function ModelPicker(props: ModelPickerProps) {
         <div
           class="mp-panel"
           style={{
+            ...(layerZ ? { 'z-index': String(layerZ().surface) } : {}),
             left: `${String(pos().left)}px`,
             width: `${String(pos().width)}px`,
             ...(pos().top !== null

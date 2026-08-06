@@ -557,7 +557,10 @@ select:focus {
 }
 .mp-panel {
   position: fixed;
-  z-index: 55; /* above modal(50)/drawer(41), below toast(60) */
+  /* z-index comes from the layer registry (centralize-overlay-layering) and is applied
+     inline; nothing is stated here, because a second place stating the order is the defect
+     this change removes. A popover opened inside a dialog registers after it, so open
+     order alone puts it above. */
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -1019,8 +1022,10 @@ select:focus {
     bottom: 0;
     left: 0;
     width: 208px;
-    /* overlay 40 · drawer 41 · nav scrim 44 · nav panel 45 · modal 50 · picker 55 · toast 60.
-       Sharing the drawer's 41 let it paint above the scrim on DOM order alone. */
+    /* z-index is DERIVED from the layer registry now (centralize-overlay-layering) and
+       applied inline; the value here is only a floor for the brief moment before the
+       registration effect runs. Two places stating the order is the defect that let the
+       scrim and the drawer both claim 41. */
     z-index: 45;
     box-shadow: var(--shadow-pop);
   }

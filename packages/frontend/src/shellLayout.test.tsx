@@ -86,8 +86,16 @@ describe('app shell scroll containment', () => {
       expect(sidebar?.style.overflowY).toBe('auto');
       expect(['0', '0px']).toContain(sidebar?.style.minHeight);
       // Y only — the shorthand would also suppress horizontal swipe-back navigation.
-      expect(sidebar?.getAttribute('style')).toContain('overscroll-behavior-y:contain');
-      expect(sidebar?.getAttribute('style')).not.toMatch(/[^-]overscroll-behavior:/);
+      //
+      // Asserted on the PARSED declaration rather than the raw attribute string. The
+      // sidebar's style became dynamic when the narrow-width layer gained a derived
+      // z-index, and a dynamic style is applied per-property, so the serialised attribute
+      // is reformatted. The contract — this axis contained, the shorthand not used — is
+      // unchanged, and reading it off the CSSOM states it without depending on spacing.
+      expect(sidebar?.style.overscrollBehaviorY).toBe('contain');
+      expect(sidebar?.style.overscrollBehavior, 'the shorthand would kill swipe-back').toBe(
+        '',
+      );
     } finally {
       h.dispose();
     }

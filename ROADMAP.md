@@ -94,15 +94,23 @@ layout in a harness that performs no layout. Phases 2 and 3 are then "apply the 
 pattern," not new decisions. Nothing in phase 1 creates rework for the others — it is a
 strict prefix, not a divergent path.
 
+**A prerequisite landed between the phases.** `centralize-overlay-layering` replaced the
+per-surface Escape predicates with one arbiter, because phase 2 adds overlay surfaces and the
+old mechanism cost a hand-written relationship per pair. It also fixed a live accessibility
+defect it uncovered — two body-capture dialogs claiming `aria-modal` with no focus trap — and
+narrowed the `<dialog>` question below: deriving paint order made the drawer's backdrop cover
+the sidebar, so **the expanded nav and an open drawer can no longer be reached together through
+the UI at all.** Mutual exclusion now appears to be what the code wants; phase 2 should still
+decide it deliberately rather than inherit it.
+
 **What phase 1 actually left phase 2.** More than planned, and in phase 2's favour: a
 Playwright suite with a `FakeApiClient`-backed harness and the locked viewport matrix
 already exists, so phase 2 writes assertions rather than infrastructure. The expandable
-rail also built a real modal surface — scrim, focus trap via the existing `dialogKeyboard`,
-`inert` content behind, and a resolved dismissal order across stacked overlays — which is
-the groundwork the drawer and modals need. The one thing phase 1 could NOT resolve is that
-`Inspector` and `UserMenu` both handle Escape on `document`: phase 1 fixed the two
-collisions it created, but a third overlay will hit the same class of problem, so phase 2
-should consider a single topmost-overlay owner rather than a third pairwise fix.
+rail also built a real modal surface — scrim, focus trap, `inert` content behind, and a
+resolved dismissal order across stacked overlays — which is the groundwork the drawer and
+modals need. The one thing phase 1 could not resolve — that a third overlay would hit the
+same class of Escape collision — is what `centralize-overlay-layering` then went and fixed,
+so phase 2 inherits a single arbiter rather than a third pairwise patch.
 
 **Phase 3 is cheaper than it looks.** The reorder model is already transport-agnostic
 (`moveTierEntry` / `beginTierDrag` / `endTierDrag`, plus `keyboardMove`) and already has two

@@ -133,8 +133,19 @@ export function RequestRow(props: { r: RequestRow }) {
         </span>
       </Cell>
       <Cell label="Tokens">
+        {/* `↑`/`↓` rather than the words: at real magnitudes "87.2k in / 1.5k out" is 125px
+            against a 112px column and wraps to two lines. Both arrows are present in Geist
+            Mono — checked against the font's cmap, not its `unicode-range` — and the coverage
+            guard fails if a future subset drops them, which is the protection `→` never had.
+            The words move to screen-reader text: an arrow announces as "up arrow", so the
+            compact form would otherwise trade a layout bug for an accessibility one. */}
         <span class="mono" style="font-size:11px">
-          {fmtTokens(props.r.inputTokens)} in / {fmtTokens(props.r.outputTokens)} out
+          <span aria-hidden="true">
+            {fmtTokens(props.r.inputTokens)}↑ {fmtTokens(props.r.outputTokens)}↓
+          </span>
+          <span class="sr-only">
+            {fmtTokens(props.r.inputTokens)} tokens in, {fmtTokens(props.r.outputTokens)} out
+          </span>
         </span>
       </Cell>
       <Cell label="Cost">

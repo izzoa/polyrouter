@@ -15,6 +15,15 @@ heading is started.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Token counts wrapped to two lines in the requests table.** At real magnitudes
+  "87.2k in / 1.5k out" is wider than the column, so most rows rendered as two lines once
+  actual traffic arrived. Tokens now read `87.2k↑ 1.5k↓` — the same information in two thirds
+  of the width. The in/out wording is kept for screen readers, since an arrow announces as
+  "up arrow". The Tokens figure on the Overview gets the same treatment; it was wrapping at
+  phone widths for the same reason.
+
 ## [0.12.1] — 2026-08-07
 
 [Release](https://github.com/izzoa/polyrouter/releases/tag/v0.12.1) ·

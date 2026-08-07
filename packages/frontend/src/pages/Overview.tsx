@@ -113,7 +113,15 @@ export function Overview(props: { live: boolean }) {
           <div class="stat-label">Tokens</div>
           <div class="stat-value">{((tin() + tout() + tcache()) / 1e6).toFixed(2)}M</div>
           <div class="stat-sub">
-            {(tin() / 1e6).toFixed(2)}M in · {(tout() / 1e6).toFixed(2)}M out
+            {/* Same reason as the requests table: the worded form wraps to two lines below
+                the narrow threshold. `cached` keeps its word — it is a third quantity, not the
+                other half of a pair, and an arrow would imply a direction it does not have. */}
+            <span aria-hidden="true">
+              {(tin() / 1e6).toFixed(2)}M↑ {(tout() / 1e6).toFixed(2)}M↓
+            </span>
+            <span class="sr-only">
+              {(tin() / 1e6).toFixed(2)}M tokens in, {(tout() / 1e6).toFixed(2)}M out
+            </span>
             <Show when={tcache() > 0}> · {(tcache() / 1e6).toFixed(2)}M cached</Show>
           </div>
         </div>

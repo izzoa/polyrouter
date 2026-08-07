@@ -79,6 +79,22 @@ function accessibleName(el: HTMLElement): string {
   return (clone.textContent ?? '').replace(/\s+/g, ' ').trim();
 }
 
+/** Removes a cell that renders its value TWICE — once visually (`aria-hidden`), once as
+ * screen-reader text. The requests table's token column does this: `100↑ 40↓` is shown and
+ * `100 tokens in, 40 out` is announced, because an arrow announces as "up arrow".
+ *
+ * Such a pair cannot take part in the byte-identity check below, by construction: removing
+ * labels-by-class keeps the visible half, removing everything-aria-hidden keeps the announced
+ * half, and the two halves are deliberately different text. Stripping both halves from both
+ * sides keeps the check meaningful for every other column. */
+function stripDualRepresentations(el: HTMLElement): void {
+  for (const sr of [...el.querySelectorAll('.sr-only')]) {
+    const visible = sr.previousElementSibling;
+    if (visible?.getAttribute('aria-hidden') === 'true') visible.remove();
+    sr.remove();
+  }
+}
+
 afterEach(() => {
   document.body.innerHTML = '';
 });
@@ -116,12 +132,17 @@ describe('request row semantics survive the stacked presentation', () => {
       // cell values with every label's own text removed.
       const withoutLabels = row.cloneNode(true) as HTMLElement;
       for (const l of withoutLabels.querySelectorAll('.rs-cell-label')) l.remove();
+      stripDualRepresentations(withoutLabels);
       const valuesOnly = (withoutLabels.textContent ?? '').replace(/\s+/g, ' ').trim();
 
       // Removing the labels BY CLASS and removing everything ARIA-HIDDEN must produce the
       // same string. If a label were not hidden, the second would keep it and they would
       // diverge — which is precisely the `::before` defect, restated as an equality.
-      expect(accessibleName(row)).toBe(valuesOnly);
+      // Strip the dual pair FIRST, then let `accessibleName` do the aria-hidden removal —
+      // so this still exercises the same name computation every other assertion uses.
+      const announced = row.cloneNode(true) as HTMLElement;
+      stripDualRepresentations(announced);
+      expect(accessibleName(announced)).toBe(valuesOnly);
       expect(valuesOnly.length).toBeGreaterThan(0);
       // And the labels really are present in the DOM for sighted users.
       const labels = [...row.querySelectorAll('.rs-cell-label')];

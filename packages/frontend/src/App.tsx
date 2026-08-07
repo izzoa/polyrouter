@@ -95,7 +95,7 @@ function Shell(props: { live: boolean }) {
               <Overview live={props.live} />
             </Match>
             <Match when={state.page === 'requests'}>
-              <Requests />
+              <Requests live={props.live} />
             </Match>
             <Match when={state.page === 'costs'}>
               <Costs live={props.live} />

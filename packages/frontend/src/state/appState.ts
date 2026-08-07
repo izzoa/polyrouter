@@ -1700,6 +1700,23 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
   // ONE fold state for both drivers (phase2-add-dashboard-event-stream): the stream
   // and the poll must never diverge, so the appliers and the poll fold share it.
   let inflightState: StreamState = emptyStream();
+
+  /** Fold-application epoch (add-requests-inflight-band).
+   *
+   * `loadInflight` captures this on START and refuses to commit if it has moved, so a
+   * snapshot that lost the race cannot overwrite newer state. It is bumped by BOTH a newer
+   * load and any stream mutation, because the two write the same fold: a poll still in
+   * flight can land after an `onStarted`/`onSettled`/`onSnapshot` and undo it — the likelier
+   * collision of the two on a healthy stream, where the stream is the continuous driver and
+   * the poll is only reconciliation.
+   *
+   * `createPoller`'s single-flight is per instance, so it does not span a navigation: with
+   * a second page mounting the poller, Overview's pending request outliving its unmount is
+   * an ordinary occurrence rather than a remount edge case. */
+  let inflightEpoch = 0;
+  const bumpInflight = (): void => {
+    inflightEpoch += 1;
+  };
   const recentIdSet = (): ReadonlySet<string> => new Set(state.recentRequests.map((r) => r.id));
   const reconcileInflightDisplay = (): void => {
     const ids = recentIdSet();
@@ -1729,6 +1746,8 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     // could commit under the new one (invariant 5). Same discipline as the routing and
     // rules loaders.
     const idGen = identityGen;
+    // Captured BEFORE awaiting: what this response is allowed to commit against.
+    const epoch = ++inflightEpoch;
     let snap: InflightSnapshot;
     try {
       snap = await client.inflight();
@@ -1736,6 +1755,9 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       snap = { items: [], available: false, truncated: false };
     }
     if (idGen !== identityGen) return; // a different account signed in mid-flight
+    // A newer load, or ANY stream mutation, has since written the fold. Applying this
+    // snapshot now would resurrect rows that settled or settle rows that just started.
+    if (epoch !== inflightEpoch) return;
     const ids = recentIdSet();
     const { next, refresh } = applyStreamSnapshot(inflightState, snap, ids, Date.now());
     inflightState = next;
@@ -1819,6 +1841,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       ...(streamFactory === undefined ? {} : { factory: streamFactory }),
       onSnapshot: (snap) => {
         if (!fresh()) return;
+        bumpInflight(); // supersede any poll still in flight
         const ids = recentIdSet();
         const { next, refresh } = applyStreamSnapshot(inflightState, snap, ids, Date.now());
         inflightState = next;
@@ -1827,12 +1850,14 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       },
       onStarted: (row) => {
         if (!fresh()) return;
+        bumpInflight();
         const ids = recentIdSet();
         inflightState = applyStarted(inflightState, row, ids, Date.now());
         setState('inflightRows', inflightDisplay(inflightState, ids));
       },
       onSettled: (id) => {
         if (!fresh()) return;
+        bumpInflight();
         const { next, refresh } = applySettled(inflightState, id, Date.now());
         inflightState = next;
         setState('inflightRows', inflightDisplay(next, recentIdSet()));

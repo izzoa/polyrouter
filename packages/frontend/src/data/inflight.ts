@@ -198,3 +198,45 @@ export function applyStreamSnapshot(
   }
   return { next: { ...next, terminal }, refresh };
 }
+
+// ---------------------------------------------------------------------------
+// Per-surface projection (add-requests-inflight-band).
+//
+// DISTINCT from `inflightDisplay`, deliberately. `inflightDisplay` is the shared
+// fold→display transform that produces `state.inflightRows` — one unfiltered live set the
+// whole app agrees on. This projects that set for ONE surface, and must never write back:
+// a row hidden on the Requests page has to stay available to the Overview card.
+//
+// Filtering inside `inflightDisplay` instead would make shared store state
+// surface-specific, and `reconcileInflightState` would then irreversibly evict settling
+// rows on one page's say-so, deleting them from under the other.
+// ---------------------------------------------------------------------------
+
+/**
+ * The rows one surface should render, given its own visible completed rows and its filter.
+ *
+ * **Dedupe is against the SURFACE's completed rows, not the app's.** Running entries and
+ * durable rows are disjoint at source — the log is written only at the terminal outcome —
+ * but this set also carries *settling* rows, which do have durable counterparts. The
+ * Requests page freezes its window at `to = now`, so a window re-frozen during the settling
+ * grace (arriving at the page, retrying, changing a filter) can contain the very row still
+ * showing here. Without this the request renders twice.
+ *
+ * **The filter mapping is derived, never copied.** `filterToRequestParams` is the one place
+ * that decides what "auto" means; a second copy here is how the band and the list would
+ * come to disagree. A filter that resolves to a decision-layer set is answerable for a
+ * running row (`decisionLayer` is known at admission); one that resolves to a terminal
+ * `status` or `escalated` is not, so the band is emptied rather than guessing.
+ */
+export function projectInflightRows(
+  rows: readonly InflightRow[],
+  completedIds: ReadonlySet<string>,
+  params: { status?: string; escalated?: boolean; decisionLayers?: readonly string[] },
+): InflightRow[] {
+  // A predicate needing a terminal outcome cannot be evaluated for a running request.
+  if (params.status !== undefined || params.escalated !== undefined) return [];
+  const layers = params.decisionLayers;
+  return rows.filter(
+    (r) => !completedIds.has(r.id) && (layers === undefined || layers.includes(r.decisionLayer)),
+  );
+}

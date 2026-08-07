@@ -34,6 +34,16 @@ heading is started.
 
 ### Added
 
+- **The Requests page shows requests as they run.** Running requests now appear above the
+  completed rows, from the same live set the Overview card reads — the page previously showed
+  only requests that had finished *before you opened it*, since its window freezes at load.
+  The band is deduped against the rows that page is showing (a just-settled request lingers
+  while its durable row is written, and arriving mid-handoff re-freezes the window to include
+  it — otherwise the same request renders twice), and respects the filters it honestly can:
+  Explicit/Auto select on the routing decision, known at admission; Fallbacks/Escalated depend
+  on how a request ends, so the band empties rather than guessing. The paginated list, its
+  cursor and "Load more" are untouched. Also fixes a latent ordering bug in the shared live
+  state, where a snapshot still in flight could land after newer state and overwrite it.
 - **Costs breakdowns can be ranked by tokens, not just spend — and "tokens" now means what
   you were billed for.** The three Costs panels share a spend/tokens selector; switching it
   refetches rather than re-sorts, because the API returns a top-N and re-ordering the rows

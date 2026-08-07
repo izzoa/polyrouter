@@ -15,6 +15,11 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.12.2] — 2026-08-07
+
+[Release](https://github.com/izzoa/polyrouter/releases/tag/v0.12.2) ·
+[Compare](https://github.com/izzoa/polyrouter/compare/v0.12.1...v0.12.2)
+
 ### Fixed
 
 - **The Overview's model breakdown had no spend/tokens switch.** The toggle added in 0.12.0
@@ -31,6 +36,14 @@ heading is started.
   of the width. The in/out wording is kept for screen readers, since an arrow announces as
   "up arrow". The Tokens figure on the Overview gets the same treatment; it was wrapping at
   phone widths for the same reason.
+
+### Upgrade notes
+
+- **No migrations and no schema change** — a drop-in upgrade from 0.12.1, nothing to configure.
+- **Both fixes are client-side**; loading the new build is the whole upgrade.
+- **The spend/tokens preference is now shared between the Overview and Costs.** It was already
+  one setting internally — only Costs could change it. Setting it on either page now affects
+  both, which is what it always meant.
 
 ## [0.12.1] — 2026-08-07
 
@@ -738,6 +751,7 @@ SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
 [Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.11.0...HEAD
+[0.12.2]: https://github.com/izzoa/polyrouter/releases/tag/v0.12.2
 [0.12.1]: https://github.com/izzoa/polyrouter/releases/tag/v0.12.1
 [0.12.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.12.0
 [0.11.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.11.0

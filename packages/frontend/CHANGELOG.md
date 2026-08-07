@@ -1,5 +1,237 @@
 # @polyrouter/frontend
 
+## 0.12.0
+
+### Minor Changes
+
+- 6257b25: The Costs breakdowns can now be ranked by tokens as well as spend, and every token figure
+  counts the work you were actually billed for.
+
+  The dashboard could tell you what each provider cost and nothing about how much work it
+  did — there was no token figure per provider, model or agent anywhere. That hides the
+  question a router exists to answer: a provider with a large share of tokens and a small
+  share of spend is doing cheap work, and heavy spend against few tokens is the opposite. The
+  three Costs panels now share a spend/tokens selector, and switching it **refetches** rather
+  than re-sorting: the API returns a top-N, so re-ordering the rows already on screen would
+  have shown "top by tokens" while silently dropping any provider that leads on tokens and
+  trails on spend.
+
+  **Two corrections to what "tokens" means, both of which move numbers you may be watching.**
+
+  Token totals now sum **both cost ledgers**. An escalated cascade attempt consumes tokens the
+  provider meters and bills, and spend has always counted them — the token figures did not, so
+  they under-reported real usage on every request the cascade escalated.
+
+  Token totals now also include **cached tokens**. `input_tokens` is recorded as _uncached_
+  input, because the adapters subtract cached tokens out and record them separately; a figure
+  built from input + output alone therefore omitted a cached workload's largest component
+  while looking exact.
+
+  Both changes flow through the summary, the timeseries and the breakdowns together, so no two
+  token numbers in the product can mean different things. **The Overview's token headline will
+  read higher** than it did for the same range — that is the fix, not a display change, and it
+  is larger the more caching and cascade escalation your traffic does. The headline now shows
+  a cached component beside its in/out split.
+
+  Nothing that decides anything reads these figures: budget enforcement, alert thresholds and
+  routing use their own spend-only paths and are untouched, as is every recorded cost and
+  price snapshot. `GET /api/analytics/breakdown` gains an optional `metric` parameter
+  (`spend` by default, so existing callers are unaffected) and returns the four token
+  components plus an `estimatedTokens` figure disclosing how much of the total came from
+  providers that did not report usage.
+
+- 4b40aab: The Requests page no longer silently goes stale, and a finished request stops saying it is
+  still running.
+
+  The page froze its time window the moment it loaded and nothing ever triggered another
+  fetch, so a request completing while you watched could never appear — however long you
+  waited, with nothing on screen saying so. The in-flight band added in the previous release
+  arguably made that worse: live rows above a frozen list read as "this page is current".
+
+  It now refreshes on the same cadence as the Overview page, routed through the shared refresh
+  budget so a burst of traffic cannot turn into a burst of queries. That only applies while
+  you have not paged: once you have clicked "Load more", refreshing would throw away the pages
+  you asked for, so instead the page tells you how many newer requests exist and offers to load
+  them. Taking the offer returns you to a fresh first page. If that check fails, it says so
+  rather than quietly implying the list is up to date.
+
+  Separately, a request that has just finished no longer displays as "Running" while its
+  record is being written. It now reads "Finishing" and stops pulsing. That was wrong on the
+  Overview card too — it was simply harder to notice there, because the handoff usually
+  completes in well under a second.
+
+- 4a179c3: The Requests page now shows requests as they run, the way the Overview card does.
+
+  Until now the page only ever showed finished requests — and, less obviously, only the ones
+  that had finished before you opened it. Its window is frozen at the moment of load, so a
+  request settling while you watched could never appear in the list, however long you waited.
+
+  Running requests are now rendered above the completed rows, from the same shared live set
+  the Overview card reads. They are deduped against the rows that page is actually showing,
+  which matters more than it sounds: a request that has just settled lingers briefly while its
+  durable row is written, and arriving at the page during that moment re-freezes the window to
+  include it — without the dedupe the same request would appear twice.
+
+  The band respects the page's filters where it honestly can. Explicit and Auto select on the
+  routing decision, which is known the moment a request is admitted, so those work. Fallbacks
+  and Escalated depend on how a request _ends_, which a running one has not done — so the band
+  empties rather than guessing at rows that might not match once they settle. Both use the
+  same filter mapping the completed list uses, so the two can never disagree about what "auto"
+  means.
+
+  Nothing about the paginated list changes: its window, its cursor and "Load more" behave
+  exactly as before, and the band never inserts into it.
+
+  Also fixes a latent ordering bug in the shared live-request state. A snapshot still in
+  flight could previously land after newer state and overwrite it — settling a request that
+  had only just started, or resurrecting one that had finished. It now loses to any newer
+  update, whether that came from another fetch or from the event stream.
+
+- 28a025d: The dashboard's pages now adapt to a narrow viewport. Every page previously rendered a
+  desktop layout regardless of screen width — the sidebar alone took 53% of a phone screen,
+  and the requests table needed roughly 1020px to stay legible.
+
+  Below 768px the sidebar collapses to an icon rail that expands, on demand, into a labelled
+  navigation panel carrying the account menu and setup guide. Multi-column page layouts drop
+  to fewer columns, control rows wrap instead of overflowing, and page gutters tighten.
+
+  Tables adapt to the width **they** actually get rather than the viewport's — a table sits
+  inside the content pane minus the sidebar and gutters, so at a 1025px window the requests
+  table receives only about 765px. Each of the four tables reflows to stacked records at its
+  own measured threshold, keeping every field, every row action, and — for a request row —
+  the same single control, the same accessible name, and the same link into the inspector.
+
+  Interactive controls now meet a 24px minimum target at every width and 44px below the
+  narrow threshold or on a touch pointer, so a tablet gets comfortable targets even at a
+  width nowhere near a phone's.
+
+  **Desktop rendering is unchanged**, with one deliberate exception: three controls that
+  shipped below the 24px accessibility minimum (`.icon-x`, `.drag-handle`, `.link-accent`)
+  grew to meet it. That parity is pinned by a browser test measured against the released
+  v0.11.0 build.
+
+  Detail drawers and dialogs keep their current geometry for now; they are the next phase.
+
+- 05c4723: The dashboard's overlays now work on a phone. Phase 1 adapted every page but deliberately
+  left the drawers and dialogs alone, so you could browse the dashboard on a phone without
+  being able to open anything on it.
+
+  Tapping a request opened a 440px inspector panel on a 390px screen: its left edge sat at
+  −50px, and at 320px wide it hung 120px off the edge. Nothing caught that, because a
+  `position: fixed` surface overhangs the viewport without adding any document overflow — so
+  the page-level check passed while a third of the drawer was unreachable. Three of the six
+  modal kinds were worse: the provider form is 878px tall at 320px wide against a 568px
+  screen, and its Save button sat 310px past the bottom of a fixed backdrop, where no scroll
+  could reach it.
+
+  Below 768px the inspector, all six modal kinds and both confirmation dialogs are now
+  presented as bottom sheets — full width, height-capped so the page stays visible behind
+  them, and scrolling internally so nothing is stranded. It is the same DOM restyled rather
+  than a second component, so dismissal, focus trapping, layer ordering and accessible names
+  are literally the same objects at both widths; a test keeps a dialog open across the
+  breakpoint and asserts the element, its layer token and the focused control all survive the
+  crossing.
+
+  The on-screen keyboard is handled for the first time. Nothing in the app read the visual
+  viewport before, so a sheet anchored to the bottom of the screen would have sat behind the
+  keyboard, and the model picker — which measured against `window.innerHeight`, a value that
+  does not shrink on iOS — would have opened underneath it. Sheets and the picker now measure
+  against what is actually visible, the picker re-measures if the keyboard arrives after it
+  opens, and pinch-zoom is correctly distinguished from a keyboard so zooming to read a value
+  does not send a sheet up the screen.
+
+  Safe-area insets are honoured on bottom-anchored surfaces, so a sheet's actions clear the
+  home indicator, and the toast — which had no width and shrink-wrapped into a 160×103px
+  block at 320px wide — now spans the screen.
+
+  **Desktop rendering is unchanged**, pinned by geometry captured from every overlay before
+  any of this was written.
+
+- 8b1f235: Tier chains can now be reordered on a touch device, and the chain row is readable on a
+  phone at all.
+
+  Reordering was wired to HTML5 drag-and-drop, which browsers never fire for touch input. So
+  on a phone the Routing page rendered, invited interaction, and could not perform its
+  function: the fallback order was fixed at whatever it was when it was created. The only
+  other path was `Alt`+arrow on the drag handle, needing a physical keyboard and discoverable
+  only by reading the handle's label.
+
+  Each chain row now carries explicit move-up / move-down controls, disabled at the ends of
+  the chain. They share the mover with the keyboard path rather than reimplementing it, so
+  the three transports cannot drift apart — a test reorders the same chain by drag, by
+  keyboard and by tap and asserts all three persist an identical result. They appear where a
+  drag is unavailable: below the narrow threshold, or wherever _any_ available pointer is
+  coarse. That second condition matters more than it looks, because a laptop with a mouse and
+  a touchscreen reports a fine pointer while being exactly the device that cannot drag with a
+  finger.
+
+  The row itself was also broken, which measuring it turned up. At 320px it had 194px of
+  content width and put 253px in it: the model identifier — the name of the thing being
+  reordered — computed to **zero width**, the price label was painted on top of it, and the
+  row's action was clipped off the edge. None of that registered as document overflow, which
+  is why it had gone unnoticed. The row now separates its information from its actions and
+  wraps, so the identifier is legible and every control is reachable. The header hint stops
+  telling touch users to drag.
+
+  **Desktop rendering is unchanged** — same single-line row, same controls, no move buttons —
+  pinned against geometry captured before the work began.
+
+### Patch Changes
+
+- d848132: Fixed: one account's spend figures could remain visible after switching to another.
+
+  The same defect as the request-view fix, on a different surface. The Observe pages' summary,
+  timeseries and cost breakdowns were guarded only against stale _range_ replies — the guard
+  orders responses within one account and cannot see an account change. So signing out and in
+  as a different user in the same browser session left the previous account's spend totals,
+  request counts, timeseries and by-model/provider/agent breakdowns on screen, and a response
+  already in flight could still commit afterwards.
+
+  The account boundary now invalidates and clears those figures, and resets their loading and
+  error state so a mid-load switch cannot latch a spinner. The guard is applied in the shared
+  slice runner, so every one of those loaders is covered at once rather than each having to
+  remember.
+
+  As with the request-view fix, no server-side isolation failure was involved: every response
+  was correctly scoped to whoever asked for it. This was about what the client kept and what it
+  allowed to commit after the principal changed.
+
+- 977b8b4: Fixed: the two body-capture confirmation dialogs — "Capture prompt & response bodies?" and
+  "Turn capture off" — announced themselves to assistive technology as modal dialogs while
+  implementing none of it. Keyboard focus could Tab straight out of them into the page behind,
+  and Escape did not close them, even though `aria-modal` told a screen reader the rest of the
+  page was hidden. Both now trap focus, close on Escape, and return focus to the control that
+  opened them.
+
+  Changed: the account menu now closes when you press Tab, letting focus continue into the
+  page, which matches how menus are expected to behave. Previously Tab moved focus through the
+  page behind while the menu stayed open.
+
+  Under both: overlay layering is now decided in one place. Which surface takes Escape, which
+  one traps Tab, and which one paints on top all derive from a single ordering, so they cannot
+  disagree — they previously could, and did.
+
+- 0d5ec8c: Fixed: one account's request data could remain visible after switching to another.
+
+  Signing out and signing in as a different user in the same browser session left parts of the
+  previous account's Requests page behind. The request list, its cursor and its frozen range
+  window were never cleared, and a page load or "Load more" already in flight could still
+  commit afterwards — so the incoming user could be looking at the previous user's requests.
+
+  More seriously, the request inspector's selection and its **cached payloads** were not
+  cleared either. Where prompt/response capture is enabled, that state holds the request and
+  response text itself — the one category of data polyrouter otherwise refuses to persist. It
+  is now cleared at the account boundary, along with the list.
+
+  The identity boundary also now resets the page's loading and error state, so an account
+  change landing mid-load leaves the page ready to reload rather than showing a spinner that
+  never resolves.
+
+  Nothing about this was a server-side isolation failure: every response was correctly scoped
+  to whoever asked for it. The defect was entirely in the client, in what it kept and what it
+  allowed to commit after the principal changed. The filter selection is deliberately kept —
+  it is a display preference, not another account's data.
+
 ## 0.11.0
 
 ### Minor Changes

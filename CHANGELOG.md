@@ -15,6 +15,11 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-08-06
+
+[Release](https://github.com/izzoa/polyrouter/releases/tag/v0.12.0) ·
+[Compare](https://github.com/izzoa/polyrouter/compare/v0.11.0...v0.12.0)
+
 ### Fixed
 
 - **One account's spend figures could remain visible after switching to another.** The same
@@ -126,6 +131,26 @@ heading is started.
   rendering is unchanged** apart from three controls that shipped below the 24px accessibility
   minimum and grew to meet it; that parity is pinned by a browser test measured against the
   released v0.11.0 build. Detail drawers and dialogs keep their current geometry for now.
+
+### Upgrade notes
+
+- **No migrations and no schema change** — a drop-in upgrade from 0.11.0.
+- **Two fixes in this release concern data visible across an account switch.** If more than
+  one person signs in to the same browser on a shared machine, upgrade rather than defer:
+  the previous account's request rows, its captured prompt/response payloads (where body
+  capture is enabled), and its spend figures could remain on screen after switching. No
+  server-side isolation failure was involved — every API response was correctly scoped to
+  whoever asked — and nothing was ever sent to the wrong principal. The defect was in what
+  the browser retained locally, so it is fixed entirely by loading the new build.
+- **Two token figures change value, deliberately.** Token totals now count both cost ledgers
+  (an escalated cascade attempt burns tokens you were billed for) and include cached tokens
+  (`input_tokens` is recorded as *uncached* input). The Overview headline will therefore read
+  higher than it did for the same range, more so the more caching and cascade escalation your
+  traffic does. Historical cost is untouched: no price snapshot is recomputed and no recorded
+  cost changes.
+- **`GET /api/analytics/breakdown` gains an optional `metric` parameter**, defaulting to
+  `spend`, so existing callers are unaffected. Its rows now also carry the four token
+  components and an `estimatedTokens` figure.
 
 ## [0.11.0] — 2026-08-05
 
@@ -649,6 +674,7 @@ SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
 [Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.11.0...HEAD
+[0.12.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.12.0
 [0.11.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.11.0
 [0.10.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.10.0
 [0.9.3]: https://github.com/izzoa/polyrouter/releases/tag/v0.9.3

@@ -53,6 +53,18 @@ heading is started.
 
 ### Added
 
+- **The Requests page no longer silently goes stale.** It froze its time window at load and
+  never fetched again, so a request completing while you watched could never appear — and the
+  in-flight band arguably made that worse, since live rows above a frozen list read as
+  current. It now refreshes on the Overview page's cadence through the shared refresh budget,
+  so a burst of traffic cannot become a burst of queries. Once you have clicked "Load more",
+  it stops refreshing (that would discard the pages you asked for) and instead tells you how
+  many newer requests exist, offering to load them; a failed check says so rather than
+  implying the list is current.
+- **A finished request stops saying it is still running.** A request whose record is being
+  written now reads "Finishing" and stops pulsing, instead of claiming to be in progress for
+  up to eight seconds. This was wrong on the Overview card too — just harder to notice, since
+  the handoff there usually completes in well under a second.
 - **The Requests page shows requests as they run.** Running requests now appear above the
   completed rows, from the same live set the Overview card reads — the page previously showed
   only requests that had finished *before you opened it*, since its window freezes at load.

@@ -82,20 +82,36 @@ export function reconcile(s: InflightState, recentIds: ReadonlySet<string>): Inf
   return { live: s.live, settling: s.settling.filter((x) => !recentIds.has(x.row.id)) };
 }
 
+/** A live row plus the CLIENT's knowledge of which half of the fold it came from.
+ *
+ * Not on the DTO: `InflightRow.status` is the literal `'running'` and correctly describes a
+ * *registry* entry, which by definition is running. What the server cannot know is that the
+ * client has since moved this row into the settling bridge — its request has finished and
+ * its durable row is being written. Erasing that at the presentation boundary is why a
+ * settled request kept announcing itself as running for up to the grace period, on every
+ * surface. */
+export type InflightPhase = 'live' | 'settling';
+export interface InflightDisplayRow extends InflightRow {
+  readonly phase: InflightPhase;
+}
+
 /** Rows to render ABOVE the completed list: settling (bridge) then live, minus any
  * id already present as a durable row (never double-shown), newest-first. PURE. */
-export function inflightDisplay(s: InflightState, recentIds: ReadonlySet<string>): InflightRow[] {
+export function inflightDisplay(
+  s: InflightState,
+  recentIds: ReadonlySet<string>,
+): InflightDisplayRow[] {
   const seen = new Set<string>();
-  const out: InflightRow[] = [];
+  const out: InflightDisplayRow[] = [];
   for (const x of s.settling) {
     if (recentIds.has(x.row.id) || seen.has(x.row.id)) continue;
     seen.add(x.row.id);
-    out.push(x.row);
+    out.push({ ...x.row, phase: 'settling' });
   }
   for (const r of s.live) {
     if (recentIds.has(r.id) || seen.has(r.id)) continue;
     seen.add(r.id);
-    out.push(r);
+    out.push({ ...r, phase: 'live' });
   }
   return out.sort((a, b) => b.startedAt - a.startedAt);
 }
@@ -228,11 +244,11 @@ export function applyStreamSnapshot(
  * running row (`decisionLayer` is known at admission); one that resolves to a terminal
  * `status` or `escalated` is not, so the band is emptied rather than guessing.
  */
-export function projectInflightRows(
-  rows: readonly InflightRow[],
+export function projectInflightRows<T extends InflightRow>(
+  rows: readonly T[],
   completedIds: ReadonlySet<string>,
   params: { status?: string; escalated?: boolean; decisionLayers?: readonly string[] },
-): InflightRow[] {
+): T[] {
   // A predicate needing a terminal outcome cannot be evaluated for a running request.
   if (params.status !== undefined || params.escalated !== undefined) return [];
   const layers = params.decisionLayers;

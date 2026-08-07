@@ -17,7 +17,7 @@ import { render } from 'solid-js/web';
 import { afterEach, describe, expect, it } from 'vitest';
 import { App } from './App';
 import { filterToRequestParams } from './data/analytics';
-import { projectInflightRows } from './data/inflight';
+import { projectInflightRows, type InflightDisplayRow, type InflightPhase } from './data/inflight';
 import type { InflightRow } from './data/api';
 import type { EventSourceLike } from './data/eventStream';
 import { createAppStore, type AppStore } from './state/appState';
@@ -30,7 +30,8 @@ const flush = async (): Promise<void> => {
 
 /** Rows carry no id attribute in the DOM, so the model label is how a specific live row
  *  is identified on screen — make it unique per fixture row. */
-const row = (id: string, layer = 'explicit'): InflightRow => ({
+const row = (id: string, layer = 'explicit', phase: InflightPhase = 'live'): InflightDisplayRow => ({
+  phase,
   id,
   startedAt: Date.now(),
   decisionLayer: layer,

@@ -1,5 +1,6 @@
 import { createSignal, For, onCleanup, onMount, type JSX } from 'solid-js';
-import { labelOf, type InflightRow, type RequestRow, type RequestStatus } from '../data/api';
+import { labelOf, type RequestRow, type RequestStatus } from '../data/api';
+import type { InflightDisplayRow } from '../data/inflight';
 import { rowCostLabel } from '../data/analytics';
 import { fmtTime, fmtTokens } from '../data/catalog';
 import { useApp } from '../state/context';
@@ -173,12 +174,12 @@ function useNow(): () => number {
 /** Live in-flight rows (add-inflight-requests): rendered ABOVE the completed rows.
  * Non-selectable (no terminal detail yet); a pulsing "Running" status and a latency
  * that ticks client-side from `startedAt`; token/cost cells are neutral placeholders. */
-export function InflightRows(props: { rows: InflightRow[] }) {
+export function InflightRows(props: { rows: InflightDisplayRow[] }) {
   const now = useNow();
   return <For each={props.rows}>{(r) => <InflightRunningRow r={r} now={now()} />}</For>;
 }
 
-function InflightRunningRow(props: { r: InflightRow; now: number }) {
+function InflightRunningRow(props: { r: InflightDisplayRow; now: number }) {
   const chip = (): { bg: string; fg: string } => CHIP[props.r.decisionLayer] ?? NEUTRAL_CHIP;
   const elapsed = (): number => Math.max(0, (props.now - props.r.startedAt) / 1000);
   return (
@@ -243,14 +244,21 @@ function InflightRunningRow(props: { r: InflightRow; now: number }) {
               width: '6px',
               height: '6px',
               'border-radius': '50%',
-              background: 'var(--accent)',
+              background: props.r.phase === 'settling' ? 'var(--faint)' : 'var(--accent)',
               flex: 'none',
               // Reuses the global `pulse` keyframe; the app's reduced-motion media
-              // query forces iteration-count 1, so it settles to a static dot.
-              animation: 'pulse 1.5s ease-in-out infinite',
+              // query forces iteration-count 1, so it settles to a static dot. A settling
+              // row does not pulse: it is no longer in progress, and reduced-motion
+              // behaviour is unchanged either way.
+              ...(props.r.phase === 'settling'
+                ? {}
+                : { animation: 'pulse 1.5s ease-in-out infinite' }),
             }}
           />
-          Running
+          {/* A row in the settling bridge has FINISHED — its durable row is being written.
+              Saying "Running" there asserts an outcome that has already been decided, for
+              up to the grace period, on every surface that renders these rows. */}
+          {props.r.phase === 'settling' ? 'Finishing' : 'Running'}
         </span>
       </Cell>
 

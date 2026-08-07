@@ -42,7 +42,6 @@ import {
   type PricingStatus,
   type BodyCaptureStatus,
   type RequestBodyContent,
-  type InflightRow,
   type InflightSnapshot,
   type RequestRow,
   type RuleDto,
@@ -58,6 +57,7 @@ import {
   applyStreamSnapshot,
   emptyStream,
   inflightDisplay,
+  type InflightDisplayRow,
   reconcile as reconcileInflightState,
   type StreamState,
 } from '../data/inflight';
@@ -235,7 +235,7 @@ export interface AppState {
   recentRequestsLoading: boolean;
   recentRequestsError: string | null;
   /** add-inflight-requests: live in-flight rows merged above the recent list. */
-  inflightRows: InflightRow[];
+  inflightRows: InflightDisplayRow[];
   /** Live-view transport health (phase2-add-dashboard-event-stream). */
   streamHealth: StreamHealth;
   requestList: RequestRow[];
@@ -243,6 +243,14 @@ export interface AppState {
   requestListError: string | null;
   requestCursor: string | null;
   requestWindow: RequestWindow | null;
+  /** Set when an append STARTS (add-requests-freshness). Not on commit: while "Load more"
+   * is in flight a commit-time flag still reads false, so a poll or nudge could reset the
+   * list, discard the append, and silently undo the click the user just made. */
+  requestsPaged: boolean;
+  /** Requests newer than the frozen window, for the "N new" disclosure. `atLeast` when the
+   * probe hit its cap; `unknown` when it failed — a failed probe must not read as "nothing
+   * new", which would present a stale list as current. */
+  requestsNew: { count: number; atLeast: boolean; unknown: boolean } | null;
 
   // Routing config (#20) — loaded on the Routing page mount. `tierEntries` is the
   // (optimistic) ordered chain per tier id; `confirmedEntries` is the last
@@ -743,6 +751,8 @@ function initialState(): AppState {
     requestListError: null,
     requestCursor: null,
     requestWindow: null,
+    requestsPaged: false,
+    requestsNew: null,
 
     routingTiers: [],
     tierEntries: {},
@@ -862,6 +872,8 @@ export interface AppStore {
    * hidden→visible catch-up, which the floor must never suppress. */
   requestAggregateRefresh: (load: () => Promise<void>, force?: boolean) => Promise<void>;
   loadRequests: (reset: boolean) => Promise<void>;
+  /** Refresh page 1, or probe for the disclosure if the user is paging. */
+  refreshRequestsPage: () => Promise<void>;
   // auth / account
   bootstrap: () => Promise<void>;
   retry: () => Promise<void>;
@@ -1193,6 +1205,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     // spinner it can never clear. `reqFilter` is deliberately kept: a display preference,
     // not another owner's data.
     bump('requests');
+    bump('newRows');
     // The Observe aggregates cross the boundary too (fix-analytics-identity-scope): spend
     // totals, the timeseries and the cost breakdowns are as much one account's data as its
     // request rows. Invalidate them AND clear what they populated — guarding the in-flight
@@ -1220,6 +1233,9 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         s.requestWindow = null;
         s.requestListLoading = false;
         s.requestListError = null;
+        // Freshness state belongs to one owner and one frozen window.
+        s.requestsPaged = false;
+        s.requestsNew = null;
         s.selId = null;
         s.selBodies = { rows: null, loading: false, error: null };
         s.streamHealth = 'polling';
@@ -1659,7 +1675,10 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
   // slice bumps its counter and applies its response only if still current, so a
   // stale (old-range) reply can't overwrite newer state — last-writer-wins across
   // pages (loadOverview/loadCosts share `summary` + the model breakdown).
-  const generation = { summary: 0, series: 0, breakdown: 0, recent: 0, requests: 0 };
+  // `newRows` is the freshness probe's OWN generation (add-requests-freshness). Sharing
+  // `requests` would let a probe cancel an append (or the reverse), and would let a late
+  // probe restore the pill after the user had already clicked it or changed filters.
+  const generation = { summary: 0, series: 0, breakdown: 0, recent: 0, requests: 0, newRows: 0 };
   type SliceKey = keyof typeof generation;
   const bump = (key: SliceKey): number => (generation[key] += 1);
   const isCurrent = (key: SliceKey, token: number): boolean => generation[key] === token;
@@ -1843,8 +1862,71 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     await load();
   };
   /** The loader for whichever aggregate page is on screen, or null elsewhere. */
+  /** Requests newer than the frozen window (add-requests-freshness).
+   *
+   * `[window.to, now)`, exactly complementary to the list's `[window.from, window.to)` —
+   * the API's range is half-open (`createdAt >= from AND createdAt < to`), so a row created
+   * at precisely `window.to` is excluded from the list and counted here, once. Carries the
+   * window's FROZEN filter, or it would count rows the filtered list would never show.
+   *
+   * Its own generation, so it can never cancel a list load or be restored by a late reply
+   * after the user acted. It writes only `requestsNew` — never the list's own
+   * loading/error/cursor/window. */
+  const NEW_ROWS_CAP = 50;
+  const probeNewRequests = async (): Promise<void> => {
+    const window = state.requestWindow;
+    if (window === null) return;
+    const now = new Date().toISOString();
+    // Never probe an inverted or empty range (clock skew, or an immediate re-probe).
+    if (now <= window.to) return;
+    const idGen = identityGen;
+    const token = bump('newRows');
+    const current = (): boolean => isCurrent('newRows', token) && idGen === identityGen;
+    try {
+      const page = await client.requests({
+        from: window.to,
+        to: now,
+        limit: NEW_ROWS_CAP,
+        ...filterToRequestParams(window.filter),
+      });
+      if (!current()) return;
+      setState('requestsNew', {
+        count: page.rows.length,
+        // "more than this" comes from the CURSOR, not a full page: a page of exactly CAP
+        // rows is not proof that more exist.
+        atLeast: page.nextCursor !== null,
+        unknown: false,
+      });
+    } catch {
+      if (!current()) return;
+      // A failed probe must NOT read as "nothing new" — that would present a stale list as
+      // current, which is the thing this feature exists to prevent.
+      setState('requestsNew', { count: 0, atLeast: false, unknown: true });
+    }
+  };
+
+  /**
+   * What the Requests page does when the shared budget offers it a refresh.
+   *
+   * Not `loadRequests(true)` directly: this seam is called by both the poll and the
+   * `analytics.invalidated` nudge, and the right action depends on whether the user is in a
+   * paging session. Wiring the reset in would let a nudge discard pages they asked for.
+   */
+  const refreshRequestsPage = async (): Promise<void> => {
+    if (state.requestsPaged) return probeNewRequests();
+    return loadRequests(true);
+  };
+
   const currentAggregateLoader = (): (() => Promise<void>) | null =>
-    state.page === 'costs' ? loadCosts : state.page === 'overview' ? loadOverview : null;
+    state.page === 'costs'
+      ? loadCosts
+      : state.page === 'overview'
+        ? loadOverview
+        : // Returned `null` before add-requests-freshness, which is why the
+          // `analytics.invalidated` nudge was silently dropped on the Requests page.
+          state.page === 'requests'
+          ? refreshRequestsPage
+          : null;
   /** A nudge NEVER fetches while hidden — the stream is closed then anyway, and phase
    * 1's single catch-up owns the return. */
   const onAnalyticsNudge = (): void => {
@@ -2003,6 +2085,8 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     setState({ requestListLoading: true, requestListError: null });
     try {
       if (reset) {
+        // A reset ends the paging session and retires any pending disclosure.
+        setState({ requestsPaged: false, requestsNew: null });
         const { from, to } = currentRange();
         const window: RequestWindow = { from, to, filter: state.reqFilter };
         const page = await client.requests({
@@ -2023,6 +2107,9 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         const window = state.requestWindow;
         const cursor = state.requestCursor;
         if (window === null || cursor === null) return;
+        // Marked HERE, before awaiting: a freshness refresh landing mid-append must see a
+        // paging session in progress and stand down, or it would discard this very call.
+        setState('requestsPaged', true);
         const page = await client.requests({
           from: window.from,
           to: window.to,
@@ -2390,6 +2477,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     },
     requestAggregateRefresh,
     loadRequests,
+    refreshRequestsPage,
 
     bootstrap,
     retry: bootstrap,

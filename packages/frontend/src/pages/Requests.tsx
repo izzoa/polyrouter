@@ -1,10 +1,15 @@
 import { createMemo, For, onMount, Show } from 'solid-js';
 import { InflightRows, RequestRows, RequestTableHead } from '../components/RequestTable';
 import { createPoller } from '../data/poller';
+
 import { filterToRequestParams } from '../data/analytics';
 import { inflightCadenceMs, projectInflightRows } from '../data/inflight';
 import { useApp } from '../state/context';
 import type { RequestFilter } from '../types';
+
+/** Matches the Overview card's cadence, so the two pages go stale at the same rate rather
+ *  than for different reasons. The shared budget floors the combined poll+nudge rate. */
+const POLL_MS = 15_000;
 
 const FILTERS: [RequestFilter, string][] = [
   ['all', 'All'],
@@ -33,6 +38,16 @@ export function Requests(props: { live: boolean }) {
    * Filtered through the SAME mapping the paginated query uses, so the band and the list
    * cannot come to disagree about what "auto" means. A filter needing a terminal outcome
    * empties the band rather than guessing at rows that have not finished. */
+  /** What the disclosure says. A FAILED probe must not read as "nothing new" — that would
+   *  present a stale list as current, which is the thing this exists to prevent. */
+  const newRowsLabel = (): string => {
+    const n = state.requestsNew;
+    if (n === null) return '';
+    if (n.unknown) return 'Newer requests may exist · reload';
+    if (n.count === 0) return 'Up to date · reload';
+    return `${String(n.count)}${n.atLeast ? '+' : ''} new · load`;
+  };
+
   const bandRows = createMemo(() =>
     projectInflightRows(
       state.inflightRows,
@@ -40,6 +55,18 @@ export function Requests(props: { live: boolean }) {
       filterToRequestParams(state.reqFilter),
     ),
   );
+
+  // Freshness (add-requests-freshness). Routed through the SHARED aggregate budget, which
+  // already floors the combined poll+nudge rate and already reserves `force` for the
+  // mandatory hidden→visible catch-up — inheriting that is why there is no second refresh
+  // path. `runImmediately: false` because `onMount` above already loaded page 1; an
+  // immediate first tick would issue two resets at setup.
+  createPoller({
+    fn: (reason) => app.requestAggregateRefresh(() => app.refreshRequestsPage(), reason === 'resume'),
+    intervalMs: () => POLL_MS,
+    enabled: () => props.live,
+    runImmediately: false,
+  });
 
   // Degraded path only: a HEALTHY stream already drives the shared live set app-wide, so
   // the band works here with no poller at all. This covers the case where the stream is
@@ -96,6 +123,24 @@ export function Requests(props: { live: boolean }) {
             </button>
           </div>
         )}
+      </Show>
+
+      {/* Shown only while the user is PAGING: an unpaged list refreshes itself, so there is
+          nothing to announce. Discarding pages 2..N to deliver freshness would be the worse
+          trade, so the page discloses instead. */}
+      <Show when={state.requestsPaged && state.requestsNew !== null}>
+        {/* A polite live region: the pill appears without user action, so a screen-reader
+            user is told the list has fallen behind rather than only sighted users. */}
+        <div role="status" style="display:flex;justify-content:center">
+          <button
+            type="button"
+            class="btn-ghost"
+            style="font:500 12px 'Geist',sans-serif"
+            onClick={() => void app.loadRequests(true)}
+          >
+            {newRowsLabel()}
+          </button>
+        </div>
       </Show>
 
       <div class="panel rs-table-panel rs-table-requests" style="overflow:hidden;border-radius:10px">

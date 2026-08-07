@@ -17,6 +17,12 @@ heading is started.
 
 ### Fixed
 
+- **Five controls were below the minimum hit target at desktop width.** The setup guide's
+  dismiss button, the three setup step buttons and a routing dropdown all rendered at 22px,
+  under the 24px floor required at every width (WCAG 2.5.8 AA). The stylesheet applied that
+  floor only to controls carrying a component class, so anything styled inline went without it
+  above the narrow breakpoint — and nothing tested the floor there. Controls now get it by
+  being controls.
 - **Interface symbols rendered differently on every operating system.** A dozen small marks —
   copy, close, chevrons, the drag handle, the escalation arrow, chart legend keys and the
   status dot — were text characters the bundled fonts do not contain, so each was drawn with

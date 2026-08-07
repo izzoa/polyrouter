@@ -273,6 +273,53 @@ test.describe('non-admin at phone width', () => {
   });
 });
 
+test.describe('desktop width, fine pointer', () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  test('every control meets the 24px floor at desktop width', async ({ page }) => {
+    // Added with narrow-geometry-tolerances, and it closes a PRE-EXISTING gap rather than
+    // only replacing what left the parity set.
+    //
+    // STYLESEED.md locks `target-base` at 24px in BOTH axes as the "minimum hit target at
+    // EVERY width (WCAG 2.5.8 AA)" — but every comprehensive floor assertion above runs
+    // inside `phone width` at 390x844, and the only other one runs at 1024x768 with
+    // `hasTouch` against `.btn-ghost` alone. At 1440x900 with a fine pointer, nothing
+    // enforced the floor at all. `.endpoint-chip`'s entry in the v0.11.0 parity set was
+    // incidentally its only height assertion here, so removing it without this would have
+    // deleted coverage.
+    //
+    // 24, not the 44px comfort target: 44 is `target-comfort`, which the lock scopes to
+    // below `narrow` and to coarse pointers. Desktop with a mouse is held to the base floor.
+    for (const name of PAGES) {
+      await page.goto(`/browser-harness.html#/${name}`);
+      await page.waitForSelector('html[data-harness-ready="true"]');
+      const small = await page.evaluate(() => {
+        const out: string[] = [];
+        // Semantic, matching the phone-width test — a class list only ever covers controls
+        // somebody remembered to class.
+        for (const el of document.querySelectorAll<HTMLElement>(
+          'button, a[href], input, select, textarea, [role="menuitem"]',
+        )) {
+          const r = el.getBoundingClientRect();
+          if (r.width === 0 || r.height === 0) continue; // not rendered in this state
+          // The same locked exceptions the phone-width assertion carries.
+          if (el.classList.contains('toggle')) continue;
+          if (el instanceof HTMLInputElement && (el.type === 'checkbox' || el.type === 'radio'))
+            continue;
+          if (r.height < 24 || r.width < 24) {
+            out.push(
+              `${el.tagName}.${el.className.toString().split(/\s+/)[0] ?? ''}` +
+                ` ${String(Math.round(r.width))}x${String(Math.round(r.height))}`,
+            );
+          }
+        }
+        return out;
+      });
+      expect(small, `controls under the 24px base floor on ${name} at desktop width`).toEqual([]);
+    }
+  });
+});
+
 test.describe('desktop parity against the released v0.11.0 baseline (task 8.8)', () => {
   test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -289,9 +336,19 @@ test.describe('desktop parity against the released v0.11.0 baseline (task 8.8)',
     // Controls already at or above the 24px floor. These values were read from BOTH
     // builds and are identical — measured in the real app, not from a control probe in
     // isolation, since a class renders at a different height depending on its content.
+    //
+    // `.endpoint-chip` LEFT this set in narrow-geometry-tolerances. It was 28 here and is 27
+    // now, because it contained `⧉` — a character no bundled font provides, drawn from a
+    // platform symbol face — and replace-fallback-symbol-glyphs deliberately swapped it for an
+    // SVG icon. 28 is NOT stale: it is a correct record of what v0.11.0 rendered, which is the
+    // whole point of this set. Rewriting it to 27 would destroy that fact while leaving the
+    // v0.11.0 provenance above it, and would assert nothing anyway — ±2 passes at either value.
+    // A control we intentionally changed simply does not belong in a list of controls asserted
+    // NOT to have changed. Its minimum size is covered by "every control meets the 24px floor
+    // at desktop width" below, which was added with this removal because nothing else asserted
+    // it above the narrow threshold.
     unchangedControls: {
       '.nav-item': 31,
-      '.endpoint-chip': 28,
       '.req-row': 35,
     },
   } as const;
@@ -325,14 +382,15 @@ test.describe('desktop parity against the released v0.11.0 baseline (task 8.8)',
     expect(now.sidebar, 'the sidebar moved at desktop width').toEqual([...BASELINE.sidebar]);
     for (const [sel, expected] of Object.entries(BASELINE.unchangedControls)) {
       if (now.controls[sel] === null) continue; // not present on this page
-      // ±2, because these heights are line boxes: the app declares `'Geist', sans-serif` and
-      // bundles no `@font-face`, so the fallback is whatever the platform calls `sans-serif`
-      // and the line box rounds differently under it. Measured by forcing other faces at
-      // load: a sans swap moves .nav-item 31→30 and .req-row 35→34, the Linux runner
-      // reported .endpoint-chip at 27, and a serif — a deliberately extreme stand-in, since
-      // the real variable is only ever which sans-serif a platform picks — moves .req-row
-      // 35→33. The check is "these controls did not grow or shrink", which two pixels of
-      // rounding is not; the 24px touch floor is asserted separately against the floor.
+      // ±2. The earlier note here said the app "bundles no `@font-face`" so each platform
+      // falls back differently — that is false: Geist is vendored and loaded (see
+      // `overlayBaseline.spec.ts`'s header for the full correction). The ±2 was sized against
+      // forced face swaps, which do not occur.
+      //
+      // It is kept anyway, and honestly: `.nav-item` and `.req-row` measure 31 and 35 on
+      // macOS, Ubuntu 22.04 and Ubuntu 24.04 alike, but CI has never disclosed their values —
+      // it reports only assertions that FAIL, and these pass. A pass is not a measurement, so
+      // narrowing this would be inference. Retiring it needs a capture-only CI run.
       expect(
         Math.abs(now.controls[sel]! - expected),
         `${sel} changed height at desktop (${expected} → ${now.controls[sel]})`,

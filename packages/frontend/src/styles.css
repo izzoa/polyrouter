@@ -937,6 +937,33 @@ select:focus {
   min-height: 24px;
 }
 
+/* The 24px base floor for controls that carry no component class (WCAG 2.5.8 AA, and
+   `target-base` in STYLESEED.md — "minimum hit target at EVERY width").
+   
+   The selector deliberately mirrors the narrow-width rule below rather than naming classes:
+   the floor is a property of being an interactive control, and a class list only ever covers
+   controls somebody remembered to class. Without this, the floor existed only below `narrow`
+   — a bare `<select>` on Routing rendered at 22px on desktop, and three Setup step buttons
+   at 22px, because their height came from a decorative 22px badge.
+
+   In CSS rather than on the elements: an inline `min-height` beats the narrow media query on
+   the property it declares, so inlining the base floor silently caps those controls at 24px
+   below `narrow` instead of letting them reach 44px.
+
+   And wrapped in `:where()` so it contributes ZERO specificity. Written bare,
+   `button:not(.toggle)` scores (0,1,1) — higher than `.btn-ghost` at (0,1,0) — so this floor
+   would outrank the 44px comfort rules and cap coarse-pointer controls at 24px. Same failure
+   as the inline case, arrived at by specificity instead: a base floor must be the weakest
+   rule in the cascade, never the strongest. */
+:where(
+  button:not(.toggle),
+  select,
+  textarea,
+  input:not([type='checkbox']):not([type='radio'])
+) {
+  min-height: 24px;
+}
+
 /* The range segmented control. Its padding moved out of the inline object style so a
    floor can reach it at all — the rendered result is identical. */
 .rs-seg {

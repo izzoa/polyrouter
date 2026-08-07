@@ -9,20 +9,26 @@
  * Pinned as numbers rather than re-derived per run, for the same reason phase 1 pins its
  * baseline: a build-and-diff per run is slow, and the pre-change tree is a fixed point.
  *
- * These numbers are LAYOUT, not text metrics. `styles.css` asks for `'Geist', sans-serif`
- * and the app ships no `@font-face`, so the generic fallback resolves per platform —
- * Helvetica here, DejaVu on the Linux runner — and an overlay sized by its own text differs
- * accordingly. Re-running this matrix under two deliberately different faces (a wider
- * Verdana and a serif Georgia), applied at page load, measured exactly which axes that
- * moves — and one thing held on ALL THIRTEEN surfaces under BOTH: the horizontal CENTRE
- * never moved. So the centre is asserted exactly, every CSS-pinned axis is asserted exactly,
- * and only the measured text-sized axes carry slack. Nothing is weakened by this: a sheet
- * leaking into desktop moves an overlay by hundreds of pixels — a full-width bottom sheet
- * is 1440 wide and bottom-anchored — not by a wrapped line.
+ * WHY SOME AXES CARRY SLACK — and what the earlier explanation here got wrong.
  *
- * The face must be applied BEFORE the surface opens to measure this honestly. Applying it
- * after only re-lays-out the overlay itself, which hid that the picker is anchored to a
- * control and therefore follows the text layout of the page above it too.
+ * This comment used to say the app "ships no `@font-face`", so each platform fell back to its
+ * own sans-serif. That is false: Geist is vendored under `public/fonts/` and linked from both
+ * entry points, and `browserHarness.tsx:156` gates readiness on `document.fonts.ready`, so
+ * every measurement here is taken with the real font loaded. A later version blamed whole-pixel
+ * glyph-advance quantisation on Linux; that was contradicted by the recorded Linux values,
+ * which include fractions (14.5, 178.375). Both stories were plausible and load-bearing, and
+ * both sent people to the wrong place. This one claims less.
+ *
+ * What is actually measured: the SAME loaded fonts produce platform-dependent TEXT LAYOUT.
+ * Across macOS, Ubuntu 22.04 and Ubuntu 24.04 — same harness, same Chromium, fonts verified
+ * loaded, three cold runs per environment hashing identically — eight of the thirteen surfaces
+ * and all three pinned controls are byte-identical, five of them reproducing sub-pixel values
+ * (704.5, 173.7813) exactly. Two measurements differ: this toast's shrink-wrapped width, and
+ * `confirm:bodyCapture`'s height, where the copy wraps to one more line. No mechanism beyond
+ * that is claimed; establishing one would need controlled text-run measurement.
+ *
+ * `boxOf` rounds every rectangle before comparison, so "exact" here means integer-rounded
+ * equality — which is why a 0.3px width difference passes and a 24px one does not.
  *
  * What this gives up, stated rather than implied: a change that alters ONLY a soft axis by
  * less than its slack — 8px of extra padding on a dialog, say — no longer fails here. The
@@ -57,17 +63,45 @@ const TEXT_SIZED: Record<string, readonly Axis[]> = {
   // Anchored to a control, so `y` tracks the text layout of the page above it, not just
   // the picker's own content.
   picker: ['y', 'h'],
-  toast: ['x', 'y', 'w', 'h'], // shrink-wrapped around one sentence, in both axes
+  // Shrink-wrapped around one sentence, so `x` and `w` move. `y` and `h` do NOT: the runner
+  // printed `[442, 843, 557, 35]` against macOS's `[454, 843, 533, 35]`, so both are
+  // runner-confirmed and identical.
+  toast: ['x', 'w'],
 };
 
-/** A wrapped line is ~18px at this UI's sizes. The largest drift measured across both probe
- * faces was 28px (a provider form's stack of labels) and the largest `y` shift 16px; the
- * runner's confirm dialog moved 18px. 40 covers all of it with margin while staying well
- * under the shortest overlay (219px) and orders of magnitude under a real regression. */
+/** DEFAULT allowances, for soft axes whose cross-platform variance has not been measured.
+ *
+ * These were sized against forced fallback-face swaps (Verdana, Georgia) — an accurate
+ * measurement of a mechanism that does not occur, since Geist always loads. They are kept, not
+ * derived: eleven surfaces still rely on them, and CI has never disclosed their values on the
+ * runner. CI reports only the measurements that FAIL, so the ones that pass do so *inside*
+ * these allowances — a pass is not a measurement, and narrowing them would be inference.
+ *
+ * Retiring them needs a capture-only CI run that logs every surface rather than only failures.
+ * Until then they stay wide, and that is a known, recorded gap rather than a claim. */
 const LINE_SLACK = 40;
-/** A shrink-wrapped width scales with the face itself rather than by whole lines: the toast
- * measured +7.5% and -5.3% across the two probe faces, and +4.5% on the runner. */
 const WIDTH_SLACK = 0.15;
+
+/** MEASURED allowances, overriding the defaults for the axes whose cross-platform spread is
+ * actually known. An override table rather than narrower defaults: this leaves every unmeasured
+ * surface untouched *by construction*, instead of by a refactor that has to be audited.
+ *
+ * Both entries are bounded by the runner's own printed numbers, not by inference — CI's
+ * `toEqual` diff prints the full received box, with the unchanged elements as context. */
+const MEASURED_SLACK: Record<string, Partial<Record<Axis, number>>> = {
+  toast: {
+    // macOS 533, Ubuntu 24.04 and the CI runner both 557 → spread 24px. 32 leaves 8px for an
+    // environment this has not seen.
+    w: 32,
+    // The box recentres as the width changes, so `x` moves by exactly half the width spread:
+    // 454 → 442. 16px, same 8px margin. The centre assertion below pins it further.
+    x: 16,
+  },
+  'confirm:bodyCapture': {
+    // macOS 160, runner 178 → 18px, one wrapped line of copy. 26 leaves the same 8px.
+    h: 26,
+  },
+};
 
 /** [x, y, width, height] at 1440x900, except the nav which exists as an overlay only
  * below the threshold and is therefore pinned at 390x844. */
@@ -123,11 +157,16 @@ for (const s of SURFACES) {
           );
           return;
         }
-        const slack = axis === 'w' ? Math.round(expected![i]! * WIDTH_SLACK) : LINE_SLACK;
+        // A measured override where the cross-platform spread is known; otherwise the wide
+        // default, which is an unretired gap rather than a derived number.
+        const measured = MEASURED_SLACK[s.name]?.[axis];
+        const slack =
+          measured ?? (axis === 'w' ? Math.round(expected![i]! * WIDTH_SLACK) : LINE_SLACK);
         expect(
           Math.abs(actual[i]! - expected![i]!),
-          `${s.name} changed ${axis} by more than a fallback font can explain ` +
-            `(${expected![i]} → ${actual[i]}, slack ${slack})`,
+          `${s.name} changed ${axis} by more than platform text layout explains ` +
+            `(${expected![i]} → ${actual[i]}, allowed ${slack}` +
+            `${measured === undefined ? ', unmeasured default' : ', measured'})`,
         ).toBeLessThanOrEqual(slack);
       });
     });

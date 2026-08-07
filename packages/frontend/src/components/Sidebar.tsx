@@ -218,7 +218,7 @@ export function Sidebar() {
             type="button"
             aria-label="Dismiss setup guide"
             title="Dismiss setup guide"
-            style="position:absolute;top:16px;right:13px;width:22px;height:22px;border:none;background:transparent;color:var(--text3);cursor:pointer;font:400 14px 'Geist',sans-serif;line-height:1;border-radius:6px;display:flex;align-items:center;justify-content:center"
+            style="position:absolute;top:15px;right:12px;width:24px;height:24px;border:none;background:transparent;color:var(--text3);cursor:pointer;font:400 14px 'Geist',sans-serif;line-height:1;border-radius:6px;display:flex;align-items:center;justify-content:center"
             onClick={() => app.dismissSetupGuide()}
           >
             ×

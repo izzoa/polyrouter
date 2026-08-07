@@ -17,6 +17,13 @@ heading is started.
 
 ### Fixed
 
+- **One account's spend figures could remain visible after switching to another.** The same
+  defect as below, on the Observe pages: summary, timeseries and cost breakdowns were guarded
+  only against stale *range* replies, a guard that cannot see an account change. Signing out
+  and in as a different user left the previous account's spend totals, counts and breakdowns
+  on screen, and an in-flight response could still commit. The boundary now invalidates and
+  clears them and resets their loading state; the guard lives in the shared slice runner, so
+  every such loader is covered at once.
 - **One account's request data could remain visible after switching to another.** Signing out
   and in as a different user in the same browser session left the previous account's request
   list, cursor and frozen window in place, and a load already in flight could still commit

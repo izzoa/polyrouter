@@ -1193,10 +1193,28 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     // spinner it can never clear. `reqFilter` is deliberately kept: a display preference,
     // not another owner's data.
     bump('requests');
+    // The Observe aggregates cross the boundary too (fix-analytics-identity-scope): spend
+    // totals, the timeseries and the cost breakdowns are as much one account's data as its
+    // request rows. Invalidate them AND clear what they populated — guarding the in-flight
+    // response alone would leave the previous account's spend on screen — and normalise
+    // their indicators, since a superseded slice's completion path is inert by design.
+    bump('summary');
+    bump('series');
+    bump('breakdown');
     setState(
       produce((s) => {
         s.inflightRows = [];
         s.recentRequests = [];
+        s.analyticsSummary = null;
+        s.analyticsSummaryLoading = false;
+        s.analyticsSummaryError = null;
+        s.analyticsSeries = [];
+        s.analyticsSeriesLoading = false;
+        s.analyticsSeriesError = null;
+        s.analyticsBreakdown = { model: [], provider: [], agent: [] };
+        s.analyticsBreakdownLoading = false;
+        s.analyticsBreakdownError = null;
+        s.recentRequestsLoading = false;
         s.requestList = [];
         s.requestCursor = null;
         s.requestWindow = null;
@@ -1646,7 +1664,21 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
   const bump = (key: SliceKey): number => (generation[key] += 1);
   const isCurrent = (key: SliceKey, token: number): boolean => generation[key] === token;
 
-  /** Run a single-slice fetch with loading/error + the stale-response guard. */
+  /** Run a single-slice fetch with loading/error + the stale-response guard.
+   *
+   * Identity-aware HERE rather than at each call site (fix-analytics-identity-scope). The
+   * slice token orders responses within one identity — its comment above says as much: it
+   * exists so a stale *old-range* reply cannot overwrite newer state — and by construction
+   * cannot observe an account change.
+   *
+   * Be precise about what this line does and does not do. For every slice that exists today
+   * it is **unreachable**: `resetIdentityScoped` bumps all four, and `identityGen += 1`
+   * happens inside it, so the token check alone already rejects a response that crosses the
+   * boundary — degrading this check leaves every test passing. It is kept because this is a
+   * SHARED runner: a slice added later and not bumped at the boundary would otherwise be
+   * unprotected, and being safe by default is worth one line. It is deliberately not
+   * presented as tested, because it cannot be from outside this closure.
+   */
   async function runSlice<T>(
     key: SliceKey,
     setLoading: (v: boolean) => void,
@@ -1654,18 +1686,20 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     fetchFn: () => Promise<T>,
     apply: (data: T) => void,
   ): Promise<void> {
+    const idGen = identityGen;
     const token = bump(key);
+    const current = (): boolean => isCurrent(key, token) && idGen === identityGen;
     setLoading(true);
     setError(null);
     try {
       const data = await fetchFn();
-      if (!isCurrent(key, token)) return;
+      if (!current()) return;
       apply(data);
     } catch (e) {
-      if (!isCurrent(key, token)) return;
+      if (!current()) return;
       setError(err(e));
     } finally {
-      if (isCurrent(key, token)) setLoading(false);
+      if (current()) setLoading(false);
     }
   }
 

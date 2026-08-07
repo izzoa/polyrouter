@@ -98,6 +98,20 @@ describe('an unpaged list does not go stale', () => {
   });
 });
 
+/** Moves the frozen window's upper bound into the past.
+ *
+ * `probeNewRequests` returns early when `now <= window.to` — correctly, since nothing can have
+ * settled inside a range that has not opened yet. But `loadRequests(true)` freezes `to` at the
+ * instant it runs, and these tests probe microseconds later, so the two timestamps land in the
+ * same MILLISECOND often enough to flake: the probe issues no query and the assertions read as
+ * a regression. Backdating the boundary makes the range non-empty by construction, and makes
+ * the probe's `from` a known value rather than whatever the clock happened to say. */
+function backdateWindow(store: AppStore, ms = 1000): void {
+  const w = store.state.requestWindow;
+  if (w === null) throw new Error('no frozen window to backdate — the fixture did not load');
+  store.setState('requestWindow', { ...w, to: new Date(Date.now() - ms).toISOString() });
+}
+
 describe('a paged list is disclosed to, never discarded', () => {
   /** Page 1, then "Load more", so a paging session is genuinely in progress. */
   async function paged(): Promise<H> {
@@ -111,6 +125,7 @@ describe('a paged list is disclosed to, never discarded', () => {
   it('does not reset a paged list, and offers a count instead', async () => {
     const h = await paged();
     try {
+      backdateWindow(h.store);
       const rows = listIds(h.store);
       const cursor = h.store.state.requestCursor;
       const window = { ...h.store.state.requestWindow };
@@ -140,6 +155,7 @@ describe('a paged list is disclosed to, never discarded', () => {
       // this one is about the probe's QUERY, and the `escalated` filter yields fewer than a
       // page in the fixture, so a real "load more" would have no cursor to follow.
       h.store.setState('requestsPaged', true);
+      backdateWindow(h.store);
 
       const before = reqCalls(h.fake).length;
       await h.store.refreshRequestsPage();
@@ -188,6 +204,7 @@ describe('a paged list is disclosed to, never discarded', () => {
       try {
         h2.store.setState('requestWindow', { ...h.store.state.requestWindow! });
         h2.store.setState('requestsPaged', true);
+        backdateWindow(h2.store);
         await h2.store.refreshRequestsPage();
         await flush();
         expect(h2.store.state.requestsNew?.unknown, 'a failed probe read as “nothing new”').toBe(

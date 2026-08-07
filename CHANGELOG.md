@@ -17,6 +17,18 @@ heading is started.
 
 ### Fixed
 
+- **One account's request data could remain visible after switching to another.** Signing out
+  and in as a different user in the same browser session left the previous account's request
+  list, cursor and frozen window in place, and a load already in flight could still commit
+  afterwards. The inspector's selection and **cached payloads** were not cleared either —
+  where body capture is enabled, that is the request and response text itself. All of it is
+  now cleared at the account boundary, which also resets the page's loading state so a
+  mid-load switch cannot latch a spinner. No server-side isolation failure was involved:
+  every response was correctly scoped to whoever asked, and the defect was entirely in what
+  the client retained.
+
+### Fixed
+
 - **The body-capture confirmation dialogs are real dialogs.** "Capture prompt & response
   bodies?" and "Turn capture off" carried `role="dialog" aria-modal="true"` while implementing
   none of the behaviour it promises: focus could Tab straight out into the page behind, and

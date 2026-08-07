@@ -1180,10 +1180,30 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     // is correct and required.
     inflightState = emptyStream();
     bump('recent');
+    // The REQUEST VIEW crosses the boundary too (fix-request-view-identity-scope): the
+    // paginated list with its cursor and frozen window, and — the part that matters most —
+    // the inspector's cached payloads, which hold prompt and response TEXT.
+    //
+    // This `bump` is the ONLY thing stopping an in-flight `loadRequests` from committing
+    // under the next account: that loader carries a slice token, which cannot see an
+    // identity change on its own. Do not remove it.
+    //
+    // Bumping alone is not enough either — a superseded loader's `finally` is inert by
+    // design, so the loading and error indicators must be reset here or the page latches a
+    // spinner it can never clear. `reqFilter` is deliberately kept: a display preference,
+    // not another owner's data.
+    bump('requests');
     setState(
       produce((s) => {
         s.inflightRows = [];
         s.recentRequests = [];
+        s.requestList = [];
+        s.requestCursor = null;
+        s.requestWindow = null;
+        s.requestListLoading = false;
+        s.requestListError = null;
+        s.selId = null;
+        s.selBodies = { rows: null, loading: false, error: null };
         s.streamHealth = 'polling';
         s.autoLayers = null;
         s.calHistory = { rows: [], loaded: false, error: null };
@@ -1938,7 +1958,14 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
   // keeps the last-good page consistent with its cursor.
   const loadRequests = async (reset: boolean): Promise<void> => {
     if (!reset && (state.requestWindow === null || state.requestCursor === null)) return;
+    // The slice token orders requests WITHIN one identity — it stops an older page-1 load
+    // overwriting a newer one — and by construction cannot observe an identity change. What
+    // makes it identity-safe is that `resetIdentityScoped` BUMPS it
+    // (fix-request-view-identity-scope): removing that bump silently re-opens a hole where a
+    // list begun as one account commits under the next. Guarded by
+    // `requestViewIdentity.test.tsx`, which fails if it goes.
     const token = bump('requests');
+    const current = (): boolean => isCurrent('requests', token);
     setState({ requestListLoading: true, requestListError: null });
     try {
       if (reset) {
@@ -1950,7 +1977,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           limit: REQUEST_PAGE_SIZE,
           ...filterToRequestParams(window.filter),
         });
-        if (!isCurrent('requests', token)) return;
+        if (!current()) return;
         setState(
           produce((s) => {
             s.requestWindow = window;
@@ -1969,7 +1996,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           cursor,
           ...filterToRequestParams(window.filter),
         });
-        if (!isCurrent('requests', token)) return;
+        if (!current()) return;
         setState(
           produce((s) => {
             s.requestList = [...s.requestList, ...page.rows];
@@ -1979,9 +2006,10 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       }
     } catch (e) {
       if (!isCurrent('requests', token)) return;
+      if (!current()) return;
       setState('requestListError', err(e));
     } finally {
-      if (isCurrent('requests', token)) setState('requestListLoading', false);
+      if (current()) setState('requestListLoading', false);
     }
   };
 

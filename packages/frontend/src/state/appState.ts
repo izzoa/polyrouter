@@ -2047,7 +2047,10 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         () => client.timeseries(range, bucket),
         (data) => setState('analyticsSeries', data),
       ),
-      loadBreakdowns(['model'], 'spend'),
+      // Follows the shared metric rather than hardcoding spend: the Overview's panel now
+      // offers the selector too, and requesting a metric the panel is not showing is what
+      // made a flip on Costs briefly render the token top-N under a spend heading.
+      loadBreakdowns(['model'], state.breakdownMetric),
       loadRecentRequests(),
     ]);
   };

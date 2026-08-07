@@ -1,56 +1,12 @@
 import { createEffect, on, Show } from 'solid-js';
-import { BarRows } from '../components/BarRows';
+import { BreakdownPanel, METRIC_OPTIONS } from '../components/BreakdownPanel';
 import { RangeSelector } from '../components/RangeSelector';
 import { Segmented } from '../components/Segmented';
-import { breakdownToSpend, breakdownToTokens, fmtTokens } from '../data/analytics';
-import type { BreakdownMetric, BreakdownRow } from '../data/api';
+import type { BreakdownMetric } from '../data/api';
 import { createPoller } from '../data/poller';
 import { useApp } from '../state/context';
 
 const POLL_MS = 15_000;
-
-/** A reactive breakdown panel (props are Solid getters, so it re-renders as the breakdown
- * slice loads / the range or metric changes).
- *
- * `stale` blanks the rows while a refetch is in flight for a DIFFERENT metric: the rows
- * stay mounted during loading, so without it flipping the selector would show dollar
- * values under a "tokens" heading until the response landed. */
-function BreakdownPanel(props: {
-  title: string;
-  rows: BreakdownRow[];
-  loading: boolean;
-  metric: BreakdownMetric;
-  stale: boolean;
-}) {
-  const tokens = (): boolean => props.metric === 'tokens';
-  const data = () => (tokens() ? breakdownToTokens(props.rows) : breakdownToSpend(props.rows));
-  return (
-    <div class="panel card">
-      <div class="section-title" style="margin-bottom:14px">
-        {props.title}
-      </div>
-      <Show
-        when={props.rows.length > 0 && !props.stale}
-        fallback={
-          <div style="font:400 12px 'Geist',sans-serif;color:var(--text3)">
-            {props.loading || props.stale
-              ? 'Loading…'
-              : tokens()
-                ? 'No usage in this range'
-                : 'No spend in this range'}
-          </div>
-        }
-      >
-        <BarRows data={data()} {...(tokens() ? { format: fmtTokens } : {})} />
-      </Show>
-    </div>
-  );
-}
-
-const METRIC_OPTIONS = [
-  { id: 'spend' as BreakdownMetric, label: 'spend' },
-  { id: 'tokens' as BreakdownMetric, label: 'tokens' },
-];
 
 export function Costs(props: { live: boolean }) {
   const app = useApp();

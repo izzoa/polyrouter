@@ -1,11 +1,13 @@
 import { createEffect, For, on, Show } from 'solid-js';
-import { BarRows } from '../components/BarRows';
+import { BreakdownPanel, METRIC_OPTIONS } from '../components/BreakdownPanel';
+import { Segmented } from '../components/Segmented';
 import { Chart } from '../components/Chart';
 import { RangeSelector } from '../components/RangeSelector';
 import { InflightRows, RequestRows, RequestTableHead } from '../components/RequestTable';
-import { breakdownToSpend, bucketSeconds, pct, timeseriesToChart } from '../data/analytics';
+import { bucketSeconds, pct, timeseriesToChart } from '../data/analytics';
 import { inflightCadenceMs } from '../data/inflight';
 import { createPoller } from '../data/poller';
+import type { BreakdownMetric } from '../data/api';
 import { rangeToParams } from '../data/range';
 import { useApp } from '../state/context';
 import { Icon } from '../components/Icon';
@@ -52,6 +54,16 @@ export function Overview(props: { live: boolean }) {
 
   const spend = () => state.analyticsSummary?.spend ?? 0;
   const reqs = () => state.analyticsSummary?.requests ?? 0;
+  const metric = (): BreakdownMetric => state.breakdownMetric;
+  /** True while the rows on screen belong to a different range/metric than the one selected —
+   * they are not merely old, they are labelled wrongly. Overview lacked this, so navigating
+   * here after flipping the metric on Costs briefly rendered the TOKEN top-N under a "Spend by
+   * model" heading: right values, wrong models, bars not in descending order. */
+  const breakdownStale = (): boolean => {
+    const l = state.breakdownLoadedFor;
+    return l === null || l.metric !== state.breakdownMetric || l.range !== state.range;
+  };
+
   const tin = () => state.analyticsSummary?.inputTokens ?? 0;
   const tout = () => state.analyticsSummary?.outputTokens ?? 0;
   /** Cache is part of the work. `inputTokens` is recorded as *uncached* input — the
@@ -152,21 +164,26 @@ export function Overview(props: { live: boolean }) {
             <Chart data={chartData()} label="requests" height={150} />
           </Show>
         </div>
-        <div class="panel card">
-          <div class="section-title" style="margin-bottom:14px">
-            Spend by model
-          </div>
-          <Show
-            when={state.analyticsBreakdown.model.length > 0}
-            fallback={
-              <div style="font:400 12px 'Geist',sans-serif;color:var(--text3)">
-                {state.analyticsBreakdownLoading ? 'Loading…' : 'No spend in this range'}
-              </div>
-            }
-          >
-            <BarRows data={breakdownToSpend(state.analyticsBreakdown.model)} />
-          </Show>
-        </div>
+        {/* The metric selector is shared with Costs — one preference, settable from either
+            page — so flipping it here re-ranks both. That is deliberate: the archived
+            requirement covers "the Overview and Costs pages", and a preference with only one
+            place to set it was the odd arrangement. */}
+        <BreakdownPanel
+          title={`${metric() === 'tokens' ? 'Tokens' : 'Spend'} by model`}
+          rows={state.analyticsBreakdown.model}
+          loading={state.analyticsBreakdownLoading}
+          metric={metric()}
+          stale={breakdownStale()}
+          action={
+            <Segmented
+              options={METRIC_OPTIONS}
+              value={metric()}
+              onChange={(m) => {
+                app.setBreakdownMetric(m);
+              }}
+            />
+          }
+        />
       </div>
 
       <div

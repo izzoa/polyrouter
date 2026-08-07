@@ -190,10 +190,74 @@ describe('the Overview headline', () => {
     }
   });
 
-  it('keeps the Overview on SPEND even though it shares the breakdown slice', async () => {
+  it('FOLLOWS the shared metric — it offers the selector too', async () => {
+    // This assertion used to be the opposite: "keeps the Overview on SPEND even though it
+    // shares the breakdown slice". That was only ever half of the archived requirement, which
+    // covers "the Overview and Costs pages" and says a breakdown panel's heading, empty state
+    // and units SHALL follow the selected metric. Overview offered no selector and rendered
+    // spend unconditionally.
+    //
+    // The old test had also gone vacuous: it mounted Overview fresh, where the default metric
+    // is already `spend`, so it passed by coincidence rather than by asserting the behaviour
+    // its name described.
     const h = await mountPage('Overview');
     try {
       expect(breakdownCalls(h.fake).every((c) => c.args[3] === 'spend')).toBe(true);
+      expect(h.host.textContent).toContain('Spend by model');
+
+      const before = breakdownCalls(h.fake).length;
+      h.store.setBreakdownMetric('tokens');
+      await flush();
+
+      const made = breakdownCalls(h.fake).slice(before);
+      expect(made.length, 'flipping the metric on Overview issued no refetch').toBeGreaterThan(0);
+      expect(made.every((c) => c.args[3] === 'tokens')).toBe(true);
+      expect(h.host.textContent).toContain('Tokens by model');
+      expect(h.host.textContent).not.toContain('Spend by model');
+
+      // And the LOAD path, which the flip path does not exercise: `loadOverview` used to
+      // hardcode `spend`, so a page load with tokens selected fetched the wrong metric. This
+      // is the assertion that fails if that hardcoding returns — verified by degradation,
+      // because the flip above passes either way.
+      const beforeLoad = breakdownCalls(h.fake).length;
+      await h.store.loadOverview();
+      await flush();
+      const onLoad = breakdownCalls(h.fake).slice(beforeLoad);
+      expect(onLoad.length, 'loadOverview fetched no breakdown').toBeGreaterThan(0);
+      expect(
+        onLoad.every((c) => c.args[3] === 'tokens'),
+        'loadOverview requested a metric the panel is not showing',
+      ).toBe(true);
+    } finally {
+      h.dispose();
+    }
+  });
+
+  it('does not render the token top-N under a spend heading while a refetch is in flight', async () => {
+    // The transient this closes: Overview requested `spend` while the shared slice could hold
+    // token-ranked rows, so navigating here after a flip on Costs briefly showed the token
+    // top-N — right values, wrong models, bars not descending — captioned "Spend by model".
+    const h = await mountPage('Overview');
+    try {
+      h.store.setState('breakdownMetric', 'tokens');
+      // Rows still belong to the previous metric: the panel must blank rather than mislabel.
+      h.store.setState('breakdownLoadedFor', { range: h.store.state.range, metric: 'spend' });
+      await flush();
+      // Scoped to the panel: the page legitimately contains `$` in the Spend headline card,
+      // so asserting on the whole host would fail for an unrelated reason.
+      const panel = [...h.host.querySelectorAll<HTMLElement>('.panel.card')].find((c) =>
+        /by model/i.test(c.textContent ?? ''),
+      );
+      expect(panel, 'no breakdown panel rendered').toBeDefined();
+      expect(panel?.textContent).toContain('Tokens by model');
+      // The rows themselves must be BLANKED, not merely reformatted. Asserting the absence of
+      // `$` proves nothing: the panel formats by the selected metric, so token formatting
+      // appears whether or not the stale guard exists. What the guard changes is that no rows
+      // render at all until the refetch lands.
+      expect(panel?.textContent, 'stale rows rendered under the new heading').not.toContain(
+        'Model 0',
+      );
+      expect(panel?.textContent).toContain('Loading…');
     } finally {
       h.dispose();
     }

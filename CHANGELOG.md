@@ -17,6 +17,14 @@ heading is started.
 
 ### Fixed
 
+- **The Overview's model breakdown had no spend/tokens switch.** The toggle added in 0.12.0
+  reached only the Costs page, although the panel is the same panel and the preference is
+  shared — so the Overview was permanently captioned "Spend by model" with no way to ask it
+  the token question. It now offers the switch, and its heading, empty state and units follow
+  the selection. Flipping it on either page changes both.
+- **The Overview could briefly caption a token chart as spend.** Arriving there after
+  switching to tokens on Costs rendered the token-ranked models under "Spend by model" — right
+  values, wrong models, bars not in descending order — until the refetch landed.
 - **Token counts wrapped to two lines in the requests table.** At real magnitudes
   "87.2k in / 1.5k out" is wider than the column, so most rows rendered as two lines once
   actual traffic arrived. Tokens now read `87.2k↑ 1.5k↓` — the same information in two thirds

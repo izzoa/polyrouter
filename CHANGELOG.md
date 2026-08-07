@@ -15,6 +15,11 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.12.1] — 2026-08-07
+
+[Release](https://github.com/izzoa/polyrouter/releases/tag/v0.12.1) ·
+[Compare](https://github.com/izzoa/polyrouter/compare/v0.12.0...v0.12.1)
+
 ### Fixed
 
 - **Five controls were below the minimum hit target at desktop width.** The setup guide's
@@ -44,6 +49,18 @@ heading is started.
 - **A dashboard that cannot start now says so, instead of showing a blank page.** An empty
   page is indistinguishable from a crashed server, an interrupted deploy, or a misconfigured
   proxy, so it sent self-hosters looking in the wrong place entirely.
+
+### Upgrade notes
+
+- **No migrations and no schema change** — a drop-in upgrade from 0.12.0, and no configuration
+  to change.
+- **Three fixes, all client-side.** Loading the new build is the whole upgrade: the locale fix
+  and the boot-failure message live in the page shell, and the icon and hit-target work is
+  markup and CSS. Nothing is stored, and nothing about routing, cost recording or the proxy
+  changes.
+- **Two figures look slightly different, deliberately.** The request list's token column now
+  reads `100 in / 40 out` rather than `100 → 40`, and a routing breadcrumb reads "Settings,
+  Notifications". Same values, wording chosen so the characters come from the bundled fonts.
 
 ## [0.12.0] — 2026-08-06
 
@@ -704,6 +721,7 @@ SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
 [Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.11.0...HEAD
+[0.12.1]: https://github.com/izzoa/polyrouter/releases/tag/v0.12.1
 [0.12.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.12.0
 [0.11.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.11.0
 [0.10.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.10.0

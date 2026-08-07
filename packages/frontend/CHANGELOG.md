@@ -1,5 +1,38 @@
 # @polyrouter/frontend
 
+## 0.12.1
+
+### Patch Changes
+
+- 62a9bd5: Fixed: five controls were smaller than the 24px minimum hit target at desktop width — the
+  setup guide's dismiss button, the three setup step buttons, and a routing band-target dropdown.
+  The 24px floor is required at every width (WCAG 2.5.8 AA) and the stylesheet only applied it to
+  controls carrying a component class, so anything styled inline had no floor above the narrow
+  breakpoint. Controls now get the floor by being controls, not by being remembered.
+- d3f4554: Fixed: a dozen small symbols in the interface — the copy, close, chevron, drag-handle and
+  escalation marks, the chart legend keys and the status dot — were text characters the bundled
+  Geist fonts do not contain, so each was drawn with whatever symbol font the viewer's operating
+  system happened to supply. The same control looked different on macOS, Linux and Windows. They
+  are now inline vector icons from one registry, or styled elements where the mark is just a
+  coloured shape, so the dashboard renders the same everywhere and fetches nothing extra.
+
+  Also fixed, found while doing it: an escalated request was marked only by a small decorative
+  arrow, so screen readers never announced escalation at all, and a completed setup step was
+  indicated by a checkmark and a green ring with no text equivalent. Both states now carry
+  accessible text.
+
+- 6dd551c: Fixed: the dashboard could fail to load entirely — a blank white page — on hosts whose browser
+  reports a locale tag that the formatting APIs reject. The charting library builds a number
+  formatter from the browser's raw reported locale while its module is being loaded, so a
+  non-conforming tag (`en-US@posix`, as some containers and kiosk browsers report) threw before
+  the dashboard had rendered anything at all. The reported locale is now checked and, if
+  unusable, replaced with the one the browser itself resolved for that machine; a host reporting
+  a normal locale is untouched and formats exactly as before.
+
+  Also added: if the dashboard ever fails to start for any reason, it now says so instead of
+  showing an empty page — a blank page is indistinguishable from a crashed server or a bad
+  deploy, and sent operators looking in the wrong place.
+
 ## 0.12.0
 
 ### Minor Changes

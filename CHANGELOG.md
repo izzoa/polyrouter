@@ -15,6 +15,15 @@ heading is started.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The OpenClaw connection snippet described a config file OpenClaw cannot read.** The block
+  shown by Agents → New (and returned by the agent-create API) was TOML at
+  `~/.openclaw/config.toml` with an `[llm]` table — a format OpenClaw has never had. Its only
+  config is JSON5 at `~/.openclaw/openclaw.json`, so following the snippet failed silently.
+  It now emits the real shape: a `models.providers` entry for the router plus an
+  `agents.defaults.model` default of `polyrouter/auto`.
+
 ## [0.12.2] — 2026-08-07
 
 [Release](https://github.com/izzoa/polyrouter/releases/tag/v0.12.2) ·

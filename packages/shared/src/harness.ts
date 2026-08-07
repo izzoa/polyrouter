@@ -37,7 +37,14 @@ export function connectionSnippet(harness: HarnessType, baseUrl: string, apiKey:
     return `curl ${baseUrl}/chat/completions \\\n  -H "Authorization: Bearer ${apiKey}" \\\n  -d '{"model":"auto","messages":[...]}'`;
   }
   if (harness === 'openclaw') {
-    return `# ~/.openclaw/config.toml\n[llm]\nbase_url = "${baseUrl}"\napi_key  = "${apiKey}"\nmodel    = "auto"`;
+    // OpenClaw's only config is JSON5 at ~/.openclaw/openclaw.json (its src/config/paths.ts:
+    // CONFIG_FILENAME = "openclaw.json"; no TOML loader exists). A custom OpenAI-compatible
+    // endpoint is a models.providers entry, and the default model is selected by
+    // agents.defaults.model.primary in provider/model form — so one `auto` model keeps the
+    // router doing the choosing, same contract as every other harness. JSON.stringify emits
+    // properly-escaped double-quoted strings (valid JSON5), so an unusual base_url/key can't
+    // corrupt the block — the same guarantee the hermes snippet makes for YAML.
+    return `// ~/.openclaw/openclaw.json  (JSON5)\n{\n  models: {\n    providers: {\n      polyrouter: {\n        baseUrl: ${JSON.stringify(baseUrl)},\n        apiKey: ${JSON.stringify(apiKey)},\n        api: "openai-completions",\n        models: [{ id: "auto" }],\n      },\n    },\n  },\n  agents: { defaults: { model: { primary: "polyrouter/auto" } } },\n}`;
   }
   if (harness === 'hermes') {
     // OpenAI-compatible: base_url keeps its /v1, provider=custom, default=auto lets the

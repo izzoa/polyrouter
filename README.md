@@ -657,13 +657,23 @@ Both speak the OpenAI-compatible endpoint, so point their `base_url` at
 (`auto`). The dashboard's **Agents → New** picks the harness and shows the exact block once;
 the equivalents are:
 
-**OpenClaw** — `~/.openclaw/config.toml`:
+**OpenClaw** — `~/.openclaw/openclaw.json` (JSON5): register the router as a provider and
+make it the default —
 
-```toml
-[llm]
-base_url = "https://<your-instance>/v1"
-api_key  = "poly_your_key"
-model    = "auto"
+```json5
+{
+  models: {
+    providers: {
+      polyrouter: {
+        baseUrl: "https://<your-instance>/v1",
+        apiKey: "poly_your_key",
+        api: "openai-completions",
+        models: [{ id: "auto" }],
+      },
+    },
+  },
+  agents: { defaults: { model: { primary: "polyrouter/auto" } } },
+}
 ```
 
 **[Hermes Agent](https://github.com/NousResearch/hermes-agent)** — `~/.hermes/config.yaml`:

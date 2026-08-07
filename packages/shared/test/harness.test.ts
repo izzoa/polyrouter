@@ -48,10 +48,28 @@ describe('connectionSnippet golden output', () => {
     expect(snippet).not.toContain(`base_url: "${nasty}"`); // raw, unescaped — must NOT appear
   });
 
-  it('openclaw → ~/.openclaw/config.toml [llm] block, OpenAI-compatible /v1', () => {
-    expect(connectionSnippet('openclaw', BASE, KEY)).toBe(
-      `# ~/.openclaw/config.toml\n[llm]\nbase_url = "${BASE}"\napi_key  = "${KEY}"\nmodel    = "auto"`,
-    );
+  it('openclaw → ~/.openclaw/openclaw.json JSON5 models.providers entry, OpenAI-compatible /v1', () => {
+    // OpenClaw reads exactly one config: JSON5 at ~/.openclaw/openclaw.json (its
+    // src/config/paths.ts, CONFIG_FILENAME = "openclaw.json"). The previous snippet emitted
+    // a TOML file with an [llm] table that OpenClaw has never read — invented, tested
+    // against itself, and shipped. This assertion pins the REAL contract: a
+    // models.providers entry plus an agents.defaults.model primary in provider/model form.
+    const out = connectionSnippet('openclaw', BASE, KEY);
+    expect(out).toContain('// ~/.openclaw/openclaw.json');
+    expect(out).not.toContain('config.toml');
+    expect(out).not.toContain('[llm]');
+    expect(out).toContain(`baseUrl: ${JSON.stringify(BASE)}`);
+    expect(out).toContain(`apiKey: ${JSON.stringify(KEY)}`);
+    expect(out).toContain('api: "openai-completions"');
+    expect(out).toContain('models: [{ id: "auto" }]');
+    expect(out).toContain('model: { primary: "polyrouter/auto" }');
+  });
+
+  it('openclaw snippet JSON-escapes hostile values, like the hermes one', () => {
+    const nasty = 'https://ex.com/v1"evil\\x';
+    const out = connectionSnippet('openclaw', nasty, KEY);
+    expect(out).toContain(`baseUrl: ${JSON.stringify(nasty)}`);
+    expect(out).not.toContain(`baseUrl: "${nasty}"`); // raw, unescaped — must NOT appear
   });
 
   it('anthropic_sdk → Anthropic SDK with /v1 stripped from base_url', () => {

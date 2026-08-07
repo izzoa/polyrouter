@@ -13,6 +13,9 @@
  * a 26-character model id, a 50-character enterprise email, a long provider label —
  * rather than the short placeholders that would make every assertion pass trivially.
  */
+// MUST STAY FIRST — see the note in `index.tsx`. The harness pulls in the same eager
+// `App → Overview → Chart → uplot` chain, so it has the same failure and needs the same guard.
+import './localeGuard';
 import { render } from 'solid-js/web';
 import { App } from './App';
 import { createAppStore } from './state/appState';

@@ -15,6 +15,20 @@ heading is started.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The dashboard could fail to load entirely on hosts reporting an unusual locale.** Some
+  environments — containers, kiosk browsers, minimal Linux images — report a locale tag the
+  browser's own formatting APIs reject, such as `en-US@posix`. The charting library builds a
+  number formatter from that raw value as it loads, so the whole dashboard failed before
+  rendering anything: a blank white page, with the only clue in a developer console. The
+  reported locale is now checked and, when unusable, replaced with the one the browser itself
+  resolved for that machine. A host reporting a normal locale is untouched and formats exactly
+  as before.
+- **A dashboard that cannot start now says so, instead of showing a blank page.** An empty
+  page is indistinguishable from a crashed server, an interrupted deploy, or a misconfigured
+  proxy, so it sent self-hosters looking in the wrong place entirely.
+
 ## [0.12.0] — 2026-08-06
 
 [Release](https://github.com/izzoa/polyrouter/releases/tag/v0.12.0) ·

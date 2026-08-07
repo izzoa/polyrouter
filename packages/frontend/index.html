@@ -10,6 +10,42 @@
   </head>
   <body>
     <div id="root"></div>
+    <!-- Boot-failure guard (fix-nonstandard-locale-boot-crash).
+         A classic script, deliberately: `type="module"` is deferred, so this runs first and —
+         more importantly — lives OUTSIDE the module graph. A failure during module evaluation
+         stops everything inside that graph, so no framework error boundary can report it.
+         Without this the user gets a white page, which reads as a crashed server or a bad
+         deploy and sends them to their proxy logs instead of here.
+         The message is a fixed string: a thrown value can carry anything that was in scope
+         where it was raised, so it is never displayed, logged, transmitted or persisted. -->
+    <script>
+      (function () {
+        window.addEventListener('load', function () {
+          setTimeout(function () {
+            var root = document.getElementById('root');
+            // The app mounts synchronously during module evaluation, so an empty #root at
+            // this point means it never started — whatever the cause.
+            if (!root || root.childElementCount > 0) return;
+            var box = document.createElement('div');
+            box.setAttribute('role', 'alert');
+            box.style.cssText =
+              'font:400 14px/1.5 Geist,sans-serif;max-width:34rem;margin:15vh auto;padding:0 1.5rem;color:#3f3f46';
+            var h = document.createElement('div');
+            h.style.cssText = 'font-weight:600;font-size:15px;margin-bottom:.5rem;color:#18181b';
+            h.textContent = 'The polyrouter dashboard failed to start.';
+            var p = document.createElement('p');
+            p.style.cssText = 'margin:0';
+            p.textContent =
+              'The server is reachable — this is a failure in the dashboard itself, so ' +
+              'checking your proxy or container logs will not explain it. Reload to retry. ' +
+              'If it persists, your browser reports details in its developer console.';
+            box.appendChild(h);
+            box.appendChild(p);
+            root.appendChild(box);
+          }, 0);
+        });
+      })();
+    </script>
     <script type="module" src="/src/index.tsx"></script>
   </body>
 </html>

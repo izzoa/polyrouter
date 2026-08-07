@@ -197,3 +197,31 @@ describe('--faint stays decorative-only in TSX', () => {
     expect(counts).toEqual(ALLOWED);
   });
 });
+
+describe('the visible-focus indicator survives (README: "all enforced by regression test suites")', () => {
+  // The README's accessibility bullet lists visible focus among the properties "enforced by
+  // regression test suites" — and until this test, it was the one item on that list nothing
+  // enforced: keyboard/dialog semantics have a11y.test.tsx, contrast and reduced-motion have
+  // their suites here, but the focus ring existed only as an unguarded CSS rule. A refactor
+  // deleting it would have shipped with every suite green.
+  it('declares a global :focus-visible outline that is real, not none', () => {
+    const block = /:focus-visible\s*\{([^}]*)\}/.exec(css);
+    expect(block, 'the global :focus-visible rule left styles.css').not.toBeNull();
+    const body = block![1]!;
+    expect(body).toMatch(/outline:\s*(?!none)/);
+    // 2px solid accent with offset — the shape locked when the rule was written. Width and
+    // offset are asserted as minimums of visibility, not exact pixels, so a deliberate
+    // restyle can move them without touching this test's reason to exist.
+    expect(body, 'outline thinner than visible').toMatch(/outline:\s*[2-9](\d)?px/);
+    expect(body, 'outline-offset removed').toMatch(/outline-offset:/);
+  });
+
+  it('never suppresses the outline on a focus-visible selector', () => {
+    // `outline: none` on :focus-visible is the classic accessibility regression — allowed
+    // nowhere. (Plain `outline: none` with a replacement style is a different pattern and is
+    // judged by the contrast suites, not here.)
+    for (const m of css.matchAll(/([^{}]+)\{([^}]*outline:\s*none[^}]*)\}/g)) {
+      expect(m[1], 'a :focus-visible selector suppresses its outline').not.toContain(':focus-visible');
+    }
+  });
+});

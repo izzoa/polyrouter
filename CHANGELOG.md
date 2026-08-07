@@ -17,6 +17,16 @@ heading is started.
 
 ### Fixed
 
+- **Interface symbols rendered differently on every operating system.** A dozen small marks —
+  copy, close, chevrons, the drag handle, the escalation arrow, chart legend keys and the
+  status dot — were text characters the bundled fonts do not contain, so each was drawn with
+  whatever symbol font the viewer's machine supplied. They are now inline vector icons from a
+  single registry, or styled elements where the mark is only a coloured shape. Nothing extra is
+  fetched.
+- **An escalated request was never announced to screen readers.** Escalation was indicated by a
+  decorative arrow and nothing else, so assistive technology had no way to convey it. A
+  completed setup step had the same problem, carrying its state in a checkmark and a green ring
+  alone. Both now have accessible text.
 - **The dashboard could fail to load entirely on hosts reporting an unusual locale.** Some
   environments — containers, kiosk browsers, minimal Linux images — report a locale tag the
   browser's own formatting APIs reject, such as `en-US@posix`. The charting library builds a

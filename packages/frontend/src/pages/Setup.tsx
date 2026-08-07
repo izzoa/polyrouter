@@ -2,6 +2,7 @@ import { For, Show } from 'solid-js';
 import { HarnessSelect } from '../components/Modals';
 import { PROVIDER_KINDS } from '../state/appState';
 import { useApp } from '../state/context';
+import { Icon } from '../components/Icon';
 
 export function Setup() {
   const app = useApp();
@@ -53,7 +54,7 @@ export function Setup() {
                       border: `1px solid ${s.done ? 'var(--green)' : s.active ? 'var(--accent)' : 'var(--border)'}`,
                     }}
                   >
-                    {s.done ? '✓' : String(s.n)}
+                    {s.done ? <Icon name="check" size={12} /> : String(s.n)}
                   </span>
                   <span
                     style={{
@@ -62,6 +63,11 @@ export function Setup() {
                     }}
                   >
                     {s.label}
+                    {/* The badge above is aria-hidden, so without this the completed state is
+                        carried by a green ring alone — colour only. */}
+                    <Show when={s.done}>
+                      <span class="sr-only"> (completed)</span>
+                    </Show>
                   </span>
                 </button>
                 <Show when={s.i < 2}>
@@ -153,7 +159,7 @@ export function Setup() {
                   style="align-self:flex-start;padding:8px 16px"
                   onClick={() => app.obGo(2)}
                 >
-                  Next: connect a provider →
+                  Next: connect a provider <Icon name="arrowRight" size={12} />
                 </button>
               </div>
             </Show>
@@ -304,7 +310,7 @@ export function Setup() {
                 style="align-self:flex-start;padding:8px 16px"
                 onClick={() => app.obGo(3)}
               >
-                Next: verify →
+                Next: verify <Icon name="arrowRight" size={12} />
               </button>
             </Show>
           </div>
@@ -336,7 +342,7 @@ export function Setup() {
             <Show when={ob().verifyReply}>
               <div style="display:flex;flex-direction:column;gap:6px;background:var(--green-bg);border-radius:8px;padding:12px 14px">
                 <div style="font:500 11px 'Geist',sans-serif;color:var(--green-text)">
-                  Routed{ob().verifyModel ? ` → ${ob().verifyModel ?? ''}` : ''}
+                  Routed{ob().verifyModel ? ` to ${ob().verifyModel ?? ''}` : ''}
                 </div>
                 <div style="font:400 12.5px 'Geist',sans-serif;color:var(--text);line-height:1.5;white-space:pre-wrap">
                   {ob().verifyReply}

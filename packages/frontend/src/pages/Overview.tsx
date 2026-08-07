@@ -8,6 +8,7 @@ import { inflightCadenceMs } from '../data/inflight';
 import { createPoller } from '../data/poller';
 import { rangeToParams } from '../data/range';
 import { useApp } from '../state/context';
+import { Icon } from '../components/Icon';
 
 const POLL_MS = 15_000;
 
@@ -217,7 +218,7 @@ export function Overview(props: { live: boolean }) {
             style="font:400 12px 'Geist',sans-serif"
             onClick={() => app.go('requests')}
           >
-            View all →
+            View all <Icon name="arrowRight" size={12} />
           </button>
         </div>
         <RequestTableHead />

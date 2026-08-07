@@ -4,6 +4,7 @@ import { toInspectorView } from '../data/analytics';
 import type { RequestRow, RequestStatus } from '../data/api';
 import { fmtDateTime } from '../data/catalog';
 import { useApp } from '../state/context';
+import { Icon } from './Icon';
 
 /** label / bg / fg per served status. */
 const STATUS_BADGE: Record<RequestStatus, [string, string, string]> = {
@@ -96,7 +97,7 @@ export function Inspector() {
                     aria-label="Close inspector"
                     onClick={() => app.select(null)}
                   >
-                    ✕
+                    <Icon name="close" size={13} />
                   </button>
                 </div>
               </div>
@@ -105,11 +106,11 @@ export function Inspector() {
                   <span style="padding:5px 10px;background:var(--chip);border-radius:7px;font:500 11.5px 'Geist',sans-serif;color:var(--text2)">
                     {view().agentLabel}
                   </span>
-                  <span style="color:var(--faint)">→</span>
+                  <Icon name="arrowRight" size={12} style="color:var(--faint)" />
                   <span style="padding:5px 10px;background:var(--accent-bg);border-radius:7px;font:500 11.5px 'Geist',sans-serif;color:var(--accent-deep)">
                     router · {view().decisionLayer}
                   </span>
-                  <span style="color:var(--faint)">→</span>
+                  <Icon name="arrowRight" size={12} style="color:var(--faint)" />
                   <span style="padding:5px 10px;background:var(--chip);border-radius:7px;font:500 11.5px 'Geist',sans-serif;color:var(--text2)">
                     {view().providerLabel}
                     {view().tier !== null ? ` · ${String(view().tier)}` : ''}
@@ -143,7 +144,9 @@ export function Inspector() {
                     <Show when={view().escalated}>
                       <div style="display:flex;justify-content:space-between">
                         <span style="color:var(--text3)">escalated</span>
-                        <span style="color:var(--amber)">yes ↗</span>
+                        <span style="color:var(--amber)">
+                        yes <Icon name="escalated" size={11} />
+                      </span>
                       </div>
                     </Show>
                     <Show when={view().qualitySignal !== null}>

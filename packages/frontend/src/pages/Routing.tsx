@@ -11,6 +11,7 @@ import { toLearningHistoryRows, toLearningVm } from '../data/semanticLearning';
 import { fmtUsd } from '../data/format';
 import { useApp } from '../state/context';
 import type { Model, Range } from '../types';
+import { Icon } from '../components/Icon';
 
 /** In-progress drag, keyed by MODEL IDENTITY rather than list index.
  *
@@ -101,7 +102,7 @@ function BandTargets() {
           <Show when={!t.empty}>
             <span style={subFont}>
               {' '}
-              ▸ {t.primary}
+              <Icon name="chevronRight" size={11} /> {t.primary}
               {t.fallbacks > 0
                 ? ` +${String(t.fallbacks)} fallback${t.fallbacks === 1 ? '' : 's'}`
                 : ''}
@@ -780,7 +781,13 @@ function AutoPerformance() {
               />
               <div style="display:flex;gap:12px;font:400 10.5px 'Geist',sans-serif;color:var(--text3);margin-top:4px">
                 <span style="color:var(--accent-deep)">— high</span>
-                <span>┅ low</span>
+                <span>
+                  <span
+                    aria-hidden="true"
+                    style="display:inline-block;width:14px;height:0;vertical-align:0.22em;border-top:1.5px dashed currentColor"
+                  />{' '}
+                  low
+                </span>
                 <span>· · ambiguous</span>
               </div>
             </Show>
@@ -1114,7 +1121,7 @@ export function Routing() {
                               keyboardMove(t.id, entry.modelId, e.key === 'ArrowUp' ? -1 : 1);
                             }}
                           >
-                            <span aria-hidden="true">⋮⋮</span>
+                            <Icon name="grip" size={14} />
                           </button>
                           <span
                             class="pos-badge"
@@ -1313,7 +1320,7 @@ export function Routing() {
                     <span style="color:var(--text3)">
                       {ru.headerName}: {ru.headerValue ?? ''}
                     </span>
-                    <span style="color:var(--faint)">→</span>
+                    <Icon name="arrowRight" size={12} style="color:var(--faint)" />
                     <span style="color:var(--text)">{ru.target}</span>
                     <button
                       type="button"

@@ -169,18 +169,18 @@ export function Costs(props: { live: boolean }) {
               small enough that a percentage alone implies precision the sample lacks. */}
           <div style="display:flex;gap:12px;font:400 11px 'Geist',sans-serif;color:var(--text3);flex-wrap:wrap">
             <span>
-              <span style="color:var(--green-text)">■</span> free {segPct(free())}% ({free()})
+              <span aria-hidden="true" style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--green-text);vertical-align:0.02em" /> free {segPct(free())}% ({free()})
             </span>
             <span>
-              <span style="color:var(--accent-deep)">■</span> subscription{' '}
+              <span aria-hidden="true" style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--accent-deep);vertical-align:0.02em" /> subscription{' '}
               {segPct(subPriced())}% ({subPriced()})
             </span>
             <span>
-              <span style="color:var(--accent)">■</span> other priced {segPct(cashPriced())}% (
+              <span aria-hidden="true" style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--accent);vertical-align:0.02em" /> other priced {segPct(cashPriced())}% (
               {cashPriced()})
             </span>
             <span>
-              <span style="color:var(--faint)">■</span> unpriced {segPct(unpriced())}% (
+              <span aria-hidden="true" style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--faint);vertical-align:0.02em" /> unpriced {segPct(unpriced())}% (
               {unpriced()})
             </span>
           </div>

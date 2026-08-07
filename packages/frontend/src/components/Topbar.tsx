@@ -2,6 +2,7 @@ import { useApp } from '../state/context';
 import { BASE_URL } from '../data/catalog';
 import type { Page } from '../types';
 import { PageIcon } from './PageIcon';
+import { Icon } from './Icon';
 
 const TITLES: Record<Page, [string, string]> = {
   overview: ['Overview', 'last 24 hours'],
@@ -80,9 +81,7 @@ export function Topbar() {
           onClick={() => app.copy(BASE_URL, 'Endpoint copied')}
         >
           /v1{' '}
-          <span aria-hidden="true" style="color:var(--faint)">
-            ⧉
-          </span>
+          <Icon name="copy" size={12} style="color:var(--faint)" />
         </button>
       </div>
     </div>

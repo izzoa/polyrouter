@@ -12,6 +12,7 @@ import {
 import { PROVIDER_KINDS } from '../state/appState';
 import { useApp } from '../state/context';
 import type { Harness } from '../types';
+import { Icon } from './Icon';
 
 /** Friendly labels for the event-subscription checkboxes (#20 channel modal). */
 const EVENT_LABELS: Record<EventType, string> = {
@@ -297,7 +298,8 @@ export function Modals() {
                         target="_blank"
                         rel="noreferrer"
                       >
-                        Open sign-in link ↗
+                        Open sign-in link <Icon name="externalLink" size={12} />
+                        <span class="sr-only"> (opens in a new tab)</span>
                       </a>
                       <div style="font:400 12px 'Geist',sans-serif;color:var(--text);line-height:1.5">
                         2. Paste what you land on — the full redirect URL or the code#state
@@ -724,7 +726,7 @@ export function Modals() {
                     when={state.channels.length > 0}
                     fallback={
                       <div style="font:400 11px 'Geist',sans-serif;color:var(--text3)">
-                        No channels yet — add one under Settings → Notifications.
+                        No channels yet — add one under Settings, Notifications.
                       </div>
                     }
                   >

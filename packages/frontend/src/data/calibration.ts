@@ -49,7 +49,7 @@ export function toHistoryRows(events: CalibrationEvent[]): CalibrationHistoryRow
       return {
         id: e.id,
         date,
-        movement: `${fmtT(from)} → ${fmtT(to)} (${e.edge})`,
+        movement: `${fmtT(from)} to ${fmtT(to)} (${e.edge})`,
         evidence: e.edgeSamples !== null ? `${String(e.edgeSamples)} samples${rate}` : '',
         kind: 'move' as const,
       };
@@ -60,7 +60,7 @@ export function toHistoryRows(events: CalibrationEvent[]): CalibrationHistoryRow
       movement:
         e.trigger === 'rebase'
           ? 'instance defaults changed — calibration reset'
-          : `${fmtT(e.oldHigh)}/${fmtT(e.oldLow)} → instance defaults`,
+          : `${fmtT(e.oldHigh)}/${fmtT(e.oldLow)} to instance defaults`,
       evidence: '',
       kind: e.trigger === 'rebase' ? ('rebase' as const) : ('revert' as const),
     };

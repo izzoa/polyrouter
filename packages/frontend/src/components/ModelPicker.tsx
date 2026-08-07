@@ -11,6 +11,7 @@ import { useLayer } from '../a11y';
 import { useAppOptional } from '../state/context';
 import { visibleBounds } from '../visualViewport';
 import type { Model } from '../types';
+import { Icon } from './Icon';
 
 export interface ModelGroup {
   label: string;
@@ -290,7 +291,7 @@ export function ModelPicker(props: ModelPickerProps) {
         add model
       </span>
       <span class="mp-chevron" aria-hidden="true">
-        ▾
+        <Icon name="chevronDown" size={12} />
       </span>
       <Show when={open()}>
         <div

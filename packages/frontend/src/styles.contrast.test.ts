@@ -166,13 +166,15 @@ describe('--faint stays decorative-only in TSX', () => {
   // A new `color: var(--faint)` site fails here until consciously allowlisted —
   // meaningful copy/status must use a contrast-passing token (dashboard-core spec).
   const ALLOWED: Record<string, number> = {
-    'components/Topbar.tsx': 1, // ⧉ copy glyph
-    'components/Inspector.tsx': 2, // → flow arrows
+    'components/Topbar.tsx': 1, // copy icon
+    'components/Inspector.tsx': 2, // flow arrows between chips
     // The ⋮⋮ drag glyph left this list in fix-tier-chain-drag-reorder: it became a real
     // reorder BUTTON, so it is an interactive control and takes --text3 (≥ 3:1), styled
-    // in styles.css. Only the → rule arrow remains decorative here.
-    'pages/Routing.tsx': 1, // → rule arrow
-    'pages/Costs.tsx': 1, // ■ legend key for the faint bar segment
+    // in styles.css. Only the flow arrow remains decorative here.
+    'pages/Routing.tsx': 1, // rule arrow
+    // Costs left this list in replace-fallback-symbol-glyphs: the ■ legend key was a text
+    // GLYPH taking a text colour, and is now a styled element taking `background`. It is
+    // still decorative — it just no longer colours any text, so nothing here can regress.
   };
 
   const tsxFiles = (dir: string): string[] =>

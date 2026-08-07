@@ -1,6 +1,7 @@
 import { onCleanup, Show } from 'solid-js';
 import { useLayer } from '../a11y';
 import { useApp } from '../state/context';
+import { Icon } from './Icon';
 
 /** The signed-in identity + account menu (user-administration): always-visible
  * chrome in the sidebar footer. Opens an upward `role="menu"` popover with
@@ -152,8 +153,8 @@ export function UserMenu() {
         <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:500 11.5px 'Geist',sans-serif;color:var(--text2)">
           {state.session?.email ?? '—'}
         </span>
-        <span aria-hidden="true" style="margin-left:auto;color:var(--text3);font-size:9px">
-          ▲
+        <span aria-hidden="true" style="margin-left:auto;color:var(--text3);display:flex">
+          <Icon name="chevronUp" size={11} />
         </span>
       </button>
     </div>

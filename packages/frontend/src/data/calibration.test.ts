@@ -88,7 +88,7 @@ describe('toHistoryRows', () => {
   it('a move row: numeric movement with its edge and evidence rate', () => {
     const [row] = toHistoryRows([event()]);
     expect(row!.kind).toBe('move');
-    expect(row!.movement).toBe('0.6 → 0.58 (high)');
+    expect(row!.movement).toBe('0.6 to 0.58 (high)');
     expect(row!.evidence).toBe('57 samples · 75% failed');
   });
 
@@ -96,7 +96,7 @@ describe('toHistoryRows', () => {
     const [row] = toHistoryRows([
       event({ edge: 'low', oldLow: 0.25, newLow: 0.27, edgeSamples: 60, edgeFailures: 3 }),
     ]);
-    expect(row!.movement).toBe('0.25 → 0.27 (low)');
+    expect(row!.movement).toBe('0.25 to 0.27 (low)');
     expect(row!.evidence).toBe('60 samples · 5% failed');
   });
 
@@ -105,7 +105,7 @@ describe('toHistoryRows', () => {
       event({ trigger: 'revert', edge: null, oldHigh: 0.58, oldLow: 0.27, edgeSamples: null }),
     ]);
     expect(row!.kind).toBe('revert');
-    expect(row!.movement).toBe('0.58/0.27 → instance defaults');
+    expect(row!.movement).toBe('0.58/0.27 to instance defaults');
     expect(row!.evidence).toBe('');
   });
 

@@ -914,7 +914,7 @@ describe('dashboard shell (auth-gated)', () => {
       expect(text).toContain('high 0.58 · low 0.27');
       expect(text).toContain('calibrated');
       expect(text).toContain('Revert to defaults');
-      expect(text).toContain('0.6 → 0.58 (high)');
+      expect(text).toContain('0.6 to 0.58 (high)');
       expect(text).toContain('57 samples · 75% failed');
       // Revert: one click clears the pair; the section returns to defaults.
       const btn = [...host.querySelectorAll<HTMLElement>('button')].find(

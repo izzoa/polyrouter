@@ -198,7 +198,11 @@ function ProviderCard(props: { p: Provider }) {
           when={props.p.credentialError === 'reauthorize_required'}
           fallback={
             <div style="font:400 11px 'Geist',sans-serif;color:var(--green-text)">
-              ● Connected · auto-refreshes{expiresLabel(props.p.credentialExpiresAt)}
+              <span
+                aria-hidden="true"
+                style="display:inline-block;width:6px;height:6px;border-radius:50%;background:currentColor;vertical-align:0.08em"
+              />{' '}
+              Connected · auto-refreshes{expiresLabel(props.p.credentialExpiresAt)}
             </div>
           }
         >

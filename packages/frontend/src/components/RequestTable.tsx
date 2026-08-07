@@ -1,9 +1,10 @@
-import { createSignal, For, onCleanup, onMount, type JSX } from 'solid-js';
+import { createSignal, For, onCleanup, onMount, Show, type JSX } from 'solid-js';
 import { labelOf, type RequestRow, type RequestStatus } from '../data/api';
 import type { InflightDisplayRow } from '../data/inflight';
 import { rowCostLabel } from '../data/analytics';
 import { fmtTime, fmtTokens } from '../data/catalog';
 import { useApp } from '../state/context';
+import { Icon } from './Icon';
 
 /** The single column definition for this table. The head and the row cells used to be
  * two independent lists of literals with nothing keeping them aligned; below the locked
@@ -119,13 +120,21 @@ export function RequestRow(props: { r: RequestRow }) {
               'font-weight': '500',
             }}
           >
-            {props.r.escalated ? `${props.r.decisionLayer} ↗` : props.r.decisionLayer}
+            {props.r.decisionLayer}
+            <Show when={props.r.escalated}>
+              {/* The mark is decorative; the word carries the state. Before this the arrow was
+                  the ONLY difference between an escalated request and a normal one, and it was
+                  unlabelled — so escalation was invisible to assistive technology entirely. */}
+              {' '}
+              <Icon name="escalated" size={11} />
+              <span class="sr-only">escalated</span>
+            </Show>
           </span>
         </span>
       </Cell>
       <Cell label="Tokens">
         <span class="mono" style="font-size:11px">
-          {fmtTokens(props.r.inputTokens)} → {fmtTokens(props.r.outputTokens)}
+          {fmtTokens(props.r.inputTokens)} in / {fmtTokens(props.r.outputTokens)} out
         </span>
       </Cell>
       <Cell label="Cost">

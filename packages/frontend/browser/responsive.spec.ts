@@ -320,10 +320,23 @@ test.describe('desktop parity against the released v0.11.0 baseline (task 8.8)',
       };
     });
 
+    // The sidebar's box is font-invariant — fixed width, full viewport height — so it stays
+    // an exact assertion.
     expect(now.sidebar, 'the sidebar moved at desktop width').toEqual([...BASELINE.sidebar]);
     for (const [sel, expected] of Object.entries(BASELINE.unchangedControls)) {
       if (now.controls[sel] === null) continue; // not present on this page
-      expect(now.controls[sel], `${sel} changed height at desktop`).toBe(expected);
+      // ±2, because these heights are line boxes: the app declares `'Geist', sans-serif` and
+      // bundles no `@font-face`, so the fallback is whatever the platform calls `sans-serif`
+      // and the line box rounds differently under it. Measured by forcing other faces at
+      // load: a sans swap moves .nav-item 31→30 and .req-row 35→34, the Linux runner
+      // reported .endpoint-chip at 27, and a serif — a deliberately extreme stand-in, since
+      // the real variable is only ever which sans-serif a platform picks — moves .req-row
+      // 35→33. The check is "these controls did not grow or shrink", which two pixels of
+      // rounding is not; the 24px touch floor is asserted separately against the floor.
+      expect(
+        Math.abs(now.controls[sel]! - expected),
+        `${sel} changed height at desktop (${expected} → ${now.controls[sel]})`,
+      ).toBeLessThanOrEqual(2);
     }
   });
 

@@ -29,7 +29,7 @@
 </p>
 
 <p align="center">
-  <a href="https://polyrouter.app"><img src="assets/dashboard-preview.svg" width="900" alt="polyrouter dashboard — the overview: KPI tiles for requests, spend, latency and success rate; a requests-over-time chart; spend by model; and the live request log"></a>
+  <a href="https://polyrouter.app"><img src="assets/dashboard-preview.svg" width="900" alt="polyrouter dashboard — the overview: KPI tiles for requests, spend, tokens and success rate; a requests-over-time chart; spend by model; and the live request log"></a>
   <br>
   <sub>The dashboard overview — KPI tiles, a requests-per-hour chart, spend by model, and the live request log (each row shows its routing layer, tokens, snapshot-priced cost, and latency).</sub>
 </p>
@@ -68,8 +68,8 @@ response bodies unless you opt in.
   `/v1/messages`, streaming and non-streaming — any SDK that accepts a base URL works
   unchanged. Cross-protocol requests (OpenAI client → Anthropic provider and vice versa)
   go through a dedicated translation core covering multi-turn tool calls, system prompts,
-  cache-control passthrough, stop reasons, and usage — locked by a **golden-file contract
-  suite**.
+  cache-control passthrough, stop reasons, and usage — locked by golden-file and
+  request-fidelity contract suites.
 
 **Cost & limits**
 
@@ -143,8 +143,10 @@ Precedence order, first match wins:
 
 1. **Explicit model** in the request body — always honored.
 2. **`x-polyrouter-tier` header** → that tier's chain.
-3. **`model: "auto"`** → enabled smart layers (L1 structural → L3 cascade).
-4. **`default` tier** — the guaranteed catch-all.
+3. **Dashboard header rules** on other headers → their target tier or model.
+4. **`model: "auto"`** → enabled smart layers (L1 structural → L3 cascade) — they engage
+   only once nothing above matched.
+5. **`default` tier** — the guaranteed catch-all.
 
 Whatever layer decides, the tier's fallback chain applies on provider failure, budgets are
 enforced, and the decision (`decision_layer` + `routing_reason`) is recorded for the
@@ -168,13 +170,15 @@ flowchart LR
 
 The smart routing layers all run **inside** the proxy (not as separate services): L1
 structural and L3 cascade ship in the baseline; the optional **L2 semantic** embedder and
-its background learning loop — which adapts thresholds from recorded request outcomes — are
+its background learning loop — which adapts the classifier's centroids (its routing
+bands) from recorded cascade outcomes — are
 a flag-gated add-on that reuses the same Redis/PostgreSQL, **never** in the baseline image
 (see [the semantic embedder](#optional-the-semantic-embedder-layer-2-foundation)).
 
 Monorepo (Turborepo + npm workspaces): `packages/shared` (types),
-`packages/control-plane` (NestJS — dashboard API, auth, CRUD, analytics),
-`packages/data-plane` (the proxy: routing, translation, recording),
+`packages/control-plane` (NestJS — dashboard API, auth, CRUD, analytics, and the `/v1`
+proxy endpoints), `packages/data-plane` (the proxy engine the control plane hosts:
+routing, translation, adapters, recording),
 `packages/frontend` (SolidJS SPA). Architecture overview: the code wiki in
 [`openwiki/`](./openwiki/); release history: [`CHANGELOG.md`](./CHANGELOG.md).
 
@@ -213,7 +217,7 @@ name: polyrouter-selfhost
 
 services:
   app:
-    image: ghcr.io/izzoa/polyrouter:0.9.2        # or :latest
+    image: ghcr.io/izzoa/polyrouter:0.12.2       # or :latest — pin the current release
     restart: unless-stopped
     ports:
       - '${POLYROUTER_HOST:-127.0.0.1}:${POLYROUTER_PORT:-3001}:3001'  # loopback by default
@@ -308,12 +312,12 @@ docker compose pull && docker compose up -d      # migrations run on boot
 > tag instead of a local `build:`, and the long list of optional pass-through vars collapsed
 > into `env_file: .env`. The service names, volumes, pinned subnet, and `apprise` profile all
 > match, so the **Operations** and **Apprise** notes below apply unchanged — every variable in
-> the `.env` reference is optional and defaults when unset. To go public, expose the port and
+> the `.env` reference defaults when unset
+> (the five secrets are required either way). To go public, expose the port and
 > set `APP_URL` as in **Claim the instance** below.
 >
-> If `docker compose pull` returns `unauthorized`/`denied`, the image is private — either
-> the maintainer hasn't flipped the GHCR package to public yet, or run
-> `docker login ghcr.io` first.
+> If `docker compose pull` returns `unauthorized`/`denied`, run `docker login ghcr.io`
+> first — on a fork, the fork's own GHCR package may also not be public yet.
 
 > **Already used the installer or a checkout?** Skip the local build by setting
 > `POLYROUTER_IMAGE=ghcr.io/izzoa/polyrouter:latest` (or a pinned `:X.Y.Z`) in `.env` and
@@ -321,10 +325,6 @@ docker compose pull && docker compose up -d      # migrations run on boot
 > flags go **before** the subcommand, exactly as the installer prints:
 > `docker compose -p polyrouter-selfhost --env-file .env -f src/docker-compose.yml
 > --project-directory src pull`.
->
-> Maintainer note (one-time, first release): GHCR packages are created **private** by
-> default — after the first `v*` tag publishes, set the `polyrouter` package to public
-> (package settings → Danger zone → Change visibility) or anonymous pulls will fail.
 
 > **Compose commands below — checkout vs. one-line install.** The bare
 > `docker compose -p polyrouter-selfhost …` form shown below assumes a **checkout**
@@ -380,13 +380,15 @@ public, or set `METRICS_ENABLED=false`.
 
 > The optional tunables above are compose pass-through: set one in `.env` and it reaches
 > the container (the compose file sets the deploy-invariant ones — bind address, mode,
-> `NODE_ENV`, DB/Redis URLs — itself). That hand-off is an **explicit allowlist**, not a
-> blanket one: the app service's `environment:` block in `docker-compose.yml` is the list
-> of what actually crosses into the container, and a key you put in `.env` without adding
-> it there is silently ignored. The `SEMANTIC_*` knobs are the one deliberate exception —
+> `NODE_ENV`, DB/Redis URLs — itself). In the repo's `docker-compose.yml` (checkout and
+> installer installs) that hand-off is an **explicit allowlist**: the app service's
+> `environment:` block is the list of what actually crosses into the container, and a key
+> you put in `.env` without adding it there is silently ignored. The prebuilt-image example
+> above passes everything through instead (`env_file: .env`), so it has no such filter. The `SEMANTIC_*` knobs are the one deliberate exception —
 > they are declared in `docker-compose.semantic.yml`, so layer that override file to tune
-> them (`SEMANTIC_MODEL_PATH` is baked into the `-semantic` image either way, so Layer 2
-> still runs without it — just untunable). The config registry in the source
+> them (`SEMANTIC_MODEL_PATH` is baked into the `-semantic` image, so the embedder loads
+> either way — but semantic routing also needs `semantic` in `ROUTING_AUTO_LAYERS`, which
+> the override file sets; without it the layer silently stays off). The config registry in the source
 > (`packages/*/src/**` config schemas) is the exhaustive list — defaults,
 > required-in-production secrets, and dev fallbacks are declared there.
 
@@ -483,7 +485,8 @@ Boot semantics: unset path → module absent, zero overhead; valid bundle →
 load + warmup at startup (requests never pay first-inference JIT); broken
 bundle → **boot fails fast** naming the file and reason (an explicit opt-in
 never runs silently degraded). Nothing is fetched over the network at boot or
-runtime; embedded text and vectors are never logged or persisted.
+runtime. A request's embedded text and vector are never logged or persisted; the opt-in
+learning loop stores only cohort-aggregated sums, never a single request's embedding.
 
 ### Optional: Apprise notifications
 
@@ -491,8 +494,8 @@ runtime; embedded text and vectors are never logged or persisted.
 docker compose -p polyrouter-selfhost --profile apprise up -d
 ```
 
-and add **both** lines to `.env` (the SSRF guard requires a port-bounded allowlist
-entry for a private-range host — by design, spec §10.1):
+and add **both** lines to `.env` (the SSRF guard requires an allowlist entry for a
+private-range host; the port bound is optional but keep it — by design, spec §10.1):
 
 ```bash
 APPRISE_API_URL=http://apprise:8000
@@ -539,7 +542,7 @@ informational summary at the target, with the page link on its own line.
 
 - **Upgrade:** pull/re-download the source, then `docker compose -p polyrouter-selfhost up -d --build` — or, on the prebuilt image, `docker compose -p polyrouter-selfhost pull && docker compose -p polyrouter-selfhost up -d`. Migrations run on boot either way.
 - **Backup:** the `polyrouter-pg` volume is the data; `docker compose exec postgres pg_dump -U polyrouter polyrouter > backup.sql`.
-- **Stop/restart:** in-flight streaming responses are drained on `docker stop` — new inference is refused and the app waits up to **15s** for open streams to finish (`streamDrainDeadlineMs`), aborting any still running at that deadline; Compose separately allows 45s (`stop_grace_period`) before SIGKILL. Deploys don't sever live completions.
+- **Stop/restart:** in-flight streaming responses are drained on `docker stop` — new inference is refused and the app waits up to **15s** for open streams to finish (`streamDrainDeadlineMs`), aborting any still running at that deadline; Compose separately allows 45s (`stop_grace_period`) before SIGKILL. Deploys don't sever live completions that finish within the drain window.
 - **One app replica only:** boot migrations take no advisory lock — do not `--scale app`. The dashboard's live event stream also fans out **in-process** for this reason; multi-instance fanout (Redis pub/sub) is a documented graduation, not a supported topology today.
 - **Reverse proxies must not buffer `/api/events`.** The dashboard receives live updates over Server-Sent Events on that one path. polyrouter already sends `X-Accel-Buffering: no` and `Cache-Control: no-cache, no-transform` and heartbeats every 25s (under the usual ~60s idle-reap), but if you front it with nginx/Traefik/Cloudflare you may need to disable response buffering and raise the read timeout for it (nginx: `proxy_buffering off;`). If the stream is blocked the dashboard says **Polling** instead of **Live** and keeps working on its normal refresh — you lose push, never function.
 - **Verify an install:** `scripts/selfhost-smoke.sh` runs the end-to-end smoke pass (health, admin bootstrap, live-stream drain, metadata-only persistence) against a throwaway stack.
@@ -553,7 +556,7 @@ provider's link, and paste the redirect URL — or the `code#state` string it sh
 into the dashboard. polyrouter verifies the `state`, exchanges the code (PKCE), and stores
 the access + refresh tokens **encrypted at rest**. Tokens **auto-refresh** before expiry
 (safe across multiple requests and instances); if the provider revokes the grant, the card
-shows **"reauthorize required"** with a one-click reconnect, and your fallback chain keeps
+flags the expired sign-in with a **Reauthorize** button that reopens the connect wizard, and your fallback chain keeps
 serving traffic meanwhile.
 
 Honest caveats:
@@ -590,8 +593,8 @@ sidebar):
 - **Invites** — single-use links pinned to an email, expiring after 72 h. With
   server SMTP configured (`SMTP_HOST` + `SMTP_FROM`) the invite is emailed
   automatically; without it, copy the link from the dashboard and deliver it
-  yourself — issuing never depends on SMTP. Only a token hash is stored, and the
-  raw token travels in the link's `#fragment`, which browsers never send to
+  yourself — issuing never depends on SMTP. Only a token hash is stored (plus a short lookup
+  prefix — never the full token), and the raw token travels in the link's `#fragment`, which browsers never send to
   servers or proxies.
 - **Roles** — promote/demote admins. The last *enabled* admin can never be
   deleted, demoted, or disabled (the API refuses with `409`).
@@ -622,7 +625,8 @@ your client at your instance:
   `/v1/chat/completions`, `/v1/messages`, and `/v1/models`
 - **API key:** the `poly_…` key from the dashboard (sent as `Authorization: Bearer poly_…`)
 - **Model:** an explicit model id (e.g. `gpt-4o`), `auto` (let the router pick), or a tier
-  via the `x-polyrouter-tier` header (e.g. `fast` / `heavy`)
+  via the `x-polyrouter-tier` header — a tier you've created under Routing (only `default`
+  exists out of the box; an unknown tier value falls back to default routing)
 
 ```bash
 # OpenAI-compatible
@@ -645,9 +649,9 @@ The router applies your configured fallbacks, spend limits, and cost tracking on
 call. Explicit routing (a named model) is the reliable core; `auto` and tier routing are
 opt-in and always degrade back to explicit/default.
 
-### Terminal coding agents (OpenClaw, Hermes)
+### Terminal agents (OpenClaw, Hermes)
 
-Terminal-native coding agents are configured with a **config file** rather than SDK code.
+Terminal-native agents are configured with a **config file** rather than SDK code.
 Both speak the OpenAI-compatible endpoint, so point their `base_url` at
 `https://<your-instance>/v1` with your `poly_…` key and let the router pick the model
 (`auto`). The dashboard's **Agents → New** picks the harness and shows the exact block once;
@@ -729,9 +733,9 @@ Development is **spec-driven** (OpenSpec change proposals):
 [`CLAUDE.md`](./CLAUDE.md) pins the stack and the non-negotiable invariants,
 [`CHANGELOG.md`](./CHANGELOG.md) records every user-facing change (each release links its
 GitHub notes), and [`STYLESEED.md`](./STYLESEED.md) locks the dashboard's visual language
-(UI changes must pass its `/ss-score` gate). CI enforces build, lint, typecheck, the unit suites, and e2e
-— including the protocol-contract (golden files), SSRF, tenant-isolation, and
-cost-immutability suites — on every push.
+(UI changes must pass its `/ss-score` gate). CI enforces build, lint, typecheck, the unit suites (including
+the golden-file protocol-contract tests), and e2e — including the SSRF, tenant-isolation,
+and cost-immutability suites — on every push.
 
 An auto-generated **code wiki** lives in [`openwiki/`](./openwiki/): start at
 [`openwiki/quickstart.md`](./openwiki/quickstart.md) for the architecture overview,

@@ -17,6 +17,10 @@ heading is started.
 
 ### Fixed
 
+- **Page subtitles in the top bar now sit on the title's baseline.** "Overview · last 24
+  hours" and every other page header rendered the subtitle a few pixels low: it was
+  baseline-aligned against the icon+title group, and a flex group exports its first item's
+  baseline — the icon's, which has no text baseline, so its bottom edge was used instead.
 - **The OpenClaw connection snippet described a config file OpenClaw cannot read.** The block
   shown by Agents → New (and returned by the agent-create API) was TOML at
   `~/.openclaw/config.toml` with an `[llm]` table — a format OpenClaw has never had. Its only

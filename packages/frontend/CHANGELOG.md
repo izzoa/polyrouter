@@ -1,5 +1,22 @@
 # @polyrouter/frontend
 
+## 0.12.3
+
+### Patch Changes
+
+- fb200c3: Fixed: the OpenClaw connection snippet — shown in Agents → New, returned by the agent-create
+  API, and printed in the README — described a config file OpenClaw cannot read (TOML at
+  `~/.openclaw/config.toml` with an `[llm]` table; OpenClaw's only config is JSON5 at
+  `~/.openclaw/openclaw.json`). Following it failed silently. The snippet now emits the real
+  format: a `models.providers` entry for the router with `api: "openai-completions"` and a
+  single `auto` model, selected as the default via `agents.defaults.model`.
+- c189b8f: Fixed: every page's subtitle in the top bar ("last 24 hours", "every routed call, with its
+  why", …) sat a few pixels below the page title's baseline instead of sharing it. The subtitle
+  was baseline-aligned against the icon-and-title group, and a flex group exports its first
+  item's baseline — the icon's, which has no text baseline, so its bottom edge was used. The
+  title row is now a single flex line: title and subtitle share a real text baseline, and the
+  icon centers itself exactly where it was before.
+
 ## 0.12.2
 
 ### Patch Changes

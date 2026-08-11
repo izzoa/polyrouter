@@ -15,6 +15,8 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.12.3] — 2026-08-11
+
 ### Fixed
 
 - **Page subtitles in the top bar now sit on the title's baseline.** "Overview · last 24
@@ -763,7 +765,8 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.12.3...HEAD
+[0.12.3]: https://github.com/izzoa/polyrouter/releases/tag/v0.12.3
 [0.12.2]: https://github.com/izzoa/polyrouter/releases/tag/v0.12.2
 [0.12.1]: https://github.com/izzoa/polyrouter/releases/tag/v0.12.1
 [0.12.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.12.0

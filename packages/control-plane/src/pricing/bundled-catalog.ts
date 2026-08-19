@@ -18,6 +18,7 @@ const LITELLM_SNAPSHOT: Record<string, unknown> = {
     output_cost_per_token: 0.00001,
     cache_read_input_token_cost: 0.00000125,
     max_input_tokens: 128000,
+    max_output_tokens: 16384,
     supports_function_calling: true,
     supports_vision: true,
   },
@@ -28,6 +29,7 @@ const LITELLM_SNAPSHOT: Record<string, unknown> = {
     output_cost_per_token: 0.0000006,
     cache_read_input_token_cost: 0.000000075,
     max_input_tokens: 128000,
+    max_output_tokens: 16384,
     supports_function_calling: true,
     supports_vision: true,
   },
@@ -37,6 +39,7 @@ const LITELLM_SNAPSHOT: Record<string, unknown> = {
     input_cost_per_token: 0.0000011,
     output_cost_per_token: 0.0000044,
     max_input_tokens: 200000,
+    max_output_tokens: 100000,
     supports_function_calling: true,
     supports_reasoning: true,
   },
@@ -48,6 +51,7 @@ const LITELLM_SNAPSHOT: Record<string, unknown> = {
     cache_read_input_token_cost: 0.0000003,
     cache_creation_input_token_cost: 0.00000375,
     max_input_tokens: 200000,
+    max_output_tokens: 64000,
     supports_function_calling: true,
     supports_vision: true,
   },
@@ -84,6 +88,7 @@ const LITELLM_SNAPSHOT: Record<string, unknown> = {
     output_cost_per_token: 0.0000011,
     cache_read_input_token_cost: 0.00000007,
     max_input_tokens: 65536,
+    max_output_tokens: 8192,
     supports_function_calling: true,
   },
   'mistral/mistral-large-latest': {
@@ -92,6 +97,7 @@ const LITELLM_SNAPSHOT: Record<string, unknown> = {
     input_cost_per_token: 0.000002,
     output_cost_per_token: 0.000006,
     max_input_tokens: 128000,
+    max_output_tokens: 262144,
     supports_function_calling: true,
   },
   'groq/llama-3.3-70b-versatile': {
@@ -100,6 +106,7 @@ const LITELLM_SNAPSHOT: Record<string, unknown> = {
     input_cost_per_token: 0.00000059,
     output_cost_per_token: 0.00000079,
     max_input_tokens: 128000,
+    max_output_tokens: 32768,
     supports_function_calling: true,
   },
   // §8 BYOK families (E5.3) — real per-token values vendored from LiteLLM's
@@ -111,6 +118,7 @@ const LITELLM_SNAPSHOT: Record<string, unknown> = {
     input_cost_per_token: 0.0000016,
     output_cost_per_token: 0.0000064,
     max_input_tokens: 30720,
+    max_output_tokens: 8192,
     supports_function_calling: true,
   },
   'dashscope/qwen-plus': {
@@ -119,6 +127,7 @@ const LITELLM_SNAPSHOT: Record<string, unknown> = {
     input_cost_per_token: 0.0000004,
     output_cost_per_token: 0.0000012,
     max_input_tokens: 129024,
+    max_output_tokens: 16384,
     supports_function_calling: true,
   },
   'moonshot/kimi-k2-0905-preview': {
@@ -128,6 +137,7 @@ const LITELLM_SNAPSHOT: Record<string, unknown> = {
     output_cost_per_token: 0.0000025,
     cache_read_input_token_cost: 0.00000015,
     max_input_tokens: 262144,
+    max_output_tokens: 262144,
     supports_function_calling: true,
   },
   'minimax/MiniMax-M2': {
@@ -137,6 +147,7 @@ const LITELLM_SNAPSHOT: Record<string, unknown> = {
     output_cost_per_token: 0.0000012,
     cache_read_input_token_cost: 0.00000003,
     max_input_tokens: 200000,
+    max_output_tokens: 8192,
     supports_function_calling: true,
   },
   'zai/glm-4.5': {
@@ -145,6 +156,7 @@ const LITELLM_SNAPSHOT: Record<string, unknown> = {
     input_cost_per_token: 0.0000006,
     output_cost_per_token: 0.0000022,
     max_input_tokens: 128000,
+    max_output_tokens: 32000,
     supports_function_calling: true,
   },
   'zai/glm-4.5-air': {
@@ -153,6 +165,7 @@ const LITELLM_SNAPSHOT: Record<string, unknown> = {
     input_cost_per_token: 0.0000002,
     output_cost_per_token: 0.0000011,
     max_input_tokens: 128000,
+    max_output_tokens: 32000,
     supports_function_calling: true,
   },
   'xai/grok-4': {
@@ -161,6 +174,7 @@ const LITELLM_SNAPSHOT: Record<string, unknown> = {
     input_cost_per_token: 0.000003,
     output_cost_per_token: 0.000015,
     max_input_tokens: 256000,
+    max_output_tokens: 256000,
     supports_function_calling: true,
   },
   'xai/grok-3-mini': {
@@ -169,6 +183,7 @@ const LITELLM_SNAPSHOT: Record<string, unknown> = {
     input_cost_per_token: 0.0000003,
     output_cost_per_token: 0.0000005,
     max_input_tokens: 131072,
+    max_output_tokens: 131072,
     supports_function_calling: true,
   },
   command: {
@@ -177,6 +192,7 @@ const LITELLM_SNAPSHOT: Record<string, unknown> = {
     input_cost_per_token: 0.000001,
     output_cost_per_token: 0.000002,
     max_input_tokens: 4096,
+    max_output_tokens: 4096,
   },
   // Curated free set (§8) — $0 tiers routable for simple traffic.
   'openrouter/meta-llama/llama-3.3-70b-instruct:free': {
@@ -196,7 +212,11 @@ const LITELLM_SNAPSHOT: Record<string, unknown> = {
   },
 };
 
-/** UTC instant used as `valid_from` for every bundled row. Bump on any change. */
-export const BUNDLED_CATALOG_VERSION = new Date('2026-07-17T00:00:00.000Z');
+/** UTC instant used as `valid_from` for every bundled row. Bump on any change.
+ * 2026-08-19: re-vendored with `max_output_tokens` from the live LiteLLM file
+ * (add-output-cap-guardrails); entries whose live counterpart carries no
+ * explicit cap (claude-3-5-haiku-latest, gemini-1.5-*, the openrouter free
+ * model) deliberately stay cap-less — unknown-not-wrong. */
+export const BUNDLED_CATALOG_VERSION = new Date('2026-08-19T00:00:00.000Z');
 
 export const BUNDLED_PRICES: BundledPrice[] = parseLiteLlmCatalog(LITELLM_SNAPSHOT);

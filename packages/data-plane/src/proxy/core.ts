@@ -471,11 +471,28 @@ export interface ChainAttempt {
    * a fallback chain can mix providers with different patience, so the walker
    * applies each member's own bound. Absent = the chain-wide `opts` value. */
   readonly firstEventTimeoutMs?: number;
+  /** Per-attempt output-cap clamp (add-output-cap-guardrails): the two-stage
+   * deferral's tail dispatches each member with `maxOutputTokens` clamped to
+   * its OWN cap. Absent = the request's value verbatim. */
+  readonly maxOutputTokens?: number;
 }
 
 export interface AttemptFailure {
   readonly index: number;
   readonly error: ProviderError;
+  /** False ONLY for a circuit-open skip — the member was never dispatched
+   * upstream, so a clamp reason must not be recorded for it (add-output-cap-
+   * guardrails). Captured at the catch boundary where the raw error class is
+   * still visible; absent (older callers) reads as dispatched. */
+  readonly dispatched?: boolean;
+}
+
+/** The per-attempt request: the member's model id, plus its clamp when the
+ * capacity plan set one (add-output-cap-guardrails). */
+function attemptRequest(request: NormalizedRequest, attempt: ChainAttempt): NormalizedRequest {
+  const base = { ...request, model: attempt.externalModelId };
+  if (attempt.maxOutputTokens === undefined) return base;
+  return { ...base, params: { ...base.params, maxOutputTokens: attempt.maxOutputTokens } };
 }
 
 export type BufferedChainResult =
@@ -551,7 +568,7 @@ export async function runBufferedChain(
         callerAborted: ctx.isCallerAbort?.() === true,
       };
     const attempt = attempts[i]!;
-    const req: NormalizedRequest = { ...request, model: attempt.externalModelId };
+    const req = attemptRequest(request, attempt);
     try {
       // build INSIDE the breaker callback: an open circuit skips before setup.
       const response = await withBreaker(
@@ -585,7 +602,7 @@ export async function runBufferedChain(
           failures,
           callerAborted: ctx.isCallerAbort?.() === true,
         };
-      failures.push({ index: i, error: mapped });
+      failures.push({ index: i, error: mapped, dispatched: !(err instanceof ProviderCircuitOpenError) });
       lastError = mapped;
     }
   }
@@ -615,7 +632,7 @@ export async function openStreamChain(
         callerAborted: opts.isCallerAbort?.() === true,
       };
     const attempt = attempts[i]!;
-    const req: NormalizedRequest = { ...request, model: attempt.externalModelId };
+    const req = attemptRequest(request, attempt);
     const result = await openAttemptStream(
       (signal, onBytes) =>
         withBreakerStream(
@@ -659,7 +676,11 @@ export async function openStreamChain(
         failures,
         callerAborted: opts.isCallerAbort?.() === true,
       };
-    failures.push({ index: i, error: mapped });
+    failures.push({
+      index: i,
+      error: mapped,
+      dispatched: !(result.error instanceof ProviderCircuitOpenError),
+    });
     lastError = mapped;
   }
   return {

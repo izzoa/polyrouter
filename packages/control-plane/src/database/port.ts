@@ -456,6 +456,7 @@ function createPricingCatalog(db: Db): PricingCatalog {
           cacheReadPricePer1m: entry.cacheReadPricePer1m ?? null,
           cacheWritePricePer1m: entry.cacheWritePricePer1m ?? null,
           contextWindow: entry.contextWindow ?? null,
+          maxOutputTokens: entry.maxOutputTokens ?? null,
           supportsTools: entry.supportsTools ?? false,
           supportsVision: entry.supportsVision ?? false,
           supportsReasoning: entry.supportsReasoning ?? false,

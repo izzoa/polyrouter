@@ -8,7 +8,8 @@ import type {
 import { BUNDLED_PRICES } from './bundled-catalog';
 import { PricingService, type PricingFetch, type PricingRuntime } from './pricing.service';
 
-const AT = new Date('2026-08-01T00:00:00Z');
+// After BUNDLED_CATALOG_VERSION (2026-08-19), before the 2026-09-* overrides.
+const AT = new Date('2026-08-20T00:00:00Z');
 
 function makeStore() {
   const versions: ModelPriceRow[] = [];
@@ -41,6 +42,7 @@ function makeStore() {
         cacheReadPricePer1m: entry.cacheReadPricePer1m ?? null,
         cacheWritePricePer1m: entry.cacheWritePricePer1m ?? null,
         contextWindow: entry.contextWindow ?? null,
+        maxOutputTokens: entry.maxOutputTokens ?? null,
         supportsTools: entry.supportsTools ?? false,
         supportsVision: entry.supportsVision ?? false,
         supportsReasoning: entry.supportsReasoning ?? false,
@@ -95,6 +97,12 @@ describe('PricingService — seed & idempotency', () => {
     const catalog = await svc.listCatalog(AT);
     expect(catalog.length).toBe(BUNDLED_PRICES.length);
     expect(catalog.some((r) => r.isFree)).toBe(true); // curated free set present
+    // add-output-cap-guardrails: re-vendored caps land with the seed…
+    const byKey = new Map(catalog.map((r) => [r.modelKey, r]));
+    expect(byKey.get('openai:gpt-4o')?.maxOutputTokens).toBe(16384);
+    expect(byKey.get('anthropic:claude-sonnet-4-5')?.maxOutputTokens).toBe(64000);
+    // …while live-file-cap-less entries stay unknown (never guessed)
+    expect(byKey.get('anthropic:claude-3-5-haiku-latest')?.maxOutputTokens).toBeNull();
   });
 });
 
@@ -144,6 +152,7 @@ describe('PricingService — refresh appends only on change', () => {
             outputPricePer1m: 10,
             cacheReadPricePer1m: 1.25,
             contextWindow: 128000,
+            maxOutputTokens: 16384,
             supportsTools: true,
             supportsVision: true,
           },
@@ -181,6 +190,91 @@ describe('PricingService — refresh appends only on change', () => {
     expect(await svc.priceAt('openai:new-model', AT)).toBeNull(); // AT is before the refresh
     expect((await svc.priceAt('openai:new-model', new Date('2026-09-02')))?.inputPricePer1m).toBe(
       1,
+    );
+  });
+});
+
+describe('PricingService — output caps (add-output-cap-guardrails)', () => {
+  it('a cap-only change appends a version like any other flag change', async () => {
+    const { port, facilities } = makeStore();
+    const svc = new PricingService(port, facilities, runtime, noFetch);
+    const base = {
+      modelKey: 'openai:cap-model',
+      inputPricePer1m: 1,
+      outputPricePer1m: 2,
+      maxOutputTokens: 8192,
+    };
+    await svc.refresh({ source: 'body', entries: [base] }, new Date('2026-09-01'));
+    // identical (cap included) → no-op
+    expect(await svc.refresh({ source: 'body', entries: [base] }, new Date('2026-09-02'))).toBe(0);
+    // SAME prices, different cap → appends
+    const capOnly = await svc.refresh(
+      { source: 'body', entries: [{ ...base, maxOutputTokens: 16384 }] },
+      new Date('2026-09-03'),
+    );
+    expect(capOnly).toBe(1);
+    expect((await svc.priceAt('openai:cap-model', new Date('2026-09-04')))?.maxOutputTokens).toBe(
+      16384,
+    );
+    expect((await svc.priceAt('openai:cap-model', new Date('2026-09-02')))?.maxOutputTokens).toBe(
+      8192, // history intact
+    );
+  });
+
+  it('a live-pull invalid/fractional cap drops the FIELD while the prices are written', async () => {
+    const { port, facilities } = makeStore();
+    const fetchImpl: PricingFetch = () =>
+      Promise.resolve({
+        'frac-cap': {
+          litellm_provider: 'openai',
+          mode: 'chat',
+          input_cost_per_token: 0.000001,
+          output_cost_per_token: 0.000002,
+          max_output_tokens: 1.5, // fractional — parser drops the field, keeps the row
+        },
+      });
+    const svc = new PricingService(port, facilities, runtime, fetchImpl);
+    expect(await svc.refresh({ source: 'litellm' }, new Date('2026-09-01'))).toBe(1);
+    const row = await svc.priceAt('openai:frac-cap', new Date('2026-09-02'));
+    expect(row?.inputPricePer1m).toBe(1);
+    expect(row?.maxOutputTokens).toBeNull();
+  });
+
+  it('a trusted invalid/fractional cap fails fast (manual override + admin body)', async () => {
+    const { port, facilities } = makeStore();
+    const svc = new PricingService(port, facilities, runtime, noFetch);
+    for (const bad of [1.5, 0, -1, Number.NaN]) {
+      await expect(
+        svc.override(
+          'x:y',
+          { inputPricePer1m: 1, outputPricePer1m: 1, maxOutputTokens: bad },
+          new Date(),
+        ),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    }
+    await expect(
+      svc.refresh(
+        {
+          source: 'body',
+          entries: [
+            { modelKey: 'x:y', inputPricePer1m: 1, outputPricePer1m: 1, maxOutputTokens: 2.5 },
+          ],
+        },
+        new Date(),
+      ),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+  });
+
+  it('an override round-trips the cap', async () => {
+    const { port, facilities } = makeStore();
+    const svc = new PricingService(port, facilities, runtime, noFetch);
+    await svc.override(
+      'openai:cap-rt',
+      { inputPricePer1m: 1, outputPricePer1m: 2, maxOutputTokens: 4096 },
+      new Date('2026-09-01'),
+    );
+    expect((await svc.priceAt('openai:cap-rt', new Date('2026-09-02')))?.maxOutputTokens).toBe(
+      4096,
     );
   });
 });

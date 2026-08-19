@@ -35,6 +35,7 @@ export interface OverrideInput {
   readonly cacheReadPricePer1m?: number;
   readonly cacheWritePricePer1m?: number;
   readonly contextWindow?: number;
+  readonly maxOutputTokens?: number;
   readonly supportsTools?: boolean;
   readonly supportsVision?: boolean;
   readonly supportsReasoning?: boolean;
@@ -58,6 +59,7 @@ function toInput(entry: BundledPrice, validFrom: Date, source: string): ModelPri
     cacheReadPricePer1m: entry.cacheReadPricePer1m ?? null,
     cacheWritePricePer1m: entry.cacheWritePricePer1m ?? null,
     contextWindow: entry.contextWindow ?? null,
+    maxOutputTokens: entry.maxOutputTokens ?? null,
     supportsTools: entry.supportsTools ?? false,
     supportsVision: entry.supportsVision ?? false,
     supportsReasoning: entry.supportsReasoning ?? false,
@@ -74,6 +76,7 @@ function unchanged(entry: BundledPrice, latest: ModelPriceRow): boolean {
     (entry.cacheReadPricePer1m ?? null) === latest.cacheReadPricePer1m &&
     (entry.cacheWritePricePer1m ?? null) === latest.cacheWritePricePer1m &&
     (entry.contextWindow ?? null) === latest.contextWindow &&
+    (entry.maxOutputTokens ?? null) === latest.maxOutputTokens &&
     (entry.supportsTools ?? false) === latest.supportsTools &&
     (entry.supportsVision ?? false) === latest.supportsVision &&
     (entry.supportsReasoning ?? false) === latest.supportsReasoning &&
@@ -98,6 +101,14 @@ function validate(entry: BundledPrice): void {
   }
   if (entry.isFree === true && (entry.inputPricePer1m !== 0 || entry.outputPricePer1m !== 0)) {
     throw new UnprocessableEntityException('a free model must have zero input/output price');
+  }
+  // Trusted-source fail-fast (add-output-cap-guardrails): the untrusted live
+  // pull can never present an invalid cap here — the parser already dropped it.
+  if (
+    entry.maxOutputTokens !== undefined &&
+    (!Number.isInteger(entry.maxOutputTokens) || entry.maxOutputTokens <= 0)
+  ) {
+    throw new UnprocessableEntityException('max_output_tokens must be a positive integer');
   }
 }
 
@@ -245,6 +256,9 @@ export class PricingService {
         ? { cacheWritePricePer1m: prices.cacheWritePricePer1m }
         : {}),
       ...(prices.contextWindow !== undefined ? { contextWindow: prices.contextWindow } : {}),
+      ...(prices.maxOutputTokens !== undefined
+        ? { maxOutputTokens: prices.maxOutputTokens }
+        : {}),
       ...(prices.supportsTools !== undefined ? { supportsTools: prices.supportsTools } : {}),
       ...(prices.supportsVision !== undefined ? { supportsVision: prices.supportsVision } : {}),
       ...(prices.supportsReasoning !== undefined

@@ -1,0 +1,2 @@
+ALTER TABLE "model_price" ADD COLUMN "max_output_tokens" integer;--> statement-breakpoint
+ALTER TABLE "model_price" ADD CONSTRAINT "model_price_max_output_positive" CHECK ("model_price"."max_output_tokens" IS NULL OR "model_price"."max_output_tokens" > 0);

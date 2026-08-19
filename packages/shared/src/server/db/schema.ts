@@ -349,6 +349,8 @@ export const modelPrices = pgTable(
     cacheReadPricePer1m: doublePrecision('cache_read_price_per_1m'),
     cacheWritePricePer1m: doublePrecision('cache_write_price_per_1m'),
     contextWindow: integer('context_window'),
+    // Output cap (add-output-cap-guardrails): null = unknown, never 0.
+    maxOutputTokens: integer('max_output_tokens'),
     supportsTools: boolean('supports_tools').default(false).notNull(),
     supportsVision: boolean('supports_vision').default(false).notNull(),
     supportsReasoning: boolean('supports_reasoning').default(false).notNull(),
@@ -359,6 +361,10 @@ export const modelPrices = pgTable(
   },
   (t) => [
     uniqueIndex('model_price_key_valid_from_unique').on(t.modelKey, t.validFrom),
+    check(
+      'model_price_max_output_positive',
+      sql`${t.maxOutputTokens} IS NULL OR ${t.maxOutputTokens} > 0`,
+    ),
     check(
       'model_price_nonneg',
       sql`${t.inputPricePer1m} >= 0 AND ${t.outputPricePer1m} >= 0

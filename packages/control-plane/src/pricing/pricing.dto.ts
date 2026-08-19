@@ -37,6 +37,11 @@ export class OverrideDto {
   contextWindow?: number;
 
   @IsOptional()
+  @IsInt()
+  @Min(1)
+  maxOutputTokens?: number;
+
+  @IsOptional()
   @IsBoolean()
   supportsTools?: boolean;
 

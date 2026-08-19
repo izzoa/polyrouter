@@ -15,6 +15,10 @@ heading is started.
 
 ## [Unreleased]
 
+### Added
+
+- **Output-cap guardrails.** Router-chosen chains now defer members whose known `max_output_tokens` (LiteLLM-catalog-ingested) can't satisfy the request's ask, and clamp per-member (honest `length` finish) when nothing can — instead of dying on a guaranteed provider 400. Deferrals/clamps are recorded in the routing reason (`output_cap_deferred` / `output_cap_clamped`); capacity outranks a subscription member's quota-first position across stages (disclosed, never within a stage). Explicit models untouched; unknown caps and lookup failures degrade to today's behavior; the synthesized Anthropic `max_tokens` default is capped to the model's known limit.
+
 ## [0.12.3] — 2026-08-11
 
 ### Fixed

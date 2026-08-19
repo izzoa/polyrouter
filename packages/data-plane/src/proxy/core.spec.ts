@@ -16,6 +16,7 @@ import {
 import {
   CallCancelledError,
   CircuitBreaker,
+  DEFAULT_BREAKER_CONFIG,
   InMemoryBreakerStore,
   ProviderCircuitOpenError,
   ProviderError,
@@ -550,5 +551,164 @@ describe('runBuffered', () => {
     );
     expect((result.wire as { object: string }).object).toBe('chat.completion');
     expect(result.response.content).toHaveLength(1); // IR exposed for #11 usage capture
+  });
+});
+
+describe('output-cap clamps + walk-stop boundaries (add-output-cap-guardrails)', () => {
+  const client = getAdapter('openai');
+  const newBreaker = (threshold = 5): CircuitBreaker =>
+    new CircuitBreaker(new InMemoryBreakerStore(), {
+      config: { ...DEFAULT_BREAKER_CONFIG, threshold },
+    });
+  const ok = (): NormalizedResponse => ({
+    id: 'r',
+    model: 'm',
+    content: [{ type: 'text', text: 'ok' }],
+    stopReason: 'stop',
+  });
+  const capAttempt = (
+    providerId: string,
+    externalModelId: string,
+    chat: (req: { params: { maxOutputTokens?: number } }) => Promise<NormalizedResponse>,
+    maxOutputTokens?: number,
+  ): ChainAttempt => ({
+    providerId,
+    externalModelId,
+    ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+    buildAdapter: () =>
+      Promise.resolve({
+        protocol: 'openai_compatible',
+        chat,
+        chatStream: async function* () {
+          /* unused */
+        },
+        listModels: () => Promise.resolve([]),
+        testConnection: () => Promise.resolve({ ok: true, models: 0 }),
+      } as unknown as ProviderAdapter),
+  });
+  const REQ = { model: 'x', messages: [], params: { maxOutputTokens: 100_000 } };
+
+  it('a clamped attempt dispatches ITS OWN cap; an unclamped attempt passes the ask verbatim', async () => {
+    const seen: (number | undefined)[] = [];
+    const record = (req: { params: { maxOutputTokens?: number } }) => {
+      seen.push(req.params.maxOutputTokens);
+      return Promise.reject(new ProviderError('rate_limit', 'next'));
+    };
+    const attempts = [
+      capAttempt('p1', 'head', record),
+      capAttempt('p2', 'tail-a', record, 4_096),
+      capAttempt('p3', 'tail-b', (req) => {
+        seen.push(req.params.maxOutputTokens);
+        return Promise.resolve(ok());
+      }, 16_384),
+    ];
+    const r = await runBufferedChain(newBreaker(), attempts, client, REQ, { created: 1 }, new AbortController().signal);
+    expect(r.ok).toBe(true);
+    expect(seen).toEqual([100_000, 4_096, 16_384]); // verbatim head, per-member tail clamps
+    for (const f of r.ok ? r.failures : []) expect(f.dispatched).not.toBe(false);
+  });
+
+  it('a head bad_request stops the walk — the clamped tail is NOT consulted', async () => {
+    let tailCalled = false;
+    const attempts = [
+      capAttempt('p1', 'head', () => Promise.reject(new ProviderError('bad_request', 'cap too big'))),
+      capAttempt('p2', 'tail', () => {
+        tailCalled = true;
+        return Promise.resolve(ok());
+      }, 16_384),
+    ];
+    const r = await runBufferedChain(newBreaker(), attempts, client, REQ, { created: 1 }, new AbortController().signal);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.kind).toBe('bad_request');
+    expect(tailCalled).toBe(false);
+  });
+
+  it('a client cancellation stops the walk — no tail, callerAborted', async () => {
+    let tailCalled = false;
+    const attempts = [
+      capAttempt('p1', 'head', () => Promise.reject(new CallCancelledError())),
+      capAttempt('p2', 'tail', () => {
+        tailCalled = true;
+        return Promise.resolve(ok());
+      }, 16_384),
+    ];
+    const r = await runBufferedChain(
+      newBreaker(),
+      attempts,
+      client,
+      REQ,
+      { created: 1, isCallerAbort: () => true },
+      new AbortController().signal,
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.callerAborted).toBe(true);
+    expect(tailCalled).toBe(false);
+  });
+
+  it('a circuit-open head skip flows to the clamped tail and is marked dispatched:false', async () => {
+    const attempts = [
+      capAttempt('p1', 'head-a', () => Promise.reject(new ProviderError('unavailable', 'down'))),
+      // Same provider: the threshold-1 breaker is now open — skipped without dispatch.
+      capAttempt('p1', 'head-b', () => Promise.reject(new Error('never built'))),
+      capAttempt('p2', 'tail', (req) => {
+        expect(req.params.maxOutputTokens).toBe(16_384);
+        return Promise.resolve(ok());
+      }, 16_384),
+    ];
+    const r = await runBufferedChain(newBreaker(1), attempts, client, REQ, { created: 1 }, new AbortController().signal);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.servedIndex).toBe(2);
+      expect(r.failures.map((f) => f.dispatched)).toEqual([true, false]); // real failure vs circuit skip
+    }
+  });
+
+  it('streaming: a pre-commit retryable head failure reaches the clamped tail; the clamp rides the stream request', async () => {
+    const seen: (number | undefined)[] = [];
+    const failing: ChainAttempt = {
+      providerId: 'p1',
+      externalModelId: 'head',
+      buildAdapter: () =>
+        Promise.resolve({
+          protocol: 'openai_compatible',
+          chat: () => Promise.reject(new Error('unused')),
+          chatStream: async function* (req: { params: { maxOutputTokens?: number } }) {
+            seen.push(req.params.maxOutputTokens);
+            throw new ProviderError('rate_limit', 'pre-commit');
+          },
+          listModels: () => Promise.resolve([]),
+          testConnection: () => Promise.resolve({ ok: true, models: 0 }),
+        } as unknown as ProviderAdapter),
+    };
+    const clamped: ChainAttempt = {
+      providerId: 'p2',
+      externalModelId: 'tail',
+      maxOutputTokens: 8_192,
+      buildAdapter: () =>
+        Promise.resolve({
+          protocol: 'openai_compatible',
+          chat: () => Promise.reject(new Error('unused')),
+          chatStream: async function* (req: { params: { maxOutputTokens?: number } }) {
+            seen.push(req.params.maxOutputTokens);
+            yield START;
+            yield TEXT;
+            yield STOP;
+            yield END;
+          },
+          listModels: () => Promise.resolve([]),
+          testConnection: () => Promise.resolve({ ok: true, models: 0 }),
+        } as unknown as ProviderAdapter),
+    };
+    const r = await openStreamChain(newBreaker(), [failing, clamped], client, REQ, {
+      ...OPTS,
+      signal: new AbortController().signal,
+    });
+    expect(r.kind).toBe('stream');
+    if (r.kind === 'stream') {
+      await collect(r.frames);
+      expect(r.servedIndex).toBe(1);
+      expect(r.failures[0]?.dispatched).toBe(true);
+    }
+    expect(seen).toEqual([100_000, 8_192]);
   });
 });

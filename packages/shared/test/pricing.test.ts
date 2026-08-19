@@ -16,6 +16,7 @@ const catalogRow = (over: Partial<ModelPriceRow> = {}): ModelPriceRow => ({
   cacheReadPricePer1m: 1.25,
   cacheWritePricePer1m: null,
   contextWindow: 128000,
+  maxOutputTokens: null,
   supportsTools: true,
   supportsVision: true,
   supportsReasoning: false,
@@ -186,6 +187,50 @@ describe('parseLiteLlmCatalog', () => {
     expect(byKey.has('openai:text-embedding-3-small')).toBe(false); // embedding skipped
     expect(rows.some((r) => r.modelKey.includes('broken'))).toBe(false); // missing costs skipped
     expect(rows.some((r) => r.modelKey === 'sample_spec')).toBe(false);
+  });
+
+  // add-output-cap-guardrails: caps come from the explicit field only, must be
+  // positive integers, and an invalid cap drops the FIELD, never the row.
+  const capEntry = (max_output_tokens: unknown) => ({
+    'cap-model': {
+      litellm_provider: 'openai',
+      mode: 'chat',
+      input_cost_per_token: 0.000001,
+      output_cost_per_token: 0.000002,
+      max_tokens: 4096,
+      max_input_tokens: 128000,
+      ...(max_output_tokens !== undefined ? { max_output_tokens } : {}),
+    },
+  });
+  const capOf = (max_output_tokens?: unknown) =>
+    parseLiteLlmCatalog(capEntry(max_output_tokens))[0];
+
+  it('maps an explicit max_output_tokens onto the row', () => {
+    expect(capOf(16384)).toMatchObject({ maxOutputTokens: 16384, contextWindow: 128000 });
+  });
+
+  it('never infers a cap from legacy max_tokens (context fallback still works)', () => {
+    const row = capOf(undefined);
+    expect(row?.maxOutputTokens).toBeUndefined();
+    const noInput = parseLiteLlmCatalog({
+      'legacy-only': {
+        litellm_provider: 'openai',
+        mode: 'chat',
+        input_cost_per_token: 0.000001,
+        output_cost_per_token: 0.000002,
+        max_tokens: 4096,
+      },
+    })[0];
+    expect(noInput?.contextWindow).toBe(4096); // legacy max_tokens still feeds contextWindow
+    expect(noInput?.maxOutputTokens).toBeUndefined();
+  });
+
+  it('drops an invalid cap FIELD while keeping the row', () => {
+    for (const bad of [1.5, 0, -8192, NaN, Infinity, -Infinity, '16384', null]) {
+      const row = capOf(bad);
+      expect(row?.maxOutputTokens).toBeUndefined();
+      expect(row?.inputPricePer1m).toBe(1); // the row and its prices survive
+    }
   });
 });
 

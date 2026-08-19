@@ -53,6 +53,7 @@ export interface BundledPrice {
   readonly cacheReadPricePer1m?: number;
   readonly cacheWritePricePer1m?: number;
   readonly contextWindow?: number;
+  readonly maxOutputTokens?: number;
   readonly supportsTools?: boolean;
   readonly supportsVision?: boolean;
   readonly supportsReasoning?: boolean;

@@ -145,6 +145,7 @@ export type ModelPriceInput = {
   cacheReadPricePer1m?: number | null;
   cacheWritePricePer1m?: number | null;
   contextWindow?: number | null;
+  maxOutputTokens?: number | null;
   supportsTools?: boolean;
   supportsVision?: boolean;
   supportsReasoning?: boolean;

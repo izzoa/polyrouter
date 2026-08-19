@@ -7,6 +7,7 @@ import {
   SsrfError,
   assertUrlSafe,
   decryptSecret,
+  deriveModelKey,
   resolvePlainCredentialValue,
   type ModelRow,
   type PersistencePort,
@@ -21,6 +22,8 @@ import {
   getAdapter,
   isRouteError,
   openStreamChain,
+  participatingAsk,
+  planOutputCaps,
   replayBufferedStream,
   resolveRoute,
   runBufferedChain,
@@ -118,6 +121,21 @@ interface Bundle {
   readonly meta: AttemptMeta[];
 }
 
+/** Per-walked-chain capacity annotations (add-output-cap-guardrails): the
+ * plan-time deferral string plus a clamp string per EFFECTIVE attempt index.
+ * Clamps are recorded only for attempts actually dispatched (`capacitySuffix`). */
+interface CapacityAnnotations {
+  readonly deferred: string | null;
+  readonly clampByIndex: ReadonlyMap<number, string>;
+}
+
+/** Late-bound cap lookup (add-output-cap-guardrails): `buildBundle`'s adapter
+ * closures capture this ref BEFORE the batched cap resolution runs; dispatch
+ * happens after, so the closure reads the populated map. */
+interface CapsRef {
+  current: ReadonlyMap<string, number>;
+}
+
 /** Cascade orchestration state (#14): the cheap chain + the escalation chain
  * (`strong ++ default`, so a down strong tier still rescues to the reliable core). */
 interface CascadeBundle {
@@ -173,6 +191,14 @@ interface Prepared {
   principal: Principal;
   agentId: string | null;
   cascade?: CascadeBundle;
+  /** Capacity annotations per WALKED chain (add-output-cap-guardrails):
+   * `primary` for the non-cascade walk; `cheap`/`escalation` for cascade legs.
+   * Absent = no planning engaged (no valid ask, client-named, or nothing to note). */
+  capacity?: {
+    readonly primary?: CapacityAnnotations;
+    readonly cheap?: CapacityAnnotations;
+    readonly escalation?: CapacityAnnotations;
+  };
   /** Armed body capture (add-body-capture): present ONLY when the effective
    * mode can persist for this request (off / agent-never never allocate).
    * Mutable content slots — the served path fills exactly one. */
@@ -466,7 +492,10 @@ export class ProxyService {
             p,
             c.cheap.meta,
             cheap.servedIndex,
-            `cascade: cheap served`,
+            withCapacity(
+              `cascade: cheap served`,
+              capacitySuffix('cheap', p.capacity?.cheap, cheap.servedIndex, cheap.failures),
+            ),
             score,
             cheap.failures,
           ),
@@ -487,6 +516,9 @@ export class ProxyService {
         score,
         'quality_gate',
         signal,
+        // The EXECUTED cheap chain's capacity reasons ride the parent row even
+        // when escalation supersedes it (a superseded clamp stays on record).
+        capacitySuffix('cheap', p.capacity?.cheap, cheap.servedIndex, cheap.failures),
       );
     }
     if (cheap.callerAborted) {
@@ -498,7 +530,10 @@ export class ProxyService {
           p,
           c.cheap.meta,
           0,
-          'cascade: client disconnected during cheap attempt',
+          withCapacity(
+            'cascade: client disconnected during cheap attempt',
+            capacitySuffix('cheap', p.capacity?.cheap, null, cheap.failures),
+          ),
           null,
           cheap.failures,
         ),
@@ -515,7 +550,10 @@ export class ProxyService {
           p,
           c.cheap.meta,
           0,
-          `cascade: cheap failed non-retryably (${cheap.error.kind})`,
+          withCapacity(
+            `cascade: cheap failed non-retryably (${cheap.error.kind})`,
+            capacitySuffix('cheap', p.capacity?.cheap, null, cheap.failures),
+          ),
           null,
           cheap.failures,
         ),
@@ -532,7 +570,15 @@ export class ProxyService {
       throw toProxyError(cheap.error);
     }
     // Cheap failed/timed out — provider fault, never quality evidence.
-    return this.escalateBuffered(p, c, null, 0, 'cheap_error', signal);
+    return this.escalateBuffered(
+      p,
+      c,
+      null,
+      0,
+      'cheap_error',
+      signal,
+      capacitySuffix('cheap', p.capacity?.cheap, null, cheap.failures),
+    );
   }
 
   private async escalateBuffered(
@@ -542,6 +588,7 @@ export class ProxyService {
     score: number | null,
     source: 'quality_gate' | 'cheap_error',
     signal: AbortSignal,
+    cheapCapacity: string | null,
   ): Promise<unknown> {
     const result = await runBufferedChain(
       this.breaker,
@@ -562,7 +609,11 @@ export class ProxyService {
           p,
           c.escalation.meta,
           0,
-          `cascade: escalated, all failed`,
+          withCapacity(
+            `cascade: escalated, all failed`,
+            cheapCapacity,
+            capacitySuffix('esc', p.capacity?.escalation, null, result.failures),
+          ),
           score,
           result.failures,
         ),
@@ -587,7 +638,11 @@ export class ProxyService {
         p,
         c.escalation.meta,
         result.servedIndex,
-        escalatedReason(c.escalation.meta, result.servedIndex),
+        withCapacity(
+          escalatedReason(c.escalation.meta, result.servedIndex),
+          cheapCapacity,
+          capacitySuffix('esc', p.capacity?.escalation, result.servedIndex, result.failures),
+        ),
         score,
         result.failures,
       ),
@@ -640,7 +695,10 @@ export class ProxyService {
             p,
             c.cheap.meta,
             cheap.servedIndex,
-            `cascade: cheap served`,
+            withCapacity(
+              `cascade: cheap served`,
+              capacitySuffix('cheap', p.capacity?.cheap, cheap.servedIndex, cheap.failures),
+            ),
             score,
             cheap.failures,
           );
@@ -679,6 +737,7 @@ export class ProxyService {
         score,
         escalate ? 'quality_gate' : 'cheap_error',
         signal,
+        capacitySuffix('cheap', p.capacity?.cheap, cheap.servedIndex, cheap.failures),
       );
     }
     if (cheap.callerAborted) {
@@ -689,7 +748,10 @@ export class ProxyService {
           p,
           c.cheap.meta,
           0,
-          'cascade: client disconnected during cheap attempt',
+          withCapacity(
+            'cascade: client disconnected during cheap attempt',
+            capacitySuffix('cheap', p.capacity?.cheap, null, cheap.failures),
+          ),
           null,
           cheap.failures,
         ),
@@ -705,7 +767,10 @@ export class ProxyService {
           p,
           c.cheap.meta,
           0,
-          `cascade: cheap failed non-retryably (${cheap.error.kind})`,
+          withCapacity(
+            `cascade: cheap failed non-retryably (${cheap.error.kind})`,
+            capacitySuffix('cheap', p.capacity?.cheap, null, cheap.failures),
+          ),
           null,
           cheap.failures,
         ),
@@ -721,7 +786,16 @@ export class ProxyService {
       );
       throw providerErrorToProxy(cheap.error);
     }
-    return this.escalateStream(p, c, null, 0, 'cheap_error', signal); // retryable cheap failure
+    // retryable cheap failure
+    return this.escalateStream(
+      p,
+      c,
+      null,
+      0,
+      'cheap_error',
+      signal,
+      capacitySuffix('cheap', p.capacity?.cheap, null, cheap.failures),
+    );
   }
 
   private async escalateStream(
@@ -731,6 +805,7 @@ export class ProxyService {
     score: number | null,
     source: 'quality_gate' | 'cheap_error',
     signal: AbortSignal,
+    cheapCapacity: string | null,
   ): Promise<AsyncGenerator<string>> {
     const result = await openStreamChain(this.breaker, c.escalation.attempts, p.client, p.routed, {
       signal,
@@ -748,7 +823,11 @@ export class ProxyService {
           p,
           c.escalation.meta,
           0,
-          `cascade: escalated, all failed`,
+          withCapacity(
+            `cascade: escalated, all failed`,
+            cheapCapacity,
+            capacitySuffix('esc', p.capacity?.escalation, null, result.failures),
+          ),
           score,
           result.failures,
         ),
@@ -771,7 +850,11 @@ export class ProxyService {
       p,
       c.escalation.meta,
       result.servedIndex,
-      escalatedReason(c.escalation.meta, result.servedIndex),
+      withCapacity(
+        escalatedReason(c.escalation.meta, result.servedIndex),
+        cheapCapacity,
+        capacitySuffix('esc', p.capacity?.escalation, result.servedIndex, result.failures),
+      ),
       score,
       result.failures,
     );
@@ -1022,23 +1105,72 @@ export class ProxyService {
       }
     }
 
-    const primary = await this.buildBundle(principal, decision, models, signal);
+    const capsRef: CapsRef = { current: new Map() };
+    let primary = await this.buildBundle(principal, decision, models, signal, capsRef);
+
+    let cascadeRaw: { cheap: Bundle; strong: Bundle } | null = null;
+    if (cascadePlan !== null) {
+      cascadeRaw = {
+        cheap: await this.buildBundle(principal, cascadePlan.cheap, models, signal, capsRef),
+        strong: await this.buildBundle(principal, cascadePlan.strong, models, signal, capsRef),
+      };
+    }
+
+    // Output-cap capacity planning (add-output-cap-guardrails): resolve KNOWN
+    // caps once (exact keys only, ONE batched read, fail-open to unknown), then
+    // plan each WALKED chain. A client-named concrete model is fenced (provider
+    // parity); an absent ask still resolves caps so the synthesized Anthropic
+    // default can be capped to the dispatched model's limit (the closures in
+    // `capsRef` read the populated map lazily at dispatch time).
+    const clientNamed = decision.decisionLayer === 'explicit' && decision.tierKey === null;
+    const planAsk = clientNamed ? null : participatingAsk(ir.params.maxOutputTokens);
+    if (planAsk !== null || ir.params.maxOutputTokens === undefined) {
+      const allMeta = [
+        ...primary.meta,
+        ...(cascadeRaw !== null ? [...cascadeRaw.cheap.meta, ...cascadeRaw.strong.meta] : []),
+      ];
+      capsRef.current = await resolveOutputCaps(
+        (keys, at) => this.db.pricing.priceAtMany(keys, at),
+        allMeta,
+        new Date(startedAt),
+      );
+    }
 
     let cascade: CascadeBundle | undefined;
-    if (cascadePlan !== null) {
-      const cheap = await this.buildBundle(principal, cascadePlan.cheap, models, signal);
-      const strong = await this.buildBundle(principal, cascadePlan.strong, models, signal);
+    let capacity: Prepared['capacity'];
+    if (cascadeRaw !== null) {
+      const { cheap, strong } = cascadeRaw;
       // Escalation walks strong then the Layer-0 default (reliable-core rescue).
       if (cheap.attempts.length > 0 && strong.attempts.length + primary.attempts.length > 0) {
-        cascade = {
-          cheap,
-          escalation: {
-            attempts: [...strong.attempts, ...primary.attempts],
-            meta: [...strong.meta, ...primary.meta],
-          },
-          cheapTimeoutMs: this.cascade.cheapTimeoutMs,
+        const escalationRaw: Bundle = {
+          attempts: [...strong.attempts, ...primary.attempts],
+          meta: [...strong.meta, ...primary.meta],
         };
+        if (planAsk !== null) {
+          // Plan per WALKED chain: the cheap chain and the CONCATENATED
+          // strong-then-default escalation — never a source bundle alone.
+          const cheapPlan = planWalkedChain(cheap, planAsk, capsRef.current);
+          const escPlan = planWalkedChain(escalationRaw, planAsk, capsRef.current);
+          cascade = {
+            cheap: cheapPlan.bundle,
+            escalation: escPlan.bundle,
+            cheapTimeoutMs: this.cascade.cheapTimeoutMs,
+          };
+          if (cheapPlan.capacity !== undefined || escPlan.capacity !== undefined) {
+            capacity = {
+              ...(cheapPlan.capacity !== undefined ? { cheap: cheapPlan.capacity } : {}),
+              ...(escPlan.capacity !== undefined ? { escalation: escPlan.capacity } : {}),
+            };
+          }
+        } else {
+          cascade = { cheap, escalation: escalationRaw, cheapTimeoutMs: this.cascade.cheapTimeoutMs };
+        }
       }
+    }
+    if (cascade === undefined && planAsk !== null) {
+      const plan = planWalkedChain(primary, planAsk, capsRef.current);
+      primary = plan.bundle;
+      if (plan.capacity !== undefined) capacity = { primary: plan.capacity };
     }
 
     if (primary.attempts.length === 0 && cascade === undefined) {
@@ -1106,9 +1238,11 @@ export class ProxyService {
       principal,
       agentId,
       ...(cascade !== undefined ? { cascade } : {}),
+      ...(capacity !== undefined ? { capacity } : {}),
       ...(capture !== undefined ? { capture } : {}),
     };
   }
+
 
   /** Resolve a decision's chain into lazy attempts + recording meta (owner-scoped
    * loads; adapters built lazily inside the breaker callback, #12). */
@@ -1117,6 +1251,7 @@ export class ProxyService {
     decision: RouteDecision,
     models: ModelRow[],
     signal: AbortSignal,
+    capsRef: CapsRef,
   ): Promise<Bundle> {
     const attempts: ChainAttempt[] = [];
     const meta: AttemptMeta[] = [];
@@ -1146,7 +1281,21 @@ export class ProxyService {
       attempts.push({
         providerId: t.providerId,
         externalModelId: t.externalModelId,
-        buildAdapter: () => this.chainAdapter(principal, provider, signal),
+        // The cap is read LAZILY at dispatch (capsRef is populated after the
+        // bundle builds) so polyrouter's own synthesized Anthropic default can
+        // be capped to THIS member's known limit (add-output-cap-guardrails).
+        buildAdapter: () => {
+          const key =
+            provider.baseUrl !== null
+              ? deriveModelKey(provider.baseUrl, t.externalModelId)
+              : null;
+          return this.chainAdapter(
+            principal,
+            provider,
+            signal,
+            key !== null ? capsRef.current.get(key) : undefined,
+          );
+        },
         // THIS member's stream watchdog bound (fix-long-call-timeouts): a
         // per-provider override must reach core even mid-chain beside
         // un-overridden members.
@@ -1185,10 +1334,11 @@ export class ProxyService {
     principal: Principal,
     provider: ProviderRow,
     signal: AbortSignal,
+    maxOutputCap?: number,
   ): Promise<ProviderAdapter> {
     let adapter: ProviderAdapter;
     try {
-      adapter = await this.buildAdapter(principal, provider);
+      adapter = await this.buildAdapter(principal, provider, maxOutputCap);
     } catch (err) {
       this.metrics.upstreamSetupFailed(provider.name);
       if (err instanceof ProviderError && err.kind === 'credential') throw err;
@@ -1206,17 +1356,18 @@ export class ProxyService {
     servedIndex: number,
     failures: readonly AttemptFailure[],
   ): RecordingContext {
-    return this.contextFor(p, servedIndex, failures);
+    return this.contextFor(p, servedIndex, servedIndex, failures);
   }
 
   /** Total-chain failure is recorded against the primary. */
   private failedContext(p: Prepared, failures: readonly AttemptFailure[]): RecordingContext {
-    return this.contextFor(p, 0, failures);
+    return this.contextFor(p, 0, null, failures);
   }
 
   private contextFor(
     p: Prepared,
     metaIndex: number,
+    servedIndex: number | null,
     failures: readonly AttemptFailure[],
   ): RecordingContext {
     const m = p.meta[metaIndex]!;
@@ -1232,7 +1383,10 @@ export class ProxyService {
       ...verdictFields(p),
       tierAssigned: p.decision.tierKey,
       decisionLayer: p.decision.decisionLayer,
-      routingReason: reasonWithTrail(p.decision.routingReason, failures, p.meta),
+      routingReason: withCapacity(
+        reasonWithTrail(p.decision.routingReason, failures, p.meta),
+        capacitySuffix(null, p.capacity?.primary, servedIndex, failures),
+      ),
       // The header that chose the route (add-routing-header-visibility); the
       // cascade context (metaContext) never carries one by construction.
       ...(p.decision.matchedHeader !== null ? { routingHeader: p.decision.matchedHeader } : {}),
@@ -1340,8 +1494,15 @@ export class ProxyService {
   private async buildAdapter(
     principal: Principal,
     provider: ProviderRow,
+    maxOutputCap?: number,
   ): Promise<ProviderAdapter> {
     if (provider.baseUrl === null) throw serviceUnavailable('provider has no base_url');
+    // Defensive synthesized default (add-output-cap-guardrails): where the IR
+    // omits maxOutputTokens the Anthropic adapter synthesizes max_tokens from
+    // this default — capped to the dispatched model's KNOWN limit so
+    // polyrouter's own default can never doom the request. Only polyrouter's
+    // synthesized value is corrected; a client value always passes through.
+    const defaultMaxOutputTokens = cappedDefault(this.rt.defaultMaxOutputTokens, maxOutputCap);
     const kind = provider.kind as ProviderKind;
     // Resolve the outbound token-cap spelling to the data-plane quirk — the SAME
     // helper providers.service uses, so proxy and test-connection never diverge
@@ -1374,7 +1535,7 @@ export class ProxyService {
         ...(r.oauthAccountId !== undefined ? { oauthAccountId: r.oauthAccountId } : {}),
         ...(r.probeModel !== undefined ? { probeModel: r.probeModel } : {}),
         ...(quirks !== undefined ? { quirks } : {}),
-        defaultMaxOutputTokens: this.rt.defaultMaxOutputTokens,
+        defaultMaxOutputTokens,
         ...this.effectiveBounds(provider),
       });
     }
@@ -1395,7 +1556,7 @@ export class ProxyService {
       kind,
       mode: this.mode,
       ...(quirks !== undefined ? { quirks } : {}),
-      defaultMaxOutputTokens: this.rt.defaultMaxOutputTokens,
+      defaultMaxOutputTokens,
       ...this.effectiveBounds(provider),
     });
   }
@@ -1497,6 +1658,122 @@ function reasonWithTrail(
     .map((f) => `${f.error.kind}@${meta[f.index]?.model.externalModelId ?? '?'}`)
     .join(', ');
   return `${reason}; fell back after: ${trail}`;
+}
+
+/** Plan ONE walked chain (add-output-cap-guardrails): the two-stage deferral
+ * over atomically-paired attempts+meta, plus the recorded annotations. Tail
+ * members get a per-attempt clamped copy (their OWN cap); clamp strings are
+ * keyed by EFFECTIVE index and only recorded for dispatched attempts
+ * (`capacitySuffix`). Caps resolve by the EXACT catalog key only. */
+export function planWalkedChain(
+  bundle: Bundle,
+  ask: number,
+  caps: ReadonlyMap<string, number>,
+): { bundle: Bundle; capacity: CapacityAnnotations | undefined } {
+  const inputs = bundle.attempts.map((attempt, i) => {
+    const meta = bundle.meta[i]!;
+    const key =
+      meta.providerBaseUrl !== null
+        ? deriveModelKey(meta.providerBaseUrl, meta.model.externalModelId)
+        : null;
+    return {
+      member: { attempt, meta },
+      cap: key !== null ? (caps.get(key) ?? null) : null,
+      label: meta.model.externalModelId,
+    };
+  });
+  const plan = planOutputCaps(inputs, ask);
+  const attempts: ChainAttempt[] = [];
+  const meta: AttemptMeta[] = [];
+  const clampByIndex = new Map<number, string>();
+  plan.members.forEach((m, i) => {
+    meta.push(m.member.meta);
+    if (m.clampTo === undefined) {
+      attempts.push(m.member.attempt);
+    } else {
+      attempts.push({ ...m.member.attempt, maxOutputTokens: m.clampTo });
+      clampByIndex.set(i, `output_cap_clamped ${ask}→${m.clampTo} (${m.label})`);
+    }
+  });
+  const deferred =
+    plan.deferred.length > 0
+      ? `output_cap_deferred ${plan.deferred.map((d) => `${d.label}(${d.cap}<${ask})`).join(', ')}`
+      : null;
+  const capacity =
+    deferred !== null || clampByIndex.size > 0 ? { deferred, clampByIndex } : undefined;
+  return { bundle: { attempts, meta }, capacity };
+}
+
+/** The recorded capacity suffix for one EXECUTED walked chain: the plan-time
+ * deferrals plus the clamps of attempts actually dispatched — the served
+ * member and non-circuit-skip failures. A tail member skipped by an open
+ * circuit (or never reached) records NO clamp; a non-retryable TERMINAL
+ * failure after a clamped dispatch is the accepted under-record (the walker
+ * surfaces no terminal index — never an over-record). */
+export function capacitySuffix(
+  leg: 'cheap' | 'esc' | null,
+  ann: CapacityAnnotations | undefined,
+  servedIndex: number | null,
+  failures: readonly AttemptFailure[],
+): string | null {
+  if (ann === undefined) return null;
+  const parts: string[] = [];
+  if (ann.deferred !== null) parts.push(ann.deferred);
+  const dispatched = new Set<number>();
+  if (servedIndex !== null) dispatched.add(servedIndex);
+  for (const f of failures) if (f.dispatched !== false) dispatched.add(f.index);
+  for (const [i, s] of ann.clampByIndex) if (dispatched.has(i)) parts.push(s);
+  if (parts.length === 0) return null;
+  const joined = parts.join('; ');
+  return leg === null ? joined : `${leg}[${joined}]`;
+}
+
+/** The synthesized Anthropic `max_tokens` default, capped to a KNOWN model
+ * limit (add-output-cap-guardrails): unknown or larger cap → the configured
+ * default unchanged. Applies on every path, client-named included — there is
+ * no client value to preserve when the IR omits the ask. */
+export function cappedDefault(configuredDefault: number, knownCap: number | undefined): number {
+  return knownCap !== undefined ? Math.min(configuredDefault, knownCap) : configuredDefault;
+}
+
+/** Append capacity suffixes to a reason (null suffixes drop out). */
+export function withCapacity(reason: string, ...suffixes: (string | null)[]): string {
+  const present = suffixes.filter((s): s is string => s !== null);
+  return present.length === 0 ? reason : `${reason}; ${present.join('; ')}`;
+}
+
+/** EXACT-key output caps for the given members in ONE `priceAtMany` batch
+ * (add-output-cap-guardrails): dedupe the derived keys across ALL walked
+ * chains, one read at one instant. Fail-open: any rejection degrades every cap
+ * to unknown — capacity discovery never fails an otherwise routable request
+ * (invariant 1). No native-family fallback, no model-row source, no cache, and
+ * NO bespoke deadline (the read shares the snapshot loads' pool posture). */
+export async function resolveOutputCaps(
+  priceAtMany: (
+    keys: readonly string[],
+    at: Date,
+  ) => Promise<readonly { modelKey: string; maxOutputTokens: number | null }[]>,
+  metas: readonly { providerBaseUrl: string | null; model: { externalModelId: string } }[],
+  at: Date,
+): Promise<ReadonlyMap<string, number>> {
+  const keys = new Set<string>();
+  for (const m of metas) {
+    if (m.providerBaseUrl === null) continue;
+    const key = deriveModelKey(m.providerBaseUrl, m.model.externalModelId);
+    if (key !== null) keys.add(key);
+  }
+  if (keys.size === 0) return new Map();
+  try {
+    const rows = await priceAtMany([...keys], at);
+    const caps = new Map<string, number>();
+    for (const r of rows) {
+      const cap = r.maxOutputTokens;
+      if (cap !== null && Number.isInteger(cap) && cap > 0) caps.set(r.modelKey, cap);
+    }
+    return caps;
+  } catch {
+    return new Map(); // fail-open (spec'd): all caps unknown, request routes as today
+  }
 }
 
 /** `cascade: escalated cheap→<served-tier>` (names the tier that actually served,

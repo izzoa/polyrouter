@@ -16,6 +16,7 @@ interface LiteLlmEntry {
   cache_creation_input_token_cost?: unknown;
   max_input_tokens?: unknown;
   max_tokens?: unknown;
+  max_output_tokens?: unknown;
   supports_function_calling?: unknown;
   supports_vision?: unknown;
   supports_reasoning?: unknown;
@@ -25,6 +26,13 @@ const PER_MILLION = 1_000_000;
 
 function finiteNumber(v: unknown): number | undefined {
   return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+}
+
+/** Output caps must be positive integers; anything else drops the FIELD (the
+ * row keeps its prices) — and because this parser also produces the bundled
+ * snapshot, no parser-produced source can carry an invalid cap. */
+function positiveInteger(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isInteger(v) && v > 0 ? v : undefined;
 }
 
 function per1m(v: unknown): number | undefined {
@@ -52,6 +60,9 @@ export function parseLiteLlmCatalog(json: unknown): BundledPrice[] {
     const cacheRead = per1m(e.cache_read_input_token_cost);
     const cacheWrite = per1m(e.cache_creation_input_token_cost);
     const contextWindow = finiteNumber(e.max_input_tokens) ?? finiteNumber(e.max_tokens);
+    // Explicit field ONLY: LiteLLM's legacy `max_tokens` may hold an INPUT or
+    // output limit, so it is never read as a cap (unknown-not-wrong).
+    const maxOutputTokens = positiveInteger(e.max_output_tokens);
     const isFree = inputP === 0 && outputP === 0;
 
     out.push({
@@ -61,6 +72,7 @@ export function parseLiteLlmCatalog(json: unknown): BundledPrice[] {
       ...(cacheRead !== undefined ? { cacheReadPricePer1m: cacheRead } : {}),
       ...(cacheWrite !== undefined ? { cacheWritePricePer1m: cacheWrite } : {}),
       ...(contextWindow !== undefined ? { contextWindow } : {}),
+      ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
       ...(e.supports_function_calling === true ? { supportsTools: true } : {}),
       ...(e.supports_vision === true ? { supportsVision: true } : {}),
       ...(e.supports_reasoning === true ? { supportsReasoning: true } : {}),

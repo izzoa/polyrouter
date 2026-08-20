@@ -1,8 +1,11 @@
 // Auto-layers endpoint e2e (#20, real Postgres). Stub principal guard (no
-// better-auth). `ROUTING_AUTO_LAYERS=cascade` so both layers are available
-// instance-wide; the endpoint reports effective + capability, `PUT` is a full
-// replacement that normalizes `cascade → structural`, and the preference is
-// owner-scoped.
+// better-auth). `ROUTING_AUTO_LAYERS=cascade,semantic` so structural + cascade
+// are available instance-wide and the semantic FLAG is on while no classifier
+// is loaded — the flag-on/classifier-off topology
+// (fix-image-healthcheck-and-l2-hint): `semanticFlagEnabled:true`,
+// `semanticClassifierReady:false`, `semanticAvailable:false`. The endpoint
+// reports effective + capability, `PUT` is a full replacement that normalizes
+// `cascade → structural`, and the preference is owner-scoped.
 import {
   Injectable,
   UnauthorizedException,
@@ -58,7 +61,7 @@ describe('auto-layers endpoint e2e', () => {
     process.env['NODE_ENV'] = 'test';
     process.env['MODE'] = 'selfhosted';
     process.env['BIND_ADDRESS'] = '127.0.0.1';
-    process.env['ROUTING_AUTO_LAYERS'] = 'cascade'; // ⇒ structural + cascade available
+    process.env['ROUTING_AUTO_LAYERS'] = 'cascade,semantic'; // ⇒ structural + cascade available; semantic flag on, classifier off
     pool = new Pool({ connectionString: databaseUrl, max: 2 });
     try {
       await pool.query('SELECT 1');
@@ -116,6 +119,8 @@ describe('auto-layers endpoint e2e', () => {
       structuralAvailable: true,
       cascadeAvailable: true,
       semanticAvailable: false,
+      semanticFlagEnabled: true,
+      semanticClassifierReady: false,
       semanticLearning: false,
       semanticLearningAvailable: false,
       calibration: CAL,
@@ -134,6 +139,8 @@ describe('auto-layers endpoint e2e', () => {
       structuralAvailable: true,
       cascadeAvailable: true,
       semanticAvailable: false,
+      semanticFlagEnabled: true,
+      semanticClassifierReady: false,
       semanticLearning: false,
       semanticLearningAvailable: false,
       calibration: CAL,
@@ -150,6 +157,8 @@ describe('auto-layers endpoint e2e', () => {
       structuralAvailable: true,
       cascadeAvailable: true,
       semanticAvailable: false,
+      semanticFlagEnabled: true,
+      semanticClassifierReady: false,
       semanticLearning: false,
       semanticLearningAvailable: false,
       calibration: CAL,
@@ -161,6 +170,8 @@ describe('auto-layers endpoint e2e', () => {
       structuralAvailable: true,
       cascadeAvailable: true,
       semanticAvailable: false,
+      semanticFlagEnabled: true,
+      semanticClassifierReady: false,
       semanticLearning: false,
       semanticLearningAvailable: false,
       calibration: CAL,

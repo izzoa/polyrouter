@@ -31,6 +31,11 @@ export interface AutoLayersView {
   /** add-semantic-routing: flag ∧ the WHOLE classifier ready (embedder +
    * centroids). false = the honest "off instance-wide" affordance. */
   semanticAvailable: boolean;
+  /** fix-image-healthcheck-and-l2-hint: the conjunction's two halves, surfaced
+   * separately so the UI can name WHICH half an unavailable L2 is missing.
+   * Invariant: `semanticAvailable === semanticFlagEnabled && semanticClassifierReady`. */
+  semanticFlagEnabled: boolean;
+  semanticClassifierReady: boolean;
   /** add-semantic-learning: the effective learning preference (enabled ∧ semantic
    * effective) and whether the instance can learn (= semanticAvailable). */
   semanticLearning: boolean;
@@ -130,6 +135,10 @@ export class AutoLayersService {
       structuralAvailable: cap.structural,
       cascadeAvailable: cap.cascade,
       semanticAvailable: cap.semantic,
+      // The two halves come from the SAME boot-resolved singletons the
+      // conjunction is built from, so they cannot drift from what routes.
+      semanticFlagEnabled: this.cfg.autoLayers.has('semantic'),
+      semanticClassifierReady: this.semantic.available,
       // Learning is effective only when semantic is (and the tenant opted in);
       // available only when the classifier is (learning rides the same stack).
       semanticLearning: layers.semantic && (pref?.semanticLearningEnabled ?? false),

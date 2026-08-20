@@ -381,6 +381,13 @@ export interface AutoLayers {
    * (the whole classifier ready). */
   semantic: boolean;
   semanticAvailable: boolean;
+  /** The semantic capability's two halves (fix-image-healthcheck-and-l2-hint):
+   * flag = `semantic ∈ ROUTING_AUTO_LAYERS`; ready = the WHOLE classifier
+   * (embedder + centroids). `semanticAvailable` stays their conjunction.
+   * Optional so a stale/older response degrades to the both-halves hint,
+   * never a wrong single-half claim. */
+  semanticFlagEnabled?: boolean;
+  semanticClassifierReady?: boolean;
   /** L2 learning (add-semantic-learning): effective preference (learning ∧
    * semantic effective) + capability (= semanticAvailable). */
   semanticLearning: boolean;

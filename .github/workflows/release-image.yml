@@ -96,6 +96,14 @@ concurrency:
   group: release-image
   cancel-in-progress: false
 
+# ONE canonical healthcheck for BOTH published variants (fix-image-healthcheck-
+# and-l2-hint): each build job asserts its local image's .Config.Healthcheck.Test
+# equals this exact jq-normalized JSON. The variants build on separate runners,
+# so per-job equality to this single canon IS the cross-variant parity check.
+# Must stay byte-identical to the Dockerfile's exec-form probe (both stages).
+env:
+  EXPECTED_HEALTHCHECK_TEST: '["CMD","node","-e","const p=process.env.PORT||3001;require(''http'').get(''http://127.0.0.1:''+p+''/api/health'',r=>process.exit(r.statusCode===200?0:1)).on(''error'',()=>process.exit(1))"]'
+
 jobs:
   # The v*.*.* glob also matches junk like vfoo.bar.baz, which would reach
   # build-push with zero tags. One gating job instead of a copy of this guard in
@@ -288,6 +296,21 @@ jobs:
               if [ -d /app/models ]; then echo "FORBIDDEN baked model directory /app/models"; fail=1; fi
               [ "$fail" = 0 ] || exit 1
               echo "baseline image is $got and ORT- and model-free"'
+
+      # Healthcheck parity gate (fix-image-healthcheck-and-l2-hint): the image
+      # must declare the canonical exec-form PORT-aware probe. jq normalizes the
+      # JSON (docker's {{json}} template may HTML-escape); the canon lives once
+      # at workflow level, and the -semantic leg asserts the same value.
+      - name: assert the canonical exec-form healthcheck
+        run: |
+          set -eu
+          docker inspect "polyrouter-baseline-verify:${PLATFORM_PAIR}" \
+            | jq -e '.[0].Config.Healthcheck.Test[0] == "CMD"' >/dev/null \
+            || { echo "::error::healthcheck is not exec-form (Test[0] != CMD)"; exit 1; }
+          got=$(docker inspect "polyrouter-baseline-verify:${PLATFORM_PAIR}" | jq -c '.[0].Config.Healthcheck.Test')
+          [ "$got" = "$EXPECTED_HEALTHCHECK_TEST" ] \
+            || { echo "::error::healthcheck drifted from the canonical probe"; echo "got:      $got"; echo "expected: $EXPECTED_HEALTHCHECK_TEST"; exit 1; }
+          echo "healthcheck matches the canonical exec-form probe"
 
       # Push UNTAGGED, by digest: two arch legs cannot both write `latest` (they
       # would clobber), so tagging is the merge job's job alone. `tags:` here
@@ -646,6 +669,20 @@ jobs:
                 console.log("SMOKE OK dims=" + v.length + " warmupMs=" + warmupMs);
               })
               .catch((e) => { console.error("SMOKE ERROR", e && e.message); process.exit(1); });'
+
+      # Healthcheck parity gate (fix-image-healthcheck-and-l2-hint): same
+      # single canon the baseline leg asserts — equality on both legs is the
+      # cross-variant parity check (the legs never see each other's images).
+      - name: assert the canonical exec-form healthcheck
+        run: |
+          set -eu
+          docker inspect "polyrouter-semantic-smoke:${PLATFORM_PAIR}" \
+            | jq -e '.[0].Config.Healthcheck.Test[0] == "CMD"' >/dev/null \
+            || { echo "::error::healthcheck is not exec-form (Test[0] != CMD)"; exit 1; }
+          got=$(docker inspect "polyrouter-semantic-smoke:${PLATFORM_PAIR}" | jq -c '.[0].Config.Healthcheck.Test')
+          [ "$got" = "$EXPECTED_HEALTHCHECK_TEST" ] \
+            || { echo "::error::healthcheck drifted from the canonical probe"; echo "got:      $got"; echo "expected: $EXPECTED_HEALTHCHECK_TEST"; exit 1; }
+          echo "healthcheck matches the canonical exec-form probe"
 
       # Only reached when THIS arch smoked green, and the merge job only runs
       # when both did — so a smoke failure can never publish the variant. Note

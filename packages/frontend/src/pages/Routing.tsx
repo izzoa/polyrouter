@@ -798,6 +798,24 @@ function AutoPerformance() {
   );
 }
 
+/**
+ * The unavailable-L2 hint names EXACTLY the missing capability half(s)
+ * (fix-image-healthcheck-and-l2-hint) — never a half that is already
+ * satisfied. The model-half copy must stay true when `SEMANTIC_MODEL_PATH`
+ * is set but the bundle failed to yield a ready classifier (broken bundle,
+ * degenerate centroids), so it directs to verify, never claims "unset".
+ * Absent fields (older API) degrade to the both-halves hint.
+ */
+function semanticUnavailableHint(al: AutoLayers | null): string {
+  const flag = al?.semanticFlagEnabled ?? false;
+  const ready = al?.semanticClassifierReady ?? false;
+  if (ready && !flag)
+    return 'off instance-wide — model loaded; add semantic to ROUTING_AUTO_LAYERS';
+  if (flag && !ready)
+    return 'off instance-wide — no ready model; check SEMANTIC_MODEL_PATH + boot logs, or run the -semantic image';
+  return 'off instance-wide — optional module; needs SEMANTIC_MODEL_PATH (or the -semantic image) + semantic in ROUTING_AUTO_LAYERS';
+}
+
 function structuralLayers(al: AutoLayers | null): LayerRow[] {
   return [
     {
@@ -816,7 +834,7 @@ function structuralLayers(al: AutoLayers | null): LayerRow[] {
       desc: "Embedding classifier over the ambiguous slice — routes what structural can't read.",
       on: al?.semantic ?? false,
       available: al?.semanticAvailable ?? false,
-      unavailableHint: 'off instance-wide — optional module; set SEMANTIC_MODEL_PATH to enable',
+      unavailableHint: semanticUnavailableHint(al),
     },
     {
       id: 'cascade',

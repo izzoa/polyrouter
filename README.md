@@ -349,6 +349,22 @@ front with your reverse proxy — **`/api/health` and `/metrics` are unauthentic
 by design** (orchestration + Prometheus); restrict them at the proxy if the port is
 public, or set `METRICS_ENABLED=false`.
 
+**Container health probe:** the image's own `HEALTHCHECK` targets `/api/health` on
+the configured `PORT` (default `3001`) — the identical exec-form Node probe on both
+the baseline and `-semantic` variants, with **no `wget`/`curl` dependency** — so
+changing `PORT` needs no healthcheck override, and the documented Node probe form
+below runs unchanged on both variants. An override that shells out to base-image
+utilities is **outside that guarantee**: a `wget` check works on the Alpine baseline
+and breaks on the `-semantic` image's Debian-slim base. If your orchestrator defines
+its own check anyway, use this form — shown as a compose override; a Kubernetes
+`livenessProbe.exec.command` takes the same `["node", "-e", …]` array without the
+leading `CMD`:
+
+```yaml
+healthcheck:
+  test: ['CMD', 'node', '-e', "const p=process.env.PORT||3001;require('http').get('http://127.0.0.1:'+p+'/api/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+```
+
 ### `.env` reference
 
 | Variable                                                                                            | Default                 | Purpose                                                                                                      |
@@ -411,15 +427,18 @@ reference model pre-baked) ships with the semantic dashboard change.
 Every tagged release also publishes a multi-arch `-semantic` image with the
 ONNX runtime **and** the reference embedding model
 (`sentence-transformers/all-MiniLM-L6-v2`, Apache-2.0, 384-dim) baked in at
-build time and `SEMANTIC_MODEL_PATH` preset. It boots with `semanticAvailable`
-already true — nothing is downloaded at runtime. Layer it over the base stack:
+build time. **The image presets only `SEMANTIC_MODEL_PATH` — the model half.**
+The layer's capability is a pair, so the dashboard's L2 row stays "off
+instance-wide" (and names which half is missing) until `ROUTING_AUTO_LAYERS`
+also lists `semantic`. Nothing is downloaded at runtime. The zero-setup path
+is the overlay compose, which sets that env for you:
 
 ```sh
 docker compose -f docker-compose.yml -f docker-compose.semantic.yml up -d
 ```
 
-or run the published image directly (set the capability so `semanticAvailable`
-is on):
+Running the published image directly? Set the flag yourself — otherwise L2
+stays off even though the boot log shows the embedder loading:
 
 ```sh
 docker run … -e ROUTING_AUTO_LAYERS=structural,semantic,cascade \

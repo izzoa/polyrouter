@@ -15,6 +15,15 @@ heading is started.
 
 ## [Unreleased]
 
+### Added
+
+- **Auto-layers view splits the semantic capability signal.** `GET /api/routing/auto-layers` now also reports `semanticFlagEnabled` (`semantic ∈ ROUTING_AUTO_LAYERS`) and `semanticClassifierReady` (embedder + centroids), with `semanticAvailable` preserved as their conjunction — additive fields, PUT shape unchanged.
+
+### Fixed
+
+- **One PORT-aware healthcheck across both image variants.** The baseline and `-semantic` images now declare the identical exec-form Node probe against `/api/health` on the configured `PORT` (default 3001), with no `wget`/`curl` dependency — a custom `PORT` no longer needs a probe override, and the documented Node probe form runs unchanged on both variants (utility-based overrides like `wget` stay outside the contract: the old baseline `wget` probe had no binary to run on the `-semantic` image's Debian-slim base). The release pipeline asserts both variants match one canonical probe.
+- **The dashboard's unavailable-L2 hint names the actual missing half.** A `-semantic` image with the model loaded but `semantic` absent from `ROUTING_AUTO_LAYERS` is now told to add the flag — not to "set `SEMANTIC_MODEL_PATH`", which it already had; the model-half copy directs to verify the bundle/boot logs and never claims the variable is unset.
+
 ## [0.13.0] — 2026-08-19
 
 ### Added

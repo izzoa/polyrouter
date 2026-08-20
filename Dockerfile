@@ -78,9 +78,14 @@ ENV SEMANTIC_MODEL_PATH=/app/models/reference
 USER node
 EXPOSE 3001
 
-# Node-based probe: the glibc slim base ships neither wget nor curl at runtime.
+# ONE probe contract for BOTH variants (fix-image-healthcheck-and-l2-hint):
+# exec-form Node probe (no shell layer, no wget/curl dependency), /api/health on
+# the PORT the server binds. This literal must stay BYTE-IDENTICAL to the
+# baseline stage's, and the 3001 fallback is paired with the registered PORT
+# default. /api/health is the REAL health route — the SPA fallback answers bare
+# /health with 200 HTML, which must never satisfy a probe.
 HEALTHCHECK --interval=10s --timeout=3s --start-period=30s --retries=5 \
-  CMD node -e "require('http').get('http://127.0.0.1:3001/api/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+  CMD ["node", "-e", "const p=process.env.PORT||3001;require('http').get('http://127.0.0.1:'+p+'/api/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
 
 CMD ["node", "packages/control-plane/dist/main.js"]
 
@@ -103,10 +108,14 @@ COPY --from=build /app/packages/frontend/dist packages/frontend/dist
 USER node
 EXPOSE 3001
 
-# /api/health is the REAL health route — the SPA fallback answers bare /health
-# with 200 HTML, which must never satisfy a probe.
+# ONE probe contract for BOTH variants (fix-image-healthcheck-and-l2-hint):
+# exec-form Node probe (no shell layer, no wget/curl dependency), /api/health on
+# the PORT the server binds. This literal must stay BYTE-IDENTICAL to the
+# semantic stage's, and the 3001 fallback is paired with the registered PORT
+# default. /api/health is the REAL health route — the SPA fallback answers bare
+# /health with 200 HTML, which must never satisfy a probe.
 HEALTHCHECK --interval=10s --timeout=3s --start-period=30s --retries=5 \
-  CMD wget -qO- http://127.0.0.1:3001/api/health || exit 1
+  CMD ["node", "-e", "const p=process.env.PORT||3001;require('http').get('http://127.0.0.1:'+p+'/api/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
 
 # Exec form: Node is PID 1 and receives SIGTERM directly, so Nest's shutdown
 # hooks run — the #12 stream drain, #11 writer flush, and #21 span flush.

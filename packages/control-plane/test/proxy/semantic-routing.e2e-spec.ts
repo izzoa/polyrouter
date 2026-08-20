@@ -498,6 +498,16 @@ describe('Layer-2 semantic routing e2e', () => {
     }
   });
 
+  it('GET auto-layers reports both capability halves true (fix-image-healthcheck-and-l2-hint)', async () => {
+    const res = await request(server).get('/api/routing/auto-layers').set('x-test-user', T.userId);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      semanticAvailable: true,
+      semanticFlagEnabled: true,
+      semanticClassifierReady: true,
+    });
+  });
+
   it('with semantic toggled OFF, an L1-ambiguous request cascades with null semantic columns', async () => {
     expect(
       (

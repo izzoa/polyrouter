@@ -351,7 +351,15 @@ describe('dashboard shell (auth-gated)', () => {
     }
   });
 
-  it('L2 · Semantic renders the SEMANTIC_MODEL_PATH affordance when unavailable — inert, not dead (add-semantic-dashboard 1.2)', async () => {
+  /** The single off-instance-wide hint rendered for the (only) unavailable
+   * layer in these fakes — exact-matched so a hint can never smuggle in a
+   * mention of a half that is already satisfied. */
+  const offInstanceHint = (host: HTMLElement): string | undefined =>
+    Array.from(host.querySelectorAll('div.mono'))
+      .map((el) => el.textContent ?? '')
+      .find((t) => t.startsWith('off instance-wide'));
+
+  it('L2 · Semantic names BOTH enablement halves when unavailable with no split signal — inert, not dead (add-semantic-dashboard 1.2; fix-image-healthcheck-and-l2-hint)', async () => {
     const fake = new FakeApiClient({
       tiers: [DEFAULT_TIER],
       autoLayers: {
@@ -361,6 +369,8 @@ describe('dashboard shell (auth-gated)', () => {
         cascadeAvailable: true,
         semantic: false,
         semanticAvailable: false,
+        // No semanticFlagEnabled/semanticClassifierReady (older API): the
+        // hint must degrade to naming both halves, never a wrong single one.
         semanticLearning: false,
         semanticLearningAvailable: false,
         calibration: DEFAULT_CALIBRATION,
@@ -371,8 +381,10 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
-      // The affordance explains its own absence and names the enabling env.
-      expect(host.textContent).toContain('set SEMANTIC_MODEL_PATH to enable');
+      // The affordance explains its own absence and names both enabling envs.
+      expect(offInstanceHint(host)).toBe(
+        'off instance-wide — optional module; needs SEMANTIC_MODEL_PATH (or the -semantic image) + semantic in ROUTING_AUTO_LAYERS',
+      );
       // No inert-control contradiction (the deleted stub) remains anywhere.
       expect(host.textContent).not.toContain('cloud tier');
       const sw = host.querySelector<HTMLButtonElement>('[aria-label="Toggle L2 · Semantic"]');
@@ -382,6 +394,71 @@ describe('dashboard shell (auth-gated)', () => {
       sw?.click();
       await flush();
       expect(fake.calls).not.toContain('setAutoLayers');
+    } finally {
+      dispose();
+    }
+  });
+
+  it('unavailable L2 with the classifier ready points ONLY at ROUTING_AUTO_LAYERS (fix-image-healthcheck-and-l2-hint)', async () => {
+    const fake = new FakeApiClient({
+      tiers: [DEFAULT_TIER],
+      autoLayers: {
+        structural: true,
+        cascade: true,
+        structuralAvailable: true,
+        cascadeAvailable: true,
+        semantic: false,
+        semanticAvailable: false,
+        semanticFlagEnabled: false,
+        semanticClassifierReady: true, // the -semantic image without the env
+        semanticLearning: false,
+        semanticLearningAvailable: false,
+        calibration: DEFAULT_CALIBRATION,
+      },
+    });
+    const { host, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Routing');
+      await flush();
+      const hint = offInstanceHint(host);
+      expect(hint).toBe('off instance-wide — model loaded; add semantic to ROUTING_AUTO_LAYERS');
+      // Never points at the half that is already satisfied.
+      expect(hint).not.toContain('SEMANTIC_MODEL_PATH');
+    } finally {
+      dispose();
+    }
+  });
+
+  it('unavailable L2 with the flag set points ONLY at the model half — verify, never "unset" (fix-image-healthcheck-and-l2-hint)', async () => {
+    const fake = new FakeApiClient({
+      tiers: [DEFAULT_TIER],
+      autoLayers: {
+        structural: true,
+        cascade: true,
+        structuralAvailable: true,
+        cascadeAvailable: true,
+        semantic: false,
+        semanticAvailable: false,
+        semanticFlagEnabled: true,
+        semanticClassifierReady: false, // unset path OR broken/degenerate bundle
+        semanticLearning: false,
+        semanticLearningAvailable: false,
+        calibration: DEFAULT_CALIBRATION,
+      },
+    });
+    const { host, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Routing');
+      await flush();
+      const hint = offInstanceHint(host);
+      expect(hint).toBe(
+        'off instance-wide — no ready model; check SEMANTIC_MODEL_PATH + boot logs, or run the -semantic image',
+      );
+      // Never points at the satisfied flag half, and never claims the var is unset.
+      expect(hint).not.toContain('ROUTING_AUTO_LAYERS');
+      expect(hint).not.toContain('set SEMANTIC_MODEL_PATH to enable');
     } finally {
       dispose();
     }

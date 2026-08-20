@@ -157,6 +157,8 @@ describe('AutoLayersService.get — effective = capability × preference', () =>
         cascadeAvailable: autoLayerCapability(cfg(c.layers)).cascade,
         semantic: false,
         semanticAvailable: false,
+        semanticFlagEnabled: false,
+        semanticClassifierReady: false,
         semanticLearning: false,
         semanticLearningAvailable: false,
         calibration: UNCAL_VIEW,
@@ -183,6 +185,8 @@ describe('AutoLayersService.set — normalizes cascade → structural', () => {
       cascadeAvailable: true,
       semantic: false,
       semanticAvailable: false,
+      semanticFlagEnabled: false,
+      semanticClassifierReady: false,
       semanticLearning: false,
       semanticLearningAvailable: false,
       calibration: UNCAL_VIEW,
@@ -218,9 +222,53 @@ describe('AutoLayersService.set — normalizes cascade → structural', () => {
       cascadeAvailable: false,
       semantic: false,
       semanticAvailable: false,
+      semanticFlagEnabled: false,
+      semanticClassifierReady: false,
       semanticLearning: false,
       semanticLearningAvailable: false,
       calibration: UNCAL_VIEW,
     });
   });
+});
+
+describe('AutoLayersService.get — the semantic capability surfaces its two halves', () => {
+  const SEMANTIC_READY = { available: true } as SemanticClassifierService;
+  const combos = [
+    {
+      name: 'flag + classifier ready → available',
+      layers: 'semantic',
+      classifier: SEMANTIC_READY,
+      flag: true,
+      ready: true,
+    },
+    {
+      name: 'flag without classifier (no/broken model bundle)',
+      layers: 'semantic',
+      classifier: SEMANTIC_OFF,
+      flag: true,
+      ready: false,
+    },
+    {
+      name: 'classifier without flag (the -semantic image on default env)',
+      layers: 'structural',
+      classifier: SEMANTIC_READY,
+      flag: false,
+      ready: true,
+    },
+    { name: 'neither half', layers: 'structural', classifier: SEMANTIC_OFF, flag: false, ready: false },
+  ] as const;
+
+  for (const c of combos) {
+    it(c.name, async () => {
+      const svc = new AutoLayersService(fakePort({ get: null }), cfg(c.layers), RAILS, c.classifier);
+      const view = await svc.get(principal);
+      expect(view.semanticFlagEnabled).toBe(c.flag);
+      expect(view.semanticClassifierReady).toBe(c.ready);
+      // The preserved conjunction — the halves can never disagree with it.
+      expect(view.semanticAvailable).toBe(c.flag && c.ready);
+      expect(view.semanticLearningAvailable).toBe(view.semanticAvailable);
+      // No stored pref → inherit-on within capability.
+      expect(view.semantic).toBe(c.flag && c.ready);
+    });
+  }
 });

@@ -1047,6 +1047,15 @@ export class FakeApiClient implements ApiClient {
       structuralAvailable: this.autoLayers.structuralAvailable,
       cascadeAvailable: this.autoLayers.cascadeAvailable,
       semanticAvailable: this.autoLayers.semanticAvailable,
+      // The capability halves are server-side state a preference write never
+      // touches — preserve them like the *Available flags (conditionally:
+      // exactOptionalPropertyTypes forbids assigning an explicit undefined).
+      ...(this.autoLayers.semanticFlagEnabled !== undefined
+        ? { semanticFlagEnabled: this.autoLayers.semanticFlagEnabled }
+        : {}),
+      ...(this.autoLayers.semanticClassifierReady !== undefined
+        ? { semanticClassifierReady: this.autoLayers.semanticClassifierReady }
+        : {}),
       semanticLearningAvailable: this.autoLayers.semanticLearningAvailable,
       structural: this.autoLayers.structuralAvailable && structuralEnabled,
       cascade: this.autoLayers.cascadeAvailable && input.cascade,

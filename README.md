@@ -217,7 +217,7 @@ name: polyrouter-selfhost
 
 services:
   app:
-    image: ghcr.io/izzoa/polyrouter:0.12.2       # or :latest — pin the current release
+    image: ghcr.io/izzoa/polyrouter:0.13.1       # or :latest — pin the current release
     restart: unless-stopped
     ports:
       - '${POLYROUTER_HOST:-127.0.0.1}:${POLYROUTER_PORT:-3001}:3001'  # loopback by default

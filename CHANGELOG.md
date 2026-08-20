@@ -15,6 +15,8 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.13.1] — 2026-08-20
+
 ### Added
 
 - **Auto-layers view splits the semantic capability signal.** `GET /api/routing/auto-layers` now also reports `semanticFlagEnabled` (`semantic ∈ ROUTING_AUTO_LAYERS`) and `semanticClassifierReady` (embedder + centroids), with `semanticAvailable` preserved as their conjunction — additive fields, PUT shape unchanged.
@@ -780,7 +782,9 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.12.3...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.13.1...HEAD
+[0.13.1]: https://github.com/izzoa/polyrouter/releases/tag/v0.13.1
+[0.13.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.13.0
 [0.12.3]: https://github.com/izzoa/polyrouter/releases/tag/v0.12.3
 [0.12.2]: https://github.com/izzoa/polyrouter/releases/tag/v0.12.2
 [0.12.1]: https://github.com/izzoa/polyrouter/releases/tag/v0.12.1

@@ -14,6 +14,7 @@ import {
   type Span,
   type SpanContext,
 } from '@opentelemetry/api';
+import type { AttemptFailureEntry } from '@polyrouter/shared';
 import {
   PERSISTENCE_PORT,
   encryptSecret,
@@ -110,6 +111,10 @@ export interface RequestLogDraft {
     readonly providerMessage?: string;
     readonly requestId?: string;
   };
+  /** Per-attempt failure metadata (add-fallback-attempt-detail) — present only
+   * on `status='error'` drafts (the recorder enforces exclusivity). Structure
+   * only: the entry shape admits no free-text field. */
+  readonly attemptFailures?: readonly AttemptFailureEntry[];
   /** The originating request's span context (#21 `recording.write` link);
    * absent when tracing is off. Never persisted. */
   readonly spanContext?: SpanContext;
@@ -489,6 +494,7 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
       semanticScore: d.semanticScore ?? null,
       semanticSource: d.semanticSource ?? null,
       semanticRevision: d.semanticRevision ?? null,
+      attemptFailures: d.attemptFailures !== undefined ? [...d.attemptFailures] : null,
       ...errorColumns(d),
     };
   }

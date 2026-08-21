@@ -5,11 +5,13 @@ import {
   doublePrecision,
   index,
   integer,
+  jsonb,
   pgTable,
   text,
   timestamp,
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
+import type { AttemptFailureEntry } from '../../attempt-failures';
 
 /** Spec §5 identity/config core. Feature-owned tables (ModelPrice, RequestLog,
  * NotificationChannel, Limit) land with their owning changes, not here. */
@@ -458,6 +460,12 @@ export const requestLogs = pgTable(
     errorStatus: integer('error_status'),
     errorMessage: text('error_message'),
     errorRequestId: text('error_request_id'),
+    // Per-attempt failure metadata (add-fallback-attempt-detail): the pre-commit
+    // walked failure/skip trail across every executed leg, set ONLY on
+    // status='error' rows; null for non-error rows and rows predating the
+    // column (unknown-not-wrong, never backfilled). Structure only — the entry
+    // shape admits no free-text field (invariant 8).
+    attemptFailures: jsonb('attempt_failures').$type<AttemptFailureEntry[]>(),
     escalated: boolean('escalated').default(false).notNull(),
     qualitySignal: doublePrecision('quality_signal'),
     /** WHY the cascade escalated (add-auto-threshold-calibration):

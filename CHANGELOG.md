@@ -15,6 +15,10 @@ heading is started.
 
 ## [Unreleased]
 
+### Added
+
+- **Per-attempt fallback forensics + a patient breaker probe.** Breaker-skipped chain members record `skip@model` (never a fake `unavailable`), error rows persist structured per-attempt failure metadata (`attempt_failures`, both cascade legs, no free text) rendered as the inspector's "Fallback trail", and the half-open probe runs/leases at doubled patience so a slow-but-healthy provider can actually close its breaker.
+
 ## [0.13.1] — 2026-08-20
 
 ### Added

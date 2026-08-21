@@ -73,6 +73,7 @@ interface LogSeed {
   errorStatus?: number;
   errorMessage?: string;
   errorRequestId?: string;
+  attemptFailures?: unknown[];
   routingHeaderName?: string;
   routingHeaderValue?: string;
 }
@@ -116,8 +117,9 @@ describe('analytics API (#17)', () => {
          escalated, created_at, price_source, error_kind, error_status, error_message, error_request_id,
          structural_band, structural_score, structural_band_source, quality_signal,
          routing_header_name, routing_header_value,
-         semantic_band, semantic_score, semantic_source, semantic_revision, provider_kind)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,'test',$8,$9,$10,$11,1,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30)`,
+         semantic_band, semantic_score, semantic_source, semantic_revision, provider_kind,
+         attempt_failures)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'test',$8,$9,$10,$11,1,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31)`,
       [
         id,
         owner,
@@ -149,6 +151,7 @@ describe('analytics API (#17)', () => {
         s.semanticSource ?? null,
         s.semanticRevision ?? null,
         s.providerKind ?? null,
+        s.attemptFailures !== undefined ? JSON.stringify(s.attemptFailures) : null,
       ],
     );
     return id;
@@ -285,6 +288,11 @@ describe('analytics API (#17)', () => {
       structuralBand: 'ambiguous',
       structuralScore: 0.41,
       structuralBandSource: 'threshold',
+      // add-fallback-attempt-detail: the per-attempt trail rides the listing.
+      attemptFailures: [
+        { index: 0, providerId: 'p1', model: 'a', kind: 'unavailable', status: 529, dispatched: true },
+        { index: 1, providerId: 'p2', model: 'b', kind: 'rate_limit', dispatched: false, terminal: true },
+      ],
     });
 
     // B: an unrelated request (isolation) + an A-owned attempt pointing at B's log (adversarial).
@@ -486,12 +494,19 @@ describe('analytics API (#17)', () => {
       structuralScore: 0.41,
       structuralBandSource: 'threshold',
     });
+    // add-fallback-attempt-detail: the per-attempt trail rides verbatim on the
+    // same safe view (no second fetch), ownership still excluded.
+    expect(errRow.attemptFailures).toEqual([
+      { index: 0, providerId: 'p1', model: 'a', kind: 'unavailable', status: 529, dispatched: true },
+      { index: 1, providerId: 'p2', model: 'b', kind: 'rate_limit', dispatched: false, terminal: true },
+    ]);
     const all = await q('requests', A, { ...RANGE });
     for (const row of all.body.rows) {
       if (row.status !== 'error') {
         // non-error rows carry all-null detail
         expect(row.errorKind).toBeNull();
         expect(row.errorMessage).toBeNull();
+        expect(row.attemptFailures).toBeNull(); // add-fallback-attempt-detail: same gate
         // non-evaluated rows carry all-null telemetry
         expect(row.structuralBand).toBeNull();
         expect(row.structuralScore).toBeNull();

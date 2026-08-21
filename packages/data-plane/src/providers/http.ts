@@ -249,6 +249,7 @@ function guardBufferedBodyIdle(
   ctl: AbortController,
   idleTimeoutMs: number,
   maxResponseBytes: number,
+  onBytes?: () => void,
 ): { res: HttpResponse; clear: () => void } {
   const source = res.body;
   if (source === null) return { res, clear: () => undefined };
@@ -289,6 +290,10 @@ function guardBufferedBodyIdle(
           c.close();
           return;
         }
+        // Byte liveness on the BUFFERED path (add-fallback-attempt-detail): the
+        // same hook the streaming path feeds — a healthy long buffered probe
+        // body must renew its lease exactly as a byte-alive stream does.
+        onBytes?.();
         arm();
         c.enqueue(r.value);
       } catch (err) {
@@ -354,7 +359,7 @@ export async function openRequest(
     // For a buffered read, keep the request abortable and bound the body drain by
     // an inter-chunk idle deadline (a stream is left to core's per-event timeout).
     if (idleTimeoutMs !== undefined) {
-      const guarded = guardBufferedBodyIdle(res, ctl, idleTimeoutMs, maxResponseBytes);
+      const guarded = guardBufferedBodyIdle(res, ctl, idleTimeoutMs, maxResponseBytes, ctx?.onBytes);
       idleClear = guarded.clear;
       return { res: guarded.res, dispose };
     }

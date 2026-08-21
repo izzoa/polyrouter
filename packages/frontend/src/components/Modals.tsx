@@ -507,7 +507,10 @@ export function Modals() {
                   <div style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);line-height:1.5;margin-top:4px">
                     For research/long-thinking models: raise patience here (up to 3600s), prefer
                     streaming, and size your client SDK’s own timeout — the one bound the router
-                    can’t lift. Blank inherits the instance default.
+                    can’t lift. Blank inherits the instance default. Timeouts count against this
+                    provider’s circuit breaker; a repeatedly slow provider is skipped until its
+                    recovery probe (which runs with doubled patience) succeeds — raising this is
+                    the durable fix for heavy chains.
                   </div>
                 </div>
                 <div style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);line-height:1.5">

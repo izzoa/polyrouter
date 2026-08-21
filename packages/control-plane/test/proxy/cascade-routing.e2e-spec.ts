@@ -420,6 +420,40 @@ describe('cascade routing e2e', () => {
     await setBand('auto_high', 'premium');
   });
 
+  it("an all-legs-exhausted cascade records BOTH legs' attempt entries (add-fallback-attempt-detail)", async () => {
+    // Cheap = strong = default = the 500-mode model, so the cheap leg exhausts,
+    // escalation walks strong ++ default, and everything fails.
+    await setBand('auto_low', 'strong-down');
+    await setBand('auto_high', 'strong-down');
+    const defaultTierId = (await port.tiers.list(principal)).find((t) => t.key === 'default')!.id;
+    await port.routingEntries.replaceForTier(principal, defaultTierId, [modelId['strongDown']!]);
+    try {
+      const res = await send('sysAllLegsDown');
+      expect(res.status).toBeGreaterThanOrEqual(500);
+      const logs = await port.requestLogs.list(principal);
+      const row = logs[logs.length - 1]!;
+      expect(row.status).toBe('error');
+      expect(row.escalated).toBe(true);
+      const entries = row.attemptFailures ?? [];
+      const firstEsc = entries.findIndex((e) => e.leg === 'escalation');
+      // Both executed legs appear, cheap first — the superseded cheap leg's
+      // failures are not dropped at escalation.
+      expect(entries.filter((e) => e.leg === 'cheap').length).toBeGreaterThanOrEqual(1);
+      expect(entries.filter((e) => e.leg === 'escalation').length).toBeGreaterThanOrEqual(1);
+      expect(entries[0]!.leg).toBe('cheap');
+      expect(firstEsc).toBeGreaterThan(0);
+      expect(entries.slice(firstEsc).every((e) => e.leg === 'escalation')).toBe(true);
+      // The terminal marker sits on the FINAL walked leg's tail only.
+      expect(entries[entries.length - 1]).toMatchObject({ leg: 'escalation', terminal: true });
+      expect(entries.filter((e) => e.terminal === true)).toHaveLength(1);
+      for (const e of entries) expect(e).toMatchObject({ kind: 'unavailable', dispatched: true });
+    } finally {
+      await port.routingEntries.replaceForTier(principal, defaultTierId, [modelId['default']!]);
+      await setBand('auto_low', 'cheap-bad');
+      await setBand('auto_high', 'premium');
+    }
+  });
+
   it('escalates when the cheap upstream hangs past the deadline', async () => {
     await setBand('auto_low', 'cheap-hang');
     const res = await send('sysHang');

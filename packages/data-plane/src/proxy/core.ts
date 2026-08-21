@@ -22,6 +22,7 @@ import {
   shouldFallback,
   withBreaker,
   withBreakerStream,
+  type BreakerAdmission,
   type BreakerOpenListener,
   type BreakerStateListener,
   type CircuitBreaker,
@@ -36,6 +37,12 @@ export interface ProxyStreamOptions {
   /** Bound on EACH upstream event wait (#6 clears its first-byte timer at
    * headers and has no inter-event timer), so a stalled 200 can't hang. */
   readonly firstEventTimeoutMs: number;
+  /** MUTABLE per-attempt watchdog bound (probe patience, add-fallback-attempt-
+   * detail): consulted at arm AND fire time, so a bound widened after arming —
+   * set synchronously when breaker admission reports a probe, before any
+   * upstream byte can arrive — re-arms the fired timer for the remainder
+   * instead of aborting at the stale value. Absent = the fixed value above. */
+  readonly firstEventBound?: { ms: number };
   /** Unix seconds for OpenAI `created` when the IR lacks it. */
   readonly created: number;
   /** Client opted into the terminal usage chunk (OpenAI `stream_options.include_usage`, A-7). */
@@ -267,9 +274,10 @@ export async function openAttemptStream(
     }
   };
 
+  const bound = opts.firstEventBound ?? { ms: opts.firstEventTimeoutMs };
   let first: IteratorResult<NormalizedStreamEvent>;
   try {
-    first = await nextWithTimeout(iterator, opts.firstEventTimeoutMs, abort, liveness);
+    first = await nextWithTimeout(iterator, bound, abort, liveness);
   } catch (err) {
     await cleanup();
     return { kind: 'error', error: err }; // raw — the chain classifies eligibility
@@ -360,10 +368,13 @@ function wrapWithSettle(
 /** Await the next event under a RE-ARMABLE deadline (fix-long-call-timeouts):
  * each upstream byte arrival (the liveness mark) restarts the full budget, so a
  * keepalive-fed stream with a long gap between parsed events is never aborted
- * as stalled, while TRUE byte-silence still trips at exactly `ms`. */
+ * as stalled, while TRUE byte-silence still trips at exactly the bound. The
+ * bound itself is a MUTABLE object consulted at arm and fire time (probe
+ * patience): a timer fired at a since-widened bound's stale value re-arms for
+ * the remainder instead of aborting. */
 async function nextWithTimeout(
   iterator: AsyncIterator<NormalizedStreamEvent>,
-  ms: number,
+  bound: { ms: number },
   abort: AbortController,
   liveness?: { lastByteAt: number },
 ): Promise<IteratorResult<NormalizedStreamEvent>> {
@@ -376,7 +387,7 @@ async function nextWithTimeout(
   for (;;) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timed = new Promise<'timeout'>((resolve) => {
-      timer = setTimeout(() => resolve('timeout'), ms - (Date.now() - armedAt));
+      timer = setTimeout(() => resolve('timeout'), bound.ms - (Date.now() - armedAt));
     });
     const winner = await Promise.race([settled, timed]);
     if (timer) clearTimeout(timer);
@@ -384,10 +395,13 @@ async function nextWithTimeout(
       if (!winner.ok) throw winner.e;
       return winner.r;
     }
+    // Bound grew since arming (probe patience widened it post-admission):
+    // re-arm for the remainder of the CURRENT bound.
+    if (armedAt + bound.ms > Date.now()) continue;
     // Deadline fired — bytes since the last arm re-arm the budget from THEIR
-    // arrival (deadline = lastByteAt + ms), never extend past it.
+    // arrival (deadline = lastByteAt + bound), never extend past it.
     const lastByteAt = liveness?.lastByteAt ?? 0;
-    if (lastByteAt > armedAt && lastByteAt + ms > Date.now()) {
+    if (lastByteAt > armedAt && lastByteAt + bound.ms > Date.now()) {
       armedAt = lastByteAt;
       continue;
     }
@@ -412,7 +426,14 @@ async function* buildFrames(
   let callerAborted = false;
   try {
     for await (const frame of client.streamSerialize(
-      replay(iterator, firstValue, opts.firstEventTimeoutMs, abort, acc, liveness),
+      replay(
+        iterator,
+        firstValue,
+        opts.firstEventBound ?? { ms: opts.firstEventTimeoutMs },
+        abort,
+        acc,
+        liveness,
+      ),
       {
         created: opts.created,
         ...(opts.includeUsage !== undefined ? { includeUsage: opts.includeUsage } : {}),
@@ -444,14 +465,14 @@ async function* buildFrames(
 async function* replay(
   iterator: AsyncIterator<NormalizedStreamEvent>,
   firstValue: NormalizedStreamEvent,
-  ms: number,
+  bound: { ms: number },
   abort: AbortController,
   acc: Accumulator,
   liveness?: { lastByteAt: number },
 ): AsyncGenerator<NormalizedStreamEvent> {
   yield firstValue; // already accumulated by the caller
   for (;;) {
-    const r = await nextWithTimeout(iterator, ms, abort, liveness);
+    const r = await nextWithTimeout(iterator, bound, abort, liveness);
     if (r.done) return;
     if (r.value.type === 'error') throw fromErrorEvent(r.value);
     accumulate(acc, r.value);
@@ -462,15 +483,25 @@ async function* replay(
 // --- fallback chain (#12) ---
 
 /** One member of the fallback chain. The adapter is built LAZILY and INSIDE the
- * breaker callback (see the walkers) so an open circuit skips before any setup. */
+ * breaker callback (see the walkers) so an open circuit skips before any setup —
+ * and so the builder can widen the adapter bounds when admission reports a
+ * half-open probe (probe patience, add-fallback-attempt-detail). */
 export interface ChainAttempt {
   readonly providerId: string;
   readonly externalModelId: string;
-  readonly buildAdapter: () => Promise<ProviderAdapter>;
+  readonly buildAdapter: (admission?: BreakerAdmission) => Promise<ProviderAdapter>;
   /** THIS member's core first/inter-event bound (fix-long-call-timeouts):
    * a fallback chain can mix providers with different patience, so the walker
    * applies each member's own bound. Absent = the chain-wide `opts` value. */
   readonly firstEventTimeoutMs?: number;
+  /** THIS member's WIDENED core bound when it runs as the half-open probe
+   * (probe patience): widened first-byte + the fixed margin, pre-computed by
+   * the bundle builder where the effective bounds live. Absent = no widening. */
+  readonly probeFirstEventTimeoutMs?: number;
+  /** The lease floor a probe admission of this member is granted (probe
+   * patience): widest widened silence bound + settle headroom, so a
+   * deliberately patient probe is never reclaimed mid-legal-silence. */
+  readonly probeLeaseMs?: number;
   /** Per-attempt output-cap clamp (add-output-cap-guardrails): the two-stage
    * deferral's tail dispatches each member with `maxOutputTokens` clamped to
    * its OWN cap. Absent = the request's value verbatim. */
@@ -570,17 +601,21 @@ export async function runBufferedChain(
     const attempt = attempts[i]!;
     const req = attemptRequest(request, attempt);
     try {
-      // build INSIDE the breaker callback: an open circuit skips before setup.
+      // build INSIDE the breaker callback: an open circuit skips before setup,
+      // and a probe admission widens the adapter bounds (probe patience). The
+      // admission's renewal rides as the call's byte-liveness hook so a healthy
+      // long buffered probe body holds its lease.
       const response = await withBreaker(
         breaker,
         attempt.providerId,
-        async () => {
-          const adapter = await attempt.buildAdapter();
-          return adapter.chat(req, { signal });
+        async (admission) => {
+          const adapter = await attempt.buildAdapter(admission);
+          return adapter.chat(req, { signal, onBytes: admission.renewOnActivity });
         },
         ctx.onOpen,
         ctx.onBreakerState,
         ctx.isCallerAbort,
+        attempt.probeLeaseMs,
       );
       return {
         ok: true,
@@ -633,6 +668,12 @@ export async function openStreamChain(
       };
     const attempt = attempts[i]!;
     const req = attemptRequest(request, attempt);
+    // THIS member's MUTABLE watchdog bound (fix-long-call-timeouts + probe
+    // patience): a per-provider override must reach the streaming watchdog even
+    // mid-chain, and a probe admission widens the SAME object synchronously —
+    // before any upstream byte — so the fired-at-stale-value timer re-arms for
+    // the remainder instead of aborting.
+    const bound = { ms: attempt.firstEventTimeoutMs ?? opts.firstEventTimeoutMs };
     const result = await openAttemptStream(
       (signal, onBytes) =>
         withBreakerStream(
@@ -641,21 +682,28 @@ export async function openStreamChain(
           // Byte liveness feeds BOTH watchdogs: core's inter-event deadline
           // (onBytes) and the breaker's half-open probe lease (renewOnActivity)
           // — an event-quiet but byte-alive probe keeps its single-probe lease.
-          (renewOnActivity) =>
-            buildThenStream(attempt, req, signal, () => {
-              onBytes();
-              renewOnActivity();
-            }),
+          (renewOnActivity, admission) => {
+            if (admission.isProbe && attempt.probeFirstEventTimeoutMs !== undefined) {
+              bound.ms = Math.max(bound.ms, attempt.probeFirstEventTimeoutMs);
+            }
+            return buildThenStream(
+              attempt,
+              req,
+              signal,
+              () => {
+                onBytes();
+                renewOnActivity();
+              },
+              admission,
+            );
+          },
           opts.onOpen,
           opts.onBreakerState,
           opts.isCallerAbort,
+          attempt.probeLeaseMs,
         ),
       client,
-      // THIS member's bound (fix-long-call-timeouts): a per-provider override
-      // must reach the streaming watchdog even mid-chain.
-      attempt.firstEventTimeoutMs !== undefined
-        ? { ...opts, firstEventTimeoutMs: attempt.firstEventTimeoutMs }
-        : opts,
+      { ...opts, firstEventBound: bound },
     );
     if (result.kind === 'stream') {
       return {
@@ -691,13 +739,15 @@ export async function openStreamChain(
   };
 }
 
-/** Build the adapter (inside the breaker generator, after admission) then stream. */
+/** Build the adapter (inside the breaker generator, after admission — so a
+ * probe admission widens its bounds) then stream. */
 async function* buildThenStream(
   attempt: ChainAttempt,
   request: NormalizedRequest,
   signal: AbortSignal,
   onBytes: () => void,
+  admission?: BreakerAdmission,
 ): AsyncGenerator<NormalizedStreamEvent> {
-  const adapter = await attempt.buildAdapter();
+  const adapter = await attempt.buildAdapter(admission);
   yield* adapter.chatStream(request, { signal, onBytes });
 }

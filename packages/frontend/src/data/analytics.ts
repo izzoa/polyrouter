@@ -192,6 +192,13 @@ export interface InspectorView {
   /** The ERROR card (add-request-error-detail): non-null ONLY for a status=error
    * row with ≥1 normalized (trimmed, empty→null) detail field. */
   errorView: ErrorView | null;
+  /** The structural fallback trail (add-fallback-attempt-detail): one line per
+   * recorded attempt; empty for rows without the column (all history) — the
+   * section is hidden and the drawer renders exactly as before. */
+  attemptTrail: AttemptView[];
+  /** True when the recorded terminal-marked attempt was a never-dispatched
+   * breaker skip — read from the data, never inferred from kinds. */
+  terminalSkipped: boolean;
 }
 
 export interface ErrorView {
@@ -199,6 +206,41 @@ export interface ErrorView {
   headline: string;
   message: string | null;
   requestId: string | null;
+}
+
+/** One rendered attempt line (add-fallback-attempt-detail). */
+export interface AttemptView {
+  model: string;
+  /** `skipped — circuit open (provider not contacted)` for a never-dispatched
+   * entry; the mapped kind (plus ` · HTTP <status>` when recorded) otherwise. */
+  label: string;
+  /** Cascade leg tag (`cheap`/`escalation`); null for a primary chain. */
+  legLabel: string | null;
+  skipped: boolean;
+}
+
+const SKIP_LABEL = 'skipped — circuit open (provider not contacted)';
+
+/** The per-attempt trail view (add-fallback-attempt-detail): data-driven off the
+ * stored column alone — a null column yields an empty trail (legacy rows render
+ * exactly as before). */
+export function toAttemptTrail(r: RequestRow): AttemptView[] {
+  return (r.attemptFailures ?? []).map((a) => ({
+    model: a.model,
+    label:
+      a.dispatched === false
+        ? SKIP_LABEL
+        : `${a.kind}${a.status !== undefined && a.status !== null ? ` · HTTP ${String(a.status)}` : ''}`,
+    legLabel: a.leg ?? null,
+    skipped: a.dispatched === false,
+  }));
+}
+
+/** The recorded terminal attempt was a breaker skip — keyed off the recorder-set
+ * marker, never inferred from kind-matching (an earlier skip beside a
+ * `bad_request` stop must not present as terminal). */
+export function isTerminalSkip(r: RequestRow): boolean {
+  return (r.attemptFailures ?? []).some((a) => a.terminal === true && a.dispatched === false);
 }
 
 /** Trim; empty string → null (a junk empty value must not summon the card). */
@@ -277,5 +319,7 @@ export function toInspectorView(r: RequestRow): InspectorView {
     priceEstimated: r.priceEstimated,
     durationMs: r.durationMs,
     errorView: toErrorView(r),
+    attemptTrail: toAttemptTrail(r),
+    terminalSkipped: isTerminalSkip(r),
   };
 }

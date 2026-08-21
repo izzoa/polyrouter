@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { SpanStatusCode, trace } from '@opentelemetry/api';
+import { ATTEMPT_FAILURES_MAX, type AttemptFailureEntry } from '@polyrouter/shared';
 import {
   AUTO_ALIAS,
   PERSISTENCE_PORT,
@@ -27,9 +28,11 @@ import {
   replayBufferedStream,
   resolveRoute,
   runBufferedChain,
+  probePatienceOf,
   serializeClientRequest,
   shouldFallback,
   type AttemptFailure,
+  type BreakerAdmission,
   type BreakerOpenListener,
   type BreakerStateListener,
   type ChainAttempt,
@@ -359,7 +362,7 @@ export class ProxyService {
       });
       return result.wire;
     }
-    this.recorder.record(this.failedContext(p, result.failures), {
+    this.recorder.record(this.failedContext(p, result.failures, result.error), {
       status: result.callerAborted ? 'cancelled' : 'error',
       outputChars: 0,
       error: recordedError(result.error),
@@ -405,7 +408,7 @@ export class ProxyService {
       ...(p.capture !== undefined ? { contentCollector: p.capture.collector } : {}),
     });
     if (result.kind === 'error') {
-      this.recorder.record(this.failedContext(p, result.failures), {
+      this.recorder.record(this.failedContext(p, result.failures, result.error), {
         status: result.callerAborted ? 'cancelled' : 'error',
         outputChars: 0,
         error: recordedError(result.error),
@@ -498,6 +501,7 @@ export class ProxyService {
             ),
             score,
             cheap.failures,
+            attemptTrailEntries([{ failures: cheap.failures, meta: c.cheap.meta, leg: 'cheap' }], null),
           ),
           {
             status: cheap.failures.length > 0 ? 'fallback' : 'success',
@@ -519,6 +523,9 @@ export class ProxyService {
         // The EXECUTED cheap chain's capacity reasons ride the parent row even
         // when escalation supersedes it (a superseded clamp stays on record).
         capacitySuffix('cheap', p.capacity?.cheap, cheap.servedIndex, cheap.failures),
+        // The served-then-superseded cheap leg's pre-serve failures survive
+        // escalation on the parent trail (add-fallback-attempt-detail).
+        cheap.failures,
       );
     }
     if (cheap.callerAborted) {
@@ -536,6 +543,7 @@ export class ProxyService {
           ),
           null,
           cheap.failures,
+          attemptTrailEntries([{ failures: cheap.failures, meta: c.cheap.meta, leg: 'cheap' }], null),
         ),
         { status: 'cancelled', outputChars: 0, escalated: false, qualitySignal: null },
       );
@@ -556,6 +564,12 @@ export class ProxyService {
           ),
           null,
           cheap.failures,
+          // The non-retryable terminal never enters `failures`, so no entry is
+          // marked terminal (identity mismatch by construction).
+          attemptTrailEntries(
+            [{ failures: cheap.failures, meta: c.cheap.meta, leg: 'cheap' }],
+            cheap.error,
+          ),
         ),
         {
           status: 'error',
@@ -578,6 +592,7 @@ export class ProxyService {
       'cheap_error',
       signal,
       capacitySuffix('cheap', p.capacity?.cheap, null, cheap.failures),
+      cheap.failures,
     );
   }
 
@@ -589,6 +604,9 @@ export class ProxyService {
     source: 'quality_gate' | 'cheap_error',
     signal: AbortSignal,
     cheapCapacity: string | null,
+    /** The executed cheap leg's pre-commit failures (add-fallback-attempt-
+     * detail): today's reason strings drop them; the parent trail must not. */
+    cheapFailures: readonly AttemptFailure[],
   ): Promise<unknown> {
     const result = await runBufferedChain(
       this.breaker,
@@ -603,6 +621,10 @@ export class ProxyService {
       },
       signal,
     );
+    const trailLegs: AttemptTrailLeg[] = [
+      { failures: cheapFailures, meta: c.cheap.meta, leg: 'cheap' },
+      { failures: result.failures, meta: c.escalation.meta, leg: 'escalation' },
+    ];
     if (!result.ok) {
       const requestId = this.recorder.record(
         this.servedFrom(
@@ -616,6 +638,7 @@ export class ProxyService {
           ),
           score,
           result.failures,
+          attemptTrailEntries(trailLegs, result.error),
         ),
         {
           status: result.callerAborted ? 'cancelled' : 'error',
@@ -645,6 +668,7 @@ export class ProxyService {
         ),
         score,
         result.failures,
+        attemptTrailEntries(trailLegs, null),
       ),
       {
         status: result.failures.length > 0 ? 'fallback' : 'success',
@@ -701,6 +725,7 @@ export class ProxyService {
             ),
             score,
             cheap.failures,
+            attemptTrailEntries([{ failures: cheap.failures, meta: c.cheap.meta, leg: 'cheap' }], null),
           );
           const fellBack = cheap.failures.length > 0;
           void replay.outcome.then((o) =>
@@ -738,6 +763,7 @@ export class ProxyService {
         escalate ? 'quality_gate' : 'cheap_error',
         signal,
         capacitySuffix('cheap', p.capacity?.cheap, cheap.servedIndex, cheap.failures),
+        cheap.failures,
       );
     }
     if (cheap.callerAborted) {
@@ -754,6 +780,7 @@ export class ProxyService {
           ),
           null,
           cheap.failures,
+          attemptTrailEntries([{ failures: cheap.failures, meta: c.cheap.meta, leg: 'cheap' }], null),
         ),
         { status: 'cancelled', outputChars: 0, escalated: false, qualitySignal: null },
       );
@@ -773,6 +800,11 @@ export class ProxyService {
           ),
           null,
           cheap.failures,
+          // The non-retryable terminal never enters `failures` — no marker.
+          attemptTrailEntries(
+            [{ failures: cheap.failures, meta: c.cheap.meta, leg: 'cheap' }],
+            cheap.error,
+          ),
         ),
         {
           status: 'error',
@@ -795,6 +827,7 @@ export class ProxyService {
       'cheap_error',
       signal,
       capacitySuffix('cheap', p.capacity?.cheap, null, cheap.failures),
+      cheap.failures,
     );
   }
 
@@ -806,6 +839,9 @@ export class ProxyService {
     source: 'quality_gate' | 'cheap_error',
     signal: AbortSignal,
     cheapCapacity: string | null,
+    /** The executed cheap leg's pre-commit failures (add-fallback-attempt-
+     * detail) — aggregated ahead of the escalation leg on the parent trail. */
+    cheapFailures: readonly AttemptFailure[],
   ): Promise<AsyncGenerator<string>> {
     const result = await openStreamChain(this.breaker, c.escalation.attempts, p.client, p.routed, {
       signal,
@@ -817,6 +853,10 @@ export class ProxyService {
       isCallerAbort: () => signal.aborted,
       ...(p.capture !== undefined ? { contentCollector: p.capture.collector } : {}),
     });
+    const trailLegs: AttemptTrailLeg[] = [
+      { failures: cheapFailures, meta: c.cheap.meta, leg: 'cheap' },
+      { failures: result.failures, meta: c.escalation.meta, leg: 'escalation' },
+    ];
     if (result.kind === 'error') {
       const requestId = this.recorder.record(
         this.servedFrom(
@@ -830,6 +870,7 @@ export class ProxyService {
           ),
           score,
           result.failures,
+          attemptTrailEntries(trailLegs, result.error),
         ),
         {
           status: result.callerAborted ? 'cancelled' : 'error',
@@ -857,6 +898,7 @@ export class ProxyService {
       ),
       score,
       result.failures,
+      attemptTrailEntries(trailLegs, null),
     );
     const fellBack = result.failures.length > 0;
     void result.outcome.then((o) => {
@@ -1278,13 +1320,23 @@ export class ProxyService {
           listedIsFree: model.listedIsFree,
         },
       });
+      const bounds = this.effectiveBounds(provider);
+      // THIS member's probe patience (add-fallback-attempt-detail O1-C):
+      // widened bounds + the lease its probe admission must be granted —
+      // pre-computed HERE, where the effective (override-resolved) bounds live.
+      const patience = probePatienceOf({
+        firstByteTimeoutMs: bounds.firstByteTimeoutMs,
+        idleTimeoutMs: bounds.idleTimeoutMs,
+        eventMarginMs: this.rt.firstEventTimeoutMs - this.rt.firstByteTimeoutMs,
+      });
       attempts.push({
         providerId: t.providerId,
         externalModelId: t.externalModelId,
         // The cap is read LAZILY at dispatch (capsRef is populated after the
         // bundle builds) so polyrouter's own synthesized Anthropic default can
         // be capped to THIS member's known limit (add-output-cap-guardrails).
-        buildAdapter: () => {
+        // A probe admission widens the adapter bounds (probe patience).
+        buildAdapter: (admission?: BreakerAdmission) => {
           const key =
             provider.baseUrl !== null
               ? deriveModelKey(provider.baseUrl, t.externalModelId)
@@ -1294,12 +1346,15 @@ export class ProxyService {
             provider,
             signal,
             key !== null ? capsRef.current.get(key) : undefined,
+            admission?.isProbe === true,
           );
         },
         // THIS member's stream watchdog bound (fix-long-call-timeouts): a
         // per-provider override must reach core even mid-chain beside
         // un-overridden members.
-        firstEventTimeoutMs: this.effectiveBounds(provider).streamEventTimeoutMs,
+        firstEventTimeoutMs: bounds.streamEventTimeoutMs,
+        probeFirstEventTimeoutMs: patience.firstEventTimeoutMs,
+        probeLeaseMs: patience.leaseMs,
       });
     }
     return { attempts, meta };
@@ -1335,10 +1390,11 @@ export class ProxyService {
     provider: ProviderRow,
     signal: AbortSignal,
     maxOutputCap?: number,
+    probe = false,
   ): Promise<ProviderAdapter> {
     let adapter: ProviderAdapter;
     try {
-      adapter = await this.buildAdapter(principal, provider, maxOutputCap);
+      adapter = await this.buildAdapter(principal, provider, maxOutputCap, probe);
     } catch (err) {
       this.metrics.upstreamSetupFailed(provider.name);
       if (err instanceof ProviderError && err.kind === 'credential') throw err;
@@ -1356,12 +1412,20 @@ export class ProxyService {
     servedIndex: number,
     failures: readonly AttemptFailure[],
   ): RecordingContext {
-    return this.contextFor(p, servedIndex, servedIndex, failures);
+    // No terminal error: a served context's later post-commit failure never
+    // enters `failures`, so its per-attempt trail carries no terminal marker.
+    return this.contextFor(p, servedIndex, servedIndex, failures, null);
   }
 
-  /** Total-chain failure is recorded against the primary. */
-  private failedContext(p: Prepared, failures: readonly AttemptFailure[]): RecordingContext {
-    return this.contextFor(p, 0, null, failures);
+  /** Total-chain failure is recorded against the primary. `terminalError` is the
+   * chain result's own error — the entry-composer marks the matching tail entry
+   * (exhaustion) and leaves a non-retryable stop unmarked (identity mismatch). */
+  private failedContext(
+    p: Prepared,
+    failures: readonly AttemptFailure[],
+    terminalError: unknown,
+  ): RecordingContext {
+    return this.contextFor(p, 0, null, failures, terminalError);
   }
 
   private contextFor(
@@ -1369,9 +1433,12 @@ export class ProxyService {
     metaIndex: number,
     servedIndex: number | null,
     failures: readonly AttemptFailure[],
+    terminalError: unknown,
   ): RecordingContext {
     const m = p.meta[metaIndex]!;
+    const trailEntries = attemptTrailEntries([{ failures, meta: p.meta }], terminalError);
     return {
+      ...(trailEntries.length > 0 ? { attemptFailures: trailEntries } : {}),
       principal: p.principal,
       requestId: p.requestId,
       ...(p.onSettle !== undefined ? { onSettle: p.onSettle } : {}),
@@ -1411,14 +1478,17 @@ export class ProxyService {
     baseReason: string,
     score: number | null,
     failures: readonly AttemptFailure[],
+    /** The leg-qualified per-attempt trail (add-fallback-attempt-detail),
+     * composed at the call site so escalation rows aggregate BOTH executed
+     * legs (cheap first) — the recorder persists it only on error rows. */
+    attemptTrail: readonly AttemptFailureEntry[],
   ): RecordingContext {
     const reason = reasonWithTrail(`${baseReason} (q=${fmtQ(score)})`, failures, meta);
     const trail = classificationTrail(p);
-    const ctx = this.metaContext(
-      p,
-      meta[servedIndex]!,
-      trail === '' ? reason : `${reason}; ${trail}`,
-    );
+    const ctx: RecordingContext = {
+      ...this.metaContext(p, meta[servedIndex]!, trail === '' ? reason : `${reason}; ${trail}`),
+      ...(attemptTrail.length > 0 ? { attemptFailures: attemptTrail } : {}),
+    };
     // The learning vector rides the SERVED context ONLY (add-semantic-learning
     // D1/3.1) — the recorder's sink contributes it at settle, then drops it.
     if (p.learningEvidence === null) return ctx;
@@ -1491,10 +1561,35 @@ export class ProxyService {
     return loadRoutingSnapshot(this.db, principal);
   }
 
+  /** The adapter bounds for this call (probe patience, add-fallback-attempt-
+   * detail): a half-open probe runs with the member's effective bounds widened
+   * ×2 (capped at the ceiling) — first-byte, independently-resolved idle, and
+   * the derived stream bound — so the dispatcher backstops derive above the
+   * WIDENED typed bounds and the layer ordering holds. Non-probe calls keep
+   * their exact effective bounds. */
+  private callBounds(
+    provider: Pick<ProviderRow, 'firstByteTimeoutMs' | 'idleTimeoutMs'>,
+    probe: boolean,
+  ): { firstByteTimeoutMs: number; idleTimeoutMs: number; streamEventTimeoutMs: number } {
+    const bounds = this.effectiveBounds(provider);
+    if (!probe) return bounds;
+    const patience = probePatienceOf({
+      firstByteTimeoutMs: bounds.firstByteTimeoutMs,
+      idleTimeoutMs: bounds.idleTimeoutMs,
+      eventMarginMs: this.rt.firstEventTimeoutMs - this.rt.firstByteTimeoutMs,
+    });
+    return {
+      firstByteTimeoutMs: patience.firstByteTimeoutMs,
+      idleTimeoutMs: patience.idleTimeoutMs,
+      streamEventTimeoutMs: patience.firstEventTimeoutMs,
+    };
+  }
+
   private async buildAdapter(
     principal: Principal,
     provider: ProviderRow,
     maxOutputCap?: number,
+    probe = false,
   ): Promise<ProviderAdapter> {
     if (provider.baseUrl === null) throw serviceUnavailable('provider has no base_url');
     // Defensive synthesized default (add-output-cap-guardrails): where the IR
@@ -1536,7 +1631,7 @@ export class ProxyService {
         ...(r.probeModel !== undefined ? { probeModel: r.probeModel } : {}),
         ...(quirks !== undefined ? { quirks } : {}),
         defaultMaxOutputTokens,
-        ...this.effectiveBounds(provider),
+        ...this.callBounds(provider, probe),
       });
     }
     let credential = '';
@@ -1557,7 +1652,7 @@ export class ProxyService {
       mode: this.mode,
       ...(quirks !== undefined ? { quirks } : {}),
       defaultMaxOutputTokens,
-      ...this.effectiveBounds(provider),
+      ...this.callBounds(provider, probe),
     });
   }
 }
@@ -1647,17 +1742,68 @@ function classificationTrail(p: Prepared): string {
 }
 
 /** The routing reason plus a sanitized fallback trail (kind@model — no raw
- * messages) so #11 records why earlier chain members failed (§7.4). */
-function reasonWithTrail(
+ * messages) so #11 records why earlier chain members failed (§7.4). A member
+ * skipped by an open circuit breaker — never dispatched upstream — records
+ * `skip@model` (add-fallback-attempt-detail): a pseudo-token deliberately
+ * outside the provider-error taxonomy, so a never-contacted member cannot
+ * impersonate an upstream failure. Absent `dispatched` reads as dispatched. */
+export function reasonWithTrail(
   reason: string,
   failures: readonly AttemptFailure[],
   meta: readonly AttemptMeta[],
 ): string {
   if (failures.length === 0) return reason;
   const trail = failures
-    .map((f) => `${f.error.kind}@${meta[f.index]?.model.externalModelId ?? '?'}`)
+    .map(
+      (f) =>
+        `${f.dispatched === false ? 'skip' : f.error.kind}@${meta[f.index]?.model.externalModelId ?? '?'}`,
+    )
     .join(', ');
   return `${reason}; fell back after: ${trail}`;
+}
+
+/** One executed leg's walk record, paired for entry composition. Structural
+ * (not `AttemptMeta`) so tests can build minimal fixtures. */
+export interface AttemptTrailLeg {
+  readonly failures: readonly AttemptFailure[];
+  readonly meta: ReadonlyArray<{
+    readonly providerId: string;
+    readonly model: { readonly externalModelId: string };
+  }>;
+  readonly leg?: 'cheap' | 'escalation';
+}
+
+/** Compose the per-attempt failure metadata for #11 (add-fallback-attempt-
+ * detail): every executed leg's pre-commit failures/skips in execution order,
+ * leg-relative indices, bounded at {@link ATTEMPT_FAILURES_MAX}. The terminal
+ * marker is set by IDENTITY — the FINAL leg's entry whose error IS the chain
+ * result's terminal error. That is true only on whole-chain exhaustion (the
+ * walker's `lastError` is the pushed tail's own instance); a non-retryable
+ * stop's or a post-commit stream failure's terminal error never enters the
+ * failure list, so no entry matches and none is marked. */
+export function attemptTrailEntries(
+  legs: readonly AttemptTrailLeg[],
+  terminalError: unknown,
+): AttemptFailureEntry[] {
+  const entries: AttemptFailureEntry[] = [];
+  for (let li = 0; li < legs.length; li += 1) {
+    const { failures, meta, leg } = legs[li]!;
+    const last = li === legs.length - 1;
+    for (const f of failures) {
+      const m = meta[f.index];
+      entries.push({
+        index: f.index,
+        providerId: m?.providerId ?? null,
+        model: m?.model.externalModelId ?? '?',
+        kind: f.error.kind,
+        ...(f.error.status !== undefined ? { status: f.error.status } : {}),
+        dispatched: f.dispatched !== false,
+        ...(leg !== undefined ? { leg } : {}),
+        ...(last && terminalError !== null && f.error === terminalError ? { terminal: true } : {}),
+      });
+    }
+  }
+  return entries.slice(0, ATTEMPT_FAILURES_MAX);
 }
 
 /** Plan ONE walked chain (add-output-cap-guardrails): the two-stage deferral

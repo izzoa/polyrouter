@@ -167,6 +167,41 @@ export function Inspector() {
                   </div>
                 </div>
 
+                {/* Structural fallback trail (add-fallback-attempt-detail): one
+                    line per recorded attempt — a never-dispatched breaker skip
+                    is labeled, not disguised as an upstream failure. Data-driven:
+                    rows without the column render exactly as before. */}
+                <Show when={view().attemptTrail.length > 0}>
+                  <div>
+                    <div class="upper-label" style="margin-bottom:9px">
+                      Fallback trail
+                    </div>
+                    <div class="kv-box">
+                      <For each={view().attemptTrail}>
+                        {(a) => (
+                          <div style="display:flex;justify-content:space-between;gap:16px">
+                            <span
+                              class="mono"
+                              style="font:500 11.5px 'Geist Mono',monospace;color:var(--text2);word-break:break-all"
+                            >
+                              {a.model}
+                              {a.legLabel !== null ? ` · ${a.legLabel}` : ''}
+                            </span>
+                            <span
+                              style={{
+                                color: a.skipped ? 'var(--text3)' : 'var(--text)',
+                                'text-align': 'right',
+                              }}
+                            >
+                              {a.label}
+                            </span>
+                          </div>
+                        )}
+                      </For>
+                    </div>
+                  </div>
+                </Show>
+
                 <Show when={view().errorView} keyed>
                   {(ev) => (
                     <div>
@@ -205,6 +240,16 @@ export function Inspector() {
                             >
                               {ev.requestId}
                             </span>
+                          </div>
+                        </Show>
+                        {/* add-fallback-attempt-detail: the terminal member was a
+                            breaker skip — read from the recorded marker, never
+                            inferred — so a bare kind must not present as an
+                            upstream failure. */}
+                        <Show when={view().terminalSkipped}>
+                          <div style="font:400 11px 'Geist',sans-serif;color:var(--text3)">
+                            The last chain member was never contacted — its provider's circuit was
+                            open when this request walked the chain.
                           </div>
                         </Show>
                       </div>

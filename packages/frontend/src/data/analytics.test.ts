@@ -6,8 +6,10 @@ import {
   filterToRequestParams,
   pct,
   rowCostLabel,
+  isTerminalSkip,
   successRate,
   timeseriesToChart,
+  toAttemptTrail,
   toErrorView,
   toInspectorView,
 } from './analytics';
@@ -85,6 +87,7 @@ const ROW: RequestRow = {
   errorStatus: null,
   errorMessage: null,
   errorRequestId: null,
+  attemptFailures: null,
   hasBodies: false,
 };
 
@@ -347,6 +350,57 @@ describe('toErrorView — the ERROR card gate + headline rules (add-request-erro
   it('rides toInspectorView', () => {
     expect(toInspectorView(errRow({ errorKind: 'auth' })).errorView?.headline).toBe('auth');
     expect(toInspectorView(ROW).errorView).toBeNull();
+  });
+});
+
+describe('toAttemptTrail / isTerminalSkip — the structural fallback trail (add-fallback-attempt-detail)', () => {
+  const entries = [
+    { index: 0, providerId: 'p1', model: 'gpt-x', kind: 'unavailable', status: 529, dispatched: true },
+    { index: 1, providerId: 'p2', model: 'strong-y', kind: 'rate_limit', dispatched: true, leg: 'escalation' as const },
+    { index: 2, providerId: 'p3', model: 'grok-z', kind: 'unavailable', dispatched: false, terminal: true },
+  ];
+
+  it('renders dispatched failures with kind (+ HTTP status when recorded) and labels skips explicitly', () => {
+    const trail = toAttemptTrail({ ...ROW, status: 'error', attemptFailures: entries });
+    expect(trail).toEqual([
+      { model: 'gpt-x', label: 'unavailable · HTTP 529', legLabel: null, skipped: false },
+      { model: 'strong-y', label: 'rate_limit', legLabel: 'escalation', skipped: false },
+      {
+        model: 'grok-z',
+        label: 'skipped — circuit open (provider not contacted)',
+        legLabel: null,
+        skipped: true,
+      },
+    ]);
+  });
+
+  it('a null column (all history) yields an empty trail — the drawer renders as before', () => {
+    expect(toAttemptTrail(ROW)).toEqual([]);
+    expect(toInspectorView(ROW).attemptTrail).toEqual([]);
+    expect(toInspectorView(ROW).terminalSkipped).toBe(false);
+  });
+
+  it('terminalSkipped keys off the recorded marker only — never inferred from kinds', () => {
+    expect(isTerminalSkip({ ...ROW, status: 'error', attemptFailures: entries })).toBe(true);
+    // Same kinds, but the terminal-marked entry was DISPATCHED → not a skip note.
+    const dispatchedTerminal = [
+      { index: 0, providerId: 'p1', model: 'a', kind: 'unavailable', dispatched: false },
+      { index: 1, providerId: 'p2', model: 'b', kind: 'unavailable', dispatched: true, terminal: true },
+    ];
+    expect(isTerminalSkip({ ...ROW, status: 'error', attemptFailures: dispatchedTerminal })).toBe(
+      false,
+    );
+    // A skip with NO marker (e.g. a bad_request stop after a skip) → no note.
+    const unmarkedSkip = [
+      { index: 0, providerId: 'p1', model: 'a', kind: 'unavailable', dispatched: false },
+    ];
+    expect(isTerminalSkip({ ...ROW, status: 'error', attemptFailures: unmarkedSkip })).toBe(false);
+  });
+
+  it('rides toInspectorView', () => {
+    const v = toInspectorView({ ...ROW, status: 'error', attemptFailures: entries });
+    expect(v.attemptTrail).toHaveLength(3);
+    expect(v.terminalSkipped).toBe(true);
   });
 });
 

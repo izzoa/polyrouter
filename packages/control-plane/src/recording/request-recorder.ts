@@ -9,6 +9,7 @@ import {
   type PartialUsage,
   type ResolvedUsage,
 } from '@polyrouter/data-plane';
+import type { AttemptFailureEntry } from '@polyrouter/shared';
 import type {
   BodyCaptureMode,
   BodyCaptureOverride,
@@ -109,6 +110,12 @@ export interface RecordingContext {
    * Attempt-ledger rows (`recordAttempt`) deliberately ignore it: only the
    * served exchange is ever captured. */
   readonly capture?: RequestCaptureState;
+  /** Per-attempt failure metadata (add-fallback-attempt-detail): the pre-commit
+   * walked failure/skip trail across every executed leg, composed by the proxy's
+   * context builders (leg-qualified for cascade legs, terminal marker set by
+   * error identity). Persisted ONLY on `status='error'` rows — the recorder
+   * gates centrally below, exactly as it gates the terminal error detail. */
+  readonly attemptFailures?: readonly AttemptFailureEntry[];
   /** The L2-ambiguous request's IN-MEMORY embedding + its decision-time learning
    * gate (add-semantic-learning D1/D3). Set ONLY by the proxy's `servedFrom()`
    * (cascade-settle) — NEVER by any other context builder — and consumed ONLY by
@@ -242,6 +249,13 @@ export class RequestRecorder {
         // the call sites.
         ...(outcome.status === 'error' && outcome.error !== undefined
           ? { error: outcome.error }
+          : {}),
+        // Same central gate for the per-attempt trail (add-fallback-attempt-
+        // detail): non-error rows persist a null column regardless of caller.
+        ...(outcome.status === 'error' &&
+        ctx.attemptFailures !== undefined &&
+        ctx.attemptFailures.length > 0
+          ? { attemptFailures: ctx.attemptFailures }
           : {}),
         ...spanContextOf(),
       };

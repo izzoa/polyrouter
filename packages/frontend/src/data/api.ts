@@ -1,4 +1,4 @@
-import type { HarnessType, RuleMatchType } from '@polyrouter/shared';
+import type { AttemptFailureEntry, HarnessType, RuleMatchType } from '@polyrouter/shared';
 import { API_BASE, PROXY_BASE } from './catalog';
 
 /**
@@ -253,7 +253,7 @@ export interface UpdateTierInput {
  * root (add-band-target-ui) — the client-side mirror is gone: one source of
  * truth for the cap, the header, and the rule kinds. */
 export { MAX_MODELS_PER_TIER, TIER_HEADER_NAME } from '@polyrouter/shared';
-export type { RuleMatchType } from '@polyrouter/shared';
+export type { AttemptFailureEntry, RuleMatchType } from '@polyrouter/shared';
 
 export interface RuleDto {
   id: string;
@@ -623,6 +623,10 @@ export interface RequestRow {
   errorStatus: number | null;
   errorMessage: string | null;
   errorRequestId: string | null;
+  /** Per-attempt failure metadata (add-fallback-attempt-detail): the pre-commit
+   * walked failure/skip trail, verbatim from the stored column; null for
+   * non-error rows and rows predating the column. */
+  attemptFailures: AttemptFailureEntry[] | null;
   /** add-body-capture: this request has stored bodies (content NEVER rides the
    * listing — the inspector fetches lazily via `requestBodies`). */
   hasBodies: boolean;

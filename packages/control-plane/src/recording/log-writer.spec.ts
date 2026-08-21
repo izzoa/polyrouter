@@ -146,6 +146,25 @@ describe('LogWriter', () => {
     expect(rows[0]!.inputPriceSnapshot).toBe(2.5);
   });
 
+  it('maps the per-attempt trail to the attempt_failures column, null when absent (add-fallback-attempt-detail)', async () => {
+    const { writer, insertMany } = makeWriter({});
+    const attemptFailures = [
+      { index: 0, providerId: 'p1', model: 'a', kind: 'unavailable', status: 529, dispatched: true },
+      { index: 1, providerId: 'p2', model: 'b', kind: 'unavailable', dispatched: false, terminal: true },
+    ];
+    writer.enqueue(draft({ status: 'error', attemptFailures }));
+    writer.enqueue(draft({ id: randomUUID() }));
+    await writer.flush();
+    const [, rows] = insertMany.mock.calls[0] as [
+      Principal,
+      { attemptFailures: unknown; status: string }[],
+    ];
+    const errorRow = rows.find((r) => r.status === 'error')!;
+    const successRow = rows.find((r) => r.status === 'success')!;
+    expect(errorRow.attemptFailures).toEqual(attemptFailures);
+    expect(successRow.attemptFailures).toBeNull();
+  });
+
   it('records the snapshot priceSource verbatim on BOTH ledgers (add-native-price-fallback)', async () => {
     const native = { ...snapshot(), source: 'native_family' as const };
     const { writer, insertMany, attemptInsertMany } = makeWriter({

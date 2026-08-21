@@ -1,0 +1,1 @@
+ALTER TABLE "request_log" ADD COLUMN "attempt_failures" jsonb;

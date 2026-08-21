@@ -15,6 +15,7 @@ import {
   breakerImpact,
   classifyStreamError,
 } from './errors';
+import { PROBE_RECORD_TTL_HEADROOM_MS } from './probe-patience';
 
 export type BreakerState = 'closed' | 'open' | 'half_open';
 export type BreakerOutcome = 'success' | 'trip' | 'neutral';
@@ -401,6 +402,22 @@ export interface BreakerToken {
    * fallback). Only a primary-store transition surfaces `justOpened` — a Redis
    * outage must not fan out N duplicate `provider_down` alerts. */
   readonly isPrimary: boolean;
+  /** The GRANTED lease duration (probe patience, add-fallback-attempt-detail):
+   * `max(config lease, caller-requested minimum)`, decided at admission and
+   * carried on the token so every subsequent renewal extends by IT — a renewal
+   * snapping back to the default would strand a widened probe whose next legal
+   * silence exceeds it. Equals the config lease for ordinary admissions. */
+  readonly leaseMs: number;
+}
+
+/** What the breaker wrappers hand their callbacks at admission (probe patience):
+ * `isProbe` lets the attempt widen its typed bounds; `renewOnActivity` is the
+ * internally-throttled, token-closing lease renewal (the private generation-
+ * stamped token itself is never exposed) — a no-op for non-probe admissions, so
+ * callers may wire it unconditionally (e.g. as the adapter's `onBytes`). */
+export interface BreakerAdmission {
+  readonly isProbe: boolean;
+  readonly renewOnActivity: () => void;
 }
 
 export interface CircuitBreakerOptions {
@@ -426,10 +443,33 @@ export class CircuitBreaker {
     this.onError = opts.onError ?? (() => undefined);
   }
 
-  async before(providerId: string): Promise<{ decision: BreakerDecision; token: BreakerToken }> {
+  /** Per-call config for a (possibly widened) lease: the lease and the record
+   * TTL are already per-call store arguments, so probe patience needs no store
+   * or script change. The TTL strictly OUTLIVES the lease (named headroom): at
+   * equality the record could expire at `probeExpiresAt` and the next admission
+   * would read a vanished record as `closed`, bypassing the generation-bumping
+   * reclaim (add-fallback-attempt-detail). */
+  private cfgForLease(leaseMs: number): BreakerConfig {
+    if (leaseMs <= this.cfg.probeLeaseMs) return this.cfg;
+    return {
+      ...this.cfg,
+      probeLeaseMs: leaseMs,
+      stateTtlMs: Math.max(this.cfg.stateTtlMs, leaseMs + PROBE_RECORD_TTL_HEADROOM_MS),
+    };
+  }
+
+  /** `minProbeLeaseMs` (probe patience): the caller's floor on the lease a probe
+   * admission is granted — `max(config lease, floor)` — so a widened-bound probe
+   * cannot be reclaimed mid-legal-silence. Unused for non-probe admissions. */
+  async before(
+    providerId: string,
+    minProbeLeaseMs?: number,
+  ): Promise<{ decision: BreakerDecision; token: BreakerToken }> {
     const now = this.now();
+    const leaseMs = Math.max(this.cfg.probeLeaseMs, minProbeLeaseMs ?? 0);
+    const cfg = this.cfgForLease(leaseMs);
     try {
-      const a = await this.primary.decide(providerId, now, this.cfg);
+      const a = await this.primary.decide(providerId, now, cfg);
       return {
         decision: a.decision,
         token: {
@@ -438,11 +478,12 @@ export class CircuitBreaker {
           generation: a.generation,
           isProbe: a.isProbe,
           isPrimary: true,
+          leaseMs,
         },
       };
     } catch (err) {
       this.onError(err);
-      const a = await this.fallback.decide(providerId, now, this.cfg);
+      const a = await this.fallback.decide(providerId, now, cfg);
       return {
         decision: a.decision,
         token: {
@@ -451,6 +492,7 @@ export class CircuitBreaker {
           generation: a.generation,
           isProbe: a.isProbe,
           isPrimary: false,
+          leaseMs,
         },
       };
     }
@@ -494,7 +536,14 @@ export class CircuitBreaker {
   async renewProbe(token: BreakerToken): Promise<void> {
     if (!token.isProbe) return;
     try {
-      await token.store.renew(token.providerId, token.generation, this.now(), this.cfg);
+      // Renewals extend by the token's GRANTED lease (probe patience) — never
+      // the default, which would strand a widened probe mid-legal-silence.
+      await token.store.renew(
+        token.providerId,
+        token.generation,
+        this.now(),
+        this.cfgForLease(token.leaseMs),
+      );
     } catch (err) {
       try {
         this.onError(err);
@@ -562,29 +611,64 @@ async function completeAndNotify(
   }
 }
 
+/** The internally-throttled, token-closing lease renewal (probe patience): a
+ * no-op for non-probe tokens and after settle, so callers can wire it
+ * unconditionally. Throttled to ~once per third of the GRANTED lease; the
+ * store's own expiry/generation guards make a late renewal a harmless no-op.
+ * `t < lastRenewAt` catches a BACKWARD wall-clock step (NTP) — renew at once
+ * and re-baseline, so renewals never stall against the store's server clock. */
+function makeRenewOnActivity(
+  breaker: CircuitBreaker,
+  token: BreakerToken,
+  isSettled: () => boolean,
+): () => void {
+  const renewEveryMs = Math.max(1, Math.floor(token.leaseMs / 3));
+  let lastRenewAt = breaker.nowMs();
+  return (): void => {
+    if (!token.isProbe || isSettled()) return;
+    const t = breaker.nowMs();
+    if (t - lastRenewAt >= renewEveryMs || t < lastRenewAt) {
+      lastRenewAt = t;
+      void breaker.renewProbe(token);
+    }
+  };
+}
+
 /** Wrap a unary provider call. Health = "did the provider respond": a resolved
  * call or a non-tripping error is success; a tripping error trips; a caller
  * cancellation is neutral — including when the CALLER-gone teardown error
  * reaches us in a normalized provider-error shape (a mid-body abort is
  * converted by the adapters), which `isCallerAbort` disambiguates from
  * system-imposed timeouts that must keep tripping. `onOpen` fires once if this
- * call opens the breaker. */
+ * call opens the breaker. The callback receives the admission info (probe
+ * patience): `isProbe` to widen the attempt's bounds, and `renewOnActivity` to
+ * wire as the call's byte-liveness hook so a healthy long buffered body holds
+ * its lease (mirroring the streaming wrapper). `minProbeLeaseMs` floors the
+ * lease a probe admission is granted. */
 export async function withBreaker<T>(
   breaker: CircuitBreaker,
   providerId: string,
-  fn: () => Promise<T>,
+  fn: (admission: BreakerAdmission) => Promise<T>,
   onOpen?: BreakerOpenListener,
   onState?: BreakerStateListener,
   isCallerAbort?: () => boolean,
+  minProbeLeaseMs?: number,
 ): Promise<T> {
-  const { decision, token } = await breaker.before(providerId);
+  const { decision, token } = await breaker.before(providerId, minProbeLeaseMs);
   notifyState(onState, providerId, decision, token.isProbe);
   if (decision === 'skip') throw new ProviderCircuitOpenError(providerId);
+  let settled = false;
+  const admission: BreakerAdmission = {
+    isProbe: token.isProbe,
+    renewOnActivity: makeRenewOnActivity(breaker, token, () => settled),
+  };
   try {
-    const result = await fn();
+    const result = await fn(admission);
+    settled = true;
     await completeAndNotify(breaker, token, 'success', onOpen);
     return result;
   } catch (err) {
+    settled = true;
     const outcome = isCallerAbort?.() === true ? 'neutral' : outcomeForError(err);
     await completeAndNotify(breaker, token, outcome, onOpen);
     throw err;
@@ -598,12 +682,16 @@ export async function withBreaker<T>(
 export async function* withBreakerStream(
   breaker: CircuitBreaker,
   providerId: string,
-  gen: (renewOnActivity: () => void) => AsyncGenerator<NormalizedStreamEvent>,
+  gen: (
+    renewOnActivity: () => void,
+    admission: BreakerAdmission,
+  ) => AsyncGenerator<NormalizedStreamEvent>,
   onOpen?: BreakerOpenListener,
   onState?: BreakerStateListener,
   isCallerAbort?: () => boolean,
+  minProbeLeaseMs?: number,
 ): AsyncGenerator<NormalizedStreamEvent> {
-  const { decision, token } = await breaker.before(providerId);
+  const { decision, token } = await breaker.before(providerId, minProbeLeaseMs);
   notifyState(onState, providerId, decision, token.isProbe);
   if (decision === 'skip') throw new ProviderCircuitOpenError(providerId);
 
@@ -615,33 +703,24 @@ export async function* withBreakerStream(
   };
 
   // A half-open probe settles only at stream end, but LLM streams routinely
-  // outlive `probeLeaseMs`; renew the lease on stream activity so the probe keeps
-  // its generation and its eventual success closes the breaker (E4.1). Fire-and-
+  // outlive the lease; renew it on stream activity so the probe keeps its
+  // generation and its eventual success closes the breaker (E4.1). Fire-and-
   // forget (never awaited) so it adds no token-path latency and cannot stall the
-  // stream; throttled to ~once per third of a lease so a fast stream doesn't issue
-  // one store op per token. The store's own expiry/generation guards make a
-  // late-landing renewal a harmless no-op. `renewOnActivity` hands the SAME
-  // throttled renewal to the byte-liveness path (fix-long-call-timeouts): an
-  // event-quiet but byte-alive probe (keepalive comments) keeps its single-probe
-  // lease instead of expiring it and admitting overlapping probes.
-  const renewEveryMs = Math.max(1, Math.floor(breaker.probeLeaseMs / 3));
-  let lastRenewAt = breaker.nowMs();
-  const renewOnActivity = (): void => {
-    if (!token.isProbe || settled) return;
-    const t = breaker.nowMs();
-    // Throttle by elapsed time; `t < lastRenewAt` catches a BACKWARD wall-clock
-    // step (NTP correction) — renew at once and re-baseline, so renewals never
-    // stall against the store's independent (server) clock still advancing.
-    if (t - lastRenewAt >= renewEveryMs || t < lastRenewAt) {
-      lastRenewAt = t;
-      void breaker.renewProbe(token);
-    }
-  };
+  // stream; throttled to ~once per third of the GRANTED lease (probe patience —
+  // renewals extend by the granted duration, never the default) so a fast stream
+  // doesn't issue one store op per token. The store's own expiry/generation
+  // guards make a late-landing renewal a harmless no-op. `renewOnActivity` hands
+  // the SAME throttled renewal to the byte-liveness path (fix-long-call-
+  // timeouts): an event-quiet but byte-alive probe (keepalive comments) keeps
+  // its single-probe lease instead of expiring it and admitting overlapping
+  // probes.
+  const renewOnActivity = makeRenewOnActivity(breaker, token, () => settled);
+  const admission: BreakerAdmission = { isProbe: token.isProbe, renewOnActivity };
 
   let sawTerminalStop = false;
   let sawError = false;
   try {
-    for await (const ev of gen(renewOnActivity)) {
+    for await (const ev of gen(renewOnActivity, admission)) {
       if (ev.type === 'message_delta' && ev.stopReason !== undefined) sawTerminalStop = true;
       if (ev.type === 'error') {
         // Settle BEFORE yielding: a commit-gated consumer may `.return()` the

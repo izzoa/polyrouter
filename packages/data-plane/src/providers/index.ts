@@ -62,7 +62,16 @@ export type {
   BreakerRedis,
   CircuitBreakerOptions,
   Admission,
+  BreakerAdmission,
   BreakerCompletion,
   BreakerOpenListener,
   BreakerStateListener,
 } from './breaker';
+export {
+  PROBE_BOUND_CEILING_MS,
+  PROBE_PATIENCE_MULTIPLIER,
+  PROBE_RECORD_TTL_HEADROOM_MS,
+  PROBE_SETTLE_HEADROOM_MS,
+  probePatienceOf,
+} from './probe-patience';
+export type { ProbePatience } from './probe-patience';

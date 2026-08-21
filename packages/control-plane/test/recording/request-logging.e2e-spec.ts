@@ -79,6 +79,7 @@ describe('request-logging e2e', () => {
   let principal: Principal;
   let key: string;
   let gpt4oModelId: string;
+  let skipProviderId: string;
 
   beforeAll(async () => {
     process.env['NODE_ENV'] = 'test';
@@ -187,6 +188,20 @@ describe('request-logging e2e', () => {
     await port.routingEntries.replaceForTier(principal, tier.id, [gpt4oModelId]);
     const fb = await port.tiers.insert(principal, { key: 'fallback' });
     await port.routingEntries.replaceForTier(principal, fb.id, [srvfail!.id, gpt4oModelId]);
+    // add-fallback-attempt-detail: a SECOND provider whose breaker the mixed-chain
+    // test opens — its member must be SKIPPED (never dispatched), not failed.
+    const skipProv = await port.providers.insert(principal, {
+      name: 'skip-stub',
+      kind: 'local',
+      protocol: 'openai_compatible',
+      baseUrl: stub.url,
+    });
+    skipProviderId = skipProv.id;
+    const skipModel = await port.models.createForProvider(principal, skipProv.id, {
+      externalModelId: 'oai-skip',
+    });
+    const mixed = await port.tiers.insert(principal, { key: 'mixed-fail' });
+    await port.routingEntries.replaceForTier(principal, mixed.id, [srvfail!.id, skipModel!.id]);
     const minted = mintAgentKey(HMAC);
     await pool.query(
       `INSERT INTO agent (id, owner_user_id, name, api_key_hash, api_key_prefix, harness_type)
@@ -223,6 +238,7 @@ describe('request-logging e2e', () => {
     expect(row.inputTokens).toBeGreaterThan(0);
     expect(row.durationMs).toBeGreaterThanOrEqual(0);
     expect(JSON.stringify(row)).not.toContain('hi'); // no prompt/response body
+    expect(row.attemptFailures).toBeNull(); // add-fallback-attempt-detail: success rows carry none
   });
 
   it('records status=fallback against the SERVED model with a failure trail (#12)', async () => {
@@ -242,6 +258,68 @@ describe('request-logging e2e', () => {
     expect(row!.errorStatus).toBeNull();
     expect(row!.errorMessage).toBeNull();
     expect(row!.errorRequestId).toBeNull();
+    // add-fallback-attempt-detail: the per-attempt column shares the same
+    // error-only exclusivity gate — a served-with-bumps row keeps it null.
+    expect(row!.attemptFailures).toBeNull();
+  });
+
+  describe('per-attempt failure metadata (add-fallback-attempt-detail)', () => {
+    it('an exhausted mixed chain records skip@ in the trail and ordered structural entries', async () => {
+      // Open the SECOND provider's breaker (threshold 5) so its member is
+      // skipped without ever being dispatched.
+      const breaker = app.get<CircuitBreaker>(PROXY_BREAKER);
+      for (let i = 0; i < 5; i += 1) {
+        const { token } = await breaker.before(skipProviderId);
+        await breaker.complete(token, 'trip');
+      }
+      const res = await request(server)
+        .post('/v1/chat/completions')
+        .set('Authorization', `Bearer ${key}`)
+        .send({ model: 'mixed-fail', messages: [] });
+      expect(res.status).toBeGreaterThanOrEqual(500);
+      await writer.flush();
+      const row = (await port.requestLogs.list(principal)).find(
+        (r) => r.status === 'error' && r.routingReason.includes('skip@'),
+      );
+      expect(row).toBeDefined();
+      // The trail distinguishes contact from silence (delta: skip@ grammar).
+      expect(row!.routingReason).toContain('unavailable@oai-srvfail, skip@oai-skip');
+      // Terminal = the skip (last member): kind only, no upstream HTTP status.
+      expect(row!.errorKind).toBe('unavailable');
+      expect(row!.errorStatus).toBeNull();
+      const entries = row!.attemptFailures!;
+      expect(entries).toHaveLength(2);
+      expect(entries[0]).toMatchObject({
+        index: 0,
+        model: 'oai-srvfail',
+        kind: 'unavailable',
+        dispatched: true,
+        status: 500,
+      });
+      expect(entries[1]).toMatchObject({
+        index: 1,
+        model: 'oai-skip',
+        kind: 'unavailable',
+        dispatched: false,
+        terminal: true,
+      });
+      expect(entries[1]!.status).toBeUndefined();
+      // Structure only — no free-text field anywhere (invariant 8).
+      const allowed = new Set([
+        'index',
+        'providerId',
+        'model',
+        'kind',
+        'status',
+        'dispatched',
+        'leg',
+        'terminal',
+      ]);
+      for (const e of entries) {
+        for (const k of Object.keys(e)) expect(allowed.has(k)).toBe(true);
+        for (const v of Object.values(e)) expect(typeof v).not.toBe('object');
+      }
+    });
   });
 
   describe('matched routing header (add-routing-header-visibility)', () => {

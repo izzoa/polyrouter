@@ -104,6 +104,34 @@ describe('RequestRecorder', () => {
     }
   });
 
+  it('carries the per-attempt trail on an error outcome (add-fallback-attempt-detail)', () => {
+    const { recorder, enqueue } = makeRecorder();
+    const attemptFailures = [
+      { index: 0, providerId: 'p1', model: 'a', kind: 'unavailable', status: 529, dispatched: true },
+      { index: 1, providerId: 'p2', model: 'b', kind: 'unavailable', dispatched: false, terminal: true },
+    ];
+    recorder.record(ctx({ attemptFailures }), {
+      status: 'error',
+      outputChars: 0,
+      error: { kind: 'unavailable' },
+    });
+    const d = enqueue.mock.calls[0]![0] as RequestLogDraft;
+    expect(d.attemptFailures).toEqual(attemptFailures);
+  });
+
+  it('CENTRALLY discards the per-attempt trail on any non-error status (one gate, five columns)', () => {
+    const { recorder, enqueue } = makeRecorder();
+    const attemptFailures = [
+      { index: 0, providerId: 'p1', model: 'a', kind: 'unavailable', dispatched: true },
+    ];
+    for (const status of ['success', 'fallback', 'cancelled'] as const) {
+      recorder.record(ctx({ attemptFailures }), { status, outputChars: 0 });
+    }
+    for (const call of enqueue.mock.calls) {
+      expect((call[0] as RequestLogDraft).attemptFailures).toBeUndefined();
+    }
+  });
+
   describe('learning contribution (add-semantic-learning task 3.3)', () => {
     const vec = new Float32Array([0.1, 0.2, 0.3]);
     const withSink = (): { recorder: RequestRecorder; enqueue: jest.Mock; contribute: jest.Mock } => {

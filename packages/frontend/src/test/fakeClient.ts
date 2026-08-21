@@ -245,6 +245,15 @@ export function buildRequestRows(n: number): RequestRow[] {
       errorStatus: status === 'error' ? 429 : null,
       errorMessage: status === 'error' ? `Rate limit exceeded on #${String(i)}` : null,
       errorRequestId: status === 'error' ? `req_fake_${String(i)}` : null,
+      // Per-attempt trail (add-fallback-attempt-detail): error rows carry a
+      // small dispatched+skip mix; everything else is null (legacy-shaped).
+      attemptFailures:
+        status === 'error'
+          ? [
+              { index: 0, providerId: 'p1', model: 'gpt-x', kind: 'unavailable', status: 529, dispatched: true },
+              { index: 1, providerId: 'p2', model: 'fallback-y', kind: 'unavailable', dispatched: false, terminal: true },
+            ]
+          : null,
     });
   }
   return rows;

@@ -15,9 +15,16 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-08-21
+
 ### Added
 
 - **Per-attempt fallback forensics + a patient breaker probe.** Breaker-skipped chain members record `skip@model` (never a fake `unavailable`), error rows persist structured per-attempt failure metadata (`attempt_failures`, both cascade legs, no free text) rendered as the inspector's "Fallback trail", and the half-open probe runs/leases at doubled patience so a slow-but-healthy provider can actually close its breaker.
+
+### Upgrade notes
+
+- **One additive migration** (`0025`: nullable `request_log.attempt_failures` jsonb) — runs automatically on boot; historical rows stay null and render exactly as before, never backfilled.
+- **Breaker recovery behavior changes deliberately:** a provider opened by timeouts now gets a recovery probe with its first-byte/idle bounds doubled (capped at 1 h) and a matching lease, so heavy-workload providers can close their breaker instead of skip-looping. A genuinely hung provider still times out (at most twice as late, on the probe path only). No new env knobs; per-provider `first_byte_timeout_ms` overrides remain the tuning surface for chains slower than 2× their bound.
 
 ## [0.13.1] — 2026-08-20
 
@@ -786,7 +793,8 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.13.1...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.14.0
 [0.13.1]: https://github.com/izzoa/polyrouter/releases/tag/v0.13.1
 [0.13.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.13.0
 [0.12.3]: https://github.com/izzoa/polyrouter/releases/tag/v0.12.3

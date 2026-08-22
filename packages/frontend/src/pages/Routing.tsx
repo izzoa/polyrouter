@@ -541,7 +541,10 @@ function SemanticLearning() {
                   <span style="font:400 10px 'Geist',sans-serif;color:var(--text3);background:var(--chip);padding:1px 6px;border-radius:4px">
                     {r.trigger}
                   </span>
-                  <span class="mono" style="font:400 11px 'Geist Mono',monospace;color:var(--text2)">
+                  <span
+                    class="mono"
+                    style="font:400 11px 'Geist Mono',monospace;color:var(--text2)"
+                  >
                     {r.samples}
                   </span>
                   <Show when={r.evidence !== ''}>
@@ -604,194 +607,297 @@ function AutoPerformance() {
       </Show>
       <Show when={vm()} keyed>
         {(v) => (
-          <Show
-            when={v.zeroState === 'none'}
-            fallback={
-              <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3);padding:6px 0">
-                {v.zeroState === 'preCapture'
-                  ? `No evaluated telemetry in this range — telemetry begins ${new Date(v.telemetrySince ?? 0).toLocaleDateString()}.`
-                  : 'No auto telemetry yet — route a request with model "auto" to start measuring.'}
-              </div>
-            }
-          >
-            <div style="display:flex;flex-wrap:wrap;gap:16px;margin:6px 0 10px">
-              <span style={statFont}>
-                evaluated <span style={valFont}>{v.evaluated.toLocaleString()}</span>
-              </span>
-              <span style={statFont}>
-                ambiguous <span style={valFont}>{v.ambiguousPct}</span>
-              </span>
-              <span style={statFont}>
-                declared <span style={valFont}>{v.declaredPct}</span>
-              </span>
-              <Show when={v.cascadeRequests > 0}>
-                <span style={statFont}>
-                  <Show when={v.cascadeIsResidual}>
-                    <span style="font:400 10px 'Geist',sans-serif;color:var(--amber)">
-                      residual cascade ·{' '}
-                    </span>
-                  </Show>
-                  quality-pass <span style={valFont}>{v.passedPct}</span>
-                </span>
-                <span style={statFont}>
-                  escalated <span style={valFont}>{v.escalatedPct}</span>
-                </span>
-                <span style={statFont}>
-                  unknown <span style={valFont}>{v.unknownPct}</span>
-                </span>
-                <span style={statFont}>
-                  failed/cancelled before escalation <span style={valFont}>{v.failedPct}</span>
-                </span>
-              </Show>
-            </div>
-            <Show when={v.semantic} keyed>
-              {(sm) => (
-                <div style="display:flex;flex-wrap:wrap;gap:16px;margin:0 0 10px">
-                  <span style={statFont}>
-                    L2 evaluated <span style={valFont}>{sm.evaluated.toLocaleString()}</span>
-                  </span>
-                  <span style={statFont}>
-                    L2 routed <span style={valFont}>{sm.routed.toLocaleString()}</span>{' '}
-                    <span
-                      class="mono"
-                      style="font:400 10.5px 'Geist Mono',monospace;color:var(--text3)"
-                    >
-                      ({sm.routedHigh} high / {sm.routedLow} low)
-                    </span>
-                  </span>
-                  <Show when={sm.routed > 0}>
-                    <span style={statFont}>
-                      success <span style={valFont}>{sm.successPct}</span>
-                    </span>
-                    <span style={statFont}>
-                      fallback <span style={valFont}>{sm.fallbackPct}</span>
-                    </span>
-                    <span style={statFont}>
-                      error <span style={valFont}>{sm.errorPct}</span>
-                    </span>
-                    <span style={statFont}>
-                      cancelled <span style={valFont}>{sm.cancelledPct}</span>
-                    </span>
-                  </Show>
-                  <span style={statFont}>
-                    source <span style={valFont}>{sm.learned.toLocaleString()}</span> learned ·{' '}
-                    <span style={valFont}>{sm.bundled.toLocaleString()}</span> bundled
-                  </span>
+          <>
+            <Show
+              when={v.zeroState === 'none'}
+              fallback={
+                <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3);padding:6px 0">
+                  {v.zeroState === 'preCapture'
+                    ? `No evaluated telemetry in this range — telemetry begins ${new Date(v.telemetrySince ?? 0).toLocaleDateString()}.`
+                    : 'No auto telemetry yet — route a request with model "auto" to start measuring.'}
                 </div>
-              )}
-            </Show>
-            <Show when={v.cascadeIsResidual}>
-              <div style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);margin:-4px 0 10px;line-height:1.5">
-                Semantically-routed requests never enter the cascade — the residual-cascade rates and
-                estimated savings above cover only the traffic L2 left behind, so pre-/post-enable
-                comparisons aren’t like-for-like. No figure here measures whether learning improves
-                routing.
-              </div>
-            </Show>
-            <Show when={v.unroutable > 0}>
-              <div style="font:400 11px 'Geist',sans-serif;color:var(--amber);margin-bottom:8px">
-                {v.unroutable} confident request{v.unroutable === 1 ? '' : 's'} fell through to
-                default — check the{' '}
-                {[
-                  ...((state.autoPerf.data?.bands.high.unroutable ?? 0) > 0
-                    ? ['strong (auto_high)']
-                    : []),
-                  ...((state.autoPerf.data?.bands.low.unroutable ?? 0) > 0
-                    ? ['cheap (auto_low)']
-                    : []),
-                ].join(' and ')}{' '}
-                band
-                {(state.autoPerf.data?.bands.high.unroutable ?? 0) > 0 &&
-                (state.autoPerf.data?.bands.low.unroutable ?? 0) > 0
-                  ? 's’'
-                  : '’s'}{' '}
-                missing-or-unusable target in Band targets above.
-              </div>
-            </Show>
-            <Show when={v.signalQuality.show}>
-              <div data-testid="signal-quality" style="margin-bottom:10px">
-                <Show when={v.signalQuality.flagged.length > 0}>
-                  <div style="font:500 11px 'Geist',sans-serif;color:var(--text2);margin-bottom:4px">
-                    Signal quality
-                  </div>
-                  <For each={v.signalQuality.flagged}>
-                    {(f) => (
-                      <div style="font:400 11px 'Geist',sans-serif;color:var(--amber);line-height:1.5">
-                        <span style="font-weight:500">{f.label}</span> — {f.detail}{' '}
-                        <span class="mono" style="font:400 10.5px 'Geist Mono',monospace;color:var(--text3)">
-                          ({f.distinctScores} distinct score{f.distinctScores === 1 ? '' : 's'})
-                        </span>
-                        <div style="color:var(--text3);font-size:10.5px">
-                          {signalQualityGuidance(state.autoLayers)}
-                        </div>
-                      </div>
-                    )}
-                  </For>
-                </Show>
-                <Show when={v.signalQuality.coverage}>
-                  <div
-                    data-testid="signal-quality-coverage"
-                    style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);line-height:1.5"
-                  >
-                    {v.signalQuality.coverage}
-                  </div>
-                </Show>
-              </div>
-            </Show>
-            <Show when={v.savings} keyed>
-              {(sv) => (
-                <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text2);margin-bottom:10px">
-                  <Show
-                    when={!sv.moneyless}
-                    fallback={
-                      <span style="color:var(--text3)">
-                        savings unavailable — {sv.coverage} were costable
+              }
+            >
+              <div style="display:flex;flex-wrap:wrap;gap:16px;margin:6px 0 10px">
+                <span style={statFont}>
+                  evaluated <span style={valFont}>{v.evaluated.toLocaleString()}</span>
+                </span>
+                <span style={statFont}>
+                  ambiguous <span style={valFont}>{v.ambiguousPct}</span>
+                </span>
+                <span style={statFont}>
+                  declared <span style={valFont}>{v.declaredPct}</span>
+                </span>
+                <Show when={v.cascadeRequests > 0}>
+                  <span style={statFont}>
+                    <Show when={v.cascadeIsResidual}>
+                      <span style="font:400 10px 'Geist',sans-serif;color:var(--amber)">
+                        residual cascade ·{' '}
                       </span>
-                    }
-                  >
+                    </Show>
+                    quality-pass <span style={valFont}>{v.passedPct}</span>
+                  </span>
+                  <span style={statFont}>
+                    escalated <span style={valFont}>{v.escalatedPct}</span>
+                  </span>
+                  <span style={statFont}>
+                    unknown <span style={valFont}>{v.unknownPct}</span>
+                  </span>
+                  <span style={statFont}>
+                    failed/cancelled before escalation <span style={valFont}>{v.failedPct}</span>
+                  </span>
+                </Show>
+              </div>
+              <Show when={v.semantic} keyed>
+                {(sm) => (
+                  <div style="display:flex;flex-wrap:wrap;gap:16px;margin:0 0 10px">
+                    <span style={statFont}>
+                      L2 evaluated <span style={valFont}>{sm.evaluated.toLocaleString()}</span>
+                    </span>
+                    <span style={statFont}>
+                      L2 routed <span style={valFont}>{sm.routed.toLocaleString()}</span>{' '}
+                      <span
+                        class="mono"
+                        style="font:400 10.5px 'Geist Mono',monospace;color:var(--text3)"
+                      >
+                        ({sm.routedHigh} high / {sm.routedLow} low)
+                      </span>
+                    </span>
+                    <Show when={sm.routed > 0}>
+                      <span style={statFont}>
+                        success <span style={valFont}>{sm.successPct}</span>
+                      </span>
+                      <span style={statFont}>
+                        fallback <span style={valFont}>{sm.fallbackPct}</span>
+                      </span>
+                      <span style={statFont}>
+                        error <span style={valFont}>{sm.errorPct}</span>
+                      </span>
+                      <span style={statFont}>
+                        cancelled <span style={valFont}>{sm.cancelledPct}</span>
+                      </span>
+                    </Show>
+                    <span style={statFont}>
+                      source <span style={valFont}>{sm.learned.toLocaleString()}</span> learned ·{' '}
+                      <span style={valFont}>{sm.bundled.toLocaleString()}</span> bundled
+                    </span>
+                  </div>
+                )}
+              </Show>
+              <Show when={v.cascadeIsResidual}>
+                <div style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);margin:-4px 0 10px;line-height:1.5">
+                  Semantically-routed requests never enter the cascade — the residual-cascade rates
+                  and estimated savings above cover only the traffic L2 left behind, so
+                  pre-/post-enable comparisons aren’t like-for-like. No figure here measures whether
+                  learning improves routing.
+                </div>
+              </Show>
+              <Show when={v.unroutable > 0}>
+                <div style="font:400 11px 'Geist',sans-serif;color:var(--amber);margin-bottom:8px">
+                  {v.unroutable} confident request{v.unroutable === 1 ? '' : 's'} fell through to
+                  default — check the{' '}
+                  {[
+                    ...((state.autoPerf.data?.bands.high.unroutable ?? 0) > 0
+                      ? ['strong (auto_high)']
+                      : []),
+                    ...((state.autoPerf.data?.bands.low.unroutable ?? 0) > 0
+                      ? ['cheap (auto_low)']
+                      : []),
+                  ].join(' and ')}{' '}
+                  band
+                  {(state.autoPerf.data?.bands.high.unroutable ?? 0) > 0 &&
+                  (state.autoPerf.data?.bands.low.unroutable ?? 0) > 0
+                    ? 's’'
+                    : '’s'}{' '}
+                  missing-or-unusable target in Band targets above.
+                </div>
+              </Show>
+              <Show when={v.signalQuality.show}>
+                <div data-testid="signal-quality" style="margin-bottom:10px">
+                  <Show when={v.signalQuality.flagged.length > 0}>
+                    <div style="font:500 11px 'Geist',sans-serif;color:var(--text2);margin-bottom:4px">
+                      Signal quality
+                    </div>
+                    <For each={v.signalQuality.flagged}>
+                      {(f) => (
+                        <div style="font:400 11px 'Geist',sans-serif;color:var(--amber);line-height:1.5">
+                          <span style="font-weight:500">{f.label}</span> — {f.detail}{' '}
+                          <span
+                            class="mono"
+                            style="font:400 10.5px 'Geist Mono',monospace;color:var(--text3)"
+                          >
+                            ({f.distinctScores} distinct score{f.distinctScores === 1 ? '' : 's'})
+                          </span>
+                          <div style="color:var(--text3);font-size:10.5px">
+                            {signalQualityGuidance(state.autoLayers)}
+                          </div>
+                        </div>
+                      )}
+                    </For>
+                  </Show>
+                  <Show when={v.signalQuality.coverage}>
+                    <div
+                      data-testid="signal-quality-coverage"
+                      style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);line-height:1.5"
+                    >
+                      {v.signalQuality.coverage}
+                    </div>
+                  </Show>
+                </div>
+              </Show>
+              <Show when={v.savings} keyed>
+                {(sv) => (
+                  <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text2);margin-bottom:10px">
                     <Show
-                      when={!sv.negative}
+                      when={!sv.moneyless}
                       fallback={
-                        <span style="color:var(--amber)">
-                          cheap routing cost {sv.excess} MORE than {sv.basisLabel} would have —
-                          review the auto_low tier · est.
+                        <span style="color:var(--text3)">
+                          savings unavailable — {sv.coverage} were costable
                         </span>
                       }
                     >
-                      est. net savings <span style={valFont}>{sv.net}</span> · at today’s{' '}
-                      {sv.basisLabel} rate · est.
-                    </Show>
-                  </Show>{' '}
-                  <span style="color:var(--text3);font-size:10.5px">
-                    {sv.coverage}
-                    {sv.incomplete ? ' (some rows uncostable)' : ''}
+                      <Show
+                        when={!sv.negative}
+                        fallback={
+                          <span style="color:var(--amber)">
+                            cheap routing cost {sv.excess} MORE than {sv.basisLabel} would have —
+                            review the auto_low tier · est.
+                          </span>
+                        }
+                      >
+                        est. net savings <span style={valFont}>{sv.net}</span> · at today’s{' '}
+                        {sv.basisLabel} rate · est.
+                      </Show>
+                    </Show>{' '}
+                    <span style="color:var(--text3);font-size:10.5px">
+                      {sv.coverage}
+                      {sv.incomplete ? ' (some rows uncostable)' : ''}
+                    </span>
+                  </div>
+                )}
+              </Show>
+              <Show when={chartData()[0].length > 0}>
+                <Chart
+                  data={chartData()}
+                  height={110}
+                  series={[
+                    { label: 'high' },
+                    { label: 'low', dash: [6, 3] },
+                    { label: 'ambiguous', dash: [2, 3] },
+                  ]}
+                />
+                <div style="display:flex;gap:12px;font:400 10.5px 'Geist',sans-serif;color:var(--text3);margin-top:4px">
+                  <span style="color:var(--accent-deep)">— high</span>
+                  <span>
+                    <span
+                      aria-hidden="true"
+                      style="display:inline-block;width:14px;height:0;vertical-align:0.22em;border-top:1.5px dashed currentColor"
+                    />{' '}
+                    low
                   </span>
+                  <span>· · ambiguous</span>
+                </div>
+              </Show>
+            </Show>
+            {/* Workload mix (add-workload-telemetry D7): a SIBLING of the structural
+              zero-state gate, so attempt-only classes still render when no parent
+              was classified in range. EMPTY only when there are no classified
+              parents AND no classes — keyed on the WORKLOAD since, never the
+              structural telemetrySince. Telemetry only: nothing here routes. */}
+            <Show
+              when={v.workload}
+              keyed
+              fallback={
+                <Show when={v.zeroState === 'none'}>
+                  <div
+                    data-testid="workload-mix-empty"
+                    style="font:400 11px 'Geist',sans-serif;color:var(--text3);margin-top:8px"
+                  >
+                    {v.workloadZero === 'preCapture'
+                      ? `No workload telemetry in this range — workload capture begins ${new Date(v.workloadSince ?? 0).toLocaleDateString()}.`
+                      : 'No workload telemetry yet — auto requests record a workload class (code / vision / structured / none) once Layer 1 evaluates them.'}
+                  </div>
+                </Show>
+              }
+            >
+              {(w) => (
+                <div data-testid="workload-mix" style="margin-top:10px">
+                  <div style="font:500 11px 'Geist',sans-serif;color:var(--text2);margin-bottom:4px">
+                    Workload mix{' '}
+                    <span style="font:400 10.5px 'Geist',sans-serif;color:var(--text3)">
+                      · of workload-classified auto requests
+                    </span>
+                  </div>
+                  <Show when={w.attemptOnly}>
+                    <div
+                      data-testid="workload-mix-attempt-only"
+                      style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);margin-bottom:4px"
+                    >
+                      This range holds attempt spend but no classified parent requests.
+                    </div>
+                  </Show>
+                  <For each={w.rows}>
+                    {(r) => (
+                      <div
+                        data-testid="workload-row"
+                        style="display:flex;align-items:center;gap:10px;font:400 11px 'Geist',sans-serif;color:var(--text2);line-height:1.7"
+                      >
+                        <span style="min-width:96px">{r.label}</span>
+                        <span
+                          class="mono"
+                          style="font:400 10.5px 'Geist Mono',monospace;color:var(--text3);min-width:72px"
+                        >
+                          {r.sharePct} · {r.requests}
+                        </span>
+                        <span
+                          aria-hidden="true"
+                          style={`display:inline-block;height:6px;border-radius:3px;background:var(--accent);opacity:.75;max-width:160px;width:${
+                            r.sharePct === '0%' ? '2px' : `${r.sharePct.replace('%', '')}%`
+                          }`}
+                        />
+                        <span
+                          class="mono"
+                          style="font:400 10.5px 'Geist Mono',monospace;color:var(--text)"
+                        >
+                          {r.spend === null ? '—' : r.spend}
+                          <Show when={r.spend === null}>
+                            <span style="color:var(--text3)"> unpriced</span>
+                          </Show>
+                          <Show when={r.spend !== null && r.unpricedNote !== null}>
+                            <span style="color:var(--text3)"> · {r.unpricedNote}</span>
+                          </Show>
+                        </span>
+                      </div>
+                    )}
+                  </For>
+                  <Show when={w.coverage}>
+                    <div
+                      data-testid="workload-mix-coverage"
+                      style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);margin-top:4px"
+                    >
+                      {w.coverage}
+                    </div>
+                  </Show>
+                  <Show when={w.revisionNote}>
+                    <div
+                      data-testid="workload-mix-revisions"
+                      style="font:400 10.5px 'Geist',sans-serif;color:var(--amber);margin-top:2px"
+                    >
+                      {w.revisionNote}
+                    </div>
+                  </Show>
+                  <div
+                    data-testid="workload-mix-footnote"
+                    style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);margin-top:4px;line-height:1.5"
+                  >
+                    Structural detection covers code, vision, and structured output; research and
+                    writing arrive with the semantic workload source. Telemetry only — nothing here
+                    routes.
+                  </div>
                 </div>
               )}
             </Show>
-            <Show when={chartData()[0].length > 0}>
-              <Chart
-                data={chartData()}
-                height={110}
-                series={[
-                  { label: 'high' },
-                  { label: 'low', dash: [6, 3] },
-                  { label: 'ambiguous', dash: [2, 3] },
-                ]}
-              />
-              <div style="display:flex;gap:12px;font:400 10.5px 'Geist',sans-serif;color:var(--text3);margin-top:4px">
-                <span style="color:var(--accent-deep)">— high</span>
-                <span>
-                  <span
-                    aria-hidden="true"
-                    style="display:inline-block;width:14px;height:0;vertical-align:0.22em;border-top:1.5px dashed currentColor"
-                  />{' '}
-                  low
-                </span>
-                <span>· · ambiguous</span>
-              </div>
-            </Show>
-          </Show>
+          </>
         )}
       </Show>
     </div>
@@ -1053,8 +1159,7 @@ export function Routing() {
                             touch device there is no drag — saying so would send the user
                             looking for a gesture the platform never fires. */}
                         <span class="chain-hint-drag">drag to reorder</span>
-                        <span class="chain-hint-tap">use ↑ ↓ to reorder</span> · max{' '}
-                        {String(5)}
+                        <span class="chain-hint-tap">use ↑ ↓ to reorder</span> · max {String(5)}
                       </span>
                       <Show when={t.key !== 'default'}>
                         <button
@@ -1232,7 +1337,12 @@ export function Routing() {
                   </Show>
                   {/* Keyboard-reorder announcements. Separate from the ModelPicker's own
                       sr-only result-count status node, which shares this card. */}
-                  <div role="status" aria-atomic="true" class="sr-only" data-testid="reorder-status">
+                  <div
+                    role="status"
+                    aria-atomic="true"
+                    class="sr-only"
+                    data-testid="reorder-status"
+                  >
                     {announce()?.tierId === t.id ? announce()?.message : ''}
                   </div>
                   <div style="padding:8px 18px">

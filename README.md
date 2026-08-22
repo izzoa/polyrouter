@@ -55,7 +55,12 @@ response bodies unless you opt in.
   prompt can't force everything into the top tier) and **L3 cascade** (try the cheap
   model, escalate on a failed quality check). Every smart layer **degrades to
   explicit/default** — a request never fails because routing tried to be clever.
-- **Safe mid-stream semantics** — fallbacks happen freely *before* the first token; once
+  Every `auto` request Layer 1 evaluates also records a **workload** class (`code` /
+  `vision` / `structured` / `none`) from the same structural features — telemetry
+  only today (the inspector chip + the Auto-performance "Workload mix"); structural
+  detection covers code, vision, and structured output within L1's bounded scan, and
+  research / writing arrive with the semantic workload source in a later change.
+- **Safe mid-stream semantics** — fallbacks happen freely _before_ the first token; once
   streaming has begun the model is committed, and an upstream failure terminates the
   stream with a clear error. Models are **never silently swapped mid-response**.
 - **Per-provider circuit breakers** (Redis-backed, shared across instances) with
@@ -94,7 +99,9 @@ response bodies unless you opt in.
   model/provider/agent, per-agent usage with one-click key rotation, provider health &
   catalog sync, routing configuration, and the **decision inspector** — every request
   shows its decision layer and human-readable routing reason, tokens, snapshot-priced
-  cost, and latency.
+  cost, and latency (plus its **workload** class when `auto` classified it). The Routing
+  page's **Auto performance** card adds a **Workload mix** block — what kinds of work `auto`
+  carried and what each cost, with unpriced / coverage / classifier-revision disclosures.
 - **Accessible by design**: fully keyboard-operable (real buttons, visible focus, honest
   dialog semantics), WCAG-checked contrast, `prefers-reduced-motion` support — all
   enforced by regression test suites, with the visual language pinned in
@@ -151,6 +158,10 @@ Precedence order, first match wins:
 Whatever layer decides, the tier's fallback chain applies on provider failure, budgets are
 enforced, and the decision (`decision_layer` + `routing_reason`) is recorded for the
 inspector. If a smart layer is unavailable, `auto` silently degrades to the default tier.
+Every `auto` request Layer 1 evaluates additionally records a **workload** class
+(`code` / `vision` / `structured` / `none`) beside the decision — **telemetry only**: it
+changes nothing in the order above, and an explicit `model: <tier-key>` (e.g. a `coding`
+tier you created) remains the way to steer work to a specialist tier today.
 
 ## Architecture
 
@@ -217,19 +228,19 @@ name: polyrouter-selfhost
 
 services:
   app:
-    image: ghcr.io/izzoa/polyrouter:0.14.0       # or :latest — pin the current release
+    image: ghcr.io/izzoa/polyrouter:0.14.0 # or :latest — pin the current release
     restart: unless-stopped
     ports:
-      - '${POLYROUTER_HOST:-127.0.0.1}:${POLYROUTER_PORT:-3001}:3001'  # loopback by default
+      - '${POLYROUTER_HOST:-127.0.0.1}:${POLYROUTER_PORT:-3001}:3001' # loopback by default
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
-    stop_grace_period: 45s                        # drain in-flight streams on stop
-    env_file: .env                                # optional tunables from the .env reference reach the container
+    stop_grace_period: 45s # drain in-flight streams on stop
+    env_file: .env # optional tunables from the .env reference reach the container
     environment:
       NODE_ENV: production
       MODE: selfhosted
-      BIND_ADDRESS: 0.0.0.0                        # bind inside the container; host exposure is `ports`
+      BIND_ADDRESS: 0.0.0.0 # bind inside the container; host exposure is `ports`
       PORT: '3001'
       DATABASE_URL: postgresql://polyrouter:${POSTGRES_PASSWORD}@postgres:5432/polyrouter
       REDIS_URL: redis://redis:6379
@@ -263,9 +274,9 @@ services:
       timeout: 3s
       retries: 12
 
-  apprise:                                        # optional notification fan-out (see below)
+  apprise: # optional notification fan-out (see below)
     image: caronc/apprise:latest
-    profiles: ['apprise']                         # only starts with `--profile apprise`
+    profiles: ['apprise'] # only starts with `--profile apprise`
     restart: unless-stopped
     volumes: ['polyrouter-apprise:/config']
 
@@ -273,7 +284,7 @@ networks:
   default:
     ipam:
       config:
-        - subnet: ${POLYROUTER_SUBNET:-172.28.5.0/24}   # deterministic CIDR for NOTIFY_ALLOWED_ENDPOINTS
+        - subnet: ${POLYROUTER_SUBNET:-172.28.5.0/24} # deterministic CIDR for NOTIFY_ALLOWED_ENDPOINTS
 
 volumes:
   polyrouter-pg:
@@ -324,14 +335,14 @@ docker compose pull && docker compose up -d      # migrations run on boot
 > running the compose command **without** `--build`. On a **fetch install** the compose
 > flags go **before** the subcommand, exactly as the installer prints:
 > `docker compose -p polyrouter-selfhost --env-file .env -f src/docker-compose.yml
-> --project-directory src pull`.
+--project-directory src pull`.
 
 > **Compose commands below — checkout vs. one-line install.** The bare
 > `docker compose -p polyrouter-selfhost …` form shown below assumes a **checkout**
 > (compose file at the repo root). A **one-line (fetch) install** keeps the compose
 > file under `src/` with `.env` beside it, so run the commands from inside the
 > `polyrouter/` directory with the `--env-file .env -f src/docker-compose.yml
-> --project-directory src` flags placed before the subcommand — exactly the manage
+--project-directory src` flags placed before the subcommand — exactly the manage
 > command the installer prints when it finishes.
 
 **Claim the instance, then expose it.** The app publishes on **loopback only** by
@@ -362,37 +373,44 @@ leading `CMD`:
 
 ```yaml
 healthcheck:
-  test: ['CMD', 'node', '-e', "const p=process.env.PORT||3001;require('http').get('http://127.0.0.1:'+p+'/api/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+  test:
+    [
+      'CMD',
+      'node',
+      '-e',
+      "const p=process.env.PORT||3001;require('http').get('http://127.0.0.1:'+p+'/api/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))",
+    ]
 ```
 
 ### `.env` reference
 
-| Variable                                                                                            | Default                 | Purpose                                                                                                      |
-| --------------------------------------------------------------------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `BETTER_AUTH_SECRET`, `API_KEY_HMAC_SECRET`, `PROVIDER_CREDENTIAL_KEY`, `NOTIFY_CREDENTIALS_SECRET` | generated               | Required 32-byte-hex secrets (sessions, agent-key HMAC, credential + channel encryption at rest)             |
-| `POSTGRES_PASSWORD`                                                                                 | generated               | Database password — **initialization-only**: changing it later does NOT rotate the role password in postgres |
-| `POLYROUTER_HOST` / `POLYROUTER_PORT`                                                               | `127.0.0.1` / `3001`    | Host interface/port the app is published on                                                                  |
-| `APP_URL`                                                                                           | `http://localhost:3001` | Public origin (Better Auth base URL) — set it when exposing. Also gates **links in notification emails**: a loopback value omits them (see Notification emails) |
-| `METRICS_ENABLED`                                                                                   | `true`                  | Prometheus `/metrics` (404 when `false`)                                                                     |
-| `OTEL_ENABLED` / `OTEL_EXPORTER_OTLP_ENDPOINT`                                                      | `false` / SDK default   | OpenTelemetry traces for the proxy path (batched OTLP/HTTP export)                                           |
-| `GOOGLE_/GITHUB_/DISCORD_CLIENT_ID`+`_SECRET`                                                       | unset                   | Optional OAuth sign-in providers                                                                             |
-| `APPRISE_API_URL` + `NOTIFY_ALLOWED_ENDPOINTS`                                                      | unset                   | Optional Apprise fan-out — see below                                                                         |
-| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` / `SMTP_SECURE`                 | unset (`PORT` 587, `SECURE` starttls) | Server-wide SMTP for password-reset **and invite** email — **active only when both `SMTP_HOST` and `SMTP_FROM` are set; otherwise password reset silently never sends and invites must be delivered by copying the link.** Rely on OAuth if you don't set it |
-| `ROUTING_AUTO_LAYERS`                                                                               | `structural`            | Which smart-routing layers are on. **Cascade (cheap→escalate) is OFF until you set `structural,cascade`** — the dashboard toggle just shows it greyed out otherwise |
-| `ROUTING_STRUCTURAL_WEIGHTS`                                                                        | built-ins               | JSON override for the Layer-1 classifier. Ambient keys (`size` `code` `tools` `schema` `depth` `multimodal` `maxTokens`) merge over the defaults and normalize to sum 1; the `reasoning` key is the declared-hint adjustment magnitude in `[0, 0.5]` (default `0.1`), NOT normalized. A declared `reasoning_effort`/`thinking` steers the score; a maximal declaration routes `auto_high` directly |
-| `CALIBRATION_SCHED_ENABLED` / `CALIBRATION_SCHED_CRON`                                              | `true` / `0 4 * * *`    | The per-tenant threshold-calibration sweep (opt-in PER TENANT from the Routing page; this pair gates the background worker instance-wide) |
-| `CALIBRATION_WINDOW_DAYS` / `CALIBRATION_MIN_EDGE_SAMPLES` / `CALIBRATION_STEP` / `CALIBRATION_MAX_DRIFT` | `14` / `50` / `0.02` / `0.1` | Calibration rails: evidence window, minimum fresh edge-zone samples (hard floor 50 — only raisable), bounded per-run step, and the max total drift from the instance thresholds. Every move is audited and one click from reverted |
-| `BUDGET_FAIL_OPEN`                                                                                  | `true`                  | On a Redis/enforcement fault, block budgets **admit** the request (availability-first). Set `false` for a hard cap that returns `503` instead |
-| `TRUSTED_PROXY_CIDRS`                                                                               | unset                   | CIDRs of reverse proxies allowed to set `X-Forwarded-For` (rate-limit client-IP trust) — set it when behind a proxy |
-| `NOTIFY_APPRISE_EGRESS_CONFIRMED`                                                                   | `false`                 | Cloud-mode (`MODE=cloud`) acknowledgement before Apprise delivery runs — the SSRF allowlist (`NOTIFY_ALLOWED_ENDPOINTS`) is still enforced independently |
-| `PRICING_REFRESH_URL`                                                                               | LiteLLM catalog         | Source for pricing refreshes (a bundled snapshot ships by default; the Settings page shows catalog status + a Refresh-now button for admins) |
-| `PRICING_REFRESH_SCHED_ENABLED` / `PRICING_REFRESH_SCHED_CRON`                                      | `true` / `30 4 * * *`   | **Daily automatic pricing refresh — ON by default** (self-host only): one outbound GET of LiteLLM's public price catalog per day; no tenant data is sent. Set `PRICING_REFRESH_SCHED_ENABLED=false` to opt out; manual refresh keeps working |
-| `PROXY_FIRST_EVENT_TIMEOUT_MS` / `PROXY_IDLE_TIMEOUT_MS`                                            | `30000` / `30000`       | Time-to-first-token / buffered-read idle bound — **raise both for slow local models** (a 30s prefill would otherwise 503 and trip the breaker). For ONE slow provider in a mixed chain, prefer its per-provider override (the provider form's "Advanced — patience for slow models") over raising the instance default: timeouts trip that provider's breaker, and while its recovery probe runs with doubled patience, a provider slower than 2× its bound stays in a skip loop until its patience is raised |
-| `SEMANTIC_MODEL_PATH`                                                                               | unset                   | Opt-in **Layer 2 semantic embedder**: path to a local model bundle (see the semantic-layer section) — pair it with `semantic` in `ROUTING_AUTO_LAYERS`. Unset = the module is absent entirely; a set-but-broken path fails boot loudly |
-| `EVENTS_ENABLED`                                                                                    | `true`                  | Dashboard live event stream (`GET /api/events`). `false` turns it off entirely and the dashboard stays on its normal polling refresh — no feature is lost, only push |
-| `EVENTS_HEARTBEAT_MS`                                                                               | `25000`                 | Keep-alive interval; must stay under your proxy's idle-reap window (boot fails if ≥ 60s). Also bounds how fast a revoked session's open stream is closed |
-| `SEMANTIC_TIMEOUT_MS` / `SEMANTIC_MAX_INPUT_CHARS` / `SEMANTIC_CONCURRENCY`                         | `50` / `2000` / `2`     | Embedder bounds: per-embed hard timeout, input cap before tokenization, concurrent-inference cap (saturation skips the layer for that request). Out-of-bounds values reject boot |
-| `POLYROUTER_SUBNET` / `POLYROUTER_IMAGE`                                                            | `172.28.5.0/24` / built | Compose network CIDR (change on a collision) / prebuilt image override                                       |
+| Variable                                                                                                  | Default                               | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| --------------------------------------------------------------------------------------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BETTER_AUTH_SECRET`, `API_KEY_HMAC_SECRET`, `PROVIDER_CREDENTIAL_KEY`, `NOTIFY_CREDENTIALS_SECRET`       | generated                             | Required 32-byte-hex secrets (sessions, agent-key HMAC, credential + channel encryption at rest)                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `POSTGRES_PASSWORD`                                                                                       | generated                             | Database password — **initialization-only**: changing it later does NOT rotate the role password in postgres                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `POLYROUTER_HOST` / `POLYROUTER_PORT`                                                                     | `127.0.0.1` / `3001`                  | Host interface/port the app is published on                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `APP_URL`                                                                                                 | `http://localhost:3001`               | Public origin (Better Auth base URL) — set it when exposing. Also gates **links in notification emails**: a loopback value omits them (see Notification emails)                                                                                                                                                                                                                                                                                                                                               |
+| `METRICS_ENABLED`                                                                                         | `true`                                | Prometheus `/metrics` (404 when `false`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `OTEL_ENABLED` / `OTEL_EXPORTER_OTLP_ENDPOINT`                                                            | `false` / SDK default                 | OpenTelemetry traces for the proxy path (batched OTLP/HTTP export)                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `GOOGLE_/GITHUB_/DISCORD_CLIENT_ID`+`_SECRET`                                                             | unset                                 | Optional OAuth sign-in providers                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `APPRISE_API_URL` + `NOTIFY_ALLOWED_ENDPOINTS`                                                            | unset                                 | Optional Apprise fan-out — see below                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` / `SMTP_SECURE`                       | unset (`PORT` 587, `SECURE` starttls) | Server-wide SMTP for password-reset **and invite** email — **active only when both `SMTP_HOST` and `SMTP_FROM` are set; otherwise password reset silently never sends and invites must be delivered by copying the link.** Rely on OAuth if you don't set it                                                                                                                                                                                                                                                  |
+| `ROUTING_AUTO_LAYERS`                                                                                     | `structural`                          | Which smart-routing layers are on. **Cascade (cheap→escalate) is OFF until you set `structural,cascade`** — the dashboard toggle just shows it greyed out otherwise                                                                                                                                                                                                                                                                                                                                           |
+| `ROUTING_STRUCTURAL_WEIGHTS`                                                                              | built-ins                             | JSON override for the Layer-1 classifier. Ambient keys (`size` `code` `tools` `schema` `depth` `multimodal` `maxTokens`) merge over the defaults and normalize to sum 1; the `reasoning` key is the declared-hint adjustment magnitude in `[0, 0.5]` (default `0.1`), NOT normalized. A declared `reasoning_effort`/`thinking` steers the score; a maximal declaration routes `auto_high` directly                                                                                                            |
+| `ROUTING_WORKLOAD_THRESHOLDS`                                                                             | built-ins                             | JSON override for the structural **workload** classifier (telemetry only — no routing change): `codeShare` in `(0, 1]` (default `0.3`) and integer `codeMinChars ≥ 0` (default `200`). An `auto` request records workload `code` when fenced code is at least that share of the scanned window AND at least that many chars; `vision` (an image block) and `structured` (a declared JSON output format) are binary. Unknown keys / out-of-range values fail boot.                                             |
+| `CALIBRATION_SCHED_ENABLED` / `CALIBRATION_SCHED_CRON`                                                    | `true` / `0 4 * * *`                  | The per-tenant threshold-calibration sweep (opt-in PER TENANT from the Routing page; this pair gates the background worker instance-wide)                                                                                                                                                                                                                                                                                                                                                                     |
+| `CALIBRATION_WINDOW_DAYS` / `CALIBRATION_MIN_EDGE_SAMPLES` / `CALIBRATION_STEP` / `CALIBRATION_MAX_DRIFT` | `14` / `50` / `0.02` / `0.1`          | Calibration rails: evidence window, minimum fresh edge-zone samples (hard floor 50 — only raisable), bounded per-run step, and the max total drift from the instance thresholds. Every move is audited and one click from reverted                                                                                                                                                                                                                                                                            |
+| `BUDGET_FAIL_OPEN`                                                                                        | `true`                                | On a Redis/enforcement fault, block budgets **admit** the request (availability-first). Set `false` for a hard cap that returns `503` instead                                                                                                                                                                                                                                                                                                                                                                 |
+| `TRUSTED_PROXY_CIDRS`                                                                                     | unset                                 | CIDRs of reverse proxies allowed to set `X-Forwarded-For` (rate-limit client-IP trust) — set it when behind a proxy                                                                                                                                                                                                                                                                                                                                                                                           |
+| `NOTIFY_APPRISE_EGRESS_CONFIRMED`                                                                         | `false`                               | Cloud-mode (`MODE=cloud`) acknowledgement before Apprise delivery runs — the SSRF allowlist (`NOTIFY_ALLOWED_ENDPOINTS`) is still enforced independently                                                                                                                                                                                                                                                                                                                                                      |
+| `PRICING_REFRESH_URL`                                                                                     | LiteLLM catalog                       | Source for pricing refreshes (a bundled snapshot ships by default; the Settings page shows catalog status + a Refresh-now button for admins)                                                                                                                                                                                                                                                                                                                                                                  |
+| `PRICING_REFRESH_SCHED_ENABLED` / `PRICING_REFRESH_SCHED_CRON`                                            | `true` / `30 4 * * *`                 | **Daily automatic pricing refresh — ON by default** (self-host only): one outbound GET of LiteLLM's public price catalog per day; no tenant data is sent. Set `PRICING_REFRESH_SCHED_ENABLED=false` to opt out; manual refresh keeps working                                                                                                                                                                                                                                                                  |
+| `PROXY_FIRST_EVENT_TIMEOUT_MS` / `PROXY_IDLE_TIMEOUT_MS`                                                  | `30000` / `30000`                     | Time-to-first-token / buffered-read idle bound — **raise both for slow local models** (a 30s prefill would otherwise 503 and trip the breaker). For ONE slow provider in a mixed chain, prefer its per-provider override (the provider form's "Advanced — patience for slow models") over raising the instance default: timeouts trip that provider's breaker, and while its recovery probe runs with doubled patience, a provider slower than 2× its bound stays in a skip loop until its patience is raised |
+| `SEMANTIC_MODEL_PATH`                                                                                     | unset                                 | Opt-in **Layer 2 semantic embedder**: path to a local model bundle (see the semantic-layer section) — pair it with `semantic` in `ROUTING_AUTO_LAYERS`. Unset = the module is absent entirely; a set-but-broken path fails boot loudly                                                                                                                                                                                                                                                                        |
+| `EVENTS_ENABLED`                                                                                          | `true`                                | Dashboard live event stream (`GET /api/events`). `false` turns it off entirely and the dashboard stays on its normal polling refresh — no feature is lost, only push                                                                                                                                                                                                                                                                                                                                          |
+| `EVENTS_HEARTBEAT_MS`                                                                                     | `25000`                               | Keep-alive interval; must stay under your proxy's idle-reap window (boot fails if ≥ 60s). Also bounds how fast a revoked session's open stream is closed                                                                                                                                                                                                                                                                                                                                                      |
+| `SEMANTIC_TIMEOUT_MS` / `SEMANTIC_MAX_INPUT_CHARS` / `SEMANTIC_CONCURRENCY`                               | `50` / `2000` / `2`                   | Embedder bounds: per-embed hard timeout, input cap before tokenization, concurrent-inference cap (saturation skips the layer for that request). Out-of-bounds values reject boot                                                                                                                                                                                                                                                                                                                              |
+| `POLYROUTER_SUBNET` / `POLYROUTER_IMAGE`                                                                  | `172.28.5.0/24` / built               | Compose network CIDR (change on a collision) / prebuilt image override                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 
 > The optional tunables above are compose pass-through: set one in `.env` and it reaches
 > the container (the compose file sets the deploy-invariant ones — bind address, mode,
@@ -487,15 +505,27 @@ models/minilm/
 {
   "schemaVersion": 1,
   "tokenizer": {
-    "type": "wordpiece", "vocabFile": "vocab.txt", "lowercase": true,
-    "unkToken": "[UNK]", "clsToken": "[CLS]", "sepToken": "[SEP]",
-    "padToken": "[PAD]", "maxTokens": 256
+    "type": "wordpiece",
+    "vocabFile": "vocab.txt",
+    "lowercase": true,
+    "unkToken": "[UNK]",
+    "clsToken": "[CLS]",
+    "sepToken": "[SEP]",
+    "padToken": "[PAD]",
+    "maxTokens": 256
   },
   "model": {
     "file": "model.onnx",
-    "inputNames": { "inputIds": "input_ids", "attentionMask": "attention_mask", "tokenTypeIds": "token_type_ids" },
-    "outputName": "last_hidden_state", "outputKind": "token_embeddings",
-    "dims": 384, "pooling": "mean", "normalize": true
+    "inputNames": {
+      "inputIds": "input_ids",
+      "attentionMask": "attention_mask",
+      "tokenTypeIds": "token_type_ids"
+    },
+    "outputName": "last_hidden_state",
+    "outputKind": "token_embeddings",
+    "dims": 384,
+    "pooling": "mean",
+    "normalize": true
   }
 }
 ```
@@ -539,16 +569,16 @@ entirely rather than sending a `127.0.0.1` URL that would be dead in someone's
 inbox — or worse, on a phone, resolve to the phone. Setting `APP_URL` to a
 loopback value explicitly does the same thing; that is deliberate, not a bug.
 
-| `APP_URL` | Links in email |
-|---|---|
-| unset, or `http://localhost:3001` (default) | omitted |
-| any `localhost` / `127.0.0.1` / `[::1]` value | omitted |
+| `APP_URL`                                                  | Links in email                                                            |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------- |
+| unset, or `http://localhost:3001` (default)                | omitted                                                                   |
+| any `localhost` / `127.0.0.1` / `[::1]` value              | omitted                                                                   |
 | `http://192.168.1.50:3001`, `http://polyrouter.local:3001` | **yes** — a LAN address is often exactly right for a self-hosted instance |
-| `https://polyrouter.example.com` | **yes** |
-| a value carrying credentials, or a non-`http(s)` scheme | omitted (it is never rendered as a link) |
+| `https://polyrouter.example.com`                           | **yes**                                                                   |
+| a value carrying credentials, or a non-`http(s)` scheme    | omitted (it is never rendered as a link)                                  |
 
 Two practical notes: the value is read **at boot**, so restart after changing it
-(`docker compose -p polyrouter-selfhost up -d`); and only the *origin* is used, so
+(`docker compose -p polyrouter-selfhost up -d`); and only the _origin_ is used, so
 an `APP_URL` with a path (`https://host/polyrouter/`) produces links at the domain
 root. Serving the dashboard under a subpath is not currently supported for email
 links.
@@ -615,7 +645,7 @@ sidebar):
   yourself — issuing never depends on SMTP. Only a token hash is stored (plus a short lookup
   prefix — never the full token), and the raw token travels in the link's `#fragment`, which browsers never send to
   servers or proxies.
-- **Roles** — promote/demote admins. The last *enabled* admin can never be
+- **Roles** — promote/demote admins. The last _enabled_ admin can never be
   deleted, demoted, or disabled (the API refuses with `409`).
 - **Disable** — cuts both credential planes at once: dashboard sessions are
   revoked immediately and every agent API key the user owns stops working on
@@ -684,14 +714,14 @@ make it the default —
   models: {
     providers: {
       polyrouter: {
-        baseUrl: "https://<your-instance>/v1",
-        apiKey: "poly_your_key",
-        api: "openai-completions",
-        models: [{ id: "auto" }],
+        baseUrl: 'https://<your-instance>/v1',
+        apiKey: 'poly_your_key',
+        api: 'openai-completions',
+        models: [{ id: 'auto' }],
       },
     },
   },
-  agents: { defaults: { model: { primary: "polyrouter/auto" } } },
+  agents: { defaults: { model: { primary: 'polyrouter/auto' } } },
 }
 ```
 
@@ -701,8 +731,8 @@ make it the default —
 model:
   default: auto
   provider: custom
-  base_url: "https://<your-instance>/v1"
-  api_key: "poly_your_key"
+  base_url: 'https://<your-instance>/v1'
+  api_key: 'poly_your_key'
 ```
 
 Prefer to keep the key out of the YAML? Hermes supports env substitution — use

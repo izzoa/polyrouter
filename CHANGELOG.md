@@ -15,6 +15,10 @@ heading is started.
 
 ## [Unreleased]
 
+### Added
+
+- **Workload telemetry (Epic W, W-1).** `auto` requests record a workload class — `code` / `vision` / `structured` / `none` — from the existing Layer-1 feature vector (telemetry only; nothing routes on it yet). Four columns on parent request-log rows (migration 0026), a workload chip in the inspector, `workloadMix` on `GET /api/analytics/auto` (per-class requests + reported-basis spend on both ledgers, with unpriced/coverage/revision disclosures), and a "Workload mix" block on the Auto-performance card. New optional `ROUTING_WORKLOAD_THRESHOLDS`.
+
 ## [0.14.0] — 2026-08-21
 
 ### Added

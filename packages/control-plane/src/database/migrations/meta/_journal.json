@@ -183,6 +183,13 @@
       "when": 1787336878216,
       "tag": "0025_flimsy_killer_shrike",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1787430685446,
+      "tag": "0026_oval_synch",
+      "breakpoints": true
     }
   ]
 }

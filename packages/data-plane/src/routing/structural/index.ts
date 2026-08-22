@@ -5,3 +5,4 @@
  */
 export * from './features';
 export * from './classify';
+export * from './workload';

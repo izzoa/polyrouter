@@ -32,6 +32,7 @@ import {
   unknownMicrosSum,
 } from './cost-sql';
 import { computeSignalQuality } from './signal-quality';
+import { buildWorkloadMix } from './workload-mix';
 
 function intCount(filter?: SQL): SQL<number> {
   return filter
@@ -202,7 +203,10 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
   const estimatedTokenSum = (t: typeof requestLogs | typeof requestAttempts) =>
     sql<number>`coalesce(sum(case when ${t.usageEstimated} then ${t.inputTokens} + ${t.outputTokens} + coalesce(${t.cacheReadTokens}, 0) + coalesce(${t.cacheWriteTokens}, 0) else 0 end), 0)`;
 
-  const addTokens = (a: AnalyticsTokens, b: Partial<AnalyticsTokens> | undefined): AnalyticsTokens => ({
+  const addTokens = (
+    a: AnalyticsTokens,
+    b: Partial<AnalyticsTokens> | undefined,
+  ): AnalyticsTokens => ({
     inputTokens: a.inputTokens + Number(b?.inputTokens ?? 0),
     outputTokens: a.outputTokens + Number(b?.outputTokens ?? 0),
     cacheReadTokens: a.cacheReadTokens + Number(b?.cacheReadTokens ?? 0),
@@ -282,10 +286,7 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
             requestAttempts.providerKind,
           ),
           unknownMicros: unknownMicrosSum(requestAttempts.cost, requestAttempts.providerKind),
-          knownCashMicros: knownCashMicrosSum(
-            requestAttempts.cost,
-            requestAttempts.providerKind,
-          ),
+          knownCashMicros: knownCashMicrosSum(requestAttempts.cost, requestAttempts.providerKind),
         })
         .from(requestAttempts)
         .where(attemptRange(principal, range));
@@ -416,15 +417,19 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
 
       // Attempt-ledger spend by the same dimension. The agent breakdown joins
       // attempts to their PARENT log for agent_id — BOTH sides owner-scoped.
-      let attemptRows: ({ key: string | null; spendMicros: number; estimatedTokens: number } & AnalyticsTokens)[];
+      let attemptRows: ({
+        key: string | null;
+        spendMicros: number;
+        estimatedTokens: number;
+      } & AnalyticsTokens)[];
       if (dimension === 'agent') {
         attemptRows = await db
           .select({
-          key: requestLogs.agentId,
-          spendMicros: cashMicrosSum(requestAttempts.cost, requestAttempts.providerKind),
-          ...tokenSums(requestAttempts),
-          estimatedTokens: estimatedTokenSum(requestAttempts),
-        })
+            key: requestLogs.agentId,
+            spendMicros: cashMicrosSum(requestAttempts.cost, requestAttempts.providerKind),
+            ...tokenSums(requestAttempts),
+            estimatedTokens: estimatedTokenSum(requestAttempts),
+          })
           .from(requestAttempts)
           .innerJoin(requestLogs, eq(requestAttempts.requestLogId, requestLogs.id))
           .where(
@@ -445,11 +450,11 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
               : requestAttempts.tierKey;
         attemptRows = await db
           .select({
-          key: attKey,
-          spendMicros: cashMicrosSum(requestAttempts.cost, requestAttempts.providerKind),
-          ...tokenSums(requestAttempts),
-          estimatedTokens: estimatedTokenSum(requestAttempts),
-        })
+            key: attKey,
+            spendMicros: cashMicrosSum(requestAttempts.cost, requestAttempts.providerKind),
+            ...tokenSums(requestAttempts),
+            estimatedTokens: estimatedTokenSum(requestAttempts),
+          })
           .from(requestAttempts)
           .where(attemptRange(principal, range))
           .groupBy(attKey);
@@ -562,14 +567,20 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
           // L2 semantic slice (add-semantic-dashboard D4). semantic_band non-null
           // ⊆ structural_band='ambiguous' ⊆ banded, so these are within `banded`.
           semanticEvaluated: intCount(sql`${requestLogs.semanticBand} is not null`),
-          semanticRoutedHigh: intCount(sql`${semanticRouted} and ${requestLogs.semanticBand} = 'high'`),
-          semanticRoutedLow: intCount(sql`${semanticRouted} and ${requestLogs.semanticBand} = 'low'`),
+          semanticRoutedHigh: intCount(
+            sql`${semanticRouted} and ${requestLogs.semanticBand} = 'high'`,
+          ),
+          semanticRoutedLow: intCount(
+            sql`${semanticRouted} and ${requestLogs.semanticBand} = 'low'`,
+          ),
           // Routed outcome split — DISJOINT + EXHAUSTIVE over the SAME routed
           // population, so success+fallback+error+cancelled == routed total.
           semanticSuccess: intCount(sql`${semanticRouted} and ${requestLogs.status} = 'success'`),
           semanticFallback: intCount(sql`${semanticRouted} and ${requestLogs.status} = 'fallback'`),
           semanticError: intCount(sql`${semanticRouted} and ${requestLogs.status} = 'error'`),
-          semanticCancelled: intCount(sql`${semanticRouted} and ${requestLogs.status} = 'cancelled'`),
+          semanticCancelled: intCount(
+            sql`${semanticRouted} and ${requestLogs.status} = 'cancelled'`,
+          ),
           // Source split over EVALUATED rows.
           semanticBundled: intCount(
             sql`${requestLogs.semanticBand} is not null and ${requestLogs.semanticSource} = 'bundled'`,
@@ -675,6 +686,66 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
 
       const iso = (v: Date | string | null | undefined): string | null =>
         v == null ? null : v instanceof Date ? v.toISOString() : new Date(v).toISOString();
+
+      // Workload mix (add-workload-telemetry D6): per present class — in-range
+      // classified PARENT rows (requests, unpriced parents, cash-like micros via
+      // the SHARED helper) plus in-range ATTEMPT rows joined to their (possibly
+      // out-of-range) classified parent, BOTH sides owner-scoped, the attempt's
+      // OWN created_at in range — cash-like micros + non-null-cost / null-cost
+      // attempt counts so costability is decidable (null-is-unpriced /
+      // zero-is-free). Merged in code over the UNION of classes; deterministic
+      // order; revisions over in-range parents only; `since` range-independent;
+      // `unclassified` = banded rows without a class (legacy or fault).
+      const wlClassified = sql`${requestLogs.workloadClass} is not null`;
+      const wlParents = await db
+        .select({
+          cls: requestLogs.workloadClass,
+          requests: intCount(),
+          unpriced: intCount(sql`${requestLogs.cost} is null`),
+          micros: cashMicrosSum(requestLogs.cost, requestLogs.providerKind),
+        })
+        .from(requestLogs)
+        .where(and(logRange(principal, range), wlClassified))
+        .groupBy(requestLogs.workloadClass);
+      const wlAttempts = await db
+        .select({
+          cls: requestLogs.workloadClass,
+          micros: cashMicrosSum(requestAttempts.cost, requestAttempts.providerKind),
+          costed: intCount(sql`${requestAttempts.cost} is not null`),
+          unpriced: intCount(sql`${requestAttempts.cost} is null`),
+        })
+        .from(requestAttempts)
+        .innerJoin(requestLogs, eq(requestAttempts.requestLogId, requestLogs.id))
+        .where(
+          and(
+            ownershipPredicate(requestAttempts, principal),
+            ownershipPredicate(requestLogs, principal),
+            gte(requestAttempts.createdAt, range.from),
+            lt(requestAttempts.createdAt, range.to),
+            wlClassified,
+          ),
+        )
+        .groupBy(requestLogs.workloadClass);
+      const [wlUnclassified] = await db
+        .select({ n: intCount() })
+        .from(requestLogs)
+        .where(and(banded, sql`${requestLogs.workloadClass} is null`));
+      const [wlSince] = await db
+        .select({ min: sql<Date | null>`min(${requestLogs.createdAt})` })
+        .from(requestLogs)
+        .where(and(ownershipPredicate(requestLogs, principal), wlClassified));
+      const wlRevisions = await db
+        .select({ revision: requestLogs.workloadRevision, requests: intCount() })
+        .from(requestLogs)
+        .where(and(logRange(principal, range), wlClassified))
+        .groupBy(requestLogs.workloadRevision);
+      const workloadMix = buildWorkloadMix(
+        wlParents,
+        wlAttempts,
+        wlUnclassified?.n ?? 0,
+        iso(wlSince?.min),
+        wlRevisions,
+      );
       return {
         evaluated: t!.evaluated,
         bands: {
@@ -714,6 +785,7 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
         telemetrySince: iso(since?.min),
         savings,
         signalQuality,
+        workloadMix,
       };
     },
 

@@ -452,6 +452,16 @@ export const requestLogs = pgTable(
     semanticScore: doublePrecision('semantic_score'),
     semanticSource: text('semantic_source'),
     semanticRevision: text('semantic_revision'),
+    // Workload telemetry (add-workload-telemetry): the workload verdict when the
+    // classifier EVALUATED the request — class (taxonomy ∪ 'none'), confidence
+    // in [0,1], the producing source (structural|semantic), and the taxonomy +
+    // classifier + threshold revision stamp. ALL FOUR travel together (CHECK
+    // below); the structural source never carries a reserved class; null =
+    // not evaluated / pre-capture (unknown-not-wrong, never backfilled).
+    workloadClass: text('workload_class'),
+    workloadScore: doublePrecision('workload_score'),
+    workloadSource: text('workload_source'),
+    workloadRevision: text('workload_revision'),
     // Terminal provider-error detail (add-request-error-detail): set ONLY on
     // status='error' rows; null for non-error rows and rows predating capture
     // (unknown-not-wrong, never backfilled). `error_message` is the factory-
@@ -531,6 +541,29 @@ export const requestLogs = pgTable(
     check(
       'request_log_semantic_score_range',
       sql`${t.semanticScore} IS NULL OR (${t.semanticScore} >= -2 AND ${t.semanticScore} <= 2)`,
+    ),
+    // The four workload columns travel together (add-workload-telemetry D4);
+    // class/source are enums-or-null; the structural source can never carry a
+    // reserved (semantic-only) class; the score is DB-bounded to [0, 1].
+    check(
+      'request_log_workload_quad',
+      sql`(${t.workloadClass} IS NULL) = (${t.workloadScore} IS NULL) AND (${t.workloadClass} IS NULL) = (${t.workloadSource} IS NULL) AND (${t.workloadClass} IS NULL) = (${t.workloadRevision} IS NULL)`,
+    ),
+    check(
+      'request_log_workload_class_valid',
+      sql`${t.workloadClass} IS NULL OR ${t.workloadClass} IN ('code', 'research', 'vision', 'structured', 'writing', 'none')`,
+    ),
+    check(
+      'request_log_workload_source_valid',
+      sql`${t.workloadSource} IS NULL OR ${t.workloadSource} IN ('structural', 'semantic')`,
+    ),
+    check(
+      'request_log_workload_structural_compat',
+      sql`${t.workloadSource} IS DISTINCT FROM 'structural' OR ${t.workloadClass} IN ('code', 'vision', 'structured', 'none')`,
+    ),
+    check(
+      'request_log_workload_score_range',
+      sql`${t.workloadScore} IS NULL OR (${t.workloadScore} >= 0 AND ${t.workloadScore} <= 1)`,
     ),
   ],
 );

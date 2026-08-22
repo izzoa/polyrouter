@@ -53,6 +53,36 @@ export interface AutoPerfVm {
   /** Which zero state to render when evaluated === 0. */
   zeroState: 'none' | 'preCapture' | 'empty';
   telemetrySince: string | null;
+  /** Workload mix (add-workload-telemetry D7) — null = the block's EMPTY state
+   * (no classified parents AND no classes); attempt-only classes are NOT empty
+   * (`attemptOnly`, rendered with zero share + spend + a note). Headed as
+   * "workload-classified auto requests" — never "all traffic". */
+  workload: {
+    evaluated: number;
+    /** Rows in the aggregation's order (requests desc, then slug). */
+    rows: {
+      class: string;
+      /** `none` reads as plain language. */
+      label: string;
+      requests: number;
+      /** Share of evaluated (0% when attempt-only). */
+      sharePct: string;
+      /** Formatted dollars; null = no costable component → a dash + "unpriced". */
+      spend: string | null;
+      /** "n unpriced" (parent + attempt components), or null when fully priced. */
+      unpricedNote: string | null;
+    }[];
+    /** evaluated === 0 but attempt-derived classes exist. */
+    attemptOnly: boolean;
+    /** "n of n+m structurally evaluated auto requests carry workload telemetry" or null. */
+    coverage: string | null;
+    /** "request figures span N classifier revisions" or null. */
+    revisionNote: string | null;
+  } | null;
+  /** When `workload` is null: keyed on the WORKLOAD-specific `since` (never the
+   * structural telemetrySince). */
+  workloadZero: 'preCapture' | 'empty';
+  workloadSince: string | null;
   /** Signal quality (add-auto-signal-honesty). Two INDEPENDENT parts — a
    * flagged list and a coverage disclosure — so a flag never hides that
    * other agents are unassessed; `show` is false only when BOTH are empty
@@ -125,6 +155,51 @@ export function toAutoPerfVm(data: AutoPerformance | null): AutoPerfVm | null {
     zeroState: data.evaluated > 0 ? 'none' : data.telemetrySince !== null ? 'preCapture' : 'empty',
     telemetrySince: data.telemetrySince,
     signalQuality: toSignalQualityVm(data.signalQuality ?? []),
+    workload: toWorkloadVm(data.workloadMix ?? EMPTY_WORKLOAD_MIX),
+    workloadZero: (data.workloadMix ?? EMPTY_WORKLOAD_MIX).since !== null ? 'preCapture' : 'empty',
+    workloadSince: (data.workloadMix ?? EMPTY_WORKLOAD_MIX).since,
+  };
+}
+
+const EMPTY_WORKLOAD_MIX: AutoPerformance['workloadMix'] = {
+  evaluated: 0,
+  unclassified: 0,
+  since: null,
+  revisions: [],
+  classes: [],
+};
+
+/** Pure workload-mix view derivation (add-workload-telemetry D7). Exported for
+ * tests. EMPTY (null) ONLY when there are no classified parents AND no classes
+ * — attempt-only classes render. Spend honesty: null → dash + "unpriced", a
+ * numeric 0 → "$0" with no qualifier, any unpriced parent OR attempt component
+ * → "n unpriced". Coverage names STRUCTURALLY evaluated requests (legacy rows
+ * were never workload-evaluated); the revision note scopes itself to request
+ * figures (attempt spend may come from out-of-range parents). */
+export function toWorkloadVm(wm: AutoPerformance['workloadMix']): AutoPerfVm['workload'] {
+  if (wm.evaluated === 0 && wm.classes.length === 0) return null;
+  return {
+    evaluated: wm.evaluated,
+    rows: wm.classes.map((c) => {
+      const unpriced = c.unpricedRequests + c.unpricedAttempts;
+      return {
+        class: c.class,
+        label: c.class === 'none' ? 'no specialist workload' : c.class,
+        requests: c.requests,
+        sharePct: pct(c.requests, wm.evaluated),
+        spend: c.spendUsd === null ? null : fmtMicros(Math.round(c.spendUsd * 1_000_000)),
+        unpricedNote: unpriced > 0 ? `${String(unpriced)} unpriced` : null,
+      };
+    }),
+    attemptOnly: wm.evaluated === 0,
+    coverage:
+      wm.unclassified > 0
+        ? `${String(wm.evaluated)} of ${String(wm.evaluated + wm.unclassified)} structurally evaluated auto requests carry workload telemetry`
+        : null,
+    revisionNote:
+      wm.revisions.length > 1
+        ? `request figures span ${String(wm.revisions.length)} classifier revisions`
+        : null,
   };
 }
 

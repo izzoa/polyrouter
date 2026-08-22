@@ -26,6 +26,7 @@ Build in this order; each is roughly one capability/change:
    → **⛔ REVIEW GATE: stop here for human review.** This is the shippable core; do not proceed to automatic routing until it's approved.
 6. **Auto routing — Layer 1 (structural)** — system-prompt fingerprinting + per-agent baseline, language-neutral features.
 7. **Auto routing — Layer 3 (cascade)** — cheap-first + escalation. (Self-host feature target reached: L0 + L1 + L3.)
+   → **Workload axis (Epic W, 2026-08-22; spec `workload-routing`):** `auto` additionally records a **workload** class — `code` / `vision` / `structured` (structural, baseline) and, via the flag-gated semantic module only, `research` / `writing` — plus the telemetry-only `none`. W-1 (`add-workload-telemetry`, shipped) is **telemetry only**; routing on it (`auto_workload` rules, `decision_layer='workload'`) is W-2. It is a second verdict from the L1/L2 mechanisms — **not an L4**, no new header, no new `ROUTING_AUTO_LAYERS` token — the taxonomy is fixed and bumps only by a change, and detection is **never keyword-based** (invariant 9).
 8. **Limits, alerts & notifications** — Redis atomic counters, block/alert, **SMTP + Apprise** channels, async delivery, dedup.
 9. **Dashboard SPA** — SolidJS + uPlot; connect-agent flow, routing UI, **routing-decision inspector**, limits/notifications UI.
 10. **Observability** — OTel traces + Prometheus metrics on the proxy.

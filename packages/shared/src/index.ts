@@ -15,10 +15,22 @@ export {
   DEFAULT_TIER_KEY,
   MAX_MODELS_PER_TIER,
   RULE_MATCH_TYPES,
+  STRUCTURAL_WORKLOAD_CLASSES,
+  STRUCTURAL_WORKLOAD_CLASSIFIER_VERSION,
   TIER_HEADER_NAME,
   TIER_KEY_PATTERN,
+  WORKLOAD_CLASSES,
+  WORKLOAD_NONE,
+  WORKLOAD_SOURCES,
+  WORKLOAD_TAXONOMY_VERSION,
 } from './routing-constants';
-export type { RuleMatchType } from './routing-constants';
+export type {
+  RuleMatchType,
+  StructuralWorkloadClass,
+  WorkloadClass,
+  WorkloadSource,
+  WorkloadVerdictClass,
+} from './routing-constants';
 export { z } from 'zod';
 export {
   ConfigRegistry,

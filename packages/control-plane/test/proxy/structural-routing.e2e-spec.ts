@@ -96,7 +96,14 @@ function body(opts: {
 
 async function buildApp(): Promise<{ app: INestApplication; server: App }> {
   const moduleRef = await Test.createTestingModule({
-    imports: [SemanticModule, DatabaseModule, PricingModule, RecordingModule, RedisModule, ObservabilityModule],
+    imports: [
+      SemanticModule,
+      DatabaseModule,
+      PricingModule,
+      RecordingModule,
+      RedisModule,
+      ObservabilityModule,
+    ],
     controllers: [ChatCompletionsController],
     providers: [
       AgentApiKeyGuard,
@@ -124,7 +131,10 @@ async function buildApp(): Promise<{ app: INestApplication; server: App }> {
       { provide: PROXY_ADAPTER_FACTORY, useValue: createProviderAdapter },
       { provide: PROXY_BREAKER, useValue: new CircuitBreaker(new InMemoryBreakerStore()) },
       { provide: ROUTING_CONFIG, useFactory: loadRoutingConfig },
-      { provide: CALIBRATION_RAILS, useFactory: (): CalibrationRails => railsOf(loadCalibrationConfig()) },
+      {
+        provide: CALIBRATION_RAILS,
+        useFactory: (): CalibrationRails => railsOf(loadCalibrationConfig()),
+      },
       {
         provide: StructuralBaselineStore,
         inject: [REDIS_CLIENT],
@@ -255,10 +265,15 @@ describe('structural routing e2e', () => {
     structuralBand: string | null;
     structuralScore: number | null;
     structuralBandSource: string | null;
+    workloadClass: string | null;
+    workloadScore: number | null;
+    workloadSource: string | null;
+    workloadRevision: string | null;
   }> {
     const logs = await port.requestLogs.list(principal);
     return logs[logs.length - 1]!;
   }
+  const REV = /^structural\/v1\/c1\/[0-9a-f]{12}$/;
 
   it('steers a complex auto request to the auto_high tier (decision_layer=structural)', async () => {
     await send(body({ system: 'sysA', userChars: 9_000, code: true, tools: 8 }));
@@ -271,6 +286,13 @@ describe('structural routing e2e', () => {
     expect(row.structuralBandSource).toBe('threshold');
     expect(row.structuralScore).toBeGreaterThanOrEqual(0.6);
     expect(JSON.stringify(row)).not.toContain('Z'.repeat(50)); // metadata only — no prompt body
+    // Workload telemetry (add-workload-telemetry): 5k fenced chars over ~14k
+    // window chars → share ≈ 0.36 ≥ 0.30 → `code`, source structural, pinned revision.
+    expect(row.workloadClass).toBe('code');
+    expect(row.workloadSource).toBe('structural');
+    expect(row.workloadRevision).toMatch(REV);
+    expect(row.workloadScore).toBeGreaterThanOrEqual(0.3);
+    expect(row.workloadScore).toBeLessThanOrEqual(1);
   });
 
   it('an ambiguous fall-through records the verdict it used to discard (add-auto-decision-telemetry)', async () => {
@@ -284,6 +306,12 @@ describe('structural routing e2e', () => {
     expect(row.structuralBandSource).toBe('threshold');
     expect(row.structuralScore).not.toBeNull();
     expect(row.routingReason).toContain('; structural:ambiguous'); // the suffix
+    // add-workload-telemetry: the ambiguous fall-through carries the quad (none).
+    expect(row.workloadClass).toBe('none');
+    expect(row.workloadScore).toBe(0);
+    expect(row.workloadSource).toBe('structural');
+    expect(row.workloadRevision).toMatch(REV);
+    expect(row.routingReason).not.toContain('workload'); // D5: the reason string is untouched
   });
 
   it('an unroutable confident band records its verdict (add-auto-decision-telemetry)', async () => {
@@ -299,6 +327,8 @@ describe('structural routing e2e', () => {
       expect(row.structuralBand).toBe('low');
       expect(row.structuralBandSource).toBe('threshold');
       expect(row.routingReason).toContain('; structural:low');
+      expect(row.workloadClass).toBe('none'); // add-workload-telemetry: unroutable rows carry the quad
+      expect(row.workloadRevision).toMatch(REV);
     } finally {
       await port.routingRules.insert(principal, {
         matchType: 'auto_low',
@@ -319,6 +349,7 @@ describe('structural routing e2e', () => {
     const row = await lastLog();
     expect(row.structuralBand).toBe('high');
     expect(row.structuralBandSource).toBe('declared');
+    expect(row.workloadClass).toBe('none'); // declared-max rows carry the quad too
   });
 
   it('steers a trivial auto request to the auto_low tier', async () => {
@@ -389,11 +420,17 @@ describe('structural routing e2e', () => {
     expect(explicit.structuralBand).toBeNull();
     expect(explicit.structuralScore).toBeNull();
     expect(explicit.structuralBandSource).toBeNull();
+    expect(explicit.workloadClass).toBeNull(); // add-workload-telemetry: never classified
+    expect(explicit.workloadScore).toBeNull();
+    expect(explicit.workloadSource).toBeNull();
+    expect(explicit.workloadRevision).toBeNull();
     await send(body({ system: 'sysHdr', userChars: 3 }), 'premium');
     const header = await lastLog();
     expect(header.structuralBand).toBeNull(); // Layer 0 won — evaluate never ran
     expect(header.structuralScore).toBeNull();
     expect(header.structuralBandSource).toBeNull();
+    expect(header.workloadClass).toBeNull();
+    expect(header.workloadRevision).toBeNull();
   });
 
   it('an x-polyrouter-tier header on an auto request still forces that tier (Layer 0 wins)', async () => {
@@ -424,5 +461,145 @@ describe('structural routing e2e', () => {
     expect(disabledRow.structuralBand).toBeNull(); // layer off — no fabricated telemetry
     expect(disabledRow.structuralScore).toBeNull();
     expect(disabledRow.structuralBandSource).toBeNull();
+    expect(disabledRow.workloadClass).toBeNull(); // add-workload-telemetry: rides L1; off → null
+    expect(disabledRow.workloadSource).toBeNull();
+  });
+
+  // ── add-workload-telemetry (W-1) ─────────────────────────────────────────
+
+  it('workload: an image request records vision; a declared JSON output format records structured; the reason stays untouched', async () => {
+    await send({
+      model: 'auto',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'describe this' },
+            { type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw0KGgo=' } },
+          ],
+        },
+      ],
+    });
+    const vision = await lastLog();
+    expect(vision.workloadClass).toBe('vision');
+    expect(vision.workloadScore).toBe(1);
+    expect(vision.workloadSource).toBe('structural');
+    expect(vision.workloadRevision).toMatch(REV);
+    expect(vision.routingReason).not.toContain('workload');
+
+    await pool.query('DELETE FROM request_log WHERE owner_user_id = $1', [userId]); // lastLog() reads one row
+    await send({
+      model: 'auto',
+      response_format: { type: 'json_object' },
+      messages: [{ role: 'user', content: 'give me json' }],
+    });
+    const structured = await lastLog();
+    expect(structured.workloadClass).toBe('structured');
+    expect(structured.workloadScore).toBe(1);
+    expect(structured.workloadSource).toBe('structural');
+  });
+
+  it('workload: an auto request selected via a configured default RULE is evaluated and records the quad', async () => {
+    const rule = await port.routingRules.insert(principal, {
+      matchType: 'default',
+      headerName: 'x-polyrouter-tier',
+      headerValue: null,
+      target: 'tier:premium',
+      priority: 0,
+    });
+    try {
+      await send(body({ system: 'sysDefaultRule', userChars: 9_000 })); // ambiguous → the rule's target stands
+      const row = await lastLog();
+      expect(row.decisionLayer).toBe('default');
+      expect(row.modelId).toBe(idPremium);
+      expect(row.structuralBand).toBe('ambiguous');
+      expect(row.workloadClass).toBe('none');
+      expect(row.workloadRevision).toMatch(REV);
+    } finally {
+      await port.routingRules.remove(principal, rule.id);
+    }
+  });
+
+  it('workload: invariant 8 — sentinels in messages, system, and a tool schema reach no column, revision, reason, or log line', async () => {
+    const SENTINELS = [
+      'SENTINEL_SYS_9f3a',
+      'SENTINEL_USER_7c1d',
+      'SENTINEL_TOOL_4b2e',
+      'SENTINEL_DESC_0e8d',
+      'SENTINEL_PROP_5a6b',
+    ];
+    const lines: string[] = [];
+    const origOut = process.stdout.write.bind(process.stdout);
+    const origErr = process.stderr.write.bind(process.stderr);
+    const cap = ((chunk: unknown): boolean => {
+      lines.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    const spies = (['log', 'warn', 'error', 'debug', 'info'] as const).map((m) =>
+      jest.spyOn(console, m).mockImplementation((...a: unknown[]) => {
+        lines.push(a.map(String).join(' '));
+      }),
+    );
+    process.stdout.write = cap;
+    process.stderr.write = cap;
+    try {
+      await send({
+        model: 'auto',
+        messages: [
+          { role: 'system', content: 'SENTINEL_SYS_9f3a ' + 'S'.repeat(200) },
+          { role: 'user', content: 'SENTINEL_USER_7c1d ' + 'U'.repeat(400) },
+        ],
+        tools: [
+          {
+            type: 'function',
+            function: {
+              name: 'SENTINEL_TOOL_4b2e',
+              description: 'SENTINEL_DESC_0e8d',
+              parameters: {
+                type: 'object',
+                properties: { SENTINEL_PROP_5a6b: { type: 'string' } },
+              },
+            },
+          },
+        ],
+      });
+    } finally {
+      process.stdout.write = origOut;
+      process.stderr.write = origErr;
+      spies.forEach((sp) => sp.mockRestore());
+    }
+    const row = await lastLog();
+    expect(row.workloadClass).not.toBeNull(); // evaluated
+    const blob = JSON.stringify(row) + '\n' + lines.join('\n');
+    for (const sentinel of SENTINELS) expect(blob).not.toContain(sentinel);
+    expect(row.workloadRevision).toMatch(REV); // configuration-only stamp
+  });
+
+  it('workload: a pre-admission refusal (evaluated, then an empty final bundle) writes no row and fabricates no telemetry', async () => {
+    const before = (await port.requestLogs.list(principal)).length;
+    // The default decision resolves and Layer 1 evaluates; bundle
+    // materialization then yields NO usable member (the only provider vanished
+    // between evaluation and the bundle build — simulated one-shot at the seam,
+    // since the snapshot and the bundle build share one prepare() call) → the
+    // existing 503 refusal before admission. No Prepared, no recorder, no row.
+    const svc = app.get(ProxyService);
+    const spy = jest
+      .spyOn(svc as unknown as { buildBundle: () => Promise<unknown> }, 'buildBundle')
+      .mockResolvedValueOnce({ attempts: [], meta: [] });
+    try {
+      const res = await request(server)
+        .post('/v1/chat/completions')
+        .set('Authorization', `Bearer ${key}`)
+        .send(body({ system: 'sysRefuse', userChars: 9_000 }));
+      expect(res.status).toBe(503);
+      expect(spy).toHaveBeenCalledTimes(1);
+      await writer.flush();
+      expect((await port.requestLogs.list(principal)).length).toBe(before); // no row — nothing fabricated
+    } finally {
+      spy.mockRestore();
+    }
+    // The same request with the seam restored serves and records the quad.
+    await send(body({ system: 'sysRefuse', userChars: 9_000 }));
+    expect((await lastLog()).workloadClass).toBe('none');
   });
 });

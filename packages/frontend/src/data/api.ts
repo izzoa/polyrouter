@@ -617,6 +617,13 @@ export interface RequestRow {
   semanticScore: number | null;
   semanticSource: string | null;
   semanticRevision: string | null;
+  /** Workload telemetry (add-workload-telemetry): the workload verdict when the
+   * classifier evaluated the request — class (taxonomy ∪ `none`), confidence,
+   * source (structural|semantic), revision; all four null otherwise. */
+  workloadClass: string | null;
+  workloadScore: number | null;
+  workloadSource: string | null;
+  workloadRevision: string | null;
   /** Terminal provider-error detail (add-request-error-detail): non-null only on
    * `status='error'` rows recorded after capture landed; all null otherwise. */
   errorKind: string | null;
@@ -681,6 +688,28 @@ export interface AutoPerformance {
     modalShare: number | null;
     collapsed: boolean | null;
   }[];
+  /** Workload mix (add-workload-telemetry): what kinds of work `auto` carried.
+   * `evaluated` = workload-classified parent rows; `unclassified` = structural
+   * rows without a class (legacy/fault); `since` is range-independent; classes
+   * are the union of classified parents and attempt-inherited classes
+   * (`requests: 0` when attempt-only); `spendUsd` null = no costable component. */
+  workloadMix: WorkloadMix;
+}
+
+export interface WorkloadMixClass {
+  class: string;
+  requests: number;
+  unpricedRequests: number;
+  unpricedAttempts: number;
+  spendUsd: number | null;
+}
+
+export interface WorkloadMix {
+  evaluated: number;
+  unclassified: number;
+  since: string | null;
+  revisions: { revision: string; requests: number }[];
+  classes: WorkloadMixClass[];
 }
 
 export interface RequestsPage {
@@ -1052,7 +1081,9 @@ export const realClient: ApiClient = {
   semanticLearningStatus: () =>
     http<SemanticLearningStatus>(`${API_BASE}/routing/semantic-learning/status`),
   semanticLearningRevert: () =>
-    http<SemanticLearningStatus>(`${API_BASE}/routing/semantic-learning/revert`, { method: 'POST' }),
+    http<SemanticLearningStatus>(`${API_BASE}/routing/semantic-learning/revert`, {
+      method: 'POST',
+    }),
   pricingStatus: () => http<PricingStatus>(`${API_BASE}/pricing/status`),
   pricingRefresh: () =>
     http<{ added: number }>(`${API_BASE}/pricing/refresh`, jsonInit('POST', { source: 'litellm' })),

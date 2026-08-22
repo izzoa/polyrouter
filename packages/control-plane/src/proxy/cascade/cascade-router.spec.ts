@@ -3,6 +3,8 @@ import {
   type NormalizedResponse,
   type RouteRule,
   type RoutingSnapshot,
+  DEFAULT_WORKLOAD_THRESHOLDS,
+  workloadRevision,
 } from '@polyrouter/data-plane';
 import type { RoutingConfig } from '../routing.config';
 import { CascadeRouter } from './cascade-router';
@@ -18,6 +20,10 @@ function cfg(over?: Partial<RoutingConfig['cascade']>): RoutingConfig {
       reasoningAdjust: 0.1,
     },
     cascade: { enabled: true, qualityThreshold: 0.5, cheapTimeoutMs: 30_000, ...over },
+    workload: {
+      thresholds: DEFAULT_WORKLOAD_THRESHOLDS,
+      revision: workloadRevision(DEFAULT_WORKLOAD_THRESHOLDS),
+    },
   };
 }
 

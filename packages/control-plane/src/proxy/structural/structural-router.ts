@@ -2,12 +2,15 @@ import { Inject, Injectable } from '@nestjs/common';
 import {
   canonicalizeSystem,
   classifyStructural,
+  classifyWorkload,
   extractStructuralFeatures,
   resolveBandTarget,
   type NormalizedRequest,
   type RouteDecision,
   type RoutingSnapshot,
+  type StructuralFeatures,
   type StructuralVerdict,
+  type WorkloadVerdict,
 } from '@polyrouter/data-plane';
 import type { Principal } from '@polyrouter/shared/server';
 import { ROUTING_CONFIG, type RoutingConfig } from '../routing.config';
@@ -23,12 +26,23 @@ export type StructuralEvaluation =
       readonly kind: 'route';
       readonly decision: RouteDecision;
       readonly verdict: StructuralVerdict;
+      /** The workload verdict from the SAME features (add-workload-telemetry
+       * D1) — telemetry only; absent when the workload classifier faulted. */
+      readonly workload?: WorkloadVerdict;
     }
-  | { readonly kind: 'ambiguous'; readonly verdict: StructuralVerdict }
+  | {
+      readonly kind: 'ambiguous';
+      readonly verdict: StructuralVerdict;
+      readonly workload?: WorkloadVerdict;
+    }
   /** A CONFIDENT/declared band whose `auto_high`/`auto_low` target is missing
    * or unresolvable — classification succeeded; the default stands but the
    * verdict is corpus data (add-auto-decision-telemetry), never a bare skip. */
-  | { readonly kind: 'unroutable'; readonly verdict: StructuralVerdict }
+  | {
+      readonly kind: 'unroutable';
+      readonly verdict: StructuralVerdict;
+      readonly workload?: WorkloadVerdict;
+    }
   /** No successful classification: layer off, or the classify-throw
    * degradation — degradation never fabricates telemetry. */
   | { readonly kind: 'skip' };
@@ -100,17 +114,36 @@ export class StructuralRouter {
         /* best-effort */
       }
 
-      if (verdict.band === 'ambiguous') return { kind: 'ambiguous', verdict };
+      // Workload verdict (add-workload-telemetry D1): the SAME feature object,
+      // in its OWN try/catch — a workload fault drops ONLY the workload verdict;
+      // the structural evaluation below is byte-identical either way. Telemetry
+      // only: it decides nothing here.
+      let workload: WorkloadVerdict | undefined;
+      try {
+        workload = this.workloadOf(features);
+      } catch {
+        workload = undefined; // degradation never fabricates a verdict
+      }
+      const wl = workload !== undefined ? { workload } : {};
+
+      if (verdict.band === 'ambiguous') return { kind: 'ambiguous', verdict, ...wl };
       const matchType = verdict.band === 'high' ? 'auto_high' : 'auto_low';
       const decision = resolveBandTarget(snapshot, matchType, 'structural', verdict.reason);
       // A confident band with no configured/resolvable target degrades to Layer 0
       // — carrying its verdict (add-auto-decision-telemetry).
       return decision === null
-        ? { kind: 'unroutable', verdict }
-        : { kind: 'route', decision, verdict };
+        ? { kind: 'unroutable', verdict, ...wl }
+        : { kind: 'route', decision, verdict, ...wl };
     } catch {
       return { kind: 'skip' }; // degrade to Layer 0 — never fail or stall
     }
+  }
+
+  /** The structural workload classifier over already-extracted features —
+   * a protected seam so a fault can be injected in tests; production is the
+   * pure `classifyWorkload` with the boot-time thresholds + revision. */
+  protected workloadOf(features: StructuralFeatures): WorkloadVerdict {
+    return classifyWorkload(features, this.cfg.workload.thresholds, this.cfg.workload.revision);
   }
 
   /** #13 adapter: the confident-band decision, else `null` (keep Layer-0 default). */

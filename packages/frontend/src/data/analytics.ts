@@ -172,6 +172,11 @@ export interface InspectorView {
    * request; both null otherwise — the chip is hidden, never a fabricated value. */
   semanticSource: string | null;
   semanticBand: string | null;
+  /** Workload verdict (add-workload-telemetry): the class (taxonomy ∪ `none`)
+   * and its source when the classifier evaluated this request; both null
+   * otherwise — the chip is hidden, never a fabricated value. */
+  workloadClass: string | null;
+  workloadSource: string | null;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number | null;
@@ -290,6 +295,8 @@ export function toInspectorView(r: RequestRow): InspectorView {
     qualitySignal: r.qualitySignal,
     semanticSource: r.semanticSource,
     semanticBand: r.semanticBand,
+    workloadClass: r.workloadClass,
+    workloadSource: r.workloadSource,
     inputTokens: r.inputTokens,
     outputTokens: r.outputTokens,
     cacheReadTokens: r.cacheReadTokens,

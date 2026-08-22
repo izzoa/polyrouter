@@ -1,0 +1,9 @@
+ALTER TABLE "request_log" ADD COLUMN "workload_class" text;--> statement-breakpoint
+ALTER TABLE "request_log" ADD COLUMN "workload_score" double precision;--> statement-breakpoint
+ALTER TABLE "request_log" ADD COLUMN "workload_source" text;--> statement-breakpoint
+ALTER TABLE "request_log" ADD COLUMN "workload_revision" text;--> statement-breakpoint
+ALTER TABLE "request_log" ADD CONSTRAINT "request_log_workload_quad" CHECK (("request_log"."workload_class" IS NULL) = ("request_log"."workload_score" IS NULL) AND ("request_log"."workload_class" IS NULL) = ("request_log"."workload_source" IS NULL) AND ("request_log"."workload_class" IS NULL) = ("request_log"."workload_revision" IS NULL)) NOT VALID;--> statement-breakpoint
+ALTER TABLE "request_log" ADD CONSTRAINT "request_log_workload_class_valid" CHECK ("request_log"."workload_class" IS NULL OR "request_log"."workload_class" IN ('code', 'research', 'vision', 'structured', 'writing', 'none')) NOT VALID;--> statement-breakpoint
+ALTER TABLE "request_log" ADD CONSTRAINT "request_log_workload_source_valid" CHECK ("request_log"."workload_source" IS NULL OR "request_log"."workload_source" IN ('structural', 'semantic')) NOT VALID;--> statement-breakpoint
+ALTER TABLE "request_log" ADD CONSTRAINT "request_log_workload_structural_compat" CHECK ("request_log"."workload_source" IS DISTINCT FROM 'structural' OR "request_log"."workload_class" IN ('code', 'vision', 'structured', 'none')) NOT VALID;--> statement-breakpoint
+ALTER TABLE "request_log" ADD CONSTRAINT "request_log_workload_score_range" CHECK ("request_log"."workload_score" IS NULL OR ("request_log"."workload_score" >= 0 AND "request_log"."workload_score" <= 1)) NOT VALID;

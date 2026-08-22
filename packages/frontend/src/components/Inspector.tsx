@@ -145,8 +145,8 @@ export function Inspector() {
                       <div style="display:flex;justify-content:space-between">
                         <span style="color:var(--text3)">escalated</span>
                         <span style="color:var(--amber)">
-                        yes <Icon name="escalated" size={11} />
-                      </span>
+                          yes <Icon name="escalated" size={11} />
+                        </span>
                       </div>
                     </Show>
                     <Show when={view().qualitySignal !== null}>
@@ -161,6 +161,26 @@ export function Inspector() {
                         <span style="padding:2px 8px;background:var(--chip);border-radius:5px;font:500 10.5px 'Geist',sans-serif;color:var(--text2)">
                           {view().semanticSource}
                           {view().semanticBand !== null ? ` · ${String(view().semanticBand)}` : ''}
+                        </span>
+                      </div>
+                    </Show>
+                    {/* Workload verdict (add-workload-telemetry): read-only transparency —
+                        the class + its source when the classifier evaluated the request;
+                        `none` reads as plain language; hidden (never a placeholder) when null.
+                        It decides nothing: this change records, it does not route. */}
+                    <Show when={view().workloadClass !== null}>
+                      <div style="display:flex;justify-content:space-between;align-items:center;gap:16px">
+                        <span style="color:var(--text3)">workload</span>
+                        <span
+                          data-testid="workload-chip"
+                          style="padding:2px 8px;background:var(--chip);border-radius:5px;font:500 10.5px 'Geist',sans-serif;color:var(--text2)"
+                        >
+                          {view().workloadClass === 'none'
+                            ? 'no specialist workload'
+                            : `workload · ${String(view().workloadClass)}`}
+                          {view().workloadSource !== null
+                            ? ` (${String(view().workloadSource)})`
+                            : ''}
                         </span>
                       </div>
                     </Show>

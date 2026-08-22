@@ -95,6 +95,11 @@ export interface RequestLogDraft {
   readonly semanticScore?: number;
   readonly semanticSource?: string;
   readonly semanticRevision?: string;
+  /** Workload telemetry (add-workload-telemetry); absent = null columns. */
+  readonly workloadClass?: string;
+  readonly workloadScore?: number;
+  readonly workloadSource?: string;
+  readonly workloadRevision?: string;
   /** #14 cascade: whether the request escalated cheap→strong. */
   readonly escalated?: boolean;
   /** #14 cascade: the numeric quality score (or null on a fail-open error). */
@@ -494,6 +499,10 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
       semanticScore: d.semanticScore ?? null,
       semanticSource: d.semanticSource ?? null,
       semanticRevision: d.semanticRevision ?? null,
+      workloadClass: d.workloadClass ?? null,
+      workloadScore: d.workloadScore ?? null,
+      workloadSource: d.workloadSource ?? null,
+      workloadRevision: d.workloadRevision ?? null,
       attemptFailures: d.attemptFailures !== undefined ? [...d.attemptFailures] : null,
       ...errorColumns(d),
     };

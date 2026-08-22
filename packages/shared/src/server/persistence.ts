@@ -430,6 +430,43 @@ export interface AgentSignalQuality {
  * tuning change edits one place. */
 export const SIGNAL_QUALITY_MIN_ROWS = 50;
 export const SIGNAL_QUALITY_COLLAPSE_SHARE = 0.5;
+/** One class row of the workload mix (add-workload-telemetry D6). */
+export interface WorkloadMixClass {
+  /** A taxonomy class or the telemetry-only `none`. */
+  class: string;
+  /** In-range classified PARENT rows (0 for a class reachable only through attempts). */
+  requests: number;
+  /** In-range parent rows with a null cost. */
+  unpricedRequests: number;
+  /** In-range attempt rows (under a classified parent) with a null cost. */
+  unpricedAttempts: number;
+  /** Reported-total basis (cash + unknown, subscription excluded, BOTH ledgers,
+   * per-row integer micro-dollars, each ledger in its own range); null ONLY
+   * when the class has no non-null-cost component (all-unpriced) — an all-free
+   * class reads 0. */
+  spendUsd: number | null;
+}
+
+/** The workload mix block of the auto aggregation (add-workload-telemetry D6):
+ * what kinds of work `auto` carried, over the SAME owner/range population as
+ * the rest of the aggregation. Legacy rows (null class) are invisible to the
+ * per-class figures and counted in `unclassified`. */
+export interface WorkloadMix {
+  /** In-range parent rows with a non-null workload class (the denominator). */
+  evaluated: number;
+  /** In-range parent rows with a structural verdict but a null workload class
+   * (pre-capture or classifier fault — not distinguishable from the columns). */
+  unclassified: number;
+  /** RANGE-INDEPENDENT: the tenant's earliest workload-classified row (ISO) or null. */
+  since: string | null;
+  /** Distinct `workload_revision` values among in-range evaluated PARENT rows,
+   * ordered lexicographically — governs request/share comparability only. */
+  revisions: { revision: string; requests: number }[];
+  /** Present classes (union of classified parents and attempt-inherited classes),
+   * ordered by requests desc, then class slug asc. */
+  classes: WorkloadMixClass[];
+}
+
 export interface AutoPerformanceData {
   evaluated: number;
   bands: {
@@ -464,6 +501,8 @@ export interface AutoPerformanceData {
   /** Per-agent signal quality over the SAME range-bounded banded population
    * (add-auto-signal-honesty) — one entry per agent with a banded row. */
   signalQuality: AgentSignalQuality[];
+  /** Workload mix (add-workload-telemetry D6). */
+  workloadMix: WorkloadMix;
 }
 
 export interface AnalyticsAccessor {

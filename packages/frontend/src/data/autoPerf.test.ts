@@ -5,6 +5,7 @@ import {
   signalQualityGuidance,
   toAutoPerfVm,
   toSignalQualityVm,
+  toWorkloadVm,
 } from './autoPerf';
 
 /** Baseline fixture mirroring the fakeClient default — mutated per case. */
@@ -41,6 +42,7 @@ function fixture(over: Partial<AutoPerformance> = {}): AutoPerformance {
       basis: { kind: 'tier', label: 'premium', model: 'gpt-x' },
     },
     signalQuality: [],
+    workloadMix: { evaluated: 0, unclassified: 0, since: null, revisions: [], classes: [] },
     ...over,
   };
 }
@@ -276,7 +278,10 @@ describe('signal quality (add-auto-signal-honesty)', () => {
   });
 
   it('hidden entirely when every agent is assessed healthy (no empty scaffolding)', () => {
-    const vm = toSignalQualityVm([entry({ collapsed: false }), entry({ agentId: 'a2', collapsed: false })]);
+    const vm = toSignalQualityVm([
+      entry({ collapsed: false }),
+      entry({ agentId: 'a2', collapsed: false }),
+    ]);
     expect(vm).toEqual({ show: false, flagged: [], coverage: null });
     // And with no agents at all:
     expect(toSignalQualityVm([]).show).toBe(false);
@@ -360,5 +365,109 @@ describe('autoSeriesToChart', () => {
     expect(high).toEqual([3, 0, 0, 2]);
     expect(low).toEqual([1, 0, 0, 0]);
     expect(ambiguous).toEqual([0, 0, 0, 4]);
+  });
+});
+
+describe('toWorkloadVm (add-workload-telemetry D7)', () => {
+  const mix = (
+    over: Partial<AutoPerformance['workloadMix']> = {},
+  ): AutoPerformance['workloadMix'] => ({
+    evaluated: 0,
+    unclassified: 0,
+    since: null,
+    revisions: [],
+    classes: [],
+    ...over,
+  });
+  const cls = (
+    c: string,
+    requests: number,
+    spendUsd: number | null,
+    over: Partial<AutoPerformance['workloadMix']['classes'][number]> = {},
+  ): AutoPerformance['workloadMix']['classes'][number] => ({
+    class: c,
+    requests,
+    unpricedRequests: 0,
+    unpricedAttempts: 0,
+    spendUsd,
+    ...over,
+  });
+
+  it('is EMPTY (null) only when there are no classified parents AND no classes', () => {
+    expect(toWorkloadVm(mix())).toBeNull();
+    // attempt-only classes are NOT empty
+    const w = toWorkloadVm(mix({ classes: [cls('code', 0, 0.25, { unpricedAttempts: 1 })] }));
+    expect(w).not.toBeNull();
+    expect(w!.attemptOnly).toBe(true);
+    expect(w!.rows[0]).toMatchObject({ class: 'code', sharePct: '0%', unpricedNote: '1 unpriced' });
+  });
+
+  it('rows keep the aggregation order, shares are of evaluated, none reads as plain language', () => {
+    const w = toWorkloadVm(
+      mix({
+        evaluated: 10,
+        classes: [
+          cls('code', 5, 2),
+          cls('none', 3, 0.1),
+          cls('structured', 2, 0.5, { unpricedRequests: 1 }),
+        ],
+      }),
+    )!;
+    expect(w.rows.map((r) => r.label)).toEqual(['code', 'no specialist workload', 'structured']);
+    expect(w.rows.map((r) => r.sharePct)).toEqual(['50%', '30%', '20%']);
+    expect(w.rows[2]!.unpricedNote).toBe('1 unpriced');
+    expect(w.rows[0]!.unpricedNote).toBeNull();
+    expect(w.attemptOnly).toBe(false);
+    expect(w.coverage).toBeNull();
+    expect(w.revisionNote).toBeNull();
+  });
+
+  it('spend honesty: null → no figure (dash + unpriced), 0 → a $0 figure with no qualifier, attempt-side unpriced qualifies', () => {
+    const w = toWorkloadVm(
+      mix({
+        evaluated: 3,
+        classes: [
+          cls('vision', 1, null, { unpricedRequests: 1 }),
+          cls('code', 1, 0),
+          cls('structured', 1, 1, { unpricedAttempts: 1 }),
+        ],
+      }),
+    )!;
+    const by = new Map(w.rows.map((r) => [r.class, r]));
+    expect(by.get('vision')!.spend).toBeNull();
+    expect(by.get('vision')!.unpricedNote).toBe('1 unpriced');
+    expect(by.get('code')!.spend).toMatch(/\$0/);
+    expect(by.get('code')!.unpricedNote).toBeNull();
+    expect(by.get('structured')!.spend).toMatch(/\$1/);
+    expect(by.get('structured')!.unpricedNote).toBe('1 unpriced');
+  });
+
+  it('discloses coverage (structurally evaluated wording) and multi-revision ranges (request figures wording)', () => {
+    const w = toWorkloadVm(
+      mix({
+        evaluated: 8,
+        unclassified: 2,
+        revisions: [
+          { revision: 'structural/v1/c1/aaa', requests: 5 },
+          { revision: 'structural/v1/c1/bbb', requests: 3 },
+        ],
+        classes: [cls('none', 8, 0)],
+      }),
+    )!;
+    expect(w.coverage).toBe(
+      '8 of 10 structurally evaluated auto requests carry workload telemetry',
+    );
+    expect(w.revisionNote).toBe('request figures span 2 classifier revisions');
+  });
+
+  it('the zero state keys on the WORKLOAD since, independent of structural telemetrySince', () => {
+    const pre = toAutoPerfVm(fixture({ workloadMix: mix({ since: '2026-07-12T00:00:00.000Z' }) }))!;
+    expect(pre.workload).toBeNull();
+    expect(pre.workloadZero).toBe('preCapture');
+    const empty = toAutoPerfVm(
+      fixture({ workloadMix: mix(), telemetrySince: '2026-07-10T00:00:00.000Z' }),
+    )!;
+    expect(empty.workload).toBeNull();
+    expect(empty.workloadZero).toBe('empty'); // structural telemetrySince does not stand in
   });
 });

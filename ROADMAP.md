@@ -150,6 +150,41 @@ two widths, and the `/ss-score` gate has to enforce it or the work decays within
 features. That ongoing tax is the strongest argument for stopping after a phase if the
 later ones stop earning their keep — each phase is independently shippable.
 
+### Workload routing — Epic W (decided 2026-08-22)
+
+`model: auto` asks one question today — *how hard is this?* — and maps the answer onto the
+STRONG / CHEAP band targets. It never asks *what kind of work* a request is, so an operator
+with a coding tier, a vision-capable tier, or a cheap reliable-JSON extractor cannot have
+`auto` reach them without per-client `model:` pinning. Epic W adds that second, categorical
+axis — named **workload** — in telemetry-first order (the same trust-precedes-autonomy
+sequencing as Epic AR): record and show the mix, then route on it.
+
+Settled up front, so they are not re-litigated per change: the feature is "workload" (a
+tier stays the destination, never the feature); the taxonomy is fixed at five classes —
+`code`, `research`, `vision`, `structured`, `writing` (+ the telemetry-only `none`) — and
+bumps only by a change; detection is invariant-bound — structural signals in the baseline
+image, an embedding-vs-anchors source only inside the flag-gated semantic module, and
+**never** a keyword path (invariant 9 / language neutrality), which makes `research` and
+`writing` semantic-only; it is **not an L4** — structural workloads are a second verdict from
+the L1 mechanism, semantic ones from L2, with no new header and no new `ROUTING_AUTO_LAYERS`
+token. Two problems were hiding in the original ask and ship separately: **hard capability**
+(never pick a member that cannot serve images / tools / JSON — the OC-1 principle, catalog
+`supports_*` flags) and **soft specialty** (prefer a coding model for code).
+
+| Change | Scope | Cost · Confidence · Invariant pressure | Status |
+|---|---|---|---|
+| **W-1 `add-workload-telemetry`** | Pure structural classifier over the EXISTING L1 feature vector (`vision` ← image block; `structured` ← declared JSON output format; `code` ← fenced share ≥ 0.30 ∧ ≥ 200 chars; precedence vision > structured > code); the quad `workload_class/score/source/revision` on parent request-log rows (migration 0026); `workloadMix` on `GET /api/analytics/auto` (reported-basis spend on both ledgers, unpriced / coverage / revision disclosures); inspector chip + "Workload mix" block. Zero routing change. | S/M · high · none | ✅ **shipped** (archived 2026-08-22; five codex clink rounds folded) |
+| **W-2 `add-workload-routing`** | `auto_workload` rules (class → tier/model; `priority` orders duplicates within a class — co-firing is resolved by the classifier, vision > structured > code; `none` never routable); the workload stage BEFORE the complexity pipeline (confident → serve, `decision_layer='workload'`, no cascade/L2; `none`/no rule/unroutable → today's flow byte-identical); "Workload targets" card beside Band targets (reserved classes disabled until W-3) | M · high · none | **Now** — proposed 2026-08-22 on user direction; the W-1 evidence gate was **skipped**, as for L2 |
+| **W-3 `add-semantic-workloads`** | Per-class bundled anchors → N centroids, argmax + margin (`research`/`writing` light up); runs on ALL `auto` when the module is enabled, ONE embed shared with the L2 complexity classifier | M/L · medium · none | **Next** — spike-gated |
+| **W-4 `add-workload-scoped-bands`** | Class-qualified `auto_high`/`auto_low` + cascade within a class | L · medium · none | **Next** — evidence-gated |
+
+Adjacent and independent of the ladder (Candidate, no proposal yet): **`add-capability-guardrails`**
+— the OC-1 extension that parses the catalog's `supports_vision` / `supports_function_calling` /
+`supports_response_schema` and filters or defers router-chosen chain members that cannot serve
+the request's declared demand (unknown caps never filter); and **`add-agent-default-tier`** —
+a per-agent default tier (its precedence — Layer-0 default vs explicit pin — is the one decision
+that proposal must settle) plus tier display-name/description editing in the Routing card.
+
 ---
 
 ## Next — committed, blocked on a named condition
@@ -170,6 +205,8 @@ early would be guessing.
 |---|---|---|
 | **Auto-routing band ladder** — generalize the `high` / `low` / `ambiguous` split into a configured N-band ladder | The calibrated 3-band scheme **saturates**: ambiguous share stays **> 50%** in the Auto-performance view *after* calibration converges (history shows moves, then goes quiet), **AND** edge-zone rates are bimodal — both edges keep qualifying against opposite bounds | M · high · none |
 | **Does structure have anything left to give?** — the successor question to the ladder | The ladder's condition, **plus** a negative result: calibration converged and band mix stable, yet quality-escalation in the ambiguous **middle** — not the edges — stays high | — · low · none |
+| **W-3 semantic workloads** — `research` / `writing` via per-class anchors in the flag-gated module | An **offline spike passes** (the Plans/L2.md task-0.1 pattern: curated per-class anchors + a disjoint eval set, confusion matrix, real MiniLM through the shipped bundle loader); a null result stops W-3 and W-1/W-2 stand on their own | M/L · medium · none |
+| **W-4 class-scoped bands** — cheap-code → strong-code inside a workload | W-1/W-2 telemetry shows BOTH mixed classes AND within-class difficulty spread | L · medium · none |
 
 **Gate status, last evaluated 2026-07-20: `UNASSESSABLE` pre-deployment.** Both need weeks
 of real traffic under threshold calibration. The gates are evaluated by a read-only query

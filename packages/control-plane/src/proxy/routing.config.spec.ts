@@ -3,6 +3,7 @@ import {
   buildRoutingConfig,
   effectiveThresholds,
   parseStructuralWeights,
+  parseWorkloadThresholds,
   type RoutingEnv,
 } from './routing.config';
 
@@ -94,7 +95,8 @@ describe('parseStructuralWeights', () => {
   });
 
   it('legacy 7-key overrides are byte-identical; `reasoning` is a bounded magnitude, not a weight (add-auto-hint-features)', () => {
-    const legacy = '{"size":0.4,"code":0.2,"tools":0.1,"schema":0.1,"depth":0.1,"multimodal":0.05,"maxTokens":0.05}';
+    const legacy =
+      '{"size":0.4,"code":0.2,"tools":0.1,"schema":0.1,"depth":0.1,"multimodal":0.05,"maxTokens":0.05}';
     const parsed = parseStructuralWeights(legacy);
     const sum = Object.values(parsed.weights).reduce((a, b) => a + b, 0);
     expect(sum).toBeCloseTo(1, 6);
@@ -185,5 +187,58 @@ describe('effectiveThresholds (add-auto-threshold-calibration)', () => {
         { maxDrift: 0.2, minGap: 0.1 },
       ),
     ).toEqual(instance);
+  });
+});
+
+describe('workload thresholds + revision (add-workload-telemetry 3.1)', () => {
+  it('defaults when unset/blank, with a pinned boot-time revision', () => {
+    const c = buildRoutingConfig(base);
+    expect(c.workload.thresholds).toEqual({ codeShare: 0.3, codeMinChars: 200 });
+    expect(c.workload.revision).toMatch(/^structural\/v1\/c1\/[0-9a-f]{12}$/);
+    expect(buildRoutingConfig({ ...base, ROUTING_WORKLOAD_THRESHOLDS: '  ' }).workload).toEqual(
+      c.workload,
+    );
+  });
+
+  it('merges a valid override over the defaults and re-stamps the revision', () => {
+    const a = buildRoutingConfig(base);
+    const b = buildRoutingConfig({ ...base, ROUTING_WORKLOAD_THRESHOLDS: '{"codeShare":0.5}' });
+    expect(b.workload.thresholds).toEqual({ codeShare: 0.5, codeMinChars: 200 });
+    expect(b.workload.revision).not.toBe(a.workload.revision);
+    const c = buildRoutingConfig({
+      ...base,
+      ROUTING_WORKLOAD_THRESHOLDS: '{"codeMinChars":200,"codeShare":0.3}',
+    });
+    expect(c.workload.revision).toBe(a.workload.revision); // equal thresholds, any key order
+  });
+
+  it('revision is stable across builds for equal thresholds (computed once, deterministic)', () => {
+    expect(buildRoutingConfig(base).workload.revision).toBe(
+      buildRoutingConfig(base).workload.revision,
+    );
+  });
+
+  it('rejects malformed JSON, non-objects, unknown keys, and out-of-range values — naming the variable', () => {
+    for (const bad of [
+      '{not json',
+      '[0.3]',
+      '{"codeShar":0.3}',
+      '{"codeShare":0}',
+      '{"codeShare":1.5}',
+      '{"codeShare":"0.3"}',
+      '{"codeShare":null}',
+      '{"codeMinChars":-1}',
+      '{"codeMinChars":1.5}',
+      '{"codeMinChars":"200"}',
+    ]) {
+      expect(() => parseWorkloadThresholds(bad)).toThrow(/ROUTING_WORKLOAD_THRESHOLDS/);
+      expect(() => buildRoutingConfig({ ...base, ROUTING_WORKLOAD_THRESHOLDS: bad })).toThrow(
+        /ROUTING_WORKLOAD_THRESHOLDS/,
+      );
+    }
+    expect(parseWorkloadThresholds('{"codeShare":1,"codeMinChars":0}')).toEqual({
+      codeShare: 1,
+      codeMinChars: 0,
+    });
   });
 });

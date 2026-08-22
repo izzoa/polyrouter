@@ -91,6 +91,12 @@ export interface RecordingContext {
   readonly semanticScore?: number;
   readonly semanticSource?: string;
   readonly semanticRevision?: string;
+  /** Workload telemetry (add-workload-telemetry) — the request-level workload
+   * verdict; all four absent when the classifier did not evaluate. */
+  readonly workloadClass?: string;
+  readonly workloadScore?: number;
+  readonly workloadSource?: string;
+  readonly workloadRevision?: string;
   readonly provider: Pick<ProviderRow, 'baseUrl' | 'kind'>;
   readonly model: Pick<
     ModelRow,
@@ -233,6 +239,10 @@ export class RequestRecorder {
         ...(ctx.semanticScore !== undefined ? { semanticScore: ctx.semanticScore } : {}),
         ...(ctx.semanticSource !== undefined ? { semanticSource: ctx.semanticSource } : {}),
         ...(ctx.semanticRevision !== undefined ? { semanticRevision: ctx.semanticRevision } : {}),
+        ...(ctx.workloadClass !== undefined ? { workloadClass: ctx.workloadClass } : {}),
+        ...(ctx.workloadScore !== undefined ? { workloadScore: ctx.workloadScore } : {}),
+        ...(ctx.workloadSource !== undefined ? { workloadSource: ctx.workloadSource } : {}),
+        ...(ctx.workloadRevision !== undefined ? { workloadRevision: ctx.workloadRevision } : {}),
         durationMs,
         status: outcome.status,
         usage,

@@ -47,6 +47,7 @@ import {
   type RouteDecision,
   type RoutingSnapshot,
   type StructuralVerdict,
+  type WorkloadVerdict,
 } from '@polyrouter/data-plane';
 import { providerMaxTokensQuirks, type MaxTokensSpelling } from '../providers/providers.dto';
 import type { ClientProtocol } from './proxy-errors';
@@ -178,6 +179,11 @@ interface Prepared {
    * recorded on every parent row alongside the structural verdict; undefined
    * when L2 did not run or faulted (fail-open never fabricates telemetry). */
   semanticVerdict?: SemanticVerdict;
+  /** The workload verdict when the structural layer EVALUATED the request
+   * (add-workload-telemetry) — recorded on every parent row beside the
+   * structural/semantic verdicts; undefined when Layer 1 did not run or the
+   * workload classifier faulted (degradation never fabricates telemetry). */
+  workloadVerdict?: WorkloadVerdict;
   /** The decision-time learning gate + the L2-ambiguous request's IN-MEMORY
    * embedding (add-semantic-learning D1/D3). The gate is default-disabled; the
    * evidence is present ONLY for the L2-ambiguous slice. Both reach the recorder's
@@ -501,7 +507,10 @@ export class ProxyService {
             ),
             score,
             cheap.failures,
-            attemptTrailEntries([{ failures: cheap.failures, meta: c.cheap.meta, leg: 'cheap' }], null),
+            attemptTrailEntries(
+              [{ failures: cheap.failures, meta: c.cheap.meta, leg: 'cheap' }],
+              null,
+            ),
           ),
           {
             status: cheap.failures.length > 0 ? 'fallback' : 'success',
@@ -543,7 +552,10 @@ export class ProxyService {
           ),
           null,
           cheap.failures,
-          attemptTrailEntries([{ failures: cheap.failures, meta: c.cheap.meta, leg: 'cheap' }], null),
+          attemptTrailEntries(
+            [{ failures: cheap.failures, meta: c.cheap.meta, leg: 'cheap' }],
+            null,
+          ),
         ),
         { status: 'cancelled', outputChars: 0, escalated: false, qualitySignal: null },
       );
@@ -725,7 +737,10 @@ export class ProxyService {
             ),
             score,
             cheap.failures,
-            attemptTrailEntries([{ failures: cheap.failures, meta: c.cheap.meta, leg: 'cheap' }], null),
+            attemptTrailEntries(
+              [{ failures: cheap.failures, meta: c.cheap.meta, leg: 'cheap' }],
+              null,
+            ),
           );
           const fellBack = cheap.failures.length > 0;
           void replay.outcome.then((o) =>
@@ -780,7 +795,10 @@ export class ProxyService {
           ),
           null,
           cheap.failures,
-          attemptTrailEntries([{ failures: cheap.failures, meta: c.cheap.meta, leg: 'cheap' }], null),
+          attemptTrailEntries(
+            [{ failures: cheap.failures, meta: c.cheap.meta, leg: 'cheap' }],
+            null,
+          ),
         ),
         { status: 'cancelled', outputChars: 0, escalated: false, qualitySignal: null },
       );
@@ -1086,6 +1104,7 @@ export class ProxyService {
     let structuralVerdict: StructuralVerdict | undefined;
     let structuralEpoch: number | undefined;
     let semanticVerdict: SemanticVerdict | undefined;
+    let workloadVerdict: WorkloadVerdict | undefined;
     let learningGate: LearningGate = DISABLED_LEARNING_GATE;
     let learningEvidence: Float32Array | null = null;
     if (ir.model === AUTO_ALIAS && decision.decisionLayer === 'default') {
@@ -1108,6 +1127,9 @@ export class ProxyService {
         if (evaln.kind !== 'skip') {
           structuralVerdict = evaln.verdict;
           structuralEpoch = layers.settings?.calibrationEpoch ?? 0;
+          // Workload telemetry (add-workload-telemetry): the verdict rides the
+          // same evaluation; absent when the workload classifier faulted.
+          if (evaln.workload !== undefined) workloadVerdict = evaln.workload;
         }
         if (evaln.kind === 'route') {
           decision = evaln.decision; // Layer 1 confident band
@@ -1205,7 +1227,11 @@ export class ProxyService {
             };
           }
         } else {
-          cascade = { cheap, escalation: escalationRaw, cheapTimeoutMs: this.cascade.cheapTimeoutMs };
+          cascade = {
+            cheap,
+            escalation: escalationRaw,
+            cheapTimeoutMs: this.cascade.cheapTimeoutMs,
+          };
         }
       }
     }
@@ -1269,6 +1295,7 @@ export class ProxyService {
       ...(structuralVerdict !== undefined ? { structuralVerdict } : {}),
       ...(structuralEpoch !== undefined ? { structuralEpoch } : {}),
       ...(semanticVerdict !== undefined ? { semanticVerdict } : {}),
+      ...(workloadVerdict !== undefined ? { workloadVerdict } : {}),
       learningGate,
       learningEvidence,
       created: Math.floor(Date.now() / 1000),
@@ -1284,7 +1311,6 @@ export class ProxyService {
       ...(capture !== undefined ? { capture } : {}),
     };
   }
-
 
   /** Resolve a decision's chain into lazy attempts + recording meta (owner-scoped
    * loads; adapters built lazily inside the breaker callback, #12). */
@@ -1338,9 +1364,7 @@ export class ProxyService {
         // A probe admission widens the adapter bounds (probe patience).
         buildAdapter: (admission?: BreakerAdmission) => {
           const key =
-            provider.baseUrl !== null
-              ? deriveModelKey(provider.baseUrl, t.externalModelId)
-              : null;
+            provider.baseUrl !== null ? deriveModelKey(provider.baseUrl, t.externalModelId) : null;
           return this.chainAdapter(
             principal,
             provider,
@@ -1691,9 +1715,14 @@ function verdictFields(p: Prepared): {
   semanticScore?: number;
   semanticSource?: string;
   semanticRevision?: string;
+  workloadClass?: string;
+  workloadScore?: number;
+  workloadSource?: string;
+  workloadRevision?: string;
 } {
   const v = p.structuralVerdict;
   const s = p.semanticVerdict;
+  const w = p.workloadVerdict;
   return {
     ...(v !== undefined
       ? {
@@ -1712,6 +1741,16 @@ function verdictFields(p: Prepared): {
           semanticScore: s.score,
           semanticSource: s.source,
           semanticRevision: s.revision,
+        }
+      : {}),
+    // Workload telemetry (add-workload-telemetry): the four columns travel
+    // together — recorded on every parent row of an evaluated request.
+    ...(w !== undefined
+      ? {
+          workloadClass: w.class,
+          workloadScore: w.score,
+          workloadSource: w.source,
+          workloadRevision: w.revision,
         }
       : {}),
   };

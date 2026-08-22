@@ -83,6 +83,10 @@ const ROW: RequestRow = {
   semanticScore: null,
   semanticSource: null,
   semanticRevision: null,
+  workloadClass: null,
+  workloadScore: null,
+  workloadSource: null,
+  workloadRevision: null,
   errorKind: null,
   errorStatus: null,
   errorMessage: null,
@@ -296,9 +300,7 @@ describe('toInspectorView', () => {
     expect(toInspectorView({ ...ROW, decisionLayer: 'header' }).matchedHeader).toBeNull();
     expect(toInspectorView(ROW).matchedHeader).toBeNull();
     // a stray value without a name (type/CHECK-impossible) never renders
-    expect(
-      toInspectorView({ ...ROW, routingHeaderValue: 'orphan' }).matchedHeader,
-    ).toBeNull();
+    expect(toInspectorView({ ...ROW, routingHeaderValue: 'orphan' }).matchedHeader).toBeNull();
   });
 });
 
@@ -355,9 +357,30 @@ describe('toErrorView — the ERROR card gate + headline rules (add-request-erro
 
 describe('toAttemptTrail / isTerminalSkip — the structural fallback trail (add-fallback-attempt-detail)', () => {
   const entries = [
-    { index: 0, providerId: 'p1', model: 'gpt-x', kind: 'unavailable', status: 529, dispatched: true },
-    { index: 1, providerId: 'p2', model: 'strong-y', kind: 'rate_limit', dispatched: true, leg: 'escalation' as const },
-    { index: 2, providerId: 'p3', model: 'grok-z', kind: 'unavailable', dispatched: false, terminal: true },
+    {
+      index: 0,
+      providerId: 'p1',
+      model: 'gpt-x',
+      kind: 'unavailable',
+      status: 529,
+      dispatched: true,
+    },
+    {
+      index: 1,
+      providerId: 'p2',
+      model: 'strong-y',
+      kind: 'rate_limit',
+      dispatched: true,
+      leg: 'escalation' as const,
+    },
+    {
+      index: 2,
+      providerId: 'p3',
+      model: 'grok-z',
+      kind: 'unavailable',
+      dispatched: false,
+      terminal: true,
+    },
   ];
 
   it('renders dispatched failures with kind (+ HTTP status when recorded) and labels skips explicitly', () => {
@@ -385,7 +408,14 @@ describe('toAttemptTrail / isTerminalSkip — the structural fallback trail (add
     // Same kinds, but the terminal-marked entry was DISPATCHED → not a skip note.
     const dispatchedTerminal = [
       { index: 0, providerId: 'p1', model: 'a', kind: 'unavailable', dispatched: false },
-      { index: 1, providerId: 'p2', model: 'b', kind: 'unavailable', dispatched: true, terminal: true },
+      {
+        index: 1,
+        providerId: 'p2',
+        model: 'b',
+        kind: 'unavailable',
+        dispatched: true,
+        terminal: true,
+      },
     ];
     expect(isTerminalSkip({ ...ROW, status: 'error', attemptFailures: dispatchedTerminal })).toBe(
       false,
@@ -457,5 +487,18 @@ describe('toInspectorView — native-family provenance (add-native-price-fallbac
     const v = toInspectorView({ ...base, cost: null, priceSource: null, priceEstimated: false });
     expect(v.priceSourceLabel).toBeNull();
     expect(v.totalCost).toBe('unpriced');
+  });
+});
+
+describe('toInspectorView — workload verdict (add-workload-telemetry)', () => {
+  it('maps the class + source verbatim, and null when unevaluated', () => {
+    const v = toInspectorView({ ...ROW, workloadClass: 'code', workloadSource: 'structural' });
+    expect(v.workloadClass).toBe('code');
+    expect(v.workloadSource).toBe('structural');
+    const none = toInspectorView({ ...ROW, workloadClass: 'none', workloadSource: 'structural' });
+    expect(none.workloadClass).toBe('none');
+    const legacy = toInspectorView({ ...ROW, workloadClass: null, workloadSource: null });
+    expect(legacy.workloadClass).toBeNull();
+    expect(legacy.workloadSource).toBeNull();
   });
 });

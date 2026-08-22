@@ -1,9 +1,13 @@
 import { userPrincipal } from '@polyrouter/shared/server';
 import {
   DEFAULT_STRUCTURAL_WEIGHTS,
+  DEFAULT_WORKLOAD_THRESHOLDS,
+  workloadRevision,
   type NormalizedRequest,
   type RouteRule,
   type RoutingSnapshot,
+  type StructuralFeatures,
+  type WorkloadVerdict,
 } from '@polyrouter/data-plane';
 import type { RoutingConfig } from '../routing.config';
 import type { StructuralBaselineStore } from './structural-baseline.store';
@@ -22,6 +26,10 @@ function cfg(over?: Partial<RoutingConfig>): RoutingConfig {
       reasoningAdjust: 0.1,
     },
     cascade: { enabled: false, qualityThreshold: 0.5, cheapTimeoutMs: 30_000 },
+    workload: {
+      thresholds: DEFAULT_WORKLOAD_THRESHOLDS,
+      revision: workloadRevision(DEFAULT_WORKLOAD_THRESHOLDS),
+    },
     ...over,
   };
 }
@@ -367,5 +375,115 @@ describe('StructuralRouter.evaluate (the #14 cascade trigger)', () => {
     );
     expect(e.kind).toBe('unroutable');
     if (e.kind === 'unroutable') expect(e.verdict.band).toBe('high');
+  });
+});
+
+describe('StructuralRouter.evaluate — workload verdict (add-workload-telemetry 3.2)', () => {
+  const REV = workloadRevision(DEFAULT_WORKLOAD_THRESHOLDS);
+  const imageIr: NormalizedRequest = {
+    model: 'auto',
+    messages: [{ role: 'user', content: [{ type: 'image', data: 'abc', mediaType: 'image/png' }] }],
+    params: {},
+  };
+
+  it('a confident route carries the workload verdict from the same features', async () => {
+    const r = new StructuralRouter(cfg(), store());
+    const e = await r.evaluate(
+      PRINCIPAL,
+      'a1',
+      complex,
+      snapshot([rule('r', 'auto_high', 'tier:premium')]),
+    );
+    expect(e.kind).toBe('route');
+    if (e.kind !== 'route') return;
+    // `complex` is ~9k prose + 5k fenced code → share ≈ 0.36 ≥ 0.30 → code.
+    expect(e.workload).toMatchObject({ class: 'code', source: 'structural', revision: REV });
+    expect(e.workload!.score).toBeGreaterThanOrEqual(0.3);
+  });
+
+  it('an ambiguous evaluation carries it too (none when nothing fires)', async () => {
+    const r = new StructuralRouter(cfg(), store());
+    const e = await r.evaluate(PRINCIPAL, 'a1', middling, snapshot([]));
+    expect(e.kind).toBe('ambiguous');
+    if (e.kind !== 'ambiguous') return;
+    expect(e.workload).toMatchObject({
+      class: 'none',
+      score: 0,
+      source: 'structural',
+      revision: REV,
+    });
+  });
+
+  it('an unroutable confident band carries it (vision from an image request)', async () => {
+    const r = new StructuralRouter(cfg(), store());
+    const e = await r.evaluate(PRINCIPAL, 'a1', imageIr, snapshot([])); // tiny → low, no auto_low rule
+    expect(e.kind).toBe('unroutable');
+    if (e.kind !== 'unroutable') return;
+    expect(e.workload).toMatchObject({ class: 'vision', score: 1 });
+  });
+
+  it('skip (layer disabled) carries no workload verdict', async () => {
+    const r = new StructuralRouter(cfg({ autoLayers: new Set() }), store());
+    const e = await r.evaluate(PRINCIPAL, 'a1', complex, snapshot([]));
+    expect(e).toEqual({ kind: 'skip' });
+  });
+
+  it('a thrown workload classifier leaves the structural evaluation byte-identical', async () => {
+    class Faulty extends StructuralRouter {
+      protected override workloadOf(_f: StructuralFeatures): WorkloadVerdict {
+        throw new Error('boom');
+      }
+    }
+    const snap = snapshot([rule('r', 'auto_high', 'tier:premium')]);
+    const healthy = await new StructuralRouter(cfg(), store()).evaluate(
+      PRINCIPAL,
+      'a1',
+      complex,
+      snap,
+    );
+    const faulty = await new Faulty(cfg(), store()).evaluate(PRINCIPAL, 'a1', complex, snap);
+    expect(faulty.kind).toBe('route');
+    expect('workload' in faulty).toBe(false);
+    const { workload: _w, ...healthyRest } = healthy as Extract<typeof healthy, { kind: 'route' }>;
+    expect(faulty).toEqual(healthyRest); // decision + verdict untouched
+  });
+
+  it('configured thresholds are honored (a 40% window is none at codeShare 0.5)', async () => {
+    const forty: NormalizedRequest = {
+      model: 'auto',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Z'.repeat(600) + '\n```\n' + 'x'.repeat(392) + '\n```' },
+          ],
+        },
+      ],
+      params: {},
+    };
+    const strict = cfg({
+      workload: {
+        thresholds: { codeShare: 0.5, codeMinChars: 200 },
+        revision: 'structural/v1/c1/test',
+      },
+    });
+    const e = await new StructuralRouter(strict, store()).evaluate(
+      PRINCIPAL,
+      'a1',
+      forty,
+      snapshot([]),
+    );
+    expect(e.kind).not.toBe('skip');
+    expect((e as { workload?: WorkloadVerdict }).workload).toMatchObject({
+      class: 'none',
+      revision: 'structural/v1/c1/test',
+    });
+    const lax = await new StructuralRouter(cfg(), store()).evaluate(
+      PRINCIPAL,
+      'a1',
+      forty,
+      snapshot([]),
+    );
+    expect((lax as { workload?: WorkloadVerdict }).workload?.class).toBe('code');
   });
 });

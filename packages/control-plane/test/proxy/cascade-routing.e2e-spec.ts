@@ -89,7 +89,14 @@ function body(system: string, stream = false): Record<string, unknown> {
 
 async function buildApp(): Promise<{ app: INestApplication; server: App }> {
   const moduleRef = await Test.createTestingModule({
-    imports: [SemanticModule, DatabaseModule, PricingModule, RecordingModule, RedisModule, ObservabilityModule],
+    imports: [
+      SemanticModule,
+      DatabaseModule,
+      PricingModule,
+      RecordingModule,
+      RedisModule,
+      ObservabilityModule,
+    ],
     controllers: [ChatCompletionsController],
     providers: [
       AgentApiKeyGuard,
@@ -117,7 +124,10 @@ async function buildApp(): Promise<{ app: INestApplication; server: App }> {
       { provide: PROXY_ADAPTER_FACTORY, useValue: createProviderAdapter },
       { provide: PROXY_BREAKER, useValue: new CircuitBreaker(new InMemoryBreakerStore()) },
       { provide: ROUTING_CONFIG, useFactory: loadRoutingConfig },
-      { provide: CALIBRATION_RAILS, useFactory: (): CalibrationRails => railsOf(loadCalibrationConfig()) },
+      {
+        provide: CALIBRATION_RAILS,
+        useFactory: (): CalibrationRails => railsOf(loadCalibrationConfig()),
+      },
       {
         provide: StructuralBaselineStore,
         inject: [REDIS_CLIENT],
@@ -295,6 +305,10 @@ describe('cascade routing e2e', () => {
     structuralScore: number | null;
     structuralBandSource: string | null;
     routingReason: string;
+    workloadClass: string | null;
+    workloadScore: number | null;
+    workloadSource: string | null;
+    workloadRevision: string | null;
   }> {
     const logs = await port.requestLogs.list(principal);
     return logs[logs.length - 1]!;
@@ -373,6 +387,10 @@ describe('cascade routing e2e', () => {
       expect(row.decisionLayer).toBe('default');
       expect(row.structuralBand).toBe('ambiguous');
       expect(row.routingReason).toContain('; structural:ambiguous');
+      // add-workload-telemetry: the plan-null fall-through carries the quad too.
+      expect(row.workloadClass).toBe('none');
+      expect(row.workloadSource).toBe('structural');
+      expect(row.workloadRevision).toMatch(/^structural\/v1\/c1\/[0-9a-f]{12}$/);
     } finally {
       await setBand('auto_high', 'premium');
     }
@@ -407,6 +425,12 @@ describe('cascade routing e2e', () => {
     expect(attempts).toHaveLength(1);
     expect(attempts[0]!.modelId).toBe(modelId['cheapBad']); // the superseded cheap call
     expect(attempts[0]!.inputTokens).toBeGreaterThan(0); // its own billed usage
+    // add-workload-telemetry: the PARENT (served) row carries the quad; the
+    // attempt ledger row carries none of it (no such columns).
+    expect(row.workloadClass).toBe('none');
+    expect(row.workloadScore).toBe(0);
+    expect(row.workloadSource).toBe('structural');
+    expect((attempts[0] as unknown as Record<string, unknown>)['workloadClass']).toBeUndefined();
   });
 
   it('rescues to the default tier when the strong tier is down', async () => {
@@ -481,6 +505,9 @@ describe('cascade routing e2e', () => {
       const row = await log();
       expect(row.structuralBand).toBe('ambiguous');
       expect(row.structuralBandSource).toBe('threshold');
+      // add-workload-telemetry: the deferred post-commit outcome row carries the quad.
+      expect(row.workloadClass).toBe('none');
+      expect(row.workloadRevision).toMatch(/^structural\/v1\/c1\//);
     } finally {
       await setBand('auto_high', 'premium');
     }
@@ -513,10 +540,52 @@ describe('cascade routing e2e', () => {
     expect(row.structuralBand).toBe('ambiguous');
     expect(row.structuralScore).not.toBeNull();
     expect(row.structuralBandSource).toBe('threshold');
+    // add-workload-telemetry: the cancelled row carries the full workload quad.
+    expect(row.workloadClass).toBe('none');
+    expect(row.workloadScore).toBe(0);
+    expect(row.workloadSource).toBe('structural');
+    expect(row.workloadRevision).toMatch(/^structural\/v1\/c1\/[0-9a-f]{12}$/);
     // No billable-attempt ledger rows (the cheap leg itself was aborted); the branch
     // also does not notifyFailed (a client disconnect is breaker-neutral, not a fault).
     expect(await port.requestAttempts.listForRequest(principal, row.id)).toHaveLength(0);
     await setBand('auto_low', 'cheap-bad');
+  });
+
+  it('a RESOLVED cascade plan whose cheap bundle fails to materialize falls through to default with the quad recorded (add-workload-telemetry)', async () => {
+    // Both band targets are configured, so cascade.plan() resolves; the cheap
+    // bundle then materializes EMPTY (simulated one-shot at the bundle seam for
+    // the cheap decision only — the snapshot and the bundle build share one
+    // prepare() call). `cascade` stays undefined → the Layer-0 default serves,
+    // the fall-through suffix + the workload quad ride the row.
+    const svc = app.get(ProxyService);
+    const seam = svc as unknown as {
+      buildBundle: (...args: unknown[]) => Promise<{ attempts: unknown[]; meta: unknown[] }>;
+    };
+    const original = seam.buildBundle.bind(svc);
+    const spy = jest.spyOn(seam, 'buildBundle').mockImplementation((...args: unknown[]) => {
+      const decision = args[1] as { tierKey: string | null };
+      return decision.tierKey === 'cheap-bad'
+        ? Promise.resolve({ attempts: [], meta: [] })
+        : original(...args);
+    });
+    try {
+      const res = await send('sysCheapBundleEmpty');
+      expect(res.status).toBe(200);
+      const row = await log();
+      expect(row.decisionLayer).toBe('default');
+      expect(row.modelId).toBe(modelId['default']);
+      expect(row.escalated).toBe(false);
+      expect(row.structuralBand).toBe('ambiguous');
+      expect(row.routingReason).toContain('; structural:ambiguous');
+      expect(row.workloadClass).toBe('none');
+      expect(row.workloadScore).toBe(0);
+      expect(row.workloadSource).toBe('structural');
+      expect(row.workloadRevision).toMatch(/^structural\/v1\/c1\/[0-9a-f]{12}$/);
+      expect(await port.requestAttempts.listForRequest(principal, row.id)).toHaveLength(0);
+      expect(spy).toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('streams only the strong tier on escalation (no cheap output, no swap)', async () => {

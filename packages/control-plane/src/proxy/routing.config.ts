@@ -2,8 +2,12 @@ import { loadConfig, registerConfig, z } from '@polyrouter/shared';
 import {
   DEFAULT_REASONING_ADJUST,
   DEFAULT_STRUCTURAL_WEIGHTS,
+  DEFAULT_WORKLOAD_THRESHOLDS,
   STRUCTURAL_WEIGHT_KEYS,
+  WORKLOAD_THRESHOLD_KEYS,
+  workloadRevision,
   type StructuralWeights,
+  type WorkloadThresholds,
 } from '@polyrouter/data-plane';
 
 /** Automatic-routing config (#13, spec §7.2/§7.6). `ROUTING_AUTO_LAYERS` gates
@@ -31,6 +35,7 @@ registerConfig(
     ROUTING_STRUCTURAL_LOW_THRESHOLD: z.coerce.number().min(0).max(1).default(0.25),
     ROUTING_STRUCTURAL_BASELINE_ALPHA: z.coerce.number().gt(0).max(1).default(0.2),
     ROUTING_STRUCTURAL_WEIGHTS: z.string().optional(),
+    ROUTING_WORKLOAD_THRESHOLDS: z.string().optional(),
     ROUTING_CASCADE_QUALITY_THRESHOLD: z.coerce.number().gt(0).max(1).default(0.5),
     ROUTING_CASCADE_CHEAP_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
   }),
@@ -42,6 +47,7 @@ export type RoutingEnv = {
   ROUTING_STRUCTURAL_LOW_THRESHOLD: number;
   ROUTING_STRUCTURAL_BASELINE_ALPHA: number;
   ROUTING_STRUCTURAL_WEIGHTS?: string;
+  ROUTING_WORKLOAD_THRESHOLDS?: string;
   ROUTING_CASCADE_QUALITY_THRESHOLD: number;
   ROUTING_CASCADE_CHEAP_TIMEOUT_MS: number;
 };
@@ -66,11 +72,62 @@ export interface CascadeConfig {
   readonly cheapTimeoutMs: number;
 }
 
+/** Structural WORKLOAD classification config (add-workload-telemetry D3/D4):
+ * the effective thresholds and the revision stamp computed ONCE at boot —
+ * never hashed per request, never from content. */
+export interface WorkloadConfig {
+  readonly thresholds: WorkloadThresholds;
+  /** `structural/<taxonomy v>/<classifier v>/<threshold digest>`. */
+  readonly revision: string;
+}
+
 export interface RoutingConfig {
   /** Enabled smart layers (e.g. `structural`); empty = pure Layer 0. */
   readonly autoLayers: ReadonlySet<string>;
   readonly structural: StructuralConfig;
   readonly cascade: CascadeConfig;
+  readonly workload: WorkloadConfig;
+}
+
+/** Parse + validate the optional workload-threshold override
+ * (`ROUTING_WORKLOAD_THRESHOLDS`, add-workload-telemetry D3) with the
+ * `ROUTING_STRUCTURAL_WEIGHTS` discipline: known keys merge over the defaults;
+ * `codeShare` must be finite in (0, 1]; `codeMinChars` a non-negative integer;
+ * malformed JSON, an unknown key, or an out-of-range value REJECTS boot naming
+ * the variable — never a silent clamp. */
+export function parseWorkloadThresholds(json: string | undefined): WorkloadThresholds {
+  if (json === undefined || json.trim() === '') return DEFAULT_WORKLOAD_THRESHOLDS;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    throw new Error('ROUTING_WORKLOAD_THRESHOLDS must be valid JSON');
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('ROUTING_WORKLOAD_THRESHOLDS must be a JSON object');
+  }
+  const obj = parsed as Record<string, unknown>;
+  const known = new Set<string>(WORKLOAD_THRESHOLD_KEYS);
+  for (const k of Object.keys(obj)) {
+    if (!known.has(k)) throw new Error(`ROUTING_WORKLOAD_THRESHOLDS has unknown key "${k}"`);
+  }
+  let codeShare = DEFAULT_WORKLOAD_THRESHOLDS.codeShare;
+  if ('codeShare' in obj) {
+    const v = obj['codeShare'];
+    if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0 || v > 1) {
+      throw new Error('ROUTING_WORKLOAD_THRESHOLDS.codeShare must be a finite number in (0, 1]');
+    }
+    codeShare = v;
+  }
+  let codeMinChars = DEFAULT_WORKLOAD_THRESHOLDS.codeMinChars;
+  if ('codeMinChars' in obj) {
+    const v = obj['codeMinChars'];
+    if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) {
+      throw new Error('ROUTING_WORKLOAD_THRESHOLDS.codeMinChars must be a non-negative integer');
+    }
+    codeMinChars = v;
+  }
+  return { codeShare, codeMinChars };
 }
 
 /** Parse + validate the optional weight override: the 7 AMBIENT keys are merged
@@ -175,6 +232,9 @@ export function buildRoutingConfig(env: RoutingEnv): RoutingConfig {
     throw new Error('ROUTING_STRUCTURAL_BASELINE_ALPHA must be in (0, 1]');
   }
   const structuralWeights = parseStructuralWeights(env.ROUTING_STRUCTURAL_WEIGHTS);
+  // Workload thresholds + the boot-time revision stamp (add-workload-telemetry
+  // D4): computed exactly once here; the hot path only reads them.
+  const workloadThresholds = parseWorkloadThresholds(env.ROUTING_WORKLOAD_THRESHOLDS);
   return {
     autoLayers,
     structural: {
@@ -188,6 +248,10 @@ export function buildRoutingConfig(env: RoutingEnv): RoutingConfig {
       enabled: autoLayers.has('cascade'),
       qualityThreshold: env.ROUTING_CASCADE_QUALITY_THRESHOLD,
       cheapTimeoutMs: env.ROUTING_CASCADE_CHEAP_TIMEOUT_MS,
+    },
+    workload: {
+      thresholds: workloadThresholds,
+      revision: workloadRevision(workloadThresholds),
     },
   };
 }

@@ -26,3 +26,40 @@ export const TIER_KEY_PATTERN = /^[a-z0-9](?:[a-z0-9_-]{0,63})$/;
  * consumed only by the structural router (#13) and inert in Layer 0. */
 export const RULE_MATCH_TYPES = ['header', 'default', 'auto_high', 'auto_low'] as const;
 export type RuleMatchType = (typeof RULE_MATCH_TYPES)[number];
+
+/* ── Workload taxonomy (add-workload-telemetry, Epic W) ─────────────────────────
+ *
+ * The categorical "what KIND of work is this?" axis beside the complexity axis.
+ * ONE shared contract for the proxy, the management API, analytics, and the
+ * dashboard: adding/removing/renaming a class is a taxonomy REVISION delivered
+ * by a change — never a silent edit. Class keys are lowercase slugs under
+ * `TIER_KEY_PATTERN` so they stay header-safe and stable as ids.
+ */
+
+/** Bumps when the CLASS LIST changes (add/remove/rename). */
+export const WORKLOAD_TAXONOMY_VERSION = 'v1';
+
+/** Bumps for ANY change that affects how the STRUCTURAL source assigns a class —
+ * a signal's interpretation, the precedence order, the share rule, or the
+ * contributing extractor's semantics (including its scan boundary) — so
+ * behaviorally different classifiers never share a `workload_revision` even
+ * when thresholds and the class list are unchanged. */
+export const STRUCTURAL_WORKLOAD_CLASSIFIER_VERSION = 'c1';
+
+/** The routable workload classes. `research`/`writing` are reserved for the
+ * semantic source (a later change) and are never produced structurally. */
+export const WORKLOAD_CLASSES = ['code', 'research', 'vision', 'structured', 'writing'] as const;
+export type WorkloadClass = (typeof WORKLOAD_CLASSES)[number];
+
+/** Telemetry-only: "evaluated, no specialist workload detected". NEVER a
+ * routable class (a rule may not target it). */
+export const WORKLOAD_NONE = 'none' as const;
+export type WorkloadVerdictClass = WorkloadClass | typeof WORKLOAD_NONE;
+
+/** What the structural source can emit (besides `none`). */
+export const STRUCTURAL_WORKLOAD_CLASSES = ['code', 'vision', 'structured'] as const;
+export type StructuralWorkloadClass = (typeof STRUCTURAL_WORKLOAD_CLASSES)[number];
+
+/** Which classifier produced a verdict. */
+export const WORKLOAD_SOURCES = ['structural', 'semantic'] as const;
+export type WorkloadSource = (typeof WORKLOAD_SOURCES)[number];

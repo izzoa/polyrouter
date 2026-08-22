@@ -161,7 +161,13 @@ function defaultBreakdown(): Record<BreakdownDimension, BreakdownRow[]> {
   return {
     model: [
       { key: 'model-0', label: 'Model 0', spend: 6.2, requests: 12, ...tokens(40_000) },
-      { key: 'model-1', label: 'Model 1', spend: 3.1, requests: 8, ...tokens(120_000, 30_000, 5_000) },
+      {
+        key: 'model-1',
+        label: 'Model 1',
+        spend: 3.1,
+        requests: 8,
+        ...tokens(120_000, 30_000, 5_000),
+      },
       { key: 'model-2', label: 'Model 2', spend: 1.9, requests: 6, ...tokens(9_000) },
     ],
     provider: [
@@ -239,6 +245,13 @@ export function buildRequestRows(n: number): RequestRow[] {
       semanticScore: null,
       semanticSource: null,
       semanticRevision: null,
+      // Workload telemetry (add-workload-telemetry): a spread of classified,
+      // `none`, and never-classified rows so the inspector chip's three states
+      // are all reachable from the default fake.
+      workloadClass: i % 3 === 0 ? 'code' : i % 3 === 1 ? 'none' : null,
+      workloadScore: i % 3 === 0 ? 0.42 : i % 3 === 1 ? 0 : null,
+      workloadSource: i % 3 === 2 ? null : 'structural',
+      workloadRevision: i % 3 === 2 ? null : 'structural/v1/c1/0123456789ab',
       // Error rows carry terminal detail (add-request-error-detail); every other
       // status — and every legacy-shaped row — is all-null.
       errorKind: status === 'error' ? 'rate_limit' : null,
@@ -250,8 +263,22 @@ export function buildRequestRows(n: number): RequestRow[] {
       attemptFailures:
         status === 'error'
           ? [
-              { index: 0, providerId: 'p1', model: 'gpt-x', kind: 'unavailable', status: 529, dispatched: true },
-              { index: 1, providerId: 'p2', model: 'fallback-y', kind: 'unavailable', dispatched: false, terminal: true },
+              {
+                index: 0,
+                providerId: 'p1',
+                model: 'gpt-x',
+                kind: 'unavailable',
+                status: 529,
+                dispatched: true,
+              },
+              {
+                index: 1,
+                providerId: 'p2',
+                model: 'fallback-y',
+                kind: 'unavailable',
+                dispatched: false,
+                terminal: true,
+              },
             ]
           : null,
     });
@@ -333,6 +360,23 @@ export const DEFAULT_AUTO_PERF: AutoPerformance = {
     basis: { kind: 'tier', label: 'premium', model: 'gpt-x' },
   },
   signalQuality: [],
+  workloadMix: {
+    evaluated: 30,
+    unclassified: 10,
+    since: '2026-07-12T00:00:00.000Z',
+    revisions: [{ revision: 'structural/v1/c1/0123456789ab', requests: 30 }],
+    classes: [
+      { class: 'none', requests: 18, unpricedRequests: 0, unpricedAttempts: 0, spendUsd: 0.42 },
+      { class: 'code', requests: 9, unpricedRequests: 1, unpricedAttempts: 0, spendUsd: 1.31 },
+      {
+        class: 'structured',
+        requests: 3,
+        unpricedRequests: 0,
+        unpricedAttempts: 0,
+        spendUsd: 0.05,
+      },
+    ],
+  },
 };
 
 export interface FakeOptions {
@@ -513,8 +557,9 @@ export class FakeApiClient implements ApiClient {
       calibration: { ...DEFAULT_CALIBRATION },
     };
     this.calibrationEvents = opts.calibrationEvents ?? [];
-    this.semanticLearningStatusResult =
-      opts.semanticLearningStatus ?? { ...DEFAULT_SEMANTIC_LEARNING_STATUS };
+    this.semanticLearningStatusResult = opts.semanticLearningStatus ?? {
+      ...DEFAULT_SEMANTIC_LEARNING_STATUS,
+    };
     this.pricingStatusResult = opts.pricingStatus ?? { ...DEFAULT_PRICING_STATUS };
     this.pricingRefreshAdded = opts.pricingRefreshAdded ?? 124;
     this.channelTestResult = opts.channelTestResult ?? { ok: true };
@@ -1165,7 +1210,9 @@ export class FakeApiClient implements ApiClient {
   }): Promise<BodyCaptureStatus> {
     this.record('bodyCaptureUpdate', patch);
     if (patch.retentionDays === null && patch.keepForever !== true) {
-      return Promise.reject(new Error('infinite retention requires the explicit keepForever choice'));
+      return Promise.reject(
+        new Error('infinite retention requires the explicit keepForever choice'),
+      );
     }
     this.bodyCaptureState = {
       ...this.bodyCaptureState,

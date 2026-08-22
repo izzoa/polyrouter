@@ -68,6 +68,11 @@ interface LogSeed {
   semanticScore?: number;
   semanticSource?: string;
   semanticRevision?: string;
+  /** Workload telemetry (add-workload-telemetry): the quad travels together. */
+  workloadClass?: string;
+  workloadScore?: number;
+  workloadSource?: string;
+  workloadRevision?: string;
   qualitySignal?: number;
   errorKind?: string;
   errorStatus?: number;
@@ -118,8 +123,8 @@ describe('analytics API (#17)', () => {
          structural_band, structural_score, structural_band_source, quality_signal,
          routing_header_name, routing_header_value,
          semantic_band, semantic_score, semantic_source, semantic_revision, provider_kind,
-         attempt_failures)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,'test',$8,$9,$10,$11,1,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31)`,
+         attempt_failures, workload_class, workload_score, workload_source, workload_revision)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'test',$8,$9,$10,$11,1,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35)`,
       [
         id,
         owner,
@@ -152,6 +157,10 @@ describe('analytics API (#17)', () => {
         s.semanticRevision ?? null,
         s.providerKind ?? null,
         s.attemptFailures !== undefined ? JSON.stringify(s.attemptFailures) : null,
+        s.workloadClass ?? null,
+        s.workloadScore ?? null,
+        s.workloadSource ?? null,
+        s.workloadRevision ?? null,
       ],
     );
     return id;
@@ -290,8 +299,22 @@ describe('analytics API (#17)', () => {
       structuralBandSource: 'threshold',
       // add-fallback-attempt-detail: the per-attempt trail rides the listing.
       attemptFailures: [
-        { index: 0, providerId: 'p1', model: 'a', kind: 'unavailable', status: 529, dispatched: true },
-        { index: 1, providerId: 'p2', model: 'b', kind: 'rate_limit', dispatched: false, terminal: true },
+        {
+          index: 0,
+          providerId: 'p1',
+          model: 'a',
+          kind: 'unavailable',
+          status: 529,
+          dispatched: true,
+        },
+        {
+          index: 1,
+          providerId: 'p2',
+          model: 'b',
+          kind: 'rate_limit',
+          dispatched: false,
+          terminal: true,
+        },
       ],
     });
 
@@ -385,13 +408,28 @@ describe('analytics API (#17)', () => {
         baseUrl: 'https://1.1.1.2/v1',
       })
     ).id;
-    const pricey = (await port.models.createForProvider(p, prov, { externalModelId: 'pricey' }))!.id;
+    const pricey = (await port.models.createForProvider(p, prov, { externalModelId: 'pricey' }))!
+      .id;
     const bulk = (await port.models.createForProvider(p, prov, { externalModelId: 'bulk' }))!.id;
 
     // Expensive, barely any tokens.
-    await seedLog(owner, { providerId: prov, modelId: pricey, cost: 100, tin: 5, tout: 5, at: DAY1 });
+    await seedLog(owner, {
+      providerId: prov,
+      modelId: pricey,
+      cost: 100,
+      tin: 5,
+      tout: 5,
+      at: DAY1,
+    });
     // Nearly free, enormous token volume.
-    await seedLog(owner, { providerId: prov, modelId: bulk, cost: 0.01, tin: 900_000, tout: 100_000, at: DAY1 });
+    await seedLog(owner, {
+      providerId: prov,
+      modelId: bulk,
+      cost: 0.01,
+      tin: 900_000,
+      tout: 100_000,
+      at: DAY1,
+    });
 
     const bySpend = (await q('breakdown', owner, { ...RANGE, dimension: 'model', limit: 1 })).body;
     expect(bySpend).toHaveLength(1);
@@ -431,7 +469,14 @@ describe('analytics API (#17)', () => {
       estimated: true,
       at: DAY1,
     });
-    await seedAttempt(logId, owner, { cost: 0.5, modelId: m, providerId: prov, tin: 7, tout: 3, at: DAY1 });
+    await seedAttempt(logId, owner, {
+      cost: 0.5,
+      modelId: m,
+      providerId: prov,
+      tin: 7,
+      tout: 3,
+      at: DAY1,
+    });
 
     const rows = (await q('breakdown', owner, { ...RANGE, dimension: 'model' })).body;
     const row = rows.find((r: { key: string }) => r.key === m);
@@ -497,8 +542,22 @@ describe('analytics API (#17)', () => {
     // add-fallback-attempt-detail: the per-attempt trail rides verbatim on the
     // same safe view (no second fetch), ownership still excluded.
     expect(errRow.attemptFailures).toEqual([
-      { index: 0, providerId: 'p1', model: 'a', kind: 'unavailable', status: 529, dispatched: true },
-      { index: 1, providerId: 'p2', model: 'b', kind: 'rate_limit', dispatched: false, terminal: true },
+      {
+        index: 0,
+        providerId: 'p1',
+        model: 'a',
+        kind: 'unavailable',
+        status: 529,
+        dispatched: true,
+      },
+      {
+        index: 1,
+        providerId: 'p2',
+        model: 'b',
+        kind: 'rate_limit',
+        dispatched: false,
+        terminal: true,
+      },
     ]);
     const all = await q('requests', A, { ...RANGE });
     for (const row of all.body.rows) {
@@ -963,18 +1022,53 @@ describe('analytics API (#17)', () => {
         ...over,
       });
     // 5 semantically-ROUTED rows (decision_layer='semantic'): outcome + source split.
-    await sem({ layer: 'semantic', semanticBand: 'high', semanticSource: 'learned', status: 'success' });
-    await sem({ layer: 'semantic', semanticBand: 'high', semanticSource: 'learned', status: 'success' });
-    await sem({ layer: 'semantic', semanticBand: 'low', semanticSource: 'bundled', status: 'fallback' });
-    await sem({ layer: 'semantic', semanticBand: 'high', semanticSource: 'learned', status: 'error' });
-    await sem({ layer: 'semantic', semanticBand: 'low', semanticSource: 'bundled', status: 'cancelled' });
+    await sem({
+      layer: 'semantic',
+      semanticBand: 'high',
+      semanticSource: 'learned',
+      status: 'success',
+    });
+    await sem({
+      layer: 'semantic',
+      semanticBand: 'high',
+      semanticSource: 'learned',
+      status: 'success',
+    });
+    await sem({
+      layer: 'semantic',
+      semanticBand: 'low',
+      semanticSource: 'bundled',
+      status: 'fallback',
+    });
+    await sem({
+      layer: 'semantic',
+      semanticBand: 'high',
+      semanticSource: 'learned',
+      status: 'error',
+    });
+    await sem({
+      layer: 'semantic',
+      semanticBand: 'low',
+      semanticSource: 'bundled',
+      status: 'cancelled',
+    });
     // Evaluated-but-not-routed (L2 ran, handed to cascade): counts in evaluated + source, NOT routed.
-    await sem({ layer: 'cascade', semanticBand: 'high', semanticSource: 'bundled', status: 'success' });
+    await sem({
+      layer: 'cascade',
+      semanticBand: 'high',
+      semanticSource: 'bundled',
+      status: 'success',
+    });
     // Adversarial (clink change-4 Med-1): decision_layer='semantic' but band NOT
     // high/low. The routed predicate is shared with the outcome split, so this row
     // counts in evaluated + source but NEITHER routed NOR any outcome — the old
     // outcome-only `decision_layer='semantic'` predicate would have over-counted it.
-    await sem({ layer: 'semantic', semanticBand: 'ambiguous', semanticSource: 'bundled', status: 'success' });
+    await sem({
+      layer: 'semantic',
+      semanticBand: 'ambiguous',
+      semanticSource: 'bundled',
+      status: 'success',
+    });
     // Legacy: no L2 (semantic_band null) → invisible to the whole slice.
     await sem({ layer: 'cascade', status: 'success' });
 
@@ -1151,7 +1245,11 @@ describe('analytics API (#17)', () => {
         protocol: 'anthropic',
       });
       expect(
-        await waitFor(async () => (await request(server).get('/api/analytics/inflight').set('x-test-user', A)).body.items.length === 1),
+        await waitFor(
+          async () =>
+            (await request(server).get('/api/analytics/inflight').set('x-test-user', A)).body.items
+              .length === 1,
+        ),
       ).toBe(true);
 
       const res = await request(server).get('/api/analytics/inflight').set('x-test-user', A);
@@ -1242,6 +1340,348 @@ describe('analytics API (#17)', () => {
       // Provenance is a separate axis and must not move the row between components.
       expect(res.body.subscriptionSpend).toBeCloseTo(7, 9);
       expect(res.body.nativeFamilySpend).toBeCloseTo(0, 9);
+    });
+  });
+
+  // ── add-workload-telemetry (W-1): listing fields + the workload mix ─────────
+  describe('workload telemetry (add-workload-telemetry)', () => {
+    const R1 = 'structural/v1/c1/aaaaaaaaaaaa';
+    const R2 = 'structural/v1/c1/bbbbbbbbbbbb';
+    const EARLY = '2025-02-20T10:00:00.000Z'; // before RANGE
+    const LATE = '2025-05-01T10:00:00.000Z'; // after RANGE
+    const wl = (cls: string, over: Partial<LogSeed> = {}): Partial<LogSeed> => ({
+      workloadClass: cls,
+      workloadScore: cls === 'none' ? 0 : cls === 'code' ? 0.4 : 1,
+      workloadSource: cls === 'research' || cls === 'writing' ? 'semantic' : 'structural',
+      workloadRevision: cls === 'research' || cls === 'writing' ? 'semantic/x' : R1,
+      structuralBand: 'ambiguous',
+      structuralScore: 0.4,
+      structuralBandSource: 'threshold',
+      ...over,
+    });
+    let W: string;
+    let V: string;
+    let L: string; // legacy-only tenant (banded, no workload rows)
+    let wCode1: string;
+
+    beforeAll(async () => {
+      W = await mkUser();
+      V = await mkUser();
+      L = await mkUser();
+      // code: four in-range parents — fractional micros, subscription (excluded),
+      // unknown kind (included), unpriced — plus attempts: in-range (counted),
+      // out-of-range (excluded), foreign-owner (excluded).
+      wCode1 = await seedLog(W, { cost: 1.0005, at: DAY1, providerKind: 'api_key', ...wl('code') });
+      await seedAttempt(wCode1, W, { cost: 0.5, at: DAY1B, providerKind: 'api_key' });
+      await seedAttempt(wCode1, V, { cost: 7, at: DAY1B, providerKind: 'api_key' }); // foreign owner
+      await seedLog(W, { cost: 2, at: DAY1, providerKind: 'subscription', ...wl('code') });
+      const code3 = await seedLog(W, {
+        cost: 3,
+        at: DAY2,
+        providerKind: null,
+        ...wl('code', { workloadRevision: R2 }),
+      });
+      await seedAttempt(code3, W, { cost: 9, at: LATE, providerKind: 'api_key' }); // out of range
+      await seedLog(W, { cost: null, at: DAY1, providerKind: 'api_key', ...wl('code') });
+      // Two SUB-micro rows ($0.0000004 each): per-row rounding → 0µ + 0µ = 0µ,
+      // whereas sum-then-round would give 1µ — pins the per-row discipline.
+      await seedLog(W, { cost: 0.0000004, at: DAY1, providerKind: 'api_key', ...wl('code') });
+      await seedLog(W, { cost: 0.0000004, at: DAY1, providerKind: 'api_key', ...wl('code') });
+      // vision: all-free (cost = 0) → spend 0, not null.
+      await seedLog(W, { cost: 0, at: DAY1, providerKind: 'api_key', ...wl('vision') });
+      await seedLog(W, { cost: 0, at: DAY1, providerKind: 'local', ...wl('vision') });
+      // structured: a subscription-only priced row + a priced parent with an
+      // in-range NULL-cost attempt → numeric spend, unpricedAttempts 1.
+      await seedLog(W, { cost: 5, at: DAY1, providerKind: 'subscription', ...wl('structured') });
+      const st2 = await seedLog(W, {
+        cost: 1,
+        at: DAY1,
+        providerKind: 'api_key',
+        ...wl('structured'),
+      });
+      await pool.query(
+        `INSERT INTO request_attempt (id, request_log_id, owner_user_id, attempt_index, input_tokens, output_tokens, cost, status, created_at, provider_kind)
+         VALUES (gen_random_uuid(), $1, $2, 0, 1, 1, NULL, 'success', $3, 'api_key')`,
+        [st2, W, DAY1B],
+      );
+      // none: all-unpriced → spend null.
+      await seedLog(W, { cost: null, at: DAY1, providerKind: 'api_key', ...wl('none') });
+      await seedLog(W, { cost: null, at: DAY2, providerKind: 'api_key', ...wl('none') });
+      // research (semantic source): unpriced parent + zero-cost attempt → costable → 0.
+      const rs = await seedLog(W, {
+        cost: null,
+        at: DAY1,
+        providerKind: 'api_key',
+        ...wl('research'),
+      });
+      await seedAttempt(rs, W, { cost: 0, at: DAY1B, providerKind: 'api_key' });
+      // writing: an EARLY (out-of-range) classified parent with an IN-RANGE attempt →
+      // attempt-only class row (requests 0), spend 0.25; revisions unaffected.
+      const early = await seedLog(W, {
+        cost: 1,
+        at: EARLY,
+        providerKind: 'api_key',
+        ...wl('writing'),
+      });
+      await seedAttempt(early, W, { cost: 0.25, at: DAY1B, providerKind: 'api_key' });
+      // Two legacy structural-only rows (banded, no workload class) → unclassified 2.
+      await seedLog(W, {
+        cost: 0.1,
+        at: DAY1,
+        providerKind: 'api_key',
+        structuralBand: 'high',
+        structuralScore: 0.7,
+        structuralBandSource: 'threshold',
+      });
+      await seedLog(W, {
+        cost: 0.1,
+        at: DAY2,
+        providerKind: 'api_key',
+        structuralBand: 'low',
+        structuralScore: 0.1,
+        structuralBandSource: 'threshold',
+      });
+      // Another tenant's workload rows must be invisible.
+      await seedLog(V, { cost: 4, at: DAY1, providerKind: 'api_key', ...wl('code') });
+      // Legacy-only tenant: banded rows, never any workload telemetry.
+      await seedLog(L, {
+        cost: 1,
+        at: DAY1,
+        providerKind: 'api_key',
+        structuralBand: 'ambiguous',
+        structuralScore: 0.4,
+        structuralBandSource: 'threshold',
+      });
+    });
+
+    it('the listing exposes the four workload fields verbatim; legacy rows null; no ownership columns', async () => {
+      const res = await q('requests', W, { ...RANGE, limit: 50 });
+      expect(res.status).toBe(200);
+      const rows = res.body.rows as Record<string, unknown>[];
+      const code = rows.find((r) => r['id'] === wCode1)!;
+      expect(code).toMatchObject({
+        workloadClass: 'code',
+        workloadScore: 0.4,
+        workloadSource: 'structural',
+        workloadRevision: R1,
+      });
+      const legacy = rows.find(
+        (r) => r['workloadClass'] === null && r['structuralBand'] === 'high',
+      )!;
+      expect(legacy.workloadScore).toBeNull();
+      expect(legacy.workloadSource).toBeNull();
+      expect(legacy.workloadRevision).toBeNull();
+      for (const r of rows) {
+        expect(r).not.toHaveProperty('ownerUserId');
+        expect(r).not.toHaveProperty('orgId');
+      }
+    });
+
+    it('workloadMix: reported-spend basis on both ledgers, costability, union classes, ordering, revisions, since, coverage — tenant-scoped', async () => {
+      const res = await q('auto', W, { ...RANGE, bucket: 'day' });
+      expect(res.status).toBe(200);
+      const mix = res.body.workloadMix;
+      expect(mix.evaluated).toBe(13); // in-range classified parents (the early writing parent excluded)
+      expect(mix.unclassified).toBe(2); // banded, no class
+      expect(mix.since).toBe(EARLY); // RANGE-INDEPENDENT earliest workload row
+      expect(mix.revisions).toEqual([
+        { revision: 'semantic/x', requests: 1 },
+        { revision: R1, requests: 11 },
+        { revision: R2, requests: 1 },
+      ]);
+      expect(mix.classes.map((c: { class: string }) => c.class)).toEqual([
+        'code',
+        'none',
+        'structured',
+        'vision',
+        'research',
+        'writing',
+      ]);
+      const by = new Map<string, Record<string, unknown>>(
+        (mix.classes as { class: string }[]).map((c) => [
+          c.class,
+          c as unknown as Record<string, unknown>,
+        ]),
+      );
+      // code: 1000500µ (per-row rounded) + 3000000µ (unknown kind) + 500000µ (in-range attempt);
+      // subscription row, out-of-range attempt, and foreign-owner attempt contribute nothing.
+      // (+ 0µ + 0µ from the two sub-micro rows — per-row rounding, NOT sum-then-round,
+      // which would add 1µ)
+      expect(by.get('code')).toEqual({
+        class: 'code',
+        requests: 6,
+        unpricedRequests: 1,
+        unpricedAttempts: 0,
+        spendUsd: 4.5005,
+      });
+      expect(by.get('none')).toEqual({
+        class: 'none',
+        requests: 2,
+        unpricedRequests: 2,
+        unpricedAttempts: 0,
+        spendUsd: null,
+      });
+      expect(by.get('structured')).toEqual({
+        class: 'structured',
+        requests: 2,
+        unpricedRequests: 0,
+        unpricedAttempts: 1,
+        spendUsd: 1, // the subscription row is priced but excluded; the api_key row counts
+      });
+      expect(by.get('vision')).toEqual({
+        class: 'vision',
+        requests: 2,
+        unpricedRequests: 0,
+        unpricedAttempts: 0,
+        spendUsd: 0,
+      });
+      expect(by.get('research')).toEqual({
+        class: 'research',
+        requests: 1,
+        unpricedRequests: 1,
+        unpricedAttempts: 0,
+        spendUsd: 0,
+      });
+      expect(by.get('writing')).toEqual({
+        class: 'writing',
+        requests: 0,
+        unpricedRequests: 0,
+        unpricedAttempts: 0,
+        spendUsd: 0.25,
+      });
+      // Reconciles with the summary's reported spend over the same rows (per-row µ$ rounding).
+      const sum = await q('summary', W, RANGE);
+      expect(sum.status).toBe(200);
+      const classTotal = (mix.classes as { spendUsd: number | null }[]).reduce(
+        (a, c) => a + (c.spendUsd ?? 0),
+        0,
+      );
+      // summary spend = all W in-range rows on the reported basis: 4.5005 (code) + 0 (vision)
+      // + 1 (structured) + 0 + 0 + 0.25 (writing attempt) + 0.2 (the two legacy rows)
+      expect(Math.round(classTotal * 1e6)).toBe(Math.round((Number(sum.body.spend) - 0.2) * 1e6));
+      // Tenant isolation: V's code row never reaches W.
+      const resV = await q('auto', V, { ...RANGE, bucket: 'day' });
+      expect(resV.body.workloadMix.evaluated).toBe(1);
+      expect(resV.body.workloadMix.classes).toEqual([
+        { class: 'code', requests: 1, unpricedRequests: 0, unpricedAttempts: 0, spendUsd: 4 },
+      ]);
+    });
+
+    it("workloadMix: zero-evaluated states are honest — legacy-only tenant (since null) vs a range before W's rows (since set)", async () => {
+      const legacy = await q('auto', L, { ...RANGE, bucket: 'day' });
+      expect(legacy.body.workloadMix).toEqual({
+        evaluated: 0,
+        unclassified: 1,
+        since: null,
+        revisions: [],
+        classes: [],
+      });
+      const before = await q('auto', W, {
+        from: '2025-01-01T00:00:00.000Z',
+        to: '2025-02-01T00:00:00.000Z',
+        bucket: 'day',
+      });
+      expect(before.body.workloadMix.evaluated).toBe(0);
+      expect(before.body.workloadMix.classes).toEqual([]);
+      expect(before.body.workloadMix.since).toBe(EARLY); // range-independent
+    });
+
+    it('workloadMix never disturbs the pre-existing aggregation: stripping the workload columns changes nothing else', async () => {
+      const withWl = (await q('auto', W, { ...RANGE, bucket: 'day' })).body as Record<
+        string,
+        unknown
+      >;
+      await pool.query(
+        `UPDATE request_log SET workload_class = NULL, workload_score = NULL, workload_source = NULL, workload_revision = NULL WHERE owner_user_id = $1`,
+        [W],
+      );
+      const without = (await q('auto', W, { ...RANGE, bucket: 'day' })).body as Record<
+        string,
+        unknown
+      >;
+      const { workloadMix: _a, ...restWith } = withWl;
+      const { workloadMix: _b, ...restWithout } = without;
+      expect(restWith).toEqual(restWithout); // band counts, cascade, semantic, savings, telemetrySince…
+      expect(without['workloadMix']).toEqual({
+        evaluated: 0,
+        unclassified: 15, // every in-range banded row of W is now unclassified
+        since: null,
+        revisions: [],
+        classes: [],
+      });
+    });
+
+    it('the store enforces the quad, the taxonomy, source compatibility, and the score range (task 1.2)', async () => {
+      const base = { cost: 1, at: DAY1, providerKind: 'api_key' as const };
+      const owner = await mkUser();
+      // Rejections.
+      await expect(seedLog(owner, { ...base, workloadClass: 'code' })).rejects.toThrow(); // partial quad
+      await expect(
+        seedLog(owner, {
+          ...base,
+          workloadClass: 'foo',
+          workloadScore: 1,
+          workloadSource: 'structural',
+          workloadRevision: R1,
+        }),
+      ).rejects.toThrow(); // out of taxonomy
+      await expect(
+        seedLog(owner, {
+          ...base,
+          workloadClass: 'code',
+          workloadScore: 1,
+          workloadSource: 'x',
+          workloadRevision: R1,
+        }),
+      ).rejects.toThrow(); // invalid source
+      await expect(
+        seedLog(owner, {
+          ...base,
+          workloadClass: 'research',
+          workloadScore: 1,
+          workloadSource: 'structural',
+          workloadRevision: R1,
+        }),
+      ).rejects.toThrow(); // structural + reserved class
+      await expect(
+        seedLog(owner, {
+          ...base,
+          workloadClass: 'code',
+          workloadScore: -0.01,
+          workloadSource: 'structural',
+          workloadRevision: R1,
+        }),
+      ).rejects.toThrow();
+      await expect(
+        seedLog(owner, {
+          ...base,
+          workloadClass: 'code',
+          workloadScore: 1.01,
+          workloadSource: 'structural',
+          workloadRevision: R1,
+        }),
+      ).rejects.toThrow();
+      // Acceptances: every structural quad + a semantic reserved class.
+      for (const cls of ['code', 'vision', 'structured', 'none']) {
+        await expect(
+          seedLog(owner, {
+            ...base,
+            workloadClass: cls,
+            workloadScore: cls === 'none' ? 0 : 1,
+            workloadSource: 'structural',
+            workloadRevision: R1,
+          }),
+        ).resolves.toBeTruthy();
+      }
+      await expect(
+        seedLog(owner, {
+          ...base,
+          workloadClass: 'research',
+          workloadScore: 0.9,
+          workloadSource: 'semantic',
+          workloadRevision: 'semantic/x',
+        }),
+      ).resolves.toBeTruthy();
     });
   });
 });

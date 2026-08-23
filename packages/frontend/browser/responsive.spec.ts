@@ -65,24 +65,24 @@ for (const vp of MATRIX) {
         await page.goto(`/browser-harness.html#/${name}`);
         await page.waitForSelector('html[data-harness-ready="true"]');
         const escapes = await page.evaluate(() => {
-        const pane = document.querySelector('[data-pane="content"]');
-        if (!pane) return ['no content pane'];
-        const bounds = pane.getBoundingClientRect();
-        const out: string[] = [];
-        for (const el of pane.querySelectorAll('*')) {
-          const s = getComputedStyle(el);
-          if (s.position === 'fixed' || s.position === 'absolute') continue;
-          const r = el.getBoundingClientRect();
-          if (r.width === 0) continue;
-          if (r.right > bounds.right + 1) {
-            const cls = el.className.toString().trim();
-            const text = (el.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 30);
-            out.push(
-              `${el.tagName}${cls ? '.' + cls.split(/\s+/).join('.') : ''}` +
-                ` over=${String(Math.round(r.right - bounds.right))}px text="${text}"`,
-            );
+          const pane = document.querySelector('[data-pane="content"]');
+          if (!pane) return ['no content pane'];
+          const bounds = pane.getBoundingClientRect();
+          const out: string[] = [];
+          for (const el of pane.querySelectorAll('*')) {
+            const s = getComputedStyle(el);
+            if (s.position === 'fixed' || s.position === 'absolute') continue;
+            const r = el.getBoundingClientRect();
+            if (r.width === 0) continue;
+            if (r.right > bounds.right + 1) {
+              const cls = el.className.toString().trim();
+              const text = (el.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 30);
+              out.push(
+                `${el.tagName}${cls ? '.' + cls.split(/\s+/).join('.') : ''}` +
+                  ` over=${String(Math.round(r.right - bounds.right))}px text="${text}"`,
+              );
+            }
           }
-        }
           return out.slice(0, 5);
         });
         expect(escapes, `content escaping its pane on ${name} at ${vp.name}`).toEqual([]);
@@ -505,3 +505,231 @@ test.describe('overlay paint order follows the layer registry', () => {
     for (const z of zs) expect(z, 'a layer reached the toast band').toBeLessThan(60);
   });
 });
+
+/** The Auto-performance Workload-mix rows (fix-workload-mix-phone-overflow).
+ *
+ * The whole-page "in-flow content stays inside its pane" assertion above catches the
+ * shipped 320px overflow on the DEFAULT fixture; these tests add the parts an
+ * element-box page sweep cannot: they assert the actual text GLYPHS (via Range rects,
+ * not only element boxes) stay inside the pane, that no required figure is clipped or
+ * ellipsised to fit, and that every honesty state the view-model can emit — routed
+ * counts, `— unpriced`, free `$0`, priced, `N unpriced`, and attempt-only `0%` — is
+ * present at phone width. The default fixture carries only some of those states, so the
+ * `?workload=boundary` / `?workload=attempt-only` variants supply the rest. A companion
+ * block pins that desktop rendering does NOT reflow. */
+
+/** Geometry + visibility state of everything under `selector`, measured against the
+ * content pane. Reports content that ESCAPES the pane (element boxes AND text-node Range
+ * rects, so glyphs spilling a container whose own box fits are caught), content that is
+ * CLIPPED (overflow hidden/clip or text-overflow ellipsis), and content that is HIDDEN
+ * while still carrying text (display:none / visibility:hidden|collapse, or a non-empty
+ * text node with a zero-area range). The hidden check matters because a required figure
+ * removed from layout still lives in `textContent`: without it a "satisfy the box check
+ * by hiding the value" fix would pass, which the workload-mix honesty contract forbids. */
+async function paneOverflow(
+  page: Page,
+  selector: string,
+): Promise<{ count: number; escapes: string[]; clipped: string[]; hidden: string[] }> {
+  return page.evaluate((sel) => {
+    const pane = document.querySelector('[data-pane="content"]');
+    if (!pane) return { count: 0, escapes: ['no content pane'], clipped: [], hidden: [] };
+    const bound = pane.getBoundingClientRect();
+    const roots = [...document.querySelectorAll(sel)];
+    const escapes: string[] = [];
+    const clipped: string[] = [];
+    const hidden: string[] = [];
+    const over = (right: number): boolean => right > bound.right + 1;
+    const short = (s: string): string => s.replace(/\s+/g, ' ').trim().slice(0, 30);
+    for (const root of roots) {
+      for (const el of [root, ...root.querySelectorAll('*')]) {
+        const s = getComputedStyle(el);
+        if (s.position === 'fixed' || s.position === 'absolute') continue;
+        const text = (el.textContent ?? '').trim();
+        // Hidden-but-present: removed from layout yet still in textContent.
+        if (
+          text.length > 0 &&
+          (s.display === 'none' || s.visibility === 'hidden' || s.visibility === 'collapse')
+        ) {
+          hidden.push(
+            `${el.tagName} display=${s.display} visibility=${s.visibility} "${short(el.textContent ?? '')}"`,
+          );
+          continue;
+        }
+        const r = el.getBoundingClientRect();
+        if (r.width > 0 && over(r.right)) {
+          escapes.push(
+            `${el.tagName} over=${String(Math.round(r.right - bound.right))}px "${short(el.textContent ?? '')}"`,
+          );
+        }
+        const hides = s.overflowX === 'hidden' || s.overflowX === 'clip';
+        if ((hides || s.textOverflow === 'ellipsis') && text.length > 0) {
+          clipped.push(
+            `${el.tagName} overflowX=${s.overflowX} textOverflow=${s.textOverflow} "${short(el.textContent ?? '')}"`,
+          );
+        }
+      }
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        const text = (n.textContent ?? '').trim();
+        if (!text) continue;
+        const range = document.createRange();
+        range.selectNodeContents(n);
+        const r = range.getBoundingClientRect();
+        // A non-empty text node with a zero-area range is collapsed / hidden.
+        if (r.width === 0 && r.height === 0) {
+          hidden.push(`TEXT zero-area "${short(n.textContent ?? '')}"`);
+          continue;
+        }
+        if (over(r.right)) {
+          escapes.push(
+            `TEXT over=${String(Math.round(r.right - bound.right))}px "${short(n.textContent ?? '')}"`,
+          );
+        }
+      }
+    }
+    return {
+      count: roots.length,
+      escapes: escapes.slice(0, 10),
+      clipped: clipped.slice(0, 10),
+      hidden: hidden.slice(0, 10),
+    };
+  }, selector);
+}
+
+/** The normalized text of every workload-mix row, in DOM order, for row-specific
+ * assertions (a state must be present ON ITS OWN row, not merely somewhere on the page). */
+async function workloadRowTexts(page: Page): Promise<string[]> {
+  return page.evaluate(() =>
+    [...document.querySelectorAll('[data-testid="workload-row"]')].map((r) =>
+      (r.textContent ?? '').replace(/\s+/g, ' ').trim(),
+    ),
+  );
+}
+
+const ROW = '[data-testid="workload-row"]';
+
+test.describe('Workload-mix rows at phone width', () => {
+  test.use({ viewport: { width: 320, height: 568 } });
+
+  test('the default fixture rows stay inside the pane, whole and unclipped', async ({ page }) => {
+    await open(page, '#/routing');
+    await page.waitForSelector(ROW);
+    const geom = await paneOverflow(page, ROW);
+    const texts = await workloadRowTexts(page);
+    // The default fixture is none / code / structured (see DEFAULT_AUTO_PERF): the
+    // long none label, and `code` carrying the "$1.3100 · 1 unpriced" qualifier.
+    expect(geom.count).toBe(3);
+    const noneRow = texts.find((t) => t.includes('no specialist workload'));
+    const codeRow = texts.find((t) => t.startsWith('code'));
+    expect(noneRow, 'the long none-label row is present').toBeTruthy();
+    expect(codeRow ?? '', 'the code row keeps its partial-unpriced qualifier').toContain(
+      '1 unpriced',
+    );
+    expect(geom.hidden, 'no required workload figure may be hidden').toEqual([]);
+    expect(geom.clipped, 'no required workload figure may be clipped or ellipsised').toEqual([]);
+    expect(geom.escapes, 'workload rows escape the pane at 320px').toEqual([]);
+  });
+
+  test('every pricing / routing state stays inside the pane', async ({ page }) => {
+    await open(page, '#/routing', '?workload=boundary');
+    await page.waitForSelector(ROW);
+    const geom = await paneOverflow(page, ROW);
+    const texts = await workloadRowTexts(page);
+    expect(geom.count).toBe(5);
+    const codeRow = texts.find((t) => t.startsWith('code')) ?? '';
+    const visionRow = texts.find((t) => t.startsWith('vision')) ?? '';
+    const structuredRow = texts.find((t) => t.startsWith('structured')) ?? '';
+    const noneRow = texts.find((t) => t.includes('no specialist workload')) ?? '';
+    const writingRow = texts.find((t) => t.startsWith('writing')) ?? '';
+    // Each honesty state is present ON ITS OWN row — not merely somewhere on the page.
+    expect(codeRow, 'routed count on the code row').toContain('7 routed');
+    expect(codeRow, 'ordinary priced spend on the code row').toContain('$12.3400');
+    expect(visionRow, 'null spend renders a dash on the vision row').toContain('—');
+    expect(visionRow, 'null spend renders "unpriced" on the vision row').toContain('unpriced');
+    expect(structuredRow, 'partial-pricing qualifier on the structured row').toContain(
+      '1 unpriced',
+    );
+    expect(noneRow, 'free spend renders $0 on the none row').toContain('$0.0000');
+    expect(noneRow, 'a free $0 carries NO unpriced qualifier').not.toContain('unpriced');
+    expect(writingRow, 'a request-zero attempt-only class shows a 0% share').toContain('0%');
+    expect(geom.hidden, 'no required workload figure may be hidden').toEqual([]);
+    expect(geom.clipped, 'no required workload figure may be clipped or ellipsised').toEqual([]);
+    expect(geom.escapes, 'a workload state escapes the pane at 320px').toEqual([]);
+  });
+
+  test('the attempt-only state renders its row and note inside the pane', async ({ page }) => {
+    await open(page, '#/routing', '?workload=attempt-only');
+    await page.waitForSelector('[data-testid="workload-mix"]');
+    const note = await page.locator('[data-testid="workload-mix-attempt-only"]').textContent();
+    expect(note, 'the attempt-only disclosure must render, not the empty affordance').toContain(
+      'attempt spend but no classified parent requests',
+    );
+    const rowGeom = await paneOverflow(page, ROW);
+    const noteGeom = await paneOverflow(page, '[data-testid="workload-mix-attempt-only"]');
+    const texts = await workloadRowTexts(page);
+    expect(rowGeom.count).toBe(1);
+    expect(texts[0] ?? '', 'the attempt-only row shows a 0% share').toContain('0%');
+    expect(rowGeom.hidden, 'the attempt-only row hides a figure').toEqual([]);
+    expect(rowGeom.clipped, 'the attempt-only row clips a figure').toEqual([]);
+    expect(rowGeom.escapes, 'the attempt-only row escapes the pane at 320px').toEqual([]);
+    expect(
+      noteGeom.hidden.concat(noteGeom.escapes),
+      'the attempt-only note escapes the pane',
+    ).toEqual([]);
+  });
+});
+
+for (const vp of [
+  { name: '1025x768', width: 1025, height: 768 },
+  { name: '1440x900', width: 1440, height: 900 },
+] as const) {
+  test.describe(`Workload-mix rows keep their one-line desktop layout @ ${vp.name}`, () => {
+    test.use({ viewport: { width: vp.width, height: vp.height } });
+
+    // Direct Routing-page parity: the existing v0.11.0 baseline suite only opens Requests,
+    // so nothing else proves the fix stays narrow-only here. Holds before AND after the
+    // `rs-wrap` addition, since that class contributes nothing above 768px.
+    test('rows stay a single non-wrapping flex line with unchanged typography', async ({
+      page,
+    }) => {
+      await open(page, '#/routing');
+      await page.waitForSelector('[data-testid="workload-row"]');
+      const rows = await page.evaluate(() =>
+        [...document.querySelectorAll('[data-testid="workload-row"]')].map((row) => {
+          const s = getComputedStyle(row);
+          const kids = [...row.children];
+          const rowH = row.getBoundingClientRect().height;
+          const maxKidH = Math.max(...kids.map((k) => k.getBoundingClientRect().height));
+          const first = kids[0];
+          const second = kids[1];
+          return {
+            display: s.display,
+            flexWrap: s.flexWrap,
+            gap: s.gap,
+            fontSize: s.fontSize,
+            lineHeight: s.lineHeight,
+            childCount: kids.length,
+            // One flex line: the row is no taller than its tallest child. A wrapped
+            // container would stack a second line and exceed it. (align-items:center
+            // means child TOPS legitimately differ, so height — not top — is the test.)
+            oneFlexLine: rowH <= maxKidH + 1,
+            firstIsLabel: !!first && !first.classList.contains('mono'),
+            secondIsMono: !!second && second.classList.contains('mono'),
+          };
+        }),
+      );
+      expect(rows.length).toBeGreaterThan(0);
+      for (const r of rows) {
+        expect(r.display).toBe('flex');
+        expect(r.flexWrap, 'desktop workload rows must not reflow').toBe('nowrap');
+        expect(r.gap).toBe('10px');
+        expect(r.fontSize).toBe('11px');
+        expect(r.lineHeight).toBe('18.7px');
+        expect(r.childCount).toBe(4);
+        expect(r.oneFlexLine, 'the row stays a single flex line at desktop').toBe(true);
+        expect(r.firstIsLabel, 'the class label leads the row').toBe(true);
+        expect(r.secondIsMono, 'the mono stat span follows the label').toBe(true);
+      }
+    });
+  });
+}

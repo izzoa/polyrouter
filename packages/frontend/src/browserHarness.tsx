@@ -20,12 +20,108 @@ import { render } from 'solid-js/web';
 import { App } from './App';
 import { createAppStore } from './state/appState';
 import { AppProvider } from './state/context';
-import { FakeApiClient } from './test/fakeClient';
-import type { AdminInviteDto, AgentDto } from './data/api';
+import { DEFAULT_AUTO_PERF, FakeApiClient } from './test/fakeClient';
+import type { AdminInviteDto, AgentDto, AutoPerformance, WorkloadMix } from './data/api';
 import './styles.css';
 
 const params = new URLSearchParams(globalThis.location.search);
 const role = params.get('role') === 'member' ? 'member' : 'admin';
+
+// Workload-mix fixture variants (fix-workload-mix-phone-overflow), opt-in via
+// `?workload=…` so the DEFAULT harness stays byte-identical for every other
+// browser suite. The default fixture already reproduces the shipped 320px
+// overflow; these two variants exercise the row states the default never
+// carries, so the narrow-width geometry checks cover the whole contract.
+//
+// `boundary` covers, in one range: a positive routed count, a null-spend row
+// (`— unpriced`), a free row (`$0` with no qualifier), an ordinary priced row,
+// a partial-pricing row (`N unpriced`), and a request-zero attempt-only class
+// (`0%`). Requests sum to `evaluated` so the shares read 100%.
+const BOUNDARY_WORKLOAD_MIX: WorkloadMix = {
+  evaluated: 20,
+  unclassified: 0,
+  since: '2026-07-12T00:00:00.000Z',
+  revisions: [{ revision: 'structural/v1/c1/boundary01', requests: 20 }],
+  classes: [
+    // ordinary priced + positive routed count
+    {
+      class: 'code',
+      requests: 10,
+      unpricedRequests: 0,
+      unpricedAttempts: 0,
+      spendUsd: 12.34,
+      routed: 7,
+    },
+    // null spend → a dash + "unpriced". Producer-reachable: the aggregation only
+    // reports `spendUsd: null` when NOTHING is costable, i.e. every request is
+    // unpriced (workload-mix.ts: costable = requests - unpricedRequests > 0 || …),
+    // so all 5 requests must be unpriced. The numeric qualifier is suppressed when
+    // spend is null, so this still renders exactly "— unpriced".
+    {
+      class: 'vision',
+      requests: 5,
+      unpricedRequests: 5,
+      unpricedAttempts: 0,
+      spendUsd: null,
+      routed: 0,
+    },
+    // priced but partially unpriced → "1 unpriced" qualifier beside the figure
+    {
+      class: 'structured',
+      requests: 3,
+      unpricedRequests: 1,
+      unpricedAttempts: 0,
+      spendUsd: 9.99,
+      routed: 2,
+    },
+    // free (subscription/no-charge) → "$0" with NO qualifier, never "unpriced"
+    {
+      class: 'none',
+      requests: 2,
+      unpricedRequests: 0,
+      unpricedAttempts: 0,
+      spendUsd: 0,
+      routed: 0,
+    },
+    // request-zero class reachable only through attempt spend → 0% share
+    {
+      class: 'writing',
+      requests: 0,
+      unpricedRequests: 0,
+      unpricedAttempts: 1,
+      spendUsd: 3.21,
+      routed: 0,
+    },
+  ],
+};
+
+// `attempt-only` is the non-empty `evaluated === 0` path: no classified parent
+// rows, but a class carrying attempt spend — the block renders the row + the
+// attempt-only note, NOT the empty affordance.
+const ATTEMPT_ONLY_WORKLOAD_MIX: WorkloadMix = {
+  evaluated: 0,
+  unclassified: 0,
+  since: '2026-07-12T00:00:00.000Z',
+  revisions: [],
+  classes: [
+    {
+      class: 'code',
+      requests: 0,
+      unpricedRequests: 0,
+      unpricedAttempts: 0,
+      spendUsd: 4.56,
+      routed: 0,
+    },
+  ],
+};
+
+function workloadAutoPerf(): AutoPerformance | undefined {
+  const which = params.get('workload');
+  if (which === 'boundary') return { ...DEFAULT_AUTO_PERF, workloadMix: BOUNDARY_WORKLOAD_MIX };
+  if (which === 'attempt-only')
+    return { ...DEFAULT_AUTO_PERF, workloadMix: ATTEMPT_ONLY_WORKLOAD_MIX };
+  return undefined;
+}
 
 const LONG_MODEL = 'claude-sonnet-4-5-20250929';
 const LONG_PROVIDER = 'anthropic-production-eu-west-1';
@@ -108,11 +204,13 @@ const TIER_ENTRIES = ['claude-sonnet-4-5-20250929', 'gpt-5-mini-2025-08-07', 'll
   }),
 );
 
+const autoPerf = workloadAutoPerf();
 const client = new FakeApiClient({
   agents: AGENTS,
   adminUsers: ADMIN_USERS,
   adminInvites: INVITES,
   ...(params.get('chain') === '1' ? { tierEntries: { 'tier-default': TIER_ENTRIES } } : {}),
+  ...(autoPerf ? { autoPerf } : {}),
 });
 if (client.session) client.session = { ...client.session, role, email: LONG_EMAIL };
 // Keep the fake's own well-formed rows and lengthen only what drives overflow: a long

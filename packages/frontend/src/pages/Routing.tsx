@@ -1198,6 +1198,7 @@ function AutoPerformance() {
                   <For each={w.rows}>
                     {(r) => (
                       <div
+                        class="rs-wrap"
                         data-testid="workload-row"
                         style="display:flex;align-items:center;gap:10px;font:400 11px 'Geist',sans-serif;color:var(--text2);line-height:1.7"
                       >

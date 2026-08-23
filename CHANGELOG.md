@@ -15,6 +15,10 @@ heading is started.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Workload-mix rows no longer overflow at phone width.** The Auto-performance "Workload mix" rows (Epic W) pushed their spend labels past the content pane at the 320px reflow width, reddening the responsive browser gate on the v0.15.0 commit. The v0.15.0 image build succeeded, so both published image variants carry this regression until a later release; the rows now wrap below the narrow threshold while keeping every figure (share, requests, routed count, spend, and the `unpriced` / `N unpriced` qualifiers) visible and unclipped, with desktop rendering unchanged.
+
 ## [0.15.0] — 2026-08-23
 
 ### Added

@@ -165,9 +165,15 @@ describe('rows, gutters and fixed widths', () => {
     expect(css).toMatch(/\.rs-page\s*\{[^}]*padding:\s*22px 26px/);
   });
 
-  it('wraps the control rows that cannot fit a phone', () => {
+  it('wraps the rows that cannot fit a phone', () => {
     expect(read('pages/Requests.tsx')).toMatch(/class="rs-wrap"[^>]*style="display:flex/);
     expect(read('pages/Setup.tsx')).toMatch(/class="rs-wrap"[^>]*style="display:flex/);
+    // fix-workload-mix-phone-overflow: these children are individually below the global
+    // 100px fixed-width guard, but their minima + gaps + spend compose wider than the
+    // 202px card interior. Pin the narrow-only wrapping intent at the actual row.
+    expect(read('pages/Routing.tsx')).toMatch(
+      /<div\s+class="rs-wrap"\s+data-testid="workload-row"/,
+    );
   });
 
   it('leaves no fixed width or min-width at or above 100px that a phone cannot honour', () => {

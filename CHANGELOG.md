@@ -15,9 +15,11 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.15.1] — 2026-08-23
+
 ### Fixed
 
-- **Workload-mix rows no longer overflow at phone width.** The Auto-performance "Workload mix" rows (Epic W) pushed their spend labels past the content pane at the 320px reflow width, reddening the responsive browser gate on the v0.15.0 commit. The v0.15.0 image build succeeded, so both published image variants carry this regression until a later release; the rows now wrap below the narrow threshold while keeping every figure (share, requests, routed count, spend, and the `unpriced` / `N unpriced` qualifiers) visible and unclipped, with desktop rendering unchanged.
+- **Workload-mix rows no longer overflow at phone width.** The Auto-performance "Workload mix" rows (Epic W) pushed their spend labels past the content pane at the 320px reflow width, reddening the responsive browser gate on the v0.15.0 commit. The v0.15.0 image build succeeded, so both published image variants carry this regression until this release; the rows now wrap below the narrow threshold while keeping every figure (share, requests, routed count, spend, and the `unpriced` / `N unpriced` qualifiers) visible and unclipped, with desktop rendering unchanged.
 
 ## [0.15.0] — 2026-08-23
 
@@ -815,7 +817,8 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.15.1...HEAD
+[0.15.1]: https://github.com/izzoa/polyrouter/releases/tag/v0.15.1
 [0.15.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.15.0
 [0.14.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.14.0
 [0.13.1]: https://github.com/izzoa/polyrouter/releases/tag/v0.13.1

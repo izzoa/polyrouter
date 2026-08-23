@@ -3145,7 +3145,13 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       const verified = (await reconcileRules()) === 'committed';
       setState('bt', 'busy', band, false);
       setState('bt', 'errors', band, failed);
-      setState('bt', 'unverified', !verified && (wrote || mayHaveLanded));
+      // MONOTONIC (fix-band-unverified-monotonic): a band action only ever
+      // RAISES the shared flag — a definitive rejection whose reconcile also
+      // failed must not clear the other band's landed-but-unverified write.
+      // Only an authoritative, generation-winning rules-list commit clears it
+      // (reconcileRules' committed path, or a full loadRouting); an identity
+      // reset re-initializes the section as fresh state.
+      if (!verified && (wrote || mayHaveLanded)) setState('bt', 'unverified', true);
       if (wrote && verified) say('Band target saved');
     },
     clearBand: async (band) => {
@@ -3170,7 +3176,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       const verified = (await reconcileRules()) === 'committed';
       setState('bt', 'busy', band, false);
       setState('bt', 'errors', band, failed);
-      setState('bt', 'unverified', !verified && (touched || mayHaveLanded));
+      if (!verified && (touched || mayHaveLanded)) setState('bt', 'unverified', true); // monotonic (fix-band-unverified-monotonic)
       if (failed === null && verified && snapshot.length > 0) say('Band cleared');
     },
     cleanShadowed: async (band) => {
@@ -3196,7 +3202,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       const verified = (await reconcileRules()) === 'committed';
       setState('bt', 'busy', band, false);
       setState('bt', 'errors', band, failed);
-      setState('bt', 'unverified', !verified && (touched || mayHaveLanded));
+      if (!verified && (touched || mayHaveLanded)) setState('bt', 'unverified', true); // monotonic (fix-band-unverified-monotonic)
       if (failed === null && verified && ofBand.length > 1) say('Duplicates removed');
     },
     // Workload targets (add-workload-routing D6): the band actions' exact
@@ -3231,8 +3237,9 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       setState('wt', 'errors', cls, failed);
       // MONOTONIC (clink r5 M2): a class action only ever RAISES the shared
       // flag — a definitive rejection whose reconcile also failed must not
-      // clear a sibling class's landed-but-unverified write. Only a COMMITTED
-      // reconcile (reconcileRules) clears it.
+      // clear a sibling class's landed-but-unverified write. Only an
+      // authoritative, generation-winning rules-list commit clears it
+      // (reconcileRules' committed path, or a full loadRouting).
       if (!verified && (wrote || mayHaveLanded)) setState('wt', 'unverified', true);
       if (wrote && verified) say('Workload target saved');
     },

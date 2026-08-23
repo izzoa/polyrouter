@@ -1578,6 +1578,45 @@ describe('band-target actions (add-band-target-ui)', () => {
     expect(s.state.rules[0]!.target).toBe('tier:cheap'); // the landed write, now confirmed
   });
 
+  it('`unverified` is monotonic across the two bands: a definitive rejection + failed reconcile never clears the other band’s landed-but-unverified write (fix-band-unverified-monotonic)', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION, rules: [] });
+    // Every reconcile fails for the duration of the race.
+    fake.listRules = () => Promise.reject(new ApiError(500, 'Internal', 'list down'));
+    // auto_high: the write LANDS immediately; auto_low: HELD, then definitively rejected.
+    let releaseLow: () => void = () => undefined;
+    const lowHeld = new Promise<void>((r) => (releaseLow = r));
+    const realCreate = fake.createRule.bind(fake);
+    fake.createRule = async (input) => {
+      if (input.matchType === 'auto_low') {
+        await lowHeld;
+        throw new ApiError(422, 'Unprocessable', 'bad target');
+      }
+      return realCreate(input);
+    };
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    const low = s.setBandTarget('auto_low', 'tier:cheap'); // starts first, finishes LAST
+    await s.setBandTarget('auto_high', 'tier:premium'); // lands; reconcile fails → unverified TRUE
+    expect(s.state.bt.unverified).toBe(true);
+    releaseLow();
+    await low; // definitive 422 + failed reconcile — must NOT write `false`
+    expect(s.state.bt.unverified).toBe(true);
+    expect(s.state.bt.errors.auto_low).toMatch(/bad target/);
+    expect(s.state.bt.errors.auto_high).toBeNull();
+    // Snapshot-dependent actions stay disabled until an authoritative re-list commits:
+    // the follow-up must issue NO rule mutation — from this stale EMPTY snapshot an
+    // unblocked retry would CREATE (a duplicate), so count every mutation kind, not
+    // just updates (codex: update-only counting could not detect the duplicate path).
+    const mutations = () =>
+      fake.calls.filter((c) => c === 'createRule' || c === 'updateRule' || c === 'deleteRule')
+        .length;
+    const before = mutations();
+    expect(fake.calls.filter((c) => c === 'createRule')).toHaveLength(1); // the high write only
+    await s.setBandTarget('auto_high', 'tier:cheap');
+    expect(mutations()).toBe(before);
+    expect(fake.calls.filter((c) => c === 'updateRule')).toHaveLength(0);
+  });
+
   it('clearBand deletes every snapshot rule of the band and reconciles', async () => {
     const shadowed = { ...highRule, id: 'r-high-2', priority: -1 };
     const fake = new FakeApiClient({ session: DEFAULT_SESSION, rules: [highRule, shadowed] });

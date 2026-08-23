@@ -863,4 +863,105 @@ describe('structural routing e2e', () => {
       process.env['ROUTING_AUTO_LAYERS'] = 'structural';
     }
   });
+
+  // ── add-workload-scoped-bands: class-scoped band targets ────────────────────
+
+  describe('class-scoped bands (add-workload-scoped-bands)', () => {
+    /** A scoped band rule for `cls`, removed afterwards. */
+    async function withScopedBand(
+      matchType: 'auto_high' | 'auto_low',
+      cls: string,
+      target: string,
+      fn: () => Promise<void>,
+      priority = 0,
+    ): Promise<void> {
+      const rule = await port.routingRules.insert(principal, {
+        matchType,
+        headerName: 'x-polyrouter-tier',
+        headerValue: null,
+        workloadClass: cls,
+        target,
+        priority,
+      });
+      try {
+        await fn();
+      } finally {
+        await port.routingRules.remove(principal, rule.id);
+      }
+    }
+
+    it('a code request banding high routes to the code-scoped strong target (reason suffixed); a non-code request keeps the generic one', async () => {
+      // The generic auto_high → premium stands; the code scope points at cheap so the two are distinguishable.
+      await withScopedBand('auto_high', 'code', 'tier:cheap', async () => {
+        await clearLogs();
+        await send(body({ system: 'sysScopedHigh', userChars: 9_000, code: true, tools: 8 }));
+        const row = await lastLog();
+        expect(row.decisionLayer).toBe('structural');
+        expect(row.modelId).toBe(idCheap); // the scoped strong target, not premium
+        expect(row.routingReason).toMatch(/^structural:high .* scope=code$/); // TERMINAL fragment
+        expect(row.workloadClass).toBe('code');
+        await clearLogs();
+        await send(body({ system: 'sysScopedHighProse', userChars: 9_000, tools: 8 })); // high, workload none
+        const prose = await lastLog();
+        expect(prose.decisionLayer).toBe('structural');
+        expect(prose.modelId).toBe(idPremium); // generic
+        expect(prose.routingReason).not.toContain('scope=');
+      });
+    });
+
+    it('a Workload target still claims first; without it the scoped band decides; an unusable claim does not claim', async () => {
+      await withScopedBand('auto_high', 'code', 'tier:cheap', async () => {
+        await withWorkloadRule('code', 'tier:premium', async () => {
+          await send(body({ system: 'sysClaimOverScope', userChars: 9_000, code: true, tools: 8 }));
+          const row = await lastLog();
+          expect(row.decisionLayer).toBe('workload'); // the claim wins
+          expect(row.modelId).toBe(idPremium);
+        });
+        // an UNUSABLE claim (empty tier) does not claim → the scoped band serves
+        const empty = await port.tiers.insert(principal, { key: 'emptyclaim' });
+        try {
+          await withWorkloadRule('code', 'tier:emptyclaim', async () => {
+            await clearLogs();
+            await send(
+              body({ system: 'sysUnusableClaim', userChars: 9_000, code: true, tools: 8 }),
+            );
+            const row = await lastLog();
+            expect(row.decisionLayer).toBe('structural');
+            expect(row.modelId).toBe(idCheap);
+            expect(row.routingReason).toMatch(/ scope=code$/);
+          });
+        } finally {
+          await port.tiers.remove(principal, empty.id);
+        }
+      });
+    });
+
+    it('a scoped rule with an EMPTY tier makes the band unroutable for the class (default serves, band recorded) — never the generic target', async () => {
+      const empty = await port.tiers.insert(principal, { key: 'emptyscope' });
+      try {
+        await withScopedBand('auto_high', 'code', 'tier:emptyscope', async () => {
+          await clearLogs();
+          await send(body({ system: 'sysScopedEmpty', userChars: 9_000, code: true, tools: 8 }));
+          const row = await lastLog();
+          expect(row.decisionLayer).toBe('default');
+          expect(row.modelId).toBe(idDefault);
+          expect(row.structuralBand).toBe('high'); // the verdict is recorded — an unroutable high
+          expect(row.workloadClass).toBe('code');
+        });
+      } finally {
+        await port.tiers.remove(principal, empty.id);
+      }
+    });
+
+    it('a `none` request never carries a scope: scoped rules are invisible to it', async () => {
+      await withScopedBand('auto_high', 'code', 'tier:cheap', async () => {
+        await clearLogs();
+        await send(body({ system: 'sysNoneScope', userChars: 9_000, tools: 8 }));
+        const row = await lastLog();
+        expect(row.workloadClass).toBe('none');
+        expect(row.modelId).toBe(idPremium);
+        expect(row.routingReason).not.toContain('scope=');
+      });
+    });
+  });
 });

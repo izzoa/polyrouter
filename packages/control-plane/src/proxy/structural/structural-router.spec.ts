@@ -546,3 +546,72 @@ describe('StructuralRouter.classify / resolveBand split (add-workload-routing 2.
     expect(typed.kind).toBe('classified');
   });
 });
+
+describe('StructuralRouter — class-scoped band resolution (add-workload-scoped-bands)', () => {
+  const scoped = (
+    id: string,
+    matchType: string,
+    target: string,
+    cls: string,
+    priority = 0,
+  ): RouteRule => ({
+    ...rule(id, matchType, target, priority),
+    workloadClass: cls,
+  });
+  const withCodeTier = (rules: RouteRule[]): RoutingSnapshot => {
+    const base = snapshot(rules);
+    return {
+      ...base,
+      tiers: [...base.tiers, { id: 't-code', key: 'strong-code' }, { id: 't-empty', key: 'empty' }],
+      entriesByTierId: new Map([
+        ...base.entriesByTierId,
+        ['t-code', [{ modelId: 'm-prem', position: 0 }]],
+        ['t-empty', []],
+      ]),
+    };
+  };
+
+  it('a scoped rule decides for its class (reason suffixed); no scope → the generic rule, byte-identical', async () => {
+    const r = new StructuralRouter(cfg(), store());
+    const snap = withCodeTier([
+      rule('g', 'auto_high', 'tier:premium', 99),
+      scoped('c', 'auto_high', 'tier:strong-code', 'code'),
+    ]);
+    const c = await r.classify(PRINCIPAL, 'a1', complex);
+    const generic = r.resolveBand(snap, c);
+    const forCode = r.resolveBand(snap, c, 'code');
+    const forVision = r.resolveBand(snap, c, 'vision');
+    expect(generic.kind).toBe('route');
+    if (generic.kind === 'route') {
+      expect(generic.decision.tierKey).toBe('premium');
+      expect(generic.decision.scope).toBeUndefined();
+      expect(generic.decision.routingReason).not.toContain('scope=');
+    }
+    expect(forCode.kind).toBe('route');
+    if (forCode.kind === 'route') {
+      expect(forCode.decision.tierKey).toBe('strong-code');
+      // the scope rides the decision as DATA — the proxy appends the terminal fragment
+      expect(forCode.decision.scope).toBe('code');
+      expect(forCode.decision.routingReason).toMatch(/^structural:high /);
+      expect(forCode.decision.routingReason).not.toContain('scope=');
+    }
+    expect(forVision).toEqual(generic); // no scoped rule for vision → generic
+    // evaluate / decide thread the scope too
+    const e = await r.evaluate(PRINCIPAL, 'a1', complex, snap, undefined, 'code');
+    expect(e.kind === 'route' && e.decision.tierKey).toBe('strong-code');
+    const d = await r.decide(PRINCIPAL, 'a1', complex, snap, 'code');
+    expect(d?.tierKey).toBe('strong-code');
+  });
+
+  it('an existing scoped rule with an unusable target makes the band UNROUTABLE for the class — the generic rule is not substituted', async () => {
+    const r = new StructuralRouter(cfg(), store());
+    const snap = withCodeTier([
+      rule('g', 'auto_high', 'tier:premium'),
+      scoped('c', 'auto_high', 'tier:empty', 'code'),
+    ]);
+    const c = await r.classify(PRINCIPAL, 'a1', complex);
+    expect(r.resolveBand(snap, c, 'code').kind).toBe('unroutable');
+    expect(r.resolveBand(snap, c, 'vision').kind).toBe('route');
+    expect(r.resolveBand(snap, c).kind).toBe('route');
+  });
+});

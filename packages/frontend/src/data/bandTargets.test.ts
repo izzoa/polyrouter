@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { Model } from '../types';
 import type { RuleDto } from './api';
-import { bandVms, effectiveRuleOrder, type BandTargetsInput } from './bandTargets';
+import {
+  anyScopedBandRule,
+  bandVms,
+  effectiveRuleOrder,
+  scopedBandVms,
+  workloadClaimState,
+  type BandTargetsInput,
+} from './bandTargets';
 import { DEFAULT_AUTO_PERF } from '../test/fakeClient';
 
 const T0 = '2026-07-01T00:00:00.000Z';
@@ -208,5 +215,111 @@ describe('bandVms', () => {
     const vm = bandVms(input({ autoPerf: { data: DEFAULT_AUTO_PERF, range: '30d' } }));
     expect(vm.high.unroutable).toEqual({ count: 1, range: '30d' }); // fixture high.unroutable = 1
     expect(vm.low.unroutable).toEqual({ count: 0, range: '30d' });
+  });
+});
+
+describe('class-scoped bands (add-workload-scoped-bands)', () => {
+  const scoped = (over: Partial<RuleDto>): RuleDto =>
+    rule({
+      id: 'sc',
+      matchType: 'auto_high',
+      workloadClass: 'code',
+      target: 'tier:premium',
+      ...over,
+    });
+
+  it('generic rows ignore class-scoped rules: a scoped rule is never the generic effective or a shadowed duplicate', () => {
+    const vm = bandVms(
+      input({
+        rules: [rule({ id: 'g', target: 'tier:cheap' }), scoped({ id: 'sc', priority: 99 })],
+      }),
+    );
+    expect(vm.high.effective?.id).toBe('g');
+    expect(vm.high.shadowed).toEqual([]);
+    expect(vm.high.target).toMatchObject({ kind: 'tier', key: 'cheap' });
+    // cascade-needs-both / same-destination consider generic rules only
+    const both = bandVms(
+      input({
+        cascadeEffective: true,
+        rules: [
+          scoped({ id: 'sh' }),
+          scoped({ id: 'sl', matchType: 'auto_low', target: 'tier:cheap' }),
+        ],
+      }),
+    );
+    expect(both.cascadeNeedsBoth).toBe(true); // no GENERIC band usable although both scoped ones are
+    expect(both.sameDestination).toBe(false);
+  });
+
+  it('scopedBandVms builds the class pair from its scoped rules only, with the shared resolution and ordering', () => {
+    const rules = [
+      rule({ id: 'g', target: 'tier:cheap' }),
+      scoped({ id: 'old', priority: 0 }),
+      scoped({ id: 'prio', priority: 5, target: 'tier:premium' }),
+      scoped({ id: 'low', matchType: 'auto_low', target: 'tier:cheap' }),
+      scoped({ id: 'vis', workloadClass: 'vision', target: 'model:m1' }),
+    ];
+    const code = scopedBandVms(input({ rules }), 'code');
+    expect(code.high.effective?.id).toBe('prio');
+    expect(code.high.shadowed.map((r) => r.id)).toEqual(['old']);
+    expect(code.high.target).toMatchObject({ kind: 'tier', key: 'premium' });
+    expect(code.low.effective?.id).toBe('low');
+    expect(code.anyScoped).toBe(true);
+    const vision = scopedBandVms(input({ rules }), 'vision');
+    expect(vision.high.target).toMatchObject({ kind: 'model' });
+    expect(vision.low.effective).toBeNull();
+    expect(vision.low.target).toEqual({ kind: 'unset' });
+    const structured = scopedBandVms(input({ rules }), 'structured');
+    expect(structured.anyScoped).toBe(false);
+    expect(anyScopedBandRule(rules)).toBe(true);
+    expect(anyScopedBandRule([rule({ id: 'g' })])).toBe(false);
+  });
+
+  it('workloadClaimState distinguishes none / usable / unusable claims by the EFFECTIVE auto_workload rule', () => {
+    expect(workloadClaimState(input(), 'code')).toBe('none');
+    const usable = rule({
+      id: 'w',
+      matchType: 'auto_workload',
+      workloadClass: 'code',
+      target: 'tier:premium',
+    });
+    expect(workloadClaimState(input({ rules: [usable] }), 'code')).toBe('usable');
+    const empty = rule({
+      id: 'w2',
+      matchType: 'auto_workload',
+      workloadClass: 'code',
+      target: 'tier:empty',
+    });
+    const catalog = input({
+      rules: [empty],
+      tiers: [
+        { id: 't-premium', key: 'premium', displayName: null, description: null, createdAt: T0 },
+        { id: 't-empty', key: 'empty', displayName: null, description: null, createdAt: T0 },
+      ],
+      tierEntries: {
+        't-premium': [{ id: 'e1', tierId: 't-premium', modelId: 'm1', position: 0, model: null }],
+        't-empty': [],
+      },
+    });
+    expect(workloadClaimState(catalog, 'code')).toBe('unusable');
+    expect(
+      workloadClaimState(
+        input({
+          rules: [
+            rule({
+              id: 'w3',
+              matchType: 'auto_workload',
+              workloadClass: 'code',
+              target: 'tier:ghost',
+            }),
+          ],
+        }),
+        'code',
+      ),
+    ).toBe('unusable');
+    // the HIGHER-priority rule decides
+    expect(workloadClaimState(input({ rules: [empty, { ...usable, priority: 9 }] }), 'code')).toBe(
+      'usable',
+    );
   });
 });

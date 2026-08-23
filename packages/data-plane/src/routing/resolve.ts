@@ -24,9 +24,10 @@ export interface RouteRule {
   readonly matchType: string;
   readonly headerName: string;
   readonly headerValue: string | null;
-  /** The workload class an `auto_workload` rule binds (add-workload-routing);
-   * null on every other match type. Optional so pre-existing snapshots and
-   * fixtures stay valid. */
+  /** The workload class an `auto_workload` rule binds (add-workload-routing),
+   * or the class SCOPE of an `auto_high`/`auto_low` band rule (add-workload-
+   * scoped-bands); null = a generic (unscoped) band rule / every other match
+   * type. Optional so pre-existing snapshots and fixtures stay valid. */
   readonly workloadClass?: string | null;
   readonly target: string;
   readonly priority: number;
@@ -95,6 +96,13 @@ export interface RouteDecision {
   readonly tierKey: string | null;
   readonly decisionLayer: DecisionLayer;
   readonly routingReason: string;
+  /** The class of the CLASS-SCOPED band rule that decided (add-workload-
+   * scoped-bands) — carried as DATA, never inside `routingReason`: the proxy
+   * appends ` scope=<class>` as the TERMINAL fragment of the recorded reason
+   * (after any quality marker, fall-back trail, capacity note, or
+   * classification trail). Absent on generic band decisions and every other
+   * layer. */
+  readonly scope?: string;
   /** Non-null ONLY for `header`-layer decisions; null everywhere else, including
    * the advisory fall-through (a non-matching client value is never captured). */
   readonly matchedHeader: MatchedHeader | null;
@@ -212,18 +220,52 @@ export const ruleOrder = <T extends { priority: number; createdAt: Date; id: str
 
 /** Resolve a structural/cascade band target: the highest-priority rule of
  * `matchType` (auto_high / auto_low), resolved to a decision — or `null` when no
- * such rule exists or its target is unresolvable. Shared by #13 (structural) and
- * #14 (cascade) so both select band rules with the one deterministic ordering. */
+ * such rule exists or its target is unresolvable. Shared by #13 (structural),
+ * #14 (cascade), and Layer 2 so all select band rules with the one
+ * deterministic ordering.
+ *
+ * `scope` (add-workload-scoped-bands): the request's deciding workload class.
+ * With a scope, the CLASS-SCOPED rules of the band (`workloadClass === scope`)
+ * are consulted first — if any exists, the highest-priority one DECIDES for
+ * this request (resolved → its target carrying `scope` — the proxy appends the
+ * terminal ` scope=<class>` reason fragment;
+ * unresolvable → `null`, i.e. the band is unroutable for the class — never a
+ * silent fall-back to the generic rule); only when NO scoped rule of the band
+ * exists do the GENERIC (unscoped) rules apply exactly as without a scope.
+ * A null/undefined scope is byte-identical to the pre-scope behaviour. */
 export function resolveBandTarget(
   snap: RoutingSnapshot,
   matchType: string,
   layer: DecisionLayer,
   reason: string,
+  scope?: string | null,
 ): RouteDecision | null {
-  const rule = [...snap.rules].filter((r) => r.matchType === matchType).sort(ruleOrder)[0];
+  const ofBand = snap.rules.filter((r) => r.matchType === matchType);
+  const isGeneric = (r: RouteRule): boolean =>
+    r.workloadClass === null || r.workloadClass === undefined;
+  let rule: RouteRule | undefined;
+  let scoped = false;
+  if (scope !== undefined && scope !== null) {
+    rule = ofBand.filter((r) => r.workloadClass === scope).sort(ruleOrder)[0];
+    scoped = rule !== undefined;
+  }
+  if (rule === undefined) rule = ofBand.filter(isGeneric).sort(ruleOrder)[0];
   if (rule === undefined) return null;
   const decision = resolveTarget(snap, rule.target, layer, reason);
-  return isRouteError(decision) ? null : decision;
+  if (isRouteError(decision)) return null;
+  return scoped ? { ...decision, scope: String(scope) } : decision;
+}
+
+/** Whether the band's SELECTED rule for `scope` is class-scoped (add-workload-
+ * scoped-bands): the cascade plan records per-leg provenance with this so the
+ * learning contributor can tell a scoped cheap leg from the generic one. */
+export function bandRuleIsScoped(
+  snap: RoutingSnapshot,
+  matchType: string,
+  scope: string | null | undefined,
+): boolean {
+  if (scope === undefined || scope === null) return false;
+  return snap.rules.some((r) => r.matchType === matchType && r.workloadClass === scope);
 }
 
 /** Resolve a WORKLOAD target (add-workload-routing): the highest-priority

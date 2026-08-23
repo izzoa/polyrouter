@@ -93,8 +93,9 @@ export class CreateRuleDto {
   headerValue?: string;
 
   /** The ONE workload class an `auto_workload` rule binds (add-workload-routing):
-   * required on that match type, forbidden on every other — decided on the
-   * effective row in the service; never `none`. */
+   * required on that match type; OPTIONAL on `auto_high`/`auto_low` as a class
+   * SCOPE (add-workload-scoped-bands); forbidden on `header`/`default` — decided
+   * on the effective row in the service; never `none`. */
   @IfDefinedNonNull()
   @IsIn(WORKLOAD_CLASSES)
   workloadClass?: WorkloadClass | null;

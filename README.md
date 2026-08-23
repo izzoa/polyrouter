@@ -105,7 +105,7 @@ response bodies unless you opt in.
   shows its decision layer and human-readable routing reason, tokens, snapshot-priced
   cost, and latency (plus its **workload** class when `auto` classified it, marked `routed`
   when a Workload target claimed it). The Routing page's **Workload targets** card binds
-  each detected class to a tier or model (the `research` / `writing` rows are live exactly when
+  each detected class to a tier or model (and its **Band targets** card lets a class carry its own strong/cheap pair — "per-workload bands" — for difficulty-aware routing within a class) (the `research` / `writing` rows are live exactly when
   the semantic workload source is effective, read-only otherwise — naming which half is missing),
   and its **Auto performance** card adds a **Workload mix** block — what kinds of work `auto`
   carried, how many of each a Workload target routed, and what each cost, with unpriced /
@@ -161,8 +161,10 @@ Precedence order, first match wins:
 3. **Dashboard header rules** on other headers → their target tier or model.
 4. **`model: "auto"`** → enabled smart layers — they engage only once nothing above
    matched, in this order: a **Workload target** for the request's detected class (if one
-   is configured and resolves), then L1 structural band targets → L2 semantic (optional)
-   → L3 cascade.
+   is configured and usable), then the band targets — a class's own **scoped**
+   `auto_high`/`auto_low` pair when you set one, the generic pair otherwise — through L1
+   structural → L2 semantic (optional) → L3 cascade (whose cheap/strong legs honour the
+   same class scope).
 5. **`default` tier** — the guaranteed catch-all.
 
 Whatever layer decides, the tier's fallback chain applies on provider failure, budgets are
@@ -182,7 +184,11 @@ through its Workload target — only when that class beats every other class by
 `SEMANTIC_WORKLOAD_MARGIN` and clears `SEMANTIC_WORKLOAD_MIN_SIM`; otherwise it records `none`.
 The structural source always wins when it found a class, the semantic source never emits the
 structural classes (so prose-only coding questions usually record `none`), and the same vector
-serves Layer 2's band classification — a request is never embedded twice.
+serves Layer 2's band classification — a request is never embedded twice. A class-scoped band rule
+decides for its class whenever it exists (an unusable scoped target makes that band unroutable for the
+class — never a silent substitution of the generic target); the Auto-performance savings basis stays the
+GENERIC strong target (the card says so when scoped rules exist), and a cascade whose cheap leg was
+class-scoped contributes no learning evidence (its revision binds to the generic cheap chain).
 
 ## Architecture
 

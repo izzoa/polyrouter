@@ -260,8 +260,9 @@ export interface RuleDto {
   matchType: string;
   headerName: string;
   headerValue: string | null;
-  /** The workload class an `auto_workload` rule binds (add-workload-routing);
-   * null on every other match type. */
+  /** The workload class an `auto_workload` rule binds (add-workload-routing),
+   * or the class SCOPE of an `auto_high`/`auto_low` band rule (add-workload-
+   * scoped-bands); null = a generic band rule / every other match type. */
   workloadClass: string | null;
   target: string;
   priority: number;
@@ -272,7 +273,8 @@ export interface CreateRuleInput {
   matchType: RuleMatchType;
   headerName?: string;
   headerValue?: string;
-  /** Required on `auto_workload`, forbidden otherwise; `null` clears on update. */
+  /** Required on `auto_workload`; an optional class SCOPE on `auto_high`/`auto_low`
+   * (add-workload-scoped-bands); forbidden on `header`/`default`. `null` clears on update. */
   workloadClass?: string | null;
   target: string;
   priority?: number;
@@ -685,7 +687,15 @@ export interface AutoPerformance {
     excessUsd: number | null;
     rows: number;
     uncostedRows: number;
-    basis: { kind: 'tier' | 'model'; label: string; model: string };
+    basis: {
+      kind: 'tier' | 'model';
+      label: string;
+      model: string;
+      /** add-workload-scoped-bands: class-scoped band rules exist — the basis is
+       * the GENERIC strong target and does not separate class-scoped traffic.
+       * Optional: an older server omits it (= false). */
+      scoped?: boolean;
+    };
   } | null;
   /** Per-agent L1 signal quality (add-auto-signal-honesty): modal 2-decimal
    * score-bucket share over the agent's AMBIGUOUS rows; `collapsed` is a

@@ -9,6 +9,7 @@ export {
   ruleOrder,
   resolveBandTarget,
   resolveWorkloadTarget,
+  bandRuleIsScoped,
   DECISION_LAYERS,
 } from './resolve';
 export * from './structural';

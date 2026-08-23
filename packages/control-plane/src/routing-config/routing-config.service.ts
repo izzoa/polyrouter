@@ -110,20 +110,23 @@ function toSafeEntry(e: RoutingEntryRow, model: ModelRow | null): SafeEntry {
   };
 }
 
-/** The `auto_workload` shape on the EFFECTIVE row (add-workload-routing D5):
- * that type requires exactly one taxonomy class (never `none`) and no
- * `header_value`; every other type forbids a class. Mirrors the DB CHECKs so
- * the pairing is a clean 4xx, never a constraint 500. */
+/** The workload-class shape on the EFFECTIVE row (add-workload-routing D5 +
+ * add-workload-scoped-bands): an `auto_workload` rule requires exactly one
+ * taxonomy class (never `none`) and no `header_value`; a band rule
+ * (`auto_high`/`auto_low`) MAY carry a class as its SCOPE (never `none`);
+ * `header`/`default` never carry one. Mirrors the DB CHECKs so the shape is
+ * a clean 4xx, never a constraint 500. */
 function assertWorkloadShape(
   matchType: string,
   workloadClass: string | null,
   headerValue: string | null,
 ): void {
+  const validClass = (c: string): boolean => (WORKLOAD_CLASSES as readonly string[]).includes(c);
   if (matchType === 'auto_workload') {
     if (workloadClass === null) {
       throw new UnprocessableEntityException('an auto_workload rule requires a workload_class');
     }
-    if (!(WORKLOAD_CLASSES as readonly string[]).includes(workloadClass)) {
+    if (!validClass(workloadClass)) {
       throw new UnprocessableEntityException(
         `workload_class must be one of ${WORKLOAD_CLASSES.join(', ')} (never none)`,
       );
@@ -133,9 +136,15 @@ function assertWorkloadShape(
     if (headerValue !== null) {
       throw new UnprocessableEntityException('an auto_workload rule carries no header_value');
     }
+  } else if (matchType === 'auto_high' || matchType === 'auto_low') {
+    if (workloadClass !== null && !validClass(workloadClass)) {
+      throw new UnprocessableEntityException(
+        `a band rule's workload_class scope must be one of ${WORKLOAD_CLASSES.join(', ')} (never none)`,
+      );
+    }
   } else if (workloadClass !== null) {
     throw new UnprocessableEntityException(
-      `workload_class is only valid on an auto_workload rule (got match_type ${matchType})`,
+      `workload_class is only valid on an auto_workload rule or as a band scope (got match_type ${matchType})`,
     );
   }
 }

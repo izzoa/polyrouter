@@ -297,7 +297,6 @@ describe('routing-config e2e', () => {
       { matchType: 'auto_workload', workloadClass: 'code', headerValue: '', target: 'tier:coding' }, // '' is not null (clink r5 M1)
       { matchType: 'header', headerValue: 'x', workloadClass: 'code', target: 'tier:coding' },
       { matchType: 'default', workloadClass: 'vision', target: 'tier:coding' },
-      { matchType: 'auto_high', workloadClass: 'code', target: 'tier:coding' },
       { matchType: 'auto_workload', workloadClass: 'code', target: 'tier:ghost' }, // target validation still applies
     ];
     for (const body of rejects) {
@@ -388,6 +387,94 @@ describe('routing-config e2e', () => {
     expect((await asA('delete', `/api/routing/tiers/${coding.body.id}`)).status).toBe(200);
   });
 
+  it('band rules may carry a class SCOPE; PATCH merges keep or refuse it (add-workload-scoped-bands)', async () => {
+    const coding = await asA('post', '/api/routing/tiers').send({ key: 'strong-code' });
+    expect(coding.status).toBe(201);
+    // A scoped band rule is accepted and listed with its class.
+    const scoped = await asA('post', '/api/routing/rules').send({
+      matchType: 'auto_high',
+      workloadClass: 'code',
+      target: 'tier:strong-code',
+    });
+    expect(scoped.status).toBe(201);
+    expect(scoped.body).toMatchObject({
+      matchType: 'auto_high',
+      workloadClass: 'code',
+      headerValue: null,
+    });
+    const listed = await asA('get', '/api/routing/rules');
+    expect(listed.body.find((r: { id: string }) => r.id === scoped.body.id)).toMatchObject({
+      workloadClass: 'code',
+    });
+    // A generic band rule stays unscoped; a band rule with `none`/unknown is rejected.
+    const generic = await asA('post', '/api/routing/rules').send({
+      matchType: 'auto_low',
+      target: 'tier:default',
+    });
+    expect(generic.status).toBe(201);
+    expect(generic.body.workloadClass).toBeNull();
+    for (const cls of ['none', 'bogus']) {
+      expect([400, 422]).toContain(
+        (
+          await asA('post', '/api/routing/rules').send({
+            matchType: 'auto_low',
+            workloadClass: cls,
+            target: 'tier:default',
+          })
+        ).status,
+      );
+    }
+    // header/default never carry a class.
+    expect([400, 422]).toContain(
+      (
+        await asA('post', '/api/routing/rules').send({
+          matchType: 'default',
+          workloadClass: 'code',
+          target: 'tier:default',
+        })
+      ).status,
+    );
+    // PATCH merges: scoped band → header without clearing → 422; scoped band → auto_workload keeps the class;
+    // unscoped band → auto_workload without a class → 422; auto_workload → auto_high keeps the class as a scope.
+    expect(
+      (
+        await asA('patch', `/api/routing/rules/${scoped.body.id}`).send({
+          matchType: 'header',
+          headerValue: 'x',
+        })
+      ).status,
+    ).toBe(422);
+    const toClaim = await asA('patch', `/api/routing/rules/${scoped.body.id}`).send({
+      matchType: 'auto_workload',
+    });
+    expect(toClaim.status).toBe(200);
+    expect(toClaim.body).toMatchObject({ matchType: 'auto_workload', workloadClass: 'code' });
+    expect(
+      (
+        await asA('patch', `/api/routing/rules/${generic.body.id}`).send({
+          matchType: 'auto_workload',
+        })
+      ).status,
+    ).toBe(422);
+    const backToBand = await asA('patch', `/api/routing/rules/${scoped.body.id}`).send({
+      matchType: 'auto_high',
+    });
+    expect(backToBand.status).toBe(200);
+    expect(backToBand.body).toMatchObject({ matchType: 'auto_high', workloadClass: 'code' });
+    // A scoped band PATCHed to a different class keeps working; clearing the class makes it generic.
+    expect(
+      (await asA('patch', `/api/routing/rules/${scoped.body.id}`).send({ workloadClass: 'vision' }))
+        .body.workloadClass,
+    ).toBe('vision');
+    expect(
+      (await asA('patch', `/api/routing/rules/${scoped.body.id}`).send({ workloadClass: null }))
+        .body.workloadClass,
+    ).toBeNull();
+    for (const id of [scoped.body.id, generic.body.id])
+      expect((await asA('delete', `/api/routing/rules/${id}`)).status).toBe(200);
+    expect((await asA('delete', `/api/routing/tiers/${coding.body.id}`)).status).toBe(200);
+  });
+
   it('DB CHECKs refuse malformed workload rows even when the API is bypassed (add-workload-routing 1.1)', async () => {
     const insert = (matchType: string, workloadClass: string | null, headerValue: string | null) =>
       pool.query(
@@ -395,11 +482,15 @@ describe('routing-config e2e', () => {
          VALUES (gen_random_uuid(), $1, $2, $3, $4, 'tier:default')`,
         [A.userId, matchType, headerValue, workloadClass],
       );
+    // add-workload-scoped-bands: the three-way SCOPE check replaces W-2's pairing.
     await expect(insert('auto_workload', null, null)).rejects.toThrow(
-      /routing_rule_workload_class_pairing/,
+      /routing_rule_workload_class_scope/,
     );
     await expect(insert('header', 'code', 'x')).rejects.toThrow(
-      /routing_rule_workload_class_pairing/,
+      /routing_rule_workload_class_scope/,
+    );
+    await expect(insert('default', 'code', null)).rejects.toThrow(
+      /routing_rule_workload_class_scope/,
     );
     await expect(insert('auto_workload', 'none', null)).rejects.toThrow(
       /routing_rule_workload_class_valid/,
@@ -407,13 +498,16 @@ describe('routing-config e2e', () => {
     await expect(insert('auto_workload', 'code', 'x')).rejects.toThrow(
       /routing_rule_workload_no_header_value/,
     );
-    // The well-formed row is accepted (and cleaned up).
+    // The well-formed rows are accepted (and cleaned up): a claim with its class, a
+    // band with a class SCOPE, and a band without one.
     await insert('auto_workload', 'code', null);
+    await insert('auto_high', 'code', null);
+    await insert('auto_low', null, null);
     const del = await pool.query(
-      `DELETE FROM routing_rule WHERE owner_user_id = $1 AND match_type = 'auto_workload'`,
+      `DELETE FROM routing_rule WHERE owner_user_id = $1 AND match_type IN ('auto_workload','auto_high','auto_low')`,
       [A.userId],
     );
-    expect(del.rowCount).toBe(1);
+    expect(del.rowCount).toBe(3);
   });
 
   it('persists a rule when its target tier is deleted; the key can be recreated', async () => {

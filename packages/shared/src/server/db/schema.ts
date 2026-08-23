@@ -331,17 +331,22 @@ export const routingRules = pgTable(
     headerValue: text('header_value'),
     // The ONE workload class an `auto_workload` rule binds (add-workload-routing
     // D1): required on that match type, forbidden on every other; never `none`.
-    workloadClass: text('workload_class'),
+    workloadClass: text('workload_class'), // claim class (auto_workload) or band SCOPE (auto_high/auto_low)
     target: text('target').notNull(),
     priority: integer('priority').default(0).notNull(),
     createdAt: createdAt(),
   },
   (t) => [
     index('routing_rule_owner_idx').on(t.ownerUserId),
-    // The class/match-type pairing is a store guarantee, not a convention.
+    // The class/match-type SCOPE rule is a store guarantee, not a convention
+    // (add-workload-scoped-bands replaces W-2's pairing): an `auto_workload`
+    // rule REQUIRES a class (the claim), a band rule (`auto_high`/`auto_low`)
+    // MAY carry one (a scope — that band target applies only to requests of
+    // the class), and `header`/`default` never carry one. Explicit three-way
+    // predicate so `(auto_workload, NULL)` cannot slip through a NULL branch.
     check(
-      'routing_rule_workload_class_pairing',
-      sql`(${t.matchType} = 'auto_workload') = (${t.workloadClass} IS NOT NULL)`,
+      'routing_rule_workload_class_scope',
+      sql`(${t.matchType} = 'auto_workload' AND ${t.workloadClass} IS NOT NULL) OR ${t.matchType} IN ('auto_high', 'auto_low') OR (${t.matchType} NOT IN ('auto_workload', 'auto_high', 'auto_low') AND ${t.workloadClass} IS NULL)`,
     ),
     check(
       'routing_rule_workload_class_valid',

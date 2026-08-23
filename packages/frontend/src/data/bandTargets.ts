@@ -124,8 +124,17 @@ export function targetUsable(target: BandTargetState): boolean {
   return (target.kind === 'tier' && !target.empty) || target.kind === 'model';
 }
 
+/** The GENERIC (unscoped) rules of a band — add-workload-scoped-bands: a
+ * class-scoped band rule (`workloadClass` set) belongs to its class's pair and
+ * never shows as the generic effective/shadowed rule. */
+export function isGenericRule(r: RuleDto): boolean {
+  return r.workloadClass === null || r.workloadClass === undefined;
+}
+
 function bandVm(input: BandTargetsInput, band: BandKey): BandVm {
-  const ofBand = input.rules.filter((r) => r.matchType === band).sort(effectiveRuleOrder);
+  const ofBand = input.rules
+    .filter((r) => r.matchType === band && isGenericRule(r))
+    .sort(effectiveRuleOrder);
   const effective = ofBand[0] ?? null;
   const shadowed = ofBand.slice(1);
   const target: BandTargetState =
@@ -164,4 +173,76 @@ export function bandVms(input: BandTargetsInput): BandTargetsVm {
     cascadeNeedsBoth: input.cascadeEffective && usableCount < 2,
     sameDestination: dHigh !== null && dHigh === destinationOf(low),
   };
+}
+
+/* ── Class-scoped bands (add-workload-scoped-bands) ──────────────────────────── */
+
+/** A class's own STRONG/CHEAP pair: the rules of each band carrying
+ * `workloadClass === cls`, resolved with the same rules as the generic rows.
+ * Unroutable figures are not shown (the aggregation is not scope-aware). */
+export interface ScopedBandVm {
+  band: BandKey;
+  cls: string;
+  effective: RuleDto | null;
+  shadowed: RuleDto[];
+  target: BandTargetState;
+  usable: boolean;
+}
+
+export interface ScopedBandsVm {
+  cls: string;
+  high: ScopedBandVm;
+  low: ScopedBandVm;
+  /** Either band of the class has a scoped rule. */
+  anyScoped: boolean;
+}
+
+function scopedBandVm(
+  input: TargetCatalog & { rules: RuleDto[] },
+  band: BandKey,
+  cls: string,
+): ScopedBandVm {
+  const ofBand = input.rules
+    .filter((r) => r.matchType === band && r.workloadClass === cls)
+    .sort(effectiveRuleOrder);
+  const effective = ofBand[0] ?? null;
+  const target: BandTargetState =
+    effective === null ? { kind: 'unset' } : resolveTargetState(input, effective.target);
+  return { band, cls, effective, shadowed: ofBand.slice(1), target, usable: targetUsable(target) };
+}
+
+export function scopedBandVms(
+  input: TargetCatalog & { rules: RuleDto[] },
+  cls: string,
+): ScopedBandsVm {
+  const high = scopedBandVm(input, 'auto_high', cls);
+  const low = scopedBandVm(input, 'auto_low', cls);
+  return { cls, high, low, anyScoped: high.effective !== null || low.effective !== null };
+}
+
+/** Whether ANY class-scoped band rule exists (the savings basis is then the
+ * generic strong target and the card says so). */
+export function anyScopedBandRule(rules: RuleDto[]): boolean {
+  return rules.some(
+    (r) => (r.matchType === 'auto_high' || r.matchType === 'auto_low') && !isGenericRule(r),
+  );
+}
+
+/** The class's Workload-target CLAIM state (add-workload-scoped-bands, clink r1 M4):
+ * `usable` — the effective `auto_workload` rule resolves to a usable target and
+ * claims the class's requests FIRST (scoped bands stay dormant while it does);
+ * `unusable` — a target is configured but empty/unresolved, so it does NOT claim
+ * and the scoped bands apply; `none` — no rule. */
+export type WorkloadClaimState = 'none' | 'usable' | 'unusable';
+
+export function workloadClaimState(
+  input: TargetCatalog & { rules: RuleDto[] },
+  cls: string,
+): WorkloadClaimState {
+  const ofClass = input.rules
+    .filter((r) => r.matchType === 'auto_workload' && r.workloadClass === cls)
+    .sort(effectiveRuleOrder);
+  const effective = ofClass[0];
+  if (effective === undefined) return 'none';
+  return targetUsable(resolveTargetState(input, effective.target)) ? 'usable' : 'unusable';
 }

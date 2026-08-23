@@ -928,7 +928,7 @@ describe('analytics API (#17)', () => {
       netUsd: -0.979,
       grossUsd: 0.019,
       excessUsd: 0.998,
-      basis: { kind: 'tier', label: 'premium', model: 'gpt-x' },
+      basis: { kind: 'tier', label: 'premium', model: 'gpt-x', scoped: false },
     });
     // telemetrySince is RANGE-INDEPENDENT: a range wholly before the rows still reports it.
     const before = await q('auto', A, {
@@ -984,7 +984,7 @@ describe('analytics API (#17)', () => {
       netUsd: null,
       grossUsd: null,
       excessUsd: null,
-      basis: { kind: 'tier', label: 'premium', model: 'gpt-x' },
+      basis: { kind: 'tier', label: 'premium', model: 'gpt-x', scoped: false },
     });
 
     // Model-target basis (r3-Medium-3): swap the auto_high rule to a direct
@@ -996,7 +996,31 @@ describe('analytics API (#17)', () => {
     );
     const modelRes = await q('auto', A, { ...RANGE5 });
     expect(modelRes.status).toBe(200);
-    expect(modelRes.body.savings.basis).toEqual({ kind: 'model', label: 'gpt-x', model: 'gpt-x' });
+    expect(modelRes.body.savings.basis).toEqual({
+      kind: 'model',
+      label: 'gpt-x',
+      model: 'gpt-x',
+      scoped: false,
+    });
+    // add-workload-scoped-bands: a HIGHER-priority class-scoped strong rule never moves the
+    // tenant-wide basis (generic rules only) — it only flips the `scoped` disclosure.
+    await pool.query(
+      `INSERT INTO routing_rule (id, owner_user_id, match_type, workload_class, target, priority)
+       VALUES (gen_random_uuid(), $1, 'auto_high', 'code', 'tier:premium', 99)`,
+      [A],
+    );
+    const scopedRes = await q('auto', A, { ...RANGE, bucket: 'day' });
+    expect(scopedRes.status).toBe(200);
+    expect(scopedRes.body.savings.basis).toEqual({
+      kind: 'model',
+      label: 'gpt-x',
+      model: 'gpt-x',
+      scoped: true,
+    });
+    await pool.query(
+      `DELETE FROM routing_rule WHERE owner_user_id = $1 AND workload_class = 'code'`,
+      [A],
+    );
     expect(modelRes.body.savings.netUsd).toBeNull();
 
     // Endpoint guards, auto-specific: bad bucket enum → 400 (DTO); inverted
@@ -1384,6 +1408,9 @@ describe('analytics API (#17)', () => {
       await seed('structural', 'code', 'high'); // a band route that happened to be code (not routed BY workload)
       await seed('default', 'none', 'ambiguous', { cost: null }); // `none` — never routed; the ordinary fall-through
       await seed('default', 'vision', 'high', { cost: 0 }); // a genuinely unroutable high
+      // add-workload-scoped-bands: a code request whose SCOPED strong target was unroutable (empty) —
+      // the default served with the band recorded; it counts as unroutable exactly like the row above.
+      await seed('default', 'code', 'high', { cost: 0 });
       // add-semantic-workloads: a SEMANTIC-sourced reserved class, claimed by its rule —
       // the mix unions it with the structural classes and lists its revision.
       await seed('workload', 'research', 'ambiguous', {
@@ -1404,8 +1431,8 @@ describe('analytics API (#17)', () => {
           c as unknown as Record<string, unknown>,
         ]),
       );
-      expect(body.workloadMix.evaluated).toBe(7);
-      expect(by.get('code')).toMatchObject({ requests: 3, routed: 2 });
+      expect(body.workloadMix.evaluated).toBe(8);
+      expect(by.get('code')).toMatchObject({ requests: 4, routed: 2 });
       expect(by.get('vision')).toMatchObject({ requests: 2, routed: 1 });
       expect(by.get('none')).toMatchObject({ requests: 1, routed: 0 });
       // add-semantic-workloads: the semantic-sourced reserved class is a class like any other,
@@ -1414,12 +1441,12 @@ describe('analytics API (#17)', () => {
       expect(body.workloadMix.revisions).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ revision: 'semantic/v1/s1/dddddddddddd', requests: 1 }),
-          expect.objectContaining({ revision: RW, requests: 6 }),
+          expect.objectContaining({ revision: RW, requests: 7 }),
         ]),
       );
       // The band policy is unchanged: a workload-routed row is a BANDED row.
-      expect(body.evaluated).toBe(7);
-      expect(body.bands.high).toEqual({ requests: 3, declared: 0, unroutable: 1 }); // only the default-layer high
+      expect(body.evaluated).toBe(8);
+      expect(body.bands.high).toEqual({ requests: 4, declared: 0, unroutable: 2 }); // the two default-layer highs — generic AND scoped-unroutable alike
       expect(body.bands.low).toEqual({ requests: 1, declared: 0, unroutable: 0 });
       expect(body.bands.ambiguous.requests).toBe(3);
       expect(body.cascade).toEqual({
@@ -1431,7 +1458,7 @@ describe('analytics API (#17)', () => {
       });
       expect(body.fallthrough).toBe(1); // the `none` default row only — a claimed ambiguous row is not a fall-through
       const series = body.series as { high: number; low: number; ambiguous: number }[];
-      expect(series.reduce((a, p) => a + p.high + p.low + p.ambiguous, 0)).toBe(7);
+      expect(series.reduce((a, p) => a + p.high + p.low + p.ambiguous, 0)).toBe(8);
       // Per-agent signal quality: the same banded-rule population as every other row.
       const sq = (
         body.signalQuality as {
@@ -1440,7 +1467,7 @@ describe('analytics API (#17)', () => {
           ambiguousRows: number;
         }[]
       ).find((r) => r.agentId === xa)!;
-      expect(sq).toMatchObject({ bandedRows: 7, ambiguousRows: 3 });
+      expect(sq).toMatchObject({ bandedRows: 8, ambiguousRows: 3 });
     });
 
     it('listing: layer=workload returns exactly the claimed rows; calibrationStats is byte-identical with and without them', async () => {

@@ -122,6 +122,9 @@ export class SemanticRouter {
     principal: Principal,
     snapshot: RoutingSnapshot,
     gate: LearningGate,
+    /** The request's deciding workload class (add-workload-scoped-bands): the
+     * confident band resolves class-scoped rules first, generic otherwise. */
+    scope?: string | null,
   ): Promise<SemanticEvaluation> {
     if (!this.classifier.available) return { kind: 'skip' };
     let verdict: SemanticVerdict;
@@ -149,7 +152,7 @@ export class SemanticRouter {
     }
     if (verdict.band === 'ambiguous') return { kind: 'ambiguous', verdict, evidence: vector };
     const matchType = verdict.band === 'high' ? 'auto_high' : 'auto_low';
-    const decision = resolveBandTarget(snapshot, matchType, 'semantic', verdict.reason);
+    const decision = resolveBandTarget(snapshot, matchType, 'semantic', verdict.reason, scope);
     if (decision === null) return { kind: 'unroutable', verdict };
     return { kind: 'route', decision, verdict };
   }
@@ -167,6 +170,7 @@ export class SemanticRouter {
     snapshot: RoutingSnapshot,
     gate: LearningGate,
     opts?: { signal?: AbortSignal },
+    scope?: string | null,
   ): Promise<SemanticEvaluation> {
     if (!this.classifier.available || this.runtime.embedder === null) return { kind: 'skip' };
     let embedded: { text: string; vector: Float32Array } | null;
@@ -176,7 +180,7 @@ export class SemanticRouter {
       return { kind: 'skip' }; // timeout, abort, saturation, or any internal throw: fail open
     }
     if (embedded === null) return { kind: 'skip' };
-    return this.classifyBand(embedded.vector, principal, snapshot, gate);
+    return this.classifyBand(embedded.vector, principal, snapshot, gate, scope);
   }
 
   /**

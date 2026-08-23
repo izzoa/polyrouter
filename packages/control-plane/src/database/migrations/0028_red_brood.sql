@@ -1,0 +1,2 @@
+ALTER TABLE "routing_rule" DROP CONSTRAINT "routing_rule_workload_class_pairing";--> statement-breakpoint
+ALTER TABLE "routing_rule" ADD CONSTRAINT "routing_rule_workload_class_scope" CHECK (("routing_rule"."match_type" = 'auto_workload' AND "routing_rule"."workload_class" IS NOT NULL) OR "routing_rule"."match_type" IN ('auto_high', 'auto_low') OR ("routing_rule"."match_type" NOT IN ('auto_workload', 'auto_high', 'auto_low') AND "routing_rule"."workload_class" IS NULL)) NOT VALID;

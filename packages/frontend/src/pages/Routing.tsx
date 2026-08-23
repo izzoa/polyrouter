@@ -5,7 +5,15 @@ import { RangeSelector } from '../components/RangeSelector';
 import { Toggle } from '../components/Toggle';
 import type { AutoLayers, TierEntryDto } from '../data/api';
 import { autoSeriesToChart, signalQualityGuidance, toAutoPerfVm } from '../data/autoPerf';
-import { bandVms, type BandTargetState, type BandVm } from '../data/bandTargets';
+import {
+  bandVms,
+  scopedBandVms,
+  workloadClaimState,
+  type BandTargetState,
+  type BandVm,
+  type ScopedBandVm,
+} from '../data/bandTargets';
+import { WORKLOAD_CLASSES, type WorkloadClass } from '@polyrouter/shared';
 import { unsetCopy, workloadVms, type WorkloadVm } from '../data/workloadTargets';
 import { toCalibrationVm, toHistoryRows } from '../data/calibration';
 import { toLearningHistoryRows, toLearningVm } from '../data/semanticLearning';
@@ -197,6 +205,19 @@ function unresolvedHint(t: BandTargetState): string {
 function BandTargets() {
   const app = useApp();
   const { state } = app;
+  // Per-workload bands (add-workload-scoped-bands): the selected class's own
+  // STRONG/CHEAP pair over its class-scoped rules; the generic rows above keep
+  // considering generic rules only.
+  const [scopeCls, setScopeCls] = createSignal<WorkloadClass>('code');
+  const catalog = () => ({
+    rules: state.rules,
+    tiers: state.routingTiers,
+    tierEntries: state.tierEntries,
+    models: state.allModels,
+    providers: state.providers,
+  });
+  const scoped = () => scopedBandVms(catalog(), scopeCls());
+  const claim = () => workloadClaimState(catalog(), scopeCls());
   const vm = () =>
     bandVms({
       rules: state.rules,
@@ -257,7 +278,7 @@ function BandTargets() {
           </button>
         </Show>
       </div>
-      <Show when={state.bt.errors[b.band]}>
+      <Show when={state.bt.errors[b.band] && state.bt.errorScope[b.band] === null}>
         <div style="font:400 11px 'Geist',sans-serif;color:var(--red)">
           {state.bt.errors[b.band]}
         </div>
@@ -289,6 +310,72 @@ function BandTargets() {
     </div>
   );
 
+  const scopedRow = (b: ScopedBandVm, title: string) => (
+    <div style="padding:6px 0" data-testid={`bt-scoped-row-${b.band}`}>
+      <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
+        <span style="font:600 10.5px 'Geist',sans-serif;letter-spacing:0.04em;color:var(--text2);min-width:52px">
+          {title}
+        </span>
+        <span class="mono" style="font:400 10px 'Geist Mono',monospace;color:var(--text3)">
+          {b.band} · {b.cls}
+        </span>
+        <TargetSummary
+          target={b.target}
+          unset={`Not set — ${b.cls} requests use the generic ${title.toLowerCase()} target`}
+        />
+        <TargetPicker
+          label={`${title} target for ${b.cls}`}
+          disabled={busy(b.band)}
+          unset={b.target.kind === 'unset'}
+          onPick={(v) => void app.setBandTarget(b.band, v, b.cls)}
+        />
+        <Show when={b.effective !== null}>
+          <button
+            type="button"
+            disabled={busy(b.band)}
+            style="font:400 11px 'Geist',sans-serif;color:var(--text3);cursor:pointer;text-decoration:underline"
+            onClick={() => void app.clearBand(b.band, b.cls)}
+          >
+            Clear
+          </button>
+        </Show>
+      </div>
+      <Show when={state.bt.errors[b.band] && state.bt.errorScope[b.band] === b.cls}>
+        <div
+          data-testid="bt-scoped-error"
+          style="font:400 11px 'Geist',sans-serif;color:var(--red)"
+        >
+          {state.bt.errors[b.band]}
+        </div>
+      </Show>
+      <Show when={b.target.kind === 'tier' && b.target.empty}>
+        <div style={warnFont}>
+          This tier has no models — the {b.cls} {title.toLowerCase()} band is unroutable for the
+          class (no fall-back to the generic target): its requests fall through to default.
+        </div>
+      </Show>
+      <Show when={b.target.kind === 'unresolved'}>
+        <div style={warnFont}>
+          Target unresolved — the {b.cls} {title.toLowerCase()} band is unroutable for the class.{' '}
+          {unresolvedHint(b.target)}
+        </div>
+      </Show>
+      <Show when={b.shadowed.length > 0}>
+        <div style={warnFont}>
+          {b.shadowed.length} shadowed duplicate rule{b.shadowed.length === 1 ? '' : 's'} —{' '}
+          <button
+            type="button"
+            disabled={busy(b.band)}
+            style="font:400 11px 'Geist',sans-serif;color:var(--text2);cursor:pointer;text-decoration:underline"
+            onClick={() => void app.cleanShadowed(b.band, b.cls)}
+          >
+            clean up
+          </button>
+        </div>
+      </Show>
+    </div>
+  );
+
   return (
     <div class="panel card">
       <div class="section-title" style="margin-bottom:2px">
@@ -312,6 +399,52 @@ function BandTargets() {
 
       {bandRow(vm().high, 'STRONG')}
       {bandRow(vm().low, 'CHEAP')}
+      {/* Per-workload bands (add-workload-scoped-bands) */}
+      <div
+        style="margin-top:10px;padding-top:8px;border-top:1px solid var(--border2)"
+        data-testid="bt-scoped"
+      >
+        <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
+          <span style="font:600 10.5px 'Geist',sans-serif;letter-spacing:0.04em;color:var(--text2)">
+            PER-WORKLOAD BANDS
+          </span>
+          <select
+            aria-label="Workload class for the scoped bands"
+            style="font:400 11px 'Geist',sans-serif;color:var(--text2);background:var(--chip);border:1px solid var(--border);border-radius:5px;padding:2px 6px"
+            onChange={(e) => setScopeCls(e.currentTarget.value as WorkloadClass)}
+          >
+            <For each={[...WORKLOAD_CLASSES]}>
+              {(c) => (
+                <option value={c} selected={c === scopeCls()}>
+                  {c}
+                </option>
+              )}
+            </For>
+          </select>
+          <span style={subFont}>
+            a class's own strong/cheap pair — the proxy consults it before the generic rows for that
+            class only; each band falls back to the generic target independently
+          </span>
+        </div>
+        <Show when={claim() === 'usable'}>
+          <div style={warnFont} data-testid="bt-scoped-claim">
+            The Workload target for {scopeCls()} claims its requests first — these bands apply only
+            while that class has no usable Workload target.
+          </div>
+        </Show>
+        <Show when={claim() === 'unusable'}>
+          <div style={warnFont} data-testid="bt-scoped-claim">
+            The Workload target for {scopeCls()} is set but unusable (empty tier / unresolved) — it
+            does not claim; these bands apply.
+          </div>
+        </Show>
+        {scopedRow(scoped().high, 'STRONG')}
+        {scopedRow(scoped().low, 'CHEAP')}
+        <div style={subFont}>
+          Busy/error state is per band (strong / cheap) across scopes. The Auto-performance savings
+          basis stays the generic strong target.
+        </div>
+      </div>
       <Show when={vm().cascadeNeedsBoth}>
         <div style={warnFont}>
           Cascade needs both bands usable — ambiguous requests stay on the default tier until then.
@@ -476,7 +609,8 @@ function WorkloadTargets() {
         structured › code.{' '}
         {semanticLive()
           ? 'Research and writing are detected by the semantic workload source (one bounded embed per structural-none auto request, reused by Layer 2) — the semantic layer toggle governs both uses.'
-          : 'Research and writing are not detected here yet — their rows go live when the semantic workload source is effective.'}
+          : 'Research and writing are not detected here yet — their rows go live when the semantic workload source is effective.'}{' '}
+        For difficulty-aware routing within a class, use the per-workload bands in Band targets.
       </div>
     </div>
   );
@@ -985,6 +1119,13 @@ function AutoPerformance() {
                       >
                         est. net savings <span style={valFont}>{sv.net}</span> · at today’s{' '}
                         {sv.basisLabel} rate · est.
+                        <Show when={sv.basisScoped}>
+                          <span data-testid="ap-basis-scoped">
+                            {' '}
+                            · basis = the generic strong target; class-scoped traffic is not
+                            separated
+                          </span>
+                        </Show>
                       </Show>
                     </Show>{' '}
                     <span style="color:var(--text3);font-size:10.5px">

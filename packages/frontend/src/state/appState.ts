@@ -74,6 +74,18 @@ import {
   type StreamState,
 } from '../data/inflight';
 import { effectiveRuleOrder } from '../data/bandTargets';
+
+/** A band rule belongs to the (band, scope) selection (add-workload-scoped-bands):
+ * scope null → the GENERIC rules (no class); a class → that class's rules only. */
+function bandRuleInScope(
+  r: { matchType: string; workloadClass?: string | null },
+  band: 'auto_high' | 'auto_low',
+  scope: string | null,
+): boolean {
+  if (r.matchType !== band) return false;
+  const cls = r.workloadClass ?? null;
+  return scope === null ? cls === null : cls === scope;
+}
 import { BASE_URL } from '../data/catalog';
 import { rangeToParams } from '../data/range';
 import type {
@@ -279,6 +291,10 @@ export interface AppState {
   bt: {
     busy: { auto_high: boolean; auto_low: boolean };
     errors: { auto_high: string | null; auto_low: string | null };
+    /** The SCOPE of the write that raised `errors[band]` (add-workload-scoped-
+     * bands): null = the generic row, else the class — a failed scoped write
+     * shows under ITS row, never under the generic one. */
+    errorScope: { auto_high: string | null; auto_low: string | null };
     unverified: boolean;
   };
   /** Workload-targets card state (add-workload-routing D6): PER-CLASS busy +
@@ -782,6 +798,7 @@ function initialState(): AppState {
     bt: {
       busy: { auto_high: false, auto_low: false },
       errors: { auto_high: null, auto_low: null },
+      errorScope: { auto_high: null, auto_low: null },
       unverified: false,
     },
     wt: {
@@ -966,10 +983,16 @@ export interface AppStore {
   deleteTier: (tierId: string) => Promise<void>;
   createRule: () => Promise<void>;
   deleteRule: (id: string) => Promise<void>;
-  /** Band targets (add-band-target-ui). */
-  setBandTarget: (band: 'auto_high' | 'auto_low', target: string) => Promise<void>;
-  clearBand: (band: 'auto_high' | 'auto_low') => Promise<void>;
-  cleanShadowed: (band: 'auto_high' | 'auto_low') => Promise<void>;
+  /** Band targets (add-band-target-ui). `scope` (add-workload-scoped-bands): a
+   * workload class → the action touches ONLY that class's rules of the band;
+   * omitted/null → ONLY the generic (unscoped) rules. */
+  setBandTarget: (
+    band: 'auto_high' | 'auto_low',
+    target: string,
+    scope?: string | null,
+  ) => Promise<void>;
+  clearBand: (band: 'auto_high' | 'auto_low', scope?: string | null) => Promise<void>;
+  cleanShadowed: (band: 'auto_high' | 'auto_low', scope?: string | null) => Promise<void>;
   /** Workload targets (add-workload-routing) — the band contract per class. */
   setWorkloadTarget: (cls: WorkloadClass, target: string) => Promise<void>;
   clearWorkload: (cls: WorkloadClass) => Promise<void>;
@@ -1282,6 +1305,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         s.bt = {
           busy: { auto_high: false, auto_low: false },
           errors: { auto_high: null, auto_low: null },
+          errorScope: { auto_high: null, auto_low: null },
           unverified: false,
         };
         s.pc = { status: null, loaded: false, loadError: null, refreshError: null, busy: false };
@@ -3113,15 +3137,19 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         say(err(e));
       }
     },
-    setBandTarget: async (band, target) => {
+    setBandTarget: async (band, target, scope = null) => {
       if (state.bt.busy[band] || state.bt.unverified) return; // per-band single-flight; unverified disables
       setState('bt', 'busy', band, true);
       setState('bt', 'errors', band, null);
+      setState('bt', 'errorScope', band, null);
       bumpRouting();
-      // The snapshot's effective rule — the proxy's pick (priority DESC,
-      // createdAt, id). PESSIMISTIC: display changes only via the reconcile.
-      // ONE comparator — the VM's exported proxy order (no drift).
-      const ofBand = state.rules.filter((r) => r.matchType === band).sort(effectiveRuleOrder);
+      // The snapshot's effective rule OF THIS SCOPE — the proxy's pick (priority
+      // DESC, createdAt, id) among the generic rules (scope null) or the class's
+      // rules (add-workload-scoped-bands). PESSIMISTIC: display changes only via
+      // the reconcile. ONE comparator — the VM's exported proxy order (no drift).
+      const ofBand = state.rules
+        .filter((r) => bandRuleInScope(r, band, scope))
+        .sort(effectiveRuleOrder);
       const effective = ofBand[0];
       let wrote = false;
       let mayHaveLanded = false;
@@ -3130,7 +3158,11 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         if (effective !== undefined) {
           await client.updateRule(effective.id, { target });
         } else {
-          await client.createRule({ matchType: band, target });
+          await client.createRule({
+            matchType: band,
+            target,
+            ...(scope !== null ? { workloadClass: scope } : {}),
+          });
         }
         wrote = true;
       } catch (e) {
@@ -3145,6 +3177,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       const verified = (await reconcileRules()) === 'committed';
       setState('bt', 'busy', band, false);
       setState('bt', 'errors', band, failed);
+      setState('bt', 'errorScope', band, failed === null ? null : scope);
       // MONOTONIC (fix-band-unverified-monotonic): a band action only ever
       // RAISES the shared flag — a definitive rejection whose reconcile also
       // failed must not clear the other band's landed-but-unverified write.
@@ -3154,12 +3187,15 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       if (!verified && (wrote || mayHaveLanded)) setState('bt', 'unverified', true);
       if (wrote && verified) say('Band target saved');
     },
-    clearBand: async (band) => {
+    clearBand: async (band, scope = null) => {
       if (state.bt.busy[band] || state.bt.unverified) return;
       setState('bt', 'busy', band, true);
       setState('bt', 'errors', band, null);
+      setState('bt', 'errorScope', band, null);
       bumpRouting();
-      const snapshot = state.rules.filter((r) => r.matchType === band);
+      // ONLY this scope's rules of the band (add-workload-scoped-bands): clearing
+      // the generic band never touches a class's rules and vice versa.
+      const snapshot = state.rules.filter((r) => bandRuleInScope(r, band, scope));
       let failed: string | null = null;
       let touched = false;
       let mayHaveLanded = false;
@@ -3176,16 +3212,21 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       const verified = (await reconcileRules()) === 'committed';
       setState('bt', 'busy', band, false);
       setState('bt', 'errors', band, failed);
+      setState('bt', 'errorScope', band, failed === null ? null : scope);
       if (!verified && (touched || mayHaveLanded)) setState('bt', 'unverified', true); // monotonic (fix-band-unverified-monotonic)
       if (failed === null && verified && snapshot.length > 0) say('Band cleared');
     },
-    cleanShadowed: async (band) => {
+    cleanShadowed: async (band, scope = null) => {
       if (state.bt.busy[band] || state.bt.unverified) return;
       setState('bt', 'busy', band, true);
       setState('bt', 'errors', band, null);
+      setState('bt', 'errorScope', band, null);
       bumpRouting();
-      // ONE comparator — the VM's exported proxy order (no drift).
-      const ofBand = state.rules.filter((r) => r.matchType === band).sort(effectiveRuleOrder);
+      // ONE comparator — the VM's exported proxy order (no drift) — over ONLY
+      // this scope's rules of the band (add-workload-scoped-bands).
+      const ofBand = state.rules
+        .filter((r) => bandRuleInScope(r, band, scope))
+        .sort(effectiveRuleOrder);
       let failed: string | null = null;
       let touched = false;
       let mayHaveLanded = false;
@@ -3202,6 +3243,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       const verified = (await reconcileRules()) === 'committed';
       setState('bt', 'busy', band, false);
       setState('bt', 'errors', band, failed);
+      setState('bt', 'errorScope', band, failed === null ? null : scope);
       if (!verified && (touched || mayHaveLanded)) setState('bt', 'unverified', true); // monotonic (fix-band-unverified-monotonic)
       if (failed === null && verified && ofBand.length > 1) say('Duplicates removed');
     },
@@ -3301,6 +3343,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       const verified = (await reconcileRules()) === 'committed';
       if (verified) {
         setState('bt', 'errors', { auto_high: null, auto_low: null });
+        setState('bt', 'errorScope', { auto_high: null, auto_low: null });
         setState(
           'wt',
           'errors',

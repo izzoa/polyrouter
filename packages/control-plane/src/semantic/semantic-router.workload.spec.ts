@@ -1,4 +1,5 @@
 import {
+  HIGH_ANCHORS,
   WORKLOAD_ANCHORS,
   stubEmbedder,
   type Embedder,
@@ -141,5 +142,93 @@ describe('SemanticRouter split (add-semantic-workloads D2)', () => {
     const { router: offline } = await ready(null);
     expect(offline.workloadEnabled).toBe(false);
     expect(offline.classifyWorkload(new Float32Array(384))).toBeNull();
+  });
+});
+
+describe('SemanticRouter.classifyBand — class scope (add-workload-scoped-bands)', () => {
+  const scopedSnapshot = (): RoutingSnapshot =>
+    ({
+      tiers: [
+        { id: 't-strong', key: 'strong' },
+        { id: 't-code', key: 'strong-code' },
+      ],
+      entriesByTierId: new Map([
+        ['t-strong', [{ modelId: 'm1', position: 0 }]],
+        ['t-code', [{ modelId: 'm2', position: 0 }]],
+      ]),
+      rules: [
+        {
+          id: 'g',
+          matchType: 'auto_high',
+          headerName: null,
+          headerValue: null,
+          target: 'tier:strong',
+          priority: 0,
+          createdAt: new Date(0),
+        },
+        {
+          id: 'c',
+          matchType: 'auto_high',
+          headerName: null,
+          headerValue: null,
+          workloadClass: 'code',
+          target: 'tier:strong-code',
+          priority: 0,
+          createdAt: new Date(0),
+        },
+      ],
+      models: [
+        { id: 'm1', providerId: 'p1', externalModelId: 'strong-model' },
+        { id: 'm2', providerId: 'p1', externalModelId: 'strong-code-model' },
+      ],
+    }) as unknown as RoutingSnapshot;
+
+  it('a confident semantic band resolves the class-scoped target for its scope and the generic one otherwise', async () => {
+    const { router } = await ready(stubEmbedder(384));
+    // An exact HIGH anchor embeds onto the high centroid's direction (stub: identical text → identical vector)
+    const embedded = await router.embed(ir(HIGH_ANCHORS[0]!));
+    expect(embedded).not.toBeNull();
+    const generic = await router.classifyBand(
+      embedded!.vector,
+      principal,
+      scopedSnapshot(),
+      DISABLED_LEARNING_GATE,
+    );
+    const forCode = await router.classifyBand(
+      embedded!.vector,
+      principal,
+      scopedSnapshot(),
+      DISABLED_LEARNING_GATE,
+      'code',
+    );
+    const forVision = await router.classifyBand(
+      embedded!.vector,
+      principal,
+      scopedSnapshot(),
+      DISABLED_LEARNING_GATE,
+      'vision',
+    );
+    expect(generic.kind).toBe('route');
+    expect(forCode.kind).toBe('route');
+    if (generic.kind === 'route' && forCode.kind === 'route' && forVision.kind === 'route') {
+      expect(generic.decision.tierKey).toBe('strong');
+      expect(forCode.decision.tierKey).toBe('strong-code');
+      expect(forCode.decision.scope).toBe('code'); // data — the proxy appends the terminal fragment
+      expect(forCode.decision.routingReason).toMatch(/^semantic:high /);
+      expect(forCode.decision.routingReason).not.toContain('scope=');
+      expect(forVision.decision.tierKey).toBe('strong');
+      expect(forVision.decision.scope).toBeUndefined();
+      expect(forVision.decision.routingReason).not.toContain('scope=');
+    }
+    // evaluate threads the scope too
+    const e = await router.evaluate(
+      principal,
+      ir(HIGH_ANCHORS[0]!),
+      scopedSnapshot(),
+      DISABLED_LEARNING_GATE,
+      undefined,
+      'code',
+    );
+    expect(e.kind === 'route' && e.decision.tierKey).toBe('strong-code');
   });
 });

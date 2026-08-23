@@ -41,7 +41,7 @@ export interface AutoPerformanceView extends Omit<AutoPerformanceData, 'savings'
     excessUsd: number | null;
     rows: number;
     uncostedRows: number;
-    basis: { kind: 'tier' | 'model'; label: string; model: string };
+    basis: { kind: 'tier' | 'model'; label: string; model: string; scoped: boolean };
   } | null;
 }
 
@@ -132,10 +132,19 @@ export class AnalyticsService {
    * Null when no rule / unresolvable target / unpriced model. */
   private async resolveAutoHighBasis(principal: Principal): Promise<{
     rates: AutoCounterfactualRates;
-    basis: { kind: 'tier' | 'model'; label: string; model: string };
+    basis: { kind: 'tier' | 'model'; label: string; model: string; scoped: boolean };
   } | null> {
-    const rules = (await this.db.routingRules.list(principal))
-      .filter((r) => r.matchType === 'auto_high')
+    const all = await this.db.routingRules.list(principal);
+    // The basis is the GENERIC (unscoped) strong target (add-workload-scoped-
+    // bands): a class-scoped `auto_high` rule — however high its priority —
+    // never moves the tenant-wide counterfactual; `scoped` tells the consumer
+    // that class-scoped band rules exist, so the basis does not separate
+    // class-scoped traffic.
+    const scoped = all.some(
+      (r) => (r.matchType === 'auto_high' || r.matchType === 'auto_low') && r.workloadClass != null,
+    );
+    const rules = all
+      .filter((r) => r.matchType === 'auto_high' && r.workloadClass == null)
       .sort(ruleOrder);
     const rule = rules[0];
     if (rule === undefined) return null;
@@ -188,6 +197,7 @@ export class AnalyticsService {
         kind: basisMeta.kind,
         label: basisMeta.kind === 'model' ? model.externalModelId : basisMeta.label,
         model: model.externalModelId,
+        scoped,
       },
     };
   }

@@ -131,3 +131,92 @@ describe('CascadeRouter', () => {
     expect(r.shouldEscalate(broken, true)).toEqual({ score: null, escalate: false });
   });
 });
+
+describe('CascadeRouter.plan — class scope + per-leg provenance (add-workload-scoped-bands)', () => {
+  const scoped = (id: string, matchType: string, target: string, cls: string): RouteRule => ({
+    ...rule(id, matchType, target),
+    workloadClass: cls,
+  });
+  const withCodeTiers = (rules: RouteRule[]): RoutingSnapshot => {
+    const base = snapshot(rules);
+    return {
+      ...base,
+      tiers: [
+        ...base.tiers,
+        { id: 't-cc', key: 'cheap-code' },
+        { id: 't-sc', key: 'strong-code' },
+        { id: 't-empty', key: 'empty' },
+      ],
+      entriesByTierId: new Map([
+        ...base.entriesByTierId,
+        ['t-cc', [{ modelId: 'm-cheap', position: 0 }]],
+        ['t-sc', [{ modelId: 'm-prem', position: 0 }]],
+        ['t-empty', []],
+      ]),
+    };
+  };
+  const generic = [rule('a', 'auto_low', 'tier:cheap'), rule('b', 'auto_high', 'tier:premium')];
+
+  it('without a scope the plan is byte-identical to today and carries scope null / unscoped provenance', () => {
+    const r = new CascadeRouter(cfg());
+    const plan = r.plan(
+      withCodeTiers([...generic, scoped('c', 'auto_low', 'tier:cheap-code', 'code')]),
+    );
+    expect(plan).toMatchObject({ scope: null, cheapScoped: false, strongScoped: false });
+    expect(plan!.cheap.tierKey).toBe('cheap');
+    expect(plan!.strong.tierKey).toBe('premium');
+    expect(plan!.cheap.routingReason).toBe('cascade cheap tier');
+  });
+
+  it('cascade within a class: both scoped legs, with reasons suffixed and provenance true', () => {
+    const r = new CascadeRouter(cfg());
+    const plan = r.plan(
+      withCodeTiers([
+        ...generic,
+        scoped('c', 'auto_low', 'tier:cheap-code', 'code'),
+        scoped('d', 'auto_high', 'tier:strong-code', 'code'),
+      ]),
+      'code',
+    );
+    expect(plan).toMatchObject({ scope: 'code', cheapScoped: true, strongScoped: true });
+    expect(plan!.cheap.tierKey).toBe('cheap-code');
+    expect(plan!.strong.tierKey).toBe('strong-code');
+    expect(plan!.cheap).toMatchObject({ routingReason: 'cascade cheap tier', scope: 'code' });
+    expect(plan!.strong).toMatchObject({ routingReason: 'cascade strong tier', scope: 'code' });
+  });
+
+  it('each band falls back to the generic rule independently — the hybrids carry honest provenance', () => {
+    const r = new CascadeRouter(cfg());
+    const cheapOnly = r.plan(
+      withCodeTiers([...generic, scoped('c', 'auto_low', 'tier:cheap-code', 'code')]),
+      'code',
+    );
+    expect(cheapOnly).toMatchObject({ scope: 'code', cheapScoped: true, strongScoped: false });
+    expect(cheapOnly!.cheap.tierKey).toBe('cheap-code');
+    expect(cheapOnly!.strong.tierKey).toBe('premium');
+    const strongOnly = r.plan(
+      withCodeTiers([...generic, scoped('d', 'auto_high', 'tier:strong-code', 'code')]),
+      'code',
+    );
+    expect(strongOnly).toMatchObject({ scope: 'code', cheapScoped: false, strongScoped: true });
+    expect(strongOnly!.cheap.tierKey).toBe('cheap');
+    expect(strongOnly!.strong.tierKey).toBe('strong-code');
+    // another class → generic pair, no provenance
+    expect(
+      r.plan(
+        withCodeTiers([...generic, scoped('c', 'auto_low', 'tier:cheap-code', 'code')]),
+        'vision',
+      ),
+    ).toMatchObject({ scope: 'vision', cheapScoped: false, strongScoped: false });
+  });
+
+  it('a scoped cheap rule with an empty target leaves the class without a plan (no silent substitution)', () => {
+    const r = new CascadeRouter(cfg());
+    expect(
+      r.plan(withCodeTiers([...generic, scoped('c', 'auto_low', 'tier:empty', 'code')]), 'code'),
+    ).toBeNull();
+    expect(
+      r.plan(withCodeTiers([...generic, scoped('c', 'auto_low', 'tier:empty', 'code')]), 'vision'),
+    ).not.toBeNull();
+  });
+});

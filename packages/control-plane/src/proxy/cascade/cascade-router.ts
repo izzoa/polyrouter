@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import {
   evaluateQuality,
+  bandRuleIsScoped,
   resolveBandTarget,
   type NormalizedResponse,
   type RouteDecision,
@@ -12,6 +13,14 @@ import { ROUTING_CONFIG, type RoutingConfig } from '../routing.config';
 export interface CascadePlan {
   readonly cheap: RouteDecision;
   readonly strong: RouteDecision;
+  /** The request's deciding workload class the plan was resolved under
+   * (add-workload-scoped-bands), or null. */
+  readonly scope: string | null;
+  /** Per-leg provenance: was the SELECTED cheap / strong rule class-scoped?
+   * (a generic-cheap + scoped-strong hybrid is `cheapScoped=false`,
+   * `strongScoped=true`). The learning contributor keys on `cheapScoped`. */
+  readonly cheapScoped: boolean;
+  readonly strongScoped: boolean;
 }
 
 /**
@@ -34,10 +43,26 @@ export class CascadeRouter {
 
   /** Resolve the cheap + strong targets; `null` when either is missing or
    * unresolvable → the caller keeps the Layer-0 default (invariant 1). */
-  plan(snapshot: RoutingSnapshot): CascadePlan | null {
-    const cheap = resolveBandTarget(snapshot, 'auto_low', 'cascade', 'cascade cheap tier');
-    const strong = resolveBandTarget(snapshot, 'auto_high', 'cascade', 'cascade strong tier');
-    return cheap !== null && strong !== null ? { cheap, strong } : null;
+  plan(snapshot: RoutingSnapshot, scope?: string | null): CascadePlan | null {
+    // Each band resolves with the request's class scope independently
+    // (add-workload-scoped-bands): a class with only a scoped cheap rule
+    // cascades scoped-cheap → generic-strong, and vice versa.
+    const cheap = resolveBandTarget(snapshot, 'auto_low', 'cascade', 'cascade cheap tier', scope);
+    const strong = resolveBandTarget(
+      snapshot,
+      'auto_high',
+      'cascade',
+      'cascade strong tier',
+      scope,
+    );
+    if (cheap === null || strong === null) return null;
+    return {
+      cheap,
+      strong,
+      scope: scope ?? null,
+      cheapScoped: bandRuleIsScoped(snapshot, 'auto_low', scope),
+      strongScoped: bandRuleIsScoped(snapshot, 'auto_high', scope),
+    };
   }
 
   /** Escalate when the cheap answer's quality score is below the threshold. A

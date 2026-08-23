@@ -7,6 +7,7 @@ import {
   type RouteRule,
   type RouteEntry,
   type RoutingSnapshot,
+  bandRuleIsScoped,
 } from './resolve';
 
 const model = (id: string, providerId: string, externalModelId: string): RouteModel => ({
@@ -523,5 +524,109 @@ describe('resolveWorkloadTarget (add-workload-routing)', () => {
     });
     expect(resolveBandTarget(s, 'auto_high', 'structural', 'x')).toMatchObject({ tierKey: 'fast' });
     expect(resolveWorkloadTarget(s, 'code', 'r')).toMatchObject({ tierKey: 'default' });
+  });
+});
+
+describe('resolveBandTarget with a workload SCOPE (add-workload-scoped-bands)', () => {
+  const band = (
+    id: string,
+    matchType: 'auto_high' | 'auto_low',
+    target: string,
+    scope: string | null = null,
+    priority = 0,
+  ): RouteRule => ({ ...rule({ id, matchType, target, priority }), workloadClass: scope });
+  const twoTiers = () =>
+    snap({
+      tiers: [
+        { id: 't_default', key: 'default' },
+        { id: 't_fast', key: 'fast' },
+        { id: 't_code', key: 'strong-code' },
+        { id: 't_empty', key: 'empty' },
+      ],
+      entriesByTierId: new Map([
+        ['t_default', [{ modelId: 'm_def', position: 0 }]],
+        ['t_fast', [{ modelId: 'm_fast', position: 0 }]],
+        [
+          't_code',
+          [
+            { modelId: 'm_fast', position: 0 },
+            { modelId: 'm_def', position: 1 },
+          ],
+        ],
+        ['t_empty', []],
+      ]),
+    });
+
+  it('without a scope (or with null) the generic rule decides exactly as before — scoped rules are ignored', () => {
+    const s = {
+      ...twoTiers(),
+      rules: [
+        band('g', 'auto_high', 'tier:fast'),
+        band('c', 'auto_high', 'tier:strong-code', 'code', 99),
+      ],
+    };
+    for (const scope of [undefined, null]) {
+      const d = resolveBandTarget(s, 'auto_high', 'structural', 'structural:high s=0.7', scope);
+      expect(d).toMatchObject({ tierKey: 'fast', routingReason: 'structural:high s=0.7' });
+    }
+    expect(bandRuleIsScoped(s, 'auto_high', null)).toBe(false);
+  });
+
+  it('a scoped rule decides for its class even against a higher-priority generic rule, with the reason suffixed', () => {
+    const s = {
+      ...twoTiers(),
+      rules: [
+        band('g', 'auto_high', 'tier:fast', null, 99),
+        band('c', 'auto_high', 'tier:strong-code', 'code', 0),
+      ],
+    };
+    const d = resolveBandTarget(s, 'auto_high', 'structural', 'structural:high s=0.7', 'code');
+    expect(d).toMatchObject({
+      tierKey: 'strong-code',
+      decisionLayer: 'structural',
+      routingReason: 'structural:high s=0.7',
+      scope: 'code',
+    });
+    expect(d!.chain).toHaveLength(2);
+    expect(bandRuleIsScoped(s, 'auto_high', 'code')).toBe(true);
+    // another class has no scoped rule → generic, no suffix
+    const v = resolveBandTarget(s, 'auto_high', 'structural', 'structural:high s=0.7', 'vision');
+    expect(v).toMatchObject({ tierKey: 'fast', routingReason: 'structural:high s=0.7' });
+    expect(bandRuleIsScoped(s, 'auto_high', 'vision')).toBe(false);
+  });
+
+  it('an existing scoped rule whose target is unresolvable makes the band UNROUTABLE for the class — no silent fall-back', () => {
+    const s = {
+      ...twoTiers(),
+      rules: [
+        band('g', 'auto_high', 'tier:fast'),
+        band('c', 'auto_high', 'tier:empty', 'code'),
+        band('d', 'auto_low', 'tier:ghost', 'code'),
+        band('gl', 'auto_low', 'tier:fast'),
+      ],
+    };
+    expect(resolveBandTarget(s, 'auto_high', 'structural', 'r', 'code')).toBeNull(); // empty scoped tier
+    expect(resolveBandTarget(s, 'auto_low', 'structural', 'r', 'code')).toBeNull(); // deleted scoped target
+    expect(resolveBandTarget(s, 'auto_high', 'structural', 'r', 'vision')).toMatchObject({
+      tierKey: 'fast',
+    }); // generic for others
+  });
+
+  it('duplicates within a scope resolve by the shared comparator (priority, createdAt, id)', () => {
+    const s = {
+      ...twoTiers(),
+      rules: [
+        band('old', 'auto_high', 'tier:fast', 'code', 0),
+        band('prio', 'auto_high', 'tier:strong-code', 'code', 5),
+        band('g', 'auto_high', 'tier:default'),
+      ],
+    };
+    expect(
+      resolveBandTarget(s, 'auto_high', 'cascade', 'cascade strong tier', 'code'),
+    ).toMatchObject({
+      tierKey: 'strong-code',
+      routingReason: 'cascade strong tier',
+      scope: 'code',
+    });
   });
 });

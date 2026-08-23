@@ -51,6 +51,9 @@ export interface AutoPerfVm {
     negative: boolean;
     excess: string | null;
     basisLabel: string;
+    /** add-workload-scoped-bands: class-scoped band rules exist — the basis is the
+     * generic strong target and does not separate class-scoped traffic. */
+    basisScoped: boolean;
     /** "based on N of M quality-passed requests" — the coverage contract. */
     coverage: string;
     incomplete: boolean;
@@ -164,6 +167,7 @@ export function toAutoPerfVm(data: AutoPerformance | null): AutoPerfVm | null {
             negative: s.netUsd !== null && s.netUsd < 0,
             excess: s.excessUsd === null ? null : fmtMicros(Math.round(s.excessUsd * 1_000_000)),
             basisLabel: s.basis.label,
+            basisScoped: s.basis.scoped === true,
             coverage: `based on ${String(s.rows)} of ${String(eligible)} quality-passed requests`,
             incomplete: s.uncostedRows > 0,
             moneyless: s.rows === 0,

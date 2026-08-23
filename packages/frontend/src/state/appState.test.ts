@@ -1506,6 +1506,60 @@ describe('workload-target actions (add-workload-routing)', () => {
   });
 });
 
+describe('band-target actions with a class SCOPE (add-workload-scoped-bands)', () => {
+  const mk = (over: Partial<Record<string, unknown>>) => ({
+    id: 'r',
+    matchType: 'auto_high',
+    workloadClass: null,
+    headerName: 'x-polyrouter-tier',
+    headerValue: null,
+    target: 'tier:premium',
+    priority: 0,
+    createdAt: '2026-07-01T00:00:00.000Z',
+    ...over,
+  });
+  const generic = mk({ id: 'g' });
+  const codeHigh = mk({ id: 'ch', workloadClass: 'code', target: 'tier:cheap' });
+  const codeHighDupe = mk({ id: 'ch2', workloadClass: 'code', target: 'tier:cheap', priority: -1 });
+  const visionHigh = mk({ id: 'vh', workloadClass: 'vision', target: 'tier:cheap' });
+
+  it('a scoped set creates the band rule WITH the class and never retargets the generic rule', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION, rules: [generic] });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    s.setState('rules', [generic]);
+    await s.setBandTarget('auto_high', 'tier:cheap', 'code');
+    expect(fake.calls).toContain('createRule');
+    expect(fake.calls.filter((c) => c === 'updateRule')).toHaveLength(0);
+    const created = s.state.rules.find((r) => r.workloadClass === 'code');
+    expect(created).toMatchObject({ matchType: 'auto_high', target: 'tier:cheap' });
+    expect(s.state.rules.find((r) => r.id === 'g')!.target).toBe('tier:premium'); // generic untouched
+    // a second scoped set retargets the scoped effective rule — still no second rule for the class
+    await s.setBandTarget('auto_high', 'tier:premium', 'code');
+    expect(
+      s.state.rules.filter((r) => r.matchType === 'auto_high' && r.workloadClass === 'code'),
+    ).toHaveLength(1);
+    // a GENERIC set retargets only the generic rule
+    await s.setBandTarget('auto_high', 'tier:cheap');
+    expect(s.state.rules.find((r) => r.id === 'g')!.target).toBe('tier:cheap');
+    expect(s.state.rules.find((r) => r.workloadClass === 'code')!.target).toBe('tier:premium');
+  });
+
+  it('clear and cleanup are (band, scope) operations — other scopes and the generic rules survive', async () => {
+    const rules = [generic, codeHigh, codeHighDupe, visionHigh];
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION, rules });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    s.setState('rules', rules);
+    await s.cleanShadowed('auto_high', 'code');
+    expect(s.state.rules.map((r) => r.id).sort()).toEqual(['ch', 'g', 'vh']); // only the code duplicate went
+    await s.clearBand('auto_high', 'code');
+    expect(s.state.rules.map((r) => r.id).sort()).toEqual(['g', 'vh']); // generic + vision survive
+    await s.clearBand('auto_high'); // generic clear leaves the vision scope
+    expect(s.state.rules.map((r) => r.id)).toEqual(['vh']);
+  });
+});
+
 describe('band-target actions (add-band-target-ui)', () => {
   const highRule = {
     id: 'r-high',
@@ -1531,6 +1585,7 @@ describe('band-target actions (add-band-target-ui)', () => {
     expect(s.state.bt).toEqual({
       busy: { auto_high: false, auto_low: false },
       errors: { auto_high: null, auto_low: null },
+      errorScope: { auto_high: null, auto_low: null },
       unverified: false,
     });
   });
@@ -1554,7 +1609,24 @@ describe('band-target actions (add-band-target-ui)', () => {
     await s.setBandTarget('auto_high', 'tier:cheap');
     expect(s.state.rules[0]!.target).toBe('tier:premium'); // unchanged truth
     expect(s.state.bt.errors.auto_high).toMatch(/bad target/);
+    expect(s.state.bt.errorScope.auto_high).toBeNull(); // a GENERIC write's error
     expect(s.state.bt.unverified).toBe(false); // reconcile succeeded — state IS verified
+  });
+
+  it('a failed SCOPED write reports its error under its scope — the generic row stays clean (add-workload-scoped-bands)', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION, rules: [highRule] });
+    fake.createRule = () => Promise.reject(new ApiError(422, 'Unprocessable', 'bad scoped target'));
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    s.setState('rules', [highRule]);
+    await s.setBandTarget('auto_high', 'tier:cheap', 'code'); // no code rule yet → create → rejected
+    expect(s.state.bt.errors.auto_high).toMatch(/bad scoped target/);
+    expect(s.state.bt.errorScope.auto_high).toBe('code'); // attributed to the code row
+    expect(s.state.rules).toHaveLength(1); // nothing landed; the generic rule is untouched
+    // A later successful GENERIC write clears both the message and its scope.
+    await s.setBandTarget('auto_high', 'tier:cheap');
+    expect(s.state.bt.errors.auto_high).toBeNull();
+    expect(s.state.bt.errorScope.auto_high).toBeNull();
   });
 
   it('write ok + reconcile failed → the visible unverified state disables actions until retry', async () => {

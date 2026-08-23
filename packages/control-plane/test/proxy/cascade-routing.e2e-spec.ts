@@ -54,6 +54,7 @@ import { CascadeRouter } from '../../src/proxy/cascade/cascade-router';
 import { RecordingModule } from '../../src/recording/recording.module';
 import { ObservabilityModule } from '../../src/observability/observability.module';
 import { LogWriter } from '../../src/recording/log-writer';
+import { RequestRecorder } from '../../src/recording/request-recorder';
 import { PricingModule } from '../../src/pricing/pricing.module';
 import { DatabaseModule } from '../../src/database/database.module';
 import { SemanticModule } from '../../src/semantic/semantic.module';
@@ -741,5 +742,222 @@ describe('cascade routing e2e', () => {
       await port.routingRules.remove(principal, rule.id);
       await setBand('auto_low', 'cheap-bad');
     }
+  });
+
+  // ── add-workload-scoped-bands: cascade within a class ───────────────────────
+
+  describe('class-scoped cascade (add-workload-scoped-bands)', () => {
+    /** An L1-AMBIGUOUS code request: ~8k window chars with ≥30% fenced code, one tool. */
+    const codeBody = (system: string): Record<string, unknown> => ({
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: 'Z'.repeat(5_000) + '\n```\n' + 'x'.repeat(3_000) + '\n```' },
+      ],
+    });
+    // log() reads ONE row — clear between sends inside a scenario.
+    const clearLogs = (): Promise<unknown> =>
+      pool.query('DELETE FROM request_log WHERE owner_user_id = $1', [userId]);
+    async function withScoped(
+      rules: Array<{ matchType: 'auto_high' | 'auto_low'; cls: string; target: string }>,
+      fn: () => Promise<void>,
+    ): Promise<void> {
+      const ids: string[] = [];
+      for (const r of rules) {
+        const row = await port.routingRules.insert(principal, {
+          matchType: r.matchType,
+          headerName: 'x-polyrouter-tier',
+          headerValue: null,
+          workloadClass: r.cls,
+          target: r.target,
+          priority: 0,
+        });
+        ids.push(row.id);
+      }
+      try {
+        await fn();
+      } finally {
+        for (const id of ids) await port.routingRules.remove(principal, id);
+      }
+    }
+
+    it('cheap-code → strong-code: the scoped cheap serves a good answer; a bad one escalates to the scoped strong — reasons carry scope=code on the served row AND the attempt context', async () => {
+      // Generic pair: cheap-bad (escalates) + premium. Code scope: cheap-good (served) — a code
+      // request served by cheap-good proves the scoped cheap leg was used.
+      await setBand('auto_low', 'cheap-bad');
+      await withScoped(
+        [
+          { matchType: 'auto_low', cls: 'code', target: 'tier:cheap-good' },
+          { matchType: 'auto_high', cls: 'code', target: 'tier:premium' },
+        ],
+        async () => {
+          const res = await sendWith('sysScopedCheapGood', codeBody('sysScopedCheapGood'));
+          expect(res.status).toBe(200);
+          const row = await log();
+          expect(row.decisionLayer).toBe('cascade');
+          expect(row.modelId).toBe(modelId['cheapGood']); // the SCOPED cheap leg
+          expect(row.escalated).toBe(false);
+          expect(row.workloadClass).toBe('code');
+          expect(row.structuralBand).toBe('ambiguous');
+          // the scope is the TERMINAL fragment — after the quality marker and any trail
+          expect(row.routingReason).toMatch(/^cascade: cheap served \(q=[^)]*\).* scope=code$/);
+          // a NON-code ambiguous request still cascades through the generic cheap-bad → premium
+          await clearLogs();
+          const prose = await send('sysGenericStillBad');
+          expect(prose.status).toBe(200);
+          const prow = await log();
+          expect(prow.escalated).toBe(true);
+          expect(prow.modelId).toBe(modelId['strong']);
+          expect(prow.routingReason).not.toContain('scope=');
+        },
+      );
+      // Escalation within the class: scoped cheap is BAD (cheap-bad), scoped strong is premium.
+      const recorder = app.get(RequestRecorder);
+      const attemptSpy = jest.spyOn(recorder, 'recordAttempt');
+      try {
+        await withScoped(
+          [
+            { matchType: 'auto_low', cls: 'code', target: 'tier:cheap-bad' },
+            { matchType: 'auto_high', cls: 'code', target: 'tier:premium' },
+          ],
+          async () => {
+            await clearLogs();
+            const res = await sendWith('sysScopedEscalate', codeBody('sysScopedEscalate'));
+            expect(res.status).toBe(200);
+            const row = await log();
+            expect(row.escalated).toBe(true);
+            expect(row.modelId).toBe(modelId['strong']);
+            expect(row.routingReason).toMatch(
+              /^cascade: escalated cheap→premium \(q=.* scope=code$/,
+            ); // terminal
+            const ctxReasons = attemptSpy.mock.calls.map(
+              (c) => (c[1] as { routingReason: string }).routingReason,
+            );
+            expect(
+              ctxReasons.some((r) => r === 'cascade: cheap attempt (escalated) scope=code'),
+            ).toBe(true);
+          },
+        );
+      } finally {
+        attemptSpy.mockRestore();
+      }
+    });
+
+    it('hybrids fall back per band: only a scoped cheap → scoped cheap + generic strong; only a scoped strong → generic cheap + scoped strong', async () => {
+      await setBand('auto_low', 'cheap-bad');
+      await setBand('auto_high', 'premium');
+      // only scoped cheap (good) → served by the scoped cheap
+      await withScoped(
+        [{ matchType: 'auto_low', cls: 'code', target: 'tier:cheap-good' }],
+        async () => {
+          await sendWith('sysHybridCheap', codeBody('sysHybridCheap'));
+          const row = await log();
+          expect(row.modelId).toBe(modelId['cheapGood']);
+          expect(row.escalated).toBe(false);
+        },
+      );
+      // only scoped strong: the generic cheap-bad escalates to the SCOPED strong (strong-mid behaves
+      // differently from premium, so it is observable: mid-stream error → rescue to default) — use the
+      // buffered path: strong-down fails → escalation continues to the default tier.
+      await withScoped(
+        [{ matchType: 'auto_high', cls: 'code', target: 'tier:strong-down' }],
+        async () => {
+          await clearLogs();
+          await sendWith('sysHybridStrong', codeBody('sysHybridStrong'));
+          const row = await log();
+          expect(row.escalated).toBe(true);
+          expect(row.modelId).toBe(modelId['default']); // scoped strong (down) → rescued by default
+          expect(row.routingReason).toMatch(/ scope=code$/); // terminal on the rescued row too
+        },
+      );
+    });
+
+    it('the scoped TERMINAL branches end with scope=code too — all legs failed, non-retryable cheap, client disconnect (r5)', async () => {
+      // ALL FAILED: scoped cheap = scoped strong = default = the 500-mode model.
+      await setBand('auto_low', 'cheap-bad');
+      await setBand('auto_high', 'premium');
+      const defaultTierId = (await port.tiers.list(principal)).find((t) => t.key === 'default')!.id;
+      await port.routingEntries.replaceForTier(principal, defaultTierId, [modelId['strongDown']!]);
+      try {
+        await withScoped(
+          [
+            { matchType: 'auto_low', cls: 'code', target: 'tier:strong-down' },
+            { matchType: 'auto_high', cls: 'code', target: 'tier:strong-down' },
+          ],
+          async () => {
+            await clearLogs();
+            const res = await sendWith('sysScopedAllDown', codeBody('sysScopedAllDown'));
+            expect(res.status).toBeGreaterThanOrEqual(500);
+            expect((await port.requestLogs.list(principal))[0]!.status).toBe('error');
+            const row = await log();
+            expect(row.escalated).toBe(true);
+            expect(row.routingReason).toMatch(/^cascade: escalated, all failed.* scope=code$/);
+          },
+        );
+      } finally {
+        await port.routingEntries.replaceForTier(principal, defaultTierId, [modelId['default']!]);
+      }
+      // NON-RETRYABLE: the scoped cheap 400s → surfaced (no escalation), scope still terminal.
+      await withScoped(
+        [{ matchType: 'auto_low', cls: 'code', target: 'tier:cheap-badreq' }],
+        async () => {
+          await clearLogs();
+          const res = await sendWith('sysScopedBadReq', codeBody('sysScopedBadReq'));
+          expect(res.status).toBeGreaterThanOrEqual(400);
+          expect(res.status).toBeLessThan(500);
+          const row = await log();
+          expect(row.escalated).toBe(false);
+          expect(row.modelId).toBe(modelId['cheapBadReq']);
+          expect(row.routingReason).toMatch(
+            /^cascade: cheap failed non-retryably \(bad_request\).* scope=code$/,
+          );
+        },
+      );
+      // CLIENT DISCONNECT during the scoped cheap leg: exactly one cancelled row, scope terminal.
+      await withScoped(
+        [{ matchType: 'auto_low', cls: 'code', target: 'tier:cheap-hang' }],
+        async () => {
+          await clearLogs();
+          const req = request(server)
+            .post('/v1/chat/completions')
+            .set('Authorization', `Bearer ${key}`)
+            .send({ ...body('sysScopedClientAbort', false), ...codeBody('sysScopedClientAbort') });
+          setTimeout(() => {
+            req.abort();
+          }, 150);
+          await expect(req).rejects.toThrow();
+          await new Promise((r) => setTimeout(r, 150));
+          await writer.flush();
+          expect((await port.requestLogs.list(principal))[0]!.status).toBe('cancelled');
+          const row = await log();
+          expect(row.escalated).toBe(false);
+          expect(row.modelId).toBe(modelId['cheapHang']);
+          expect(row.routingReason).toMatch(
+            /^cascade: client disconnected during cheap attempt.* scope=code$/,
+          );
+        },
+      );
+    });
+
+    it('a scoped cheap rule with an empty tier leaves the class without a plan — the default serves, no cheap call', async () => {
+      await setBand('auto_low', 'cheap-good');
+      const empty = await port.tiers.insert(principal, { key: 'empty-cheap' });
+      try {
+        await withScoped(
+          [{ matchType: 'auto_low', cls: 'code', target: 'tier:empty-cheap' }],
+          async () => {
+            const before = stub.requests.length;
+            await sendWith('sysScopedEmptyCheap', codeBody('sysScopedEmptyCheap'));
+            const row = await log();
+            expect(row.decisionLayer).toBe('default');
+            expect(row.modelId).toBe(modelId['default']);
+            expect(stub.requests.length - before).toBe(1); // one call — no cheap leg
+            expect(await port.requestAttempts.listForRequest(principal, row.id)).toHaveLength(0);
+          },
+        );
+      } finally {
+        await port.tiers.remove(principal, empty.id);
+        await setBand('auto_low', 'cheap-bad');
+      }
+    });
   });
 });

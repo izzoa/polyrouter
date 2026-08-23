@@ -149,6 +149,27 @@ interface CascadeBundle {
   readonly cheap: Bundle;
   readonly escalation: Bundle;
   readonly cheapTimeoutMs: number;
+  /** The plan's REASON scope (add-workload-scoped-bands): the request's class
+   * when a SELECTED leg's rule was class-scoped (`cheapScoped || strongScoped`),
+   * else null — every cascade-constructed reason then ENDS with ` scope=<class>`
+   * (the terminal fragment; see `withScope`). */
+  readonly scope: string | null;
+}
+
+/** Append the ` scope=<class>` fragment LAST (add-workload-scoped-bands): after
+ * the quality marker, the fall-back trail, capacity notes, and the L1→L2
+ * classification trail — so a scoped `routing_reason` always ENDS with it and
+ * `/ scope=<class>$/` is a reliable inspection key on every path (class
+ * names/ids only — never content). A null/absent scope leaves the reason as is. */
+function withScope(reason: string, scope: string | null | undefined): string {
+  return scope === null || scope === undefined ? reason : `${reason} scope=${scope}`;
+}
+
+/** The cascade plan's reason scope: set only when a SELECTED leg's rule was
+ * class-scoped — a plan whose legs both resolved generically carries no
+ * fragment, exactly like a generic band decision. */
+function reasonScopeOf(plan: CascadePlan | null): string | null {
+  return plan !== null && (plan.cheapScoped || plan.strongScoped) ? plan.scope : null;
 }
 
 /** The served cheap response, for a per-call ledger row when it is escalated. */
@@ -515,6 +536,7 @@ export class ProxyService {
               [{ failures: cheap.failures, meta: c.cheap.meta, leg: 'cheap' }],
               null,
             ),
+            c.scope,
           ),
           {
             status: cheap.failures.length > 0 ? 'fallback' : 'success',
@@ -560,6 +582,7 @@ export class ProxyService {
             [{ failures: cheap.failures, meta: c.cheap.meta, leg: 'cheap' }],
             null,
           ),
+          c.scope,
         ),
         { status: 'cancelled', outputChars: 0, escalated: false, qualitySignal: null },
       );
@@ -586,6 +609,7 @@ export class ProxyService {
             [{ failures: cheap.failures, meta: c.cheap.meta, leg: 'cheap' }],
             cheap.error,
           ),
+          c.scope,
         ),
         {
           status: 'error',
@@ -655,6 +679,7 @@ export class ProxyService {
           score,
           result.failures,
           attemptTrailEntries(trailLegs, result.error),
+          c.scope,
         ),
         {
           status: result.callerAborted ? 'cancelled' : 'error',
@@ -685,6 +710,7 @@ export class ProxyService {
         score,
         result.failures,
         attemptTrailEntries(trailLegs, null),
+        c.scope,
       ),
       {
         status: result.failures.length > 0 ? 'fallback' : 'success',
@@ -745,6 +771,7 @@ export class ProxyService {
               [{ failures: cheap.failures, meta: c.cheap.meta, leg: 'cheap' }],
               null,
             ),
+            c.scope,
           );
           const fellBack = cheap.failures.length > 0;
           void replay.outcome.then((o) =>
@@ -803,6 +830,7 @@ export class ProxyService {
             [{ failures: cheap.failures, meta: c.cheap.meta, leg: 'cheap' }],
             null,
           ),
+          c.scope,
         ),
         { status: 'cancelled', outputChars: 0, escalated: false, qualitySignal: null },
       );
@@ -827,6 +855,7 @@ export class ProxyService {
             [{ failures: cheap.failures, meta: c.cheap.meta, leg: 'cheap' }],
             cheap.error,
           ),
+          c.scope,
         ),
         {
           status: 'error',
@@ -893,6 +922,7 @@ export class ProxyService {
           score,
           result.failures,
           attemptTrailEntries(trailLegs, result.error),
+          c.scope,
         ),
         {
           status: result.callerAborted ? 'cancelled' : 'error',
@@ -921,6 +951,7 @@ export class ProxyService {
       score,
       result.failures,
       attemptTrailEntries(trailLegs, null),
+      c.scope,
     );
     const fellBack = result.failures.length > 0;
     void result.outcome.then((o) => {
@@ -959,7 +990,7 @@ export class ProxyService {
     if (m === undefined) return;
     this.recorder.recordAttempt(
       requestLogId,
-      this.metaContext(p, m, `cascade: cheap attempt (escalated)`),
+      this.metaContext(p, m, withScope('cascade: cheap attempt (escalated)', c.scope)),
       {
         status: 'success',
         ...(cheapServed.response.usage !== undefined
@@ -1181,6 +1212,13 @@ export class ProxyService {
             : classified.workload !== undefined && classified.workload.class !== WORKLOAD_NONE
               ? classified.workload
               : (semanticWorkload ?? classified.workload);
+        // The BAND SCOPE (add-workload-scoped-bands): the deciding class when it
+        // names one — class-scoped band rules decide for the request (Layer 1,
+        // Layer 2, the cascade plan) before the generic ones; `none` → null.
+        const bandScope: string | null =
+          decidingWorkload !== undefined && decidingWorkload.class !== WORKLOAD_NONE
+            ? decidingWorkload.class
+            : null;
         // Workload stage (add-workload-routing D3): a confident workload class
         // with a resolvable `auto_workload` target CLAIMS the request before
         // band targets / L2 / cascade. Its own try/catch — a fault is
@@ -1206,7 +1244,7 @@ export class ProxyService {
         const evaln =
           claimed !== null
             ? ({ kind: 'skip' } as const) // band NEVER resolved for a claimed request
-            : this.structural.resolveBand(snapshot, classified);
+            : this.structural.resolveBand(snapshot, classified, bandScope);
         if (claimed !== null && classified.kind === 'classified') {
           decision = claimed; // decision_layer 'workload' — no band, no L2, no cascade
           structuralVerdict = classified.verdict;
@@ -1241,10 +1279,23 @@ export class ProxyService {
           const sem = !layers.semantic
             ? ({ kind: 'skip' } as const)
             : embedded !== null
-              ? await this.semantic.classifyBand(embedded.vector, principal, snapshot, gate)
+              ? await this.semantic.classifyBand(
+                  embedded.vector,
+                  principal,
+                  snapshot,
+                  gate,
+                  bandScope,
+                )
               : semanticEmbedFailed
                 ? ({ kind: 'skip' } as const)
-                : await this.semantic.evaluate(principal, ir, snapshot, gate, { signal });
+                : await this.semantic.evaluate(
+                    principal,
+                    ir,
+                    snapshot,
+                    gate,
+                    { signal },
+                    bandScope,
+                  );
           if (sem.kind !== 'skip') semanticVerdict = sem.verdict;
           // The vector + gate for the learning contributor ride Prepared, set ONLY
           // for the L2-ambiguous slice (add-semantic-learning D1/D3) — the exact
@@ -1262,7 +1313,15 @@ export class ProxyService {
           } else if (layers.cascade) {
             // Only a still-AMBIGUOUS verdict or a SKIP (L2 not evaluated /
             // faulted) hands to the existing cascade candidate.
-            cascadePlan = this.cascade.plan(snapshot);
+            cascadePlan = this.cascade.plan(snapshot, bandScope);
+            // Learning evidence binds its revision to the GENERIC cheap chain
+            // (add-semantic-learning): a plan whose SELECTED cheap leg is class-
+            // scoped contributes nothing for this request (add-workload-scoped-
+            // bands) — keyed on the selected leg, never the request's class.
+            if (cascadePlan !== null && cascadePlan.cheapScoped) {
+              learningEvidence = null;
+              learningGate = DISABLED_LEARNING_GATE;
+            }
           }
           // else: the Layer-0 default decision stands (invariant 1)
         }
@@ -1320,6 +1379,7 @@ export class ProxyService {
             cheap: cheapPlan.bundle,
             escalation: escPlan.bundle,
             cheapTimeoutMs: this.cascade.cheapTimeoutMs,
+            scope: reasonScopeOf(cascadePlan),
           };
           if (cheapPlan.capacity !== undefined || escPlan.capacity !== undefined) {
             capacity = {
@@ -1332,6 +1392,7 @@ export class ProxyService {
             cheap,
             escalation: escalationRaw,
             cheapTimeoutMs: this.cascade.cheapTimeoutMs,
+            scope: reasonScopeOf(cascadePlan),
           };
         }
       }
@@ -1575,9 +1636,14 @@ export class ProxyService {
       ...verdictFields(p),
       tierAssigned: p.decision.tierKey,
       decisionLayer: p.decision.decisionLayer,
-      routingReason: withCapacity(
-        reasonWithTrail(p.decision.routingReason, failures, p.meta),
-        capacitySuffix(null, p.capacity?.primary, servedIndex, failures),
+      // A class-scoped band decision's ` scope=<class>` lands LAST (add-workload-
+      // scoped-bands) — after the fall-back trail and the capacity notes.
+      routingReason: withScope(
+        withCapacity(
+          reasonWithTrail(p.decision.routingReason, failures, p.meta),
+          capacitySuffix(null, p.capacity?.primary, servedIndex, failures),
+        ),
+        p.decision.scope,
       ),
       // The header that chose the route (add-routing-header-visibility); the
       // cascade context (metaContext) never carries one by construction.
@@ -1607,11 +1673,18 @@ export class ProxyService {
      * composed at the call site so escalation rows aggregate BOTH executed
      * legs (cheap first) — the recorder persists it only on error rows. */
     attemptTrail: readonly AttemptFailureEntry[],
+    /** The plan's reason scope (add-workload-scoped-bands) — appended LAST, after
+     * the quality marker, fall-back trail, capacity notes, and the trail. */
+    scope: string | null,
   ): RecordingContext {
     const reason = reasonWithTrail(`${baseReason} (q=${fmtQ(score)})`, failures, meta);
     const trail = classificationTrail(p);
     const ctx: RecordingContext = {
-      ...this.metaContext(p, meta[servedIndex]!, trail === '' ? reason : `${reason}; ${trail}`),
+      ...this.metaContext(
+        p,
+        meta[servedIndex]!,
+        withScope(trail === '' ? reason : `${reason}; ${trail}`, scope),
+      ),
       ...(attemptTrail.length > 0 ? { attemptFailures: attemptTrail } : {}),
     };
     // The learning vector rides the SERVED context ONLY (add-semantic-learning

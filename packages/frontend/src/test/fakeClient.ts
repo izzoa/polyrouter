@@ -357,7 +357,7 @@ export const DEFAULT_AUTO_PERF: AutoPerformance = {
     excessUsd: 0.22,
     rows: 6,
     uncostedRows: 1,
-    basis: { kind: 'tier', label: 'premium', model: 'gpt-x' },
+    basis: { kind: 'tier', label: 'premium', model: 'gpt-x', scoped: false },
   },
   signalQuality: [],
   workloadMix: {

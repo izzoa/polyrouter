@@ -1019,6 +1019,125 @@ describe('dashboard shell (auth-gated)', () => {
     }
   });
 
+  it('Band targets: per-workload bands — class picker, scoped set/clear, generic rows untouched, claim notes (add-workload-scoped-bands)', async () => {
+    const mkRule = (over: Partial<RuleDto>): RuleDto => ({
+      id: 'r-x',
+      matchType: 'auto_high',
+      workloadClass: null,
+      headerName: 'x-polyrouter-tier',
+      headerValue: null,
+      target: 'tier:premium',
+      priority: 0,
+      createdAt: NOW,
+      ...over,
+    });
+    const premium: TierDto = {
+      id: 't-premium',
+      key: 'premium',
+      displayName: null,
+      description: null,
+      createdAt: NOW,
+    };
+    const empty: TierDto = {
+      id: 't-empty',
+      key: 'empty',
+      displayName: null,
+      description: null,
+      createdAt: NOW,
+    };
+    const fake = new FakeApiClient({
+      tiers: [DEFAULT_TIER, premium, empty],
+      tierEntries: {
+        t1: [mkEntry('m1', 0)],
+        't-premium': [{ id: 'ep1', tierId: 't-premium', modelId: 'm2', position: 0, model: null }],
+        't-empty': [],
+      },
+      models: { p1: [mkModel('m1'), mkModel('m2')] },
+      rules: [
+        mkRule({ id: 'g-high' }), // generic strong → premium
+        mkRule({ id: 'code-high', workloadClass: 'code', target: 'tier:default', priority: 9 }), // scoped strong
+        mkRule({
+          id: 'vision-low',
+          matchType: 'auto_low',
+          workloadClass: 'vision',
+          target: 'tier:empty',
+        }), // scoped cheap, EMPTY tier
+        mkRule({
+          id: 'claim',
+          matchType: 'auto_workload',
+          workloadClass: 'vision',
+          target: 'tier:premium',
+        }), // usable claim for vision
+      ],
+    });
+    const { host, store, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Routing');
+      await flush();
+      const panel = () =>
+        [...host.querySelectorAll<HTMLElement>('.panel')].find((p) =>
+          p.textContent?.includes('Band targets'),
+        )!;
+      const block = () => panel().querySelector<HTMLElement>('[data-testid="bt-scoped"]')!;
+      // Generic rows consider generic rules only: the higher-priority scoped rule is NOT the generic effective.
+      expect(panel().textContent).toContain('tier: premium');
+      expect(panel().textContent).not.toContain('shadowed duplicate');
+      // The block shows code by default: STRONG = scoped (default tier), CHEAP unset with the generic copy.
+      expect(block()).not.toBeNull();
+      const high = () =>
+        block().querySelector<HTMLElement>('[data-testid="bt-scoped-row-auto_high"]')!;
+      const low = () =>
+        block().querySelector<HTMLElement>('[data-testid="bt-scoped-row-auto_low"]')!;
+      expect(high().textContent).toContain('tier: default');
+      expect(low().textContent).toContain('code requests use the generic cheap target');
+      expect(block().querySelector('[data-testid="bt-scoped-claim"]')).toBeNull(); // no claim for code
+      // Set the code CHEAP band via its picker → a scoped auto_low rule with the class; generic rules untouched.
+      const cheapPicker = low().querySelector<HTMLSelectElement>('select')!;
+      expect(cheapPicker.getAttribute('aria-label')).toBe('CHEAP target for code');
+      cheapPicker.value = 'tier:premium';
+      cheapPicker.dispatchEvent(new Event('change', { bubbles: true }));
+      await flush();
+      expect(
+        store.state.rules.find((r) => r.matchType === 'auto_low' && r.workloadClass === 'code'),
+      ).toMatchObject({ target: 'tier:premium' });
+      expect(store.state.rules.find((r) => r.id === 'g-high')!.target).toBe('tier:premium');
+      expect(
+        store.state.rules.some((r) => r.matchType === 'auto_low' && r.workloadClass === null),
+      ).toBe(false); // no generic cheap was created
+      // Switch the class to vision: the empty scoped cheap is flagged unroutable-for-class; the usable claim note shows.
+      const select = block().querySelector<HTMLSelectElement>(
+        'select[aria-label="Workload class for the scoped bands"]',
+      )!;
+      select.value = 'vision';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      await flush();
+      expect(block().querySelector('[data-testid="bt-scoped-claim"]')!.textContent).toContain(
+        'claims its requests first',
+      );
+      expect(low().textContent).toContain('unroutable for the class');
+      // Clear the vision cheap band → only that scope's rule goes.
+      const clear = [...low().querySelectorAll<HTMLElement>('button')].find(
+        (b) => b.textContent?.trim() === 'Clear',
+      );
+      clear?.click();
+      await flush();
+      expect(store.state.rules.some((r) => r.id === 'vision-low')).toBe(false);
+      expect(store.state.rules.some((r) => r.id === 'code-high')).toBe(true);
+      expect(store.state.rules.some((r) => r.id === 'g-high')).toBe(true);
+      // An UNUSABLE claim (empty tier) shows the other note.
+      store.setState('rules', (rs) =>
+        rs.map((r) => (r.id === 'claim' ? { ...r, target: 'tier:empty' } : r)),
+      );
+      await flush();
+      expect(block().querySelector('[data-testid="bt-scoped-claim"]')!.textContent).toContain(
+        'set but unusable',
+      );
+    } finally {
+      dispose();
+    }
+  });
+
   it('body-capture card: consent-gated enable flips the badge; master-kill copy (add-body-capture)', async () => {
     const { host, dispose } = mount();
     try {
@@ -1318,6 +1437,8 @@ describe('dashboard shell (auth-gated)', () => {
       expect(text).toContain('premium');
       expect(text).toContain('est.');
       expect(text).toContain('based on 6 of 7 quality-passed requests');
+      // No class-scoped band rules in the fixture → no basis disclosure (add-workload-scoped-bands).
+      expect(host.querySelector('[data-testid="ap-basis-scoped"]')).toBeNull();
       // Unroutable diagnostic (1 in the fixture, high band): the perf panel
       // names the AFFECTED band and points at Band targets (cause-neutral —
       // scoped to the panel so the band section's keys can't satisfy it).
@@ -1369,6 +1490,80 @@ describe('dashboard shell (auth-gated)', () => {
       // Routed traffic ⇒ residual-cascade labeling + the denominator footnote.
       expect(text).toContain('residual cascade');
       expect(text).toContain('never enter the cascade');
+    } finally {
+      dispose();
+    }
+  });
+
+  it('Auto performance discloses the GENERIC savings basis when class-scoped band rules exist (add-workload-scoped-bands)', async () => {
+    const fake = new FakeApiClient({
+      tiers: [DEFAULT_TIER],
+      autoPerf: {
+        ...DEFAULT_AUTO_PERF,
+        savings: {
+          ...DEFAULT_AUTO_PERF.savings!,
+          basis: { ...DEFAULT_AUTO_PERF.savings!.basis, scoped: true },
+        },
+      },
+    });
+    const { host, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Routing');
+      await flush();
+      const note = host.querySelector<HTMLElement>('[data-testid="ap-basis-scoped"]');
+      expect(note).not.toBeNull();
+      expect(note!.textContent).toContain('basis = the generic strong target');
+      expect(note!.textContent).toContain('class-scoped traffic is not separated');
+    } finally {
+      dispose();
+    }
+  });
+
+  it('Band targets: a failed SCOPED write shows its error under the scoped row, never under the generic one (add-workload-scoped-bands)', async () => {
+    const fake = new FakeApiClient({
+      tiers: [DEFAULT_TIER],
+      tierEntries: { t1: [mkEntry('m1', 0)] },
+      models: { p1: [mkModel('m1')] },
+      rules: [
+        {
+          id: 'g-high',
+          matchType: 'auto_high',
+          workloadClass: null,
+          headerName: 'x-polyrouter-tier',
+          headerValue: null,
+          target: 'tier:default',
+          priority: 0,
+          createdAt: NOW,
+        },
+      ],
+    });
+    fake.createRule = () => Promise.reject(new ApiError(422, 'Unprocessable', 'bad scoped target'));
+    const { host, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Routing');
+      await flush();
+      const panel = () =>
+        [...host.querySelectorAll<HTMLElement>('.panel')].find((p) =>
+          p.textContent?.includes('Band targets'),
+        )!;
+      const block = () => panel().querySelector<HTMLElement>('[data-testid="bt-scoped"]')!;
+      const low = () =>
+        block().querySelector<HTMLElement>('[data-testid="bt-scoped-row-auto_low"]')!;
+      // Set the code CHEAP band (no code rule exists → create → the server rejects it).
+      const picker = low().querySelector<HTMLSelectElement>(
+        'select[aria-label="CHEAP target for code"]',
+      )!;
+      picker.value = 'tier:default';
+      picker.dispatchEvent(new Event('change', { bubbles: true }));
+      await flush();
+      const err = low().querySelector<HTMLElement>('[data-testid="bt-scoped-error"]');
+      expect(err).not.toBeNull();
+      expect(err!.textContent).toContain('bad scoped target');
+      // Exactly ONE rendering of the message in the whole card — the generic CHEAP row is clean.
+      expect(panel().textContent.split('bad scoped target').length - 1).toBe(1);
+      expect(panel().querySelectorAll('[data-testid="bt-scoped-error"]')).toHaveLength(1);
     } finally {
       dispose();
     }

@@ -151,13 +151,19 @@ export class StructuralRouter {
    * discards the captured verdicts for that request — today's whole-evaluate
    * semantics (Layer-0 default, nothing fabricated).
    */
-  resolveBand(snapshot: RoutingSnapshot, c: StructuralClassification): StructuralEvaluation {
+  resolveBand(
+    snapshot: RoutingSnapshot,
+    c: StructuralClassification,
+    /** The request's deciding workload class (add-workload-scoped-bands):
+     * class-scoped band rules decide for it first, generic ones otherwise. */
+    scope?: string | null,
+  ): StructuralEvaluation {
     if (c.kind === 'skip') return { kind: 'skip' };
     try {
       const wl = c.workload !== undefined ? { workload: c.workload } : {};
       if (c.verdict.band === 'ambiguous') return { kind: 'ambiguous', verdict: c.verdict, ...wl };
       const matchType = c.verdict.band === 'high' ? 'auto_high' : 'auto_low';
-      const decision = this.bandTargetOf(snapshot, matchType, c.verdict.reason);
+      const decision = this.bandTargetOf(snapshot, matchType, c.verdict.reason, scope);
       // A confident band with no configured/resolvable target degrades to Layer 0
       // — carrying its verdict (add-auto-decision-telemetry).
       return decision === null
@@ -174,8 +180,9 @@ export class StructuralRouter {
     snapshot: RoutingSnapshot,
     matchType: 'auto_high' | 'auto_low',
     reason: string,
+    scope?: string | null,
   ): RouteDecision | null {
-    return resolveBandTarget(snapshot, matchType, 'structural', reason);
+    return resolveBandTarget(snapshot, matchType, 'structural', reason, scope);
   }
 
   /** The pre-split contract: classify + resolve the band (W-1 callers/tests). */
@@ -185,8 +192,13 @@ export class StructuralRouter {
     ir: NormalizedRequest,
     snapshot: RoutingSnapshot,
     thresholds?: { high: number; low: number },
+    scope?: string | null,
   ): Promise<StructuralEvaluation> {
-    return this.resolveBand(snapshot, await this.classify(principal, agentId, ir, thresholds));
+    return this.resolveBand(
+      snapshot,
+      await this.classify(principal, agentId, ir, thresholds),
+      scope,
+    );
   }
 
   /** The structural workload classifier over already-extracted features —
@@ -202,8 +214,9 @@ export class StructuralRouter {
     agentId: string | null,
     ir: NormalizedRequest,
     snapshot: RoutingSnapshot,
+    scope?: string | null,
   ): Promise<RouteDecision | null> {
-    const e = await this.evaluate(principal, agentId, ir, snapshot);
+    const e = await this.evaluate(principal, agentId, ir, snapshot, undefined, scope);
     return e.kind === 'route' ? e.decision : null;
   }
 }

@@ -95,6 +95,7 @@ const WEAK_RESEARCH_MARKER = 'WEAK_RESEARCH_MARKER_1F'; // research direction bu
 const FAIL_EMBED_MARKER = 'FAIL_EMBED_MARKER_0X'; // the embedder rejects (timeout/abort stand-in)
 const ZERO_VECTOR_MARKER = 'ZERO_VECTOR_MARKER_0Z'; // a degenerate (zero-norm) vector
 const SLOW_EMBED_MARKER = 'SLOW_EMBED_MARKER_9S'; // resolves only AFTER the bounded timeout (a real timeout crossing)
+const RESEARCH_HIGH_MARKER = 'RESEARCH_HIGH_MARKER_2H'; // research class AND an L2-high band (e0 + e4)
 const SLOW_EMBED_MS = 200; // > SEMANTIC_CFG.timeoutMs (50)
 /** Workload classes → basis e3..e7 (code, research, vision, structured, writing). */
 const WORKLOAD_BASIS: Record<string, number> = {
@@ -186,6 +187,7 @@ function controlledEmbedder(): Embedder & { readonly saturated: boolean } {
       if (text.includes(RESEARCH_MARKER) && text.includes(WRITING_MARKER))
         return Promise.resolve(unit({ 4: 1, 7: 1 }));
       if (text.includes(WEAK_RESEARCH_MARKER)) return Promise.resolve(unit({ 2: 0.98, 4: 0.15 })); // topSim ≈ 0.15 < 0.20
+      if (text.includes(RESEARCH_HIGH_MARKER)) return Promise.resolve(unit({ 0: 1, 4: 1 }));
       if (text.includes(RESEARCH_MARKER)) return Promise.resolve(basis(4));
       if (text.includes(WRITING_MARKER)) return Promise.resolve(basis(7));
       return Promise.resolve(basis(2));
@@ -1005,6 +1007,100 @@ describe('Layer-2 semantic routing e2e', () => {
       const blob = JSON.stringify(row) + '\n' + lines.join('\n');
       for (const sentinel of SENTINELS) expect(blob).not.toContain(sentinel);
       expect(row.workloadRevision).toMatch(SEM_REV);
+    });
+  });
+
+  // ── add-workload-scoped-bands: Layer 2 + the learning contributor under a class scope ─
+
+  describe('class-scoped bands through Layer 2 and learning (add-workload-scoped-bands)', () => {
+    async function withScoped(
+      t: Tenant,
+      rules: Array<{ matchType: 'auto_high' | 'auto_low'; cls: string; target: string }>,
+      fn: () => Promise<void>,
+    ): Promise<void> {
+      const ids: string[] = [];
+      for (const r of rules) {
+        const row = await port.routingRules.insert(t.principal, {
+          matchType: r.matchType,
+          headerName: 'x-polyrouter-tier',
+          headerValue: null,
+          workloadClass: r.cls,
+          target: r.target,
+          priority: 0,
+        });
+        ids.push(row.id);
+      }
+      try {
+        await fn();
+      } finally {
+        for (const id of ids) await port.routingRules.remove(t.principal, id);
+      }
+    }
+
+    it('an L2-high research request resolves the research-scoped strong target (decision_layer semantic, reason suffixed); without the scoped rule the generic strong serves', async () => {
+      // The scoped strong points at the CHEAP model so it is distinguishable from the generic premium/strong.
+      await withScoped(
+        T,
+        [{ matchType: 'auto_high', cls: 'research', target: 'tier:cheap' }],
+        async () => {
+          await proxy(T, ambiguousBody('sem-scoped-high', RESEARCH_HIGH_MARKER));
+          const row = await lastRow(T);
+          expect(row.decisionLayer).toBe('semantic');
+          expect(row.modelId).toBe(T.model.cheap); // the research-scoped strong target
+          expect(row.workloadClass).toBe('research');
+          expect(row.workloadSource).toBe('semantic');
+          expect(row.semanticBand).toBe('high');
+          expect(row.routingReason).toMatch(/^semantic:high .* scope=research$/); // TERMINAL fragment
+        },
+      );
+      await proxy(T, ambiguousBody('sem-generic-high', RESEARCH_HIGH_MARKER));
+      const generic = await lastRow(T);
+      expect(generic.decisionLayer).toBe('semantic');
+      expect(generic.modelId).toBe(T.model.strong); // generic auto_high → premium
+      expect(generic.routingReason).not.toContain('scope=');
+    });
+
+    it('learning evidence is suppressed ONLY when the selected cheap leg is class-scoped (generic cheap + scoped strong still contributes)', async () => {
+      const svc = app.get(ProxyService) as unknown as {
+        prepare: (
+          ...a: unknown[]
+        ) => Promise<{ learningEvidence: Float32Array | null; cascade?: unknown }>;
+      };
+      // 1) scoped cheap for research → no evidence (cheapScoped)
+      await withScoped(
+        T,
+        [{ matchType: 'auto_low', cls: 'research', target: 'tier:cheap' }],
+        async () => {
+          const prepareSpy = jest.spyOn(svc, 'prepare');
+          try {
+            await proxy(T, ambiguousBody('sem-learn-scoped-cheap', RESEARCH_MARKER)); // L1 ambiguous, L2 ambiguous (e4 ⟂ bands) → cascade
+            const prepared = await prepareSpy.mock.results[0]!.value;
+            const row = await lastRow(T);
+            expect(row.decisionLayer).toBe('cascade');
+            expect(row.routingReason).toMatch(/ scope=research$/);
+            expect(prepared.learningEvidence).toBeNull(); // the scoped cheap leg contributes nothing
+          } finally {
+            prepareSpy.mockRestore();
+          }
+        },
+      );
+      // 2) generic cheap + scoped STRONG for research → evidence kept (cheapScoped=false)
+      await withScoped(
+        T,
+        [{ matchType: 'auto_high', cls: 'research', target: 'tier:premium' }],
+        async () => {
+          const prepareSpy = jest.spyOn(svc, 'prepare');
+          try {
+            await proxy(T, ambiguousBody('sem-learn-generic-cheap', RESEARCH_MARKER));
+            const prepared = await prepareSpy.mock.results[0]!.value;
+            const row = await lastRow(T);
+            expect(row.decisionLayer).toBe('cascade');
+            expect(prepared.learningEvidence).not.toBeNull(); // the generic cheap chain → evidence as before
+          } finally {
+            prepareSpy.mockRestore();
+          }
+        },
+      );
     });
   });
 });

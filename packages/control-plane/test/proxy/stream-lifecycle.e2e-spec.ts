@@ -63,6 +63,7 @@ import { BodyCaptureService } from '../../src/body-capture/body-capture.service'
 import { ObservabilityModule } from '../../src/observability/observability.module';
 import { StreamDrainRegistry } from '../../src/proxy/stream-drain.registry';
 import { StructuralRouter } from '../../src/proxy/structural/structural-router';
+import { WorkloadRouter } from '../../src/proxy/workload/workload-router';
 import { CascadeRouter } from '../../src/proxy/cascade/cascade-router';
 import { DatabaseModule } from '../../src/database/database.module';
 import { SemanticModule } from '../../src/semantic/semantic.module';
@@ -153,9 +154,15 @@ async function bootApp(streamDrainDeadlineMs: number): Promise<BootedApp> {
         },
       },
       { provide: RequestRecorder, useValue: { record: recorded } },
+      WorkloadRouter,
       {
         provide: StructuralRouter,
-        useValue: { enabled: false, evaluate: () => Promise.resolve({ kind: 'skip' }) },
+        useValue: {
+          enabled: false,
+          evaluate: () => Promise.resolve({ kind: 'skip' }),
+          classify: () => Promise.resolve({ kind: 'skip' }),
+          resolveBand: () => ({ kind: 'skip' }),
+        },
       },
       { provide: CascadeRouter, useValue: { enabled: false, plan: () => null } },
       {
@@ -170,7 +177,10 @@ async function bootApp(streamDrainDeadlineMs: number): Promise<BootedApp> {
       { provide: PROXY_ADAPTER_FACTORY, useValue: createProviderAdapter },
       { provide: PROXY_BREAKER, useValue: new CircuitBreaker(store, { config: THRESHOLD_1 }) },
       { provide: ROUTING_CONFIG, useFactory: loadRoutingConfig },
-      { provide: CALIBRATION_RAILS, useFactory: (): CalibrationRails => railsOf(loadCalibrationConfig()) },
+      {
+        provide: CALIBRATION_RAILS,
+        useFactory: (): CalibrationRails => railsOf(loadCalibrationConfig()),
+      },
       { provide: APP_FILTER, useClass: ProxyExceptionFilter },
     ],
   }).compile();
@@ -404,150 +414,130 @@ describe('stream lifecycle e2e (drain / disconnect / backpressure)', () => {
     await stub.close();
   });
 
-  it(
-    'a slow client stalls upstream consumption instead of buffering unboundedly, and loses nothing',
-    async () => {
-      const c = await withTimeout(
-        openStreamTracked(a1.port, key, 'oai-bigframes'),
-        10_000,
-        'open big-frame stream',
-      );
-      await withTimeout(c.firstFrame, 10_000, 'first frame');
-      c.res.pause();
+  it('a slow client stalls upstream consumption instead of buffering unboundedly, and loses nothing', async () => {
+    const c = await withTimeout(
+      openStreamTracked(a1.port, key, 'oai-bigframes'),
+      10_000,
+      'open big-frame stream',
+    );
+    await withTimeout(c.firstFrame, 10_000, 'first frame');
+    c.res.pause();
 
-      // Every buffer in the chain (stub socket → undici → proxy → client socket)
-      // fills, then the drain-aware counter settles. Poll until it stops moving
-      // rather than sampling at a fixed instant (loaded-runner safe).
-      const stalled = await settle(() => stub.framesSent(), 200, 5_000);
-      await sleep(300);
-      expect(stub.framesSent()).toBe(stalled); // still no progress while paused
-      expect(stalled).toBeLessThan(BIG_FRAME_COUNT); // the stall happened mid-stream
+    // Every buffer in the chain (stub socket → undici → proxy → client socket)
+    // fills, then the drain-aware counter settles. Poll until it stops moving
+    // rather than sampling at a fixed instant (loaded-runner safe).
+    const stalled = await settle(() => stub.framesSent(), 200, 5_000);
+    await sleep(300);
+    expect(stub.framesSent()).toBe(stalled); // still no progress while paused
+    expect(stalled).toBeLessThan(BIG_FRAME_COUNT); // the stall happened mid-stream
 
-      c.res.resume();
-      const body = await withTimeout(c.done, 20_000, 'stream completion after resume');
-      expect(stub.framesSent()).toBe(BIG_FRAME_COUNT); // progress resumed to completion
+    c.res.resume();
+    const body = await withTimeout(c.done, 20_000, 'stream completion after resume');
+    expect(stub.framesSent()).toBe(BIG_FRAME_COUNT); // progress resumed to completion
 
-      // End-state integrity: every emitted frame arrived, in order.
-      const indices = [...body.matchAll(/"content":"(\d+):/g)].map((m) => Number(m[1]));
-      expect(indices).toEqual([...Array(BIG_FRAME_COUNT).keys()]);
-      expect(body).toContain('[DONE]');
-    },
-    30_000,
-  );
+    // End-state integrity: every emitted frame arrived, in order.
+    const indices = [...body.matchAll(/"content":"(\d+):/g)].map((m) => Number(m[1]));
+    expect(indices).toEqual([...Array(BIG_FRAME_COUNT).keys()]);
+    expect(body).toContain('[DONE]');
+  }, 30_000);
 
-  it(
-    'a mid-stream client disconnect tears down the upstream and stays breaker-neutral',
-    async () => {
-      const before = stub.requests.length;
-      const outcomesBefore = a1.store.outcomes.length;
-      const recordedBefore = a1.recorded.mock.calls.length;
-      const notifiedBefore = a1.onRequestFailed.mock.calls.length;
-      const client = await openStreamTracked(a1.port, key, 'oai-slowtail');
+  it('a mid-stream client disconnect tears down the upstream and stays breaker-neutral', async () => {
+    const before = stub.requests.length;
+    const outcomesBefore = a1.store.outcomes.length;
+    const recordedBefore = a1.recorded.mock.calls.length;
+    const notifiedBefore = a1.onRequestFailed.mock.calls.length;
+    const client = await openStreamTracked(a1.port, key, 'oai-slowtail');
+    await withTimeout(client.firstFrame, 10_000, 'first frame');
+
+    client.destroy(); // client goes away mid-stream (tail arrives at +400ms)
+
+    const record = stub.requests[before]!;
+    await withTimeout(record.closed, 5_000, 'upstream teardown after client disconnect');
+
+    // The breaker outcome for this attempt settles when the stream winds down.
+    const deadline = Date.now() + 5_000;
+    while (a1.store.outcomes.length <= outcomesBefore && Date.now() < deadline) {
+      await sleep(25);
+    }
+    expect(a1.store.outcomes.length).toBeGreaterThan(outcomesBefore);
+    expect(a1.store.outcomes[a1.store.outcomes.length - 1]).toBe('neutral');
+    expect(a1.providerDown).not.toHaveBeenCalled();
+
+    // A-3: the disconnect is recorded as `cancelled` (not a provider `error`) and
+    // the failure-spike producer is never notified — a client hang-up can't inflate
+    // the error rate or trip a false spike. The record lands in the outcome microtask.
+    const recDeadline = Date.now() + 5_000;
+    while (a1.recorded.mock.calls.length <= recordedBefore && Date.now() < recDeadline) {
+      await sleep(25);
+    }
+    const call = a1.recorded.mock.calls[a1.recorded.mock.calls.length - 1]!;
+    expect(call[1].status).toBe('cancelled');
+    expect(a1.onRequestFailed.mock.calls.length).toBe(notifiedBefore); // no spike notify
+
+    // Threshold-1 breaker: any mis-recorded trip would have opened it.
+    const followUp = await postChat(a1.port, key, 'gpt-4o');
+    expect(followUp.status).toBe(200);
+  }, 30_000);
+
+  it('drain refuses new work with a protocol-shaped 503 and lets the in-flight stream finish', async () => {
+    const client = await openStreamTracked(a1.port, key, 'oai-slowtail');
+    await withTimeout(client.firstFrame, 10_000, 'first frame');
+
+    const drain = a1.registry.beforeApplicationShutdown(); // not awaited yet
+    expect(a1.registry.isDraining()).toBe(true);
+
+    const refused = await postChat(a1.port, key, 'gpt-4o');
+    expect(refused.status).toBe(503);
+    expect(refused.body.error?.message).toContain('shutting down'); // OpenAI error envelope
+    expect(typeof refused.body.error?.type).toBe('string');
+
+    const body = await withTimeout(client.done, 10_000, 'in-flight stream completion');
+    expect(body).toContain(' tail'); // the delayed tail was delivered, not severed
+    expect(body).toContain('[DONE]');
+
+    await withTimeout(drain, 5_000, 'drain resolution after deregistration');
+  }, 30_000);
+
+  it('a straggler stream is aborted at the drain deadline and the upstream call is torn down', async () => {
+    const before = stub.requests.length;
+    const client = await openStreamTracked(a2.port, key, 'oai-neverend');
+    await withTimeout(client.firstFrame, 10_000, 'first frame');
+
+    const started = Date.now();
+    await withTimeout(a2.registry.beforeApplicationShutdown(), 5_000, 'deadline drain');
+    const took = Date.now() - started;
+    expect(took).toBeGreaterThanOrEqual(495); // waited the configured 500ms deadline
+
+    const record = stub.requests[before]!;
+    await withTimeout(record.closed, 5_000, 'upstream teardown after deadline abort');
+    await withTimeout(client.done, 5_000, 'client stream end after deadline abort');
+    expect(client.text()).not.toContain('[DONE]'); // truncated, not fabricated-complete
+    client.destroy();
+  }, 30_000);
+
+  it('app.close() completes even when a client has stopped reading a write-blocked stream (E1.2)', async () => {
+    // A dedicated short-deadline app so closing it does not disturb a1/a2.
+    const app = await bootApp(500);
+    let client: StreamClient | undefined;
+    try {
+      // Fill the whole buffer chain with large frames, then stop reading so the
+      // proxy pump parks in `await drain(res)` with the socket open. Before the
+      // fix, the drain deadline aborts only the upstream and drain() never
+      // resolves → httpServer.close() hangs forever. After the fix, drain()
+      // resolves on the abort signal and the finally destroys the socket.
+      client = await openStream(app.port, key, 'oai-bigframes');
       await withTimeout(client.firstFrame, 10_000, 'first frame');
-
-      client.destroy(); // client goes away mid-stream (tail arrives at +400ms)
-
-      const record = stub.requests[before]!;
-      await withTimeout(record.closed, 5_000, 'upstream teardown after client disconnect');
-
-      // The breaker outcome for this attempt settles when the stream winds down.
-      const deadline = Date.now() + 5_000;
-      while (a1.store.outcomes.length <= outcomesBefore && Date.now() < deadline) {
-        await sleep(25);
-      }
-      expect(a1.store.outcomes.length).toBeGreaterThan(outcomesBefore);
-      expect(a1.store.outcomes[a1.store.outcomes.length - 1]).toBe('neutral');
-      expect(a1.providerDown).not.toHaveBeenCalled();
-
-      // A-3: the disconnect is recorded as `cancelled` (not a provider `error`) and
-      // the failure-spike producer is never notified — a client hang-up can't inflate
-      // the error rate or trip a false spike. The record lands in the outcome microtask.
-      const recDeadline = Date.now() + 5_000;
-      while (a1.recorded.mock.calls.length <= recordedBefore && Date.now() < recDeadline) {
-        await sleep(25);
-      }
-      const call = a1.recorded.mock.calls[a1.recorded.mock.calls.length - 1]!;
-      expect(call[1].status).toBe('cancelled');
-      expect(a1.onRequestFailed.mock.calls.length).toBe(notifiedBefore); // no spike notify
-
-      // Threshold-1 breaker: any mis-recorded trip would have opened it.
-      const followUp = await postChat(a1.port, key, 'gpt-4o');
-      expect(followUp.status).toBe(200);
-    },
-    30_000,
-  );
-
-  it(
-    'drain refuses new work with a protocol-shaped 503 and lets the in-flight stream finish',
-    async () => {
-      const client = await openStreamTracked(a1.port, key, 'oai-slowtail');
-      await withTimeout(client.firstFrame, 10_000, 'first frame');
-
-      const drain = a1.registry.beforeApplicationShutdown(); // not awaited yet
-      expect(a1.registry.isDraining()).toBe(true);
-
-      const refused = await postChat(a1.port, key, 'gpt-4o');
-      expect(refused.status).toBe(503);
-      expect(refused.body.error?.message).toContain('shutting down'); // OpenAI error envelope
-      expect(typeof refused.body.error?.type).toBe('string');
-
-      const body = await withTimeout(client.done, 10_000, 'in-flight stream completion');
-      expect(body).toContain(' tail'); // the delayed tail was delivered, not severed
-      expect(body).toContain('[DONE]');
-
-      await withTimeout(drain, 5_000, 'drain resolution after deregistration');
-    },
-    30_000,
-  );
-
-  it(
-    'a straggler stream is aborted at the drain deadline and the upstream call is torn down',
-    async () => {
-      const before = stub.requests.length;
-      const client = await openStreamTracked(a2.port, key, 'oai-neverend');
-      await withTimeout(client.firstFrame, 10_000, 'first frame');
+      client.res.pause();
+      await settle(() => stub.framesSent(), 200, 5_000); // let the pump reach backpressure
 
       const started = Date.now();
-      await withTimeout(a2.registry.beforeApplicationShutdown(), 5_000, 'deadline drain');
+      await withTimeout(app.app.close(), 5_000, 'app.close() during write-blocked drain');
       const took = Date.now() - started;
-      expect(took).toBeGreaterThanOrEqual(495); // waited the configured 500ms deadline
-
-      const record = stub.requests[before]!;
-      await withTimeout(record.closed, 5_000, 'upstream teardown after deadline abort');
-      await withTimeout(client.done, 5_000, 'client stream end after deadline abort');
-      expect(client.text()).not.toContain('[DONE]'); // truncated, not fabricated-complete
-      client.destroy();
-    },
-    30_000,
-  );
-
-  it(
-    'app.close() completes even when a client has stopped reading a write-blocked stream (E1.2)',
-    async () => {
-      // A dedicated short-deadline app so closing it does not disturb a1/a2.
-      const app = await bootApp(500);
-      let client: StreamClient | undefined;
-      try {
-        // Fill the whole buffer chain with large frames, then stop reading so the
-        // proxy pump parks in `await drain(res)` with the socket open. Before the
-        // fix, the drain deadline aborts only the upstream and drain() never
-        // resolves → httpServer.close() hangs forever. After the fix, drain()
-        // resolves on the abort signal and the finally destroys the socket.
-        client = await openStream(app.port, key, 'oai-bigframes');
-        await withTimeout(client.firstFrame, 10_000, 'first frame');
-        client.res.pause();
-        await settle(() => stub.framesSent(), 200, 5_000); // let the pump reach backpressure
-
-        const started = Date.now();
-        await withTimeout(app.app.close(), 5_000, 'app.close() during write-blocked drain');
-        const took = Date.now() - started;
-        // Resolves within the drain deadline (500ms) + the registry poll interval
-        // (50ms) + a generous fixed tolerance — NOT hanging to the 5s timeout.
-        expect(took).toBeLessThan(3_000);
-      } finally {
-        client?.destroy();
-      }
-    },
-    30_000,
-  );
+      // Resolves within the drain deadline (500ms) + the registry poll interval
+      // (50ms) + a generous fixed tolerance — NOT hanging to the 5s timeout.
+      expect(took).toBeLessThan(3_000);
+    } finally {
+      client?.destroy();
+    }
+  }, 30_000);
 });

@@ -46,6 +46,7 @@ import { NotificationProducers } from '../../src/producers/notification-producer
 import { BudgetService } from '../../src/budgets/budget-service';
 import { StreamDrainRegistry } from '../../src/proxy/stream-drain.registry';
 import { StructuralRouter } from '../../src/proxy/structural/structural-router';
+import { WorkloadRouter } from '../../src/proxy/workload/workload-router';
 import { CascadeRouter } from '../../src/proxy/cascade/cascade-router';
 import { RecordingModule } from '../../src/recording/recording.module';
 import { ObservabilityModule } from '../../src/observability/observability.module';
@@ -121,9 +122,15 @@ describe('request-logging e2e', () => {
           },
         },
         StreamDrainRegistry,
+        WorkloadRouter,
         {
           provide: StructuralRouter,
-          useValue: { enabled: false, evaluate: () => Promise.resolve({ kind: 'skip' }) },
+          useValue: {
+            enabled: false,
+            evaluate: () => Promise.resolve({ kind: 'skip' }),
+            classify: () => Promise.resolve({ kind: 'skip' }),
+            resolveBand: () => ({ kind: 'skip' }),
+          },
         }, // #13 off here
         { provide: CascadeRouter, useValue: { enabled: false, plan: () => null } }, // #14 off here
         {
@@ -138,7 +145,10 @@ describe('request-logging e2e', () => {
         { provide: PROXY_ADAPTER_FACTORY, useValue: createProviderAdapter },
         { provide: PROXY_BREAKER, useValue: new CircuitBreaker(new InMemoryBreakerStore()) },
         { provide: ROUTING_CONFIG, useFactory: loadRoutingConfig },
-      { provide: CALIBRATION_RAILS, useFactory: (): CalibrationRails => railsOf(loadCalibrationConfig()) },
+        {
+          provide: CALIBRATION_RAILS,
+          useFactory: (): CalibrationRails => railsOf(loadCalibrationConfig()),
+        },
         { provide: APP_FILTER, useClass: ProxyExceptionFilter },
       ],
     }).compile();
@@ -705,7 +715,9 @@ describe('request-logging e2e', () => {
 
   it('listed fallback prices an aggregator model the catalog does not cover — flagged, immutable (record-listed-price-fallback)', async () => {
     // The catalog is GLOBAL — clear the key so a rerun can't hijack the resolution.
-    await pool.query(`DELETE FROM model_price WHERE model_key = $1`, ['openrouter:sakana/fugu-ultra']);
+    await pool.query(`DELETE FROM model_price WHERE model_key = $1`, [
+      'openrouter:sakana/fugu-ultra',
+    ]);
     // An unmapped vendor (`sakana` is not in the native allowlist) → exact AND
     // native-family both miss; but the model carries a captured listed price.
     const listedCtx: RecordingContext = {
@@ -758,11 +770,14 @@ describe('request-logging e2e', () => {
     const again = await port.requestLogs.findById(principal, row!.id);
     expect(again!.cost).toBe(row!.cost);
     expect(again!.priceSource).toBe('listed');
-    recorder.record({ ...listedCtx, requestId: randomUUID() }, {
-      status: 'success',
-      providerUsage: { inputTokens: 1_000_000, outputTokens: 0 },
-      outputChars: 0,
-    });
+    recorder.record(
+      { ...listedCtx, requestId: randomUUID() },
+      {
+        status: 'success',
+        providerUsage: { inputTokens: 1_000_000, outputTokens: 0 },
+        outputChars: 0,
+      },
+    );
     await writer.flush();
     const afterCatalog = (await port.requestLogs.list(principal)).find(
       (r) => r.decisionLayer === 'listed-fallback-e2e' && r.id !== row!.id && r.cost !== null,

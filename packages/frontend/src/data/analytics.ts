@@ -110,8 +110,9 @@ export function filterToRequestParams(filter: RequestFilter): RequestFilterParam
       return { decisionLayers: ['explicit', 'header', 'default'] };
     case 'auto':
       // L2-routed requests carry decision_layer='semantic' — include it or the
-      // Auto filter silently drops them (clink change-4 Med-5).
-      return { decisionLayers: ['structural', 'semantic', 'cascade'] };
+      // Auto filter silently drops them (clink change-4 Med-5). Workload-routed
+      // requests carry 'workload' (add-workload-routing) — same rule.
+      return { decisionLayers: ['structural', 'workload', 'semantic', 'cascade'] };
     case 'fallback':
       return { status: 'fallback' };
     case 'escalated':

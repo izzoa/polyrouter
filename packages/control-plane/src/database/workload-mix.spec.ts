@@ -31,7 +31,29 @@ describe('buildWorkloadMix (add-workload-telemetry D6)', () => {
       unpricedRequests: 1,
       unpricedAttempts: 0,
       spendUsd: 2, // 1.5 + 0.5
+      routed: 0,
     });
+  });
+
+  it('routed (add-workload-routing) rides the parent aggregate per class; absent → 0; never counted for attempt-only classes', () => {
+    const mix = buildWorkloadMix(
+      [
+        { cls: 'code', requests: 5, unpriced: 0, micros: 0, routed: 2 },
+        { cls: 'vision', requests: 1, unpriced: 0, micros: 0, routed: '1' as never }, // pg string coerced
+        { cls: 'none', requests: 4, unpriced: 0, micros: 0, routed: 0 },
+        { cls: 'structured', requests: 1, unpriced: 0, micros: 0 }, // legacy shape (no routed)
+      ],
+      [{ cls: 'writing', micros: 0, costed: 1, unpriced: 0 }],
+      0,
+      null,
+      [],
+    );
+    const by = new Map(mix.classes.map((c) => [c.class, c]));
+    expect(by.get('code')!).toMatchObject({ requests: 5, routed: 2 });
+    expect(by.get('vision')!.routed).toBe(1);
+    expect(by.get('none')!.routed).toBe(0);
+    expect(by.get('structured')!.routed).toBe(0);
+    expect(by.get('writing')!).toMatchObject({ requests: 0, routed: 0 });
   });
 
   it('costability follows null-is-unpriced / zero-is-free', () => {
@@ -65,7 +87,14 @@ describe('buildWorkloadMix (add-workload-telemetry D6)', () => {
     );
     expect(mix.evaluated).toBe(0);
     expect(mix.classes).toEqual([
-      { class: 'code', requests: 0, unpricedRequests: 0, unpricedAttempts: 1, spendUsd: 0.75 },
+      {
+        class: 'code',
+        requests: 0,
+        unpricedRequests: 0,
+        unpricedAttempts: 1,
+        spendUsd: 0.75,
+        routed: 0,
+      },
     ]);
   });
 

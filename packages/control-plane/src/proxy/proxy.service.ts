@@ -15,6 +15,7 @@ import {
   type Principal,
   type ProviderRow,
   type RoutingSettingsValue,
+  WORKLOAD_NONE,
 } from '@polyrouter/shared/server';
 import {
   BoundedBlockCollector,
@@ -90,6 +91,7 @@ import { loadRoutingSnapshot } from './routing-snapshot';
 import { StructuralRouter } from './structural/structural-router';
 import { CascadeRouter, type CascadePlan } from './cascade/cascade-router';
 import { SemanticRouter, type SemanticVerdict } from '../semantic/semantic-router';
+import { WorkloadRouter } from './workload/workload-router';
 import { SemanticClassifierService } from '../semantic/semantic-classifier.service';
 import { DISABLED_LEARNING_GATE, type LearningGate } from '../semantic/classification-source';
 import { resolveLearningEvidenceRevision } from '../semantic/learning-evidence';
@@ -260,6 +262,7 @@ export class ProxyService {
     private readonly cascade: CascadeRouter,
     private readonly semantic: SemanticRouter,
     private readonly semanticClassifier: SemanticClassifierService,
+    private readonly workload: WorkloadRouter,
     private readonly producers: NotificationProducers,
     private readonly budgets: BudgetService,
     private readonly oauth: SubscriptionOauthService,
@@ -1121,17 +1124,51 @@ export class ProxyService {
           layers.settings,
           this.calibrationRails,
         );
-        const evaln = await this.structural.evaluate(principal, agentId, ir, snapshot, thresholds);
-        // Telemetry (add-auto-decision-telemetry): every EVALUATED request
-        // records its verdict — including ambiguous/unroutable fall-throughs.
-        if (evaln.kind !== 'skip') {
+        // Layer 1 CLASSIFICATION (band + workload verdicts) — no target lookup
+        // yet (add-workload-routing D2): the workload stage runs between
+        // classification and band resolution, so a claim pre-empts the band.
+        const classified = await this.structural.classify(principal, agentId, ir, thresholds);
+        // Workload stage (add-workload-routing D3): a confident workload class
+        // with a resolvable `auto_workload` target CLAIMS the request before
+        // band targets / L2 / cascade. Its own try/catch — a fault is
+        // "unclaimed" (invariant 1). `none` never claims.
+        let claimed: RouteDecision | null = null;
+        if (
+          classified.kind === 'classified' &&
+          classified.workload !== undefined &&
+          classified.workload.class !== WORKLOAD_NONE
+        ) {
+          try {
+            claimed = this.workload.claim(snapshot, classified.workload);
+          } catch {
+            claimed = null; // degrade to the unclaimed flow — never fail or stall
+          }
+        }
+        // Telemetry commit is ATOMIC (add-workload-routing D2/D3): the three
+        // verdict locals are set only after a successful claim or a non-skip
+        // band resolution; a band-resolution `skip` leaves all three unset
+        // (null columns incl. structural_epoch — today's whole-evaluate semantics).
+        const evaln =
+          claimed !== null
+            ? ({ kind: 'skip' } as const) // band NEVER resolved for a claimed request
+            : this.structural.resolveBand(snapshot, classified);
+        if (claimed !== null && classified.kind === 'classified') {
+          decision = claimed; // decision_layer 'workload' — no band, no L2, no cascade
+          structuralVerdict = classified.verdict;
+          structuralEpoch = layers.settings?.calibrationEpoch ?? 0;
+          if (classified.workload !== undefined) workloadVerdict = classified.workload;
+        } else if (evaln.kind !== 'skip') {
+          // Telemetry (add-auto-decision-telemetry): every EVALUATED request
+          // records its verdict — including ambiguous/unroutable fall-throughs.
           structuralVerdict = evaln.verdict;
           structuralEpoch = layers.settings?.calibrationEpoch ?? 0;
           // Workload telemetry (add-workload-telemetry): the verdict rides the
           // same evaluation; absent when the workload classifier faulted.
           if (evaln.workload !== undefined) workloadVerdict = evaln.workload;
         }
-        if (evaln.kind === 'route') {
+        if (claimed !== null) {
+          // claimed — nothing below runs
+        } else if (evaln.kind === 'route') {
           decision = evaln.decision; // Layer 1 confident band
         } else if (evaln.kind === 'ambiguous') {
           // Layer 2 (semantic) refines ONLY the L1-ambiguous slice (add-

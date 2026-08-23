@@ -17,7 +17,8 @@ heading is started.
 
 ### Added
 
-- **Workload telemetry (Epic W, W-1).** `auto` requests record a workload class — `code` / `vision` / `structured` / `none` — from the existing Layer-1 feature vector (telemetry only; nothing routes on it yet). Four columns on parent request-log rows (migration 0026), a workload chip in the inspector, `workloadMix` on `GET /api/analytics/auto` (per-class requests + reported-basis spend on both ledgers, with unpriced/coverage/revision disclosures), and a "Workload mix" block on the Auto-performance card. New optional `ROUTING_WORKLOAD_THRESHOLDS`.
+- **Workload targets (Epic W, W-2).** `auto_workload` rules bind a detected workload class (`code` / `vision` / `structured`; `research` / `writing` reserved) to a tier or model; a matching `auto` request is claimed ahead of band targets, L2, and the cascade (`decision_layer = workload`), everything else stays byte-identical and degrade-safe. Migration `0027` (`routing_rule.workload_class` + CHECKs), rule-CRUD pairing validation, `workloadMix.classes[].routed` + `layer=workload` filter in analytics, a **Workload targets** card with routed counts/disclosures on the Routing page, and a `routed` mark in the inspector.
+- **Workload telemetry (Epic W, W-1).** `auto` requests record a workload class — `code` / `vision` / `structured` / `none` — from the existing Layer-1 feature vector (the classification itself is telemetry — it routes only through a configured Workload target, see the W-2 entry above). Four columns on parent request-log rows (migration 0026), a workload chip in the inspector, `workloadMix` on `GET /api/analytics/auto` (per-class requests + reported-basis spend on both ledgers, with unpriced/coverage/revision disclosures), and a "Workload mix" block on the Auto-performance card. New optional `ROUTING_WORKLOAD_THRESHOLDS`.
 
 ## [0.14.0] — 2026-08-21
 

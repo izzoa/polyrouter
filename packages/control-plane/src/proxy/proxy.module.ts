@@ -45,6 +45,7 @@ import { breakerStoreErrorHandler } from './breaker-observability';
 import { StreamDrainRegistry } from './stream-drain.registry';
 import { StructuralBaselineStore } from './structural/structural-baseline.store';
 import { StructuralRouter } from './structural/structural-router';
+import { WorkloadRouter } from './workload/workload-router';
 import { CascadeRouter } from './cascade/cascade-router';
 
 /** ioredis `eval` bounded by a fail-fast deadline so a slow/down Redis degrades
@@ -87,13 +88,17 @@ function boundedBreakerRedis(redis: Redis): BreakerRedis {
     ProxyService,
     StreamDrainRegistry,
     StructuralRouter,
+    WorkloadRouter,
     CascadeRouter,
     { provide: PROXY_RUNTIME, useFactory: loadProxyRuntime },
     { provide: PROXY_ADAPTER_FACTORY, useValue: createProviderAdapter },
     { provide: ROUTING_CONFIG, useFactory: loadRoutingConfig },
     // The hot path re-validates stored calibrated pairs against the ACTIVE
     // rails on every read (add-auto-threshold-calibration).
-    { provide: CALIBRATION_RAILS, useFactory: (): CalibrationRails => railsOf(loadCalibrationConfig()) },
+    {
+      provide: CALIBRATION_RAILS,
+      useFactory: (): CalibrationRails => railsOf(loadCalibrationConfig()),
+    },
     {
       // Structural baseline (#13): a dedicated fail-fast Redis connection, keyed
       // by an HMAC derived from the resolved agent-key secret.

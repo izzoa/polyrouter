@@ -51,6 +51,7 @@ import { NotificationProducers } from '../../src/producers/notification-producer
 import { BudgetService } from '../../src/budgets/budget-service';
 import { StreamDrainRegistry } from '../../src/proxy/stream-drain.registry';
 import { StructuralRouter } from '../../src/proxy/structural/structural-router';
+import { WorkloadRouter } from '../../src/proxy/workload/workload-router';
 import { CascadeRouter } from '../../src/proxy/cascade/cascade-router';
 import { RecordingModule } from '../../src/recording/recording.module';
 import { ObservabilityModule } from '../../src/observability/observability.module';
@@ -98,9 +99,7 @@ describe('body-capture e2e', () => {
   let agentId: string;
 
   const chat = (body: object, tier?: string) => {
-    let r = request(server)
-      .post('/v1/chat/completions')
-      .set('Authorization', `Bearer ${key}`);
+    let r = request(server).post('/v1/chat/completions').set('Authorization', `Bearer ${key}`);
     if (tier !== undefined) r = r.set('x-polyrouter-tier', tier);
     return r.send(body);
   };
@@ -117,8 +116,7 @@ describe('body-capture e2e', () => {
         [owner],
       )
     ).rows;
-  const newestLogId = async () =>
-    (await port.requestLogs.list(principal))[0]!.id;
+  const newestLogId = async () => (await port.requestLogs.list(principal))[0]!.id;
 
   beforeAll(async () => {
     process.env['NODE_ENV'] = 'test';
@@ -138,7 +136,8 @@ describe('body-capture e2e', () => {
 
     const moduleRef = await Test.createTestingModule({
       imports: [
-        SemanticModule,        DatabaseModule,
+        SemanticModule,
+        DatabaseModule,
         PricingModule,
         RecordingModule,
         ObservabilityModule,
@@ -156,9 +155,15 @@ describe('body-capture e2e', () => {
           },
         },
         StreamDrainRegistry,
+        WorkloadRouter,
         {
           provide: StructuralRouter,
-          useValue: { enabled: false, evaluate: () => Promise.resolve({ kind: 'skip' }) },
+          useValue: {
+            enabled: false,
+            evaluate: () => Promise.resolve({ kind: 'skip' }),
+            classify: () => Promise.resolve({ kind: 'skip' }),
+            resolveBand: () => ({ kind: 'skip' }),
+          },
         },
         { provide: CascadeRouter, useValue: { enabled: false, plan: () => null } },
         {
@@ -173,7 +178,10 @@ describe('body-capture e2e', () => {
         { provide: PROXY_ADAPTER_FACTORY, useValue: createProviderAdapter },
         { provide: PROXY_BREAKER, useValue: new CircuitBreaker(new InMemoryBreakerStore()) },
         { provide: ROUTING_CONFIG, useFactory: loadRoutingConfig },
-        { provide: CALIBRATION_RAILS, useFactory: (): CalibrationRails => railsOf(loadCalibrationConfig()) },
+        {
+          provide: CALIBRATION_RAILS,
+          useFactory: (): CalibrationRails => railsOf(loadCalibrationConfig()),
+        },
         { provide: APP_FILTER, useClass: ProxyExceptionFilter },
         { provide: APP_GUARD, useClass: TestPrincipalGuard },
       ],
@@ -231,7 +239,9 @@ describe('body-capture e2e', () => {
   });
 
   it('fresh install (no settings row) captures nothing', async () => {
-    expect((await chat({ model: 'gpt-4o', messages: [{ role: 'user', content: 'hi' }] })).status).toBe(200);
+    expect(
+      (await chat({ model: 'gpt-4o', messages: [{ role: 'user', content: 'hi' }] })).status,
+    ).toBe(200);
     await writer.flush();
     expect(await bodiesInDb(userId)).toHaveLength(0);
   });
@@ -276,7 +286,9 @@ describe('body-capture e2e', () => {
     await api(otherUserId).del(`/api/analytics/requests/${id}/bodies`).expect(404);
     await api(userId).del(`/api/analytics/requests/${id}/bodies`).expect(200);
     await api(userId).get(`/api/analytics/requests/${id}/bodies`).expect(404);
-    const ts = await pool.query('SELECT 1 FROM request_body_tombstone WHERE request_log_id = $1', [id]);
+    const ts = await pool.query('SELECT 1 FROM request_body_tombstone WHERE request_log_id = $1', [
+      id,
+    ]);
     expect(ts.rowCount).toBe(1);
     // A late queued draft for the deleted request can never resurrect it.
     const r = await port.bodyCapture.insertBodies(principal, [
@@ -298,7 +310,9 @@ describe('body-capture e2e', () => {
     await api(userId).post('/api/body-capture/purge').expect(200);
     await api(userId).patch('/api/body-capture', { mode: 'errors_only' }).expect(200);
     expect((await chat({ model: 'gpt-4o', messages: [] })).status).toBe(200); // success → nothing
-    expect((await chat({ model: 'auto', messages: [] }, 'failing')).status).toBeGreaterThanOrEqual(500); // whole-chain error → captured
+    expect((await chat({ model: 'auto', messages: [] }, 'failing')).status).toBeGreaterThanOrEqual(
+      500,
+    ); // whole-chain error → captured
     await writer.flush();
     let rows = await bodiesInDb(userId);
     expect(rows).toHaveLength(1); // the error's REQUEST direction only (no response assembled)
@@ -317,7 +331,9 @@ describe('body-capture e2e', () => {
     await api(userId)
       .patch(`/api/body-capture/agents/${agentId}/override`, { override: 'never' })
       .expect(200);
-    expect((await chat({ model: 'auto', messages: [] }, 'failing')).status).toBeGreaterThanOrEqual(500);
+    expect((await chat({ model: 'auto', messages: [] }, 'failing')).status).toBeGreaterThanOrEqual(
+      500,
+    );
     await writer.flush();
     expect(await bodiesInDb(userId)).toHaveLength(0); // never suppresses even errors
     await api(userId)
@@ -339,9 +355,7 @@ describe('body-capture e2e', () => {
   });
 
   it('infinite retention demands the explicit keepForever choice', async () => {
-    await api(userId)
-      .patch('/api/body-capture', { mode: 'all', retentionDays: null })
-      .expect(400); // blank infinite → rejected
+    await api(userId).patch('/api/body-capture', { mode: 'all', retentionDays: null }).expect(400); // blank infinite → rejected
     await api(userId)
       .patch('/api/body-capture', { mode: 'all', retentionDays: null, keepForever: true })
       .expect(200);
@@ -362,8 +376,13 @@ describe('body-capture e2e', () => {
     const conn = await pool.connect();
     try {
       await conn.query('BEGIN');
-      await conn.query('SELECT capture_epoch FROM body_capture_settings WHERE owner_user_id = $1 FOR UPDATE', [userId]);
-      const purge = api(userId).post('/api/body-capture/purge').then((r) => r.body as { purged: number });
+      await conn.query(
+        'SELECT capture_epoch FROM body_capture_settings WHERE owner_user_id = $1 FOR UPDATE',
+        [userId],
+      );
+      const purge = api(userId)
+        .post('/api/body-capture/purge')
+        .then((r) => r.body as { purged: number });
       await new Promise((r) => setTimeout(r, 150)); // purge is now blocked on the lock
       await conn.query(
         `INSERT INTO request_body (id, owner_user_id, request_log_id, direction, content_encrypted, bytes)
@@ -405,7 +424,9 @@ describe('body-capture e2e', () => {
         'SELECT capture_epoch FROM body_capture_settings WHERE owner_user_id = $1 FOR UPDATE',
         [userId],
       );
-      const del = api(userId).del(`/api/analytics/requests/${id}/bodies`).then((r) => r.status);
+      const del = api(userId)
+        .del(`/api/analytics/requests/${id}/bodies`)
+        .then((r) => r.status);
       await new Promise((r) => setTimeout(r, 150)); // delete now blocked on the owner lock
       await conn.query(
         `INSERT INTO request_body (id, owner_user_id, request_log_id, direction, content_encrypted, bytes)
@@ -455,7 +476,9 @@ describe('body-capture e2e', () => {
   });
 
   it('tenant isolation: settings, overrides, and purge are invisible across owners', async () => {
-    await api(otherUserId).patch(`/api/body-capture/agents/${agentId}/override`, { override: 'always' }).expect(404);
+    await api(otherUserId)
+      .patch(`/api/body-capture/agents/${agentId}/override`, { override: 'always' })
+      .expect(404);
     const other = await api(otherUserId).get('/api/body-capture').expect(200);
     expect(other.body.mode).toBe('off'); // B's own (absent) settings, never A's
   });

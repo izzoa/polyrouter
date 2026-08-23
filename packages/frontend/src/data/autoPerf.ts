@@ -14,10 +14,17 @@ export interface AutoPerfVm {
   unknownPct: string;
   failedPct: string;
   cascadeRequests: number;
-  /** True when L2 actually routed traffic (routed > 0): every cascade-derived
-   * figure is then RESIDUAL-only, since semantically-routed requests never
-   * cascade (add-semantic-dashboard D4). Drives the denominator footnote. */
+  /** True when L2 OR the workload stage actually routed traffic: every
+   * cascade-derived figure is then RESIDUAL-only, since semantically- and
+   * workload-routed requests never cascade (add-semantic-dashboard D4,
+   * add-workload-routing). Drives the denominator footnote. */
   cascadeIsResidual: boolean;
+  /** Which pre-emptive layers make the cascade residual (footnote wording). */
+  residualCauses: { semantic: boolean; workload: boolean };
+  /** Requests the WORKLOAD stage served in range (add-workload-routing):
+   * when > 0 the band figures include classified-but-claimed rows, and the
+   * card discloses it. */
+  workloadRouted: number;
   /** The L2 semantic slice — null when nothing was evaluated (legacy/never-run
    * rows show the section's honest empty affordance, never fabricated zeros). */
   semantic: {
@@ -71,6 +78,9 @@ export interface AutoPerfVm {
       spend: string | null;
       /** "n unpriced" (parent + attempt components), or null when fully priced. */
       unpricedNote: string | null;
+      /** How many of `requests` the workload stage ROUTED (add-workload-routing);
+       * `none` is never routed. */
+      routed: number;
     }[];
     /** evaluated === 0 but attempt-derived classes exist. */
     attemptOnly: boolean;
@@ -112,6 +122,10 @@ export function toAutoPerfVm(data: AutoPerformance | null): AutoPerfVm | null {
   const eligible = s === null ? 0 : s.rows + s.uncostedRows;
   const sem = data.semantic;
   const semRouted = sem.routed.high + sem.routed.low;
+  const wlRouted = (data.workloadMix ?? EMPTY_WORKLOAD_MIX).classes.reduce(
+    (a, c) => a + (c.routed ?? 0),
+    0,
+  );
   return {
     evaluated: data.evaluated,
     ambiguousPct: pct(data.bands.ambiguous.requests, data.evaluated),
@@ -121,7 +135,9 @@ export function toAutoPerfVm(data: AutoPerformance | null): AutoPerfVm | null {
     unknownPct: pct(c.qualityUnknown, c.requests),
     failedPct: pct(c.failedOrCancelled, c.requests),
     cascadeRequests: c.requests,
-    cascadeIsResidual: semRouted > 0,
+    cascadeIsResidual: semRouted > 0 || wlRouted > 0,
+    residualCauses: { semantic: semRouted > 0, workload: wlRouted > 0 },
+    workloadRouted: wlRouted,
     semantic:
       sem.evaluated === 0
         ? null
@@ -189,6 +205,7 @@ export function toWorkloadVm(wm: AutoPerformance['workloadMix']): AutoPerfVm['wo
         sharePct: pct(c.requests, wm.evaluated),
         spend: c.spendUsd === null ? null : fmtMicros(Math.round(c.spendUsd * 1_000_000)),
         unpricedNote: unpriced > 0 ? `${String(unpriced)} unpriced` : null,
+        routed: c.routed ?? 0,
       };
     }),
     attemptOnly: wm.evaluated === 0,

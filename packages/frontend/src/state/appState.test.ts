@@ -364,7 +364,12 @@ describe('providers (create → test → sync, kind mapping, pricing)', () => {
     s.setState('np', 'clearCredential', true);
     await s.addProvider();
     const clearPatch = fake.lastArgs('updateProvider')?.[1] as Record<string, unknown>;
-    expect(clearPatch).toEqual({ name: 'My ChatGPT', credential: '', firstByteTimeoutMs: null, idleTimeoutMs: null });
+    expect(clearPatch).toEqual({
+      name: 'My ChatGPT',
+      credential: '',
+      firstByteTimeoutMs: null,
+      idleTimeoutMs: null,
+    });
 
     // A non-OAuth row's edit payload is UNCHANGED (regression guard).
     await addProvider(s, {
@@ -1333,10 +1338,179 @@ describe('identity-scoped cache isolation (add-auto-threshold-calibration r3-Hig
   });
 });
 
+describe('workload-target actions (add-workload-routing)', () => {
+  const codeRule = {
+    id: 'r-code',
+    matchType: 'auto_workload',
+    workloadClass: 'code',
+    headerName: 'x-polyrouter-tier',
+    headerValue: null,
+    target: 'tier:coding',
+    priority: 0,
+    createdAt: '2026-07-01T00:00:00.000Z',
+  };
+  const bandRule = {
+    ...codeRule,
+    id: 'r-high',
+    matchType: 'auto_high',
+    workloadClass: null,
+    target: 'tier:premium',
+  };
+  const idle = (over: Partial<Record<string, boolean>> = {}) => ({
+    code: false,
+    research: false,
+    vision: false,
+    structured: false,
+    writing: false,
+    ...over,
+  });
+
+  it('setWorkloadTarget PATCHes the effective rule of THAT class — never a second rule, never a band rule', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION, rules: [codeRule, bandRule] });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    s.setState('rules', [codeRule, bandRule]);
+    await s.setWorkloadTarget('code', 'tier:cheap');
+    expect(fake.calls).toContain('updateRule');
+    expect(fake.calls.filter((c) => c === 'createRule')).toHaveLength(0);
+    const wl = s.state.rules.filter((r) => r.matchType === 'auto_workload');
+    expect(wl).toHaveLength(1);
+    expect(wl[0]).toMatchObject({ workloadClass: 'code', target: 'tier:cheap' });
+    expect(s.state.rules.find((r) => r.id === 'r-high')!.target).toBe('tier:premium'); // untouched
+    expect(s.state.wt).toEqual({
+      busy: idle(),
+      errors: {
+        ...idle(),
+        ...{ code: null, research: null, vision: null, structured: null, writing: null },
+      },
+      unverified: false,
+    });
+  });
+
+  it('setWorkloadTarget creates an auto_workload rule carrying the class when unset; display commits via the reconcile', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION, rules: [] });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    await s.setWorkloadTarget('vision', 'tier:cheap');
+    expect(fake.calls).toContain('createRule');
+    expect(fake.calls).toContain('listRules');
+    const created = s.state.rules.find((r) => r.matchType === 'auto_workload');
+    expect(created).toMatchObject({
+      workloadClass: 'vision',
+      target: 'tier:cheap',
+      headerValue: null,
+    });
+  });
+
+  it('a failed write reconciles and reports a ROW error for that class only — no optimistic lie', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION, rules: [codeRule] });
+    fake.updateRule = () => Promise.reject(new ApiError(422, 'Unprocessable', 'bad target'));
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    s.setState('rules', [codeRule]);
+    await s.setWorkloadTarget('code', 'tier:cheap');
+    expect(s.state.rules[0]!.target).toBe('tier:coding'); // unchanged truth
+    expect(s.state.wt.errors.code).toMatch(/bad target/);
+    expect(s.state.wt.errors.vision).toBeNull();
+    expect(s.state.wt.unverified).toBe(false);
+  });
+
+  it('write ok + reconcile failed → unverified disables workload actions until a retry heals it', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION, rules: [codeRule] });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    s.setState('rules', [codeRule]);
+    let failList = true;
+    const realList = fake.listRules.bind(fake);
+    fake.listRules = () =>
+      failList ? Promise.reject(new ApiError(500, 'Internal', 'list down')) : realList();
+    await s.setWorkloadTarget('code', 'tier:cheap');
+    expect(s.state.wt.unverified).toBe(true);
+    await s.setWorkloadTarget('vision', 'tier:cheap'); // every class is disabled while unverified
+    expect(fake.calls.filter((c) => c === 'createRule')).toHaveLength(0);
+    failList = false;
+    await s.retryRulesReconcile();
+    expect(s.state.wt.unverified).toBe(false);
+    expect(s.state.rules[0]!.target).toBe('tier:cheap');
+  });
+
+  it('clearWorkload deletes every snapshot rule of the class and reconciles; cleanWorkloadShadowed keeps only the effective one', async () => {
+    const shadowed = { ...codeRule, id: 'r-code-2', priority: -1 };
+    const vision = { ...codeRule, id: 'r-vis', workloadClass: 'vision' };
+    const fake = new FakeApiClient({
+      session: DEFAULT_SESSION,
+      rules: [codeRule, shadowed, vision],
+    });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    s.setState('rules', [codeRule, shadowed, vision]);
+    await s.cleanWorkloadShadowed('code');
+    expect(s.state.rules.filter((r) => r.workloadClass === 'code').map((r) => r.id)).toEqual([
+      'r-code',
+    ]);
+    await s.clearWorkload('code');
+    expect(s.state.rules.filter((r) => r.workloadClass === 'code')).toHaveLength(0);
+    expect(s.state.rules.filter((r) => r.workloadClass === 'vision')).toHaveLength(1); // other class untouched
+  });
+
+  it('`unverified` is monotonic across concurrent classes: a definitive rejection + failed reconcile never clears a sibling’s landed-but-unverified write (clink r5 M2)', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION, rules: [] });
+    // Every reconcile fails for the duration of the race.
+    fake.listRules = () => Promise.reject(new ApiError(500, 'Internal', 'list down'));
+    // code: the write LANDS immediately; vision: the write is HELD, then definitively rejected.
+    let releaseVision: () => void = () => undefined;
+    const visionHeld = new Promise<void>((r) => (releaseVision = r));
+    const realCreate = fake.createRule.bind(fake);
+    fake.createRule = async (input) => {
+      if (input.workloadClass === 'vision') {
+        await visionHeld;
+        throw new ApiError(422, 'Unprocessable', 'bad target');
+      }
+      return realCreate(input);
+    };
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    const vision = s.setWorkloadTarget('vision', 'tier:cheap'); // starts first, finishes LAST
+    await s.setWorkloadTarget('code', 'tier:cheap'); // lands; reconcile fails → unverified TRUE
+    expect(s.state.wt.unverified).toBe(true);
+    releaseVision();
+    await vision; // definitive 422 + failed reconcile — must NOT write `false`
+    expect(s.state.wt.unverified).toBe(true);
+    expect(s.state.wt.errors.vision).toMatch(/bad target/);
+    expect(s.state.wt.errors.code).toBeNull();
+  });
+
+  it('per-class single-flight: a second write on the same class is blocked; another class proceeds', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION, rules: [] });
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((r) => (release = r));
+    const realCreate = fake.createRule.bind(fake);
+    let first = true;
+    fake.createRule = async (input) => {
+      if (first) {
+        first = false;
+        await held;
+      }
+      return realCreate(input);
+    };
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    const a = s.setWorkloadTarget('code', 'tier:cheap'); // held in flight
+    const dupe = s.setWorkloadTarget('code', 'tier:premium'); // same class → blocked
+    await s.setWorkloadTarget('vision', 'tier:cheap'); // other class → allowed
+    release();
+    await Promise.all([a, dupe]);
+    const wl = s.state.rules.filter((r) => r.matchType === 'auto_workload');
+    expect(wl.map((r) => r.workloadClass).sort()).toEqual(['code', 'vision']);
+    expect(wl.find((r) => r.workloadClass === 'code')!.target).toBe('tier:cheap');
+  });
+});
+
 describe('band-target actions (add-band-target-ui)', () => {
   const highRule = {
     id: 'r-high',
     matchType: 'auto_high',
+    workloadClass: null,
     headerName: 'x-polyrouter-tier',
     headerValue: null,
     target: 'tier:premium',

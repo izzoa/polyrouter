@@ -250,6 +250,172 @@ describe('routing-config e2e', () => {
     expect(del.status).toBe(200);
   });
 
+  // --- auto_workload rules (add-workload-routing D5) ---
+
+  it('does auto_workload rule CRUD: class pairing, null-clear, reserved classes, listing', async () => {
+    const asB = (m: 'get' | 'post' | 'patch' | 'delete', path: string) =>
+      request(server)[m](path).set('x-test-user', B.userId);
+    const coding = await asA('post', '/api/routing/tiers').send({ key: 'coding' });
+    expect(coding.status).toBe(201);
+
+    // Happy path: ONE class, no header_value, target validated like any rule.
+    const created = await asA('post', '/api/routing/rules').send({
+      matchType: 'auto_workload',
+      workloadClass: 'code',
+      target: 'tier:coding',
+    });
+    expect(created.status).toBe(201);
+    expect(created.body).toMatchObject({
+      matchType: 'auto_workload',
+      workloadClass: 'code',
+      headerValue: null,
+      target: 'tier:coding',
+    });
+    // The listing carries the class (the dashboard's Workload-targets card reads it).
+    const listed = await asA('get', '/api/routing/rules');
+    expect(listed.status).toBe(200);
+    expect(listed.body.find((r: { id: string }) => r.id === created.body.id)).toMatchObject({
+      workloadClass: 'code',
+    });
+    expect(
+      listed.body
+        .filter((r: { matchType: string }) => r.matchType !== 'auto_workload')
+        .every((r: { workloadClass: unknown }) => r.workloadClass === null),
+    ).toBe(true);
+
+    // Rejected shapes — a clean 4xx, never a constraint 500.
+    const rejects: Array<Record<string, unknown>> = [
+      { matchType: 'auto_workload', target: 'tier:coding' }, // no class
+      { matchType: 'auto_workload', workloadClass: 'none', target: 'tier:coding' }, // telemetry-only class
+      { matchType: 'auto_workload', workloadClass: 'bogus', target: 'tier:coding' }, // unknown class
+      {
+        matchType: 'auto_workload',
+        workloadClass: 'code',
+        headerValue: 'x',
+        target: 'tier:coding',
+      },
+      { matchType: 'auto_workload', workloadClass: 'code', headerValue: '', target: 'tier:coding' }, // '' is not null (clink r5 M1)
+      { matchType: 'header', headerValue: 'x', workloadClass: 'code', target: 'tier:coding' },
+      { matchType: 'default', workloadClass: 'vision', target: 'tier:coding' },
+      { matchType: 'auto_high', workloadClass: 'code', target: 'tier:coding' },
+      { matchType: 'auto_workload', workloadClass: 'code', target: 'tier:ghost' }, // target validation still applies
+    ];
+    for (const body of rejects) {
+      const res = await asA('post', '/api/routing/rules').send(body);
+      expect([400, 422]).toContain(res.status);
+    }
+
+    // Reserved classes (semantic-only today) are still VALID rule targets —
+    // the rule is inert until a source emits them, never a validation error.
+    for (const cls of ['research', 'writing', 'vision', 'structured']) {
+      const r = await asA('post', '/api/routing/rules').send({
+        matchType: 'auto_workload',
+        workloadClass: cls,
+        target: 'tier:coding',
+      });
+      expect(r.status).toBe(201);
+      expect((await asA('delete', `/api/routing/rules/${r.body.id}`)).status).toBe(200);
+    }
+
+    // PATCH validates the EFFECTIVE merged row.
+    expect(
+      (
+        await asA('patch', `/api/routing/rules/${created.body.id}`).send({
+          workloadClass: 'vision',
+        })
+      ).body,
+    ).toMatchObject({ matchType: 'auto_workload', workloadClass: 'vision' });
+    // Clearing the class on a still-auto_workload row → 422 (pairing).
+    expect(
+      (await asA('patch', `/api/routing/rules/${created.body.id}`).send({ workloadClass: null }))
+        .status,
+    ).toBe(422);
+    // Adding a header_value to an auto_workload row → 422.
+    expect(
+      (await asA('patch', `/api/routing/rules/${created.body.id}`).send({ headerValue: 'x' }))
+        .status,
+    ).toBe(422);
+    // '' is not null either — a clean 422, never the DB CHECK → 500 (clink r5 M1).
+    expect(
+      (await asA('patch', `/api/routing/rules/${created.body.id}`).send({ headerValue: '' }))
+        .status,
+    ).toBe(422);
+    // Moving the type away WITHOUT clearing the class → 422 (class forbidden there).
+    expect(
+      (await asA('patch', `/api/routing/rules/${created.body.id}`).send({ matchType: 'default' }))
+        .status,
+    ).toBe(422);
+    // The atomic move: type + explicit null class in ONE patch → 200, class cleared.
+    const moved = await asA('patch', `/api/routing/rules/${created.body.id}`).send({
+      matchType: 'default',
+      workloadClass: null,
+    });
+    expect(moved.status).toBe(200);
+    expect(moved.body).toMatchObject({ matchType: 'default', workloadClass: null });
+    // And back: type without a class → 422; type + class → 200.
+    expect(
+      (
+        await asA('patch', `/api/routing/rules/${created.body.id}`).send({
+          matchType: 'auto_workload',
+        })
+      ).status,
+    ).toBe(422);
+    expect(
+      (
+        await asA('patch', `/api/routing/rules/${created.body.id}`).send({
+          matchType: 'auto_workload',
+          workloadClass: 'code',
+        })
+      ).status,
+    ).toBe(200);
+
+    // Tenant isolation by id: B can neither read-modify nor delete A's rule.
+    expect(
+      (
+        await asB('patch', `/api/routing/rules/${created.body.id}`).send({
+          workloadClass: 'vision',
+        })
+      ).status,
+    ).toBe(404);
+    expect((await asB('delete', `/api/routing/rules/${created.body.id}`)).status).toBe(404);
+    expect(
+      (await asB('get', '/api/routing/rules')).body.some(
+        (r: { id: string }) => r.id === created.body.id,
+      ),
+    ).toBe(false);
+
+    expect((await asA('delete', `/api/routing/rules/${created.body.id}`)).status).toBe(200);
+    expect((await asA('delete', `/api/routing/tiers/${coding.body.id}`)).status).toBe(200);
+  });
+
+  it('DB CHECKs refuse malformed workload rows even when the API is bypassed (add-workload-routing 1.1)', async () => {
+    const insert = (matchType: string, workloadClass: string | null, headerValue: string | null) =>
+      pool.query(
+        `INSERT INTO routing_rule (id, owner_user_id, match_type, header_value, workload_class, target)
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, 'tier:default')`,
+        [A.userId, matchType, headerValue, workloadClass],
+      );
+    await expect(insert('auto_workload', null, null)).rejects.toThrow(
+      /routing_rule_workload_class_pairing/,
+    );
+    await expect(insert('header', 'code', 'x')).rejects.toThrow(
+      /routing_rule_workload_class_pairing/,
+    );
+    await expect(insert('auto_workload', 'none', null)).rejects.toThrow(
+      /routing_rule_workload_class_valid/,
+    );
+    await expect(insert('auto_workload', 'code', 'x')).rejects.toThrow(
+      /routing_rule_workload_no_header_value/,
+    );
+    // The well-formed row is accepted (and cleaned up).
+    await insert('auto_workload', 'code', null);
+    const del = await pool.query(
+      `DELETE FROM routing_rule WHERE owner_user_id = $1 AND match_type = 'auto_workload'`,
+      [A.userId],
+    );
+    expect(del.rowCount).toBe(1);
+  });
+
   it('persists a rule when its target tier is deleted; the key can be recreated', async () => {
     const temp = await asA('post', '/api/routing/tiers').send({ key: 'temp' });
     const ruleRes = await asA('post', '/api/routing/rules').send({
@@ -276,7 +442,12 @@ describe('routing-config e2e', () => {
     });
     expect(created.status).toBe(201);
     const id = created.body.id;
-    for (const bad of [{ target: null }, { priority: null }, { matchType: null }, { headerName: null }]) {
+    for (const bad of [
+      { target: null },
+      { priority: null },
+      { matchType: null },
+      { headerName: null },
+    ]) {
       const res = await asA('patch', `/api/routing/rules/${id}`).send(bad);
       expect(res.status).toBeGreaterThanOrEqual(400);
       expect(res.status).toBeLessThan(500); // 4xx validation, NOT a 500 (TypeError/NOT NULL)
@@ -303,16 +474,22 @@ describe('routing-config e2e', () => {
       protocol: 'openai_compatible',
       baseUrl: 'https://e10a.example.com',
     });
-    const mm1 = (await port.models.createForProvider(A.principal, p1.id, { externalModelId: 'e10-m1' }))!;
+    const mm1 = (await port.models.createForProvider(A.principal, p1.id, {
+      externalModelId: 'e10-m1',
+    }))!;
     const p2 = await port.providers.insert(A.principal, {
       name: 'e10p2',
       kind: 'api_key',
       protocol: 'openai_compatible',
       baseUrl: 'https://e10b.example.com',
     });
-    const mm2 = (await port.models.createForProvider(A.principal, p2.id, { externalModelId: 'e10-m2' }))!;
+    const mm2 = (await port.models.createForProvider(A.principal, p2.id, {
+      externalModelId: 'e10-m2',
+    }))!;
     const tier = await asA('post', '/api/routing/tiers').send({ key: 'e10tier' });
-    await asA('put', `/api/routing/tiers/${tier.body.id}/entries`).send({ modelIds: [mm1.id, mm2.id] });
+    await asA('put', `/api/routing/tiers/${tier.body.id}/entries`).send({
+      modelIds: [mm1.id, mm2.id],
+    });
 
     // Delete p1 (owns the position-0 model) — the cascade removes mm1's entry.
     expect(await port.providers.remove(A.principal, p1.id)).toBe(true);

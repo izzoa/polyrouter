@@ -4,6 +4,7 @@ describe('ProxyMetrics (#21)', () => {
   it('emits the request/token/cost/upstream/breaker/drop series with bounded labels', async () => {
     const m = new ProxyMetrics();
     m.recordRequest('openai', 'structural', 'success', 0.25);
+    m.recordRequest('openai', 'workload', 'success', 0.2); // add-workload-routing: a claimed request
     m.recordTokens('openai-prod', 'gpt-4o', 100, 40);
     m.recordCost('openai-prod', 'gpt-4o', 0.0125); // USD → 12500 µ$
     m.recordUpstream('openai-prod', 'gpt-4o', 'success', 0.2);
@@ -16,6 +17,9 @@ describe('ProxyMetrics (#21)', () => {
     const text = await m.metricsText();
     expect(text).toContain(
       'polyrouter_requests_total{protocol="openai",decision_layer="structural",status="success"} 1',
+    );
+    expect(text).toContain(
+      'polyrouter_requests_total{protocol="openai",decision_layer="workload",status="success"} 1',
     );
     expect(text).toContain(
       'polyrouter_tokens_total{provider="openai-prod",model="gpt-4o",direction="input"} 100',
@@ -62,13 +66,23 @@ describe('ProxyMetrics (#21)', () => {
     const text = await m.metricsText();
     // The explicit ladder is present (prom-client defaults stop at le="10", so a 90s
     // observation would otherwise land ONLY in +Inf). prom-client emits `le` first.
-    expect(text).toContain('polyrouter_request_duration_seconds_bucket{le="60",protocol="openai",decision_layer="default",status="success"} 0');
-    expect(text).toContain('polyrouter_request_duration_seconds_bucket{le="120",protocol="openai",decision_layer="default",status="success"} 1');
-    expect(text).toContain('polyrouter_request_duration_seconds_bucket{le="300",protocol="openai",decision_layer="default",status="success"} 1');
+    expect(text).toContain(
+      'polyrouter_request_duration_seconds_bucket{le="60",protocol="openai",decision_layer="default",status="success"} 0',
+    );
+    expect(text).toContain(
+      'polyrouter_request_duration_seconds_bucket{le="120",protocol="openai",decision_layer="default",status="success"} 1',
+    );
+    expect(text).toContain(
+      'polyrouter_request_duration_seconds_bucket{le="300",protocol="openai",decision_layer="default",status="success"} 1',
+    );
     // Upstream histogram gets the same ladder — a 90s stream is finite, not only +Inf.
     // It also carries the `outcome` label (A-37) so aborts don't pollute success latency.
-    expect(text).toContain('polyrouter_upstream_duration_seconds_bucket{le="60",provider="openai-prod",model="gpt-4o",outcome="success"} 0');
-    expect(text).toContain('polyrouter_upstream_duration_seconds_bucket{le="120",provider="openai-prod",model="gpt-4o",outcome="success"} 1');
+    expect(text).toContain(
+      'polyrouter_upstream_duration_seconds_bucket{le="60",provider="openai-prod",model="gpt-4o",outcome="success"} 0',
+    );
+    expect(text).toContain(
+      'polyrouter_upstream_duration_seconds_bucket{le="120",provider="openai-prod",model="gpt-4o",outcome="success"} 1',
+    );
   });
 
   it('splits upstream duration by outcome so a client abort does not pollute success latency (A-37)', async () => {
@@ -77,8 +91,12 @@ describe('ProxyMetrics (#21)', () => {
     m.recordUpstream('openai-prod', 'gpt-4o', 'canceled', 0.2); // client left early
     const text = await m.metricsText();
     // Distinct series per outcome — the canceled 0.2s never lands in the success histogram.
-    expect(text).toContain('polyrouter_upstream_duration_seconds_count{provider="openai-prod",model="gpt-4o",outcome="success"} 1');
-    expect(text).toContain('polyrouter_upstream_duration_seconds_count{provider="openai-prod",model="gpt-4o",outcome="canceled"} 1');
+    expect(text).toContain(
+      'polyrouter_upstream_duration_seconds_count{provider="openai-prod",model="gpt-4o",outcome="success"} 1',
+    );
+    expect(text).toContain(
+      'polyrouter_upstream_duration_seconds_count{provider="openai-prod",model="gpt-4o",outcome="canceled"} 1',
+    );
   });
 
   it('two instances own independent registries (no cross-app collision)', async () => {

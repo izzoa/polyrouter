@@ -23,6 +23,7 @@ import {
   type TierInsertInput,
   type TierPatch,
   type TierRow,
+  WORKLOAD_CLASSES,
 } from '@polyrouter/shared/server';
 import { ruleOrder } from '@polyrouter/data-plane';
 import type {
@@ -60,6 +61,9 @@ export interface SafeRule {
   matchType: string;
   headerName: string;
   headerValue: string | null;
+  /** The workload class an `auto_workload` rule binds (add-workload-routing);
+   * null on every other match type. */
+  workloadClass: string | null;
   target: string;
   priority: number;
   createdAt: Date;
@@ -106,12 +110,43 @@ function toSafeEntry(e: RoutingEntryRow, model: ModelRow | null): SafeEntry {
   };
 }
 
+/** The `auto_workload` shape on the EFFECTIVE row (add-workload-routing D5):
+ * that type requires exactly one taxonomy class (never `none`) and no
+ * `header_value`; every other type forbids a class. Mirrors the DB CHECKs so
+ * the pairing is a clean 4xx, never a constraint 500. */
+function assertWorkloadShape(
+  matchType: string,
+  workloadClass: string | null,
+  headerValue: string | null,
+): void {
+  if (matchType === 'auto_workload') {
+    if (workloadClass === null) {
+      throw new UnprocessableEntityException('an auto_workload rule requires a workload_class');
+    }
+    if (!(WORKLOAD_CLASSES as readonly string[]).includes(workloadClass)) {
+      throw new UnprocessableEntityException(
+        `workload_class must be one of ${WORKLOAD_CLASSES.join(', ')} (never none)`,
+      );
+    }
+    // ANY non-null value (including '') is refused — the DB CHECK is `IS NULL`,
+    // so a clean 4xx here is the only way an empty string never reaches it.
+    if (headerValue !== null) {
+      throw new UnprocessableEntityException('an auto_workload rule carries no header_value');
+    }
+  } else if (workloadClass !== null) {
+    throw new UnprocessableEntityException(
+      `workload_class is only valid on an auto_workload rule (got match_type ${matchType})`,
+    );
+  }
+}
+
 function toSafeRule(r: RoutingRuleRow): SafeRule {
   return {
     id: r.id,
     matchType: r.matchType,
     headerName: r.headerName,
     headerValue: r.headerValue,
+    workloadClass: r.workloadClass,
     target: r.target,
     priority: r.priority,
     createdAt: r.createdAt,
@@ -239,11 +274,14 @@ export class RoutingConfigService {
     if (dto.matchType === 'header' && !hasValue(dto.headerValue)) {
       throw new UnprocessableEntityException('a header rule requires a header_value');
     }
+    const workloadClass = dto.workloadClass ?? null;
+    assertWorkloadShape(dto.matchType, workloadClass, dto.headerValue ?? null);
     await this.assertTargetOwned(principal, dto.target);
     const values: RoutingRuleInsertInput = {
       matchType: dto.matchType,
       headerName,
       headerValue: dto.headerValue ?? null,
+      workloadClass,
       target: dto.target,
       priority: dto.priority ?? 0,
     };
@@ -260,6 +298,11 @@ export class RoutingConfigService {
     if (matchType === 'header' && !hasValue(headerValue)) {
       throw new UnprocessableEntityException('a header rule requires a header_value');
     }
+    // `workload_class` is nullable at the boundary: an explicit null CLEARS it
+    // (add-workload-routing D5) — the merged row decides legality.
+    const workloadClass =
+      dto.workloadClass !== undefined ? dto.workloadClass : existing.workloadClass;
+    assertWorkloadShape(matchType, workloadClass, headerValue);
     if (dto.target !== undefined) await this.assertTargetOwned(principal, dto.target);
 
     const patch: RoutingRulePatch = {
@@ -268,6 +311,7 @@ export class RoutingConfigService {
         ? { headerName: this.normalizeHeaderName(dto.headerName) }
         : {}),
       ...(dto.headerValue !== undefined ? { headerValue: dto.headerValue } : {}),
+      ...(dto.workloadClass !== undefined ? { workloadClass: dto.workloadClass } : {}),
       ...(dto.target !== undefined ? { target: dto.target } : {}),
       ...(dto.priority !== undefined ? { priority: dto.priority } : {}),
     };

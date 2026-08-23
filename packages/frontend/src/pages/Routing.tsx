@@ -5,7 +5,8 @@ import { RangeSelector } from '../components/RangeSelector';
 import { Toggle } from '../components/Toggle';
 import type { AutoLayers, TierEntryDto } from '../data/api';
 import { autoSeriesToChart, signalQualityGuidance, toAutoPerfVm } from '../data/autoPerf';
-import { bandVms, type BandVm } from '../data/bandTargets';
+import { bandVms, type BandTargetState, type BandVm } from '../data/bandTargets';
+import { unsetCopy, workloadVms, type WorkloadVm } from '../data/workloadTargets';
 import { toCalibrationVm, toHistoryRows } from '../data/calibration';
 import { toLearningHistoryRows, toLearningVm } from '../data/semanticLearning';
 import { fmtUsd } from '../data/format';
@@ -76,6 +77,123 @@ export function groupModelsByProvider(
  * dashboard-configurable — the effective rule in the PROXY's order, atomic
  * retargeting, snapshot-scoped guarantees with post-mutation reconciles, and
  * every degraded state flagged instead of hidden. */
+const TARGET_SUB_FONT = "font:400 11.5px 'Geist',sans-serif;color:var(--text3)";
+
+/** ONE rendering of a rule-backed target (tier / model / unresolved / unset)
+ * shared by the Band-targets and Workload-targets cards (add-workload-routing)
+ * — the same state reads the same everywhere. */
+function TargetSummary(props: { target: BandTargetState; unset: string }) {
+  const t = () => props.target;
+  return (
+    <>
+      <Show when={t().kind === 'tier' && t()} keyed>
+        {(tt) =>
+          tt.kind === 'tier' ? (
+            <span style="font:500 12px 'Geist',sans-serif;color:var(--accent-deep)">
+              tier: {tt.key}
+              <Show when={!tt.empty}>
+                <span style={TARGET_SUB_FONT}>
+                  {' '}
+                  <Icon name="chevronRight" size={11} /> {tt.primary}
+                  {tt.fallbacks > 0
+                    ? ` +${String(tt.fallbacks)} fallback${tt.fallbacks === 1 ? '' : 's'}`
+                    : ''}
+                  {tt.isDefault ? ' · uses the Layer-0 default chain' : ''}
+                </span>
+              </Show>
+            </span>
+          ) : null
+        }
+      </Show>
+      <Show when={t().kind === 'model' && t()} keyed>
+        {(tt) =>
+          tt.kind === 'model' ? (
+            <span style="font:500 12px 'Geist',sans-serif;color:var(--accent-deep)">
+              {tt.label}
+              <span style={TARGET_SUB_FONT}>
+                {' '}
+                {tt.provider ?? 'unknown provider'} · {modelPriceLabel(tt.model)}
+              </span>
+            </span>
+          ) : null
+        }
+      </Show>
+      <Show when={t().kind === 'unresolved' && t()} keyed>
+        {(tt) =>
+          tt.kind === 'unresolved' ? (
+            <span class="mono" style="font:400 11.5px 'Geist Mono',monospace;color:var(--text2)">
+              {tt.literal}
+            </span>
+          ) : null
+        }
+      </Show>
+      <Show when={t().kind === 'unset'}>
+        <span style={TARGET_SUB_FONT}>{props.unset}</span>
+      </Show>
+    </>
+  );
+}
+
+/** The ACTION picker for a rule-backed target: tiers, then models by
+ * provider. Snaps back to its placeholder — the row's summary shows the
+ * current state (shared by both target cards). */
+function TargetPicker(props: {
+  label: string;
+  disabled: boolean;
+  unset: boolean;
+  onPick: (target: string) => void;
+}) {
+  const { state } = useApp();
+  return (
+    <select
+      aria-label={props.label}
+      disabled={props.disabled}
+      style="font:400 11px 'Geist',sans-serif;color:var(--text2);background:var(--chip);border:1px solid var(--border);border-radius:5px;padding:2px 6px;max-width:220px"
+      onChange={(e) => {
+        const v = e.currentTarget.value;
+        // Snap back to the placeholder — this is an ACTION picker, not a
+        // value display (the row's target line shows the current state).
+        e.currentTarget.selectedIndex = 0;
+        if (v !== '') props.onPick(v);
+      }}
+    >
+      {/* `selected` pins the placeholder at first render — without it the
+          browser displays the first REAL option ("default") while nothing
+          is actually chosen (the v0.5.0 display bug). */}
+      <option value="" disabled selected>
+        {props.unset ? 'Set target…' : 'Change…'}
+      </option>
+      <optgroup label="Tiers">
+        <For each={state.routingTiers}>
+          {(t) => <option value={`tier:${t.key}`}>{t.key}</option>}
+        </For>
+      </optgroup>
+      <For each={groupModelsByProvider(state.allModels, state.providers)}>
+        {(g) => (
+          <optgroup label={`Models — ${g.label}`}>
+            <For each={g.models}>
+              {(m) => (
+                <option value={`model:${m.id}`}>
+                  {m.displayName ?? m.externalModelId} · {modelPriceLabel(m)}
+                </option>
+              )}
+            </For>
+          </optgroup>
+        )}
+      </For>
+    </select>
+  );
+}
+
+/** Target-unresolved guidance shared by both cards. */
+function unresolvedHint(t: BandTargetState): string {
+  return t.kind === 'unresolved' && t.parsed === 'tier'
+    ? 'Recreating the tier key rebinds this rule.'
+    : t.kind === 'unresolved' && t.parsed === 'model'
+      ? 'The model no longer exists — pick a new target.'
+      : 'The stored target is malformed — pick a new target.';
+}
+
 function BandTargets() {
   const app = useApp();
   const { state } = app;
@@ -93,50 +211,12 @@ function BandTargets() {
   const subFont = "font:400 11.5px 'Geist',sans-serif;color:var(--text3)";
   const busy = (band: 'auto_high' | 'auto_low') => state.bt.busy[band] || state.bt.unverified;
 
-  const targetLine = (b: BandVm) => {
-    const t = b.target;
-    if (t.kind === 'tier') {
-      return (
-        <span style="font:500 12px 'Geist',sans-serif;color:var(--accent-deep)">
-          tier: {t.key}
-          <Show when={!t.empty}>
-            <span style={subFont}>
-              {' '}
-              <Icon name="chevronRight" size={11} /> {t.primary}
-              {t.fallbacks > 0
-                ? ` +${String(t.fallbacks)} fallback${t.fallbacks === 1 ? '' : 's'}`
-                : ''}
-              {t.isDefault ? ' · uses the Layer-0 default chain' : ''}
-            </span>
-          </Show>
-        </span>
-      );
-    }
-    if (t.kind === 'model') {
-      return (
-        <span style="font:500 12px 'Geist',sans-serif;color:var(--accent-deep)">
-          {t.label}
-          <span style={subFont}>
-            {' '}
-            {t.provider ?? 'unknown provider'} · {modelPriceLabel(t.model)}
-          </span>
-        </span>
-      );
-    }
-    if (t.kind === 'unresolved') {
-      return (
-        <span class="mono" style="font:400 11.5px 'Geist Mono',monospace;color:var(--text2)">
-          {t.literal}
-        </span>
-      );
-    }
-    return (
-      <span style={subFont}>
-        Not set — confident {b.band === 'auto_high' ? 'high' : 'low'} verdicts fall through to
-        default
-      </span>
-    );
-  };
+  const targetLine = (b: BandVm) => (
+    <TargetSummary
+      target={b.target}
+      unset={`Not set — confident ${b.band === 'auto_high' ? 'high' : 'low'} verdicts fall through to default`}
+    />
+  );
 
   const unroutableNote = (b: BandVm) => {
     const u = b.unroutable;
@@ -160,43 +240,12 @@ function BandTargets() {
         </span>
         {targetLine(b)}
         {unroutableNote(b)}
-        <select
-          aria-label={`${title} target`}
+        <TargetPicker
+          label={`${title} target`}
           disabled={busy(b.band)}
-          style="font:400 11px 'Geist',sans-serif;color:var(--text2);background:var(--chip);border:1px solid var(--border);border-radius:5px;padding:2px 6px;max-width:180px"
-          onChange={(e) => {
-            const v = e.currentTarget.value;
-            // Snap back to the placeholder — this is an ACTION picker, not a
-            // value display (the row's target line shows the current state).
-            e.currentTarget.selectedIndex = 0;
-            if (v !== '') void app.setBandTarget(b.band, v);
-          }}
-        >
-          {/* `selected` pins the placeholder at first render — without it the
-              browser displays the first REAL option ("default") while nothing
-              is actually chosen (the v0.5.0 display bug). */}
-          <option value="" disabled selected>
-            {b.target.kind === 'unset' ? 'Set target…' : 'Change…'}
-          </option>
-          <optgroup label="Tiers">
-            <For each={state.routingTiers}>
-              {(t) => <option value={`tier:${t.key}`}>{t.key}</option>}
-            </For>
-          </optgroup>
-          <For each={groupModelsByProvider(state.allModels, state.providers)}>
-            {(g) => (
-              <optgroup label={`Models — ${g.label}`}>
-                <For each={g.models}>
-                  {(m) => (
-                    <option value={`model:${m.id}`}>
-                      {m.displayName ?? m.externalModelId} · {modelPriceLabel(m)}
-                    </option>
-                  )}
-                </For>
-              </optgroup>
-            )}
-          </For>
-        </select>
+          unset={b.target.kind === 'unset'}
+          onPick={(v) => void app.setBandTarget(b.band, v)}
+        />
         <Show when={b.effective !== null}>
           <button
             type="button"
@@ -221,12 +270,7 @@ function BandTargets() {
       </Show>
       <Show when={b.target.kind === 'unresolved'}>
         <div style={warnFont}>
-          Target unresolved — requests fall through to default.{' '}
-          {b.target.kind === 'unresolved' && b.target.parsed === 'tier'
-            ? 'Recreating the tier key rebinds this rule.'
-            : b.target.kind === 'unresolved' && b.target.parsed === 'model'
-              ? 'The model no longer exists — pick a new target.'
-              : 'The stored target is malformed — pick a new target.'}
+          Target unresolved — requests fall through to default. {unresolvedHint(b.target)}
         </div>
       </Show>
       <Show when={b.shadowed.length > 0}>
@@ -278,6 +322,158 @@ function BandTargets() {
           Both bands resolve to the same destination — the cascade would retry the same chain.
         </div>
       </Show>
+    </div>
+  );
+}
+
+/** The WORKLOAD TARGETS card (add-workload-routing D6): one row per taxonomy
+ * class — live rows carry the picker, reserved (semantic-only) rows are
+ * disclosed read-only. A set class pre-empts band targets / L2 / cascade for
+ * ITS requests; explicit models and the tier header still win (precedence). */
+function WorkloadTargets() {
+  const app = useApp();
+  const { state } = app;
+  const vm = () =>
+    workloadVms({
+      rules: state.rules,
+      tiers: state.routingTiers,
+      tierEntries: state.tierEntries,
+      models: state.allModels,
+      providers: state.providers,
+      autoPerf: { data: state.autoPerf.data, range: state.autoPerf.range },
+    });
+  const warnFont = "font:400 11px 'Geist',sans-serif;color:var(--amber)";
+  const subFont = TARGET_SUB_FONT;
+  const busy = (w: WorkloadVm) => state.wt.busy[w.cls] || state.wt.unverified;
+
+  const routedNote = (w: WorkloadVm) => {
+    const r = w.routed;
+    if (r === null || (r.count === 0 && r.requests === 0)) return null;
+    return (
+      <span style={subFont} data-testid="wt-routed">
+        {' '}
+        ({r.count} routed of {r.requests} detected in the selected {r.range} range)
+      </span>
+    );
+  };
+
+  const row = (w: WorkloadVm) => (
+    <div style="padding:8px 0;border-top:1px solid var(--border2)" data-testid="wt-row">
+      <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
+        <span style="font:600 10.5px 'Geist',sans-serif;letter-spacing:0.04em;color:var(--text2);min-width:52px">
+          {w.cls.toUpperCase()}
+        </span>
+        <span class="mono" style="font:400 10px 'Geist Mono',monospace;color:var(--text3)">
+          auto_workload · {w.cls}
+        </span>
+        <TargetSummary target={w.target} unset={unsetCopy(w.cls)} />
+        {routedNote(w)}
+        <Show when={!w.reserved}>
+          <TargetPicker
+            label={`${w.label} workload target`}
+            disabled={busy(w)}
+            unset={w.target.kind === 'unset'}
+            onPick={(v) => void app.setWorkloadTarget(w.cls, v)}
+          />
+        </Show>
+        <Show when={w.effective !== null && !w.reserved}>
+          <button
+            type="button"
+            disabled={busy(w)}
+            style="font:400 11px 'Geist',sans-serif;color:var(--text3);cursor:pointer;text-decoration:underline"
+            onClick={() => void app.clearWorkload(w.cls)}
+          >
+            Clear
+          </button>
+        </Show>
+      </div>
+      <Show when={w.reserved && w.effective !== null}>
+        <div style={subFont} data-testid="wt-reserved-note">
+          Reserved class — this rule was created through the API and stays inert until the semantic
+          workload source emits {w.cls}.
+        </div>
+      </Show>
+      <Show when={state.wt.errors[w.cls]}>
+        <div style="font:400 11px 'Geist',sans-serif;color:var(--red)">
+          {state.wt.errors[w.cls]}
+        </div>
+      </Show>
+      <Show when={w.target.kind === 'tier' && w.target.empty}>
+        <div style={warnFont}>
+          This tier has no models — {w.cls} requests are not claimed and follow the complexity path
+          (band targets, then L2 and the cascade, then default).
+        </div>
+      </Show>
+      <Show when={w.target.kind === 'unresolved'}>
+        <div style={warnFont}>
+          Target unresolved — {w.cls} requests follow the complexity path (band targets, then L2 and
+          the cascade, then default). {unresolvedHint(w.target)}
+        </div>
+      </Show>
+      <Show when={w.shadowed.length > 0}>
+        <div style={warnFont} data-testid="wt-shadowed">
+          {w.shadowed.length} shadowed duplicate rule{w.shadowed.length === 1 ? '' : 's'}
+          {/* Reserved rows stay READ-ONLY (clink r5 M3): the duplicate is
+              disclosed, never actionable from here — the API owns those rules. */}
+          <Show
+            when={!w.reserved}
+            fallback={<span> (API-created — manage through the rules API)</span>}
+          >
+            {' '}
+            —{' '}
+            <button
+              type="button"
+              disabled={busy(w)}
+              style="font:400 11px 'Geist',sans-serif;color:var(--text2);cursor:pointer;text-decoration:underline"
+              onClick={() => void app.cleanWorkloadShadowed(w.cls)}
+            >
+              clean up
+            </button>
+          </Show>
+        </div>
+      </Show>
+    </div>
+  );
+
+  return (
+    <div class="panel card" data-testid="workload-targets">
+      <div class="section-title" style="margin-bottom:2px">
+        Workload targets
+      </div>
+      <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3);margin-bottom:8px;line-height:1.5">
+        Send a detected workload to its own tier or model. A set class claims its{' '}
+        <span class="mono" style="font-size:10.5px">
+          auto
+        </span>{' '}
+        requests before band targets, Layer 2, and the cascade; an explicit model or the tier header
+        still wins. Unset classes change nothing.
+      </div>
+      <Show when={state.wt.unverified}>
+        <div style="font:400 11px 'Geist',sans-serif;color:var(--red)">
+          Routing may have changed — the refresh failed.{' '}
+          <button
+            type="button"
+            style="font:400 11px 'Geist',sans-serif;color:var(--text2);cursor:pointer;text-decoration:underline"
+            onClick={() => void app.retryRulesReconcile()}
+          >
+            Retry
+          </button>
+        </div>
+      </Show>
+      <For each={vm().rows.filter((w) => !w.reserved)}>{(w) => row(w)}</For>
+      <div
+        style="font:500 10.5px 'Geist',sans-serif;letter-spacing:0.04em;color:var(--text3);margin-top:8px"
+        data-testid="wt-reserved-heading"
+      >
+        RESERVED — semantic source only
+      </div>
+      <For each={vm().rows.filter((w) => w.reserved)}>{(w) => row(w)}</For>
+      <div style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);margin-top:8px;line-height:1.5">
+        Detection is structural: fenced code above the configured code thresholds, an image in the
+        request, a declared JSON output format. When several fire, one class wins: vision ›
+        structured › code. Research and writing are not detected yet — their rows wait for the
+        semantic workload source.
+      </div>
     </div>
   );
 }
@@ -685,11 +881,29 @@ function AutoPerformance() {
                 )}
               </Show>
               <Show when={v.cascadeIsResidual}>
-                <div style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);margin:-4px 0 10px;line-height:1.5">
-                  Semantically-routed requests never enter the cascade — the residual-cascade rates
-                  and estimated savings above cover only the traffic L2 left behind, so
-                  pre-/post-enable comparisons aren’t like-for-like. No figure here measures whether
-                  learning improves routing.
+                <div
+                  data-testid="ap-residual-note"
+                  style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);margin:-4px 0 10px;line-height:1.5"
+                >
+                  {v.residualCauses.semantic && v.residualCauses.workload
+                    ? 'Semantically- and workload-routed requests'
+                    : v.residualCauses.workload
+                      ? 'Workload-routed requests'
+                      : 'Semantically-routed requests'}{' '}
+                  never enter the cascade — the residual-cascade rates and estimated savings above
+                  cover only the traffic those layers left behind, so pre-/post-enable comparisons
+                  aren’t like-for-like. No figure here measures whether learning improves routing.
+                </div>
+              </Show>
+              <Show when={v.workloadRouted > 0}>
+                <div
+                  data-testid="ap-workload-disclosure"
+                  style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);margin:-4px 0 10px;line-height:1.5"
+                >
+                  The band figures include {v.workloadRouted.toLocaleString()} workload-routed
+                  request
+                  {v.workloadRouted === 1 ? '' : 's'} — classified like any other, then claimed by a
+                  Workload target before any band target was consulted.
                 </div>
               </Show>
               <Show when={v.unroutable > 0}>
@@ -803,7 +1017,7 @@ function AutoPerformance() {
               zero-state gate, so attempt-only classes still render when no parent
               was classified in range. EMPTY only when there are no classified
               parents AND no classes — keyed on the WORKLOAD since, never the
-              structural telemetrySince. Telemetry only: nothing here routes. */}
+              structural telemetrySince. Routed counts ride each row (add-workload-routing). */}
             <Show
               when={v.workload}
               keyed
@@ -848,6 +1062,9 @@ function AutoPerformance() {
                           style="font:400 10.5px 'Geist Mono',monospace;color:var(--text3);min-width:72px"
                         >
                           {r.sharePct} · {r.requests}
+                          <Show when={r.class !== 'none'}>
+                            <span data-testid="workload-row-routed"> · {r.routed} routed</span>
+                          </Show>
                         </span>
                         <span
                           aria-hidden="true"
@@ -891,8 +1108,9 @@ function AutoPerformance() {
                     style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);margin-top:4px;line-height:1.5"
                   >
                     Structural detection covers code, vision, and structured output; research and
-                    writing arrive with the semantic workload source. Telemetry only — nothing here
-                    routes.
+                    writing arrive with the semantic workload source. Classification itself never
+                    routes — a class steers only through its Workload target above, and “routed”
+                    counts the requests that target claimed.
                   </div>
                 </div>
               )}
@@ -1423,6 +1641,7 @@ export function Routing() {
 
           <Show when={state.autoLayers?.structuralAvailable}>
             <BandTargets />
+            <WorkloadTargets />
             <SelfCalibration />
             <SemanticLearning />
             <AutoPerformance />

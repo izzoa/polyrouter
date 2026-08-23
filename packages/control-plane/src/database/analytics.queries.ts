@@ -701,6 +701,8 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
         .select({
           cls: requestLogs.workloadClass,
           requests: intCount(),
+          // Routed by the workload stage (add-workload-routing): `none` is 0 by construction.
+          routed: intCount(sql`${requestLogs.decisionLayer} = 'workload'`),
           unpriced: intCount(sql`${requestLogs.cost} is null`),
           micros: cashMicrosSum(requestLogs.cost, requestLogs.providerKind),
         })

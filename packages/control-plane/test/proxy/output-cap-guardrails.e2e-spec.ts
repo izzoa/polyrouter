@@ -54,6 +54,7 @@ import { BodyCaptureService } from '../../src/body-capture/body-capture.service'
 import { ObservabilityModule } from '../../src/observability/observability.module';
 import { StreamDrainRegistry } from '../../src/proxy/stream-drain.registry';
 import { StructuralRouter } from '../../src/proxy/structural/structural-router';
+import { WorkloadRouter } from '../../src/proxy/workload/workload-router';
 import { StructuralBaselineStore } from '../../src/proxy/structural/structural-baseline.store';
 import { CascadeRouter } from '../../src/proxy/cascade/cascade-router';
 import { LogWriter } from '../../src/recording/log-writer';
@@ -88,8 +89,7 @@ const behaviorByModel: Record<string, Behavior> = {
 
 /** Every dispatched upstream call: the model, the maxOutputTokens the wire
  * would carry, and the adapter config's (possibly capped) synthesized default. */
-const dispatched: { model: string; ask: number | undefined; defaultMax: number | undefined }[] =
-  [];
+const dispatched: { model: string; ask: number | undefined; defaultMax: number | undefined }[] = [];
 
 function fakeAdapterFactory(config: ProviderConfig): ProviderAdapter {
   const chat = (req: NormalizedRequest): Promise<NormalizedResponse> => {
@@ -164,13 +164,7 @@ describe('output-cap guardrails e2e', () => {
     }
 
     const moduleRef = await Test.createTestingModule({
-      imports: [
-        SemanticModule,
-        DatabaseModule,
-        RecordingModule,
-        RedisModule,
-        ObservabilityModule,
-      ],
+      imports: [SemanticModule, DatabaseModule, RecordingModule, RedisModule, ObservabilityModule],
       controllers: [ChatCompletionsController],
       providers: [
         AgentApiKeyGuard,
@@ -186,6 +180,7 @@ describe('output-cap guardrails e2e', () => {
         },
         StreamDrainRegistry,
         StructuralRouter,
+        WorkloadRouter,
         CascadeRouter,
         {
           provide: BodyCaptureService,
@@ -366,6 +361,7 @@ describe('output-cap guardrails e2e', () => {
   const lastLog = async (): Promise<{
     modelId: string | null;
     status: string;
+    decisionLayer: string;
     routingReason: string;
     escalated: boolean | null;
   }> => {
@@ -446,14 +442,18 @@ describe('output-cap guardrails e2e', () => {
     const res = await chat({ model: 'sub-allins', max_completion_tokens: 100_000, ...msg });
     expect(res.status).toBe(200);
     expect(dispatched).toEqual([{ model: 'ocap-sub8k', ask: 8_192, defaultMax: 4096 }]);
-    expect((await lastLog()).routingReason).toContain('output_cap_clamped 100000→8192 (ocap-sub8k)');
+    expect((await lastLog()).routingReason).toContain(
+      'output_cap_clamped 100000→8192 (ocap-sub8k)',
+    );
   });
 
   it('a capable paid member serves the full ask; the small-cap subscription member defers (disclosed inversion)', async () => {
     const res = await chat({ model: 'sub-defer', max_completion_tokens: 100_000, ...msg });
     expect(res.status).toBe(200);
     expect(dispatched).toEqual([{ model: 'ocap-200k', ask: 100_000, defaultMax: 4096 }]);
-    expect((await lastLog()).routingReason).toContain('output_cap_deferred ocap-sub8k(8192<100000)');
+    expect((await lastLog()).routingReason).toContain(
+      'output_cap_deferred ocap-sub8k(8192<100000)',
+    );
   });
 
   // --- 5.2: cascade composition (ambiguous auto; tiny ask so L1 stays ambiguous) ---
@@ -506,5 +506,75 @@ describe('output-cap guardrails e2e', () => {
     expect(row.modelId).toBe(modelId['ocap-default']);
     expect(row.routingReason).toContain('cheap[output_cap_clamped 2→1 (ocap-cheapfail1)]'); // superseded, kept
     expect(row.routingReason).toContain('esc[output_cap_deferred ocap-strong1(1<2)]');
+  });
+
+  // --- add-workload-routing: a workload claim is planned like any other head ---
+
+  describe('workload targets under output-cap planning', () => {
+    /** ≥200 fenced chars at ~100% share → the structural `code` class. */
+    const codeMsg = {
+      messages: [{ role: 'user', content: '```ts\n' + 'const x = 1;\n'.repeat(40) + '```' }],
+    };
+    async function withWorkloadRule(target: string, fn: () => Promise<void>): Promise<void> {
+      const rule = await port.routingRules.insert(principal, {
+        matchType: 'auto_workload',
+        headerName: 'x-polyrouter-tier',
+        headerValue: null,
+        workloadClass: 'code',
+        target,
+        priority: 0,
+      });
+      try {
+        await fn();
+      } finally {
+        await port.routingRules.remove(principal, rule.id);
+      }
+    }
+
+    it('a tier: workload target defers its insufficient member behind the workload: head', async () => {
+      await withWorkloadRule('tier:defer-t', async () => {
+        const res = await chat({ model: 'auto', max_completion_tokens: 100_000, ...codeMsg });
+        expect(res.status).toBe(200);
+        expect(dispatched).toEqual([{ model: 'ocap-200k', ask: 100_000, defaultMax: 4096 }]);
+        const row = await lastLog();
+        expect(row.decisionLayer).toBe('workload');
+        expect(row.modelId).toBe(modelId['ocap-200k']);
+        expect(row.status).toBe('success');
+        expect(row.routingReason).toMatch(/^workload:code/);
+        expect(row.routingReason).toContain('output_cap_deferred ocap-16k(16384<100000)');
+      });
+    });
+
+    it('a model: workload target clamps the ask behind the workload: head', async () => {
+      await withWorkloadRule(`model:${modelId['ocap-4k']}`, async () => {
+        const res = await chat({ model: 'auto', max_completion_tokens: 100_000, ...codeMsg });
+        expect(res.status).toBe(200);
+        expect(dispatched).toEqual([{ model: 'ocap-4k', ask: 4_096, defaultMax: 4096 }]);
+        const row = await lastLog();
+        expect(row.decisionLayer).toBe('workload');
+        expect(row.modelId).toBe(modelId['ocap-4k']);
+        expect(row.routingReason).toMatch(/^workload:code/);
+        expect(row.routingReason).toContain('output_cap_clamped 100000→4096 (ocap-4k)');
+      });
+    });
+
+    it('a failing primary in a workload tier falls back, the trail recorded behind the workload: head', async () => {
+      const wlFail = await port.tiers.insert(principal, { key: 'wl-fail' });
+      await port.routingEntries.replaceForTier(principal, wlFail.id, [
+        modelId['ocap-cheapfail1']!,
+        modelId['ocap-200k']!,
+      ]);
+      await withWorkloadRule('tier:wl-fail', async () => {
+        const res = await chat({ model: 'auto', ...codeMsg }); // no ask → no deferral/clamp
+        expect(res.status).toBe(200);
+        expect(dispatched.map((d) => d.model)).toEqual(['ocap-cheapfail1', 'ocap-200k']);
+        const row = await lastLog();
+        expect(row.decisionLayer).toBe('workload');
+        expect(row.modelId).toBe(modelId['ocap-200k']);
+        expect(row.status).toBe('fallback');
+        expect(row.routingReason).toMatch(/^workload:code/);
+        expect(row.routingReason).toContain('fell back');
+      });
+    });
   });
 });

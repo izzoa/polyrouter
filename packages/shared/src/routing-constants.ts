@@ -23,8 +23,16 @@ export const TIER_KEY_PATTERN = /^[a-z0-9](?:[a-z0-9_-]{0,63})$/;
 
 /** Valid rule match types (spec §5, §7.2). `header`/`default` drive Layer-0
  * resolution; `auto_high`/`auto_low` are Layer-1 structural band targets —
- * consumed only by the structural router (#13) and inert in Layer 0. */
-export const RULE_MATCH_TYPES = ['header', 'default', 'auto_high', 'auto_low'] as const;
+ * consumed only by the structural router (#13) and inert in Layer 0;
+ * `auto_workload` binds ONE workload class to a target (add-workload-routing)
+ * — consumed only by the workload stage, inert in Layer 0, degrade-safe. */
+export const RULE_MATCH_TYPES = [
+  'header',
+  'default',
+  'auto_high',
+  'auto_low',
+  'auto_workload',
+] as const;
 export type RuleMatchType = (typeof RULE_MATCH_TYPES)[number];
 
 /* ── Workload taxonomy (add-workload-telemetry, Epic W) ─────────────────────────

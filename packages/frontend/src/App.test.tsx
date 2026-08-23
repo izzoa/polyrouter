@@ -650,6 +650,7 @@ describe('dashboard shell (auth-gated)', () => {
     const mkRule = (over: Partial<RuleDto>): RuleDto => ({
       id: 'r-b1',
       matchType: 'auto_high',
+      workloadClass: null,
       headerName: 'x-polyrouter-tier',
       headerValue: null,
       target: 'tier:premium',
@@ -721,6 +722,178 @@ describe('dashboard shell (auth-gated)', () => {
       clear?.click();
       await flush();
       expect(store.state.rules.some((r) => r.matchType === 'auto_low')).toBe(false);
+    } finally {
+      dispose();
+    }
+  });
+
+  it('Workload targets: live rows pick/clear, reserved rows read-only, precedence copy, routed counts + Auto-performance disclosure (add-workload-routing)', async () => {
+    const mkRule = (over: Partial<RuleDto>): RuleDto => ({
+      id: 'r-w1',
+      matchType: 'auto_workload',
+      workloadClass: 'code',
+      headerName: 'x-polyrouter-tier',
+      headerValue: null,
+      target: 'tier:premium',
+      priority: 0,
+      createdAt: NOW,
+      ...over,
+    });
+    const premium: TierDto = {
+      id: 't-premium',
+      key: 'premium',
+      displayName: null,
+      description: null,
+      createdAt: NOW,
+    };
+    const fake = new FakeApiClient({
+      tiers: [DEFAULT_TIER, premium],
+      tierEntries: {
+        t1: [mkEntry('m1', 0)],
+        't-premium': [{ id: 'ep1', tierId: 't-premium', modelId: 'm2', position: 0, model: null }],
+      },
+      models: { p1: [mkModel('m1'), mkModel('m2')] },
+      rules: [
+        mkRule({ id: 'r-eff', priority: 5 }),
+        mkRule({ id: 'r-shadow', priority: 0 }), // shadowed duplicate of code
+        mkRule({ id: 'r-res', workloadClass: 'research', target: 'model:m1' }), // API-created reserved
+        mkRule({ id: 'r-res-dupe', workloadClass: 'research', target: 'model:m2', priority: -1 }), // its duplicate
+      ],
+      autoPerf: {
+        ...DEFAULT_AUTO_PERF,
+        workloadMix: {
+          evaluated: 9,
+          unclassified: 0,
+          since: NOW,
+          revisions: [],
+          classes: [
+            {
+              class: 'code',
+              requests: 6,
+              unpricedRequests: 0,
+              unpricedAttempts: 0,
+              spendUsd: 1,
+              routed: 2,
+            },
+            {
+              class: 'none',
+              requests: 3,
+              unpricedRequests: 0,
+              unpricedAttempts: 0,
+              spendUsd: 0,
+              routed: 0,
+            },
+          ],
+        },
+      },
+    });
+    const { host, store, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Routing');
+      await flush();
+      const panel = () => host.querySelector<HTMLElement>('[data-testid="workload-targets"]');
+      const text = () => panel()?.textContent ?? '';
+      // Precedence copy + the live/reserved split.
+      expect(text()).toContain('before band targets, Layer 2, and the cascade');
+      expect(text()).toContain('an explicit model or the tier header still wins');
+      const rows = () => [...panel()!.querySelectorAll<HTMLElement>('[data-testid="wt-row"]')];
+      expect(rows()).toHaveLength(5);
+      expect(rows().map((r) => r.textContent?.includes('auto_workload ·'))).toEqual([
+        true,
+        true,
+        true,
+        true,
+        true,
+      ]);
+      // Effective (priority 5) shown with chain preview; duplicate disclosed; routed count from auto data.
+      expect(rows()[0]!.textContent).toContain('CODE');
+      expect(rows()[0]!.textContent).toContain('tier: premium');
+      expect(rows()[0]!.textContent).toContain('1 shadowed duplicate rule');
+      expect(rows()[0]!.querySelector('[data-testid="wt-routed"]')!.textContent).toContain(
+        '2 routed of 6 detected',
+      );
+      // Unset live rows carry their consequence copy and a picker resting on the placeholder.
+      expect(rows()[1]!.textContent).toContain('Vision requests');
+      expect(rows()[1]!.textContent).toContain(
+        'band targets, then L2 and the cascade where enabled, then default',
+      );
+      expect(text()).toContain('vision › structured › code'); // classifier precedence disclosed (clink r5 L1)
+      expect(text()).toContain('configured code thresholds');
+      const visionSelect = rows()[1]!.querySelector<HTMLSelectElement>('select')!;
+      expect(visionSelect.getAttribute('aria-label')).toBe('Vision workload target');
+      expect(visionSelect.value).toBe('');
+      // Reserved rows: heading, no picker, no Clear — the API-created research rule is disclosed read-only.
+      expect(panel()!.querySelector('[data-testid="wt-reserved-heading"]')!.textContent).toContain(
+        'semantic source only',
+      );
+      const research = rows().find((r) => r.textContent?.includes('RESEARCH'))!;
+      expect(research.querySelector('select')).toBeNull();
+      expect(
+        [...research.querySelectorAll('button')].some((b) => b.textContent?.trim() === 'Clear'),
+      ).toBe(false);
+      expect(research.querySelector('[data-testid="wt-reserved-note"]')!.textContent).toContain(
+        'stays inert until the semantic workload source emits research',
+      );
+      // A reserved duplicate is DISCLOSED but never actionable here (clink r5 M3).
+      expect(research.querySelector('[data-testid="wt-shadowed"]')!.textContent).toContain(
+        '1 shadowed duplicate rule',
+      );
+      expect(research.querySelector('[data-testid="wt-shadowed"]')!.textContent).toContain(
+        'API-created',
+      );
+      expect(
+        [...research.querySelectorAll('button')].some((b) => b.textContent?.trim() === 'clean up'),
+      ).toBe(false);
+      const writing = rows().find((r) => r.textContent?.includes('WRITING'))!;
+      expect(writing.textContent).toContain('not detected yet');
+      expect(writing.querySelector('select')).toBeNull();
+      // Cleanup removes only the shadowed code rule; the research rule is untouched.
+      const cleanup = [...rows()[0]!.querySelectorAll<HTMLElement>('button')].find(
+        (b) => b.textContent?.trim() === 'clean up',
+      );
+      cleanup?.click();
+      await flush();
+      expect(store.state.rules.filter((r) => r.workloadClass === 'code').map((r) => r.id)).toEqual([
+        'r-eff',
+      ]);
+      expect(store.state.rules.filter((r) => r.workloadClass === 'research')).toHaveLength(2); // reserved rows untouched
+      // Setting vision via the picker creates an auto_workload rule carrying the class.
+      visionSelect.value = 'tier:default';
+      visionSelect.dispatchEvent(new Event('change', { bubbles: true }));
+      await flush();
+      expect(store.state.rules.find((r) => r.workloadClass === 'vision')).toMatchObject({
+        matchType: 'auto_workload',
+        target: 'tier:default',
+      });
+      expect(visionSelect.value).toBe('');
+      expect(rows()[1]!.textContent).toContain('uses the Layer-0 default chain');
+      // Clear removes the vision rule again.
+      const clear = [...rows()[1]!.querySelectorAll<HTMLElement>('button')].find(
+        (b) => b.textContent?.trim() === 'Clear',
+      );
+      clear?.click();
+      await flush();
+      expect(store.state.rules.some((r) => r.workloadClass === 'vision')).toBe(false);
+      // Auto-performance: the disclosure + widened residual note + per-row routed.
+      const perf = [...host.querySelectorAll<HTMLElement>('.panel')].find((p) =>
+        p.textContent?.includes('Auto performance'),
+      )!;
+      expect(perf.querySelector('[data-testid="ap-workload-disclosure"]')!.textContent).toContain(
+        'include 2 workload-routed requests',
+      );
+      // DEFAULT_AUTO_PERF also routes semantically — the note names BOTH causes.
+      expect(perf.querySelector('[data-testid="ap-residual-note"]')!.textContent).toContain(
+        'Semantically- and workload-routed requests never enter the cascade',
+      );
+      const mixRows = [...perf.querySelectorAll<HTMLElement>('[data-testid="workload-row"]')];
+      expect(
+        mixRows[0]!.querySelector('[data-testid="workload-row-routed"]')!.textContent,
+      ).toContain('2 routed');
+      expect(mixRows[1]!.querySelector('[data-testid="workload-row-routed"]')).toBeNull(); // `none` never routes
+      expect(perf.querySelector('[data-testid="workload-mix-footnote"]')!.textContent).toContain(
+        'Classification itself never routes',
+      );
     } finally {
       dispose();
     }
@@ -1202,6 +1375,7 @@ describe('dashboard shell (auth-gated)', () => {
       {
         id: 'r-hdr',
         matchType: 'header',
+        workloadClass: null,
         headerName: 'x-polyrouter-tier',
         headerValue: 'heavy',
         target: 'tier:heavy',
@@ -1211,6 +1385,7 @@ describe('dashboard shell (auth-gated)', () => {
       {
         id: 'r-auto',
         matchType: 'auto_high',
+        workloadClass: null,
         headerName: 'x-polyrouter-tier',
         headerValue: null,
         target: 'model:auto-band-xyz',

@@ -52,6 +52,7 @@ import { NotificationProducers } from '../../src/producers/notification-producer
 import { BudgetService } from '../../src/budgets/budget-service';
 import { StreamDrainRegistry } from '../../src/proxy/stream-drain.registry';
 import { StructuralRouter } from '../../src/proxy/structural/structural-router';
+import { WorkloadRouter } from '../../src/proxy/workload/workload-router';
 import { CascadeRouter } from '../../src/proxy/cascade/cascade-router';
 import { RecordingModule } from '../../src/recording/recording.module';
 import { ObservabilityModule } from '../../src/observability/observability.module';
@@ -117,7 +118,13 @@ describe('long-call timeouts e2e (fix-long-call-timeouts)', () => {
     }
 
     const moduleRef = await Test.createTestingModule({
-      imports: [SemanticModule, DatabaseModule, RecordingModule, ObservabilityModule, ProvidersModule],
+      imports: [
+        SemanticModule,
+        DatabaseModule,
+        RecordingModule,
+        ObservabilityModule,
+        ProvidersModule,
+      ],
       controllers: [ChatCompletionsController],
       providers: [
         AgentApiKeyGuard,
@@ -129,9 +136,15 @@ describe('long-call timeouts e2e (fix-long-call-timeouts)', () => {
           },
         },
         StreamDrainRegistry,
+        WorkloadRouter,
         {
           provide: StructuralRouter,
-          useValue: { enabled: false, evaluate: () => Promise.resolve({ kind: 'skip' }) },
+          useValue: {
+            enabled: false,
+            evaluate: () => Promise.resolve({ kind: 'skip' }),
+            classify: () => Promise.resolve({ kind: 'skip' }),
+            resolveBand: () => ({ kind: 'skip' }),
+          },
         },
         { provide: CascadeRouter, useValue: { enabled: false, plan: () => null } },
         {
@@ -146,7 +159,10 @@ describe('long-call timeouts e2e (fix-long-call-timeouts)', () => {
         { provide: PROXY_ADAPTER_FACTORY, useValue: createProviderAdapter },
         { provide: PROXY_BREAKER, useValue: new CircuitBreaker(new InMemoryBreakerStore()) },
         { provide: ROUTING_CONFIG, useFactory: loadRoutingConfig },
-        { provide: CALIBRATION_RAILS, useFactory: (): CalibrationRails => railsOf(loadCalibrationConfig()) },
+        {
+          provide: CALIBRATION_RAILS,
+          useFactory: (): CalibrationRails => railsOf(loadCalibrationConfig()),
+        },
         { provide: APP_FILTER, useClass: ProxyExceptionFilter },
         { provide: APP_GUARD, useClass: TestPrincipalGuard },
       ],

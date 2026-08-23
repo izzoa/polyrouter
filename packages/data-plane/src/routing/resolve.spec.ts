@@ -1,6 +1,7 @@
 import {
   resolveRoute,
   resolveBandTarget,
+  resolveWorkloadTarget,
   isRouteError,
   type RouteModel,
   type RouteRule,
@@ -208,7 +209,9 @@ describe('resolveRoute — tierKey (tier_assigned producer)', () => {
 describe('resolveRoute — tier-header precedence (add-tier-header-precedence)', () => {
   it('a resolving x-polyrouter-tier beats a HIGHER-priority rule on another header (direct lookup)', () => {
     const s = snap({
-      rules: [rule({ headerName: 'x-env', headerValue: 'prod', target: 'tier:fast', priority: 999 })],
+      rules: [
+        rule({ headerName: 'x-env', headerValue: 'prod', target: 'tier:fast', priority: 999 }),
+      ],
     });
     const r = resolveRoute(s, parse('auto', { 'x-env': 'prod', 'x-polyrouter-tier': 'default' }));
     expect(r).toMatchObject({
@@ -222,7 +225,13 @@ describe('resolveRoute — tier-header precedence (add-tier-header-precedence)',
   it('a tier-header REMAP also beats a higher-priority other-header rule', () => {
     const s = snap({
       rules: [
-        rule({ id: 'a', headerName: 'x-env', headerValue: 'prod', target: 'tier:fast', priority: 999 }),
+        rule({
+          id: 'a',
+          headerName: 'x-env',
+          headerValue: 'prod',
+          target: 'tier:fast',
+          priority: 999,
+        }),
         rule({ id: 'b', headerValue: 'shopping', target: 'tier:default', priority: 0 }),
       ],
     });
@@ -275,7 +284,9 @@ describe('resolveRoute — tier-header precedence (add-tier-header-precedence)',
         { id: 't_empty', key: 'empty' },
       ],
       entriesByTierId: new Map([['t_default', [{ modelId: 'm_def', position: 0 }]]]),
-      rules: [rule({ headerName: 'x-env', headerValue: 'prod', target: 'tier:default', priority: 999 })],
+      rules: [
+        rule({ headerName: 'x-env', headerValue: 'prod', target: 'tier:default', priority: 999 }),
+      ],
     });
     expect(
       resolveRoute(s, parse('auto', { 'x-polyrouter-tier': 'empty', 'x-env': 'prod' })),
@@ -286,7 +297,13 @@ describe('resolveRoute — tier-header precedence (add-tier-header-precedence)',
     const s = snap({
       rules: [
         rule({ id: 'remap', headerValue: 'fast', target: 'tier:ghost' }), // target deleted
-        rule({ id: 'other', headerName: 'x-env', headerValue: 'prod', target: 'tier:default', priority: 999 }),
+        rule({
+          id: 'other',
+          headerName: 'x-env',
+          headerValue: 'prod',
+          target: 'tier:default',
+          priority: 999,
+        }),
       ],
     });
     // 'fast' is ALSO a real tier — the broken remap still owns the match.
@@ -390,5 +407,121 @@ describe('resolveRoute — typed errors', () => {
   it('isRouteError narrows the union', () => {
     const r = resolveRoute(snap(), parse('nope'));
     expect(isRouteError(r)).toBe(true);
+  });
+});
+
+describe('resolveWorkloadTarget (add-workload-routing)', () => {
+  // The shared rule() helper builds only the pre-existing fields — add the class on top.
+  const wl = (
+    id: string,
+    cls: string,
+    target: string,
+    priority = 0,
+    createdAt?: Date,
+  ): RouteRule => ({
+    ...rule({
+      id,
+      matchType: 'auto_workload',
+      target,
+      priority,
+      ...(createdAt ? { createdAt } : {}),
+    }),
+    workloadClass: cls,
+  });
+  const chainSnap = () =>
+    snap({
+      tiers: [
+        { id: 't_default', key: 'default' },
+        { id: 't_coding', key: 'coding' },
+      ],
+      entriesByTierId: new Map([
+        ['t_default', [{ modelId: 'm_def', position: 0 }]],
+        [
+          't_coding',
+          [
+            { modelId: 'm_fast', position: 0 },
+            { modelId: 'm_def', position: 1 },
+          ],
+        ],
+      ]),
+    });
+
+  it('a tier target carries the chain, layer workload, the verdict reason verbatim', () => {
+    const s = { ...chainSnap(), rules: [wl('w', 'code', 'tier:coding')] };
+    const d = resolveWorkloadTarget(
+      s,
+      'code',
+      'workload:code score=0.42 share=0.42 codechars=500 mm=0 rf=0',
+    );
+    expect(d).toMatchObject({
+      decisionLayer: 'workload',
+      tierKey: 'coding',
+      modelId: 'm_fast',
+      routingReason: 'workload:code score=0.42 share=0.42 codechars=500 mm=0 rf=0',
+      matchedHeader: null,
+    });
+    expect(d!.chain).toHaveLength(2);
+  });
+
+  it('a model target is that single model (no chain)', () => {
+    const s = snap({ rules: [wl('w', 'vision', 'model:m_fast')] });
+    const d = resolveWorkloadTarget(s, 'vision', 'workload:vision score=1.00');
+    expect(d).toMatchObject({ decisionLayer: 'workload', modelId: 'm_fast', tierKey: null });
+    expect(d!.chain).toHaveLength(1);
+  });
+
+  it('duplicates resolve by priority desc, then createdAt, then id — within the class only', () => {
+    const early = new Date('2026-01-01T00:00:00Z');
+    const late = new Date('2026-02-01T00:00:00Z');
+    const s = snap({
+      rules: [
+        wl('b', 'code', 'tier:default', 0, late),
+        wl('a', 'code', 'tier:fast', 0, early), // same priority, older → wins over b
+        wl('c', 'code', 'model:m_fast', 5), // higher priority → wins overall
+        wl('v', 'vision', 'tier:default', 9), // another class — never consulted for code
+      ],
+    });
+    expect(resolveWorkloadTarget(s, 'code', 'r')).toMatchObject({
+      modelId: 'm_fast',
+      tierKey: null,
+    });
+    const s2 = snap({
+      rules: [wl('b', 'code', 'tier:default', 0, late), wl('a', 'code', 'tier:fast', 0, early)],
+    });
+    expect(resolveWorkloadTarget(s2, 'code', 'r')).toMatchObject({ tierKey: 'fast' });
+    const s3 = snap({ rules: [wl('b', 'code', 'tier:default'), wl('a', 'code', 'tier:fast')] });
+    expect(resolveWorkloadTarget(s3, 'code', 'r')).toMatchObject({ tierKey: 'fast' }); // id tie-break (a < b)
+  });
+
+  it('is null for no rule, another class only, an unresolved target, an empty tier, and none', () => {
+    expect(resolveWorkloadTarget(snap(), 'code', 'r')).toBeNull();
+    expect(
+      resolveWorkloadTarget(snap({ rules: [wl('v', 'vision', 'tier:fast')] }), 'code', 'r'),
+    ).toBeNull();
+    expect(
+      resolveWorkloadTarget(snap({ rules: [wl('w', 'code', 'tier:ghost')] }), 'code', 'r'),
+    ).toBeNull();
+    expect(
+      resolveWorkloadTarget(snap({ rules: [wl('w', 'code', 'model:nope')] }), 'code', 'r'),
+    ).toBeNull();
+    const empty = snap({
+      rules: [wl('w', 'code', 'tier:fast')],
+      entriesByTierId: new Map([['t_default', [{ modelId: 'm_def', position: 0 }]]]),
+    });
+    expect(resolveWorkloadTarget(empty, 'code', 'r')).toBeNull();
+    expect(
+      resolveWorkloadTarget(snap({ rules: [wl('w', 'none', 'tier:fast')] }), 'none', 'r'),
+    ).toMatchObject({ tierKey: 'fast' }); // the resolver is class-agnostic; the CALLER never passes none
+  });
+
+  it('band rules and auto_workload rules never see each other', () => {
+    const s = snap({
+      rules: [
+        rule({ id: 'h', matchType: 'auto_high', target: 'tier:fast' }),
+        wl('w', 'code', 'tier:default'),
+      ],
+    });
+    expect(resolveBandTarget(s, 'auto_high', 'structural', 'x')).toMatchObject({ tierKey: 'fast' });
+    expect(resolveWorkloadTarget(s, 'code', 'r')).toMatchObject({ tierKey: 'default' });
   });
 });

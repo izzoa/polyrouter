@@ -16,7 +16,9 @@ import {
   MAX_MODELS_PER_TIER,
   RULE_MATCH_TYPES,
   TIER_KEY_PATTERN,
+  WORKLOAD_CLASSES,
   type RuleMatchType,
+  type WorkloadClass,
 } from '@polyrouter/shared/server';
 
 // `priority` is stored in an int4 column; bound it so an oversized value is a
@@ -28,6 +30,14 @@ const PRIORITY_MAX = 1_000_000;
  * for an explicit `null` — so a non-nullable field sent as `null` is a clean 4xx
  * rather than a downstream TypeError / NOT NULL 500. */
 const IfDefined = (): PropertyDecorator => ValidateIf((_o, v) => v !== undefined);
+
+/** Validate a field only when PRESENT AND NON-NULL (add-workload-routing D5):
+ * `workload_class` is nullable at the DTO boundary — an explicit `null` means
+ * "clear it" (how a PATCH moves a rule away from `auto_workload` atomically);
+ * the service's effective-merge validation then decides whether the resulting
+ * row is legal. */
+const IfDefinedNonNull = (): PropertyDecorator =>
+  ValidateIf((_o, v) => v !== undefined && v !== null);
 
 export class CreateTierDto {
   // Pattern also bounds length (1–64) and charset (lowercase slug).
@@ -82,6 +92,13 @@ export class CreateRuleDto {
   @MaxLength(256)
   headerValue?: string;
 
+  /** The ONE workload class an `auto_workload` rule binds (add-workload-routing):
+   * required on that match type, forbidden on every other — decided on the
+   * effective row in the service; never `none`. */
+  @IfDefinedNonNull()
+  @IsIn(WORKLOAD_CLASSES)
+  workloadClass?: WorkloadClass | null;
+
   // Structured reference: `tier:<key>` or `model:<id>` (validated in the service).
   @IsString()
   @MinLength(1)
@@ -110,6 +127,11 @@ export class UpdateRuleDto {
   @IsString()
   @MaxLength(256)
   headerValue?: string;
+
+  /** Nullable: `null` clears the class (see CreateRuleDto). */
+  @IfDefinedNonNull()
+  @IsIn(WORKLOAD_CLASSES)
+  workloadClass?: WorkloadClass | null;
 
   @IfDefined()
   @IsString()

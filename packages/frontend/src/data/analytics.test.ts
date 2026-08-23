@@ -182,7 +182,7 @@ describe('filterToRequestParams', () => {
       decisionLayers: ['explicit', 'header', 'default'],
     });
     expect(filterToRequestParams('auto')).toEqual({
-      decisionLayers: ['structural', 'semantic', 'cascade'],
+      decisionLayers: ['structural', 'workload', 'semantic', 'cascade'],
     });
     expect(filterToRequestParams('fallback')).toEqual({ status: 'fallback' });
     expect(filterToRequestParams('escalated')).toEqual({ escalated: true });

@@ -56,10 +56,12 @@ response bodies unless you opt in.
   model, escalate on a failed quality check). Every smart layer **degrades to
   explicit/default** — a request never fails because routing tried to be clever.
   Every `auto` request Layer 1 evaluates also records a **workload** class (`code` /
-  `vision` / `structured` / `none`) from the same structural features — telemetry
-  only today (the inspector chip + the Auto-performance "Workload mix"); structural
-  detection covers code, vision, and structured output within L1's bounded scan, and
-  research / writing arrive with the semantic workload source in a later change.
+  `vision` / `structured` / `none`) from the same structural features, and a
+  **Workload target** (an `auto_workload` rule: class → tier or model) sends that class
+  straight to its own chain, ahead of band targets, L2, and the cascade — classification
+  alone changes nothing; only a configured target routes. Structural detection covers
+  code, vision, and structured output within L1's bounded scan; research / writing arrive
+  with the semantic workload source in a later change.
 - **Safe mid-stream semantics** — fallbacks happen freely _before_ the first token; once
   streaming has begun the model is committed, and an upstream failure terminates the
   stream with a clear error. Models are **never silently swapped mid-response**.
@@ -99,9 +101,12 @@ response bodies unless you opt in.
   model/provider/agent, per-agent usage with one-click key rotation, provider health &
   catalog sync, routing configuration, and the **decision inspector** — every request
   shows its decision layer and human-readable routing reason, tokens, snapshot-priced
-  cost, and latency (plus its **workload** class when `auto` classified it). The Routing
-  page's **Auto performance** card adds a **Workload mix** block — what kinds of work `auto`
-  carried and what each cost, with unpriced / coverage / classifier-revision disclosures.
+  cost, and latency (plus its **workload** class when `auto` classified it, marked `routed`
+  when a Workload target claimed it). The Routing page's **Workload targets** card binds
+  each detected class to a tier or model (reserved semantic-only classes shown read-only),
+  and its **Auto performance** card adds a **Workload mix** block — what kinds of work `auto`
+  carried, how many of each a Workload target routed, and what each cost, with unpriced /
+  coverage / classifier-revision disclosures.
 - **Accessible by design**: fully keyboard-operable (real buttons, visible focus, honest
   dialog semantics), WCAG-checked contrast, `prefers-reduced-motion` support — all
   enforced by regression test suites, with the visual language pinned in
@@ -151,17 +156,22 @@ Precedence order, first match wins:
 1. **Explicit model** in the request body — always honored.
 2. **`x-polyrouter-tier` header** → that tier's chain.
 3. **Dashboard header rules** on other headers → their target tier or model.
-4. **`model: "auto"`** → enabled smart layers (L1 structural → L3 cascade) — they engage
-   only once nothing above matched.
+4. **`model: "auto"`** → enabled smart layers — they engage only once nothing above
+   matched, in this order: a **Workload target** for the request's detected class (if one
+   is configured and resolves), then L1 structural band targets → L2 semantic (optional)
+   → L3 cascade.
 5. **`default` tier** — the guaranteed catch-all.
 
 Whatever layer decides, the tier's fallback chain applies on provider failure, budgets are
 enforced, and the decision (`decision_layer` + `routing_reason`) is recorded for the
 inspector. If a smart layer is unavailable, `auto` silently degrades to the default tier.
 Every `auto` request Layer 1 evaluates additionally records a **workload** class
-(`code` / `vision` / `structured` / `none`) beside the decision — **telemetry only**: it
-changes nothing in the order above, and an explicit `model: <tier-key>` (e.g. a `coding`
-tier you created) remains the way to steer work to a specialist tier today.
+(`code` / `vision` / `structured` / `none`) beside the decision. The class itself routes
+nothing; a **Workload target** you configure for it does — the request is then served by
+that tier or model with `decision_layer = workload`, and its band verdict is still recorded
+but never acted on. Without a target (or with an unusable one) the request follows the
+band / cascade / default path exactly as before; `none` is never routable; and an explicit
+`model: <tier-key>` (e.g. a `coding` tier you created) keeps working as it always did.
 
 ## Architecture
 
@@ -397,7 +407,7 @@ healthcheck:
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` / `SMTP_SECURE`                       | unset (`PORT` 587, `SECURE` starttls) | Server-wide SMTP for password-reset **and invite** email — **active only when both `SMTP_HOST` and `SMTP_FROM` are set; otherwise password reset silently never sends and invites must be delivered by copying the link.** Rely on OAuth if you don't set it                                                                                                                                                                                                                                                  |
 | `ROUTING_AUTO_LAYERS`                                                                                     | `structural`                          | Which smart-routing layers are on. **Cascade (cheap→escalate) is OFF until you set `structural,cascade`** — the dashboard toggle just shows it greyed out otherwise                                                                                                                                                                                                                                                                                                                                           |
 | `ROUTING_STRUCTURAL_WEIGHTS`                                                                              | built-ins                             | JSON override for the Layer-1 classifier. Ambient keys (`size` `code` `tools` `schema` `depth` `multimodal` `maxTokens`) merge over the defaults and normalize to sum 1; the `reasoning` key is the declared-hint adjustment magnitude in `[0, 0.5]` (default `0.1`), NOT normalized. A declared `reasoning_effort`/`thinking` steers the score; a maximal declaration routes `auto_high` directly                                                                                                            |
-| `ROUTING_WORKLOAD_THRESHOLDS`                                                                             | built-ins                             | JSON override for the structural **workload** classifier (telemetry only — no routing change): `codeShare` in `(0, 1]` (default `0.3`) and integer `codeMinChars ≥ 0` (default `200`). An `auto` request records workload `code` when fenced code is at least that share of the scanned window AND at least that many chars; `vision` (an image block) and `structured` (a declared JSON output format) are binary. Unknown keys / out-of-range values fail boot.                                             |
+| `ROUTING_WORKLOAD_THRESHOLDS`                                                                             | built-ins                             | JSON override for the structural **workload** classifier (detection only — routing happens through a configured Workload target): `codeShare` in `(0, 1]` (default `0.3`) and integer `codeMinChars ≥ 0` (default `200`). An `auto` request records workload `code` when fenced code is at least that share of the scanned window AND at least that many chars; `vision` (an image block) and `structured` (a declared JSON output format) are binary. Unknown keys / out-of-range values fail boot.          |
 | `CALIBRATION_SCHED_ENABLED` / `CALIBRATION_SCHED_CRON`                                                    | `true` / `0 4 * * *`                  | The per-tenant threshold-calibration sweep (opt-in PER TENANT from the Routing page; this pair gates the background worker instance-wide)                                                                                                                                                                                                                                                                                                                                                                     |
 | `CALIBRATION_WINDOW_DAYS` / `CALIBRATION_MIN_EDGE_SAMPLES` / `CALIBRATION_STEP` / `CALIBRATION_MAX_DRIFT` | `14` / `50` / `0.02` / `0.1`          | Calibration rails: evidence window, minimum fresh edge-zone samples (hard floor 50 — only raisable), bounded per-run step, and the max total drift from the instance thresholds. Every move is audited and one click from reverted                                                                                                                                                                                                                                                                            |
 | `BUDGET_FAIL_OPEN`                                                                                        | `true`                                | On a Redis/enforcement fault, block budgets **admit** the request (availability-first). Set `false` for a hard cap that returns `503` instead                                                                                                                                                                                                                                                                                                                                                                 |

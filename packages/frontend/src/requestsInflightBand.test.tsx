@@ -30,7 +30,11 @@ const flush = async (): Promise<void> => {
 
 /** Rows carry no id attribute in the DOM, so the model label is how a specific live row
  *  is identified on screen — make it unique per fixture row. */
-const row = (id: string, layer = 'explicit', phase: InflightPhase = 'live'): InflightDisplayRow => ({
+const row = (
+  id: string,
+  layer = 'explicit',
+  phase: InflightPhase = 'live',
+): InflightDisplayRow => ({
   phase,
   id,
   startedAt: Date.now(),
@@ -64,7 +68,15 @@ async function mountRequests(fake = new FakeApiClient({})): Promise<{
     .find((e) => e.textContent?.trim() === 'Requests')
     ?.click();
   await flush();
-  return { host, store, fake, dispose: () => { dispose(); host.remove(); } };
+  return {
+    host,
+    store,
+    fake,
+    dispose: () => {
+      dispose();
+      host.remove();
+    },
+  };
 }
 
 /** Every row rendered in the table — band and list together, in DOM order. */
@@ -83,7 +95,12 @@ afterEach(() => {
 // The projection, tested purely — no page, no store, no async.
 // ---------------------------------------------------------------------------
 describe('projectInflightRows', () => {
-  const rows = [row('a', 'explicit'), row('b', 'structural'), row('c', 'semantic')];
+  const rows = [
+    row('a', 'explicit'),
+    row('b', 'structural'),
+    row('c', 'semantic'),
+    row('d', 'workload'), // add-workload-routing: a claimed request is an auto request
+  ];
   const none = new Set<string>();
 
   it('passes everything through under the all filter', () => {
@@ -91,6 +108,7 @@ describe('projectInflightRows', () => {
       'a',
       'b',
       'c',
+      'd',
     ]);
   });
 
@@ -102,7 +120,7 @@ describe('projectInflightRows', () => {
     // bug in the paginated query dropped. Deriving from the shared mapping is what keeps
     // the band and the list agreeing about that.
     expect(projectInflightRows(rows, none, filterToRequestParams('auto')).map((r) => r.id)).toEqual(
-      ['b', 'c'],
+      ['b', 'c', 'd'],
     );
   });
 
@@ -117,13 +135,13 @@ describe('projectInflightRows', () => {
   it('drops a row whose durable counterpart is already visible', () => {
     expect(
       projectInflightRows(rows, new Set(['b']), filterToRequestParams('all')).map((r) => r.id),
-    ).toEqual(['a', 'c']);
+    ).toEqual(['a', 'c', 'd']);
   });
 
   it('does not mutate its input — the shared set must survive one surface hiding a row', () => {
     const input = [...rows];
-    projectInflightRows(input, new Set(['a', 'b', 'c']), filterToRequestParams('escalated'));
-    expect(input.map((r) => r.id)).toEqual(['a', 'b', 'c']);
+    projectInflightRows(input, new Set(['a', 'b', 'c', 'd']), filterToRequestParams('escalated'));
+    expect(input.map((r) => r.id)).toEqual(['a', 'b', 'c', 'd']);
   });
 });
 
@@ -271,8 +289,11 @@ describe('a stale in-flight snapshot cannot overwrite newer state', () => {
 
   /** A fake whose `inflight()` calls are resolved individually, in any order. */
   class OrderedInflightClient extends FakeApiClient {
-    readonly pending: ((v: { items: InflightRow[]; available: boolean; truncated: boolean }) => void)[] =
-      [];
+    readonly pending: ((v: {
+      items: InflightRow[];
+      available: boolean;
+      truncated: boolean;
+    }) => void)[] = [];
     override inflight(): Promise<{ items: InflightRow[]; available: boolean; truncated: boolean }> {
       return new Promise((resolve) => this.pending.push(resolve));
     }

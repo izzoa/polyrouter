@@ -49,6 +49,7 @@ import { BudgetService } from '../../src/budgets/budget-service';
 import { StreamDrainRegistry } from '../../src/proxy/stream-drain.registry';
 import { StructuralBaselineStore } from '../../src/proxy/structural/structural-baseline.store';
 import { StructuralRouter } from '../../src/proxy/structural/structural-router';
+import { WorkloadRouter } from '../../src/proxy/workload/workload-router';
 import { CascadeRouter } from '../../src/proxy/cascade/cascade-router';
 import { RecordingModule } from '../../src/recording/recording.module';
 import { ObservabilityModule } from '../../src/observability/observability.module';
@@ -118,6 +119,7 @@ async function buildApp(): Promise<{ app: INestApplication; server: App }> {
       },
       StreamDrainRegistry,
       StructuralRouter,
+      WorkloadRouter,
       CascadeRouter,
       {
         provide: NotificationProducers,
@@ -265,6 +267,7 @@ describe('structural routing e2e', () => {
     structuralBand: string | null;
     structuralScore: number | null;
     structuralBandSource: string | null;
+    structuralEpoch: number | null;
     workloadClass: string | null;
     workloadScore: number | null;
     workloadSource: string | null;
@@ -601,5 +604,263 @@ describe('structural routing e2e', () => {
     // The same request with the seam restored serves and records the quad.
     await send(body({ system: 'sysRefuse', userChars: 9_000 }));
     expect((await lastLog()).workloadClass).toBe('none');
+  });
+
+  // ── Workload routing (add-workload-routing) ───────────────────────────────
+
+  /** Bind ONE workload class to `tier:<key>` for the duration of `fn` — the
+   * rule is removed afterwards so every other scenario sees today's config. */
+  // lastLog() reads ONE row — clear between sends inside a scenario.
+  const clearLogs = (): Promise<unknown> =>
+    pool.query('DELETE FROM request_log WHERE owner_user_id = $1', [userId]);
+  async function withWorkloadRule(
+    cls: string,
+    target: string,
+    fn: () => Promise<void>,
+  ): Promise<void> {
+    await clearLogs();
+    const rule = await port.routingRules.insert(principal, {
+      matchType: 'auto_workload',
+      headerName: 'x-polyrouter-tier',
+      headerValue: null,
+      workloadClass: cls,
+      target,
+      priority: 0,
+    });
+    try {
+      await fn();
+    } finally {
+      await port.routingRules.remove(principal, rule.id);
+    }
+  }
+
+  it('workload routing: a code request is CLAIMED by the auto_workload code rule before the band target (decision_layer=workload)', async () => {
+    // The coding tier points at the CHEAP model while the structural band is
+    // HIGH (→ premium): a claim is visible as cheap-with-a-high-band.
+    const coding = await port.tiers.insert(principal, { key: 'coding' });
+    await port.routingEntries.replaceForTier(principal, coding.id, [idCheap]);
+    try {
+      await withWorkloadRule('code', 'tier:coding', async () => {
+        await send(body({ system: 'sysClaim', userChars: 9_000, code: true, tools: 8 }));
+        const row = await lastLog();
+        expect(row.decisionLayer).toBe('workload');
+        expect(row.modelId).toBe(idCheap); // the claim's target, NOT the auto_high premium
+        // The reason is the verdict fragment — never a prompt byte.
+        expect(row.routingReason).toMatch(/^workload:code/);
+        expect(row.routingReason).not.toContain('structural:');
+        // Telemetry: BOTH verdicts from the one classification — the band is
+        // classified (columns intact) even though its target was never consulted.
+        expect(row.structuralBand).toBe('high');
+        expect(row.structuralScore).toBeGreaterThanOrEqual(0.6);
+        expect(row.structuralEpoch).not.toBeNull(); // the calibration epoch commits with the quad
+        expect(row.workloadClass).toBe('code');
+        expect(row.workloadSource).toBe('structural');
+        expect(row.workloadRevision).toMatch(REV);
+      });
+      // The rule gone → the same SHAPE of request (a fresh system prompt, so
+      // the per-agent baseline learned above does not de-escalate it) rides
+      // the band to premium again (unchanged W-1 behavior).
+      await clearLogs();
+      await send(body({ system: 'sysClaimAfter', userChars: 9_000, code: true, tools: 8 }));
+      const after = await lastLog();
+      expect(after.decisionLayer).toBe('structural');
+      expect(after.modelId).toBe(idPremium);
+      expect(after.workloadClass).toBe('code');
+    } finally {
+      await port.tiers.remove(principal, coding.id);
+    }
+  });
+
+  it('workload routing: Layer 0 (explicit model, x-polyrouter-tier header) still outranks a configured workload rule', async () => {
+    await withWorkloadRule('code', 'tier:cheap', async () => {
+      // Header-forced auto → the header tier wins; the smart layers never run.
+      await send(body({ system: 'sysPrec', userChars: 9_000, code: true, tools: 8 }), 'premium');
+      const forced = await lastLog();
+      expect(forced.decisionLayer).toBe('header');
+      expect(forced.modelId).toBe(idPremium);
+      expect(forced.workloadClass).toBeNull();
+      // Explicit model → explicit.
+      await clearLogs();
+      await send({
+        ...body({ system: 'sysPrec', userChars: 9_000, code: true }),
+        model: 'gpt-4o-hi',
+      });
+      const explicit = await lastLog();
+      expect(explicit.decisionLayer).toBe('explicit');
+      expect(explicit.modelId).toBe(idPremium);
+      expect(explicit.workloadClass).toBeNull();
+    });
+  });
+
+  it('workload routing: `none` never claims; an unresolvable workload target falls through to the band', async () => {
+    await withWorkloadRule('code', 'tier:cheap', async () => {
+      // No fenced code → `none` → the rule is inert; the band decides as before.
+      await send(body({ system: 'sysNone', userChars: 9_000, tools: 8 }));
+      const none = await lastLog();
+      expect(none.decisionLayer).toBe('structural');
+      expect(none.modelId).toBe(idPremium);
+      expect(none.workloadClass).toBe('none');
+    });
+    // The rule targets a tier that does not exist (write-time validation
+    // bypassed at the port) → no claim, band target stands, verdict recorded.
+    await withWorkloadRule('code', 'tier:ghost', async () => {
+      await send(body({ system: 'sysGhost', userChars: 9_000, code: true, tools: 8 }));
+      const row = await lastLog();
+      expect(row.decisionLayer).toBe('structural');
+      expect(row.modelId).toBe(idPremium);
+      expect(row.routingReason).toContain('structural:high');
+      expect(row.workloadClass).toBe('code');
+      expect(row.workloadRevision).toMatch(REV);
+    });
+  });
+
+  it('workload routing: a claim fault degrades to the unclaimed flow; a band-resolution fault commits NO telemetry (atomic)', async () => {
+    await withWorkloadRule('code', 'tier:cheap', async () => {
+      const claim = jest.spyOn(app.get(WorkloadRouter), 'claim').mockImplementationOnce(() => {
+        throw new Error('claim boom');
+      });
+      try {
+        await send(body({ system: 'sysFault', userChars: 9_000, code: true, tools: 8 }));
+        expect(claim).toHaveBeenCalledTimes(1);
+        const row = await lastLog();
+        expect(row.decisionLayer).toBe('structural'); // unclaimed → band → premium
+        expect(row.modelId).toBe(idPremium);
+        expect(row.workloadClass).toBe('code'); // the verdicts still commit via the band path
+        expect(row.structuralBand).toBe('high');
+      } finally {
+        claim.mockRestore();
+      }
+    });
+    // Band resolution faults (no claim: no workload rule, a high non-code
+    // request) → `skip` → decision default, ALL verdict columns null — the
+    // pre-split whole-evaluate semantics, nothing fabricated.
+    const structural = app.get(StructuralRouter) as unknown as { bandTargetOf: () => unknown };
+    const band = jest.spyOn(structural, 'bandTargetOf').mockImplementationOnce(() => {
+      throw new Error('band boom');
+    });
+    try {
+      await clearLogs();
+      await send(body({ system: 'sysBandFault', userChars: 9_000, tools: 8 }));
+      expect(band).toHaveBeenCalledTimes(1);
+      const row = await lastLog();
+      expect(row.decisionLayer).toBe('default');
+      expect(row.modelId).toBe(idDefault);
+      expect(row.structuralBand).toBeNull();
+      expect(row.structuralScore).toBeNull();
+      expect(row.structuralEpoch).toBeNull(); // atomic: the epoch clears with the verdicts
+      expect(row.workloadClass).toBeNull();
+      expect(row.workloadRevision).toBeNull();
+    } finally {
+      band.mockRestore();
+    }
+  });
+
+  it('workload routing: vision and structured claims (the precedence order of the classifier decides the ONE class)', async () => {
+    await withWorkloadRule('vision', 'tier:cheap', async () => {
+      await send({
+        model: 'auto',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'describe this' },
+              { type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw0KGgo=' } },
+            ],
+          },
+        ],
+      });
+      const row = await lastLog();
+      expect(row.decisionLayer).toBe('workload');
+      expect(row.modelId).toBe(idCheap);
+      expect(row.routingReason).toMatch(/^workload:vision/);
+      expect(row.workloadClass).toBe('vision');
+    });
+    // A structured request with ONLY a vision rule configured → `structured`
+    // has no rule → unclaimed → default (a tiny request: ambiguous/low band).
+    await withWorkloadRule('vision', 'tier:cheap', async () => {
+      await send({
+        model: 'auto',
+        response_format: { type: 'json_object' },
+        messages: [{ role: 'user', content: 'give me json' }],
+      });
+      const row = await lastLog();
+      expect(row.decisionLayer).not.toBe('workload');
+      expect(row.workloadClass).toBe('structured');
+    });
+  });
+
+  it('workload routing: a claim outranks a DECLARED-max high band too (not counted unroutable); band resolution is never called for a claimed request', async () => {
+    const structural = app.get(StructuralRouter);
+    const resolveBand = jest.spyOn(structural, 'resolveBand');
+    try {
+      await withWorkloadRule('code', 'tier:cheap', async () => {
+        await send({
+          ...body({ system: 'sysDeclared', userChars: 400, code: true }),
+          reasoning_effort: 'high',
+        });
+        const row = await lastLog();
+        expect(row.structuralBand).toBe('high');
+        expect(row.structuralBandSource).toBe('declared');
+        expect(row.decisionLayer).toBe('workload'); // a 'workload' row is never an unroutable 'default' row
+        expect(row.modelId).toBe(idCheap);
+        expect(row.workloadClass).toBe('code');
+        // Band resolution NEVER happens for a claimed request (not merely ignored).
+        expect(resolveBand).toHaveBeenCalledTimes(0);
+      });
+      // Unclaimed (no rule) → exactly one band resolution.
+      await clearLogs();
+      await send(body({ system: 'sysDeclaredAfter', userChars: 400, code: true }));
+      expect(resolveBand).toHaveBeenCalledTimes(1);
+    } finally {
+      resolveBand.mockRestore();
+    }
+  });
+
+  it('workload routing: an EMPTY-tier target and a RESERVED-class rule leave the flow byte-identical', async () => {
+    const empty = await port.tiers.insert(principal, { key: 'emptyw' }); // no models
+    try {
+      await withWorkloadRule('code', 'tier:emptyw', async () => {
+        await send(body({ system: 'sysEmpty', userChars: 9_000, code: true, tools: 8 }));
+        const row = await lastLog();
+        expect(row.decisionLayer).toBe('structural');
+        expect(row.modelId).toBe(idPremium);
+        expect(row.routingReason).toContain('structural:high');
+        expect(row.workloadClass).toBe('code');
+      });
+    } finally {
+      await port.tiers.remove(principal, empty.id);
+    }
+    // `research` is reserved for the semantic source — the structural source
+    // never emits it, so the rule is inert (no claim, no error).
+    await withWorkloadRule('research', 'tier:cheap', async () => {
+      await send(body({ system: 'sysReserved', userChars: 9_000, code: true, tools: 8 }));
+      const row = await lastLog();
+      expect(row.decisionLayer).toBe('structural');
+      expect(row.modelId).toBe(idPremium);
+      expect(row.workloadClass).toBe('code');
+    });
+  });
+
+  it('workload routing: with the structural layer disabled a configured workload rule does nothing (no verdict → no claim)', async () => {
+    process.env['ROUTING_AUTO_LAYERS'] = '';
+    const disabled = await buildApp();
+    try {
+      await withWorkloadRule('code', 'tier:cheap', async () => {
+        const res = await request(disabled.server)
+          .post('/v1/chat/completions')
+          .set('Authorization', `Bearer ${key}`)
+          .send(body({ system: 'sysOffW', userChars: 9_000, code: true, tools: 8 }));
+        expect(res.status).toBe(200);
+        await disabled.app.get(LogWriter).flush();
+        const row = await lastLog();
+        expect(row.decisionLayer).toBe('default');
+        expect(row.modelId).toBe(idDefault);
+        expect(row.workloadClass).toBeNull();
+        expect(row.structuralBand).toBeNull();
+      });
+    } finally {
+      await disabled.app.close();
+      process.env['ROUTING_AUTO_LAYERS'] = 'structural';
+    }
   });
 });

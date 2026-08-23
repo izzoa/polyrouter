@@ -35,6 +35,7 @@ const cls = (
   unpricedRequests: 0,
   unpricedAttempts: 0,
   spendUsd,
+  routed: 0,
   ...over,
 });
 
@@ -209,5 +210,32 @@ describe('Inspector workload chip (add-workload-telemetry 5.1)', () => {
     expect(seen).toContain('workload · code (structural)');
     expect(seen).toContain('no specialist workload (structural)');
     expect(seen).toContain(null); // a never-classified row shows no chip
+  });
+
+  it('a workload-ROUTED row reads `router · workload` and the chip says routed; a classified-only row does not (add-workload-routing)', async () => {
+    h = await mount({}, 'Requests');
+    const idx = h.store.state.requestList.findIndex((r) => r.workloadClass === 'code');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    const open = async (): Promise<{ router: string; chip: string | null }> => {
+      const buttons = [...h!.host.querySelectorAll<HTMLButtonElement>('button.req-row')];
+      buttons[idx]!.click();
+      await flush();
+      const drawer = h!.host.querySelector('#inspector-drawer')!;
+      const router =
+        [...drawer.querySelectorAll<HTMLElement>('*')]
+          .map((e) => e.textContent ?? '')
+          .find((t) => /^router · \w+$/.test(t.trim())) ?? '';
+      const chip = drawer.querySelector('[data-testid="workload-chip"]')?.textContent ?? null;
+      drawer.querySelector<HTMLButtonElement>('button')?.click();
+      await flush();
+      return { router: router.trim(), chip };
+    };
+    const before = await open();
+    expect(before.chip).toBe('workload · code (structural)');
+    expect(before.router).not.toBe('router · workload');
+    h.store.setState('requestList', idx, 'decisionLayer', 'workload');
+    const after = await open();
+    expect(after.router).toBe('router · workload');
+    expect(after.chip).toBe('workload · code (structural) · routed');
   });
 });

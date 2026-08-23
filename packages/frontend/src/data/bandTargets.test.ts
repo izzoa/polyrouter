@@ -11,6 +11,7 @@ function rule(over: Partial<RuleDto>): RuleDto {
   return {
     id: 'r1',
     matchType: 'auto_high',
+    workloadClass: null,
     headerName: 'x-polyrouter-tier',
     headerValue: null,
     target: 'tier:premium',

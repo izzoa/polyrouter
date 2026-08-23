@@ -1,0 +1,4 @@
+ALTER TABLE "routing_rule" ADD COLUMN "workload_class" text;--> statement-breakpoint
+ALTER TABLE "routing_rule" ADD CONSTRAINT "routing_rule_workload_class_pairing" CHECK (("routing_rule"."match_type" = 'auto_workload') = ("routing_rule"."workload_class" IS NOT NULL)) NOT VALID;--> statement-breakpoint
+ALTER TABLE "routing_rule" ADD CONSTRAINT "routing_rule_workload_class_valid" CHECK ("routing_rule"."workload_class" IS NULL OR "routing_rule"."workload_class" IN ('code', 'research', 'vision', 'structured', 'writing')) NOT VALID;--> statement-breakpoint
+ALTER TABLE "routing_rule" ADD CONSTRAINT "routing_rule_workload_no_header_value" CHECK ("routing_rule"."match_type" <> 'auto_workload' OR "routing_rule"."header_value" IS NULL) NOT VALID;

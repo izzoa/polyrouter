@@ -68,6 +68,7 @@ import { BudgetService } from '../../src/budgets/budget-service';
 import { StreamDrainRegistry } from '../../src/proxy/stream-drain.registry';
 import { StructuralBaselineStore } from '../../src/proxy/structural/structural-baseline.store';
 import { StructuralRouter } from '../../src/proxy/structural/structural-router';
+import { WorkloadRouter } from '../../src/proxy/workload/workload-router';
 import { CascadeRouter } from '../../src/proxy/cascade/cascade-router';
 import { RecordingModule } from '../../src/recording/recording.module';
 import { ObservabilityModule } from '../../src/observability/observability.module';
@@ -101,10 +102,18 @@ function basis(i: number): Float32Array {
  * (the classifier runs them through the extractor), so this mirrors the live
  * path exactly.
  */
+/** Every embed() call across the suite — the workload-routing scenario asserts
+ * that a claimed request never reaches Layer 2 (no embedding at all). */
+let embedCalls = 0;
+
 function controlledEmbedder(): Embedder & { readonly saturated: boolean } {
   const serialize = (text: string): string =>
     extractSemanticInput(
-      { model: 'auto', messages: [{ role: 'user', content: [{ type: 'text', text }] }], params: {} },
+      {
+        model: 'auto',
+        messages: [{ role: 'user', content: [{ type: 'text', text }] }],
+        params: {},
+      },
       { totalChars: 2000 },
     );
   const highSet = new Set(HIGH_ANCHORS.map(serialize));
@@ -114,6 +123,7 @@ function controlledEmbedder(): Embedder & { readonly saturated: boolean } {
     dims: DIMS,
     saturated: false,
     embed(text: string): Promise<Float32Array> {
+      embedCalls += 1;
       if (highSet.has(text) || text.includes(ESCALATE)) return Promise.resolve(basis(0));
       if (lowSet.has(text) || text.includes(TRIVIAL)) return Promise.resolve(basis(1));
       return Promise.resolve(basis(2));
@@ -215,6 +225,7 @@ async function buildApp(): Promise<{ app: INestApplication; server: App }> {
       AutoLayersService,
       StreamDrainRegistry,
       StructuralRouter,
+      WorkloadRouter,
       CascadeRouter,
       {
         provide: NotificationProducers,
@@ -228,11 +239,15 @@ async function buildApp(): Promise<{ app: INestApplication; server: App }> {
       { provide: PROXY_ADAPTER_FACTORY, useValue: createProviderAdapter },
       { provide: PROXY_BREAKER, useValue: new CircuitBreaker(new InMemoryBreakerStore()) },
       { provide: ROUTING_CONFIG, useFactory: loadRoutingConfig },
-      { provide: CALIBRATION_RAILS, useFactory: (): CalibrationRails => railsOf(loadCalibrationConfig()) },
+      {
+        provide: CALIBRATION_RAILS,
+        useFactory: (): CalibrationRails => railsOf(loadCalibrationConfig()),
+      },
       {
         provide: StructuralBaselineStore,
         inject: [REDIS_CLIENT],
-        useFactory: (redis: Redis): StructuralBaselineStore => new StructuralBaselineStore(redis, HMAC),
+        useFactory: (redis: Redis): StructuralBaselineStore =>
+          new StructuralBaselineStore(redis, HMAC),
       },
       { provide: APP_FILTER, useClass: ProxyExceptionFilter },
       { provide: APP_GUARD, useClass: PermissivePrincipalGuard },
@@ -294,7 +309,11 @@ describe('Layer-2 semantic routing e2e', () => {
     });
     const mk = async (ext: string): Promise<string> =>
       (await port.models.createForProvider(principal, provider.id, { externalModelId: ext }))!.id;
-    const model = { default: await mk('gpt-4o'), strong: await mk('gpt-4o-hi'), cheap: await mk('gpt-4o-mini') };
+    const model = {
+      default: await mk('gpt-4o'),
+      strong: await mk('gpt-4o-hi'),
+      cheap: await mk('gpt-4o-mini'),
+    };
     await port.ensureDefaultTier(principal);
     const def = (await port.tiers.list(principal)).find((t) => t.key === 'default')!;
     await port.routingEntries.replaceForTier(principal, def.id, [model.default]);
@@ -529,5 +548,57 @@ describe('Layer-2 semantic routing e2e', () => {
         .set('x-test-user', T.userId)
         .send({ structural: true, cascade: true, semantic: true });
     }
+  });
+
+  it('a workload-routed request never reaches Layer 2: no embed, semantic columns null (add-workload-routing)', async () => {
+    const codeBody = (system: string): Record<string, unknown> => ({
+      model: 'auto',
+      messages: [
+        { role: 'system', content: system },
+        // L1-AMBIGUOUS window (~8k chars, one tool) with ≥30% fenced code → `code`.
+        { role: 'user', content: 'Z'.repeat(5_000) + '\n```\n' + 'x'.repeat(3_000) + '\n```' },
+      ],
+      tools: [
+        {
+          type: 'function',
+          function: {
+            name: 'f',
+            parameters: { type: 'object', properties: { q: { type: 'string' } } },
+          },
+        },
+      ],
+    });
+    const rule = await port.routingRules.insert(T.principal, {
+      matchType: 'auto_workload',
+      headerName: 'x-polyrouter-tier',
+      headerValue: null,
+      workloadClass: 'code',
+      target: 'tier:cheap',
+      priority: 0,
+    });
+    try {
+      const before = embedCalls;
+      await proxy(T, codeBody('sem-wl'));
+      const row = await lastRow(T);
+      expect(row.decisionLayer).toBe('workload');
+      expect(row.modelId).toBe(T.model.cheap);
+      expect(row.routingReason).toMatch(/^workload:code/);
+      expect(row.semanticBand).toBeNull();
+      expect(row.semanticScore).toBeNull();
+      expect(row.semanticSource).toBeNull();
+      expect(row.semanticRevision).toBeNull();
+      expect(embedCalls).toBe(before); // Layer 2 was never consulted
+    } finally {
+      await port.routingRules.remove(T.principal, rule.id);
+    }
+    // Control: the SAME shape without the rule is L1-ambiguous and DOES reach
+    // Layer 2 (an embed happens) — so the scenario above proves pre-emption,
+    // not merely an L1-confident short-circuit.
+    const before = embedCalls;
+    await proxy(T, codeBody('sem-wl-control'));
+    const control = await lastRow(T);
+    expect(control.structuralBand).toBe('ambiguous');
+    expect(control.decisionLayer).not.toBe('workload');
+    expect(embedCalls).toBeGreaterThan(before);
   });
 });

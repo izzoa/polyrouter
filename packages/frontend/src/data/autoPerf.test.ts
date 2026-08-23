@@ -119,6 +119,74 @@ describe('toAutoPerfVm', () => {
     expect(vm.cascadeIsResidual).toBe(false); // nothing diverted from cascade
   });
 
+  it('workload routing makes the cascade residual too, names its cause, and totals routed (add-workload-routing)', () => {
+    const wm = (routedCode: number, routedVision: number): AutoPerformance['workloadMix'] => ({
+      evaluated: 10,
+      unclassified: 0,
+      since: '2026-07-01T00:00:00.000Z',
+      revisions: [],
+      classes: [
+        {
+          class: 'code',
+          requests: 6,
+          unpricedRequests: 0,
+          unpricedAttempts: 0,
+          spendUsd: 1,
+          routed: routedCode,
+        },
+        {
+          class: 'vision',
+          requests: 2,
+          unpricedRequests: 0,
+          unpricedAttempts: 0,
+          spendUsd: 0,
+          routed: routedVision,
+        },
+        {
+          class: 'none',
+          requests: 2,
+          unpricedRequests: 0,
+          unpricedAttempts: 0,
+          spendUsd: 0,
+          routed: 0,
+        },
+      ],
+    });
+    const unrouted = toAutoPerfVm(
+      fixture({
+        semantic: {
+          evaluated: 0,
+          routed: { high: 0, low: 0 },
+          outcomes: { success: 0, fallback: 0, error: 0, cancelled: 0 },
+          source: { bundled: 0, learned: 0 },
+        },
+        workloadMix: wm(0, 0),
+      }),
+    )!;
+    expect(unrouted.workloadRouted).toBe(0);
+    expect(unrouted.cascadeIsResidual).toBe(false);
+    expect(unrouted.residualCauses).toEqual({ semantic: false, workload: false });
+    const routed = toAutoPerfVm(
+      fixture({
+        semantic: {
+          evaluated: 0,
+          routed: { high: 0, low: 0 },
+          outcomes: { success: 0, fallback: 0, error: 0, cancelled: 0 },
+          source: { bundled: 0, learned: 0 },
+        },
+        workloadMix: wm(4, 1),
+      }),
+    )!;
+    expect(routed.workloadRouted).toBe(5);
+    expect(routed.cascadeIsResidual).toBe(true); // claimed requests never cascade
+    expect(routed.residualCauses).toEqual({ semantic: false, workload: true });
+    expect(routed.workload?.rows.map((r) => [r.class, r.routed])).toEqual([
+      ['code', 4],
+      ['vision', 1],
+      ['none', 0],
+    ]);
+  });
+
   it('rates are 0% (not NaN) when no cascade traffic exists', () => {
     const vm = toAutoPerfVm(
       fixture({
@@ -390,6 +458,7 @@ describe('toWorkloadVm (add-workload-telemetry D7)', () => {
     unpricedRequests: 0,
     unpricedAttempts: 0,
     spendUsd,
+    routed: 0,
     ...over,
   });
 

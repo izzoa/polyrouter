@@ -69,61 +69,69 @@ function modelLabel(m: Model): string {
   return m.displayName ?? m.externalModelId;
 }
 
+/** The catalog slice a target literal resolves against (shared by the band
+ * and workload cards — add-workload-routing). */
+export interface TargetCatalog {
+  tiers: TierDto[];
+  tierEntries: Record<string, TierEntryDto[]>;
+  models: Model[];
+  providers: Provider[];
+}
+
+/** Resolve ONE `tier:<key>` / `model:<id>` literal to its display state —
+ * the same rules for every rule-backed target on the Routing page. */
+export function resolveTargetState(input: TargetCatalog, literal: string): BandTargetState {
+  const parsed = parseRoutingTarget(literal);
+  if (parsed === null) return { kind: 'unresolved', literal, parsed: 'malformed' };
+  if (parsed.kind === 'tier') {
+    const tier = input.tiers.find((t) => t.key === parsed.key);
+    // Late-bound by key (routing-config contract): recreating the key
+    // rebinds — until then the literal is shown.
+    if (tier === undefined) return { kind: 'unresolved', literal, parsed: 'tier' };
+    const entries = [...(input.tierEntries[tier.id] ?? [])].sort((a, b) => a.position - b.position);
+    const primaryEntry = entries[0];
+    const primaryModel =
+      primaryEntry === undefined
+        ? undefined
+        : (input.models.find((m) => m.id === primaryEntry.modelId) ?? undefined);
+    return {
+      kind: 'tier',
+      key: parsed.key,
+      isDefault: parsed.key === 'default',
+      primary:
+        primaryEntry === undefined
+          ? null
+          : primaryModel !== undefined
+            ? modelLabel(primaryModel)
+            : (primaryEntry.model?.externalModelId ?? primaryEntry.modelId),
+      fallbacks: Math.max(0, entries.length - 1),
+      empty: entries.length === 0,
+    };
+  }
+  const model = input.models.find((m) => m.id === parsed.id);
+  if (model === undefined) return { kind: 'unresolved', literal, parsed: 'model' };
+  return {
+    kind: 'model',
+    label: modelLabel(model),
+    provider: input.providers.find((p) => p.id === model.providerId)?.name ?? null,
+    model,
+  };
+}
+
+/** A target steers something routable (not unset/empty/unresolved) — mirrors
+ * the resolver's success condition. */
+export function targetUsable(target: BandTargetState): boolean {
+  return (target.kind === 'tier' && !target.empty) || target.kind === 'model';
+}
+
 function bandVm(input: BandTargetsInput, band: BandKey): BandVm {
   const ofBand = input.rules.filter((r) => r.matchType === band).sort(effectiveRuleOrder);
   const effective = ofBand[0] ?? null;
   const shadowed = ofBand.slice(1);
+  const target: BandTargetState =
+    effective === null ? { kind: 'unset' } : resolveTargetState(input, effective.target);
 
-  let target: BandTargetState = { kind: 'unset' };
-  if (effective !== null) {
-    const parsed = parseRoutingTarget(effective.target);
-    if (parsed === null) {
-      target = { kind: 'unresolved', literal: effective.target, parsed: 'malformed' };
-    } else if (parsed.kind === 'tier') {
-      const tier = input.tiers.find((t) => t.key === parsed.key);
-      if (tier === undefined) {
-        // Late-bound by key (routing-config contract): recreating the key
-        // rebinds — until then the literal is shown.
-        target = { kind: 'unresolved', literal: effective.target, parsed: 'tier' };
-      } else {
-        const entries = [...(input.tierEntries[tier.id] ?? [])].sort(
-          (a, b) => a.position - b.position,
-        );
-        const primaryEntry = entries[0];
-        const primaryModel =
-          primaryEntry === undefined
-            ? undefined
-            : (input.models.find((m) => m.id === primaryEntry.modelId) ?? undefined);
-        target = {
-          kind: 'tier',
-          key: parsed.key,
-          isDefault: parsed.key === 'default',
-          primary:
-            primaryEntry === undefined
-              ? null
-              : primaryModel !== undefined
-                ? modelLabel(primaryModel)
-                : (primaryEntry.model?.externalModelId ?? primaryEntry.modelId),
-          fallbacks: Math.max(0, entries.length - 1),
-          empty: entries.length === 0,
-        };
-      }
-    } else {
-      const model = input.models.find((m) => m.id === parsed.id);
-      if (model === undefined) {
-        target = { kind: 'unresolved', literal: effective.target, parsed: 'model' };
-      } else {
-        target = {
-          kind: 'model',
-          label: modelLabel(model),
-          provider: input.providers.find((p) => p.id === model.providerId)?.name ?? null,
-          model,
-        };
-      }
-    }
-  }
-
-  const usable = (target.kind === 'tier' && !target.empty) || target.kind === 'model';
+  const usable = targetUsable(target);
 
   const perf = input.autoPerf.data;
   const unroutable =

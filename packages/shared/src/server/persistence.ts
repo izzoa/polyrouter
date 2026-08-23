@@ -440,6 +440,9 @@ export interface WorkloadMixClass {
   unpricedRequests: number;
   /** In-range attempt rows (under a classified parent) with a null cost. */
   unpricedAttempts: number;
+  /** In-range parent rows the workload stage ROUTED for this class
+   * (`decision_layer = 'workload'`, add-workload-routing); `none` is always 0. */
+  routed: number;
   /** Reported-total basis (cash + unknown, subscription excluded, BOTH ledgers,
    * per-row integer micro-dollars, each ledger in its own range); null ONLY
    * when the class has no non-null-cost component (all-unpriced) — an all-free

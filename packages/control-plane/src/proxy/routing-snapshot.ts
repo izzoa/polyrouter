@@ -39,6 +39,7 @@ export async function loadRoutingSnapshot(
       matchType: r.matchType,
       headerName: r.headerName,
       headerValue: r.headerValue,
+      workloadClass: r.workloadClass,
       target: r.target,
       priority: r.priority,
       createdAt: r.createdAt,

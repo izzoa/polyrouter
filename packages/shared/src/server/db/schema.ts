@@ -326,14 +326,32 @@ export const routingRules = pgTable(
     id: id(),
     ownerUserId: owned.ownerUserId(),
     orgId: owned.orgId(),
-    matchType: text('match_type').notNull(), // header | default
+    matchType: text('match_type').notNull(), // header | default | auto_high | auto_low | auto_workload
     headerName: text('header_name').default('x-polyrouter-tier').notNull(),
     headerValue: text('header_value'),
+    // The ONE workload class an `auto_workload` rule binds (add-workload-routing
+    // D1): required on that match type, forbidden on every other; never `none`.
+    workloadClass: text('workload_class'),
     target: text('target').notNull(),
     priority: integer('priority').default(0).notNull(),
     createdAt: createdAt(),
   },
-  (t) => [index('routing_rule_owner_idx').on(t.ownerUserId)],
+  (t) => [
+    index('routing_rule_owner_idx').on(t.ownerUserId),
+    // The class/match-type pairing is a store guarantee, not a convention.
+    check(
+      'routing_rule_workload_class_pairing',
+      sql`(${t.matchType} = 'auto_workload') = (${t.workloadClass} IS NOT NULL)`,
+    ),
+    check(
+      'routing_rule_workload_class_valid',
+      sql`${t.workloadClass} IS NULL OR ${t.workloadClass} IN ('code', 'research', 'vision', 'structured', 'writing')`,
+    ),
+    check(
+      'routing_rule_workload_no_header_value',
+      sql`${t.matchType} <> 'auto_workload' OR ${t.headerValue} IS NULL`,
+    ),
+  ],
 );
 
 /** Global (non-tenant) effective-dated pricing/capability catalog (#8, §7.7).

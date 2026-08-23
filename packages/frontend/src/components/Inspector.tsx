@@ -167,7 +167,9 @@ export function Inspector() {
                     {/* Workload verdict (add-workload-telemetry): read-only transparency —
                         the class + its source when the classifier evaluated the request;
                         `none` reads as plain language; hidden (never a placeholder) when null.
-                        It decides nothing: this change records, it does not route. */}
+                        The classifier itself does not route: a row reads `routed` only when
+                        the workload stage claimed it (decision_layer `workload`,
+                        add-workload-routing) — the `router ·` line above says the same. */}
                     <Show when={view().workloadClass !== null}>
                       <div style="display:flex;justify-content:space-between;align-items:center;gap:16px">
                         <span style="color:var(--text3)">workload</span>
@@ -181,6 +183,7 @@ export function Inspector() {
                           {view().workloadSource !== null
                             ? ` (${String(view().workloadSource)})`
                             : ''}
+                          {view().decisionLayer === 'workload' ? ' · routed' : ''}
                         </span>
                       </div>
                     </Show>

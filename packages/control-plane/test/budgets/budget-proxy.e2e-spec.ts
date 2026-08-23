@@ -48,6 +48,7 @@ import { BodyCaptureService } from '../../src/body-capture/body-capture.service'
 import { ObservabilityModule } from '../../src/observability/observability.module';
 import { StreamDrainRegistry } from '../../src/proxy/stream-drain.registry';
 import { StructuralRouter } from '../../src/proxy/structural/structural-router';
+import { WorkloadRouter } from '../../src/proxy/workload/workload-router';
 import { CascadeRouter } from '../../src/proxy/cascade/cascade-router';
 import { NotificationProducers } from '../../src/producers/notification-producers';
 import { BudgetService } from '../../src/budgets/budget-service';
@@ -191,9 +192,15 @@ describe('budget block enforcement — proxy path (#16)', () => {
           provide: RequestRecorder,
           useValue: { record: () => undefined, recordAttempt: () => undefined },
         },
+        WorkloadRouter,
         {
           provide: StructuralRouter,
-          useValue: { enabled: false, evaluate: () => Promise.resolve({ kind: 'skip' }) },
+          useValue: {
+            enabled: false,
+            evaluate: () => Promise.resolve({ kind: 'skip' }),
+            classify: () => Promise.resolve({ kind: 'skip' }),
+            resolveBand: () => ({ kind: 'skip' }),
+          },
         },
         { provide: CascadeRouter, useValue: { enabled: false, plan: () => null } },
         {
@@ -216,7 +223,10 @@ describe('budget block enforcement — proxy path (#16)', () => {
         { provide: PROXY_ADAPTER_FACTORY, useValue: createProviderAdapter },
         { provide: PROXY_BREAKER, useValue: new CircuitBreaker(new InMemoryBreakerStore()) },
         { provide: ROUTING_CONFIG, useFactory: loadRoutingConfig },
-      { provide: CALIBRATION_RAILS, useFactory: (): CalibrationRails => railsOf(loadCalibrationConfig()) },
+        {
+          provide: CALIBRATION_RAILS,
+          useFactory: (): CalibrationRails => railsOf(loadCalibrationConfig()),
+        },
         { provide: APP_FILTER, useClass: ProxyExceptionFilter },
       ],
     }).compile();

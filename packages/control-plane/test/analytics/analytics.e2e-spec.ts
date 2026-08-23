@@ -1344,6 +1344,121 @@ describe('analytics API (#17)', () => {
   });
 
   // ── add-workload-telemetry (W-1): listing fields + the workload mix ─────────
+  describe('workload routing (add-workload-routing)', () => {
+    const RW = 'structural/v1/c1/cccccccccccc';
+    let X: string;
+    let xa: string;
+    let routedIds: string[];
+    /** A banded parent carrying a workload quad; `layer` decides whether the
+     * workload stage CLAIMED it (`workload`) or something else served it. */
+    const seed = (
+      layer: string,
+      cls: string,
+      band: 'high' | 'low' | 'ambiguous',
+      over: Partial<LogSeed> = {},
+    ): Promise<string> =>
+      seedLog(X, {
+        agentId: xa,
+        cost: 1,
+        at: DAY1,
+        providerKind: 'api_key',
+        layer,
+        structuralBand: band,
+        structuralScore: band === 'high' ? 0.7 : band === 'low' ? 0.1 : 0.45,
+        structuralBandSource: 'threshold',
+        workloadClass: cls,
+        workloadScore: cls === 'none' ? 0 : cls === 'code' ? 0.4 : 1,
+        workloadSource: 'structural',
+        workloadRevision: RW,
+        ...over,
+      });
+
+    beforeAll(async () => {
+      X = await mkUser();
+      xa = await mkAgent(X, 'WlAgent');
+      routedIds = [
+        await seed('workload', 'code', 'high'), // claimed; banded HIGH → counts in bands.high, NOT unroutable
+        await seed('workload', 'code', 'ambiguous'), // claimed; banded ambiguous → NOT cascade, NOT fallthrough
+        await seed('workload', 'vision', 'low'), // claimed; banded low
+      ];
+      await seed('structural', 'code', 'high'); // a band route that happened to be code (not routed BY workload)
+      await seed('default', 'none', 'ambiguous', { cost: null }); // `none` — never routed; the ordinary fall-through
+      await seed('default', 'vision', 'high', { cost: 0 }); // a genuinely unroutable high
+    });
+
+    it('auto: workload-routed rows count per class as `routed`, in evaluated/bands/series/signal quality — never in unroutable, cascade, or fallthrough', async () => {
+      const res = await q('auto', X, { ...RANGE, bucket: 'day' });
+      expect(res.status).toBe(200);
+      const body = res.body;
+      // Per-class routed vs requests (`none` routed 0 by construction).
+      const by = new Map<string, Record<string, unknown>>(
+        (body.workloadMix.classes as { class: string }[]).map((c) => [
+          c.class,
+          c as unknown as Record<string, unknown>,
+        ]),
+      );
+      expect(body.workloadMix.evaluated).toBe(6);
+      expect(by.get('code')).toMatchObject({ requests: 3, routed: 2 });
+      expect(by.get('vision')).toMatchObject({ requests: 2, routed: 1 });
+      expect(by.get('none')).toMatchObject({ requests: 1, routed: 0 });
+      // The band policy is unchanged: a workload-routed row is a BANDED row.
+      expect(body.evaluated).toBe(6);
+      expect(body.bands.high).toEqual({ requests: 3, declared: 0, unroutable: 1 }); // only the default-layer high
+      expect(body.bands.low).toEqual({ requests: 1, declared: 0, unroutable: 0 });
+      expect(body.bands.ambiguous.requests).toBe(2);
+      expect(body.cascade).toEqual({
+        requests: 0,
+        qualityPassed: 0,
+        qualityUnknown: 0,
+        failedOrCancelled: 0,
+        escalated: 0,
+      });
+      expect(body.fallthrough).toBe(1); // the `none` default row only — a claimed ambiguous row is not a fall-through
+      const series = body.series as { high: number; low: number; ambiguous: number }[];
+      expect(series.reduce((a, p) => a + p.high + p.low + p.ambiguous, 0)).toBe(6);
+      // Per-agent signal quality: the same banded-rule population as every other row.
+      const sq = (
+        body.signalQuality as {
+          agentId: string | null;
+          bandedRows: number;
+          ambiguousRows: number;
+        }[]
+      ).find((r) => r.agentId === xa)!;
+      expect(sq).toMatchObject({ bandedRows: 6, ambiguousRows: 2 });
+    });
+
+    it('listing: layer=workload returns exactly the claimed rows; calibrationStats is byte-identical with and without them', async () => {
+      const res = await q('requests', X, { ...RANGE, layer: 'workload', limit: 50 });
+      expect(res.status).toBe(200);
+      const ids = (res.body.rows as { id: string; decisionLayer: string }[])
+        .map((r) => r.id)
+        .sort();
+      expect(ids).toEqual([...routedIds].sort());
+      expect(
+        (res.body.rows as { decisionLayer: string }[]).every((r) => r.decisionLayer === 'workload'),
+      ).toBe(true);
+      // calibrationStats reads the DECIDED cascade population only — claimed
+      // rows (even ambiguous-banded ones) never enter it.
+      const range = { from: new Date(RANGE.from), to: new Date(RANGE.to) };
+      const args = { high: 0.6, low: 0.3, edgeWidth: 0.2, epoch: 0 };
+      const principalX = userPrincipal(X);
+      const withRows = await port.analytics.calibrationStats(principalX, range, args);
+      await pool.query(`DELETE FROM request_log WHERE id = ANY($1)`, [routedIds]);
+      try {
+        const without = await port.analytics.calibrationStats(principalX, range, args);
+        expect(JSON.stringify(without)).toBe(JSON.stringify(withRows));
+      } finally {
+        // Restore the fixture (clink r5 L2): a retry or a reordered assertion must
+        // still find the routed rows this describe block seeded once.
+        routedIds = [
+          await seed('workload', 'code', 'high'),
+          await seed('workload', 'code', 'ambiguous'),
+          await seed('workload', 'vision', 'low'),
+        ];
+      }
+    });
+  });
+
   describe('workload telemetry (add-workload-telemetry)', () => {
     const R1 = 'structural/v1/c1/aaaaaaaaaaaa';
     const R2 = 'structural/v1/c1/bbbbbbbbbbbb';
@@ -1513,6 +1628,7 @@ describe('analytics API (#17)', () => {
         unpricedRequests: 1,
         unpricedAttempts: 0,
         spendUsd: 4.5005,
+        routed: 0,
       });
       expect(by.get('none')).toEqual({
         class: 'none',
@@ -1520,13 +1636,15 @@ describe('analytics API (#17)', () => {
         unpricedRequests: 2,
         unpricedAttempts: 0,
         spendUsd: null,
+        routed: 0,
       });
       expect(by.get('structured')).toEqual({
         class: 'structured',
         requests: 2,
         unpricedRequests: 0,
         unpricedAttempts: 1,
-        spendUsd: 1, // the subscription row is priced but excluded; the api_key row counts
+        spendUsd: 1, // the subscription row is priced but excluded; the api_key row counts,
+        routed: 0,
       });
       expect(by.get('vision')).toEqual({
         class: 'vision',
@@ -1534,6 +1652,7 @@ describe('analytics API (#17)', () => {
         unpricedRequests: 0,
         unpricedAttempts: 0,
         spendUsd: 0,
+        routed: 0,
       });
       expect(by.get('research')).toEqual({
         class: 'research',
@@ -1541,6 +1660,7 @@ describe('analytics API (#17)', () => {
         unpricedRequests: 1,
         unpricedAttempts: 0,
         spendUsd: 0,
+        routed: 0,
       });
       expect(by.get('writing')).toEqual({
         class: 'writing',
@@ -1548,6 +1668,7 @@ describe('analytics API (#17)', () => {
         unpricedRequests: 0,
         unpricedAttempts: 0,
         spendUsd: 0.25,
+        routed: 0,
       });
       // Reconciles with the summary's reported spend over the same rows (per-row µ$ rounding).
       const sum = await q('summary', W, RANGE);
@@ -1563,7 +1684,14 @@ describe('analytics API (#17)', () => {
       const resV = await q('auto', V, { ...RANGE, bucket: 'day' });
       expect(resV.body.workloadMix.evaluated).toBe(1);
       expect(resV.body.workloadMix.classes).toEqual([
-        { class: 'code', requests: 1, unpricedRequests: 0, unpricedAttempts: 0, spendUsd: 4 },
+        {
+          class: 'code',
+          requests: 1,
+          unpricedRequests: 0,
+          unpricedAttempts: 0,
+          spendUsd: 4,
+          routed: 0,
+        },
       ]);
     });
 

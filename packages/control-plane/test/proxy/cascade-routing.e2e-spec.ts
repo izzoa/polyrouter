@@ -49,6 +49,7 @@ import { BudgetService } from '../../src/budgets/budget-service';
 import { StreamDrainRegistry } from '../../src/proxy/stream-drain.registry';
 import { StructuralBaselineStore } from '../../src/proxy/structural/structural-baseline.store';
 import { StructuralRouter } from '../../src/proxy/structural/structural-router';
+import { WorkloadRouter } from '../../src/proxy/workload/workload-router';
 import { CascadeRouter } from '../../src/proxy/cascade/cascade-router';
 import { RecordingModule } from '../../src/recording/recording.module';
 import { ObservabilityModule } from '../../src/observability/observability.module';
@@ -111,6 +112,7 @@ async function buildApp(): Promise<{ app: INestApplication; server: App }> {
       },
       StreamDrainRegistry,
       StructuralRouter,
+      WorkloadRouter,
       CascadeRouter,
       {
         provide: NotificationProducers,
@@ -700,6 +702,44 @@ describe('cascade routing e2e', () => {
     } finally {
       await off.app.close();
       process.env['ROUTING_AUTO_LAYERS'] = 'structural,cascade';
+    }
+  });
+
+  it('a workload-routed request never cascades: no cheap call, no ledger row (add-workload-routing)', async () => {
+    // Both bands configured (cascade eligible) AND a code rule → the claim
+    // pre-empts the cascade plan entirely: one upstream call to the claimed
+    // target, no cheap leg, no billable-attempt ledger row.
+    await setBand('auto_low', 'cheap-good');
+    const rule = await port.routingRules.insert(principal, {
+      matchType: 'auto_workload',
+      headerName: 'x-polyrouter-tier',
+      headerValue: null,
+      workloadClass: 'code',
+      target: 'tier:premium',
+      priority: 0,
+    });
+    const upstreamBefore = stub.requests.length;
+    try {
+      const res = await sendWith('sysWlCasc', {
+        messages: [
+          { role: 'system', content: 'sysWlCasc' },
+          // ~8k window chars with ≥30% fenced → the structural `code` class.
+          { role: 'user', content: 'Z'.repeat(5_000) + '\n```\n' + 'x'.repeat(3_000) + '\n```' },
+        ],
+      });
+      expect(res.status).toBe(200);
+      const row = await log();
+      expect(row.decisionLayer).toBe('workload');
+      expect(row.modelId).toBe(modelId['strong']);
+      expect(row.escalated).toBe(false);
+      expect(row.qualitySignal).toBeNull(); // no cheap leg was judged
+      expect(row.workloadClass).toBe('code');
+      expect(row.structuralBand).not.toBeNull(); // the band is classified, just never resolved
+      expect(stub.requests.length - upstreamBefore).toBe(1); // exactly ONE upstream call — no cheap leg
+      expect(await port.requestAttempts.listForRequest(principal, row.id)).toHaveLength(0);
+    } finally {
+      await port.routingRules.remove(principal, rule.id);
+      await setBand('auto_low', 'cheap-bad');
     }
   });
 });

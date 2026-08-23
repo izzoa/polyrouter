@@ -49,6 +49,7 @@ import { BodyCaptureService } from '../../src/body-capture/body-capture.service'
 import { ObservabilityModule } from '../../src/observability/observability.module';
 import { StreamDrainRegistry } from '../../src/proxy/stream-drain.registry';
 import { StructuralRouter } from '../../src/proxy/structural/structural-router';
+import { WorkloadRouter } from '../../src/proxy/workload/workload-router';
 import { CascadeRouter } from '../../src/proxy/cascade/cascade-router';
 import { DatabaseModule } from '../../src/database/database.module';
 import { SemanticModule } from '../../src/semantic/semantic.module';
@@ -181,9 +182,15 @@ describe('inference proxy e2e', () => {
               Promise.resolve({ mode: 'off', override: null, retentionDays: null, epoch: 0 }),
           },
         },
+        WorkloadRouter,
         {
           provide: StructuralRouter,
-          useValue: { enabled: false, evaluate: () => Promise.resolve({ kind: 'skip' }) },
+          useValue: {
+            enabled: false,
+            evaluate: () => Promise.resolve({ kind: 'skip' }),
+            classify: () => Promise.resolve({ kind: 'skip' }),
+            resolveBand: () => ({ kind: 'skip' }),
+          },
         }, // #13 off here
         { provide: CascadeRouter, useValue: { enabled: false, plan: () => null } }, // #14 off here
         {
@@ -198,7 +205,10 @@ describe('inference proxy e2e', () => {
         { provide: PROXY_ADAPTER_FACTORY, useValue: createProviderAdapter },
         { provide: PROXY_BREAKER, useValue: new CircuitBreaker(new InMemoryBreakerStore()) },
         { provide: ROUTING_CONFIG, useFactory: loadRoutingConfig },
-      { provide: CALIBRATION_RAILS, useFactory: (): CalibrationRails => railsOf(loadCalibrationConfig()) },
+        {
+          provide: CALIBRATION_RAILS,
+          useFactory: (): CalibrationRails => railsOf(loadCalibrationConfig()),
+        },
         { provide: APP_FILTER, useClass: ProxyExceptionFilter },
       ],
     }).compile();
@@ -361,7 +371,12 @@ describe('inference proxy e2e', () => {
   };
 
   it('streams an OpenAI upstream to an Anthropic client as conformant frames (one usage-bearing message_delta)', async () => {
-    const res = await messages(A.key, { model: 'gpt-4o', stream: true, max_tokens: 64, messages: [] });
+    const res = await messages(A.key, {
+      model: 'gpt-4o',
+      stream: true,
+      max_tokens: 64,
+      messages: [],
+    });
     expect(res.status).toBe(200);
     expect(res.headers['content-type']).toContain('text/event-stream');
     expect(res.text).toContain('event: message_start');
@@ -374,14 +389,23 @@ describe('inference proxy e2e', () => {
   });
 
   it('renders a 401 on /v1/messages in the Anthropic error envelope', async () => {
-    const res = await messages('poly_notarealkey000', { model: 'auto', max_tokens: 16, messages: [] });
+    const res = await messages('poly_notarealkey000', {
+      model: 'auto',
+      max_tokens: 16,
+      messages: [],
+    });
     expect(res.status).toBe(401);
     expect(res.body.type).toBe('error'); // Anthropic-shaped {type:'error', error:{…}}
     expect(res.body.error.type).toBeDefined();
   });
 
   it('emits an Anthropic terminal error frame on a mid-stream failure (no swap, no leak)', async () => {
-    const res = await messages(A.key, { model: 'oai-miderror', stream: true, max_tokens: 64, messages: [] });
+    const res = await messages(A.key, {
+      model: 'oai-miderror',
+      stream: true,
+      max_tokens: 64,
+      messages: [],
+    });
     expect(res.status).toBe(200); // committed before the failure
     expect(res.text).toContain('event: error'); // Anthropic terminal error shape
     expect(res.text).not.toContain('SECRET'); // raw upstream detail never leaks

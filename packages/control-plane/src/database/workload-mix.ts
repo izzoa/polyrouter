@@ -17,6 +17,8 @@ export interface WorkloadParentAgg {
   requests: number | string;
   unpriced: number | string;
   micros: number | string;
+  /** Parent rows with `decision_layer = 'workload'` (add-workload-routing). */
+  routed?: number | string;
 }
 
 export interface WorkloadAttemptAgg {
@@ -33,6 +35,7 @@ export interface WorkloadRevisionAgg {
 
 interface Acc {
   requests: number;
+  routed: number;
   unpricedRequests: number;
   unpricedAttempts: number;
   costedAttempts: number;
@@ -55,6 +58,7 @@ export function buildWorkloadMix(
     if (a === undefined) {
       a = {
         requests: 0,
+        routed: 0,
         unpricedRequests: 0,
         unpricedAttempts: 0,
         costedAttempts: 0,
@@ -70,6 +74,7 @@ export function buildWorkloadMix(
     if (p.cls === null) continue;
     const a = acc(p.cls);
     a.requests += n(p.requests);
+    a.routed += n(p.routed ?? 0);
     a.unpricedRequests += n(p.unpriced);
     a.parentMicros += n(p.micros);
     evaluated += n(p.requests);
@@ -89,6 +94,7 @@ export function buildWorkloadMix(
         requests: a.requests,
         unpricedRequests: a.unpricedRequests,
         unpricedAttempts: a.unpricedAttempts,
+        routed: a.routed,
         // Dollars once, at the edge — both ledgers already rounded per row.
         spendUsd: costable ? (a.parentMicros + a.attemptMicros) / 1_000_000 : null,
       };

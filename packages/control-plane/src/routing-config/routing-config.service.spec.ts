@@ -49,6 +49,7 @@ function model(id: string): ModelRow {
 
 function rule(over: Partial<RoutingRuleRow> = {}): RoutingRuleRow {
   return {
+    workloadClass: null,
     id: over.id ?? 'r1',
     ownerUserId: 'u1',
     orgId: null,

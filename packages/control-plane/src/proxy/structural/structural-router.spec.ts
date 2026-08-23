@@ -11,7 +11,7 @@ import {
 } from '@polyrouter/data-plane';
 import type { RoutingConfig } from '../routing.config';
 import type { StructuralBaselineStore } from './structural-baseline.store';
-import { StructuralRouter } from './structural-router';
+import { StructuralRouter, type StructuralClassification } from './structural-router';
 
 const PRINCIPAL = userPrincipal('u1');
 
@@ -485,5 +485,64 @@ describe('StructuralRouter.evaluate — workload verdict (add-workload-telemetry
       snapshot([]),
     );
     expect((lax as { workload?: WorkloadVerdict }).workload?.class).toBe('code');
+  });
+});
+
+describe('StructuralRouter.classify / resolveBand split (add-workload-routing 2.2)', () => {
+  it('classify returns both verdicts without consulting any rule (no snapshot involved)', async () => {
+    const r = new StructuralRouter(cfg(), store());
+    const c = await r.classify(PRINCIPAL, 'a1', complex);
+    expect(c.kind).toBe('classified');
+    if (c.kind !== 'classified') return;
+    expect(c.verdict.band).toBe('high');
+    expect(c.workload).toMatchObject({ class: 'code', source: 'structural' });
+  });
+
+  it('resolveBand over a classification reproduces evaluate: route / ambiguous / unroutable', async () => {
+    const r = new StructuralRouter(cfg(), store());
+    const withHigh = snapshot([rule('r', 'auto_high', 'tier:premium')]);
+    for (const [ir, snap] of [
+      [complex, withHigh],
+      [middling, withHigh],
+      [complex, snapshot([])],
+    ] as const) {
+      const c = await r.classify(PRINCIPAL, 'a1', ir);
+      const split = r.resolveBand(snap, c);
+      const whole = await r.evaluate(PRINCIPAL, 'a1', ir, snap);
+      expect(split).toEqual(whole);
+    }
+    expect(r.resolveBand(withHigh, await r.classify(PRINCIPAL, 'a1', complex)).kind).toBe('route');
+    expect(r.resolveBand(withHigh, await r.classify(PRINCIPAL, 'a1', middling)).kind).toBe(
+      'ambiguous',
+    );
+    expect(r.resolveBand(snapshot([]), await r.classify(PRINCIPAL, 'a1', complex)).kind).toBe(
+      'unroutable',
+    );
+  });
+
+  it('skip classifications stay skip; a disabled layer classifies skip', async () => {
+    const r = new StructuralRouter(cfg({ autoLayers: new Set() }), store());
+    const c = await r.classify(PRINCIPAL, 'a1', complex);
+    expect(c).toEqual({ kind: 'skip' });
+    expect(r.resolveBand(snapshot([]), c)).toEqual({ kind: 'skip' });
+  });
+
+  it("resolveBand is non-throwing: an injected target-lookup fault returns skip (today's degrade)", async () => {
+    class Faulty extends StructuralRouter {
+      protected override bandTargetOf(): never {
+        throw new Error('lookup boom');
+      }
+    }
+    const r = new Faulty(cfg(), store());
+    const c = await r.classify(PRINCIPAL, 'a1', complex);
+    expect(c.kind).toBe('classified');
+    expect(r.resolveBand(snapshot([rule('r', 'auto_high', 'tier:premium')]), c)).toEqual({
+      kind: 'skip',
+    });
+    // An ambiguous classification never touches the lookup and is unaffected.
+    const amb = await r.classify(PRINCIPAL, 'a1', middling);
+    expect(r.resolveBand(snapshot([]), amb).kind).toBe('ambiguous');
+    const typed: StructuralClassification = c;
+    expect(typed.kind).toBe('classified');
   });
 });

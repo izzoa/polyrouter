@@ -1,4 +1,10 @@
-import { connectionSnippet, isHarnessType, type HarnessType } from '@polyrouter/shared';
+import {
+  connectionSnippet,
+  isHarnessType,
+  type HarnessType,
+  WORKLOAD_CLASSES,
+  type WorkloadClass,
+} from '@polyrouter/shared';
 import {
   createEventStream,
   type EventSourceFactory,
@@ -6,7 +12,13 @@ import {
   type StreamHealth,
 } from '../data/eventStream';
 import { untrack } from 'solid-js';
-import { layerZ as zForIndex, supersededByDialog, type LayerEntry, type LayerKind, type LayerToken } from '../a11y';
+import {
+  layerZ as zForIndex,
+  supersededByDialog,
+  type LayerEntry,
+  type LayerKind,
+  type LayerToken,
+} from '../a11y';
 import { createStore, produce, type SetStoreFunction } from 'solid-js/store';
 import { DEFAULT_PAGE, hashForPage, pageFromHash } from './route';
 import { filterToRequestParams } from '../data/analytics';
@@ -267,6 +279,14 @@ export interface AppState {
   bt: {
     busy: { auto_high: boolean; auto_low: boolean };
     errors: { auto_high: string | null; auto_low: string | null };
+    unverified: boolean;
+  };
+  /** Workload-targets card state (add-workload-routing D6): PER-CLASS busy +
+   * row-scoped errors and the section-level UNVERIFIED flag — the band
+   * card's contract, keyed by taxonomy class. */
+  wt: {
+    busy: Record<WorkloadClass, boolean>;
+    errors: Record<WorkloadClass, string | null>;
     unverified: boolean;
   };
   autoLayers: AutoLayers | null;
@@ -764,6 +784,17 @@ function initialState(): AppState {
       errors: { auto_high: null, auto_low: null },
       unverified: false,
     },
+    wt: {
+      busy: Object.fromEntries(WORKLOAD_CLASSES.map((c) => [c, false])) as Record<
+        WorkloadClass,
+        boolean
+      >,
+      errors: Object.fromEntries(WORKLOAD_CLASSES.map((c) => [c, null])) as Record<
+        WorkloadClass,
+        string | null
+      >,
+      unverified: false,
+    },
     autoLayers: null,
     calHistory: { rows: [], loaded: false, error: null },
     semLearn: { status: null, loaded: false, error: null },
@@ -939,6 +970,10 @@ export interface AppStore {
   setBandTarget: (band: 'auto_high' | 'auto_low', target: string) => Promise<void>;
   clearBand: (band: 'auto_high' | 'auto_low') => Promise<void>;
   cleanShadowed: (band: 'auto_high' | 'auto_low') => Promise<void>;
+  /** Workload targets (add-workload-routing) — the band contract per class. */
+  setWorkloadTarget: (cls: WorkloadClass, target: string) => Promise<void>;
+  clearWorkload: (cls: WorkloadClass) => Promise<void>;
+  cleanWorkloadShadowed: (cls: WorkloadClass) => Promise<void>;
   retryRulesReconcile: () => Promise<void>;
   toggleAutoLayer: (layer: 'structural' | 'cascade' | 'semantic') => Promise<void>;
   // limits (#20)
@@ -1149,6 +1184,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         } else {
           setState('rules', rows);
           setState('bt', 'unverified', false);
+          setState('wt', 'unverified', false);
           outcome = 'committed';
         }
       } catch {
@@ -1750,7 +1786,9 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     const token = bump('breakdown');
     setState({ analyticsBreakdownLoading: true, analyticsBreakdownError: null });
     try {
-      const results = await Promise.all(dims.map((d) => client.breakdown(d, range, undefined, metric)));
+      const results = await Promise.all(
+        dims.map((d) => client.breakdown(d, range, undefined, metric)),
+      );
       if (!isCurrent('breakdown', token)) return;
       setState(
         produce((s) => {
@@ -2460,8 +2498,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       setState('reqFilter', reqFilter);
       void loadRequests(true);
     },
-    select: (id) =>
-      setState({ selId: id, selBodies: { rows: null, loading: false, error: null } }),
+    select: (id) => setState({ selId: id, selBodies: { rows: null, loading: false, error: null } }),
     say,
     clearToast: () => {
       clearTimeout(toastTimer);
@@ -2725,7 +2762,8 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           clearCredential: false,
           origKind: apiKindToUi(p.kind),
           oauthPreset: p.oauthPreset,
-          firstByteTimeoutS: p.firstByteTimeoutMs === null ? '' : String(p.firstByteTimeoutMs / 1000),
+          firstByteTimeoutS:
+            p.firstByteTimeoutMs === null ? '' : String(p.firstByteTimeoutMs / 1000),
           idleTimeoutS: p.idleTimeoutMs === null ? '' : String(p.idleTimeoutMs / 1000),
         },
       });
@@ -3161,10 +3199,109 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       setState('bt', 'unverified', !verified && (touched || mayHaveLanded));
       if (failed === null && verified && ofBand.length > 1) say('Duplicates removed');
     },
+    // Workload targets (add-workload-routing D6): the band actions' exact
+    // contract — per-class single-flight, pessimistic display via the
+    // reconcile, `unverified` only on an ambiguous/landed write — over the
+    // `auto_workload` rules of ONE class.
+    setWorkloadTarget: async (cls, target) => {
+      if (state.wt.busy[cls] || state.wt.unverified) return;
+      setState('wt', 'busy', cls, true);
+      setState('wt', 'errors', cls, null);
+      bumpRouting();
+      const ofClass = state.rules
+        .filter((r) => r.matchType === 'auto_workload' && r.workloadClass === cls)
+        .sort(effectiveRuleOrder);
+      const effective = ofClass[0];
+      let wrote = false;
+      let mayHaveLanded = false;
+      let failed: string | null = null;
+      try {
+        if (effective !== undefined) {
+          await client.updateRule(effective.id, { target });
+        } else {
+          await client.createRule({ matchType: 'auto_workload', workloadClass: cls, target });
+        }
+        wrote = true;
+      } catch (e) {
+        failed = err(e);
+        mayHaveLanded = !isApiError(e);
+      }
+      const verified = (await reconcileRules()) === 'committed';
+      setState('wt', 'busy', cls, false);
+      setState('wt', 'errors', cls, failed);
+      // MONOTONIC (clink r5 M2): a class action only ever RAISES the shared
+      // flag — a definitive rejection whose reconcile also failed must not
+      // clear a sibling class's landed-but-unverified write. Only a COMMITTED
+      // reconcile (reconcileRules) clears it.
+      if (!verified && (wrote || mayHaveLanded)) setState('wt', 'unverified', true);
+      if (wrote && verified) say('Workload target saved');
+    },
+    clearWorkload: async (cls) => {
+      if (state.wt.busy[cls] || state.wt.unverified) return;
+      setState('wt', 'busy', cls, true);
+      setState('wt', 'errors', cls, null);
+      bumpRouting();
+      const snapshot = state.rules.filter(
+        (r) => r.matchType === 'auto_workload' && r.workloadClass === cls,
+      );
+      let failed: string | null = null;
+      let touched = false;
+      let mayHaveLanded = false;
+      for (const r of snapshot) {
+        try {
+          await client.deleteRule(r.id);
+          touched = true;
+        } catch (e) {
+          failed = err(e);
+          mayHaveLanded = !isApiError(e);
+          break;
+        }
+      }
+      const verified = (await reconcileRules()) === 'committed';
+      setState('wt', 'busy', cls, false);
+      setState('wt', 'errors', cls, failed);
+      if (!verified && (touched || mayHaveLanded)) setState('wt', 'unverified', true); // monotonic (clink r5 M2)
+      if (failed === null && verified && snapshot.length > 0) say('Workload target cleared');
+    },
+    cleanWorkloadShadowed: async (cls) => {
+      if (state.wt.busy[cls] || state.wt.unverified) return;
+      setState('wt', 'busy', cls, true);
+      setState('wt', 'errors', cls, null);
+      bumpRouting();
+      const ofClass = state.rules
+        .filter((r) => r.matchType === 'auto_workload' && r.workloadClass === cls)
+        .sort(effectiveRuleOrder);
+      let failed: string | null = null;
+      let touched = false;
+      let mayHaveLanded = false;
+      for (const r of ofClass.slice(1)) {
+        try {
+          await client.deleteRule(r.id);
+          touched = true;
+        } catch (e) {
+          failed = err(e);
+          mayHaveLanded = !isApiError(e);
+          break;
+        }
+      }
+      const verified = (await reconcileRules()) === 'committed';
+      setState('wt', 'busy', cls, false);
+      setState('wt', 'errors', cls, failed);
+      if (!verified && (touched || mayHaveLanded)) setState('wt', 'unverified', true); // monotonic (clink r5 M2)
+      if (failed === null && verified && ofClass.length > 1) say('Duplicates removed');
+    },
     retryRulesReconcile: async () => {
       const verified = (await reconcileRules()) === 'committed';
       if (verified) {
         setState('bt', 'errors', { auto_high: null, auto_low: null });
+        setState(
+          'wt',
+          'errors',
+          Object.fromEntries(WORKLOAD_CLASSES.map((c) => [c, null])) as Record<
+            WorkloadClass,
+            string | null
+          >,
+        );
       }
     },
     toggleAutoLayer: (layer) => {

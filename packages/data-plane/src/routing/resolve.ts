@@ -24,6 +24,10 @@ export interface RouteRule {
   readonly matchType: string;
   readonly headerName: string;
   readonly headerValue: string | null;
+  /** The workload class an `auto_workload` rule binds (add-workload-routing);
+   * null on every other match type. Optional so pre-existing snapshots and
+   * fixtures stay valid. */
+  readonly workloadClass?: string | null;
   readonly target: string;
   readonly priority: number;
   readonly createdAt: Date;
@@ -48,7 +52,8 @@ export interface ParsedRoute {
   readonly headers: Readonly<Record<string, string | undefined>>;
 }
 
-export type DecisionLayer = 'explicit' | 'header' | 'default' | 'structural' | 'cascade' | 'semantic';
+export type DecisionLayer =
+  'explicit' | 'header' | 'default' | 'structural' | 'cascade' | 'semantic' | 'workload';
 
 /** The complete decision-layer value list (add-semantic-routing): the one
  * source the analytics `layer` filter validates against per-element. */
@@ -59,6 +64,7 @@ export const DECISION_LAYERS: readonly DecisionLayer[] = [
   'structural',
   'cascade',
   'semantic',
+  'workload',
 ];
 
 /** One member of a fallback chain (#12). */
@@ -217,6 +223,26 @@ export function resolveBandTarget(
   const rule = [...snap.rules].filter((r) => r.matchType === matchType).sort(ruleOrder)[0];
   if (rule === undefined) return null;
   const decision = resolveTarget(snap, rule.target, layer, reason);
+  return isRouteError(decision) ? null : decision;
+}
+
+/** Resolve a WORKLOAD target (add-workload-routing): the highest-priority
+ * `auto_workload` rule bound to `cls` — the SAME comparator band rules use, so
+ * `priority` orders duplicates within a class — rendered with layer
+ * `workload` and the verdict's numbers-only reason (a `tier:` target carries
+ * its chain, a `model:` target is that single model). `null` when no rule
+ * binds the class or its target is unresolved/empty: the caller treats null
+ * as "unclaimed" — degrade-safe, never a client-facing error (invariant 1). */
+export function resolveWorkloadTarget(
+  snap: RoutingSnapshot,
+  cls: string,
+  reason: string,
+): RouteDecision | null {
+  const rule = [...snap.rules]
+    .filter((r) => r.matchType === 'auto_workload' && r.workloadClass === cls)
+    .sort(ruleOrder)[0];
+  if (rule === undefined) return null;
+  const decision = resolveTarget(snap, rule.target, 'workload', reason);
   return isRouteError(decision) ? null : decision;
 }
 

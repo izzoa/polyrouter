@@ -260,6 +260,9 @@ export interface RuleDto {
   matchType: string;
   headerName: string;
   headerValue: string | null;
+  /** The workload class an `auto_workload` rule binds (add-workload-routing);
+   * null on every other match type. */
+  workloadClass: string | null;
   target: string;
   priority: number;
   createdAt: string;
@@ -269,6 +272,8 @@ export interface CreateRuleInput {
   matchType: RuleMatchType;
   headerName?: string;
   headerValue?: string;
+  /** Required on `auto_workload`, forbidden otherwise; `null` clears on update. */
+  workloadClass?: string | null;
   target: string;
   priority?: number;
 }
@@ -702,6 +707,8 @@ export interface WorkloadMixClass {
   unpricedRequests: number;
   unpricedAttempts: number;
   spendUsd: number | null;
+  /** Parent rows the workload stage routed for this class (add-workload-routing). */
+  routed: number;
 }
 
 export interface WorkloadMix {

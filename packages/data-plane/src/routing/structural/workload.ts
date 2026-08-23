@@ -18,7 +18,8 @@
  * structured > code (capability-binding signals first); else `none`.
  *
  * The `reason` is numbers/flags only — never prompt text (invariant 8). The
- * verdict decides NOTHING in this change (telemetry only).
+ * classifier itself does not route: a verdict steers a request only through a
+ * configured `auto_workload` target (add-workload-routing) — otherwise it is telemetry.
  */
 import { createHash } from 'node:crypto';
 import {

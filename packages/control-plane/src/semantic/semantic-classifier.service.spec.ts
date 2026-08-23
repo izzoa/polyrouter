@@ -11,6 +11,7 @@ const CFG: SemanticConfig = {
   concurrency: 2,
   highThreshold: 0.15,
   lowThreshold: 0.15,
+  workload: { margin: 0.05, minSim: 0.2 },
   learning: {
     minCohort: 8,
     minSamples: 50,
@@ -68,5 +69,65 @@ describe('SemanticClassifierService lifecycle', () => {
     // Must NOT throw — degrades to unavailable (invariant 1), never crashes boot.
     await expect(svc.onApplicationBootstrap()).resolves.toBeUndefined();
     expect(svc.available).toBe(false);
+  });
+});
+
+describe('SemanticClassifierService — the semantic WORKLOAD source (add-semantic-workloads D4)', () => {
+  it('builds five validated workload centroids with a semantic revision when the band build succeeds', async () => {
+    const svc = new SemanticClassifierService(fakeRuntime(stubEmbedder(384)));
+    await svc.onApplicationBootstrap();
+    expect(svc.available).toBe(true);
+    expect(svc.workloadReady).toBe(true);
+    const wl = svc.workloadState!;
+    expect(Object.keys(wl.centroids).sort()).toEqual([
+      'code',
+      'research',
+      'structured',
+      'vision',
+      'writing',
+    ]);
+    for (const v of Object.values(wl.centroids)) expect(v).toHaveLength(384);
+    expect(wl.rails).toEqual({ margin: 0.05, minSim: 0.2 });
+    expect(wl.revision).toMatch(/^semantic\/v1\/s1\/[0-9a-f]{12}$/);
+  });
+
+  it('module absent: no workload source either', async () => {
+    const svc = new SemanticClassifierService(fakeRuntime(null));
+    await svc.onApplicationBootstrap();
+    expect(svc.workloadReady).toBe(false);
+    expect(svc.workloadState).toBeNull();
+  });
+
+  it('a degenerate embedder leaves BOTH sources unavailable without throwing', async () => {
+    const collapse: Embedder = {
+      id: 'sha256:degenerate',
+      dims: 8,
+      embed: () => {
+        const v = new Float32Array(8);
+        v[0] = 1;
+        return Promise.resolve(v);
+      },
+    };
+    const svc = new SemanticClassifierService(fakeRuntime(collapse));
+    await expect(svc.onApplicationBootstrap()).resolves.toBeUndefined();
+    expect(svc.available).toBe(false);
+    expect(svc.workloadReady).toBe(false);
+  });
+
+  it('a failure while embedding ONE workload anchor disables only the workload source — the band classifier stays available (separate boundary)', async () => {
+    const base = stubEmbedder(384);
+    const throwing: Embedder = {
+      id: base.id,
+      dims: base.dims,
+      embed: (text, opts) =>
+        text.includes('intermittent fasting and longevity') // a research workload anchor; no band anchor contains it
+          ? Promise.reject(new Error('injected workload-anchor fault'))
+          : base.embed(text, opts),
+    };
+    const svc = new SemanticClassifierService(fakeRuntime(throwing));
+    await expect(svc.onApplicationBootstrap()).resolves.toBeUndefined();
+    expect(svc.available).toBe(true);
+    expect(svc.workloadReady).toBe(false);
+    expect(svc.workloadState).toBeNull();
   });
 });

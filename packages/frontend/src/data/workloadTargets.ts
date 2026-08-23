@@ -39,16 +39,20 @@ export const WORKLOAD_SIGNALS: Record<WorkloadClass, string> = {
   code: 'fenced code above the configured code thresholds (default: 30% of the window, 200+ chars)',
   vision: 'an image in the request',
   structured: 'a declared JSON output format',
-  research: 'semantic source only — no structural signal',
-  writing: 'semantic source only — no structural signal',
+  research: 'detected by the semantic workload source (embedding vs bundled anchors)',
+  writing: 'detected by the semantic workload source (embedding vs bundled anchors)',
 };
 
 export interface WorkloadVm {
   cls: WorkloadClass;
   label: string;
-  /** No source emits this class yet (semantic-only): the row is disclosed
-   * read-only; an API-created rule still shows and can be cleared. */
+  /** A semantic-only class (research / writing): its source is the flag-gated
+   * semantic module, so the row is LIVE only while that source is effective. */
   reserved: boolean;
+  /** The row carries live controls: every structural class, and a reserved
+   * class exactly when the semantic workload source is effective
+   * (add-semantic-workloads D5). */
+  live: boolean;
   /** The rule the PROXY would use: priority DESC, then createdAt, then id. */
   effective: RuleDto | null;
   /** Every other rule of the class — dead weight the cleanup action removes. */
@@ -65,6 +69,9 @@ export interface WorkloadVm {
 export interface WorkloadTargetsInput extends TargetCatalog {
   rules: RuleDto[];
   autoPerf: { data: AutoPerformance | null; range: Range };
+  /** The EFFECTIVE semantic workload source (auto-layers `semanticWorkload`):
+   * flips the reserved rows live. */
+  semanticWorkload: boolean;
 }
 
 export interface WorkloadTargetsVm {
@@ -80,11 +87,13 @@ export function isReservedWorkload(cls: WorkloadClass): boolean {
   return !(STRUCTURAL_WORKLOAD_CLASSES as readonly string[]).includes(cls);
 }
 
-/** The empty-state copy for ONE class — what happens to its requests today. */
-export function unsetCopy(cls: WorkloadClass): string {
-  return isReservedWorkload(cls)
-    ? `${WORKLOAD_LABELS[cls]} requests are not detected yet (${WORKLOAD_SIGNALS[cls]}); a target here stays inert until a source emits the class.`
-    : `${WORKLOAD_LABELS[cls]} requests (${WORKLOAD_SIGNALS[cls]}) follow the complexity path: band targets, then L2 and the cascade where enabled, then default.`;
+/** The empty-state copy for ONE class — what happens to its requests today.
+ * A reserved class reads as live only when its semantic source is effective. */
+export function unsetCopy(cls: WorkloadClass, live = !isReservedWorkload(cls)): string {
+  if (isReservedWorkload(cls) && !live) {
+    return `${WORKLOAD_LABELS[cls]} requests are not detected on this instance yet (${WORKLOAD_SIGNALS[cls]} — not effective here); a target here stays inert until it is.`;
+  }
+  return `${WORKLOAD_LABELS[cls]} requests (${WORKLOAD_SIGNALS[cls]}) follow the complexity path: band targets, then L2 and the cascade where enabled, then default.`;
 }
 
 function workloadVm(input: WorkloadTargetsInput, cls: WorkloadClass): WorkloadVm {
@@ -105,10 +114,12 @@ function workloadVm(input: WorkloadTargetsInput, cls: WorkloadClass): WorkloadVm
           requests: mixRow?.requests ?? 0,
           range: input.autoPerf.range,
         };
+  const reserved = isReservedWorkload(cls);
   return {
     cls,
     label: WORKLOAD_LABELS[cls],
-    reserved: isReservedWorkload(cls),
+    reserved,
+    live: !reserved || input.semanticWorkload,
     effective,
     shadowed,
     target,
@@ -121,7 +132,7 @@ export function workloadVms(input: WorkloadTargetsInput): WorkloadTargetsVm {
   const rows = WORKLOAD_ROW_ORDER.map((cls) => workloadVm(input, cls));
   return {
     rows,
-    anyUsable: rows.some((r) => !r.reserved && r.usable),
+    anyUsable: rows.some((r) => r.live && r.usable),
     routedTotal: rows.reduce((a, r) => a + (r.routed?.count ?? 0), 0),
   };
 }

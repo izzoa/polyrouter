@@ -26,7 +26,6 @@ import {
   STRUCTURAL_WORKLOAD_CLASSIFIER_VERSION,
   WORKLOAD_NONE,
   WORKLOAD_TAXONOMY_VERSION,
-  type StructuralWorkloadClass,
 } from '@polyrouter/shared';
 import type { StructuralFeatures } from './features';
 
@@ -50,24 +49,18 @@ export const WORKLOAD_THRESHOLD_KEYS: readonly (keyof WorkloadThresholds)[] = [
   'codeMinChars',
 ];
 
-/** What the structural source can record: its three classes, or `none` — the
- * reserved semantic-only classes are unrepresentable here by type, not just by
- * the database's compatibility CHECK. */
-export type StructuralWorkloadVerdictClass = StructuralWorkloadClass | typeof WORKLOAD_NONE;
-
-export interface WorkloadVerdict {
-  /** A taxonomy class the structural source can emit, or `none`. */
-  readonly class: StructuralWorkloadVerdictClass;
-  /** The recorded class's confidence in [0,1]: 1 for the binary classes, the
-   * fenced-code share for `code`, 0 for `none`. */
-  readonly score: number;
-  readonly source: 'structural';
-  /** `structural/<taxonomy v>/<classifier v>/<threshold digest>` — configuration
-   * only, computed once at boot by the caller, never per request. */
-  readonly revision: string;
-  /** Numbers-only serialization (invariant 8). */
-  readonly reason: string;
-}
+// The verdict shapes live in `../workload-verdict` (add-semantic-workloads): the
+// structural interface is re-exported here so W-1/W-2 callers keep their imports,
+// and `WorkloadVerdict` is now the structural | semantic union.
+export type {
+  StructuralWorkloadVerdict,
+  StructuralWorkloadVerdictClass,
+  WorkloadVerdict,
+} from '../workload-verdict';
+import type {
+  StructuralWorkloadVerdict,
+  StructuralWorkloadVerdictClass,
+} from '../workload-verdict';
 
 /** The pinned structural revision stamp (design D4): taxonomy version,
  * classifier version, and the first 12 hex chars of a SHA-256 over the
@@ -92,7 +85,7 @@ export function classifyWorkload(
   f: StructuralFeatures,
   t: WorkloadThresholds,
   revision: string,
-): WorkloadVerdict {
+): StructuralWorkloadVerdict {
   const chars = nonNeg(f.effectiveInputChars);
   const code = nonNeg(f.codeBlockChars);
   // Share of the scanned window's counted text inside fenced spans; a window

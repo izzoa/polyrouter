@@ -268,11 +268,18 @@ export function autoLayerCapability(
   /** add-semantic-routing: the WHOLE classifier ready (embedder + centroids)
    * — not merely the flag. Callers pass SemanticClassifierService.ready. */
   semanticClassifierReady = false,
-): { structural: boolean; cascade: boolean; semantic: boolean } {
+  /** add-semantic-workloads: the semantic WORKLOAD source ready (embedder +
+   * five validated workload centroids). Its capability is the semantic
+   * capability ∧ this — a separate flag so the dashboard never conflates the
+   * band classifier with the workload source. */
+  semanticWorkloadReady = false,
+): { structural: boolean; cascade: boolean; semantic: boolean; semanticWorkload: boolean } {
+  const semantic = cfg.autoLayers.has('semantic') && semanticClassifierReady;
   return {
     structural: cfg.autoLayers.has('structural'),
     cascade: cfg.cascade.enabled,
-    semantic: cfg.autoLayers.has('semantic') && semanticClassifierReady,
+    semantic,
+    semanticWorkload: semantic && semanticWorkloadReady,
   };
 }
 
@@ -317,16 +324,20 @@ export function effectiveThresholds(
  * Shared by the dashboard's `AutoLayersService` and the proxy's per-request read so
  * the two can never drift. `structuralAvailable`/`cascadeAvailable` come from `cap`. */
 export function effectiveAutoLayers(
-  cap: { structural: boolean; cascade: boolean; semantic: boolean },
+  cap: { structural: boolean; cascade: boolean; semantic: boolean; semanticWorkload?: boolean },
   pref: {
     structuralEnabled: boolean;
     cascadeEnabled: boolean;
     semanticEnabled?: boolean;
   } | null,
-): { structural: boolean; cascade: boolean; semantic: boolean } {
+): { structural: boolean; cascade: boolean; semantic: boolean; semanticWorkload: boolean } {
+  const semantic = cap.semantic && (pref?.semanticEnabled ?? true);
   return {
-    semantic: cap.semantic && (pref?.semanticEnabled ?? true),
+    semantic,
     structural: cap.structural && (pref?.structuralEnabled ?? true),
     cascade: cap.cascade && (pref?.cascadeEnabled ?? true),
+    // The workload source rides the SAME tenant preference as Layer 2 (no new
+    // toggle — add-semantic-workloads D5): semantic off disables both uses.
+    semanticWorkload: semantic && (cap.semanticWorkload ?? false),
   };
 }

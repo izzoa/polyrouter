@@ -16,6 +16,11 @@ registerConfig(
     SEMANTIC_CONCURRENCY: z.coerce.number().int().min(1).max(8).default(2),
     SEMANTIC_HIGH_THRESHOLD: z.coerce.number().min(0.01).max(1).default(0.15),
     SEMANTIC_LOW_THRESHOLD: z.coerce.number().min(0.01).max(1).default(0.15),
+    // Semantic WORKLOAD rails (add-semantic-workloads D6): the margin carries the
+    // discrimination; the floor is a near-orthogonal guard (spike: 0.30 cost recall
+    // for no precision — 0.20 keeps 100 % / 93 % on the eval).
+    SEMANTIC_WORKLOAD_MARGIN: z.coerce.number().min(0.01).max(1).default(0.05),
+    SEMANTIC_WORKLOAD_MIN_SIM: z.coerce.number().min(0).max(1).default(0.2),
     // Learning rails (add-semantic-learning D10): FAIL BOOT outside range —
     // never silently clamp. Cross-field checks (MIN_SAMPLES ≥ MIN_COHORT,
     // COOLDOWN < STATE_TTL) run in the builder.
@@ -40,6 +45,8 @@ type SemanticEnv = {
   SEMANTIC_CONCURRENCY: number;
   SEMANTIC_HIGH_THRESHOLD: number;
   SEMANTIC_LOW_THRESHOLD: number;
+  SEMANTIC_WORKLOAD_MARGIN: number;
+  SEMANTIC_WORKLOAD_MIN_SIM: number;
   SEMANTIC_LEARNING_MIN_COHORT: number;
   SEMANTIC_LEARNING_MIN_SAMPLES: number;
   SEMANTIC_LEARNING_ALPHA: number;
@@ -75,7 +82,16 @@ export interface SemanticConfig {
    * defaults 0.15/0.15 (spike-quantile derived, wide-ambiguous). */
   readonly highThreshold: number;
   readonly lowThreshold: number;
+  /** Semantic WORKLOAD classifier rails (add-semantic-workloads D6): the winning
+   * reserved class must lead the runner-up by `margin` AND reach `minSim`;
+   * both ≤ 4 dp, both digested into the semantic workload revision. */
+  readonly workload: SemanticWorkloadRailsConfig;
   readonly learning: SemanticLearningConfig;
+}
+
+export interface SemanticWorkloadRailsConfig {
+  readonly margin: number;
+  readonly minSim: number;
 }
 
 export function buildSemanticConfig(env: SemanticEnv): SemanticConfig {
@@ -83,6 +99,9 @@ export function buildSemanticConfig(env: SemanticEnv): SemanticConfig {
   const is4dp = (n: number): boolean => Math.round(n * 10_000) / 10_000 === n;
   if (!is4dp(env.SEMANTIC_HIGH_THRESHOLD) || !is4dp(env.SEMANTIC_LOW_THRESHOLD)) {
     throw new Error('SEMANTIC_*_THRESHOLD must have at most 4 decimal places');
+  }
+  if (!is4dp(env.SEMANTIC_WORKLOAD_MARGIN) || !is4dp(env.SEMANTIC_WORKLOAD_MIN_SIM)) {
+    throw new Error('SEMANTIC_WORKLOAD_{MARGIN,MIN_SIM} must have at most 4 decimal places');
   }
   if (!is4dp(env.SEMANTIC_LEARNING_ALPHA) || !is4dp(env.SEMANTIC_LEARNING_MAX_DRIFT)) {
     throw new Error('SEMANTIC_LEARNING_{ALPHA,MAX_DRIFT} must have at most 4 decimal places');
@@ -104,6 +123,7 @@ export function buildSemanticConfig(env: SemanticEnv): SemanticConfig {
     concurrency: env.SEMANTIC_CONCURRENCY,
     highThreshold: env.SEMANTIC_HIGH_THRESHOLD,
     lowThreshold: env.SEMANTIC_LOW_THRESHOLD,
+    workload: { margin: env.SEMANTIC_WORKLOAD_MARGIN, minSim: env.SEMANTIC_WORKLOAD_MIN_SIM },
     learning: {
       minCohort: env.SEMANTIC_LEARNING_MIN_COHORT,
       minSamples: env.SEMANTIC_LEARNING_MIN_SAMPLES,

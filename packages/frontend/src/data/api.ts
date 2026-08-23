@@ -393,6 +393,13 @@ export interface AutoLayers {
    * never a wrong single-half claim. */
   semanticFlagEnabled?: boolean;
   semanticClassifierReady?: boolean;
+  /** The semantic WORKLOAD source (add-semantic-workloads): capability (semantic
+   * capability ∧ the workload centroids ready) and the effective flag (semantic
+   * effective ∧ available — no separate tenant toggle). The Workload-targets
+   * card's reserved rows go live on the effective flag. Optional: an older
+   * server omits both (= false). */
+  semanticWorkloadAvailable?: boolean;
+  semanticWorkload?: boolean;
   /** L2 learning (add-semantic-learning): effective preference (learning ∧
    * semantic effective) + capability (= semanticAvailable). */
   semanticLearning: boolean;

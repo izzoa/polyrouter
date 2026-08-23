@@ -1384,6 +1384,13 @@ describe('analytics API (#17)', () => {
       await seed('structural', 'code', 'high'); // a band route that happened to be code (not routed BY workload)
       await seed('default', 'none', 'ambiguous', { cost: null }); // `none` — never routed; the ordinary fall-through
       await seed('default', 'vision', 'high', { cost: 0 }); // a genuinely unroutable high
+      // add-semantic-workloads: a SEMANTIC-sourced reserved class, claimed by its rule —
+      // the mix unions it with the structural classes and lists its revision.
+      await seed('workload', 'research', 'ambiguous', {
+        workloadSource: 'semantic',
+        workloadRevision: 'semantic/v1/s1/dddddddddddd',
+        workloadScore: 0.61,
+      });
     });
 
     it('auto: workload-routed rows count per class as `routed`, in evaluated/bands/series/signal quality — never in unroutable, cascade, or fallthrough', async () => {
@@ -1397,15 +1404,24 @@ describe('analytics API (#17)', () => {
           c as unknown as Record<string, unknown>,
         ]),
       );
-      expect(body.workloadMix.evaluated).toBe(6);
+      expect(body.workloadMix.evaluated).toBe(7);
       expect(by.get('code')).toMatchObject({ requests: 3, routed: 2 });
       expect(by.get('vision')).toMatchObject({ requests: 2, routed: 1 });
       expect(by.get('none')).toMatchObject({ requests: 1, routed: 0 });
+      // add-semantic-workloads: the semantic-sourced reserved class is a class like any other,
+      // and its revision is listed beside the structural one.
+      expect(by.get('research')).toMatchObject({ requests: 1, routed: 1 });
+      expect(body.workloadMix.revisions).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ revision: 'semantic/v1/s1/dddddddddddd', requests: 1 }),
+          expect.objectContaining({ revision: RW, requests: 6 }),
+        ]),
+      );
       // The band policy is unchanged: a workload-routed row is a BANDED row.
-      expect(body.evaluated).toBe(6);
+      expect(body.evaluated).toBe(7);
       expect(body.bands.high).toEqual({ requests: 3, declared: 0, unroutable: 1 }); // only the default-layer high
       expect(body.bands.low).toEqual({ requests: 1, declared: 0, unroutable: 0 });
-      expect(body.bands.ambiguous.requests).toBe(2);
+      expect(body.bands.ambiguous.requests).toBe(3);
       expect(body.cascade).toEqual({
         requests: 0,
         qualityPassed: 0,
@@ -1415,7 +1431,7 @@ describe('analytics API (#17)', () => {
       });
       expect(body.fallthrough).toBe(1); // the `none` default row only — a claimed ambiguous row is not a fall-through
       const series = body.series as { high: number; low: number; ambiguous: number }[];
-      expect(series.reduce((a, p) => a + p.high + p.low + p.ambiguous, 0)).toBe(6);
+      expect(series.reduce((a, p) => a + p.high + p.low + p.ambiguous, 0)).toBe(7);
       // Per-agent signal quality: the same banded-rule population as every other row.
       const sq = (
         body.signalQuality as {
@@ -1424,16 +1440,15 @@ describe('analytics API (#17)', () => {
           ambiguousRows: number;
         }[]
       ).find((r) => r.agentId === xa)!;
-      expect(sq).toMatchObject({ bandedRows: 6, ambiguousRows: 2 });
+      expect(sq).toMatchObject({ bandedRows: 7, ambiguousRows: 3 });
     });
 
     it('listing: layer=workload returns exactly the claimed rows; calibrationStats is byte-identical with and without them', async () => {
       const res = await q('requests', X, { ...RANGE, layer: 'workload', limit: 50 });
       expect(res.status).toBe(200);
-      const ids = (res.body.rows as { id: string; decisionLayer: string }[])
-        .map((r) => r.id)
-        .sort();
-      expect(ids).toEqual([...routedIds].sort());
+      const ids = (res.body.rows as { id: string; decisionLayer: string }[]).map((r) => r.id);
+      expect(ids).toHaveLength(routedIds.length + 1); // + the semantic-sourced research claim
+      for (const id of routedIds) expect(ids).toContain(id);
       expect(
         (res.body.rows as { decisionLayer: string }[]).every((r) => r.decisionLayer === 'workload'),
       ).toBe(true);

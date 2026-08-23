@@ -15,6 +15,8 @@ export {
   DEFAULT_TIER_KEY,
   MAX_MODELS_PER_TIER,
   RULE_MATCH_TYPES,
+  SEMANTIC_WORKLOAD_CLASSES,
+  SEMANTIC_WORKLOAD_CLASSIFIER_VERSION,
   STRUCTURAL_WORKLOAD_CLASSES,
   STRUCTURAL_WORKLOAD_CLASSIFIER_VERSION,
   TIER_HEADER_NAME,
@@ -26,6 +28,7 @@ export {
 } from './routing-constants';
 export type {
   RuleMatchType,
+  SemanticWorkloadClass,
   StructuralWorkloadClass,
   WorkloadClass,
   WorkloadSource,

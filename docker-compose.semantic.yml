@@ -29,6 +29,9 @@ services:
       SEMANTIC_CONCURRENCY:
       SEMANTIC_TIMEOUT_MS:
       SEMANTIC_MAX_INPUT_CHARS:
+      # Semantic WORKLOAD rails (add-semantic-workloads): research/writing detection.
+      SEMANTIC_WORKLOAD_MARGIN:
+      SEMANTIC_WORKLOAD_MIN_SIM:
       # Optional L2 learning loop (default off; opt-in PER TENANT in the UI —
       # there is no global enable env). These tune the sweep + its bounds.
       SEMANTIC_LEARNING_ALPHA:

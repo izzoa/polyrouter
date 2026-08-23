@@ -8,6 +8,8 @@ describe('buildSemanticConfig (add-semantic-embedder)', () => {
     SEMANTIC_CONCURRENCY: 2,
     SEMANTIC_HIGH_THRESHOLD: 0.15,
     SEMANTIC_LOW_THRESHOLD: 0.15,
+    SEMANTIC_WORKLOAD_MARGIN: 0.05,
+    SEMANTIC_WORKLOAD_MIN_SIM: 0.2,
     SEMANTIC_LEARNING_MIN_COHORT: 8,
     SEMANTIC_LEARNING_MIN_SAMPLES: 50,
     SEMANTIC_LEARNING_ALPHA: 0.2,
@@ -34,6 +36,7 @@ describe('buildSemanticConfig (add-semantic-embedder)', () => {
       concurrency: 2,
       highThreshold: 0.15,
       lowThreshold: 0.15,
+      workload: { margin: 0.05, minSim: 0.2 },
       learning: {
         minCohort: 8,
         minSamples: 50,
@@ -46,6 +49,21 @@ describe('buildSemanticConfig (add-semantic-embedder)', () => {
         schedCron: '0 3 * * *',
       },
     });
+  });
+
+  it('carries the semantic workload rails (add-semantic-workloads D6) and rejects rails finer than 4 decimals', () => {
+    const cfg = buildSemanticConfig({ ...BASE, SEMANTIC_MODEL_PATH: '/m' });
+    expect(cfg.workload).toEqual({ margin: 0.05, minSim: 0.2 });
+    expect(
+      buildSemanticConfig({ ...BASE, SEMANTIC_WORKLOAD_MARGIN: 0.08, SEMANTIC_WORKLOAD_MIN_SIM: 0 })
+        .workload,
+    ).toEqual({ margin: 0.08, minSim: 0 });
+    expect(() => buildSemanticConfig({ ...BASE, SEMANTIC_WORKLOAD_MARGIN: 0.05001 })).toThrow(
+      /SEMANTIC_WORKLOAD_\{MARGIN,MIN_SIM\} must have at most 4 decimal places/,
+    );
+    expect(() => buildSemanticConfig({ ...BASE, SEMANTIC_WORKLOAD_MIN_SIM: 0.20001 })).toThrow(
+      /4 decimal places/,
+    );
   });
 
   it('rejects thresholds finer than 4 decimals', () => {

@@ -26,3 +26,8 @@ export type {
   RouteErrorKind,
   DecisionLayer,
 } from './resolve';
+export type {
+  SemanticWorkloadVerdict,
+  SemanticWorkloadVerdictClass,
+  StructuralWorkloadVerdict,
+} from './workload-verdict';

@@ -73,6 +73,7 @@ function input(over: Partial<WorkloadTargetsInput> = {}): WorkloadTargetsInput {
     models: [model('m1', { displayName: 'Coder' }), model('m2')],
     providers: [{ id: 'p1', name: 'OpenAI' } as never],
     autoPerf: { data: null, range: RANGE },
+    semanticWorkload: false,
     ...over,
   };
 }
@@ -102,6 +103,7 @@ describe('workloadVms (add-workload-routing D6)', () => {
       'writing',
     ]);
     expect(vm.rows.map((r) => r.reserved)).toEqual([false, false, false, true, true]);
+    expect(vm.rows.map((r) => r.live)).toEqual([true, true, true, false, false]); // semantic source not effective
     expect(isReservedWorkload('research')).toBe(true);
     expect(isReservedWorkload('code')).toBe(false);
     for (const r of vm.rows) {
@@ -213,7 +215,24 @@ describe('workloadVms (add-workload-routing D6)', () => {
     expect(unsetCopy('code')).toContain(
       'band targets, then L2 and the cascade where enabled, then default',
     );
-    expect(unsetCopy('research')).toContain('not detected yet');
-    expect(unsetCopy('research')).toContain('semantic source only');
+    expect(unsetCopy('research')).toContain('not detected on this instance yet');
+    expect(unsetCopy('research')).toContain('semantic workload source');
+  });
+
+  it('reserved rows go LIVE exactly when the semantic workload source is effective (add-semantic-workloads D5)', () => {
+    const vm = workloadVms(
+      input({
+        semanticWorkload: true,
+        rules: [rule({ id: 'r', workloadClass: 'writing', target: 'tier:coding' })],
+      }),
+    );
+    expect(vm.rows.map((r) => r.live)).toEqual([true, true, true, true, true]);
+    expect(vm.rows.map((r) => r.reserved)).toEqual([false, false, false, true, true]); // still reserved for copy
+    expect(vm.anyUsable).toBe(true); // a usable target on a LIVE reserved class counts
+    expect(unsetCopy('research', true)).toContain('detected by the semantic workload source');
+    expect(unsetCopy('research', true)).not.toContain('not detected');
+    expect(unsetCopy('research', false)).toContain('not detected on this instance yet');
+    expect(unsetCopy('research')).toContain('not detected on this instance yet'); // default = reserved off
+    expect(unsetCopy('code', true)).toBe(unsetCopy('code'));
   });
 });

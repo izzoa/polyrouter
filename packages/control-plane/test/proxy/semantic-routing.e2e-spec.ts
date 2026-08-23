@@ -32,6 +32,7 @@ import {
   createProviderAdapter,
   extractSemanticInput,
   type Embedder,
+  WORKLOAD_ANCHORS,
 } from '@polyrouter/data-plane';
 import { startStubUpstream } from './stub-upstream';
 import request from 'supertest';
@@ -61,6 +62,7 @@ import { ProxyService } from '../../src/proxy/proxy.service';
 import { AutoLayersController } from '../../src/routing-config/auto-layers.controller';
 import { AutoLayersService } from '../../src/routing-config/auto-layers.service';
 import { SemanticModule } from '../../src/semantic/semantic.module';
+import { SemanticRouter } from '../../src/semantic/semantic-router';
 import { SEMANTIC_LOADER } from '../../src/semantic/onnx-loader';
 import { SEMANTIC_CONFIG, type SemanticConfig } from '../../src/semantic/semantic.config';
 import { NotificationProducers } from '../../src/producers/notification-producers';
@@ -86,6 +88,31 @@ const HMAC = 'a'.repeat(64);
 const DIMS = 8;
 const ESCALATE = 'ESCALATE_MARKER_9Q';
 const TRIVIAL = 'TRIVIAL_MARKER_7Z';
+// add-semantic-workloads: workload-class markers + fault markers for the controlled embedder.
+const RESEARCH_MARKER = 'RESEARCH_MARKER_3R';
+const WRITING_MARKER = 'WRITING_MARKER_5W';
+const WEAK_RESEARCH_MARKER = 'WEAK_RESEARCH_MARKER_1F'; // research direction but far below the similarity floor
+const FAIL_EMBED_MARKER = 'FAIL_EMBED_MARKER_0X'; // the embedder rejects (timeout/abort stand-in)
+const ZERO_VECTOR_MARKER = 'ZERO_VECTOR_MARKER_0Z'; // a degenerate (zero-norm) vector
+const SLOW_EMBED_MARKER = 'SLOW_EMBED_MARKER_9S'; // resolves only AFTER the bounded timeout (a real timeout crossing)
+const SLOW_EMBED_MS = 200; // > SEMANTIC_CFG.timeoutMs (50)
+/** Workload classes → basis e3..e7 (code, research, vision, structured, writing). */
+const WORKLOAD_BASIS: Record<string, number> = {
+  code: 3,
+  research: 4,
+  vision: 5,
+  structured: 6,
+  writing: 7,
+};
+function unit(vals: Partial<Record<number, number>>): Float32Array {
+  const v = new Float32Array(DIMS);
+  for (const [i, x] of Object.entries(vals)) v[Number(i)] = x ?? 0;
+  let n = 0;
+  for (const x of v) n += x * x;
+  n = Math.sqrt(n);
+  for (let i = 0; i < DIMS; i += 1) v[i] = (v[i] ?? 0) / n;
+  return v;
+}
 
 /** Basis vector e_i, unit-norm. */
 function basis(i: number): Float32Array {
@@ -118,14 +145,49 @@ function controlledEmbedder(): Embedder & { readonly saturated: boolean } {
     );
   const highSet = new Set(HIGH_ANCHORS.map(serialize));
   const lowSet = new Set(LOW_ANCHORS.map(serialize));
+  // Workload anchors (add-semantic-workloads): each class's 30 anchors map to ONE
+  // basis vector, so the boot-built centroid IS that pole (pairwise cosine 0).
+  const workloadSets = new Map<number, Set<string>>();
+  for (const [cls, idx] of Object.entries(WORKLOAD_BASIS)) {
+    workloadSets.set(
+      idx,
+      new Set((WORKLOAD_ANCHORS as Record<string, readonly string[]>)[cls]!.map(serialize)),
+    );
+  }
   return {
     id: 'sha256:e2e-controlled',
     dims: DIMS,
     saturated: false,
     embed(text: string): Promise<Float32Array> {
       embedCalls += 1;
+      // A SLOW embed is raced against the configured bound exactly as the real
+      // embedder is (clink r5 L2): the caller sees a rejection after `timeoutMs`,
+      // never the late vector.
+      if (text.includes(SLOW_EMBED_MARKER)) {
+        const slow = new Promise<Float32Array>((resolve) =>
+          setTimeout(() => resolve(basis(4)), SLOW_EMBED_MS),
+        );
+        const bound = new Promise<never>((_, reject) =>
+          setTimeout(
+            () =>
+              reject(new Error(`semantic embed timeout after ${String(SEMANTIC_CFG.timeoutMs)}ms`)),
+            SEMANTIC_CFG.timeoutMs,
+          ),
+        );
+        return Promise.race([slow, bound]);
+      }
+      if (text.includes(FAIL_EMBED_MARKER))
+        return Promise.reject(new Error('embed timeout (injected)'));
+      if (text.includes(ZERO_VECTOR_MARKER)) return Promise.resolve(new Float32Array(DIMS));
+      for (const [idx, set] of workloadSets) if (set.has(text)) return Promise.resolve(basis(idx));
       if (highSet.has(text) || text.includes(ESCALATE)) return Promise.resolve(basis(0));
       if (lowSet.has(text) || text.includes(TRIVIAL)) return Promise.resolve(basis(1));
+      // A tie between the two reserved classes → margin 0 → `none`.
+      if (text.includes(RESEARCH_MARKER) && text.includes(WRITING_MARKER))
+        return Promise.resolve(unit({ 4: 1, 7: 1 }));
+      if (text.includes(WEAK_RESEARCH_MARKER)) return Promise.resolve(unit({ 2: 0.98, 4: 0.15 })); // topSim ≈ 0.15 < 0.20
+      if (text.includes(RESEARCH_MARKER)) return Promise.resolve(basis(4));
+      if (text.includes(WRITING_MARKER)) return Promise.resolve(basis(7));
       return Promise.resolve(basis(2));
     },
   };
@@ -138,6 +200,7 @@ const SEMANTIC_CFG: SemanticConfig = {
   concurrency: 2,
   highThreshold: 0.15,
   lowThreshold: 0.15,
+  workload: { margin: 0.05, minSim: 0.2 },
   learning: {
     minCohort: 8,
     minSamples: 50,
@@ -282,6 +345,11 @@ interface SemRow {
   semanticSource: string | null;
   semanticRevision: string | null;
   structuralBand: string | null;
+  structuralScore: number | null;
+  workloadClass: string | null;
+  workloadScore: number | null;
+  workloadSource: string | null;
+  workloadRevision: string | null;
 }
 
 describe('Layer-2 semantic routing e2e', () => {
@@ -405,7 +473,9 @@ describe('Layer-2 semantic routing e2e', () => {
       `SELECT model_id as "modelId", decision_layer as "decisionLayer", routing_reason as "routingReason",
               semantic_band as "semanticBand", semantic_score as "semanticScore",
               semantic_source as "semanticSource", semantic_revision as "semanticRevision",
-              structural_band as "structuralBand"
+              structural_band as "structuralBand", structural_score as "structuralScore",
+              workload_class as "workloadClass", workload_score as "workloadScore",
+              workload_source as "workloadSource", workload_revision as "workloadRevision"
        FROM request_log WHERE owner_user_id = $1
        ORDER BY created_at DESC, id DESC LIMIT 1`,
       [t.userId],
@@ -600,5 +670,341 @@ describe('Layer-2 semantic routing e2e', () => {
     expect(control.structuralBand).toBe('ambiguous');
     expect(control.decisionLayer).not.toBe('workload');
     expect(embedCalls).toBeGreaterThan(before);
+  });
+
+  // ── add-semantic-workloads: the semantic WORKLOAD source ───────────────────
+
+  describe('semantic workload source (add-semantic-workloads)', () => {
+    const SEM_REV = /^semantic\/v1\/s1\/[0-9a-f]{12}$/;
+    const researchBody = (system: string, marker = RESEARCH_MARKER): Record<string, unknown> =>
+      ambiguousBody(system, marker); // L1-ambiguous shape, structural `none`, embeds to the research pole
+    async function withRule(
+      t: Tenant,
+      cls: string,
+      target: string,
+      fn: () => Promise<void>,
+    ): Promise<void> {
+      const rule = await port.routingRules.insert(t.principal, {
+        matchType: 'auto_workload',
+        headerName: 'x-polyrouter-tier',
+        headerValue: null,
+        workloadClass: cls,
+        target,
+        priority: 0,
+      });
+      try {
+        await fn();
+      } finally {
+        await port.routingRules.remove(t.principal, rule.id);
+      }
+    }
+    const putLayers = (t: Tenant, dto: Record<string, unknown>) =>
+      request(server).put('/api/routing/auto-layers').set('x-test-user', t.userId).send(dto);
+
+    it('auto-layers reports the workload source as its own capability + effective flag, riding the semantic preference', async () => {
+      const t = await seedTenant('sem-wl-cap', false);
+      try {
+        const on = await request(server)
+          .get('/api/routing/auto-layers')
+          .set('x-test-user', t.userId);
+        expect(on.body).toMatchObject({
+          semanticAvailable: true,
+          semanticWorkloadAvailable: true,
+          semantic: true,
+          semanticWorkload: true,
+        });
+        const off = await putLayers(t, { structural: true, cascade: true, semantic: false });
+        expect(off.body).toMatchObject({
+          semanticWorkloadAvailable: true,
+          semantic: false,
+          semanticWorkload: false,
+        });
+      } finally {
+        await pool.query('DELETE FROM "user" WHERE id = $1', [t.userId]);
+      }
+    });
+
+    it('a research request with auto_workload(research) is CLAIMED: one embed, decision_layer workload, semantic quad, no band resolution, no L2 band classification', async () => {
+      await withRule(T, 'research', 'tier:cheap', async () => {
+        const router = app.get(SemanticRouter);
+        const classifyBand = jest.spyOn(router, 'classifyBand');
+        const structural = app.get(StructuralRouter);
+        const resolveBand = jest.spyOn(structural, 'resolveBand');
+        try {
+          const before = embedCalls;
+          await proxy(T, researchBody('sem-wl-claim'));
+          expect(embedCalls - before).toBe(1); // exactly ONE embed — the workload classification itself
+          const row = await lastRow(T);
+          expect(row.decisionLayer).toBe('workload');
+          expect(row.modelId).toBe(T.model.cheap);
+          expect(row.routingReason).toMatch(
+            /^workload:research score=\d\.\d{4} m=\d\.\d{4} sim2=-?\d\.\d{4} top=research top2=\w+ src=semantic/,
+          );
+          expect(row.workloadClass).toBe('research');
+          expect(row.workloadSource).toBe('semantic');
+          expect(row.workloadScore).toBeCloseTo(1, 3);
+          expect(row.workloadRevision).toMatch(SEM_REV);
+          expect(row.structuralBand).toBe('ambiguous'); // the band verdict is recorded…
+          expect(resolveBand).toHaveBeenCalledTimes(0); // …but never resolved
+          expect(classifyBand).toHaveBeenCalledTimes(0); // no Layer-2 band classification
+          expect(row.semanticBand).toBeNull();
+          expect(row.semanticSource).toBeNull();
+        } finally {
+          classifyBand.mockRestore();
+          resolveBand.mockRestore();
+        }
+      });
+    });
+
+    it('a structural class request (fenced code) embeds NOTHING even with reserved rules configured', async () => {
+      await withRule(T, 'research', 'tier:cheap', async () => {
+        const before = embedCalls;
+        await proxy(T, highBody('sem-wl-structural'));
+        expect(embedCalls - before).toBe(0);
+        const row = await lastRow(T);
+        expect(row.decisionLayer).toBe('structural');
+        expect(row.workloadClass).toBe('code');
+        expect(row.workloadSource).toBe('structural');
+      });
+    });
+
+    it('without a rule, a semantic research verdict is recorded and the SAME vector is reused by Layer 2 (one embed, evidence identity)', async () => {
+      const router = app.get(SemanticRouter);
+      const svc = app.get(ProxyService) as unknown as {
+        prepare: (...a: unknown[]) => Promise<{ learningEvidence: Float32Array | null }>;
+      };
+      const embedSpy = jest.spyOn(router, 'embed');
+      const classifyBand = jest.spyOn(router, 'classifyBand');
+      const prepareSpy = jest.spyOn(svc, 'prepare');
+      try {
+        const before = embedCalls;
+        await proxy(T, researchBody('sem-wl-reuse'));
+        expect(embedCalls - before).toBe(1); // embedded ONCE for both the workload source and the L2 band
+        const embedded = (await embedSpy.mock.results[0]!.value) as { vector: Float32Array } | null;
+        expect(embedded).not.toBeNull();
+        expect(classifyBand).toHaveBeenCalledTimes(1);
+        expect(classifyBand.mock.calls[0]![0]).toBe(embedded!.vector); // the SAME instance — no re-embed
+        const prepared = await prepareSpy.mock.results[0]!.value;
+        expect(prepared.learningEvidence).toBe(embedded!.vector); // …and it rides to the learning contributor unchanged
+        const row = await lastRow(T);
+        expect(row.workloadClass).toBe('research'); // recorded (source semantic) though unrouted
+        expect(row.workloadSource).toBe('semantic');
+        expect(row.decisionLayer).toBe('cascade'); // L1 ambiguous + L2 ambiguous (the research pole is orthogonal to both bands) → cascade
+        expect(row.semanticBand).toBe('ambiguous');
+      } finally {
+        embedSpy.mockRestore();
+        classifyBand.mockRestore();
+        prepareSpy.mockRestore();
+      }
+    });
+
+    it('below the margin (a reserved tie) and below the floor record none/semantic and never claim', async () => {
+      await withRule(T, 'research', 'tier:cheap', async () => {
+        await proxy(T, ambiguousBody('sem-wl-tie', `${RESEARCH_MARKER} ${WRITING_MARKER}`));
+        const tie = await lastRow(T);
+        expect(tie.decisionLayer).not.toBe('workload');
+        expect(tie.workloadClass).toBe('none');
+        expect(tie.workloadSource).toBe('semantic');
+        expect(tie.workloadRevision).toMatch(SEM_REV);
+        expect(tie.workloadScore).toBeCloseTo(Math.SQRT1_2, 3); // the winning cosine is recorded even for `none` (clink r5 M1)
+        await proxy(T, ambiguousBody('sem-wl-weak', WEAK_RESEARCH_MARKER));
+        const weak = await lastRow(T);
+        expect(weak.decisionLayer).not.toBe('workload');
+        expect(weak.workloadClass).toBe('none');
+        expect(weak.workloadSource).toBe('semantic');
+        expect(weak.workloadScore).toBeGreaterThan(0.1); // the real sub-floor confidence, not a fabricated zero
+        expect(weak.workloadScore).toBeLessThan(0.2);
+      });
+    });
+
+    it('an embed failure and a degenerate vector record no semantic verdict and skip Layer 2 (one wait, never two); a classify throw keeps the vector for Layer 2', async () => {
+      const router = app.get(SemanticRouter);
+      await withRule(T, 'research', 'tier:cheap', async () => {
+        // 1) the embedder rejects
+        let classifyBand = jest.spyOn(router, 'classifyBand');
+        let before = embedCalls;
+        await proxy(T, ambiguousBody('sem-wl-fail', FAIL_EMBED_MARKER));
+        expect(embedCalls - before).toBe(1); // the one bounded wait was spent at the stage…
+        expect(classifyBand).toHaveBeenCalledTimes(0); // …and Layer 2 did not embed again
+        let row = await lastRow(T);
+        expect(row.decisionLayer).toBe('cascade'); // served through the unclaimed flow
+        expect(row.workloadClass).toBe('none');
+        expect(row.workloadSource).toBe('structural'); // no semantic verdict fabricated
+        expect(row.semanticBand).toBeNull();
+        classifyBand.mockRestore();
+        // 2) a zero-norm vector is an embed-quality failure: same outcome, never reused
+        classifyBand = jest.spyOn(router, 'classifyBand');
+        before = embedCalls;
+        await proxy(T, ambiguousBody('sem-wl-zero', ZERO_VECTOR_MARKER));
+        expect(embedCalls - before).toBe(1);
+        expect(classifyBand).toHaveBeenCalledTimes(0);
+        row = await lastRow(T);
+        expect(row.workloadSource).toBe('structural');
+        expect(row.semanticBand).toBeNull();
+        classifyBand.mockRestore();
+        // 2b) a REAL bounded timeout: the embed resolves only after SEMANTIC_TIMEOUT_MS → the stage
+        //     sees the rejection after one bounded wait; L2 never embeds again; served.
+        classifyBand = jest.spyOn(router, 'classifyBand');
+        before = embedCalls;
+        const t0 = Date.now();
+        await proxy(T, ambiguousBody('sem-wl-slow', SLOW_EMBED_MARKER));
+        const elapsed = Date.now() - t0;
+        expect(embedCalls - before).toBe(1);
+        expect(classifyBand).toHaveBeenCalledTimes(0);
+        expect(elapsed).toBeGreaterThanOrEqual(SEMANTIC_CFG.timeoutMs - 5); // the bound was actually waited
+        row = await lastRow(T);
+        expect(row.decisionLayer).toBe('cascade');
+        expect(row.workloadSource).toBe('structural');
+        expect(row.semanticBand).toBeNull();
+        classifyBand.mockRestore();
+        // 3) the classifier throws over a VALID vector: no semantic verdict, but L2 classifies from the kept vector
+        classifyBand = jest.spyOn(router, 'classifyBand');
+        const classifyWorkload = jest
+          .spyOn(router, 'classifyWorkload')
+          .mockImplementationOnce(() => {
+            throw new Error('injected classifier fault');
+          });
+        before = embedCalls;
+        await proxy(T, researchBody('sem-wl-cls-throw'));
+        expect(embedCalls - before).toBe(1);
+        expect(classifyBand).toHaveBeenCalledTimes(1); // the kept vector went to Layer 2
+        row = await lastRow(T);
+        expect(row.decisionLayer).not.toBe('workload');
+        expect(row.workloadSource).toBe('structural'); // the structural `none` stands
+        expect(row.semanticBand).toBe('ambiguous');
+        classifyBand.mockRestore();
+        classifyWorkload.mockRestore();
+      });
+    });
+
+    it('a band-resolution fault after a successful semantic classification clears BOTH quads (atomic commit) and the default serves', async () => {
+      const structural = app.get(StructuralRouter) as unknown as { bandTargetOf: () => unknown };
+      const band = jest.spyOn(structural, 'bandTargetOf').mockImplementationOnce(() => {
+        throw new Error('band boom');
+      });
+      try {
+        // Structural HIGH without fenced code (workload `none`) + the research pole: the
+        // stage classifies research (no rule → unclaimed) → band HIGH → bandTargetOf throws.
+        await proxy(T, {
+          ...highBody('sem-wl-atomic'),
+          messages: [
+            { role: 'system', content: 'sem-wl-atomic' },
+            { role: 'user', content: `${RESEARCH_MARKER} ` + 'Z'.repeat(9_000) },
+          ],
+        });
+        expect(band).toHaveBeenCalledTimes(1);
+        const row = await lastRow(T);
+        expect(row.decisionLayer).toBe('default');
+        expect(row.modelId).toBe(T.model.default);
+        expect(row.structuralBand).toBeNull();
+        expect(row.structuralScore).toBeNull();
+        expect(row.workloadClass).toBeNull();
+        expect(row.workloadSource).toBeNull();
+        expect(row.workloadRevision).toBeNull();
+      } finally {
+        band.mockRestore();
+      }
+    });
+
+    it('a structural WORKLOAD-classifier fault still lets the semantic source classify; a whole Layer-1 skip embeds nothing', async () => {
+      const structural = app.get(StructuralRouter) as unknown as {
+        workloadOf: () => unknown;
+        classify: () => unknown;
+      };
+      await withRule(T, 'research', 'tier:cheap', async () => {
+        const wl = jest.spyOn(structural, 'workloadOf').mockImplementationOnce(() => {
+          throw new Error('structural workload fault');
+        });
+        try {
+          const before = embedCalls;
+          await proxy(T, researchBody('sem-wl-wlfault'));
+          expect(embedCalls - before).toBe(1);
+          const row = await lastRow(T);
+          expect(row.decisionLayer).toBe('workload'); // the semantic source decided
+          expect(row.workloadSource).toBe('semantic');
+        } finally {
+          wl.mockRestore();
+        }
+        const cls = jest
+          .spyOn(structural, 'classify')
+          .mockResolvedValueOnce({ kind: 'skip' } as never);
+        try {
+          const before = embedCalls;
+          await proxy(T, researchBody('sem-wl-l1skip'));
+          expect(embedCalls - before).toBe(0); // whole Layer-1 skip → no source runs
+          const row = await lastRow(T);
+          expect(row.decisionLayer).toBe('default');
+          expect(row.structuralBand).toBeNull();
+          expect(row.workloadClass).toBeNull();
+        } finally {
+          cls.mockRestore();
+        }
+      });
+    });
+
+    it('with the semantic layer toggled OFF for the tenant, reserved rules are inert and nothing embeds', async () => {
+      const t = await seedTenant('sem-wl-off', false);
+      try {
+        await putLayers(t, { structural: true, cascade: true, semantic: false });
+        await withRule(t, 'research', 'tier:cheap', async () => {
+          const before = embedCalls;
+          await proxy(t, researchBody('sem-wl-off-req'));
+          expect(embedCalls - before).toBe(0);
+          const row = await lastRow(t);
+          expect(row.decisionLayer).not.toBe('workload');
+          expect(row.workloadClass).toBe('none');
+          expect(row.workloadSource).toBe('structural');
+        });
+      } finally {
+        await pool.query('DELETE FROM "user" WHERE id = $1', [t.userId]);
+      }
+    });
+
+    it('invariant 8 — sentinels in a semantically classified request reach no column, reason, revision, or log line', async () => {
+      const SENTINELS = ['SENTINEL_SYS_w3a1', 'SENTINEL_USER_w3b2', 'SENTINEL_TOOL_w3c3'];
+      const lines: string[] = [];
+      const origOut = process.stdout.write.bind(process.stdout);
+      const origErr = process.stderr.write.bind(process.stderr);
+      const cap = ((chunk: unknown): boolean => {
+        lines.push(String(chunk));
+        return true;
+      }) as typeof process.stdout.write;
+      const spies = (['log', 'warn', 'error', 'debug', 'info'] as const).map((m) =>
+        jest.spyOn(console, m).mockImplementation((...a: unknown[]) => {
+          lines.push(a.map(String).join(' '));
+        }),
+      );
+      process.stdout.write = cap;
+      process.stderr.write = cap;
+      try {
+        await withRule(T, 'research', 'tier:cheap', async () => {
+          await proxy(T, {
+            model: 'auto',
+            messages: [
+              { role: 'system', content: 'SENTINEL_SYS_w3a1 ' + 'S'.repeat(200) },
+              { role: 'user', content: `${RESEARCH_MARKER} SENTINEL_USER_w3b2 ` + 'U'.repeat(400) },
+            ],
+            tools: [
+              {
+                type: 'function',
+                function: {
+                  name: 'SENTINEL_TOOL_w3c3',
+                  parameters: { type: 'object', properties: {} },
+                },
+              },
+            ],
+          });
+        });
+      } finally {
+        process.stdout.write = origOut;
+        process.stderr.write = origErr;
+        spies.forEach((sp) => sp.mockRestore());
+      }
+      const row = await lastRow(T);
+      expect(row.workloadSource).toBe('semantic');
+      const blob = JSON.stringify(row) + '\n' + lines.join('\n');
+      for (const sentinel of SENTINELS) expect(blob).not.toContain(sentinel);
+      expect(row.workloadRevision).toMatch(SEM_REV);
+    });
   });
 });

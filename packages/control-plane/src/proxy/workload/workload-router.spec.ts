@@ -41,16 +41,21 @@ function snapshot(
     ],
   };
 }
+// The union (add-semantic-workloads): a reserved class can only come from the
+// semantic source; everything else here is structural.
 const verdict = (
   cls: WorkloadVerdict['class'],
   reason = `workload:${cls} score=1.00`,
-): WorkloadVerdict => ({
-  class: cls,
-  score: cls === 'none' ? 0 : 1,
-  source: 'structural',
-  revision: 'structural/v1/c1/000000000000',
-  reason,
-});
+): WorkloadVerdict =>
+  cls === 'research' || cls === 'writing'
+    ? { class: cls, score: 1, source: 'semantic', revision: 'semantic/v1/s1/000000000000', reason }
+    : {
+        class: cls,
+        score: cls === 'none' ? 0 : 1,
+        source: 'structural',
+        revision: 'structural/v1/c1/000000000000',
+        reason,
+      };
 
 describe('WorkloadRouter.claim (add-workload-routing)', () => {
   const r = new WorkloadRouter();

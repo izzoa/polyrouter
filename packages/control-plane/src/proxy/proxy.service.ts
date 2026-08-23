@@ -48,6 +48,7 @@ import {
   type RouteDecision,
   type RoutingSnapshot,
   type StructuralVerdict,
+  type SemanticWorkloadVerdict,
   type WorkloadVerdict,
 } from '@polyrouter/data-plane';
 import { providerMaxTokensQuirks, type MaxTokensSpelling } from '../providers/providers.dto';
@@ -981,11 +982,17 @@ export class ProxyService {
     structural: boolean;
     cascade: boolean;
     semantic: boolean;
+    semanticWorkload: boolean;
     settings: RoutingSettingsValue | null;
   }> {
     // Capability = the boot flags masked by the WHOLE classifier readiness for
-    // semantic (add-semantic-routing) — flag ∧ embedder ∧ centroids.
-    const cap = autoLayerCapability(this.routingConfig, this.semanticClassifier.available);
+    // semantic (add-semantic-routing) — flag ∧ embedder ∧ centroids — and, for
+    // the semantic WORKLOAD source, ∧ its own centroids (add-semantic-workloads).
+    const cap = autoLayerCapability(
+      this.routingConfig,
+      this.semanticClassifier.available,
+      this.semanticClassifier.workloadReady,
+    );
     // Cascade/semantic imply structural, so structural off instance-wide leaves
     // nothing for a preference to gate — skip the read entirely.
     if (!cap.structural) return { ...cap, settings: null };
@@ -1128,18 +1135,66 @@ export class ProxyService {
         // yet (add-workload-routing D2): the workload stage runs between
         // classification and band resolution, so a claim pre-empts the band.
         const classified = await this.structural.classify(principal, agentId, ir, thresholds);
+        // Semantic WORKLOAD stage (add-semantic-workloads D1/D2): ONLY for a
+        // successful Layer-1 classification whose STRUCTURAL workload verdict
+        // is `none` (or absent because the structural workload classifier alone
+        // faulted) — a whole Layer-1 `skip` runs nothing — and only when the
+        // tenant's semantic layer is effective and the workload source is
+        // ready. ONE bounded embed; the vector is reused by Layer 2 below.
+        // One stage-level fault boundary with two failure kinds: an EMBED
+        // failure (throw/timeout, no evidence, degenerate vector) → no semantic
+        // verdict AND Layer 2 `skip` for this request (one wait, never two); a
+        // post-embed CLASSIFICATION throw → no semantic verdict, the vector KEPT
+        // for Layer 2. Nothing here can fail or stall the request (invariant 1).
+        let embedded: { text: string; vector: Float32Array } | null = null;
+        let semanticEmbedFailed = false;
+        let semanticWorkload: SemanticWorkloadVerdict | null = null;
+        if (
+          classified.kind === 'classified' &&
+          (classified.workload === undefined || classified.workload.class === WORKLOAD_NONE) &&
+          layers.semanticWorkload &&
+          this.semantic.workloadEnabled
+        ) {
+          try {
+            embedded = await this.semantic.embed(ir, { signal });
+            if (embedded === null) {
+              semanticEmbedFailed = true; // no usable vector — never reused
+            } else {
+              try {
+                semanticWorkload = this.semantic.classifyWorkload(embedded.vector);
+              } catch {
+                semanticWorkload = null; // classification fault — the vector stays usable for L2
+              }
+            }
+          } catch {
+            embedded = null;
+            semanticEmbedFailed = true;
+            semanticWorkload = null;
+          }
+        }
+        // The DECIDING workload verdict (D3): the structural class when it found
+        // one; otherwise the semantic verdict (class or `none`, source semantic)
+        // when the stage ran; otherwise the structural `none`/absent.
+        const decidingWorkload: WorkloadVerdict | undefined =
+          classified.kind !== 'classified'
+            ? undefined
+            : classified.workload !== undefined && classified.workload.class !== WORKLOAD_NONE
+              ? classified.workload
+              : (semanticWorkload ?? classified.workload);
         // Workload stage (add-workload-routing D3): a confident workload class
         // with a resolvable `auto_workload` target CLAIMS the request before
         // band targets / L2 / cascade. Its own try/catch — a fault is
-        // "unclaimed" (invariant 1). `none` never claims.
+        // "unclaimed" (invariant 1). `none` never claims. Source-agnostic: a
+        // semantic `research`/`writing` verdict claims exactly like a
+        // structural one (add-semantic-workloads).
         let claimed: RouteDecision | null = null;
         if (
           classified.kind === 'classified' &&
-          classified.workload !== undefined &&
-          classified.workload.class !== WORKLOAD_NONE
+          decidingWorkload !== undefined &&
+          decidingWorkload.class !== WORKLOAD_NONE
         ) {
           try {
-            claimed = this.workload.claim(snapshot, classified.workload);
+            claimed = this.workload.claim(snapshot, decidingWorkload);
           } catch {
             claimed = null; // degrade to the unclaimed flow — never fail or stall
           }
@@ -1156,15 +1211,16 @@ export class ProxyService {
           decision = claimed; // decision_layer 'workload' — no band, no L2, no cascade
           structuralVerdict = classified.verdict;
           structuralEpoch = layers.settings?.calibrationEpoch ?? 0;
-          if (classified.workload !== undefined) workloadVerdict = classified.workload;
+          if (decidingWorkload !== undefined) workloadVerdict = decidingWorkload;
         } else if (evaln.kind !== 'skip') {
           // Telemetry (add-auto-decision-telemetry): every EVALUATED request
           // records its verdict — including ambiguous/unroutable fall-throughs.
           structuralVerdict = evaln.verdict;
           structuralEpoch = layers.settings?.calibrationEpoch ?? 0;
-          // Workload telemetry (add-workload-telemetry): the verdict rides the
-          // same evaluation; absent when the workload classifier faulted.
-          if (evaln.workload !== undefined) workloadVerdict = evaln.workload;
+          // Workload telemetry (add-workload-telemetry / add-semantic-workloads):
+          // the DECIDING source's verdict rides the same commit; absent when no
+          // source produced one.
+          if (decidingWorkload !== undefined) workloadVerdict = decidingWorkload;
         }
         if (claimed !== null) {
           // claimed — nothing below runs
@@ -1178,9 +1234,17 @@ export class ProxyService {
           const gate = layers.semantic
             ? this.learningGate(layers.settings, snapshot)
             : DISABLED_LEARNING_GATE;
-          const sem = layers.semantic
-            ? await this.semantic.evaluate(principal, ir, snapshot, gate, { signal })
-            : ({ kind: 'skip' } as const);
+          // ONE embed per request (add-semantic-workloads D2): when the
+          // workload stage embedded this request, Layer 2 classifies the band
+          // from THAT vector; when the stage's embed failed, Layer 2 is skipped
+          // (the one bounded wait is spent); otherwise today's evaluate.
+          const sem = !layers.semantic
+            ? ({ kind: 'skip' } as const)
+            : embedded !== null
+              ? await this.semantic.classifyBand(embedded.vector, principal, snapshot, gate)
+              : semanticEmbedFailed
+                ? ({ kind: 'skip' } as const)
+                : await this.semantic.evaluate(principal, ir, snapshot, gate, { signal });
           if (sem.kind !== 'skip') semanticVerdict = sem.verdict;
           // The vector + gate for the learning contributor ride Prepared, set ONLY
           // for the L2-ambiguous slice (add-semantic-learning D1/D3) — the exact

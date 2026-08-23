@@ -60,8 +60,10 @@ response bodies unless you opt in.
   **Workload target** (an `auto_workload` rule: class → tier or model) sends that class
   straight to its own chain, ahead of band targets, L2, and the cascade — classification
   alone changes nothing; only a configured target routes. Structural detection covers
-  code, vision, and structured output within L1's bounded scan; research / writing arrive
-  with the semantic workload source in a later change.
+  code, vision, and structured output within L1's bounded scan; when the flag-gated semantic
+  module is loaded, a **semantic workload source** detects `research` / `writing` for
+  structural-`none` requests (embedding vs bundled per-class anchors — one bounded embed per
+  such request, reused by Layer 2; never keywords) and the same Workload targets route them.
 - **Safe mid-stream semantics** — fallbacks happen freely _before_ the first token; once
   streaming has begun the model is committed, and an upstream failure terminates the
   stream with a clear error. Models are **never silently swapped mid-response**.
@@ -103,7 +105,8 @@ response bodies unless you opt in.
   shows its decision layer and human-readable routing reason, tokens, snapshot-priced
   cost, and latency (plus its **workload** class when `auto` classified it, marked `routed`
   when a Workload target claimed it). The Routing page's **Workload targets** card binds
-  each detected class to a tier or model (reserved semantic-only classes shown read-only),
+  each detected class to a tier or model (the `research` / `writing` rows are live exactly when
+  the semantic workload source is effective, read-only otherwise — naming which half is missing),
   and its **Auto performance** card adds a **Workload mix** block — what kinds of work `auto`
   carried, how many of each a Workload target routed, and what each cost, with unpriced /
   coverage / classifier-revision disclosures.
@@ -171,7 +174,15 @@ nothing; a **Workload target** you configure for it does — the request is then
 that tier or model with `decision_layer = workload`, and its band verdict is still recorded
 but never acted on. Without a target (or with an unusable one) the request follows the
 band / cascade / default path exactly as before; `none` is never routable; and an explicit
-`model: <tier-key>` (e.g. a `coding` tier you created) keeps working as it always did.
+`model: <tier-key>` (e.g. a `coding` tier you created) keeps working as it always did. With the
+semantic module loaded (`SEMANTIC_MODEL_PATH` + `semantic` in `ROUTING_AUTO_LAYERS`, and the
+tenant's semantic layer on), a structural-`none` `auto` request is embedded once and compared to
+bundled per-class anchors: it records `research` / `writing` (source `semantic`) — and routes
+through its Workload target — only when that class beats every other class by
+`SEMANTIC_WORKLOAD_MARGIN` and clears `SEMANTIC_WORKLOAD_MIN_SIM`; otherwise it records `none`.
+The structural source always wins when it found a class, the semantic source never emits the
+structural classes (so prose-only coding questions usually record `none`), and the same vector
+serves Layer 2's band classification — a request is never embedded twice.
 
 ## Architecture
 
@@ -420,6 +431,7 @@ healthcheck:
 | `EVENTS_ENABLED`                                                                                          | `true`                                | Dashboard live event stream (`GET /api/events`). `false` turns it off entirely and the dashboard stays on its normal polling refresh — no feature is lost, only push                                                                                                                                                                                                                                                                                                                                          |
 | `EVENTS_HEARTBEAT_MS`                                                                                     | `25000`                               | Keep-alive interval; must stay under your proxy's idle-reap window (boot fails if ≥ 60s). Also bounds how fast a revoked session's open stream is closed                                                                                                                                                                                                                                                                                                                                                      |
 | `SEMANTIC_TIMEOUT_MS` / `SEMANTIC_MAX_INPUT_CHARS` / `SEMANTIC_CONCURRENCY`                               | `50` / `2000` / `2`                   | Embedder bounds: per-embed hard timeout, input cap before tokenization, concurrent-inference cap (saturation skips the layer for that request). Out-of-bounds values reject boot                                                                                                                                                                                                                                                                                                                              |
+| `SEMANTIC_WORKLOAD_MARGIN` / `SEMANTIC_WORKLOAD_MIN_SIM`                                                  | `0.05` / `0.20`                       | Semantic **workload** rails (need the semantic module): a structural-`none` `auto` request records `research` / `writing` only when the winning class leads the runner-up by ≥ `MARGIN` (the discriminating rail) and its cosine is ≥ `MIN_SIM` (a near-orthogonal guard; the spike showed 0.30 cost recall for no precision). Both ≤ 4 decimals, both part of the `semantic/…` workload revision, so a change never silently mixes two populations                                                           |
 | `POLYROUTER_SUBNET` / `POLYROUTER_IMAGE`                                                                  | `172.28.5.0/24` / built               | Compose network CIDR (change on a collision) / prebuilt image override                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 
 > The optional tunables above are compose pass-through: set one in `.env` and it reaches

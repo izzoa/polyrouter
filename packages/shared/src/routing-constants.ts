@@ -68,6 +68,17 @@ export type WorkloadVerdictClass = WorkloadClass | typeof WORKLOAD_NONE;
 export const STRUCTURAL_WORKLOAD_CLASSES = ['code', 'vision', 'structured'] as const;
 export type StructuralWorkloadClass = (typeof STRUCTURAL_WORKLOAD_CLASSES)[number];
 
+/** What the SEMANTIC source can emit besides `none` (add-semantic-workloads):
+ * the reserved classes only — the structural classes stay the structural
+ * source's by construction (the five-way argmax is internal to the classifier). */
+export const SEMANTIC_WORKLOAD_CLASSES = ['research', 'writing'] as const;
+export type SemanticWorkloadClass = (typeof SEMANTIC_WORKLOAD_CLASSES)[number];
+
+/** Bumps for ANY change to how the SEMANTIC source assigns a class (the
+ * emission rule, the rails' meaning, the argmax/margin semantics) — thresholds,
+ * anchors, embedder, and extractor are digested separately into the revision. */
+export const SEMANTIC_WORKLOAD_CLASSIFIER_VERSION = 's1';
+
 /** Which classifier produced a verdict. */
 export const WORKLOAD_SOURCES = ['structural', 'semantic'] as const;
 export type WorkloadSource = (typeof WORKLOAD_SOURCES)[number];

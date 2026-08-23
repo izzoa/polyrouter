@@ -846,7 +846,7 @@ describe('dashboard shell (auth-gated)', () => {
         [...research.querySelectorAll('button')].some((b) => b.textContent?.trim() === 'clean up'),
       ).toBe(false);
       const writing = rows().find((r) => r.textContent?.includes('WRITING'))!;
-      expect(writing.textContent).toContain('not detected yet');
+      expect(writing.textContent).toContain('not detected on this instance yet');
       expect(writing.querySelector('select')).toBeNull();
       // Cleanup removes only the shadowed code rule; the research rule is untouched.
       const cleanup = [...rows()[0]!.querySelectorAll<HTMLElement>('button')].find(
@@ -896,6 +896,126 @@ describe('dashboard shell (auth-gated)', () => {
       );
     } finally {
       dispose();
+    }
+  });
+
+  it('Workload targets: reserved rows go LIVE when the semantic workload source is effective; the missing half is named otherwise (add-semantic-workloads)', async () => {
+    const premium: TierDto = {
+      id: 't-premium',
+      key: 'premium',
+      displayName: null,
+      description: null,
+      createdAt: NOW,
+    };
+    const base = {
+      tiers: [DEFAULT_TIER, premium],
+      tierEntries: {
+        t1: [mkEntry('m1', 0)],
+        't-premium': [{ id: 'ep1', tierId: 't-premium', modelId: 'm2', position: 0, model: null }],
+      },
+      models: { p1: [mkModel('m1'), mkModel('m2')] },
+      rules: [] as RuleDto[],
+    };
+    const live = {
+      structural: true,
+      cascade: true,
+      structuralAvailable: true,
+      cascadeAvailable: true,
+      semantic: true,
+      semanticAvailable: true,
+      semanticFlagEnabled: true,
+      semanticClassifierReady: true,
+      semanticWorkloadAvailable: true,
+      semanticWorkload: true,
+      semanticLearning: false,
+      semanticLearningAvailable: true,
+      calibration: DEFAULT_CALIBRATION,
+    };
+    // 1) effective → research/writing rows carry controls; heading + footnotes flip.
+    let fake = new FakeApiClient({ ...base, autoLayers: live });
+    let mounted = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(mounted.host, '.nav-item span', 'Routing');
+      await flush();
+      const panel = mounted.host.querySelector<HTMLElement>('[data-testid="workload-targets"]')!;
+      const rows = [...panel.querySelectorAll<HTMLElement>('[data-testid="wt-row"]')];
+      const research = rows.find((r) => r.textContent?.includes('RESEARCH'))!;
+      const select = research.querySelector<HTMLSelectElement>('select');
+      expect(select).not.toBeNull();
+      expect(select!.getAttribute('aria-label')).toBe('Research workload target');
+      expect(research.textContent).toContain('detected by the semantic workload source');
+      expect(panel.querySelector('[data-testid="wt-reserved-heading"]')!.textContent).toContain(
+        '(live)',
+      );
+      expect(panel.textContent).toContain(
+        'detected by the semantic workload source (one bounded embed',
+      );
+      // setting research via the picker creates the rule like any structural class
+      select!.value = 'tier:premium';
+      select!.dispatchEvent(new Event('change', { bubbles: true }));
+      await flush();
+      expect(mounted.store.state.rules.find((r) => r.workloadClass === 'research')).toMatchObject({
+        matchType: 'auto_workload',
+        target: 'tier:premium',
+      });
+      const researchAfter = [...panel.querySelectorAll<HTMLElement>('[data-testid="wt-row"]')].find(
+        (r) => r.textContent?.includes('RESEARCH'),
+      )!; // re-query: the row re-rendered with the reconciled rule
+      expect(researchAfter.textContent).toContain('tier: premium');
+      // and Clear is offered for the live reserved row
+      const clear = [...researchAfter.querySelectorAll<HTMLElement>('button')].find(
+        (b) => b.textContent?.trim() === 'Clear',
+      );
+      expect(clear).toBeDefined();
+      // the Auto-performance mix footnote flips too
+      const perf = [...mounted.host.querySelectorAll<HTMLElement>('.panel')].find((p) =>
+        p.textContent?.includes('Auto performance'),
+      )!;
+      expect(perf.querySelector('[data-testid="workload-mix-footnote"]')!.textContent).toContain(
+        'detected by the semantic workload source',
+      );
+    } finally {
+      mounted.dispose();
+    }
+    // 2) capability present but the tenant's semantic layer OFF → read-only, naming the toggle.
+    fake = new FakeApiClient({
+      ...base,
+      autoLayers: { ...live, semantic: false, semanticWorkload: false },
+    });
+    mounted = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(mounted.host, '.nav-item span', 'Routing');
+      await flush();
+      const panel = mounted.host.querySelector<HTMLElement>('[data-testid="workload-targets"]')!;
+      const research = [...panel.querySelectorAll<HTMLElement>('[data-testid="wt-row"]')].find(
+        (r) => r.textContent?.includes('RESEARCH'),
+      )!;
+      expect(research.querySelector('select')).toBeNull();
+      expect(panel.querySelector('[data-testid="wt-reserved-heading"]')!.textContent).toContain(
+        'toggled off for this tenant',
+      );
+      expect(research.textContent).toContain('not detected on this instance yet');
+    } finally {
+      mounted.dispose();
+    }
+    // 3) model loaded but the workload anchors did not build → names the centroid half.
+    fake = new FakeApiClient({
+      ...base,
+      autoLayers: { ...live, semanticWorkloadAvailable: false, semanticWorkload: false },
+    });
+    mounted = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(mounted.host, '.nav-item span', 'Routing');
+      await flush();
+      const panel = mounted.host.querySelector<HTMLElement>('[data-testid="workload-targets"]')!;
+      expect(panel.querySelector('[data-testid="wt-reserved-heading"]')!.textContent).toContain(
+        'workload anchors did not build',
+      );
+    } finally {
+      mounted.dispose();
     }
   });
 

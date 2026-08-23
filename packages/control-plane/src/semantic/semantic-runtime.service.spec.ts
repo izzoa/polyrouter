@@ -10,6 +10,7 @@ const cfg = (modelPath?: string): SemanticConfig => ({
   concurrency: 2,
   highThreshold: 0.15,
   lowThreshold: 0.15,
+  workload: { margin: 0.05, minSim: 0.2 },
   learning: {
     minCohort: 8,
     minSamples: 50,

@@ -84,13 +84,28 @@ function fakePort(opts: {
 
 describe('autoLayerCapability', () => {
   it('reports both layers when cascade is enabled (cascade implies structural)', () => {
-    expect(autoLayerCapability(cfg('cascade'))).toEqual({ structural: true, cascade: true, semantic: false });
+    expect(autoLayerCapability(cfg('cascade'))).toEqual({
+      structural: true,
+      cascade: true,
+      semantic: false,
+      semanticWorkload: false,
+    });
   });
   it('reports structural-only when only structural is enabled', () => {
-    expect(autoLayerCapability(cfg('structural'))).toEqual({ structural: true, cascade: false, semantic: false });
+    expect(autoLayerCapability(cfg('structural'))).toEqual({
+      structural: true,
+      cascade: false,
+      semantic: false,
+      semanticWorkload: false,
+    });
   });
   it('reports neither when no smart layers are enabled', () => {
-    expect(autoLayerCapability(cfg(''))).toEqual({ structural: false, cascade: false, semantic: false });
+    expect(autoLayerCapability(cfg(''))).toEqual({
+      structural: false,
+      cascade: false,
+      semantic: false,
+      semanticWorkload: false,
+    });
   });
 });
 
@@ -149,14 +164,21 @@ describe('AutoLayersService.get — effective = capability × preference', () =>
 
   for (const c of cases) {
     it(c.name, async () => {
-      const svc = new AutoLayersService(fakePort({ get: c.pref }), cfg(c.layers), RAILS, SEMANTIC_OFF);
+      const svc = new AutoLayersService(
+        fakePort({ get: c.pref }),
+        cfg(c.layers),
+        RAILS,
+        SEMANTIC_OFF,
+      );
       const view = await svc.get(principal);
       expect(view).toEqual({
         ...c.expected,
         structuralAvailable: autoLayerCapability(cfg(c.layers)).structural,
         cascadeAvailable: autoLayerCapability(cfg(c.layers)).cascade,
         semantic: false,
+        semanticWorkload: false,
         semanticAvailable: false,
+        semanticWorkloadAvailable: false,
         semanticFlagEnabled: false,
         semanticClassifierReady: false,
         semanticLearning: false,
@@ -184,7 +206,9 @@ describe('AutoLayersService.set — normalizes cascade → structural', () => {
       structuralAvailable: true,
       cascadeAvailable: true,
       semantic: false,
+      semanticWorkload: false,
       semanticAvailable: false,
+      semanticWorkloadAvailable: false,
       semanticFlagEnabled: false,
       semanticClassifierReady: false,
       semanticLearning: false,
@@ -221,7 +245,9 @@ describe('AutoLayersService.set — normalizes cascade → structural', () => {
       structuralAvailable: true,
       cascadeAvailable: false,
       semantic: false,
+      semanticWorkload: false,
       semanticAvailable: false,
+      semanticWorkloadAvailable: false,
       semanticFlagEnabled: false,
       semanticClassifierReady: false,
       semanticLearning: false,
@@ -255,18 +281,52 @@ describe('AutoLayersService.get — the semantic capability surfaces its two hal
       flag: false,
       ready: true,
     },
-    { name: 'neither half', layers: 'structural', classifier: SEMANTIC_OFF, flag: false, ready: false },
+    {
+      name: 'neither half',
+      layers: 'structural',
+      classifier: SEMANTIC_OFF,
+      flag: false,
+      ready: false,
+    },
+    // add-semantic-workloads: the workload source is its own capability — band ready
+    // with the workload centroids failed must NOT advertise it; both ready does.
+    {
+      name: 'band ready, workload centroids failed → semantic yes, workload no',
+      layers: 'semantic',
+      classifier: { available: true, workloadReady: false } as SemanticClassifierService,
+      flag: true,
+      ready: true,
+    },
+    {
+      name: 'band + workload centroids ready → both capabilities',
+      layers: 'semantic',
+      classifier: { available: true, workloadReady: true } as SemanticClassifierService,
+      flag: true,
+      ready: true,
+    },
   ] as const;
 
   for (const c of combos) {
     it(c.name, async () => {
-      const svc = new AutoLayersService(fakePort({ get: null }), cfg(c.layers), RAILS, c.classifier);
+      const svc = new AutoLayersService(
+        fakePort({ get: null }),
+        cfg(c.layers),
+        RAILS,
+        c.classifier,
+      );
       const view = await svc.get(principal);
       expect(view.semanticFlagEnabled).toBe(c.flag);
       expect(view.semanticClassifierReady).toBe(c.ready);
       // The preserved conjunction — the halves can never disagree with it.
       expect(view.semanticAvailable).toBe(c.flag && c.ready);
       expect(view.semanticLearningAvailable).toBe(view.semanticAvailable);
+      // the workload source: semantic capability ∧ the workload centroids ready (add-semantic-workloads)
+
+      const workloadReady = (c.classifier as { workloadReady?: boolean }).workloadReady === true;
+
+      expect(view.semanticWorkloadAvailable).toBe(view.semanticAvailable && workloadReady);
+
+      expect(view.semanticWorkload).toBe(view.semanticWorkloadAvailable); // no preference → inherits on
       // No stored pref → inherit-on within capability.
       expect(view.semantic).toBe(c.flag && c.ready);
     });

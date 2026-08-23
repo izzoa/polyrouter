@@ -36,6 +36,12 @@ export interface AutoLayersView {
    * Invariant: `semanticAvailable === semanticFlagEnabled && semanticClassifierReady`. */
   semanticFlagEnabled: boolean;
   semanticClassifierReady: boolean;
+  /** add-semantic-workloads: the semantic WORKLOAD source — capability (the
+   * semantic capability ∧ the five workload centroids ready) and the effective
+   * flag (semantic effective ∧ available; no separate tenant preference). The
+   * dashboard's reserved Workload-target rows go live on the effective flag. */
+  semanticWorkloadAvailable: boolean;
+  semanticWorkload: boolean;
   /** add-semantic-learning: the effective learning preference (enabled ∧ semantic
    * effective) and whether the instance can learn (= semanticAvailable). */
   semanticLearning: boolean;
@@ -123,7 +129,7 @@ export class AutoLayersService {
   private effective(pref: RoutingSettingsValue | null): AutoLayersView {
     // Capability includes the WHOLE classifier readiness (add-semantic-
     // routing): flag ∧ embedder ∧ centroids — never merely a loaded embedder.
-    const cap = autoLayerCapability(this.cfg, this.semantic.available);
+    const cap = autoLayerCapability(this.cfg, this.semantic.available, this.semantic.workloadReady);
     const { high: instanceHigh, low: instanceLow } = this.cfg.structural;
     const eff = effectiveThresholds(this.cfg.structural, pref, this.rails);
     // A pair is presented ONLY while it is the pair actually routing — an
@@ -135,6 +141,7 @@ export class AutoLayersService {
       structuralAvailable: cap.structural,
       cascadeAvailable: cap.cascade,
       semanticAvailable: cap.semantic,
+      semanticWorkloadAvailable: cap.semanticWorkload,
       // The two halves come from the SAME boot-resolved singletons the
       // conjunction is built from, so they cannot drift from what routes.
       semanticFlagEnabled: this.cfg.autoLayers.has('semantic'),

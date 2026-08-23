@@ -567,6 +567,8 @@ export class FakeApiClient implements ApiClient {
       cascadeAvailable: true,
       semantic: false,
       semanticAvailable: false,
+      semanticWorkloadAvailable: false,
+      semanticWorkload: false,
       semanticLearning: false,
       semanticLearningAvailable: false,
       calibration: { ...DEFAULT_CALIBRATION },
@@ -1127,9 +1129,15 @@ export class FakeApiClient implements ApiClient {
         ? { semanticClassifierReady: this.autoLayers.semanticClassifierReady }
         : {}),
       semanticLearningAvailable: this.autoLayers.semanticLearningAvailable,
+      semanticWorkloadAvailable: this.autoLayers.semanticWorkloadAvailable ?? false,
       structural: this.autoLayers.structuralAvailable && structuralEnabled,
       cascade: this.autoLayers.cascadeAvailable && input.cascade,
       semantic: this.autoLayers.semanticAvailable && (input.semantic ?? this.autoLayers.semantic),
+      // The workload source rides the semantic preference (no toggle of its own).
+      semanticWorkload:
+        (this.autoLayers.semanticWorkloadAvailable ?? false) &&
+        this.autoLayers.semanticAvailable &&
+        (input.semantic ?? this.autoLayers.semantic),
       semanticLearning:
         this.autoLayers.semanticLearningAvailable &&
         (input.semanticLearning ?? this.autoLayers.semanticLearning),

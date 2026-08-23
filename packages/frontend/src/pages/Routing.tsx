@@ -341,10 +341,13 @@ function WorkloadTargets() {
       models: state.allModels,
       providers: state.providers,
       autoPerf: { data: state.autoPerf.data, range: state.autoPerf.range },
+      semanticWorkload: state.autoLayers?.semanticWorkload ?? false,
     });
   const warnFont = "font:400 11px 'Geist',sans-serif;color:var(--amber)";
   const subFont = TARGET_SUB_FONT;
   const busy = (w: WorkloadVm) => state.wt.busy[w.cls] || state.wt.unverified;
+  const semanticLive = () => state.autoLayers?.semanticWorkload ?? false;
+  const missingHalf = () => semanticWorkloadMissingHalf(state.autoLayers);
 
   const routedNote = (w: WorkloadVm) => {
     const r = w.routed;
@@ -366,9 +369,9 @@ function WorkloadTargets() {
         <span class="mono" style="font:400 10px 'Geist Mono',monospace;color:var(--text3)">
           auto_workload · {w.cls}
         </span>
-        <TargetSummary target={w.target} unset={unsetCopy(w.cls)} />
+        <TargetSummary target={w.target} unset={unsetCopy(w.cls, w.live)} />
         {routedNote(w)}
-        <Show when={!w.reserved}>
+        <Show when={w.live}>
           <TargetPicker
             label={`${w.label} workload target`}
             disabled={busy(w)}
@@ -376,7 +379,7 @@ function WorkloadTargets() {
             onPick={(v) => void app.setWorkloadTarget(w.cls, v)}
           />
         </Show>
-        <Show when={w.effective !== null && !w.reserved}>
+        <Show when={w.effective !== null && w.live}>
           <button
             type="button"
             disabled={busy(w)}
@@ -387,10 +390,10 @@ function WorkloadTargets() {
           </button>
         </Show>
       </div>
-      <Show when={w.reserved && w.effective !== null}>
+      <Show when={w.reserved && !w.live && w.effective !== null}>
         <div style={subFont} data-testid="wt-reserved-note">
           Reserved class — this rule was created through the API and stays inert until the semantic
-          workload source emits {w.cls}.
+          workload source emits {w.cls} ({missingHalf()}).
         </div>
       </Show>
       <Show when={state.wt.errors[w.cls]}>
@@ -415,10 +418,7 @@ function WorkloadTargets() {
           {w.shadowed.length} shadowed duplicate rule{w.shadowed.length === 1 ? '' : 's'}
           {/* Reserved rows stay READ-ONLY (clink r5 M3): the duplicate is
               disclosed, never actionable from here — the API owns those rules. */}
-          <Show
-            when={!w.reserved}
-            fallback={<span> (API-created — manage through the rules API)</span>}
-          >
+          <Show when={w.live} fallback={<span> (API-created — manage through the rules API)</span>}>
             {' '}
             —{' '}
             <button
@@ -465,14 +465,18 @@ function WorkloadTargets() {
         style="font:500 10.5px 'Geist',sans-serif;letter-spacing:0.04em;color:var(--text3);margin-top:8px"
         data-testid="wt-reserved-heading"
       >
-        RESERVED — semantic source only
+        {semanticLive()
+          ? 'SEMANTIC SOURCE — research / writing (live)'
+          : `RESERVED — semantic source only · ${missingHalf()}`}
       </div>
       <For each={vm().rows.filter((w) => w.reserved)}>{(w) => row(w)}</For>
       <div style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);margin-top:8px;line-height:1.5">
         Detection is structural: fenced code above the configured code thresholds, an image in the
         request, a declared JSON output format. When several fire, one class wins: vision ›
-        structured › code. Research and writing are not detected yet — their rows wait for the
-        semantic workload source.
+        structured › code.{' '}
+        {semanticLive()
+          ? 'Research and writing are detected by the semantic workload source (one bounded embed per structural-none auto request, reused by Layer 2) — the semantic layer toggle governs both uses.'
+          : 'Research and writing are not detected here yet — their rows go live when the semantic workload source is effective.'}
       </div>
     </div>
   );
@@ -1107,10 +1111,12 @@ function AutoPerformance() {
                     data-testid="workload-mix-footnote"
                     style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);margin-top:4px;line-height:1.5"
                   >
-                    Structural detection covers code, vision, and structured output; research and
-                    writing arrive with the semantic workload source. Classification itself never
-                    routes — a class steers only through its Workload target above, and “routed”
-                    counts the requests that target claimed.
+                    Structural detection covers code, vision, and structured output;{' '}
+                    {state.autoLayers?.semanticWorkload === true
+                      ? 'research and writing are detected by the semantic workload source.'
+                      : 'research and writing arrive with the semantic workload source.'}{' '}
+                    Classification itself never routes — a class steers only through its Workload
+                    target above, and “routed” counts the requests that target claimed.
                   </div>
                 </div>
               )}
@@ -1130,6 +1136,21 @@ function AutoPerformance() {
  * degenerate centroids), so it directs to verify, never claims "unset".
  * Absent fields (older API) degrade to the both-halves hint.
  */
+/** Which half of the semantic WORKLOAD source is missing (add-semantic-workloads
+ * D5) — the flag, the model, the workload centroids, or the tenant's toggle —
+ * named from the auto-layers view; empty when it is effective. */
+function semanticWorkloadMissingHalf(al: AutoLayers | null): string {
+  if (al === null) return 'semantic module state unknown';
+  if (al.semanticWorkload === true) return '';
+  if (!(al.semanticFlagEnabled ?? false)) return 'add semantic to ROUTING_AUTO_LAYERS';
+  if (!(al.semanticClassifierReady ?? false))
+    return 'no ready model (SEMANTIC_MODEL_PATH / the -semantic image)';
+  if (!(al.semanticWorkloadAvailable ?? false))
+    return 'the workload anchors did not build under this model (see the boot log)';
+  if (!al.semantic) return 'the semantic layer is toggled off for this tenant';
+  return 'not effective';
+}
+
 function semanticUnavailableHint(al: AutoLayers | null): string {
   const flag = al?.semanticFlagEnabled ?? false;
   const ready = al?.semanticClassifierReady ?? false;
@@ -1155,7 +1176,7 @@ function structuralLayers(al: AutoLayers | null): LayerRow[] {
       id: 'semantic',
       name: 'L2 · Semantic',
       tag: 'local embed',
-      desc: "Embedding classifier over the ambiguous slice — routes what structural can't read.",
+      desc: "Embedding classifier over the ambiguous slice — routes what structural can't read; also detects research / writing workloads (one shared embed).",
       on: al?.semantic ?? false,
       available: al?.semanticAvailable ?? false,
       unavailableHint: semanticUnavailableHint(al),

@@ -4,11 +4,19 @@ import {
   HIGH_ANCHORS,
   LOW_ANCHORS,
   SEMANTIC_EXTRACTOR_VERSION,
+  WORKLOAD_ANCHORS,
+  WORKLOAD_ANCHOR_CONTENT_HASH,
+  WORKLOAD_ANCHOR_SET_ID,
   extractSemanticInput,
+  semanticWorkloadRevision,
   validateCentroids,
+  validateWorkloadCentroids,
   type Embedder,
   type SemanticCentroids,
+  type SemanticWorkloadRails,
+  type WorkloadCentroids,
 } from '@polyrouter/data-plane';
+import { WORKLOAD_CLASSES, type WorkloadClass } from '@polyrouter/shared';
 import type { Principal } from '@polyrouter/shared/server';
 import {
   computeRevision,
@@ -37,6 +45,13 @@ export interface LearningProvenance {
   readonly lowThreshold: number;
 }
 
+/** The semantic WORKLOAD source's boot-built state (add-semantic-workloads). */
+export interface SemanticWorkloadState {
+  readonly centroids: WorkloadCentroids;
+  readonly rails: SemanticWorkloadRails;
+  readonly revision: string;
+}
+
 /**
  * The Layer-2 classifier lifecycle (add-semantic-routing D5). A distinct
  * bootstrap phase AFTER the embedder runtime: it awaits the runtime's
@@ -53,6 +68,10 @@ export class SemanticClassifierService
 {
   private readonly logger = new Logger('SemanticClassifier');
   private state: ClassificationState | null = null;
+  /** The semantic WORKLOAD source (add-semantic-workloads D4): five per-class
+   * centroids + rails + revision, built in its OWN boot boundary — `null` when
+   * the module is absent or the workload anchors did not build/validate. */
+  private workload: SemanticWorkloadState | null = null;
   private provenance: LearningProvenance | null = null;
   /** The `computeRevision` inputs (minus source/sourceRevision) captured at
    * bootstrap, so a LEARNED classification can be stamped with a distinct,
@@ -67,6 +86,17 @@ export class SemanticClassifierService
   /** The whole classifier is ready (embedder loaded ∧ centroids built). */
   get available(): boolean {
     return this.state !== null;
+  }
+
+  /** The semantic WORKLOAD source is ready (embedder ∧ five validated workload
+   * centroids) — independent of the band classifier's readiness. */
+  get workloadReady(): boolean {
+    return this.workload !== null;
+  }
+
+  /** The workload centroids, rails, and revision; `null` when not ready. */
+  get workloadState(): SemanticWorkloadState | null {
+    return this.workload;
   }
 
   /** The bundled centroids + revision provenance the learning sweep folds
@@ -148,14 +178,59 @@ export class SemanticClassifierService
         `semantic classifier UNAVAILABLE — bundled centroids did not build/validate under embedder ${embedder.id} (${err instanceof Error ? err.message : 'unknown'}); Layer 2 is off, all other routing is unaffected`,
       );
     }
+    // The WORKLOAD source builds in its OWN boundary (add-semantic-workloads D4,
+    // clink r2 M1): any failure here — an anchor embed throw, validation, the
+    // revision — disables ONLY the workload source with a loud line; the band
+    // classifier keeps exactly the state the block above produced.
+    try {
+      const centroids = await this.buildWorkloadCentroids(embedder, cfg);
+      validateWorkloadCentroids(centroids, embedder.dims);
+      const rails: SemanticWorkloadRails = {
+        margin: cfg.workload.margin,
+        minSim: cfg.workload.minSim,
+      };
+      const revision = semanticWorkloadRevision({
+        embedderId: embedder.id,
+        anchorSetId: WORKLOAD_ANCHOR_SET_ID,
+        anchorContentHash: WORKLOAD_ANCHOR_CONTENT_HASH,
+        extractorVersion: SEMANTIC_EXTRACTOR_VERSION,
+        margin: rails.margin,
+        minSim: rails.minSim,
+      });
+      this.workload = { centroids, rails, revision };
+      this.logger.log(
+        `semantic workload source ready: anchors=${WORKLOAD_ANCHOR_SET_ID} classes=${String(WORKLOAD_CLASSES.length)}×${String(WORKLOAD_ANCHORS.code.length)} margin=${String(rails.margin)} minSim=${String(rails.minSim)} revision=${revision}`,
+      );
+    } catch (err) {
+      this.workload = null;
+      this.logger.error(
+        `semantic workload source UNAVAILABLE — workload centroids did not build/validate under embedder ${embedder.id} (${err instanceof Error ? err.message : 'unknown'}) — research/writing stay reserved; Layer-2 band classification unaffected`,
+      );
+    }
   }
 
-  private async buildBundledCentroids(
+  /** Embed each class's anchors SEQUENTIALLY (the band discipline) into one
+   * unit-norm centroid per taxonomy class. */
+  private async buildWorkloadCentroids(
     embedder: Embedder,
     cfg: SemanticConfig,
-  ): Promise<SemanticCentroids> {
+  ): Promise<Partial<Record<WorkloadClass, Float32Array>>> {
+    const embedAnchor = this.anchorEmbedder(embedder, cfg);
+    const out: Partial<Record<WorkloadClass, Float32Array>> = {};
+    for (const cls of WORKLOAD_CLASSES) {
+      out[cls] = await this.centroidOf(WORKLOAD_ANCHORS[cls], embedAnchor, embedder.dims);
+    }
+    return out;
+  }
+
+  /** Serialize an anchor exactly as a live request is (the SAME extractor,
+   * the SAME caps) before embedding it. */
+  private anchorEmbedder(
+    embedder: Embedder,
+    cfg: SemanticConfig,
+  ): (text: string) => Promise<Float32Array> {
     const caps = { totalChars: cfg.maxInputChars };
-    const embedAnchor = (text: string): Promise<Float32Array> =>
+    return (text: string): Promise<Float32Array> =>
       embedder.embed(
         extractSemanticInput(
           {
@@ -166,6 +241,13 @@ export class SemanticClassifierService
           caps,
         ),
       );
+  }
+
+  private async buildBundledCentroids(
+    embedder: Embedder,
+    cfg: SemanticConfig,
+  ): Promise<SemanticCentroids> {
+    const embedAnchor = this.anchorEmbedder(embedder, cfg);
     // Build the two bands SEQUENTIALLY (clink r2 Med-1): concurrent chains
     // would issue two embeds at once and deterministically saturate a
     // `SEMANTIC_CONCURRENCY=1` no-queue embedder, disabling the classifier.

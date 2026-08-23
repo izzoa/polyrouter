@@ -2,7 +2,8 @@
 #
 # Layer it over the base stack to run the batteries-included semantic image —
 # the ONNX runtime and the reference embedding model are pre-baked, so L2 is
-# available on first boot with zero manual steps:
+# available on first boot with zero manual steps (the same module powers the
+# semantic WORKLOAD source — research / writing detection — no extra files):
 #
 #   docker compose -f docker-compose.yml -f docker-compose.semantic.yml up -d
 #

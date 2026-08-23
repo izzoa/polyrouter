@@ -55,15 +55,16 @@ response bodies unless you opt in.
   prompt can't force everything into the top tier) and **L3 cascade** (try the cheap
   model, escalate on a failed quality check). Every smart layer **degrades to
   explicit/default** — a request never fails because routing tried to be clever.
-  Every `auto` request Layer 1 evaluates also records a **workload** class (`code` /
-  `vision` / `structured` / `none`) from the same structural features, and a
-  **Workload target** (an `auto_workload` rule: class → tier or model) sends that class
-  straight to its own chain, ahead of band targets, L2, and the cascade — classification
-  alone changes nothing; only a configured target routes. Structural detection covers
-  code, vision, and structured output within L1's bounded scan; when the flag-gated semantic
-  module is loaded, a **semantic workload source** detects `research` / `writing` for
-  structural-`none` requests (embedding vs bundled per-class anchors — one bounded embed per
-  such request, reused by Layer 2; never keywords) and the same Workload targets route them.
+- **Workload routing** — beside the complexity axis, every `auto` request gets a
+  **workload** class: `code` / `vision` / `structured` from the same Layer-1 structural
+  features (baseline), plus `research` / `writing` from the optional semantic module
+  (embedding vs bundled per-class anchors — never keywords). The class alone routes
+  nothing; you opt in per class: a **Workload target** (`auto_workload` rule: class →
+  tier or model) claims that class ahead of the band targets, L2, and the cascade, and
+  **per-workload bands** (`auto_high` / `auto_low` rules scoped to a class) give a class
+  its own strong/cheap pair — including a cascade within the class. Unrecognised or
+  unconfigured classes follow the ordinary `auto` path unchanged. See
+  [Workload routing](#workload-routing).
 - **Safe mid-stream semantics** — fallbacks happen freely _before_ the first token; once
   streaming has begun the model is committed, and an upstream failure terminates the
   stream with a clear error. Models are **never silently swapped mid-response**.
@@ -103,13 +104,15 @@ response bodies unless you opt in.
   model/provider/agent, per-agent usage with one-click key rotation, provider health &
   catalog sync, routing configuration, and the **decision inspector** — every request
   shows its decision layer and human-readable routing reason, tokens, snapshot-priced
-  cost, and latency (plus its **workload** class when `auto` classified it, marked `routed`
-  when a Workload target claimed it). The Routing page's **Workload targets** card binds
-  each detected class to a tier or model (and its **Band targets** card lets a class carry its own strong/cheap pair — "per-workload bands" — for difficulty-aware routing within a class) (the `research` / `writing` rows are live exactly when
-  the semantic workload source is effective, read-only otherwise — naming which half is missing),
-  and its **Auto performance** card adds a **Workload mix** block — what kinds of work `auto`
-  carried, how many of each a Workload target routed, and what each cost, with unpriced /
-  coverage / classifier-revision disclosures.
+  cost, and latency, plus its **workload** class when `auto` classified it (marked
+  `routed` when a Workload target claimed it). On the Routing page, the **Workload
+  targets** card binds each detected class to a tier or model (the `research` / `writing`
+  rows are live exactly when the semantic workload source is effective, read-only
+  otherwise — naming which half is missing), the **Band targets** card's **Per-workload
+  bands** block gives a class its own strong/cheap pair, and the **Auto performance**
+  card's **Workload mix** block shows what kinds of work `auto` carried, how many of each
+  a Workload target routed, and what each cost — with unpriced / coverage /
+  classifier-revision disclosures.
 - **Accessible by design**: fully keyboard-operable (real buttons, visible focus, honest
   dialog semantics), WCAG-checked contrast, `prefers-reduced-motion` support — all
   enforced by regression test suites, with the visual language pinned in
@@ -159,36 +162,73 @@ Precedence order, first match wins:
 1. **Explicit model** in the request body — always honored.
 2. **`x-polyrouter-tier` header** → that tier's chain.
 3. **Dashboard header rules** on other headers → their target tier or model.
-4. **`model: "auto"`** → enabled smart layers — they engage only once nothing above
+4. **`model: "auto"`** → the enabled smart layers, which engage only once nothing above
    matched, in this order: a **Workload target** for the request's detected class (if one
    is configured and usable), then the band targets — a class's own **scoped**
-   `auto_high`/`auto_low` pair when you set one, the generic pair otherwise — through L1
+   `auto_high` / `auto_low` pair when you set one, the generic pair otherwise — through L1
    structural → L2 semantic (optional) → L3 cascade (whose cheap/strong legs honour the
-   same class scope).
+   same class scope). See [Workload routing](#workload-routing).
 5. **`default` tier** — the guaranteed catch-all.
 
 Whatever layer decides, the tier's fallback chain applies on provider failure, budgets are
 enforced, and the decision (`decision_layer` + `routing_reason`) is recorded for the
 inspector. If a smart layer is unavailable, `auto` silently degrades to the default tier.
-Every `auto` request Layer 1 evaluates additionally records a **workload** class
-(`code` / `vision` / `structured` / `none`) beside the decision. The class itself routes
-nothing; a **Workload target** you configure for it does — the request is then served by
-that tier or model with `decision_layer = workload`, and its band verdict is still recorded
-but never acted on. Without a target (or with an unusable one) the request follows the
-band / cascade / default path exactly as before; `none` is never routable; and an explicit
-`model: <tier-key>` (e.g. a `coding` tier you created) keeps working as it always did. With the
-semantic module loaded (`SEMANTIC_MODEL_PATH` + `semantic` in `ROUTING_AUTO_LAYERS`, and the
-tenant's semantic layer on), a structural-`none` `auto` request is embedded once and compared to
-bundled per-class anchors: it records `research` / `writing` (source `semantic`) — and routes
-through its Workload target — only when that class beats every other class by
-`SEMANTIC_WORKLOAD_MARGIN` and clears `SEMANTIC_WORKLOAD_MIN_SIM`; otherwise it records `none`.
-The structural source always wins when it found a class, the semantic source never emits the
-structural classes (so prose-only coding questions usually record `none`), and the same vector
-serves Layer 2's band classification — a request is never embedded twice. A class-scoped band rule
-decides for its class whenever it exists (an unusable scoped target makes that band unroutable for the
-class — never a silent substitution of the generic target); the Auto-performance savings basis stays the
-GENERIC strong target (the card says so when scoped rules exist), and a cascade whose cheap leg was
-class-scoped contributes no learning evidence (its revision binds to the generic cheap chain).
+
+### Workload routing
+
+Beside the complexity bands, every `auto` request that Layer 1 evaluates records a
+**workload** class — _what kind of work_ it is. The taxonomy is fixed (`v1`):
+
+| Class        | Source                     | Detected from                                                                                       |
+| ------------ | -------------------------- | --------------------------------------------------------------------------------------------------- |
+| `code`       | structural (baseline)      | fenced-code share of the prompt (≥ 30 % and ≥ 200 chars by default — `ROUTING_WORKLOAD_THRESHOLDS`) |
+| `vision`     | structural (baseline)      | an image content block                                                                              |
+| `structured` | structural (baseline)      | a declared JSON / schema output format                                                              |
+| `research`   | semantic (optional module) | the request embedding vs bundled per-class anchors — five-way cosine argmax with a margin           |
+| `writing`    | semantic (optional module) | same                                                                                                |
+| `none`       | —                          | nothing above applied — telemetry only, never routable                                              |
+
+Among the structural classes vision > structured > code; the structural source always wins
+when it found a class, and the semantic source never emits the structural classes (a
+prose-only coding question usually records `none`). Detection is never keyword-based.
+
+**Classification alone routes nothing.** You opt in per class on the Routing page:
+
+- **Workload target** — an `auto_workload` rule binding one class to a tier or model. A
+  matching `auto` request is _claimed_ before the band targets, Layer 2, and the cascade
+  and served by that chain with `decision_layer = workload` (its band verdict is still
+  recorded, never acted on). No target, or an unusable one (empty tier, unresolvable
+  model) → the request follows the ordinary `auto` path. `none` can never be targeted.
+- **Per-workload bands** — an `auto_high` / `auto_low` rule may carry a class as its
+  _scope_. For a request of that class the scoped rule of a band decides: resolvable → it
+  serves; unresolvable → that band is unroutable _for the class_ (never a silent
+  substitution of the generic target). Only when a band has no scoped rule for the class
+  does the generic rule apply — each band independently, so `auto_low(code) → cheap-code`
+  beside a generic `auto_high` is a valid hybrid. The L3 cascade plans its cheap and strong
+  legs with the same scope ("cascade within a class": cheap-code → strong-code). A class
+  that also has a usable Workload target is claimed first and its scoped bands are never
+  consulted (the card says so).
+- **Semantic source** — `research` / `writing` light up when the semantic module is loaded
+  (`SEMANTIC_MODEL_PATH` + `semantic` in `ROUTING_AUTO_LAYERS`, and the tenant's semantic
+  layer on). A structural-`none` request is embedded **once** (the same vector serves
+  Layer 2's band classification) and records the winning reserved class only when it beats
+  every other class by `SEMANTIC_WORKLOAD_MARGIN` (0.05) and its cosine clears
+  `SEMANTIC_WORKLOAD_MIN_SIM` (0.20); otherwise `none`. The anchors ship inside the
+  package — no extra files — and the dashboard's auto-layers view reports the semantic
+  workload state separately from L2. There is no new `ROUTING_AUTO_LAYERS` token and no
+  new header: workload routing is a second verdict from the same layers, not a fourth.
+
+**What is recorded.** The parent request-log row carries the workload quad —
+`workload_class`, `workload_score`, `workload_source` (`structural` / `semantic`) and
+`workload_revision` (`structural/v1/c1/<hash>`, `semantic/v1/s1/<hash>`) — and the
+inspector shows the class as a chip. A claim records `decision_layer = workload`; a
+class-scoped band or cascade decision's `routing_reason` **ends with ` scope=<class>`**
+(class names only — never content). The Auto-performance card's **Workload mix** breaks
+requests and spend down per class; its savings basis stays the **generic** strong target
+(disclosed whenever scoped rules exist), and a cascade whose cheap leg was class-scoped
+contributes no evidence to the optional learning loop. Everything degrades: a missing
+model, a classifier fault, or a saturated embedder leaves the request on the ordinary
+`auto` path — never an error.
 
 ## Architecture
 
@@ -433,7 +473,7 @@ healthcheck:
 | `PRICING_REFRESH_URL`                                                                                     | LiteLLM catalog                       | Source for pricing refreshes (a bundled snapshot ships by default; the Settings page shows catalog status + a Refresh-now button for admins)                                                                                                                                                                                                                                                                                                                                                                  |
 | `PRICING_REFRESH_SCHED_ENABLED` / `PRICING_REFRESH_SCHED_CRON`                                            | `true` / `30 4 * * *`                 | **Daily automatic pricing refresh — ON by default** (self-host only): one outbound GET of LiteLLM's public price catalog per day; no tenant data is sent. Set `PRICING_REFRESH_SCHED_ENABLED=false` to opt out; manual refresh keeps working                                                                                                                                                                                                                                                                  |
 | `PROXY_FIRST_EVENT_TIMEOUT_MS` / `PROXY_IDLE_TIMEOUT_MS`                                                  | `30000` / `30000`                     | Time-to-first-token / buffered-read idle bound — **raise both for slow local models** (a 30s prefill would otherwise 503 and trip the breaker). For ONE slow provider in a mixed chain, prefer its per-provider override (the provider form's "Advanced — patience for slow models") over raising the instance default: timeouts trip that provider's breaker, and while its recovery probe runs with doubled patience, a provider slower than 2× its bound stays in a skip loop until its patience is raised |
-| `SEMANTIC_MODEL_PATH`                                                                                     | unset                                 | Opt-in **Layer 2 semantic embedder**: path to a local model bundle (see the semantic-layer section) — pair it with `semantic` in `ROUTING_AUTO_LAYERS`. Unset = the module is absent entirely; a set-but-broken path fails boot loudly                                                                                                                                                                                                                                                                        |
+| `SEMANTIC_MODEL_PATH`                                                                                     | unset                                 | Opt-in **Layer 2 semantic embedder**: path to a local model bundle (see the semantic-layer section) — pair it with `semantic` in `ROUTING_AUTO_LAYERS`. Also enables the semantic **workload** source (`research` / `writing`). Unset = the module is absent entirely; a set-but-broken path fails boot loudly                                                                                                                                                                                                |
 | `EVENTS_ENABLED`                                                                                          | `true`                                | Dashboard live event stream (`GET /api/events`). `false` turns it off entirely and the dashboard stays on its normal polling refresh — no feature is lost, only push                                                                                                                                                                                                                                                                                                                                          |
 | `EVENTS_HEARTBEAT_MS`                                                                                     | `25000`                               | Keep-alive interval; must stay under your proxy's idle-reap window (boot fails if ≥ 60s). Also bounds how fast a revoked session's open stream is closed                                                                                                                                                                                                                                                                                                                                                      |
 | `SEMANTIC_TIMEOUT_MS` / `SEMANTIC_MAX_INPUT_CHARS` / `SEMANTIC_CONCURRENCY`                               | `50` / `2000` / `2`                   | Embedder bounds: per-embed hard timeout, input cap before tokenization, concurrent-inference cap (saturation skips the layer for that request). Out-of-bounds values reject boot                                                                                                                                                                                                                                                                                                                              |
@@ -564,6 +604,15 @@ bundle → **boot fails fast** naming the file and reason (an explicit opt-in
 never runs silently degraded). Nothing is fetched over the network at boot or
 runtime. A request's embedded text and vector are never logged or persisted; the opt-in
 learning loop stores only cohort-aggregated sums, never a single request's embedding.
+
+**What the module enables** (all local; each opt-in per tenant in the dashboard): Layer-2
+band classification for the requests Layer 1 finds ambiguous; the optional learning loop
+that adapts its centroids from recorded cascade outcomes; and the **semantic workload
+source** — `research` / `writing` detection for structural-`none` `auto` requests (see
+[Workload routing](#workload-routing)). The workload anchors are plain bundled data in the
+package — no extra files, nothing downloaded — and boot behind their own readiness check,
+so the auto-layers view reports "semantic workload" separately from L2 and names what is
+missing. Rails: `SEMANTIC_WORKLOAD_MARGIN` / `SEMANTIC_WORKLOAD_MIN_SIM`.
 
 ### Optional: Apprise notifications
 

@@ -26,6 +26,11 @@ heading is started.
 
 - **Band-targets `unverified` is raise-only.** A definitively rejected band write whose follow-up reconcile also failed could clear the section-level *unverified* state set by a concurrent landed-but-unverified write on the other band, re-enabling actions against a stale rules snapshot; the flag now only rises from actions and only an authoritative rules re-list that commits (the section's reconcile or a full routing reload) clears it (the same rule the Workload-targets card shipped with), pinned by an ordered race test.
 
+### Upgrade notes
+
+- **Three additive migrations** run automatically on boot: `0026` (the workload quad on parent request-log rows), `0027` (nullable `routing_rule.workload_class` + its CHECKs) and `0028` (the W-2 class/match-type pairing CHECK becomes the three-way scope CHECK, added `NOT VALID` — existing rows are never rewritten). Nothing routes differently until you configure a Workload target or a class-scoped band; `auto` requests simply start recording their workload class.
+- The semantic workload source (`research` / `writing`) needs the optional semantic module (`SEMANTIC_MODEL_PATH` + `semantic` in `ROUTING_AUTO_LAYERS`); the baseline image is unchanged. New optional knobs: `ROUTING_WORKLOAD_THRESHOLDS` (structural code detection) and `SEMANTIC_WORKLOAD_MARGIN` / `SEMANTIC_WORKLOAD_MIN_SIM` (semantic rails) — both documented in the README's `.env` reference.
+
 ## [0.14.0] — 2026-08-21
 
 ### Added

@@ -15,6 +15,8 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-08-23
+
 ### Added
 
 - **Workload-scoped bands (Epic W, W-4).** `auto_high` / `auto_low` rules may carry a `workload_class` SCOPE (migration 0028 replaces the W-2 pairing CHECK with a three-way scope CHECK): for a request whose deciding workload class has a scoped band rule, Layer-1/Layer-2 band resolution and the cascade plan use that class's pair (each band falls back to the generic rule independently; an unusable scoped target makes the band unroutable for the class — no silent substitution), the Workload-target claim still runs first, reasons gain ` scope=<class>` (cascade reasons included), a cascade whose SELECTED cheap leg was scoped contributes no learning evidence, the savings basis is pinned to the generic strong target (`savings.basis.scoped` discloses scoped rules), and the Band-targets card gains a per-workload bands block with scope-isolated set/clear/cleanup.
@@ -809,7 +811,8 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.15.0
 [0.14.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.14.0
 [0.13.1]: https://github.com/izzoa/polyrouter/releases/tag/v0.13.1
 [0.13.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.13.0

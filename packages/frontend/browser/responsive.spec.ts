@@ -40,6 +40,53 @@ async function open(page: Page, hash = '', query = ''): Promise<void> {
   await page.waitForSelector('[data-pane="sidebar"]');
 }
 
+/** Switch the Routing page's rail to a section (section-routing-rail). Its cards MOUNT
+ * AND UNMOUNT with the section, so a test asserting on a Tuning or Rules card must
+ * switch first — otherwise it fails as a `waitForSelector` TIMEOUT on an element that
+ * is simply not in the DOM, which reads like flake and is not. */
+async function openRoutingSection(page: Page, label: string): Promise<void> {
+  const seg = page
+    .locator('[data-testid="routing-sections"] .rs-seg')
+    .filter({ hasText: new RegExp(`^${label}$`) });
+  await seg.waitFor({ state: 'visible' });
+  await seg.click();
+  await expect(seg, `Routing section "${label}" did not become active`).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+}
+
+/** Every distinct rendered state of a page that the all-page sweeps must measure.
+ * Only `routing` has more than one: sectioning its rail (section-routing-rail) means
+ * the initially-rendered DOM is Auto ALONE — no Auto-performance range control, no
+ * calibration or learning actions, no header-rules inputs. A sweep that measures only
+ * what `goto` paints would silently shrink to Auto and stop guarding the rest, which
+ * is exactly the failure the comfort-target sweep exists to prevent (see :197).
+ * Yields a label per state, with the page already switched to it. */
+async function* pageStates(page: Page, name: string): AsyncGenerator<string> {
+  await page.goto(`/browser-harness.html#/${name}`);
+  await page.waitForSelector('html[data-harness-ready="true"]');
+  const sections: string[] = await page.evaluate(() =>
+    [...document.querySelectorAll('[data-testid="routing-sections"] .rs-seg')].map((b) =>
+      (b.textContent ?? '').trim(),
+    ),
+  );
+  if (sections.length === 0) {
+    // Not a silent fallback on `routing`: if the rail's testid is renamed the sweeps
+    // would quietly go back to measuring Auto alone and still report green — the exact
+    // vacuous pass this generator exists to prevent.
+    expect(name, 'the Routing rail exposes no sections — the sweep would cover Auto only').not.toBe(
+      'routing',
+    );
+    yield name;
+    return;
+  }
+  for (const label of sections) {
+    await openRoutingSection(page, label);
+    yield `${name}/${label}`;
+  }
+}
+
 for (const vp of MATRIX) {
   test.describe(`viewport ${vp.name}`, () => {
     test.use({ viewport: { width: vp.width, height: vp.height } });
@@ -47,45 +94,45 @@ for (const vp of MATRIX) {
     test('no page overflows the document horizontally', async ({ page }) => {
       await open(page);
       for (const name of PAGES) {
-        await page.goto(`/browser-harness.html#/${name}`);
-        await page.waitForSelector('html[data-harness-ready="true"]');
-        const overflow = await page.evaluate(() => ({
-          scrollWidth: document.documentElement.scrollWidth,
-          clientWidth: document.documentElement.clientWidth,
-        }));
-        expect(
-          overflow.scrollWidth,
-          `${name} overflows at ${vp.name} (${String(overflow.scrollWidth)} > ${String(overflow.clientWidth)})`,
-        ).toBeLessThanOrEqual(overflow.clientWidth + 1);
+        for await (const state of pageStates(page, name)) {
+          const overflow = await page.evaluate(() => ({
+            scrollWidth: document.documentElement.scrollWidth,
+            clientWidth: document.documentElement.clientWidth,
+          }));
+          expect(
+            overflow.scrollWidth,
+            `${state} overflows at ${vp.name} (${String(overflow.scrollWidth)} > ${String(overflow.clientWidth)})`,
+          ).toBeLessThanOrEqual(overflow.clientWidth + 1);
+        }
       }
     });
 
     test('in-flow content stays inside its pane, on every page', async ({ page }) => {
       for (const name of PAGES) {
-        await page.goto(`/browser-harness.html#/${name}`);
-        await page.waitForSelector('html[data-harness-ready="true"]');
-        const escapes = await page.evaluate(() => {
-          const pane = document.querySelector('[data-pane="content"]');
-          if (!pane) return ['no content pane'];
-          const bounds = pane.getBoundingClientRect();
-          const out: string[] = [];
-          for (const el of pane.querySelectorAll('*')) {
-            const s = getComputedStyle(el);
-            if (s.position === 'fixed' || s.position === 'absolute') continue;
-            const r = el.getBoundingClientRect();
-            if (r.width === 0) continue;
-            if (r.right > bounds.right + 1) {
-              const cls = el.className.toString().trim();
-              const text = (el.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 30);
-              out.push(
-                `${el.tagName}${cls ? '.' + cls.split(/\s+/).join('.') : ''}` +
-                  ` over=${String(Math.round(r.right - bounds.right))}px text="${text}"`,
-              );
+        for await (const state of pageStates(page, name)) {
+          const escapes = await page.evaluate(() => {
+            const pane = document.querySelector('[data-pane="content"]');
+            if (!pane) return ['no content pane'];
+            const bounds = pane.getBoundingClientRect();
+            const out: string[] = [];
+            for (const el of pane.querySelectorAll('*')) {
+              const s = getComputedStyle(el);
+              if (s.position === 'fixed' || s.position === 'absolute') continue;
+              const r = el.getBoundingClientRect();
+              if (r.width === 0) continue;
+              if (r.right > bounds.right + 1) {
+                const cls = el.className.toString().trim();
+                const text = (el.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 30);
+                out.push(
+                  `${el.tagName}${cls ? '.' + cls.split(/\s+/).join('.') : ''}` +
+                    ` over=${String(Math.round(r.right - bounds.right))}px text="${text}"`,
+                );
+              }
             }
-          }
-          return out.slice(0, 5);
-        });
-        expect(escapes, `content escaping its pane on ${name} at ${vp.name}`).toEqual([]);
+            return out.slice(0, 5);
+          });
+          expect(escapes, `content escaping its pane on ${state} at ${vp.name}`).toEqual([]);
+        }
       }
     });
   });
@@ -158,31 +205,31 @@ test.describe('phone width', () => {
     // with inline padding shipped at 22-28px — a class list can only ever cover controls
     // somebody remembered to class.
     for (const name of PAGES) {
-      await page.goto(`/browser-harness.html#/${name}`);
-      await page.waitForSelector('html[data-harness-ready="true"]');
-      const small = await page.evaluate(() => {
-        const out: string[] = [];
-        for (const el of document.querySelectorAll<HTMLElement>(
-          'button, a[href], input, select, textarea, [role="menuitem"]',
-        )) {
-          const r = el.getBoundingClientRect();
-          if (r.width === 0 || r.height === 0) continue; // not rendered in this state
-          // Locked exceptions (STYLESEED.md): the switch keeps its 30x17 visual and meets
-          // the floor through an expanded hit area, asserted separately below; checkboxes
-          // and radios would be stretched rather than given a bigger tap area.
-          if (el.classList.contains('toggle')) continue;
-          if (el instanceof HTMLInputElement && (el.type === 'checkbox' || el.type === 'radio'))
-            continue;
-          if (r.height < 44) {
-            out.push(
-              `${el.tagName}.${el.className.toString().split(/\s+/)[0] ?? ''}` +
-                ` ${String(Math.round(r.width))}x${String(Math.round(r.height))}`,
-            );
+      for await (const state of pageStates(page, name)) {
+        const small = await page.evaluate(() => {
+          const out: string[] = [];
+          for (const el of document.querySelectorAll<HTMLElement>(
+            'button, a[href], input, select, textarea, [role="menuitem"]',
+          )) {
+            const r = el.getBoundingClientRect();
+            if (r.width === 0 || r.height === 0) continue; // not rendered in this state
+            // Locked exceptions (STYLESEED.md): the switch keeps its 30x17 visual and meets
+            // the floor through an expanded hit area, asserted separately below; checkboxes
+            // and radios would be stretched rather than given a bigger tap area.
+            if (el.classList.contains('toggle')) continue;
+            if (el instanceof HTMLInputElement && (el.type === 'checkbox' || el.type === 'radio'))
+              continue;
+            if (r.height < 44) {
+              out.push(
+                `${el.tagName}.${el.className.toString().split(/\s+/)[0] ?? ''}` +
+                  ` ${String(Math.round(r.width))}x${String(Math.round(r.height))}`,
+              );
+            }
           }
-        }
-        return out;
-      });
-      expect(small, `controls under the comfort target on ${name}`).toEqual([]);
+          return out;
+        });
+        expect(small, `controls under the comfort target on ${state}`).toEqual([]);
+      }
     }
   });
 
@@ -613,6 +660,7 @@ test.describe('Workload-mix rows at phone width', () => {
 
   test('the default fixture rows stay inside the pane, whole and unclipped', async ({ page }) => {
     await open(page, '#/routing');
+    await openRoutingSection(page, 'Tuning'); // the mix lives in Auto performance
     await page.waitForSelector(ROW);
     const geom = await paneOverflow(page, ROW);
     const texts = await workloadRowTexts(page);
@@ -632,6 +680,7 @@ test.describe('Workload-mix rows at phone width', () => {
 
   test('every pricing / routing state stays inside the pane', async ({ page }) => {
     await open(page, '#/routing', '?workload=boundary');
+    await openRoutingSection(page, 'Tuning');
     await page.waitForSelector(ROW);
     const geom = await paneOverflow(page, ROW);
     const texts = await workloadRowTexts(page);
@@ -659,6 +708,7 @@ test.describe('Workload-mix rows at phone width', () => {
 
   test('the attempt-only state renders its row and note inside the pane', async ({ page }) => {
     await open(page, '#/routing', '?workload=attempt-only');
+    await openRoutingSection(page, 'Tuning');
     await page.waitForSelector('[data-testid="workload-mix"]');
     const note = await page.locator('[data-testid="workload-mix-attempt-only"]').textContent();
     expect(note, 'the attempt-only disclosure must render, not the empty affordance').toContain(
@@ -693,6 +743,7 @@ for (const vp of [
       page,
     }) => {
       await open(page, '#/routing');
+      await openRoutingSection(page, 'Tuning');
       await page.waitForSelector('[data-testid="workload-row"]');
       const rows = await page.evaluate(() =>
         [...document.querySelectorAll('[data-testid="workload-row"]')].map((row) => {

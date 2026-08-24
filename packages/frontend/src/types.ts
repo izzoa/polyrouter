@@ -24,6 +24,10 @@ export type Page =
 
 export type Theme = 'light' | 'dark';
 export type Range = '24h' | '7d' | '30d';
+/** Which section of the Routing page's automatic-routing rail is showing
+ * (section-routing-rail). In-memory only: the hash grammar is `#/routing` with
+ * no suffix, so a full reload starts on `auto`. */
+export type RoutingSection = 'auto' | 'tuning' | 'rules';
 export type RequestFilter = 'all' | 'explicit' | 'auto' | 'fallback' | 'escalated';
 /** The dashboard's harness type IS the canonical shared one (single source). */
 export type Harness = HarnessType;

@@ -105,6 +105,7 @@ import type {
   ProviderStatus,
   Range,
   RequestFilter,
+  RoutingSection,
   SessionInfo,
   Theme,
 } from '../types';
@@ -129,6 +130,11 @@ export interface AppState {
   /** The sidebar setup-guide card was dismissed (persisted per browser). */
   setupDismissed: boolean;
   range: Range;
+  /** The user's LAST EXPLICIT choice of Routing-rail section (section-routing-rail).
+   * What actually renders is derived on the page: a section that stops being
+   * offered falls back to `auto` for display while this keeps the choice, so it
+   * is restored if the capability comes back. */
+  routingSection: RoutingSection;
   /** Auto-performance section (add-auto-performance-view), Routing-local range. */
   autoPerf: {
     data: AutoPerformance | null;
@@ -725,6 +731,7 @@ function initialState(): AppState {
     theme: 'light',
     setupDismissed: readSetupDismissed(),
     range: '24h',
+    routingSection: 'auto',
     autoPerf: { data: null, loaded: false, error: null, range: '7d' },
     reqFilter: 'all',
     selId: null,
@@ -876,6 +883,8 @@ export interface AppStore {
   setNavExpanded: (open: boolean) => void;
   setAccountMenuOpen: (open: boolean) => void;
   setRange: (range: Range) => void;
+  /** Routing-rail section (section-routing-rail). */
+  setRoutingSection: (section: RoutingSection) => void;
   /** Refetches; it does not re-sort. See `loadBreakdowns`. */
   setBreakdownMetric: (metric: BreakdownMetric) => void;
   /** Auto-performance section (add-auto-performance-view): Routing-local range. */
@@ -1028,6 +1037,15 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
   // Monotonic stamp for auto-performance loads (r3-High-1 race guard).
   let autoPerfSeq = 0;
+  // The same guard for the two card-scoped loaders, which became racy once their
+  // cards mount and unmount with a rail section (section-routing-rail D8): flipping
+  // to Tuning and back starts a second GET while the first is still in flight.
+  let calHistorySeq = 0;
+  // Semantic learning's counter is a GENERATION over every `semLearn` writer, not
+  // just its loader: `revertSemanticLearning` commits an authoritative response, so
+  // a status GET started before it must not land afterwards and restore
+  // `source: learned`.
+  let semLearnGen = 0;
 
   const say = (msg: string): void => {
     clearTimeout(toastTimer);
@@ -1524,25 +1542,27 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
   };
 
   const loadCalHistory = async (): Promise<void> => {
+    const seq = ++calHistorySeq; // a superseded response never overwrites a newer one
     const gen = identityGen;
     try {
       const rows = await client.calibrationHistory();
-      if (gen !== identityGen) return; // a different account signed in mid-flight
+      if (seq !== calHistorySeq || gen !== identityGen) return; // superseded, or a different account
       setState('calHistory', { rows, loaded: true, error: null });
     } catch (e) {
-      if (gen !== identityGen) return;
+      if (seq !== calHistorySeq || gen !== identityGen) return;
       setState('calHistory', (c) => ({ ...c, loaded: true, error: err(e) }));
     }
   };
 
   const loadSemanticLearning = async (): Promise<void> => {
     const gen = identityGen;
+    const sgen = ++semLearnGen; // superseded by a later load OR by a revert's commit
     try {
       const status = await client.semanticLearningStatus();
-      if (gen !== identityGen) return; // a different account signed in mid-flight
+      if (sgen !== semLearnGen || gen !== identityGen) return;
       setState('semLearn', { status, loaded: true, error: null });
     } catch (e) {
-      if (gen !== identityGen) return;
+      if (sgen !== semLearnGen || gen !== identityGen) return;
       setState('semLearn', (c) => ({ ...c, loaded: true, error: err(e) }));
     }
   };
@@ -2509,6 +2529,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     },
     setAccountMenuOpen: (open) => setState('accountMenuOpen', open),
     setRange: (range) => setState('range', range),
+    setRoutingSection: (section) => setState('routingSection', section),
     setBreakdownMetric,
     loadAutoPerf,
     setAutoPerfRange: (range) => {
@@ -3434,6 +3455,10 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     revertSemanticLearning: async () => {
       try {
         const status = await client.semanticLearningRevert();
+        // Bump BEFORE committing: this response is authoritative, so any status GET
+        // still in flight (a section switch can start one) must not land after it
+        // and restore `source: learned` (section-routing-rail D8).
+        semLearnGen += 1;
         setState('semLearn', { status, loaded: true, error: null });
       } catch (e) {
         say(err(e));

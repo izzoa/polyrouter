@@ -87,6 +87,21 @@ function clickByText(host: HTMLElement, selector: string, text: string): void {
   el.click();
 }
 
+/** Switch the Routing page's rail to a section (section-routing-rail). Scoped to
+ * the rail's own group so it can never hit `RangeSelector`, which uses the same
+ * `Segmented` control — and throws loudly if the section is not offered, rather
+ * than silently leaving the rail on Auto. Awaits a flush because a card that
+ * fetches on first mount (calibration history, learning status) only starts that
+ * fetch when its section opens. */
+async function openSection(host: HTMLElement, label: 'Auto' | 'Tuning' | 'Rules'): Promise<void> {
+  const seg = [
+    ...host.querySelectorAll<HTMLButtonElement>('[data-testid="routing-sections"] .rs-seg'),
+  ].find((b) => b.textContent?.trim() === label);
+  if (!seg) throw new Error(`Routing section "${label}" is not offered`);
+  seg.click();
+  await flush();
+}
+
 describe('dashboard shell (auth-gated)', () => {
   afterEach(() => {
     localStorage.clear();
@@ -135,6 +150,9 @@ describe('dashboard shell (auth-gated)', () => {
       clickByText(host, '.nav-item span', 'Routing');
       expect(store.state.page).toBe('routing');
       expect(host.textContent).toContain('Automatic routing');
+      // Header rules moved to the rail's Rules section — assert it there rather
+      // than dropping half of what this test covers.
+      await openSection(host, 'Rules');
       expect(host.textContent).toContain('x-polyrouter-tier');
       clickByText(host, '.nav-item span', 'Settings');
       expect(host.textContent).toContain('Prompt & response bodies');
@@ -487,6 +505,9 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
+      // Open the card's own section first — otherwise this would pass because the
+      // section is closed, not because the semantic layer is ineffective.
+      await openSection(host, 'Tuning');
       expect(host.textContent).not.toContain('Semantic learning');
     } finally {
       dispose();
@@ -514,6 +535,7 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
+      await openSection(host, 'Tuning');
       expect(host.textContent).toContain('Semantic learning');
       expect(host.textContent).toContain('active: bundled anchors');
       expect(host.textContent).toContain('No learning events yet.');
@@ -569,6 +591,7 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
+      await openSection(host, 'Tuning');
       expect(host.textContent).toContain('active: learned centroids');
       expect(host.textContent).toContain('learning from 12 low · 5 high');
       expect(host.textContent).toContain('drift 0.03/0.05 · sim 0.97/0.95');
@@ -606,6 +629,7 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
+      await openSection(host, 'Tuning');
       expect(host.textContent).toContain('active: bundled anchors');
       expect(host.textContent).toContain('inactive');
       expect(host.textContent).not.toContain('active: learned centroids');
@@ -629,6 +653,7 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
+      await openSection(host, 'Tuning');
       // Shell renders: title + a toggle reflecting the auto-layers truth (on).
       expect(host.textContent).toContain('Semantic learning');
       const sw = host.querySelector<HTMLButtonElement>('[aria-label="Semantic learning"]');
@@ -876,6 +901,8 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       expect(store.state.rules.some((r) => r.workloadClass === 'vision')).toBe(false);
       // Auto-performance: the disclosure + widened residual note + per-row routed.
+      // It lives in the rail's Tuning section; the rows above were in Auto.
+      await openSection(host, 'Tuning');
       const perf = [...host.querySelectorAll<HTMLElement>('.panel')].find((p) =>
         p.textContent?.includes('Auto performance'),
       )!;
@@ -968,7 +995,8 @@ describe('dashboard shell (auth-gated)', () => {
         (b) => b.textContent?.trim() === 'Clear',
       );
       expect(clear).toBeDefined();
-      // the Auto-performance mix footnote flips too
+      // the Auto-performance mix footnote flips too (rail's Tuning section)
+      await openSection(mounted.host, 'Tuning');
       const perf = [...mounted.host.querySelectorAll<HTMLElement>('.panel')].find((p) =>
         p.textContent?.includes('Auto performance'),
       )!;
@@ -1398,6 +1426,7 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
+      await openSection(host, 'Tuning');
       const text = host.textContent ?? '';
       expect(text).toContain('Self-calibration');
       expect(text).toContain('high 0.58 · low 0.27');
@@ -1426,6 +1455,7 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
+      await openSection(host, 'Tuning');
       const text = host.textContent ?? '';
       expect(text).toContain('Auto performance');
       // DEFAULT_AUTO_PERF: evaluated 40; cascade 10 with 7 passed / 1 escalated.
@@ -1446,7 +1476,9 @@ describe('dashboard shell (auth-gated)', () => {
         p.textContent?.includes('Auto performance'),
       );
       expect(perfPanel?.textContent).toContain('strong (auto_high)');
-      expect(perfPanel?.textContent).toContain('Band targets above');
+      // Names the card, never its position — the two are in different sections now.
+      expect(perfPanel?.textContent).toContain('the Band targets card');
+      expect(perfPanel?.textContent).not.toContain('Band targets above');
       // The section's range control is LOCAL: clicking 30d must not move the
       // global Observe range (24h default), only autoPerf.range.
       expect(store.state.autoPerf.range).toBe('7d');
@@ -1476,6 +1508,7 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
+      await openSection(host, 'Tuning');
       const perfPanel = [...host.querySelectorAll<HTMLElement>('.panel')].find((p) =>
         p.textContent?.includes('Auto performance'),
       );
@@ -1511,6 +1544,7 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
+      await openSection(host, 'Tuning');
       const note = host.querySelector<HTMLElement>('[data-testid="ap-basis-scoped"]');
       expect(note).not.toBeNull();
       expect(note!.textContent).toContain('basis = the generic strong target');
@@ -1587,6 +1621,7 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
+      await openSection(host, 'Tuning');
       const perfPanel = [...host.querySelectorAll<HTMLElement>('.panel')].find((p) =>
         p.textContent?.includes('Auto performance'),
       );
@@ -1678,7 +1713,10 @@ describe('dashboard shell (auth-gated)', () => {
       clickByText(host, '.nav-item span', 'Routing'); // …and return
       await flush();
       // A revisit refetches (stale-while-revalidate: old data stayed visible).
+      // Note both counts were taken WITHOUT opening Tuning: the fetch is owned by
+      // the page now, not by the card (section-routing-rail D2).
       expect(fake.calls.filter((c) => c === 'autoPerformance').length).toBeGreaterThan(first);
+      await openSection(host, 'Tuning');
       expect(host.textContent).toContain('Auto performance');
     } finally {
       dispose();
@@ -1714,6 +1752,7 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
+      await openSection(host, 'Rules');
       expect(host.textContent).toContain('tier:heavy'); // the header rule is shown + deletable
       // The auto rule stays OUT of the Header-rules panel — but IS now
       // presented by Band targets (add-band-target-ui), as unresolved here.
@@ -1721,6 +1760,9 @@ describe('dashboard shell (auth-gated)', () => {
         p.textContent?.includes('Header rules'),
       );
       expect(headerPanel?.textContent).not.toContain('auto-band-xyz');
+      // Band targets sits in the Auto section — switch rather than drop the half
+      // of this test that proves the auto rule surfaces there.
+      await openSection(host, 'Auto');
       const bandPanel = [...host.querySelectorAll<HTMLElement>('.panel')].find((p) =>
         p.textContent?.includes('Band targets'),
       );
@@ -1754,6 +1796,226 @@ describe('dashboard shell (auth-gated)', () => {
       clickByText(host, '.btn-ghost', 'Send test');
       await flush();
       expect(host.textContent).toContain('test failed — smtp_auth');
+    } finally {
+      dispose();
+    }
+  });
+});
+
+describe('Routing rail sections (section-routing-rail)', () => {
+  /** Everything the Routing page can write. The section control touches none of it. */
+  const ROUTING_WRITES = [
+    'createTier',
+    'updateTier',
+    'deleteTier',
+    'replaceTierEntries',
+    'createRule',
+    'updateRule',
+    'deleteRule',
+    'setAutoLayers',
+    'calibrationRevert',
+    'semanticLearningRevert',
+  ];
+  const writesOf = (fake: FakeApiClient): string[] =>
+    fake.calls.filter((c) => ROUTING_WRITES.includes(c));
+
+  const railFake = (over: Partial<AutoLayers> = {}): FakeApiClient =>
+    new FakeApiClient({
+      tiers: [DEFAULT_TIER],
+      autoLayers: {
+        structural: true,
+        cascade: true,
+        structuralAvailable: true,
+        cascadeAvailable: true,
+        semantic: false,
+        semanticAvailable: false,
+        semanticLearning: false,
+        semanticLearningAvailable: false,
+        calibration: DEFAULT_CALIBRATION,
+        ...over,
+      },
+    });
+
+  const openRouting = async (host: HTMLElement): Promise<void> => {
+    clickByText(host, '.nav-item span', 'Routing');
+    await flush();
+  };
+  const segments = (host: HTMLElement): string[] =>
+    [...host.querySelectorAll<HTMLElement>('[data-testid="routing-sections"] .rs-seg')].map(
+      (b) => b.textContent?.trim() ?? '',
+    );
+  const pressed = (host: HTMLElement): string[] =>
+    [
+      ...host.querySelectorAll<HTMLElement>(
+        '[data-testid="routing-sections"] .rs-seg[aria-pressed="true"]',
+      ),
+    ].map((b) => b.textContent?.trim() ?? '');
+  const bandPanel = (host: HTMLElement): HTMLElement | undefined =>
+    [...host.querySelectorAll<HTMLElement>('.panel')].find((p) =>
+      p.textContent?.includes('Band targets'),
+    );
+  const panels = (host: HTMLElement): string[] =>
+    [...host.querySelectorAll<HTMLElement>('.panel')]
+      .map((p) => p.querySelector('h2,h3')?.textContent?.trim() ?? '')
+      .filter((t) => t !== '');
+
+  it('starts on Auto with ONLY the Auto cards mounted (2.1)', async () => {
+    const { host, dispose } = mount(createAppStore(railFake()));
+    try {
+      await flush();
+      await openRouting(host);
+      const text = host.textContent ?? '';
+      // Auto's three cards are here…
+      expect(text).toContain('Automatic routing');
+      expect(bandPanel(host)).not.toBeUndefined();
+      expect(host.querySelector('[data-testid="workload-targets"]')).not.toBeNull();
+      // …and nothing from Tuning or Rules is in the DOM at all (unmounted, not hidden).
+      expect(text).not.toContain('Auto performance');
+      expect(text).not.toContain('Self-calibration');
+      expect(text).not.toContain('Header rules');
+      expect(host.querySelector('[data-testid="signal-quality"]')).toBeNull();
+    } finally {
+      dispose();
+    }
+  });
+
+  it('offers three sections, marks the active one, and swaps the rail without touching the chains (2.3)', async () => {
+    const fake = railFake();
+    const { host, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      await openRouting(host);
+      expect(segments(host)).toEqual(['Auto', 'Tuning', 'Rules']);
+      expect(pressed(host)).toEqual(['Auto']);
+
+      // A switch is presentation only: no routing configuration is written.
+      const before = writesOf(fake);
+      await openSection(host, 'Rules');
+      expect(pressed(host)).toEqual(['Rules']);
+      expect(host.textContent).toContain('Header rules');
+      expect(bandPanel(host)).toBeUndefined();
+      expect(writesOf(fake)).toEqual(before);
+
+      // The tier chains and the add-tier header are outside the rail and stay put
+      // in every section — that is what makes sectioning safe for band work.
+      for (const section of ['Auto', 'Tuning', 'Rules'] as const) {
+        await openSection(host, section);
+        expect(host.textContent).toContain('Add tier');
+        expect(host.textContent).toContain('New tier key');
+        expect(host.textContent).toContain('drag to reorder');
+      }
+      expect(writesOf(fake)).toEqual(before);
+    } finally {
+      dispose();
+    }
+  });
+
+  it('does not offer Tuning when the structural capability is unavailable, and falls back to Auto on a live flip (2.2)', async () => {
+    const store = createAppStore(railFake());
+    const { host, dispose } = mount(store);
+    try {
+      await flush();
+      await openRouting(host);
+      await openSection(host, 'Tuning');
+      expect(pressed(host)).toEqual(['Tuning']);
+
+      // The capability goes away underneath the user (a re-poll of auto-layers).
+      store.setState('autoLayers', 'structuralAvailable', false);
+      await flush();
+      expect(segments(host)).toEqual(['Auto', 'Rules']); // no empty section is offered
+      expect(pressed(host)).toEqual(['Auto']);
+      expect(host.textContent).toContain('Automatic routing');
+      expect(host.textContent).not.toContain('Auto performance');
+      // The user's explicit choice is REMEMBERED, not overwritten — it comes back
+      // with the capability.
+      expect(store.state.routingSection).toBe('tuning');
+      store.setState('autoLayers', 'structuralAvailable', true);
+      await flush();
+      expect(pressed(host)).toEqual(['Tuning']);
+    } finally {
+      dispose();
+    }
+  });
+
+  it('remembers the section across in-app navigation without touching the URL (2.4)', async () => {
+    const store = createAppStore(railFake());
+    const { host, dispose } = mount(store);
+    try {
+      await flush();
+      await openRouting(host);
+      expect(window.location.hash).toBe('#/routing');
+      await openSection(host, 'Tuning');
+      expect(window.location.hash).toBe('#/routing'); // no `/tuning` suffix is invented
+      clickByText(host, '.nav-item span', 'Requests');
+      await flush();
+      clickByText(host, '.nav-item span', 'Routing');
+      await flush();
+      expect(window.location.hash).toBe('#/routing');
+      expect(pressed(host)).toEqual(['Tuning']);
+      expect(host.textContent).toContain('Auto performance');
+    } finally {
+      dispose();
+    }
+  });
+
+  it('restores focus to the active segment when the focused section stops being offered (2.5)', async () => {
+    const store = createAppStore(railFake());
+    const { host, dispose } = mount(store);
+    try {
+      await flush();
+      await openRouting(host);
+      await openSection(host, 'Tuning');
+      const tuning = [
+        ...host.querySelectorAll<HTMLButtonElement>('[data-testid="routing-sections"] .rs-seg'),
+      ].find((b) => b.textContent?.trim() === 'Tuning')!;
+      tuning.focus();
+      expect(document.activeElement).toBe(tuning);
+
+      // Tuning is withdrawn — the focused button is removed from the DOM, which
+      // would otherwise drop focus to <body> and lose the keyboard user's place.
+      store.setState('autoLayers', 'structuralAvailable', false);
+      await flush();
+      expect(document.activeElement).not.toBe(document.body);
+      expect((document.activeElement as HTMLElement).textContent?.trim()).toBe('Auto');
+      expect((document.activeElement as HTMLElement).getAttribute('aria-pressed')).toBe('true');
+    } finally {
+      dispose();
+    }
+  });
+
+  it('loads the auto-performance aggregation on an Auto-only visit — Band and Workload targets read it (3.2)', async () => {
+    const fake = railFake();
+    const { host, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      await openRouting(host);
+      // Tuning is never opened in this test; the fetch belongs to the page.
+      expect(fake.calls.filter((c) => c === 'autoPerformance').length).toBeGreaterThanOrEqual(1);
+      expect(host.textContent).not.toContain('Auto performance');
+
+      // Band targets shows its range-scoped unroutable count (DEFAULT_AUTO_PERF: 1 high)…
+      expect(bandPanel(host)?.textContent).toContain('(1 unroutable in the selected 7d range)');
+      // …and Workload targets its per-class `routed` counts.
+      const wt = host.querySelector<HTMLElement>('[data-testid="workload-targets"]')!;
+      expect(wt.querySelector('[data-testid="wt-routed"]')).not.toBeNull();
+    } finally {
+      dispose();
+    }
+  });
+
+  it('keeps the rail intact across repeated section switching (no card loses content)', async () => {
+    const { host, dispose } = mount(createAppStore(railFake()));
+    try {
+      await flush();
+      await openRouting(host);
+      const auto = panels(host);
+      for (let i = 0; i < 3; i++) {
+        await openSection(host, 'Tuning');
+        await openSection(host, 'Rules');
+        await openSection(host, 'Auto');
+      }
+      expect(panels(host)).toEqual(auto);
+      expect(bandPanel(host)?.textContent).toContain('(1 unroutable in the selected 7d range)');
     } finally {
       dispose();
     }

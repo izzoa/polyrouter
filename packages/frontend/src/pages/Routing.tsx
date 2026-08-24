@@ -1,7 +1,8 @@
-import { createEffect, createSignal, For, onCleanup, onMount, Show } from 'solid-js';
+import { createEffect, createSignal, For, on, onCleanup, onMount, Show } from 'solid-js';
 import { Chart } from '../components/Chart';
 import { ModelPicker } from '../components/ModelPicker';
 import { RangeSelector } from '../components/RangeSelector';
+import { Segmented } from '../components/Segmented';
 import { Toggle } from '../components/Toggle';
 import type { AutoLayers, TierEntryDto } from '../data/api';
 import { autoSeriesToChart, signalQualityGuidance, toAutoPerfVm } from '../data/autoPerf';
@@ -19,7 +20,7 @@ import { toCalibrationVm, toHistoryRows } from '../data/calibration';
 import { toLearningHistoryRows, toLearningVm } from '../data/semanticLearning';
 import { fmtUsd } from '../data/format';
 import { useApp } from '../state/context';
-import type { Model, Range } from '../types';
+import type { Model, Range, RoutingSection } from '../types';
 import { Icon } from '../components/Icon';
 
 /** In-progress drag, keyed by MODEL IDENTITY rather than list index.
@@ -910,11 +911,13 @@ function SemanticLearning() {
 function AutoPerformance() {
   const app = useApp();
   const { state } = app;
-  // Refresh on EVERY mount (the page convention — loadRouting does the same):
-  // a `loaded`-gated effect froze the card at its first fetch across visits.
-  // Already-loaded data stays visible while the refetch replaces it (the
-  // loader's seq/gen/range guards make late responses harmless).
-  onMount(() => void app.loadAutoPerf());
+  // The fetch is NOT here. This card lives in the rail's Tuning section, but Band
+  // targets and Workload targets — in Auto — read the same aggregation, so the load
+  // is owned by `Routing()` and runs on every visit whichever section is showing
+  // (section-routing-rail). It stays per-visit rather than `loaded`-gated: a
+  // store-level gate is what once froze this card at its first fetch across visits.
+  // Already-loaded data stays visible while a refetch replaces it (the loader's
+  // seq/gen/range guards make late responses harmless).
   const vm = () => toAutoPerfVm(state.autoPerf.data);
   const bucketSecs = () => (state.autoPerf.range === '24h' ? 3600 : 86_400);
   const chartData = () => autoSeriesToChart(state.autoPerf.data?.series ?? [], bucketSecs());
@@ -1061,7 +1064,7 @@ function AutoPerformance() {
                   (state.autoPerf.data?.bands.low.unroutable ?? 0) > 0
                     ? 's’'
                     : '’s'}{' '}
-                  missing-or-unusable target in Band targets above.
+                  missing-or-unusable target in the Band targets card.
                 </div>
               </Show>
               <Show when={v.signalQuality.show}>
@@ -1257,8 +1260,8 @@ function AutoPerformance() {
                     {state.autoLayers?.semanticWorkload === true
                       ? 'research and writing are detected by the semantic workload source.'
                       : 'research and writing arrive with the semantic workload source.'}{' '}
-                    Classification itself never routes — a class steers only through its Workload
-                    target above, and “routed” counts the requests that target claimed.
+                    Classification itself never routes — a class steers only through its target in
+                    the Workload targets card, and “routed” counts the requests that target claimed.
                   </div>
                 </div>
               )}
@@ -1302,6 +1305,14 @@ function semanticUnavailableHint(al: AutoLayers | null): string {
     return 'off instance-wide — no ready model; check SEMANTIC_MODEL_PATH + boot logs, or run the -semantic image';
   return 'off instance-wide — optional module; needs SEMANTIC_MODEL_PATH (or the -semantic image) + semantic in ROUTING_AUTO_LAYERS';
 }
+
+/** The automatic-routing rail's sections, in display order (section-routing-rail).
+ * The rail grew to seven stacked cards; this is what keeps at most three on screen. */
+const RAIL_SECTIONS: readonly { id: RoutingSection; label: string }[] = [
+  { id: 'auto', label: 'Auto' },
+  { id: 'tuning', label: 'Tuning' },
+  { id: 'rules', label: 'Rules' },
+];
 
 function structuralLayers(al: AutoLayers | null): LayerRow[] {
   return [
@@ -1363,6 +1374,67 @@ export function Routing() {
   onCleanup(() => {
     const d = drag();
     if (d !== null) app.endTierDrag(d.tierId, 'abandon');
+  });
+
+  // ---- the rail's sections (section-routing-rail) --------------------------
+  const structural = (): boolean => state.autoLayers?.structuralAvailable === true;
+  /**
+   * A section is offered only when at least one of its cards would render.
+   *
+   * `structural()` ALONE decides Tuning because `AutoPerformance` is the one Tuning
+   * card with no gate of its own — an instance where neither calibration nor
+   * semantic learning applies still gets a Tuning section holding just Auto
+   * performance, which is correct and non-empty. If `AutoPerformance` ever gains a
+   * precondition, widen this with it or the control will offer an empty section.
+   * `Auto` and `Rules` are always non-empty (the layers and header-rules cards are
+   * ungated), so the control never degrades to a single stub button.
+   */
+  const offered = (): readonly { id: RoutingSection; label: string }[] =>
+    RAIL_SECTIONS.filter((s) => s.id !== 'tuning' || structural());
+  /** What RENDERS. The store keeps the user's last explicit choice, so an
+   * availability flip falls back to Auto without writing state during render (a
+   * Solid footgun) — and the choice is restored if the capability comes back. */
+  const active = (): RoutingSection =>
+    offered().some((s) => s.id === state.routingSection) ? state.routingSection : 'auto';
+
+  const focusActiveSegment = (): void => {
+    document
+      .querySelector<HTMLButtonElement>(
+        '[data-testid="routing-sections"] .rs-seg[aria-pressed="true"]',
+      )
+      ?.focus();
+  };
+  // Losing Tuning while the user stands on it unmounts the button they are focused
+  // on, and the browser resets focus to <body> — their next Tab restarts from the
+  // top of the document. Only the losing direction can do that: gaining a section
+  // adds a button and steals nothing, and the body-focus test means nothing else
+  // holds focus. Both guards matter — `structuralAvailable` goes false→true on
+  // essentially every visit (it arrives with `loadRouting`), and focusing the rail
+  // there would yank a fresh page's focus off the top for no reason.
+  createEffect(
+    on(
+      structural,
+      (now, before) => {
+        if (now || before !== true || state.routingSection !== 'tuning') return;
+        if (document.activeElement === document.body) focusActiveSegment();
+      },
+      { defer: true },
+    ),
+  );
+
+  // The auto-performance aggregation is cross-consumed: Band targets reads
+  // `bands.*.unroutable` and Workload targets the per-class `routed` counts, both
+  // in the AUTO section — so the fetch cannot live inside the Tuning-only card.
+  // Visit-scoped by a component-local flag (not a store flag): a store-level
+  // `loaded` gate is exactly what once froze the card at its first fetch across
+  // visits. An effect rather than `onMount` because `autoLayers` arrives async, so
+  // at mount we do not yet know whether the capability is there.
+  let autoPerfRequested = false;
+  createEffect(() => {
+    if (structural() && !autoPerfRequested) {
+      autoPerfRequested = true;
+      void app.loadAutoPerf();
+    }
   });
 
   const modelById = (id: string): Model | undefined => state.allModels.find((m) => m.id === id);
@@ -1741,162 +1813,182 @@ export function Routing() {
         </div>
 
         <div style="display:flex;flex-direction:column;gap:12px">
-          <div class="panel card">
-            <div class="section-title" style="margin-bottom:4px">
-              Automatic routing
-            </div>
-            <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3);margin-bottom:12px;line-height:1.5">
-              Applies only when an agent asks for model{' '}
-              <span
-                class="mono"
-                style="font-size:11px;background:var(--chip);padding:1px 5px;border-radius:4px"
-              >
-                auto
-              </span>
-              . Explicit requests always win.
-            </div>
-            <div style="display:flex;flex-direction:column;gap:10px">
-              <For each={structuralLayers(state.autoLayers)}>
-                {(l) => (
-                  <div style={{ display: 'flex', 'align-items': 'flex-start', gap: '10px' }}>
-                    <div style="margin-top:1px">
-                      <Toggle
-                        on={l.on}
-                        locked={!l.available}
-                        label={`Toggle ${l.name}`}
-                        onToggle={() => void app.toggleAutoLayer(l.id)}
-                      />
-                    </div>
-                    <div style={{ opacity: l.available ? '1' : '0.55' }}>
-                      <div style="font:500 12px 'Geist',sans-serif;color:var(--text)">
-                        {l.name}{' '}
-                        <span
-                          class="mono"
-                          style="font:400 10.5px 'Geist Mono',monospace;color:var(--text3)"
-                        >
-                          {l.tag}
-                        </span>
-                      </div>
-                      <div style="font:400 11px 'Geist',sans-serif;color:var(--text3);line-height:1.45">
-                        {l.desc}
-                      </div>
-                      <Show when={!l.available}>
-                        <div
-                          class="mono"
-                          style="font:400 10px 'Geist Mono',monospace;color:var(--amber);margin-top:2px"
-                        >
-                          {l.unavailableHint}
-                        </div>
-                      </Show>
-                    </div>
-                  </div>
-                )}
-              </For>
-            </div>
-            <div style="margin-top:12px;padding:9px 11px;background:var(--accent-bg);border-radius:7px;font:400 11px 'Geist',sans-serif;color:var(--text2);line-height:1.5">
-              If a smart layer is down,{' '}
-              <span class="mono" style="font-size:10.5px">
-                auto
-              </span>{' '}
-              degrades to the default tier. Requests never fail because routing got clever.
-            </div>
+          {/* The group wrapper, not a new `Segmented` prop: the shared control has three
+              other call sites and no reason to change, and the `data-testid` gives tests a
+              selector that cannot also match RangeSelector's segments inside Auto
+              performance. Deliberately NOT a tablist — a half-built one (no `aria-controls`,
+              no roving tabindex) announces a contract to assistive tech that this widget
+              does not honor. */}
+          <div role="group" aria-label="Routing sections" data-testid="routing-sections">
+            <Segmented options={offered()} value={active()} onChange={app.setRoutingSection} />
           </div>
 
-          <Show when={state.autoLayers?.structuralAvailable}>
-            <BandTargets />
-            <WorkloadTargets />
-            <SelfCalibration />
-            <SemanticLearning />
-            <AutoPerformance />
+          <Show when={active() === 'auto'}>
+            <div class="panel card">
+              <div class="section-title" style="margin-bottom:4px">
+                Automatic routing
+              </div>
+              <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3);margin-bottom:12px;line-height:1.5">
+                Applies only when an agent asks for model{' '}
+                <span
+                  class="mono"
+                  style="font-size:11px;background:var(--chip);padding:1px 5px;border-radius:4px"
+                >
+                  auto
+                </span>
+                . Explicit requests always win.
+              </div>
+              <div style="display:flex;flex-direction:column;gap:10px">
+                <For each={structuralLayers(state.autoLayers)}>
+                  {(l) => (
+                    <div style={{ display: 'flex', 'align-items': 'flex-start', gap: '10px' }}>
+                      <div style="margin-top:1px">
+                        <Toggle
+                          on={l.on}
+                          locked={!l.available}
+                          label={`Toggle ${l.name}`}
+                          onToggle={() => void app.toggleAutoLayer(l.id)}
+                        />
+                      </div>
+                      <div style={{ opacity: l.available ? '1' : '0.55' }}>
+                        <div style="font:500 12px 'Geist',sans-serif;color:var(--text)">
+                          {l.name}{' '}
+                          <span
+                            class="mono"
+                            style="font:400 10.5px 'Geist Mono',monospace;color:var(--text3)"
+                          >
+                            {l.tag}
+                          </span>
+                        </div>
+                        <div style="font:400 11px 'Geist',sans-serif;color:var(--text3);line-height:1.45">
+                          {l.desc}
+                        </div>
+                        <Show when={!l.available}>
+                          <div
+                            class="mono"
+                            style="font:400 10px 'Geist Mono',monospace;color:var(--amber);margin-top:2px"
+                          >
+                            {l.unavailableHint}
+                          </div>
+                        </Show>
+                      </div>
+                    </div>
+                  )}
+                </For>
+              </div>
+              <div style="margin-top:12px;padding:9px 11px;background:var(--accent-bg);border-radius:7px;font:400 11px 'Geist',sans-serif;color:var(--text2);line-height:1.5">
+                If a smart layer is down,{' '}
+                <span class="mono" style="font-size:10.5px">
+                  auto
+                </span>{' '}
+                degrades to the default tier. Requests never fail because routing got clever.
+              </div>
+            </div>
+            {/* Each card keeps its OWN gate inside its section — the section is an
+                additional condition, never a replacement for the card's. */}
+            <Show when={structural()}>
+              <BandTargets />
+              <WorkloadTargets />
+            </Show>
           </Show>
 
-          <div class="panel card">
-            <div class="section-title" style="margin-bottom:4px">
-              Header rules
-            </div>
-            <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3);margin-bottom:12px">
-              Force a tier per request with{' '}
-              <span class="mono" style="font-size:10.5px">
-                x-polyrouter-tier
-              </span>
-            </div>
-            <div style="display:flex;flex-direction:column;gap:6px">
-              <For each={headerRules()}>
-                {(ru) => (
-                  <div
-                    class="mono"
-                    style="display:flex;align-items:center;gap:8px;font:400 11.5px 'Geist Mono',monospace;color:var(--text2);padding:6px 9px;background:var(--bg);border:1px solid var(--border2);border-radius:6px"
-                  >
-                    <span style="color:var(--text3)">
-                      {ru.headerName}: {ru.headerValue ?? ''}
-                    </span>
-                    <Icon name="arrowRight" size={12} style="color:var(--faint)" />
-                    <span style="color:var(--text)">{ru.target}</span>
-                    <button
-                      type="button"
-                      class="icon-x"
-                      style="margin-left:auto"
-                      aria-label={`Delete rule ${ru.headerValue ?? ''} → ${ru.target}`}
-                      onClick={() => void app.deleteRule(ru.id)}
+          <Show when={active() === 'tuning'}>
+            <Show when={structural()}>
+              <AutoPerformance />
+              <SelfCalibration />
+              <SemanticLearning />
+            </Show>
+          </Show>
+
+          <Show when={active() === 'rules'}>
+            <div class="panel card">
+              <div class="section-title" style="margin-bottom:4px">
+                Header rules
+              </div>
+              <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3);margin-bottom:12px">
+                Force a tier per request with{' '}
+                <span class="mono" style="font-size:10.5px">
+                  x-polyrouter-tier
+                </span>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:6px">
+                <For each={headerRules()}>
+                  {(ru) => (
+                    <div
+                      class="mono"
+                      style="display:flex;align-items:center;gap:8px;font:400 11.5px 'Geist Mono',monospace;color:var(--text2);padding:6px 9px;background:var(--bg);border:1px solid var(--border2);border-radius:6px"
                     >
-                      ×
-                    </button>
+                      <span style="color:var(--text3)">
+                        {ru.headerName}: {ru.headerValue ?? ''}
+                      </span>
+                      <Icon name="arrowRight" size={12} style="color:var(--faint)" />
+                      <span style="color:var(--text)">{ru.target}</span>
+                      <button
+                        type="button"
+                        class="icon-x"
+                        style="margin-left:auto"
+                        aria-label={`Delete rule ${ru.headerValue ?? ''} → ${ru.target}`}
+                        onClick={() => void app.deleteRule(ru.id)}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  )}
+                </For>
+                <Show when={headerRules().length === 0}>
+                  <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3);padding:4px 0">
+                    No header rules yet.
                   </div>
-                )}
-              </For>
-              <Show when={headerRules().length === 0}>
-                <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3);padding:4px 0">
-                  No header rules yet.
+                </Show>
+              </div>
+              <div style="display:flex;align-items:flex-end;gap:6px;margin-top:10px">
+                <div style="flex:1">
+                  <label class="field-label" for="f-rf-value" style="display:block">
+                    Header value
+                  </label>
+                  <input
+                    class="input mono"
+                    id="f-rf-value"
+                    style="font:400 11.5px 'Geist Mono',monospace"
+                    placeholder="e.g. heavy"
+                    value={state.rf.value}
+                    onInput={(e) => app.setState('rf', 'value', e.currentTarget.value)}
+                  />
+                </div>
+                <div style="flex:1">
+                  <label class="field-label" for="f-rf-target" style="display:block">
+                    Target tier
+                  </label>
+                  <select
+                    class="select"
+                    id="f-rf-target"
+                    value={state.rf.target}
+                    onChange={(e) => app.setState('rf', 'target', e.currentTarget.value)}
+                  >
+                    <option value="" disabled selected={state.rf.target === ''}>
+                      Pick a tier…
+                    </option>
+                    <For each={state.routingTiers}>
+                      {(t) => <option value={t.key}>{t.key}</option>}
+                    </For>
+                  </select>
+                </div>
+                <button
+                  type="button"
+                  class="btn-ghost"
+                  disabled={state.rf.busy}
+                  onClick={() => void app.createRule()}
+                >
+                  {state.rf.busy ? '…' : 'Add'}
+                </button>
+              </div>
+              <Show when={state.rf.error}>
+                <div style="font:400 11px 'Geist',sans-serif;color:var(--red);margin-top:6px">
+                  {state.rf.error}
                 </div>
               </Show>
             </div>
-            <div style="display:flex;align-items:flex-end;gap:6px;margin-top:10px">
-              <div style="flex:1">
-                <label class="field-label" for="f-rf-value" style="display:block">
-                  Header value
-                </label>
-                <input
-                  class="input mono"
-                  id="f-rf-value"
-                  style="font:400 11.5px 'Geist Mono',monospace"
-                  placeholder="e.g. heavy"
-                  value={state.rf.value}
-                  onInput={(e) => app.setState('rf', 'value', e.currentTarget.value)}
-                />
-              </div>
-              <div style="flex:1">
-                <label class="field-label" for="f-rf-target" style="display:block">
-                  Target tier
-                </label>
-                <select
-                  class="select"
-                  id="f-rf-target"
-                  value={state.rf.target}
-                  onChange={(e) => app.setState('rf', 'target', e.currentTarget.value)}
-                >
-                  <option value="" disabled selected={state.rf.target === ''}>
-                    Pick a tier…
-                  </option>
-                  <For each={state.routingTiers}>
-                    {(t) => <option value={t.key}>{t.key}</option>}
-                  </For>
-                </select>
-              </div>
-              <button
-                type="button"
-                class="btn-ghost"
-                disabled={state.rf.busy}
-                onClick={() => void app.createRule()}
-              >
-                {state.rf.busy ? '…' : 'Add'}
-              </button>
-            </div>
-            <Show when={state.rf.error}>
-              <div style="font:400 11px 'Geist',sans-serif;color:var(--red);margin-top:6px">
-                {state.rf.error}
-              </div>
-            </Show>
-          </div>
+          </Show>
         </div>
       </div>
     </div>

@@ -204,6 +204,20 @@ describe('replacing a glyph with artwork did not strip any accessible name', () 
     for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 0));
 
     const nameless: string[] = [];
+    const scan = (where: string): void => {
+      for (const el of host.querySelectorAll<HTMLElement>('button, a[href]')) {
+        if (!el.querySelector('[data-icon]')) continue;
+        const named =
+          (el.getAttribute('aria-label') ?? '').trim() !== '' ||
+          (el.getAttribute('title') ?? '').trim() !== '' ||
+          accessibleText(el) !== '';
+        if (!named) nameless.push(`${where}: <${el.tagName.toLowerCase()}> ${el.className}`);
+      }
+    };
+    const railSegments = (): HTMLButtonElement[] => [
+      ...host.querySelectorAll<HTMLButtonElement>('[data-testid="routing-sections"] .rs-seg'),
+    ];
+
     for (const page of ['requests', 'costs', 'routing', 'providers', 'settings']) {
       [...host.querySelectorAll<HTMLElement>('.nav-item span')]
         .find((e) => e.textContent?.trim().toLowerCase() === page)
@@ -219,13 +233,21 @@ describe('replacing a glyph with artwork did not strip any accessible name', () 
         for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 0));
       }
 
-      for (const el of host.querySelectorAll<HTMLElement>('button, a[href]')) {
-        if (!el.querySelector('[data-icon]')) continue;
-        const named =
-          (el.getAttribute('aria-label') ?? '').trim() !== '' ||
-          (el.getAttribute('title') ?? '').trim() !== '' ||
-          accessibleText(el) !== '';
-        if (!named) nameless.push(`${page}: <${el.tagName.toLowerCase()}> ${el.className}`);
+      // The Routing rail is sectioned (section-routing-rail): only the ACTIVE
+      // section's cards are in the DOM. Sweep every offered section, or this
+      // sweep's reach silently shrinks to Auto and the next unnamed icon button
+      // added to Tuning or Rules ships unaudited.
+      const labels = railSegments().map((b) => b.textContent?.trim() ?? '');
+      if (labels.length === 0) {
+        scan(page);
+        continue;
+      }
+      for (const label of labels) {
+        railSegments()
+          .find((b) => b.textContent?.trim() === label)
+          ?.click();
+        for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 0));
+        scan(`${page}/${label}`);
       }
     }
     expect(

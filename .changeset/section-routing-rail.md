@@ -1,0 +1,5 @@
+---
+'@polyrouter/frontend': minor
+---
+
+**Sectioned Routing rail.** The Routing page's right rail is now behind a three-section segmented control instead of one eight-card scroll: **Auto** (automatic-routing layers, Band targets, Workload targets), **Tuning** (Auto performance, Self-calibration, Semantic learning) and **Rules** (header rules). Tier chains and the Add-tier header stay visible in every section, each card keeps its own visibility gate, and the rail opens on Auto and remembers your section for the session. Tuning is offered only while the structural layer is available — losing it falls back to Auto and restores your choice if it returns, moving keyboard focus to the active segment rather than dropping it to the top of the document. Because sectioning makes the moved cards mount repeatedly, Self-calibration history and Semantic learning status now ignore a superseded response: flipping sections can no longer overwrite newer rows with older ones, replace loaded rows with a stale error, or resurrect learned state a revert just cleared.

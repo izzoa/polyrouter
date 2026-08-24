@@ -15,6 +15,10 @@ heading is started.
 
 ## [Unreleased]
 
+### Changed
+
+- **The Routing page's right rail is sectioned.** A three-section segmented control (**Auto** — automatic-routing layers, Band targets, Workload targets · **Tuning** — Auto performance, Self-calibration, Semantic learning · **Rules** — header rules) replaces the single eight-card scroll, with tier chains and the Add-tier header visible in every section. The rail opens on Auto and remembers the section for the session; Tuning is offered only while the structural layer is available, and losing it falls back to Auto (restoring the choice if it returns) while keeping keyboard focus on the rail. The cards that fetch on mount now ignore a superseded response, so switching sections cannot overwrite newer rows, surface a stale error over loaded rows, or resurrect learned state a revert just cleared.
+
 ## [0.15.1] — 2026-08-23
 
 ### Fixed

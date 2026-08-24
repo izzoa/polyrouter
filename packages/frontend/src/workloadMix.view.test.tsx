@@ -67,6 +67,16 @@ async function mount(
   );
   nav?.click();
   await flush();
+  if (page === 'Routing') {
+    // The workload mix lives inside Auto performance, in the rail's Tuning
+    // section (section-routing-rail). Switch here rather than in every case.
+    const seg = [
+      ...host.querySelectorAll<HTMLButtonElement>('[data-testid="routing-sections"] .rs-seg'),
+    ].find((b) => b.textContent?.trim() === 'Tuning');
+    if (!seg) throw new Error('Routing section "Tuning" is not offered');
+    seg.click();
+    await flush();
+  }
   return {
     host,
     store,

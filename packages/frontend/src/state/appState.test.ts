@@ -2,12 +2,19 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ApiError,
   type AgentDto,
+  type CalibrationEvent,
   type ChannelDto,
   type ModelDto,
+  type SemanticLearningStatus,
   type TierDto,
   type TierEntryDto,
 } from '../data/api';
-import { DEFAULT_CALIBRATION, DEFAULT_SESSION, FakeApiClient } from '../test/fakeClient';
+import {
+  DEFAULT_CALIBRATION,
+  DEFAULT_SEMANTIC_LEARNING_STATUS,
+  DEFAULT_SESSION,
+  FakeApiClient,
+} from '../test/fakeClient';
 import type { ProviderForm } from '../types';
 import { PROVIDER_KINDS, createAppStore } from './appState';
 
@@ -1890,5 +1897,108 @@ describe('pricing-catalog slice (add-pricing-refresh-ui)', () => {
       busy: false,
     });
     expect(s.state.toast).not.toBe('+124 price versions');
+  });
+});
+
+describe('Routing-rail section state (section-routing-rail)', () => {
+  it('starts on the Auto section and remembers an explicit choice', () => {
+    const s = createAppStore(new FakeApiClient({ session: DEFAULT_SESSION }));
+    expect(s.state.routingSection).toBe('auto');
+    s.setRoutingSection('tuning');
+    expect(s.state.routingSection).toBe('tuning');
+    s.setRoutingSection('rules');
+    expect(s.state.routingSection).toBe('rules');
+  });
+});
+
+describe('card loaders survive section churn (section-routing-rail D8)', () => {
+  // Self-calibration and Semantic learning fetch on FIRST MOUNT. Sectioning the
+  // rail made that mount repeatable: flipping to Tuning, away, and back starts a
+  // second GET while the first is still open. Without a guard the loser decides.
+  const mkCalEvent = (id: string): CalibrationEvent => ({
+    id,
+    trigger: 'calibrator',
+    oldHigh: 0.6,
+    oldLow: 0.25,
+    newHigh: 0.62,
+    newLow: 0.24,
+    anchorHigh: 0.6,
+    anchorLow: 0.25,
+    windowFrom: null,
+    windowTo: null,
+    edge: 'high',
+    edgeSamples: 40,
+    edgeFailures: 2,
+    reason: 'edge drift',
+    createdAt: NOW,
+  });
+
+  it('a REJECTED older calibration-history load leaves the newer rows in place', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    const pending: { resolve: (v: CalibrationEvent[]) => void; reject: (e: unknown) => void }[] =
+      [];
+    fake.calibrationHistory = () =>
+      new Promise((resolve, reject) => pending.push({ resolve, reject }));
+    const s = createAppStore(fake);
+    const first = s.loadCalHistory(); // Tuning opened…
+    const second = s.loadCalHistory(); // …closed and reopened
+    expect(pending.length).toBe(2);
+    pending[1]!.resolve([mkCalEvent('e2')]);
+    await second;
+    expect(s.state.calHistory.rows.map((r) => r.id)).toEqual(['e2']);
+    // The superseded request now fails. Its error must be dropped — otherwise the
+    // card swaps good rows for "couldn't load" on a purely cosmetic tab flip.
+    pending[0]!.reject(new Error('aborted'));
+    await first;
+    expect(s.state.calHistory.error).toBeNull();
+    expect(s.state.calHistory.rows.map((r) => r.id)).toEqual(['e2']);
+    expect(s.state.calHistory.loaded).toBe(true);
+  });
+
+  it('a REJECTED older learning-status load leaves the newer status in place', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    const pending: {
+      resolve: (v: SemanticLearningStatus) => void;
+      reject: (e: unknown) => void;
+    }[] = [];
+    fake.semanticLearningStatus = () =>
+      new Promise((resolve, reject) => pending.push({ resolve, reject }));
+    const s = createAppStore(fake);
+    const first = s.loadSemanticLearning();
+    const second = s.loadSemanticLearning();
+    expect(pending.length).toBe(2);
+    pending[1]!.resolve({ ...DEFAULT_SEMANTIC_LEARNING_STATUS, generation: 7 });
+    await second;
+    expect(s.state.semLearn.status?.generation).toBe(7);
+    pending[0]!.reject(new Error('aborted'));
+    await first;
+    expect(s.state.semLearn.error).toBeNull();
+    expect(s.state.semLearn.status?.generation).toBe(7);
+    expect(s.state.semLearn.loaded).toBe(true);
+  });
+
+  it('a status GET that lands AFTER a revert does not restore the learned state', async () => {
+    // The counter is a GENERATION over every `semLearn` writer, not just the
+    // loader: the revert's response is authoritative, so a GET opened before it
+    // must not resurrect `source: learned` afterwards.
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    const resolvers: ((v: SemanticLearningStatus) => void)[] = [];
+    fake.semanticLearningStatus = () => new Promise((resolve) => resolvers.push(resolve));
+    fake.semanticLearningRevert = () =>
+      Promise.resolve({ ...DEFAULT_SEMANTIC_LEARNING_STATUS, epoch: 1, source: 'bundled' });
+    const s = createAppStore(fake);
+    const inFlight = s.loadSemanticLearning(); // started when Tuning opened
+    await s.revertSemanticLearning(); // the user reverts while it is still open
+    expect(s.state.semLearn.status?.source).toBe('bundled');
+    resolvers[0]!({
+      ...DEFAULT_SEMANTIC_LEARNING_STATUS,
+      source: 'learned',
+      generation: 3,
+      freshHigh: 12,
+    });
+    await inFlight;
+    expect(s.state.semLearn.status?.source).toBe('bundled');
+    expect(s.state.semLearn.status?.freshHigh).toBe(0);
+    expect(s.state.semLearn.status?.epoch).toBe(1);
   });
 });

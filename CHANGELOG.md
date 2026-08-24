@@ -15,6 +15,8 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-08-23
+
 ### Changed
 
 - **The Routing page's right rail is sectioned.** A three-section segmented control (**Auto** — automatic-routing layers, Band targets, Workload targets · **Tuning** — Auto performance, Self-calibration, Semantic learning · **Rules** — header rules) replaces the single eight-card scroll, with tier chains and the Add-tier header visible in every section. The rail opens on Auto and remembers the section for the session; Tuning is offered only while the structural layer is available, and losing it falls back to Auto (restoring the choice if it returns) while keeping keyboard focus on the rail. The cards that fetch on mount now ignore a superseded response, so switching sections cannot overwrite newer rows, surface a stale error over loaded rows, or resurrect learned state a revert just cleared.
@@ -821,7 +823,8 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.15.1...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.16.0
 [0.15.1]: https://github.com/izzoa/polyrouter/releases/tag/v0.15.1
 [0.15.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.15.0
 [0.14.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.14.0

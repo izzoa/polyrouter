@@ -1,5 +1,11 @@
 # @polyrouter/frontend
 
+## 0.16.1
+
+### Patch Changes
+
+- **Version tracks the release.** No frontend code changed in this release — the bump keeps `__APP_VERSION__`, the version the sidebar and Settings page display, equal to the released image tag. The fix itself is in the control plane: `GET /api/analytics/auto` no longer 500s once the `auto_high` counterfactual basis has a fractional price, so the Auto-performance card loads again.
+
 ## 0.16.0
 
 ### Minor Changes

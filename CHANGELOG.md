@@ -15,6 +15,8 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.16.1] — 2026-08-28
+
 ### Fixed
 
 - **Auto performance survives a realistically-priced basis.** `GET /api/analytics/auto` bound the `auto_high` counterfactual's per-1M rates into `integer_column * $n`, so Postgres typed them as `integer` and rejected the first fractional rate (`22P02 invalid input syntax for type integer: "1.4"`) — failing the entire request, not just the savings block, for any basis model not priced in whole dollars per 1M tokens. Rates are now `double precision` (matching the float math that wrote the costs they are subtracted from); results for integer rates are unchanged.
@@ -828,7 +830,8 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.16.1...HEAD
+[0.16.1]: https://github.com/izzoa/polyrouter/releases/tag/v0.16.1
 [0.16.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.16.0
 [0.15.1]: https://github.com/izzoa/polyrouter/releases/tag/v0.15.1
 [0.15.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.15.0

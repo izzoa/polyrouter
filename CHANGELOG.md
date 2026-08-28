@@ -15,6 +15,11 @@ heading is started.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Auto performance survives a realistically-priced basis.** `GET /api/analytics/auto` bound the `auto_high` counterfactual's per-1M rates into `integer_column * $n`, so Postgres typed them as `integer` and rejected the first fractional rate (`22P02 invalid input syntax for type integer: "1.4"`) — failing the entire request, not just the savings block, for any basis model not priced in whole dollars per 1M tokens. Rates are now `double precision` (matching the float math that wrote the costs they are subtracted from); results for integer rates are unchanged.
+- **A failed background job says why.** The scheduler `failed` handlers logged only the error's message — for a wrapped Drizzle query error, that is the SQL, while the real reason (`ENOTFOUND`, a dropped connection, a SQLSTATE) sat unread in `cause`. All seven queues (budget eval, notify delivery, weekly summary, calibration, body purge, semantic learning, pricing refresh) now log the cause chain, clipped to one line.
+
 ## [0.16.0] — 2026-08-23
 
 ### Changed

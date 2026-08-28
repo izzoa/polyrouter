@@ -8,7 +8,7 @@ import {
 import { REDIS_CLIENT } from '@polyrouter/shared/server';
 import { Queue, Worker, type Job } from 'bullmq';
 import type { Redis } from 'ioredis';
-import { withDeadline } from '../notifications/notify.queue';
+import { jobFailureReason, withDeadline } from '../notifications/notify.queue';
 import type { PricingSchedulerConfig } from './pricing.config';
 import { PRICING_RUNTIME, PricingService, type PricingRuntime } from './pricing.service';
 
@@ -85,9 +85,7 @@ export class PricingRefreshScheduler implements OnApplicationBootstrap, OnApplic
       });
       this.worker.on('error', () => {});
       this.worker.on('failed', (job, err) =>
-        this.logger.warn(
-          `pricing refresh ${job?.id ?? '?'} failed: ${String(err?.message ?? 'error')}`,
-        ),
+        this.logger.warn(`pricing refresh ${job?.id ?? '?'} failed: ${jobFailureReason(err)}`),
       );
     }
   }

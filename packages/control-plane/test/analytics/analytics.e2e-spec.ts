@@ -774,8 +774,12 @@ describe('analytics API (#17)', () => {
     const pa = userPrincipal(A);
     // Basis: auto_high → tier premium whose primary is modelA; kind=custom
     // honors model-own prices (E5.4), so the counterfactual is deterministic.
+    // The rates are deliberately FRACTIONAL — as every real catalog price is:
+    // integer rates let Postgres type the bound rate parameter as `integer`
+    // from `integer_column * $1`, which hid a 22P02 that 500'd the endpoint for
+    // any actually-priced basis.
     await pool.query(
-      `UPDATE model SET input_price_per_1m = 10, output_price_per_1m = 20 WHERE id = $1`,
+      `UPDATE model SET input_price_per_1m = 1.4, output_price_per_1m = 4.4 WHERE id = $1`,
       [modelA],
     );
     const premium = await port.tiers.insert(pa, { key: 'premium' });
@@ -920,14 +924,14 @@ describe('analytics API (#17)', () => {
       escalated: 2,
     });
     expect(body.fallthrough).toBe(2);
-    // Savings: rows P1 (cf 20000µ − 1000µ = +19000µ) and P2 (cf 2000µ − 1000000µ = −998000µ);
+    // Savings: rows P1 (cf 3600µ − 1000µ = +2600µ) and P2 (cf 360µ − 1000000µ = −999640µ);
     // the null-cost row excluded + disclosed. net = gross − excess EXACTLY.
     expect(body.savings).toMatchObject({
       rows: 2,
       uncostedRows: 1,
-      netUsd: -0.979,
-      grossUsd: 0.019,
-      excessUsd: 0.998,
+      netUsd: -0.99704,
+      grossUsd: 0.0026,
+      excessUsd: 0.99964,
       basis: { kind: 'tier', label: 'premium', model: 'gpt-x', scoped: false },
     });
     // telemetrySince is RANGE-INDEPENDENT: a range wholly before the rows still reports it.

@@ -8,7 +8,7 @@ import {
 import { REDIS_CLIENT, type BudgetRow } from '@polyrouter/shared/server';
 import { Queue, Worker, type Job } from 'bullmq';
 import { Redis } from 'ioredis';
-import { withDeadline } from '../notifications/notify.queue';
+import { jobFailureReason, withDeadline } from '../notifications/notify.queue';
 import { BUDGET_READER, type BudgetReader } from '../database/budget.reader';
 import { NotificationProducers } from '../producers/notification-producers';
 import type { MeteringBasis } from '../database/budget.reader';
@@ -198,9 +198,7 @@ export class BudgetScheduler implements OnApplicationBootstrap, OnApplicationShu
       });
       this.worker.on('error', () => {});
       this.worker.on('failed', (job, err) =>
-        this.logger.warn(
-          `budget eval ${job?.id ?? '?'} failed: ${String(err?.message ?? 'error')}`,
-        ),
+        this.logger.warn(`budget eval ${job?.id ?? '?'} failed: ${jobFailureReason(err)}`),
       );
     }
   }
@@ -236,7 +234,10 @@ export class BudgetScheduler implements OnApplicationBootstrap, OnApplicationShu
         { pattern: this.cron, tz: 'UTC' },
         // Bounded retention (E6.2): don't accumulate job records forever in the
         // enforcement Redis (mirrors notify.queue's BASE_JOB_OPTS).
-        { name: JOB_NAME, opts: { removeOnComplete: { age: 3_600 }, removeOnFail: { age: 86_400 } } },
+        {
+          name: JOB_NAME,
+          opts: { removeOnComplete: { age: 3_600 }, removeOnFail: { age: 86_400 } },
+        },
       );
     } else {
       await this.queue.removeJobScheduler(SCHEDULER_ID).catch(() => undefined);

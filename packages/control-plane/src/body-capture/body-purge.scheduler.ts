@@ -7,12 +7,9 @@ import {
 } from '@nestjs/common';
 import { Queue, Worker, type Job } from 'bullmq';
 import type Redis from 'ioredis';
-import {
-  PERSISTENCE_PORT,
-  REDIS_CLIENT,
-  type PersistencePort,
-} from '@polyrouter/shared/server';
+import { PERSISTENCE_PORT, REDIS_CLIENT, type PersistencePort } from '@polyrouter/shared/server';
 import { BODY_CAPTURE_CONFIG, type BodyCaptureConfig } from './body-capture.config';
+import { jobFailureReason } from '../notifications/notify.queue';
 
 const QUEUE_NAME = 'body-capture-purge';
 const SCHEDULER_ID = 'body-capture-purge-daily';
@@ -80,7 +77,7 @@ export class BodyPurgeScheduler implements OnApplicationBootstrap, OnApplication
       });
       this.worker.on('error', () => {});
       this.worker.on('failed', (job, err) =>
-        this.logger.warn(`body purge ${job?.id ?? '?'} failed: ${String(err?.message ?? 'error')}`),
+        this.logger.warn(`body purge ${job?.id ?? '?'} failed: ${jobFailureReason(err)}`),
       );
     }
   }
@@ -96,7 +93,9 @@ export class BodyPurgeScheduler implements OnApplicationBootstrap, OnApplication
       await withDeadline(this.applySchedule(), RECONCILE_TIMEOUT_MS, 'reconcile_timeout');
       this.reconciled = true;
     } catch (err) {
-      this.logger.warn(`body purge scheduler reconcile deferred: ${String((err as Error).message)}`);
+      this.logger.warn(
+        `body purge scheduler reconcile deferred: ${String((err as Error).message)}`,
+      );
       if (!this.shuttingDown) {
         this.reconcileTimer = setTimeout(() => {
           this.reconcileTimer = undefined;

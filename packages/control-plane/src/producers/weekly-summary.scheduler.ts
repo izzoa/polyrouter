@@ -9,7 +9,7 @@ import { REDIS_CLIENT } from '@polyrouter/shared/server';
 import { Queue, Worker, type Job } from 'bullmq';
 import { Redis } from 'ioredis';
 import { NotificationService } from '../notifications/notification.service';
-import { withDeadline } from '../notifications/notify.queue';
+import { jobFailureReason, withDeadline } from '../notifications/notify.queue';
 import { WEEKLY_SPEND_READER, type WeeklySpendReader } from '../database/weekly-spend.reader';
 import { PRODUCERS_CONFIG, type ProducersConfig } from './producers.config';
 
@@ -96,9 +96,7 @@ export class WeeklySummaryScheduler implements OnApplicationBootstrap, OnApplica
       });
       this.worker.on('error', () => {});
       this.worker.on('failed', (job, err) =>
-        this.logger.warn(
-          `weekly summary ${job?.id ?? '?'} failed: ${String(err?.message ?? 'error')}`,
-        ),
+        this.logger.warn(`weekly summary ${job?.id ?? '?'} failed: ${jobFailureReason(err)}`),
       );
     }
   }

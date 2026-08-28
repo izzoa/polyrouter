@@ -18,11 +18,7 @@ import {
   type NotificationEvent,
 } from './notification.types';
 import { parseStoredConfig, type AppriseConfig, type SmtpConfig } from './channel-config';
-import {
-  defaultRenderContext,
-  renderNotificationChat,
-  renderNotificationEmail,
-} from './render';
+import { defaultRenderContext, renderNotificationChat, renderNotificationEmail } from './render';
 
 /** Sanitized code for a render fault — never the message (it could carry a
  * field value), only the constructor name. */
@@ -56,6 +52,27 @@ export function withDeadline<T>(p: Promise<T>, ms: number, code: string): Promis
     );
   });
 }
+const REASON_MAX = 200;
+
+/** `message`, then every distinct `cause` message beneath it. A wrapper like
+ * Drizzle's `DrizzleQueryError` carries the SQL in `message` and the ACTUAL
+ * reason — `ENOTFOUND`, a dropped connection, `invalid input syntax` — only in
+ * `cause`, so a handler logging `message` alone reports THAT a job failed while
+ * withholding WHY (the dead end a once-a-day budget-eval failure left an
+ * operator in). Each segment is flattened + clipped so one warn stays one line. */
+export function jobFailureReason(err: unknown): string {
+  const parts: string[] = [];
+  let cur: unknown = err;
+  for (let depth = 0; cur != null && depth < 4; depth++) {
+    const raw = cur instanceof Error ? cur.message : typeof cur === 'string' ? cur : '';
+    const flat = raw.replace(/\s+/g, ' ').trim();
+    const text = flat.length > REASON_MAX ? `${flat.slice(0, REASON_MAX - 1)}…` : flat;
+    if (text.length > 0 && !parts.includes(text)) parts.push(text);
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  return parts.length > 0 ? parts.join(' ← caused by: ') : 'error';
+}
+
 const BASE_JOB_OPTS = {
   attempts: 4,
   backoff: { type: 'exponential' as const, delay: 2_000 },
@@ -114,9 +131,7 @@ export class NotifyQueue implements OnApplicationShutdown {
       concurrency: 5,
     });
     this.worker.on('failed', (job, err) =>
-      this.logger.warn(
-        `notify delivery ${job?.id ?? '?'} failed: ${String(err?.message ?? 'error')}`,
-      ),
+      this.logger.warn(`notify delivery ${job?.id ?? '?'} failed: ${jobFailureReason(err)}`),
     );
     this.worker.on('error', () => {});
   }

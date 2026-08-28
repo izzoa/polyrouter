@@ -626,7 +626,13 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
         const crMissing = c.cacheReadPer1m === null ? sql`true` : sql`false`;
         const cwMissing = c.cacheWritePer1m === null ? sql`true` : sql`false`;
         const uncostable = sql`(${requestLogs.cost} is null or (coalesce(${requestLogs.cacheReadTokens}, 0) > 0 and ${crMissing}) or (coalesce(${requestLogs.cacheWriteTokens}, 0) > 0 and ${cwMissing}))`;
-        const cfMicros = sql`round(${requestLogs.inputTokens} * ${c.inputPer1m} + ${requestLogs.outputTokens} * ${c.outputPer1m} + coalesce(${requestLogs.cacheReadTokens}, 0) * ${c.cacheReadPer1m ?? 0} + coalesce(${requestLogs.cacheWriteTokens}, 0) * ${c.cacheWritePer1m ?? 0})`;
+        // A rate is a BOUND PARAMETER, and Postgres types an untyped parameter from
+        // the operator it meets: in `integer_column * $1` it resolves $1 to `integer`,
+        // so the first fractional $/1M (1.4) killed the whole endpoint with 22P02
+        // rather than costing the row. Pin every rate to `double precision` — the same
+        // float arithmetic `computeCost` used to write the actual cost this subtracts.
+        const rate = (v: number): SQL => sql`cast(${v} as double precision)`;
+        const cfMicros = sql`round(${requestLogs.inputTokens} * ${rate(c.inputPer1m)} + ${requestLogs.outputTokens} * ${rate(c.outputPer1m)} + coalesce(${requestLogs.cacheReadTokens}, 0) * ${rate(c.cacheReadPer1m ?? 0)} + coalesce(${requestLogs.cacheWriteTokens}, 0) * ${rate(c.cacheWritePer1m ?? 0)})`;
         const deltaMicros = sql`(${cfMicros} - round(${requestLogs.cost} * 1000000))`;
         const [sums] = await db
           .select({

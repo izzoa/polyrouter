@@ -4,6 +4,7 @@ import type { Embedder } from '@polyrouter/data-plane';
 import { BundleError, WordPieceTokenizer, contentHashId, parseManifest } from './bundle';
 import { buildEmbedder, type TensorLike } from './embed-core';
 import { TrySemaphore } from './semaphore';
+import { observeAdmission, type ModelActivity } from './model-activity';
 import type { SemanticConfig } from './semantic.config';
 
 /** Load failure carrying the offending file's BASENAME and a reason — the
@@ -46,6 +47,12 @@ export interface LoadedSemanticRuntime {
    * session and never a second gate.
    */
   readonly boundEmbedder: (timeoutMs: number) => Embedder & { readonly saturated: boolean };
+  /**
+   * Read-only activity over this model (recover-semantic-centroid-build):
+   * whether any inference is outstanding, and when a request-path embed was
+   * last attempted. Recovery reads both to decide whether it may run.
+   */
+  readonly activity: ModelActivity;
   readonly warmupMs: number;
 }
 
@@ -166,6 +173,13 @@ export const loadWithOrt = async (
       [1, ids.length],
     );
 
+  // ONE gate per loaded model, shared by every seam below: the width is the
+  // ceiling on orphaned native work, so a gate per seam would silently make
+  // the real ceiling 2 × SEMANTIC_CONCURRENCY. ONE observer over it too,
+  // created HERE rather than inside `boundEmbedder` — that factory is invoked
+  // per seam (and, during a rebuild, per anchor), so a tracker built there
+  // would fragment into one counter per call and always read zero.
+  const gate = observeAdmission(new TrySemaphore(cfg.concurrency));
   const core = {
     id,
     manifest,
@@ -173,10 +187,6 @@ export const loadWithOrt = async (
     session,
     makeTensor,
     maxInputChars: cfg.maxInputChars,
-    // ONE gate per loaded model, shared by both seams below: the width is the
-    // ceiling on orphaned native work, so a gate per seam would silently make
-    // the real ceiling 2 × SEMANTIC_CONCURRENCY.
-    admission: new TrySemaphore(cfg.concurrency),
   };
 
   // Warmup outside the request-path bound: the first inference JITs and may
@@ -184,7 +194,7 @@ export const loadWithOrt = async (
   // every other boot-time consumer gets — rather than a throwaway.
   const warmupStart = Date.now();
   const boundEmbedder = (timeoutMs: number): Embedder & { readonly saturated: boolean } =>
-    buildEmbedder({ ...core, timeoutMs });
+    buildEmbedder({ ...core, timeoutMs, admission: gate.forPath('boot') });
   const bootEmbedder = boundEmbedder(BOOT_EMBED_TIMEOUT_MS);
   try {
     await bootEmbedder.embed('polyrouter semantic warmup');
@@ -196,5 +206,11 @@ export const loadWithOrt = async (
   }
   const warmupMs = Date.now() - warmupStart;
 
-  return { embedder: boundEmbedder(cfg.timeoutMs), bootEmbedder, boundEmbedder, warmupMs };
+  // The REQUEST seam is the only one whose admissions mark traffic.
+  const embedder = buildEmbedder({
+    ...core,
+    timeoutMs: cfg.timeoutMs,
+    admission: gate.forPath('request'),
+  });
+  return { embedder, bootEmbedder, boundEmbedder, activity: gate.activity, warmupMs };
 };

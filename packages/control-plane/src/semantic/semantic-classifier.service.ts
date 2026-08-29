@@ -1,4 +1,9 @@
-import { Injectable, Logger, type OnApplicationBootstrap } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  type OnApplicationBootstrap,
+  type OnModuleDestroy,
+} from '@nestjs/common';
 import {
   ANCHOR_SET_ID,
   HIGH_ANCHORS,
@@ -9,6 +14,7 @@ import {
   WORKLOAD_ANCHOR_SET_ID,
   extractSemanticInput,
   semanticWorkloadRevision,
+  CentroidValidationError,
   validateCentroids,
   validateWorkloadCentroids,
   type Embedder,
@@ -26,6 +32,13 @@ import {
   type LearningGate,
 } from './classification-source';
 import { SemanticRuntimeService } from './semantic-runtime.service';
+import { PhaseBudgetError, classifyBuildFailure } from './recovery-classify';
+import {
+  RebuildLease,
+  RecoveryGeneration,
+  type GenerationEnd,
+  type SlotOutcome,
+} from './recovery-generation';
 import type { SemanticConfig } from './semantic.config';
 
 /**
@@ -74,25 +87,49 @@ export interface SemanticWorkloadState {
  */
 export const ANCHOR_PHASE_BUDGET_MS = 20_000;
 
-/** The phase budget ran out. Distinct from a degenerate-anchor failure so the
- * boot log names a host-speed fault, whose remedy is nothing like a bad bundle. */
-export class PhaseBudgetError extends Error {
-  constructor(
-    readonly phase: string,
-    readonly budgetMs: number,
-  ) {
-    super(`${phase} anchor build exceeded its ${String(budgetMs)}ms boot budget`);
-    this.name = 'PhaseBudgetError';
-  }
-}
+/** Re-exported from where the classification lives, so `instanceof` in
+ * `classifyBuildFailure` and the error `runPhase` throws are ONE class. Two
+ * same-named classes would make every spent budget classify as terminal —
+ * silently disabling recovery for its commonest cause. */
+export { PhaseBudgetError };
 
 /** The abort reason the phase timer raises — tagged so ONLY this cause becomes
  * a `PhaseBudgetError`; a caller's own abort stays what it was. */
 const PHASE_BUDGET_ABORT = Symbol('polyrouter:phase-budget');
+/** Request traffic resumed under a quiet-gated slot — a DEFERRAL, not a failure. */
+const PHASE_TRAFFIC_ABORT = Symbol('polyrouter:phase-traffic');
+/** The instance is shutting down — closes the generation, re-arms nothing. */
+const PHASE_SHUTDOWN_ABORT = Symbol('polyrouter:phase-shutdown');
+
+/** Why a phase stopped, decided by the tagged abort cause rather than inferred. */
+export type PhaseStop = 'budget' | 'traffic' | 'shutdown';
+
+function stopOf(reason: unknown): PhaseStop | null {
+  if (reason === PHASE_BUDGET_ABORT) return 'budget';
+  if (reason === PHASE_TRAFFIC_ABORT) return 'traffic';
+  if (reason === PHASE_SHUTDOWN_ABORT) return 'shutdown';
+  return null;
+}
+
+/** Traffic resumed under a gated slot. Not a failure — the slot simply closes. */
+export class PhaseAbandonedError extends Error {
+  constructor(readonly phase: string) {
+    super(`${phase} anchor build abandoned — request traffic resumed`);
+    this.name = 'PhaseAbandonedError';
+  }
+}
+
+/** Shutdown stopped the phase. Closes the generation; arms nothing. */
+export class PhaseShutdownError extends Error {
+  constructor(readonly phase: string) {
+    super(`${phase} anchor build stopped by shutdown`);
+    this.name = 'PhaseShutdownError';
+  }
+}
 
 @Injectable()
 export class SemanticClassifierService
-  implements OnApplicationBootstrap, ClassificationSourceProvider
+  implements OnApplicationBootstrap, OnModuleDestroy, ClassificationSourceProvider
 {
   private readonly logger = new Logger('SemanticClassifier');
   private state: ClassificationState | null = null;
@@ -109,7 +146,55 @@ export class SemanticClassifierService
     'source' | 'sourceRevision'
   > | null = null;
 
+  /**
+   * The controller of the phase currently executing, if any. `runPhase` owns
+   * the controller, but traffic observation and the shutdown fence live
+   * OUTSIDE it and must be able to stop a run — with a tagged cause, since a
+   * budget stop, a traffic stop and a shutdown stop mean entirely different
+   * things to the recovery state machine. Aborting only takes effect between
+   * anchors: a dispatched native call cannot be interrupted.
+   */
+  private running: { readonly phase: string; readonly ctrl: AbortController } | null = null;
+  /** ONE rebuild at a time across both sources — they share an admission gate
+   * and an event loop, so concurrent chains would contend with each other. */
+  private readonly lease = new RebuildLease();
+  private readonly generations = new Map<string, RecoveryGeneration>();
+  /** Set in `onModuleDestroy`. Nest runs `onApplicationShutdown` AFTER the HTTP
+   * server is disposed, and this project's stream drain runs in the earlier
+   * phase — a late fence would let a slot start during a drain. */
+  private shuttingDown = false;
+  /** How long the model must be free of request-path embeds before a gated
+   * slot may start. Long enough that back-to-back traffic does not look like a
+   * gap; short enough that an ordinary lull qualifies. */
+  private static readonly QUIET_MS = 2_500;
+
   constructor(private readonly runtime: SemanticRuntimeService) {}
+
+  /** Stop the executing phase, if any, with a tagged cause. Shutdown wins any
+   * race — a traffic stop never overrides a shutdown already requested. */
+  private stopRunningPhase(cause: PhaseStop): void {
+    const run = this.running;
+    if (run === null || run.ctrl.signal.aborted) return;
+    run.ctrl.abort(
+      cause === 'shutdown'
+        ? PHASE_SHUTDOWN_ABORT
+        : cause === 'traffic'
+          ? PHASE_TRAFFIC_ABORT
+          : PHASE_BUDGET_ABORT,
+    );
+  }
+
+  /**
+   * Fence recovery EARLY (invariant 12). `onApplicationShutdown` fires after
+   * the HTTP server is disposed, by which point the drain is already running;
+   * a slot starting then would put 210 inferences in front of it.
+   */
+  onModuleDestroy(): void {
+    this.shuttingDown = true;
+    for (const gen of this.generations.values()) gen.close('shutdown');
+    this.generations.clear();
+    this.stopRunningPhase('shutdown');
+  }
 
   /** The whole classifier is ready (embedder loaded ∧ centroids built). */
   get available(): boolean {
@@ -157,6 +242,70 @@ export class SemanticClassifierService
     return this.state; // the base source is always bundled; the decorator layers learned
   }
 
+  /**
+   * Arm bounded recovery for a source whose build failed RETRYABLY. A terminal
+   * fault arms nothing: its inputs are fixed for the process's lifetime, so a
+   * repeat is near-certain and would bury the error an operator must act on.
+   */
+  private armRecovery(
+    source: string,
+    err: unknown,
+    rebuild: (ctx: { readonly final: boolean }) => Promise<void>,
+  ): void {
+    if (this.shuttingDown) return;
+    if (classifyBuildFailure(err) !== 'retryable') return;
+    if (this.generations.has(source)) return;
+
+    const gen = new RecoveryGeneration(source, {
+      // A gated slot runs only when nothing is in flight and no request-path
+      // embed has been attempted recently. The final slot does not ask.
+      isQuiet: () => this.runtime.activity?.isQuiet(SemanticClassifierService.QUIET_MS) ?? true,
+      acquireLease: () => this.lease.acquire(),
+      execute: rebuild,
+      classify: (e) => {
+        if (e instanceof PhaseShutdownError) return 'terminal';
+        if (e instanceof PhaseAbandonedError) return 'abandoned';
+        return classifyBuildFailure(e) === 'retryable' ? 'retryable' : 'terminal';
+      },
+      onSlot: (index, outcome, e) => {
+        this.logSlot(source, index, outcome, e);
+      },
+      onEnd: (end) => {
+        this.generations.delete(source);
+        this.logGenerationEnd(source, end);
+      },
+    });
+    this.generations.set(source, gen);
+    gen.arm();
+  }
+
+  /** Timings and counts only — never anchor text, never vector values. */
+  private logSlot(source: string, index: number, outcome: SlotOutcome, err?: unknown): void {
+    const at = `slot ${String(index + 1)}`;
+    if (outcome === 'succeeded') return; // the ready line already says it
+    if (outcome === 'closed-unrun') {
+      this.logger.log(
+        `semantic ${source} recovery ${at}: closed unrun — the model was not embed-quiet`,
+      );
+      return;
+    }
+    const why = err instanceof Error ? err.message : 'unknown';
+    this.logger.log(
+      outcome === 'ran-abandoned'
+        ? `semantic ${source} recovery ${at}: abandoned — request traffic resumed (${why})`
+        : `semantic ${source} recovery ${at}: failed (${why})`,
+    );
+  }
+
+  private logGenerationEnd(source: string, end: GenerationEnd): void {
+    if (end === 'succeeded' || end === 'shutdown') return;
+    this.logger.error(
+      end === 'terminal'
+        ? `semantic ${source} recovery stopped: the fault is not one a retry can clear — act on the error above`
+        : `semantic ${source} recovery EXHAUSTED — no further attempts will be made; restart the instance to try again`,
+    );
+  }
+
   async onApplicationBootstrap(): Promise<void> {
     // Correct ordering without assuming Nest sequenced the two hooks (D5).
     // The embedder LOAD already succeeded or failed boot in the runtime; here
@@ -176,103 +325,127 @@ export class SemanticClassifierService
     const embedder = this.runtime.bootEmbedder ?? requestSeam;
 
     const cfg = this.runtime.config;
+    // Each source installs through the SAME method a rebuild calls, so "a
+    // rebuilt source computes what a boot build computes" holds by
+    // construction rather than by two implementations agreeing (D5).
+    await this.attempt('bundled', () => this.installBundled(embedder, cfg));
+    await this.attempt('workload', () => this.installWorkload(embedder, cfg));
+  }
+
+  /**
+   * Run one source's build, log its failure, and arm bounded recovery when the
+   * fault is one a later execution could clear. Used by boot AND by every
+   * recovery slot — a rebuild is this same call, with a fresh budget.
+   */
+  private async attempt(
+    source: string,
+    install: (opts?: { readonly abandonOnTraffic?: boolean }) => Promise<void>,
+  ): Promise<void> {
     try {
-      const { value: centroids, elapsedMs } = await this.runPhase(
-        'bundled',
-        embedder,
-        cfg,
-        (embed) => this.buildBundledCentroids(embed, embedder.dims),
-      );
-      validateCentroids(centroids, embedder.dims);
-      this.revisionInputs = {
-        embedderId: embedder.id,
-        dims: embedder.dims,
-        anchorSetId: ANCHOR_SET_ID,
-        anchorContentHash: hashAnchorContent(HIGH_ANCHORS, LOW_ANCHORS),
-        extractorVersion: SEMANTIC_EXTRACTOR_VERSION,
-        highThreshold: cfg.highThreshold,
-        lowThreshold: cfg.lowThreshold,
-      };
-      const revision = computeRevision({
-        ...this.revisionInputs,
-        source: 'bundled',
-        sourceRevision: ANCHOR_SET_ID,
-      });
-      this.state = { centroids, source: 'bundled', revision };
-      this.provenance = {
-        bundled: centroids,
-        embedderId: embedder.id,
-        dims: embedder.dims,
-        anchorSetId: ANCHOR_SET_ID,
-        extractorVersion: SEMANTIC_EXTRACTOR_VERSION,
-        highThreshold: cfg.highThreshold,
-        lowThreshold: cfg.lowThreshold,
-      };
-      // Elapsed on the SUCCESS path so an operator sees headroom BEFORE it is
-      // an outage (the reporting instance ran at ~1x margin and had no way to
-      // know). Timings only — never anchor text, never vector values.
-      this.logger.log(
-        `semantic classifier ready: anchors=${ANCHOR_SET_ID} high=${String(HIGH_ANCHORS.length)} low=${String(LOW_ANCHORS.length)} revision=${revision} built=${String(elapsedMs)}ms/${String(ANCHOR_PHASE_BUDGET_MS)}ms`,
-      );
+      // Boot is never traffic-abandonable: no traffic exists yet, and giving
+      // up the boot build would cost the capability for nothing.
+      await install();
     } catch (err) {
-      this.state = null;
-      // Name the BUDGET when that is the cause: a host-speed fault and a bad
-      // bundle have nothing in common as remedies.
-      this.logger.error(
-        err instanceof PhaseBudgetError
-          ? `semantic classifier UNAVAILABLE — ${err.message} under embedder ${embedder.id}; the host is slower than the anchor budget allows, the bundle is fine; Layer 2 is off, all other routing is unaffected`
-          : `semantic classifier UNAVAILABLE — bundled centroids did not build/validate under embedder ${embedder.id} (${err instanceof Error ? err.message : 'unknown'}); Layer 2 is off, all other routing is unaffected`,
-      );
-    }
-    // The WORKLOAD source builds in its OWN boundary (add-semantic-workloads D4,
-    // clink r2 M1): any failure here — an anchor embed throw, validation, the
-    // revision — disables ONLY the workload source with a loud line; the band
-    // classifier keeps exactly the state the block above produced.
-    try {
-      const { value: centroids, elapsedMs } = await this.runPhase(
-        'workload',
-        embedder,
-        cfg,
-        (embed) => this.buildWorkloadCentroids(embed, embedder.dims),
-      );
-      validateWorkloadCentroids(centroids, embedder.dims);
-      const rails: SemanticWorkloadRails = {
-        margin: cfg.workload.margin,
-        minSim: cfg.workload.minSim,
-      };
-      const revision = semanticWorkloadRevision({
-        embedderId: embedder.id,
-        anchorSetId: WORKLOAD_ANCHOR_SET_ID,
-        anchorContentHash: WORKLOAD_ANCHOR_CONTENT_HASH,
-        extractorVersion: SEMANTIC_EXTRACTOR_VERSION,
-        margin: rails.margin,
-        minSim: rails.minSim,
-      });
-      this.workload = { centroids, rails, revision };
-      this.logger.log(
-        `semantic workload source ready: anchors=${WORKLOAD_ANCHOR_SET_ID} classes=${String(WORKLOAD_CLASSES.length)}×${String(WORKLOAD_ANCHORS.code.length)} margin=${String(rails.margin)} minSim=${String(rails.minSim)} revision=${revision} built=${String(elapsedMs)}ms/${String(ANCHOR_PHASE_BUDGET_MS)}ms`,
-      );
-    } catch (err) {
-      this.workload = null;
-      this.logger.error(
-        err instanceof PhaseBudgetError
-          ? `semantic workload source UNAVAILABLE — ${err.message} under embedder ${embedder.id}; the host is slower than the anchor budget allows — research/writing stay reserved; Layer-2 band classification unaffected`
-          : `semantic workload source UNAVAILABLE — workload centroids did not build/validate under embedder ${embedder.id} (${err instanceof Error ? err.message : 'unknown'}) — research/writing stay reserved; Layer-2 band classification unaffected`,
-      );
+      this.logBuildFailure(source, err);
+      // A GATED slot abandons on resumed traffic; the final one does not.
+      this.armRecovery(source, err, ({ final }) => install({ abandonOnTraffic: !final }));
     }
   }
 
-  /** Embed each class's anchors SEQUENTIALLY (the band discipline) into one
-   * unit-norm centroid per taxonomy class. */
-  private async buildWorkloadCentroids(
-    embedAnchor: (text: string) => Promise<Float32Array>,
-    dims: number,
-  ): Promise<Partial<Record<WorkloadClass, Float32Array>>> {
-    const out: Partial<Record<WorkloadClass, Float32Array>> = {};
-    for (const cls of WORKLOAD_CLASSES) {
-      out[cls] = await this.centroidOf(WORKLOAD_ANCHORS[cls], embedAnchor, dims);
+  private async installBundled(
+    embedder: Embedder,
+    cfg: SemanticConfig,
+    opts: { readonly abandonOnTraffic?: boolean } = {},
+  ): Promise<void> {
+    const { value: centroids, elapsedMs } = await this.runPhase(
+      'bundled',
+      embedder,
+      cfg,
+      (embed) => this.buildBundledCentroids(embed, embedder.dims),
+      opts,
+    );
+    validateCentroids(centroids, embedder.dims);
+    this.revisionInputs = {
+      embedderId: embedder.id,
+      dims: embedder.dims,
+      anchorSetId: ANCHOR_SET_ID,
+      anchorContentHash: hashAnchorContent(HIGH_ANCHORS, LOW_ANCHORS),
+      extractorVersion: SEMANTIC_EXTRACTOR_VERSION,
+      highThreshold: cfg.highThreshold,
+      lowThreshold: cfg.lowThreshold,
+    };
+    const revision = computeRevision({
+      ...this.revisionInputs,
+      source: 'bundled',
+      sourceRevision: ANCHOR_SET_ID,
+    });
+    this.state = { centroids, source: 'bundled', revision };
+    this.provenance = {
+      bundled: centroids,
+      embedderId: embedder.id,
+      dims: embedder.dims,
+      anchorSetId: ANCHOR_SET_ID,
+      extractorVersion: SEMANTIC_EXTRACTOR_VERSION,
+      highThreshold: cfg.highThreshold,
+      lowThreshold: cfg.lowThreshold,
+    };
+    // Elapsed on the SUCCESS path so an operator sees headroom BEFORE it is
+    // an outage (the reporting instance ran at ~1x margin and had no way to
+    // know). Timings only — never anchor text, never vector values.
+    this.logger.log(
+      `semantic classifier ready: anchors=${ANCHOR_SET_ID} high=${String(HIGH_ANCHORS.length)} low=${String(LOW_ANCHORS.length)} revision=${revision} built=${String(elapsedMs)}ms/${String(ANCHOR_PHASE_BUDGET_MS)}ms`,
+    );
+  }
+
+  private async installWorkload(
+    embedder: Embedder,
+    cfg: SemanticConfig,
+    opts: { readonly abandonOnTraffic?: boolean } = {},
+  ): Promise<void> {
+    const { value: centroids, elapsedMs } = await this.runPhase(
+      'workload',
+      embedder,
+      cfg,
+      (embed) => this.buildWorkloadCentroids(embed, embedder.dims),
+      opts,
+    );
+    validateWorkloadCentroids(centroids, embedder.dims);
+    const rails: SemanticWorkloadRails = {
+      margin: cfg.workload.margin,
+      minSim: cfg.workload.minSim,
+    };
+    const revision = semanticWorkloadRevision({
+      embedderId: embedder.id,
+      anchorSetId: WORKLOAD_ANCHOR_SET_ID,
+      anchorContentHash: WORKLOAD_ANCHOR_CONTENT_HASH,
+      extractorVersion: SEMANTIC_EXTRACTOR_VERSION,
+      margin: rails.margin,
+      minSim: rails.minSim,
+    });
+    this.workload = { centroids, rails, revision };
+    this.logger.log(
+      `semantic workload source ready: anchors=${WORKLOAD_ANCHOR_SET_ID} classes=${String(WORKLOAD_CLASSES.length)}×${String(WORKLOAD_ANCHORS.code.length)} margin=${String(rails.margin)} minSim=${String(rails.minSim)} revision=${revision} built=${String(elapsedMs)}ms/${String(ANCHOR_PHASE_BUDGET_MS)}ms`,
+    );
+  }
+
+  /** Name the CAUSE: a spent budget is a host-speed fault whose remedy is
+   * nothing like a bad bundle's. */
+  private logBuildFailure(source: string, err: unknown): void {
+    const id = this.runtime.bootEmbedder?.id ?? this.runtime.embedder?.id ?? 'unknown';
+    const why = err instanceof Error ? err.message : 'unknown';
+    if (source === 'bundled') {
+      this.logger.error(
+        err instanceof PhaseBudgetError
+          ? `semantic classifier UNAVAILABLE — ${err.message} under embedder ${id}; the host is slower than the anchor budget allows, the bundle is fine; Layer 2 is off, all other routing is unaffected`
+          : `semantic classifier UNAVAILABLE — bundled centroids did not build/validate under embedder ${id} (${why}); Layer 2 is off, all other routing is unaffected`,
+      );
+      return;
     }
-    return out;
+    this.logger.error(
+      err instanceof PhaseBudgetError
+        ? `semantic workload source UNAVAILABLE — ${err.message} under embedder ${id}; the host is slower than the anchor budget allows — research/writing stay reserved; Layer-2 band classification unaffected`
+        : `semantic workload source UNAVAILABLE — workload centroids did not build/validate under embedder ${id} (${why}) — research/writing stay reserved; Layer-2 band classification unaffected`,
+    );
   }
 
   /**
@@ -290,6 +463,7 @@ export class SemanticClassifierService
     embedder: Embedder,
     cfg: SemanticConfig,
     build: (embed: (text: string) => Promise<Float32Array>) => Promise<T>,
+    opts: { readonly abandonOnTraffic?: boolean } = {},
   ): Promise<{ value: T; elapsedMs: number }> {
     const budgetMs = ANCHOR_PHASE_BUDGET_MS;
     const ctrl = new AbortController();
@@ -304,17 +478,38 @@ export class SemanticClassifierService
     // — and that blocks `listen()`, so a dead instance would be the cost of a
     // wedged embed. Racing makes "boot completes" unconditional; the abandoned
     // inference is then exactly the in-flight case the shared gate bounds.
-    const budgetExpired = new Promise<never>((_, reject) => {
+    const stopped = new Promise<never>((_, reject) => {
       ctrl.signal.addEventListener(
         'abort',
         () => {
-          reject(new PhaseBudgetError(phase, budgetMs));
+          // Route by the TAGGED cause here too: this race is what settles a
+          // phase whose seam never returns, so rejecting it as a budget error
+          // regardless would relabel every traffic and shutdown stop as one.
+          const stop = stopOf(ctrl.signal.reason);
+          reject(
+            stop === 'shutdown'
+              ? new PhaseShutdownError(phase)
+              : stop === 'traffic'
+                ? new PhaseAbandonedError(phase)
+                : new PhaseBudgetError(phase, budgetMs),
+          );
         },
         { once: true },
       );
     });
+    this.running = { phase, ctrl };
     try {
       const building = build(async (text: string) => {
+        // Between anchors is the ONLY place either check can act: a dispatched
+        // native call cannot be interrupted, so this is where a gated slot
+        // notices traffic and where an expired budget stops.
+        if (opts.abandonOnTraffic === true) {
+          const last = this.runtime.activity?.lastRequestAttemptAt ?? null;
+          if (last !== null && last >= started) {
+            this.stopRunningPhase('traffic');
+            throw new PhaseAbandonedError(phase);
+          }
+        }
         // Never admit an anchor the budget can no longer pay for.
         const remaining = deadline - Date.now();
         if (ctrl.signal.aborted || remaining <= 0) {
@@ -330,22 +525,25 @@ export class SemanticClassifierService
       });
       // A lost race leaves nobody awaiting `building`; consume its settlement.
       building.catch(() => undefined);
-      const value = await Promise.race([building, budgetExpired]);
+      const value = await Promise.race([building, stopped]);
       return { value, elapsedMs: Date.now() - started };
     } catch (err) {
       // Only OUR tagged reason becomes a budget error; anything else — a
       // degenerate vector, a saturated gate, a runtime fault — keeps its own
       // identity so the boot log names the real cause.
       if (err instanceof PhaseBudgetError) throw err;
-      if (ctrl.signal.aborted && ctrl.signal.reason === PHASE_BUDGET_ABORT) {
-        throw new PhaseBudgetError(phase, budgetMs);
-      }
+      // Route by the TAGGED cause, never by inspecting a message.
+      const stop = ctrl.signal.aborted ? stopOf(ctrl.signal.reason) : null;
+      if (stop === 'shutdown') throw new PhaseShutdownError(phase);
+      if (stop === 'traffic') throw new PhaseAbandonedError(phase);
+      if (stop === 'budget') throw new PhaseBudgetError(phase, budgetMs);
       // The seam refused at its own entry deadline — which, by construction
       // above, IS this phase's deadline. Same cause, so same error.
       if (Date.now() >= deadline) throw new PhaseBudgetError(phase, budgetMs);
       throw err;
     } finally {
       clearTimeout(timer);
+      this.running = null;
     }
   }
 
@@ -369,6 +567,19 @@ export class SemanticClassifierService
         ),
         signal === undefined ? undefined : { signal },
       );
+  }
+
+  /** Embed each class's anchors SEQUENTIALLY (the band discipline) into one
+   * unit-norm centroid per taxonomy class. */
+  private async buildWorkloadCentroids(
+    embedAnchor: (text: string) => Promise<Float32Array>,
+    dims: number,
+  ): Promise<Partial<Record<WorkloadClass, Float32Array>>> {
+    const out: Partial<Record<WorkloadClass, Float32Array>> = {};
+    for (const cls of WORKLOAD_CLASSES) {
+      out[cls] = await this.centroidOf(WORKLOAD_ANCHORS[cls], embedAnchor, dims);
+    }
+    return out;
   }
 
   private async buildBundledCentroids(
@@ -400,7 +611,9 @@ export class SemanticClassifierService
     for (const x of acc) norm += x * x;
     norm = Math.sqrt(norm);
     if (!Number.isFinite(norm) || norm === 0) {
-      throw new Error('bundled anchor centroid is zero or non-finite');
+      // Typed like the validators it precedes: a zero/non-finite accumulator is
+      // the same class of deterministic fault, and recovery must not retry it.
+      throw new CentroidValidationError('bundled anchor centroid is zero or non-finite');
     }
     for (let i = 0; i < dims; i += 1) acc[i] = (acc[i] ?? 0) / norm;
     return acc;

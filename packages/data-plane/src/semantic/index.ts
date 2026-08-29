@@ -1,6 +1,7 @@
 export { stubEmbedder, type Embedder } from './embedder';
 export {
   classifySemantic,
+  CentroidValidationError,
   validateCentroids,
   type SemanticBand,
   type SemanticCentroids,

@@ -323,7 +323,19 @@ async function buildApp(): Promise<{ app: INestApplication; server: App }> {
     .overrideProvider(SEMANTIC_CONFIG)
     .useValue(SEMANTIC_CFG)
     .overrideProvider(SEMANTIC_LOADER)
-    .useValue(() => Promise.resolve({ embedder: controlledEmbedder(), warmupMs: 0 }))
+    .useValue(() => {
+      // The loader's full shape (recover-semantic-centroid-build): both seams,
+      // the bounded factory, and a quiescent activity view — these cases
+      // exercise routing, not recovery.
+      const e = controlledEmbedder();
+      return Promise.resolve({
+        embedder: e,
+        bootEmbedder: e,
+        boundEmbedder: () => e,
+        activity: { inferenceInFlight: false, lastRequestAttemptAt: null, isQuiet: () => true },
+        warmupMs: 0,
+      });
+    })
     .compile();
   const app = moduleRef.createNestApplication<NestExpressApplication>();
   configureApp(app as NestExpressApplication, { NODE_ENV: 'test' }, 'http://localhost:3000');

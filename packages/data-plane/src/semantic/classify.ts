@@ -73,23 +73,50 @@ export function classifySemantic(
 }
 
 /**
+ * A centroid set that does not validate (recover-semantic-centroid-build).
+ *
+ * Typed because the classifier's recovery must tell a DEGENERATE result — the
+ * anchors do not separate under this embedder, a function of inputs fixed for
+ * the process's lifetime — apart from an unknown fault. The first is terminal:
+ * retrying it would very likely fail identically and would bury the one error
+ * an operator must act on. A bare `Error` here made the two indistinguishable
+ * at the catch site, so the split could not be implemented at all.
+ */
+export class CentroidValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CentroidValidationError';
+  }
+}
+
+/**
  * Boot-time centroid validation (D5): unit-norm within tolerance and
  * NON-CANCELLING (near-identical centroids make every score ≈ 0 — a broken
  * anchor set must fail boot, not silently classify everything ambiguous).
  */
 export function validateCentroids(c: SemanticCentroids, dims: number): void {
   const check = (v: Float32Array, name: string): void => {
-    if (v.length !== dims) throw new Error(`${name} centroid has ${String(v.length)} dims, expected ${String(dims)}`);
+    if (v.length !== dims)
+      throw new CentroidValidationError(
+        `${name} centroid has ${String(v.length)} dims, expected ${String(dims)}`,
+      );
     let norm = 0;
     for (const x of v) {
-      if (!Number.isFinite(x)) throw new Error(`${name} centroid contains a non-finite value`);
+      if (!Number.isFinite(x))
+        throw new CentroidValidationError(`${name} centroid contains a non-finite value`);
       norm += x * x;
     }
     norm = Math.sqrt(norm);
-    if (Math.abs(norm - 1) > 1e-3) throw new Error(`${name} centroid is not unit-norm (|v|=${norm.toFixed(6)})`);
+    if (Math.abs(norm - 1) > 1e-3)
+      throw new CentroidValidationError(
+        `${name} centroid is not unit-norm (|v|=${norm.toFixed(6)})`,
+      );
   };
   check(c.high, 'high');
   check(c.low, 'low');
   const sim = clamp1(dot(c.high, c.low));
-  if (sim > 0.999) throw new Error(`centroids nearly cancel (cos=${sim.toFixed(6)}) — anchor sets do not separate`);
+  if (sim > 0.999)
+    throw new CentroidValidationError(
+      `centroids nearly cancel (cos=${sim.toFixed(6)}) — anchor sets do not separate`,
+    );
 }

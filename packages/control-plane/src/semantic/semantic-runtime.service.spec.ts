@@ -24,6 +24,13 @@ const cfg = (modelPath?: string): SemanticConfig => ({
   },
 });
 
+/** A quiescent activity view — these cases exercise load, not recovery. */
+const stubActivity = () => ({
+  inferenceInFlight: false,
+  lastRequestAttemptAt: null,
+  isQuiet: () => true,
+});
+
 const stubLoader =
   (calls: { count: number }): SemanticLoader =>
   (c) => {
@@ -33,6 +40,7 @@ const stubLoader =
       embedder: Object.assign(stubEmbedder(8), { saturated: false }),
       bootEmbedder: Object.assign(stubEmbedder(8), { saturated: false }),
       boundEmbedder: () => Object.assign(stubEmbedder(8), { saturated: false }),
+      activity: stubActivity(),
       warmupMs: 3,
     });
   };

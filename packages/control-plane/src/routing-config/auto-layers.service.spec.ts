@@ -6,8 +6,11 @@ import {
   type RoutingEnv,
 } from '../proxy/routing.config';
 import { AutoLayersService } from './auto-layers.service';
-import type { SemanticClassifierService } from '../semantic/semantic-classifier.service';
+import { SemanticClassifierService } from '../semantic/semantic-classifier.service';
 import type { SemanticRuntimeService } from '../semantic/semantic-runtime.service';
+import { Logger } from '@nestjs/common';
+import { stubEmbedder } from '@polyrouter/data-plane';
+import { EmbedError } from '../semantic/embed-core';
 
 /** add-semantic-routing: the classifier is not ready in these tests. */
 /** A runtime whose embedder readiness is stated independently of the
@@ -370,4 +373,69 @@ describe('AutoLayersService.get — the semantic capability surfaces its two hal
       expect(view.semantic).toBe(c.flag && c.ready);
     });
   }
+});
+
+/**
+ * recover-semantic-centroid-build. The capability the dashboard reads is
+ * derived from the classifier's live state, so a source that recovers must
+ * flip the view without a restart. This composes the REAL AutoLayersService
+ * over a REAL classifier; the view→HTTP leg is covered by the auto-layers e2e.
+ */
+describe('AutoLayersService reflects a recovered classifier', () => {
+  it('reports semanticAvailable false after a failed build and true after recovery', async () => {
+    let failing = true;
+    const base = stubEmbedder(384);
+    const flaky = {
+      id: base.id,
+      dims: base.dims,
+      embed: (text: string, o?: { signal?: AbortSignal }) =>
+        failing ? Promise.reject(new EmbedError('timeout', 'slow host')) : base.embed(text, o),
+    };
+    const runtime = {
+      embedder: flaky,
+      bootEmbedder: flaky,
+      boundEmbedder: () => flaky,
+      activity: { inferenceInFlight: false, lastRequestAttemptAt: null, isQuiet: () => true },
+      whenReady: () => Promise.resolve(flaky),
+      config: {
+        modelPath: '/x',
+        timeoutMs: 50,
+        maxInputChars: 2000,
+        concurrency: 2,
+        highThreshold: 0.15,
+        lowThreshold: 0.15,
+        workload: { margin: 0.05, minSim: 0.2 },
+      },
+    } as unknown as SemanticRuntimeService;
+
+    const classifier = new SemanticClassifierService(runtime);
+    const view = () =>
+      new AutoLayersService(
+        fakePort({ get: null }),
+        cfg('semantic'),
+        RAILS,
+        classifier,
+        runtimeWith(true),
+      ).get(principal);
+
+    jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    jest.useFakeTimers();
+    try {
+      await classifier.onApplicationBootstrap();
+      expect((await view()).semanticAvailable).toBe(false); // the reported defect
+
+      failing = false; // the host stops being contended
+      await jest.advanceTimersByTimeAsync(60_000 + 100); // slot 1
+
+      const after = await view();
+      expect(after.semanticAvailable).toBe(true); // recovered, no restart
+      expect(after.semanticEmbedderReady).toBe(true);
+      expect(after.semanticClassifierReady).toBe(true);
+      classifier.onModuleDestroy();
+    } finally {
+      jest.useRealTimers();
+      jest.restoreAllMocks();
+    }
+  });
 });

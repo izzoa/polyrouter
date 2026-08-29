@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger, type OnApplicationBootstrap } from '@nestjs/common';
 import type { Embedder } from '@polyrouter/data-plane';
 import { SEMANTIC_LOADER, SemanticLoadError, type SemanticLoader } from './onnx-loader';
+import type { ModelActivity } from './model-activity';
 import { SEMANTIC_CONFIG, type SemanticConfig } from './semantic.config';
 
 /**
@@ -19,6 +20,7 @@ export class SemanticRuntimeService implements OnApplicationBootstrap {
    * admission gate, a bound that does not answer to the request rail. */
   private bootLoaded: (Embedder & { readonly saturated: boolean }) | null = null;
   private boundFactory: ((timeoutMs: number) => Embedder) | null = null;
+  private modelActivity: ModelActivity | null = null;
   /** Resolves after this service's own bootstrap completes (the embedder or
    * null) — the classifier (add-semantic-routing) AWAITS this rather than
    * assuming Nest ordered the two bootstrap hooks. Rejects if load fails
@@ -71,6 +73,16 @@ export class SemanticRuntimeService implements OnApplicationBootstrap {
     return this.boundFactory?.(timeoutMs) ?? this.bootLoaded ?? this.loaded;
   }
 
+  /**
+   * Read-only activity over the loaded model (recover-semantic-centroid-build):
+   * whether any inference is outstanding, and when a request-path embed was
+   * last attempted. Null when the module is absent. Deliberately NOT derived
+   * from `saturated`, which answers a different question at width > 1.
+   */
+  get activity(): ModelActivity | null {
+    return this.modelActivity;
+  }
+
   /** Saturation is a visible health signal (D6). */
   get saturated(): boolean {
     return this.loaded?.saturated ?? false;
@@ -95,10 +107,13 @@ export class SemanticRuntimeService implements OnApplicationBootstrap {
       return;
     }
     try {
-      const { embedder, bootEmbedder, boundEmbedder, warmupMs } = await this.loader(this.cfg);
+      const { embedder, bootEmbedder, boundEmbedder, activity, warmupMs } = await this.loader(
+        this.cfg,
+      );
       this.loaded = embedder;
       this.bootLoaded = bootEmbedder;
       this.boundFactory = boundEmbedder ?? null;
+      this.modelActivity = activity ?? null;
       this.logger.log(
         `semantic embedder ready: ${embedder.id} dims=${String(embedder.dims)} warmup=${String(warmupMs)}ms timeout=${String(this.cfg.timeoutMs)}ms concurrency=${String(this.cfg.concurrency)}`,
       );

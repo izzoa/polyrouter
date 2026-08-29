@@ -1,3 +1,4 @@
+import { CentroidValidationError } from './classify';
 import { createHash } from 'node:crypto';
 import {
   SEMANTIC_WORKLOAD_CLASSES,
@@ -127,21 +128,23 @@ export function validateWorkloadCentroids(
 ): asserts centroids is WorkloadCentroids {
   for (const cls of WORKLOAD_CLASSES) {
     const v = centroids[cls];
-    if (v === undefined) throw new Error(`workload centroid ${cls} is missing`);
+    if (v === undefined) throw new CentroidValidationError(`workload centroid ${cls} is missing`);
     if (v.length !== dims) {
-      throw new Error(
+      throw new CentroidValidationError(
         `workload centroid ${cls} has ${String(v.length)} dims, expected ${String(dims)}`,
       );
     }
     let norm = 0;
     for (const x of v) {
       if (!Number.isFinite(x))
-        throw new Error(`workload centroid ${cls} contains a non-finite value`);
+        throw new CentroidValidationError(`workload centroid ${cls} contains a non-finite value`);
       norm += x * x;
     }
     norm = Math.sqrt(norm);
     if (Math.abs(norm - 1) > 1e-3) {
-      throw new Error(`workload centroid ${cls} is not unit-norm (|v|=${norm.toFixed(6)})`);
+      throw new CentroidValidationError(
+        `workload centroid ${cls} is not unit-norm (|v|=${norm.toFixed(6)})`,
+      );
     }
   }
   for (let i = 0; i < WORKLOAD_CLASSES.length; i += 1) {
@@ -150,7 +153,7 @@ export function validateWorkloadCentroids(
       const b = WORKLOAD_CLASSES[j]!;
       const sim = clamp1(dot(centroids[a]!, centroids[b]!));
       if (sim >= 0.999) {
-        throw new Error(
+        throw new CentroidValidationError(
           `workload centroids ${a} and ${b} nearly cancel (cos=${sim.toFixed(6)}) — anchor sets do not separate`,
         );
       }

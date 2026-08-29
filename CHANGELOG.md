@@ -15,6 +15,10 @@ heading is started.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A semantic source that loses its boot build recovers on its own.** v0.16.2 made a failed centroid build rare; it did not make one recoverable — a spent budget left Layer 2 (and research/writing detection) dead until a restart that was a coin flip on the same contention. A retryable failure now arms three slots at +1m/+5m/+15m inside one latched generation, while a degenerate result never retries (its inputs are fixed, so a repeat is near-certain and would bury the real error). Because inference blocks the event loop, the first two slots run only when the model is embed-quiet and abandon if traffic resumes; **the last runs regardless**, so recovery is guaranteed rather than dependent on a quiet window ever arriving. Each slot's outcome is distinguishable in the log, and an exhausted generation says so. No new environment key, no API field, no migration, and no change for an instance whose centroids build at boot.
+
 ## [0.16.2] — 2026-08-29
 
 ### Fixed

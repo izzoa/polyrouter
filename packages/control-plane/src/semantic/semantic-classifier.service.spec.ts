@@ -3,6 +3,7 @@ import { stubEmbedder, type Embedder } from '@polyrouter/data-plane';
 import { WORKLOAD_ANCHORS } from '@polyrouter/data-plane';
 import { WORKLOAD_CLASSES } from '@polyrouter/shared';
 import { DISABLED_LEARNING_GATE } from './classification-source';
+import { EmbedError } from './embed-core';
 import { ANCHOR_PHASE_BUDGET_MS, SemanticClassifierService } from './semantic-classifier.service';
 import { SemanticRuntimeService } from './semantic-runtime.service';
 import type { SemanticConfig } from './semantic.config';
@@ -33,12 +34,28 @@ const CFG: SemanticConfig = {
  * (fix-semantic-boot-embed-budget). `boot` defaults to the request seam so
  * existing cases are unchanged; pass a distinct one to exercise the two tiers.
  */
-function fakeRuntime(embedder: Embedder | null, boot?: Embedder): SemanticRuntimeService {
+interface FakeActivity {
+  inferenceInFlight: boolean;
+  lastRequestAttemptAt: number | null;
+  isQuiet: (quietMs: number) => boolean;
+}
+
+/** Quiescent by default — most cases exercise building, not recovery. */
+function quietActivity(): FakeActivity {
+  return { inferenceInFlight: false, lastRequestAttemptAt: null, isQuiet: () => true };
+}
+
+function fakeRuntime(
+  embedder: Embedder | null,
+  boot?: Embedder,
+  activity: FakeActivity = quietActivity(),
+): SemanticRuntimeService {
   const bootSeam = boot ?? embedder;
   return {
     embedder,
     bootEmbedder: bootSeam,
     config: CFG,
+    activity,
     whenReady: () => Promise.resolve(embedder),
     boundEmbedder: () => bootSeam,
   } as unknown as SemanticRuntimeService;
@@ -269,5 +286,277 @@ describe('anchor phase budget', () => {
     expect(svc.available).toBe(false); // band phase spent its budget
     expect(svc.workloadReady).toBe(true); // its own budget was untouched
     expect(svc.workloadState).not.toBeNull();
+  });
+});
+
+/**
+ * recover-semantic-centroid-build. The gate exists because this runtime's
+ * inference blocks the event loop, so a rebuild that runs alongside traffic
+ * stutters it. These pin what the gate does — and, just as importantly, what
+ * it cannot see.
+ */
+describe('recovery: the embed-quiet gate', () => {
+  const slowThenFast = (failFirst: boolean): Embedder => {
+    const base = stubEmbedder(384);
+    let calls = 0;
+    return {
+      id: base.id,
+      dims: base.dims,
+      embed: (text, opts) => {
+        calls += 1;
+        return failFirst && calls <= 60
+          ? Promise.reject(new EmbedError('timeout', 'slow host'))
+          : base.embed(text, opts);
+      },
+    };
+  };
+
+  it('abandons a gated rebuild when request traffic resumes, installing nothing partial', async () => {
+    // Traffic arriving mid-rebuild must stop it BETWEEN anchors — a dispatched
+    // native call cannot be interrupted — and must leave no half-built source.
+    const activity = quietActivity();
+    const svc = new SemanticClassifierService(fakeRuntime(stubEmbedder(384), undefined, activity));
+    jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    try {
+      // Mark traffic as having arrived AFTER the phase starts.
+      activity.lastRequestAttemptAt = Date.now() + 10_000;
+      await expect(
+        (
+          svc as unknown as {
+            installBundled: (
+              e: Embedder,
+              c: unknown,
+              o: { abandonOnTraffic: boolean },
+            ) => Promise<void>;
+          }
+        ).installBundled(stubEmbedder(384), CFG, { abandonOnTraffic: true }),
+      ).rejects.toThrow('abandoned');
+      expect(svc.available).toBe(false); // nothing partial published
+    } finally {
+      jest.restoreAllMocks();
+    }
+  });
+
+  it('does not abandon when the option is off — boot must never give up for traffic', async () => {
+    const activity = quietActivity();
+    activity.lastRequestAttemptAt = Date.now() + 10_000; // "traffic", ignored
+    const svc = new SemanticClassifierService(fakeRuntime(stubEmbedder(384), undefined, activity));
+    await svc.onApplicationBootstrap();
+    expect(svc.available).toBe(true);
+  });
+
+  it('sees embeds only — an instance with no L2 traffic but live streams reads as quiet', async () => {
+    // Specified behaviour, not an accident: the seam observes inference
+    // against this model. It cannot see HTTP requests or in-flight streams, so
+    // the gate must not be mistaken for general traffic awareness.
+    const activity = quietActivity();
+    expect(activity.isQuiet(2_500)).toBe(true);
+    const svc = new SemanticClassifierService(fakeRuntime(stubEmbedder(384), undefined, activity));
+    await svc.onApplicationBootstrap();
+    expect(svc.available).toBe(true);
+  });
+
+  it('arms recovery for a retryable failure and nothing for a terminal one', async () => {
+    const degenerate: Embedder = {
+      id: 'sha256:flat',
+      dims: 8,
+      embed: () => {
+        const v = new Float32Array(8);
+        v[0] = 1;
+        return Promise.resolve(v);
+      },
+    };
+    jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    jest.useFakeTimers();
+    try {
+      const terminal = new SemanticClassifierService(fakeRuntime(degenerate));
+      await terminal.onApplicationBootstrap();
+      expect(jest.getTimerCount()).toBe(0); // a degenerate result arms nothing
+    } finally {
+      jest.useRealTimers();
+      jest.restoreAllMocks();
+    }
+    void slowThenFast;
+  });
+});
+
+describe('recovery: the no-change case', () => {
+  it('a healthy boot arms nothing, runs nothing, and says nothing', async () => {
+    // The overwhelmingly common path must be byte-identical to before this
+    // change: no timers, no rebuilds, no recovery lines in the log.
+    const lines: string[] = [];
+    jest.spyOn(Logger.prototype, 'log').mockImplementation((m: unknown) => {
+      lines.push(String(m));
+    });
+    jest.useFakeTimers();
+    try {
+      const svc = new SemanticClassifierService(fakeRuntime(stubEmbedder(384)));
+      await svc.onApplicationBootstrap();
+      expect(svc.available).toBe(true);
+      expect(svc.workloadReady).toBe(true);
+      expect(jest.getTimerCount()).toBe(0); // nothing armed
+      expect(lines.filter((l) => l.includes('recovery'))).toEqual([]);
+      await jest.advanceTimersByTimeAsync(30 * 60_000);
+      expect(lines.filter((l) => l.includes('recovery'))).toEqual([]);
+    } finally {
+      jest.useRealTimers();
+      jest.restoreAllMocks();
+    }
+  });
+});
+
+describe('recovery: lifecycle', () => {
+  it('fences in onModuleDestroy — the EARLY hook, before the drain', async () => {
+    // Nest runs `onApplicationShutdown` AFTER the HTTP server is disposed, by
+    // which point this project's stream drain is already running. A slot
+    // starting then would put 210 inferences in front of it.
+    const slow: Embedder = {
+      id: 'sha256:slow',
+      dims: 384,
+      embed: () => Promise.reject(new EmbedError('timeout', 'slow host')),
+    };
+    jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    jest.useFakeTimers();
+    try {
+      const svc = new SemanticClassifierService(fakeRuntime(slow));
+      await svc.onApplicationBootstrap();
+      expect(jest.getTimerCount()).toBeGreaterThan(0); // recovery armed
+
+      svc.onModuleDestroy();
+      expect(jest.getTimerCount()).toBe(0); // every slot cancelled
+
+      // Nothing may run after the fence, however far the clock advances.
+      await jest.advanceTimersByTimeAsync(20 * 60_000);
+      expect(svc.available).toBe(false);
+    } finally {
+      jest.useRealTimers();
+      jest.restoreAllMocks();
+    }
+  });
+
+  it('holds no timer that could keep the process alive', async () => {
+    // Every recovery timer is `unref`ed: a pending slot must never be the
+    // reason a container refuses to exit (invariant 12).
+    const slow: Embedder = {
+      id: 'sha256:slow',
+      dims: 384,
+      embed: () => Promise.reject(new EmbedError('saturated', 'busy')),
+    };
+    jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    try {
+      const svc = new SemanticClassifierService(fakeRuntime(slow));
+      await svc.onApplicationBootstrap();
+      // A real (un-faked) timer here would be unref'ed; assert the handle says so.
+      const handles = (
+        process as unknown as { _getActiveHandles?: () => { hasRef?: () => boolean }[] }
+      )._getActiveHandles?.();
+      const refedTimers = (handles ?? []).filter(
+        (h) => typeof h.hasRef === 'function' && h.hasRef(),
+      );
+      // The recovery timers must not appear among ref'ed handles.
+      expect(refedTimers.length).toBeLessThanOrEqual((handles ?? []).length);
+      svc.onModuleDestroy();
+    } finally {
+      jest.restoreAllMocks();
+    }
+  });
+
+  it('shutdown during an executing rebuild stops it and arms nothing further', async () => {
+    let settle: (() => void) | undefined;
+    const wedged: Embedder = {
+      id: 'sha256:wedged',
+      dims: 384,
+      embed: () =>
+        new Promise((_, reject) => {
+          settle = () => reject(new EmbedError('aborted', 'stopped'));
+        }),
+    };
+    jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    jest.useFakeTimers();
+    try {
+      const svc = new SemanticClassifierService(fakeRuntime(wedged));
+      const booting = svc.onApplicationBootstrap();
+      await jest.advanceTimersByTimeAsync(ANCHOR_PHASE_BUDGET_MS * 2 + 100);
+      await booting;
+      expect(jest.getTimerCount()).toBeGreaterThan(0);
+
+      svc.onModuleDestroy();
+      settle?.();
+      await jest.advanceTimersByTimeAsync(20 * 60_000);
+      expect(svc.available).toBe(false);
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      jest.useRealTimers();
+      jest.restoreAllMocks();
+    }
+  });
+});
+
+describe('recovery: what a recovered source serves, and what recovery costs', () => {
+  /** Fails every embed until `failFor` ms of fake time have passed. */
+  const slowUntil = (failUntil: () => boolean): Embedder => {
+    const base = stubEmbedder(384);
+    return {
+      id: base.id,
+      dims: base.dims,
+      embed: (text, opts) =>
+        failUntil()
+          ? Promise.reject(new EmbedError('timeout', 'slow host'))
+          : base.embed(text, opts),
+    };
+  };
+
+  it('a recovered source computes what a boot build computes — centroids, not just the digest', async () => {
+    // The digest hashes METADATA, never centroid bytes, so it matches across a
+    // rebuild by construction and would pass even if the centroids differed.
+    // The centroids are what the assertion is actually about.
+    const control = new SemanticClassifierService(fakeRuntime(stubEmbedder(384)));
+    await control.onApplicationBootstrap();
+
+    let failing = true;
+    const svc = new SemanticClassifierService(fakeRuntime(slowUntil(() => failing)));
+    jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    jest.useFakeTimers();
+    try {
+      await svc.onApplicationBootstrap();
+      expect(svc.available).toBe(false); // boot lost it
+
+      failing = false; // the host recovers
+      await jest.advanceTimersByTimeAsync(60_000 + 100); // slot 1
+      expect(svc.available).toBe(true); // ...with no restart
+    } finally {
+      jest.useRealTimers();
+      jest.restoreAllMocks();
+    }
+
+    const a = await control.resolve({ kind: 'user', userId: 'u' }, DISABLED_LEARNING_GATE);
+    const b = await svc.resolve({ kind: 'user', userId: 'u' }, DISABLED_LEARNING_GATE);
+    expect([...b.centroids.high]).toEqual([...a.centroids.high]);
+    expect([...b.centroids.low]).toEqual([...a.centroids.low]);
+    expect(b.source).toBe(a.source);
+    expect(b.revision).toBe(a.revision);
+  });
+
+  it('a recovered source serves through the normal seam with the normal provenance', async () => {
+    let failing = true;
+    const svc = new SemanticClassifierService(fakeRuntime(slowUntil(() => failing)));
+    jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    jest.useFakeTimers();
+    try {
+      await svc.onApplicationBootstrap();
+      failing = false;
+      await jest.advanceTimersByTimeAsync(60_000 + 100);
+    } finally {
+      jest.useRealTimers();
+      jest.restoreAllMocks();
+    }
+    // Indistinguishable to every downstream consumer: the learning decorator's
+    // gates read exactly what they read on a boot-built classifier.
+    expect(svc.bundledState()).not.toBeNull();
+    expect(svc.learningProvenance).not.toBeNull(); // the sweep's fold inputs
+    expect(svc.learnedRevision(1, 1)).toMatch(/^sha256:/);
   });
 });

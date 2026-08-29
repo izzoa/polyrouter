@@ -1,5 +1,22 @@
 # @polyrouter/control-plane
 
+## 0.15.3
+
+### Patch Changes
+
+- 0925190: **A semantic source that loses its boot build now recovers on its own.** v0.16.2 made a failed centroid build rare by giving the anchor phases their own budget; it did not make one recoverable. A phase that spent its budget set its source to null for the life of the process — Layer 2 (and, for the workload phase, research/writing detection) stayed dead until someone restarted the container, and the restart was a coin flip on the same contention that caused the failure. Boot is exactly when a host is most contended, so the one moment the build runs is the one moment it is most likely to lose.
+
+  A phase that fails for a **retryable** cause — a spent budget, an embed timeout, an admission saturation — now arms three scheduled slots at +1m/+5m/+15m inside one latched generation. A **degenerate** result never retries: its inputs are fixed for the process's lifetime, so a repeat is near-certain and would bury the one error an operator must act on. That split is exhaustive over the embed-failure kinds and enforced at compile time, every validation path raises a typed error rather than a bare `Error`, and anything unclassified is treated as terminal — the safe direction.
+
+  Because this runtime executes inference **synchronously on the event loop**, no admission rule can protect live traffic from a rebuild's occupancy; the only lever is whether it runs. So the first two slots start only when the model is embed-quiet and abandon — installing nothing partial — if traffic resumes, while **the last slot runs regardless**. That is what makes recovery a guarantee rather than a hope: eligibility for the quiet gate turns on arrival spacing, not load, so a lightly loaded instance with steady spacing would otherwise never qualify. The cost is bounded but not free: up to three phase executions per failed source, one of them unconditional.
+
+  What recovery does **not** promise, stated rather than implied: no request ever awaits a rebuild and none fails because of one, but a dispatched native slice still delays whatever is behind it, and a rebuild taking admission on the shared gate can make a concurrent request skip Layer 2 — including a band classification refused during a workload rebuild. Each slot's outcome is distinguishable in the log (`closed-unrun`, `ran-abandoned`, `ran-failed`, succeeded), and an exhausted generation says so rather than leaving an operator to infer from silence whether anything is still being tried.
+
+  No new environment key, no API field, no migration, and no change at all for an instance whose centroids build at boot.
+
+- Updated dependencies [0925190]
+  - @polyrouter/data-plane@0.9.1
+
 ## 0.15.2
 
 ### Patch Changes

@@ -1,5 +1,11 @@
 # @polyrouter/frontend
 
+## 0.16.3
+
+### Patch Changes
+
+- **Version tracks the release.** No frontend code changed in this release — the bump keeps `__APP_VERSION__`, the version the sidebar and Settings page display, equal to the released image tag. The fix is in the control plane and data plane: a semantic centroid source that loses its boot build now recovers on its own instead of staying dead until a restart.
+
 ## 0.16.2
 
 ### Patch Changes

@@ -15,9 +15,18 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.16.3] — 2026-08-29
+
 ### Fixed
 
 - **A semantic source that loses its boot build recovers on its own.** v0.16.2 made a failed centroid build rare; it did not make one recoverable — a spent budget left Layer 2 (and research/writing detection) dead until a restart that was a coin flip on the same contention. A retryable failure now arms three slots at +1m/+5m/+15m inside one latched generation, while a degenerate result never retries (its inputs are fixed, so a repeat is near-certain and would bury the real error). Because inference blocks the event loop, the first two slots run only when the model is embed-quiet and abandon if traffic resumes; **the last runs regardless**, so recovery is guaranteed rather than dependent on a quiet window ever arriving. Each slot's outcome is distinguishable in the log, and an exhausted generation says so. No new environment key, no API field, no migration, and no change for an instance whose centroids build at boot.
+
+### Upgrade notes
+
+- **Drop-in: no migrations, no new or changed environment keys, and no behaviour change at all for an instance whose centroids build at boot** — it arms no timers, runs no rebuilds, and logs nothing new. Pull `ghcr.io/izzoa/polyrouter:0.16.3` and restart.
+- **New log lines appear only after a failed build.** `semantic <source> recovery slot N: …` reports each scheduled slot's outcome — `closed unrun` (the model was not embed-quiet), `abandoned` (traffic resumed mid-rebuild), or `failed` — and an exhausted generation says so explicitly rather than going quiet. If you see recovery succeed, `semanticAvailable` flips to true with no restart.
+- **Recovery is per-process, by design.** The missing state lives in one process's memory, so each degraded replica heals itself; a queued job could be picked up by a healthy replica and do nothing. This shortens per-replica divergence but does not eliminate it — an exhausted generation leaves it until a restart.
+- **The costs are disclosed, not zero.** Up to three phase executions per failed source (one unconditional). Because inference runs synchronously on the event loop, a dispatched anchor slice delays whatever is behind it, and a rebuild holding shared admission can make a concurrent request skip Layer 2 for the duration — including a band classification refused during a workload rebuild. No request ever waits on a rebuild or fails because of one.
 
 ## [0.16.2] — 2026-08-29
 
@@ -848,7 +857,8 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.16.2...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.16.3...HEAD
+[0.16.3]: https://github.com/izzoa/polyrouter/releases/tag/v0.16.3
 [0.16.2]: https://github.com/izzoa/polyrouter/releases/tag/v0.16.2
 [0.16.1]: https://github.com/izzoa/polyrouter/releases/tag/v0.16.1
 [0.16.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.16.0

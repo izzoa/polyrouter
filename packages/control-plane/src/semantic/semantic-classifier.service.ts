@@ -62,6 +62,34 @@ export interface SemanticWorkloadState {
  * not merely a loaded embedder. Bundled-only source in this change; change 3
  * decorates the `ClassificationSourceProvider` seam with learned state.
  */
+/**
+ * Per-phase anchor-build budget (fix-semantic-boot-embed-budget). PROVISIONAL
+ * and validated by measurement, not derived: the published image's healthcheck
+ * grace is ~70-80s, while the KNOWN startup bound (unbounded session creation +
+ * up to `BOOT_EMBED_TIMEOUT_MS` warmup + both phases) does not close on paper.
+ * 20s is ~4-5× the observed 4s/5s per phase and keeps a typical slow boot well
+ * inside the probe window. Internal on purpose — the defect this fixes was an
+ * operator needing to know a knob to get advertised default behaviour, and a
+ * second knob is not the cure.
+ */
+export const ANCHOR_PHASE_BUDGET_MS = 20_000;
+
+/** The phase budget ran out. Distinct from a degenerate-anchor failure so the
+ * boot log names a host-speed fault, whose remedy is nothing like a bad bundle. */
+export class PhaseBudgetError extends Error {
+  constructor(
+    readonly phase: string,
+    readonly budgetMs: number,
+  ) {
+    super(`${phase} anchor build exceeded its ${String(budgetMs)}ms boot budget`);
+    this.name = 'PhaseBudgetError';
+  }
+}
+
+/** The abort reason the phase timer raises — tagged so ONLY this cause becomes
+ * a `PhaseBudgetError`; a caller's own abort stays what it was. */
+const PHASE_BUDGET_ABORT = Symbol('polyrouter:phase-budget');
+
 @Injectable()
 export class SemanticClassifierService
   implements OnApplicationBootstrap, ClassificationSourceProvider
@@ -138,12 +166,23 @@ export class SemanticClassifierService
     // smart-layer quality fault must degrade to Layer-2-off (invariant 1),
     // never take down an operator's instance. `available` stays false, so the
     // capability honestly reports the incomplete classifier (clink r1 High-4).
-    const embedder = await this.runtime.whenReady();
-    if (embedder === null) return; // module absent — nothing to build
+    const requestSeam = await this.runtime.whenReady();
+    if (requestSeam === null) return; // module absent — nothing to build
+
+    // Anchor building runs on the BOOT seam (fix-semantic-boot-embed-budget):
+    // no request waits on these embeds, so `SEMANTIC_TIMEOUT_MS` — the rail
+    // that exists so no request stalls — must not decide whether the whole
+    // capability exists. Same session, same admission gate, same id/dims.
+    const embedder = this.runtime.bootEmbedder ?? requestSeam;
 
     const cfg = this.runtime.config;
     try {
-      const centroids = await this.buildBundledCentroids(embedder, cfg);
+      const { value: centroids, elapsedMs } = await this.runPhase(
+        'bundled',
+        embedder,
+        cfg,
+        (embed) => this.buildBundledCentroids(embed, embedder.dims),
+      );
       validateCentroids(centroids, embedder.dims);
       this.revisionInputs = {
         embedderId: embedder.id,
@@ -169,13 +208,20 @@ export class SemanticClassifierService
         highThreshold: cfg.highThreshold,
         lowThreshold: cfg.lowThreshold,
       };
+      // Elapsed on the SUCCESS path so an operator sees headroom BEFORE it is
+      // an outage (the reporting instance ran at ~1x margin and had no way to
+      // know). Timings only — never anchor text, never vector values.
       this.logger.log(
-        `semantic classifier ready: anchors=${ANCHOR_SET_ID} high=${String(HIGH_ANCHORS.length)} low=${String(LOW_ANCHORS.length)} revision=${revision}`,
+        `semantic classifier ready: anchors=${ANCHOR_SET_ID} high=${String(HIGH_ANCHORS.length)} low=${String(LOW_ANCHORS.length)} revision=${revision} built=${String(elapsedMs)}ms/${String(ANCHOR_PHASE_BUDGET_MS)}ms`,
       );
     } catch (err) {
       this.state = null;
+      // Name the BUDGET when that is the cause: a host-speed fault and a bad
+      // bundle have nothing in common as remedies.
       this.logger.error(
-        `semantic classifier UNAVAILABLE — bundled centroids did not build/validate under embedder ${embedder.id} (${err instanceof Error ? err.message : 'unknown'}); Layer 2 is off, all other routing is unaffected`,
+        err instanceof PhaseBudgetError
+          ? `semantic classifier UNAVAILABLE — ${err.message} under embedder ${embedder.id}; the host is slower than the anchor budget allows, the bundle is fine; Layer 2 is off, all other routing is unaffected`
+          : `semantic classifier UNAVAILABLE — bundled centroids did not build/validate under embedder ${embedder.id} (${err instanceof Error ? err.message : 'unknown'}); Layer 2 is off, all other routing is unaffected`,
       );
     }
     // The WORKLOAD source builds in its OWN boundary (add-semantic-workloads D4,
@@ -183,7 +229,12 @@ export class SemanticClassifierService
     // revision — disables ONLY the workload source with a loud line; the band
     // classifier keeps exactly the state the block above produced.
     try {
-      const centroids = await this.buildWorkloadCentroids(embedder, cfg);
+      const { value: centroids, elapsedMs } = await this.runPhase(
+        'workload',
+        embedder,
+        cfg,
+        (embed) => this.buildWorkloadCentroids(embed, embedder.dims),
+      );
       validateWorkloadCentroids(centroids, embedder.dims);
       const rails: SemanticWorkloadRails = {
         margin: cfg.workload.margin,
@@ -199,12 +250,14 @@ export class SemanticClassifierService
       });
       this.workload = { centroids, rails, revision };
       this.logger.log(
-        `semantic workload source ready: anchors=${WORKLOAD_ANCHOR_SET_ID} classes=${String(WORKLOAD_CLASSES.length)}×${String(WORKLOAD_ANCHORS.code.length)} margin=${String(rails.margin)} minSim=${String(rails.minSim)} revision=${revision}`,
+        `semantic workload source ready: anchors=${WORKLOAD_ANCHOR_SET_ID} classes=${String(WORKLOAD_CLASSES.length)}×${String(WORKLOAD_ANCHORS.code.length)} margin=${String(rails.margin)} minSim=${String(rails.minSim)} revision=${revision} built=${String(elapsedMs)}ms/${String(ANCHOR_PHASE_BUDGET_MS)}ms`,
       );
     } catch (err) {
       this.workload = null;
       this.logger.error(
-        `semantic workload source UNAVAILABLE — workload centroids did not build/validate under embedder ${embedder.id} (${err instanceof Error ? err.message : 'unknown'}) — research/writing stay reserved; Layer-2 band classification unaffected`,
+        err instanceof PhaseBudgetError
+          ? `semantic workload source UNAVAILABLE — ${err.message} under embedder ${embedder.id}; the host is slower than the anchor budget allows — research/writing stay reserved; Layer-2 band classification unaffected`
+          : `semantic workload source UNAVAILABLE — workload centroids did not build/validate under embedder ${embedder.id} (${err instanceof Error ? err.message : 'unknown'}) — research/writing stay reserved; Layer-2 band classification unaffected`,
       );
     }
   }
@@ -212,15 +265,88 @@ export class SemanticClassifierService
   /** Embed each class's anchors SEQUENTIALLY (the band discipline) into one
    * unit-norm centroid per taxonomy class. */
   private async buildWorkloadCentroids(
-    embedder: Embedder,
-    cfg: SemanticConfig,
+    embedAnchor: (text: string) => Promise<Float32Array>,
+    dims: number,
   ): Promise<Partial<Record<WorkloadClass, Float32Array>>> {
-    const embedAnchor = this.anchorEmbedder(embedder, cfg);
     const out: Partial<Record<WorkloadClass, Float32Array>> = {};
     for (const cls of WORKLOAD_CLASSES) {
-      out[cls] = await this.centroidOf(WORKLOAD_ANCHORS[cls], embedAnchor, embedder.dims);
+      out[cls] = await this.centroidOf(WORKLOAD_ANCHORS[cls], embedAnchor, dims);
     }
     return out;
+  }
+
+  /**
+   * Run one anchor phase under a TOTAL wall-clock budget. The budget bounds the
+   * PHASE, not each embed: `onApplicationBootstrap` blocks `listen()`, so a
+   * per-embed bound would trade a lost capability for a boot hang. Enforcement
+   * is CANCELLATION — a tagged `AbortController` — never a shrinking per-embed
+   * timeout, which would still admit one more inference through the seam's
+   * `Math.max(1, …)` floor. The remaining budget is checked before admitting
+   * the next anchor, and the seam re-checks the signal immediately before
+   * dispatch, so an expired phase starts no native work.
+   */
+  private async runPhase<T>(
+    phase: string,
+    embedder: Embedder,
+    cfg: SemanticConfig,
+    build: (embed: (text: string) => Promise<Float32Array>) => Promise<T>,
+  ): Promise<{ value: T; elapsedMs: number }> {
+    const budgetMs = ANCHOR_PHASE_BUDGET_MS;
+    const ctrl = new AbortController();
+    const deadline = Date.now() + budgetMs;
+    const started = Date.now();
+    const timer = setTimeout(() => {
+      ctrl.abort(PHASE_BUDGET_ABORT);
+    }, budgetMs);
+    timer.unref();
+    // The phase is bounded by its OWN timer, not by the seam's cooperation.
+    // A seam that ignores the abort would otherwise hang `onApplicationBootstrap`
+    // — and that blocks `listen()`, so a dead instance would be the cost of a
+    // wedged embed. Racing makes "boot completes" unconditional; the abandoned
+    // inference is then exactly the in-flight case the shared gate bounds.
+    const budgetExpired = new Promise<never>((_, reject) => {
+      ctrl.signal.addEventListener(
+        'abort',
+        () => {
+          reject(new PhaseBudgetError(phase, budgetMs));
+        },
+        { once: true },
+      );
+    });
+    try {
+      const building = build(async (text: string) => {
+        // Never admit an anchor the budget can no longer pay for.
+        const remaining = deadline - Date.now();
+        if (ctrl.signal.aborted || remaining <= 0) {
+          throw new PhaseBudgetError(phase, budgetMs);
+        }
+        // A seam bounded by the budget REMAINING, so its entry deadline IS the
+        // phase deadline: the pipeline's own before-dispatch check then refuses
+        // to start an inference whose tokenizing crossed the line — a window a
+        // signal cannot cover, because a timer callback cannot interrupt
+        // synchronous work. Same session, same admission gate.
+        const seam = this.runtime.boundEmbedder(remaining) ?? embedder;
+        return this.anchorEmbedder(seam, cfg, ctrl.signal)(text);
+      });
+      // A lost race leaves nobody awaiting `building`; consume its settlement.
+      building.catch(() => undefined);
+      const value = await Promise.race([building, budgetExpired]);
+      return { value, elapsedMs: Date.now() - started };
+    } catch (err) {
+      // Only OUR tagged reason becomes a budget error; anything else — a
+      // degenerate vector, a saturated gate, a runtime fault — keeps its own
+      // identity so the boot log names the real cause.
+      if (err instanceof PhaseBudgetError) throw err;
+      if (ctrl.signal.aborted && ctrl.signal.reason === PHASE_BUDGET_ABORT) {
+        throw new PhaseBudgetError(phase, budgetMs);
+      }
+      // The seam refused at its own entry deadline — which, by construction
+      // above, IS this phase's deadline. Same cause, so same error.
+      if (Date.now() >= deadline) throw new PhaseBudgetError(phase, budgetMs);
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /** Serialize an anchor exactly as a live request is (the SAME extractor,
@@ -228,6 +354,7 @@ export class SemanticClassifierService
   private anchorEmbedder(
     embedder: Embedder,
     cfg: SemanticConfig,
+    signal?: AbortSignal,
   ): (text: string) => Promise<Float32Array> {
     const caps = { totalChars: cfg.maxInputChars };
     return (text: string): Promise<Float32Array> =>
@@ -240,19 +367,19 @@ export class SemanticClassifierService
           },
           caps,
         ),
+        signal === undefined ? undefined : { signal },
       );
   }
 
   private async buildBundledCentroids(
-    embedder: Embedder,
-    cfg: SemanticConfig,
+    embedAnchor: (text: string) => Promise<Float32Array>,
+    dims: number,
   ): Promise<SemanticCentroids> {
-    const embedAnchor = this.anchorEmbedder(embedder, cfg);
     // Build the two bands SEQUENTIALLY (clink r2 Med-1): concurrent chains
     // would issue two embeds at once and deterministically saturate a
     // `SEMANTIC_CONCURRENCY=1` no-queue embedder, disabling the classifier.
-    const high = await this.centroidOf(HIGH_ANCHORS, embedAnchor, embedder.dims);
-    const low = await this.centroidOf(LOW_ANCHORS, embedAnchor, embedder.dims);
+    const high = await this.centroidOf(HIGH_ANCHORS, embedAnchor, dims);
+    const low = await this.centroidOf(LOW_ANCHORS, embedAnchor, dims);
     return { high, low };
   }
 

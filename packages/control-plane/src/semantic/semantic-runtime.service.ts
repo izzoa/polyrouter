@@ -15,6 +15,10 @@ import { SEMANTIC_CONFIG, type SemanticConfig } from './semantic.config';
 export class SemanticRuntimeService implements OnApplicationBootstrap {
   private readonly logger = new Logger('SemanticRuntime');
   private loaded: (Embedder & { readonly saturated: boolean }) | null = null;
+  /** The BOOT-path seam (fix-semantic-boot-embed-budget) — same session, same
+   * admission gate, a bound that does not answer to the request rail. */
+  private bootLoaded: (Embedder & { readonly saturated: boolean }) | null = null;
+  private boundFactory: ((timeoutMs: number) => Embedder) | null = null;
   /** Resolves after this service's own bootstrap completes (the embedder or
    * null) — the classifier (add-semantic-routing) AWAITS this rather than
    * assuming Nest ordered the two bootstrap hooks. Rejects if load fails
@@ -41,9 +45,30 @@ export class SemanticRuntimeService implements OnApplicationBootstrap {
     return this.loaded !== null;
   }
 
-  /** The seam consumers use (change 2's classifier); null = unavailable. */
+  /** The seam REQUEST-path consumers use; null = unavailable. Bounded by
+   * `SEMANTIC_TIMEOUT_MS` — never hand this to boot-time work. */
   get embedder(): Embedder | null {
     return this.loaded;
+  }
+
+  /** The seam BOOT-time consumers use (fix-semantic-boot-embed-budget): the
+   * anchor builds run on this so a host slower than the request rail does not
+   * lose the whole capability. Null exactly when the module is absent or the
+   * load failed (which also fails boot). Deliberately named so reaching for it
+   * on a request path reads wrong. */
+  get bootEmbedder(): Embedder | null {
+    return this.bootLoaded;
+  }
+
+  /**
+   * A boot-path seam bounded by `timeoutMs` over the same session and gate.
+   * Boot work with a TOTAL budget passes the budget REMAINING, so the seam's
+   * entry deadline IS the phase deadline and the pipeline refuses to dispatch
+   * once it passes. Falls back to the fixed boot seam when the loader predates
+   * the factory. Null exactly when the module is absent.
+   */
+  boundEmbedder(timeoutMs: number): Embedder | null {
+    return this.boundFactory?.(timeoutMs) ?? this.bootLoaded ?? this.loaded;
   }
 
   /** Saturation is a visible health signal (D6). */
@@ -70,8 +95,10 @@ export class SemanticRuntimeService implements OnApplicationBootstrap {
       return;
     }
     try {
-      const { embedder, warmupMs } = await this.loader(this.cfg);
+      const { embedder, bootEmbedder, boundEmbedder, warmupMs } = await this.loader(this.cfg);
       this.loaded = embedder;
+      this.bootLoaded = bootEmbedder;
+      this.boundFactory = boundEmbedder ?? null;
       this.logger.log(
         `semantic embedder ready: ${embedder.id} dims=${String(embedder.dims)} warmup=${String(warmupMs)}ms timeout=${String(this.cfg.timeoutMs)}ms concurrency=${String(this.cfg.concurrency)}`,
       );

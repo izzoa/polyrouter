@@ -7,8 +7,15 @@ import {
 } from '../proxy/routing.config';
 import { AutoLayersService } from './auto-layers.service';
 import type { SemanticClassifierService } from '../semantic/semantic-classifier.service';
+import type { SemanticRuntimeService } from '../semantic/semantic-runtime.service';
 
 /** add-semantic-routing: the classifier is not ready in these tests. */
+/** A runtime whose embedder readiness is stated independently of the
+ * classifier's — the whole point of the new half. `classifier ⇒ embedder`
+ * always holds, so `embedderReady` defaults to the classifier's own state. */
+const runtimeWith = (embedderReady: boolean): SemanticRuntimeService =>
+  ({ available: embedderReady }) as unknown as SemanticRuntimeService;
+
 const SEMANTIC_OFF = { available: false } as SemanticClassifierService;
 
 /** Fixture: a settings value with the calibration fields at their defaults
@@ -169,6 +176,7 @@ describe('AutoLayersService.get — effective = capability × preference', () =>
         cfg(c.layers),
         RAILS,
         SEMANTIC_OFF,
+        runtimeWith(false),
       );
       const view = await svc.get(principal);
       expect(view).toEqual({
@@ -180,6 +188,7 @@ describe('AutoLayersService.get — effective = capability × preference', () =>
         semanticAvailable: false,
         semanticWorkloadAvailable: false,
         semanticFlagEnabled: false,
+        semanticEmbedderReady: false,
         semanticClassifierReady: false,
         semanticLearning: false,
         semanticLearningAvailable: false,
@@ -197,6 +206,7 @@ describe('AutoLayersService.set — normalizes cascade → structural', () => {
       cfg('cascade'),
       RAILS,
       SEMANTIC_OFF,
+      runtimeWith(false),
     );
     const view = await svc.set(principal, { structural: false, cascade: true });
     expect(stored).toEqual({ structuralEnabled: true, cascadeEnabled: true });
@@ -210,6 +220,7 @@ describe('AutoLayersService.set — normalizes cascade → structural', () => {
       semanticAvailable: false,
       semanticWorkloadAvailable: false,
       semanticFlagEnabled: false,
+      semanticEmbedderReady: false,
       semanticClassifierReady: false,
       semanticLearning: false,
       semanticLearningAvailable: false,
@@ -224,6 +235,7 @@ describe('AutoLayersService.set — normalizes cascade → structural', () => {
       cfg('cascade'),
       RAILS,
       SEMANTIC_OFF,
+      runtimeWith(false),
     );
     await svc.set(principal, { structural: false, cascade: false });
     expect(stored).toEqual({ structuralEnabled: false, cascadeEnabled: false });
@@ -236,6 +248,7 @@ describe('AutoLayersService.set — normalizes cascade → structural', () => {
       cfg('structural'), // cascade not available instance-wide
       RAILS,
       SEMANTIC_OFF,
+      runtimeWith(false),
     );
     const view = await svc.set(principal, { structural: true, cascade: true });
     expect(stored).toEqual({ structuralEnabled: true, cascadeEnabled: true });
@@ -249,6 +262,7 @@ describe('AutoLayersService.set — normalizes cascade → structural', () => {
       semanticAvailable: false,
       semanticWorkloadAvailable: false,
       semanticFlagEnabled: false,
+      semanticEmbedderReady: false,
       semanticClassifierReady: false,
       semanticLearning: false,
       semanticLearningAvailable: false,
@@ -288,6 +302,25 @@ describe('AutoLayersService.get — the semantic capability surfaces its two hal
       flag: false,
       ready: false,
     },
+    // fix-semantic-boot-embed-budget: the MODEL half is itself a conjunction,
+    // so these two are distinct states the old shape could not tell apart —
+    // the second is exactly the reported field defect.
+    {
+      name: 'embedder loaded, centroids failed, flag ON (the reported defect)',
+      layers: 'semantic',
+      classifier: SEMANTIC_OFF,
+      embedder: true,
+      flag: true,
+      ready: false,
+    },
+    {
+      name: 'embedder loaded, centroids failed, flag OFF (both halves unmet)',
+      layers: 'structural',
+      classifier: SEMANTIC_OFF,
+      embedder: true,
+      flag: false,
+      ready: false,
+    },
     // add-semantic-workloads: the workload source is its own capability — band ready
     // with the workload centroids failed must NOT advertise it; both ready does.
     {
@@ -313,10 +346,16 @@ describe('AutoLayersService.get — the semantic capability surfaces its two hal
         cfg(c.layers),
         RAILS,
         c.classifier,
+        runtimeWith((c as { embedder?: boolean }).embedder ?? c.ready),
       );
       const view = await svc.get(principal);
       expect(view.semanticFlagEnabled).toBe(c.flag);
       expect(view.semanticClassifierReady).toBe(c.ready);
+      const embedderReady = (c as { embedder?: boolean }).embedder ?? c.ready;
+      expect(view.semanticEmbedderReady).toBe(embedderReady);
+      // Centroids cannot exist without the embedder that built them: only SIX
+      // of the eight triples are reachable, and this is why.
+      if (view.semanticClassifierReady) expect(view.semanticEmbedderReady).toBe(true);
       // The preserved conjunction — the halves can never disagree with it.
       expect(view.semanticAvailable).toBe(c.flag && c.ready);
       expect(view.semanticLearningAvailable).toBe(view.semanticAvailable);

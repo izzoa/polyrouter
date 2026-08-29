@@ -1,13 +1,9 @@
 import { readFile } from 'node:fs/promises';
 import { basename, join, resolve, sep } from 'node:path';
 import type { Embedder } from '@polyrouter/data-plane';
-import {
-  BundleError,
-  WordPieceTokenizer,
-  contentHashId,
-  parseManifest,
-} from './bundle';
+import { BundleError, WordPieceTokenizer, contentHashId, parseManifest } from './bundle';
 import { buildEmbedder, type TensorLike } from './embed-core';
+import { TrySemaphore } from './semaphore';
 import type { SemanticConfig } from './semantic.config';
 
 /** Load failure carrying the offending file's BASENAME and a reason — the
@@ -23,8 +19,33 @@ export class SemanticLoadError extends Error {
   }
 }
 
+/**
+ * The BOOT-path per-embed bound (fix-semantic-boot-embed-budget). Generous by
+ * design: no live request waits on a boot embed, so `SEMANTIC_TIMEOUT_MS` —
+ * whose whole job is that no request stalls — must not decide whether the
+ * capability exists. This is only a backstop; the real bound on boot work is
+ * the caller's PHASE budget, which is always the smaller of the two.
+ */
+export const BOOT_EMBED_TIMEOUT_MS = 30_000;
+
 export interface LoadedSemanticRuntime {
+  /** The REQUEST-path seam: bounded by `SEMANTIC_TIMEOUT_MS`. */
   readonly embedder: Embedder & { readonly saturated: boolean };
+  /** The BOOT-path seam over the SAME session and the SAME admission gate —
+   * warmup used it, and every other boot-time consumer reaches it rather than
+   * being judged by the request rail. */
+  readonly bootEmbedder: Embedder & { readonly saturated: boolean };
+  /**
+   * A seam at an ARBITRARY bound over the same session and the same admission
+   * gate. Boot-time work with a TOTAL budget asks for a seam bounded by the
+   * budget REMAINING, so the seam's own entry deadline coincides with the
+   * caller's phase deadline — which is what makes the pipeline's
+   * before-dispatch deadline check authoritative for that phase, so no
+   * inference starts after the budget is spent, not even one whose tokenizing
+   * crossed the line. Cheap: a closure over shared state, never a second
+   * session and never a second gate.
+   */
+  readonly boundEmbedder: (timeoutMs: number) => Embedder & { readonly saturated: boolean };
   readonly warmupMs: number;
 }
 
@@ -43,11 +64,7 @@ export interface OrtLike {
       opts: { executionProviders: string[] },
     ): Promise<import('./embed-core').InferenceLike>;
   };
-  Tensor: new (
-    type: string,
-    data: BigInt64Array,
-    dims: number[],
-  ) => TensorLike;
+  Tensor: new (type: string, data: BigInt64Array, dims: number[]) => TensorLike;
 }
 
 /**
@@ -69,7 +86,10 @@ export const loadOnnxRuntime: SemanticLoader = (cfg) =>
     return require('onnxruntime-node') as OrtLike;
   });
 
-export const loadWithOrt = async (cfg: SemanticConfig, getOrt: () => OrtLike): Promise<LoadedSemanticRuntime> => {
+export const loadWithOrt = async (
+  cfg: SemanticConfig,
+  getOrt: () => OrtLike,
+): Promise<LoadedSemanticRuntime> => {
   const dir = cfg.modelPath;
   if (dir === undefined) throw new SemanticLoadError('(unset)', 'SEMANTIC_MODEL_PATH is not set');
 
@@ -85,7 +105,9 @@ export const loadWithOrt = async (cfg: SemanticConfig, getOrt: () => OrtLike): P
     } catch (err) {
       throw new SemanticLoadError(
         basename(relPath),
-        err instanceof Error && 'code' in err ? String((err as { code?: string }).code) : 'unreadable',
+        err instanceof Error && 'code' in err
+          ? String((err as { code?: string }).code)
+          : 'unreadable',
       );
     }
   };
@@ -151,15 +173,21 @@ export const loadWithOrt = async (cfg: SemanticConfig, getOrt: () => OrtLike): P
     session,
     makeTensor,
     maxInputChars: cfg.maxInputChars,
-    concurrency: cfg.concurrency,
+    // ONE gate per loaded model, shared by both seams below: the width is the
+    // ceiling on orphaned native work, so a gate per seam would silently make
+    // the real ceiling 2 × SEMANTIC_CONCURRENCY.
+    admission: new TrySemaphore(cfg.concurrency),
   };
 
-  // Warmup outside the request-path 50ms bound: the first inference JITs and
-  // may legitimately take hundreds of ms. Same pipeline, generous bound.
+  // Warmup outside the request-path bound: the first inference JITs and may
+  // legitimately take hundreds of ms. It runs on the BOOT seam — the same one
+  // every other boot-time consumer gets — rather than a throwaway.
   const warmupStart = Date.now();
-  const warmup = buildEmbedder({ ...core, timeoutMs: 30_000 });
+  const boundEmbedder = (timeoutMs: number): Embedder & { readonly saturated: boolean } =>
+    buildEmbedder({ ...core, timeoutMs });
+  const bootEmbedder = boundEmbedder(BOOT_EMBED_TIMEOUT_MS);
   try {
-    await warmup.embed('polyrouter semantic warmup');
+    await bootEmbedder.embed('polyrouter semantic warmup');
   } catch (err) {
     throw new SemanticLoadError(
       basename(manifest.model.file),
@@ -168,5 +196,5 @@ export const loadWithOrt = async (cfg: SemanticConfig, getOrt: () => OrtLike): P
   }
   const warmupMs = Date.now() - warmupStart;
 
-  return { embedder: buildEmbedder({ ...core, timeoutMs: cfg.timeoutMs }), warmupMs };
+  return { embedder: boundEmbedder(cfg.timeoutMs), bootEmbedder, boundEmbedder, warmupMs };
 };

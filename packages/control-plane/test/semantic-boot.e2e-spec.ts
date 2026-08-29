@@ -85,6 +85,41 @@ describe('semantic boot matrix (add-semantic-embedder D5)', () => {
       expect(code).toBe(0);
       expect(stdout).toContain('LISTENING');
       expect(stdout).toContain('AVAILABLE:true');
+      // The fixture's synthetic model does not separate the real anchors, so
+      // the classifier is legitimately unavailable here — the embedder half is
+      // what this case is about.
+      expect(stdout).toContain('CLASSIFIER:false');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('the request rail no longer influences the anchor build outcome (fix-semantic-boot-embed-budget)', async () => {
+    // The defect in one assertion, against REAL onnxruntime: the anchor build
+    // used to run under `SEMANTIC_TIMEOUT_MS`, so shrinking that rail could
+    // change whether the capability existed at all. It must now be inert to it
+    // — same bundle, same host, rail at its 50ms default vs its 10ms floor,
+    // byte-identical capability lines.
+    const dir = await mkdtemp(join(tmpdir(), 'poly-semantic-rail-'));
+    try {
+      await writeFile(join(dir, 'manifest.json'), JSON.stringify(FIXTURE_MANIFEST));
+      await writeFile(join(dir, 'vocab.txt'), FIXTURE_VOCAB);
+      await writeFile(join(dir, 'model.onnx'), buildFixtureModel());
+      const capabilityOf = (out: string): string[] =>
+        out.split('\n').filter((l) => l.startsWith('AVAILABLE:') || l.startsWith('CLASSIFIER:'));
+
+      const wide = await runFixture({ PATH: process.env['PATH'], SEMANTIC_MODEL_PATH: dir });
+      const narrow = await runFixture({
+        PATH: process.env['PATH'],
+        SEMANTIC_MODEL_PATH: dir,
+        SEMANTIC_TIMEOUT_MS: '10', // the configurable floor
+      });
+
+      expect(wide.code).toBe(0);
+      expect(narrow.code).toBe(0);
+      expect(narrow.stdout).toContain('LISTENING'); // a tight rail never costs boot
+      expect(capabilityOf(narrow.stdout)).toEqual(capabilityOf(wide.stdout));
+      expect(capabilityOf(narrow.stdout)).toContain('AVAILABLE:true');
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

@@ -6,18 +6,13 @@ import {
   type BundleManifest,
   type WordPieceTokenizer,
 } from './bundle';
-import { TrySemaphore } from './semaphore';
+import type { Admission } from './semaphore';
 
 /** Typed embed failure. `message` carries timings/dimensions/reasons ONLY —
  * never input text, never vector values (D9). */
 export class EmbedError extends Error {
   constructor(
-    public readonly kind:
-      | 'saturated'
-      | 'timeout'
-      | 'aborted'
-      | 'invalid_output'
-      | 'runtime',
+    public readonly kind: 'saturated' | 'timeout' | 'aborted' | 'invalid_output' | 'runtime',
     message: string,
   ) {
     super(message);
@@ -48,7 +43,12 @@ export interface EmbedCoreOptions {
   readonly makeTensor: TensorFactory;
   readonly timeoutMs: number;
   readonly maxInputChars: number;
-  readonly concurrency: number;
+  /** The model-wide admission gate, SHARED by every seam over this session
+   * (fix-semantic-boot-embed-budget). Never constructed per seam: the width is
+   * the ceiling on orphaned native work, and one gate per seam would raise the
+   * real ceiling to width × seams. Its `width` is also the only source of the
+   * saturation diagnostic's number. */
+  readonly admission: Admission;
 }
 
 /**
@@ -59,13 +59,14 @@ export interface EmbedCoreOptions {
  * dims, finite, unit norm) before it reaches the caller.
  */
 export function buildEmbedder(opts: EmbedCoreOptions): Embedder & { readonly saturated: boolean } {
-  const sem = new TrySemaphore(opts.concurrency);
+  const sem = opts.admission;
   const { manifest, tokenizer } = opts;
   const dims = manifest.model.dims;
 
   const runOnce = (
     text: string,
     deadline: number,
+    signal: AbortSignal | undefined,
   ): { raw: Promise<Float32Array>; release: () => void } | null => {
     const release = sem.tryAcquire();
     if (release === null) return null;
@@ -86,7 +87,18 @@ export function buildEmbedder(opts: EmbedCoreOptions): Embedder & { readonly sat
       };
       const tt = manifest.model.inputNames.tokenTypeIds;
       if (tt !== undefined) {
-        feeds[tt] = opts.makeTensor(enc.ids.map(() => 0), 'token_type_ids');
+        feeds[tt] = opts.makeTensor(
+          enc.ids.map(() => 0),
+          'token_type_ids',
+        );
+      }
+      // Re-check the ABORT immediately before dispatch (clink r2 Med-1):
+      // tokenization is synchronous and can cross a caller's deadline AFTER
+      // admission, so an entry-time check alone would still start one more
+      // native inference the caller has already given up on. A boot phase
+      // whose budget expired mid-preprocessing must start nothing.
+      if (signal?.aborted === true) {
+        throw new EmbedError('aborted', 'aborted before dispatch');
       }
       const raw = opts.session.run(feeds).then((results) => {
         const out = results[manifest.model.outputName];
@@ -177,7 +189,7 @@ export function buildEmbedder(opts: EmbedCoreOptions): Embedder & { readonly sat
 
         let admitted;
         try {
-          admitted = runOnce(text, deadline);
+          admitted = runOnce(text, deadline, signal);
         } catch (err) {
           finish(() => {
             reject(
@@ -190,12 +202,7 @@ export function buildEmbedder(opts: EmbedCoreOptions): Embedder & { readonly sat
         }
         if (admitted === null) {
           finish(() => {
-            reject(
-              new EmbedError(
-                'saturated',
-                `inference saturated (width ${String(opts.concurrency)})`,
-              ),
-            );
+            reject(new EmbedError('saturated', `inference saturated (width ${String(sem.width)})`));
           });
           return;
         }
@@ -207,9 +214,7 @@ export function buildEmbedder(opts: EmbedCoreOptions): Embedder & { readonly sat
         timer = setTimeout(
           () => {
             finish(() => {
-              reject(
-                new EmbedError('timeout', `embed exceeded ${String(opts.timeoutMs)}ms bound`),
-              );
+              reject(new EmbedError('timeout', `embed exceeded ${String(opts.timeoutMs)}ms bound`));
             });
           },
           Math.max(1, deadline - Date.now()),

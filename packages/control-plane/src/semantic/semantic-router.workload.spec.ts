@@ -49,8 +49,12 @@ const EMPTY_SNAPSHOT = {
 function fakeRuntime(embedder: Embedder | null): SemanticRuntimeService {
   return {
     embedder,
+    // Both seams + the bounded factory, as the real loader supplies them
+    // (fix-semantic-boot-embed-budget); one model, one gate, one behaviour.
+    bootEmbedder: embedder,
     config: CFG,
     whenReady: () => Promise.resolve(embedder),
+    boundEmbedder: () => embedder,
   } as unknown as SemanticRuntimeService;
 }
 

@@ -15,6 +15,7 @@ import {
   type RoutingConfig,
 } from '../proxy/routing.config';
 import { SemanticClassifierService } from '../semantic/semantic-classifier.service';
+import { SemanticRuntimeService } from '../semantic/semantic-runtime.service';
 import type { AutoLayersDto } from './auto-layers.dto';
 
 /** The tenant's effective auto-layer state plus what the instance is capable of
@@ -33,8 +34,16 @@ export interface AutoLayersView {
   semanticAvailable: boolean;
   /** fix-image-healthcheck-and-l2-hint: the conjunction's two halves, surfaced
    * separately so the UI can name WHICH half an unavailable L2 is missing.
-   * Invariant: `semanticAvailable === semanticFlagEnabled && semanticClassifierReady`. */
+   * Invariant: `semanticAvailable === semanticFlagEnabled && semanticClassifierReady`.
+   * fix-semantic-boot-embed-budget splits the MODEL half again: a missing
+   * bundle and a bundle that loaded but yielded no centroids both reduced to
+   * `semanticClassifierReady:false`, and an operator's remedy differs entirely
+   * between them, so `semanticEmbedderReady` reports the embedder alone.
+   * Second invariant: `semanticClassifierReady ⟹ semanticEmbedderReady` —
+   * centroids cannot exist without the embedder that built them, so only SIX
+   * of the eight flag/embedder/classifier triples are reachable. */
   semanticFlagEnabled: boolean;
+  semanticEmbedderReady: boolean;
   semanticClassifierReady: boolean;
   /** add-semantic-workloads: the semantic WORKLOAD source — capability (the
    * semantic capability ∧ the five workload centroids ready) and the effective
@@ -72,6 +81,7 @@ export class AutoLayersService {
     @Inject(ROUTING_CONFIG) private readonly cfg: RoutingConfig,
     @Inject(CALIBRATION_RAILS) private readonly rails: CalibrationRails,
     private readonly semantic: SemanticClassifierService,
+    private readonly runtime: SemanticRuntimeService,
   ) {}
 
   async get(principal: Principal): Promise<AutoLayersView> {
@@ -145,6 +155,10 @@ export class AutoLayersService {
       // The two halves come from the SAME boot-resolved singletons the
       // conjunction is built from, so they cannot drift from what routes.
       semanticFlagEnabled: this.cfg.autoLayers.has('semantic'),
+      // From the SAME boot-resolved singletons the conjunction is built from,
+      // never inferred from a sibling field — so the reported triple cannot
+      // drift from what actually routes.
+      semanticEmbedderReady: this.runtime.available,
       semanticClassifierReady: this.semantic.available,
       // Learning is effective only when semantic is (and the tenant opted in);
       // available only when the classifier is (learning rides the same stack).

@@ -1,6 +1,9 @@
+import { Logger } from '@nestjs/common';
 import { stubEmbedder, type Embedder } from '@polyrouter/data-plane';
+import { WORKLOAD_ANCHORS } from '@polyrouter/data-plane';
+import { WORKLOAD_CLASSES } from '@polyrouter/shared';
 import { DISABLED_LEARNING_GATE } from './classification-source';
-import { SemanticClassifierService } from './semantic-classifier.service';
+import { ANCHOR_PHASE_BUDGET_MS, SemanticClassifierService } from './semantic-classifier.service';
 import { SemanticRuntimeService } from './semantic-runtime.service';
 import type { SemanticConfig } from './semantic.config';
 
@@ -25,11 +28,19 @@ const CFG: SemanticConfig = {
   },
 };
 
-function fakeRuntime(embedder: Embedder | null): SemanticRuntimeService {
+/**
+ * A runtime supplying BOTH seams the way the real loader does
+ * (fix-semantic-boot-embed-budget). `boot` defaults to the request seam so
+ * existing cases are unchanged; pass a distinct one to exercise the two tiers.
+ */
+function fakeRuntime(embedder: Embedder | null, boot?: Embedder): SemanticRuntimeService {
+  const bootSeam = boot ?? embedder;
   return {
     embedder,
+    bootEmbedder: bootSeam,
     config: CFG,
     whenReady: () => Promise.resolve(embedder),
+    boundEmbedder: () => bootSeam,
   } as unknown as SemanticRuntimeService;
 }
 
@@ -129,5 +140,134 @@ describe('SemanticClassifierService — the semantic WORKLOAD source (add-semant
     expect(svc.available).toBe(true);
     expect(svc.workloadReady).toBe(false);
     expect(svc.workloadState).toBeNull();
+  });
+});
+
+/**
+ * fix-semantic-boot-embed-budget. The field defect: a host whose per-embed cost
+ * merely exceeds the REQUEST rail lost the entire semantic layer, because the
+ * anchor build ran under that rail. These pin the boot budget's behaviour.
+ */
+// Anchors reach `embed` SERIALIZED by the extractor, not raw — so match on
+// containment, the way the sibling workload-fault test does.
+const WORKLOAD_ANCHOR_TEXTS = WORKLOAD_CLASSES.flatMap((c) => WORKLOAD_ANCHORS[c]);
+
+describe('anchor phase budget', () => {
+  /** An embedder that costs `ms` per embed — slow, but perfectly healthy. */
+  const slowEmbedder = (ms: number, dims = 384): Embedder => {
+    const base = stubEmbedder(dims);
+    return {
+      id: base.id,
+      dims: base.dims,
+      embed: async (text, opts) => {
+        await new Promise((r) => setTimeout(r, ms));
+        return base.embed(text, opts);
+      },
+    };
+  };
+
+  it('a slow host still gets a classifier, with identical centroids and revision', async () => {
+    // The bound decides WHETHER the build completes, never WHAT it computes.
+    // (That a boot embed outlives the REQUEST rail is pinned on real seams in
+    // embed-core.spec — the stub here has no bound of its own.)
+    const fast = new SemanticClassifierService(fakeRuntime(stubEmbedder(384)));
+    await fast.onApplicationBootstrap();
+    const slow = new SemanticClassifierService(fakeRuntime(slowEmbedder(1)));
+    await slow.onApplicationBootstrap();
+
+    expect(slow.available).toBe(true);
+    expect(slow.workloadReady).toBe(true);
+    const a = await fast.resolve({ kind: 'user', userId: 'u' }, DISABLED_LEARNING_GATE);
+    const b = await slow.resolve({ kind: 'user', userId: 'u' }, DISABLED_LEARNING_GATE);
+    expect(b.revision).toBe(a.revision);
+    expect([...b.centroids.high]).toEqual([...a.centroids.high]);
+    expect([...b.centroids.low]).toEqual([...a.centroids.low]);
+    expect(slow.workloadState!.revision).toBe(fast.workloadState!.revision);
+  });
+
+  it('an embedder that never returns costs the capability, not the boot', async () => {
+    // Boot must COMPLETE — `onApplicationBootstrap` blocks `listen()`, so a
+    // hang here is a dead instance, which is strictly worse than no Layer 2.
+    const wedged: Embedder = {
+      id: 'sha256:wedged',
+      dims: 384,
+      embed: () => new Promise(() => undefined),
+    };
+    const svc = new SemanticClassifierService(fakeRuntime(wedged));
+    const errors: string[] = [];
+    jest.spyOn(Logger.prototype, 'error').mockImplementation((m: unknown) => {
+      errors.push(String(m));
+    });
+    jest.useFakeTimers();
+    try {
+      const booting = svc.onApplicationBootstrap();
+      // Both phases must give up on their own; nothing else can unblock this.
+      await jest.advanceTimersByTimeAsync(ANCHOR_PHASE_BUDGET_MS * 2 + 100);
+      await expect(booting).resolves.toBeUndefined();
+    } finally {
+      jest.useRealTimers();
+      jest.restoreAllMocks();
+    }
+    expect(svc.available).toBe(false);
+    expect(svc.workloadReady).toBe(false);
+    // The log must name the BUDGET — a host-speed fault, whose remedy is
+    // nothing like the bad-bundle remedy the old message implied.
+    expect(errors.join(' ')).toContain('boot budget');
+    expect(errors.join(' ')).not.toContain('did not build/validate');
+  });
+
+  it('names the anchors, not the budget, when the anchors are the actual fault', async () => {
+    const collapse: Embedder = {
+      id: 'sha256:collapse',
+      dims: 8,
+      embed: () => {
+        const v = new Float32Array(8);
+        v[0] = 1;
+        return Promise.resolve(v);
+      },
+    };
+    const errors: string[] = [];
+    jest.spyOn(Logger.prototype, 'error').mockImplementation((m: unknown) => {
+      errors.push(String(m));
+    });
+    try {
+      await new SemanticClassifierService(fakeRuntime(collapse)).onApplicationBootstrap();
+    } finally {
+      jest.restoreAllMocks();
+    }
+    expect(errors.join(' ')).toContain('did not build/validate');
+    expect(errors.join(' ')).not.toContain('boot budget');
+  });
+
+  it('an exhausted BAND budget leaves the workload source free to build', async () => {
+    // Phase-locality, the direction the existing workload-fault test does not
+    // cover. NOTE this is the CLASSIFIER's own per-source state: the EXPOSED
+    // `semanticWorkloadAvailable` keeps its band conjunction, so a consumer
+    // still sees the workload source unavailable here (routing.config.ts).
+    const base = stubEmbedder(384);
+    const bandOnlySlow: Embedder = {
+      id: base.id,
+      dims: base.dims,
+      // Band anchors hang; workload anchors are instant. The band phase must
+      // spend its budget without touching the workload phase's.
+      embed: (text, opts) =>
+        WORKLOAD_ANCHOR_TEXTS.some((a) => text.includes(a))
+          ? base.embed(text, opts)
+          : new Promise(() => undefined),
+    };
+    const svc = new SemanticClassifierService(fakeRuntime(bandOnlySlow));
+    jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    jest.useFakeTimers();
+    try {
+      const booting = svc.onApplicationBootstrap();
+      await jest.advanceTimersByTimeAsync(ANCHOR_PHASE_BUDGET_MS + 100);
+      await expect(booting).resolves.toBeUndefined();
+    } finally {
+      jest.useRealTimers();
+      jest.restoreAllMocks();
+    }
+    expect(svc.available).toBe(false); // band phase spent its budget
+    expect(svc.workloadReady).toBe(true); // its own budget was untouched
+    expect(svc.workloadState).not.toBeNull();
   });
 });

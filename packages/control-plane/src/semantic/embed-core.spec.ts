@@ -1,5 +1,6 @@
 import { WordPieceTokenizer, type BundleManifest } from './bundle';
 import { EmbedError, buildEmbedder, type InferenceLike, type TensorLike } from './embed-core';
+import { TrySemaphore } from './semaphore';
 
 const VOCAB = ['[PAD]', '[UNK]', '[CLS]', '[SEP]', 'route', 'this', 'request'].join('\n');
 
@@ -51,7 +52,7 @@ const build = (session: InferenceLike, over?: Partial<Parameters<typeof buildEmb
     makeTensor,
     timeoutMs: 40,
     maxInputChars: 2000,
-    concurrency: 2,
+    admission: new TrySemaphore(2),
     ...over,
   });
 
@@ -127,7 +128,7 @@ describe('buildEmbedder — the D6 semaphore/timeout matrix (clink r1 High-3)', 
         });
       },
     };
-    const e = build(controlled, { timeoutMs: 15, concurrency: 1 });
+    const e = build(controlled, { timeoutMs: 15, admission: new TrySemaphore(1) });
     await expect(kindOf(e.embed('route'))).resolves.toBe('timeout');
     expect(e.saturated).toBe(true); // caller unbound, permit held
     settle?.();
@@ -181,7 +182,7 @@ describe('buildEmbedder — the D6 semaphore/timeout matrix (clink r1 High-3)', 
     await expect(kindOf(e1.embed('route', { signal: pre.signal }))).resolves.toBe('aborted');
 
     const never: InferenceLike = { run: () => new Promise(() => undefined) };
-    const e2 = build(never, { timeoutMs: 5000, concurrency: 1 });
+    const e2 = build(never, { timeoutMs: 5000, admission: new TrySemaphore(1) });
     const ctl = new AbortController();
     const p = e2.embed('route', { signal: ctl.signal });
     ctl.abort();
@@ -246,10 +247,126 @@ describe('buildEmbedder — output validation + privacy (D6/D9)', () => {
     await capture(build(boom).embed(SENTINEL));
     await capture(build(never, { timeoutMs: 10 }).embed(SENTINEL));
     await capture(build(missing).embed(SENTINEL));
-    const sat = build(never, { timeoutMs: 10, concurrency: 1 });
+    const sat = build(never, { timeoutMs: 10, admission: new TrySemaphore(1) });
     void kindOf(sat.embed(SENTINEL));
     await capture(sat.embed(SENTINEL));
     expect(messages.length).toBeGreaterThanOrEqual(4);
     for (const m of messages) expect(m).not.toContain('SENTINEL');
+  });
+});
+
+/**
+ * fix-semantic-boot-embed-budget: the seam has TWO bounds over ONE model, and
+ * the admission gate is shared across them. These pin the properties the field
+ * defect turned on — a boot embed must not be judged by the request rail, and
+ * splitting the gate must not silently raise the orphaned-work ceiling.
+ */
+describe('two-tier bounds over one shared admission gate', () => {
+  /** A session whose inference takes `ms` — the shape of a host slower than
+   * the request rail but perfectly healthy. */
+  const slowSession = (ms: number): InferenceLike => ({
+    run: (feeds) =>
+      new Promise((resolve) => {
+        const seq = (feeds['input_ids'] as TensorLike).dims[1] ?? 1;
+        setTimeout(
+          () => resolve({ out: { data: new Float32Array(seq * 4).fill(1), dims: [1, seq, 4] } }),
+          ms,
+        );
+      }),
+  });
+
+  it('a boot-path embed outlives the request rail; a request-path embed does not', async () => {
+    // ONE gate, two seams — exactly what the loader now returns.
+    const gate = new TrySemaphore(2);
+    const session = slowSession(60); // > the 50ms-class request rail
+    const request = build(session, { timeoutMs: 50, admission: gate });
+    const boot = build(session, { timeoutMs: 30_000, admission: gate });
+
+    await expect(kindOf(request.embed('route'))).resolves.toBe('timeout');
+    await expect(boot.embed('route')).resolves.toHaveLength(4);
+  });
+
+  it('the in-flight native ceiling is shared, not per-tier', async () => {
+    // Width 1: once boot's orphaned work holds the permit, a request embed on
+    // the OTHER seam must see saturation. With a gate per seam it would not —
+    // which is precisely the guarantee that would have been voided.
+    const gate = new TrySemaphore(1);
+    const never: InferenceLike = { run: () => new Promise(() => undefined) };
+    const boot = build(never, { timeoutMs: 30_000, admission: gate });
+    const request = build(never, { timeoutMs: 10, admission: gate });
+
+    void kindOf(boot.embed('route')); // admitted; raw never settles
+    await new Promise((r) => setTimeout(r, 5));
+    // Rejects IMMEDIATELY (no queue) — the request proceeds without the layer.
+    await expect(kindOf(request.embed('route'))).resolves.toBe('saturated');
+    expect(request.saturated).toBe(true);
+    expect(boot.saturated).toBe(true); // one gate, one truth
+  });
+
+  it('reports the width that actually governs admission', async () => {
+    // One source of truth: an injected width of 1 must never report width 2.
+    const gate = new TrySemaphore(1);
+    const never: InferenceLike = { run: () => new Promise(() => undefined) };
+    const a = build(never, { timeoutMs: 5000, admission: gate });
+    void a.embed('route').catch(() => undefined);
+    await new Promise((r) => setTimeout(r, 5));
+    await expect(a.embed('route').catch((e: Error) => e.message)).resolves.toContain('width 1');
+  });
+
+  it('starts no inference once the abort has actually fired', async () => {
+    // An abort that already fired before the call reaches dispatch starts
+    // nothing. The wall-clock case — deadline crossed DURING synchronous
+    // tokenization, so the timer callback has not run and `aborted` is still
+    // false — is covered by the next test, via the seam's own entry deadline.
+    let runs = 0;
+    const counting: InferenceLike = {
+      run: (feeds) => {
+        runs += 1;
+        const seq = (feeds['input_ids'] as TensorLike).dims[1] ?? 1;
+        return Promise.resolve({
+          out: { data: new Float32Array(seq * 4).fill(1), dims: [1, seq, 4] },
+        });
+      },
+    };
+    const ctl = new AbortController();
+    ctl.abort(); // already aborted — the state a fired phase deadline leaves
+    const e = build(counting, { timeoutMs: 5000, admission: new TrySemaphore(2) });
+    await expect(kindOf(e.embed('route', { signal: ctl.signal }))).resolves.toBe('aborted');
+    expect(runs).toBe(0);
+  });
+
+  it('starts no inference when tokenizing crosses the seam deadline', async () => {
+    // The window a signal CANNOT cover: a timer callback cannot interrupt
+    // synchronous work, so `aborted` is still false when preprocessing ends.
+    // A boot phase asks for a seam bounded by its REMAINING budget, which makes
+    // the seam's entry deadline the phase deadline — and the pipeline's
+    // before-dispatch check then refuses to start the inference.
+    let runs = 0;
+    const counting: InferenceLike = {
+      run: (feeds) => {
+        runs += 1;
+        const seq = (feeds['input_ids'] as TensorLike).dims[1] ?? 1;
+        return Promise.resolve({
+          out: { data: new Float32Array(seq * 4).fill(1), dims: [1, seq, 4] },
+        });
+      },
+    };
+    // A tokenizer that burns the whole (1ms) budget before returning.
+    const slowTokenizer = new WordPieceTokenizer(VOCAB, MANIFEST.tokenizer);
+    const realEncode = slowTokenizer.encode.bind(slowTokenizer);
+    slowTokenizer.encode = (text: string) => {
+      const until = Date.now() + 5;
+      while (Date.now() < until) {
+        /* synchronous, exactly like real tokenization */
+      }
+      return realEncode(text);
+    };
+    const e = build(counting, {
+      timeoutMs: 1,
+      tokenizer: slowTokenizer,
+      admission: new TrySemaphore(2),
+    });
+    await expect(kindOf(e.embed('route'))).resolves.toBe('timeout');
+    expect(runs).toBe(0);
   });
 });

@@ -3,7 +3,8 @@
 // are available instance-wide and the semantic FLAG is on while no classifier
 // is loaded — the flag-on/classifier-off topology
 // (fix-image-healthcheck-and-l2-hint): `semanticFlagEnabled:true`,
-// `semanticClassifierReady:false`, `semanticAvailable:false`. The endpoint
+// `semanticEmbedderReady:false`, `semanticClassifierReady:false`,
+// `semanticAvailable:false`. The endpoint
 // reports effective + capability, `PUT` is a full replacement that normalizes
 // `cascade → structural`, and the preference is owner-scoped.
 import {
@@ -122,6 +123,7 @@ describe('auto-layers endpoint e2e', () => {
       semanticWorkloadAvailable: false,
       semanticWorkload: false,
       semanticFlagEnabled: true,
+      semanticEmbedderReady: false,
       semanticClassifierReady: false,
       semanticLearning: false,
       semanticLearningAvailable: false,
@@ -144,6 +146,7 @@ describe('auto-layers endpoint e2e', () => {
       semanticWorkloadAvailable: false,
       semanticWorkload: false,
       semanticFlagEnabled: true,
+      semanticEmbedderReady: false,
       semanticClassifierReady: false,
       semanticLearning: false,
       semanticLearningAvailable: false,
@@ -164,6 +167,7 @@ describe('auto-layers endpoint e2e', () => {
       semanticWorkloadAvailable: false,
       semanticWorkload: false,
       semanticFlagEnabled: true,
+      semanticEmbedderReady: false,
       semanticClassifierReady: false,
       semanticLearning: false,
       semanticLearningAvailable: false,
@@ -179,6 +183,7 @@ describe('auto-layers endpoint e2e', () => {
       semanticWorkloadAvailable: false,
       semanticWorkload: false,
       semanticFlagEnabled: true,
+      semanticEmbedderReady: false,
       semanticClassifierReady: false,
       semanticLearning: false,
       semanticLearningAvailable: false,

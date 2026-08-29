@@ -31,6 +31,8 @@ const stubLoader =
     void c;
     return Promise.resolve({
       embedder: Object.assign(stubEmbedder(8), { saturated: false }),
+      bootEmbedder: Object.assign(stubEmbedder(8), { saturated: false }),
+      boundEmbedder: () => Object.assign(stubEmbedder(8), { saturated: false }),
       warmupMs: 3,
     });
   };

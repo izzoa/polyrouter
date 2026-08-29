@@ -6,10 +6,25 @@
  * caller's timeout — ORT cannot hard-cancel a running CPU inference, so
  * permits-held-until-settle is what bounds orphaned native work.
  */
-export class TrySemaphore {
+/**
+ * The admission gate as its consumers see it. ONE instance per loaded model,
+ * shared by every seam over it (fix-semantic-boot-embed-budget): the width is
+ * the ceiling on ORPHANED native work — a permit outlives its caller — so a
+ * per-seam gate would multiply that ceiling by the number of seams and void
+ * the guarantee `SEMANTIC_CONCURRENCY` states. `width` is exposed so the
+ * saturation diagnostic reads the SAME number that governs admission; a second
+ * copy carried alongside could report a width that is not the one enforced.
+ */
+export interface Admission {
+  readonly saturated: boolean;
+  readonly width: number;
+  tryAcquire(): (() => void) | null;
+}
+
+export class TrySemaphore implements Admission {
   private inFlight = 0;
 
-  constructor(private readonly width: number) {
+  constructor(readonly width: number) {
     if (!Number.isInteger(width) || width < 1) {
       throw new Error('TrySemaphore width must be a positive integer');
     }

@@ -459,7 +459,8 @@ describe('dashboard shell (auth-gated)', () => {
         semantic: false,
         semanticAvailable: false,
         semanticFlagEnabled: true,
-        semanticClassifierReady: false, // unset path OR broken/degenerate bundle
+        semanticEmbedderReady: false, // no bundle at all — the path IS the fix
+        semanticClassifierReady: false,
         semanticLearning: false,
         semanticLearningAvailable: false,
         calibration: DEFAULT_CALIBRATION,
@@ -477,6 +478,76 @@ describe('dashboard shell (auth-gated)', () => {
       // Never points at the satisfied flag half, and never claims the var is unset.
       expect(hint).not.toContain('ROUTING_AUTO_LAYERS');
       expect(hint).not.toContain('set SEMANTIC_MODEL_PATH to enable');
+    } finally {
+      dispose();
+    }
+  });
+
+  it('a LOADED model whose centroids failed points at the centroid build, never the path (fix-semantic-boot-embed-budget)', async () => {
+    // The reported field defect: the bundle loaded perfectly and the anchor
+    // build ran out of budget. The old copy sent the operator to check
+    // SEMANTIC_MODEL_PATH — which was never wrong.
+    const fake = new FakeApiClient({
+      tiers: [DEFAULT_TIER],
+      autoLayers: {
+        structural: true,
+        cascade: true,
+        structuralAvailable: true,
+        cascadeAvailable: true,
+        semantic: false,
+        semanticAvailable: false,
+        semanticFlagEnabled: true,
+        semanticEmbedderReady: true,
+        semanticClassifierReady: false,
+        semanticLearning: false,
+        semanticLearningAvailable: false,
+        calibration: DEFAULT_CALIBRATION,
+      },
+    });
+    const { host, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Routing');
+      await flush();
+      const hint = offInstanceHint(host);
+      expect(hint).toContain('centroids did not build');
+      expect(hint).toContain('boot log');
+      // Neither satisfied half may be named: the path is correct and so is the flag.
+      expect(hint).not.toContain('SEMANTIC_MODEL_PATH');
+      expect(hint).not.toContain('-semantic image');
+      expect(hint).not.toContain('ROUTING_AUTO_LAYERS');
+    } finally {
+      dispose();
+    }
+  });
+
+  it('a loaded model with the flag off names the centroids AND the flag, never the path', async () => {
+    const fake = new FakeApiClient({
+      tiers: [DEFAULT_TIER],
+      autoLayers: {
+        structural: true,
+        cascade: true,
+        structuralAvailable: true,
+        cascadeAvailable: true,
+        semantic: false,
+        semanticAvailable: false,
+        semanticFlagEnabled: false,
+        semanticEmbedderReady: true,
+        semanticClassifierReady: false,
+        semanticLearning: false,
+        semanticLearningAvailable: false,
+        calibration: DEFAULT_CALIBRATION,
+      },
+    });
+    const { host, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Routing');
+      await flush();
+      const hint = offInstanceHint(host);
+      expect(hint).toContain('centroids did not build');
+      expect(hint).toContain('ROUTING_AUTO_LAYERS');
+      expect(hint).not.toContain('SEMANTIC_MODEL_PATH');
     } finally {
       dispose();
     }

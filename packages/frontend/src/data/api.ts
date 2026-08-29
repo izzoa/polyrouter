@@ -394,6 +394,13 @@ export interface AutoLayers {
    * Optional so a stale/older response degrades to the both-halves hint,
    * never a wrong single-half claim. */
   semanticFlagEnabled?: boolean;
+  /** fix-semantic-boot-embed-budget: the MODEL half split — the embedder alone.
+   * `semanticClassifierReady` is embedder ∧ centroids, so a missing bundle and
+   * a bundle that loaded but yielded no centroids were indistinguishable, and
+   * the copy sent operators after an env var that was already correct.
+   * `semanticClassifierReady ⟹ semanticEmbedderReady`. Optional: an older
+   * server omits it, and the copy then degrades to naming both halves. */
+  semanticEmbedderReady?: boolean;
   semanticClassifierReady?: boolean;
   /** The semantic WORKLOAD source (add-semantic-workloads): capability (semantic
    * capability ∧ the workload centroids ready) and the effective flag (semantic

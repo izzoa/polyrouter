@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import { SemanticClassifierService } from '../semantic/semantic-classifier.service';
 import { SemanticRuntimeService } from '../semantic/semantic-runtime.service';
 import { SemanticModule } from '../semantic/semantic.module';
 
@@ -25,6 +26,10 @@ async function main(): Promise<void> {
   await app.listen(0, '127.0.0.1');
   console.log('LISTENING');
   console.log(`AVAILABLE:${String(app.get(SemanticRuntimeService).available)}`);
+  // The classifier half, separately (fix-semantic-boot-embed-budget): a loaded
+  // embedder whose anchor build failed is exactly the state the field defect
+  // produced, and AVAILABLE alone cannot show it.
+  console.log(`CLASSIFIER:${String(app.get(SemanticClassifierService).available)}`);
   await app.close();
 }
 

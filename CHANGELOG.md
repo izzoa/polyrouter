@@ -15,10 +15,19 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.16.2] — 2026-08-29
+
 ### Fixed
 
 - **Layer 2 survives a busy boot.** The 210 bundled band + workload anchors were embedded under `SEMANTIC_TIMEOUT_MS` — the rail that exists so no *live request* stalls — even though no request waits on a boot embed and per-anchor cost on ordinary hardware sits in the same range as that 50ms bound. The same image and config could therefore come up with L2 ready one day and `semantic classifier UNAVAILABLE — … (embed exceeded 50ms bound)` the next, losing research/writing detection with it and staying dead until restart. Boot-path embedding now has its own bound, each anchor phase is capped by a total budget (so a wedged embedder costs the capability, never the boot), the failure names the budget rather than blaming the bundle, and each phase logs its elapsed time so headroom is visible before it becomes an outage. `SEMANTIC_TIMEOUT_MS` keeps its meaning and 50ms default; the two seams share one admission gate so `SEMANTIC_CONCURRENCY` still bounds in-flight native work across both.
 - **The L2 hint stops naming a setting that is already correct.** `GET /api/routing/auto-layers` gains `semanticEmbedderReady` (additive; `semanticAvailable` and the `PUT` shape unchanged), which splits "no model bundle" from "bundle loaded, centroids failed". Both the Automatic-routing L2 row and the Workload-targets row used to say "no ready model; check `SEMANTIC_MODEL_PATH`" in either case — with the embedder loaded they now point at the centroid build and the boot log instead.
+
+### Upgrade notes
+
+- **Drop-in: no migrations, no new or changed environment keys.** `SEMANTIC_TIMEOUT_MS` keeps its meaning and its 50ms default — the anchor build simply no longer consults it. If you raised it to work around a classifier that would not come up, you can put it back where you want it for request latency; nothing forces the change.
+- **Two boot lines are new on the `-semantic` image**, and both are worth reading once: `semantic classifier ready: … built=<elapsed>ms/20000ms` and the same for the workload source. That ratio is your headroom. On reference hardware it is ~703ms and ~1460ms against 20000ms; if yours is within ~2x of the budget, the host is close to the line that used to lose the layer outright.
+- **A failed anchor build now names its cause.** `… exceeded its 20000ms boot budget` is a host-speed fault (the bundle is fine); the older `did not build/validate` wording is now reserved for anchors that genuinely do not separate under the model.
+- `GET /api/routing/auto-layers` gains `semanticEmbedderReady`. Additive — `semanticAvailable` and the `PUT` shape are unchanged, and a client that does not know the field degrades to the previous, more generic copy.
 
 ## [0.16.1] — 2026-08-28
 
@@ -835,7 +844,8 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.16.1...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.16.2...HEAD
+[0.16.2]: https://github.com/izzoa/polyrouter/releases/tag/v0.16.2
 [0.16.1]: https://github.com/izzoa/polyrouter/releases/tag/v0.16.1
 [0.16.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.16.0
 [0.15.1]: https://github.com/izzoa/polyrouter/releases/tag/v0.15.1

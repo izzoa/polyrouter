@@ -1,5 +1,15 @@
 # @polyrouter/frontend
 
+## 0.16.2
+
+### Patch Changes
+
+- 9c5cef1: **Layer 2 no longer loses a boot to a busy host.** The bundled band anchors and the workload anchors — 210 embeds — were built through the seam bounded by `SEMANTIC_TIMEOUT_MS`, the rail whose whole purpose is that no _live request_ stalls on the embedder. No request waits on a boot embed, and per-anchor cost on ordinary self-host hardware sits in the same tens-of-milliseconds range as that 50ms rail, so the build was effectively a lottery every startup: the same image and config could come up with L2 ready one day and `semantic classifier UNAVAILABLE — … (embed exceeded 50ms bound)` the next, taking research/writing workload detection with it and staying dead until a restart that might not help.
+
+  Boot-path embedding now runs on its own bound, and each anchor phase is bounded by a total wall-clock budget instead — because `onApplicationBootstrap` blocks `listen()`, a generous per-embed bound would trade a lost capability for a hung instance. A phase that runs out gives up, names the **budget** in its error (a host-speed fault, whose remedy is nothing like the bad-bundle one it used to be reported as), logs the elapsed time on success so an operator can see headroom before it becomes an outage, and lets the instance start; the band and workload phases keep their independent outcomes. `SEMANTIC_TIMEOUT_MS` is untouched in meaning and default — the point is that the two bounds have different jobs. The two seams share one admission gate, so `SEMANTIC_CONCURRENCY` keeps bounding in-flight native work across both rather than per-seam.
+
+  **The dashboard stops sending you after a variable that was already right.** `GET /api/routing/auto-layers` adds `semanticEmbedderReady` beside the existing halves (additive; `semanticAvailable` and the `PUT` shape unchanged), splitting "no model bundle" from "bundle loaded, centroids failed" — states that were indistinguishable, so the L2 row and the Workload-targets row both said "no ready model; check `SEMANTIC_MODEL_PATH`" even when the model had loaded perfectly. With the embedder up, both now name the centroid build and the boot log, and never a half that is already satisfied.
+
 ## 0.16.1
 
 ### Patch Changes

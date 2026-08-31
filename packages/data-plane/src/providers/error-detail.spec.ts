@@ -261,6 +261,45 @@ describe('adapter-stage stream sanitization (the layer holding the credential)',
     expect(err.diagnostic?.requestId).toBe('req_777');
   });
 
+  // fix-4xx-error-taxonomy. `wire` is stripped at this stage, so without a carried
+  // kind the routing and breaker layers re-derive from the outward `error.type` alone
+  // and silently lose a marker that appeared only in `code`. Each of these fails
+  // against the pre-change wiring.
+  it.each([
+    ['insufficient_credits', 'insufficient_funds'],
+    ['content_filter', 'content_policy'],
+    ['permission_error', 'permission'],
+    ['authentication_error', 'auth'],
+  ])('carries a code-only %s marker through as kind=%s', async (code, expected) => {
+    const sse = `data: ${JSON.stringify({ error: { type: 'error', code, message: 'refused' } })}\n\n`;
+    const { client } = recordingClient(() => sseResponse(sse));
+    const adapter = createOpenaiProviderAdapter(config, { httpClient: client });
+    const events = await collect(adapter.chatStream(request));
+    const err = events.find((e) => e.type === 'error');
+    if (err?.type !== 'error') throw new Error('no error event');
+    // the outward type is generic — only the code names the real classification
+    expect(err.diagnostic?.kind).toBe(expected);
+  });
+
+  // The routing reducer is NOT the message reducer. The message policy prefers
+  // `bad_request` whenever any field looks like validation (right for withholding
+  // text); reusing that for routing would make this error non-retryable AND would let
+  // the generic outward type outrank the code.
+  it('routes on the specific code while the message policy still withholds', async () => {
+    const sse = `data: ${JSON.stringify({
+      error: { type: 'invalid_request_error', code: 'insufficient_credits', message: 'no funds' },
+    })}\n\n`;
+    const { client } = recordingClient(() => sseResponse(sse));
+    const adapter = createOpenaiProviderAdapter(config, { httpClient: client });
+    const events = await collect(adapter.chatStream(request));
+    const err = events.find((e) => e.type === 'error');
+    if (err?.type !== 'error') throw new Error('no error event');
+    // routing reads the specific field...
+    expect(err.diagnostic?.kind).toBe('bad_request');
+    // ...and the message policy independently withholds on the validation marker
+    expect(err.diagnostic?.providerMessage).toBe(VALIDATION_WITHHELD);
+  });
+
   it('drops a malicious response-header request id and passes synthetic events untouched', async () => {
     const chunks = oaiSse([
       {
@@ -336,7 +375,14 @@ describe('serializers never emit the diagnostic (client frames byte-identical)',
         error: { type: 'overloaded', message: 'upstream stream error' },
         ...(withDiag
           ? {
-              diagnostic: { providerMessage: asSanitized('SECRET-detail zz9'), requestId: 'req_1' },
+              diagnostic: {
+                // fix-4xx-error-taxonomy: the carried routing kind is part of the
+                // diagnostic now, and inherits the same guarantee — client frames
+                // must stay byte-identical with or without it.
+                kind: 'insufficient_funds' as const,
+                providerMessage: asSanitized('SECRET-detail zz9'),
+                requestId: 'req_1',
+              },
             }
           : {}),
       };
@@ -351,6 +397,7 @@ describe('serializers never emit the diagnostic (client frames byte-identical)',
     const [withD, withoutD] = await Promise.all([frames(true), frames(false)]);
     expect(withD).toBe(withoutD); // byte-identical — the diagnostic never hits the wire
     expect(withD).not.toContain('SECRET-detail');
+    expect(withD).not.toContain('insufficient_funds'); // nor the carried kind
   });
 });
 
@@ -376,5 +423,39 @@ describe('classifyResponse — providerMessage capture', () => {
   it('exact-redacts the configured credential in an auth body', () => {
     const err = classifyResponse(401, '{"error":{"message":"key zz9 is not valid"}}', {}, ['zz9']);
     expect(err.providerMessage).toBe('key [redacted] is not valid');
+  });
+  // fix-4xx-error-taxonomy: this facade is the ONLY path a Responses-protocol chat()
+  // takes, and it rebuilt the kind from the outward type. A code-only marker would
+  // therefore misroute every non-streaming call to that provider.
+  it('chat() adopts the carried kind rather than re-deriving from the outward type', async () => {
+    const sse =
+      'event: response.created\ndata: {"type":"response.created","response":{}}\n\n' +
+      'event: response.failed\ndata: ' +
+      JSON.stringify({
+        type: 'response.failed',
+        response: { error: { code: 'insufficient_credits', message: 'no funds' } },
+      }) +
+      '\n\n';
+    const { client } = recordingClient(() => sseResponse(sse));
+    const adapter = createResponsesProviderAdapter(
+      {
+        protocol: 'openai_responses',
+        baseUrl: 'https://chatgpt.example',
+        credential: 'zz9',
+        kind: 'subscription',
+        mode: 'selfhosted',
+        authScheme: 'oauth_bearer',
+        oauthAccountId: 'acct-123',
+        probeModel: 'gpt-5.4-mini',
+      },
+      { httpClient: client },
+    );
+    await expect(
+      adapter.chat({
+        model: 'gpt-5.4-mini',
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+        params: {},
+      }),
+    ).rejects.toMatchObject({ kind: 'insufficient_funds' });
   });
 });

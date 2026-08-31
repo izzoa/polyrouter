@@ -33,6 +33,7 @@ import {
   classifyStreamError,
   sanitizeRequestId,
 } from './errors';
+import type { ProviderErrorKind } from './errors';
 import {
   createGuardedHttpClient,
   joinUrl,
@@ -111,13 +112,15 @@ async function* sanitizeStreamErrors(
       continue;
     }
     const wire = ev.diagnostic.wire;
-    // Conservative kind (r3-High-1): classify EVERY available field — a generic
-    // wire type must not launder a `code=invalid_request_error` into the
-    // operational-verbatim path. (The factory re-checks markers itself; this is
-    // the belt to its suspenders.)
     const kinds = [wire.type, wire.code, ev.error.type]
       .filter((v): v is string => typeof v === 'string')
       .map(classifyStreamError);
+    // Conservative kind (r3-High-1): classify EVERY available field — a generic
+    // wire type must not launder a `code=invalid_request_error` into the
+    // operational-verbatim path. (The factory re-checks markers itself; this is
+    // the belt to its suspenders.) This bias is correct for deciding whether to
+    // WITHHOLD text and WRONG for deciding whether to walk the chain, which is why
+    // the routing kind below is reduced separately (fix-4xx-error-taxonomy).
     const providerMessage = captureProviderMessage(
       { source: 'stream-wire', ...wire },
       {
@@ -129,11 +132,28 @@ async function* sanitizeStreamErrors(
       type: 'error',
       error: ev.error,
       diagnostic: {
+        kind: routingKind(kinds),
         ...(providerMessage !== null ? { providerMessage } : {}),
         ...(requestId !== undefined ? { requestId } : {}),
       },
     };
   }
+}
+
+/**
+ * The ROUTING kind carried on the sanitized diagnostic (fix-4xx-error-taxonomy).
+ * Deterministic and specificity-ordered: a field that classifies to something
+ * specific outranks one that falls through to the classifier's `unavailable`
+ * default, ties broken by field order (`wire.type`, `wire.code`, `error.type`).
+ *
+ * Deliberately NOT the message policy's reducer, which prefers `bad_request`
+ * whenever ANY field looks like validation. That bias is right for withholding
+ * text and wrong here: it would make a stream error non-retryable on the strength
+ * of one incidental field, and it lets a generic outward `type` outrank a `code`
+ * that names the real classification. Same fields, different rule.
+ */
+function routingKind(kinds: readonly ProviderErrorKind[]): ProviderErrorKind {
+  return kinds.find((k) => k !== 'unavailable') ?? kinds[0] ?? 'unavailable';
 }
 
 /** Pass typed errors through; wrap everything unexpected as a network fault.

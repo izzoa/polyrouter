@@ -13,6 +13,11 @@
  * - a single assistant choice (`n = 1`) is normalized; `n > 1` is out of scope.
  */
 
+// Type-only, so it is erased at runtime and creates no cycle — `errors.ts` already
+// imports `SanitizedMessage` from here the same way. Keeps ONE source of truth for
+// the taxonomy rather than a drifting duplicate (fix-4xx-error-taxonomy).
+import type { ProviderErrorKind } from '../../providers/errors';
+
 export type Role = 'user' | 'assistant' | 'tool';
 
 export type ImageDetail = 'auto' | 'low' | 'high';
@@ -228,6 +233,13 @@ export type NormalizedStreamEvent =
           readonly type?: string;
           readonly code?: string;
         };
+        /** The adapter's CROSS-FIELD classification (fix-4xx-error-taxonomy).
+         * `wire` is removed at the adapter stage, so without this the routing and
+         * breaker layers would re-derive a kind from the outward `error.type`
+         * alone and silently lose a `code`-only credit / policy / permission
+         * marker. Never serialized to a client frame — like the rest of the
+         * diagnostic, serialize-side output is byte-identical with or without it. */
+        readonly kind?: ProviderErrorKind;
         readonly providerMessage?: SanitizedMessage;
         readonly requestId?: string;
       };

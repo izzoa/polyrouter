@@ -185,6 +185,13 @@ describe('request-logging e2e', () => {
     await port.models.createForProvider(principal, provider.id, {
       externalModelId: 'oai-badreq',
     });
+    // fix-4xx-error-taxonomy fixtures: 402 (rescued and exhausted) and a 403.
+    const nofunds = await port.models.createForProvider(principal, provider.id, {
+      externalModelId: 'oai-nofunds',
+    });
+    const noperm = await port.models.createForProvider(principal, provider.id, {
+      externalModelId: 'oai-noperm',
+    });
     await port.models.createForProvider(principal, provider.id, {
       externalModelId: 'oai-miderror',
     });
@@ -198,6 +205,14 @@ describe('request-logging e2e', () => {
     await port.routingEntries.replaceForTier(principal, tier.id, [gpt4oModelId]);
     const fb = await port.tiers.insert(principal, { key: 'fallback' });
     await port.routingEntries.replaceForTier(principal, fb.id, [srvfail!.id, gpt4oModelId]);
+    // an all-dry chain: nothing rescues it, so the terminal 402 detail is recorded
+    const drytier = await port.tiers.insert(principal, { key: 'alldry' });
+    await port.routingEntries.replaceForTier(principal, drytier.id, [nofunds!.id]);
+    // a rescued 402: member 1 is dry, member 2 serves → status=fallback
+    const rescued = await port.tiers.insert(principal, { key: 'rescued' });
+    await port.routingEntries.replaceForTier(principal, rescued.id, [nofunds!.id, gpt4oModelId]);
+    const permtier = await port.tiers.insert(principal, { key: 'nopermtier' });
+    await port.routingEntries.replaceForTier(principal, permtier.id, [noperm!.id]);
     // add-fallback-attempt-detail: a SECOND provider whose breaker the mixed-chain
     // test opens — its member must be SKIPPED (never dispatched), not failed.
     const skipProv = await port.providers.insert(principal, {
@@ -490,6 +505,57 @@ describe('request-logging e2e', () => {
       expect(row).toBeDefined();
       expect(row!.errorStatus).toBe(400);
       expect(row!.errorMessage).toBe('[validation message withheld]'); // never the echo-prone text
+    });
+
+    // fix-4xx-error-taxonomy. The reported incident's row: explicable from KIND +
+    // STATUS alone, with no provider text — invariant 8 is the acceptance criterion
+    // here, not diagnosability. (The kind is what the operator reads; the body would
+    // add only provider phrasing, at a privacy cost 402 cannot justify.)
+    it('an out-of-credit 402 records diagnosable metadata and withholds the body', async () => {
+      const res = await request(server)
+        .post('/v1/chat/completions')
+        .set('Authorization', `Bearer ${key}`)
+        .send({ model: 'alldry', messages: [] });
+      expect(res.status).toBe(502); // never a bare 400 for a well-formed request
+      await writer.flush();
+      const row = (await port.requestLogs.list(principal)).find(
+        (r) => r.status === 'error' && r.errorKind === 'insufficient_funds',
+      );
+      expect(row).toBeDefined();
+      expect(row!.errorStatus).toBe(402);
+      expect(row!.errorMessage).toBe('[insufficient-funds message withheld]');
+      expect(row!.errorMessage).not.toMatch(/Insufficient credits/i); // the provider's own words
+    });
+
+    it('a permission 403 withholds under its own marker, not the validation one', async () => {
+      await request(server)
+        .post('/v1/chat/completions')
+        .set('Authorization', `Bearer ${key}`)
+        .send({ model: 'nopermtier', messages: [] });
+      await writer.flush();
+      const row = (await port.requestLogs.list(principal)).find(
+        (r) => r.status === 'error' && r.errorKind === 'permission',
+      );
+      expect(row).toBeDefined();
+      expect(row!.errorStatus).toBe(403);
+      expect(row!.errorMessage).toBe('[permission message withheld]');
+    });
+
+    // A successful fallback keeps attempt_failures NULL by contract — the trail lives
+    // in routing_reason. Asserting the column would contradict this capability.
+    it('a rescued 402 records status=fallback with its trail in routing_reason', async () => {
+      const res = await request(server)
+        .post('/v1/chat/completions')
+        .set('Authorization', `Bearer ${key}`)
+        .send({ model: 'rescued', messages: [] });
+      expect(res.status).toBe(200);
+      await writer.flush();
+      const row = (await port.requestLogs.list(principal)).find(
+        (r) => r.status === 'fallback' && r.routingReason?.includes('insufficient_funds@'),
+      );
+      expect(row).toBeDefined();
+      expect(row!.attemptFailures).toBeNull();
+      expect(row!.errorKind).toBeNull(); // non-error rows carry no error detail
     });
 
     it('a post-commit stream failure records the wire error event’s own message', async () => {

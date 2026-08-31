@@ -100,6 +100,39 @@ const PROVIDER_MAP: Record<ProviderErrorKind, Mapped> = {
     type: 'invalid_request_error',
     code: 'bad_request',
   },
+  // fix-4xx-error-taxonomy. `renderProxyError` drops `code` for the Anthropic
+  // envelope, so each of these must be distinguishable by STATUS and fixed MESSAGE
+  // in BOTH shapes — `code` is an OpenAI-only affordance, never the sole carrier.
+  permission: {
+    status: 403,
+    message: 'upstream denied permission for this model or region',
+    type: 'permission_error',
+    code: 'upstream_permission',
+  },
+  insufficient_funds: {
+    status: 502,
+    message: 'upstream provider account has insufficient credit',
+    type: 'api_error',
+    code: 'upstream_credits',
+  },
+  content_policy: {
+    status: 400,
+    message: 'upstream refused the request under its content policy',
+    type: 'invalid_request_error',
+    code: 'content_filter',
+  },
+  policy_block: {
+    status: 451,
+    message: 'upstream denied the request for legal reasons',
+    type: 'invalid_request_error',
+    code: 'policy_block',
+  },
+  upstream_rejected: {
+    status: 502,
+    message: 'upstream rejected the request',
+    type: 'api_error',
+    code: 'upstream_rejected',
+  },
   unknown_model: {
     status: 404,
     message: 'model not found upstream',

@@ -219,6 +219,46 @@ describe('provider management', () => {
     expect(gated.status).toBe(422);
   });
 
+  // fix-4xx-error-taxonomy. The Responses / subscription-OAuth contracts said
+  // "401/403 → auth". A 403 is now a typed `permission` failure: still never masked
+  // as healthy, still sets the provider to error — but it does NOT imply the
+  // credential needs reauthorizing, because the credential is valid.
+  it('a 403 probe surfaces permission — errored, sanitized, and not a reauthorize prompt', async () => {
+    const created = await asAlice().send({ ...CUSTOM, credential: 'sk-perm-e2e' });
+    nextTest = () => ({
+      ok: false,
+      kind: 'permission',
+      message: 'your key may not use this model',
+    });
+    const res = await request(server)
+      .post(`/api/providers/${created.body.id}/test-connection`)
+      .set('x-test-user', alice);
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(false);
+    // the operator gets a label of its own, never the generic fallback and never
+    // wording that sends them to rotate a working key
+    expect(String(res.body.message)).toBe('permission denied for this model or region');
+    expect(String(res.body.message)).not.toMatch(/authentication failed/i);
+    expect(JSON.stringify(res.body)).not.toContain('sk-perm-e2e');
+    const after = await request(server)
+      .get(`/api/providers/${created.body.id}`)
+      .set('x-test-user', alice);
+    expect(after.body.status).toBe('error'); // never masked as healthy
+    // the reauthorize affordance is driven by the DURABLE credential condition,
+    // which a permission denial must not set
+    expect(after.body.credentialError ?? null).not.toBe('reauthorize_required');
+  });
+
+  it('a 401 probe still surfaces auth', async () => {
+    const created = await asAlice().send({ ...CUSTOM, credential: 'sk-auth-e2e' });
+    nextTest = () => ({ ok: false, kind: 'auth', message: 'invalid key' });
+    const res = await request(server)
+      .post(`/api/providers/${created.body.id}/test-connection`)
+      .set('x-test-user', alice);
+    expect(res.body.ok).toBe(false);
+    expect(String(res.body.message)).toBe('authentication failed');
+  });
+
   it('test-connection sets status and stays sanitized on a reflected-credential failure', async () => {
     const created = await asAlice().send({ ...CUSTOM, credential: 'sk-reflect-e2e' });
     nextTest = () => ({ ok: false, kind: 'bad_request', message: 'upstream said sk-reflect-e2e' });

@@ -117,6 +117,83 @@ describe('withBreaker — health follows whether the provider responded', () => 
     expect((await breaker.before(PID)).decision).toBe('allow');
   });
 
+  // fix-4xx-error-taxonomy: the reported bug, at the breaker. Repeated 403s — the
+  // marker-free `permission` shape AND the moderation-marked one — must never disable
+  // a provider that is answering, while 401s still must.
+  it.each(['permission', 'content_policy', 'policy_block'] as const)(
+    'never opens the breaker on repeated %s failures',
+    async (kind) => {
+      const store = new InMemoryBreakerStore();
+      const breaker = clockedBreaker(store, { t: 0 });
+      for (let i = 0; i < cfg.threshold * 2; i++) {
+        await withBreaker(breaker, PID, () =>
+          Promise.reject(new ProviderError(kind, 'refused')),
+        ).catch(() => undefined);
+      }
+      expect((await breaker.before(PID)).decision).toBe('allow');
+    },
+  );
+
+  it('still opens on repeated 401 auth failures', async () => {
+    const store = new InMemoryBreakerStore();
+    const breaker = clockedBreaker(store, { t: 0 });
+    for (let i = 0; i < cfg.threshold; i++) {
+      await withBreaker(breaker, PID, () =>
+        Promise.reject(new ProviderError('auth', 'invalid key')),
+      ).catch(() => undefined);
+    }
+    expect((await breaker.before(PID)).decision).toBe('skip');
+  });
+
+  // An unclassifiable 4xx is evidence of NOTHING: it must not trip, and — the part a
+  // plain non-tripping kind would get wrong — it must not settle as a health success
+  // either, because that would erase a provider's accumulated real failures.
+  it('upstream_rejected neither trips nor erases accumulated failures', async () => {
+    const store = new InMemoryBreakerStore();
+    const breaker = clockedBreaker(store, { t: 0 });
+    // one short of opening
+    await tripN(breaker, cfg.threshold - 1);
+    // an unclassifiable rejection lands in the middle — it must not reset the count
+    await withBreaker(breaker, PID, () =>
+      Promise.reject(new ProviderError('upstream_rejected', '418')),
+    ).catch(() => undefined);
+    expect((await breaker.before(PID)).decision).toBe('allow');
+    // the very next genuine failure must still be the one that opens it
+    await tripN(breaker, 1);
+    expect((await breaker.before(PID)).decision).toBe('skip');
+  });
+
+  it('upstream_rejected does NOT close a half-open probe', async () => {
+    const store = new InMemoryBreakerStore();
+    const clock = { t: 0 };
+    const breaker = clockedBreaker(store, clock);
+    await tripN(breaker, cfg.threshold); // open
+    clock.t = 1000;
+    await withBreaker(breaker, PID, () =>
+      Promise.reject(new ProviderError('upstream_rejected', '418')),
+    ).catch(() => undefined);
+    // Neutral: the probe neither closed the breaker nor re-opened it. The lease stays
+    // authoritative, so the breaker is still NOT allowing traffic through — contrast
+    // the success-settling kinds below, which do close it.
+    expect((await breaker.before(PID)).decision).toBe('skip');
+  });
+
+  it.each(['permission', 'policy_block', 'content_policy'] as const)(
+    'a %s during a half-open probe closes the breaker (the provider answered)',
+    async (kind) => {
+      const store = new InMemoryBreakerStore();
+      const clock = { t: 0 };
+      const breaker = clockedBreaker(store, clock);
+      await tripN(breaker, cfg.threshold);
+      clock.t = 1000;
+      await withBreaker(breaker, PID, () => Promise.reject(new ProviderError(kind, 'refused'))).catch(
+        () => undefined,
+      );
+      expect((await breaker.before(PID)).decision).toBe('allow');
+      expect((await breaker.before(PID)).token.isProbe).toBe(false);
+    },
+  );
+
   it('a bad_request during a half-open probe still closes the breaker', async () => {
     const store = new InMemoryBreakerStore();
     const clock = { t: 0 };

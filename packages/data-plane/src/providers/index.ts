@@ -19,6 +19,7 @@ export {
   ProviderError,
   ProviderCircuitOpenError,
   CallCancelledError,
+  PROVIDER_ERROR_KINDS,
   shouldFallback,
   breakerImpact,
   classifyResponse,

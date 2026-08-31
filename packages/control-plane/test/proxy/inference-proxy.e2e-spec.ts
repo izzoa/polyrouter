@@ -92,6 +92,14 @@ async function seedTenant(
     protocol: 'anthropic_compatible',
     baseUrl: stubUrl,
   });
+  // A SECOND provider for the breaker-bound measurement: the breaker is per-provider,
+  // so sharing one with the other 402 tests would let their failures pollute the count.
+  const dryProvider = await port.providers.insert(principal, {
+    name: 'openai-dry',
+    kind: 'local',
+    protocol: 'openai_compatible',
+    baseUrl: stubUrl,
+  });
   const models: Record<string, string> = {};
   const add = async (providerId: string, ext: string): Promise<void> => {
     const m = await port.models.createForProvider(principal, providerId, { externalModelId: ext });
@@ -103,6 +111,13 @@ async function seedTenant(
   await add(anthropic.id, 'claude-x');
   await add(anthropic.id, 'anthro-miderror');
   await add(anthropic.id, 'anthro-firsterror');
+  // fix-4xx-error-taxonomy fixtures
+  await add(openai.id, 'oai-nofunds0');
+  await add(openai.id, 'oai-nofunds1');
+  await add(openai.id, 'oai-modblock');
+  await add(openai.id, 'oai-noperm');
+  await add(openai.id, 'oai-legal');
+  await add(openai.id, 'oai-teapot');
   await add(openai.id, `${label}-secret`);
 
   await port.ensureDefaultTier(principal);
@@ -121,6 +136,38 @@ async function seedTenant(
   await port.routingEntries.replaceForTier(principal, mid.id, [
     models['anthro-miderror']!,
     models['gpt-4o']!,
+  ]);
+  // fix-4xx-error-taxonomy tiers. Each is a two-member chain whose FIRST member
+  // returns the status under test and whose second would serve — so the test reads
+  // the routing decision, not just the label.
+  for (const [key, head] of [
+    ['nofunds', 'oai-nofunds0'],
+    ['modblock', 'oai-modblock'],
+    ['noperm', 'oai-noperm'],
+    ['legal', 'oai-legal'],
+    ['teapot', 'oai-teapot'],
+  ] as const) {
+    const tier = await port.tiers.insert(principal, { key });
+    await port.routingEntries.replaceForTier(principal, tier.id, [
+      models[head]!,
+      models['gpt-4o']!,
+    ]);
+  }
+  // A chain whose members ALL sit on the dry provider — nothing can rescue it, so the
+  // whole chain exhausts and the client sees the terminal mapping.
+  // Five members — the chain maximum — ALL on the isolated dry provider, so one
+  // request measures the real dispatch bound against the breaker threshold.
+  for (let i = 0; i < 5; i += 1) await add(dryProvider.id, `oai-nofundsx${String(i)}`);
+  const bound = await port.tiers.insert(principal, { key: 'drybound' });
+  await port.routingEntries.replaceForTier(
+    principal,
+    bound.id,
+    [0, 1, 2, 3, 4].map((i) => models[`oai-nofundsx${String(i)}`]!),
+  );
+  const dry = await port.tiers.insert(principal, { key: 'alldry' });
+  await port.routingEntries.replaceForTier(principal, dry.id, [
+    models['oai-nofunds0']!,
+    models['oai-nofunds1']!,
   ]);
   await port.tiers.insert(principal, { key: 'empty' }); // no entries
 
@@ -315,6 +362,90 @@ describe('inference proxy e2e', () => {
     expect(res.status).toBe(200);
     expect(res.text).toContain('"upstream_error"'); // terminal error, not a second model
     expect(res.text).not.toContain('Hello from stub'); // gpt-4o (the fallback) never served
+  });
+
+  // --- fix-4xx-error-taxonomy: the reported incident, end to end ---
+
+  describe('4xx taxonomy routing', () => {
+    // THE regression. Before this change a 402 was classified `bad_request`, the
+    // chain was abandoned without trying member 2, and the agent got a 400
+    // `invalid_request_error` — the one class it will never retry.
+    it('an out-of-credit 402 falls back instead of failing the request', async () => {
+      const before = stub.requests.length;
+      const res = await chat(A.key, { model: 'nofunds', messages: [] });
+      expect(res.status).toBe(200);
+      expect(res.body.choices[0].message.content).toContain('Hello from stub');
+      expect(stub.requests.length).toBe(before + 2); // BOTH members were dispatched
+    });
+
+    it('the same 402 falls back pre-commit while streaming', async () => {
+      const res = await chat(A.key, { model: 'nofunds', stream: true, messages: [] });
+      expect(res.status).toBe(200);
+      expect(res.text).toContain('data: [DONE]');
+      expect(res.text).not.toContain('"upstream_error"');
+    });
+
+    it.each([
+      ['modblock', 'a moderation 403'],
+      ['noperm', 'a marker-free permission 403'],
+      ['teapot', 'an unrecognized 4xx'],
+    ])('%s (%s) walks the chain', async (tier) => {
+      const res = await chat(A.key, { model: tier, messages: [] });
+      expect(res.status).toBe(200);
+      expect(res.body.choices[0].message.content).toContain('Hello from stub');
+    });
+
+    // The one deliberate walk STOP. A fallback here would be a circumvention bug,
+    // not a routing improvement — so the second member must never be contacted.
+    it('a 451 stops the walk and never dispatches the next member', async () => {
+      const before = stub.requests.length;
+      const res = await chat(A.key, { model: 'legal', messages: [] });
+      expect(res.status).toBe(451);
+      expect(stub.requests.length).toBe(before + 1); // ONLY the blocked member
+    });
+
+    // design.md D4: the breaker does NOT bound a single request. It opens on a
+    // THRESHOLD of failures (5), not the first — so a five-member chain on one dry
+    // provider dispatches to all five. The bound is chain × cascade length; the
+    // breaker bounds the NEXT request. This test measures that rather than assuming it.
+    it('measures the real dispatch bound: chain length, then the breaker', async () => {
+      const before = stub.requests.length;
+      const first = await chat(A.key, { model: 'drybound', messages: [] });
+      expect(first.status).toBe(502);
+      expect(stub.requests.length - before).toBe(5); // all five dispatched, not one
+
+      // the fifth failure opened the breaker — the next request contacts nobody
+      const mid = stub.requests.length;
+      const second = await chat(A.key, { model: 'drybound', messages: [] });
+      expect(second.status).toBeGreaterThanOrEqual(500);
+      expect(stub.requests.length).toBe(mid); // zero upstream calls
+    });
+
+    it('a whole-chain 402 exhaustion is a 502, never a bare 400', async () => {
+      const res = await chat(A.key, { model: 'alldry', messages: [] });
+      expect(res.status).toBe(502);
+      expect(res.body.error.code).toBe('upstream_credits');
+      expect(res.body.error.type).not.toBe('invalid_request_error');
+    });
+
+    // The Anthropic envelope renders no `code`, so the distinction has to survive in
+    // status + message alone.
+    it('carries the distinction in the Anthropic envelope too', async () => {
+      const res = await request(server)
+        .post('/v1/messages')
+        .set('x-api-key', A.key)
+        .send({ model: 'alldry', max_tokens: 16, messages: [] });
+      expect(res.status).toBe(502);
+      expect(res.body.type).toBe('error');
+      expect(String(res.body.error.message)).toMatch(/credit/i);
+      const legal = await request(server)
+        .post('/v1/messages')
+        .set('x-api-key', A.key)
+        .send({ model: 'legal', max_tokens: 16, messages: [] });
+      expect(legal.status).toBe(451);
+      expect(String(legal.body.error.message)).toMatch(/legal/i);
+    });
+
   });
 
   it('shapes a malformed JSON body as a protocol 4xx', async () => {

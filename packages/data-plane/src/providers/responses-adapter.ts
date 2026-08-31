@@ -168,8 +168,12 @@ async function collectStream(
         // Preserve the adapter-stage sanitized diagnostic (r3-Medium-3): the
         // inner chatStream already ran the capture factory, so the buffered
         // facade must carry providerMessage/requestId, not discard them.
+        // The carried cross-field kind wins over a re-derivation from the outward
+        // type (fix-4xx-error-taxonomy) — this buffered facade is the ONLY path a
+        // Responses-protocol chat() takes, so losing a `code`-only marker here
+        // would misroute every non-streaming call to that provider.
         throw new ProviderError(
-          classifyStreamError(ev.error.type),
+          ev.diagnostic?.kind ?? classifyStreamError(ev.error.type),
           'provider stream failed before completion',
           {
             ...(ev.diagnostic?.providerMessage !== undefined

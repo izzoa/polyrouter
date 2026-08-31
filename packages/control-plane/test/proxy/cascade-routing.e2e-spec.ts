@@ -218,6 +218,10 @@ describe('cascade routing e2e', () => {
       strongDown: 'oai-srvfail',
       strongMid: 'oai-miderror',
       cheapBadReq: 'oai-badreq',
+      // fix-4xx-error-taxonomy: a dry cheap leg (retryable → escalates) and a legal
+      // denial (non-retryable → surfaced, on principle rather than futility).
+      cheapNoFunds: 'oai-nofunds',
+      cheapLegal: 'oai-legal',
       cheapLenstop: 'oai-lenstop',
     };
     for (const [k, ext] of Object.entries(external)) {
@@ -254,6 +258,12 @@ describe('cascade routing e2e', () => {
     ]);
     await port.routingEntries.replaceForTier(principal, await tier('strong-mid'), [
       modelId['strongMid']!,
+    ]);
+    await port.routingEntries.replaceForTier(principal, await tier('cheap-nofunds'), [
+      modelId['cheapNoFunds']!,
+    ]);
+    await port.routingEntries.replaceForTier(principal, await tier('cheap-legal'), [
+      modelId['cheapLegal']!,
     ]);
     await port.routingEntries.replaceForTier(principal, await tier('cheap-badreq'), [
       modelId['cheapBadReq']!,
@@ -609,6 +619,43 @@ describe('cascade routing e2e', () => {
     expect(res.status).toBeLessThan(500);
     const row = await log();
     expect(row.modelId).toBe(modelId['cheapBadReq']); // the cheap model — NO strong-tier escalation
+    expect(row.escalated).toBe(false);
+    await setBand('auto_low', 'cheap-bad');
+  });
+
+  // fix-4xx-error-taxonomy. The intended behavior CHANGE: a dry cheap provider is
+  // retryable, and the strong tier is usually a different provider — so escalating is
+  // right where surfacing a 400 was wrong. No escalation code changed; `shouldFallback`
+  // moved underneath it.
+  it('DOES escalate when the cheap leg is out of credit (402)', async () => {
+    await setBand('auto_low', 'cheap-nofunds');
+    const res = await send('sysCheapNoFundsUnique', false);
+    expect(res.status).toBe(200);
+    const row = await log();
+    expect(row.modelId).toBe(modelId['strong']); // rescued by the strong tier
+    expect(row.escalated).toBe(true);
+    await setBand('auto_low', 'cheap-bad');
+  });
+
+  // The other new non-retryable kind. Unlike a bad_request this is NOT futility — the
+  // strong tier might well serve it, and escalating would route around a legal denial.
+  it('does NOT escalate a cheap 451, and records the kind in the reason', async () => {
+    await setBand('auto_low', 'cheap-legal');
+    const res = await send('sysCheapLegalUnique', false);
+    expect(res.status).toBe(451);
+    const row = await log();
+    expect(row.modelId).toBe(modelId['cheapLegal']); // never reached the strong tier
+    expect(row.escalated).toBe(false);
+    expect(row.routingReason).toContain('cheap failed non-retryably (policy_block)');
+    await setBand('auto_low', 'cheap-bad');
+  });
+
+  it('does NOT escalate a STREAMED cheap 451 either (the streaming cascade path)', async () => {
+    await setBand('auto_low', 'cheap-legal');
+    const res = await send('sysStreamCheapLegalUnique', true);
+    expect(res.status).toBe(451);
+    const row = await log();
+    expect(row.modelId).toBe(modelId['cheapLegal']);
     expect(row.escalated).toBe(false);
     await setBand('auto_low', 'cheap-bad');
   });

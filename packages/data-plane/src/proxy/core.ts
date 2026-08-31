@@ -109,12 +109,20 @@ function fromErrorEvent(ev: Extract<NormalizedStreamEvent, { type: 'error' }>): 
   // Core reads ONLY the adapter-sanitized diagnostic (add-request-error-detail).
   // The IR types `providerMessage` with the SanitizedMessage brand itself, so
   // the value flows factory → adapter → here with no cast anywhere.
-  return new ProviderError(classifyStreamError(ev.error.type), 'upstream stream error', {
-    ...(ev.diagnostic?.providerMessage !== undefined
-      ? { providerMessage: ev.diagnostic.providerMessage }
-      : {}),
-    ...(ev.diagnostic?.requestId !== undefined ? { requestId: ev.diagnostic.requestId } : {}),
-  });
+  // Prefer the adapter's CARRIED cross-field kind (fix-4xx-error-taxonomy): `wire`
+  // is stripped at the adapter stage, so re-deriving from the outward `error.type`
+  // alone would silently lose a `code`-only credit / policy / permission marker.
+  // The fallback keeps events from adapters that carry no kind working unchanged.
+  return new ProviderError(
+    ev.diagnostic?.kind ?? classifyStreamError(ev.error.type),
+    'upstream stream error',
+    {
+      ...(ev.diagnostic?.providerMessage !== undefined
+        ? { providerMessage: ev.diagnostic.providerMessage }
+        : {}),
+      ...(ev.diagnostic?.requestId !== undefined ? { requestId: ev.diagnostic.requestId } : {}),
+    },
+  );
 }
 
 /** Non-streaming: returns the client wire body AND the IR response (for #11 usage). */
@@ -559,8 +567,12 @@ export type StreamChainResult =
     });
 
 /** Decide on the RAW error whether to walk to the next member. A client
- * cancellation (gone) and a `bad_request` (caller's fault) stop; a circuit-open
- * skip, a member build failure, and a retryable ProviderError continue. */
+ * cancellation (gone) stops, as do the taxonomy's TWO non-retryable kinds — a
+ * `bad_request` (the caller's fault; every member would reject it identically) and
+ * a `policy_block` (a 451 legal denial another member might well serve, which is
+ * exactly why we must not try). A circuit-open skip, a member build failure, and a
+ * retryable ProviderError continue. "Non-retryable" is NOT a synonym for "the
+ * caller's fault" (fix-4xx-error-taxonomy). */
 export function fallbackEligible(err: unknown): boolean {
   if (err instanceof CallCancelledError) return false;
   if (err instanceof Error && err.name === 'AbortError') return false;

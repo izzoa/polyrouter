@@ -173,11 +173,25 @@ const FIXED_MESSAGE: Record<string, string> = {
   unavailable: 'provider unavailable',
   bad_request: 'invalid request to provider',
   unknown_model: 'model not found',
+  // fix-4xx-error-taxonomy. This map is `Record<string, …>` with a default, so a
+  // missing entry degrades silently rather than failing the build — the exhaustive
+  // test over PROVIDER_ERROR_KINDS is what keeps it complete.
+  permission: 'permission denied for this model or region',
+  insufficient_funds: 'provider account has insufficient credit',
+  content_policy: 'provider refused on content policy',
+  policy_block: 'provider denied for legal reasons',
+  upstream_rejected: 'provider rejected the request',
 };
 
 function fixedMessage(kind: string): string {
   return FIXED_MESSAGE[kind] ?? 'provider error';
 }
+
+/** The operator-facing label for a provider-error kind. Exported so an exhaustive
+ * test over `PROVIDER_ERROR_KINDS` can prove every member has one — this map is
+ * `Record<string, …>` with a default, so a missing entry degrades silently rather
+ * than failing the build (fix-4xx-error-taxonomy). */
+export const toSafeProviderMessage = fixedMessage;
 
 export function toSafe(p: ProviderRow): SafeProvider {
   return {

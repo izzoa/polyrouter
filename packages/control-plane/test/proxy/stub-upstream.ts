@@ -229,6 +229,43 @@ export async function startStubUpstream(): Promise<StubUpstream> {
         res.writeHead(400, { 'content-type': 'application/json' });
         return res.end(JSON.stringify({ error: { message: 'invalid request' } }));
       }
+      // fix-4xx-error-taxonomy. The 4xx statuses whose classification this change
+      // corrects — each one a routing decision, not just a label.
+      // `*nofunds*` → HTTP 402: an exhausted credit balance. Fallback-ELIGIBLE (a
+      // different provider can serve the identical request) and breaker-tripping.
+      if (model.includes('nofunds')) {
+        res.writeHead(402, { 'content-type': 'application/json' });
+        return res.end(
+          JSON.stringify({ error: { message: 'Insufficient credits. Add more to continue.' } }),
+        );
+      }
+      // `*modblock*` → HTTP 403 carrying a moderation marker → `content_policy`.
+      if (model.includes('modblock')) {
+        res.writeHead(403, { 'content-type': 'application/json' });
+        return res.end(
+          JSON.stringify({ error: { type: 'content_filter', message: 'flagged by moderation' } }),
+        );
+      }
+      // `*noperm*` → a marker-free HTTP 403 → `permission`. The COMMON shape, and
+      // the one that used to trip the provider breaker as `auth`.
+      if (model.includes('noperm')) {
+        res.writeHead(403, { 'content-type': 'application/json' });
+        return res.end(
+          JSON.stringify({ error: { message: 'your key may not use this model' } }),
+        );
+      }
+      // `*legal*` → HTTP 451 → `policy_block`: the walk STOPS rather than routing
+      // around a legally-mandated denial.
+      if (model.includes('legal')) {
+        res.writeHead(451, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: { message: 'unavailable for legal reasons' } }));
+      }
+      // `*teapot*` → an unnamed 4xx → `upstream_rejected`: fallback-eligible and
+      // strictly breaker-neutral.
+      if (model.includes('teapot')) {
+        res.writeHead(418, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: { message: 'no coffee here' } }));
+      }
       // `*hang*` → headers then no body (tests the #14 cascade cheap-response deadline).
       if (model.includes('hang')) {
         res.writeHead(200, { 'content-type': 'application/json' });

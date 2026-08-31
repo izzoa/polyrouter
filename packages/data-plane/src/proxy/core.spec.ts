@@ -252,13 +252,27 @@ describe('openStream — outcome (usage capture for #11)', () => {
 });
 
 describe('fallbackEligible', () => {
-  it('continues on retryable/circuit-open, stops on bad_request/cancellation', () => {
+  it('continues on retryable/circuit-open, stops on the two non-retryable kinds', () => {
     expect(fallbackEligible(new ProviderError('rate_limit', 'x'))).toBe(true);
     expect(fallbackEligible(new ProviderError('unavailable', 'x'))).toBe(true);
     expect(fallbackEligible(new ProviderError('unknown_model', 'x'))).toBe(true);
     expect(fallbackEligible(new ProviderCircuitOpenError('p'))).toBe(true);
     expect(fallbackEligible(new ProviderError('bad_request', 'x'))).toBe(false);
     expect(fallbackEligible(new CallCancelledError())).toBe(false);
+  });
+
+  // fix-4xx-error-taxonomy: an account-level rejection, a moderation refusal, and an
+  // unrecognized 4xx all describe ONE provider's state, not a defect in the caller's
+  // request — the chain must walk on. A 451 is the one deliberate exception.
+  it.each(['insufficient_funds', 'content_policy', 'permission', 'upstream_rejected'] as const)(
+    'walks the chain on %s',
+    (kind) => {
+      expect(fallbackEligible(new ProviderError(kind, 'x'))).toBe(true);
+    },
+  );
+
+  it('stops on policy_block — the router CAN try another member and must not', () => {
+    expect(fallbackEligible(new ProviderError('policy_block', 'x'))).toBe(false);
   });
 });
 
@@ -414,6 +428,108 @@ describe('openStreamChain', () => {
     const out = await collect(r.frames);
     expect(out).toContain('data: [DONE]');
     expect(out).not.toContain('"upstream_error"'); // clean stream, no terminal error
+  });
+
+  // fix-4xx-error-taxonomy. The chain-walk end of the carried kind: an in-band error
+  // whose marker lives ONLY in `code` must walk on with the right kind. Against the
+  // pre-change wiring the kind would be re-derived from the generic outward type.
+  it.each([
+    ['insufficient_funds', 'insufficient_funds'],
+    ['content_policy', 'content_policy'],
+    ['permission', 'permission'],
+  ] as const)('walks the chain pre-commit on a carried %s kind', async (carried) => {
+    const attempts = [
+      streamAttempt('p1', async function* () {
+        yield {
+          type: 'error',
+          error: { type: 'error', message: 'refused' },
+          diagnostic: { kind: carried },
+        } as NormalizedStreamEvent;
+      }),
+      streamAttempt('p2', async function* () {
+        yield START;
+        yield TEXT;
+        yield STOP;
+        yield END;
+      }),
+    ];
+    const r = await openStreamChain(
+      newBreaker(),
+      attempts,
+      client,
+      { model: 'x', messages: [], params: {} },
+      OPTS,
+    );
+    expect(r.kind).toBe('stream');
+    if (r.kind !== 'stream') throw new Error('unreachable');
+    expect(r.servedIndex).toBe(1);
+    expect(r.failures[0]?.error.kind).toBe(carried);
+  });
+
+  // The one carried kind that must NOT walk on: routing around a legal denial is the
+  // circumvention `policy_block` exists to prevent.
+  it('stops the walk pre-commit on a carried policy_block', async () => {
+    let secondDispatched = false;
+    const attempts = [
+      streamAttempt('p1', async function* () {
+        yield {
+          type: 'error',
+          error: { type: 'error', message: 'blocked' },
+          diagnostic: { kind: 'policy_block' },
+        } as NormalizedStreamEvent;
+      }),
+      streamAttempt('p2', async function* () {
+        secondDispatched = true;
+        yield START;
+        yield END;
+      }),
+    ];
+    const r = await openStreamChain(
+      newBreaker(),
+      attempts,
+      client,
+      { model: 'x', messages: [], params: {} },
+      OPTS,
+    );
+    expect(r.kind).toBe('error');
+    if (r.kind !== 'error') throw new Error('unreachable');
+    expect(r.error.kind).toBe('policy_block');
+    expect(secondDispatched).toBe(false);
+  });
+
+  // Invariant 3 is untouched: the SAME event after the first token is terminal, and
+  // no model is swapped behind bytes the client already has.
+  it('a POST-commit carried credit error terminates the stream without swapping', async () => {
+    let secondDispatched = false;
+    const attempts = [
+      streamAttempt('p1', async function* () {
+        yield START;
+        yield TEXT;
+        yield {
+          type: 'error',
+          error: { type: 'error', message: 'out of credit' },
+          diagnostic: { kind: 'insufficient_funds' },
+        } as NormalizedStreamEvent;
+      }),
+      streamAttempt('p2', async function* () {
+        secondDispatched = true;
+        yield START;
+        yield END;
+      }),
+    ];
+    const r = await openStreamChain(
+      newBreaker(),
+      attempts,
+      client,
+      { model: 'x', messages: [], params: {} },
+      OPTS,
+    );
+    expect(r.kind).toBe('stream'); // committed on the first token
+    if (r.kind !== 'stream') throw new Error('unreachable');
+    expect(r.servedIndex).toBe(0);
+    const out = await collect(r.frames);
+    expect(out).toContain('upstream_error'); // terminal frame, not a silent swap
+    expect(secondDispatched).toBe(false);
   });
 
   // E1.3 composition: a hung-at-connect member whose stream is aborted by a

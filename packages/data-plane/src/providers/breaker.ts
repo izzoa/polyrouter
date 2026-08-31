@@ -15,6 +15,7 @@ import {
   breakerImpact,
   classifyStreamError,
 } from './errors';
+import type { ProviderErrorKind } from './errors';
 import { PROBE_RECORD_TTL_HEADROOM_MS } from './probe-patience';
 
 export type BreakerState = 'closed' | 'open' | 'half_open';
@@ -554,13 +555,30 @@ export class CircuitBreaker {
   }
 }
 
+/**
+ * The ONE kind→outcome rule, shared by the thrown-error path and the in-band
+ * streamed-error path so the two cannot drift (fix-4xx-error-taxonomy).
+ *
+ * `credential` (add-subscription-oauth) is strictly NEUTRAL: a revoked grant or IdP
+ * outage must neither trip the breaker NOR settle as a success — a success would
+ * erase genuine failure counts or close a half-open probe the upstream never earned.
+ * `upstream_rejected` joins it on exactly that reasoning: a 4xx we could not
+ * classify proves nothing about upstream health, so letting it settle `success`
+ * would turn an unrecognized response into a laundering mechanism for a provider's
+ * genuine failure history.
+ *
+ * Every other non-tripping kind PROVES the provider answered — `permission`,
+ * `content_policy`, and `policy_block` are decisions from a working provider,
+ * exactly like `bad_request` — so they settle as health successes.
+ */
+export function outcomeForKind(kind: ProviderErrorKind): BreakerOutcome {
+  if (kind === 'credential' || kind === 'upstream_rejected') return 'neutral';
+  return breakerImpact(kind) ? 'trip' : 'success';
+}
+
 export function outcomeForError(err: unknown): BreakerOutcome {
   if (err instanceof CallCancelledError) return 'neutral';
-  // `credential` (add-subscription-oauth) is strictly NEUTRAL: a revoked grant or IdP
-  // outage must neither trip the breaker NOR settle as a success — a success would
-  // erase genuine failure counts or close a half-open probe the upstream never earned.
-  if (err instanceof ProviderError && err.kind === 'credential') return 'neutral';
-  if (err instanceof ProviderError) return breakerImpact(err.kind) ? 'trip' : 'success';
+  if (err instanceof ProviderError) return outcomeForKind(err.kind);
   return 'trip';
 }
 
@@ -727,7 +745,11 @@ export async function* withBreakerStream(
         // generator on seeing the error event, whose `finally` would otherwise
         // settle `neutral` first and let an overload/rate-limit escape untripped.
         sawError = true;
-        await settle(breakerImpact(classifyStreamError(ev.error.type)) ? 'trip' : 'success');
+        // Read the adapter's CARRIED kind first (fix-4xx-error-taxonomy) and settle
+        // through the shared rule, so a `code`-only marker reaches the breaker with
+        // the same kind the chain walk sees — and so a neutral-settling kind stays
+        // neutral here instead of being flattened into a health success.
+        await settle(outcomeForKind(ev.diagnostic?.kind ?? classifyStreamError(ev.error.type)));
       }
       renewOnActivity();
       yield ev;

@@ -15,6 +15,10 @@ heading is started.
 
 ## [Unreleased]
 
+### Fixed
+
+- **An out-of-credit or permission-denied provider now falls back instead of failing the request.** Every 4xx status the router did not explicitly name was classified as the caller's fault, so an HTTP 402 (empty credit balance) abandoned the fallback chain unwalked and returned the agent a `400 invalid_request_error`. The 4xx map is now explicit: 402 falls back and trips the breaker, 451 deliberately stops the walk, and any unrecognized 4xx falls back while staying strictly breaker-neutral. Separately, **401 and 403 no longer share a kind** — reading a permission or region denial as an authentication failure could take a healthy provider offline for every agent on the instance.
+
 ## [0.16.3] — 2026-08-29
 
 ### Fixed

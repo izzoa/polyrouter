@@ -589,9 +589,11 @@ export class ProxyService {
       throw toProxyError(cheap.error);
     }
     if (!shouldFallback(cheap.error.kind)) {
-      // A non-retryable cheap failure (a `bad_request` — the client's request is
-      // malformed) will fail the expensive tier too; surface it instead of wasting
-      // an escalation (A-21). Record one error row, no escalation, no notifyFailed.
+      // A non-retryable cheap failure does not escalate (A-21), for one of two
+      // reasons: a `bad_request` would fail the expensive tier identically, and a
+      // `policy_block` (451) might NOT — escalating would route around a legal
+      // denial (fix-4xx-error-taxonomy). Record one error row, no escalation, no
+      // notifyFailed.
       this.recorder.record(
         this.servedFrom(
           p,
@@ -837,8 +839,10 @@ export class ProxyService {
       throw providerErrorToProxy(cheap.error);
     }
     if (!shouldFallback(cheap.error.kind)) {
-      // A non-retryable cheap failure (bad_request) won't succeed on the strong tier
-      // either — surface it instead of escalating (A-21). Pre-commit: no bytes sent.
+      // A non-retryable cheap failure is surfaced, not escalated (A-21): a
+      // `bad_request` won't succeed on the strong tier either, and a `policy_block`
+      // (451) must not be routed around even though it might (fix-4xx-error-taxonomy).
+      // Pre-commit: no bytes sent.
       this.recorder.record(
         this.servedFrom(
           p,

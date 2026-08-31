@@ -1,5 +1,17 @@
 # @polyrouter/frontend
 
+## 0.16.4
+
+### Patch Changes
+
+- 1ea0ad9: **An out-of-credit or permission-denied provider now falls back instead of failing the request.** A request routed to an OpenRouter model came back `bad_request · HTTP 402` with the provider's own words withheld, `$0.00` of attempt cost, and a fallback chain that was never walked — and the agent received an OpenAI-shaped `400 invalid_request_error`, the one class a well-behaved client will never retry. The cause was a single catch-all: `classifyResponse` named 400/401/404/408/409/413/422/429/5xx and mapped **every other 4xx** to `bad_request`, the only kind for which `shouldFallback` is false. So "I do not recognize this status" was answered with the most destructive value in the taxonomy — the chain abandoned, the breaker left closed so the next request hit the same dry account, and the body withheld as a validation echo, hiding the one string ("Insufficient credits…") that explained the outage.
+
+  The 4xx map is now explicit end to end. **402** is `insufficient_funds`: fallback-eligible (another provider serves the identical request) and breaker-tripping (a dry account rejects everything until a human tops it up). **405/415** are provider misconfiguration; **410** is refined by body exactly as 404 already was; **451** is `policy_block`, the one deliberate walk _stop_ — another member might well serve a legally-denied request, which is precisely why the router must not try. Anything else 4xx is `upstream_rejected`: fallback-eligible and **strictly breaker-neutral**, so a response we could not classify can neither disable a provider nor erase its accumulated real failures.
+
+  **401 and 403 no longer share a kind, which is the real fix for the breaker trip.** Every provider protocol polyrouter targets returns 401 for an invalid or revoked credential and 403 for a permission decision — an unsupported region, a model the key may not call, an org policy. Mapping 403 to `auth` read a _per-model_ denial as a _provider-wide credential failure_ and opened the breaker on a provider answering every other request; one moderation-flagged prompt could take a healthy provider offline for every agent on the instance. `auth` is now 401 only. A 403 is `permission` (or `content_policy` when its body carries a moderation marker, read from nested provider metadata as well as the outward type/code) — both fallback-eligible, neither tripping, so a missed marker costs a label rather than a provider.
+
+  Streamed errors get the same taxonomy pre-commit, and the adapter's cross-field classification is now _carried_ to the router rather than re-derived from the outward type, so a credit, policy, or permission marker that appears only in the wire `code` no longer misroutes. The mid-stream commit boundary is untouched: after the first token the model stays committed and any failure terminates the stream. Provider error bodies for the new kinds are withheld under markers naming their own reason — the **kind** carries the diagnosis, and no status whose body semantics providers do not guarantee is trusted to be free of echoed prompt content.
+
 ## 0.16.3
 
 ### Patch Changes

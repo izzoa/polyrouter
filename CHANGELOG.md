@@ -15,9 +15,20 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.16.4] — 2026-08-31
+
 ### Fixed
 
-- **An out-of-credit or permission-denied provider now falls back instead of failing the request.** Every 4xx status the router did not explicitly name was classified as the caller's fault, so an HTTP 402 (empty credit balance) abandoned the fallback chain unwalked and returned the agent a `400 invalid_request_error`. The 4xx map is now explicit: 402 falls back and trips the breaker, 451 deliberately stops the walk, and any unrecognized 4xx falls back while staying strictly breaker-neutral. Separately, **401 and 403 no longer share a kind** — reading a permission or region denial as an authentication failure could take a healthy provider offline for every agent on the instance.
+- **An out-of-credit or permission-denied provider now falls back instead of failing the request.** `classifyResponse` named nine statuses and mapped **every other 4xx** to `bad_request` — the only kind for which fallback is disabled — so "I do not recognize this status" was answered with the most destructive value in the taxonomy. A live HTTP 402 (empty credit balance) therefore abandoned its fallback chain unwalked, left the breaker closed so the next request hit the same dry account, and returned the agent a `400 invalid_request_error`: the one class a well-behaved client never retries. The 4xx map is now explicit — 402 falls back **and** trips (a dry account rejects everything until a human acts), 405/415 are provider misconfiguration, 410 is body-refined exactly as 404 already was, 451 deliberately **stops** the walk, and any unrecognized 4xx falls back while staying strictly breaker-neutral.
+- **401 and 403 no longer share an error kind.** Every provider protocol polyrouter targets returns 401 for an invalid credential and 403 for a permission decision — an unsupported region, a model the key may not call, an org policy. Reading a 403 as an authentication failure treated a per-model denial as provider-wide and opened the circuit breaker, so a single moderation-flagged prompt could take a healthy provider offline for every agent on the instance.
+- **A streamed error's classification now reaches the router.** A credit, policy, or permission marker that appeared only in the wire `code` was lost when the proxy re-derived the kind from the outward error type, misrouting in-band failures on the streaming, breaker, and buffered-Responses paths alike.
+
+### Upgrade notes
+
+- **Drop-in: no migrations, no new or changed environment keys.** Pull `ghcr.io/izzoa/polyrouter:0.16.4` and restart.
+- **Clients see new status codes for cases that used to be a blanket 400.** An exhausted-credit chain now returns `502` (`upstream_credits`), a permission denial `403`, a content-policy refusal `400` with code `content_filter`, and a legal denial `451`. If you match on `400 invalid_request_error` to detect upstream failure, match on the status instead — the Anthropic envelope renders no `code`, so every new kind is distinguishable by status and message in both protocol shapes.
+- **Some requests now cost more before failing.** A chain whose members all sit on one out-of-credit provider dispatches to each member instead of stopping at the first. That is bounded by your configured chain and cascade length (up to 5 per leg), not by the breaker — which opens on a threshold of failures, not the first one — and later requests skip the provider entirely once it trips.
+- **Five new values appear in `error_kind`:** `insufficient_funds`, `permission`, `content_policy`, `policy_block`, `upstream_rejected`. Historical rows keep the kinds they were written with and are never backfilled. Each withholds the provider's own message under a marker naming its reason — the kind carries the diagnosis, because no status whose body semantics providers do not guarantee is trusted to be free of prompt content.
 
 ## [0.16.3] — 2026-08-29
 
@@ -861,7 +872,8 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.16.3...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.16.4...HEAD
+[0.16.4]: https://github.com/izzoa/polyrouter/releases/tag/v0.16.4
 [0.16.3]: https://github.com/izzoa/polyrouter/releases/tag/v0.16.3
 [0.16.2]: https://github.com/izzoa/polyrouter/releases/tag/v0.16.2
 [0.16.1]: https://github.com/izzoa/polyrouter/releases/tag/v0.16.1

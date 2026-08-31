@@ -1,5 +1,11 @@
 # @polyrouter/frontend
 
+## 0.16.5
+
+### Patch Changes
+
+- **No runtime change.** This release exists so the released tag passes its own CI. v0.16.4's tag pointed at a commit whose `npm run typecheck` failed: a two-column `it.each` table in a data-plane spec was read by a one-parameter callback, which jest and the production build both accept (the build config excludes spec files) but a full type-check does not. The fix is confined to that spec file — no shipped code differs from v0.16.4.
+
 ## 0.16.4
 
 ### Patch Changes

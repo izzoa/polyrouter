@@ -15,6 +15,16 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.16.5] — 2026-08-31
+
+### Fixed
+
+- **No runtime change — this release exists so the released tag passes its own CI.** v0.16.4's tag pointed at a commit whose type-check failed on a test file: a two-column `it.each` table read by a one-parameter callback, which jest and the production build both accept (the build config excludes spec files) but a full type-check does not. No shipped code differs from v0.16.4; if you are already running it, there is nothing to gain by upgrading.
+
+### Upgrade notes
+
+- **Nothing to do.** `ghcr.io/izzoa/polyrouter:0.16.5` is behaviourally identical to `0.16.4`. See the [0.16.4] notes for the error-taxonomy changes this line actually carries.
+
 ## [0.16.4] — 2026-08-31
 
 ### Fixed
@@ -872,7 +882,8 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.16.4...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.16.5...HEAD
+[0.16.5]: https://github.com/izzoa/polyrouter/releases/tag/v0.16.5
 [0.16.4]: https://github.com/izzoa/polyrouter/releases/tag/v0.16.4
 [0.16.3]: https://github.com/izzoa/polyrouter/releases/tag/v0.16.3
 [0.16.2]: https://github.com/izzoa/polyrouter/releases/tag/v0.16.2

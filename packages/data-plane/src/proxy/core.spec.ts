@@ -433,38 +433,37 @@ describe('openStreamChain', () => {
   // fix-4xx-error-taxonomy. The chain-walk end of the carried kind: an in-band error
   // whose marker lives ONLY in `code` must walk on with the right kind. Against the
   // pre-change wiring the kind would be re-derived from the generic outward type.
-  it.each([
-    ['insufficient_funds', 'insufficient_funds'],
-    ['content_policy', 'content_policy'],
-    ['permission', 'permission'],
-  ] as const)('walks the chain pre-commit on a carried %s kind', async (carried) => {
-    const attempts = [
-      streamAttempt('p1', async function* () {
-        yield {
-          type: 'error',
-          error: { type: 'error', message: 'refused' },
-          diagnostic: { kind: carried },
-        } as NormalizedStreamEvent;
-      }),
-      streamAttempt('p2', async function* () {
-        yield START;
-        yield TEXT;
-        yield STOP;
-        yield END;
-      }),
-    ];
-    const r = await openStreamChain(
-      newBreaker(),
-      attempts,
-      client,
-      { model: 'x', messages: [], params: {} },
-      OPTS,
-    );
-    expect(r.kind).toBe('stream');
-    if (r.kind !== 'stream') throw new Error('unreachable');
-    expect(r.servedIndex).toBe(1);
-    expect(r.failures[0]?.error.kind).toBe(carried);
-  });
+  it.each(['insufficient_funds', 'content_policy', 'permission'] as const)(
+    'walks the chain pre-commit on a carried %s kind',
+    async (carried) => {
+      const attempts = [
+        streamAttempt('p1', async function* () {
+          yield {
+            type: 'error',
+            error: { type: 'error', message: 'refused' },
+            diagnostic: { kind: carried },
+          } as NormalizedStreamEvent;
+        }),
+        streamAttempt('p2', async function* () {
+          yield START;
+          yield TEXT;
+          yield STOP;
+          yield END;
+        }),
+      ];
+      const r = await openStreamChain(
+        newBreaker(),
+        attempts,
+        client,
+        { model: 'x', messages: [], params: {} },
+        OPTS,
+      );
+      expect(r.kind).toBe('stream');
+      if (r.kind !== 'stream') throw new Error('unreachable');
+      expect(r.servedIndex).toBe(1);
+      expect(r.failures[0]?.error.kind).toBe(carried);
+    },
+  );
 
   // The one carried kind that must NOT walk on: routing around a legal denial is the
   // circumvention `policy_block` exists to prevent.
@@ -713,12 +712,24 @@ describe('output-cap clamps + walk-stop boundaries (add-output-cap-guardrails)',
     const attempts = [
       capAttempt('p1', 'head', record),
       capAttempt('p2', 'tail-a', record, 4_096),
-      capAttempt('p3', 'tail-b', (req) => {
-        seen.push(req.params.maxOutputTokens);
-        return Promise.resolve(ok());
-      }, 16_384),
+      capAttempt(
+        'p3',
+        'tail-b',
+        (req) => {
+          seen.push(req.params.maxOutputTokens);
+          return Promise.resolve(ok());
+        },
+        16_384,
+      ),
     ];
-    const r = await runBufferedChain(newBreaker(), attempts, client, REQ, { created: 1 }, new AbortController().signal);
+    const r = await runBufferedChain(
+      newBreaker(),
+      attempts,
+      client,
+      REQ,
+      { created: 1 },
+      new AbortController().signal,
+    );
     expect(r.ok).toBe(true);
     expect(seen).toEqual([100_000, 4_096, 16_384]); // verbatim head, per-member tail clamps
     for (const f of r.ok ? r.failures : []) expect(f.dispatched).not.toBe(false);
@@ -727,13 +738,27 @@ describe('output-cap clamps + walk-stop boundaries (add-output-cap-guardrails)',
   it('a head bad_request stops the walk — the clamped tail is NOT consulted', async () => {
     let tailCalled = false;
     const attempts = [
-      capAttempt('p1', 'head', () => Promise.reject(new ProviderError('bad_request', 'cap too big'))),
-      capAttempt('p2', 'tail', () => {
-        tailCalled = true;
-        return Promise.resolve(ok());
-      }, 16_384),
+      capAttempt('p1', 'head', () =>
+        Promise.reject(new ProviderError('bad_request', 'cap too big')),
+      ),
+      capAttempt(
+        'p2',
+        'tail',
+        () => {
+          tailCalled = true;
+          return Promise.resolve(ok());
+        },
+        16_384,
+      ),
     ];
-    const r = await runBufferedChain(newBreaker(), attempts, client, REQ, { created: 1 }, new AbortController().signal);
+    const r = await runBufferedChain(
+      newBreaker(),
+      attempts,
+      client,
+      REQ,
+      { created: 1 },
+      new AbortController().signal,
+    );
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.kind).toBe('bad_request');
     expect(tailCalled).toBe(false);
@@ -743,10 +768,15 @@ describe('output-cap clamps + walk-stop boundaries (add-output-cap-guardrails)',
     let tailCalled = false;
     const attempts = [
       capAttempt('p1', 'head', () => Promise.reject(new CallCancelledError())),
-      capAttempt('p2', 'tail', () => {
-        tailCalled = true;
-        return Promise.resolve(ok());
-      }, 16_384),
+      capAttempt(
+        'p2',
+        'tail',
+        () => {
+          tailCalled = true;
+          return Promise.resolve(ok());
+        },
+        16_384,
+      ),
     ];
     const r = await runBufferedChain(
       newBreaker(),
@@ -766,12 +796,24 @@ describe('output-cap clamps + walk-stop boundaries (add-output-cap-guardrails)',
       capAttempt('p1', 'head-a', () => Promise.reject(new ProviderError('unavailable', 'down'))),
       // Same provider: the threshold-1 breaker is now open — skipped without dispatch.
       capAttempt('p1', 'head-b', () => Promise.reject(new Error('never built'))),
-      capAttempt('p2', 'tail', (req) => {
-        expect(req.params.maxOutputTokens).toBe(16_384);
-        return Promise.resolve(ok());
-      }, 16_384),
+      capAttempt(
+        'p2',
+        'tail',
+        (req) => {
+          expect(req.params.maxOutputTokens).toBe(16_384);
+          return Promise.resolve(ok());
+        },
+        16_384,
+      ),
     ];
-    const r = await runBufferedChain(newBreaker(1), attempts, client, REQ, { created: 1 }, new AbortController().signal);
+    const r = await runBufferedChain(
+      newBreaker(1),
+      attempts,
+      client,
+      REQ,
+      { created: 1 },
+      new AbortController().signal,
+    );
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.servedIndex).toBe(2);

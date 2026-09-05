@@ -1,0 +1,47 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "batch_abc123",
+      "object": "batch",
+      "endpoint": "/v1/chat/completions",
+      "input_file_id": "file-abc123",
+      "completion_window": "24h",
+      "status": "in_progress",
+      "output_file_id": null,
+      "error_file_id": null,
+      "created_at": 1782097200,
+      "request_counts": { "total": 2, "completed": 1, "failed": 0 },
+      "metadata": { "polyrouter_job_id": "job-1" }
+    },
+    {
+      "id": "batch_nometa",
+      "object": "batch",
+      "endpoint": "/v1/chat/completions",
+      "input_file_id": "file-zzz",
+      "completion_window": "24h",
+      "status": "completed",
+      "output_file_id": "file-out999",
+      "error_file_id": null,
+      "created_at": 1782090000,
+      "request_counts": { "total": 1, "completed": 1, "failed": 0 },
+      "metadata": null
+    },
+    {
+      "id": "batch_novel",
+      "object": "batch",
+      "endpoint": "/v1/chat/completions",
+      "input_file_id": "file-yyy",
+      "completion_window": "24h",
+      "status": "paused_for_review",
+      "output_file_id": null,
+      "error_file_id": null,
+      "created_at": 1782095000,
+      "request_counts": { "total": 4, "completed": 0, "failed": 0 },
+      "metadata": { "polyrouter_job_id": "job-9" }
+    }
+  ],
+  "first_id": "batch_abc123",
+  "last_id": "batch_novel",
+  "has_more": false
+}

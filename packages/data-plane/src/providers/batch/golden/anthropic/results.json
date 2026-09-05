@@ -1,0 +1,32 @@
+{
+  "lines": [
+    {
+      "custom_id": "req_2",
+      "result": {
+        "type": "errored",
+        "error": {
+          "type": "error",
+          "error": { "type": "rate_limit_error", "message": "This request would exceed your organization's rate limit" },
+          "request_id": "req_011CSHoEeqs5C35K2UUUUUUU"
+        }
+      }
+    },
+    { "custom_id": "req-3", "result": { "type": "expired" } },
+    {
+      "custom_id": "req-1",
+      "result": {
+        "type": "succeeded",
+        "message": {
+          "id": "msg_014VwiXbi91y3JMjcpyGBHX5",
+          "type": "message",
+          "role": "assistant",
+          "model": "claude-sonnet-4-5",
+          "content": [{ "type": "text", "text": "Hello! How can I help you today?" }],
+          "stop_reason": "end_turn",
+          "stop_sequence": null,
+          "usage": { "input_tokens": 11, "output_tokens": 12, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0 }
+        }
+      }
+    }
+  ]
+}

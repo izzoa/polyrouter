@@ -27,6 +27,22 @@ export interface PriceSnapshot {
   readonly isFree: boolean;
   readonly source: PriceSource;
   readonly validFrom: Date | null;
+  /** Which rate rule produced this snapshot (add-batch-inference): `sync` is
+   * every pre-existing path byte-for-byte; `batch` resolves only batch-tier
+   * pairs and never substitutes a synchronous rate. */
+  readonly mode: PriceMode;
+}
+
+export type PriceMode = 'sync' | 'batch';
+
+/** Batch-mode resolution options (add-batch-inference). `listedBatch*` is the
+ * aggregator twin's captured rate (the base model's `:batch` sibling, per
+ * `model-variants`), supplied by the caller — the LAST resort in batch mode,
+ * consulted only when neither catalog row carries a batch pair. */
+export interface PriceResolutionOptions {
+  readonly mode?: PriceMode;
+  readonly listedBatchInputPricePer1m?: number | null;
+  readonly listedBatchOutputPricePer1m?: number | null;
 }
 
 /** What the resolver needs about a tenant model (the caller supplies the catalog
@@ -58,6 +74,9 @@ export interface BundledPrice {
   readonly supportsVision?: boolean;
   readonly supportsReasoning?: boolean;
   readonly isFree?: boolean;
+  /** Batch-tier pair (add-batch-inference): both present or both absent. */
+  readonly batchInputPricePer1m?: number;
+  readonly batchOutputPricePer1m?: number;
 }
 
 /** Provider base_url host → LiteLLM `litellm_provider` family. Aligned to
@@ -147,18 +166,27 @@ export function deriveNativeFamilyKey(
   return canonicalModelKey(family, rest);
 }
 
-/** Map a tenant provider (host) + model id to a catalog key, or null when the
- * host is not a known family — an unknown/reseller host NEVER inherits a
- * well-known provider's price (cost-correctness). */
-export function deriveModelKey(providerBaseUrl: string, externalModelId: string): string | null {
+/** THE single host→family resolution, shared by price-key derivation and
+ * `model-variants` scoping (add-model-variant-detection): both must agree on
+ * what "this provider's billing family" means, and a second host list free to
+ * drift from this one is exactly what the one-canonicalizer rule forbids.
+ * Returns null for an unparseable URL or an unmapped host. */
+export function deriveProviderFamily(providerBaseUrl: string): string | null {
   let host: string;
   try {
     host = new URL(providerBaseUrl).hostname.toLowerCase();
   } catch {
     return null;
   }
-  const family = PROVIDER_FAMILY_HOSTS[host];
-  if (family === undefined) return null;
+  return PROVIDER_FAMILY_HOSTS[host] ?? null;
+}
+
+/** Map a tenant provider (host) + model id to a catalog key, or null when the
+ * host is not a known family — an unknown/reseller host NEVER inherits a
+ * well-known provider's price (cost-correctness). */
+export function deriveModelKey(providerBaseUrl: string, externalModelId: string): string | null {
+  const family = deriveProviderFamily(providerBaseUrl);
+  if (family === null) return null;
   return canonicalModelKey(family, externalModelId);
 }
 
@@ -172,7 +200,9 @@ export function resolveModelPrice(
   input: PriceResolutionInput,
   catalogRow: ModelPriceRow | null,
   nativeCatalogRow: ModelPriceRow | null = null,
+  opts: PriceResolutionOptions = {},
 ): PriceSnapshot | null {
+  if (opts.mode === 'batch') return resolveBatchPrice(catalogRow, nativeCatalogRow, opts);
   // A model-own price is honored ONLY for a custom/local provider — the API forbids
   // setting one on an api_key/subscription provider (its price comes from the
   // catalog), so a stale price left after a kind change, or one restored by a
@@ -193,6 +223,7 @@ export function resolveModelPrice(
       isFree: input.modelIsFree,
       source: 'model',
       validFrom: null,
+      mode: 'sync',
     };
   }
   if (input.providerKind === 'local') {
@@ -206,6 +237,7 @@ export function resolveModelPrice(
       isFree: true,
       source: 'local',
       validFrom: null,
+      mode: 'sync',
     };
   }
   if (catalogRow !== null) {
@@ -219,6 +251,7 @@ export function resolveModelPrice(
       isFree: catalogRow.isFree,
       source: catalogRow.source as PriceSource,
       validFrom: catalogRow.validFrom,
+      mode: 'sync',
     };
   }
   if (nativeCatalogRow !== null) {
@@ -235,6 +268,7 @@ export function resolveModelPrice(
       isFree: nativeCatalogRow.isFree,
       source: 'native_family',
       validFrom: nativeCatalogRow.validFrom,
+      mode: 'sync',
     };
   }
   // LAST resort (record-listed-price-fallback): the provider's OWN listed
@@ -259,8 +293,61 @@ export function resolveModelPrice(
         isFree: input.listedIsFree,
         source: 'listed',
         validFrom: null,
+        mode: 'sync',
       };
     }
+  }
+  return null;
+}
+
+/** Batch-mode precedence (add-batch-inference): the exact row's batch pair →
+ * the native-family row's batch pair (`native_family`) → the twin's captured
+ * listed batch rate (`listed`, no version id) → null. A model-own or local
+ * price is never used (those kinds have no batch API), and a synchronous rate
+ * NEVER stands in for a missing batch rate — unknown rather than wrong. */
+function resolveBatchPrice(
+  catalogRow: ModelPriceRow | null,
+  nativeCatalogRow: ModelPriceRow | null,
+  opts: PriceResolutionOptions,
+): PriceSnapshot | null {
+  const fromRow = (row: ModelPriceRow, source: PriceSource): PriceSnapshot | null =>
+    row.batchInputPricePer1m !== null && row.batchOutputPricePer1m !== null
+      ? {
+          priceVersionId: row.id,
+          modelKey: row.modelKey,
+          inputPricePer1m: row.batchInputPricePer1m,
+          outputPricePer1m: row.batchOutputPricePer1m,
+          cacheReadPricePer1m: null,
+          cacheWritePricePer1m: null,
+          isFree: row.batchInputPricePer1m === 0 && row.batchOutputPricePer1m === 0,
+          source,
+          validFrom: row.validFrom,
+          mode: 'batch',
+        }
+      : null;
+  if (catalogRow !== null) {
+    const exact = fromRow(catalogRow, catalogRow.source as PriceSource);
+    if (exact !== null) return exact;
+  }
+  if (nativeCatalogRow !== null) {
+    const native = fromRow(nativeCatalogRow, 'native_family');
+    if (native !== null) return native;
+  }
+  const li = opts.listedBatchInputPricePer1m ?? null;
+  const lo = opts.listedBatchOutputPricePer1m ?? null;
+  if (li !== null && lo !== null) {
+    return {
+      priceVersionId: null,
+      modelKey: null,
+      inputPricePer1m: li,
+      outputPricePer1m: lo,
+      cacheReadPricePer1m: null,
+      cacheWritePricePer1m: null,
+      isFree: li === 0 && lo === 0,
+      source: 'listed',
+      validFrom: null,
+      mode: 'batch',
+    };
   }
   return null;
 }

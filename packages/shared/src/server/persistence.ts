@@ -9,6 +9,7 @@ import type {
   routingRules,
   tiers,
   AgentRow,
+  BatchJobRow,
   BudgetRow,
   ModelPriceRow,
   ModelRow,
@@ -21,6 +22,8 @@ import type {
   TierRow,
 } from './db/schema';
 import type { Principal } from './tenancy';
+import type { BatchEndpoint, BatchJobErrorKind, BatchJobStatus } from '../batch-jobs';
+import type { PriceMode } from './pricing/resolve';
 
 /** Injection tokens for the persistence seam (spec §11.1 + the workspace
  * dependency matrix): the control-plane database module PROVIDES these; the
@@ -28,6 +31,11 @@ import type { Principal } from './tenancy';
  * database module ever sees a raw Pool/drizzle handle. */
 export const PERSISTENCE_PORT = 'polyrouter:persistence-port';
 export const PERSISTENCE_FACILITIES = 'polyrouter:persistence-facilities';
+/** Instance-level maintenance accessors (add-batch-inference). Provided by the
+ * persistence module's SEPARATE maintenance module — never by the database module
+ * a request-handling module imports — so a controller-bearing module cannot
+ * resolve it (tenant-isolation: a negative DI test pins this). */
+export const PERSISTENCE_MAINTENANCE = 'polyrouter:persistence-maintenance';
 export const REDIS_CLIENT = 'polyrouter:redis-client';
 
 type InsertInputOf<T extends { $inferInsert: unknown }> = Omit<
@@ -91,11 +99,38 @@ export interface ModelAccessor {
    * returning the count cleared. Used when a provider's kind leaves custom/local
    * so a stale price can't be displayed for a now-catalog-priced provider. */
   clearPricingForProvider(principal: Principal, providerId: string): Promise<number>;
-  /** Clear all of a provider's models' provider-listed DISPLAY estimates (`listed_*`,
-   * owner-scoped), returning the count cleared. Used when a provider's base_url/protocol
-   * changes so an estimate captured from the prior endpoint is not displayed
-   * (add-provider-price-sync-and-edit). Never touches the billing user-price columns. */
+  /** Clear all of a provider's models' provider-listed DISPLAY estimates (`listed_*`)
+   * AND their derived `variant` classification (owner-scoped), returning the count
+   * cleared. Used when a provider's base_url/protocol changes: both were derived from
+   * the prior endpoint — an estimate captured there must not be displayed for a
+   * different one (add-provider-price-sync-and-edit), and a family-scoped
+   * classification must not keep a retained model non-routable after the provider is
+   * repointed away from that family (add-model-variant-detection). Both repopulate on
+   * the next sync. Never touches the billing user-price columns. */
   clearListedPricingForProvider(principal: Principal, providerId: string): Promise<number>;
+}
+
+/** One model's re-derived classification, as produced by the pure callback the
+ * maintenance pass is given. */
+export interface ModelVariantDeriveInput {
+  /** Nullable: `provider.base_url` is optional (a bundled-preset provider may
+   * carry none), and such a provider resolves to no family — hence no variant. */
+  readonly providerBaseUrl: string | null;
+  readonly externalModelId: string;
+}
+
+/** SYSTEM maintenance over model rows (add-model-variant-detection). Deliberately
+ * NOT principal-scoped: it is an instance-level pass that re-derives each row's
+ * value from that row's OWN provider (joined by `provider_id`), so no data crosses
+ * a tenant boundary and no row is read on behalf of another tenant. It carries no
+ * policy: the caller supplies the pure derivation, keeping the allowlist and the
+ * host->family map in one shared module rather than duplicated in SQL. */
+export interface ModelMaintenance {
+  /** Re-derive every model's `variant` and write ONLY the rows whose stored value
+   * differs, so a converged database takes no writes (idempotent by construction). */
+  classifyVariants(
+    derive: (input: ModelVariantDeriveInput) => string | null,
+  ): Promise<{ scanned: number; updated: number }>;
 }
 
 /** Outcome of an atomic chain replacement (#9). Distinguishes the two ownership
@@ -146,6 +181,8 @@ export type ModelPriceInput = {
   cacheWritePricePer1m?: number | null;
   contextWindow?: number | null;
   maxOutputTokens?: number | null;
+  batchInputPricePer1m?: number | null;
+  batchOutputPricePer1m?: number | null;
   supportsTools?: boolean;
   supportsVision?: boolean;
   supportsReasoning?: boolean;
@@ -202,8 +239,141 @@ export type RequestLogInsertInput = Omit<
  * (`ON CONFLICT (id) DO NOTHING`). Reads are ownership-scoped (invariant 5). */
 export interface RequestLogAccessor {
   insertMany(principal: Principal, rows: RequestLogInsertInput[]): Promise<void>;
+  /** The DURABLE settlement insert (add-batch-inference D9): same idempotent
+   * `ON CONFLICT (id) DO NOTHING` write, but it reports WHICH ids actually landed —
+   * a conflict replay (a crashed settlement re-run, a duplicate poll) reports zero
+   * new rows, so per-row cost metrics fire once per row, never per attempt. */
+  insertManyReturning(
+    principal: Principal,
+    rows: RequestLogInsertInput[],
+  ): Promise<{ insertedIds: string[] }>;
   list(principal: Principal): Promise<RequestLogRow[]>;
   findById(principal: Principal, id: string): Promise<RequestLogRow | null>;
+}
+
+/** A batch job ready to insert (add-batch-inference). `id` is pre-allocated by the
+ * submit path — it is the upstream idempotency key, so the row must exist under it
+ * BEFORE the create (D6). The owner is forced from the principal; the status is
+ * forced to `submitting`, the counts to zero, the upstream id to null: every
+ * later column is system-owned and reachable only through `update`/`settle`. */
+export interface BatchJobInsertInput {
+  id: string;
+  agentId: string;
+  providerId: string;
+  modelId: string;
+  tierAssigned: string | null;
+  endpoint: BatchEndpoint;
+  /** The upstream wire protocol the items were serialized to. */
+  protocol: string;
+  /** The serving provider's kind at submission (spend classification). */
+  providerKind: string;
+  itemCount: number;
+  estimatedInputTokens: number;
+  priceMode: PriceMode;
+  inputPriceSnapshot: number | null;
+  outputPriceSnapshot: number | null;
+  cacheReadPriceSnapshot: number | null;
+  cacheWritePriceSnapshot: number | null;
+  priceVersionId: string | null;
+  priceSource: string | null;
+  /** Integer µ$; null = no finite ceiling (admitted under no `block` budget). */
+  reservedCeilingMicros: number | null;
+  completionWindowMs: number;
+}
+
+/** The system-owned columns a job's lifecycle writes (submit → poll → settle).
+ * No identity, route, snapshot, or ceiling field is patchable: those are fixed
+ * at submission (D7). */
+export interface BatchJobSystemPatch {
+  status?: BatchJobStatus;
+  upstreamBatchId?: string | null;
+  completedCount?: number;
+  failedCount?: number;
+  cancelRequested?: boolean;
+  errorKind?: BatchJobErrorKind | null;
+  lastPolledAt?: Date | null;
+  stalledSince?: Date | null;
+  resultsExpireAt?: Date | null;
+}
+
+/** The one write that ends a job: counts, the summed settled cost, the terminal
+ * status with its stamp — applied only from `finalizing`/`cancelling` (D9). */
+export interface BatchJobSettlement {
+  status: 'completed' | 'failed' | 'expired' | 'cancelled';
+  completedCount: number;
+  failedCount: number;
+  settledCostMicros: number;
+  terminalAt: Date;
+  errorKind?: BatchJobErrorKind | null;
+  resultsExpireAt?: Date | null;
+}
+
+/** Keyset cursor over the job listing's order — active first (non-terminal before
+ * terminal), then newest-submitted first, tie-broken by id. `submittedAt` is the
+ * full-precision `::text` rendering, like the request listing's cursor. */
+export interface BatchJobsCursor {
+  terminal: boolean;
+  submittedAt: string;
+  id: string;
+}
+
+export interface BatchJobsListQuery {
+  limit: number;
+  cursor?: BatchJobsCursor;
+  /** Restrict to one agent's jobs (the agent-key plane's `GET /v1/batches`). */
+  agentId?: string;
+}
+
+export interface BatchJobsPage {
+  rows: BatchJobRow[];
+  nextCursor: string | null;
+}
+
+/** Owner-scoped batch jobs (add-batch-inference; invariant 5): every method takes
+ * the principal; another tenant's job is a null, indistinguishable from a missing
+ * one. Mutations are compare-and-set on status so two pollers or a poller and a
+ * cancel cannot both "win" a transition. */
+export interface BatchJobAccessor {
+  insert(principal: Principal, values: BatchJobInsertInput): Promise<BatchJobRow>;
+  findById(principal: Principal, id: string): Promise<BatchJobRow | null>;
+  /** Every non-terminal job, newest-submitted first — the live band's source. */
+  listActive(principal: Principal, opts?: { agentId?: string }): Promise<BatchJobRow[]>;
+  list(principal: Principal, query: BatchJobsListQuery): Promise<BatchJobsPage>;
+  /** Patch system-owned columns; with `whenStatusIn`, only when the row is
+   * currently in one of those states (CAS). Null = not found, not owned, or not
+   * in state — the caller reads first when it must tell those apart. */
+  update(
+    principal: Principal,
+    id: string,
+    patch: BatchJobSystemPatch,
+    opts?: { whenStatusIn?: readonly BatchJobStatus[] },
+  ): Promise<BatchJobRow | null>;
+  /**
+   * The single terminal write: counts, settled cost, terminal status and stamp.
+   * Guarded by a compare-and-set on status, defaulting to `finalizing`/`cancelling`
+   * — the states the settlement path holds a job in while its chunks land, so a
+   * job can never flip terminal before its rows are durable. A job that ends with
+   * NOTHING to settle (an expiry the upstream confirmed, a provably lost
+   * submission) passes the wider non-terminal set explicitly. A terminal row is
+   * never re-settled either way.
+   */
+  settle(
+    principal: Principal,
+    id: string,
+    settlement: BatchJobSettlement,
+    opts?: { whenStatusIn?: readonly BatchJobStatus[] },
+  ): Promise<BatchJobRow | null>;
+  /** The listing cursor positioned AT this job (the `after=<id>` idiom of the
+   * agent-key plane's list) — null for a job the principal cannot see. */
+  cursorForJob(principal: Principal, id: string): Promise<string | null>;
+  /** A submit that never reached the upstream (a budget rejection, an ingress
+   * failure after the row): delete the `submitting` row that has no upstream id —
+   * it never existed for the caller. False when nothing matched. */
+  discard(principal: Principal, id: string): Promise<boolean>;
+  /** A DEFINITIVE failure with no settlement (a provider-rejected create, a
+   * provably lost submission): terminal `failed` from any non-terminal state, with
+   * the taxonomy kind and a zero settled cost. Null when already terminal. */
+  fail(principal: Principal, id: string, errorKind: BatchJobErrorKind): Promise<BatchJobRow | null>;
 }
 
 /** A request-attempt ledger row ready to insert (id pre-allocated; owner forced
@@ -249,6 +419,11 @@ export interface AnalyticsSummary {
   errorCount: number;
   escalatedCount: number;
   estimatedCount: number;
+  /** Settled batch items in the range (add-batch-inference). They ARE part of
+   * `requests`, `spend` and the token totals — they are spend the owner incurred —
+   * so this count makes their share visible rather than silent, and marks the
+   * population every latency figure must exclude (a job's wall time is hours). */
+  batchRequests: number;
   /** Served-request classification by served cost: 0 / >0 / null. */
   freeRequests: number;
   /** Total priced (cost > 0) requests — retained so existing consumers keep working;
@@ -336,6 +511,12 @@ export interface AnalyticsRequestsQuery {
   /** Match ANY of these decision layers (the dashboard's multi-value chips). */
   decisionLayers?: string[];
   escalated?: boolean;
+  /** Execution mode (add-batch-inference): `sync` excludes settled batch items,
+   * `batch` returns only them. A row predating `price_mode` reads as `sync`. */
+  mode?: 'sync' | 'batch';
+  /** Exactly one owned job's items — the live band's targeted existence read.
+   * Another tenant's job id simply matches nothing (the range is owner-scoped). */
+  batchId?: string;
 }
 
 /** A request-log row enriched for the dashboard listing: owner-scoped labels
@@ -891,8 +1072,46 @@ export interface PersistencePort {
   users: UsersInfra;
   /** Global pricing catalog (#8) — non-owned, append-only. */
   pricing: PricingCatalog;
+  /** Owner-scoped batch jobs (add-batch-inference). */
+  batchJobs: BatchJobAccessor;
   /** Idempotent, race-safe `default`-tier provisioning (spec §5); #3 calls this at user creation. */
   ensureDefaultTier(principal: Principal): Promise<TierRow>;
+}
+
+/** The batch poller's sweep (add-batch-inference D19): every non-terminal job
+ * across owners, each row carrying its own owner — the poller derives the
+ * principal it acts under FROM THE ROW and performs every write through the
+ * owner-scoped `batchJobs`/`requestLogs` accessors. No by-id read exists here. */
+export interface BatchJobMaintenance {
+  /** Oldest-updated first (fairness across a slow job), bounded by `limit`. */
+  listNonTerminal(limit: number): Promise<BatchJobRow[]>;
+}
+
+/** The reconciler's pending read (spend-limits): Σ reserved ceilings of one
+ * owner's non-terminal jobs submitted in `[start, endExclusive)` — `submitting`
+ * included, so a reconciliation interleaved between a job row and its Redis add
+ * can only over-count briefly, never erase a live reservation (D8). Mirrors the
+ * budget reader's `spendMicrosFor` shape so the scheduler treats both alike. */
+export interface ReservationMaintenance {
+  pendingMicrosFor(
+    ownerUserId: string,
+    agentId: string | null,
+    start: Date,
+    endExclusive: Date,
+  ): Promise<number>;
+}
+
+/** Purpose-specific instance-level maintenance (tenant-isolation, add-batch-
+ * inference). Each accessor enumerates rows ACROSS owners for one named system
+ * purpose, derives every row's owner from the row itself, and writes only the
+ * system-owned columns its purpose names; none returns a query builder, a raw
+ * handle, or a by-id read of an owned row. Consumed by scheduler and bootstrap
+ * providers only — never by a request-handling module. */
+export interface PersistenceMaintenance {
+  /** B-1's classification pass (add-model-variant-detection), moved here. */
+  models: ModelMaintenance;
+  batchJobs: BatchJobMaintenance;
+  reservations: ReservationMaintenance;
 }
 
 /** Privileged facilities (needed by #3's first-admin transaction). Callbacks

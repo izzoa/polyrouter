@@ -26,11 +26,11 @@ function tier(key: string, over: Partial<TierRow> = {}): TierRow {
   };
 }
 
-function model(id: string): ModelRow {
+function model(id: string, variant: string | null = null, externalModelId?: string): ModelRow {
   return {
     id,
     providerId: 'p1',
-    externalModelId: id,
+    externalModelId: externalModelId ?? id,
     displayName: null,
     contextWindow: null,
     supportsTools: false,
@@ -43,6 +43,7 @@ function model(id: string): ModelRow {
     listedOutputPricePer1m: null,
     listedIsFree: null,
     listedPriceCapturedAt: null,
+    variant,
     lastSyncedAt: null,
   };
 }
@@ -219,6 +220,44 @@ describe('RoutingConfigService — entries', () => {
       [0, 'm2'],
       [1, 'm1'],
     ]);
+  });
+});
+
+describe('non-routable targets are refused at write time (add-model-variant-detection)', () => {
+  const twin = model('m_twin', 'batch', 'openai/gpt-6-astra:batch');
+  const seed = () => ({ tiers: [tier('default')], models: [model('m1'), twin] });
+
+  it('rejects a tier-entry PUT naming a batch-only model, naming the base id', async () => {
+    const { svc } = svcWith(seed());
+    await expect(svc.replaceEntries(P, 't_default', ['m1', 'm_twin'])).rejects.toThrow(
+      /batch-priced variant/,
+    );
+    await expect(svc.replaceEntries(P, 't_default', ['m1', 'm_twin'])).rejects.toThrow(
+      /openai\/gpt-6-astra/,
+    );
+  });
+
+  it('rejects the whole list even when the offending member was already stored', async () => {
+    // A PUT is a full replacement: accepting it would re-affirm an unservable member.
+    const { svc } = svcWith(seed());
+    await expect(svc.replaceEntries(P, 't_default', ['m_twin'])).rejects.toThrow(
+      /batch-priced variant/,
+    );
+  });
+
+  it('rejects a rule whose model: target is batch-only, but not a tier: target', async () => {
+    const { svc } = svcWith(seed());
+    await expect(
+      svc.createRule(P, { matchType: 'default', target: 'model:m_twin' }),
+    ).rejects.toThrow(/batch-priced variant/);
+    await expect(
+      svc.createRule(P, { matchType: 'default', target: 'tier:default' }),
+    ).resolves.toBeDefined();
+  });
+
+  it('still accepts a routable model target', async () => {
+    const { svc } = svcWith(seed());
+    await expect(svc.replaceEntries(P, 't_default', ['m1'])).resolves.toBeDefined();
   });
 });
 

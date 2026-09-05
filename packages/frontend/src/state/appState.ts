@@ -4,6 +4,7 @@ import {
   type HarnessType,
   WORKLOAD_CLASSES,
   type WorkloadClass,
+  isNonRoutableVariant,
 } from '@polyrouter/shared';
 import {
   createEventStream,
@@ -21,7 +22,7 @@ import {
 } from '../a11y';
 import { createStore, produce, type SetStoreFunction } from 'solid-js/store';
 import { DEFAULT_PAGE, hashForPage, pageFromHash } from './route';
-import { filterToRequestParams } from '../data/analytics';
+import { filterToRequestParams, modeToRequestParams } from '../data/analytics';
 import {
   EVENT_TYPES,
   type AdminInviteDto,
@@ -54,6 +55,7 @@ import {
   type PricingStatus,
   type BodyCaptureStatus,
   type RequestBodyContent,
+  type BatchJobsPage,
   type InflightSnapshot,
   type RequestRow,
   type RuleDto,
@@ -73,6 +75,15 @@ import {
   reconcile as reconcileInflightState,
   type StreamState,
 } from '../data/inflight';
+import {
+  BATCH_POLL_MS,
+  batchDisplay,
+  emptyBatchBand,
+  foldBatch,
+  reconcileBatch,
+  type BatchBandState,
+  type BatchDisplayRow,
+} from '../data/batchBand';
 import { effectiveRuleOrder } from '../data/bandTargets';
 
 /** A band rule belongs to the (band, scope) selection (add-workload-scoped-bands):
@@ -105,6 +116,7 @@ import type {
   ProviderStatus,
   Range,
   RequestFilter,
+  RequestMode,
   RoutingSection,
   SessionInfo,
   Theme,
@@ -121,6 +133,9 @@ export interface RequestWindow {
   from: string;
   to: string;
   filter: RequestFilter;
+  /** The mode the window was frozen under (add-batch-inference), so the
+   * new-rows probe counts exactly what the list would show. */
+  mode: RequestMode;
 }
 
 export interface AppState {
@@ -143,6 +158,9 @@ export interface AppState {
     range: Range;
   };
   reqFilter: RequestFilter;
+  /** add-batch-inference: the Requests page's execution-mode partition. Orthogonal
+   * to `reqFilter` — one asks "how was it routed", the other "how was it run". */
+  reqMode: RequestMode;
   selId: string | null;
   toast: string | null;
   modal: ModalKind | null;
@@ -266,6 +284,9 @@ export interface AppState {
   recentRequestsError: string | null;
   /** add-inflight-requests: live in-flight rows merged above the recent list. */
   inflightRows: InflightDisplayRow[];
+  /** add-batch-inference: live batch JOB rows — a SECOND live partition, combined
+   * with `inflightRows` only at render (D11). */
+  batchRows: BatchDisplayRow[];
   /** Live-view transport health (phase2-add-dashboard-event-stream). */
   streamHealth: StreamHealth;
   requestList: RequestRow[];
@@ -734,6 +755,7 @@ function initialState(): AppState {
     routingSection: 'auto',
     autoPerf: { data: null, loaded: false, error: null, range: '7d' },
     reqFilter: 'all',
+    reqMode: 'all',
     selId: null,
     toast: null,
     modal: null,
@@ -788,6 +810,7 @@ function initialState(): AppState {
     recentRequestsLoading: false,
     recentRequestsError: null,
     inflightRows: [],
+    batchRows: [],
     streamHealth: 'polling',
     requestList: [],
     requestListLoading: false,
@@ -909,6 +932,7 @@ export interface AppStore {
   revertSemanticLearning: () => Promise<void>;
   loadSemanticLearning: () => Promise<void>;
   setFilter: (filter: RequestFilter) => void;
+  setMode: (mode: RequestMode) => void;
   select: (id: string | null) => void;
   say: (msg: string) => void;
   clearToast: () => void;
@@ -918,6 +942,11 @@ export interface AppStore {
   loadCosts: () => Promise<void>;
   loadRecentRequests: () => Promise<void>;
   loadInflight: () => Promise<void>;
+  /** add-batch-inference: refresh the batch partition from its authoritative read. */
+  loadBatchBand: () => Promise<void>;
+  cancelBatch: (id: string) => Promise<void>;
+  /** add-batch-inference (Phase D): the Batches page's owner-scoped listing. */
+  listBatches: (query: { limit?: number; cursor?: string }) => Promise<BatchJobsPage>;
   /** Dashboard event stream (phase2-add-dashboard-event-stream): the app shell opens
    * it while visible + live and closes it when hidden, releasing its slot in the
    * SHARED per-origin connection pool rather than merely pausing a timer. */
@@ -1268,6 +1297,8 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     // tenant isolation overrides handoff continuity — dropping a row mid-settling-grace
     // is correct and required.
     inflightState = emptyStream();
+    batchState = emptyBatchBand();
+    batchHandedOff.clear();
     bump('recent');
     // The REQUEST VIEW crosses the boundary too (fix-request-view-identity-scope): the
     // paginated list with its cursor and frozen window, and — the part that matters most —
@@ -1294,6 +1325,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     setState(
       produce((s) => {
         s.inflightRows = [];
+        s.batchRows = [];
         s.recentRequests = [];
         s.analyticsSummary = null;
         s.analyticsSummaryLoading = false;
@@ -1920,6 +1952,104 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     if (refresh) void loadRecentRequests(); // a settle was observed → durable refresh
   };
 
+  // ---------------------------------------------------------------------------
+  // The BATCH partition of the live band (add-batch-inference D11/D18, task 5.1).
+  //
+  // Its own fold, its own authoritative read, its own gate — beside the in-flight
+  // partition, never inside it. `foldInflight` replaces the whole live set from
+  // each snapshot, so a job riding it would be settled by any in-flight poll that
+  // did not mention it, and an in-flight entry would be settled by a batch read.
+  // ---------------------------------------------------------------------------
+  let batchState: BatchBandState = emptyBatchBand();
+  /** Job ids whose settled item rows are known to be visible — the handoff. */
+  const batchHandedOff = new Set<string>();
+  let batchEpoch = 0;
+
+  /** Ids proven handed off, plus any job already represented by a loaded item row.
+   * Both halves matter: the existence read is targeted, and the ordinary list can
+   * surface a job's items before that read ever runs. */
+  const batchHandedOffIds = (): ReadonlySet<string> => {
+    const ids = new Set(batchHandedOff);
+    for (const r of state.recentRequests) if (r.batchId !== null) ids.add(r.batchId);
+    for (const r of state.requestList) if (r.batchId !== null) ids.add(r.batchId);
+    return ids;
+  };
+
+  const renderBatchRows = (): void => {
+    const ids = batchHandedOffIds();
+    batchState = reconcileBatch(batchState, ids);
+    setState('batchRows', batchDisplay(batchState, ids));
+  };
+
+  /**
+   * The targeted existence read (D11): the Overview refresh fetches only six rows,
+   * so a small batch's items may never appear in that window. `limit: 1` on the
+   * job's own id answers "are its rows visible yet?" without paging anything.
+   *
+   * A FAILED probe proves nothing and must not hand off — the job stays bridged
+   * and its grace retires it, which is the honest outcome either way.
+   */
+  const probeBatchItems = async (jobId: string): Promise<void> => {
+    const { from, to } = currentRange();
+    try {
+      const page = await client.requests({ from, to, limit: 1, batchId: jobId });
+      if (page.rows.length > 0) batchHandedOff.add(jobId);
+    } catch {
+      /* not evidence — the grace retires the bridged row */
+    }
+  };
+
+  /** Poll the owner's ACTIVE jobs. Any error degrades to an unavailable read:
+   * cached job rows are retained and nothing is settled on it. */
+  const loadBatchBand = async (): Promise<void> => {
+    const idGen = identityGen;
+    const epoch = ++batchEpoch;
+    let rows: BatchDisplayRow[] | null = null;
+    let available = true;
+    try {
+      rows = (await client.batches({ active: true })).rows as unknown as BatchDisplayRow[];
+    } catch {
+      available = false;
+    }
+    if (idGen !== identityGen) return;
+    if (epoch !== batchEpoch) return; // a newer read has since written the fold
+    const { next, settledIds } = foldBatch(
+      batchState,
+      { rows: rows ?? [], available },
+      batchHandedOffIds(),
+      Date.now(),
+    );
+    batchState = next;
+    renderBatchRows();
+    // A job just went terminal: ask whether its item rows are visible yet, and
+    // refresh the durable list so they can be.
+    if (settledIds.length > 0) {
+      void loadRecentRequests();
+      for (const id of settledIds) {
+        void probeBatchItems(id).then(renderBatchRows);
+      }
+    }
+  };
+
+  /**
+   * A `batch.updated` nudge CONSUMES the next scheduled read rather than adding
+   * one (D18, the `analytics.invalidated` rule): the combined nudge+poll rate can
+   * never exceed the poll cadence, so a job advancing item by item cannot turn
+   * into a read storm.
+   */
+  let lastBatchReadAt = 0;
+  const requestBatchRefresh = async (force = false): Promise<void> => {
+    const t = Date.now();
+    if (!force && t - lastBatchReadAt < BATCH_POLL_MS) return;
+    lastBatchReadAt = t;
+    await loadBatchBand();
+  };
+
+  const cancelBatch = async (id: string): Promise<void> => {
+    await client.cancelBatch(id);
+    await requestBatchRefresh(true); // the user just acted — never suppressed
+  };
+
   /**
    * The SHARED aggregate-refresh budget (phase2-add-dashboard-event-stream).
    *
@@ -1970,6 +2100,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         to: now,
         limit: NEW_ROWS_CAP,
         ...filterToRequestParams(window.filter),
+        ...modeToRequestParams(window.mode),
       });
       if (!current()) return;
       setState('requestsNew', {
@@ -2086,6 +2217,13 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         if (!fresh()) return;
         onAnalyticsNudge();
       },
+      onBatchUpdated: () => {
+        if (!fresh()) return;
+        // A NUDGE, not a row source: it consumes the next scheduled batch read
+        // rather than adding one, so a job advancing item by item cannot become a
+        // read storm (D18).
+        void requestBatchRefresh();
+      },
       onResync: () => {
         if (!fresh()) return;
         // Drop delta state and re-establish authoritatively. The settling bridge is
@@ -2173,12 +2311,13 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         // A reset ends the paging session and retires any pending disclosure.
         setState({ requestsPaged: false, requestsNew: null });
         const { from, to } = currentRange();
-        const window: RequestWindow = { from, to, filter: state.reqFilter };
+        const window: RequestWindow = { from, to, filter: state.reqFilter, mode: state.reqMode };
         const page = await client.requests({
           from,
           to,
           limit: REQUEST_PAGE_SIZE,
           ...filterToRequestParams(window.filter),
+          ...modeToRequestParams(window.mode),
         });
         if (!current()) return;
         setState(
@@ -2201,6 +2340,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           limit: REQUEST_PAGE_SIZE,
           cursor,
           ...filterToRequestParams(window.filter),
+          ...modeToRequestParams(window.mode),
         });
         if (!current()) return;
         setState(
@@ -2543,6 +2683,10 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       setState('reqFilter', reqFilter);
       void loadRequests(true);
     },
+    setMode: (reqMode) => {
+      setState('reqMode', reqMode);
+      void loadRequests(true);
+    },
     select: (id) => setState({ selId: id, selBodies: { rows: null, loading: false, error: null } }),
     say,
     clearToast: () => {
@@ -2555,6 +2699,9 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     loadCosts,
     loadRecentRequests,
     loadInflight,
+    loadBatchBand: () => requestBatchRefresh(true),
+    cancelBatch,
+    listBatches: (query) => client.batches(query),
     connectStream,
     disconnectStream,
     setStreamFactory: (factory: EventSourceFactory) => {
@@ -3740,9 +3887,19 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
 
         const models = await client.listModels(providerId);
         setState('models', providerId, models);
-        const first = models[0];
+        // The first ROUTABLE model, not `models[0]` (add-model-variant-detection):
+        // an aggregator's catalog can list a batch-priced twin first, and assigning
+        // one would make this guide's own final step — a real `model:"auto"` call —
+        // fail on the chain the guide just built.
+        const first = models.find((m) => !isNonRoutableVariant(m.variant));
         if (!first) {
-          setState('ob', { busy2: false, error2: 'Provider synced but exposed no models' });
+          setState('ob', {
+            busy2: false,
+            error2:
+              models.length > 0
+                ? 'Provider synced, but none of its models can serve requests (batch-priced variants only)'
+                : 'Provider synced but exposed no models',
+          });
           return;
         }
 

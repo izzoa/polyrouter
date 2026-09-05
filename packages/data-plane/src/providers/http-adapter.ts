@@ -34,6 +34,7 @@ import {
   sanitizeRequestId,
 } from './errors';
 import type { ProviderErrorKind } from './errors';
+import type { BatchFactory, BatchTransport } from './batch/transport';
 import {
   createGuardedHttpClient,
   joinUrl,
@@ -80,9 +81,12 @@ function appendQuery(url: string, param: string, value: string): string {
 
 export interface AdapterDeps {
   readonly httpClient?: HttpClient;
+  /** The batch implementation to attach (add-batch-inference): chosen by the
+   * factory from the provider family; absent = no batch seam on this adapter. */
+  readonly batch?: BatchFactory;
 }
 
-function errMeta(res: HttpResponse): { requestId?: string } {
+export function errMeta(res: HttpResponse): { requestId?: string } {
   // Strict allowlist (add-request-error-detail): an arbitrary response-header
   // value is never copied verbatim into error metadata.
   const id = sanitizeRequestId(
@@ -158,7 +162,7 @@ function routingKind(kinds: readonly ProviderErrorKind[]): ProviderErrorKind {
 
 /** Pass typed errors through; wrap everything unexpected as a network fault.
  * Never inspects the credential. */
-function rethrowTyped(err: unknown): never {
+export function rethrowTyped(err: unknown): never {
   if (
     err instanceof ProviderError ||
     err instanceof CallCancelledError ||
@@ -398,7 +402,27 @@ export function createHttpProviderAdapter(
     }
   }
 
-  return { protocol: spec.protocol, chat, chatStream, listModels, testConnection };
+  // The batch seam borrows THIS adapter's client, headers, translate and bounds
+  // (add-batch-inference D4) — attached only when the factory chose a family.
+  const transport: BatchTransport = {
+    baseUrl: config.baseUrl,
+    protocol: spec.protocol,
+    translate: spec.translate,
+    httpClient,
+    headers: (json) => headers(json, false),
+    credential: config.credential,
+    firstByteTimeoutMs,
+    idleTimeoutMs,
+    maxResponseBytes,
+  };
+  return {
+    protocol: spec.protocol,
+    chat,
+    chatStream,
+    listModels,
+    testConnection,
+    ...(deps.batch !== undefined ? { batch: deps.batch(transport) } : {}),
+  };
 }
 
 const PER_MILLION = 1_000_000;

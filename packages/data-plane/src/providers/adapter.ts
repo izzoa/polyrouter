@@ -12,6 +12,7 @@ import type {
   NormalizedResponse,
   NormalizedStreamEvent,
 } from '../proxy/translate';
+import type { BatchAdapter } from './batch';
 
 export type ProviderKind = 'api_key' | 'subscription' | 'custom' | 'local';
 // 'openai_responses' (add-chatgpt-responses) is UPSTREAM/preset-only — no client speaks
@@ -110,6 +111,10 @@ export interface ProviderAdapter {
   chatStream(request: NormalizedRequest, ctx?: CallContext): AsyncGenerator<NormalizedStreamEvent>;
   listModels(ctx?: CallContext): Promise<ProviderModelInfo[]>;
   testConnection(ctx?: CallContext): Promise<ConnectionResult>;
+  /** The optional asynchronous batch seam (add-batch-inference): present ONLY
+   * when the provider family has a batch API — attached by the factory, never by
+   * a protocol adapter on its own. Every decorator MUST forward it. */
+  readonly batch?: BatchAdapter;
 }
 
 export const DEFAULT_FIRST_BYTE_TIMEOUT_MS = 30_000;

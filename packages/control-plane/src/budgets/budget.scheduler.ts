@@ -2,10 +2,17 @@ import {
   Inject,
   Injectable,
   Logger,
+  Optional,
   type OnApplicationBootstrap,
   type OnApplicationShutdown,
 } from '@nestjs/common';
-import { REDIS_CLIENT, type BudgetRow } from '@polyrouter/shared/server';
+import {
+  PERSISTENCE_MAINTENANCE,
+  REDIS_CLIENT,
+  type BudgetRow,
+  type PersistenceMaintenance,
+  type ReservationMaintenance,
+} from '@polyrouter/shared/server';
 import { Queue, Worker, type Job } from 'bullmq';
 import { Redis } from 'ioredis';
 import { jobFailureReason, withDeadline } from '../notifications/notify.queue';
@@ -62,6 +69,11 @@ export async function runBudgetOccurrence(
   producers: NotificationProducers,
   atMs: number,
   staleMs: number,
+  /** The batch reservations read (add-batch-inference D8): each group's pending
+   * total is recomputed from the non-terminal job rows and SET beside the spend
+   * counter, so a leaked or double-counted reservation heals within one occurrence.
+   * Null = no batch surface wired (the counter's pending keys are left alone). */
+  reservations: ReservationMaintenance | null = null,
 ): Promise<void> {
   const at = new Date(atMs);
   const active = await reader.listActiveBudgets();
@@ -108,6 +120,17 @@ export async function runBudgetOccurrence(
     const micros = spend.micros;
     const ttlMs = g.endMs - atMs + GRACE_MS;
     await counter.reconcileMax(g.key, micros, ttlMs);
+    if (reservations !== null) {
+      // The database is the source of truth for pending too: every non-terminal
+      // job's ceiling (`submitting` included) submitted in this period.
+      const pending = await reservations.pendingMicrosFor(
+        g.owner,
+        agentId,
+        new Date(g.startMs),
+        new Date(g.endMs),
+      );
+      await counter.reconcilePending(g.key, pending, ttlMs);
+    }
 
     for (const b of g.budgets) {
       if (b.action !== 'alert' || micros < toMicros(b.amount)) continue;
@@ -168,13 +191,20 @@ export class BudgetScheduler implements OnApplicationBootstrap, OnApplicationShu
   private reconciled = false;
   private shuttingDown = false;
 
+  private readonly reservations: ReservationMaintenance | null;
+
   constructor(
     @Inject(REDIS_CLIENT) redis: Redis,
     @Inject(BUDGET_READER) private readonly reader: BudgetReader,
     private readonly counter: SpendCounter,
     private readonly producers: NotificationProducers,
     @Inject(BUDGETS_CONFIG) cfg: BudgetsConfig,
+    // The maintenance token (add-batch-inference D19): provided by the scheduler's
+    // own controller-free module; optional so a harness without the batch surface
+    // still runs the spend reconcile.
+    @Optional() @Inject(PERSISTENCE_MAINTENANCE) maintenance?: PersistenceMaintenance,
   ) {
+    this.reservations = maintenance?.reservations ?? null;
     this.enabled = cfg.schedEnabled;
     this.cron = cfg.schedCron;
     this.staleMs = cfg.staleMs;
@@ -258,6 +288,7 @@ export class BudgetScheduler implements OnApplicationBootstrap, OnApplicationShu
       this.producers,
       prevMillis - 1,
       this.staleMs,
+      this.reservations,
     );
   }
 

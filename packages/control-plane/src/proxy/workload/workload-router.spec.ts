@@ -36,8 +36,8 @@ function snapshot(
       ]),
     rules,
     models: [
-      { id: 'm-code', providerId: 'p1', externalModelId: 'coder' },
-      { id: 'm-fb', providerId: 'p1', externalModelId: 'fallback' },
+      { id: 'm-code', providerId: 'p1', externalModelId: 'coder', variant: null },
+      { id: 'm-fb', providerId: 'p1', externalModelId: 'fallback', variant: null },
     ],
   };
 }

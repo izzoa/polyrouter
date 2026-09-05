@@ -1,15 +1,20 @@
+import 'reflect-metadata';
 import { Test as NestTest } from '@nestjs/testing';
-import { PERSISTENCE_PORT } from '@polyrouter/shared/server';
+import { PERSISTENCE_MAINTENANCE, PERSISTENCE_PORT } from '@polyrouter/shared/server';
 import type {
   AgentInsertInput,
+  BatchJobInsertInput,
+  PersistenceMaintenance,
   PersistencePort,
   Principal,
   ProviderInsertInput,
   RoutingRuleInsertInput,
   TierInsertInput,
 } from '@polyrouter/shared/server';
+import { AppModule } from '../../src/app.module';
 import { DRIZZLE, PG_POOL } from '../../src/database/database.internal';
 import { DatabaseModule } from '../../src/database/database.module';
+import { DatabaseMaintenanceModule } from '../../src/database/maintenance.module';
 import { TenancyHarness, type TestPrincipal } from './harness';
 
 /** Cross-tenant/IDOR regression suite (tenant-isolation DoD): another
@@ -93,6 +98,28 @@ function ownedCases(port: () => PersistencePort): OwnedCase[] {
   ];
 }
 
+const batchJobValues = (): BatchJobInsertInput => ({
+  id: `job-${Math.random().toString(36).slice(2, 12)}`,
+  agentId: 'agent-1',
+  providerId: 'prov-1',
+  modelId: 'model-1',
+  tierAssigned: null,
+  endpoint: '/v1/chat/completions',
+  protocol: 'openai_compatible',
+  providerKind: 'api_key',
+  itemCount: 3,
+  estimatedInputTokens: 300,
+  priceMode: 'batch',
+  inputPriceSnapshot: 1.25,
+  outputPriceSnapshot: 5,
+  cacheReadPriceSnapshot: null,
+  cacheWritePriceSnapshot: null,
+  priceVersionId: 'v1',
+  priceSource: 'bundled',
+  reservedCeilingMicros: 10_000,
+  completionWindowMs: 86_400_000,
+});
+
 describe('tenant isolation across owned resources', () => {
   it('cross-tenant reads and mutations fail closed for every owned resource', async () => {
     for (const c of ownedCases(() => harness.port)) {
@@ -154,9 +181,18 @@ describe('tenant isolation across owned resources', () => {
     // B can; A cannot see, update, or delete it — and providerId is immutable
     const model = await harness.port.models.createForProvider(bob.principal, bobsProvider.id, {
       externalModelId: `m-${Math.random().toString(36).slice(2, 8)}`,
+      // add-model-variant-detection: the derived classification is owner-scoped
+      // like every other model field — a cross-tenant read must not reveal it,
+      // and a cross-tenant write must not set it.
+      variant: 'batch',
     });
     expect(model).not.toBeNull();
+    expect(model!.variant).toBe('batch');
     expect(await harness.port.models.findById(alice.principal, model!.id)).toBeNull();
+    expect(
+      await harness.port.models.update(alice.principal, model!.id, { variant: null }),
+    ).toBeNull();
+    expect((await harness.port.models.findById(bob.principal, model!.id))!.variant).toBe('batch');
     expect(
       await harness.port.models.update(alice.principal, model!.id, { displayName: 'x' }),
     ).toBeNull();
@@ -264,5 +300,160 @@ describe('tenant isolation across owned resources', () => {
     } finally {
       await app.close();
     }
+  });
+});
+
+describe('batch jobs are owner-scoped on every surface (add-batch-inference, task 2.3)', () => {
+  it('another tenant’s job is a missing job for reads, listings, cancels, and settlement', async () => {
+    const jobs = harness.port.batchJobs;
+    const mine = await jobs.insert(bob.principal, batchJobValues());
+    expect(mine.status).toBe('submitting'); // forced, not caller-assignable
+    expect(mine.ownerUserId).toBe(bob.userId);
+
+    // reads
+    expect(await jobs.findById(alice.principal, mine.id)).toBeNull();
+    expect(await jobs.findById(alice.principal, 'does-not-exist')).toBeNull();
+    expect((await jobs.listActive(alice.principal)).map((j) => j.id)).not.toContain(mine.id);
+    expect((await jobs.list(alice.principal, { limit: 50 })).rows.map((j) => j.id)).not.toContain(
+      mine.id,
+    );
+    // a cancel intent and a status transition from the wrong tenant touch nothing
+    expect(await jobs.update(alice.principal, mine.id, { cancelRequested: true })).toBeNull();
+    expect(
+      await jobs.update(
+        alice.principal,
+        mine.id,
+        { status: 'failed' },
+        { whenStatusIn: ['submitting'] },
+      ),
+    ).toBeNull();
+    expect(
+      await jobs.settle(alice.principal, mine.id, {
+        status: 'completed',
+        completedCount: 3,
+        failedCount: 0,
+        settledCostMicros: 1,
+        terminalAt: new Date(),
+      }),
+    ).toBeNull();
+    const untouched = await jobs.findById(bob.principal, mine.id);
+    expect(untouched?.status).toBe('submitting');
+    expect(untouched?.cancelRequested).toBe(false);
+    expect(untouched?.terminalAt).toBeNull();
+
+    // the owner's own paths work — and the CAS is real
+    expect(
+      await jobs.update(
+        bob.principal,
+        mine.id,
+        { status: 'failed' },
+        { whenStatusIn: ['in_progress'] },
+      ),
+    ).toBeNull();
+    const moved = await jobs.update(
+      bob.principal,
+      mine.id,
+      { status: 'validating', upstreamBatchId: 'up-1' },
+      { whenStatusIn: ['submitting'] },
+    );
+    expect(moved?.status).toBe('validating');
+    expect(moved?.upstreamBatchId).toBe('up-1');
+  });
+
+  it('the poller’s sweep sees every tenant’s live jobs, each carrying its own owner', async () => {
+    const a = await harness.port.batchJobs.insert(alice.principal, batchJobValues());
+    const b = await harness.port.batchJobs.insert(bob.principal, batchJobValues());
+    const swept = await harness.maintenance.batchJobs.listNonTerminal(1_000);
+    const byId = new Map(swept.map((j) => [j.id, j]));
+    expect(byId.get(a.id)?.ownerUserId).toBe(alice.userId);
+    expect(byId.get(b.id)?.ownerUserId).toBe(bob.userId);
+    // The sweep hands out rows, never a by-id read: there is no such method.
+    expect(
+      (harness.maintenance.batchJobs as unknown as Record<string, unknown>)['findById'],
+    ).toBeUndefined();
+  });
+});
+
+describe('the maintenance token is a real module boundary (add-batch-inference, task 2.2)', () => {
+  it('cannot be injected by a module that imports only DatabaseModule', async () => {
+    const compile = NestTest.createTestingModule({
+      imports: [DatabaseModule],
+      providers: [
+        { provide: 'PROBE', useFactory: (m: unknown) => m, inject: [PERSISTENCE_MAINTENANCE] },
+      ],
+    }).compile();
+    await expect(compile).rejects.toThrow(/resolve|dependency/i);
+  });
+
+  it('resolves for a scheduler module importing the maintenance module, with no raw handle in reach', async () => {
+    for (const token of [DRIZZLE, PG_POOL]) {
+      const compile = NestTest.createTestingModule({
+        imports: [DatabaseMaintenanceModule],
+        providers: [{ provide: 'PROBE', useFactory: (raw: unknown) => raw, inject: [token] }],
+      }).compile();
+      await expect(compile).rejects.toThrow(/resolve|dependency/i);
+    }
+    const moduleRef = await NestTest.createTestingModule({
+      imports: [DatabaseMaintenanceModule],
+      providers: [
+        {
+          provide: 'SCHEDULER',
+          useFactory: (m: PersistenceMaintenance) => m,
+          inject: [PERSISTENCE_MAINTENANCE],
+        },
+      ],
+    }).compile();
+    const app = moduleRef.createNestApplication();
+    await app.init();
+    try {
+      const m = app.get<PersistenceMaintenance>('SCHEDULER');
+      expect(typeof m.models.classifyVariants).toBe('function');
+      expect(typeof m.batchJobs.listNonTerminal).toBe('function');
+      expect(typeof m.reservations.pendingMicrosFor).toBe('function');
+      // No member — at any depth — is a query builder or a raw handle.
+      for (const surface of [m, m.models, m.batchJobs, m.reservations]) {
+        const rec = surface as unknown as Record<string, unknown>;
+        for (const forbidden of ['query', 'execute', 'select', 'transaction', 'insert', 'db']) {
+          expect(rec[forbidden]).toBeUndefined();
+        }
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('the scoped port gained no unscoped method — the classification pass left it', () => {
+    const port = harness.port as unknown as Record<string, unknown>;
+    expect(port['modelMaintenance']).toBeUndefined();
+    expect(typeof harness.port.batchJobs.findById).toBe('function');
+    expect(harness.port.batchJobs.findById.length).toBe(2); // (principal, id) — never bare
+  });
+
+  it('no controller-bearing (request-handling) module in the application imports the maintenance module', () => {
+    // Walk the static module graph by metadata — no boot needed. A module with
+    // controllers handles requests; it must reach persistence only through
+    // DatabaseModule's scoped port.
+    type ModuleLike = (new () => unknown) | { module: new () => unknown; imports?: unknown[] };
+    const seen = new Set<unknown>();
+    const offenders: string[] = [];
+    const visit = (m: ModuleLike): void => {
+      const cls = typeof m === 'function' ? m : m.module;
+      if (seen.has(cls)) return;
+      seen.add(cls);
+      const imports = [
+        ...((Reflect.getMetadata('imports', cls) as ModuleLike[] | undefined) ?? []),
+        ...(typeof m === 'function' ? [] : ((m.imports as ModuleLike[] | undefined) ?? [])),
+      ];
+      const controllers = (Reflect.getMetadata('controllers', cls) as unknown[] | undefined) ?? [];
+      const importsMaintenance = imports.some(
+        (i) => (typeof i === 'function' ? i : i.module) === DatabaseMaintenanceModule,
+      );
+      if (controllers.length > 0 && importsMaintenance) offenders.push(cls.name);
+      for (const i of imports) visit(i);
+    };
+    visit(AppModule);
+    expect(seen.size).toBeGreaterThan(10);
+    expect(seen.has(DatabaseMaintenanceModule)).toBe(true); // the walk reached it via a scheduler/bootstrap module
+    expect(offenders).toEqual([]);
   });
 });

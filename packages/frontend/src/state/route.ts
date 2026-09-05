@@ -11,11 +11,17 @@
 import type { Page } from '../types';
 
 /** Every routable page. The `Page` union is the source of truth; this array is
- * its runtime shadow, and the `satisfies` pins them together so adding a page
- * to the union without adding it here fails the build. */
+ * its runtime shadow, and `MISSING_PAGE` below pins them together so adding a
+ * page to the union without adding it here fails the build.
+ *
+ * `satisfies readonly Page[]` alone does NOT do that — it only checks that every
+ * ELEMENT is a `Page`, so a subset satisfies it happily. It read as exhaustive
+ * and was not: `batches` was added to the union and silently became unroutable,
+ * which is what add-batch-inference found. */
 export const PAGES = [
   'overview',
   'requests',
+  'batches',
   'costs',
   'agents',
   'providers',
@@ -25,6 +31,12 @@ export const PAGES = [
   'users',
   'setup',
 ] as const satisfies readonly Page[];
+
+/** The real exhaustiveness check: any `Page` absent from `PAGES` leaves a
+ * non-`never` residue here and fails the build. Type-only — it emits nothing. */
+type MissingPage = Exclude<Page, (typeof PAGES)[number]>;
+const _exhaustive: MissingPage extends never ? true : MissingPage = true;
+void _exhaustive;
 
 /** The page rendered when no valid fragment names one. */
 export const DEFAULT_PAGE: Page = 'overview';

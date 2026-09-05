@@ -48,6 +48,12 @@ const NOW = '2026-07-15T00:00:00.000Z';
 /** Let a fire-and-forget optimistic persist settle (macrotask after microtasks). */
 const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
+/** A ModelDto for a specific provider + external id (add-model-variant-detection
+ * onboarding cases); spread it to override `variant`/`baseExternalModelId`. */
+function blankModel(providerId: string, id: string, externalModelId: string): ModelDto {
+  return { ...mkModel(id), providerId, externalModelId };
+}
+
 function mkModel(id: string): ModelDto {
   return {
     id,
@@ -69,6 +75,8 @@ function mkModel(id: string): ModelDto {
       estimated: false,
     },
     listedPrice: null,
+    variant: null,
+    baseExternalModelId: null,
     lastSyncedAt: null,
   };
 }
@@ -569,6 +577,56 @@ describe('onboarding (failure-aware walk)', () => {
     s.obFinish();
     expect(s.state.page).toBe('overview');
     expect(s.state.ob.key).toBe('');
+  });
+
+  it('assigns the first ROUTABLE model when the catalog lists a batch twin first', async () => {
+    // add-model-variant-detection: an aggregator can return the twin first, and
+    // assigning it would make this guide's own final `model:"auto"` call fail on
+    // the chain the guide just built.
+    const twinFirst = (providerId: string) => [
+      {
+        ...blankModel(providerId, 'm-twin', 'openai/gpt-6-astra:batch'),
+        variant: 'batch',
+        baseExternalModelId: 'openai/gpt-6-astra',
+      },
+      blankModel(providerId, 'm-base', 'openai/gpt-6-astra'),
+    ];
+    const fake = new FakeApiClient({
+      session: DEFAULT_SESSION,
+      syncResult: { ok: true, status: 'ok', message: 'synced', traceId: 't', synced: 2 },
+      syncSeed: twinFirst,
+    });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    await s.obCreateAgent();
+    setProv(s);
+    await s.obConnectProvider();
+    expect(s.state.ob.done2).toBe(true);
+    const putArgs = fake.lastArgs('replaceTierEntries');
+    expect(putArgs?.[1]).toEqual(['m-base']); // never the twin
+  });
+
+  it('stops when a provider exposes only batch-only models', async () => {
+    const twinsOnly = (providerId: string) => [
+      {
+        ...blankModel(providerId, 'm-twin', 'openai/gpt-6-astra:batch'),
+        variant: 'batch',
+        baseExternalModelId: null,
+      },
+    ];
+    const fake = new FakeApiClient({
+      session: DEFAULT_SESSION,
+      syncResult: { ok: true, status: 'ok', message: 'synced', traceId: 't', synced: 1 },
+      syncSeed: twinsOnly,
+    });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    await s.obCreateAgent();
+    setProv(s);
+    await s.obConnectProvider();
+    expect(s.state.ob.done2).toBe(false);
+    expect(s.state.ob.error2).toMatch(/batch-priced/i);
+    expect(fake.calls).not.toContain('replaceTierEntries');
   });
 
   it('stops before assigning when sync reports zero models', async () => {

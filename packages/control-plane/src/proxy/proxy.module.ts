@@ -123,5 +123,9 @@ function boundedBreakerRedis(redis: Redis): BreakerRedis {
     },
     { provide: APP_FILTER, useClass: ProxyExceptionFilter },
   ],
+  // The drain registry is shared with the batch surface (add-batch-inference task
+  // 4.5): a results stream is an in-flight stream, and shutdown must drain both
+  // through ONE deadline rather than two independent ones.
+  exports: [StreamDrainRegistry],
 })
 export class ProxyModule {}

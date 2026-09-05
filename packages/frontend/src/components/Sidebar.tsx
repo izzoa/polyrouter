@@ -13,6 +13,7 @@ const SIDEBAR_STYLE =
 const NAV: [Page, string][] = [
   ['overview', 'Overview'],
   ['requests', 'Requests'],
+  ['batches', 'Batches'],
   ['costs', 'Costs'],
   ['agents', 'Agents'],
   ['providers', 'Providers'],

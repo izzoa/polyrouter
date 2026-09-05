@@ -59,6 +59,11 @@ class FakeCounter {
     this.heartbeats.push({ now, ttl });
     return Promise.resolve();
   }
+  pendingReconciled: { key: string; micros: number }[] = [];
+  reconcilePending(key: string, micros: number): Promise<void> {
+    this.pendingReconciled.push({ key, micros });
+    return Promise.resolve();
+  }
 }
 
 function makeReader(
@@ -181,5 +186,51 @@ describe('runBudgetOccurrence (#16)', () => {
     await run(reader, counter);
     expect(calls[0]!.agentId).toBe('ag1');
     expect(counter.reconciled[0]!.key).toBe('budget:u1:agent:ag1:day:2026-03-15');
+  });
+});
+
+describe('runBudgetOccurrence — batch reservations (add-batch-inference D8)', () => {
+  it("SETs each group's pending total from the non-terminal job rows, beside the spend counter", async () => {
+    const { reader } = makeReader(
+      [row({ id: 'g' }), row({ id: 'a', scope: 'agent', agentId: 'ag1' })],
+      0,
+    );
+    const counter = new FakeCounter();
+    const calls: { owner: string; agentId: string | null }[] = [];
+    const reservations = {
+      pendingMicrosFor: (owner: string, agentId: string | null) => {
+        calls.push({ owner, agentId });
+        return Promise.resolve(agentId === null ? 2_500_000 : 700_000);
+      },
+    };
+    await runBudgetOccurrence(
+      reader,
+      counter as unknown as SpendCounter,
+      { budgetAlert: () => undefined } as unknown as NotificationProducers,
+      MID_DAY,
+      STALE_MS,
+      reservations,
+    );
+    expect(calls).toEqual([
+      { owner: 'u1', agentId: null },
+      { owner: 'u1', agentId: 'ag1' },
+    ]);
+    expect(counter.pendingReconciled).toEqual([
+      { key: 'budget:u1:global:global:day:2026-03-15', micros: 2_500_000 },
+      { key: 'budget:u1:agent:ag1:day:2026-03-15', micros: 700_000 },
+    ]);
+  });
+
+  it('leaves pending alone when no reservations reader is wired', async () => {
+    const { reader } = makeReader([row({ id: 'g' })], 0);
+    const counter = new FakeCounter();
+    await runBudgetOccurrence(
+      reader,
+      counter as unknown as SpendCounter,
+      { budgetAlert: () => undefined } as unknown as NotificationProducers,
+      MID_DAY,
+      STALE_MS,
+    );
+    expect(counter.pendingReconciled).toEqual([]);
   });
 });

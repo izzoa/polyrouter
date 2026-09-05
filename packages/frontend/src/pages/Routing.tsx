@@ -14,7 +14,11 @@ import {
   type BandVm,
   type ScopedBandVm,
 } from '../data/bandTargets';
-import { WORKLOAD_CLASSES, type WorkloadClass } from '@polyrouter/shared';
+import {
+  WORKLOAD_CLASSES,
+  isNonRoutableVariant,
+  type WorkloadClass,
+} from '@polyrouter/shared';
 import { unsetCopy, workloadVms, type WorkloadVm } from '../data/workloadTargets';
 import { toCalibrationVm, toHistoryRows } from '../data/calibration';
 import { toLearningHistoryRows, toLearningVm } from '../data/semanticLearning';
@@ -70,6 +74,10 @@ export function groupModelsByProvider(
 ): Array<{ label: string; models: Model[] }> {
   const byProvider = new Map<string, Model[]>();
   for (const m of models) {
+    // A batch-priced variant can never serve a request, so it is not offerable as
+    // a routing target (add-model-variant-detection). It is still visible on the
+    // Providers page as the batch rate of the model it prices.
+    if (isNonRoutableVariant(m.variant)) continue;
     const list = byProvider.get(m.providerId) ?? [];
     list.push(m);
     byProvider.set(m.providerId, list);
@@ -80,6 +88,17 @@ export function groupModelsByProvider(
       models: group.sort((a, b) => a.externalModelId.localeCompare(b.externalModelId)),
     }))
     .sort((a, b) => a.label.localeCompare(b.label));
+}
+
+/** The note shown on a stored chain member or rule target that can no longer serve
+ * (add-model-variant-detection). Returns null for a routable model — a `Show` on it
+ * renders nothing — and names the base model so the correction is obvious. */
+export function nonRoutableNote(m: Model | null | undefined): string | null {
+  if (!m || !isNonRoutableVariant(m.variant)) return null;
+  const base = m.baseExternalModelId;
+  return base === null
+    ? 'batch-only — cannot serve; remove it'
+    : `batch-only — cannot serve; use ${base}`;
 }
 
 /** The BAND TARGETS section (add-band-target-ui): auto_high/auto_low made
@@ -1731,6 +1750,20 @@ export function Routing() {
                           >
                             {modelPriceLabel(modelById(entry.modelId))}
                           </span>
+                          {/* A member stored before classification can be batch-only
+                              (add-model-variant-detection). Excluding it from the picker
+                              is not enough: without this, the tenant's only signal is a
+                              rejected save or a request that quietly routes elsewhere. */}
+                          <Show when={nonRoutableNote(modelById(entry.modelId))}>
+                            {(note) => (
+                              <span
+                                data-nonroutable={entry.modelId}
+                                style="font:400 10.5px 'Geist',sans-serif;color:var(--amber)"
+                              >
+                                {note()}
+                              </span>
+                            )}
+                          </Show>
                           {/* Action region. `display: contents` above the threshold, so at
                               desktop these contribute no box and the row renders exactly as
                               it always has; below it, its own wrapping line. */}

@@ -20,10 +20,16 @@ import { DEFAULT_MAX_RESPONSE_BYTES } from './adapter';
 import type { CallContext, RuntimeMode, ProviderKind } from './adapter';
 import { CallCancelledError, ProviderError } from './errors';
 
+/** A request body: a string, or a byte stream for an upload that must not be
+ * buffered (add-batch-inference: the OpenAI JSONL upload streams through the
+ * SAME connect-time SSRF, redirect, and timeout rules — the stream is not read
+ * until the address has passed the name-time gate). */
+export type HttpBody = string | ReadableStream<Uint8Array>;
+
 export interface HttpInit {
   readonly method: string;
   readonly headers: Record<string, string>;
-  readonly body?: string;
+  readonly body?: HttpBody;
   readonly signal?: AbortSignal;
 }
 
@@ -170,6 +176,11 @@ export function createGuardedHttpClient(options: GuardedClientOptions): HttpClie
         method: init.method,
         headers: init.headers,
         ...(init.body !== undefined ? { body: init.body } : {}),
+        // A streamed body is half-duplex by the fetch spec: bytes are pulled from
+        // the stream as the socket drains them, never materialized first.
+        ...(init.body !== undefined && typeof init.body !== 'string'
+          ? { duplex: 'half' as const }
+          : {}),
         ...(init.signal !== undefined ? { signal: init.signal } : {}),
         redirect: 'manual',
         dispatcher,

@@ -30,6 +30,9 @@ export class BudgetEnforcementUnavailableError extends Error {
 export interface BudgetHit {
   readonly budget: BudgetRow;
   readonly spentMicros: number;
+  /** Money reserved by non-terminal batch jobs (add-batch-inference D8) — part of
+   * every block decision, never part of reported spend. */
+  readonly pendingMicros: number;
   readonly periodId: string;
   /** The metered period's exact bounds — provenance lookups MUST use these, not
    * `new Date()` (a boundary-crossing async emit would inspect the wrong period). */
@@ -40,6 +43,16 @@ export interface BudgetHit {
 function ownerOf(principal: Principal): string {
   return principal.kind === 'user' ? principal.userId : principal.orgId;
 }
+
+/** The outcome of reserving a batch ceiling (add-batch-inference D8). */
+export type BatchReservation =
+  | { readonly outcome: 'reserved'; readonly keys: readonly string[] }
+  /** No `block` budget governs this agent: nothing to reserve against. */
+  | { readonly outcome: 'no_block_budget' }
+  /** Enforcement faulted under fail-open: admitted, nothing recorded in Redis — the
+   * job row carries the ceiling and the next reconcile picks it up from the rows. */
+  | { readonly outcome: 'unenforced' }
+  | { readonly outcome: 'rejected'; readonly hit: BudgetHit; readonly ceilingMicros: number };
 
 function parseCsv(csv: string): string[] {
   return csv
@@ -136,16 +149,19 @@ export class BudgetService {
       const at = new Date(now);
       const infos = matched.map((b) => ({ b, ...this.keyFor(owner, b, at) }));
       const distinctKeys = [...new Set(infos.map((i) => i.key))];
-      const values = await this.counter.read(distinctKeys);
-      const byKey = new Map<string, number>();
-      distinctKeys.forEach((k, i) => byKey.set(k, values[i] ?? 0));
+      // EVERY block admission evaluates spend + pending (add-batch-inference D8):
+      // synchronous traffic can never consume money reserved for a batch.
+      const values = await this.counter.readWithPending(distinctKeys);
+      const byKey = new Map<string, { spend: number; pending: number }>();
+      distinctKeys.forEach((k, i) => byKey.set(k, values[i] ?? { spend: 0, pending: 0 }));
 
       for (const info of infos) {
-        const spent = byKey.get(info.key) ?? 0;
-        if (spent >= toMicros(info.b.amount)) {
+        const { spend, pending } = byKey.get(info.key) ?? { spend: 0, pending: 0 };
+        if (spend + pending >= toMicros(info.b.amount)) {
           return {
             budget: info.b,
-            spentMicros: spent,
+            spentMicros: spend,
+            pendingMicros: pending,
             periodId: info.periodId,
             periodStart: info.periodStart,
             resetAt: info.resetAt,
@@ -157,6 +173,130 @@ export class BudgetService {
       this.recordFault(err); // E6.1 — meter + throttled warn (behavior unchanged)
       if (this.failOpen) return null; // availability: allow on a fault (default)
       throw new BudgetEnforcementUnavailableError(); // fail-closed → 503
+    }
+  }
+
+  /** Whether any `block` budget governs this agent — the gate under which an
+   * unbounded batch ceiling is refused rather than admitted (D20). Same fault
+   * discipline as the block check. */
+  async hasBlockBudget(principal: Principal, agentId: string | null): Promise<boolean> {
+    try {
+      const all = await this.cache.get(principal);
+      return all.some((b) => b.enabled && b.action === 'block' && this.applies(b, agentId));
+    } catch (err) {
+      this.recordFault(err);
+      if (this.failOpen) return false;
+      throw new BudgetEnforcementUnavailableError();
+    }
+  }
+
+  /**
+   * Reserve a batch ceiling against every applicable `block` budget (add-batch-
+   * inference D8): one atomic check-and-reserve per counter key, in the SAME
+   * staleness and fail-mode discipline as `checkBlocked`. Keys sharing a counter
+   * are checked against the smallest amount among their budgets. A later key's
+   * rejection rolls back the earlier keys — a partial reservation is only ever an
+   * over-count, never an over-admission. Under fail-open a fault admits without
+   * a Redis record (the job row's ceiling is reconciled from the rows); under
+   * fail-closed it throws `BudgetEnforcementUnavailableError`.
+   */
+  async reserveForBatch(
+    principal: Principal,
+    agentId: string | null,
+    ceilingMicros: number,
+  ): Promise<BatchReservation> {
+    const owner = ownerOf(principal);
+    const reserved: { key: string; ttlMs: number }[] = [];
+    try {
+      const all = await this.cache.get(principal);
+      const matched = all.filter(
+        (b) => b.enabled && b.action === 'block' && this.applies(b, agentId),
+      );
+      if (matched.length === 0) return { outcome: 'no_block_budget' };
+      const now = Date.now();
+      const age = await this.counter.heartbeatAgeMs(now);
+      if (age > this.staleMs) throw new BudgetEnforcementUnavailableError();
+
+      const at = new Date(now);
+      const infos = matched.map((b) => ({ b, ...this.keyFor(owner, b, at) }));
+      const groups = new Map<string, typeof infos>();
+      for (const info of infos) {
+        const g = groups.get(info.key);
+        if (g === undefined) groups.set(info.key, [info]);
+        else g.push(info);
+      }
+      for (const [key, group] of groups) {
+        const tightest = group.reduce((a, b) => (a.b.amount <= b.b.amount ? a : b));
+        const ttlMs = Math.max(1, tightest.resetAt.getTime() - now) + MARKER_GRACE_MS;
+        const r = await this.counter.checkAndReserve(
+          key,
+          toMicros(tightest.b.amount),
+          ceilingMicros,
+          ttlMs,
+        );
+        if (!r.admitted) {
+          await this.rollback(reserved, ceilingMicros);
+          return {
+            outcome: 'rejected',
+            ceilingMicros,
+            hit: {
+              budget: tightest.b,
+              spentMicros: r.spend,
+              pendingMicros: r.pending,
+              periodId: tightest.periodId,
+              periodStart: tightest.periodStart,
+              resetAt: tightest.resetAt,
+            },
+          };
+        }
+        reserved.push({ key, ttlMs });
+      }
+      return { outcome: 'reserved', keys: reserved.map((r) => r.key) };
+    } catch (err) {
+      if (err instanceof BudgetEnforcementUnavailableError && !this.failOpen) throw err;
+      this.recordFault(err);
+      await this.rollback(reserved, ceilingMicros);
+      if (this.failOpen) return { outcome: 'unenforced' };
+      throw new BudgetEnforcementUnavailableError();
+    }
+  }
+
+  private async rollback(
+    reserved: { key: string; ttlMs: number }[],
+    micros: number,
+  ): Promise<void> {
+    for (const r of reserved) {
+      await this.counter.release(r.key, micros, r.ttlMs).catch(() => undefined);
+    }
+  }
+
+  /**
+   * Release a job's ceiling from every applicable block budget's pending structure
+   * for the period the job was SUBMITTED in. Best-effort and idempotent in effect:
+   * the scheduler recomputes pending from the job rows each interval, so a missed
+   * or repeated release heals within one reconcile (D8).
+   */
+  async releaseForBatch(
+    principal: Principal,
+    agentId: string | null,
+    submittedAt: Date,
+    ceilingMicros: number,
+  ): Promise<void> {
+    if (ceilingMicros <= 0) return;
+    const owner = ownerOf(principal);
+    try {
+      const all = await this.cache.get(principal);
+      const matched = all.filter(
+        (b) => b.enabled && b.action === 'block' && this.applies(b, agentId),
+      );
+      const keys = new Map<string, number>();
+      for (const b of matched) {
+        const info = this.keyFor(owner, b, submittedAt);
+        keys.set(info.key, Math.max(1, info.resetAt.getTime() - Date.now()) + MARKER_GRACE_MS);
+      }
+      for (const [key, ttlMs] of keys) await this.counter.release(key, ceilingMicros, ttlMs);
+    } catch (err) {
+      this.recordFault(err); // reconciliation heals a missed release
     }
   }
 

@@ -32,6 +32,10 @@ export interface EventStreamOptions {
   onStarted: (row: InflightRow) => void;
   onSettled: (id: string) => void;
   onInvalidated: () => void;
+  /** add-batch-inference (D18): a batch job advanced. A metadata-only NUDGE — it
+   * carries no labels, so the band cannot synthesize a row from it; the handler
+   * refreshes the batch partition from its authoritative read instead. */
+  onBatchUpdated?: () => void;
   /** Drop delta state and re-establish from a fresh snapshot. */
   onResync: () => void;
   /**
@@ -188,14 +192,17 @@ export function createEventStream(opts: EventStreamOptions): EventStreamHandle {
 
     on('snapshot', (data) => {
       const p = data as StreamSnapshotPayload;
-      heartbeatMs = typeof p.heartbeatIntervalMs === 'number' ? p.heartbeatIntervalMs : DEFAULT_HEARTBEAT_MS;
-      if (typeof p.reconciliationIntervalMs === 'number') setReconcileMs(p.reconciliationIntervalMs);
+      heartbeatMs =
+        typeof p.heartbeatIntervalMs === 'number' ? p.heartbeatIntervalMs : DEFAULT_HEARTBEAT_MS;
+      if (typeof p.reconciliationIntervalMs === 'number')
+        setReconcileMs(p.reconciliationIntervalMs);
       attempts = 0; // a completed handshake resets the backoff
       opts.onSnapshot(p);
     });
     on('inflight.started', (data) => opts.onStarted((data as { row: InflightRow }).row));
     on('inflight.settled', (data) => opts.onSettled((data as { id: string }).id));
     on('analytics.invalidated', () => opts.onInvalidated());
+    on('batch.updated', () => opts.onBatchUpdated?.());
     on('resync', () => opts.onResync());
     on('heartbeat', () => undefined); // liveness only — markFrame already ran
 

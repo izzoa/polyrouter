@@ -1,4 +1,4 @@
-import type { RequestFilter, SpendDatum } from '../types';
+import type { RequestFilter, RequestMode, SpendDatum } from '../types';
 import {
   fmtMicros,
   labelOf,
@@ -104,6 +104,12 @@ export type RequestFilterParams = Pick<RequestsQuery, 'status' | 'escalated' | '
  * map to server filters so keyset pagination never returns an empty filtered page
  * mid-cursor. `explicit` covers deterministic routing incl. a smart request that
  * fell through to `default`. */
+/** The execution-mode partition as a query param (add-batch-inference). `all` is
+ * the absence of a filter, so it sends nothing. */
+export function modeToRequestParams(mode: RequestMode): { mode?: 'sync' | 'batch' } {
+  return mode === 'all' ? {} : { mode };
+}
+
 export function filterToRequestParams(filter: RequestFilter): RequestFilterParams {
   switch (filter) {
     case 'explicit':
@@ -195,6 +201,14 @@ export interface InspectorView {
   /** Served OR any attempt priced `native_family` — the TOTAL carries the marker. */
   priceEstimated: boolean;
   durationMs: number;
+  /** add-batch-inference (task 5.4): the job this item settled under, or null for a
+   * synchronous request. Shown as TEXT in this phase; Phase D links it to the
+   * Batches page. */
+  batchId: string | null;
+  /** Whether the row was priced by the BATCH rule rather than the synchronous one —
+   * a different rate, so the drawer says which applied rather than leaving the
+   * reader to infer it from the number. */
+  batchPriced: boolean;
   /** The ERROR card (add-request-error-detail): non-null ONLY for a status=error
    * row with ≥1 normalized (trimmed, empty→null) detail field. */
   errorView: ErrorView | null;
@@ -326,6 +340,8 @@ export function toInspectorView(r: RequestRow): InspectorView {
             : r.priceSource,
     priceEstimated: r.priceEstimated,
     durationMs: r.durationMs,
+    batchId: r.batchId,
+    batchPriced: r.priceMode === 'batch',
     errorView: toErrorView(r),
     attemptTrail: toAttemptTrail(r),
     terminalSkipped: isTerminalSkip(r),

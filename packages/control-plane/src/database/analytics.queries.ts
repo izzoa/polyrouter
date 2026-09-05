@@ -238,6 +238,11 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
           errorCount: intCount(sql`${requestLogs.status} = 'error'`),
           escalatedCount: intCount(sql`${requestLogs.escalated}`),
           estimatedCount: intCount(sql`${requestLogs.usageEstimated}`),
+          // Settled batch items (add-batch-inference): counted INSIDE `requests`,
+          // spend and tokens — they are spend — and surfaced separately so their
+          // share is visible. There is deliberately no latency aggregate on this
+          // surface; if one is ever added it MUST exclude this population.
+          batchRequests: intCount(sql`${requestLogs.batchId} is not null`),
           // Cost classification runs BEFORE the component: null = unpriced, 0 = free
           // (including a zero-cost subscription or local row). Only positive-cost rows
           // are split by provider kind. `paidRequests` is retained as the priced TOTAL
@@ -310,6 +315,7 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
         errorCount: Number(log?.errorCount ?? 0),
         escalatedCount: Number(log?.escalatedCount ?? 0),
         estimatedCount: Number(log?.estimatedCount ?? 0),
+        batchRequests: Number(log?.batchRequests ?? 0),
         freeRequests: Number(log?.freeRequests ?? 0),
         paidRequests: Number(log?.paidRequests ?? 0),
         unpricedRequests: Number(log?.unpricedRequests ?? 0),
@@ -841,6 +847,11 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
       if (query.decisionLayers !== undefined && query.decisionLayers.length > 0)
         conds.push(inArray(requestLogs.decisionLayer, query.decisionLayers));
       if (query.escalated !== undefined) conds.push(eq(requestLogs.escalated, query.escalated));
+      // Execution mode (add-batch-inference): a null `price_mode` predates the
+      // column and reads as `sync`, so the two filters partition every row.
+      if (query.mode === 'batch') conds.push(sql`${requestLogs.batchId} is not null`);
+      if (query.mode === 'sync') conds.push(sql`${requestLogs.batchId} is null`);
+      if (query.batchId !== undefined) conds.push(eq(requestLogs.batchId, query.batchId));
       if (query.cursor !== undefined) {
         // Bind the cursor timestamp as ::timestamptz so Postgres compares at the
         // column's full µs precision (the cursor carries the raw ::text value).

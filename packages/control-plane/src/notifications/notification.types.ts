@@ -10,6 +10,7 @@ export type EventType =
   | 'provider_down'
   | 'request_failures_spike'
   | 'weekly_spend_summary'
+  | 'batch_stalled'
   | 'test';
 
 export const EVENT_TYPES: readonly EventType[] = [
@@ -18,6 +19,7 @@ export const EVENT_TYPES: readonly EventType[] = [
   'provider_down',
   'request_failures_spike',
   'weekly_spend_summary',
+  'batch_stalled',
   'test',
 ];
 
@@ -87,6 +89,10 @@ const WINDOW_MS: Record<EventType, number> = {
   weekly_spend_summary: 6 * 86_400_000,
   budget_alert: 3_600_000,
   budget_block: 3_600_000,
+  // A stalled batch is a per-job condition an operator acts on once; the
+  // `lifecycleId` is `<jobId>|<kind>`, so re-entering a stall after recovery is a
+  // NEW lifecycle and is not suppressed (add-batch-inference D26).
+  batch_stalled: 3_600_000,
 };
 export function windowMs(type: EventType): number {
   return WINDOW_MS[type];
@@ -118,7 +124,8 @@ function basisNote(v: unknown): string {
 }
 
 function estimateNote(v: unknown): string {
-  if (v === 'true') return ' The metered spend includes estimate-priced components (native-family rates).';
+  if (v === 'true')
+    return ' The metered spend includes estimate-priced components (native-family rates).';
   if (v === 'unknown') return ' Price provenance was unavailable for this notice.';
   return '';
 }
@@ -152,6 +159,16 @@ export function renderEvent(event: NotificationEvent): { title: string; body: st
       return {
         title: `polyrouter — budget block: ${f['limitName'] ?? 'a budget'}`,
         body: `The budget ${f['limitName'] ?? ''} is blocking new requests until the window resets.${estimateNote(f['spendEstimated'])}${basisNote(f['meteringBasis'])}`,
+      };
+    case 'batch_stalled':
+      return {
+        // Metadata only (invariant 8): an opaque job id, a taxonomy reason and a
+        // duration. Never an item, a `custom_id`, or upstream text.
+        title: 'polyrouter — batch job needs attention',
+        body:
+          f['reason'] === 'submission_unknown'
+            ? `Batch ${f['jobId'] ?? ''} (${f['model'] ?? 'a model'}) has been reconciling with the provider for ${f['stalledMinutes'] ?? '?'} minutes: polyrouter cannot yet confirm whether the provider accepted it. Its reserved budget is held until it resolves.`
+            : `Batch ${f['jobId'] ?? ''} (${f['model'] ?? 'a model'}) has been reporting a status polyrouter does not recognize ("${f['status'] ?? '?'}") for ${f['stalledMinutes'] ?? '?'} minutes. It keeps polling and its reserved budget is held.`,
       };
     case 'weekly_spend_summary':
       return {

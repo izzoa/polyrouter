@@ -85,6 +85,7 @@ function makePort(): FakePort {
         providerId,
         externalModelId: values.externalModelId,
         displayName: values.displayName ?? null,
+        variant: values.variant ?? null,
         contextWindow: null,
         supportsTools: false,
         supportsVision: false,
@@ -322,6 +323,57 @@ describe('ProvidersService — sync-models', () => {
     }
   });
 
+  it('derives the variant for an aggregator provider and clears it when the id stops yielding one', async () => {
+    // add-model-variant-detection: written on EVERY sync, set or cleared, so a
+    // classification can never outlive the id that produced it.
+    const { port, upsert } = makePort();
+    const seed = mkProvidersService(port, factory(), runtime('selfhosted'));
+    const prov = await seed.create(principal, {
+      ...baseCreate,
+      kind: 'api_key',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      credential: 'k',
+    });
+    const svc = (listing: ProviderModelInfo[]) =>
+      mkProvidersService(
+        port,
+        factory({ listModels: () => Promise.resolve(listing) }),
+        runtime('selfhosted'),
+      );
+
+    await svc([{ id: 'openai/gpt-6-astra:batch' }, { id: 'openai/gpt-6-astra' }]).syncModels(
+      principal,
+      prov.id,
+    );
+    expect(upsert.mock.calls[0]![2].variant).toBe('batch');
+    expect(upsert.mock.calls[1]![2].variant).toBeNull();
+
+    upsert.mockClear();
+    // The same row, now listed without the suffix: the column is CLEARED, not left.
+    await svc([{ id: 'openai/gpt-6-astra' }]).syncModels(principal, prov.id);
+    expect(upsert.mock.calls[0]![2].variant).toBeNull();
+  });
+
+  it('never classifies a non-aggregator provider, however the id is shaped', async () => {
+    const { port, upsert } = makePort();
+    const seed = mkProvidersService(port, factory(), runtime('selfhosted'));
+    const prov = await seed.create(principal, {
+      ...baseCreate,
+      kind: 'custom',
+      baseUrl: 'https://1.1.1.1/v1',
+      credential: 'k',
+    });
+    const svc = mkProvidersService(
+      port,
+      factory({ listModels: () => Promise.resolve([{ id: 'openai/gpt-6-astra:batch' }]) }),
+      runtime('selfhosted'),
+    );
+    await svc.syncModels(principal, prov.id);
+    // A self-hosted gateway may legitimately serve this id — blocking it would be
+    // wrong, not conservative.
+    expect(upsert.mock.calls[0]![2].variant).toBeNull();
+  });
+
   it('caps the upsert count at MAX_SYNCED_MODELS — no partial 10k flood (E11.1)', async () => {
     const { port, upsert } = makePort();
     const seed = mkProvidersService(port, factory(), runtime('selfhosted'));
@@ -409,6 +461,7 @@ describe('listModels — native-family display batch (add-native-price-fallback)
       listedOutputPricePer1m: 1.1,
       listedIsFree: false,
       listedPriceCapturedAt: new Date('2026-07-19T00:00:00Z'),
+      variant: null,
       lastSyncedAt: null,
     };
     const nativeRow = {

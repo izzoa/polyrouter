@@ -377,10 +377,10 @@ describe('provider management', () => {
     await request(server).delete(`/api/providers/${created.body.id}`).set('x-test-user', alice);
   });
 
-  it('a base_url change clears the listed estimates', async () => {
+  it('a base_url change clears the listed estimates AND the derived classification', async () => {
     const created = await asAlice().send({ ...OR, credential: 'k' });
     nextModels = () => [
-      { id: 'y/model', pricing: { inputPricePer1m: 1, outputPricePer1m: 2 } },
+      { id: 'y/model:batch', pricing: { inputPricePer1m: 1, outputPricePer1m: 2 } },
     ];
     await request(server)
       .post(`/api/providers/${created.body.id}/sync-models`)
@@ -393,6 +393,10 @@ describe('provider management', () => {
       .expect(200);
     const list = await listModelsFor(alice);
     expect(list.body[0].effectivePrice).toBeNull();
+    // Both were derived from the old endpoint's family: a retained model must not
+    // stay non-routable on a provider now pointed elsewhere
+    // (add-model-variant-detection).
+    expect(list.body[0].variant).toBeNull();
     // A name-only edit leaves an estimate intact (control).
     await request(server)
       .post(`/api/providers/${created.body.id}/sync-models`)
@@ -402,7 +406,12 @@ describe('provider management', () => {
       .set('x-test-user', alice)
       .send({ name: 'renamed' })
       .expect(200);
-    expect((await listModelsFor(alice)).body[0].effectivePrice).not.toBeNull();
+    const after = await listModelsFor(alice);
+    expect(after.body[0].effectivePrice).not.toBeNull();
+    // The re-sync also re-derives the classification — which is only possible
+    // because `variant` rides the upsert's ON CONFLICT set (a first-insert-only
+    // write would have frozen the cleared null forever).
+    expect(after.body[0].variant).toBe('batch');
     await request(server).delete(`/api/providers/${created.body.id}`).set('x-test-user', alice);
   });
 
@@ -446,7 +455,9 @@ describe('provider management', () => {
           await port.providers.update(principal, provider.id, {
             baseUrl: 'https://openrouter.ai/v1',
           });
-          return [{ id: 'race/model', pricing: { inputPricePer1m: 9, outputPricePer1m: 9 } }];
+          // A `:batch` id so the CLASSIFICATION is exercised too: it would classify
+          // on the original (aggregator) endpoint, and must not once it moved.
+          return [{ id: 'race/model:batch', pricing: { inputPricePer1m: 9, outputPricePer1m: 9 } }];
         },
       }) as unknown as ProviderAdapter) as unknown as ProviderAdapterFactory;
     const svc = mkSvc(port, racingFactory, { key: 'a'.repeat(64), mode: 'selfhosted' });
@@ -454,8 +465,11 @@ describe('provider management', () => {
     expect(res.ok).toBe(true);
     expect(res.pricesCaptured).toBe(0); // the moved endpoint voids the capture
     const models = await svc.listModels(principal, {});
-    const m = models.find((x) => x.externalModelId === 'race/model');
+    const m = models.find((x) => x.externalModelId === 'race/model:batch');
     expect(m?.effectivePrice ?? null).toBeNull();
+    // The moved endpoint voids the classification exactly as it voids the price
+    // (add-model-variant-detection): both were derived from the old family.
+    expect(m?.variant ?? null).toBeNull();
     await port.providers.remove(principal, provider.id);
   });
 

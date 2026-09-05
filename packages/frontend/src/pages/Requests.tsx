@@ -1,15 +1,29 @@
 import { createMemo, For, onMount, Show } from 'solid-js';
-import { InflightRows, RequestRows, RequestTableHead } from '../components/RequestTable';
+import {
+  BatchJobRows,
+  InflightRows,
+  RequestRows,
+  RequestTableHead,
+} from '../components/RequestTable';
 import { createPoller } from '../data/poller';
 
 import { filterToRequestParams } from '../data/analytics';
+import { BATCH_POLL_MS } from '../data/batchBand';
 import { inflightCadenceMs, projectInflightRows } from '../data/inflight';
 import { useApp } from '../state/context';
-import type { RequestFilter } from '../types';
+import type { RequestFilter, RequestMode } from '../types';
 
 /** Matches the Overview card's cadence, so the two pages go stale at the same rate rather
  *  than for different reasons. The shared budget floors the combined poll+nudge rate. */
 const POLL_MS = 15_000;
+
+/** How a request was RUN — orthogonal to how it was routed, so it is its own
+ * control rather than another chip in the routing row (add-batch-inference 5.4). */
+const MODES: [RequestMode, string][] = [
+  ['all', 'All'],
+  ['sync', 'Sync'],
+  ['batch', 'Batch'],
+];
 
 const FILTERS: [RequestFilter, string][] = [
   ['all', 'All'],
@@ -48,6 +62,17 @@ export function Requests(props: { live: boolean }) {
     return `${String(n.count)}${n.atLeast ? '+' : ''} new · load`;
   };
 
+  /** The batch partition for THIS surface. A job has no terminal outcome yet, so a
+   * filter that needs one (a status, an escalation) empties it — the same rule the
+   * in-flight projection follows — and the Mode filter's `sync` hides it outright. */
+  const batchBandRows = createMemo(() => {
+    if (state.reqMode === 'sync') return [];
+    const params = filterToRequestParams(state.reqFilter);
+    if (params.status !== undefined || params.escalated !== undefined) return [];
+    if (params.decisionLayers !== undefined) return []; // a job's mode is not a layer
+    return state.batchRows;
+  });
+
   const bandRows = createMemo(() =>
     projectInflightRows(
       state.inflightRows,
@@ -62,7 +87,8 @@ export function Requests(props: { live: boolean }) {
   // path. `runImmediately: false` because `onMount` above already loaded page 1; an
   // immediate first tick would issue two resets at setup.
   createPoller({
-    fn: (reason) => app.requestAggregateRefresh(() => app.refreshRequestsPage(), reason === 'resume'),
+    fn: (reason) =>
+      app.requestAggregateRefresh(() => app.refreshRequestsPage(), reason === 'resume'),
     intervalMs: () => POLL_MS,
     enabled: () => props.live,
     runImmediately: false,
@@ -76,6 +102,15 @@ export function Requests(props: { live: boolean }) {
     fn: () => app.loadInflight(),
     intervalMs: () => inflightCadenceMs(state.inflightRows.length),
     enabled: () => props.live && state.streamHealth !== 'live',
+  });
+
+  // The batch partition's read (add-batch-inference D11) — its own driver, and not
+  // suppressed by a healthy stream: `batch.updated` consumes this read rather than
+  // replacing it.
+  createPoller({
+    fn: () => app.loadBatchBand(),
+    intervalMs: () => BATCH_POLL_MS,
+    enabled: () => props.live,
   });
 
   return (
@@ -102,6 +137,39 @@ export function Requests(props: { live: boolean }) {
               </button>
             )}
           </For>
+        </div>
+        <div
+          class="rs-wrap"
+          style="display:flex;align-items:center;gap:6px;padding-left:10px;margin-left:10px;border-left:1px solid var(--border)"
+        >
+          <span
+            id="req-mode-label"
+            style="font:500 11px 'Geist',sans-serif;color:var(--text3);text-transform:uppercase;letter-spacing:.04em"
+          >
+            Mode
+          </span>
+          <div role="group" aria-labelledby="req-mode-label" style="display:flex;gap:6px">
+            <For each={MODES}>
+              {([id, label]) => (
+                <button
+                  type="button"
+                  aria-pressed={state.reqMode === id}
+                  style={{
+                    padding: '5px 12px',
+                    'border-radius': '10px',
+                    font: "500 12px 'Geist',sans-serif",
+                    color: state.reqMode === id ? 'var(--accent-deep)' : 'var(--text2)',
+                    background: state.reqMode === id ? 'var(--accent-bg)' : 'var(--panel)',
+                    border: `1px solid ${state.reqMode === id ? 'transparent' : 'var(--border)'}`,
+                    cursor: 'pointer',
+                  }}
+                  onClick={() => app.setMode(id)}
+                >
+                  {label}
+                </button>
+              )}
+            </For>
+          </div>
         </div>
         <div style="margin-left:auto;font:400 11.5px 'Geist',sans-serif;color:var(--text3)">
           {state.requestList.length} shown{state.requestCursor !== null ? '+' : ''} · click a row to
@@ -143,11 +211,17 @@ export function Requests(props: { live: boolean }) {
         </div>
       </Show>
 
-      <div class="panel rs-table-panel rs-table-requests" style="overflow:hidden;border-radius:10px">
+      <div
+        class="panel rs-table-panel rs-table-requests"
+        style="overflow:hidden;border-radius:10px"
+      >
         <RequestTableHead />
         {/* Live rows above the completed ones, as the Overview card does. Outside the
             frozen keyset window: nothing here inserts into, reorders or invalidates the
             paginated list, its window, or its cursor. */}
+        <Show when={batchBandRows().length > 0}>
+          <BatchJobRows rows={batchBandRows()} />
+        </Show>
         <Show when={bandRows().length > 0}>
           <InflightRows rows={bandRows()} />
         </Show>
@@ -157,7 +231,7 @@ export function Requests(props: { live: boolean }) {
             <div style="padding:16px 18px;font:400 12px 'Geist',sans-serif;color:var(--text3)">
               {state.requestListLoading || state.requestWindow === null
                 ? 'Loading…'
-                : bandRows().length > 0
+                : bandRows().length > 0 || batchBandRows().length > 0
                   ? 'No completed requests match this filter yet.'
                   : 'No requests match this filter.'}
             </div>

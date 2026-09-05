@@ -13,6 +13,17 @@ function app(): express.Express {
   a.post('/v1/chat/completions', (req, res) => res.status(200).json({ ok: true, echo: req.body }));
   a.post('/v1/messages', (req, res) => res.status(200).json({ ok: true }));
   a.post('/api/echo', (req, res) => res.status(200).json({ ok: true, echo: req.body }));
+  // add-batch-inference D1: the batch submission is stream-parsed by its own
+  // controller — this handler reports whether the parsers left the body alone.
+  a.post('/v1/batches', (req, res) => {
+    let bytes = 0;
+    req.on('data', (c: Buffer) => (bytes += c.length));
+    req.on('end', () => res.status(202).json({ parsed: req.body !== undefined, bytes }));
+  });
+  a.get('/v1/batches', (req, res) => res.status(200).json({ parsed: req.body !== undefined }));
+  a.post('/v1/batches/b1/cancel', (req, res) =>
+    res.status(200).json({ parsed: req.body !== undefined }),
+  );
   return a;
 }
 
@@ -33,7 +44,10 @@ describe('mountBodyParsing', () => {
       .send({ big: 'x'.repeat(LIMIT * 2) });
     expect(res.status).toBe(413);
     expect(res.headers['content-type']).toMatch(/application\/json/);
-    expect(res.body.error).toMatchObject({ type: 'invalid_request_error', code: 'request_too_large' });
+    expect(res.body.error).toMatchObject({
+      type: 'invalid_request_error',
+      code: 'request_too_large',
+    });
     expect(res.text).not.toMatch(/<!DOCTYPE|<html|Error:/i);
   });
 
@@ -48,7 +62,10 @@ describe('mountBodyParsing', () => {
 
   it('renders malformed JSON as a protocol-shaped 400 on both /v1 routes', async () => {
     for (const [path, check] of [
-      ['/v1/chat/completions', (b: { error?: { type?: string } }) => b.error?.type === 'invalid_request_error'],
+      [
+        '/v1/chat/completions',
+        (b: { error?: { type?: string } }) => b.error?.type === 'invalid_request_error',
+      ],
       ['/v1/messages', (b: { type?: string }) => b.type === 'error'],
     ] as const) {
       const res = await request(app())
@@ -81,5 +98,50 @@ describe('mountBodyParsing', () => {
       .send({ big: 'x'.repeat(LIMIT * 4) });
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
+  });
+});
+
+describe('mountBodyParsing — the POST /v1/batches carve-out (add-batch-inference task 3.1)', () => {
+  it('hands POST /v1/batches the raw request even above the /v1 limit', async () => {
+    const body = JSON.stringify({
+      endpoint: '/v1/chat/completions',
+      model: 'm',
+      requests: [{ pad: 'x'.repeat(LIMIT * 4) }],
+    });
+    const res = await request(app())
+      .post('/v1/batches')
+      .set('content-type', 'application/json')
+      .send(body);
+    expect(res.status).toBe(202);
+    expect(res.body).toEqual({ parsed: false, bytes: Buffer.byteLength(body) });
+    // Case-insensitive and trailing-slash tolerant, like every other plane rule
+    // (Express matches the route the same way).
+    const slash = await request(app())
+      .post('/V1/Batches/')
+      .set('content-type', 'application/json')
+      .send('{"a":1}');
+    expect(slash.status).toBe(202);
+    expect(slash.body.parsed).toBe(false);
+  });
+
+  it('is exactly the submission: the other batch routes and every other /v1 path still parse', async () => {
+    const list = await request(app()).get('/v1/batches');
+    expect(list.status).toBe(200); // a GET carries no body to parse; the route is untouched
+    const cancel = await request(app())
+      .post('/v1/batches/b1/cancel')
+      .set('content-type', 'application/json')
+      .send({});
+    expect(cancel.body.parsed).toBe(true);
+    const over = await request(app())
+      .post('/v1/chat/completions')
+      .set('content-type', 'application/json')
+      .send({ big: 'x'.repeat(LIMIT * 2) });
+    expect(over.status).toBe(413);
+    // A url-encoded body to the submission is left alone too.
+    const form = await request(app())
+      .post('/v1/batches')
+      .set('content-type', 'application/x-www-form-urlencoded')
+      .send('a=1');
+    expect(form.body.parsed).toBe(false);
   });
 });

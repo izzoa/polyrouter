@@ -1,4 +1,5 @@
 import { createMemo, For, Show } from 'solid-js';
+import { fmtElapsed } from '../data/batchBand';
 import { useModalSurface } from '../a11y';
 import { toInspectorView } from '../data/analytics';
 import type { RequestRow, RequestStatus } from '../data/api';
@@ -139,6 +140,31 @@ export function Inspector() {
                         >
                           {view().matchedHeader}
                         </span>
+                      </div>
+                    </Show>
+                    {/* A batch item's decision really was `explicit` — a batch is
+                        never produced by `auto` — so the MODE goes beneath it rather
+                        than replacing it (add-batch-inference D12/task 5.4). The
+                        job id is text in this phase; Phase D links it. */}
+                    <Show when={view().batchId !== null}>
+                      <div style="display:flex;justify-content:space-between;gap:16px">
+                        <span style="color:var(--text3)">mode</span>
+                        <span style="color:var(--text)">batch</span>
+                      </div>
+                      <div style="display:flex;justify-content:space-between;gap:16px">
+                        <span style="color:var(--text3);flex:none">batch job</span>
+                        {/* Phase D: the id is a LINK to the Batches page, where the
+                            job's progress, wall time, reservation and retention
+                            window live — the questions an id alone cannot answer. */}
+                        <button
+                          type="button"
+                          class="link-accent mono"
+                          style="font:500 11.5px 'Geist Mono',monospace;text-align:right;word-break:break-all"
+                          data-batch-id={view().batchId}
+                          onClick={() => app.go('batches')}
+                        >
+                          {view().batchId}
+                        </button>
                       </div>
                     </Show>
                     <Show when={view().escalated}>
@@ -333,7 +359,15 @@ export function Inspector() {
                     <Show when={view().priceSourceLabel !== null}>
                       <div style="display:flex;justify-content:space-between">
                         <span style="color:var(--text3)">price source</span>
-                        <span style="color:var(--text)">{view().priceSourceLabel}</span>
+                        {/* Which RULE priced it, beside where the rate came from: a
+                            batch item is charged the provider's batch tier, and a
+                            `listed`/`native_family` batch rate is an estimate exactly
+                            as it is for a synchronous request. */}
+                        <span style="color:var(--text)">
+                          {view().batchPriced
+                            ? `batch · ${String(view().priceSourceLabel)}`
+                            : view().priceSourceLabel}
+                        </span>
                       </div>
                     </Show>
                     <div style="display:flex;justify-content:space-between;border-top:1px solid var(--border2);padding-top:7px">
@@ -446,7 +480,11 @@ export function Inspector() {
                     <div style="display:flex;justify-content:space-between">
                       <span style="color:var(--text3)">duration</span>
                       <span style="color:var(--text)">
-                        {(view().durationMs / 1000).toFixed(2)}s
+                        {/* A batch item's latency is the JOB's wall time — the time
+                            the caller actually waited — so it reads in hours. */}
+                        {view().batchId !== null
+                          ? fmtElapsed(view().durationMs)
+                          : `${(view().durationMs / 1000).toFixed(2)}s`}
                       </span>
                     </div>
                     <div style="display:flex;justify-content:space-between">

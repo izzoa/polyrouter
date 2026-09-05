@@ -29,6 +29,37 @@ if v > c then return v else return c end
 `;
 
 /**
+ * Atomic check-and-reserve for a batch ceiling (add-batch-inference D8): admit iff
+ * `spend + pending + ceiling ≤ amount`, and in the same script add the ceiling to
+ * the PENDING key. KEYS[1]=spend counter, KEYS[2]=its pending key — co-located in
+ * one slot by construction (`pendingKeyFor`), so the script is Cluster-safe.
+ * ARGV[1]=ceiling µ$; ARGV[2]=amount µ$; ARGV[3]=pending TTL ms.
+ * Returns {admitted, spend, pending}. */
+const CHECK_AND_RESERVE_LUA = `
+local spend = tonumber(redis.call('GET', KEYS[1]) or '0')
+local pending = tonumber(redis.call('GET', KEYS[2]) or '0')
+local ceiling = tonumber(ARGV[1])
+local amount = tonumber(ARGV[2])
+if spend + pending + ceiling > amount then return {0, spend, pending} end
+redis.call('INCRBY', KEYS[2], ceiling)
+redis.call('PEXPIRE', KEYS[2], ARGV[3])
+return {1, spend, pending}
+`;
+
+/** Release a reservation: subtract, floor at zero (a release racing a reconcile
+ * SET must never drive the key negative), keep the key expiring with its period.
+ * KEYS[1]=pending key; ARGV[1]=µ$; ARGV[2]=TTL ms. */
+const RELEASE_LUA = `
+local v = redis.call('DECRBY', KEYS[1], ARGV[1])
+if v < 0 then
+  redis.call('SET', KEYS[1], '0')
+  v = 0
+end
+redis.call('PEXPIRE', KEYS[1], ARGV[2])
+return v
+`;
+
+/**
  * The Redis spend counter (#16, invariant 10). Integer micro-dollars keyed per
  * distinct `(owner, scope, scopeId, window, period)`, shared across proxy
  * instances (no per-instance drift). All ops run on a DEDICATED fail-fast
@@ -128,6 +159,75 @@ export class SpendCounter implements OnApplicationShutdown {
     if (keys.length === 0) return [];
     const raw = await this.readConn.mget(keys);
     return raw.map((v) => (v === null ? 0 : Number(v)));
+  }
+
+  /**
+   * The pending-reservation key beside a spend key (add-batch-inference D8). It is
+   * its OWN structure — the scheduler `SET`s the spend counter from the ledger and
+   * would erase anything held inside it — and it is placed in the spend key's
+   * cluster slot by hash tag: a key without braces hashes its whole name, and
+   * `{<name>}:pending` hashes exactly `<name>`, so the two co-locate without moving
+   * the spend key (an upgrade must find every existing counter where it left it).
+   */
+  pendingKeyFor(spendKey: string): string {
+    return `{${spendKey}}:pending`;
+  }
+
+  /** Spend + pending for each spend key, in one round trip (missing = 0). */
+  async readWithPending(spendKeys: string[]): Promise<{ spend: number; pending: number }[]> {
+    if (spendKeys.length === 0) return [];
+    const raw = await this.readConn.mget([
+      ...spendKeys,
+      ...spendKeys.map((k) => this.pendingKeyFor(k)),
+    ]);
+    const n = spendKeys.length;
+    return spendKeys.map((_, i) => ({
+      spend: raw[i] === null || raw[i] === undefined ? 0 : Number(raw[i]),
+      pending: raw[n + i] === null || raw[n + i] === undefined ? 0 : Number(raw[n + i]),
+    }));
+  }
+
+  /** Atomic check-and-reserve against ONE spend key (see the script). Fail-fast:
+   * a fault throws and the caller applies the named fail mode. */
+  async checkAndReserve(
+    spendKey: string,
+    amountMicros: number,
+    ceilingMicros: number,
+    ttlMs: number,
+  ): Promise<{ admitted: boolean; spend: number; pending: number }> {
+    const out = (await this.readConn.eval(
+      CHECK_AND_RESERVE_LUA,
+      2,
+      spendKey,
+      this.pendingKeyFor(spendKey),
+      String(Math.max(0, Math.ceil(ceilingMicros))),
+      String(Math.max(0, Math.round(amountMicros))),
+      String(Math.max(1, Math.round(ttlMs))),
+    )) as [number, number, number];
+    return { admitted: Number(out[0]) === 1, spend: Number(out[1]), pending: Number(out[2]) };
+  }
+
+  /** Release a reservation from ONE spend key's pending structure (floored at 0). */
+  async release(spendKey: string, micros: number, ttlMs: number): Promise<number> {
+    const out = await this.readConn.eval(
+      RELEASE_LUA,
+      1,
+      this.pendingKeyFor(spendKey),
+      String(Math.max(0, Math.ceil(micros))),
+      String(Math.max(1, Math.round(ttlMs))),
+    );
+    return Number(out);
+  }
+
+  /** Scheduler write: the authoritative pending total from the job rows (NOT
+   * monotonic — pending falls as jobs settle; the database is the source of truth). */
+  async reconcilePending(spendKey: string, micros: number, ttlMs: number): Promise<void> {
+    await this.writeConn.set(
+      this.pendingKeyFor(spendKey),
+      String(Math.max(0, Math.round(micros))),
+      'PX',
+      Math.max(1, Math.round(ttlMs)),
+    );
   }
 
   /** Scheduler write: monotonically raise the counter to `micros` and (re)set its

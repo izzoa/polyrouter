@@ -5,11 +5,13 @@ import type {
   PersistenceFacilities,
   PersistencePort,
 } from '@polyrouter/shared/server';
-import { BUNDLED_PRICES } from './bundled-catalog';
+import { BUNDLED_CATALOG_VERSION, BUNDLED_PRICES } from './bundled-catalog';
 import { PricingService, type PricingFetch, type PricingRuntime } from './pricing.service';
 
-// After BUNDLED_CATALOG_VERSION (2026-08-19), before the 2026-09-* overrides.
-const AT = new Date('2026-08-20T00:00:00Z');
+// Clocks are DERIVED from the bundle version so a content bump (which moves the
+// seed's valid_from forward) can never turn these fixtures into backdated writes.
+const day = (n: number): Date => new Date(BUNDLED_CATALOG_VERSION.getTime() + n * 86_400_000);
+const AT = day(1); // after the seed, before every override/refresh below
 
 function makeStore() {
   const versions: ModelPriceRow[] = [];
@@ -43,6 +45,8 @@ function makeStore() {
         cacheWritePricePer1m: entry.cacheWritePricePer1m ?? null,
         contextWindow: entry.contextWindow ?? null,
         maxOutputTokens: entry.maxOutputTokens ?? null,
+        batchInputPricePer1m: entry.batchInputPricePer1m ?? null,
+        batchOutputPricePer1m: entry.batchOutputPricePer1m ?? null,
         supportsTools: entry.supportsTools ?? false,
         supportsVision: entry.supportsVision ?? false,
         supportsReasoning: entry.supportsReasoning ?? false,
@@ -112,15 +116,15 @@ describe('PricingService — override & manual protection', () => {
     const svc = new PricingService(port, facilities, runtime, noFetch);
     await svc.seed();
     const key = 'openai:gpt-4o';
-    await svc.override(key, { inputPricePer1m: 99, outputPricePer1m: 199 }, new Date('2026-09-01'));
+    await svc.override(key, { inputPricePer1m: 99, outputPricePer1m: 199 }, day(2));
     const afterOverride = await svc.priceAt(key, AT); // AT < override date, still bundled
     expect(afterOverride?.source).toBe('bundled');
-    const now = await svc.priceAt(key, new Date('2026-09-02'));
+    const now = await svc.priceAt(key, day(3));
     expect(now).toMatchObject({ source: 'manual', inputPricePer1m: 99 });
 
     // a re-seed must not overwrite the manual override (its latest is manual)
     await svc.seed();
-    const stillManual = await svc.priceAt(key, new Date('2026-09-03'));
+    const stillManual = await svc.priceAt(key, day(4));
     expect(stillManual?.source).toBe('manual');
   });
 
@@ -153,12 +157,16 @@ describe('PricingService — refresh appends only on change', () => {
             cacheReadPricePer1m: 1.25,
             contextWindow: 128000,
             maxOutputTokens: 16384,
+            // The bundled gpt-4o row carries a batch pair (add-batch-inference);
+            // "identical" now includes it — omitting the pair IS a change.
+            batchInputPricePer1m: 1.25,
+            batchOutputPricePer1m: 5,
             supportsTools: true,
             supportsVision: true,
           },
         ],
       },
-      new Date('2026-09-01'),
+      day(2),
     );
     expect(same).toBe(0);
     // changed → appends
@@ -167,10 +175,10 @@ describe('PricingService — refresh appends only on change', () => {
         source: 'body',
         entries: [{ modelKey: 'openai:gpt-4o', inputPricePer1m: 3, outputPricePer1m: 11 }],
       },
-      new Date('2026-09-02'),
+      day(3),
     );
     expect(changed).toBe(1);
-    expect((await svc.priceAt('openai:gpt-4o', new Date('2026-09-03')))?.inputPricePer1m).toBe(3);
+    expect((await svc.priceAt('openai:gpt-4o', day(4)))?.inputPricePer1m).toBe(3);
   });
 
   it('a litellm refresh parses the fetched catalog and appends', async () => {
@@ -185,10 +193,10 @@ describe('PricingService — refresh appends only on change', () => {
         },
       });
     const svc = new PricingService(port, facilities, runtime, fetchImpl);
-    const added = await svc.refresh({ source: 'litellm' }, new Date('2026-09-01'));
+    const added = await svc.refresh({ source: 'litellm' }, day(2));
     expect(added).toBe(1);
     expect(await svc.priceAt('openai:new-model', AT)).toBeNull(); // AT is before the refresh
-    expect((await svc.priceAt('openai:new-model', new Date('2026-09-02')))?.inputPricePer1m).toBe(
+    expect((await svc.priceAt('openai:new-model', day(3)))?.inputPricePer1m).toBe(
       1,
     );
   });
@@ -204,19 +212,19 @@ describe('PricingService — output caps (add-output-cap-guardrails)', () => {
       outputPricePer1m: 2,
       maxOutputTokens: 8192,
     };
-    await svc.refresh({ source: 'body', entries: [base] }, new Date('2026-09-01'));
+    await svc.refresh({ source: 'body', entries: [base] }, day(2));
     // identical (cap included) → no-op
-    expect(await svc.refresh({ source: 'body', entries: [base] }, new Date('2026-09-02'))).toBe(0);
+    expect(await svc.refresh({ source: 'body', entries: [base] }, day(3))).toBe(0);
     // SAME prices, different cap → appends
     const capOnly = await svc.refresh(
       { source: 'body', entries: [{ ...base, maxOutputTokens: 16384 }] },
-      new Date('2026-09-03'),
+      day(4),
     );
     expect(capOnly).toBe(1);
-    expect((await svc.priceAt('openai:cap-model', new Date('2026-09-04')))?.maxOutputTokens).toBe(
+    expect((await svc.priceAt('openai:cap-model', day(5)))?.maxOutputTokens).toBe(
       16384,
     );
-    expect((await svc.priceAt('openai:cap-model', new Date('2026-09-02')))?.maxOutputTokens).toBe(
+    expect((await svc.priceAt('openai:cap-model', day(3)))?.maxOutputTokens).toBe(
       8192, // history intact
     );
   });
@@ -234,8 +242,8 @@ describe('PricingService — output caps (add-output-cap-guardrails)', () => {
         },
       });
     const svc = new PricingService(port, facilities, runtime, fetchImpl);
-    expect(await svc.refresh({ source: 'litellm' }, new Date('2026-09-01'))).toBe(1);
-    const row = await svc.priceAt('openai:frac-cap', new Date('2026-09-02'));
+    expect(await svc.refresh({ source: 'litellm' }, day(2))).toBe(1);
+    const row = await svc.priceAt('openai:frac-cap', day(3));
     expect(row?.inputPricePer1m).toBe(1);
     expect(row?.maxOutputTokens).toBeNull();
   });
@@ -271,11 +279,85 @@ describe('PricingService — output caps (add-output-cap-guardrails)', () => {
     await svc.override(
       'openai:cap-rt',
       { inputPricePer1m: 1, outputPricePer1m: 2, maxOutputTokens: 4096 },
-      new Date('2026-09-01'),
+      day(2),
     );
-    expect((await svc.priceAt('openai:cap-rt', new Date('2026-09-02')))?.maxOutputTokens).toBe(
+    expect((await svc.priceAt('openai:cap-rt', day(3)))?.maxOutputTokens).toBe(
       4096,
     );
+  });
+});
+
+describe('PricingService — batch-tier pair (add-batch-inference)', () => {
+  it('a batch-pair-only change appends a version like any other flag change', async () => {
+    const { port, facilities } = makeStore();
+    const svc = new PricingService(port, facilities, runtime, noFetch);
+    const base = {
+      modelKey: 'openai:batch-model',
+      inputPricePer1m: 2,
+      outputPricePer1m: 8,
+      batchInputPricePer1m: 1,
+      batchOutputPricePer1m: 4,
+    };
+    await svc.refresh({ source: 'body', entries: [base] }, day(2));
+    expect(await svc.refresh({ source: 'body', entries: [base] }, day(3))).toBe(0);
+    // SAME sync prices, different batch pair → appends; history intact.
+    expect(
+      await svc.refresh(
+        { source: 'body', entries: [{ ...base, batchInputPricePer1m: 0.9, batchOutputPricePer1m: 3.6 }] },
+        day(4),
+      ),
+    ).toBe(1);
+    expect((await svc.priceAt('openai:batch-model', day(5)))?.batchInputPricePer1m).toBe(0.9);
+    expect((await svc.priceAt('openai:batch-model', day(3)))?.batchInputPricePer1m).toBe(1);
+  });
+
+  it('a trusted half pair or negative pair fails fast (manual override + admin body)', async () => {
+    const { port, facilities } = makeStore();
+    const svc = new PricingService(port, facilities, runtime, noFetch);
+    await expect(
+      svc.override('x:y', { inputPricePer1m: 1, outputPricePer1m: 1, batchInputPricePer1m: 0.5 }, new Date()),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    await expect(
+      svc.override(
+        'x:y',
+        { inputPricePer1m: 1, outputPricePer1m: 1, batchInputPricePer1m: -1, batchOutputPricePer1m: 1 },
+        new Date(),
+      ),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    await expect(
+      svc.refresh(
+        {
+          source: 'body',
+          entries: [{ modelKey: 'x:y', inputPricePer1m: 1, outputPricePer1m: 1, batchOutputPricePer1m: 2 }],
+        },
+        new Date(),
+      ),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+  });
+
+  it('a live pull with a half pair keeps the row and drops the pair; an override round-trips a full pair', async () => {
+    const { port, facilities } = makeStore();
+    const fetchImpl: PricingFetch = () =>
+      Promise.resolve({
+        'half-batch': {
+          litellm_provider: 'openai',
+          mode: 'chat',
+          input_cost_per_token: 0.000001,
+          output_cost_per_token: 0.000002,
+          input_cost_per_token_batches: 0.0000005, // half → parser drops the pair, keeps the row
+        },
+      });
+    const svc = new PricingService(port, facilities, runtime, fetchImpl);
+    expect(await svc.refresh({ source: 'litellm' }, day(2))).toBe(1);
+    const row = await svc.priceAt('openai:half-batch', day(3));
+    expect(row?.inputPricePer1m).toBe(1);
+    expect(row?.batchInputPricePer1m).toBeNull();
+    await svc.override(
+      'anthropic:claude-opus-5',
+      { inputPricePer1m: 15, outputPricePer1m: 75, batchInputPricePer1m: 7.5, batchOutputPricePer1m: 37.5 },
+      day(2),
+    );
+    expect((await svc.priceAt('anthropic:claude-opus-5', day(3)))?.batchOutputPricePer1m).toBe(37.5);
   });
 });
 
@@ -401,10 +483,10 @@ describe('PricingService — refresh validation resilience (A-13)', () => {
     };
     const fetch: PricingFetch = () => Promise.resolve(catalog);
     const svc = new PricingService(port, facilities, runtime, fetch);
-    const written = await svc.refresh({ source: 'litellm' }, new Date('2026-09-01'));
+    const written = await svc.refresh({ source: 'litellm' }, day(2));
     expect(written).toBe(1); // only the good model appended — the bad one skipped, not fatal
-    expect(await svc.priceAt('openai:good-model', new Date('2026-09-02'))).not.toBeNull();
-    expect(await svc.priceAt('openai:bad-model', new Date('2026-09-02'))).toBeNull();
+    expect(await svc.priceAt('openai:good-model', day(3))).not.toBeNull();
+    expect(await svc.priceAt('openai:bad-model', day(3))).toBeNull();
   });
 
   it('an admin BODY refresh with an invalid entry fails-fast (operator input surfaced)', async () => {

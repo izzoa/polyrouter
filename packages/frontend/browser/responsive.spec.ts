@@ -24,6 +24,10 @@ const MATRIX = [
 const PAGES = [
   'overview',
   'requests',
+  // The widest table in the app (ten columns). It joins the all-page sweeps rather than
+  // getting a bespoke overflow test, because the sweeps are the ones that would actually
+  // catch a tenth column shipping without a reflow.
+  'batches',
   'costs',
   'agents',
   'providers',
@@ -173,6 +177,26 @@ test.describe('phone width', () => {
     await expect(page.locator('.rs-sidebar-footer')).toBeVisible();
   });
 
+  test('the account footer stays on screen however long the nav gets', async ({ page }) => {
+    // A regression guard with a known cause: adding the Batches page made the expanded
+    // nav taller than a 320x568 screen, and the footer — the only route to Settings, the
+    // theme toggle, Users and Log out — fell below the fold. It was still reachable by
+    // scrolling, so `toBeVisible()` passed; the account menu, which opens upward from a
+    // trigger inside it, rendered off-screen. Pinning the footer makes nav length
+    // irrelevant, and this measures that rather than the current page count.
+    await page.setViewportSize({ width: 320, height: 568 });
+    await open(page);
+    await page.locator('.rs-nav-toggle').click();
+    await page.waitForTimeout(250);
+    const box = await page
+      .locator('.rs-sidebar-footer')
+      .evaluate((el) => el.getBoundingClientRect().toJSON() as { top: number; bottom: number });
+    expect(box.top, 'the account footer starts below the fold').toBeLessThan(568);
+    expect(box.bottom, 'the account footer runs past the bottom of the screen').toBeLessThanOrEqual(
+      568.5,
+    );
+  });
+
   test('the rail reclaims the viewport when collapsed', async ({ page }) => {
     await open(page);
     const width = await page
@@ -197,6 +221,30 @@ test.describe('phone width', () => {
     expect(shape.row).toBe('block');
     expect(shape.head).toBe('none');
     expect(shape.label).not.toBe('none');
+  });
+
+  test('the batches table renders as stacked records, not a 10-column grid', async ({ page }) => {
+    await open(page, '#/batches');
+    const shape = await page.evaluate(() => {
+      const row = document.querySelector('.rs-batch-row');
+      const head = document.querySelector('.rs-table-batches .table-head');
+      const label = document.querySelector('.rs-batch-row .rs-cell-label');
+      const terminalAction = document
+        .querySelector('[data-batch-job="bj-done"]')
+        ?.querySelector('.rs-cell:last-child');
+      return {
+        row: row ? getComputedStyle(row).display : null,
+        head: head ? getComputedStyle(head).display : null,
+        label: label ? getComputedStyle(label).display : null,
+        // A finished job offers no Cancel, so its action cell holds only its own empty
+        // label. Stacked, that would close every completed record with a blank strip.
+        terminalAction: terminalAction ? getComputedStyle(terminalAction).display : null,
+      };
+    });
+    expect(shape.row).toBe('block');
+    expect(shape.head).toBe('none');
+    expect(shape.label).not.toBe('none');
+    expect(shape.terminalAction).toBe('none');
   });
 
   test('every rendered control meets the comfort target, on every page', async ({ page }) => {
@@ -364,6 +412,72 @@ test.describe('desktop width, fine pointer', () => {
       });
       expect(small, `controls under the 24px base floor on ${name} at desktop width`).toEqual([]);
     }
+  });
+
+  test('every batches row lines up with the head, cell edge for cell edge', async ({ page }) => {
+    // What D17's `minmax(0, …)` tracks exist for, measured rather than declared. A bare
+    // `fr` track takes an implicit `auto` minimum, so ONE unshrinkable cell — the stacked
+    // "up to $184.2500 / reserved, not spent", or a 12,500-item count — widens its own
+    // track and shifts every column after it. The row then no longer aligns with the head
+    // or with its neighbours, which is exactly what the mockup did.
+    await open(page, '#/batches');
+    const drift = await page.evaluate(() => {
+      const table = document.querySelector('.rs-table-batches');
+      if (!table) return ['no batches table'];
+      // `.rs-cell` is `display: contents` at desktop — it carries no box, so the real grid
+      // items are its children, and measuring the wrapper reads 0 for every column.
+      const items = (el: Element): Element[] =>
+        [...el.children]
+          .flatMap((c) => (getComputedStyle(c).display === 'contents' ? [...c.children] : [c]))
+          .filter((c) => getComputedStyle(c).display !== 'none');
+      const head = table.querySelector('.table-head');
+      const rows = [...table.querySelectorAll('.rs-batch-row')];
+      if (!head || rows.length === 0) return ['no head or no rows'];
+      const want = items(head).map((c) => Math.round(c.getBoundingClientRect().left));
+      const out: string[] = [];
+      for (const row of rows) {
+        const cells = items(row);
+        const id = (row as HTMLElement).dataset['batchJob'] ?? '?';
+        // A finished job offers no Cancel, so its last cell contributes no item and the
+        // row is legitimately short. That is safe only because the gap is TRAILING:
+        // auto-placement fills tracks in order, so a gap anywhere earlier would land
+        // every later item one track early — which the per-index edge check below
+        // catches. A row with MORE items than headers has no such excuse.
+        if (cells.length > want.length) {
+          out.push(`${id}: ${String(cells.length)} cells vs ${String(want.length)} headers`);
+          continue;
+        }
+        cells.forEach((c, i) => {
+          const x = Math.round(c.getBoundingClientRect().left);
+          if (Math.abs(x - (want[i] ?? 0)) > 1)
+            out.push(`${id} col ${String(i)}: ${String(x)} vs head ${String(want[i] ?? 0)}`);
+        });
+      }
+      return out.slice(0, 8);
+    });
+    expect(drift, 'batches columns drift between the head and a row').toEqual([]);
+  });
+
+  test('a batches cell can shrink inside its column, never widen it', async ({ page }) => {
+    // The other half of D17. `minmax(0, …)` pins the TRACK, which is why the edges above
+    // line up — but a grid item keeps `min-width: auto` unless told otherwise, and an
+    // item wider than its track paints over the next column instead of shrinking. Seven
+    // of the ten items read `min-width: auto` until the rule was pointed at the real
+    // items rather than at the boxless `.rs-cell` wrapper.
+    await open(page, '#/batches');
+    const bad = await page.evaluate(() => {
+      const out: string[] = [];
+      for (const cell of document.querySelectorAll<HTMLElement>('.rs-batch-row > .rs-cell > *')) {
+        const s = getComputedStyle(cell);
+        if (s.display === 'none') continue;
+        if (s.minWidth !== '0px') {
+          const text = (cell.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 30);
+          out.push(`min-width:${s.minWidth} text="${text}"`);
+        }
+      }
+      return out.slice(0, 8);
+    });
+    expect(bad, 'a batches grid item can still widen its own column').toEqual([]);
   });
 });
 

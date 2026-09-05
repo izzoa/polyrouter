@@ -1,6 +1,12 @@
 import { createSignal, For, onCleanup, onMount, Show, type JSX } from 'solid-js';
 import { labelOf, type RequestRow, type RequestStatus } from '../data/api';
 import type { InflightDisplayRow } from '../data/inflight';
+import {
+  batchProgressLabel,
+  batchStatusLabel,
+  fmtElapsed,
+  type BatchDisplayRow,
+} from '../data/batchBand';
 import { rowCostLabel } from '../data/analytics';
 import { fmtTime, fmtTokens } from '../data/catalog';
 import { useApp } from '../state/context';
@@ -66,7 +72,36 @@ const STATUS_TEXT: Record<RequestStatus, string> = {
 // `status` is free-form text at the DB — an unknown/legacy value renders neutrally
 // instead of crashing on a missing map entry.
 const dotFor = (s: string): string => STATUS_DOT[s as RequestStatus] ?? 'var(--text3)';
+/** A settled batch item. `batchId` is the fact; `priceMode` is how it was priced —
+ * either alone identifies one, and a row predating the columns is neither. */
+export const isBatchItem = (r: Pick<RequestRow, 'batchId' | 'priceMode'>): boolean =>
+  r.batchId !== null || r.priceMode === 'batch';
 const textFor = (s: string): string => STATUS_TEXT[s as RequestStatus] ?? (s || 'unknown');
+
+/** The neutral `batch` chip (add-batch-inference D11a/D12). Neutral on purpose:
+ * the lock reserves the accent tint for `explicit` and amber for status, and a
+ * batch is an execution MODE, not a routing decision — the decision layer beside
+ * it stays truthful. The glyph is decorative; the word carries the state. */
+function BatchChip() {
+  return (
+    <span
+      style={{
+        display: 'inline-flex',
+        'align-items': 'center',
+        gap: '4px',
+        padding: '2px 8px',
+        background: 'var(--chip)',
+        color: 'var(--text2)',
+        'border-radius': '10px',
+        'font-size': '11px',
+        'font-weight': '500',
+      }}
+    >
+      <Icon name="layers" size={11} />
+      batch
+    </span>
+  );
+}
 
 export function RequestTableHead() {
   return (
@@ -90,7 +125,7 @@ export function RequestRow(props: { r: RequestRow }) {
       aria-controls="inspector-drawer"
       onClick={() => app.select(selected() ? null : props.r.id)}
     >
-            <Cell label="Time">
+      <Cell label="Time">
         <span class="mono" style="font-size:11px;color:var(--text3)">
           {fmtTime(new Date(props.r.createdAt).getTime())}
         </span>
@@ -124,12 +159,20 @@ export function RequestRow(props: { r: RequestRow }) {
             <Show when={props.r.escalated}>
               {/* The mark is decorative; the word carries the state. Before this the arrow was
                   the ONLY difference between an escalated request and a normal one, and it was
-                  unlabelled — so escalation was invisible to assistive technology entirely. */}
-              {' '}
+                  unlabelled — so escalation was invisible to assistive technology entirely. */}{' '}
               <Icon name="escalated" size={11} />
               <span class="sr-only">escalated</span>
             </Show>
           </span>
+          {/* A settled batch item (add-batch-inference task 5.4): the SAME neutral
+              chip and glyph the live job row uses, beside the decision layer rather
+              than instead of it — the decision really was explicit, and the mode is
+              a separate fact. The chip is never the sole carrier: the row's latency
+              reads in hours and the inspector names the job. */}
+          <Show when={isBatchItem(props.r)}>
+            {' '}
+            <BatchChip />
+          </Show>
         </span>
       </Cell>
       <Cell label="Tokens">
@@ -154,8 +197,13 @@ export function RequestRow(props: { r: RequestRow }) {
         </span>
       </Cell>
       <Cell label="Latency">
+        {/* A batch item's `duration_ms` is the JOB's wall time — the time the caller
+            actually waited — which runs to hours. `7412.3s` is not a reading, so it
+            is formatted as a job. Latency aggregates exclude these rows entirely. */}
         <span class="mono" style="font-size:11px">
-          {(props.r.durationMs / 1000).toFixed(1)}s
+          {isBatchItem(props.r)
+            ? fmtElapsed(props.r.durationMs)
+            : `${(props.r.durationMs / 1000).toFixed(1)}s`}
         </span>
       </Cell>
       <Cell label="Status">
@@ -172,13 +220,121 @@ export function RequestRow(props: { r: RequestRow }) {
           {textFor(props.r.status)}
         </span>
       </Cell>
-
     </button>
   );
 }
 
 export function RequestRows(props: { rows: RequestRow[] }) {
   return <For each={props.rows}>{(r) => <RequestRow r={r} />}</For>;
+}
+
+/**
+ * Live batch JOB rows (add-batch-inference task 5.2), rendered in the same band as
+ * the live request rows and in the same visual vocabulary — but they are a
+ * different kind of thing, so every cell says so: a neutral `batch` chip instead
+ * of a decision layer, the job's progress on its OWN line beneath the status (so
+ * it can never widen the status column), an elapsed time formatted for hours
+ * rather than seconds, and neutral token/cost cells because a job has no cost
+ * until it settles. A reservation is never rendered as spend (D13).
+ *
+ * Non-selectable, like a running request: there is no terminal detail to inspect
+ * yet, and the settled item rows carry it once there is.
+ */
+export function BatchJobRows(props: { rows: BatchDisplayRow[] }) {
+  const now = useNow();
+  return <For each={props.rows}>{(r) => <BatchJobRow r={r} now={now()} />}</For>;
+}
+
+function BatchJobRow(props: { r: BatchDisplayRow; now: number }) {
+  const label = () => batchStatusLabel(props.r);
+  const progress = () => batchProgressLabel(props.r);
+  // `Cancelling` pulses amber — a state the user asked for and is waiting on;
+  // `Reconciling` pulses faint — polyrouter cannot yet confirm the provider took
+  // the job. Everything else is a steady dot. The app's reduced-motion query
+  // forces iteration-count 1, so each settles to a static dot.
+  const dot = (): string => {
+    if (props.r.phase === 'settling') return 'var(--faint)';
+    if (props.r.status === 'cancelling') return 'var(--amber)';
+    if (props.r.status === 'submission_unknown') return 'var(--faint)';
+    return 'var(--accent)';
+  };
+  const pulses = (): boolean =>
+    props.r.phase !== 'settling' &&
+    (props.r.status === 'cancelling' ||
+      props.r.status === 'submission_unknown' ||
+      props.r.status === 'in_progress');
+  return (
+    <div class="req-row" style={{ cursor: 'default' }} data-batch-row={props.r.id}>
+      <Cell label="Time">
+        <span class="mono" style="font-size:11px;color:var(--text3)">
+          {fmtTime(Date.parse(props.r.submittedAt))}
+        </span>
+      </Cell>
+      <Cell label="Model">
+        <span class="mono" style="font-size:11.5px;color:var(--text)">
+          {props.r.modelLabel ?? props.r.modelId}
+        </span>
+      </Cell>
+      <Cell label="Provider">
+        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+          {props.r.providerLabel ?? props.r.providerId}
+        </span>
+      </Cell>
+      <Cell label="Tier">
+        <span>{props.r.tierAssigned ?? '—'}</span>
+      </Cell>
+      <Cell label="Decided by">
+        <span>
+          <BatchChip />
+        </span>
+      </Cell>
+      <Cell label="Tokens">
+        <span class="mono" style="font-size:11px;color:var(--text3)">
+          —
+        </span>
+      </Cell>
+      <Cell label="Cost">
+        {/* A reservation is money PROMISED, not spent — it is never shown here (D13);
+            the Batches page labels it as reserved where there is room to say so. */}
+        <span class="mono" style="font-size:11px;color:var(--text3)">
+          —
+        </span>
+      </Cell>
+      <Cell label="Latency">
+        <span class="mono" style="font-size:11px;color:var(--text2)">
+          {fmtElapsed(props.now - Date.parse(props.r.submittedAt))}
+        </span>
+      </Cell>
+      <Cell label="Status">
+        <span style="display:flex;flex-direction:column;gap:2px;color:var(--text2);min-width:0">
+          <span style="display:flex;align-items:center;gap:5px">
+            <span
+              aria-hidden="true"
+              style={{
+                width: '6px',
+                height: '6px',
+                'border-radius': '50%',
+                background: dot(),
+                flex: 'none',
+                ...(pulses() ? { animation: 'pulse 1.5s ease-in-out infinite' } : {}),
+              }}
+            />
+            {label()}
+          </span>
+          {/* On its OWN line: at real magnitudes "In progress 1204 of 5000" is wider
+              than the status column, and a bare `fr` track would let it shift every
+              other column (D17). */}
+          <Show when={progress()}>
+            {(p) => (
+              <span class="mono" style="font-size:10.5px;color:var(--text3)">
+                {p()}
+              </span>
+            )}
+          </Show>
+        </span>
+      </Cell>
+    </div>
+  );
 }
 
 /** One shared 1s ticker for the live latency column (not per-row). */
@@ -207,7 +363,7 @@ function InflightRunningRow(props: { r: InflightDisplayRow; now: number }) {
     // a bare div has no role to hang one on, and the row's own text already reads
     // out completely — time, model, provider, tier, layer, and "Running".
     <div class="req-row" style={{ cursor: 'default' }}>
-            <Cell label="Time">
+      <Cell label="Time">
         <span class="mono" style="font-size:11px;color:var(--text3)">
           {fmtTime(props.r.startedAt)}
         </span>
@@ -281,7 +437,6 @@ function InflightRunningRow(props: { r: InflightDisplayRow; now: number }) {
           {props.r.phase === 'settling' ? 'Finishing' : 'Running'}
         </span>
       </Cell>
-
     </div>
   );
 }

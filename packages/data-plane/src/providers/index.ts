@@ -34,13 +34,52 @@ export {
 } from './errors';
 export type { ProviderErrorKind, SanitizedMessage, CaptureInput, CaptureContext } from './errors';
 export { createGuardedHttpClient, readSseChunks, joinUrl, openRequest } from './http';
-export type { HttpClient, HttpResponse, HttpInit, GuardedClientOptions } from './http';
+export type { HttpBody, HttpClient, HttpResponse, HttpInit, GuardedClientOptions } from './http';
 export { createHttpProviderAdapter, parseModelList } from './http-adapter';
 export type { AdapterDeps, HttpAdapterSpec } from './http-adapter';
+export type { BatchFactory, BatchTransport } from './batch/transport';
+export { JsonStreamError, bytesOf, readJsonLines, scanTopLevelObject } from './batch/json-stream';
+export type { JsonStreamEvent, JsonStreamFailure, JsonStreamOptions } from './batch/json-stream';
 export { createOpenaiProviderAdapter } from './openai-adapter';
 export { createAnthropicProviderAdapter } from './anthropic-adapter';
 export { createResponsesProviderAdapter, guardEventIdle } from './responses-adapter';
-export { createProviderAdapter } from './factory';
+export { createProviderAdapter, batchFactoryFor } from './factory';
+export {
+  OPENROUTER_BATCH_STATUSES,
+  OPENROUTER_STATUS_MAP,
+  createOpenRouterBatchAdapter,
+  openRouterBatchesUrl,
+} from './batch/openrouter-batch';
+export {
+  ANTHROPIC_CUSTOM_ID,
+  ANTHROPIC_PROCESSING_STATUSES,
+  anthropicErrorKind,
+  createAnthropicBatchAdapter,
+  mapAnthropicStatus,
+  parseMessageBatch,
+} from './batch/anthropic-batch';
+export {
+  OPENAI_BATCH_STATUSES,
+  OPENAI_JOB_ID_KEY,
+  OPENAI_STATUS_MAP,
+  createOpenAiBatchAdapter,
+  multipartJsonl,
+  parseOpenAiBatch,
+} from './batch/openai-batch';
+export { streamJsonDocument } from './batch/support';
+export { BatchUpstreamNotFoundError, mapUpstreamStatus } from './batch';
+export type {
+  BatchAdapter,
+  BatchLimits,
+  BatchCounts,
+  BatchItem,
+  BatchItemOutcome,
+  BatchListEntry,
+  BatchStatusView,
+  BatchSubmitInput,
+  BatchSubmitResult,
+  BatchUpstreamStatus,
+} from './batch';
 export {
   CircuitBreaker,
   InMemoryBreakerStore,

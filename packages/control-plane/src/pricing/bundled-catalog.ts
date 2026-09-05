@@ -16,6 +16,9 @@ const LITELLM_SNAPSHOT: Record<string, unknown> = {
     mode: 'chat',
     input_cost_per_token: 0.0000025,
     output_cost_per_token: 0.00001,
+    // Batch-tier pair (add-batch-inference), verbatim from LiteLLM 2026-09-04.
+    input_cost_per_token_batches: 0.00000125,
+    output_cost_per_token_batches: 0.000005,
     cache_read_input_token_cost: 0.00000125,
     max_input_tokens: 128000,
     max_output_tokens: 16384,
@@ -27,6 +30,8 @@ const LITELLM_SNAPSHOT: Record<string, unknown> = {
     mode: 'chat',
     input_cost_per_token: 0.00000015,
     output_cost_per_token: 0.0000006,
+    input_cost_per_token_batches: 0.000000075,
+    output_cost_per_token_batches: 0.0000003,
     cache_read_input_token_cost: 0.000000075,
     max_input_tokens: 128000,
     max_output_tokens: 16384,
@@ -217,6 +222,10 @@ const LITELLM_SNAPSHOT: Record<string, unknown> = {
  * (add-output-cap-guardrails); entries whose live counterpart carries no
  * explicit cap (claude-3-5-haiku-latest, gemini-1.5-*, the openrouter free
  * model) deliberately stay cap-less — unknown-not-wrong. */
-export const BUNDLED_CATALOG_VERSION = new Date('2026-08-19T00:00:00.000Z');
+// 2026-09-05: batch-tier pairs (add-batch-inference). LiteLLM carries them for
+// the `openai` family only — NO `anthropic`-family entry has one (only Bedrock/
+// Vertex variants do), so a direct Anthropic provider's batch rate stays unknown
+// (unknown-not-wrong; an operator override can supply it) until LiteLLM does.
+export const BUNDLED_CATALOG_VERSION = new Date('2026-09-05T00:00:00.000Z');
 
 export const BUNDLED_PRICES: BundledPrice[] = parseLiteLlmCatalog(LITELLM_SNAPSHOT);

@@ -74,7 +74,7 @@ describe('Responses provider adapter (add-chatgpt-responses)', () => {
     expect(h['Authorization']).toBe('Bearer oat-access-token');
     expect(h['chatgpt-account-id']).toBe('acct-123');
     expect(h['OpenAI-Beta']).toBe('responses=experimental');
-    const body = JSON.parse(call.init.body!) as Record<string, unknown>;
+    const body = JSON.parse(call.init.body as string) as Record<string, unknown>;
     expect(body['store']).toBe(false); // ALWAYS
     expect(body['stream']).toBe(true); // the wire refuses non-streaming (verified live)
     expect(body['model']).toBe('gpt-5.4-mini');
@@ -127,7 +127,7 @@ describe('Responses provider adapter (add-chatgpt-responses)', () => {
     const { client, calls } = recordingClient(() => sseResponse(OK_STREAM));
     const adapter = createResponsesProviderAdapter(config, { httpClient: client });
     await expect(adapter.testConnection()).resolves.toEqual({ ok: true, models: 0 });
-    const body = JSON.parse(calls[0]!.init.body!) as Record<string, unknown>;
+    const body = JSON.parse(calls[0]!.init.body as string) as Record<string, unknown>;
     expect(body['model']).toBe('gpt-5.4-mini');
     expect(body['stream']).toBe(true);
     expect(body['store']).toBe(false);

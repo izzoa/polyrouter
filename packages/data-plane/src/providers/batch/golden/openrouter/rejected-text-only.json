@@ -1,0 +1,9 @@
+{
+  "status": 400,
+  "body": {
+    "error": {
+      "message": "Batch API is text-only: request req-2 carries an image content part. Send multimodal requests to the sync API.",
+      "code": 400
+    }
+  }
+}

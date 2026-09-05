@@ -41,6 +41,20 @@ export class OverrideDto {
   @Min(1)
   maxOutputTokens?: number;
 
+  // Batch-tier pair (add-batch-inference). A trusted source may supply it — an
+  // operator pricing a batch the catalog does not (LiteLLM carries no
+  // anthropic-family pair). Both-or-neither is enforced by the service's
+  // trusted-source validation, not here, so the rejection names the rule.
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  batchInputPricePer1m?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  batchOutputPricePer1m?: number;
+
   @IsOptional()
   @IsBoolean()
   supportsTools?: boolean;

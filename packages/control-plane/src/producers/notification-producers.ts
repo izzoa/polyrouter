@@ -111,6 +111,45 @@ export class NotificationProducers {
     }
   }
 
+  /**
+   * A batch job has been stuck in a state that needs an operator (add-batch-
+   * inference D26/task 4.10): `submission_unknown` past its reconciliation window,
+   * or an upstream status polyrouter cannot map. Deduped per `(jobId, kind)` — a
+   * job that recovers and stalls again is a new lifecycle. Fire-and-forget: the
+   * poller sweep is never delayed by a slow or failing channel (invariant 11).
+   */
+  batchStalled(a: {
+    readonly ownerUserId: string;
+    readonly agentId?: string;
+    readonly jobId: string;
+    readonly kind: string;
+    readonly status: string;
+    readonly stalledMinutes: number;
+    readonly modelId: string;
+  }): void {
+    try {
+      void this.notifications.emit({
+        type: 'batch_stalled',
+        scope: {
+          ownerUserId: a.ownerUserId,
+          ...(a.agentId !== undefined ? { agentId: a.agentId } : {}),
+          // Metadata only: an opaque job id and a taxonomy token, never an item.
+          limitId: a.jobId,
+          lifecycleId: `${a.jobId}|${a.kind}`,
+        },
+        fields: {
+          jobId: a.jobId,
+          reason: a.kind,
+          status: a.status,
+          stalledMinutes: a.stalledMinutes,
+          model: a.modelId,
+        },
+      });
+    } catch (err) {
+      this.logger.warn(`batch_stalled emit skipped: ${String((err as Error).message)}`);
+    }
+  }
+
   /** A request was recorded as an error → bump the owner's windowed Redis
    * counter; emit a spike alert exactly when it reaches the threshold. */
   async onRequestFailed(principal: Principal): Promise<void> {

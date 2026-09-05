@@ -39,6 +39,7 @@ import {
 } from '@polyrouter/shared/server';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { createAnalyticsAccessor } from './analytics.queries';
+import { createBatchJobAccessor } from './batch-jobs.queries';
 import { createBodyCaptureAccessor } from './body-capture.queries';
 import type { Db } from './database.internal';
 import {
@@ -134,8 +135,9 @@ function createModelAccessor(db: Db): ModelAccessor {
     async upsertForProvider(principal, providerId, values: ModelInsertInput) {
       // Same transactional parent-ownership fence as createForProvider, but a
       // single ON CONFLICT statement — concurrent syncs / duplicate ids converge
-      // instead of racing to a unique violation. Only display_name/last_synced_at
-      // are updated (never prices/capabilities — those are #8's).
+      // instead of racing to a unique violation. Only the sync-owned fields are
+      // updated — display_name/last_synced_at, the listed_* display estimates, and
+      // the derived variant — never prices/capabilities (those are #8's).
       return db.transaction(async (tx) => {
         const parent = await tx
           .select({ id: providers.id })
@@ -158,6 +160,11 @@ function createModelAccessor(db: Db): ModelAccessor {
         if ('listedIsFree' in rest) set['listedIsFree'] = rest['listedIsFree'];
         if ('listedPriceCapturedAt' in rest)
           set['listedPriceCapturedAt'] = rest['listedPriceCapturedAt'];
+        // Derived variant (add-model-variant-detection): MUST be in the conflict set.
+        // Written only on INSERT, a classification would freeze at the row's first
+        // sync — an id whose variant changed, or one wrongly classified before a
+        // provider was repointed, could never be corrected by a re-sync.
+        if ('variant' in rest) set['variant'] = rest['variant'];
         const rows = await tx
           .insert(models)
           .values(insertValues)
@@ -219,6 +226,10 @@ function createModelAccessor(db: Db): ModelAccessor {
           listedOutputPricePer1m: null,
           listedIsFree: null,
           listedPriceCapturedAt: null,
+          // The classification was derived from the OLD endpoint's billing family
+          // (add-model-variant-detection): keeping it would leave a retained model
+          // permanently non-routable on a provider now pointed elsewhere.
+          variant: null,
         })
         .where(
           and(
@@ -457,6 +468,8 @@ function createPricingCatalog(db: Db): PricingCatalog {
           cacheWritePricePer1m: entry.cacheWritePricePer1m ?? null,
           contextWindow: entry.contextWindow ?? null,
           maxOutputTokens: entry.maxOutputTokens ?? null,
+          batchInputPricePer1m: entry.batchInputPricePer1m ?? null,
+          batchOutputPricePer1m: entry.batchOutputPricePer1m ?? null,
           supportsTools: entry.supportsTools ?? false,
           supportsVision: entry.supportsVision ?? false,
           supportsReasoning: entry.supportsReasoning ?? false,
@@ -530,6 +543,19 @@ function createRequestLogAccessor(db: Db): RequestLogAccessor {
       assertUserPrincipal(principal);
       const owned = rows.map((r) => ({ ...r, ownerUserId: principal.userId, orgId: null }));
       await db.insert(requestLogs).values(owned).onConflictDoNothing({ target: requestLogs.id });
+    },
+    async insertManyReturning(principal, rows) {
+      if (rows.length === 0) return { insertedIds: [] };
+      assertUserPrincipal(principal);
+      const owned = rows.map((r) => ({ ...r, ownerUserId: principal.userId, orgId: null }));
+      // RETURNING after DO NOTHING yields exactly the rows that landed — a replay
+      // of already-settled ids returns none (D9: metrics once per row).
+      const landed = await db
+        .insert(requestLogs)
+        .values(owned)
+        .onConflictDoNothing({ target: requestLogs.id })
+        .returning({ id: requestLogs.id });
+      return { insertedIds: landed.map((r) => r.id) };
     },
     async list(principal) {
       return db
@@ -1025,6 +1051,7 @@ export function buildPersistencePort(db: Db): PersistencePort {
     calibrationEvents: createCalibrationEventsAccessor(db),
     semanticLearningEvents: createSemanticLearningEventsAccessor(db),
     pricing: createPricingCatalog(db),
+    batchJobs: createBatchJobAccessor(db),
     users: {
       async count() {
         const rows = await db.select({ value: sql<number>`count(*)::int` }).from(users);

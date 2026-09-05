@@ -1,5 +1,7 @@
 import { SpanStatusCode, context, trace, type Span } from '@opentelemetry/api';
 import type {
+  BatchAdapter,
+  BatchItemOutcome,
   CallContext,
   NormalizedRequest,
   NormalizedResponse,
@@ -61,7 +63,79 @@ export function observeAdapter(
 
     listModels: (ctx?: CallContext) => adapter.listModels(ctx),
     testConnection: (ctx?: CallContext) => adapter.testConnection(ctx),
+    // The optional batch seam is FORWARDED, wrapped for spans (add-batch-inference
+    // D4): a decorator that rebuilt the adapter without it would silently strip a
+    // provider's batch capability. Batch calls carry no `recordUpstream` metric —
+    // they are not requests and must not feed the request histograms (D10);
+    // their own gauges/counters live with the poller.
+    ...(adapter.batch !== undefined ? { batch: observeBatch(adapter.batch, opts) } : {}),
   };
+}
+
+function observeBatch(batch: BatchAdapter, opts: ObserveAdapterOptions): BatchAdapter {
+  const spanned = async <T>(op: string, fn: () => Promise<T>): Promise<T> => {
+    const span = trace
+      .getTracer(TRACER_NAME)
+      .startSpan(
+        'upstream.batch',
+        { attributes: { 'polyrouter.provider': opts.provider, 'polyrouter.batch.op': op } },
+        context.active(),
+      );
+    try {
+      const out = await fn();
+      span.setAttribute('polyrouter.outcome', 'success');
+      return out;
+    } catch (err) {
+      span.setAttribute('polyrouter.outcome', opts.clientAborted() ? 'canceled' : 'error');
+      span.setStatus({ code: SpanStatusCode.ERROR });
+      throw err;
+    } finally {
+      span.end();
+    }
+  };
+  return {
+    limits: batch.limits,
+    submit: (input, ctx) => spanned('submit', () => batch.submit(input, ctx)),
+    status: (id, ctx) => spanned('status', () => batch.status(id, ctx)),
+    list: (ctx) => spanned('list', () => batch.list(ctx)),
+    cancel: (id, ctx) => spanned('cancel', () => batch.cancel(id, ctx)),
+    results: (id, ctx) => observeResults(batch.results(id, ctx), opts),
+  };
+}
+
+/** The results stream is wrapped like `chatStream`: the span opens on first
+ * iteration and settles exactly once on completion, throw, or consumer return —
+ * and the wrapper touches only the outcome objects, never their bodies. */
+async function* observeResults(
+  inner: AsyncIterable<BatchItemOutcome>,
+  opts: ObserveAdapterOptions,
+): AsyncGenerator<BatchItemOutcome> {
+  const span = trace
+    .getTracer(TRACER_NAME)
+    .startSpan(
+      'upstream.batch',
+      { attributes: { 'polyrouter.provider': opts.provider, 'polyrouter.batch.op': 'results' } },
+      context.active(),
+    );
+  let items = 0;
+  let completed = false;
+  try {
+    for await (const item of inner) {
+      items += 1;
+      yield item;
+    }
+    completed = true;
+  } catch (err) {
+    span.setStatus({ code: SpanStatusCode.ERROR });
+    throw err;
+  } finally {
+    span.setAttribute('polyrouter.batch.items', items);
+    span.setAttribute(
+      'polyrouter.outcome',
+      completed ? 'success' : opts.clientAborted() ? 'canceled' : 'error',
+    );
+    span.end();
+  }
 }
 
 async function* observeStream(

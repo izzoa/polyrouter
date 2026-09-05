@@ -15,6 +15,14 @@ heading is started.
 
 ## [Unreleased]
 
+### Added
+
+- **Batch inference.** `POST /v1/batches` submits a JSONL batch of ordinary chat/messages requests on the same agent key, routed like any other request and handed to the provider's own batch API (OpenRouter, Anthropic, OpenAI); `GET /v1/batches/{id}` tracks it, `/results` streams the outcomes through without storing them, and `DELETE` cancels. Submitting reserves a spend ceiling rather than charging it — the dashboard says which of the two every number is — and settlement replaces the reservation with real, snapshotted per-item cost, durably and in chunks, so a restart mid-settlement resumes instead of double-charging. Batch items are priced at the provider's batch rate and recorded with an explicit price mode, so batch and sync spend separate in analytics. New **Batches** page, a Mode filter on Requests, and a link from a request's inspector to the job it came from.
+
+### Changed
+
+- **Batch-priced model variants (e.g. OpenRouter's `:batch` twins) are detected and no longer routable** — they are shown as the batch rate of the model they price instead of as separate models, excluded from `GET /v1/models` and from routing target pickers, and naming one explicitly returns a clear 400 naming the base model to use. A tier chain containing one now serves from its routable members without spending a failed upstream attempt. No pricing or recorded-cost behaviour changes.
+
 ## [0.16.5] — 2026-08-31
 
 ### Fixed

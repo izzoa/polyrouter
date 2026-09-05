@@ -1,0 +1,2 @@
+ALTER TABLE "batch_job" ADD COLUMN "provider_kind" text;--> statement-breakpoint
+ALTER TABLE "batch_job" ADD CONSTRAINT "batch_job_provider_kind_known" CHECK ("batch_job"."provider_kind" IS NULL OR "batch_job"."provider_kind" IN ('api_key','subscription','custom','local'));

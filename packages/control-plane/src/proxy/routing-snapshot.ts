@@ -48,6 +48,9 @@ export async function loadRoutingSnapshot(
       id: m.id,
       providerId: m.providerId,
       externalModelId: m.externalModelId,
+      // add-model-variant-detection: carried so the resolver can exclude a
+      // non-routable member from a chain and refuse an explicit ask by name.
+      variant: m.variant,
     })),
   };
   return { snapshot, models };

@@ -13,6 +13,7 @@ import { Limits } from './pages/Limits';
 import { Login } from './pages/Login';
 import { Overview } from './pages/Overview';
 import { Providers } from './pages/Providers';
+import { Batches } from './pages/Batches';
 import { Requests } from './pages/Requests';
 import { Routing } from './pages/Routing';
 import { Settings } from './pages/Settings';
@@ -96,6 +97,9 @@ function Shell(props: { live: boolean }) {
             </Match>
             <Match when={state.page === 'requests'}>
               <Requests live={props.live} />
+            </Match>
+            <Match when={state.page === 'batches'}>
+              <Batches live={props.live} />
             </Match>
             <Match when={state.page === 'costs'}>
               <Costs live={props.live} />

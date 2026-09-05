@@ -181,7 +181,9 @@ describe('tables without a detail surface keep every field and action inline', (
       await flush();
       const row = h.host.querySelector<HTMLElement>('.rs-agent-row');
       expect(row, 'no agent row rendered').not.toBeNull();
-      const actions = [...(row?.querySelectorAll('button') ?? [])].map((b) => b.textContent?.trim());
+      const actions = [...(row?.querySelectorAll('button') ?? [])].map((b) =>
+        b.textContent?.trim(),
+      );
       expect(actions).toContain('Rotate key');
       expect(actions.some((a) => a?.includes('Delete'))).toBe(true);
     } finally {
@@ -231,16 +233,16 @@ describe('table stylesheet contract', () => {
   it('leaves no inline grid-template-columns at any of the five table sites (6.8)', () => {
     for (const f of ['components/RequestTable.tsx', 'pages/Agents.tsx']) {
       const src = readFileSync(join(SRC, f), 'utf8');
-      expect(src, `${f} still sets a column template inline`).not.toMatch(
-        /grid-template-columns/,
-      );
+      expect(src, `${f} still sets a column template inline`).not.toMatch(/grid-template-columns/);
     }
   });
 
   it('scopes the two column templates by container class so they cannot be shared', () => {
     // The RequestTable and Agents constants were both called GRID and were NOT the same
     // template — 9 columns vs 7. Scoping keeps `.table-head` a shared class regardless.
-    expect(css).toMatch(/\.rs-table-requests \.table-head[\s\S]{0,120}66px 1\.5fr/);
+    // add-batch-inference D17: the tracks are `minmax(0, …)` so one unshrinkable
+    // cell cannot widen its track and shift every other column.
+    expect(css).toMatch(/\.rs-table-requests \.table-head[\s\S]{0,600}66px minmax\(0, 1\.5fr\)/);
     expect(css).toMatch(/\.rs-table-agents \.table-head[\s\S]{0,120}1\.3fr 1fr/);
   });
 

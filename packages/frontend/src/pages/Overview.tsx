@@ -3,8 +3,14 @@ import { BreakdownPanel, METRIC_OPTIONS } from '../components/BreakdownPanel';
 import { Segmented } from '../components/Segmented';
 import { Chart } from '../components/Chart';
 import { RangeSelector } from '../components/RangeSelector';
-import { InflightRows, RequestRows, RequestTableHead } from '../components/RequestTable';
+import {
+  BatchJobRows,
+  InflightRows,
+  RequestRows,
+  RequestTableHead,
+} from '../components/RequestTable';
 import { bucketSeconds, pct, timeseriesToChart } from '../data/analytics';
+import { BATCH_POLL_MS } from '../data/batchBand';
 import { inflightCadenceMs } from '../data/inflight';
 import { createPoller } from '../data/poller';
 import type { BreakdownMetric } from '../data/api';
@@ -52,6 +58,17 @@ export function Overview(props: { live: boolean }) {
     enabled: () => props.live && state.streamHealth !== 'live',
   });
 
+  // The batch partition's own read (add-batch-inference D11). Separate from the
+  // in-flight poll because the two carry different evidence and must never settle
+  // each other; visibility-gated and floored the same way, and NOT suppressed by a
+  // healthy stream — `batch.updated` is a nudge that consumes this read, not a
+  // second driver that replaces it.
+  createPoller({
+    fn: () => app.loadBatchBand(),
+    intervalMs: () => BATCH_POLL_MS,
+    enabled: () => props.live,
+  });
+
   const spend = () => state.analyticsSummary?.spend ?? 0;
   const reqs = () => state.analyticsSummary?.requests ?? 0;
   const metric = (): BreakdownMetric => state.breakdownMetric;
@@ -76,7 +93,10 @@ export function Overview(props: { live: boolean }) {
   const fallbackCount = () => state.analyticsSummary?.fallbackCount ?? 0;
   const escalatedCount = () => state.analyticsSummary?.escalatedCount ?? 0;
   const chartData = () =>
-    timeseriesToChart(state.analyticsSeries, bucketSeconds(rangeToParams(state.range, Date.now()).bucket));
+    timeseriesToChart(
+      state.analyticsSeries,
+      bucketSeconds(rangeToParams(state.range, Date.now()).bucket),
+    );
   const errorMsg = () =>
     state.analyticsSummaryError ??
     state.analyticsSeriesError ??
@@ -209,7 +229,9 @@ export function Overview(props: { live: boolean }) {
                 aria-label={`${p.name} — ${
                   p.status === 'ok' ? 'healthy' : p.status === 'error' ? 'failing' : 'not tested'
                 }`}
-                title={p.status === 'ok' ? 'healthy' : p.status === 'error' ? 'failing' : 'not tested'}
+                title={
+                  p.status === 'ok' ? 'healthy' : p.status === 'error' ? 'failing' : 'not tested'
+                }
                 onClick={() => app.go('providers')}
               >
                 <span
@@ -234,7 +256,10 @@ export function Overview(props: { live: boolean }) {
         </Show>
       </div>
 
-      <div class="panel rs-table-panel rs-table-requests" style="overflow:hidden;border-radius:10px">
+      <div
+        class="panel rs-table-panel rs-table-requests"
+        style="overflow:hidden;border-radius:10px"
+      >
         <div style="display:flex;justify-content:space-between;align-items:center;padding:13px 18px;border-bottom:1px solid var(--border2)">
           <div class="section-title">Recent requests</div>
           <button
@@ -247,13 +272,24 @@ export function Overview(props: { live: boolean }) {
           </button>
         </div>
         <RequestTableHead />
+        {/* Two live partitions, combined only here (D11): a job row can never be
+            settled by an in-flight snapshot, nor a request row by a batch read. */}
+        <Show when={state.batchRows.length > 0}>
+          <BatchJobRows rows={state.batchRows} />
+        </Show>
         <Show when={state.inflightRows.length > 0}>
           <InflightRows rows={state.inflightRows} />
         </Show>
         <Show when={state.recentRequests.length > 0}>
           <RequestRows rows={state.recentRequests} />
         </Show>
-        <Show when={state.recentRequests.length === 0 && state.inflightRows.length === 0}>
+        <Show
+          when={
+            state.recentRequests.length === 0 &&
+            state.inflightRows.length === 0 &&
+            state.batchRows.length === 0
+          }
+        >
           <div style="padding:16px 18px;font:400 12px 'Geist',sans-serif;color:var(--text3)">
             {state.recentRequestsLoading ? 'Loading…' : 'No requests in this range yet.'}
           </div>

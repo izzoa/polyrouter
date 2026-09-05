@@ -74,6 +74,9 @@ interface LogSeed {
   workloadSource?: string;
   workloadRevision?: string;
   qualitySignal?: number;
+  /** add-batch-inference: a settled batch item names its job and its price rule. */
+  batchId?: string;
+  priceMode?: string;
   errorKind?: string;
   errorStatus?: number;
   errorMessage?: string;
@@ -123,8 +126,9 @@ describe('analytics API (#17)', () => {
          structural_band, structural_score, structural_band_source, quality_signal,
          routing_header_name, routing_header_value,
          semantic_band, semantic_score, semantic_source, semantic_revision, provider_kind,
-         attempt_failures, workload_class, workload_score, workload_source, workload_revision)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,'test',$8,$9,$10,$11,1,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35)`,
+         attempt_failures, workload_class, workload_score, workload_source, workload_revision,
+         batch_id, price_mode)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'test',$8,$9,$10,$11,1,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37)`,
       [
         id,
         owner,
@@ -161,6 +165,8 @@ describe('analytics API (#17)', () => {
         s.workloadScore ?? null,
         s.workloadSource ?? null,
         s.workloadRevision ?? null,
+        s.batchId ?? null,
+        s.priceMode ?? null,
       ],
     );
     return id;
@@ -356,6 +362,7 @@ describe('analytics API (#17)', () => {
       errorCount: 1,
       escalatedCount: 1,
       estimatedCount: 1,
+      batchRequests: 0,
       freeRequests: 1,
       paidRequests: 2,
       unpricedRequests: 1,
@@ -1856,6 +1863,105 @@ describe('analytics API (#17)', () => {
           workloadRevision: 'semantic/x',
         }),
       ).resolves.toBeTruthy();
+    });
+  });
+
+  describe('batch rows in analytics (add-batch-inference task 4.9)', () => {
+    let owner: string;
+    let jobA: string;
+    let jobB: string;
+
+    beforeAll(async () => {
+      owner = await mkUser();
+      jobA = `job-${randomUUID()}`;
+      jobB = `job-${randomUUID()}`;
+      // Two settled batch items on one job, one on another, and a synchronous row.
+      await seedLog(owner, {
+        cost: 0.5,
+        at: DAY1,
+        batchId: jobA,
+        priceMode: 'batch',
+        layer: 'explicit',
+        tin: 10,
+        tout: 5,
+      });
+      await seedLog(owner, {
+        cost: 0.25,
+        at: DAY1B,
+        batchId: jobA,
+        priceMode: 'batch',
+        layer: 'explicit',
+        tin: 4,
+        tout: 2,
+      });
+      await seedLog(owner, {
+        cost: 1,
+        at: DAY2,
+        batchId: jobB,
+        priceMode: 'batch',
+        layer: 'explicit',
+      });
+      await seedLog(owner, { cost: 2, at: DAY2, layer: 'default' });
+    });
+
+    const q = (extra = '') =>
+      request(server)
+        .get(`/api/analytics/requests?from=${RANGE.from}&to=${RANGE.to}${extra}`)
+        .set('x-test-user', owner);
+
+    it('counts batch items in spend, tokens and requests, and names how many are batch', async () => {
+      const res = await request(server)
+        .get(`/api/analytics/summary?from=${RANGE.from}&to=${RANGE.to}`)
+        .set('x-test-user', owner);
+      expect(res.status).toBe(200);
+      expect(res.body.requests).toBe(4);
+      expect(res.body.batchRequests).toBe(3);
+      expect(res.body.spend).toBeCloseTo(3.75, 6);
+      expect(res.body.inputTokens).toBe(14);
+      // There is deliberately NO latency aggregate on this surface, so a job's
+      // hours-long wall time cannot poison one. If one is ever added it must
+      // exclude `batch_id is not null`.
+      expect(Object.keys(res.body as Record<string, unknown>).join(' ')).not.toMatch(
+        /latency|p95|duration/i,
+      );
+    });
+
+    it('carries batchId and priceMode on every listed row, with the batch rule marked', async () => {
+      const res = await q();
+      expect(res.status).toBe(200);
+      const rows = res.body.rows as { batchId: string | null; priceMode: string | null }[];
+      expect(rows).toHaveLength(4);
+      expect(rows.filter((r) => r.priceMode === 'batch')).toHaveLength(3);
+      expect(rows.filter((r) => r.batchId === jobA)).toHaveLength(2);
+      // A synchronous row predates the column and reads as null (i.e. `sync`).
+      const sync = rows.find((r) => r.batchId === null)!;
+      expect(sync.priceMode).toBeNull();
+    });
+
+    it('partitions the listing by mode and narrows it to one owned job', async () => {
+      const batch = await q('&mode=batch');
+      expect((batch.body.rows as unknown[]).length).toBe(3);
+      const sync = await q('&mode=sync');
+      expect(
+        (sync.body.rows as { batchId: string | null }[]).every((r) => r.batchId === null),
+      ).toBe(true);
+      expect((sync.body.rows as unknown[]).length).toBe(1);
+      const one = await q(`&batchId=${jobA}`);
+      expect((one.body.rows as { batchId: string }[]).map((r) => r.batchId)).toEqual([jobA, jobA]);
+      // An unknown or another tenant's job id simply matches nothing — the range
+      // is owner-scoped, so there is no cross-tenant read to refuse.
+      const foreign = await q(`&batchId=job-${randomUUID()}`);
+      expect(foreign.body.rows).toEqual([]);
+      const other = await request(server)
+        .get(`/api/analytics/requests?from=${RANGE.from}&to=${RANGE.to}&batchId=${jobA}`)
+        .set('x-test-user', B);
+      expect(other.status).toBe(200);
+      expect(other.body.rows).toEqual([]);
+    });
+
+    it('rejects an unknown mode rather than silently ignoring it', async () => {
+      const res = await q('&mode=async');
+      expect(res.status).toBe(400);
     });
   });
 });

@@ -37,6 +37,7 @@ const SEVERITY: Record<EventType, ChatSeverity> = {
   budget_alert: 'warning',
   request_failures_spike: 'warning',
   weekly_spend_summary: 'info',
+  batch_stalled: 'warning',
   test: 'info',
 };
 
@@ -55,6 +56,9 @@ const LINK_PAGE: Record<EventType, string> = {
   budget_block: 'limits',
   weekly_spend_summary: 'costs',
   request_failures_spike: 'requests',
+  // The Batches page (Phase D). Until then the link lands on the dashboard's
+  // batch surface, which is where an operator acts on a stalled job.
+  batch_stalled: 'batches',
   test: 'settings',
 };
 
@@ -102,7 +106,10 @@ export function deepLink(eventType: string, origin: string | null): string | nul
  * `#token=` and the reset's query ARE the payload; reducing to an origin would
  * strip exactly what makes those mails work.
  */
-export function validateAction(raw: string | undefined | null, origin: string | null): string | null {
+export function validateAction(
+  raw: string | undefined | null,
+  origin: string | null,
+): string | null {
   if (!raw || origin === null) return null;
   let u: URL;
   try {
@@ -160,21 +167,22 @@ function footerNote(mail: BrandedEmail, ctx: RenderContext): string {
  * inlined CSS because Outlook is not a CSS-grid engine; a system font stack
  * because the locked Geist cannot load in mail.
  */
-export function renderBrandedEmail(mail: BrandedEmail, ctx: RenderContext): { text: string; html: string } {
+export function renderBrandedEmail(
+  mail: BrandedEmail,
+  ctx: RenderContext,
+): { text: string; html: string } {
   // The transactional callers write their link inline in the prose. That is
   // right for the TEXT part — a text-only recipient needs a URL they can copy
   // — but in HTML a full token URL printed out AND linked to itself is noise
   // that wraps badly. So the HTML strips the URL from the body and lets the
   // button carry it; the text part keeps the caller's wording verbatim.
   const bodyHasAction = mail.action !== null && mail.body.includes(mail.action);
-  const text =
-    mail.action === null || bodyHasAction ? mail.body : `${mail.body}\n\n${mail.action}`;
-  const font =
-    "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
+  const text = mail.action === null || bodyHasAction ? mail.body : `${mail.body}\n\n${mail.action}`;
+  const font = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
   const accent = '#4F5DFF';
-  const htmlBody = (bodyHasAction && mail.action !== null
-    ? mail.body.split(mail.action).join('')
-    : mail.body)
+  const htmlBody = (
+    bodyHasAction && mail.action !== null ? mail.body.split(mail.action).join('') : mail.body
+  )
     .replace(/[ \t]+$/gm, '') // trailing space left where the URL was
     .replace(/\n{3,}/g, '\n\n')
     .trim();

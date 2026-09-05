@@ -47,6 +47,29 @@ class FakeConn {
     this.store.set(k, String(v));
     return Promise.resolve('OK');
   }
+  failEval = false;
+  /** Mirrors the check-and-reserve / release scripts (real-Redis parity is covered
+   * by the batch-reservation e2e). */
+  eval(script: string, _n: number, ...args: string[]): Promise<unknown> {
+    if (this.failEval) return Promise.reject(new Error('timeout'));
+    const num = (k: string): number => Number(this.store.get(k) ?? '0');
+    if (script.includes('INCRBY')) {
+      const [spendKey, pendingKey, ceiling, amount] = args as [string, string, string, string];
+      const spend = num(spendKey);
+      const pending = num(pendingKey);
+      if (spend + pending + Number(ceiling) > Number(amount))
+        return Promise.resolve([0, spend, pending]);
+      this.store.set(pendingKey, String(pending + Number(ceiling)));
+      return Promise.resolve([1, spend, pending]);
+    }
+    if (script.includes('DECRBY')) {
+      const [pendingKey, micros] = args as [string, string];
+      const v = Math.max(0, num(pendingKey) - Number(micros));
+      this.store.set(pendingKey, String(v));
+      return Promise.resolve(v);
+    }
+    return Promise.reject(new Error('unexpected script'));
+  }
 }
 
 function row(p: Partial<BudgetRow>): BudgetRow {
@@ -83,7 +106,10 @@ function make(
     listActiveBudgets: jest.fn().mockResolvedValue([]),
     spendMicrosFor,
   } as unknown as BudgetReader;
-  const svc = new BudgetService(cache, counter, producers, metrics, reader, { ...BASE_CFG, failOpen });
+  const svc = new BudgetService(cache, counter, producers, metrics, reader, {
+    ...BASE_CFG,
+    failOpen,
+  });
   return { svc, conn, counter, budgetBlock, metrics, spendMicrosFor };
 }
 
@@ -237,6 +263,7 @@ describe('BudgetService.notifyBlocked', () => {
     const hit: BudgetHit = {
       budget: b,
       spentMicros: toMicros(12),
+      pendingMicros: 0,
       periodId: '2026-03-15',
       periodStart: new Date(Date.UTC(2026, 2, 15)),
       resetAt: new Date(Date.UTC(2026, 2, 16)),
@@ -263,12 +290,14 @@ describe('BudgetService.emitBlock — provenance (add-native-price-fallback)', (
   const hit: BudgetHit = {
     budget: b,
     spentMicros: toMicros(12),
+    pendingMicros: 0,
     periodId: '2026-03-15',
     periodStart: new Date(Date.UTC(2026, 2, 15)),
     resetAt: new Date(Date.UTC(2026, 2, 16)),
   };
   const emitOf = (svc: BudgetService) =>
-    (svc as unknown as { emitBlock: (p: typeof PRINCIPAL, h: BudgetHit) => Promise<void> }).emitBlock;
+    (svc as unknown as { emitBlock: (p: typeof PRINCIPAL, h: BudgetHit) => Promise<void> })
+      .emitBlock;
 
   it('queries the HIT period bounds (never new Date()) and marks native spend', async () => {
     const spend = jest.fn().mockResolvedValue({ micros: toMicros(12), estimatedMicros: 5 });
@@ -299,5 +328,100 @@ describe('BudgetService.emitBlock — provenance (add-native-price-fallback)', (
     const { svc, budgetBlock } = make([b], true, spend);
     await emitOf(svc).call(svc, PRINCIPAL, hit);
     expect(budgetBlock.mock.calls[0]![0]).toMatchObject({ spendEstimated: false });
+  });
+});
+
+describe('BudgetService — spend + pending admission and batch reservations (add-batch-inference D8)', () => {
+  beforeAll(() => jest.useFakeTimers({ now: NOW }));
+  afterAll(() => jest.useRealTimers());
+
+  const pendingOf = (conn: FakeConn, counter: SpendCounter, b: BudgetRow): number => {
+    const { periodId } = periodInfo(b.window as 'day', new Date(NOW));
+    const key = counter.key(b.ownerUserId, 'global', 'global', 'day', periodId, 'notional');
+    return Number(conn.store.get(counter.pendingKeyFor(key)) ?? '0');
+  };
+
+  it('a synchronous request is blocked by spend + pending, never by spend alone', async () => {
+    const b = row({ amount: 10 });
+    const { svc, conn, counter } = make([b]);
+    seed(conn, counter, b, toMicros(4)); // $4 spent
+    expect(await svc.checkBlocked(PRINCIPAL, null)).toBeNull();
+    const r = await svc.reserveForBatch(PRINCIPAL, null, toMicros(6)); // + $6 reserved = $10
+    expect(r.outcome).toBe('reserved');
+    const hit = await svc.checkBlocked(PRINCIPAL, null);
+    expect(hit).not.toBeNull();
+    expect(hit!.spentMicros).toBe(toMicros(4));
+    expect(hit!.pendingMicros).toBe(toMicros(6));
+  });
+
+  it('reserves atomically per counter key against the tightest budget, and rejects naming it', async () => {
+    const loose = row({ id: 'loose', amount: 100 });
+    const tight = row({ id: 'tight', amount: 10 });
+    const { svc, conn, counter } = make([loose, tight]);
+    seed(conn, counter, tight, toMicros(3));
+    const ok = await svc.reserveForBatch(PRINCIPAL, null, toMicros(7));
+    expect(ok.outcome).toBe('reserved');
+    expect(pendingOf(conn, counter, tight)).toBe(toMicros(7));
+    const no = await svc.reserveForBatch(PRINCIPAL, null, toMicros(1));
+    expect(no.outcome).toBe('rejected');
+    if (no.outcome === 'rejected') {
+      expect(no.hit.budget.id).toBe('tight');
+      expect(no.hit.spentMicros).toBe(toMicros(3));
+      expect(no.hit.pendingMicros).toBe(toMicros(7));
+      expect(no.ceilingMicros).toBe(toMicros(1));
+    }
+    expect(pendingOf(conn, counter, tight)).toBe(toMicros(7)); // nothing leaked by the rejection
+  });
+
+  it('rolls back an earlier key when a later key rejects (partial reservations never stand)', async () => {
+    const global = row({ id: 'g', amount: 100 });
+    const agent = row({ id: 'a', scope: 'agent', agentId: 'a1', amount: 5 });
+    const { svc, conn, counter } = make([global, agent]);
+    seed(conn, counter, global, 0);
+    const r = await svc.reserveForBatch(PRINCIPAL, 'a1', toMicros(6)); // fits global, not agent
+    expect(r.outcome).toBe('rejected');
+    expect(pendingOf(conn, counter, global)).toBe(0);
+  });
+
+  it("releases a job's ceiling from the period it was submitted in, floored at zero", async () => {
+    const b = row({ amount: 10 });
+    const { svc, conn, counter } = make([b]);
+    seed(conn, counter, b, 0);
+    await svc.reserveForBatch(PRINCIPAL, null, toMicros(4));
+    await svc.releaseForBatch(PRINCIPAL, null, new Date(NOW), toMicros(4));
+    expect(pendingOf(conn, counter, b)).toBe(0);
+    await svc.releaseForBatch(PRINCIPAL, null, new Date(NOW), toMicros(4)); // a repeated release is harmless
+    expect(pendingOf(conn, counter, b)).toBe(0);
+  });
+
+  it('has nothing to reserve against without a block budget', async () => {
+    const { svc } = make([row({ action: 'alert' })]);
+    expect(await svc.reserveForBatch(PRINCIPAL, null, toMicros(1))).toEqual({
+      outcome: 'no_block_budget',
+    });
+  });
+
+  it('follows the named fail mode on a stale heartbeat or a Redis fault, exactly like checkBlocked', async () => {
+    const b = row({ amount: 10 });
+    const open = make([b]); // no seed → heartbeat absent
+    expect(await open.svc.reserveForBatch(PRINCIPAL, null, toMicros(1))).toEqual({
+      outcome: 'unenforced',
+    });
+    const closed = make([b], false);
+    await expect(closed.svc.reserveForBatch(PRINCIPAL, null, toMicros(1))).rejects.toBeInstanceOf(
+      BudgetEnforcementUnavailableError,
+    );
+    const faultOpen = make([b]);
+    seed(faultOpen.conn, faultOpen.counter, b, 0);
+    faultOpen.conn.failEval = true;
+    expect(await faultOpen.svc.reserveForBatch(PRINCIPAL, null, toMicros(1))).toEqual({
+      outcome: 'unenforced',
+    });
+    const faultClosed = make([b], false);
+    seed(faultClosed.conn, faultClosed.counter, b, 0);
+    faultClosed.conn.failEval = true;
+    await expect(
+      faultClosed.svc.reserveForBatch(PRINCIPAL, null, toMicros(1)),
+    ).rejects.toBeInstanceOf(BudgetEnforcementUnavailableError);
   });
 });

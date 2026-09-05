@@ -8,6 +8,8 @@ import {
   AUTO_ALIAS,
   DEFAULT_TIER_KEY,
   TIER_HEADER_NAME,
+  isNonRoutableVariant,
+  parseModelVariant,
   parseRoutingTarget,
 } from '@polyrouter/shared/server';
 
@@ -37,6 +39,16 @@ export interface RouteModel {
   readonly id: string;
   readonly providerId: string;
   readonly externalModelId: string;
+  /** Derived aggregator SKU variant (add-model-variant-detection); null = none.
+   * REQUIRED-nullable on purpose: an optional field omitted by a snapshot builder
+   * or a fixture would silently restore routability to a model that cannot serve. */
+  readonly variant: string | null;
+}
+
+/** A model no request can be sent to (today: a batch-priced twin). Chains exclude
+ * these members; explicit asks are refused by name rather than rerouted. */
+function isRoutable(m: RouteModel): boolean {
+  return !isNonRoutableVariant(m.variant);
 }
 
 export interface RoutingSnapshot {
@@ -113,11 +125,37 @@ export interface RouteDecision {
 }
 
 export type RouteErrorKind =
-  'unknown_model' | 'ambiguous_model' | 'empty_tier' | 'unresolved_target' | 'no_default';
+  | 'unknown_model'
+  | 'ambiguous_model'
+  | 'empty_tier'
+  | 'unresolved_target'
+  | 'no_default'
+  | 'batch_only_model';
 
 export interface RouteError {
   readonly error: RouteErrorKind;
   readonly detail?: string;
+  /** `batch_only_model` only: the base id derived from the asked-for model, and
+   * whether a ROUTABLE model bearing it exists on the SAME provider. The renderer
+   * offers it as an alternative only when it does — the router never promises a
+   * route it does not have. Derived from owned config, never from client bytes. */
+  readonly baseModelId?: string;
+  readonly baseIsRoutable?: boolean;
+}
+
+/** Build the refusal for an explicit ask that landed on a non-routable model. */
+function batchOnlyError(snap: RoutingSnapshot, model: RouteModel): RouteError {
+  const parsed = parseModelVariant(model.externalModelId);
+  if (parsed === null) return { error: 'batch_only_model', detail: model.externalModelId };
+  const sibling = snap.models.find(
+    (m) => m.providerId === model.providerId && m.externalModelId === parsed.base,
+  );
+  return {
+    error: 'batch_only_model',
+    detail: model.externalModelId,
+    baseModelId: parsed.base,
+    baseIsRoutable: sibling !== undefined && isRoutable(sibling),
+  };
 }
 
 export function isRouteError(r: RouteDecision | RouteError): r is RouteError {
@@ -159,26 +197,56 @@ function resolveTier(
   // Primary is position 0 exactly (if a cascade removed it, the tier is unusable
   // here rather than silently promoting a fallback). The chain is all resolvable
   // entries in position order (#12), chain[0] = the position-0 primary.
-  const entries = [...(snap.entriesByTierId.get(tier.id) ?? [])].sort(
+  //
+  // ONE stated exception (add-model-variant-detection): an entry whose model is
+  // NON-ROUTABLE by variant is dropped BEFORE the position-0 rule, because it
+  // could never serve — so `[twin@0, base@1]`, which works today only by spending
+  // a failed upstream attempt, promotes `base` instead of breaking. This is not
+  // the no-silent-promotion case: that rule protects a DELETED position-0 entry
+  // (a config accident), whereas a twin is a row we can prove is unservable.
+  const all = [...(snap.entriesByTierId.get(tier.id) ?? [])].sort(
     (a, b) => a.position - b.position,
   );
-  const primary = entries.find((e) => e.position === 0);
+  const modelById = (id: string): RouteModel | undefined => snap.models.find((m) => m.id === id);
+  const nonRoutable = (e: RouteEntry): boolean => {
+    const m = modelById(e.modelId);
+    return m !== undefined && !isRoutable(m);
+  };
+  const excluded = all.filter(nonRoutable).length;
+  const entries = all.filter((e) => !nonRoutable(e));
+  // Promotion is justified ONLY by an exclusion. A position-0 entry that is simply
+  // MISSING (deleted, or removed by a cascade) still errors, exactly as before —
+  // otherwise an unrelated non-routable member elsewhere in the chain would quietly
+  // buy a promotion the no-silent-promotion rule exists to forbid.
+  const atZero = all.find((e) => e.position === 0);
+  const primary =
+    atZero === undefined
+      ? undefined
+      : nonRoutable(atZero)
+        ? entries[0] // position 0 was excluded → the next routable member leads
+        : atZero;
+  // A tier whose every member is non-routable is unusable — surfaced as the
+  // existing empty-tier error before any attempt, never a walk that cannot win.
   if (!primary) return { error: 'empty_tier', detail: tier.key };
   const chain: RouteTarget[] = [];
   for (const e of entries) {
-    const m = snap.models.find((mm) => mm.id === e.modelId);
+    const m = modelById(e.modelId);
     if (m) chain.push(target(m));
   }
-  const primaryModel = snap.models.find((m) => m.id === primary.modelId);
+  const primaryModel = modelById(primary.modelId);
   // FK guarantees the model exists; guard defensively as an unresolved target.
   if (!primaryModel || chain.length === 0) return { error: 'unresolved_target', detail: tier.key };
+  // The exclusion is visible in the recorded reason, on the same terms as #12's
+  // capacity-deferral trail — a promoted primary is never silent.
+  const effectiveReason =
+    excluded > 0 ? `${reason} (excluded ${String(excluded)} batch-only)` : reason;
   return {
     providerId: primaryModel.providerId,
     modelId: primaryModel.id,
     externalModelId: primaryModel.externalModelId,
     tierKey: tier.key,
     decisionLayer: layer,
-    routingReason: reason,
+    routingReason: effectiveReason,
     matchedHeader: null, // only resolveRoute's header phases override
     chain,
   };
@@ -203,6 +271,10 @@ export function resolveTarget(
   }
   const model = snap.models.find((m) => m.id === parsed.id);
   if (!model) return { error: 'unresolved_target', detail: target };
+  // A stored target that has since become non-routable is a THIRD state, distinct
+  // from unresolved: the row exists and the dashboard shows it. Layer-0 callers
+  // surface this by name; the smart layers treat any error as degrade-safe.
+  if (!isRoutable(model)) return batchOnlyError(snap, model);
   return modelDecision(model, layer, reason);
 }
 
@@ -304,14 +376,25 @@ export function resolveRoute(
       const qualified = snap.models.find(
         (m) => m.providerId === providerId && m.externalModelId === externalModelId,
       );
-      if (qualified)
+      if (qualified) {
+        // The exact row decides — even if a routable model elsewhere shares the
+        // bare id, a qualified ask names THIS one (add-model-variant-detection).
+        if (!isRoutable(qualified)) return batchOnlyError(snap, qualified);
         return modelDecision(qualified, 'explicit', `explicit model ${externalModelId}`);
+      }
       // else: the colon was part of a bare model id — fall through.
     }
-    // bare external id
+    // Bare external id. Ambiguity is counted over ROUTABLE matches only, so this
+    // phase and `GET /v1/models` (which advertises only routable ids) can never
+    // disagree about whether an advertised id resolves.
     const matches = snap.models.filter((m) => m.externalModelId === mf);
-    if (matches.length === 1) return modelDecision(matches[0]!, 'explicit', `explicit model ${mf}`);
-    if (matches.length > 1) return { error: 'ambiguous_model', detail: mf };
+    const routable = matches.filter(isRoutable);
+    if (routable.length === 1)
+      return modelDecision(routable[0]!, 'explicit', `explicit model ${mf}`);
+    if (routable.length > 1) return { error: 'ambiguous_model', detail: mf };
+    // No routable match, but the id IS a model the tenant owns: refuse by name
+    // rather than send them to qualify an id that cannot serve under any provider.
+    if (matches.length > 0) return batchOnlyError(snap, matches[0]!);
     // tier key (a name that is both a model and a tier resolved to the model above)
     const tier = snap.tiers.find((t) => t.key === mf);
     if (tier) return resolveTier(snap, tier, 'explicit', `explicit tier ${mf}`);

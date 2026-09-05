@@ -11,13 +11,14 @@ import {
   SsrfError,
   assertUrlSafe,
   credentialLockKey,
-  decryptSecret,
   deriveModelKey,
   deriveNativeFamilyKey,
+  deriveProviderFamily,
   encryptSecret,
   resolveModelPrice,
-  resolvePlainCredentialValue,
+  parseModelVariant,
   serializePlainCredential,
+  variantForProvider,
   type ModelInsertInput,
   type ModelPatch,
   type ModelPriceRow,
@@ -37,7 +38,6 @@ import {
   type ProviderAdapter,
   type ProviderConfig,
   type ProviderKind,
-  type ProviderProtocol,
   type ProviderModelInfo,
   type ProviderListedPricing,
 } from '@polyrouter/data-plane';
@@ -48,7 +48,7 @@ import type {
   UpdateModelPricingDto,
   UpdateProviderDto,
 } from './providers.dto';
-import { providerMaxTokensQuirks } from './providers.dto';
+import { AdapterBuildError, ProviderAdapterBuilder } from './adapter-builder';
 import { SubscriptionOauthService } from '../subscription-oauth/subscription-oauth.service';
 
 export type ProviderAdapterFactory = typeof createProviderAdapter;
@@ -145,6 +145,14 @@ export interface SafeModel {
     isFree: boolean;
     capturedAt: Date | null;
   } | null;
+  /** Derived aggregator SKU variant (add-model-variant-detection); null = none.
+   * `batch` marks a model that prices an async batch tier and cannot serve a
+   * synchronous request. */
+  variant: string | null;
+  /** For a variant row, the SAME provider's model this one prices — null when the
+   * variant's base id is not present on that provider (an orphan twin), so a
+   * client is never pointed at a model that is not there. */
+  baseExternalModelId: string | null;
   lastSyncedAt: Date | null;
 }
 
@@ -278,7 +286,11 @@ function toEffectivePrice(
   };
 }
 
-function toSafeModel(m: ModelRow, effectivePrice: EffectivePrice | null = null): SafeModel {
+function toSafeModel(
+  m: ModelRow,
+  effectivePrice: EffectivePrice | null = null,
+  baseExternalModelId: string | null = null,
+): SafeModel {
   return {
     id: m.id,
     providerId: m.providerId,
@@ -301,14 +313,27 @@ function toSafeModel(m: ModelRow, effectivePrice: EffectivePrice | null = null):
             capturedAt: m.listedPriceCapturedAt,
           }
         : null,
+    variant: m.variant,
+    baseExternalModelId,
     lastSyncedAt: m.lastSyncedAt,
   };
+}
+
+/** The same-provider base id a variant row prices, or null (no variant, or the
+ * base model is absent from that provider — never a guess at another provider's
+ * row). `siblings` is the id set of the model's OWN provider. */
+function baseIdFor(m: ModelRow, siblings: ReadonlySet<string>): string | null {
+  if (m.variant === null) return null;
+  const parsed = parseModelVariant(m.externalModelId);
+  if (parsed === null) return null;
+  return siblings.has(parsed.base) ? parsed.base : null;
 }
 
 @Injectable()
 export class ProvidersService {
   private readonly key: string;
   private readonly mode: 'selfhosted' | 'cloud';
+  private readonly adapterBuilder: ProviderAdapterBuilder;
 
   constructor(
     @Inject(PERSISTENCE_PORT) private readonly db: PersistencePort,
@@ -319,6 +344,7 @@ export class ProvidersService {
   ) {
     this.key = runtime.key;
     this.mode = runtime.mode;
+    this.adapterBuilder = new ProviderAdapterBuilder(runtime, oauth);
   }
 
   async list(principal: Principal): Promise<SafeProvider[]> {
@@ -518,6 +544,12 @@ export class ProvidersService {
       current === null ||
       current.baseUrl !== provider.baseUrl ||
       current.protocol !== provider.protocol;
+    // The variant is aggregator-scoped, so it is derived from the SAME endpoint the
+    // response came from (add-model-variant-detection). If that endpoint moved
+    // mid-flight the response is persisted UNCLASSIFIED as well as priceless — a
+    // classification justified by the old family must not attach to the new one.
+    const billingFamily =
+      endpointMoved || provider.baseUrl === null ? null : deriveProviderFamily(provider.baseUrl);
     // Bound ingestion (E11.1): cap the number of upserts and skip/truncate over-long
     // fields before writing, so a pathological (but address-safe) response can't
     // flood the models table. Skip — not truncate — an over-long id: a truncated id
@@ -540,6 +572,9 @@ export class ProvidersService {
       const values: ModelInsertInput = {
         externalModelId: m.id,
         lastSyncedAt: now,
+        // ALWAYS written (set or cleared), like the listed_* columns: a stale
+        // classification must not outlive the id that produced it.
+        variant: variantForProvider(billingFamily, m.id)?.variant ?? null,
         ...(displayName !== undefined ? { displayName } : {}),
         ...listedColumnsFrom(pricing, now),
       };
@@ -597,13 +632,25 @@ export class ProvidersService {
     }
     const catalog = await this.db.pricing.priceAtMany([...keys], new Date());
     const catByKey = new Map(catalog.map((c) => [c.modelKey, c]));
+    // Per-provider external-id index: a twin pairs ONLY with a base model on its
+    // own provider (add-model-variant-detection).
+    const idsByProvider = new Map<string, Set<string>>();
+    for (const r of rows) {
+      const set = idsByProvider.get(r.providerId) ?? new Set<string>();
+      set.add(r.externalModelId);
+      idsByProvider.set(r.providerId, set);
+    }
     let safe = rows.map((r) => {
       const kind = provById.get(r.providerId)?.kind ?? 'custom';
       const key = keyByModel.get(r.id);
       const nativeKey = nativeKeyByModel.get(r.id);
       const catalogRow = key !== undefined ? (catByKey.get(key) ?? null) : null;
       const nativeRow = nativeKey !== undefined ? (catByKey.get(nativeKey) ?? null) : null;
-      return toSafeModel(r, toEffectivePrice(r, kind, catalogRow, nativeRow));
+      return toSafeModel(
+        r,
+        toEffectivePrice(r, kind, catalogRow, nativeRow),
+        baseIdFor(r, idsByProvider.get(r.providerId) ?? new Set()),
+      );
     });
     // The is_free filter applies to the EFFECTIVE price (resolve, then filter), so a
     // catalog-less free-by-listing model still matches (add-provider-price-sync-and-edit).
@@ -702,57 +749,24 @@ export class ProvidersService {
     principal: Principal,
     provider: ProviderRow,
   ): Promise<ProviderConfig> {
-    if (provider.baseUrl === null) {
-      throw new UnprocessableEntityException('provider base_url is required');
-    }
-    const kind = provider.kind as ProviderKind;
-    // Resolve the per-provider outbound token-cap spelling to the data-plane quirk
-    // (add-max-tokens-spelling) — the SAME helper the proxy hot path uses, so both
-    // paths agree. Inert (undefined) for non-`openai_compatible` protocols.
-    const quirks = providerMaxTokensQuirks(
-      provider.protocol,
-      kind,
-      provider.maxTokensSpelling as MaxTokensSpelling,
-    );
-    // Subscription providers resolve through the subscription-oauth seam: a plain
-    // paste unwraps; an OAuth envelope refreshes pre-request and supplies
-    // authScheme/oauthBeta — so test-connection exercises the REAL token path.
-    if (kind === 'subscription' && provider.encryptedCredentials !== null) {
-      const r = await this.oauth.resolveCredential(principal, provider);
-      return {
-        protocol: provider.protocol as ProviderProtocol,
-        baseUrl: provider.baseUrl,
-        credential: r.credential,
-        kind,
-        mode: this.mode,
-        authScheme: r.authScheme,
-        ...(r.oauthBeta !== undefined ? { oauthBeta: r.oauthBeta } : {}),
-        ...(r.oauthAccountId !== undefined ? { oauthAccountId: r.oauthAccountId } : {}),
-        ...(r.probeModel !== undefined ? { probeModel: r.probeModel } : {}),
-        ...(quirks !== undefined ? { quirks } : {}),
+    // The SAME shared builder the proxy and batch paths use (add-batch-inference
+    // D4). Management keeps its call-time SSRF semantics — test-connection reports
+    // a refused address through the adapter's typed result rather than a 422 —
+    // so the build-time gate is skipped here; the guarded transport still refuses
+    // at connect. A missing base_url/credential is this surface's 422.
+    try {
+      return await this.adapterBuilder.buildConfig(principal, provider, {
         defaultMaxOutputTokens: 4096,
-      };
+        assertAddress: false,
+      });
+    } catch (err) {
+      if (err instanceof AdapterBuildError) {
+        throw new UnprocessableEntityException(
+          err.reason === 'no_base_url' ? 'provider base_url is required' : err.message,
+        );
+      }
+      throw err;
     }
-    let credential = '';
-    if (provider.encryptedCredentials !== null) {
-      // Plain path only: unwraps the typed envelope (legacy raw strings pass through).
-      // OAuth envelopes never reach here — subscription providers resolve through the
-      // subscription-oauth seam (which refreshes and supplies authScheme/oauthBeta).
-      credential = resolvePlainCredentialValue(
-        decryptSecret(provider.encryptedCredentials, this.key),
-      );
-    } else if (kind !== 'local') {
-      throw new UnprocessableEntityException('provider has no credential');
-    }
-    return {
-      protocol: provider.protocol as ProviderProtocol,
-      baseUrl: provider.baseUrl,
-      credential,
-      kind,
-      mode: this.mode,
-      ...(quirks !== undefined ? { quirks } : {}),
-      defaultMaxOutputTokens: 4096,
-    };
   }
 
   /** Reject userinfo/query/fragment, SSRF-gate the address with the per-kind

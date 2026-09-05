@@ -4,14 +4,17 @@ import { Test } from '@nestjs/testing';
 import { loadConfig } from '@polyrouter/shared';
 import {
   PERSISTENCE_FACILITIES,
+  PERSISTENCE_MAINTENANCE,
   PERSISTENCE_PORT,
   userPrincipal,
   type PersistenceFacilities,
+  type PersistenceMaintenance,
   type PersistencePort,
   type Principal,
 } from '@polyrouter/shared/server';
 import { Pool } from 'pg';
 import { DatabaseModule } from '../../src/database/database.module';
+import { DatabaseMaintenanceModule } from '../../src/database/maintenance.module';
 import '../../src/database/database.config';
 
 export const COMPOSE_HINT =
@@ -30,6 +33,8 @@ export class TenancyHarness {
     public readonly app: INestApplication,
     public readonly port: PersistencePort,
     public readonly facilities: PersistenceFacilities,
+    /** The instance-level maintenance half (add-batch-inference D19). */
+    public readonly maintenance: PersistenceMaintenance,
     public readonly pool: Pool,
     private readonly userIds: string[] = [],
   ) {}
@@ -45,13 +50,16 @@ export class TenancyHarness {
       // fake the tenant-isolation DoD.
       throw new Error(`${COMPOSE_HINT}\n(${(error as Error).message})`);
     }
-    const moduleRef = await Test.createTestingModule({ imports: [DatabaseModule] }).compile();
+    const moduleRef = await Test.createTestingModule({
+      imports: [DatabaseModule, DatabaseMaintenanceModule],
+    }).compile();
     const app = moduleRef.createNestApplication();
     await app.init(); // runs migrations before anything else
     return new TenancyHarness(
       app,
       app.get<PersistencePort>(PERSISTENCE_PORT),
       app.get<PersistenceFacilities>(PERSISTENCE_FACILITIES),
+      app.get<PersistenceMaintenance>(PERSISTENCE_MAINTENANCE),
       pool,
     );
   }

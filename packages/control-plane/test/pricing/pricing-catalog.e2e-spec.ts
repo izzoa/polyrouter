@@ -114,6 +114,10 @@ describe('pricing catalog (self-host)', () => {
     expect(res.body.length).toBeGreaterThan(5);
     expect(res.body.some((r: { modelKey: string }) => r.modelKey === 'openai:gpt-4o')).toBe(true);
     expect(res.body.some((r: { isFree: boolean }) => r.isFree === true)).toBe(true);
+    // add-batch-inference: the bundled snapshot carries LiteLLM's batch-tier pair
+    // for the OpenAI family (LiteLLM has none for `anthropic` — nothing is invented).
+    const gpt4o = res.body.find((r: { modelKey: string }) => r.modelKey === 'openai:gpt-4o');
+    expect(gpt4o).toMatchObject({ batchInputPricePer1m: 1.25, batchOutputPricePer1m: 5 });
   });
 
   it('status starts at the seed truth: bundled newest, NEVER refreshed (add-pricing-refresh-ui)', async () => {

@@ -204,6 +204,34 @@
       "when": 1787453823659,
       "tag": "0028_red_brood",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1788570062974,
+      "tag": "0029_colorful_albert_cleary",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1788634657065,
+      "tag": "0030_talented_nicolaos",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1788635942278,
+      "tag": "0031_natural_lady_mastermind",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1788640479447,
+      "tag": "0032_goofy_black_widow",
+      "breakpoints": true
     }
   ]
 }

@@ -2,6 +2,7 @@ import { createSignal, For, Show } from 'solid-js';
 import type { ModelPricingInput } from '../data/api';
 import { fmtUsd } from '../data/format';
 import { isPriceEditableKind, providerKindLabel } from '../state/appState';
+import { isNonRoutableVariant } from '@polyrouter/shared';
 import { useApp } from '../state/context';
 import type { Model, Provider, ProviderStatus } from '../types';
 
@@ -61,6 +62,40 @@ function priceProvenance(m: Model): string {
     default:
       return 'from the price catalog';
   }
+}
+
+/** The batch-tier rate a twin carries, as a line for its base model's row
+ * (add-model-variant-detection). The twin is the record of the aggregator's batch
+ * price; it is shown, but never as something selectable. */
+function batchRateText(twin: Model): string {
+  const ep = twin.effectivePrice;
+  if (ep === null) return 'batch rate — unpriced';
+  if (ep.isFree) return 'batch rate — free';
+  return `batch ${fmtUsd(ep.inputPricePer1m)} / ${fmtUsd(ep.outputPricePer1m)} per 1M · estimate`;
+}
+
+/** Split a provider's models into the ROUTABLE rows to render and the batch twins
+ * keyed by the base id they price. A twin whose base is absent from this provider
+ * (`baseExternalModelId === null`) is an ORPHAN: it stays visible as its own
+ * non-selectable row rather than being hidden — a model the provider lists must
+ * not silently disappear. */
+function splitVariants(models: Model[]): {
+  rows: Model[];
+  batchByBase: Map<string, Model>;
+  orphans: Model[];
+} {
+  const batchByBase = new Map<string, Model>();
+  const orphans: Model[] = [];
+  const rows: Model[] = [];
+  for (const m of models) {
+    if (!isNonRoutableVariant(m.variant)) {
+      rows.push(m);
+      continue;
+    }
+    if (m.baseExternalModelId !== null) batchByBase.set(m.baseExternalModelId, m);
+    else orphans.push(m);
+  }
+  return { rows, batchByBase, orphans };
 }
 
 /** Inline price editor for custom/local models only (#18 §7.7). Writes exactly one
@@ -144,6 +179,8 @@ function ProviderCard(props: { p: Provider }) {
   const [open, setOpen] = createSignal(false);
   const editable = () => isPriceEditableKind(props.p.kind);
   const models = (): Model[] => state.models[props.p.id] ?? [];
+  // Batch twins are folded into the models they price (add-model-variant-detection).
+  const split = () => splitVariants(models());
 
   const toggleModels = (): void => {
     const next = !open();
@@ -263,7 +300,7 @@ function ProviderCard(props: { p: Provider }) {
               </div>
             }
           >
-            <For each={models()}>
+            <For each={split().rows}>
               {(m) => (
                 <div style="display:flex;flex-direction:column;gap:2px">
                   <div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px">
@@ -296,6 +333,38 @@ function ProviderCard(props: { p: Provider }) {
                       onSave={(body) => void app.setModelPrice(props.p.id, m.id, body)}
                     />
                   </Show>
+                  {/* The batch twin's rate rides ON this row (add-model-variant-
+                      detection): the discount is real information, but the twin can
+                      only be reached through the provider's batch API, so it is
+                      never offered as a target. */}
+                  <Show when={split().batchByBase.get(m.externalModelId)}>
+                    {(twin) => (
+                      <div
+                        data-batch-rate={m.externalModelId}
+                        style="font:400 10px 'Geist',sans-serif;color:var(--text3)"
+                      >
+                        {batchRateText(twin())} · not routable
+                      </div>
+                    )}
+                  </Show>
+                </div>
+              )}
+            </For>
+            {/* An orphan twin (its base model is not on this provider) stays VISIBLE
+                as a non-selectable row: hiding a model the provider lists would be
+                the same dishonesty from the other direction. */}
+            <For each={split().orphans}>
+              {(m) => (
+                <div
+                  data-orphan-batch={m.externalModelId}
+                  style="display:flex;align-items:baseline;justify-content:space-between;gap:8px"
+                >
+                  <span class="mono" style="font:500 11.5px 'Geist Mono',monospace;color:var(--text3)">
+                    {m.displayName ?? m.externalModelId}
+                  </span>
+                  <span style="font:400 10px 'Geist',sans-serif;color:var(--text3)">
+                    batch-only · not routable
+                  </span>
                 </div>
               )}
             </For>

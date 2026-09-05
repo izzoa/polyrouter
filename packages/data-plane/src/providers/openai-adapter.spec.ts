@@ -44,7 +44,7 @@ describe('OpenAI provider adapter', () => {
     expect(call.init.method).toBe('POST');
     expect(call.init.headers['Authorization']).toBe('Bearer sk-secret-123');
     expect(call.init.headers['Content-Type']).toBe('application/json');
-    const body = JSON.parse(call.init.body!) as { model: string; stream: boolean };
+    const body = JSON.parse(call.init.body as string) as { model: string; stream: boolean };
     expect(body.model).toBe('gpt-4o');
     expect(body.stream).toBe(false);
   });
@@ -129,7 +129,7 @@ describe('OpenAI provider adapter — max-tokens spelling (add-max-tokens-spelli
       { httpClient: client },
     );
     await adapter.chat(capped);
-    const body = JSON.parse(calls[0]!.init.body!) as Record<string, unknown>;
+    const body = JSON.parse(calls[0]!.init.body as string) as Record<string, unknown>;
     expect(body.max_tokens).toBe(100);
     expect(body.max_completion_tokens).toBeUndefined();
   });
@@ -138,7 +138,7 @@ describe('OpenAI provider adapter — max-tokens spelling (add-max-tokens-spelli
     const { client, calls } = recordingClient(() => jsonResponse(OAI_RESPONSE));
     const adapter = createOpenaiProviderAdapter(config, { httpClient: client });
     await adapter.chat(capped);
-    const body = JSON.parse(calls[0]!.init.body!) as Record<string, unknown>;
+    const body = JSON.parse(calls[0]!.init.body as string) as Record<string, unknown>;
     expect(body.max_completion_tokens).toBe(100);
     expect(body.max_tokens).toBeUndefined();
   });
@@ -150,7 +150,7 @@ describe('OpenAI provider adapter — max-tokens spelling (add-max-tokens-spelli
       { httpClient: client },
     );
     for await (const ev of adapter.chatStream(capped)) void ev; // drain
-    const body = JSON.parse(calls[0]!.init.body!) as Record<string, unknown>;
+    const body = JSON.parse(calls[0]!.init.body as string) as Record<string, unknown>;
     expect(body.max_tokens).toBe(100);
     expect(body.max_completion_tokens).toBeUndefined();
     expect(body.stream).toBe(true);

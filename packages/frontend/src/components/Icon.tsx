@@ -77,6 +77,18 @@ const ArrowRight = (): JSX.Element => (
 
 const Check = (): JSX.Element => <path d="M20 6 9 17l-5-5" />;
 
+/** Many requests submitted as one job (add-batch-inference). Stacked planes: the
+ * one shape in this registry that reads as "a set moving together", and
+ * deliberately unlike `escalated` (a routing outcome) or `arrowRight` (a flow).
+ * Decorative like every icon here — the word `batch` beside it carries the state. */
+const Layers = (): JSX.Element => (
+  <>
+    <path d="m12 2 9 5-9 5-9-5 9-5Z" />
+    <path d="m3 12 9 5 9-5" />
+    <path d="m3 17 9 5 9-5" />
+  </>
+);
+
 export const ICONS = {
   copy: Copy,
   close: Close,
@@ -88,6 +100,7 @@ export const ICONS = {
   escalated: Escalated,
   arrowRight: ArrowRight,
   check: Check,
+  layers: Layers,
 } satisfies Record<string, () => JSX.Element>;
 
 export type IconName = keyof typeof ICONS;

@@ -36,6 +36,9 @@ export interface OverrideInput {
   readonly cacheWritePricePer1m?: number;
   readonly contextWindow?: number;
   readonly maxOutputTokens?: number;
+  /** Batch-tier pair (add-batch-inference): both or neither — validated as a trusted source. */
+  readonly batchInputPricePer1m?: number;
+  readonly batchOutputPricePer1m?: number;
   readonly supportsTools?: boolean;
   readonly supportsVision?: boolean;
   readonly supportsReasoning?: boolean;
@@ -60,6 +63,8 @@ function toInput(entry: BundledPrice, validFrom: Date, source: string): ModelPri
     cacheWritePricePer1m: entry.cacheWritePricePer1m ?? null,
     contextWindow: entry.contextWindow ?? null,
     maxOutputTokens: entry.maxOutputTokens ?? null,
+    batchInputPricePer1m: entry.batchInputPricePer1m ?? null,
+    batchOutputPricePer1m: entry.batchOutputPricePer1m ?? null,
     supportsTools: entry.supportsTools ?? false,
     supportsVision: entry.supportsVision ?? false,
     supportsReasoning: entry.supportsReasoning ?? false,
@@ -80,7 +85,11 @@ function unchanged(entry: BundledPrice, latest: ModelPriceRow): boolean {
     (entry.supportsTools ?? false) === latest.supportsTools &&
     (entry.supportsVision ?? false) === latest.supportsVision &&
     (entry.supportsReasoning ?? false) === latest.supportsReasoning &&
-    (entry.isFree ?? false) === latest.isFree
+    (entry.isFree ?? false) === latest.isFree &&
+    // The batch pair participates like a cap (add-batch-inference): a changed
+    // batch rate for a model whose sync prices are unchanged is a new version.
+    (entry.batchInputPricePer1m ?? null) === latest.batchInputPricePer1m &&
+    (entry.batchOutputPricePer1m ?? null) === latest.batchOutputPricePer1m
   );
 }
 
@@ -109,6 +118,23 @@ function validate(entry: BundledPrice): void {
     (!Number.isInteger(entry.maxOutputTokens) || entry.maxOutputTokens <= 0)
   ) {
     throw new UnprocessableEntityException('max_output_tokens must be a positive integer');
+  }
+  // Batch pair (add-batch-inference): both-or-neither, finite, non-negative. The
+  // untrusted live pull can never present a half or negative pair — the parser
+  // already dropped it — so this is the trusted-source fail-fast, like the cap.
+  const hasIn = entry.batchInputPricePer1m !== undefined;
+  const hasOut = entry.batchOutputPricePer1m !== undefined;
+  if (hasIn !== hasOut) {
+    throw new UnprocessableEntityException('batch prices must be supplied as an input/output pair');
+  }
+  if (
+    hasIn &&
+    (!finite(entry.batchInputPricePer1m) ||
+      !finite(entry.batchOutputPricePer1m) ||
+      (entry.batchInputPricePer1m ?? 0) < 0 ||
+      (entry.batchOutputPricePer1m ?? 0) < 0)
+  ) {
+    throw new UnprocessableEntityException('batch prices must be finite and non-negative');
   }
 }
 
@@ -174,6 +200,66 @@ export class PricingService {
       catalogRow,
       nativeRow,
     );
+  }
+
+  /**
+   * The batch-mode snapshot (add-batch-inference D7) plus the catalog output cap
+   * the ceiling needs — resolved ONCE at submission and stored on the job row.
+   * `mode: 'batch'` resolves only batch-tier pairs: the exact row's pair, else the
+   * native-family row's pair (an estimate), else the aggregator twin's captured
+   * listed rate (`listedTwin`, an estimate), else unknown — never a synchronous
+   * rate. The native row is consulted whenever the exact row has no pair, not only
+   * when it is absent, because a pair is what batch mode is looking for.
+   */
+  async resolveBatchPricing(
+    model: Pick<
+      ModelRow,
+      | 'externalModelId'
+      | 'inputPricePer1m'
+      | 'outputPricePer1m'
+      | 'isFree'
+      | 'listedInputPricePer1m'
+      | 'listedOutputPricePer1m'
+      | 'listedIsFree'
+    >,
+    providerBaseUrl: string | null,
+    providerKind: string,
+    at: Date,
+    listedTwin: { inputPricePer1m: number | null; outputPricePer1m: number | null } | null,
+  ): Promise<{ snapshot: PriceSnapshot | null; maxOutputTokens: number | null }> {
+    const key =
+      providerBaseUrl !== null ? deriveModelKey(providerBaseUrl, model.externalModelId) : null;
+    const catalogRow = key !== null ? await this.db.pricing.priceAt(key, at) : null;
+    let nativeRow = null;
+    if (key !== null && (catalogRow === null || catalogRow.batchInputPricePer1m === null)) {
+      const nativeKey = deriveNativeFamilyKey(
+        key.slice(0, key.indexOf(':')),
+        model.externalModelId,
+      );
+      if (nativeKey !== null) nativeRow = await this.db.pricing.priceAt(nativeKey, at);
+    }
+    const snapshot = resolveModelPrice(
+      {
+        providerKind,
+        modelInputPricePer1m: model.inputPricePer1m,
+        modelOutputPricePer1m: model.outputPricePer1m,
+        modelIsFree: model.isFree,
+        listedInputPricePer1m: model.listedInputPricePer1m,
+        listedOutputPricePer1m: model.listedOutputPricePer1m,
+        listedIsFree: model.listedIsFree ?? false,
+      },
+      catalogRow,
+      nativeRow,
+      {
+        mode: 'batch',
+        listedBatchInputPricePer1m: listedTwin?.inputPricePer1m ?? null,
+        listedBatchOutputPricePer1m: listedTwin?.outputPricePer1m ?? null,
+      },
+    );
+    return {
+      snapshot,
+      maxOutputTokens: catalogRow?.maxOutputTokens ?? nativeRow?.maxOutputTokens ?? null,
+    };
   }
 
   /** The SINGLE write path. Serialized by an advisory lock; re-reads `latest`
@@ -249,6 +335,12 @@ export class PricingService {
       modelKey,
       inputPricePer1m: prices.inputPricePer1m,
       outputPricePer1m: prices.outputPricePer1m,
+      ...(prices.batchInputPricePer1m !== undefined
+        ? { batchInputPricePer1m: prices.batchInputPricePer1m }
+        : {}),
+      ...(prices.batchOutputPricePer1m !== undefined
+        ? { batchOutputPricePer1m: prices.batchOutputPricePer1m }
+        : {}),
       ...(prices.cacheReadPricePer1m !== undefined
         ? { cacheReadPricePer1m: prices.cacheReadPricePer1m }
         : {}),
@@ -256,9 +348,7 @@ export class PricingService {
         ? { cacheWritePricePer1m: prices.cacheWritePricePer1m }
         : {}),
       ...(prices.contextWindow !== undefined ? { contextWindow: prices.contextWindow } : {}),
-      ...(prices.maxOutputTokens !== undefined
-        ? { maxOutputTokens: prices.maxOutputTokens }
-        : {}),
+      ...(prices.maxOutputTokens !== undefined ? { maxOutputTokens: prices.maxOutputTokens } : {}),
       ...(prices.supportsTools !== undefined ? { supportsTools: prices.supportsTools } : {}),
       ...(prices.supportsVision !== undefined ? { supportsVision: prices.supportsVision } : {}),
       ...(prices.supportsReasoning !== undefined

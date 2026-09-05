@@ -1,0 +1,11 @@
+{
+  "status": 400,
+  "body": {
+    "error": {
+      "message": "Invalid file format. Batch input files must be JSONL with purpose 'batch'.",
+      "type": "invalid_request_error",
+      "param": "input_file_id",
+      "code": "invalid_file_format"
+    }
+  }
+}

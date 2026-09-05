@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import {
+  bigint,
   boolean,
   check,
   doublePrecision,
@@ -12,6 +13,12 @@ import {
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
 import type { AttemptFailureEntry } from '../../attempt-failures';
+import {
+  BATCH_ENDPOINTS,
+  BATCH_JOB_ERROR_KINDS,
+  BATCH_JOB_STATUSES,
+  BATCH_JOB_TERMINAL_STATUSES,
+} from '../../batch-jobs';
 
 /** Spec §5 identity/config core. Feature-owned tables (ModelPrice, RequestLog,
  * NotificationChannel, Limit) land with their owning changes, not here. */
@@ -273,6 +280,15 @@ export const models = pgTable(
     listedOutputPricePer1m: doublePrecision('listed_output_price_per_1m'),
     listedIsFree: boolean('listed_is_free'),
     listedPriceCapturedAt: timestamp('listed_price_captured_at', { withTimezone: true }),
+    // DERIVED aggregator SKU variant (add-model-variant-detection): null = none.
+    // Written for every admitted model on EVERY sync — set or cleared, and carried
+    // in the upsert's ON CONFLICT set so a re-sync corrects it rather than freezing
+    // the first-insert value. Scoped to aggregator billing families (a direct or
+    // custom provider's id that merely looks suffixed is never classified), cleared
+    // when the provider's base_url/protocol moves, and re-derivable at any time from
+    // the id — never authored by a user. Routability is DERIVED from this value
+    // (`NON_ROUTABLE_VARIANTS`), never stored as its own flag that could drift.
+    variant: text('variant'),
     lastSyncedAt: timestamp('last_synced_at', { withTimezone: true }),
   },
   (t) => [
@@ -380,12 +396,26 @@ export const modelPrices = pgTable(
     supportsVision: boolean('supports_vision').default(false).notNull(),
     supportsReasoning: boolean('supports_reasoning').default(false).notNull(),
     isFree: boolean('is_free').default(false).notNull(),
+    // Asynchronous batch-tier rates (add-batch-inference): USD per 1M, present
+    // TOGETHER or absent together (a half rate is never stored), null = batch
+    // rate unknown — never "free". Participates in change detection like a cap.
+    batchInputPricePer1m: doublePrecision('batch_input_price_per_1m'),
+    batchOutputPricePer1m: doublePrecision('batch_output_price_per_1m'),
     source: text('source').notNull(), // bundled | refresh | manual
     validFrom: timestamp('valid_from', { withTimezone: true }).notNull(),
     createdAt: createdAt(),
   },
   (t) => [
     uniqueIndex('model_price_key_valid_from_unique').on(t.modelKey, t.validFrom),
+    check(
+      'model_price_batch_pair',
+      sql`(${t.batchInputPricePer1m} IS NULL) = (${t.batchOutputPricePer1m} IS NULL)`,
+    ),
+    check(
+      'model_price_batch_nonneg',
+      sql`(${t.batchInputPricePer1m} IS NULL OR ${t.batchInputPricePer1m} >= 0)
+        AND (${t.batchOutputPricePer1m} IS NULL OR ${t.batchOutputPricePer1m} >= 0)`,
+    ),
     check(
       'model_price_max_output_positive',
       sql`${t.maxOutputTokens} IS NULL OR ${t.maxOutputTokens} > 0`,
@@ -445,6 +475,17 @@ export const requestLogs = pgTable(
     // model|local|bundled|refresh|manual|native_family; null = unpriced or predates
     // the column. 'native_family' is the estimate marker.
     priceSource: text('price_source'),
+    // Which pricing rule the snapshot came from (add-batch-inference): 'sync' —
+    // resolved when the request completed — or 'batch' — the job's submit-time
+    // snapshot copied verbatim at settlement. Null = predates the column, read as
+    // 'sync'. A synchronous rate is never used for a batch item, nor the reverse.
+    priceMode: text('price_mode'),
+    // Batch membership (add-batch-inference): the job this item settled under.
+    // Plain text, NO foreign key — an item's ledger row outlives its job, and the
+    // job carries the `custom_id` mapping only through its results stream (never a
+    // column here). Indexed for the listing's `batchId` filter and the live band's
+    // targeted existence read. Null = a synchronous request.
+    batchId: text('batch_id'),
     // The SERVING provider's kind, snapshotted immutably (split-subscription-spend).
     // Decides whether this row's cost is money owed (`api_key`/`custom`/`local` → cash)
     // or traffic already paid for at a flat rate (`subscription` → notional, excluded
@@ -522,6 +563,7 @@ export const requestLogs = pgTable(
     index('request_log_agent_idx').on(t.agentId),
     index('request_log_provider_idx').on(t.providerId),
     index('request_log_model_idx').on(t.modelId),
+    index('request_log_batch_idx').on(t.batchId),
     check(
       'request_log_tokens_nonneg',
       sql`${t.inputTokens} >= 0 AND ${t.outputTokens} >= 0
@@ -587,6 +629,17 @@ export const requestLogs = pgTable(
     check(
       'request_log_workload_score_range',
       sql`${t.workloadScore} IS NULL OR (${t.workloadScore} >= 0 AND ${t.workloadScore} <= 1)`,
+    ),
+    // Batch rows (add-batch-inference): the mode is an enum-or-null, and a
+    // batch-priced row always names its job — a batch snapshot without a job would
+    // be a cost nobody can trace to a settlement.
+    check(
+      'request_log_price_mode_valid',
+      sql`${t.priceMode} IS NULL OR ${t.priceMode} IN ('sync', 'batch')`,
+    ),
+    check(
+      'request_log_batch_price_mode_compat',
+      sql`${t.priceMode} IS DISTINCT FROM 'batch' OR ${t.batchId} IS NOT NULL`,
     ),
   ],
 );
@@ -979,6 +1032,150 @@ export const semanticLearningEvents = pgTable(
   ],
 );
 
+/** Asynchronous batch jobs (add-batch-inference): the METADATA of a job polyrouter
+ * brokered to an upstream batch API. Owned like every owned table (cascade with
+ * the owner); `agent_id`/`provider_id`/`model_id`/`tier_assigned` are DENORMALIZED
+ * plain ids with no FK — history survives config deletion, the request_log
+ * precedent. The shape admits no free-text field: no item body, no result body,
+ * and no client-authored `custom_id` (invariant 8). A job maps to its items only
+ * through the results stream; each settled item's ledger row names the job
+ * (`request_log.batch_id`). Every column past the identity/route block is
+ * SYSTEM-owned: written by the submit path, the poller, and settlement — never
+ * from caller input. */
+export const batchJobs = pgTable(
+  'batch_job',
+  {
+    // Pre-allocated by the submit path: it doubles as the upstream idempotency key,
+    // so the row must exist under this id BEFORE the upstream create (D6).
+    id: id(),
+    ownerUserId: owned.ownerUserId(),
+    orgId: owned.orgId(),
+    agentId: text('agent_id').notNull(),
+    providerId: text('provider_id').notNull(),
+    modelId: text('model_id').notNull(),
+    tierAssigned: text('tier_assigned'),
+    // Null until the upstream create returns (or until reconciliation adopts it).
+    upstreamBatchId: text('upstream_batch_id'),
+    // The caller's item shape (`/v1/chat/completions` | `/v1/messages`) and the
+    // UPSTREAM wire protocol the items were serialized to — snapshotted so results
+    // translate exactly as the items were sent, whatever the provider row says later.
+    endpoint: text('endpoint').notNull(),
+    protocol: text('protocol').notNull(),
+    // The serving provider's KIND at submission, snapshotted for the same reason
+    // `request_log.provider_kind` is: it decides whether each settled item's cost is
+    // money owed or flat-rate notional, and settlement lands up to a day later —
+    // reading the provider row then would let a config change reclassify past spend
+    // (invariant 4). Null = predates the column.
+    providerKind: text('provider_kind'),
+    status: text('status').notNull(),
+    itemCount: integer('item_count').notNull(),
+    completedCount: integer('completed_count').default(0).notNull(),
+    failedCount: integer('failed_count').default(0).notNull(),
+    // Routing-grade `chars/4` aggregate over every item — a NUMBER, never text; the
+    // missing-usage fallback divides it by `item_count` at settlement (D9).
+    estimatedInputTokens: integer('estimated_input_tokens').notNull(),
+    // The submit-time price snapshot (D7): copied VERBATIM onto every item row at
+    // settlement, never re-resolved. Null rates = batch rate unknown (the job was
+    // admitted under no `block` budget); the pair and its provenance travel together.
+    priceMode: text('price_mode').notNull(),
+    inputPriceSnapshot: doublePrecision('input_price_snapshot'),
+    outputPriceSnapshot: doublePrecision('output_price_snapshot'),
+    cacheReadPriceSnapshot: doublePrecision('cache_read_price_snapshot'),
+    cacheWritePriceSnapshot: doublePrecision('cache_write_price_snapshot'),
+    priceVersionId: text('price_version_id'),
+    priceSource: text('price_source'),
+    // The reserved ceiling in integer micro-USD (the spend counter's unit); null =
+    // no finite ceiling could be established and no `block` budget applied (D20).
+    // The reconciler recomputes `pending` from every non-terminal row's value.
+    reservedCeilingMicros: bigint('reserved_ceiling_micros', { mode: 'number' }),
+    // Σ of the job's item rows' immutable costs, written at settlement so a
+    // terminal job's cost is read here, never re-summed from the ledger (D9).
+    settledCostMicros: bigint('settled_cost_micros', { mode: 'number' }),
+    // A cancel recorded before an upstream id existed; honoured by the reconciler
+    // the moment an id is adopted (D6).
+    cancelRequested: boolean('cancel_requested').default(false).notNull(),
+    // The provider's completion window, as declared by the adapter at submission;
+    // local expiry = submitted_at + window + BATCH_WINDOW_MARGIN_MS, and even then
+    // the job is not terminal until the upstream confirms (D21).
+    completionWindowMs: integer('completion_window_ms').notNull(),
+    submittedAt: timestamp('submitted_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+    lastPolledAt: timestamp('last_polled_at', { withTimezone: true }),
+    // When the job entered a state that needs an operator after a bound —
+    // `submission_unknown`, or an unmapped upstream status; cleared on recovery.
+    stalledSince: timestamp('stalled_since', { withTimezone: true }),
+    terminalAt: timestamp('terminal_at', { withTimezone: true }),
+    // The upstream's results retention deadline; null = the adapter reported none
+    // (the UI says "retention unknown" rather than inventing a date, D23).
+    resultsExpireAt: timestamp('results_expire_at', { withTimezone: true }),
+    errorKind: text('error_kind'),
+  },
+  (t) => [
+    index('batch_job_owner_idx').on(t.ownerUserId),
+    index('batch_job_owner_submitted_idx').on(t.ownerUserId, t.submittedAt),
+    // The poller's sweep reads only non-terminal rows, which stay few while the
+    // terminal population only grows — a partial index keeps the sweep cheap.
+    index('batch_job_active_idx')
+      .on(t.updatedAt)
+      .where(
+        sql`${t.status} NOT IN (${sql.raw(BATCH_JOB_TERMINAL_STATUSES.map((s) => `'${s}'`).join(', '))})`,
+      ),
+    check(
+      'batch_job_status_valid',
+      sql`${t.status} IN (${sql.raw(BATCH_JOB_STATUSES.map((s) => `'${s}'`).join(', '))})`,
+    ),
+    check(
+      'batch_job_endpoint_valid',
+      sql`${t.endpoint} IN (${sql.raw(BATCH_ENDPOINTS.map((s) => `'${s}'`).join(', '))})`,
+    ),
+    check(
+      'batch_job_protocol_valid',
+      sql`${t.protocol} IN ('openai_compatible', 'anthropic_compatible', 'openai_responses')`,
+    ),
+    // The same closed vocabulary `request_log.provider_kind` carries, for the same
+    // reason: the spend classification partitions on this value.
+    check(
+      'batch_job_provider_kind_known',
+      sql`${t.providerKind} IS NULL OR ${t.providerKind} IN ('api_key','subscription','custom','local')`,
+    ),
+    check('batch_job_item_count_positive', sql`${t.itemCount} > 0`),
+    check(
+      'batch_job_counts_bounded',
+      sql`${t.completedCount} >= 0 AND ${t.failedCount} >= 0 AND ${t.completedCount} + ${t.failedCount} <= ${t.itemCount}`,
+    ),
+    check('batch_job_estimated_tokens_nonneg', sql`${t.estimatedInputTokens} >= 0`),
+    check('batch_job_price_mode_valid', sql`${t.priceMode} IN ('sync', 'batch')`),
+    // The rate pair and its provenance are present together or absent together.
+    check(
+      'batch_job_price_pair',
+      sql`(${t.inputPriceSnapshot} IS NULL) = (${t.outputPriceSnapshot} IS NULL) AND (${t.inputPriceSnapshot} IS NULL) = (${t.priceSource} IS NULL)`,
+    ),
+    // Batch mode never resolves a model-own or local price (pricing-catalog).
+    check(
+      'batch_job_price_source_valid',
+      sql`${t.priceSource} IS NULL OR ${t.priceSource} IN ('bundled', 'refresh', 'manual', 'native_family', 'listed')`,
+    ),
+    check(
+      'batch_job_reserved_nonneg',
+      sql`${t.reservedCeilingMicros} IS NULL OR ${t.reservedCeilingMicros} >= 0`,
+    ),
+    check(
+      'batch_job_settled_nonneg',
+      sql`${t.settledCostMicros} IS NULL OR ${t.settledCostMicros} >= 0`,
+    ),
+    check('batch_job_completion_window_positive', sql`${t.completionWindowMs} > 0`),
+    check(
+      'batch_job_error_kind_valid',
+      sql`${t.errorKind} IS NULL OR ${t.errorKind} IN (${sql.raw(BATCH_JOB_ERROR_KINDS.map((s) => `'${s}'`).join(', '))})`,
+    ),
+    // A terminal row stamps when it became terminal; a live row carries no stamp.
+    check(
+      'batch_job_terminal_at_pair',
+      sql`(${t.terminalAt} IS NULL) = (${t.status} NOT IN (${sql.raw(BATCH_JOB_TERMINAL_STATUSES.map((s) => `'${s}'`).join(', '))}))`,
+    ),
+  ],
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
 export type AccountRow = typeof accounts.$inferSelect;
@@ -999,5 +1196,6 @@ export type RequestBodyRow = typeof requestBodies.$inferSelect;
 export type PricingRefreshRunRow = typeof pricingRefreshRuns.$inferSelect;
 export type ThresholdCalibrationEventRow = typeof thresholdCalibrationEvents.$inferSelect;
 export type SemanticLearningEventRow = typeof semanticLearningEvents.$inferSelect;
+export type BatchJobRow = typeof batchJobs.$inferSelect;
 export type InviteRow = typeof invites.$inferSelect;
 export type InstanceSettingsRow = typeof instanceSettings.$inferSelect;

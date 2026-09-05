@@ -7,6 +7,7 @@ import {
   ProviderCircuitOpenError,
   ProviderError,
   type ProviderErrorKind,
+  type RouteError,
   type RouteErrorKind,
 } from '@polyrouter/data-plane';
 import type { BudgetHit } from '../budgets/budget-service';
@@ -63,6 +64,17 @@ const ROUTE_MAP: Record<RouteErrorKind, Mapped> = {
     message: 'no default routing tier is configured',
     type: 'api_error',
     code: 'no_default',
+  },
+  // add-model-variant-detection. 400, not the 404 an unknown model gets: the row
+  // EXISTS and the dashboard shows it with a price — "model not found" would be a
+  // lie. The status is what carries the distinction into the Anthropic envelope,
+  // which renders no `code`. This is the one entry whose message is completed at
+  // render time (see `routeError`).
+  batch_only_model: {
+    status: 400,
+    message: 'this model is a batch-priced variant and cannot serve a request',
+    type: 'invalid_request_error',
+    code: 'batch_only_model',
   },
 };
 
@@ -143,7 +155,25 @@ const PROVIDER_MAP: Record<ProviderErrorKind, Mapped> = {
 
 const of = (m: Mapped): ProxyError => new ProxyError(m.status, m.message, m.type, m.code);
 
-export const routeError = (kind: RouteErrorKind): ProxyError => of(ROUTE_MAP[kind]);
+/**
+ * Render a resolver error. Takes the WHOLE typed error, not just its kind, so the
+ * batch-only message can name the base model the caller should retarget to.
+ *
+ * The interpolated id is derived by the resolver from the OWNED config snapshot —
+ * never a substring of the client's `model` field — so the no-echo rule holds. The
+ * alternative is offered only when a routable model bearing that id actually
+ * exists on the same provider; otherwise the base is stated without any promise
+ * that it can be routed.
+ */
+export const routeError = (err: RouteError): ProxyError => {
+  const mapped = ROUTE_MAP[err.error];
+  if (err.error !== 'batch_only_model' || err.baseModelId === undefined) return of(mapped);
+  const suffix =
+    err.baseIsRoutable === true
+      ? `; use "${err.baseModelId}" instead`
+      : `; its base model is "${err.baseModelId}"`;
+  return new ProxyError(mapped.status, `${mapped.message}${suffix}`, mapped.type, mapped.code);
+};
 export const providerErrorToProxy = (err: ProviderError): ProxyError => of(PROVIDER_MAP[err.kind]);
 
 export const badRequest = (message: string): ProxyError =>

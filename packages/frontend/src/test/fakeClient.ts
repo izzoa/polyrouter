@@ -2,6 +2,8 @@ import { ApiError } from '../data/api';
 import type {
   ActionResult,
   AdminInviteDto,
+  BatchJobDto,
+  BatchJobsPage,
   AdminUserDto,
   IssuedInviteDto,
   RegistrationSettingsDto,
@@ -81,6 +83,7 @@ export const DEFAULT_SUMMARY: AnalyticsSummary = {
   errorCount: 2,
   escalatedCount: 6,
   estimatedCount: 3,
+  batchRequests: 0,
   freeRequests: 8,
   paidRequests: 20,
   unpricedRequests: 2,
@@ -234,6 +237,8 @@ export function buildRequestRows(n: number): RequestRow[] {
       usageEstimated: i % 8 === 0,
       priceSource: null,
       priceEstimated: false,
+      batchId: null,
+      priceMode: null,
       qualitySignal: i % 3 === 0 ? null : 0.7,
       modelLabel: `Model ${String(i % 4)}`,
       providerLabel: `Provider ${String(i % 2)}`,
@@ -404,6 +409,13 @@ export interface FakeOptions {
   agents?: AgentDto[];
   providers?: ProviderDto[];
   models?: Record<string, ModelDto[]>;
+  /** add-batch-inference: the owner's batch jobs (the live band + the page). */
+  batchJobs?: BatchJobDto[];
+  batchesFailure?: ApiError | null;
+  /** Models a sync installs for the provider it just synced, when the test needs a
+   * specific catalog (e.g. a batch twin listed first) and cannot know the generated
+   * provider id up front. */
+  syncSeed?: (providerId: string) => ModelDto[];
   tiers?: TierDto[];
   tierEntries?: Record<string, TierEntryDto[]>;
   rules?: RuleDto[];
@@ -451,6 +463,8 @@ function fakeModel(providerId: string, n: number): ModelDto {
     outputPricePer1m: null,
     effectivePrice: null,
     listedPrice: null,
+    variant: null,
+    baseExternalModelId: null,
     lastSyncedAt: NOW,
   };
 }
@@ -506,6 +520,7 @@ export class FakeApiClient implements ApiClient {
   agents: AgentDto[];
   providers: ProviderDto[];
   models: Record<string, ModelDto[]>;
+  private readonly syncSeed: ((providerId: string) => ModelDto[]) | null;
   tiers: TierDto[];
   tierEntries: Record<string, TierEntryDto[]>;
   rules: RuleDto[];
@@ -526,6 +541,8 @@ export class FakeApiClient implements ApiClient {
   timeseriesResult: TimeseriesPoint[];
   breakdownResult: Record<BreakdownDimension, BreakdownRow[]>;
   requestRows: RequestRow[];
+  batchJobs: BatchJobDto[];
+  batchesFailure: ApiError | null;
   inflightResult: InflightSnapshot;
   analyticsFailure: ApiError | null;
   bodyCaptureState: BodyCaptureStatus;
@@ -547,6 +564,7 @@ export class FakeApiClient implements ApiClient {
     this.agents = opts.agents ?? [];
     this.providers = opts.providers ?? [];
     this.models = opts.models ?? {};
+    this.syncSeed = opts.syncSeed ?? null;
     this.tiers = opts.tiers ?? [
       {
         id: 'tier-default',
@@ -594,6 +612,8 @@ export class FakeApiClient implements ApiClient {
     this.breakdownResult = opts.breakdown ?? defaultBreakdown();
     this.requestRows = opts.requestRows ?? buildRequestRows(30);
     this.inflightResult = opts.inflight ?? { items: [], available: true, truncated: false };
+    this.batchJobs = opts.batchJobs ?? [];
+    this.batchesFailure = opts.batchesFailure ?? null;
     this.analyticsFailure = opts.analyticsFailure ?? null;
     this.bodyCaptureState = opts.bodyCaptureStatus ?? {
       mode: 'off',
@@ -917,7 +937,10 @@ export class FakeApiClient implements ApiClient {
     this.record('syncModels', id);
     const result = this.syncResult;
     if (result.ok && (result.synced ?? 0) > 0 && this.models[id] === undefined) {
-      this.models[id] = Array.from({ length: result.synced ?? 0 }, (_v, i) => fakeModel(id, i));
+      this.models[id] =
+        this.syncSeed === null
+          ? Array.from({ length: result.synced ?? 0 }, (_v, i) => fakeModel(id, i))
+          : this.syncSeed(id);
     }
     return Promise.resolve(result);
   }
@@ -1484,6 +1507,14 @@ export class FakeApiClient implements ApiClient {
       const layers = query.decisionLayers;
       rows = rows.filter((r) => layers.includes(r.decisionLayer));
     }
+    // add-batch-inference: the two server-side partitions. `batchId` is the band's
+    // targeted existence read, so a fake that ignored it would hand off every job.
+    if (query.mode === 'batch') rows = rows.filter((r) => r.batchId !== null);
+    if (query.mode === 'sync') rows = rows.filter((r) => r.batchId === null);
+    if (query.batchId !== undefined) {
+      const id = query.batchId;
+      rows = rows.filter((r) => r.batchId === id);
+    }
     const startIdx =
       query.cursor !== undefined ? rows.findIndex((r) => r.id === query.cursor) + 1 : 0;
     const limit = query.limit ?? 50;
@@ -1496,5 +1527,25 @@ export class FakeApiClient implements ApiClient {
   inflight(): Promise<InflightSnapshot> {
     this.record('inflight');
     return Promise.resolve(this.inflightResult);
+  }
+
+  /** add-batch-inference: the owner's batch jobs. `batchesFailure` degrades the
+   * read so the band's retain-on-degraded rule is testable. */
+  batches(
+    query: { active?: boolean; limit?: number; cursor?: string } = {},
+  ): Promise<BatchJobsPage> {
+    this.record('batches', query);
+    if (this.batchesFailure) return Promise.reject(this.batchesFailure);
+    const rows = query.active === true ? this.batchJobs.filter((b) => !b.terminal) : this.batchJobs;
+    return Promise.resolve({ rows, nextCursor: null });
+  }
+
+  cancelBatch(id: string): Promise<BatchJobDto> {
+    this.record('cancelBatch', id);
+    const row = this.batchJobs.find((b) => b.id === id);
+    if (row === undefined) return Promise.reject(new Error('batch not found'));
+    const next = { ...row, status: 'cancelling' };
+    this.batchJobs = this.batchJobs.map((b) => (b.id === id ? next : b));
+    return Promise.resolve(next);
   }
 }

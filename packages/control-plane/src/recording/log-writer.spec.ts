@@ -87,6 +87,7 @@ const snapshot = (): PriceSnapshot => ({
   isFree: false,
   source: 'bundled',
   validFrom: new Date('2026-07-15T00:00:00Z'),
+  mode: 'sync',
 });
 
 function makeWriter(overrides: {

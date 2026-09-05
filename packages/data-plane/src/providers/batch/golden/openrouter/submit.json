@@ -1,0 +1,44 @@
+{
+  "request": {
+    "endpoint": "/v1/chat/completions",
+    "model": "openai/gpt-4o",
+    "requests": [
+      {
+        "custom_id": "req-1",
+        "body": {
+          "model": "openai/gpt-4o",
+          "messages": [{ "role": "user", "content": "Say hello." }],
+          "max_tokens": 32,
+          "stream": false
+        }
+      },
+      {
+        "custom_id": "req-2",
+        "body": {
+          "model": "openai/gpt-4o",
+          "messages": [
+            { "role": "system", "content": "Be terse." },
+            { "role": "user", "content": "Name a colour, then a number." }
+          ],
+          "max_tokens": 16,
+          "temperature": 0.2,
+          "stream": false
+        }
+      }
+    ]
+  },
+  "response": {
+    "id": "batch_123",
+    "object": "batch",
+    "endpoint": "/v1/chat/completions",
+    "model": "openai/gpt-4o",
+    "completion_window": "24h",
+    "status": "validating",
+    "created_at": 1782097200,
+    "finalized_at": null,
+    "request_counts": { "total": 2, "completed": 0, "failed": 0 },
+    "usage": null,
+    "results": null,
+    "error": null
+  }
+}

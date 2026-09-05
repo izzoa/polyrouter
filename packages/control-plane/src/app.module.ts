@@ -7,8 +7,11 @@ import { AgentsController } from './agents/agents.controller';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { EventsModule } from './events/events.module';
 import { AuthModule } from './auth/auth.module';
+import { BatchModule } from './batch/batch.module';
+import { BatchPollerModule } from './batch/batch-poller.module';
 import { BodyCaptureModule } from './body-capture/body-capture.module';
 import { BudgetsModule } from './budgets/budgets.module';
+import { BudgetSchedulerModule } from './budgets/budget-scheduler.module';
 import { CalibrationModule } from './calibration/calibration.module';
 import { SemanticLearningModule } from './semantic/semantic-learning.module';
 import { LearningContributionModule } from './semantic/learning-contribution.module';
@@ -20,6 +23,7 @@ import { ObservabilityModule } from './observability/observability.module';
 import { PricingModule } from './pricing/pricing.module';
 import { ProducersModule } from './producers/producers.module';
 import { ProvidersModule } from './providers/providers.module';
+import { VariantClassificationModule } from './providers/variant-classification.module';
 import { ProxyModule } from './proxy/proxy.module';
 import { RecordingModule } from './recording/recording.module';
 import { RedisModule } from './redis/redis.module';
@@ -32,14 +36,18 @@ import { RoutingConfigModule } from './routing-config/routing-config.module';
     AuthModule,
     DataPlaneModule,
     ProvidersModule,
+    VariantClassificationModule,
     PricingModule,
     RoutingConfigModule,
     ProxyModule,
+    BatchModule,
+    BatchPollerModule,
     RecordingModule,
     NotificationsModule,
     ObservabilityModule,
     ProducersModule,
     BudgetsModule,
+    BudgetSchedulerModule,
     CalibrationModule,
     SemanticLearningModule,
     LearningContributionModule,

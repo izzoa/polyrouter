@@ -1,0 +1,10 @@
+{
+  "status": 400,
+  "body": {
+    "type": "error",
+    "error": {
+      "type": "invalid_request_error",
+      "message": "requests.1.custom_id: String should match pattern '^[a-zA-Z0-9_-]{1,64}$'"
+    }
+  }
+}

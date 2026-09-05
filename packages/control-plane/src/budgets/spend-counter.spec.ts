@@ -41,7 +41,24 @@ class FakeConn {
   /** Mirrors RECONCILE_MAX_LUA — including materializing the key at v=0, so a seeded
    * zero is distinguishable from "never reconciled" (split-subscription-spend). Real
    * Redis parity for the script itself is covered by the reconcile e2e. */
-  eval(_s: string, _n: number, key: string, micros: string, _ttl: string): Promise<number> {
+  eval(script: string, _n: number, ...args: string[]): Promise<unknown> {
+    const num = (k: string): number => Number(this.store.get(k) ?? '0');
+    if (script.includes('INCRBY')) {
+      const [spendKey, pendingKey, ceiling, amount] = args as [string, string, string, string];
+      const spend = num(spendKey);
+      const pending = num(pendingKey);
+      if (spend + pending + Number(ceiling) > Number(amount))
+        return Promise.resolve([0, spend, pending]);
+      this.store.set(pendingKey, String(pending + Number(ceiling)));
+      return Promise.resolve([1, spend, pending]);
+    }
+    if (script.includes('DECRBY')) {
+      const [pendingKey, micros] = args as [string, string];
+      const v = Math.max(0, num(pendingKey) - Number(micros));
+      this.store.set(pendingKey, String(v));
+      return Promise.resolve(v);
+    }
+    const [key, micros] = args as [string, string];
     const exists = this.store.has(key);
     const cur = Number(this.store.get(key) ?? '0');
     const v = Number(micros);
@@ -131,5 +148,46 @@ describe('SpendCounter', () => {
     const { counter, conn } = make();
     conn.failNext = true;
     await expect(counter.read(['k1'])).rejects.toThrow();
+  });
+});
+
+describe('SpendCounter — batch reservations (add-batch-inference D8)', () => {
+  it("places the pending key in the spend key's cluster slot without moving the spend key", () => {
+    const { counter } = make();
+    const spend = counter.key('u1', 'global', 'global', 'day', '2026-03-15', 'notional');
+    expect(spend).toBe('budget:u1:global:global:day:2026-03-15'); // untouched (upgrade-safe)
+    expect(counter.pendingKeyFor(spend)).toBe('{budget:u1:global:global:day:2026-03-15}:pending');
+  });
+
+  it('check-and-reserve admits while spend + pending + ceiling fits, then rejects', async () => {
+    const { counter, conn } = make();
+    conn.store.set('k', '4');
+    expect(await counter.checkAndReserve('k', 10, 5, 1000)).toEqual({
+      admitted: true,
+      spend: 4,
+      pending: 0,
+    });
+    expect(await counter.checkAndReserve('k', 10, 1, 1000)).toEqual({
+      admitted: true,
+      spend: 4,
+      pending: 5,
+    });
+    expect(await counter.checkAndReserve('k', 10, 1, 1000)).toEqual({
+      admitted: false,
+      spend: 4,
+      pending: 6,
+    });
+    expect(await counter.readWithPending(['k'])).toEqual([{ spend: 4, pending: 6 }]);
+  });
+
+  it('release floors at zero, and reconcilePending SETs the authoritative total', async () => {
+    const { counter, conn } = make();
+    await counter.checkAndReserve('k', 100, 5, 1000);
+    expect(await counter.release('k', 3, 1000)).toBe(2);
+    expect(await counter.release('k', 9, 1000)).toBe(0);
+    await counter.reconcilePending('k', 7, 1000);
+    expect(conn.store.get(counter.pendingKeyFor('k'))).toBe('7');
+    await counter.reconcilePending('k', 2, 1000); // pending FALLS as jobs settle — not monotonic
+    expect(await counter.readWithPending(['k'])).toEqual([{ spend: 0, pending: 2 }]);
   });
 });

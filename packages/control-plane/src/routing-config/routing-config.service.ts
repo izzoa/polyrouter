@@ -11,6 +11,8 @@ import {
   MAX_MODELS_PER_TIER,
   PERSISTENCE_PORT,
   TIER_HEADER_NAME,
+  isNonRoutableVariant,
+  parseModelVariant,
   parseRoutingTarget,
   type ModelRow,
   type PersistencePort,
@@ -247,6 +249,18 @@ export class RoutingConfigService {
     if (new Set(modelIds).size !== modelIds.length) {
       throw new UnprocessableEntityException('modelIds must not contain duplicates');
     }
+    // The WHOLE submitted list is checked, including a member that was already
+    // stored: a PUT is a full replacement, so accepting it would re-affirm a member
+    // that can never serve (add-model-variant-detection). The stored chain is left
+    // untouched on rejection, and the proxy keeps serving around such a member
+    // meanwhile, so this is never the first the tenant hears of it.
+    if (modelIds.length > 0) {
+      const owned = await this.modelsById(principal);
+      for (const id of modelIds) {
+        const m = owned.get(id);
+        if (m) assertRoutable(m, 'model');
+      }
+    }
     const result = await this.db.routingEntries.replaceForTier(principal, tierId, modelIds);
     if (result.status === 'tier_not_found') throw new NotFoundException();
     if (result.status === 'unknown_models') {
@@ -367,8 +381,24 @@ export class RoutingConfigService {
       if (!model) {
         throw new UnprocessableEntityException('target model does not exist');
       }
+      // add-model-variant-detection: a batch-priced variant can never serve, so a
+      // rule that names one is refused when it is WRITTEN rather than at request
+      // time. A `tier:` target is unaffected — late-bound by key, with its
+      // membership policed by the entry-replacement path.
+      assertRoutable(model, 'target model');
     }
   }
+}
+
+/** Refuse a non-routable model at a config write, naming the base id so the
+ * message points somewhere real (add-model-variant-detection). */
+function assertRoutable(model: ModelRow, label: string): void {
+  if (!isNonRoutableVariant(model.variant)) return;
+  const base = parseModelVariant(model.externalModelId)?.base;
+  const hint = base === undefined ? '' : ` — use "${base}" instead`;
+  throw new UnprocessableEntityException(
+    `${label} "${model.externalModelId}" is a batch-priced variant and cannot serve requests${hint}`,
+  );
 }
 
 function hasValue(v: string | null | undefined): boolean {

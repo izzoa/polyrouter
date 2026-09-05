@@ -1,0 +1,45 @@
+{
+  "output": [
+    {
+      "id": "batch_req_1",
+      "custom_id": "req-1",
+      "response": {
+        "status_code": 200,
+        "request_id": "req_openai_1",
+        "body": {
+          "id": "chatcmpl-1",
+          "object": "chat.completion",
+          "created": 1782100800,
+          "model": "gpt-4o",
+          "choices": [
+            {
+              "index": 0,
+              "message": { "role": "assistant", "content": "Hello!" },
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": { "prompt_tokens": 12, "completion_tokens": 9, "total_tokens": 21 }
+        }
+      },
+      "error": null
+    },
+    {
+      "id": "batch_req_2",
+      "custom_id": "req-2",
+      "response": {
+        "status_code": 400,
+        "request_id": "req_openai_2",
+        "body": { "error": { "message": "This model does not support that parameter.", "type": "invalid_request_error" } }
+      },
+      "error": null
+    }
+  ],
+  "errors": [
+    {
+      "id": "batch_req_3",
+      "custom_id": "req-3",
+      "response": null,
+      "error": { "code": "rate_limit_exceeded", "message": "Rate limit reached for gpt-4o" }
+    }
+  ]
+}

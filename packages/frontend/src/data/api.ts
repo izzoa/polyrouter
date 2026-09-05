@@ -196,6 +196,14 @@ export interface ModelDto {
     isFree: boolean;
     capturedAt: string | null;
   } | null;
+  /** Derived aggregator SKU variant (add-model-variant-detection); null = none.
+   * `batch` marks a model that prices an async batch tier and cannot serve a
+   * synchronous request — it is shown as a price on its base model, never as a
+   * selectable target. */
+  variant: string | null;
+  /** For a variant row, the SAME provider's model it prices — null for an orphan
+   * twin, so the UI never points at a model that is not there. */
+  baseExternalModelId: string | null;
   lastSyncedAt: string | null;
 }
 
@@ -326,6 +334,7 @@ export const EVENT_TYPES = [
   'provider_down',
   'request_failures_spike',
   'weekly_spend_summary',
+  'batch_stalled',
   'test',
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
@@ -526,6 +535,9 @@ export interface AnalyticsSummary {
   errorCount: number;
   escalatedCount: number;
   estimatedCount: number;
+  /** Settled batch items in the range (add-batch-inference) — part of `requests`
+   * and `spend`, surfaced so their share is visible rather than silent. */
+  batchRequests: number;
   freeRequests: number;
   /** Priced total, retained for compatibility; the split below is additive. */
   paidRequests: number;
@@ -621,6 +633,12 @@ export interface RequestRow {
   usageEstimated: boolean;
   /** Served row's snapshot provenance; null = unpriced or predates the column. */
   priceSource: string | null;
+  /** add-batch-inference: the batch job this item settled under; null = a
+   * synchronous request. */
+  batchId: string | null;
+  /** Which pricing rule produced the snapshot: `batch` for a settled batch item,
+   * `sync` or null (predating the column, read as sync) otherwise. */
+  priceMode: 'sync' | 'batch' | null;
   /** True when the served row OR any attempt was priced `native_family`. */
   priceEstimated: boolean;
   qualitySignal: number | null;
@@ -781,6 +799,47 @@ export interface RequestsQuery {
   status?: string;
   decisionLayers?: string[];
   escalated?: boolean;
+  /** add-batch-inference: partition by execution mode. */
+  mode?: 'sync' | 'batch';
+  /** add-batch-inference: one owned job's settled items (the band's existence read). */
+  batchId?: string;
+}
+
+/**
+ * A batch job as the dashboard reads it (add-batch-inference) — the server's safe
+ * view: metadata only, with labels that fall back to ids when a provider or model
+ * row has since been deleted. It carries no prompt, response or client-authored id
+ * because the job row has no column that could hold one.
+ */
+export interface BatchJobDto {
+  id: string;
+  upstreamBatchId: string | null;
+  status: string;
+  terminal: boolean;
+  endpoint: string;
+  agentId: string | null;
+  providerId: string;
+  providerLabel: string | null;
+  modelId: string;
+  modelLabel: string | null;
+  tierAssigned: string | null;
+  counts: { total: number; completed: number; failed: number };
+  submittedAt: string;
+  updatedAt: string;
+  terminalAt: string | null;
+  /** µ$ reserved while the job is live; null once terminal. A reservation is
+   * never rendered as spend (D13). */
+  reservedCeilingMicros: number | null;
+  settledCostMicros: number | null;
+  /** When the UPSTREAM stops serving results; null = the provider states none,
+   * which the UI shows as "retention unknown" rather than inventing a date. */
+  resultsExpireAt: string | null;
+  errorKind: string | null;
+}
+
+export interface BatchJobsPage {
+  rows: BatchJobDto[];
+  nextCursor: string | null;
 }
 
 /** Micros-exact total request cost = served `cost` (µ$) + this request's attempt
@@ -914,6 +973,10 @@ export interface ApiClient {
   requests(query: RequestsQuery): Promise<RequestsPage>;
   /** add-inflight-requests: the owner's live in-flight snapshot for the Overview card. */
   inflight(): Promise<InflightSnapshot>;
+  /** add-batch-inference: the owner's batch jobs. `active` is the live-row band's
+   * authoritative read; the full listing pages by cursor. */
+  batches(query?: { active?: boolean; limit?: number; cursor?: string }): Promise<BatchJobsPage>;
+  cancelBatch(id: string): Promise<BatchJobDto>;
   bodyCaptureStatus(): Promise<BodyCaptureStatus>;
   bodyCaptureUpdate(patch: {
     mode?: 'off' | 'errors_only' | 'all';
@@ -1178,9 +1241,21 @@ export const realClient: ApiClient = {
         status: query.status,
         layer: query.decisionLayers,
         escalated: query.escalated,
+        mode: query.mode,
+        batchId: query.batchId,
       })}`,
     ),
   inflight: () => http<InflightSnapshot>(`${API_BASE}/analytics/inflight`),
+  batches: (query = {}) =>
+    http<BatchJobsPage>(
+      `${API_BASE}/batches${queryString({
+        active: query.active === true ? '1' : undefined,
+        limit: query.limit,
+        cursor: query.cursor,
+      })}`,
+    ),
+  cancelBatch: (id) =>
+    http<BatchJobDto>(`${API_BASE}/batches/${encodeURIComponent(id)}/cancel`, jsonInit('POST', {})),
   bodyCaptureStatus: () => http<BodyCaptureStatus>(`${API_BASE}/body-capture`),
   bodyCaptureUpdate: (patch) =>
     http<BodyCaptureStatus>(`${API_BASE}/body-capture`, jsonInit('PATCH', patch)),

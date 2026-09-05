@@ -1,0 +1,36 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "batch_9f2c1e",
+      "object": "batch",
+      "endpoint": "/v1/chat/completions",
+      "model": "openai/gpt-4o",
+      "completion_window": "24h",
+      "status": "completed",
+      "created_at": 1787836000,
+      "finalized_at": 1787837000,
+      "request_counts": { "total": 100, "completed": 100, "failed": 0 },
+      "usage": { "prompt_tokens": 51200, "completion_tokens": 20480, "total_tokens": 71680 },
+      "results": null,
+      "error": null
+    },
+    {
+      "id": "batch_paused",
+      "object": "batch",
+      "endpoint": "/v1/chat/completions",
+      "model": "openai/gpt-4o",
+      "completion_window": "24h",
+      "status": "paused_for_review",
+      "created_at": 1787836100,
+      "finalized_at": null,
+      "request_counts": { "total": 3, "completed": 0, "failed": 0 },
+      "usage": null,
+      "results": null,
+      "error": null
+    }
+  ],
+  "first_id": "batch_9f2c1e",
+  "last_id": "batch_paused",
+  "has_more": false
+}

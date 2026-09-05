@@ -267,7 +267,7 @@ describe('interactive target floors', () => {
 describe('table query containers', () => {
   it('declares inline-size containers with distinct names', () => {
     expect(css).toContain('container-type: inline-size');
-    for (const name of ['rs-requests', 'rs-agents', 'rs-users']) {
+    for (const name of ['rs-requests', 'rs-batches', 'rs-agents', 'rs-users']) {
       expect(css).toContain(`container-name: ${name}`);
     }
   });

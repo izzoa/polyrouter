@@ -47,7 +47,7 @@ describe('Anthropic provider adapter', () => {
     expect(call.init.headers['x-api-key']).toBe('sk-ant-secret');
     expect(call.init.headers['anthropic-version']).toBe('2023-06-01');
     expect(call.init.headers['x-custom']).toBe('v1');
-    const body = JSON.parse(call.init.body!) as { max_tokens: number };
+    const body = JSON.parse(call.init.body as string) as { max_tokens: number };
     expect(body.max_tokens).toBe(4096);
   });
 
@@ -161,7 +161,7 @@ describe('Anthropic provider adapter', () => {
       { httpClient: client },
     );
     await adapter.chat({ ...request, params: { maxOutputTokens: 100 } });
-    const body = JSON.parse(calls[0]!.init.body!) as Record<string, unknown>;
+    const body = JSON.parse(calls[0]!.init.body as string) as Record<string, unknown>;
     expect(body.max_tokens).toBe(100);
     expect(body.max_completion_tokens).toBeUndefined();
   });

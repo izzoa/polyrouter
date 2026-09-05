@@ -20,6 +20,7 @@
 |---|---|---|
 | `narrow` | **768px** viewport | Nav collapses to the rail; page grids drop columns; gutters shrink; `target-comfort` applies |
 | `table-fit-requests` | **960px** container | The 9-column requests table reflows to stacked records |
+| `table-fit-batches` | **960px** container | The 10-column batches table reflows to stacked records (same width as requests: more columns, not a different problem) |
 | `table-fit-agents` | **680px** container | The 7-column agents table reflows |
 | `table-fit-users` | **660px** container | Both semantic `<table>`s on the Users page reflow |
 | `rail-collapsed` | **56px** | Width of the collapsed icon rail (44px target + 6px each side) |
@@ -57,6 +58,14 @@ keyboard opens, so a sheet at `bottom: 0` sits behind the keyboard however tall 
 variable is published by `visualViewport.ts` and is 0 whenever nothing is covering the
 screen. It divides the pinch-zoom scale back out — without that, zooming to 2× is
 indistinguishable from a 422px keyboard and the sheet leaps up the screen.
+
+**The account footer is pinned inside the expanded rail.** Below `narrow` the expanded nav
+scrolls, and the footer is its last child — so once the nav is taller than the screen the
+footer starts below the fold, and the account menu, which opens upward from a trigger
+inside it, renders entirely off-screen. It is `position: sticky; bottom: 0` with the panel
+background, which makes the shell contract's "the account stays reachable in the expanded
+state" independent of how many pages the nav happens to carry. Adding the eleventh page is
+what found this.
 
 **Table thresholds are per table and were measured, not chosen** — see `measurements.md` in the responsive change. They are container widths, not viewport widths: a table cares about the space it actually gets, which is roughly `viewport − 208px sidebar − gutters`.
 

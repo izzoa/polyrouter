@@ -7,7 +7,6 @@ import { BudgetsController } from './budgets.controller';
 import { BudgetsCrudService } from './budgets.crud';
 import { BudgetCache } from './budget-cache';
 import { BudgetService } from './budget-service';
-import { BudgetScheduler } from './budget.scheduler';
 import { SpendCounter } from './spend-counter';
 import { BUDGETS_CONFIG, resolveBudgetsConfig } from './budgets.config';
 
@@ -18,7 +17,8 @@ import { BUDGETS_CONFIG, resolveBudgetsConfig } from './budgets.config';
  * writer, on its own `budget-eval` queue). Reconcile spend from the request-log
  * ledgers via `DatabaseModule`'s narrow `BUDGET_READER`; budget events go through
  * `ProducersModule`'s `NotificationProducers`. No writer/`SPEND_SINK` coupling —
- * `RecordingModule` is untouched.
+ * `RecordingModule` is untouched. The scheduler itself is registered by
+ * `BudgetSchedulerModule` (see there).
  */
 @Module({
   imports: [DatabaseModule, RedisModule, ProducersModule, ObservabilityModule],
@@ -28,9 +28,11 @@ import { BUDGETS_CONFIG, resolveBudgetsConfig } from './budgets.config';
     SpendCounter,
     BudgetCache,
     BudgetService,
-    BudgetScheduler,
     BudgetsCrudService,
   ],
-  exports: [BudgetService],
+  // The reconcile `BudgetScheduler` lives in `BudgetSchedulerModule` (controller-
+  // free, so it may import the persistence maintenance half — add-batch-inference
+  // D19); it consumes these through the exports below.
+  exports: [BudgetService, SpendCounter, BudgetCache, BUDGETS_CONFIG],
 })
 export class BudgetsModule {}

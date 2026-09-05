@@ -743,7 +743,9 @@ select:focus {
   background: var(--panel);
   color: var(--text2);
   cursor: pointer;
-  font: 400 13px 'Geist', sans-serif;
+  font:
+    400 13px 'Geist',
+    sans-serif;
   line-height: 1;
   align-items: center;
   justify-content: center;
@@ -955,12 +957,7 @@ select:focus {
    would outrank the 44px comfort rules and cap coarse-pointer controls at 24px. Same failure
    as the inline case, arrived at by specificity instead: a base floor must be the weakest
    rule in the cascade, never the strongest. */
-:where(
-  button:not(.toggle),
-  select,
-  textarea,
-  input:not([type='checkbox']):not([type='radio'])
-) {
+:where(button:not(.toggle), select, textarea, input:not([type='checkbox']):not([type='radio'])) {
   min-height: 24px;
 }
 
@@ -1160,6 +1157,21 @@ select:focus {
        scrim and the drawer both claim 41. */
     z-index: 45;
     box-shadow: var(--shadow-pop);
+  }
+
+  /* The account footer sticks to the bottom of the scrolling rail rather than being the
+     last thing in a column taller than the screen. At 320x568 the expanded nav already
+     runs to 719px, so the footer sat 34px below the fold and the account menu — which
+     opens UPWARD from it — rendered entirely off-screen. The rail scrolls, so it was
+     reachable; it was not visible, and a popover anchored to an off-screen trigger is
+     off-screen too. Sticky makes that structural: the shell contract says the account
+     stays reachable in the expanded state, and adding an eleventh page (or a twelfth)
+     must not be able to take it away. `--panel` is required — a transparent sticky
+     footer lets the nav items scroll through it. */
+  .rs-sidebar.rs-nav-open .rs-sidebar-footer {
+    position: sticky;
+    bottom: 0;
+    background: var(--panel);
   }
   /* Reuses `.overlay` for the backdrop itself — one scrim language, one alpha. This
      rule only lifts it above the drawer's z-index so the nav stacks correctly. */
@@ -1366,6 +1378,9 @@ select:focus {
 .rs-table-requests {
   container-name: rs-requests;
 }
+.rs-table-batches {
+  container-name: rs-batches;
+}
 .rs-table-agents {
   container-name: rs-agents;
 }
@@ -1380,7 +1395,73 @@ select:focus {
    templates (9 columns vs 7 — they were never the same, despite both being called GRID). */
 .rs-table-requests .table-head,
 .rs-table-requests .req-row {
-  grid-template-columns: 66px 1.5fr 1.1fr 0.8fr 1.1fr 0.9fr 0.7fr 0.6fr 0.8fr;
+  /* `minmax(0, …)` rather than a bare `fr` (add-batch-inference D17): an `fr`
+     track's implicit minimum is `auto`, so ONE unshrinkable cell — a batch job's
+     "12 of 50" beneath its status — widens its own track and shifts every other
+     column, misaligning the row against its neighbours and the head. The mockup
+     reproduced exactly that. Paired with `min-width: 0` on the cells so their
+     content can actually shrink. */
+  grid-template-columns:
+    66px minmax(0, 1.5fr) minmax(0, 1.1fr) minmax(0, 0.8fr) minmax(0, 1.1fr)
+    minmax(0, 0.9fr) minmax(0, 0.7fr) minmax(0, 0.6fr) minmax(0, 0.8fr);
+}
+.rs-table-requests .table-head > *,
+.rs-table-requests .req-row > * {
+  min-width: 0;
+}
+/* The Batches page's ten columns (add-batch-inference task 7.1). `minmax(0, …)`
+   for the same reason the requests table uses it: a progress bar, a reserved-cost
+   caption and a retention note are all cells whose content can exceed their track,
+   and a bare `fr` would let any of them shift every other column. */
+/* ONLY the template lives at two-class specificity. `display`/`gap`/`align-items` belong
+   on `.rs-batch-row` itself, because a container query adds NO specificity: with
+   `display: grid` declared here, `@container rs-batches { .rs-batch-row { display: block } }`
+   is a one-class selector losing to a two-class one, and the table stays a ten-column grid
+   at 320px however well the query matches. It did exactly that until the browser suite
+   measured it. `.req-row` has always been shaped this way; this now matches it. */
+.rs-table-batches .table-head,
+.rs-table-batches .rs-batch-row {
+  grid-template-columns:
+    minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 0.7fr) minmax(0, 0.8fr)
+    minmax(0, 1.2fr) minmax(0, 0.7fr) minmax(0, 1fr) minmax(0, 1.1fr) minmax(0, 0.7fr);
+}
+/* `.rs-cell` is `display: contents` at desktop, so a row's DIRECT children carry no box
+   and the real grid items are the cells' children. `> *` therefore set `min-width: 0` on
+   nothing: the items kept `min-width: auto` and painted over their neighbours instead of
+   shrinking. `minmax(0, …)` already pins the TRACK, which is why the columns still lined
+   up; this is what makes the content inside one actually fit. */
+.rs-table-batches .table-head > *,
+.rs-table-batches .rs-batch-row > .rs-cell > * {
+  min-width: 0;
+}
+.rs-batch-row {
+  display: grid;
+  width: 100%;
+  gap: 0 14px;
+  align-items: center;
+  padding: 11px 18px;
+  border-bottom: 1px solid var(--border2);
+  font:
+    400 12px 'Geist',
+    sans-serif;
+  color: var(--text2);
+}
+.rs-batch-row:last-child {
+  border-bottom: none;
+}
+/* The progress bar. A hairline track and an accent fill — the flat-borders
+   language, no shadow, no gradient. */
+.rs-batch-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--chip);
+  overflow: hidden;
+}
+.rs-batch-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
 }
 .rs-table-agents .table-head,
 .rs-table-agents .rs-agent-row {
@@ -1479,6 +1560,53 @@ select:focus {
   .rs-table-users td > .rs-cell-label {
     flex: none;
     min-width: 0;
+  }
+}
+
+/* Same stacked-record reflow as the requests table, at the same container width:
+   ten columns is more than nine, not a different problem (task 7.3). */
+@container rs-batches (max-width: 960px) {
+  .table-head {
+    display: none;
+  }
+  .rs-batch-row {
+    display: block;
+    padding: 12px 16px;
+  }
+  .rs-batch-row .rs-cell {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 12px;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 3px 0;
+    text-align: left;
+  }
+  .rs-batch-row .rs-cell-label {
+    display: block;
+    flex: none;
+    font:
+      500 10.5px 'Geist',
+      sans-serif;
+    color: var(--text3);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .rs-batch-row .rs-cell > * {
+    flex: 0 1 auto;
+    min-width: min-content;
+    max-width: 100%;
+    overflow-wrap: break-word;
+  }
+  .rs-batch-row .rs-cell > .rs-cell-label {
+    flex: none;
+    min-width: 0;
+  }
+  /* A terminal job offers no action, so its action cell holds nothing but its own
+     (empty) label. Stacked, that renders as a blank strip closing every finished
+     record. Hide any cell whose only child is the label. */
+  .rs-batch-row .rs-cell:not(:has(> :not(.rs-cell-label))) {
+    display: none;
   }
 }
 

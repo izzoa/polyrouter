@@ -10,10 +10,16 @@ import {
   bandRuleIsScoped,
 } from './resolve';
 
-const model = (id: string, providerId: string, externalModelId: string): RouteModel => ({
+const model = (
+  id: string,
+  providerId: string,
+  externalModelId: string,
+  variant: string | null = null,
+): RouteModel => ({
   id,
   providerId,
   externalModelId,
+  variant,
 });
 
 const rule = (over: Partial<RouteRule>): RouteRule => ({
@@ -379,6 +385,132 @@ describe('resolveRoute — matchedHeader (add-routing-header-visibility)', () =>
     const s = snap({ rules: [rule({ id: 'h', matchType: 'auto_high', target: 'tier:fast' })] });
     const d = resolveBandTarget(s, 'auto_high', 'structural', 'structural:high');
     expect(d).toMatchObject({ matchedHeader: null });
+  });
+});
+
+describe('non-routable variants (add-model-variant-detection)', () => {
+  const twin = model('m_twin', 'p1', 'openai/gpt-6-astra:batch', 'batch');
+  const base = model('m_base', 'p1', 'openai/gpt-6-astra');
+
+  it('refuses an explicit ask by name, offering the base when it is routable', () => {
+    const s = snap({ models: [twin, base] });
+    expect(resolveRoute(s, parse('openai/gpt-6-astra:batch'))).toEqual({
+      error: 'batch_only_model',
+      detail: 'openai/gpt-6-astra:batch',
+      baseModelId: 'openai/gpt-6-astra',
+      baseIsRoutable: true,
+    });
+    // ...and the base model itself still routes normally.
+    expect(resolveRoute(s, parse('openai/gpt-6-astra'))).toMatchObject({ modelId: 'm_base' });
+  });
+
+  it('names the base WITHOUT claiming it routes when the twin is an orphan', () => {
+    const s = snap({ models: [twin] });
+    expect(resolveRoute(s, parse('openai/gpt-6-astra:batch'))).toEqual({
+      error: 'batch_only_model',
+      detail: 'openai/gpt-6-astra:batch',
+      baseModelId: 'openai/gpt-6-astra',
+      baseIsRoutable: false,
+    });
+  });
+
+  it('counts bare-id ambiguity over ROUTABLE matches only', () => {
+    // A non-routable twin on p1 and a routable literal `x:batch` on p2: the bare
+    // ask resolves to the routable one instead of reporting ambiguity, so listing
+    // and resolution agree about the id `/v1/models` advertises.
+    const lookalike = model('m_look', 'p2', 'openai/gpt-6-astra:batch');
+    expect(resolveRoute(snap({ models: [twin, lookalike] }), parse('openai/gpt-6-astra:batch')))
+      .toMatchObject({ modelId: 'm_look', decisionLayer: 'explicit' });
+    // Two ROUTABLE matches remain ambiguous, exactly as before.
+    const second = model('m_look2', 'p3', 'openai/gpt-6-astra:batch');
+    expect(
+      resolveRoute(snap({ models: [lookalike, second] }), parse('openai/gpt-6-astra:batch')),
+    ).toMatchObject({ error: 'ambiguous_model' });
+  });
+
+  it('a qualified ask decides on its exact row, even when a routable twin-id exists elsewhere', () => {
+    const lookalike = model('m_look', 'p2', 'openai/gpt-6-astra:batch');
+    expect(
+      resolveRoute(snap({ models: [twin, lookalike] }), parse('p1:openai/gpt-6-astra:batch')),
+    ).toMatchObject({ error: 'batch_only_model' });
+  });
+
+  it('excludes a non-routable member from a tier chain BEFORE the position-0 rule', () => {
+    // `[twin@0, base@1]` works today only by spending a failed upstream attempt;
+    // it must promote `base`, not break.
+    const s = snap({
+      models: [twin, base],
+      entriesByTierId: new Map([
+        [
+          't_default',
+          [
+            { modelId: 'm_twin', position: 0 },
+            { modelId: 'm_base', position: 1 },
+          ],
+        ],
+      ]),
+    });
+    const r = resolveRoute(s, parse('auto'));
+    expect(r).toMatchObject({ modelId: 'm_base', tierKey: 'default' });
+    expect(isRouteError(r)).toBe(false);
+    if (!isRouteError(r)) {
+      expect(r.chain.map((c) => c.modelId)).toEqual(['m_base']);
+      // The promotion is visible, never silent.
+      expect(r.routingReason).toContain('excluded 1 batch-only');
+    }
+  });
+
+  it('a MISSING position 0 still errors — only an exclusion buys a promotion', () => {
+    // The no-silent-promotion rule protects a deleted primary. An unrelated
+    // non-routable member elsewhere must not quietly buy that promotion.
+    const s = snap({
+      models: [twin, base],
+      entriesByTierId: new Map([
+        [
+          't_default',
+          [
+            { modelId: 'm_twin', position: 1 },
+            { modelId: 'm_base', position: 2 },
+          ],
+        ],
+      ]),
+    });
+    expect(resolveRoute(s, parse('auto'))).toEqual({ error: 'empty_tier', detail: 'default' });
+  });
+
+  it('empty_tier when every member is non-routable', () => {
+    const s = snap({
+      models: [twin],
+      entriesByTierId: new Map([['t_default', [{ modelId: 'm_twin', position: 0 }]]]),
+    });
+    expect(resolveRoute(s, parse('auto'))).toEqual({ error: 'empty_tier', detail: 'default' });
+  });
+
+  it('Layer-0 errors by name while a smart-layer band DEGRADES (invariant 1)', () => {
+    // The same stored `model:` target, two rule classes, two behaviours: an
+    // explicit/Layer-0 ask must say what is wrong; an optional band refinement must
+    // never fail a request it was only trying to improve.
+    const s = snap({
+      models: [twin, base],
+      rules: [rule({ id: 'd', matchType: 'default', target: 'model:m_twin' })],
+    });
+    expect(resolveRoute(s, parse('auto'))).toMatchObject({ error: 'batch_only_model' });
+
+    const banded = snap({
+      models: [twin, base],
+      rules: [rule({ id: 'h', matchType: 'auto_high', target: 'model:m_twin' })],
+    });
+    // resolveBandTarget hands back null (no claim) rather than an error, so the
+    // caller falls through to the Layer-0 default decision.
+    expect(resolveBandTarget(banded, 'auto_high', 'structural', 'structural:high')).toBeNull();
+  });
+
+  it('leaves a routable variant (`:free`) fully routable', () => {
+    const free = model('m_free', 'p1', 'meta/llama:free', 'free');
+    expect(resolveRoute(snap({ models: [free] }), parse('meta/llama:free'))).toMatchObject({
+      modelId: 'm_free',
+      decisionLayer: 'explicit',
+    });
   });
 });
 

@@ -10,6 +10,7 @@ const price = (over: Partial<PriceSnapshot> = {}): PriceSnapshot => ({
   cacheWritePricePer1m: 3.75,
   isFree: false,
   source: 'bundled',
+  mode: 'sync',
   validFrom: new Date('2026-07-15T00:00:00Z'),
   ...over,
 });

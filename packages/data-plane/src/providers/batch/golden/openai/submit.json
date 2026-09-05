@@ -1,0 +1,66 @@
+{
+  "inputLines": [
+    {
+      "custom_id": "req-1",
+      "method": "POST",
+      "url": "/v1/chat/completions",
+      "body": {
+        "model": "gpt-4o",
+        "messages": [{ "role": "user", "content": "Say hello." }],
+        "max_tokens": 32,
+        "stream": false
+      }
+    },
+    {
+      "custom_id": "req-2",
+      "method": "POST",
+      "url": "/v1/chat/completions",
+      "body": {
+        "model": "gpt-4o",
+        "messages": [
+          { "role": "system", "content": "Be terse." },
+          { "role": "user", "content": "Name a colour, then a number." }
+        ],
+        "max_tokens": 16,
+        "temperature": 0.2,
+        "stream": false
+      }
+    }
+  ],
+  "file": {
+    "id": "file-abc123",
+    "object": "file",
+    "bytes": 512,
+    "created_at": 1782097100,
+    "filename": "polyrouter-job-1.jsonl",
+    "purpose": "batch"
+  },
+  "createRequest": {
+    "input_file_id": "file-abc123",
+    "endpoint": "/v1/chat/completions",
+    "completion_window": "24h",
+    "metadata": { "polyrouter_job_id": "job-1" }
+  },
+  "response": {
+    "id": "batch_abc123",
+    "object": "batch",
+    "endpoint": "/v1/chat/completions",
+    "errors": null,
+    "input_file_id": "file-abc123",
+    "completion_window": "24h",
+    "status": "validating",
+    "output_file_id": null,
+    "error_file_id": null,
+    "created_at": 1782097200,
+    "in_progress_at": null,
+    "expires_at": 1782183600,
+    "finalizing_at": null,
+    "completed_at": null,
+    "failed_at": null,
+    "expired_at": null,
+    "cancelling_at": null,
+    "cancelled_at": null,
+    "request_counts": { "total": 2, "completed": 0, "failed": 0 },
+    "metadata": { "polyrouter_job_id": "job-1" }
+  }
+}

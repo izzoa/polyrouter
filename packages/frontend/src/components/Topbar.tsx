@@ -7,6 +7,7 @@ import { Icon } from './Icon';
 const TITLES: Record<Page, [string, string]> = {
   overview: ['Overview', 'last 24 hours'],
   requests: ['Requests', 'every routed call, with its why'],
+  batches: ['Batches', 'jobs the provider is still working through'],
   costs: ['Costs', 'where the money goes'],
   agents: ['Agents', 'things that call the router'],
   providers: ['Providers', 'where requests get served'],

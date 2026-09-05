@@ -101,4 +101,14 @@ export class RequestsQueryDto extends RangeQueryDto {
   @Transform(toBool)
   @IsBoolean()
   escalated?: boolean;
+
+  /** add-batch-inference: partition by execution mode. */
+  @IsOptional()
+  @IsIn(['sync', 'batch'])
+  mode?: 'sync' | 'batch';
+
+  /** add-batch-inference: one owned job's settled items. */
+  @IsOptional()
+  @IsString()
+  batchId?: string;
 }

@@ -8,6 +8,7 @@ export { assertUserPrincipal, ownershipPredicate, userPrincipal } from './tenanc
 export type { OwnedTableColumns, Principal } from './tenancy';
 export {
   PERSISTENCE_FACILITIES,
+  PERSISTENCE_MAINTENANCE,
   PERSISTENCE_PORT,
   REDIS_CLIENT,
   SIGNAL_QUALITY_COLLAPSE_SHARE,
@@ -57,6 +58,18 @@ export type {
   PersistenceFacilities,
   PersistencePort,
   PricingCatalog,
+  ModelMaintenance,
+  ModelVariantDeriveInput,
+  PersistenceMaintenance,
+  BatchJobMaintenance,
+  ReservationMaintenance,
+  BatchJobAccessor,
+  BatchJobInsertInput,
+  BatchJobSystemPatch,
+  BatchJobSettlement,
+  BatchJobsCursor,
+  BatchJobsListQuery,
+  BatchJobsPage,
   ProviderInsertInput,
   ProviderPatch,
   ReplaceEntriesResult,
@@ -96,8 +109,17 @@ export {
   canonicalModelKey,
   deriveModelKey,
   deriveNativeFamilyKey,
+  deriveProviderFamily,
   resolveModelPrice,
 } from './pricing/resolve';
+export {
+  MODEL_VARIANTS,
+  NON_ROUTABLE_VARIANTS,
+  isNonRoutableVariant,
+  parseModelVariant,
+  variantForProvider,
+} from './models/variants';
+export type { ParsedModelVariant } from './models/variants';
 export type {
   BundledPrice,
   PriceResolutionInput,

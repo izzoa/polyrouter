@@ -13,6 +13,7 @@ import type {
 export type Page =
   | 'overview'
   | 'requests'
+  | 'batches'
   | 'costs'
   | 'agents'
   | 'providers'
@@ -29,16 +30,15 @@ export type Range = '24h' | '7d' | '30d';
  * no suffix, so a full reload starts on `auto`. */
 export type RoutingSection = 'auto' | 'tuning' | 'rules';
 export type RequestFilter = 'all' | 'explicit' | 'auto' | 'fallback' | 'escalated';
+
+/** How a request was RUN, orthogonal to how it was routed (add-batch-inference).
+ * `sync` is every request served on the wire; `batch` is a settled batch item. */
+export type RequestMode = 'all' | 'sync' | 'batch';
 /** The dashboard's harness type IS the canonical shared one (single source). */
 export type Harness = HarnessType;
 export type ProviderKindId = 'api' | 'sub' | 'custom' | 'local';
 export type ModalKind =
-  | 'newAgent'
-  | 'keyReveal'
-  | 'newProvider'
-  | 'editProvider'
-  | 'newLimit'
-  | 'channel';
+  'newAgent' | 'keyReveal' | 'newProvider' | 'editProvider' | 'newLimit' | 'channel';
 
 /** One row of a spend/cost breakdown (BarRows). */
 export interface SpendDatum {

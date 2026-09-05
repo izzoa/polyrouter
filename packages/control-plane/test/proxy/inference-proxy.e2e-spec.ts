@@ -119,6 +119,19 @@ async function seedTenant(
   await add(openai.id, 'oai-legal');
   await add(openai.id, 'oai-teapot');
   await add(openai.id, `${label}-secret`);
+  // add-model-variant-detection fixtures. `variant` is set explicitly here because
+  // these rows are created directly (no sync runs in this suite).
+  const addVariant = async (providerId: string, ext: string, variant: string): Promise<void> => {
+    const m = await port.models.createForProvider(principal, providerId, {
+      externalModelId: ext,
+      variant,
+    });
+    models[ext] = m!.id;
+  };
+  await addVariant(openai.id, 'openai/gpt-6-astra:batch', 'batch');
+  await add(openai.id, 'openai/gpt-6-astra');
+  await addVariant(openai.id, 'anthropic/claude-opus-5:batch', 'batch'); // orphan twin
+  await addVariant(openai.id, 'meta/llama:free', 'free'); // routable variant (control)
 
   await port.ensureDefaultTier(principal);
   const tiers = await port.tiers.list(principal);
@@ -551,9 +564,74 @@ describe('inference proxy e2e', () => {
     expect(ids).toContain('default');
     expect(ids).toContain('gpt-4o');
     expect(ids).not.toContain('proxyB-secret'); // never another tenant's model
+    // add-model-variant-detection: a batch twin is advertised under NEITHER form,
+    // while the base model it prices is listed exactly as before.
+    expect(ids).not.toContain('openai/gpt-6-astra:batch');
+    expect(ids.some((id: string) => id.endsWith(':openai/gpt-6-astra:batch'))).toBe(false);
+    expect(ids).toContain('openai/gpt-6-astra');
+    expect(ids).toContain('meta/llama:free'); // a ROUTABLE variant stays advertised
 
     // A's key cannot reach B's model id — it isn't in A's config → unknown_model.
     const cross = await chat(A.key, { model: 'proxyB-secret', messages: [] });
     expect(cross.status).toBe(404);
+  });
+
+  // --- batch-only variants (add-model-variant-detection) ---
+
+  it('refuses a batch-only model with a 400 that names the base, in BOTH protocols', async () => {
+    const oai = await chat(A.key, { model: 'openai/gpt-6-astra:batch', messages: [] });
+    expect(oai.status).toBe(400); // NOT the 404 an unknown model gets
+    expect(oai.body.error.code).toBe('batch_only_model');
+    expect(oai.body.error.message).toMatch(/batch-priced variant/);
+    expect(oai.body.error.message).toContain('openai/gpt-6-astra');
+
+    const anthropic = await request(server)
+      .post('/v1/messages')
+      .set('Authorization', `Bearer ${A.key}`)
+      .send({ model: 'openai/gpt-6-astra:batch', messages: [], max_tokens: 16 });
+    // The Anthropic envelope renders no `code`, so the distinction has to survive
+    // in the STATUS and the message — both of which it does.
+    expect(anthropic.status).toBe(400);
+    expect(anthropic.body.type).toBe('error');
+    expect(anthropic.body.error.message).toMatch(/batch-priced variant/);
+    expect(anthropic.body.error.message).toContain('openai/gpt-6-astra');
+
+    // The base model, asked for the same way, still routes.
+    expect((await chat(A.key, { model: 'openai/gpt-6-astra', messages: [] })).status).toBe(200);
+  });
+
+  it('names each twin\'s OWN base, and does not promise a route for an orphan', async () => {
+    const withBase = await chat(A.key, { model: 'openai/gpt-6-astra:batch', messages: [] });
+    const orphan = await chat(A.key, { model: 'anthropic/claude-opus-5:batch', messages: [] });
+    expect(withBase.body.error.message).toContain('use "openai/gpt-6-astra" instead');
+    // No routable base on that provider → the base is STATED, never offered.
+    expect(orphan.body.error.message).toContain('its base model is "anthropic/claude-opus-5"');
+    expect(orphan.body.error.message).not.toContain('instead');
+  });
+
+  it('refuses pre-admission: no request_log row, and n > 1 still takes precedence', async () => {
+    const before = await pool.query<{ n: string }>(
+      'SELECT count(*)::text AS n FROM request_log WHERE owner_user_id = $1',
+      [A.userId],
+    );
+    const refused = await chat(A.key, { model: 'openai/gpt-6-astra:batch', messages: [] });
+    expect(refused.status).toBe(400);
+    // Give the async log writer the same chance it would get for a real request.
+    await new Promise((r) => setTimeout(r, 250));
+    const after = await pool.query<{ n: string }>(
+      'SELECT count(*)::text AS n FROM request_log WHERE owner_user_id = $1',
+      [A.userId],
+    );
+    expect(after.rows[0]!.n).toBe(before.rows[0]!.n); // nothing recorded as traffic
+
+    // `n > 1` is rejected BEFORE routing, so it wins even on a batch-only model.
+    const both = await chat(A.key, { model: 'openai/gpt-6-astra:batch', messages: [], n: 2 });
+    expect(both.status).toBe(400);
+    expect(both.body.error.message).toMatch(/n/);
+    expect(both.body.error.code).not.toBe('batch_only_model');
+  });
+
+  it('keeps a routable variant fully routable', async () => {
+    expect((await chat(A.key, { model: 'meta/llama:free', messages: [] })).status).toBe(200);
   });
 });

@@ -21,7 +21,13 @@ import { App } from './App';
 import { createAppStore } from './state/appState';
 import { AppProvider } from './state/context';
 import { DEFAULT_AUTO_PERF, FakeApiClient } from './test/fakeClient';
-import type { AdminInviteDto, AgentDto, AutoPerformance, WorkloadMix } from './data/api';
+import type {
+  AdminInviteDto,
+  AgentDto,
+  AutoPerformance,
+  BatchJobDto,
+  WorkloadMix,
+} from './data/api';
 import './styles.css';
 
 const params = new URLSearchParams(globalThis.location.search);
@@ -204,11 +210,109 @@ const TIER_ENTRIES = ['claude-sonnet-4-5-20250929', 'gpt-5-mini-2025-08-07', 'll
   }),
 );
 
+// Batch jobs (add-batch-inference, task 7.3). Ten columns is the widest table in the
+// app, so the batches fixture carries the worst case for EVERY one of them at once: the
+// long model id and provider label that already drive requests-table overflow, plus the
+// three cells that are wider than their header — a stacked ceiling with its "reserved,
+// not spent" caption, a progress column carrying a count AND a status note, and a
+// retention cell that falls back to the full "retention unknown" sentence.
+//
+// Four rows, because the row STATES render differently: one active (bar, ceiling,
+// Cancel), one reconciling (the note under the count), one terminal (settled cost, a
+// retention date, no action), and one lost submission (the "nothing charged" note).
+const BATCH_JOBS: BatchJobDto[] = [
+  {
+    id: 'bj-active',
+    upstreamBatchId: 'batch_01HZX9K2QRSTUVWXYZ0123456',
+    status: 'in_progress',
+    terminal: false,
+    endpoint: '/v1/chat/completions',
+    agentId: 'a2',
+    providerId: 'p1',
+    providerLabel: LONG_PROVIDER,
+    modelId: 'm-0',
+    modelLabel: LONG_MODEL,
+    tierAssigned: 'nightly-reprocessing',
+    counts: { total: 12_500, completed: 4_318, failed: 12 },
+    submittedAt: '2026-08-06T02:14:00.000Z',
+    updatedAt: '2026-08-06T11:58:00.000Z',
+    terminalAt: null,
+    reservedCeilingMicros: 184_250_000,
+    settledCostMicros: null,
+    resultsExpireAt: null,
+    errorKind: null,
+  },
+  {
+    id: 'bj-reconciling',
+    upstreamBatchId: null,
+    status: 'submission_unknown',
+    terminal: false,
+    endpoint: '/v1/messages',
+    agentId: 'a2',
+    providerId: 'p1',
+    providerLabel: LONG_PROVIDER,
+    modelId: 'm-1',
+    modelLabel: LONG_MODEL,
+    tierAssigned: null,
+    counts: { total: 800, completed: 0, failed: 0 },
+    submittedAt: '2026-08-06T11:52:00.000Z',
+    updatedAt: '2026-08-06T11:58:00.000Z',
+    terminalAt: null,
+    reservedCeilingMicros: 9_600_000,
+    settledCostMicros: null,
+    resultsExpireAt: null,
+    errorKind: null,
+  },
+  {
+    id: 'bj-done',
+    upstreamBatchId: 'msgbatch_01HZX9K2QRSTUVWXYZ0123456',
+    status: 'completed',
+    terminal: true,
+    endpoint: '/v1/chat/completions',
+    agentId: 'a1',
+    providerId: 'p1',
+    providerLabel: LONG_PROVIDER,
+    modelId: 'm-0',
+    modelLabel: LONG_MODEL,
+    tierAssigned: 'nightly-reprocessing',
+    counts: { total: 12_500, completed: 12_461, failed: 39 },
+    submittedAt: '2026-08-05T02:14:00.000Z',
+    updatedAt: '2026-08-05T09:41:00.000Z',
+    terminalAt: '2026-08-05T09:41:00.000Z',
+    reservedCeilingMicros: null,
+    settledCostMicros: 172_913_400,
+    resultsExpireAt: '2026-09-03T09:41:00.000Z',
+    errorKind: null,
+  },
+  {
+    id: 'bj-lost',
+    upstreamBatchId: null,
+    status: 'failed',
+    terminal: true,
+    endpoint: '/v1/chat/completions',
+    agentId: 'a2',
+    providerId: 'p1',
+    providerLabel: LONG_PROVIDER,
+    modelId: 'm-2',
+    modelLabel: 'llama-3.3-70b-instruct-turbo',
+    tierAssigned: null,
+    counts: { total: 400, completed: 0, failed: 0 },
+    submittedAt: '2026-08-04T22:03:00.000Z',
+    updatedAt: '2026-08-04T22:08:00.000Z',
+    terminalAt: '2026-08-04T22:08:00.000Z',
+    reservedCeilingMicros: null,
+    settledCostMicros: 0,
+    resultsExpireAt: null,
+    errorKind: 'submit_lost',
+  },
+];
+
 const autoPerf = workloadAutoPerf();
 const client = new FakeApiClient({
   agents: AGENTS,
   adminUsers: ADMIN_USERS,
   adminInvites: INVITES,
+  batchJobs: BATCH_JOBS,
   ...(params.get('chain') === '1' ? { tierEntries: { 'tier-default': TIER_ENTRIES } } : {}),
   ...(autoPerf ? { autoPerf } : {}),
 });

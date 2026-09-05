@@ -21,6 +21,7 @@ const EVENT_LABELS: Record<EventType, string> = {
   provider_down: 'Provider down',
   request_failures_spike: 'Request failure spike',
   weekly_spend_summary: 'Weekly spend summary',
+  batch_stalled: 'Batch job stalled',
   test: 'Test',
 };
 
@@ -211,8 +212,8 @@ export function Modals() {
                           Subscription — connected via {state.np.oauthPreset}
                         </span>
                         <span style="display:block;font:400 11px 'Geist',sans-serif;color:var(--text3);line-height:1.45;margin-top:3px">
-                          Endpoint, kind, and protocol are pinned by the connection. Use
-                          Reauthorize to refresh access
+                          Endpoint, kind, and protocol are pinned by the connection. Use Reauthorize
+                          to refresh access
                           {state.np.protocol === 'openai_responses'
                             ? ' — this provider only works with its OAuth sign-in (to start over, delete it and reconnect).'
                             : ', or paste a credential below to convert it to an ordinary provider.'}
@@ -302,8 +303,7 @@ export function Modals() {
                         <span class="sr-only"> (opens in a new tab)</span>
                       </a>
                       <div style="font:400 12px 'Geist',sans-serif;color:var(--text);line-height:1.5">
-                        2. Paste what you land on — the full redirect URL or the code#state
-                        string.
+                        2. Paste what you land on — the full redirect URL or the code#state string.
                       </div>
                       <label class="field-label" for="f-ow-paste" style="display:block">
                         Redirect URL or code
@@ -347,200 +347,204 @@ export function Modals() {
                     </div>
                   </Show>
                   <div style="font:400 10.5px 'Geist',sans-serif;color:var(--amber);line-height:1.5">
-                    Reusing a flat-rate subscription programmatically may violate the provider’s
-                    ToS — pair it with a pay-per-token fallback.
+                    Reusing a flat-rate subscription programmatically may violate the provider’s ToS
+                    — pair it with a pay-per-token fallback.
                   </div>
                 </Show>
                 <Show when={!subConnect()}>
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-                  <div>
-                    <label class="field-label" for="f-np-protocol" style="display:block">
-                      Protocol
-                    </label>
-                    <Show
-                      when={!oauthLocked()}
-                      fallback={
-                        <input
-                          class="input"
-                          id="f-np-protocol"
-                          value={PROTOCOL_LABELS[state.np.protocol] ?? state.np.protocol}
-                          disabled
-                          aria-label="Protocol (pinned by the connection)"
-                        />
-                      }
-                    >
-                      <select
-                        class="select"
-                        id="f-np-protocol"
-                        value={state.np.protocol}
-                        onChange={(e) =>
-                          setState(
-                            'np',
-                            'protocol',
-                            e.currentTarget.value as 'openai_compatible' | 'anthropic_compatible',
-                          )
+                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+                    <div>
+                      <label class="field-label" for="f-np-protocol" style="display:block">
+                        Protocol
+                      </label>
+                      <Show
+                        when={!oauthLocked()}
+                        fallback={
+                          <input
+                            class="input"
+                            id="f-np-protocol"
+                            value={PROTOCOL_LABELS[state.np.protocol] ?? state.np.protocol}
+                            disabled
+                            aria-label="Protocol (pinned by the connection)"
+                          />
                         }
                       >
-                        <option value="openai_compatible">OpenAI-compatible</option>
-                        <option value="anthropic_compatible">Anthropic-compatible</option>
-                      </select>
-                    </Show>
-                  </div>
-                  <div>
-                    <label class="field-label" for="f-np-baseurl" style="display:block">
-                      Base URL
-                    </label>
-                    <input
-                      class="input mono"
-                      id="f-np-baseurl"
-                      style="font:400 12px 'Geist Mono',monospace"
-                      value={state.np.baseUrl}
-                      disabled={oauthLocked()}
-                      placeholder={
-                        npKind()?.id === 'local'
-                          ? 'http://127.0.0.1:11434/v1'
-                          : 'https://api.provider.com/v1'
-                      }
-                      onInput={(e) => setState('np', 'baseUrl', e.currentTarget.value)}
-                    />
-                  </div>
-                </div>
-                {/* A Responses row runs ONLY on its OAuth sign-in — a pasted credential
-                    can never work, so the rotate/clear controls are not offered. */}
-                <Show when={!(oauthLocked() && state.np.protocol === 'openai_responses')}>
-                <div>
-                  <label class="field-label" for="f-np-credential" style="display:block">
-                    {npKind()?.field ?? 'Credential'}
-                    {state.np.kind === 'local' ? ' (optional)' : ''}
-                  </label>
-                  <input
-                    class="input mono"
-                    id="f-np-credential"
-                    style="font:400 12px 'Geist Mono',monospace"
-                    type="password"
-                    value={state.np.credential}
-                    disabled={state.np.clearCredential}
-                    placeholder={
-                      oauthLocked()
-                        ? 'leave blank to keep the connected sign-in'
-                        : state.np.editingId && state.np.hadCredential
-                          ? 'leave blank to keep the stored key'
-                          : (npKind()?.ph ?? '')
-                    }
-                    onInput={(e) => setState('np', 'credential', e.currentTarget.value)}
-                  />
-                  <Show when={state.np.editingId !== null && state.np.hadCredential}>
-                    <label style="display:flex;align-items:center;gap:6px;margin-top:6px;font:400 10.5px 'Geist',sans-serif;color:var(--text3)">
+                        <select
+                          class="select"
+                          id="f-np-protocol"
+                          value={state.np.protocol}
+                          onChange={(e) =>
+                            setState(
+                              'np',
+                              'protocol',
+                              e.currentTarget.value as 'openai_compatible' | 'anthropic_compatible',
+                            )
+                          }
+                        >
+                          <option value="openai_compatible">OpenAI-compatible</option>
+                          <option value="anthropic_compatible">Anthropic-compatible</option>
+                        </select>
+                      </Show>
+                    </div>
+                    <div>
+                      <label class="field-label" for="f-np-baseurl" style="display:block">
+                        Base URL
+                      </label>
                       <input
-                        type="checkbox"
-                        checked={state.np.clearCredential}
-                        onChange={(e) => setState('np', 'clearCredential', e.currentTarget.checked)}
+                        class="input mono"
+                        id="f-np-baseurl"
+                        style="font:400 12px 'Geist Mono',monospace"
+                        value={state.np.baseUrl}
+                        disabled={oauthLocked()}
+                        placeholder={
+                          npKind()?.id === 'local'
+                            ? 'http://127.0.0.1:11434/v1'
+                            : 'https://api.provider.com/v1'
+                        }
+                        onInput={(e) => setState('np', 'baseUrl', e.currentTarget.value)}
                       />
-                      Remove the stored credential
-                    </label>
+                    </div>
+                  </div>
+                  {/* A Responses row runs ONLY on its OAuth sign-in — a pasted credential
+                    can never work, so the rotate/clear controls are not offered. */}
+                  <Show when={!(oauthLocked() && state.np.protocol === 'openai_responses')}>
+                    <div>
+                      <label class="field-label" for="f-np-credential" style="display:block">
+                        {npKind()?.field ?? 'Credential'}
+                        {state.np.kind === 'local' ? ' (optional)' : ''}
+                      </label>
+                      <input
+                        class="input mono"
+                        id="f-np-credential"
+                        style="font:400 12px 'Geist Mono',monospace"
+                        type="password"
+                        value={state.np.credential}
+                        disabled={state.np.clearCredential}
+                        placeholder={
+                          oauthLocked()
+                            ? 'leave blank to keep the connected sign-in'
+                            : state.np.editingId && state.np.hadCredential
+                              ? 'leave blank to keep the stored key'
+                              : (npKind()?.ph ?? '')
+                        }
+                        onInput={(e) => setState('np', 'credential', e.currentTarget.value)}
+                      />
+                      <Show when={state.np.editingId !== null && state.np.hadCredential}>
+                        <label style="display:flex;align-items:center;gap:6px;margin-top:6px;font:400 10.5px 'Geist',sans-serif;color:var(--text3)">
+                          <input
+                            type="checkbox"
+                            checked={state.np.clearCredential}
+                            onChange={(e) =>
+                              setState('np', 'clearCredential', e.currentTarget.checked)
+                            }
+                          />
+                          Remove the stored credential
+                        </label>
+                      </Show>
+                    </div>
                   </Show>
-                </div>
-                </Show>
-                <Show when={state.np.kind === 'sub'}>
-                  <div style="font:400 10.5px 'Geist',sans-serif;color:var(--amber);line-height:1.5">
-                    Reusing a flat-rate subscription programmatically may violate the provider’s
-                    ToS — pair it with a pay-per-token fallback.
-                  </div>
-                </Show>
-                <Show
-                  when={
-                    state.np.editingId !== null &&
-                    (state.np.kind === 'api' || state.np.kind === 'sub') &&
-                    (state.np.origKind === 'custom' || state.np.origKind === 'local')
-                  }
-                >
-                  <div style="font:400 10.5px 'Geist',sans-serif;color:var(--amber);line-height:1.5">
-                    An API-key/subscription provider is priced from the catalog — any per-model
-                    prices you set are cleared on save.
-                  </div>
-                </Show>
-                {/* Advanced patience (fix-long-call-timeouts): blank = inherit the
+                  <Show when={state.np.kind === 'sub'}>
+                    <div style="font:400 10.5px 'Geist',sans-serif;color:var(--amber);line-height:1.5">
+                      Reusing a flat-rate subscription programmatically may violate the provider’s
+                      ToS — pair it with a pay-per-token fallback.
+                    </div>
+                  </Show>
+                  <Show
+                    when={
+                      state.np.editingId !== null &&
+                      (state.np.kind === 'api' || state.np.kind === 'sub') &&
+                      (state.np.origKind === 'custom' || state.np.origKind === 'local')
+                    }
+                  >
+                    <div style="font:400 10.5px 'Geist',sans-serif;color:var(--amber);line-height:1.5">
+                      An API-key/subscription provider is priced from the catalog — any per-model
+                      prices you set are cleared on save.
+                    </div>
+                  </Show>
+                  {/* Advanced patience (fix-long-call-timeouts): blank = inherit the
                     instance defaults — shown honestly as placeholders from the
                     server's timeout-defaults read, never hard-coded. */}
-                <div>
-                  <div class="upper-label" style="margin-bottom:6px">
-                    Advanced — patience for slow models
-                  </div>
-                  <div style="display:flex;gap:8px">
-                    <div style="flex:1">
-                      <label class="field-label" for="f-np-firstbyte" style="display:block">
-                        First response (s)
-                      </label>
-                      <input
-                        class="input mono"
-                        id="f-np-firstbyte"
-                        style="font:400 12px 'Geist Mono',monospace"
-                        inputmode="numeric"
-                        value={state.np.firstByteTimeoutS}
-                        placeholder={
-                          state.tdefaults !== null
-                            ? `${String(state.tdefaults.firstByteTimeoutMs / 1000)} · instance default`
-                            : 'instance default'
-                        }
-                        onInput={(e) => setState('np', 'firstByteTimeoutS', e.currentTarget.value)}
-                      />
+                  <div>
+                    <div class="upper-label" style="margin-bottom:6px">
+                      Advanced — patience for slow models
                     </div>
-                    <div style="flex:1">
-                      <label class="field-label" for="f-np-idle" style="display:block">
-                        Between chunks (s)
-                      </label>
-                      <input
-                        class="input mono"
-                        id="f-np-idle"
-                        style="font:400 12px 'Geist Mono',monospace"
-                        inputmode="numeric"
-                        value={state.np.idleTimeoutS}
-                        placeholder={
-                          state.tdefaults !== null
-                            ? `${String(state.tdefaults.idleTimeoutMs / 1000)} · instance default`
-                            : 'instance default'
-                        }
-                        onInput={(e) => setState('np', 'idleTimeoutS', e.currentTarget.value)}
-                      />
+                    <div style="display:flex;gap:8px">
+                      <div style="flex:1">
+                        <label class="field-label" for="f-np-firstbyte" style="display:block">
+                          First response (s)
+                        </label>
+                        <input
+                          class="input mono"
+                          id="f-np-firstbyte"
+                          style="font:400 12px 'Geist Mono',monospace"
+                          inputmode="numeric"
+                          value={state.np.firstByteTimeoutS}
+                          placeholder={
+                            state.tdefaults !== null
+                              ? `${String(state.tdefaults.firstByteTimeoutMs / 1000)} · instance default`
+                              : 'instance default'
+                          }
+                          onInput={(e) =>
+                            setState('np', 'firstByteTimeoutS', e.currentTarget.value)
+                          }
+                        />
+                      </div>
+                      <div style="flex:1">
+                        <label class="field-label" for="f-np-idle" style="display:block">
+                          Between chunks (s)
+                        </label>
+                        <input
+                          class="input mono"
+                          id="f-np-idle"
+                          style="font:400 12px 'Geist Mono',monospace"
+                          inputmode="numeric"
+                          value={state.np.idleTimeoutS}
+                          placeholder={
+                            state.tdefaults !== null
+                              ? `${String(state.tdefaults.idleTimeoutMs / 1000)} · instance default`
+                              : 'instance default'
+                          }
+                          onInput={(e) => setState('np', 'idleTimeoutS', e.currentTarget.value)}
+                        />
+                      </div>
+                    </div>
+                    <div style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);line-height:1.5;margin-top:4px">
+                      For research/long-thinking models: raise patience here (up to 3600s), prefer
+                      streaming, and size your client SDK’s own timeout — the one bound the router
+                      can’t lift. Blank inherits the instance default. Timeouts count against this
+                      provider’s circuit breaker; a repeatedly slow provider is skipped until its
+                      recovery probe (which runs with doubled patience) succeeds — raising this is
+                      the durable fix for heavy chains.
                     </div>
                   </div>
-                  <div style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);line-height:1.5;margin-top:4px">
-                    For research/long-thinking models: raise patience here (up to 3600s), prefer
-                    streaming, and size your client SDK’s own timeout — the one bound the router
-                    can’t lift. Blank inherits the instance default. Timeouts count against this
-                    provider’s circuit breaker; a repeatedly slow provider is skipped until its
-                    recovery probe (which runs with doubled patience) succeeds — raising this is
-                    the durable fix for heavy chains.
+                  <div style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);line-height:1.5">
+                    Custom base URLs are SSRF-checked — private and metadata ranges are rejected.
+                    Credentials are encrypted at rest.
                   </div>
-                </div>
-                <div style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);line-height:1.5">
-                  Custom base URLs are SSRF-checked — private and metadata ranges are rejected.
-                  Credentials are encrypted at rest.
-                </div>
-                <Show when={state.np.error}>
-                  <div style="font:400 11px 'Geist',sans-serif;color:var(--red)">
-                    {state.np.error}
+                  <Show when={state.np.error}>
+                    <div style="font:400 11px 'Geist',sans-serif;color:var(--red)">
+                      {state.np.error}
+                    </div>
+                  </Show>
+                  <div style="display:flex;gap:8px;justify-content:flex-end">
+                    <button type="button" class="btn-cancel" onClick={() => app.closeModal()}>
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      class="btn-primary"
+                      disabled={state.np.busy}
+                      onClick={() => void app.addProvider()}
+                    >
+                      {state.np.editingId
+                        ? state.np.busy
+                          ? 'Saving…'
+                          : 'Save changes'
+                        : state.np.busy
+                          ? 'Adding…'
+                          : 'Add provider'}
+                    </button>
                   </div>
-                </Show>
-                <div style="display:flex;gap:8px;justify-content:flex-end">
-                  <button type="button" class="btn-cancel" onClick={() => app.closeModal()}>
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    class="btn-primary"
-                    disabled={state.np.busy}
-                    onClick={() => void app.addProvider()}
-                  >
-                    {state.np.editingId
-                      ? state.np.busy
-                        ? 'Saving…'
-                        : 'Save changes'
-                      : state.np.busy
-                        ? 'Adding…'
-                        : 'Add provider'}
-                  </button>
-                </div>
                 </Show>
               </Show>
 
@@ -569,7 +573,9 @@ export function Modals() {
                       class="select"
                       id="f-bf-scope"
                       value={state.bf.scope}
-                      onChange={(e) => setState('bf', 'scope', e.currentTarget.value as BudgetScope)}
+                      onChange={(e) =>
+                        setState('bf', 'scope', e.currentTarget.value as BudgetScope)
+                      }
                     >
                       <option value="global">Global</option>
                       <option value="agent">Agent</option>

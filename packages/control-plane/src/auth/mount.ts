@@ -4,7 +4,12 @@ import { AUTH_INSTANCE } from './auth.tokens';
 import { AuthRateLimitMiddleware } from './rate-limit.middleware';
 import type { AuthInstance } from './better-auth';
 import { DEFAULT_MAX_BODY_BYTES, PROXY_RUNTIME, type ProxyRuntime } from '../proxy/proxy.config';
-import { protocolForPath, renderProxyError, requestTooLarge, badRequest } from '../proxy/proxy-errors';
+import {
+  protocolForPath,
+  renderProxyError,
+  requestTooLarge,
+  badRequest,
+} from '../proxy/proxy-errors';
 import { isV1Path } from '../planes';
 
 /** The `/v1` body limit comes from the proxy runtime in production; auth-only
@@ -20,6 +25,14 @@ function resolveMaxBodyBytes(app: NestExpressApplication): number {
 
 // Segment-safe so `/v10` or `/v1evil` are NOT treated as the proxy surface.
 const isV1 = isV1Path;
+
+/** `POST /v1/batches` — exactly it — is stream-parsed by its own controller
+ * (add-batch-inference D1): a batch may legitimately exceed `PROXY_MAX_BODY_BYTES`,
+ * and buffering it here would defeat the streaming parser's memory bound. Both
+ * parsers step aside so the guarded controller receives the raw request. */
+export function isBatchSubmission(req: { method: string; path: string }): boolean {
+  return req.method === 'POST' && /^\/v1\/batches\/?$/i.test(req.path);
+}
 
 /**
  * Body parsing (E1.1). The `/v1` proxy surface accepts large bodies (real
@@ -38,8 +51,13 @@ export function mountBodyParsing(expressApp: express.Express, maxBodyBytes: numb
 
   const routeByPath =
     (v1: RequestHandler, api: RequestHandler): RequestHandler =>
-    (req, res, next) =>
+    (req, res, next) => {
+      if (isBatchSubmission(req)) {
+        next();
+        return;
+      }
       (isV1(req.path) ? v1 : api)(req, res, next);
+    };
 
   expressApp.use(routeByPath(v1Json, apiJson));
   expressApp.use(routeByPath(v1Urlencoded, apiUrlencoded));

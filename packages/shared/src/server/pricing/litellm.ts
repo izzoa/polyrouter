@@ -12,6 +12,8 @@ interface LiteLlmEntry {
   mode?: unknown;
   input_cost_per_token?: unknown;
   output_cost_per_token?: unknown;
+  input_cost_per_token_batches?: unknown;
+  output_cost_per_token_batches?: unknown;
   cache_read_input_token_cost?: unknown;
   cache_creation_input_token_cost?: unknown;
   max_input_tokens?: unknown;
@@ -64,6 +66,14 @@ export function parseLiteLlmCatalog(json: unknown): BundledPrice[] {
     // output limit, so it is never read as a cap (unknown-not-wrong).
     const maxOutputTokens = positiveInteger(e.max_output_tokens);
     const isFree = inputP === 0 && outputP === 0;
+    // Batch-tier pair (add-batch-inference): BOTH or neither — a half rate is
+    // never used, and a negative one drops the pair, never the row.
+    const batchIn = per1m(e.input_cost_per_token_batches);
+    const batchOut = per1m(e.output_cost_per_token_batches);
+    const batchPair =
+      batchIn !== undefined && batchOut !== undefined && batchIn >= 0 && batchOut >= 0
+        ? { batchInputPricePer1m: batchIn, batchOutputPricePer1m: batchOut }
+        : {};
 
     out.push({
       modelKey: canonicalModelKey(provider, name),
@@ -77,6 +87,7 @@ export function parseLiteLlmCatalog(json: unknown): BundledPrice[] {
       ...(e.supports_vision === true ? { supportsVision: true } : {}),
       ...(e.supports_reasoning === true ? { supportsReasoning: true } : {}),
       ...(isFree ? { isFree: true } : {}),
+      ...batchPair,
     });
   }
   return out;

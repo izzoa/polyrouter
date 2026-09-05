@@ -159,3 +159,77 @@ describe('observeAdapter (#21)', () => {
     expect(await metrics.metricsText()).not.toContain('polyrouter_upstream_requests_total{');
   });
 });
+
+describe('observeAdapter forwards the batch seam (add-batch-inference D4)', () => {
+  const batchSpans = () => exporter.getFinishedSpans().filter((s) => s.name === 'upstream.batch');
+
+  it('carries no seam when the adapter has none', () => {
+    const { wrapped } = wrap(fakeAdapter());
+    expect(wrapped.batch).toBeUndefined();
+  });
+
+  it('wraps every batch call in an upstream.batch span and passes results through untouched', async () => {
+    const outcomes = [
+      { customId: 'a', ok: true as const, statusCode: 200, response: RESPONSE },
+      { customId: 'b', ok: false as const, statusCode: 429, kind: 'rate_limit' as const },
+    ];
+    const batch = {
+      limits: {
+        maxItems: null,
+        maxBytes: null,
+        customIdPattern: null,
+        completionWindowMs: 86_400_000,
+      },
+      submit: jest.fn(() =>
+        Promise.resolve({
+          upstreamId: 'up',
+          status: 'validating' as const,
+          completionWindowMs: 1,
+          resultsExpireAt: null,
+        }),
+      ),
+      status: jest.fn(() =>
+        Promise.resolve({ status: 'in_progress' as const, counts: null, resultsExpireAt: null }),
+      ),
+      // eslint-disable-next-line @typescript-eslint/require-await -- async iterable by contract
+      results: jest.fn(async function* () {
+        yield* outcomes;
+      }),
+      list: jest.fn(() => Promise.resolve([])),
+      cancel: jest.fn(() => Promise.reject(new ProviderError('unavailable', 'nope'))),
+    };
+    const { wrapped } = wrap(fakeAdapter({ batch }));
+    expect(wrapped.batch).toBeDefined();
+    expect(wrapped.batch!.limits).toBe(batch.limits);
+    const input = { items: [], model: 'm', jobId: 'j' };
+    await wrapped.batch!.submit(input);
+    expect(batch.submit).toHaveBeenCalledWith(input, undefined);
+    await wrapped.batch!.status('up');
+    await wrapped.batch!.list();
+    await expect(wrapped.batch!.cancel('up')).rejects.toThrow('nope');
+    const seen: unknown[] = [];
+    for await (const item of wrapped.batch!.results('up')) seen.push(item);
+    expect(seen).toEqual(outcomes);
+
+    const ops = batchSpans().map((s) => [
+      s.attributes['polyrouter.batch.op'],
+      s.attributes['polyrouter.outcome'],
+    ]);
+    expect(ops).toEqual([
+      ['submit', 'success'],
+      ['status', 'success'],
+      ['list', 'success'],
+      ['cancel', 'error'],
+      ['results', 'success'],
+    ]);
+    const results = batchSpans().find((s) => s.attributes['polyrouter.batch.op'] === 'results')!;
+    expect(results.attributes['polyrouter.batch.items']).toBe(2);
+    // Spans carry ids and counts only — never a custom_id or a body.
+    for (const span of batchSpans()) {
+      expect(JSON.stringify(span.attributes)).not.toMatch(/customId|"a"|"b"/);
+    }
+    // No request metric was fed: batch calls are not requests (D10).
+    const { metrics } = wrap(fakeAdapter({ batch }));
+    expect(await metrics.metricsText()).not.toMatch(/polyrouter_upstream_requests_total\{/);
+  });
+});

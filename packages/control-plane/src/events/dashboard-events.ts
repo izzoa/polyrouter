@@ -41,6 +41,19 @@ export type DashboardEvent =
   | { readonly type: 'inflight.started'; readonly row: StreamInflightRow }
   | { readonly type: 'inflight.settled'; readonly id: string }
   | { readonly type: 'analytics.invalidated' }
+  /** A batch job advanced (add-batch-inference D18). A metadata-only NUDGE: it
+   * carries ids, status and counts but NO labels, so the client band cannot
+   * synthesize a row from it — on receipt it refreshes the batch partition from
+   * the authoritative owner-scoped read, consuming the next scheduled poll. */
+  | {
+      readonly type: 'batch.updated';
+      readonly id: string;
+      readonly status: string;
+      readonly completed: number;
+      readonly failed: number;
+      readonly total: number;
+      readonly updatedAt: string;
+    }
   | { readonly type: 'heartbeat' }
   | { readonly type: 'resync' };
 

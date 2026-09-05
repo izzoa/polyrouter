@@ -40,6 +40,8 @@ function mkModel(id: string): ModelDto {
       estimated: false,
     },
     listedPrice: null,
+    variant: null,
+    baseExternalModelId: null,
     lastSyncedAt: null,
   };
 }

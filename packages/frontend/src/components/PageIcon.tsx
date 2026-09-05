@@ -94,9 +94,21 @@ const Setup = (): JSX.Element => (
 
 /** The sole source of truth. `satisfies Record<Page, …>` makes a missing page a
  * compile error (exhaustiveness), while keeping the concrete keys for tests. */
+/** Batches: many requests moving as one job (add-batch-inference). The same
+ * stacked-planes idea as the row chip's `layers` glyph, drawn at page scale — one
+ * meaning, one shape, wherever it appears. */
+const Batches = (): JSX.Element => (
+  <>
+    <path d="m12 2 9 5-9 5-9-5 9-5Z" />
+    <path d="m3 12 9 5 9-5" />
+    <path d="m3 17 9 5 9-5" />
+  </>
+);
+
 export const PAGE_ICONS = {
   overview: Overview,
   requests: Requests,
+  batches: Batches,
   costs: Costs,
   agents: Agents,
   providers: Providers,

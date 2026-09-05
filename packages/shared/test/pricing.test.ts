@@ -4,6 +4,7 @@ import {
   deriveModelKey,
   deriveNativeFamilyKey,
   resolveModelPrice,
+  type PriceResolutionInput,
 } from '../src/server/pricing/resolve';
 import { parseLiteLlmCatalog } from '../src/server/pricing/litellm';
 import type { ModelPriceRow } from '../src/server/db/schema';
@@ -21,6 +22,8 @@ const catalogRow = (over: Partial<ModelPriceRow> = {}): ModelPriceRow => ({
   supportsVision: true,
   supportsReasoning: false,
   isFree: false,
+  batchInputPricePer1m: null,
+  batchOutputPricePer1m: null,
   source: 'bundled',
   validFrom: new Date('2026-07-15T00:00:00Z'),
   createdAt: new Date('2026-07-15T00:00:00Z'),
@@ -404,5 +407,118 @@ describe('resolveModelPrice — listed fallback (record-listed-price-fallback)',
       null,
     );
     expect(snap).toBeNull();
+  });
+});
+
+describe('batch-tier pricing (add-batch-inference)', () => {
+  const row = (over: Partial<ModelPriceRow>): ModelPriceRow => ({
+    id: 'v1',
+    modelKey: 'openai:gpt-4o',
+    inputPricePer1m: 2.5,
+    outputPricePer1m: 10,
+    cacheReadPricePer1m: null,
+    cacheWritePricePer1m: null,
+    contextWindow: null,
+    maxOutputTokens: null,
+    supportsTools: false,
+    supportsVision: false,
+    supportsReasoning: false,
+    isFree: false,
+    batchInputPricePer1m: null,
+    batchOutputPricePer1m: null,
+    source: 'bundled',
+    validFrom: new Date('2026-01-01T00:00:00Z'),
+    createdAt: new Date('2026-01-01T00:00:00Z'),
+    ...over,
+  });
+  const input: PriceResolutionInput = {
+    providerKind: 'api_key',
+    modelInputPricePer1m: null,
+    modelOutputPricePer1m: null,
+    modelIsFree: false,
+    listedInputPricePer1m: null,
+    listedOutputPricePer1m: null,
+    listedIsFree: false,
+  };
+
+  it('parser maps the LiteLLM batch cost pair to per-1M, and drops a half pair', () => {
+    const rows = parseLiteLlmCatalog({
+      'gpt-4o': {
+        litellm_provider: 'openai',
+        mode: 'chat',
+        input_cost_per_token: 0.0000025,
+        output_cost_per_token: 0.00001,
+        input_cost_per_token_batches: 0.000001,
+        output_cost_per_token_batches: 0.000004,
+      },
+      half: {
+        litellm_provider: 'openai',
+        mode: 'chat',
+        input_cost_per_token: 0.000001,
+        output_cost_per_token: 0.000002,
+        input_cost_per_token_batches: 0.0000005,
+      },
+      negative: {
+        litellm_provider: 'openai',
+        mode: 'chat',
+        input_cost_per_token: 0.000001,
+        output_cost_per_token: 0.000002,
+        input_cost_per_token_batches: -1,
+        output_cost_per_token_batches: 0.000001,
+      },
+    });
+    const byKey = new Map(rows.map((r) => [r.modelKey, r]));
+    expect(byKey.get('openai:gpt-4o')).toMatchObject({ batchInputPricePer1m: 1, batchOutputPricePer1m: 4 });
+    // A half pair is never used; the row's synchronous prices are still parsed.
+    expect(byKey.get('openai:half')).toMatchObject({ inputPricePer1m: 1, outputPricePer1m: 2 });
+    expect(byKey.get('openai:half')).not.toHaveProperty('batchInputPricePer1m');
+    expect(byKey.get('openai:negative')).not.toHaveProperty('batchOutputPricePer1m');
+  });
+
+  it('sync mode is byte-identical to today, with mode stamped', () => {
+    const s = resolveModelPrice(input, row({}), null);
+    expect(s).toMatchObject({ inputPricePer1m: 2.5, outputPricePer1m: 10, source: 'bundled', mode: 'sync' });
+  });
+
+  it('batch mode resolves the exact row pair with the row provenance', () => {
+    const s = resolveModelPrice(input, row({ batchInputPricePer1m: 1.25, batchOutputPricePer1m: 5 }), null, {
+      mode: 'batch',
+    });
+    expect(s).toMatchObject({
+      inputPricePer1m: 1.25,
+      outputPricePer1m: 5,
+      source: 'bundled',
+      priceVersionId: 'v1',
+      mode: 'batch',
+    });
+  });
+
+  it('batch mode falls to the native-family pair, flagged native_family', () => {
+    const native = row({ id: 'n1', modelKey: 'openai:gpt-4o', batchInputPricePer1m: 1, batchOutputPricePer1m: 4 });
+    const s = resolveModelPrice(input, row({}), native, { mode: 'batch' });
+    expect(s).toMatchObject({ inputPricePer1m: 1, outputPricePer1m: 4, source: 'native_family', mode: 'batch' });
+  });
+
+  it('batch mode uses the twin listed rate only when no catalog pair exists, as an estimate', () => {
+    const s = resolveModelPrice(input, row({}), null, {
+      mode: 'batch',
+      listedBatchInputPricePer1m: 5,
+      listedBatchOutputPricePer1m: 25,
+    });
+    expect(s).toMatchObject({ inputPricePer1m: 5, outputPricePer1m: 25, source: 'listed', priceVersionId: null, mode: 'batch' });
+    // ...and never beats a catalog pair.
+    const beaten = resolveModelPrice(input, row({ batchInputPricePer1m: 1.25, batchOutputPricePer1m: 5 }), null, {
+      mode: 'batch',
+      listedBatchInputPricePer1m: 5,
+      listedBatchOutputPricePer1m: 25,
+    });
+    expect(beaten).toMatchObject({ source: 'bundled', inputPricePer1m: 1.25 });
+  });
+
+  it('batch mode never substitutes a synchronous rate, a model-own price, or local-free', () => {
+    expect(resolveModelPrice(input, row({}), null, { mode: 'batch' })).toBeNull();
+    const custom: PriceResolutionInput = { ...input, providerKind: 'custom', modelInputPricePer1m: 1, modelOutputPricePer1m: 2 };
+    expect(resolveModelPrice(custom, null, null, { mode: 'batch' })).toBeNull();
+    expect(resolveModelPrice({ ...input, providerKind: 'local' }, null, null, { mode: 'batch' })).toBeNull();
   });
 });

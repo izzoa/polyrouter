@@ -10,6 +10,7 @@ import type { Page } from './types';
 const ALL_PAGES: Page[] = [
   'overview',
   'requests',
+  'batches',
   'costs',
   'agents',
   'providers',

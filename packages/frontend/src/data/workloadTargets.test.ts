@@ -49,6 +49,8 @@ function model(id: string, over: Partial<Model> = {}): Model {
       estimated: false,
     },
     listedPrice: null,
+    variant: null,
+    baseExternalModelId: null,
     lastSyncedAt: null,
     ...over,
   };

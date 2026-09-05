@@ -51,8 +51,8 @@ function snapshot(rules: RouteRule[]): RoutingSnapshot {
     ]),
     rules,
     models: [
-      { id: 'm-prem', providerId: 'p1', externalModelId: 'gpt-4o' },
-      { id: 'm-cheap', providerId: 'p1', externalModelId: 'gpt-4o-mini' },
+      { id: 'm-prem', providerId: 'p1', externalModelId: 'gpt-4o', variant: null },
+      { id: 'm-cheap', providerId: 'p1', externalModelId: 'gpt-4o-mini', variant: null },
     ],
   };
 }

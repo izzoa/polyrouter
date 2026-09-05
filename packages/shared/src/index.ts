@@ -10,6 +10,16 @@ export const OPENROUTER_HOST = 'openrouter.ai';
 
 export { formatRoutingTarget, parseRoutingTarget } from './routing-target';
 export type { RoutingTarget } from './routing-target';
+// Pure model-id variant primitives (add-model-variant-detection): browser-safe and
+// shared verbatim with `@polyrouter/shared/server`, so the dashboard and the router
+// classify a SKU identically — one parser, no drift.
+export {
+  MODEL_VARIANTS,
+  NON_ROUTABLE_VARIANTS,
+  isNonRoutableVariant,
+  parseModelVariant,
+} from './model-variants';
+export type { ParsedModelVariant } from './model-variants';
 export {
   AUTO_ALIAS,
   DEFAULT_TIER_KEY,
@@ -48,4 +58,17 @@ export type { AppConfig, BaseConfig } from './config/base';
 export { HARNESS_TYPES, HARNESS_LABELS, connectionSnippet, isHarnessType } from './harness';
 export type { HarnessType } from './harness';
 export { ATTEMPT_FAILURES_MAX } from './attempt-failures';
+export {
+  BATCH_ENDPOINTS,
+  BATCH_JOB_ERROR_KINDS,
+  BATCH_JOB_STATUSES,
+  BATCH_JOB_TERMINAL_STATUSES,
+  isBatchJobTerminal,
+} from './batch-jobs';
+export type {
+  BatchEndpoint,
+  BatchJobErrorKind,
+  BatchJobStatus,
+  BatchJobTerminalStatus,
+} from './batch-jobs';
 export type { AttemptFailureEntry } from './attempt-failures';

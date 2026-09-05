@@ -5,11 +5,8 @@ import { ATTEMPT_FAILURES_MAX, type AttemptFailureEntry } from '@polyrouter/shar
 import {
   AUTO_ALIAS,
   PERSISTENCE_PORT,
-  SsrfError,
-  assertUrlSafe,
-  decryptSecret,
   deriveModelKey,
-  resolvePlainCredentialValue,
+  isNonRoutableVariant,
   type ModelRow,
   type PersistencePort,
   type Principal,
@@ -43,15 +40,14 @@ import {
   type NormalizedResponse,
   type ProtocolAdapter,
   type ProviderAdapter,
-  type ProviderKind,
-  type ProviderProtocol,
+  type ProviderConfig,
   type RouteDecision,
   type RoutingSnapshot,
   type StructuralVerdict,
   type SemanticWorkloadVerdict,
   type WorkloadVerdict,
 } from '@polyrouter/data-plane';
-import { providerMaxTokensQuirks, type MaxTokensSpelling } from '../providers/providers.dto';
+import { AdapterBuildError, ProviderAdapterBuilder } from '../providers/adapter-builder';
 import type { ClientProtocol } from './proxy-errors';
 import {
   badRequest,
@@ -270,6 +266,7 @@ function countOutputChars(content: readonly ContentBlock[]): number {
 export class ProxyService {
   private readonly key: string;
   private readonly mode: 'selfhosted' | 'cloud';
+  private readonly adapterBuilder: ProviderAdapterBuilder;
 
   constructor(
     @Inject(PERSISTENCE_PORT) private readonly db: PersistencePort,
@@ -296,6 +293,7 @@ export class ProxyService {
   ) {
     this.key = rt.key;
     this.mode = rt.mode;
+    this.adapterBuilder = new ProviderAdapterBuilder({ key: rt.key, mode: rt.mode }, oauth);
   }
 
   /** Block-budget gate (#16). Reject a request at/over a `block` budget BEFORE any
@@ -476,10 +474,16 @@ export class ProxyService {
   async listModels(
     principal: Principal,
   ): Promise<{ object: 'list'; data: { id: string; object: 'model'; owned_by: string }[] }> {
-    const [models, tiers] = await Promise.all([
+    const [all, tiers] = await Promise.all([
       this.db.models.listForPrincipal(principal),
       this.db.tiers.list(principal),
     ]);
+    // Only ROUTABLE models are advertised (add-model-variant-detection): a
+    // batch-priced variant cannot serve a synchronous request, so listing it would
+    // promise a route that does not exist. Ambiguity is computed over this same
+    // routable set, so a bare id advertised here always resolves the way the
+    // resolver's phase-1 matrix decides it.
+    const models = all.filter((m) => !isNonRoutableVariant(m.variant));
     const seen = new Map<string, string>(); // external id → count for ambiguity
     for (const m of models) seen.set(m.externalModelId, (seen.get(m.externalModelId) ?? '') + '.');
     const ids: string[] = ['auto', ...tiers.map((t) => t.key)];
@@ -1141,7 +1145,7 @@ export class ProxyService {
       modelField: ir.model,
       headers: normalizeHeaders(headers),
     });
-    if (isRouteError(decision)) throw routeError(decision.error);
+    if (isRouteError(decision)) throw routeError(decision);
 
     // Auto routing (#13/#14) refines an `auto` request that fell through to the
     // default tier; explicit models and header tiers already won in Layer 0.
@@ -1793,69 +1797,26 @@ export class ProxyService {
     maxOutputCap?: number,
     probe = false,
   ): Promise<ProviderAdapter> {
-    if (provider.baseUrl === null) throw serviceUnavailable('provider has no base_url');
     // Defensive synthesized default (add-output-cap-guardrails): where the IR
     // omits maxOutputTokens the Anthropic adapter synthesizes max_tokens from
     // this default — capped to the dispatched model's KNOWN limit so
     // polyrouter's own default can never doom the request. Only polyrouter's
     // synthesized value is corrected; a client value always passes through.
     const defaultMaxOutputTokens = cappedDefault(this.rt.defaultMaxOutputTokens, maxOutputCap);
-    const kind = provider.kind as ProviderKind;
-    // Resolve the outbound token-cap spelling to the data-plane quirk — the SAME
-    // helper providers.service uses, so proxy and test-connection never diverge
-    // (add-max-tokens-spelling). Inert for non-`openai_compatible` protocols.
-    const quirks = providerMaxTokensQuirks(
-      provider.protocol,
-      kind,
-      provider.maxTokensSpelling as MaxTokensSpelling,
-    );
+    // ONE shared builder for the request, batch, and management paths (add-batch-
+    // inference D4): credentials, OAuth, SSRF, quirks, and bounds resolve in one
+    // place; only the surface mapping of a build failure is the proxy's own.
+    let config: ProviderConfig;
     try {
-      await assertUrlSafe(provider.baseUrl, { context: { mode: this.mode, providerKind: kind } });
+      config = await this.adapterBuilder.buildConfig(principal, provider, {
+        defaultMaxOutputTokens,
+        bounds: this.callBounds(provider, probe),
+      });
     } catch (err) {
-      if (err instanceof SsrfError) throw serviceUnavailable('provider address rejected');
+      if (err instanceof AdapterBuildError) throw serviceUnavailable(err.message);
       throw err;
     }
-    // Subscription providers resolve through the subscription-oauth seam: it unwraps a
-    // plain paste, or refreshes an OAuth token (pre-request only — invariant 3) and
-    // supplies authScheme/oauthBeta. Credential failures are ProviderError('credential')
-    // — fallback-eligible, breaker-neutral (chainAdapter passes them through).
-    if (kind === 'subscription' && provider.encryptedCredentials !== null) {
-      const r = await this.oauth.resolveCredential(principal, provider);
-      return this.factory({
-        protocol: provider.protocol as ProviderProtocol,
-        baseUrl: provider.baseUrl,
-        credential: r.credential,
-        kind,
-        mode: this.mode,
-        authScheme: r.authScheme,
-        ...(r.oauthBeta !== undefined ? { oauthBeta: r.oauthBeta } : {}),
-        ...(r.oauthAccountId !== undefined ? { oauthAccountId: r.oauthAccountId } : {}),
-        ...(r.probeModel !== undefined ? { probeModel: r.probeModel } : {}),
-        ...(quirks !== undefined ? { quirks } : {}),
-        defaultMaxOutputTokens,
-        ...this.callBounds(provider, probe),
-      });
-    }
-    let credential = '';
-    if (provider.encryptedCredentials !== null) {
-      // Plain path: unwrap the typed envelope (legacy raw passes through). OAuth
-      // envelopes resolve through the subscription-oauth seam above instead.
-      credential = resolvePlainCredentialValue(
-        decryptSecret(provider.encryptedCredentials, this.key),
-      );
-    } else if (kind !== 'local') {
-      throw serviceUnavailable('provider has no credential');
-    }
-    return this.factory({
-      protocol: provider.protocol as ProviderProtocol,
-      baseUrl: provider.baseUrl,
-      credential,
-      kind,
-      mode: this.mode,
-      ...(quirks !== undefined ? { quirks } : {}),
-      defaultMaxOutputTokens,
-      ...this.callBounds(provider, probe),
-    });
+    return this.factory(config);
   }
 }
 

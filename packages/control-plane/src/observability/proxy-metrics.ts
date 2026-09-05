@@ -100,6 +100,33 @@ export class ProxyMetrics {
     help: 'Request-log rows the writer abandoned (queue overflow or insert give-up)',
     registers: [this.registry],
   });
+  /** Batch jobs by terminal outcome (add-batch-inference task 4.7). */
+  private readonly batches = new Counter({
+    name: 'polyrouter_batches_total',
+    help: 'Batch jobs reaching a terminal status, by provider and status',
+    labelNames: ['provider', 'status'] as const,
+    registers: [this.registry],
+  });
+  /** Settled batch ITEMS. Deliberately separate from `requests_total`: a batch
+   * item is spend, not a request the router served, and it must never enter the
+   * synchronous request counter or its latency histogram (D10). */
+  private readonly batchItems = new Counter({
+    name: 'polyrouter_batch_items_total',
+    help: 'Batch items recorded at settlement, by provider and item status',
+    labelNames: ['provider', 'status'] as const,
+    registers: [this.registry],
+  });
+  private readonly batchActive = new Gauge({
+    name: 'polyrouter_batch_active',
+    help: 'Non-terminal batch jobs observed by the most recent poller sweep',
+    registers: [this.registry],
+  });
+  private readonly batchPollLag = new Histogram({
+    name: 'polyrouter_batch_poll_lag_seconds',
+    help: 'Seconds between a batch job becoming pollable and the sweep reaching it',
+    buckets: [1, 5, 15, 30, 60, 300, 900, 3600],
+    registers: [this.registry],
+  });
   private readonly budgetFaults = new Counter({
     name: 'polyrouter_budget_enforcement_faults_total',
     help: 'Budget checks that faulted and engaged the named fail mode (open|closed)',
@@ -184,6 +211,26 @@ export class ProxyMetrics {
    * instance silently running degraded enforcement is visible on `/metrics`. */
   recordBudgetFault(mode: 'open' | 'closed'): void {
     this.safe(() => this.budgetFaults.inc({ mode }));
+  }
+
+  /** A batch job reached a terminal status (add-batch-inference task 4.7). */
+  recordBatch(provider: string, status: string): void {
+    this.safe(() => this.batches.inc({ provider, status }));
+  }
+
+  /** One settled batch item, called ONCE per LANDED row (a replay adds none).
+   * Deliberately not `requests_total`: a batch item is spend, not a request the
+   * router served, and it must never enter the synchronous latency histogram. */
+  recordBatchItem(provider: string, status: string): void {
+    this.safe(() => this.batchItems.inc({ provider, status }));
+  }
+
+  /** The live job count and the observed lag of one poller sweep. */
+  observeBatchSweep(active: number, lagSeconds: readonly number[]): void {
+    this.safe(() => {
+      this.batchActive.set(Math.max(0, active));
+      for (const s of lagSeconds) this.batchPollLag.observe(Math.max(0, s));
+    });
   }
 
   metricsText(): Promise<string> {

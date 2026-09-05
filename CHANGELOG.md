@@ -15,6 +15,8 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-09-05
+
 ### Added
 
 - **Batch inference.** `POST /v1/batches` submits a JSONL batch of ordinary chat/messages requests on the same agent key, routed like any other request and handed to the provider's own batch API (OpenRouter, Anthropic, OpenAI); `GET /v1/batches/{id}` tracks it, `/results` streams the outcomes through without storing them, and `DELETE` cancels. Submitting reserves a spend ceiling rather than charging it — the dashboard says which of the two every number is — and settlement replaces the reservation with real, snapshotted per-item cost, durably and in chunks, so a restart mid-settlement resumes instead of double-charging. Batch items are priced at the provider's batch rate and recorded with an explicit price mode, so batch and sync spend separate in analytics. New **Batches** page, a Mode filter on Requests, and a link from a request's inspector to the job it came from.
@@ -22,6 +24,14 @@ heading is started.
 ### Changed
 
 - **Batch-priced model variants (e.g. OpenRouter's `:batch` twins) are detected and no longer routable** — they are shown as the batch rate of the model they price instead of as separate models, excluded from `GET /v1/models` and from routing target pickers, and naming one explicitly returns a clear 400 naming the base model to use. A tier chain containing one now serves from its routable members without spending a failed upstream attempt. No pricing or recorded-cost behaviour changes.
+
+### Upgrade notes
+
+- **Four migrations run on boot** (`0029`–`0032`): a `model.variant` column, the batch price pair on `model_price`, the `batch_job` table, and `price_mode`/`batch_id` on `request_log`. All additive — no backfill step, and existing rows are classified by an idempotent boot pass. Roll back by restoring a pre-upgrade database dump; there is no down-migration.
+- **Batch is on by default and needs no configuration.** Five optional knobs: `BATCH_ENABLED` (default true; setting it `false` refuses *new* submissions only — the poller, reads, results and cancel keep serving so in-flight jobs drain rather than strand), `BATCH_MAX_ITEMS` (50 000), `BATCH_MAX_BODY_BYTES` (its own bound, separate from `PROXY_MAX_BODY_BYTES`), `BATCH_POLL_INTERVAL_MS` (15 000) and `BATCH_WINDOW_MARGIN_MS` (1 h).
+- **Batch requires a provider that has one.** Adapters ship for OpenRouter, Anthropic and OpenAI; a custom or local provider offers no batch seam and says so at submit time rather than failing later.
+- **If you pinned a routing target to an OpenRouter `:batch` model id, it will now be refused at config-write time** with a 400 naming the base model to use. Nothing routed to those ids successfully before — they cannot serve a synchronous request — so this converts a silent runtime failure into a clear one. A tier chain containing one now serves from its routable members without spending a failed upstream attempt.
+- **No pricing or recorded-cost behaviour changes for existing traffic.** Historical cost is still computed against the prices snapshotted at request time.
 
 ## [0.16.5] — 2026-08-31
 
@@ -890,7 +900,8 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.16.5...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.17.0
 [0.16.5]: https://github.com/izzoa/polyrouter/releases/tag/v0.16.5
 [0.16.4]: https://github.com/izzoa/polyrouter/releases/tag/v0.16.4
 [0.16.3]: https://github.com/izzoa/polyrouter/releases/tag/v0.16.3

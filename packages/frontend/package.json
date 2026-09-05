@@ -1,6 +1,6 @@
 {
   "name": "@polyrouter/frontend",
-  "version": "0.16.5",
+  "version": "0.17.0",
   "license": "AGPL-3.0-only",
   "private": true,
   "description": "polyrouter dashboard SPA (SolidJS + Vite)",

@@ -15,6 +15,8 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-09-07
+
 ### Added
 
 - **The batch reservation explains itself.** The control now carries help text — announced with the switch, revealed on hover or keyboard focus, and always visible on narrow screens — saying that the entry is held for batch work, that results can take up to 24 hours and arrive only when the whole batch finishes with nothing streaming, and what that model's batch rate is beside its synchronous one. The rate is the model's own resolved batch price: where none can be resolved the text says so, rather than implying the synchronous price or a discount.
@@ -24,6 +26,14 @@ heading is started.
 
 - **A batch naming a Claude Pro / Max subscription provider was accepted, then rejected upstream *after* taking a budget reservation** — and since the poller releases nothing on failure, that reservation stayed held for the rest of its window while the job never finished. Batch is now refused up front for any subscription provider, decided by provider **kind** rather than by protocol, so it holds for every subscription preset rather than only the one whose protocol happened to differ. Jobs already accepted keep draining to completion, settling, and serving their results.
 - **A tier whose every member was reserved for batch reported itself as unconfigured to a batch submission.** Batch resolution no longer applies the synchronous exclusion to itself.
+
+### Upgrade notes
+
+- **One migration runs on boot** (`0033`): `routing_entry.mode`, `NOT NULL DEFAULT 'any'` with a CHECK. Additive, no backfill — every existing entry becomes `any`, which carries no restriction, so chains resolve exactly as they did before. There is no down-migration; roll back by restoring a pre-upgrade dump.
+- **Nothing routes differently until you set a mode.** With no entry reserved, a synchronous walk excludes nothing new and a batch resolves to position 0 — byte-identical to 0.17.0.
+- **If you submit batches to a Claude Pro / Max subscription provider, those submissions now fail immediately** with `batch_not_supported` instead of being accepted and rejected upstream. This is a repair, not a new restriction: the old path took a budget reservation first and the poller never released it, so the reservation stayed held for the rest of its window while the job never reached a terminal state. Jobs already accepted keep draining to completion, settling, and serving their results. Use an API-key provider for batch work.
+- **If you pinned a routing target to an OpenRouter `:batch` twin**, nothing changes — they are still not routing targets. They now appear in the model picker as a shortcut that reserves the model they price.
+- **No new configuration.** No env knobs, no API changes on the agent plane.
 
 ## [0.17.0] — 2026-09-05
 
@@ -910,7 +920,8 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.18.0
 [0.17.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.17.0
 [0.16.5]: https://github.com/izzoa/polyrouter/releases/tag/v0.16.5
 [0.16.4]: https://github.com/izzoa/polyrouter/releases/tag/v0.16.4

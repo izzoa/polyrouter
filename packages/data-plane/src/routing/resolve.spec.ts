@@ -3,6 +3,8 @@ import {
   resolveBandTarget,
   resolveWorkloadTarget,
   isRouteError,
+  type EntryMode,
+  type RouteDecision,
   type RouteModel,
   type RouteRule,
   type RouteEntry,

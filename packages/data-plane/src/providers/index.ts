@@ -43,7 +43,8 @@ export type { JsonStreamEvent, JsonStreamFailure, JsonStreamOptions } from './ba
 export { createOpenaiProviderAdapter } from './openai-adapter';
 export { createAnthropicProviderAdapter } from './anthropic-adapter';
 export { createResponsesProviderAdapter, guardEventIdle } from './responses-adapter';
-export { createProviderAdapter, batchFactoryFor } from './factory';
+export { createProviderAdapter, batchFactoryFor, servicingBatchFactoryFor } from './factory';
+export type { BatchSeamInput } from './factory';
 export {
   OPENROUTER_BATCH_STATUSES,
   OPENROUTER_STATUS_MAP,

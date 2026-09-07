@@ -32,10 +32,16 @@ const rule = (over: Partial<RouteRule>): RouteRule => ({
   createdAt: over.createdAt ?? new Date('2026-01-01T00:00:00Z'),
 });
 
+const entry = (modelId: string, position: number, mode: EntryMode = 'any'): RouteEntry => ({
+  modelId,
+  position,
+  mode,
+});
+
 function snap(over: Partial<RoutingSnapshot> = {}): RoutingSnapshot {
   const entries = new Map<string, RouteEntry[]>([
-    ['t_default', [{ modelId: 'm_def', position: 0 }]],
-    ['t_fast', [{ modelId: 'm_fast', position: 0 }]],
+    ['t_default', [{ modelId: 'm_def', position: 0, mode: 'any' }]],
+    ['t_fast', [{ modelId: 'm_fast', position: 0, mode: 'any' }]],
   ]);
   return {
     tiers: [
@@ -97,8 +103,8 @@ describe('resolveRoute — phase 1 (model field)', () => {
       ],
       models: [model('m_def', 'p1', 'x'), model('m_clash', 'p1', 'clash')],
       entriesByTierId: new Map([
-        ['t_default', [{ modelId: 'm_def', position: 0 }]],
-        ['t_clash', [{ modelId: 'm_def', position: 0 }]],
+        ['t_default', [{ modelId: 'm_def', position: 0, mode: 'any' }]],
+        ['t_clash', [{ modelId: 'm_def', position: 0, mode: 'any' }]],
       ]),
     });
     expect(resolveRoute(s, parse('clash'))).toMatchObject({ modelId: 'm_clash' });
@@ -161,8 +167,8 @@ describe('resolveRoute — auto / header / default cascade', () => {
         [
           't_default',
           [
-            { modelId: 'm_fast', position: 2 },
-            { modelId: 'm_def', position: 0 },
+            { modelId: 'm_fast', position: 2, mode: 'any' },
+            { modelId: 'm_def', position: 0, mode: 'any' },
           ],
         ],
       ]),
@@ -178,8 +184,8 @@ describe('resolveRoute — chain (#12 fallback order)', () => {
         [
           't_default',
           [
-            { modelId: 'm_fast', position: 1 },
-            { modelId: 'm_def', position: 0 },
+            { modelId: 'm_fast', position: 1, mode: 'any' },
+            { modelId: 'm_def', position: 0, mode: 'any' },
           ],
         ],
       ]),
@@ -290,7 +296,7 @@ describe('resolveRoute — tier-header precedence (add-tier-header-precedence)',
         { id: 't_default', key: 'default' },
         { id: 't_empty', key: 'empty' },
       ],
-      entriesByTierId: new Map([['t_default', [{ modelId: 'm_def', position: 0 }]]]),
+      entriesByTierId: new Map([['t_default', [{ modelId: 'm_def', position: 0, mode: 'any' }]]]),
       rules: [
         rule({ headerName: 'x-env', headerValue: 'prod', target: 'tier:default', priority: 999 }),
       ],
@@ -419,8 +425,9 @@ describe('non-routable variants (add-model-variant-detection)', () => {
     // ask resolves to the routable one instead of reporting ambiguity, so listing
     // and resolution agree about the id `/v1/models` advertises.
     const lookalike = model('m_look', 'p2', 'openai/gpt-6-astra:batch');
-    expect(resolveRoute(snap({ models: [twin, lookalike] }), parse('openai/gpt-6-astra:batch')))
-      .toMatchObject({ modelId: 'm_look', decisionLayer: 'explicit' });
+    expect(
+      resolveRoute(snap({ models: [twin, lookalike] }), parse('openai/gpt-6-astra:batch')),
+    ).toMatchObject({ modelId: 'm_look', decisionLayer: 'explicit' });
     // Two ROUTABLE matches remain ambiguous, exactly as before.
     const second = model('m_look2', 'p3', 'openai/gpt-6-astra:batch');
     expect(
@@ -444,8 +451,8 @@ describe('non-routable variants (add-model-variant-detection)', () => {
         [
           't_default',
           [
-            { modelId: 'm_twin', position: 0 },
-            { modelId: 'm_base', position: 1 },
+            { modelId: 'm_twin', position: 0, mode: 'any' },
+            { modelId: 'm_base', position: 1, mode: 'any' },
           ],
         ],
       ]),
@@ -469,8 +476,8 @@ describe('non-routable variants (add-model-variant-detection)', () => {
         [
           't_default',
           [
-            { modelId: 'm_twin', position: 1 },
-            { modelId: 'm_base', position: 2 },
+            { modelId: 'm_twin', position: 1, mode: 'any' },
+            { modelId: 'm_base', position: 2, mode: 'any' },
           ],
         ],
       ]),
@@ -481,7 +488,7 @@ describe('non-routable variants (add-model-variant-detection)', () => {
   it('empty_tier when every member is non-routable', () => {
     const s = snap({
       models: [twin],
-      entriesByTierId: new Map([['t_default', [{ modelId: 'm_twin', position: 0 }]]]),
+      entriesByTierId: new Map([['t_default', [{ modelId: 'm_twin', position: 0, mode: 'any' }]]]),
     });
     expect(resolveRoute(s, parse('auto'))).toEqual({ error: 'empty_tier', detail: 'default' });
   });
@@ -522,7 +529,7 @@ describe('resolveRoute — typed errors', () => {
 
   it('empty_tier when position 0 is gone (no silent promotion of a fallback)', () => {
     const s = snap({
-      entriesByTierId: new Map([['t_default', [{ modelId: 'm_fast', position: 1 }]]]),
+      entriesByTierId: new Map([['t_default', [{ modelId: 'm_fast', position: 1, mode: 'any' }]]]),
     });
     expect(resolveRoute(s, parse('auto'))).toEqual({ error: 'empty_tier', detail: 'default' });
   });
@@ -568,12 +575,12 @@ describe('resolveWorkloadTarget (add-workload-routing)', () => {
         { id: 't_coding', key: 'coding' },
       ],
       entriesByTierId: new Map([
-        ['t_default', [{ modelId: 'm_def', position: 0 }]],
+        ['t_default', [{ modelId: 'm_def', position: 0, mode: 'any' }]],
         [
           't_coding',
           [
-            { modelId: 'm_fast', position: 0 },
-            { modelId: 'm_def', position: 1 },
+            { modelId: 'm_fast', position: 0, mode: 'any' },
+            { modelId: 'm_def', position: 1, mode: 'any' },
           ],
         ],
       ]),
@@ -639,7 +646,7 @@ describe('resolveWorkloadTarget (add-workload-routing)', () => {
     ).toBeNull();
     const empty = snap({
       rules: [wl('w', 'code', 'tier:fast')],
-      entriesByTierId: new Map([['t_default', [{ modelId: 'm_def', position: 0 }]]]),
+      entriesByTierId: new Map([['t_default', [{ modelId: 'm_def', position: 0, mode: 'any' }]]]),
     });
     expect(resolveWorkloadTarget(empty, 'code', 'r')).toBeNull();
     expect(
@@ -676,13 +683,13 @@ describe('resolveBandTarget with a workload SCOPE (add-workload-scoped-bands)', 
         { id: 't_empty', key: 'empty' },
       ],
       entriesByTierId: new Map([
-        ['t_default', [{ modelId: 'm_def', position: 0 }]],
-        ['t_fast', [{ modelId: 'm_fast', position: 0 }]],
+        ['t_default', [{ modelId: 'm_def', position: 0, mode: 'any' }]],
+        ['t_fast', [{ modelId: 'm_fast', position: 0, mode: 'any' }]],
         [
           't_code',
           [
-            { modelId: 'm_fast', position: 0 },
-            { modelId: 'm_def', position: 1 },
+            { modelId: 'm_fast', position: 0, mode: 'any' },
+            { modelId: 'm_def', position: 1, mode: 'any' },
           ],
         ],
         ['t_empty', []],
@@ -760,5 +767,118 @@ describe('resolveBandTarget with a workload SCOPE (add-workload-scoped-bands)', 
       routingReason: 'cascade strong tier',
       scope: 'code',
     });
+  });
+});
+
+describe('entry mode — the two exclusions and the single batch candidate', () => {
+  const models = [
+    model('m_a', 'p1', 'alpha'),
+    model('m_b', 'p1', 'beta'),
+    model('m_c', 'p1', 'gamma'),
+  ];
+  const tier = (entries: RouteEntry[]) =>
+    snap({ entriesByTierId: new Map([['t_default', entries]]), models });
+  const sync = (s: RoutingSnapshot) => resolveRoute(s, { modelField: 'default', headers: {} });
+  const batch = (s: RoutingSnapshot) =>
+    resolveRoute(s, { modelField: 'default', headers: {}, mode: 'batch' });
+
+  it('withholds a reserved entry from a synchronous walk and promotes the next', () => {
+    const r = sync(tier([entry('m_a', 0, 'batch'), entry('m_b', 1)]));
+    expect(r).toMatchObject({ modelId: 'm_b' });
+    // Promotion is never silent: the reason names it, and names it as a RESERVATION
+    // rather than as "batch-only", which would report the tenant's own configuration
+    // as a catalog defect.
+    expect((r as RouteDecision).routingReason).toContain('1 batch-reserved');
+    expect((r as RouteDecision).routingReason).not.toContain('batch-only');
+    // A synchronous chain never carries a reserved member as a fallback either.
+    expect((r as RouteDecision).chain.map((c) => c.modelId)).toEqual(['m_b']);
+  });
+
+  it('counts a non-routable exclusion and a reservation separately', () => {
+    const r = sync(
+      snap({
+        entriesByTierId: new Map([
+          ['t_default', [entry('m_a', 0, 'batch'), entry('m_twin', 1), entry('m_b', 2)]],
+        ]),
+        models: [...models, model('m_twin', 'p1', 'alpha:batch', 'batch')],
+      }),
+    );
+    expect((r as RouteDecision).modelId).toBe('m_b');
+    expect((r as RouteDecision).routingReason).toContain('1 batch-only');
+    expect((r as RouteDecision).routingReason).toContain('1 batch-reserved');
+  });
+
+  it('refuses a wholly reserved tier to sync, and serves it to batch', () => {
+    const t = tier([entry('m_a', 0, 'batch'), entry('m_b', 1, 'batch')]);
+    // The loud failure of a tier with no capacity for interactive traffic — the same
+    // error an all-non-routable chain gives, not a silent use of reserved capacity.
+    expect(sync(t)).toEqual({ error: 'empty_tier', detail: 'default' });
+    // The very configuration a batch is entitled to use: the exclusion is not applied.
+    expect(batch(t)).toMatchObject({ modelId: 'm_a' });
+  });
+
+  it('a batch claims the lowest-position reservation, even from behind an unreserved one', () => {
+    // The gesture the picker actually produces: appending a reservation to a chain.
+    const r = batch(tier([entry('m_a', 0), entry('m_b', 1, 'batch')]));
+    expect(r).toMatchObject({ modelId: 'm_b' });
+    // And it resolves to ONE candidate: a longer chain would imply a promotion.
+    expect((r as RouteDecision).chain.map((c) => c.modelId)).toEqual(['m_b']);
+  });
+
+  it('a batch falls back to position 0 only when NO entry is reserved', () => {
+    const r = batch(tier([entry('m_a', 0), entry('m_b', 1)]));
+    // Byte-identical to the behaviour before the column existed.
+    expect(r).toMatchObject({ modelId: 'm_a' });
+    expect((r as RouteDecision).chain.map((c) => c.modelId)).toEqual(['m_a']);
+  });
+
+  it('never promotes past a reservation, even to another reserved member', () => {
+    // "The chain holds a reservation" is literal. If the lowest reserved entry turns
+    // out to be unserviceable the submission is refused — a later member can be a
+    // different provider at a different price, and moving bulk work onto billable
+    // capacity the tenant did not name is not the router's decision to make.
+    const r = batch(tier([entry('m_a', 0, 'batch'), entry('m_b', 1, 'batch')]));
+    expect(r).toMatchObject({ modelId: 'm_a' });
+  });
+
+  it('refuses a non-routable batch candidate by name, never dispatching the twin', () => {
+    // A chain CAN hold a twin: classification never rewrites a stored entry, so an
+    // entry stored before its model was classified — and reserved while it still
+    // looked routable — ends up exactly here. Skipping it would be the promotion D3
+    // forbids; selecting it would dispatch `alpha:batch` upstream, which
+    // `model-variants` forbids through any path. So it is refused BY NAME.
+    const twinModels = [...models, model('m_twin', 'p1', 'alpha:batch', 'batch')];
+    const reserved = snap({
+      entriesByTierId: new Map([['t_default', [entry('m_twin', 0, 'batch'), entry('m_b', 1)]]]),
+      models: twinModels,
+    });
+    expect(batch(reserved)).toMatchObject({ error: 'batch_only_model', baseModelId: 'alpha' });
+
+    // The same holds for an UNRESERVED twin at position 0 with nothing reserved: the
+    // tier does hold an entry, so `empty_tier` would misreport it.
+    const plain = snap({
+      entriesByTierId: new Map([['t_default', [entry('m_twin', 0), entry('m_b', 1)]]]),
+      models: twinModels,
+    });
+    expect(batch(plain)).toMatchObject({ error: 'batch_only_model' });
+    // Sync still EXCLUDES rather than refuses, and serves from the routable member.
+    expect(sync(plain)).toMatchObject({ modelId: 'm_b' });
+  });
+
+  it('picks the lowest-position reservation, not merely position 0 or the last one', () => {
+    // Position-independent by construction: the reservation is neither first nor last,
+    // so a rule that hardcoded position 0 — or took the last match — fails here.
+    const r = batch(tier([entry('m_a', 0), entry('m_b', 1, 'batch'), entry('m_c', 2, 'batch')]));
+    expect(r).toMatchObject({ modelId: 'm_b' });
+  });
+
+  it('leaves an explicitly named model untouched by any reservation', () => {
+    // Mode lives on an ENTRY, so an explicit ask has none to consult. Reserving a
+    // model in a tier is a routing preference, never an authorization control.
+    const r = resolveRoute(tier([entry('m_a', 0, 'batch')]), {
+      modelField: 'alpha',
+      headers: {},
+    });
+    expect(r).toMatchObject({ modelId: 'm_a', decisionLayer: 'explicit' });
   });
 });

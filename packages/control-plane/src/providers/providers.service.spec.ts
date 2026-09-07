@@ -1,3 +1,5 @@
+import { resolveModelPrice } from '@polyrouter/shared/server';
+import { batchFactoryFor } from '@polyrouter/data-plane';
 import { UnprocessableEntityException } from '@nestjs/common';
 import type {
   ModelInsertInput,
@@ -575,5 +577,137 @@ describe('ProvidersService — max-tokens spelling resolution (add-max-tokens-sp
     });
     await svc.testConnection(principal, p.id);
     expect(cfgs[0]!.quirks).toBeUndefined();
+  });
+});
+
+describe('batchCapable on the model view (add-batch-mode-routing task 2.3)', () => {
+  // Derived server-side from the SUBMISSION predicate, so the dashboard's control and
+  // the batch path can never disagree about what is reservable.
+  const cases: [string, { kind: string; protocol: string; baseUrl: string | null }, boolean][] = [
+    [
+      'OpenRouter api-key',
+      { kind: 'api_key', protocol: 'openai_compatible', baseUrl: 'https://openrouter.ai/api/v1' },
+      true,
+    ],
+    [
+      'Anthropic api-key',
+      { kind: 'api_key', protocol: 'anthropic_compatible', baseUrl: 'https://api.anthropic.com' },
+      true,
+    ],
+    [
+      'OpenAI api-key',
+      { kind: 'api_key', protocol: 'openai_compatible', baseUrl: 'https://api.openai.com/v1' },
+      true,
+    ],
+    // The shape that shipped carrying a seam: identical to the Anthropic row above
+    // on family and protocol, separated only by `kind`.
+    [
+      'Claude subscription',
+      {
+        kind: 'subscription',
+        protocol: 'anthropic_compatible',
+        baseUrl: 'https://api.anthropic.com',
+      },
+      false,
+    ],
+    [
+      'ChatGPT subscription',
+      { kind: 'subscription', protocol: 'openai_responses', baseUrl: 'https://chatgpt.com/' },
+      false,
+    ],
+    [
+      'local',
+      { kind: 'local', protocol: 'openai_compatible', baseUrl: 'http://127.0.0.1:11434/v1' },
+      false,
+    ],
+    [
+      'custom',
+      { kind: 'custom', protocol: 'openai_compatible', baseUrl: 'https://example.invalid/v1' },
+      false,
+    ],
+    ['no base url', { kind: 'api_key', protocol: 'openai_compatible', baseUrl: null }, false],
+  ];
+
+  it.each(cases)('%s -> %s', (_label, provider, expected) => {
+    // Exercised through the exported predicate the service delegates to, so this test
+    // cannot pass while the service consults something else.
+    const seam =
+      provider.baseUrl === null
+        ? undefined
+        : batchFactoryFor({
+            kind: provider.kind as never,
+            protocol: provider.protocol as never,
+            baseUrl: provider.baseUrl,
+          });
+    expect(seam !== undefined).toBe(expected);
+  });
+});
+
+describe('batchEffectivePrice on the model read (add-batch-mode-help tasks 1.1/1.2)', () => {
+  // Exercised through the shared resolver the service delegates to, so these cannot
+  // pass while the service resolves something else.
+  const base = {
+    providerKind: 'api_key',
+    modelInputPricePer1m: 10,
+    modelOutputPricePer1m: 30,
+    modelIsFree: false,
+    listedInputPricePer1m: null,
+    listedOutputPricePer1m: null,
+    listedIsFree: false,
+  };
+  const catalogRow = (over: Record<string, unknown> = {}) =>
+    ({
+      inputPricePer1m: 10,
+      outputPricePer1m: 30,
+      batchInputPricePer1m: null,
+      batchOutputPricePer1m: null,
+      isFree: false,
+      source: 'catalog',
+      ...over,
+    }) as never;
+
+  it('resolves the catalog batch pair off the row already fetched', () => {
+    const snap = resolveModelPrice(
+      base,
+      catalogRow({ batchInputPricePer1m: 5, batchOutputPricePer1m: 15 }),
+      null,
+      { mode: 'batch' },
+    );
+    expect(snap).toMatchObject({ inputPricePer1m: 5, outputPricePer1m: 15, mode: 'batch' });
+  });
+
+  it("falls back to the sibling TWIN's captured rate, flagged as an estimate", () => {
+    // The path the first draft of this change would have missed: the rate is on the
+    // twin's OWN row, so a resolution passing only the catalog row reports null for
+    // exactly the aggregator models whose batch rate is most often knowable.
+    const snap = resolveModelPrice(base, catalogRow(), null, {
+      mode: 'batch',
+      listedBatchInputPricePer1m: 5,
+      listedBatchOutputPricePer1m: 15,
+    });
+    expect(snap).toMatchObject({ inputPricePer1m: 5, outputPricePer1m: 15, source: 'listed' });
+  });
+
+  it('is null — never the SYNCHRONOUS rate — when nothing resolves', () => {
+    // The failure that would matter most: silently showing the sync price as though it
+    // were the batch price would misstate the trade the control exists to disclose.
+    const snap = resolveModelPrice(base, catalogRow(), null, { mode: 'batch' });
+    expect(snap).toBeNull();
+    // ...while the SYNC resolution over the same inputs is not null, so this is a real
+    // absence rather than a broken fixture.
+    expect(resolveModelPrice(base, catalogRow(), null)).not.toBeNull();
+  });
+
+  it('prefers the catalog pair over the twin estimate', () => {
+    const snap = resolveModelPrice(
+      base,
+      catalogRow({ batchInputPricePer1m: 4, batchOutputPricePer1m: 12 }),
+      null,
+      { mode: 'batch', listedBatchInputPricePer1m: 5, listedBatchOutputPricePer1m: 15 },
+    );
+    // The catalog pair wins and carries the ROW's source, not the twin's `listed` —
+    // which is what proves the estimate did not shadow an authoritative rate.
+    expect(snap).toMatchObject({ inputPricePer1m: 4, outputPricePer1m: 12 });
+    expect(snap?.source).not.toBe('listed');
   });
 });

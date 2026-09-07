@@ -5,6 +5,10 @@ interface ToggleProps {
   onToggle: () => void;
   /** Accessible name for the switch (icon-only control). */
   label: string;
+  /** Id of an element describing the switch — announced with it, so the
+   * consequences of flipping it are available to a screen reader and not only to a
+   * sighted reader who hovers (add-batch-mode-help). */
+  describedBy?: string | undefined;
 }
 
 /** The prototype's switch control (small = layers/channels, medium = settings). */
@@ -21,6 +25,7 @@ export function Toggle(props: ToggleProps) {
       aria-checked={props.on}
       aria-disabled={props.locked === true ? true : undefined}
       aria-label={props.label}
+      aria-describedby={props.describedBy}
       style={{
         width: `${String(dims().w)}px`,
         height: `${String(dims().h)}px`,

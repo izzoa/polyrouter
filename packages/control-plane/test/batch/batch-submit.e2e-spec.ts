@@ -103,8 +103,16 @@ interface Tenant {
 
 /** Attach the OpenRouter / Anthropic batch seams by base-URL suffix — the stub
  * serves both shapes from one host, so the family rule (host-derived) cannot
- * decide here; a `/plain` provider carries none (the `batch_not_supported` case). */
+ * decide here; a `/plain` provider carries none (the `batch_not_supported` case).
+ *
+ * The `kind` half of the production rule IS applied (add-batch-mode-routing task
+ * 1.3): a subscription provider carries no seam for a NEW submission however its
+ * family and protocol look, and that refusal must be observable end to end. A
+ * `servicing` purpose still yields the seam, so an accepted job can still drain. */
 const e2eBatchFactory: BatchAdapterFactory = (config, deps = {}) => {
+  if (config.kind === 'subscription' && deps.batchPurpose !== 'servicing') {
+    return createProviderAdapter(config, deps);
+  }
   if (config.baseUrl.endsWith('/or')) {
     return createProviderAdapter(config, { ...deps, batch: createOpenRouterBatchAdapter });
   }
@@ -481,6 +489,151 @@ describe('batch submission — Phase B §3 (add-batch-inference)', () => {
     expect(unknown.status).toBe(404);
     expect((await jobsOf(free)).length).toBe(before);
     expect(stub.batches.size).toBe(0 + [...stub.batches.values()].length); // no create for any of them
+  });
+
+  // --- a reservation claims batch (add-batch-mode-routing tasks 3.2/3.3) ----
+
+  it('sends a batch to the reserved entry, and a sync request to the unreserved one', async () => {
+    // The configuration the whole feature exists for: one chain, cheap interactive
+    // traffic, an expensive model held for bulk work. The reservation sits at
+    // position 1 because that is where the dashboard's picker appends it.
+    const tier = await port.tiers.insert(capped.principal, { key: 'mixed' });
+    await port.routingEntries.replaceForTier(capped.principal, tier.id, [
+      { modelId: capped.models['gpt-4o-norate']! },
+      { modelId: capped.models['gpt-4o']!, mode: 'batch' },
+    ]);
+
+    const res = await submit(capped.key, doc('mixed', [item('a')]));
+    expect(res.status).toBe(202);
+    const job = (await jobsOf(capped)).find((j) => j.id === (res.body.id as string))!;
+    // The reserved entry won even from behind an earlier unreserved one — without
+    // that, appending a reservation produces an entry that serves neither mode.
+    expect(job.modelId).toBe(capped.models['gpt-4o']);
+    expect(job.tierAssigned).toBe('mixed');
+  });
+
+  it('refuses rather than promoting past a reserved candidate that cannot serve', async () => {
+    // The single most important negative in this change, and the one a single-member
+    // tier cannot prove: member 0 is reserved on a seam-less provider while member 1
+    // is reserved AND batch-capable. Promoting would move bulk work onto a different
+    // provider at a different price without the tenant naming it.
+    const tier = await port.tiers.insert(capped.principal, { key: 'no-promote' });
+    await port.routingEntries.replaceForTier(capped.principal, tier.id, [
+      { modelId: capped.models['gpt-plain']!, mode: 'batch' },
+      { modelId: capped.models['gpt-4o']!, mode: 'batch' },
+    ]);
+    const beforeJobs = (await jobsOf(capped)).length;
+
+    const res = await submit(capped.key, doc('no-promote', [item('a')]));
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('batch_not_supported');
+    expect((await jobsOf(capped)).length).toBe(beforeJobs);
+    // Reordering so the capable member is lowest makes the SAME chain submit — proof
+    // the refusal was about position, not about the chain being unusable.
+    await port.routingEntries.replaceForTier(capped.principal, tier.id, [
+      { modelId: capped.models['gpt-4o']!, mode: 'batch' },
+      { modelId: capped.models['gpt-plain']!, mode: 'batch' },
+    ]);
+    const ok = await submit(capped.key, doc('no-promote', [item('a')]));
+    expect(ok.status).toBe(202);
+  });
+
+  it('resolves a wholly reserved tier for batch, which sync cannot use at all', async () => {
+    const tier = await port.tiers.insert(capped.principal, { key: 'bulk-only' });
+    await port.routingEntries.replaceForTier(capped.principal, tier.id, [
+      { modelId: capped.models['gpt-4o']!, mode: 'batch' },
+    ]);
+    // Batch resolution does not apply the synchronous exclusion — otherwise the one
+    // configuration a batch is entitled to use would answer `empty_tier`.
+    const res = await submit(capped.key, doc('bulk-only', [item('a')]));
+    expect(res.status).toBe(202);
+    // And the same tier refuses interactive traffic, loudly.
+    const sync = await request(server)
+      .post('/v1/chat/completions')
+      .set('Authorization', `Bearer ${capped.key}`)
+      .send({ model: 'bulk-only', messages: [{ role: 'user', content: 'hi' }] });
+    expect(sync.status).toBe(400);
+    expect(sync.body.error.code).toBe('empty_tier');
+  });
+
+  it('preserves stored modes when a chain is rewritten by ids alone', async () => {
+    // What every pre-existing client and the dashboard's optimistic queue send. Read
+    // as "all unreserved" this would clear the tenant's reservations on any reorder.
+    const tier = await port.tiers.insert(capped.principal, { key: 'preserve' });
+    await port.routingEntries.replaceForTier(capped.principal, tier.id, [
+      { modelId: capped.models['gpt-4o']!, mode: 'batch' },
+      { modelId: capped.models['gpt-4o-norate']! },
+    ]);
+    // A bare-id reorder, exactly as an older client would send it.
+    await port.routingEntries.replaceForTier(capped.principal, tier.id, [
+      capped.models['gpt-4o-norate']!,
+      capped.models['gpt-4o']!,
+    ]);
+    const rows = await port.routingEntries.listForTier(capped.principal, tier.id);
+    const byModel = new Map(rows.map((r) => [r.modelId, r]));
+    expect(byModel.get(capped.models['gpt-4o']!)?.mode).toBe('batch');
+    expect(byModel.get(capped.models['gpt-4o']!)?.position).toBe(1);
+    expect(byModel.get(capped.models['gpt-4o-norate']!)?.mode).toBe('any');
+  });
+
+  // --- refusal precedence (add-batch-mode-routing task 3.4) -----------------
+
+  it('reports the most specific cause: an empty tier is not "unsupported"', async () => {
+    // The boundary an implementer would otherwise have to guess. It holds because the
+    // resolver is config-only and answers FIRST; `batch_not_supported` can only be
+    // raised later, when the adapter is built. Pinned so nobody reorders the checks
+    // and turns a misconfiguration into a misleading capability error.
+    const bare = await port.tiers.insert(capped.principal, { key: 'bare' });
+    const seamless = await port.tiers.insert(capped.principal, { key: 'seamless' });
+    await port.routingEntries.replaceForTier(capped.principal, seamless.id, [
+      capped.models['gpt-plain']!,
+    ]);
+
+    // No entries at all -> the tier is misconfigured, and says so.
+    const empty = await submit(capped.key, doc('bare', [item('a')]));
+    expect(empty.status).toBe(400);
+    expect(empty.body.error.code).toBe('empty_tier');
+
+    // Entries exist, but the resolved candidate's provider has no batch seam.
+    const unsupported = await submit(capped.key, doc('seamless', [item('a')]));
+    expect(unsupported.status).toBe(400);
+    expect(unsupported.body.error.code).toBe('batch_not_supported');
+
+    // And a name that resolves to nothing outranks both.
+    const unknown = await submit(capped.key, doc('no-such-tier-or-model', [item('a')]));
+    expect(unknown.status).toBe(404);
+    expect(bare.id).not.toBe(seamless.id);
+  });
+
+  // --- a refusal costs nothing (add-batch-mode-routing task 1.3) ------------
+
+  it('refuses an unsupported provider BEFORE any job row, reservation, or upstream call', () => {
+    // The property that matters about `batch_not_supported`, and the reason the
+    // subscription seam was closed: the previous behaviour wrote the row and held
+    // the reservation first, then let the upstream reject — and the poller releases
+    // nothing on a failure, so the budget stayed withheld for the rest of its window
+    // while the job never reached a terminal state.
+    //
+    // Exercised through a seam-less provider rather than a subscription one: a
+    // subscription provider at the loopback stub is refused earlier still, by the
+    // SSRF guard (`provider address rejected`), because loopback is legal only for
+    // `kind: 'local'` (invariant 6). The KIND rule itself is therefore unit-tested
+    // in `data-plane/src/providers/factory.spec.ts`, where the shape that shipped
+    // carrying a seam can actually be constructed.
+    return (async () => {
+      const beforeJobs = (await jobsOf(capped)).length;
+      const beforePending = await pendingOf(capped);
+      const beforeUpstream = stub.batches.size;
+
+      const res = await submit(capped.key, doc('gpt-plain', [item('a'), item('b')]));
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('batch_not_supported');
+      expect((await jobsOf(capped)).length).toBe(beforeJobs);
+      expect(await pendingOf(capped)).toBe(beforePending);
+      expect(stub.batches.size).toBe(beforeUpstream);
+    })();
   });
 
   it('routes a tier to its primary and records the tier on the job', async () => {

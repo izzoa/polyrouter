@@ -15,6 +15,16 @@ heading is started.
 
 ## [Unreleased]
 
+### Added
+
+- **The batch reservation explains itself.** The control now carries help text — announced with the switch, revealed on hover or keyboard focus, and always visible on narrow screens — saying that the entry is held for batch work, that results can take up to 24 hours and arrive only when the whole batch finishes with nothing streaming, and what that model's batch rate is beside its synchronous one. The rate is the model's own resolved batch price: where none can be resolved the text says so, rather than implying the synchronous price or a discount.
+- **A routing-chain entry can be reserved for batch work.** Each tier entry carries a mode: leave it alone and nothing changes; set it to **batch only** and a synchronous walk skips that entry while a batch submission claims it — so one chain can serve cheap interactive traffic and hold an expensive model for overnight runs. The Routing page gains a per-entry switch (always available to un-reserve, even if the provider later changes), and OpenRouter's `:batch` twins appear in the model picker as a shortcut that reserves the model they price, without the twin id ever becoming a routing target. A batch resolves to **exactly one candidate** — the lowest-position reserved entry, else position 0 — and is refused rather than re-pointed at a later member, because a different member can be a different provider at a different price.
+
+### Fixed
+
+- **A batch naming a Claude Pro / Max subscription provider was accepted, then rejected upstream *after* taking a budget reservation** — and since the poller releases nothing on failure, that reservation stayed held for the rest of its window while the job never finished. Batch is now refused up front for any subscription provider, decided by provider **kind** rather than by protocol, so it holds for every subscription preset rather than only the one whose protocol happened to differ. Jobs already accepted keep draining to completion, settling, and serving their results.
+- **A tier whose every member was reserved for batch reported itself as unconfigured to a batch submission.** Batch resolution no longer applies the synchronous exclusion to itself.
+
 ## [0.17.0] — 2026-09-05
 
 ### Added

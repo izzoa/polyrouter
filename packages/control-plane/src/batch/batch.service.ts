@@ -287,7 +287,11 @@ export class BatchService {
     const { snapshot, models } = await loadRoutingSnapshot(this.db, principal);
     // No headers: the tier header and every smart layer are outside the batch
     // path by construction (invariant 1); `auto` was refused by the ingress.
-    const decision = resolveRoute(snapshot, { modelField, headers: {} });
+    // `mode: 'batch'` is not cosmetic: the resolver's SYNCHRONOUS composition
+    // excludes batch-reserved entries, so reusing it here would answer `empty_tier`
+    // for a wholly reserved tier — the one configuration a batch is entitled to use.
+    // It also selects the single never-promoted candidate (add-batch-mode-routing D3).
+    const decision = resolveRoute(snapshot, { modelField, headers: {}, mode: 'batch' });
     if (isRouteError(decision)) throw routeError(decision);
     const provider = await this.db.providers.findById(principal, decision.providerId);
     const model = models.find((m) => m.id === decision.modelId);
@@ -423,7 +427,27 @@ export class BatchService {
     return { row: updated ?? row, changed: true };
   }
 
-  /** The seam for an EXISTING job's provider (cancel, and the poller's calls). */
+  /**
+   * The seam for an EXISTING job's provider (cancel, results, and the poller's
+   * calls). Built from the SERVICING predicate, not the submission one
+   * (add-batch-mode-routing task 1.2): `createProviderAdapter` derives
+   * `deps.batch` from `batchFactoryFor` unless a factory is supplied, so once
+   * submission eligibility narrowed it would have stripped the seam from here
+   * too — and a job whose seam has vanished can never be polled to a terminal
+   * state, so it holds its budget reservation for the rest of the window (the
+   * poller releases nothing on a failure) and its paid-for results become
+   * unreadable. Injecting the servicing factory is what keeps "drain, never
+   * strand" true across an eligibility change.
+   *
+   * The seam is selected by PURPOSE, not by rewriting the config's `kind`. An
+   * earlier cut overrode `kind` with the job's recorded value for fidelity; that
+   * is both redundant — the servicing predicate already admits what submission
+   * refuses — and harmful, because `kind` also drives connect-time SSRF and
+   * credential resolution, so rewriting it changes semantics well beyond the
+   * seam (a loopback provider stops being reachable). The live row remains the
+   * truth for how to TALK to the provider; the purpose decides only whether a
+   * batch seam is attached.
+   */
   async batchFor(principal: Principal, provider: ProviderRow): Promise<BatchAdapter> {
     let config: ProviderConfig;
     try {
@@ -439,7 +463,7 @@ export class BatchService {
       if (err instanceof AdapterBuildError) throw serviceUnavailable(err.message);
       throw err;
     }
-    const adapter = this.factory(config);
+    const adapter = this.factory(config, { batchPurpose: 'servicing' });
     if (adapter.batch === undefined) throw batchError('batch_not_supported');
     return adapter.batch;
   }

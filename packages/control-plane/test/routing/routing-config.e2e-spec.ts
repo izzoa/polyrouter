@@ -45,6 +45,8 @@ interface Tenant {
   userId: string;
   principal: Principal;
   modelIds: string[];
+  /** A model on a BATCH-CAPABLE provider (add-batch-mode-routing). */
+  batchModelId: string;
 }
 
 async function seedTenant(port: PersistencePort, pool: Pool, label: string): Promise<Tenant> {
@@ -67,7 +69,19 @@ async function seedTenant(port: PersistencePort, pool: Pool, label: string): Pro
     const m = await port.models.createForProvider(principal, provider.id, { externalModelId: ext });
     modelIds.push(m!.id);
   }
-  return { userId, principal, modelIds };
+  // A BATCH-CAPABLE provider too (add-batch-mode-routing): the provider above is on
+  // no batch family, so a reservation naming its models is correctly refused — the
+  // accepted path needs one that qualifies.
+  const batchProvider = await port.providers.insert(principal, {
+    name: 'p-batch',
+    kind: 'api_key',
+    protocol: 'openai_compatible',
+    baseUrl: 'https://openrouter.ai/api/v1',
+  });
+  const batchModel = await port.models.createForProvider(principal, batchProvider.id, {
+    externalModelId: 'm-batchable',
+  });
+  return { userId, principal, modelIds, batchModelId: batchModel!.id };
 }
 
 describe('routing-config e2e', () => {
@@ -175,6 +189,91 @@ describe('routing-config e2e', () => {
       (await asA('put', entriesUrl).send({ modelIds: [A.modelIds[0], A.modelIds[0]] })).status,
     ).toBe(422);
     expect((await asA('put', entriesUrl).send({ modelIds: [B.modelIds[0]] })).status).toBe(422);
+  });
+
+  it('carries entry mode on both body forms, and never clears it by omission', async () => {
+    const tiers = await asA('get', '/api/routing/tiers');
+    const defaultId = tiers.body.find((t: { key: string }) => t.key === 'default').id;
+    const entriesUrl = `/api/routing/tiers/${defaultId}/entries`;
+    type Entry = { modelId: string; mode: string; position: number };
+
+    // The canonical body. `entries` must be DECLARED on the DTO or the global
+    // ValidationPipe's `forbidNonWhitelisted` would 400 it before any service logic.
+    const put = await asA('put', entriesUrl).send({
+      entries: [{ modelId: A.batchModelId, mode: 'batch' }, { modelId: A.modelIds[0] }],
+    });
+    expect(put.status).toBe(200);
+    expect(put.body.map((e: Entry) => [e.modelId, e.mode])).toEqual([
+      [A.batchModelId, 'batch'],
+      [A.modelIds[0], 'any'],
+    ]);
+
+    // A bare-id reorder — what every client predating the field sends, and what the
+    // dashboard's own optimistic queue sends. It must PRESERVE the reservation.
+    const reordered = await asA('put', entriesUrl).send({
+      modelIds: [A.modelIds[0], A.batchModelId],
+    });
+    expect(reordered.status).toBe(200);
+    const byModel = new Map(reordered.body.map((e: Entry) => [e.modelId, e]));
+    expect((byModel.get(A.batchModelId) as Entry).mode).toBe('batch');
+    expect((byModel.get(A.batchModelId) as Entry).position).toBe(1);
+    expect((byModel.get(A.modelIds[0]) as Entry).mode).toBe('any');
+
+    // Reserving a model whose provider has no batch API is refused, by name.
+    const refused = await asA('put', entriesUrl).send({
+      entries: [{ modelId: A.modelIds[0], mode: 'batch' }],
+    });
+    expect(refused.status).toBe(422);
+    expect(String(refused.body.message)).toMatch(/cannot be reserved for batch/);
+
+    // Exactly one form: neither, or both, is ambiguous rather than a silent pick.
+    expect((await asA('put', entriesUrl).send({})).status).toBe(422);
+    expect(
+      (await asA('put', entriesUrl).send({ modelIds: [A.modelIds[0]], entries: [] })).status,
+    ).toBe(422);
+    // An unknown mode is rejected by the DTO, not stored.
+    expect(
+      (
+        await asA('put', entriesUrl).send({
+          entries: [{ modelId: A.modelIds[0], mode: 'nightly' }],
+        })
+      ).status,
+    ).toBe(400);
+    // An explicit `null` is a clean 400, never "absent". Read as absent it would pass
+    // the exactly-one-form check and `?? []` would silently CLEAR the chain.
+    expect((await asA('put', entriesUrl).send({ modelIds: null })).status).toBe(400);
+    expect((await asA('put', entriesUrl).send({ entries: null })).status).toBe(400);
+    expect(
+      (await asA('put', entriesUrl).send({ entries: [{ modelId: A.modelIds[0], mode: null }] }))
+        .status,
+    ).toBe(400);
+    // ...and the chain is still what the last accepted write left.
+    const after = await asA('get', entriesUrl);
+    expect(after.body.length).toBe(2);
+  });
+
+  it('settles tier ownership before judging its contents, and names an unowned model', async () => {
+    const tiers = await asA('get', '/api/routing/tiers');
+    const defaultId = tiers.body.find((t: { key: string }) => t.key === 'default').id;
+
+    // B's tier, with a reservation A's own model cannot honour. The seam check must
+    // not answer first — that would make another tenant's tier id distinguishable
+    // from a missing one (invariant 5).
+    const bTiers = await request(server).get('/api/routing/tiers').set('x-test-user', B.userId);
+    const bDefault = bTiers.body.find((t: { key: string }) => t.key === 'default').id;
+    const cross = await asA('put', `/api/routing/tiers/${bDefault}/entries`).send({
+      entries: [{ modelId: A.modelIds[0], mode: 'batch' }],
+    });
+    expect(cross.status).toBe(404);
+
+    // A model that is not the principal's is an unknown model, not a provider defect:
+    // "its provider has no batch API" would describe someone else's configuration.
+    const unowned = await asA('put', `/api/routing/tiers/${defaultId}/entries`).send({
+      entries: [{ modelId: B.modelIds[0], mode: 'batch' }],
+    });
+    expect(unowned.status).toBe(422);
+    expect(String(unowned.body.message)).toMatch(/not among your models/);
+    expect(String(unowned.body.message)).not.toMatch(/batch API/);
   });
 
   // --- rules ---

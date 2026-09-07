@@ -204,6 +204,14 @@ export interface ModelDto {
   /** For a variant row, the SAME provider's model it prices — null for an orphan
    * twin, so the UI never points at a model that is not there. */
   baseExternalModelId: string | null;
+  /** Whether this model's PROVIDER carries the batch adapter seam, so an entry
+   * naming it may be reserved for batch (add-batch-mode-routing). Server-derived —
+   * never re-derived here, where a second copy of the family rule would drift. */
+  batchCapable: boolean;
+  /** That model's price resolved in BATCH mode (add-batch-mode-help), shaped like
+   * `effectivePrice` and flagged `estimated` on the same terms — or null when no
+   * batch price resolves from any source. Never the synchronous price standing in. */
+  batchEffectivePrice: EffectivePrice | null;
   lastSyncedAt: string | null;
 }
 
@@ -241,7 +249,19 @@ export interface TierEntryDto {
   tierId: string;
   modelId: string;
   position: number;
+  /** Which execution mode this entry is reserved for (add-batch-mode-routing).
+   * `any` = no restriction; `batch` = only batch work may use it. */
+  mode: EntryMode;
   model: TierEntryModel | null;
+}
+
+export type EntryMode = 'any' | 'batch';
+
+/** One member of a chain replacement. Omitting `mode` PRESERVES the mode already
+ * stored for that model in that tier — it does not assert `any`. */
+export interface TierEntryInput {
+  modelId: string;
+  mode?: EntryMode;
 }
 
 // --- Config surfaces (#20) — tiers / rules / budgets / channels / auto-layers ---
@@ -932,7 +952,7 @@ export interface ApiClient {
   updateTier(id: string, patch: UpdateTierInput): Promise<TierDto>;
   deleteTier(id: string): Promise<{ deleted: boolean }>;
   listTierEntries(tierId: string): Promise<TierEntryDto[]>;
-  replaceTierEntries(tierId: string, modelIds: string[]): Promise<TierEntryDto[]>;
+  replaceTierEntries(tierId: string, entries: readonly TierEntryInput[]): Promise<TierEntryDto[]>;
   listRules(): Promise<RuleDto[]>;
   createRule(input: CreateRuleInput): Promise<RuleDto>;
   updateRule(id: string, patch: { target: string }): Promise<RuleDto>;
@@ -1154,10 +1174,14 @@ export const realClient: ApiClient = {
     }),
   listTierEntries: (tierId) =>
     http<TierEntryDto[]>(`${API_BASE}/routing/tiers/${encodeURIComponent(tierId)}/entries`),
-  replaceTierEntries: (tierId, modelIds) =>
+  replaceTierEntries: (tierId, entries) =>
     http<TierEntryDto[]>(
       `${API_BASE}/routing/tiers/${encodeURIComponent(tierId)}/entries`,
-      jsonInit('PUT', { modelIds }),
+      // Always the canonical `entries` form — never `modelIds`. The server reads a
+      // bare-id body as "preserve whatever mode is stored", which is the right
+      // behaviour for a legacy client but would make this one unable to UNRESERVE
+      // an entry: an omitted mode could never mean `any`.
+      jsonInit('PUT', { entries: entries.map((e) => ({ modelId: e.modelId, mode: e.mode })) }),
     ),
   listRules: () => http<RuleDto[]>(`${API_BASE}/routing/rules`),
   createRule: (input) => http<RuleDto>(`${API_BASE}/routing/rules`, jsonInit('POST', input)),

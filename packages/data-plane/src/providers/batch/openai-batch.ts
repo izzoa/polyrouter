@@ -1,3 +1,4 @@
+import { BATCH_COMPLETION_WINDOW_MS } from '@polyrouter/shared';
 /**
  * OpenAI's Batch API (add-batch-inference Phase C): the one shipped upstream with
  * a FILE plane. Items are framed as JSONL and streamed up to `POST /v1/files`
@@ -62,7 +63,9 @@ export const OPENAI_STATUS_MAP: Readonly<Record<OpenAiBatchStatus, BatchUpstream
 export const OPENAI_JOB_ID_KEY = 'polyrouter_job_id';
 
 /** "Currently only `24h` is supported." */
-const COMPLETION_WINDOW_MS = 86_400_000;
+/** The shared window (add-batch-mode-help): one declaration the dashboard reads too,
+ * so this provider and the help text cannot state different figures. */
+const COMPLETION_WINDOW_MS = BATCH_COMPLETION_WINDOW_MS;
 /** "The file can contain up to 50,000 requests, and can be up to 200 MB in size." */
 const MAX_ITEMS = 50_000;
 const MAX_BYTES = 200_000_000;

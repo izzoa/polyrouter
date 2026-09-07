@@ -1,3 +1,4 @@
+import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   IsArray,
@@ -11,6 +12,7 @@ import {
   Min,
   MinLength,
   ValidateIf,
+  ValidateNested,
 } from 'class-validator';
 import {
   MAX_MODELS_PER_TIER,
@@ -68,13 +70,53 @@ export class UpdateTierDto {
   description?: string;
 }
 
+/** One member of a chain replacement in the canonical body. */
+export class ReplaceEntryItemDto {
+  @IsString()
+  modelId!: string;
+
+  /** Omitted PRESERVES the mode already stored for this model in this tier — it
+   * does not assert `any` (add-batch-mode-routing D11). */
+  // Same reason: `null` must be a clean 400, not silently read as "preserve".
+  // `mode: 'any'` is the canonical way to unreserve.
+  @IfDefined()
+  @IsIn(['any', 'batch'])
+  mode?: 'any' | 'batch';
+}
+
+/**
+ * Either form is accepted, and exactly one must be present.
+ *
+ * `entries` is canonical. `modelIds` stays because every client that predates the
+ * mode field sends it — including the dashboard's own optimistic queue — and it
+ * PRESERVES stored modes rather than clearing them (the persistence layer applies
+ * that rule, so no handler can forget it).
+ *
+ * Both are `@IsOptional()` with a cross-field check rather than one required
+ * property, because the global `ValidationPipe` runs `forbidNonWhitelisted`: an
+ * undeclared `entries` would be rejected 400 before any service logic ran.
+ */
 export class ReplaceEntriesDto {
+  // `@IfDefined()`, not `@IsOptional()`: the latter skips validators for `null` too,
+  // so `{"modelIds": null}` would pass, the controller's exactly-one-form check would
+  // read it as "present", and `?? []` would silently CLEAR the tier's chain. The
+  // project already carries this decorator for precisely this hazard (E10.1).
+  @IfDefined()
   @IsArray()
   @ArrayMaxSize(MAX_MODELS_PER_TIER, {
     message: `a tier holds at most ${MAX_MODELS_PER_TIER} models`,
   })
   @IsString({ each: true })
-  modelIds!: string[];
+  modelIds?: string[];
+
+  @IfDefined()
+  @IsArray()
+  @ArrayMaxSize(MAX_MODELS_PER_TIER, {
+    message: `a tier holds at most ${MAX_MODELS_PER_TIER} models`,
+  })
+  @ValidateNested({ each: true })
+  @Type(() => ReplaceEntryItemDto)
+  entries?: ReplaceEntryItemDto[];
 }
 
 export class CreateRuleDto {

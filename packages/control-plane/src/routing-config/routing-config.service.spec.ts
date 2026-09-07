@@ -7,8 +7,9 @@ import type {
   RoutingEntryRow,
   RoutingRuleRow,
   TierRow,
+  ReplaceEntryInput,
 } from '@polyrouter/shared/server';
-import { userPrincipal } from '@polyrouter/shared/server';
+import { replaceEntryModelId, userPrincipal } from '@polyrouter/shared/server';
 import { RoutingConfigService } from './routing-config.service';
 
 const P: Principal = userPrincipal('u1');
@@ -122,6 +123,19 @@ function makePort(seed: { tiers: TierRow[]; models: ModelRow[]; rules?: RoutingR
         return Promise.resolve(true);
       },
     },
+    // The seam check reads providers (add-batch-mode-routing): a batch-capable
+    // OpenRouter provider by default, so the existing cases are unaffected.
+    providers: {
+      list: () =>
+        Promise.resolve([
+          {
+            id: 'p1',
+            kind: 'api_key',
+            protocol: 'openai_compatible',
+            baseUrl: 'https://openrouter.ai/api/v1',
+          },
+        ]),
+    },
     models: {
       listForPrincipal: () => Promise.resolve([...models]),
       findById: (_p: Principal, id: string) =>
@@ -135,21 +149,32 @@ function makePort(seed: { tiers: TierRow[]; models: ModelRow[]; rules?: RoutingR
       replaceForTier: (
         _p: Principal,
         tierId: string,
-        ids: string[],
+        ordered: readonly ReplaceEntryInput[],
       ): Promise<ReplaceEntriesResult> => {
         if (!tiers.some((t) => t.id === tierId)) {
           return Promise.resolve({ status: 'tier_not_found' });
         }
+        const ids = ordered.map(replaceEntryModelId);
         const unknown = ids.filter((id) => !models.some((m) => m.id === id));
         if (unknown.length > 0) {
           return Promise.resolve({ status: 'unknown_models', modelIds: unknown });
         }
-        const entries = ids.map((modelId, position) => ({
-          id: `e${++seq}`,
-          tierId,
-          modelId,
-          position,
-        }));
+        // Mirrors the real port: a member that does not STATE a mode keeps the one
+        // already stored for that model in this tier (add-batch-mode-routing D11).
+        const prior = new Map(
+          (entriesByTier.get(tierId) ?? []).map((e) => [e.modelId, e.mode] as const),
+        );
+        const entries = ordered.map((e, position) => {
+          const modelId = replaceEntryModelId(e);
+          const stated = typeof e === 'string' ? undefined : e.mode;
+          return {
+            id: `e${++seq}`,
+            tierId,
+            modelId,
+            position,
+            mode: stated ?? prior.get(modelId) ?? 'any',
+          };
+        });
         entriesByTier.set(tierId, entries);
         return Promise.resolve({ status: 'ok', entries });
       },
@@ -320,5 +345,89 @@ describe('RoutingConfigService — rules', () => {
     });
     const ids = (await svc.listRules(P)).map((r) => r.id);
     expect(ids).toEqual(['c', 'a', 'b']);
+  });
+});
+
+describe('entry mode at write time (add-batch-mode-routing tasks 4.1/4.2/4.3)', () => {
+  // A provider set the tests can steer: `p1` is batch-capable, `p2` is not.
+  type Prov = { id: string; kind: string; protocol: string; baseUrl: string | null };
+  const withProviders = (provs: Prov[]) => {
+    const built = svcWith({ tiers: [tier('t1')], models: [model('m1'), model('m2')] });
+    (built.port as unknown as { providers: { list: () => Promise<Prov[]> } }).providers = {
+      list: () => Promise.resolve(provs),
+    };
+    return built;
+  };
+  const setProviders = (built: { port: unknown }, provs: Prov[]): void => {
+    (built.port as { providers: { list: () => Promise<Prov[]> } }).providers = {
+      list: () => Promise.resolve(provs),
+    };
+  };
+  const CAPABLE = {
+    id: 'p1',
+    kind: 'api_key',
+    protocol: 'openai_compatible',
+    baseUrl: 'https://openrouter.ai/api/v1',
+  };
+  const LOCAL = {
+    id: 'p1',
+    kind: 'local',
+    protocol: 'openai_compatible',
+    baseUrl: 'http://127.0.0.1:11434/v1',
+  };
+
+  it('stores a stated mode, and defaults a model the tier did not hold', async () => {
+    const { svc } = withProviders([CAPABLE]);
+    const out = await svc.replaceEntries(P, 't_t1', [
+      { modelId: 'm1', mode: 'batch' },
+      { modelId: 'm2' },
+    ]);
+    expect(out.map((e) => [e.modelId, e.mode])).toEqual([
+      ['m1', 'batch'],
+      ['m2', 'any'],
+    ]);
+  });
+
+  it('refuses a reservation whose provider has no batch API, naming the model', async () => {
+    const { svc } = withProviders([LOCAL]);
+    await expect(svc.replaceEntries(P, 't_t1', [{ modelId: 'm1', mode: 'batch' }])).rejects.toThrow(
+      /cannot be reserved for batch/,
+    );
+    // The same list unreserved is fine — the refusal is about the reservation, not
+    // about the model being unusable.
+    await expect(svc.replaceEntries(P, 't_t1', [{ modelId: 'm1' }])).resolves.toBeDefined();
+  });
+
+  it('lets a tenant UNRESERVE an entry whose provider has since lost its seam', async () => {
+    // The deadlock this exemption exists to prevent: the entry is stored as `batch`,
+    // the provider no longer qualifies, and a PUT resubmits every entry — so a
+    // blanket check would refuse every edit to that tier, leaving the tenant no way
+    // out but deleting the model.
+    const built = withProviders([CAPABLE]);
+    const { svc } = built;
+    await svc.replaceEntries(P, 't_t1', [{ modelId: 'm1', mode: 'batch' }]);
+
+    setProviders(built, [LOCAL]);
+    // Retaining it is refused...
+    await expect(svc.replaceEntries(P, 't_t1', [{ modelId: 'm1', mode: 'batch' }])).rejects.toThrow(
+      /cannot be reserved for batch/,
+    );
+    // ...and so is a bare-id write, because omitting the mode PRESERVES `batch`.
+    await expect(svc.replaceEntries(P, 't_t1', ['m1'])).rejects.toThrow(
+      /cannot be reserved for batch/,
+    );
+    // But moving it to `any` always succeeds, which is the way out.
+    const out = await svc.replaceEntries(P, 't_t1', [{ modelId: 'm1', mode: 'any' }]);
+    expect(out.map((e) => e.mode)).toEqual(['any']);
+  });
+
+  it('still refuses the same model at two modes as a duplicate', async () => {
+    const { svc } = withProviders([CAPABLE]);
+    await expect(
+      svc.replaceEntries(P, 't_t1', [
+        { modelId: 'm1', mode: 'batch' },
+        { modelId: 'm1', mode: 'any' },
+      ]),
+    ).rejects.toThrow(/duplicates/);
   });
 });

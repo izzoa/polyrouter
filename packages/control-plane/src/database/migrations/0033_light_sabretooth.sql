@@ -1,0 +1,2 @@
+ALTER TABLE "routing_entry" ADD COLUMN "mode" text DEFAULT 'any' NOT NULL;--> statement-breakpoint
+ALTER TABLE "routing_entry" ADD CONSTRAINT "routing_entry_mode_valid" CHECK ("routing_entry"."mode" IN ('any', 'batch'));

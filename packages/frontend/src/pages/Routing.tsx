@@ -4,6 +4,7 @@ import { ModelPicker } from '../components/ModelPicker';
 import { RangeSelector } from '../components/RangeSelector';
 import { Segmented } from '../components/Segmented';
 import { Toggle } from '../components/Toggle';
+import { BatchModeHelp } from '../components/BatchModeHelp';
 import type { AutoLayers, TierEntryDto } from '../data/api';
 import { autoSeriesToChart, signalQualityGuidance, toAutoPerfVm } from '../data/autoPerf';
 import {
@@ -14,11 +15,7 @@ import {
   type BandVm,
   type ScopedBandVm,
 } from '../data/bandTargets';
-import {
-  WORKLOAD_CLASSES,
-  isNonRoutableVariant,
-  type WorkloadClass,
-} from '@polyrouter/shared';
+import { WORKLOAD_CLASSES, isNonRoutableVariant, type WorkloadClass } from '@polyrouter/shared';
 import { unsetCopy, workloadVms, type WorkloadVm } from '../data/workloadTargets';
 import { toCalibrationVm, toHistoryRows } from '../data/calibration';
 import { toLearningHistoryRows, toLearningVm } from '../data/semanticLearning';
@@ -71,13 +68,24 @@ function modelPriceLabel(m: Model | undefined): string {
 export function groupModelsByProvider(
   models: readonly Model[],
   providers: readonly { id: string; name: string }[],
+  /** Given a batch-priced twin, the id of the model it prices when that model may
+   * be RESERVED for batch here — else null (add-batch-mode-routing task 5.3). The
+   * twin then appears as a labeled shortcut instead of being hidden. */
+  reserveTargetFor?: (twin: Model) => string | null,
 ): Array<{ label: string; models: Model[] }> {
   const byProvider = new Map<string, Model[]>();
   for (const m of models) {
     // A batch-priced variant can never serve a request, so it is not offerable as
     // a routing target (add-model-variant-detection). It is still visible on the
     // Providers page as the batch rate of the model it prices.
-    if (isNonRoutableVariant(m.variant)) continue;
+    if (isNonRoutableVariant(m.variant)) {
+      const base = reserveTargetFor?.(m) ?? null;
+      if (base === null) continue;
+      const list = byProvider.get(m.providerId) ?? [];
+      list.push({ ...m, reserveBaseId: base } as Model);
+      byProvider.set(m.providerId, list);
+      continue;
+    }
     const list = byProvider.get(m.providerId) ?? [];
     list.push(m);
     byProvider.set(m.providerId, list);
@@ -1549,7 +1557,31 @@ export function Routing() {
     });
   const addableModels = (tierId: string): Model[] => {
     const used = new Set(entries(tierId).map((e) => e.modelId));
-    return state.allModels.filter((m) => !used.has(m.id));
+    // A twin whose BASE is in the chain is still offerable — as a shortcut that
+    // reserves that base — so it must not be filtered out by "already used".
+    return state.allModels.filter((m) => !used.has(m.id) || isNonRoutableVariant(m.variant));
+  };
+
+  /**
+   * The model a batch-priced twin lets the tenant reserve here, or null.
+   *
+   * Offered only when a ROUTABLE sibling base exists on the SAME provider (an
+   * orphan twin has no id to store), that provider is batch-capable (a reservation
+   * it cannot honour could only produce a rejected save), and that entry is not
+   * already reserved (committing would be a no-op). Task 5.3 / dashboard-config.
+   */
+  const reserveTargetFor = (tierId: string, twin: Model): string | null => {
+    const base = twin.baseExternalModelId;
+    if (base === null) return null;
+    const sibling = state.allModels.find(
+      (m) =>
+        m.providerId === twin.providerId &&
+        m.externalModelId === base &&
+        !isNonRoutableVariant(m.variant),
+    );
+    if (sibling === undefined || !sibling.batchCapable) return null;
+    const stored = entries(tierId).find((e) => e.modelId === sibling.id);
+    return stored?.mode === 'batch' ? null : sibling.id;
   };
   // Only `header` rules are user-editable here; `auto_high`/`auto_low` drive band
   // routing and are read-only (deleting them would silently break structural/cascade).
@@ -1750,6 +1782,70 @@ export function Routing() {
                           >
                             {modelPriceLabel(modelById(entry.modelId))}
                           </span>
+                          {/* The batch reservation (add-batch-mode-routing). Shown where
+                              the provider can run a batch — and ALWAYS where the entry is
+                              already reserved, however the provider looks now, because a
+                              PUT resubmits every entry: suppressing it on capability
+                              alone would leave a tenant whose provider lost its seam
+                              unable to edit the tier at all (D12). */}
+                          <Show
+                            when={
+                              entry.mode === 'batch' ||
+                              (modelById(entry.modelId)?.batchCapable ?? false)
+                            }
+                          >
+                            <span class="chain-mode">
+                              {(() => {
+                                const [helpId, setHelpId] = createSignal<string>();
+                                return (
+                                  <>
+                                    <Toggle
+                                      on={entry.mode === 'batch'}
+                                      label={`Reserve ${entryLabel(entry)} for batch only`}
+                                      describedBy={helpId()}
+                                      onToggle={() =>
+                                        app.setTierEntryMode(
+                                          t.id,
+                                          entry.modelId,
+                                          entry.mode === 'batch' ? 'any' : 'batch',
+                                        )
+                                      }
+                                    />
+                                    <span
+                                      data-mode-label={entry.modelId}
+                                      style="font:400 10.5px 'Geist',sans-serif;color:var(--text3)"
+                                    >
+                                      batch only
+                                    </span>
+                                    <BatchModeHelp
+                                      entryLabel={entryLabel(entry)}
+                                      model={modelById(entry.modelId)}
+                                      onId={setHelpId}
+                                      onPress={() => {
+                                        suppressDrag = true;
+                                      }}
+                                    />
+                                  </>
+                                );
+                              })()}
+                            </span>
+                          </Show>
+                          {/* A reservation the provider can no longer honour. Same
+                              treatment as a stored non-routable member, and for the same
+                              reason: the tenant's signal must not be a rejected save. */}
+                          <Show
+                            when={
+                              entry.mode === 'batch' &&
+                              !(modelById(entry.modelId)?.batchCapable ?? false)
+                            }
+                          >
+                            <span
+                              data-mode-orphaned={entry.modelId}
+                              style="font:400 10.5px 'Geist',sans-serif;color:var(--amber)"
+                            >
+                              reserved for batch, but this provider has no batch API
+                            </span>
+                          </Show>
                           {/* A member stored before classification can be batch-only
                               (add-model-variant-detection). Excluding it from the picker
                               is not enough: without this, the tenant's only signal is a
@@ -1847,10 +1943,12 @@ export function Routing() {
                   </div>
                   <div style="padding:8px 18px">
                     <ModelPicker
-                      groups={groupModelsByProvider(addableModels(t.id), state.providers)}
+                      groups={groupModelsByProvider(addableModels(t.id), state.providers, (twin) =>
+                        reserveTargetFor(t.id, twin),
+                      )}
                       labelledBy={`tier-h-${t.id}`}
                       priceLabel={(m) => modelPriceLabel(m)}
-                      onCommit={(id) => app.addTierModel(t.id, id)}
+                      onCommit={(id, mode) => app.addTierModel(t.id, id, mode)}
                     />
                   </div>
                 </div>

@@ -13,6 +13,13 @@ import { visibleBounds } from '../visualViewport';
 import type { Model } from '../types';
 import { Icon } from './Icon';
 
+/** A picker row that RESERVES the model a batch-priced twin prices, rather than
+ * adding the twin. Marked on the row via a non-enumerable-ish convention field so
+ * the existing `Model`-shaped plumbing (filtering, grouping, keyboard nav) is
+ * untouched — the alternative was a parallel item type through every layer. */
+export const reserveBaseIdOf = (m: Model & { reserveBaseId?: string }): string | null =>
+  m.reserveBaseId ?? null;
+
 export interface ModelGroup {
   label: string;
   models: Model[];
@@ -50,7 +57,9 @@ interface ModelPickerProps {
   /** id of the tier card's visible header — the accessible-name base. */
   labelledBy: string;
   priceLabel: (m: Model) => string;
-  onCommit: (modelId: string) => void;
+  /** `mode` reserves the committed entry (add-batch-mode-routing). A shortcut row
+   * commits the BASE model id with `'batch'` — the twin id is never a target. */
+  onCommit: (modelId: string, mode?: 'any' | 'batch') => void;
 }
 
 /** Hand-rolled WAI-ARIA combobox for the tier add-model flow: a single-tab-stop
@@ -122,7 +131,9 @@ export function ModelPicker(props: ModelPickerProps) {
     if (!open()) return;
     const vv = globalThis.visualViewport;
     if (!vv) return;
-    const onChange = (): void => { measure(); };
+    const onChange = (): void => {
+      measure();
+    };
     vv.addEventListener('resize', onChange);
     vv.addEventListener('scroll', onChange);
     onCleanup(() => {
@@ -164,7 +175,12 @@ export function ModelPicker(props: ModelPickerProps) {
   };
 
   const commit = (m: Model): void => {
-    props.onCommit(m.id);
+    // A shortcut row stands for "reserve the model this twin prices": it commits the
+    // BASE id, so the stored entry is indistinguishable from toggling that model
+    // directly and the non-routable twin never becomes a target.
+    const reserve = reserveBaseIdOf(m);
+    if (reserve !== null) props.onCommit(reserve, 'batch');
+    else props.onCommit(m.id);
     setQuery('');
     close();
     inputEl?.focus();

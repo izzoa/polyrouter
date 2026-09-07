@@ -709,6 +709,98 @@ select:focus {
   display: contents;
 }
 
+/* The batch reservation control (add-batch-mode-routing). Sits before the action group
+   so the row reads model → price → reservation → actions, and never grows the row: a
+   chain can hold five of these, and at the narrow width it wraps with the rest of the
+   row's content rather than forcing a horizontal scroll. */
+/* Declared here, not inline: the narrow layer has to override `flex` and let this wrap,
+   and an inline value cannot be reached from a stylesheet — the same trap the batches
+   table hit when `display` sat at a specificity a container query could not beat. */
+.chain-mode {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  margin-left: 4px;
+}
+
+/* ---- the reservation's help text (add-batch-mode-help) ----
+ *
+ * TWO presentations of ONE element, so `aria-describedby` points at the same node at
+ * every width. Above the narrow threshold it is a fixed-position card disclosed on
+ * hover/focus; below it, static in-flow text that is simply always there.
+ *
+ * The card must be `fixed`, not absolute: every tier card is `overflow: hidden`, so a
+ * card positioned inside the row is clipped at the panel's edge — most visibly on a
+ * tier holding one row, where there is nothing below to clip into. Same constraint the
+ * add-model combobox solves the same way. */
+.chain-help {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+.chain-help-trigger {
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  font:
+    500 10px 'Geist',
+    sans-serif;
+  color: var(--text3);
+  cursor: help;
+  position: relative;
+}
+.chain-help-trigger:hover,
+.chain-help-trigger:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+/* The 24px base floor in both axes (STYLESEED `target-base`) reached by an expanded
+   hit area rather than a bigger circle — the same device the switch beside it uses. */
+.chain-help-trigger::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 24px;
+  height: 24px;
+}
+/* Undecorated and hidden by default. ALL the card treatment lives on the revealed
+   state, so the narrow layer below needs no reset — it makes this visible and in-flow,
+   and `.chain-help-shown` never applies there because nothing discloses it. That also
+   keeps the elevation lock satisfied without needing to clear the shadow in the narrow
+   layer — the lock's guard requires every shadow value to be a token, and it scans
+   comments as well as declarations, so there is no way to write the override even in
+   prose. */
+.chain-help-card {
+  display: none;
+}
+.chain-help-shown {
+  display: block;
+  position: fixed;
+  width: 300px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow-pop);
+}
+.chain-help-line {
+  font:
+    400 11.5px 'Geist',
+    sans-serif;
+  color: var(--text2);
+  line-height: 1.5;
+}
+.chain-help-line + .chain-help-line {
+  margin-top: 6px;
+}
+
 /* The tier card's header. Held here rather than inline so the narrow layer can let it
    wrap — at 320px the tier name and the reorder hint ran together into "Defaultdrag to
    reorder" on one unwrappable line. */
@@ -1293,6 +1385,31 @@ select:focus {
   /* The actions become a real box on their own line, wrapping within it — a fallback row
      carries five controls (handle, up, down, "Make primary", remove) and they do not fit
      one line at 320px however they are arranged. */
+  /* The help text is ALWAYS VISIBLE here and takes its own line, exactly as the model
+     id and the action group do. Nothing is disclosed, so there is nothing to tap —
+     which is the point: a tap belongs to the switch, whose hit area already expands to
+     44x44 under a coarse pointer, and a second trigger would compete for space in the
+     most cramped row in the app. `position: static` makes the measured coordinates
+     inert without having to clear them. */
+  /* The reservation and its help take a line of their own, and the help fills it —
+     `.chain-help` is a child of `.chain-mode`, so `.chain-mode` is the one that has to
+     wrap and go full width, or a full-width child simply overflows the row. */
+  .chain-mode {
+    order: 3;
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    margin-left: 0;
+  }
+  .chain-help {
+    flex: 1 1 100%;
+  }
+  .chain-help-trigger {
+    display: none;
+  }
+  .chain-help-card {
+    display: block;
+  }
+
   .chain-actions {
     display: flex;
     order: 2;

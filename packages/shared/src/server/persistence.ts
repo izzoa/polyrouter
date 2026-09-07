@@ -162,9 +162,29 @@ export interface RoutingEntryAccessor {
   replaceForTier(
     principal: Principal,
     tierId: string,
-    orderedModelIds: string[],
+    ordered: readonly ReplaceEntryInput[],
   ): Promise<ReplaceEntriesResult>;
 }
+
+/**
+ * One member of a replacement chain (add-batch-mode-routing). A bare id — or an
+ * object with no `mode` — does NOT assert that the entry is unreserved: it
+ * PRESERVES the mode already stored for that model in that tier, defaulting to
+ * `any` only for a model the tier did not already hold.
+ *
+ * That rule lives here, at the one place a chain is written, rather than in an
+ * HTTP handler: the wire carries ids only on every path that predates the field
+ * (and on the optimistic queue behind the dashboard's drag-and-drop), and a
+ * chain-replacing API resubmits every entry on every edit — so reading a bare id
+ * as `any` would make silently clearing a tenant's reservations the DEFAULT
+ * outcome of reordering, not an edge case.
+ */
+export type ReplaceEntryInput =
+  string | { readonly modelId: string; readonly mode?: 'any' | 'batch' };
+
+/** The model id a replacement member names, whichever form it took. */
+export const replaceEntryModelId = (e: ReplaceEntryInput): string =>
+  typeof e === 'string' ? e : e.modelId;
 
 /** Narrow identity-plane accessor for infrastructure that predates auth (#3's
  * first-admin race needs a user count inside an advisory lock). */

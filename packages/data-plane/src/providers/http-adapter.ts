@@ -84,6 +84,14 @@ export interface AdapterDeps {
   /** The batch implementation to attach (add-batch-inference): chosen by the
    * factory from the provider family; absent = no batch seam on this adapter. */
   readonly batch?: BatchFactory;
+  /** Which batch predicate the factory should apply when `batch` is not supplied
+   * (add-batch-mode-routing). `submission` (the default) refuses the kinds that
+   * may not START a batch; `servicing` is for a job the system has ALREADY
+   * accepted — polling, cancel, settlement, results — and admits kinds that may
+   * no longer submit, because narrowing eligibility must never strand accepted
+   * work. Naming the PURPOSE rather than pre-selecting a factory keeps the
+   * predicate itself in one place. */
+  readonly batchPurpose?: 'submission' | 'servicing';
 }
 
 export function errMeta(res: HttpResponse): { requestId?: string } {

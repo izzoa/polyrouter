@@ -328,11 +328,22 @@ export const routingEntries = pgTable(
       .notNull()
       .references(() => models.id, { onDelete: 'cascade' }),
     position: integer('position').notNull(),
+    // Which execution mode this entry is reserved for (add-batch-mode-routing).
+    // `any` carries no restriction and is what every entry predating the column
+    // is: a synchronous walk may use it and a batch may resolve to it. `batch`
+    // RESERVES the entry — a synchronous walk excludes it before position 0
+    // (`fallback-routing`), and a batch prefers it (`batch-inference`). NOT NULL
+    // with a default so the migration needs no backfill and no row can present a
+    // fourth state to the resolver.
+    mode: text('mode').default('any').notNull(),
   },
   (t) => [
     uniqueIndex('routing_entry_tier_position_unique').on(t.tierId, t.position),
     index('routing_entry_tier_idx').on(t.tierId),
     check('routing_entry_position_range', sql`${t.position} BETWEEN 0 AND 4`),
+    // The taxonomy is closed at the database, so widening it is a deliberate
+    // migration rather than an accident of an application write.
+    check('routing_entry_mode_valid', sql`${t.mode} IN ('any', 'batch')`),
   ],
 );
 

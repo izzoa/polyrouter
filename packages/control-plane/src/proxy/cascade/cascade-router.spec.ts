@@ -46,8 +46,8 @@ function snapshot(rules: RouteRule[]): RoutingSnapshot {
       { id: 't-cheap', key: 'cheap' },
     ],
     entriesByTierId: new Map([
-      ['t-prem', [{ modelId: 'm-prem', position: 0 }]],
-      ['t-cheap', [{ modelId: 'm-cheap', position: 0 }]],
+      ['t-prem', [{ modelId: 'm-prem', position: 0, mode: 'any' as const }]],
+      ['t-cheap', [{ modelId: 'm-cheap', position: 0, mode: 'any' as const }]],
     ]),
     rules,
     models: [
@@ -149,8 +149,8 @@ describe('CascadeRouter.plan — class scope + per-leg provenance (add-workload-
       ],
       entriesByTierId: new Map([
         ...base.entriesByTierId,
-        ['t-cc', [{ modelId: 'm-cheap', position: 0 }]],
-        ['t-sc', [{ modelId: 'm-prem', position: 0 }]],
+        ['t-cc', [{ modelId: 'm-cheap', position: 0, mode: 'any' as const }]],
+        ['t-sc', [{ modelId: 'm-prem', position: 0, mode: 'any' as const }]],
         ['t-empty', []],
       ]),
     };

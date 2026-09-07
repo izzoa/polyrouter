@@ -48,11 +48,18 @@ function mkModel(id: string): ModelDto {
     listedPrice: null,
     variant: null,
     baseExternalModelId: null,
+    batchCapable: true,
+    batchEffectivePrice: null,
     lastSyncedAt: null,
   };
 }
-function mkEntry(tierId: string, modelId: string, position: number): TierEntryDto {
-  return { id: `e-${tierId}-${modelId}`, tierId, modelId, position, model: null };
+function mkEntry(
+  tierId: string,
+  modelId: string,
+  position: number,
+  mode: 'any' | 'batch' = 'any',
+): TierEntryDto {
+  return { id: `e-${tierId}-${modelId}`, tierId, modelId, position, mode, model: null };
 }
 const TIER: TierDto = {
   id: 't1',
@@ -131,6 +138,11 @@ function ghost(host: HTMLElement): string {
   return g.map((r) => r.dataset['modelId'] ?? '?').join(',') || 'none';
 }
 
+/** The model ids of one recorded replacement. The payload carries
+ * `{modelId, mode}` since add-batch-mode-routing; these assertions are about order. */
+const idsOf = (call: { args: unknown[] } | undefined): string[] | undefined =>
+  (call?.args[1] as { modelId: string }[] | undefined)?.map((e) => e.modelId);
+
 /** Recorded `replaceTierEntries` calls (fake.calls is method NAMES only; callLog has args). */
 function writesOf(fake: FakeApiClient): { method: string; args: unknown[] }[] {
   return fake.callLog.filter((c) => c.method === 'replaceTierEntries');
@@ -144,7 +156,16 @@ function stubRects(host: HTMLElement, heights?: number[]): void {
     const t = top;
     top += h;
     row.getBoundingClientRect = (): DOMRect =>
-      ({ top: t, bottom: t + h, height: h, left: 0, right: 100, width: 100, x: 0, y: t }) as DOMRect;
+      ({
+        top: t,
+        bottom: t + h,
+        height: h,
+        left: 0,
+        right: 100,
+        width: 100,
+        x: 0,
+        y: t,
+      }) as DOMRect;
   });
 }
 
@@ -312,7 +333,7 @@ describe('tier chain drag reorder', () => {
       await flush();
       const writes = writesOf(h.fake);
       expect(writes).toHaveLength(1);
-      expect(writes[0]?.args[1]).toEqual(['m3', 'm1', 'm2']);
+      expect(idsOf(writes[0])).toEqual(['m3', 'm1', 'm2']);
     } finally {
       h.dispose();
     }
@@ -330,7 +351,7 @@ describe('tier chain drag reorder', () => {
       expect(ghost(h.host)).toBe('none');
       const writes = writesOf(h.fake);
       expect(writes).toHaveLength(1);
-      expect(writes[0]?.args[1]).toEqual(['m2', 'm1', 'm3']);
+      expect(idsOf(writes[0])).toEqual(['m2', 'm1', 'm3']);
     } finally {
       h.dispose();
     }
@@ -381,7 +402,7 @@ describe('tier chain drag vs concurrent server state', () => {
       fire(rows(h.host)[2]!, 'dragend', bag);
       await flush();
       const writes = writesOf(fake);
-      expect(writes[writes.length - 1]?.args[1]).toEqual(['m1', 'm3', 'm2']);
+      expect(idsOf(writes[writes.length - 1])).toEqual(['m1', 'm3', 'm2']);
       expect(order(h.host)).toEqual(['m1', 'm3', 'm2']);
     } finally {
       h.dispose();
@@ -409,7 +430,7 @@ describe('tier chain drag vs concurrent server state', () => {
       fire(rows(h.host)[2]!, 'dragend', bag);
       await flush();
       const writes = writesOf(fake);
-      expect(writes[writes.length - 1]?.args[1]).toEqual(['m2', 'm3', 'm1']);
+      expect(idsOf(writes[writes.length - 1])).toEqual(['m2', 'm3', 'm1']);
     } finally {
       h.dispose();
     }
@@ -584,7 +605,7 @@ describe('tier chain keyboard reorder', () => {
       const focusedRow = document.activeElement?.closest('.chain-row') as HTMLElement | null;
       expect(focusedRow?.dataset['modelId']).toBe('m3');
       const writes = writesOf(h.fake);
-      expect(writes[writes.length - 1]?.args[1]).toEqual(['m1', 'm3', 'm2']);
+      expect(idsOf(writes[writes.length - 1])).toEqual(['m1', 'm3', 'm2']);
     } finally {
       h.dispose();
     }
@@ -689,7 +710,7 @@ describe('tier chain keyboard reorder', () => {
       }
       const writes = writesOf(fake);
       expect(writes.length - before).toBeLessThan(KEYPRESSES);
-      expect(writes[writes.length - 1]?.args[1]).toEqual(['m2', 'm3', 'm4', 'm1']);
+      expect(idsOf(writes[writes.length - 1])).toEqual(['m2', 'm3', 'm4', 'm1']);
     } finally {
       h.dispose();
     }
@@ -708,7 +729,13 @@ describe('tier chain reorder — store-level hold semantics', () => {
       fake.tierWriteQueue.shift()?.settle('resolve');
       await flush();
       // Visible state held; the rollback baseline still tracks server truth.
-      expect(h.store.state.confirmedEntries['t1']).toEqual(['m3', 'm1', 'm2']);
+      // `confirmedEntries` carries `{modelId, mode}` since add-batch-mode-routing, so a
+      // rollback restores reservations as well as order; this asserts the order.
+      expect(h.store.state.confirmedEntries['t1']?.map((e) => e.modelId)).toEqual([
+        'm3',
+        'm1',
+        'm2',
+      ]);
       h.store.endTierDrag('t1', 'abandon');
       await flush();
     } finally {

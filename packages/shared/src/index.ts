@@ -59,6 +59,8 @@ export { HARNESS_TYPES, HARNESS_LABELS, connectionSnippet, isHarnessType } from 
 export type { HarnessType } from './harness';
 export { ATTEMPT_FAILURES_MAX } from './attempt-failures';
 export {
+  BATCH_COMPLETION_WINDOW_MS,
+  BATCH_COMPLETION_WINDOW_TEXT,
   BATCH_ENDPOINTS,
   BATCH_JOB_ERROR_KINDS,
   BATCH_JOB_STATUSES,

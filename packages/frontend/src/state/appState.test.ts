@@ -77,11 +77,37 @@ function mkModel(id: string): ModelDto {
     listedPrice: null,
     variant: null,
     baseExternalModelId: null,
+    batchCapable: true,
+    batchEffectivePrice: null,
     lastSyncedAt: null,
   };
 }
-function mkEntry(tierId: string, modelId: string, position: number): TierEntryDto {
-  return { id: `e-${modelId}`, tierId, modelId, position, model: null };
+/** The model ids of the confirmed baseline for a tier. It stores `{modelId, mode}`
+ * since add-batch-mode-routing, so a rollback restores reservations as well as
+ * order; these assertions are about ORDER. */
+function confirmedIds(
+  s: { state: { confirmedEntries: Record<string, { modelId: string }[]> } },
+  tierId: string,
+): string[] | undefined {
+  return s.state.confirmedEntries[tierId]?.map((e) => e.modelId);
+}
+
+/** The model ids of the LAST chain replacement sent. The wire carries
+ * `{modelId, mode}` since add-batch-mode-routing; these assertions are about ORDER,
+ * so they read the ids off it rather than pinning the payload shape. */
+function sentIds(f: { lastArgs: (m: string) => unknown[] | undefined }): string[] | undefined {
+  const args = f.lastArgs('replaceTierEntries');
+  if (args === undefined) return undefined;
+  return (args[1] as { modelId: string }[]).map((e) => e.modelId);
+}
+
+function mkEntry(
+  tierId: string,
+  modelId: string,
+  position: number,
+  mode: 'any' | 'batch' = 'any',
+): TierEntryDto {
+  return { id: `e-${modelId}`, tierId, modelId, position, mode, model: null };
 }
 function mkChannel(id: string, kind: 'smtp' | 'apprise'): ChannelDto {
   return {
@@ -565,7 +591,7 @@ describe('onboarding (failure-aware walk)', () => {
     const putArgs = fake.lastArgs('replaceTierEntries');
     expect(putArgs?.[0]).toBe('tier-default');
     expect(Array.isArray(putArgs?.[1])).toBe(true);
-    expect((putArgs?.[1] as string[]).length).toBe(1);
+    expect(sentIds(fake)?.length).toBe(1);
 
     s.obGo(3);
     await s.obVerify();
@@ -588,6 +614,8 @@ describe('onboarding (failure-aware walk)', () => {
         ...blankModel(providerId, 'm-twin', 'openai/gpt-6-astra:batch'),
         variant: 'batch',
         baseExternalModelId: 'openai/gpt-6-astra',
+        batchCapable: true,
+        batchEffectivePrice: null,
       },
       blankModel(providerId, 'm-base', 'openai/gpt-6-astra'),
     ];
@@ -602,8 +630,7 @@ describe('onboarding (failure-aware walk)', () => {
     setProv(s);
     await s.obConnectProvider();
     expect(s.state.ob.done2).toBe(true);
-    const putArgs = fake.lastArgs('replaceTierEntries');
-    expect(putArgs?.[1]).toEqual(['m-base']); // never the twin
+    expect(sentIds(fake)).toEqual(['m-base']); // never the twin
   });
 
   it('stops when a provider exposes only batch-only models', async () => {
@@ -612,6 +639,8 @@ describe('onboarding (failure-aware walk)', () => {
         ...blankModel(providerId, 'm-twin', 'openai/gpt-6-astra:batch'),
         variant: 'batch',
         baseExternalModelId: null,
+        batchCapable: true,
+        batchEffectivePrice: null,
       },
     ];
     const fake = new FakeApiClient({
@@ -705,7 +734,7 @@ describe('routing config (real CRUD)', () => {
     await s.loadRouting();
     s.moveTierEntry('t1', 2, 0);
     await s.commitTierOrder('t1');
-    expect(fake.lastArgs('replaceTierEntries')).toEqual(['t1', ['m3', 'm1', 'm2']]);
+    expect(sentIds(fake)).toEqual(['m3', 'm1', 'm2']);
   });
 
   it('adds a model (appended modelIds) and caps at 5 with a toast', async () => {
@@ -714,7 +743,7 @@ describe('routing config (real CRUD)', () => {
     await s.loadRouting();
     s.addTierModel('t1', 'm4');
     await tick();
-    expect(fake.lastArgs('replaceTierEntries')).toEqual(['t1', ['m1', 'm2', 'm3', 'm4']]);
+    expect(sentIds(fake)).toEqual(['m1', 'm2', 'm3', 'm4']);
     s.addTierModel('t1', 'm5');
     await tick();
     expect(s.state.tierEntries['t1']).toHaveLength(5);
@@ -730,7 +759,7 @@ describe('routing config (real CRUD)', () => {
     await s.loadRouting();
     s.removeTierModel('t1', 'm2');
     await tick();
-    expect(fake.lastArgs('replaceTierEntries')).toEqual(['t1', ['m1', 'm3']]);
+    expect(sentIds(fake)).toEqual(['m1', 'm3']);
   });
 
   it('sets a fallback as primary (position 0)', async () => {
@@ -739,7 +768,7 @@ describe('routing config (real CRUD)', () => {
     await s.loadRouting();
     s.setPrimaryTierModel('t1', 'm3');
     await tick();
-    expect(fake.lastArgs('replaceTierEntries')).toEqual(['t1', ['m3', 'm1', 'm2']]);
+    expect(sentIds(fake)).toEqual(['m3', 'm1', 'm2']);
   });
 
   it('creates and deletes a header rule (value → tier:<key>)', async () => {
@@ -975,7 +1004,7 @@ describe('config write serialization & single-flight guards (#20 review)', () =>
       'm4',
       'm5',
     ]);
-    expect(s.state.confirmedEntries['t1']).toEqual(['m1', 'm2', 'm3', 'm4', 'm5']);
+    expect(confirmedIds(s, 't1')).toEqual(['m1', 'm2', 'm3', 'm4', 'm5']);
   });
 
   it('rolls a failed reorder back to the CONFIRMED order, not the mid-drag order (#1)', async () => {
@@ -990,7 +1019,7 @@ describe('config write serialization & single-flight guards (#20 review)', () =>
     await tick();
     // Rollback restores the server-confirmed order, NOT the failed optimistic one.
     expect(s.state.tierEntries['t1']?.map((e) => e.modelId)).toEqual(['m1', 'm2', 'm3']);
-    expect(s.state.confirmedEntries['t1']).toEqual(['m1', 'm2', 'm3']);
+    expect(confirmedIds(s, 't1')).toEqual(['m1', 'm2', 'm3']);
   });
 
   it('serializes auto-layer toggles: a failed earlier PUT never loses the newer toggle (#2)', async () => {
@@ -1068,12 +1097,12 @@ describe('stale-loader-overwrite guards (#20 verify pass)', () => {
     // A PUT succeeds during the load — confirmed/visible advance to [..m4].
     s.addTierModel('t1', 'm4');
     await tick();
-    expect(s.state.confirmedEntries['t1']).toEqual(['m1', 'm2', 'm3', 'm4']);
+    expect(confirmedIds(s, 't1')).toEqual(['m1', 'm2', 'm3', 'm4']);
     // The stale GET now resolves — it must NOT clobber the just-persisted state.
     fake.gateReads = false;
     fake.openGate();
     await reload;
-    expect(s.state.confirmedEntries['t1']).toEqual(['m1', 'm2', 'm3', 'm4']);
+    expect(confirmedIds(s, 't1')).toEqual(['m1', 'm2', 'm3', 'm4']);
     expect(s.state.tierEntries['t1']?.map((e) => e.modelId)).toEqual(['m1', 'm2', 'm3', 'm4']);
   });
 
@@ -1267,8 +1296,7 @@ describe('E12.4 — the setup guide does not wipe an existing default-tier chain
     await s.obConnectProvider();
 
     expect(s.state.ob.done2).toBe(true);
-    const args = fake.lastArgs('replaceTierEntries');
-    const sent = args?.[1] as string[];
+    const sent = sentIds(fake) ?? [];
     // The existing chain is preserved and the new model is appended (not wiped to 1).
     expect(sent.slice(0, 2)).toEqual(['keep-1', 'keep-2']);
     expect(sent.length).toBe(3);
@@ -1281,7 +1309,7 @@ describe('E12.4 — the setup guide does not wipe an existing default-tier chain
     await s.bootstrap();
     s.setState('ob', 'prov', { ...LOCAL_FORM });
     await s.obConnectProvider();
-    const sent = fake.lastArgs('replaceTierEntries')?.[1] as string[];
+    const sent = sentIds(fake) ?? [];
     expect(sent.length).toBe(1);
   });
 

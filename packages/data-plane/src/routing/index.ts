@@ -18,6 +18,8 @@ export type {
   ParsedRoute,
   RouteTier,
   RouteEntry,
+  EntryMode,
+  ResolutionMode,
   RouteRule,
   RouteModel,
   RouteTarget,

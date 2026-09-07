@@ -36,6 +36,7 @@ import {
   type SemanticLearningEventInput,
   type SemanticLearningEventRowView,
   type TierRow,
+  replaceEntryModelId,
 } from '@polyrouter/shared/server';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { createAnalyticsAccessor } from './analytics.queries';
@@ -358,7 +359,8 @@ function createRoutingEntryAccessor(db: Db): RoutingEntryAccessor {
         .returning({ id: routingEntries.id });
       return rows.length > 0;
     },
-    async replaceForTier(principal, tierId, orderedModelIds) {
+    async replaceForTier(principal, tierId, ordered) {
+      const orderedModelIds = ordered.map(replaceEntryModelId);
       return db.transaction(async (tx) => {
         // Lock the owned tier row so concurrent replacements serialize instead
         // of racing the non-deferrable UNIQUE(tier_id, position).
@@ -387,13 +389,35 @@ function createRoutingEntryAccessor(db: Db): RoutingEntryAccessor {
           if (unknown.length > 0) return { status: 'unknown_models' as const, modelIds: unknown };
         }
 
+        // A member that does not STATE a mode keeps the one already stored for that
+        // model in this tier (add-batch-mode-routing D11). Read before the delete,
+        // inside the same transaction, so a concurrent edit cannot interleave.
+        const priorMode = new Map<string, string>();
+        for (const row of await tx
+          .select({ modelId: routingEntries.modelId, mode: routingEntries.mode })
+          .from(routingEntries)
+          .where(eq(routingEntries.tierId, tierId))) {
+          priorMode.set(row.modelId, row.mode);
+        }
+
         // All-or-nothing replace: clear the chain, reinsert at positions 0..N-1.
         await tx.delete(routingEntries).where(eq(routingEntries.tierId, tierId));
         const entries =
-          orderedModelIds.length > 0
+          ordered.length > 0
             ? await tx
                 .insert(routingEntries)
-                .values(orderedModelIds.map((modelId, position) => ({ tierId, modelId, position })))
+                .values(
+                  ordered.map((e, position) => {
+                    const modelId = replaceEntryModelId(e);
+                    const stated = typeof e === 'string' ? undefined : e.mode;
+                    return {
+                      tierId,
+                      modelId,
+                      position,
+                      mode: stated ?? priorMode.get(modelId) ?? 'any',
+                    };
+                  }),
+                )
                 .returning()
             : [];
         return { status: 'ok' as const, entries };

@@ -18,6 +18,8 @@ const model = (id: string, providerId: string, externalModelId: string): Model =
   listedPrice: null,
   variant: null,
   baseExternalModelId: null,
+  batchCapable: true,
+  batchEffectivePrice: null,
   lastSyncedAt: null,
 });
 

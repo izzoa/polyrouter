@@ -40,6 +40,8 @@ import {
   type ProviderKind,
   type ProviderModelInfo,
   type ProviderListedPricing,
+  batchFactoryFor,
+  type BatchSeamInput,
 } from '@polyrouter/data-plane';
 import type {
   CreateProviderDto,
@@ -96,13 +98,7 @@ export interface SafeProvider {
 /** The provenance of an `EffectivePrice` — the billing-resolver sources plus the
  * display-only `listed` estimate (add-provider-price-sync-and-edit). */
 export type EffectivePriceSource =
-  | 'model'
-  | 'local'
-  | 'bundled'
-  | 'refresh'
-  | 'manual'
-  | 'native_family'
-  | 'listed';
+  'model' | 'local' | 'bundled' | 'refresh' | 'manual' | 'native_family' | 'listed';
 
 /** A model's current effective price for display (add-provider-price-sync-and-edit).
  * Resolved read-time through the SAME pure resolver the recorded-cost path uses
@@ -153,6 +149,23 @@ export interface SafeModel {
    * variant's base id is not present on that provider (an orphan twin), so a
    * client is never pointed at a model that is not there. */
   baseExternalModelId: string | null;
+  /** Whether this model's PROVIDER carries the batch adapter seam, so a chain
+   * entry naming it may be reserved for batch (add-batch-mode-routing). Derived
+   * server-side from the provider's `kind`, base-URL family, and protocol through
+   * the same predicate the batch path uses — never re-derived in the SPA, where a
+   * second copy of `deriveProviderFamily` would drift from the price-key
+   * derivation it was extracted to keep aligned.
+   *
+   * REQUIRED, not optional: a producer that omitted it would leave the dashboard
+   * unable to tell "not capable" from "not stated", and it gates a control whose
+   * absence must be trustworthy. Deliberately NOT on the routing snapshot — that
+   * is loaded per synchronous request and does not read providers (invariant 9). */
+  batchCapable: boolean;
+  /** That model's price resolved in BATCH mode (add-batch-mode-help), in the same
+   * shape as `effectivePrice` and flagged `estimated` on the same terms, or null
+   * when no batch price resolves from any source. Null is a state to report, never
+   * a reason to substitute the synchronous price. */
+  batchEffectivePrice: EffectivePrice | null;
   lastSyncedAt: Date | null;
 }
 
@@ -257,6 +270,11 @@ function toEffectivePrice(
   providerKind: string,
   catalogRow: ModelPriceRow | null,
   nativeCatalogRow: ModelPriceRow | null = null,
+  /** BATCH mode (add-batch-mode-help): the sibling aggregator twin whose captured
+   * rate is the last-resort estimate. It lives on the TWIN's own row — not on this
+   * model's and not on the catalog row — so a resolution that omitted it would
+   * report null for exactly the provider whose batch rate is most often knowable. */
+  batch: { twin: ModelRow | null } | null = null,
 ): EffectivePrice | null {
   // The listed fallback now lives in the shared resolver (record-listed-price-
   // fallback), so display + recorded cost resolve identically — this supplies the
@@ -273,6 +291,13 @@ function toEffectivePrice(
     },
     catalogRow,
     nativeCatalogRow,
+    batch === null
+      ? undefined
+      : {
+          mode: 'batch',
+          listedBatchInputPricePer1m: batch.twin?.listedInputPricePer1m ?? null,
+          listedBatchOutputPricePer1m: batch.twin?.listedOutputPricePer1m ?? null,
+        },
   );
   if (snap === null) return null;
   return {
@@ -286,10 +311,31 @@ function toEffectivePrice(
   };
 }
 
+/**
+ * Whether a provider carries the batch adapter seam (add-batch-mode-routing).
+ * Delegates to the data plane's SUBMISSION predicate, so the dashboard's control
+ * and the batch path can never disagree about what is reservable — the reason
+ * this is derived server-side rather than in the SPA.
+ */
+function providerBatchCapable(p: ProviderRow | undefined): boolean {
+  if (p === undefined || p.baseUrl === null) return false;
+  // The row's columns are plain text; the predicate's enums are the authority, and
+  // an unrecognized value simply matches nothing rather than widening the seam.
+  return (
+    batchFactoryFor({
+      kind: p.kind as BatchSeamInput['kind'],
+      protocol: p.protocol as BatchSeamInput['protocol'],
+      baseUrl: p.baseUrl,
+    }) !== undefined
+  );
+}
+
 function toSafeModel(
   m: ModelRow,
   effectivePrice: EffectivePrice | null = null,
   baseExternalModelId: string | null = null,
+  batchCapable = false,
+  batchEffectivePrice: EffectivePrice | null = null,
 ): SafeModel {
   return {
     id: m.id,
@@ -315,6 +361,8 @@ function toSafeModel(
         : null,
     variant: m.variant,
     baseExternalModelId,
+    batchCapable,
+    batchEffectivePrice,
     lastSyncedAt: m.lastSyncedAt,
   };
 }
@@ -367,9 +415,13 @@ export class ProvidersService {
       // Every NEW write stores the typed envelope; plain input is WRAPPED so a pasted
       // marker-lookalike can never forge an OAuth credential (add-subscription-oauth).
       ...(dto.credential !== undefined && dto.credential !== ''
-        ? { encryptedCredentials: encryptSecret(serializePlainCredential(dto.credential), this.key) }
+        ? {
+            encryptedCredentials: encryptSecret(serializePlainCredential(dto.credential), this.key),
+          }
         : {}),
-      ...(dto.firstByteTimeoutMs !== undefined ? { firstByteTimeoutMs: dto.firstByteTimeoutMs } : {}),
+      ...(dto.firstByteTimeoutMs !== undefined
+        ? { firstByteTimeoutMs: dto.firstByteTimeoutMs }
+        : {}),
       ...(dto.idleTimeoutMs !== undefined ? { idleTimeoutMs: dto.idleTimeoutMs } : {}),
       // Mapped by hand (like every field here) — omit to take the schema `auto` default.
       ...(dto.maxTokensSpelling !== undefined ? { maxTokensSpelling: dto.maxTokensSpelling } : {}),
@@ -423,7 +475,9 @@ export class ProvidersService {
       ...(dto.protocol !== undefined ? { protocol: dto.protocol } : {}),
       // Timeout overrides (fix-long-call-timeouts): explicit null clears to
       // inherit; omitted preserves.
-      ...(dto.firstByteTimeoutMs !== undefined ? { firstByteTimeoutMs: dto.firstByteTimeoutMs } : {}),
+      ...(dto.firstByteTimeoutMs !== undefined
+        ? { firstByteTimeoutMs: dto.firstByteTimeoutMs }
+        : {}),
       ...(dto.idleTimeoutMs !== undefined ? { idleTimeoutMs: dto.idleTimeoutMs } : {}),
       // Omitted preserves the stored value (an explicit null was already rejected at the DTO).
       ...(dto.maxTokensSpelling !== undefined ? { maxTokensSpelling: dto.maxTokensSpelling } : {}),
@@ -620,10 +674,7 @@ export class ProvidersService {
         keys.add(key);
         // Native-family fallback keys ride the SAME batch (derived up front — no
         // follow-up query per exact-key miss; add-native-price-fallback).
-        const nativeKey = deriveNativeFamilyKey(
-          key.slice(0, key.indexOf(':')),
-          r.externalModelId,
-        );
+        const nativeKey = deriveNativeFamilyKey(key.slice(0, key.indexOf(':')), r.externalModelId);
         if (nativeKey !== null) {
           nativeKeyByModel.set(r.id, nativeKey);
           keys.add(nativeKey);
@@ -640,6 +691,17 @@ export class ProvidersService {
       set.add(r.externalModelId);
       idsByProvider.set(r.providerId, set);
     }
+    // Batch twins indexed by (provider, BASE external id) — the same pairing rule the
+    // recorded-cost path uses (add-batch-mode-help task 1.2). The twin's captured rate
+    // is the last-resort batch estimate and lives on the TWIN's own row, so resolving
+    // batch mode without it reports null for exactly the aggregator models whose batch
+    // rate is most often knowable. These rows are already in `rows`, so no query.
+    const twinByBase = new Map<string, ModelRow>();
+    for (const r of rows) {
+      if (r.variant !== 'batch') continue;
+      const base = parseModelVariant(r.externalModelId)?.base;
+      if (base !== undefined) twinByBase.set(`${r.providerId}\u0000${base}`, r);
+    }
     let safe = rows.map((r) => {
       const kind = provById.get(r.providerId)?.kind ?? 'custom';
       const key = keyByModel.get(r.id);
@@ -650,6 +712,14 @@ export class ProvidersService {
         r,
         toEffectivePrice(r, kind, catalogRow, nativeRow),
         baseIdFor(r, idsByProvider.get(r.providerId) ?? new Set()),
+        // The providers read above already happened for the display price, so this
+        // adds no query — the projection stays bounded (invariant 9).
+        providerBatchCapable(provById.get(r.providerId)),
+        // Batch mode over the SAME catalog rows (the batch pair lives on the row
+        // already fetched), plus the sibling twin's captured rate as the last resort.
+        toEffectivePrice(r, kind, catalogRow, nativeRow, {
+          twin: twinByBase.get(`${r.providerId}\u0000${r.externalModelId}`) ?? null,
+        }),
       );
     });
     // The is_free filter applies to the EFFECTIVE price (resolve, then filter), so a
@@ -716,7 +786,15 @@ export class ProvidersService {
       );
       if (nativeKey !== null) nativeRow = await this.db.pricing.priceAt(nativeKey, now);
     }
-    return toSafeModel(updated, toEffectivePrice(updated, provider.kind, catalogRow, nativeRow));
+    return toSafeModel(
+      updated,
+      toEffectivePrice(updated, provider.kind, catalogRow, nativeRow),
+      null,
+      providerBatchCapable(provider),
+      // Single-model read: no sibling set in hand, so the twin estimate is not
+      // available here. Catalog and native-family batch rates still resolve.
+      toEffectivePrice(updated, provider.kind, catalogRow, nativeRow, { twin: null }),
+    );
   }
 
   // --- internals ---

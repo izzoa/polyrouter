@@ -29,6 +29,7 @@ import {
   createOpenRouterBatchAdapter,
   createProviderAdapter,
 } from '@polyrouter/data-plane';
+import type { BatchFactory } from '@polyrouter/data-plane';
 import { Pool } from 'pg';
 import { Redis } from 'ioredis';
 import { configureApp } from '../../src/app.setup';
@@ -120,6 +121,8 @@ export const PROXY_LIMIT = 2_048;
 export const BATCH_LIMIT = 262_144;
 
 export interface Tenant {
+  /** Provider ids the mode/servicing tests address directly. */
+  providers?: { ant: string; plain: string; or: string };
   principal: Principal;
   userId: string;
   key: string;
@@ -141,17 +144,23 @@ export interface StallRecord {
  * cannot pick between them here; a `/plain` provider carries no seam at all —
  * the `batch_not_supported` case.
  */
+const seamBySuffix = (baseUrl: string): BatchFactory | undefined => {
+  if (baseUrl.endsWith('/or')) return createOpenRouterBatchAdapter;
+  if (baseUrl.endsWith('/ant')) return createAnthropicBatchAdapter;
+  if (baseUrl.endsWith('/oai')) return createOpenAiBatchAdapter;
+  return undefined;
+};
+
 export const e2eBatchFactory: BatchAdapterFactory = (config, deps = {}) => {
-  if (config.baseUrl.endsWith('/or')) {
-    return createProviderAdapter(config, { ...deps, batch: createOpenRouterBatchAdapter });
-  }
-  if (config.baseUrl.endsWith('/ant')) {
-    return createProviderAdapter(config, { ...deps, batch: createAnthropicBatchAdapter });
-  }
-  if (config.baseUrl.endsWith('/oai')) {
-    return createProviderAdapter(config, { ...deps, batch: createOpenAiBatchAdapter });
-  }
-  return createProviderAdapter(config, deps);
+  const suffix = seamBySuffix(config.baseUrl);
+  // Mirror the production predicate SPLIT (add-batch-mode-routing). The stub serves
+  // every shape from one host, so the real family rule cannot pick between them here
+  // and the suffix stands in for it — but the `kind` half of that rule is real and
+  // must be honoured, or the subscription refusal would be untestable end-to-end. A
+  // `servicing` purpose keeps the seam for a job that was already accepted.
+  const gated =
+    config.kind === 'subscription' && deps.batchPurpose !== 'servicing' ? undefined : suffix;
+  return createProviderAdapter(config, gated !== undefined ? { ...deps, batch: gated } : deps);
 };
 
 export async function seedTenant(
@@ -192,6 +201,9 @@ export async function seedTenant(
     protocol: 'openai_compatible',
     baseUrl: `${stubUrl}/plain`,
   });
+  // A flat-rate SUBSCRIPTION provider on the Anthropic-shaped route
+  // (add-batch-mode-routing task 1.3). Its suffix WOULD attach a seam, so a refusal
+  // here can only come from the `kind` rule — the shape that shipped carrying one.
   const models: Record<string, string> = {};
   const add = async (
     providerId: string,
@@ -284,7 +296,14 @@ export async function seedTenant(
       [userId, minted.hash, minted.prefix],
     )
   ).rows[0]!.id;
-  return { principal, userId, key: minted.key, agentId, models };
+  return {
+    principal,
+    userId,
+    key: minted.key,
+    agentId,
+    models,
+    providers: { ant: ant.id, plain: plain.id, or: or.id },
+  };
 }
 
 export const item = (id: string, body: Record<string, unknown> = {}): Record<string, unknown> => ({

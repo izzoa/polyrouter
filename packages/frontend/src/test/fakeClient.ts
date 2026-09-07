@@ -52,6 +52,7 @@ import type {
   UpdateChannelInput,
   UpdateProviderInput,
   UpdateTierInput,
+  TierEntryInput,
 } from '../data/api';
 
 export const DEFAULT_SESSION: SessionInfo = {
@@ -465,6 +466,8 @@ function fakeModel(providerId: string, n: number): ModelDto {
     listedPrice: null,
     variant: null,
     baseExternalModelId: null,
+    batchCapable: true,
+    batchEffectivePrice: null,
     lastSyncedAt: NOW,
   };
 }
@@ -484,7 +487,11 @@ export class FakeApiClient implements ApiClient {
   // When set, `replaceTierEntries` / `setAutoLayers` return promises the test
   // settles out of order (via the queues below) to exercise write serialization.
   deferTierWrites = false;
-  tierWriteQueue: DeferredCall<{ tierId: string; modelIds: string[] }>[] = [];
+  tierWriteQueue: DeferredCall<{
+    tierId: string;
+    modelIds: string[];
+    ordered: readonly TierEntryInput[];
+  }>[] = [];
   deferAutoLayers = false;
   autoLayersQueue: DeferredCall<{
     structural: boolean;
@@ -1042,15 +1049,21 @@ export class FakeApiClient implements ApiClient {
     return this.gate().then(() => snapshot);
   }
 
-  private buildTierEntries(tierId: string, modelIds: string[]): TierEntryDto[] {
+  private buildTierEntries(tierId: string, ordered: readonly TierEntryInput[]): TierEntryDto[] {
     const allModels = Object.values(this.models).flat();
-    return modelIds.map((modelId, position) => {
+    // Mirrors the server: a member that does not STATE a mode keeps the one already
+    // stored for that model in this tier (add-batch-mode-routing D11), so a test can
+    // observe a reservation surviving a reorder exactly as production does.
+    const prior = new Map((this.tierEntries[tierId] ?? []).map((e) => [e.modelId, e.mode]));
+    return ordered.map((e, position) => {
+      const modelId = e.modelId;
       const m = allModels.find((x) => x.id === modelId);
       return {
         id: `entry-${tierId}-${String(position)}`,
         tierId,
         modelId,
         position,
+        mode: e.mode ?? prior.get(modelId) ?? 'any',
         model: m
           ? {
               id: m.id,
@@ -1063,16 +1076,16 @@ export class FakeApiClient implements ApiClient {
     });
   }
 
-  replaceTierEntries(tierId: string, modelIds: string[]): Promise<TierEntryDto[]> {
-    this.record('replaceTierEntries', tierId, modelIds);
-    const entries = this.buildTierEntries(tierId, modelIds);
+  replaceTierEntries(tierId: string, ordered: readonly TierEntryInput[]): Promise<TierEntryDto[]> {
+    this.record('replaceTierEntries', tierId, ordered);
+    const entries = this.buildTierEntries(tierId, ordered);
     if (!this.deferTierWrites) {
       this.tierEntries[tierId] = entries;
       return Promise.resolve(entries.map((e) => ({ ...e })));
     }
     return new Promise<TierEntryDto[]>((resolve, reject) => {
       this.tierWriteQueue.push({
-        input: { tierId, modelIds },
+        input: { tierId, modelIds: ordered.map((e) => e.modelId), ordered },
         settle: (mode) => {
           if (mode === 'resolve') {
             this.tierEntries[tierId] = entries;

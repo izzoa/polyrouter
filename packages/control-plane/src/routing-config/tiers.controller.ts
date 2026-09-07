@@ -1,4 +1,15 @@
-import { Body, Controller, Delete, Get, Header, Param, Patch, Post, Put } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Header,
+  Param,
+  Patch,
+  Post,
+  Put,
+  UnprocessableEntityException,
+} from '@nestjs/common';
 import type { Principal } from '@polyrouter/shared/server';
 import { CurrentPrincipal } from '../auth/principal.decorator';
 import { CreateTierDto, ReplaceEntriesDto, UpdateTierDto } from './routing-config.dto';
@@ -61,6 +72,11 @@ export class TiersController {
     @Param('tierId') tierId: string,
     @Body() dto: ReplaceEntriesDto,
   ): Promise<SafeEntry[]> {
-    return this.svc.replaceEntries(principal, tierId, dto.modelIds);
+    // Exactly one form. Both absent is an empty chain expressed ambiguously; both
+    // present would leave which one wins to the reader's guess.
+    if ((dto.entries === undefined) === (dto.modelIds === undefined)) {
+      throw new UnprocessableEntityException('provide exactly one of `entries` or `modelIds`');
+    }
+    return this.svc.replaceEntries(principal, tierId, dto.entries ?? dto.modelIds ?? []);
   }
 }

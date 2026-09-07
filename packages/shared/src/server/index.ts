@@ -13,6 +13,7 @@ export {
   REDIS_CLIENT,
   SIGNAL_QUALITY_COLLAPSE_SHARE,
   SIGNAL_QUALITY_MIN_ROWS,
+  replaceEntryModelId,
 } from './persistence';
 export type {
   AgentInsertInput,
@@ -101,6 +102,7 @@ export type {
   TierInsertInput,
   TierPatch,
   UsersInfra,
+  ReplaceEntryInput,
 } from './persistence';
 export {
   AGGREGATOR_FAMILIES,

@@ -26,7 +26,11 @@ async function rowGeometry(page: Page, index = 0) {
       for (const c of el.children) {
         // `display: contents` wrappers contribute no box; measure what actually paints.
         if (getComputedStyle(c).display === 'contents') walk(c);
-        else kids.push({ cls: (c as HTMLElement).className || c.tagName, r: c.getBoundingClientRect() });
+        else
+          kids.push({
+            cls: (c as HTMLElement).className || c.tagName,
+            r: c.getBoundingClientRect(),
+          });
       }
     };
     walk(row);
@@ -36,7 +40,12 @@ async function rowGeometry(page: Page, index = 0) {
         const x = kids[a]!.r;
         const y = kids[b]!.r;
         if (!x.width || !y.width) continue;
-        if (x.left < y.right - 0.5 && y.left < x.right - 0.5 && x.top < y.bottom - 0.5 && y.top < x.bottom - 0.5)
+        if (
+          x.left < y.right - 0.5 &&
+          y.left < x.right - 0.5 &&
+          x.top < y.bottom - 0.5 &&
+          y.top < x.bottom - 0.5
+        )
           overlaps.push(`${kids[a]!.cls} / ${kids[b]!.cls}`);
       }
     }
@@ -183,5 +192,138 @@ test.describe('a press on a move control does not drag the row', () => {
       await page.locator('.chain-row[data-dragging="true"]').count(),
       'a row entered the dragging state',
     ).toBe(0);
+  });
+});
+
+test.describe('the batch reservation control (add-batch-mode-routing task 5.5)', () => {
+  // The harness reserves the MIDDLE entry, so a chain renders both states at once.
+  for (const vp of [
+    { name: '1440x900', width: 1440, height: 900 },
+    { name: '390x844', width: 390, height: 844 },
+    { name: '320x568', width: 320, height: 568 },
+  ]) {
+    test(`stays inside its row and meets its hit floor @ ${vp.name}`, async ({ page }) => {
+      await page.setViewportSize({ width: vp.width, height: vp.height });
+      await open(page);
+      const out = await page.evaluate(() => {
+        const rows = [...document.querySelectorAll('.chain-row')];
+        const switches = [...document.querySelectorAll('.chain-mode [role="switch"]')];
+        const escapes: string[] = [];
+        for (const sw of switches) {
+          const row = sw.closest('.chain-row');
+          if (!row) {
+            escapes.push('switch outside any row');
+            continue;
+          }
+          const r = sw.getBoundingClientRect();
+          const b = row.getBoundingClientRect();
+          if (r.right > b.right + 0.5 || r.left < b.left - 0.5)
+            escapes.push('switch escapes its row');
+          if (r.bottom > b.bottom + 0.5 || r.top < b.top - 0.5)
+            escapes.push('switch escapes vertically');
+        }
+        return {
+          rows: rows.length,
+          switches: switches.length,
+          checked: switches.filter((s) => s.getAttribute('aria-checked') === 'true').length,
+          // A chain of five must not present five identically-named switches.
+          names: new Set(switches.map((s) => s.getAttribute('aria-label'))).size,
+          // Scrolled into view first: `elementFromPoint` is viewport-relative, so a
+          // control below the fold answers null — which is a scroll position, not an
+          // obstruction. The property under test is that nothing PAINTS OVER the
+          // control, and the row's own 44px hit area is asserted by the responsive
+          // suite (the lock lets `.toggle` keep its 30x17 box and reach the floor
+          // through a `::before`).
+          hits: switches.map((s) => {
+            s.scrollIntoView({ block: 'center' });
+            const r = s.getBoundingClientRect();
+            const el = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+            return el !== null && (el === s || s.contains(el) || el.closest('.toggle') === s);
+          }),
+          escapes,
+          docOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        };
+      });
+      expect(out.rows).toBe(3);
+      // Every entry in this fixture is on a batch-capable provider, so each row has one.
+      expect(out.switches).toBe(3);
+      expect(out.checked, 'exactly the reserved entry reads as on').toBe(1);
+      expect(out.names, 'each switch names its own entry').toBe(3);
+      expect(out.escapes).toEqual([]);
+      // Reachable rather than merely non-empty: a clipped control is "visible" and untappable.
+      expect(out.hits.every(Boolean), 'a switch is covered at its own centre').toBe(true);
+      expect(
+        out.docOverflow,
+        'five controls must not push the page into horizontal scroll',
+      ).toBeLessThanOrEqual(1);
+    });
+  }
+});
+
+test.describe('the reservation help escapes its tier card (add-batch-mode-help task 2.2)', () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  test('is fully visible on a tier with few rows, and closes when the page scrolls', async ({
+    page,
+  }) => {
+    // The constraint that forces fixed positioning: every tier card is
+    // `overflow: hidden`, so a card positioned inside the row is clipped at the
+    // panel's edge — worst on a short tier, where there is nothing below to clip into.
+    await open(page);
+    const trigger = page.locator('.chain-help-trigger').first();
+    await trigger.focus();
+    await page.waitForTimeout(150);
+
+    const out = await page.evaluate(() => {
+      const card = document.querySelector('.chain-help-shown');
+      if (!card) return { shown: false } as const;
+      const c = card.getBoundingClientRect();
+      const panel = card.closest('.panel')?.getBoundingClientRect() ?? null;
+      // Reachable rather than merely non-empty: sample the card's own corners.
+      const hit = (x: number, y: number): boolean => {
+        const el = document.elementFromPoint(x, y);
+        return el !== null && card.contains(el);
+      };
+      return {
+        shown: true as const,
+        inViewport:
+          c.left >= -0.5 &&
+          c.top >= -0.5 &&
+          c.right <= window.innerWidth + 0.5 &&
+          c.bottom <= window.innerHeight + 0.5,
+        // If it were clipped by the panel it would be invisible where it overhangs.
+        overhangsPanel:
+          panel !== null && (c.bottom > panel.bottom + 0.5 || c.right > panel.right + 0.5),
+        corners: [
+          hit(c.left + 4, c.top + 4),
+          hit(c.right - 4, c.top + 4),
+          hit(c.left + 4, c.bottom - 4),
+        ],
+        position: getComputedStyle(card).position,
+      };
+    });
+
+    expect(out.shown, 'focus alone must reveal it — no mouse').toBe(true);
+    if (!out.shown) return; // narrows the union for the assertions below
+    expect(out.position, 'absolute would be clipped by the tier card').toBe('fixed');
+    expect(out.inViewport).toBe(true);
+    expect(out.corners.every(Boolean), 'the card is painted over at its own corners').toBe(true);
+
+    // A fixed card must not float away from an anchor that has moved.
+    await page.evaluate(() => document.querySelector('main')?.dispatchEvent(new Event('scroll')));
+    await page.waitForTimeout(100);
+    expect(await page.locator('.chain-help-shown').count()).toBe(0);
+  });
+
+  test('the switch keeps its own tap, and the help is not bound to it', async ({ page }) => {
+    // A tap on a `role="switch"` belongs to that switch. Clicking it must toggle and
+    // must NOT raise the help — otherwise every state change spawns a card.
+    await open(page);
+    const sw = page.locator('.chain-mode [role="switch"]').first();
+    const before = await sw.getAttribute('aria-checked');
+    await sw.click();
+    await page.waitForTimeout(120);
+    expect(await sw.getAttribute('aria-checked')).not.toBe(before);
+    expect(await page.locator('.chain-help-shown').count()).toBe(0);
   });
 });

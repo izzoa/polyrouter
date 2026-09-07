@@ -15,7 +15,7 @@ function rule(id: string, cls: string, target: string, priority = 0): RouteRule 
 }
 function snapshot(
   rules: RouteRule[],
-  entries?: Map<string, { modelId: string; position: number }[]>,
+  entries?: Map<string, { modelId: string; position: number; mode: 'any' | 'batch' }[]>,
 ): RoutingSnapshot {
   return {
     tiers: [
@@ -28,8 +28,8 @@ function snapshot(
         [
           't-code',
           [
-            { modelId: 'm-code', position: 0 },
-            { modelId: 'm-fb', position: 1 },
+            { modelId: 'm-code', position: 0, mode: 'any' as const },
+            { modelId: 'm-fb', position: 1, mode: 'any' as const },
           ],
         ],
         ['t-empty', []],

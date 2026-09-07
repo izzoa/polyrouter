@@ -20,7 +20,24 @@ export interface RouteTier {
 export interface RouteEntry {
   readonly modelId: string;
   readonly position: number;
+  /** Which execution mode this entry is reserved for (add-batch-mode-routing).
+   * REQUIRED, like `RouteModel.variant` and for the same reason: a snapshot
+   * builder or fixture omitting an optional field would silently make every
+   * entry unreserved, restoring the synchronous use of capacity a tenant
+   * deliberately set aside. */
+  readonly mode: EntryMode;
 }
+
+/** `any` = no restriction (what every entry predating the field is). `batch` =
+ * reserved for batch work: excluded from a synchronous walk, preferred by a
+ * batch submission. */
+export type EntryMode = 'any' | 'batch';
+
+/** Which mode a resolution is FOR. Absent means synchronous — the batch path
+ * passes it explicitly, because a resolver that applied the synchronous
+ * reservation exclusion to a batch would answer `empty_tier` for the one
+ * configuration a batch is entitled to use (add-batch-mode-routing D13). */
+export type ResolutionMode = 'sync' | 'batch';
 export interface RouteRule {
   readonly id: string;
   readonly matchType: string;
@@ -63,6 +80,8 @@ export interface RoutingSnapshot {
 export interface ParsedRoute {
   readonly modelField: string;
   readonly headers: Readonly<Record<string, string | undefined>>;
+  /** Defaults to `sync`; the batch path sets `batch`. */
+  readonly mode?: ResolutionMode;
 }
 
 export type DecisionLayer =
@@ -193,6 +212,7 @@ function resolveTier(
   tier: RouteTier,
   layer: DecisionLayer,
   reason: string,
+  mode: ResolutionMode = 'sync',
 ): RouteDecision | RouteError {
   // Primary is position 0 exactly (if a cascade removed it, the tier is unusable
   // here rather than silently promoting a fallback). The chain is all resolvable
@@ -212,34 +232,77 @@ function resolveTier(
     const m = modelById(e.modelId);
     return m !== undefined && !isRoutable(m);
   };
-  const excluded = all.filter(nonRoutable).length;
-  const entries = all.filter((e) => !nonRoutable(e));
+  // A SECOND exclusion (add-batch-mode-routing): an entry RESERVED for batch cannot
+  // serve a synchronous request either, so it drops before the position-0 rule on
+  // exactly the same terms. Counted separately from the non-routable exclusion —
+  // reporting a tenant's deliberate reservation as "batch-only" would describe
+  // their configuration as a catalog defect.
+  //
+  // A BATCH resolution applies neither this exclusion nor a preference for the
+  // unreserved: it selects ONE candidate below, so the reservation is what claims
+  // batch rather than something the chain composition has to encode.
+  const reserved = (e: RouteEntry): boolean => mode === 'sync' && e.mode === 'batch';
+  const excludedVariant = all.filter((e) => nonRoutable(e) && !reserved(e)).length;
+  const excludedReserved = all.filter(reserved).length;
+  const dropped = (e: RouteEntry): boolean => nonRoutable(e) || reserved(e);
+  const entries = all.filter((e) => !dropped(e));
   // Promotion is justified ONLY by an exclusion. A position-0 entry that is simply
   // MISSING (deleted, or removed by a cascade) still errors, exactly as before —
   // otherwise an unrelated non-routable member elsewhere in the chain would quietly
   // buy a promotion the no-silent-promotion rule exists to forbid.
   const atZero = all.find((e) => e.position === 0);
   const primary =
-    atZero === undefined
-      ? undefined
-      : nonRoutable(atZero)
-        ? entries[0] // position 0 was excluded → the next routable member leads
-        : atZero;
+    mode === 'batch'
+      ? // ONE candidate, never promoted (add-batch-mode-routing D3): the
+        // lowest-position RESERVED entry when the chain holds any, else position 0.
+        // "Holds any" is literal — a reservation that turns out to be unserviceable
+        // does not fall back to unreserved capacity, because a later member can be
+        // a different provider at a different price and moving bulk work onto
+        // billable capacity the tenant did not name is not the router's call.
+        //
+        // Routability is NOT filtered into this choice, deliberately: a candidate
+        // that is non-routable by variant is REFUSED BY NAME below rather than
+        // skipped, the same way an explicit ask for a twin is refused. Filtering it
+        // here would either dispatch the twin's id upstream (a chain can still hold
+        // one — classification never rewrites a stored entry) or mislabel a tier
+        // that does hold an entry as `empty_tier`.
+        (all.find((e) => e.mode === 'batch') ?? atZero)
+      : atZero === undefined
+        ? undefined
+        : dropped(atZero)
+          ? entries[0] // position 0 was excluded → the next eligible member leads
+          : atZero;
   // A tier whose every member is non-routable is unusable — surfaced as the
   // existing empty-tier error before any attempt, never a walk that cannot win.
   if (!primary) return { error: 'empty_tier', detail: tier.key };
   const chain: RouteTarget[] = [];
-  for (const e of entries) {
-    const m = modelById(e.modelId);
+  if (mode === 'batch') {
+    // A batch submits exactly once and never falls back across the completion
+    // window, so its "chain" is the single candidate — a longer one would imply a
+    // promotion this rule forbids.
+    const m = modelById(primary.modelId);
     if (m) chain.push(target(m));
+  } else {
+    for (const e of entries) {
+      const m = modelById(e.modelId);
+      if (m) chain.push(target(m));
+    }
   }
   const primaryModel = modelById(primary.modelId);
   // FK guarantees the model exists; guard defensively as an unresolved target.
   if (!primaryModel || chain.length === 0) return { error: 'unresolved_target', detail: tier.key };
+  // A batch's single candidate must still be routable. Refused BY NAME (naming the
+  // base id) rather than skipped: `model-variants` forbids dispatching to a twin
+  // through ANY path, and skipping would be the promotion D3 rules out. The
+  // synchronous branch excludes such members from the chain instead, which is why
+  // only this branch needs the check.
+  if (mode === 'batch' && !isRoutable(primaryModel)) return batchOnlyError(snap, primaryModel);
   // The exclusion is visible in the recorded reason, on the same terms as #12's
   // capacity-deferral trail — a promoted primary is never silent.
-  const effectiveReason =
-    excluded > 0 ? `${reason} (excluded ${String(excluded)} batch-only)` : reason;
+  const parts: string[] = [];
+  if (excludedVariant > 0) parts.push(`${String(excludedVariant)} batch-only`);
+  if (excludedReserved > 0) parts.push(`${String(excludedReserved)} batch-reserved`);
+  const effectiveReason = parts.length > 0 ? `${reason} (excluded ${parts.join(', ')})` : reason;
   return {
     providerId: primaryModel.providerId,
     modelId: primaryModel.id,
@@ -365,6 +428,10 @@ export function resolveRoute(
   parsed: ParsedRoute,
 ): RouteDecision | RouteError {
   const mf = parsed.modelField;
+  // Which mode this resolution is FOR. Rules are unreachable on the batch path (a
+  // batch always names a non-empty explicit model or tier, so phase 1 terminates
+  // first), so only the tier phases need it.
+  const resolutionMode: ResolutionMode = parsed.mode ?? 'sync';
 
   // Phase 1 — an explicit selection in the `model` field terminates here.
   if (mf.length > 0 && mf !== AUTO_ALIAS) {
@@ -397,7 +464,7 @@ export function resolveRoute(
     if (matches.length > 0) return batchOnlyError(snap, matches[0]!);
     // tier key (a name that is both a model and a tier resolved to the model above)
     const tier = snap.tiers.find((t) => t.key === mf);
-    if (tier) return resolveTier(snap, tier, 'explicit', `explicit tier ${mf}`);
+    if (tier) return resolveTier(snap, tier, 'explicit', `explicit tier ${mf}`, resolutionMode);
     // non-empty, unrecognized → a clear error, never a silent default
     return { error: 'unknown_model', detail: mf };
   }
@@ -433,7 +500,13 @@ export function resolveRoute(
     // 2b — the sent value naming an owned tier directly.
     const tier = snap.tiers.find((t) => t.key === builtin);
     if (tier) {
-      const d = resolveTier(snap, tier, 'header', `${TIER_HEADER_NAME}: ${builtin}`);
+      const d = resolveTier(
+        snap,
+        tier,
+        'header',
+        `${TIER_HEADER_NAME}: ${builtin}`,
+        resolutionMode,
+      );
       if (isRouteError(d)) return d;
       // tier.key, not the client string — the value is the OWNED tier key that
       // matched (identical bytes, config-side provenance).
@@ -469,5 +542,6 @@ export function resolveRoute(
     def,
     'default',
     mf === AUTO_ALIAS ? 'auto → default tier' : 'default tier',
+    resolutionMode,
   );
 }

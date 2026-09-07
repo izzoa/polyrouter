@@ -59,8 +59,8 @@ function snapshot(rules: RouteRule[]): RoutingSnapshot {
       { id: 't-cheap', key: 'cheap' },
     ],
     entriesByTierId: new Map([
-      ['t-prem', [{ modelId: 'm-prem', position: 0 }]],
-      ['t-cheap', [{ modelId: 'm-cheap', position: 0 }]],
+      ['t-prem', [{ modelId: 'm-prem', position: 0, mode: 'any' as const }]],
+      ['t-cheap', [{ modelId: 'm-cheap', position: 0, mode: 'any' as const }]],
     ]),
     rules,
     models: [
@@ -565,7 +565,7 @@ describe('StructuralRouter — class-scoped band resolution (add-workload-scoped
       tiers: [...base.tiers, { id: 't-code', key: 'strong-code' }, { id: 't-empty', key: 'empty' }],
       entriesByTierId: new Map([
         ...base.entriesByTierId,
-        ['t-code', [{ modelId: 'm-prem', position: 0 }]],
+        ['t-code', [{ modelId: 'm-prem', position: 0, mode: 'any' as const }]],
         ['t-empty', []],
       ]),
     };

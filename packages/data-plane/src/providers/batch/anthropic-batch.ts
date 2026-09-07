@@ -1,3 +1,4 @@
+import { BATCH_COMPLETION_WINDOW_MS } from '@polyrouter/shared';
 /**
  * Anthropic's Message Batches API (`/v1/messages/batches`, add-batch-inference
  * task 2.9): `requests[{ custom_id, params }]`, a three-state
@@ -89,7 +90,9 @@ export function anthropicErrorKind(type: unknown): ProviderErrorKind {
 }
 
 /** "Batches expire if processing does not complete within 24 hours." */
-const COMPLETION_WINDOW_MS = 86_400_000;
+/** The shared window (add-batch-mode-help): one declaration the dashboard reads too,
+ * so this provider and the help text cannot state different figures. */
+const COMPLETION_WINDOW_MS = BATCH_COMPLETION_WINDOW_MS;
 /** "Batch results are available for 29 days after creation." */
 const RETENTION_MS = 29 * 86_400_000;
 /** One JSONL result line (a whole message) — bounded like any value. */

@@ -28,6 +28,8 @@ const mkModel = (over: Partial<ModelDto> & Pick<ModelDto, 'id' | 'externalModelI
   listedPrice: null,
   variant: null,
   baseExternalModelId: null,
+  batchCapable: true,
+  batchEffectivePrice: null,
   lastSyncedAt: NOW,
   ...over,
 });
@@ -37,6 +39,8 @@ const TWIN = mkModel({
   externalModelId: 'openai/gpt-6-astra:batch',
   variant: 'batch',
   baseExternalModelId: 'openai/gpt-6-astra',
+  batchCapable: true,
+  batchEffectivePrice: null,
   effectivePrice: {
     inputPricePer1m: 5,
     outputPricePer1m: 25,
@@ -61,6 +65,8 @@ const ORPHAN = mkModel({
   externalModelId: 'anthropic/claude-opus-5:batch',
   variant: 'batch',
   baseExternalModelId: null,
+  batchCapable: true,
+  batchEffectivePrice: null,
 });
 const FREE = mkModel({ id: 'm-free', externalModelId: 'meta/llama:free', variant: 'free' });
 

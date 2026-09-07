@@ -51,6 +51,8 @@ function model(id: string, over: Partial<Model> = {}): Model {
     listedPrice: null,
     variant: null,
     baseExternalModelId: null,
+    batchCapable: true,
+    batchEffectivePrice: null,
     lastSyncedAt: null,
     ...over,
   };
@@ -66,11 +68,11 @@ function input(over: Partial<WorkloadTargetsInput> = {}): WorkloadTargetsInput {
     ],
     tierEntries: {
       't-coding': [
-        { id: 'e1', tierId: 't-coding', modelId: 'm1', position: 0, model: null },
-        { id: 'e2', tierId: 't-coding', modelId: 'm2', position: 1, model: null },
+        { id: 'e1', tierId: 't-coding', modelId: 'm1', position: 0, mode: 'any' as const, model: null },
+        { id: 'e2', tierId: 't-coding', modelId: 'm2', position: 1, mode: 'any' as const, model: null },
       ],
       't-empty': [],
-      't-default': [{ id: 'e3', tierId: 't-default', modelId: 'm2', position: 0, model: null }],
+      't-default': [{ id: 'e3', tierId: 't-default', modelId: 'm2', position: 0, mode: 'any' as const, model: null }],
     },
     models: [model('m1', { displayName: 'Coder' }), model('m2')],
     providers: [{ id: 'p1', name: 'OpenAI' } as never],

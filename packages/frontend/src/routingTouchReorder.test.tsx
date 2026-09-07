@@ -52,12 +52,19 @@ function mkModel(id: string): ModelDto {
     listedPrice: null,
     variant: null,
     baseExternalModelId: null,
+    batchCapable: true,
+    batchEffectivePrice: null,
     lastSyncedAt: null,
   };
 }
-const mkEntry = (modelId: string, position: number): TierEntryDto => ({
+const mkEntry = (
+  modelId: string,
+  position: number,
+  mode: 'any' | 'batch' = 'any',
+): TierEntryDto => ({
   id: `e-${modelId}`,
   tierId: 't1',
+  mode,
   modelId,
   position,
   model: null,
@@ -109,6 +116,11 @@ async function mountRouting(fake: FakeApiClient = makeFake()): Promise<Harness> 
 const rows = (host: HTMLElement): HTMLElement[] => [
   ...(host.querySelector<HTMLElement>('.panel')?.querySelectorAll<HTMLElement>('.chain-row') ?? []),
 ];
+/** The model ids of one recorded replacement. The payload carries
+ * `{modelId, mode}` since add-batch-mode-routing; these assertions are about order. */
+const idsOf = (call: { args: unknown[] } | undefined): string[] | undefined =>
+  (call?.args[1] as { modelId: string }[] | undefined)?.map((e) => e.modelId);
+
 const order = (host: HTMLElement): string[] => rows(host).map((r) => r.dataset['modelId'] ?? '?');
 const writesOf = (fake: FakeApiClient): { method: string; args: unknown[] }[] =>
   fake.callLog.filter((c) => c.method === 'replaceTierEntries');
@@ -138,7 +150,7 @@ describe('reordering without a drag', () => {
       // persisting is the failure this asserts against.
       const w = writesOf(h.fake);
       expect(w).toHaveLength(1);
-      expect(w[0]?.args[1]).toEqual(['m2', 'm1', 'm3']);
+      expect(idsOf(w[0])).toEqual(['m2', 'm1', 'm3']);
     } finally {
       h.dispose();
     }
@@ -317,7 +329,7 @@ describe('coexistence with the other transports', () => {
           new KeyboardEvent('keydown', { key: 'ArrowDown', altKey: true, bubbles: true }),
         );
       await flush();
-      keyboardResult = writesOf(viaKeyboard.fake).at(-1)?.args[1];
+      keyboardResult = idsOf(writesOf(viaKeyboard.fake).at(-1));
     } finally {
       viaKeyboard.dispose();
     }
@@ -326,7 +338,7 @@ describe('coexistence with the other transports', () => {
     try {
       moveBtn(viaButton.host, 'm1', 'down').click();
       await flush();
-      expect(writesOf(viaButton.fake).at(-1)?.args[1]).toEqual(keyboardResult);
+      expect(idsOf(writesOf(viaButton.fake).at(-1))).toEqual(keyboardResult);
     } finally {
       viaButton.dispose();
     }
@@ -342,7 +354,7 @@ describe('coexistence with the other transports', () => {
       expect(order(h.host)).toEqual(['m2', 'm3', 'm4', 'm1']);
       const w = writesOf(h.fake);
       expect(w.length, 'one write per activation').toBeLessThan(3);
-      expect(w.at(-1)?.args[1], 'the final order is not what persisted').toEqual([
+      expect(idsOf(w.at(-1)), 'the final order is not what persisted').toEqual([
         'm2',
         'm3',
         'm4',

@@ -58,3 +58,23 @@ export const BATCH_JOB_ERROR_KINDS = [
   'provider_missing', // the provider row was deleted while the job was in flight
 ] as const;
 export type BatchJobErrorKind = (typeof BATCH_JOB_ERROR_KINDS)[number];
+
+/**
+ * The completion window every batch provider polyrouter supports documents: a batch
+ * may take up to 24 hours (add-batch-mode-help).
+ *
+ * ONE declaration, referenced by each adapter and by the dashboard's help text. The
+ * adapters each declared their own copy of this number, which meant a fourth adapter
+ * with a different window would have left the interface quietly asserting a figure
+ * that provider does not honour. Sharing it makes that drift unrepresentable rather
+ * than merely detectable: a provider needing a different window has to introduce a
+ * per-provider one deliberately, and the test in the data plane fails until it does.
+ *
+ * It lives here because the frontend depends on `@polyrouter/shared` and NOT on
+ * `@polyrouter/data-plane`, so this is the only place both sides can read.
+ */
+export const BATCH_COMPLETION_WINDOW_MS = 86_400_000;
+
+/** How that window is written for a reader. Kept beside the number so the two cannot
+ * disagree — a change to one is a visible change to the other. */
+export const BATCH_COMPLETION_WINDOW_TEXT = '24 hours';

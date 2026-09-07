@@ -1,4 +1,4 @@
-import { type RouteEntry, type RoutingSnapshot } from '@polyrouter/data-plane';
+import { type EntryMode, type RouteEntry, type RoutingSnapshot } from '@polyrouter/data-plane';
 import { type ModelRow, type PersistencePort, type Principal } from '@polyrouter/shared/server';
 
 /**
@@ -27,7 +27,13 @@ export async function loadRoutingSnapshot(
       const entries = await db.routingEntries.listForTier(principal, t.id);
       entriesByTierId.set(
         t.id,
-        entries.map((e) => ({ modelId: e.modelId, position: e.position })),
+        // `mode` is REQUIRED on RouteEntry, so a row missing it cannot silently
+        // read as unreserved; the `?? 'any'` covers only a pre-migration read.
+        entries.map((e) => ({
+          modelId: e.modelId,
+          position: e.position,
+          mode: (e.mode ?? 'any') as EntryMode,
+        })),
       );
     }),
   );

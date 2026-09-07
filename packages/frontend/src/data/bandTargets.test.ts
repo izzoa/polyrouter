@@ -51,6 +51,8 @@ function model(id: string, over: Partial<Model> = {}): Model {
     listedPrice: null,
     variant: null,
     baseExternalModelId: null,
+    batchCapable: true,
+    batchEffectivePrice: null,
     lastSyncedAt: null,
     ...over,
   };
@@ -66,11 +68,11 @@ function input(over: Partial<BandTargetsInput> = {}): BandTargetsInput {
     ],
     tierEntries: {
       't-premium': [
-        { id: 'e1', tierId: 't-premium', modelId: 'm1', position: 0, model: null },
-        { id: 'e2', tierId: 't-premium', modelId: 'm2', position: 1, model: null },
+        { id: 'e1', tierId: 't-premium', modelId: 'm1', position: 0, mode: 'any' as const, model: null },
+        { id: 'e2', tierId: 't-premium', modelId: 'm2', position: 1, mode: 'any' as const, model: null },
       ],
-      't-cheap': [{ id: 'e3', tierId: 't-cheap', modelId: 'm2', position: 0, model: null }],
-      't-default': [{ id: 'e4', tierId: 't-default', modelId: 'm1', position: 0, model: null }],
+      't-cheap': [{ id: 'e3', tierId: 't-cheap', modelId: 'm2', position: 0, mode: 'any' as const, model: null }],
+      't-default': [{ id: 'e4', tierId: 't-default', modelId: 'm1', position: 0, mode: 'any' as const, model: null }],
     },
     models: [model('m1', { displayName: 'GPT X' }), model('m2')],
     providers: [
@@ -299,7 +301,7 @@ describe('class-scoped bands (add-workload-scoped-bands)', () => {
         { id: 't-empty', key: 'empty', displayName: null, description: null, createdAt: T0 },
       ],
       tierEntries: {
-        't-premium': [{ id: 'e1', tierId: 't-premium', modelId: 'm1', position: 0, model: null }],
+        't-premium': [{ id: 'e1', tierId: 't-premium', modelId: 'm1', position: 0, mode: 'any' as const, model: null }],
         't-empty': [],
       },
     });

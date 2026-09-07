@@ -61,6 +61,8 @@ import {
   type RuleDto,
   type TierDto,
   type TierEntryDto,
+  type EntryMode,
+  type TierEntryInput,
   type TimeseriesPoint,
   type UpdateBudgetInput,
   type UpdateChannelInput,
@@ -309,7 +311,9 @@ export interface AppState {
   // picker + labels/prices.
   routingTiers: TierDto[];
   tierEntries: Record<string, TierEntryDto[]>;
-  confirmedEntries: Record<string, string[]>;
+  /** The last SERVER-CONFIRMED chain per tier — `{modelId, mode}`, not bare ids,
+   * so a rollback restores reservations as well as order (add-batch-mode-routing). */
+  confirmedEntries: Record<string, TierEntryInput[]>;
   allModels: Model[];
   rules: RuleDto[];
   /** Band-targets section state (add-band-target-ui): PER-BAND busy +
@@ -1014,7 +1018,12 @@ export interface AppStore {
    *  `unchanged` applies deferred state without writing; `abandon` discards both
    *  (page teardown, tier deletion, sign-out) — a boolean cannot express that third case. */
   endTierDrag: (tierId: string, outcome: 'changed' | 'unchanged' | 'abandon') => void;
-  addTierModel: (tierId: string, modelId: string) => void;
+  /** Add a model to a tier's chain. `mode` reserves it (add-batch-mode-routing);
+   * for a model already in the chain a stated mode sets it in place rather than
+   * being a no-op, since a duplicate entry would be refused. */
+  addTierModel: (tierId: string, modelId: string, mode?: EntryMode) => void;
+  /** Reserve or unreserve one entry, leaving every other entry's mode alone. */
+  setTierEntryMode: (tierId: string, modelId: string, mode: EntryMode) => void;
   removeTierModel: (tierId: string, modelId: string) => void;
   setPrimaryTierModel: (tierId: string, modelId: string) => void;
   createTier: () => Promise<void>;
@@ -1185,7 +1194,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
   // SERVER-confirmed order), never a mid-drag optimistic order (blockers #1/#2).
   // Orders are generation-tagged: a queued order belongs to the identity that queued it,
   // so an old principal's write can never be sent (or applied) under a new session.
-  const tierDesired = new Map<string, { modelIds: string[]; gen: number }>();
+  const tierDesired = new Map<string, { ordered: TierEntryInput[]; gen: number }>();
   const tierInFlight = new Set<string>();
   // ── Drag hold (fix-tier-chain-drag-reorder) ────────────────────────────────────────
   // `<For>` is keyed by reference, so ANY write that installs fresh server objects
@@ -1414,7 +1423,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           s.confirmedEntries = {};
           tiers.forEach((t, i) => {
             const list = entries[i] ?? [];
-            s.confirmedEntries[t.id] = list.map((e) => e.modelId);
+            s.confirmedEntries[t.id] = list.map((e) => ({ modelId: e.modelId, mode: e.mode }));
             if (t.id === held && heldVisible !== undefined) {
               s.tierEntries[t.id] = heldVisible;
               tierPending.set(t.id, list);
@@ -1457,29 +1466,46 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       : null;
   };
 
-  const buildEntries = (tierId: string, modelIds: string[]): TierEntryDto[] =>
-    modelIds.map((modelId, position) => ({
-      id: `pending-${tierId}-${modelId}`,
+  const buildEntries = (tierId: string, ordered: readonly TierEntryInput[]): TierEntryDto[] =>
+    ordered.map((e, position) => ({
+      id: `pending-${tierId}-${e.modelId}`,
       tierId,
-      modelId,
+      modelId: e.modelId,
       position,
-      model: modelEntryInfo(modelId),
+      mode: e.mode ?? 'any',
+      model: modelEntryInfo(e.modelId),
     }));
 
   const currentModelIds = (tierId: string): string[] =>
     (state.tierEntries[tierId] ?? []).map((e) => e.modelId);
 
-  /** Apply an ordered chain optimistically (immediate UI), then schedule a
-   * serialized PUT that sends the latest desired order. */
-  const applyTierOrder = (tierId: string, modelIds: string[]): void => {
-    setState('tierEntries', tierId, buildEntries(tierId, modelIds));
-    scheduleTierWrite(tierId, modelIds);
+  /** The visible chain as replacement input — each id paired with the mode it
+   * currently carries. Every reorder/remove/set-primary goes through this, so no
+   * local path can drop a reservation before a request is even sent
+   * (add-batch-mode-routing task 5.1). */
+  const currentEntries = (tierId: string): TierEntryInput[] =>
+    (state.tierEntries[tierId] ?? []).map((e) => ({ modelId: e.modelId, mode: e.mode }));
+
+  /** Re-pair an ordering of ids with the modes those ids currently hold. */
+  const withCurrentModes = (tierId: string, modelIds: readonly string[]): TierEntryInput[] => {
+    const byId = new Map(currentEntries(tierId).map((e) => [e.modelId, e.mode]));
+    return modelIds.map((modelId) => ({ modelId, mode: byId.get(modelId) ?? 'any' }));
   };
 
-  const scheduleTierWrite = (tierId: string, modelIds: string[]): void => {
+  /** Apply an ordered chain optimistically (immediate UI), then schedule a
+   * serialized PUT that sends the latest desired order. */
+  const applyTierOrder = (tierId: string, modelIds: string[]): void =>
+    applyTierEntries(tierId, withCurrentModes(tierId, modelIds));
+
+  const applyTierEntries = (tierId: string, ordered: TierEntryInput[]): void => {
+    setState('tierEntries', tierId, buildEntries(tierId, ordered));
+    scheduleTierWrite(tierId, ordered);
+  };
+
+  const scheduleTierWrite = (tierId: string, ordered: TierEntryInput[]): void => {
     if (deletedTiers.has(tierId)) return; // tombstoned — no writes for a deleted tier
     bumpRouting(); // a mutation is starting — invalidate any in-flight loadRouting
-    tierDesired.set(tierId, { modelIds, gen: identityGen });
+    tierDesired.set(tierId, { ordered, gen: identityGen });
     if (!tierInFlight.has(tierId)) void drainTierWrites(tierId);
   };
 
@@ -1496,14 +1522,14 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         if (queued.gen !== identityGen) continue;
         const gen = queued.gen;
         try {
-          const entries = await client.replaceTierEntries(tierId, queued.modelIds);
+          const entries = await client.replaceTierEntries(tierId, queued.ordered);
           if (gen !== identityGen) continue; // identity changed mid-flight — inert
           if (deletedTiers.has(tierId)) continue; // deleted mid-flight — don't resurrect
           bumpRouting();
           setState(
             'confirmedEntries',
             tierId,
-            entries.map((e) => e.modelId),
+            entries.map((e) => ({ modelId: e.modelId, mode: e.mode })),
           );
           // Reconcile the visible chain to the server truth ONLY when no newer edit
           // is queued — else the newer optimistic state stays and the next PUT wins.
@@ -3164,7 +3190,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     // The chain is already reordered locally by `moveTierEntry` during the drag;
     // on drop, schedule a single serialized PUT of the current order.
     commitTierOrder: (tierId) => {
-      scheduleTierWrite(tierId, currentModelIds(tierId));
+      scheduleTierWrite(tierId, currentEntries(tierId));
       return Promise.resolve();
     },
     beginTierDrag: (tierId) => {
@@ -3191,19 +3217,40 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         // The user's post-drag order is newer intent than a response to a request they
         // already superseded — the same rule the `tierDesired` guard encodes.
         dropPending(tierId);
-        scheduleTierWrite(tierId, currentModelIds(tierId));
+        scheduleTierWrite(tierId, currentEntries(tierId));
         return;
       }
       applyPending(tierId); // unchanged: converge to server truth, issue no write
     },
-    addTierModel: (tierId, modelId) => {
-      const ids = currentModelIds(tierId);
-      if (ids.includes(modelId)) return;
-      if (ids.length >= MAX_MODELS_PER_TIER) {
+    addTierModel: (tierId, modelId, mode) => {
+      const entries = currentEntries(tierId);
+      const existing = entries.find((e) => e.modelId === modelId);
+      if (existing !== undefined) {
+        // Already in the chain. With no mode asked for this is the old no-op; with
+        // one it RESERVES the entry in place (add-batch-mode-routing task 5.3) —
+        // appending a second entry for the same model would be refused as a
+        // duplicate, and the five-model cap must not block a mode change that adds
+        // no entry.
+        if (mode === undefined || existing.mode === mode) return;
+        applyTierEntries(
+          tierId,
+          entries.map((e) => (e.modelId === modelId ? { modelId, mode } : e)),
+        );
+        return;
+      }
+      if (entries.length >= MAX_MODELS_PER_TIER) {
         say(`Max ${String(MAX_MODELS_PER_TIER)} models per tier`);
         return;
       }
-      applyTierOrder(tierId, [...ids, modelId]);
+      applyTierEntries(tierId, [...entries, { modelId, mode: mode ?? 'any' }]);
+    },
+    setTierEntryMode: (tierId, modelId, mode) => {
+      const entries = currentEntries(tierId);
+      if (!entries.some((e) => e.modelId === modelId && e.mode !== mode)) return;
+      applyTierEntries(
+        tierId,
+        entries.map((e) => (e.modelId === modelId ? { modelId, mode } : e)),
+      );
     },
     removeTierModel: (tierId, modelId) => {
       applyTierOrder(
@@ -3927,7 +3974,12 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         }
         const nextIds = alreadyRouted ? existingIds : [...existingIds, first.id];
         if (nextIds.join('\n') !== existingIds.join('\n')) {
-          await client.replaceTierEntries(def.id, nextIds);
+          // Onboarding assigns the first routable model to a fresh default tier; a new
+          // chain carries no reservations, so the ids map straight to unreserved entries.
+          await client.replaceTierEntries(
+            def.id,
+            nextIds.map((modelId) => ({ modelId, mode: 'any' as const })),
+          );
         }
         setState(
           produce((s) => {

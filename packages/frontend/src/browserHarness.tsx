@@ -201,6 +201,10 @@ const TIER_ENTRIES = ['claude-sonnet-4-5-20250929', 'gpt-5-mini-2025-08-07', 'll
     tierId: 'tier-default',
     modelId: `m-${String(i)}`,
     position: i,
+    // The middle entry is RESERVED for batch (add-batch-mode-routing), so the
+    // browser suite measures a chain that actually carries the reservation control
+    // and its warning states rather than a uniform row.
+    mode: i === 1 ? ('batch' as const) : ('any' as const),
     model: {
       id: `m-${String(i)}`,
       providerId: 'p1',
@@ -307,13 +311,40 @@ const BATCH_JOBS: BatchJobDto[] = [
   },
 ];
 
+/** The chain fixture's models, so the reservation control has a capability to read
+ * (add-batch-mode-routing task 5.5). Without these the entries reference ids absent
+ * from the catalog and the control renders only where a reservation is already
+ * stored — a real state, but not the one the geometry checks need to measure. */
+const CHAIN_MODELS = TIER_ENTRIES.map((e) => ({
+  id: e.modelId,
+  providerId: 'p1',
+  externalModelId: e.model.externalModelId,
+  displayName: null,
+  contextWindow: null,
+  supportsTools: false,
+  supportsVision: false,
+  supportsReasoning: false,
+  isFree: false,
+  inputPricePer1m: 1,
+  outputPricePer1m: 2,
+  effectivePrice: null,
+  listedPrice: null,
+  variant: null,
+  baseExternalModelId: null,
+  batchCapable: true,
+  batchEffectivePrice: null,
+  lastSyncedAt: null,
+}));
+
 const autoPerf = workloadAutoPerf();
 const client = new FakeApiClient({
   agents: AGENTS,
   adminUsers: ADMIN_USERS,
   adminInvites: INVITES,
   batchJobs: BATCH_JOBS,
-  ...(params.get('chain') === '1' ? { tierEntries: { 'tier-default': TIER_ENTRIES } } : {}),
+  ...(params.get('chain') === '1'
+    ? { tierEntries: { 'tier-default': TIER_ENTRIES }, models: { p1: CHAIN_MODELS } }
+    : {}),
   ...(autoPerf ? { autoPerf } : {}),
 });
 if (client.session) client.session = { ...client.session, role, email: LONG_EMAIL };

@@ -42,11 +42,13 @@ function mkModel(id: string): ModelDto {
     listedPrice: null,
     variant: null,
     baseExternalModelId: null,
+    batchCapable: true,
+    batchEffectivePrice: null,
     lastSyncedAt: null,
   };
 }
-function mkEntry(modelId: string, position: number): TierEntryDto {
-  return { id: `e-${modelId}`, tierId: 't1', modelId, position, model: null };
+function mkEntry(modelId: string, position: number, mode: 'any' | 'batch' = 'any'): TierEntryDto {
+  return { id: `e-${modelId}`, tierId: 't1', modelId, position, mode, model: null };
 }
 const DEFAULT_TIER: TierDto = {
   id: 't1',
@@ -767,7 +769,7 @@ describe('dashboard shell (auth-gated)', () => {
       tiers: [DEFAULT_TIER, premium],
       tierEntries: {
         t1: [mkEntry('m1', 0)],
-        't-premium': [{ id: 'ep1', tierId: 't-premium', modelId: 'm2', position: 0, model: null }],
+        't-premium': [{ id: 'ep1', tierId: 't-premium', modelId: 'm2', position: 0, mode: 'any' as const, model: null }],
       },
       models: { p1: [mkModel('m1'), mkModel('m2')] },
       rules: [
@@ -848,7 +850,7 @@ describe('dashboard shell (auth-gated)', () => {
       tiers: [DEFAULT_TIER, premium],
       tierEntries: {
         t1: [mkEntry('m1', 0)],
-        't-premium': [{ id: 'ep1', tierId: 't-premium', modelId: 'm2', position: 0, model: null }],
+        't-premium': [{ id: 'ep1', tierId: 't-premium', modelId: 'm2', position: 0, mode: 'any' as const, model: null }],
       },
       models: { p1: [mkModel('m1'), mkModel('m2')] },
       rules: [
@@ -1011,7 +1013,7 @@ describe('dashboard shell (auth-gated)', () => {
       tiers: [DEFAULT_TIER, premium],
       tierEntries: {
         t1: [mkEntry('m1', 0)],
-        't-premium': [{ id: 'ep1', tierId: 't-premium', modelId: 'm2', position: 0, model: null }],
+        't-premium': [{ id: 'ep1', tierId: 't-premium', modelId: 'm2', position: 0, mode: 'any' as const, model: null }],
       },
       models: { p1: [mkModel('m1'), mkModel('m2')] },
       rules: [] as RuleDto[],
@@ -1150,7 +1152,7 @@ describe('dashboard shell (auth-gated)', () => {
       tiers: [DEFAULT_TIER, premium, empty],
       tierEntries: {
         t1: [mkEntry('m1', 0)],
-        't-premium': [{ id: 'ep1', tierId: 't-premium', modelId: 'm2', position: 0, model: null }],
+        't-premium': [{ id: 'ep1', tierId: 't-premium', modelId: 'm2', position: 0, mode: 'any' as const, model: null }],
         't-empty': [],
       },
       models: { p1: [mkModel('m1'), mkModel('m2')] },

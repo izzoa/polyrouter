@@ -1,3 +1,4 @@
+import { BATCH_COMPLETION_WINDOW_MS } from '@polyrouter/shared';
 /**
  * OpenRouter's Batch API (`/api/beta/batches`, add-batch-inference task 2.8):
  * inline `requests[]` with `endpoint` and `model` serialized FIRST (the API
@@ -52,7 +53,9 @@ export const OPENROUTER_STATUS_MAP: Readonly<Record<OpenRouterBatchStatus, Batch
 };
 
 /** "The only supported completion window is 24h." */
-const COMPLETION_WINDOW_MS = 86_400_000;
+/** The shared window (add-batch-mode-help): one declaration the dashboard reads too,
+ * so this provider and the help text cannot state different figures. */
+const COMPLETION_WINDOW_MS = BATCH_COMPLETION_WINDOW_MS;
 /** "OpenRouter … deletes them 30 days after creation." */
 const RETENTION_MS = 30 * 86_400_000;
 /** One inlined result (a whole completion body) or one metadata member. */

@@ -1,3 +1,4 @@
+import { batchFactoryFor, type BatchSeamInput } from '@polyrouter/data-plane';
 import {
   ConflictException,
   Inject,
@@ -26,6 +27,8 @@ import {
   type TierPatch,
   type TierRow,
   WORKLOAD_CLASSES,
+  replaceEntryModelId,
+  type ReplaceEntryInput,
 } from '@polyrouter/shared/server';
 import { ruleOrder } from '@polyrouter/data-plane';
 import type {
@@ -55,6 +58,10 @@ export interface SafeEntry {
   tierId: string;
   modelId: string;
   position: number;
+  /** Which execution mode this entry is reserved for (add-batch-mode-routing).
+   * `any` = no restriction; `batch` = only batch work may use it. Returned so the
+   * dashboard can render the reservation without inferring it. */
+  mode: 'any' | 'batch';
   model: SafeEntryModel | null;
 }
 
@@ -101,6 +108,7 @@ function toSafeEntry(e: RoutingEntryRow, model: ModelRow | null): SafeEntry {
     tierId: e.tierId,
     modelId: e.modelId,
     position: e.position,
+    mode: e.mode === 'batch' ? 'batch' : 'any',
     model: model
       ? {
           id: model.id,
@@ -166,6 +174,18 @@ function toSafeRule(r: RoutingRuleRow): SafeRule {
 
 /** `/api/routing` service: tier / ordered-entry / rule CRUD, tenant-scoped
  * through the persistence port. No routing execution (that is #10). */
+/** Whether a provider row carries the batch adapter seam (add-batch-mode-routing). */
+function providerCanBatch(p: { kind: string; protocol: string; baseUrl: string | null }): boolean {
+  if (p.baseUrl === null) return false;
+  return (
+    batchFactoryFor({
+      kind: p.kind as BatchSeamInput['kind'],
+      protocol: p.protocol as BatchSeamInput['protocol'],
+      baseUrl: p.baseUrl,
+    }) !== undefined
+  );
+}
+
 @Injectable()
 export class RoutingConfigService {
   constructor(@Inject(PERSISTENCE_PORT) private readonly db: PersistencePort) {}
@@ -238,11 +258,15 @@ export class RoutingConfigService {
     return entries.map((e) => toSafeEntry(e, byId.get(e.modelId) ?? null));
   }
 
+  // Same predicate the batch path and the dashboard's capability flag use, so a
+  // reservation the UI offers can never be refused here (and vice versa).
+  // (Module-level helper below.)
   async replaceEntries(
     principal: Principal,
     tierId: string,
-    modelIds: string[],
+    ordered: readonly ReplaceEntryInput[],
   ): Promise<SafeEntry[]> {
+    const modelIds = ordered.map(replaceEntryModelId);
     if (modelIds.length > MAX_MODELS_PER_TIER) {
       throw new UnprocessableEntityException(`a tier holds at most ${MAX_MODELS_PER_TIER} models`);
     }
@@ -254,14 +278,49 @@ export class RoutingConfigService {
     // that can never serve (add-model-variant-detection). The stored chain is left
     // untouched on rejection, and the proxy keeps serving around such a member
     // meanwhile, so this is never the first the tenant hears of it.
+    // Ownership of the TIER is settled before anything about its contents is judged
+    // (invariant 5). `replaceForTier` would answer `tier_not_found` eventually, but
+    // every content check above it can throw a 4xx first — so another tenant's tier
+    // id would answer 422 "cannot be reserved for batch" instead of the 404 that
+    // makes it indistinguishable from a missing one. Pre-existing for the routability
+    // check; the seam check would have widened it.
+    if ((await this.db.tiers.findById(principal, tierId)) === null) throw new NotFoundException();
     if (modelIds.length > 0) {
       const owned = await this.modelsById(principal);
       for (const id of modelIds) {
         const m = owned.get(id);
         if (m) assertRoutable(m, 'model');
       }
+      // A reservation may only name a provider that can actually run a batch
+      // (add-batch-mode-routing). Checked for a member that INTRODUCES or RETAINS
+      // `batch` — never for one moving to `any`: a provider can lose its seam
+      // beneath a stored reservation, and since a PUT resubmits every entry, a
+      // blanket check would leave the tenant unable to edit that tier at all.
+      // Unreserving must always be reachable (D12).
+      const providers = new Map((await this.db.providers.list(principal)).map((r) => [r.id, r]));
+      const stored = new Map(
+        (await this.db.routingEntries.listForTier(principal, tierId)).map((e) => [e.modelId, e]),
+      );
+      for (const e of ordered) {
+        const modelId = replaceEntryModelId(e);
+        const stated = typeof e === 'string' ? undefined : e.mode;
+        const effective = stated ?? stored.get(modelId)?.mode ?? 'any';
+        if (effective !== 'batch') continue;
+        const m = owned.get(modelId);
+        // An id that is not the principal's is NOT a provider-capability problem —
+        // it falls through to the `unknown_models` mapping below, which names it as
+        // such. Reporting "its provider has no batch API" for a model the tenant does
+        // not own would describe someone else's configuration.
+        if (m === undefined) continue;
+        const prov = providers.get(m.providerId);
+        if (prov === undefined || prov.baseUrl === null || !providerCanBatch(prov)) {
+          throw new UnprocessableEntityException(
+            `"${m.externalModelId}" cannot be reserved for batch: its provider has no batch API`,
+          );
+        }
+      }
     }
-    const result = await this.db.routingEntries.replaceForTier(principal, tierId, modelIds);
+    const result = await this.db.routingEntries.replaceForTier(principal, tierId, ordered);
     if (result.status === 'tier_not_found') throw new NotFoundException();
     if (result.status === 'unknown_models') {
       throw new UnprocessableEntityException(

@@ -15,6 +15,16 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.18.1] — 2026-09-07
+
+### Fixed
+
+- **No runtime change — this release exists so the released tag passes its own CI.** v0.18.0's tag pointed at a commit whose `npm run typecheck` failed: a data-plane spec file used two types without importing them. Jest does not type-check, and the production build excludes spec files, so both accepted it while a full type-check did not. Nothing shipped differs from v0.18.0, and the `0.18.0` image is unaffected — if you are already running it, there is nothing to gain by upgrading.
+
+### Upgrade notes
+
+- **Nothing to do.** `ghcr.io/izzoa/polyrouter:0.18.1` is behaviourally identical to `0.18.0`. See the [0.18.0] notes for the batch-reservation changes this line actually carries.
+
 ## [0.18.0] — 2026-09-07
 
 ### Added
@@ -920,7 +930,8 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.18.1...HEAD
+[0.18.1]: https://github.com/izzoa/polyrouter/releases/tag/v0.18.1
 [0.18.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.18.0
 [0.17.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.17.0
 [0.16.5]: https://github.com/izzoa/polyrouter/releases/tag/v0.16.5

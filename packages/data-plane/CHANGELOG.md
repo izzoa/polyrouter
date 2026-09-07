@@ -1,5 +1,22 @@
 # @polyrouter/data-plane
 
+## 0.11.1
+
+### Patch Changes
+
+- **No runtime change.** This release exists so the released tag passes its own CI.
+
+  v0.18.0's tag pointed at a commit whose `npm run typecheck` failed: a data-plane spec
+  used `RouteDecision` and `EntryMode` without importing them. Jest does not type-check,
+  and the production build uses `tsconfig.build.json`, which excludes spec files — so both
+  accepted it, while the full type-check over `tsconfig.json` did not. The fix is two type
+  imports in that spec file; no shipped code differs from v0.18.0, and the v0.18.0 image
+  is unaffected.
+
+  This is the second time this exact gap has produced a red tag (see 0.16.5). The local
+  gate now runs `npm run typecheck`, not only `npm run build`, because the build alone
+  cannot see spec files.
+
 ## 0.11.0
 
 ### Minor Changes

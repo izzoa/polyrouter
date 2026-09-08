@@ -15,10 +15,19 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.18.2] — 2026-09-07
+
+[Release](https://github.com/izzoa/polyrouter/releases/tag/v0.18.2) ·
+[Compare](https://github.com/izzoa/polyrouter/compare/v0.18.1...v0.18.2)
+
 ### Fixed
 
 - **The batch reservation switch appeared on models the provider will not batch.** Batch capability was read from the *provider* and inherited by all of its models — right for OpenAI and Anthropic, where the batch endpoint covers the account, but wrong for OpenRouter, which sells batch as a per-model SKU that only part of its catalog carries. The switch is now shown only where that model itself is batchable, and `PUT /api/routing/tiers/:id/entries` refuses the same reservations by the same rule, so the dashboard and the API cannot disagree. Reservations you have already stored are untouched and can still be un-reserved. Separately, a `supportsVision` / `supportsTools` filter on the model list could hide a model's batch twin and with it the evidence that the model is batchable.
 - **A tier's chain rows did not line up.** The price, the reservation switch and the row actions landed at a different position on every row, depending on which optional pieces that row happened to carry. The chain is now one grid whose columns each row adopts, so every kind of content starts at the same place down the whole tier.
+
+### Upgrade notes
+
+- **Nothing to do — no migration, no new environment variable.** One behaviour narrows: an aggregator model its provider publishes no batch tier for can no longer be reserved for batch, from the dashboard or from `PUT /api/routing/tiers/:id/entries`. Reservations already stored are left exactly as they are, the switch stays available to un-reserve them, and the row says why it can no longer be honoured. As with a provider that loses its batch API, a chain holding such an entry cannot be reordered until that entry is un-reserved.
 
 ## [0.18.1] — 2026-09-07
 
@@ -935,7 +944,8 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.18.1...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.18.2...HEAD
+[0.18.2]: https://github.com/izzoa/polyrouter/releases/tag/v0.18.2
 [0.18.1]: https://github.com/izzoa/polyrouter/releases/tag/v0.18.1
 [0.18.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.18.0
 [0.17.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.17.0

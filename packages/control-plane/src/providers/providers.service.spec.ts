@@ -711,3 +711,147 @@ describe('batchEffectivePrice on the model read (add-batch-mode-help tasks 1.1/1
     expect(snap?.source).not.toBe('listed');
   });
 });
+
+// The bug: `batchCapable` was derived per PROVIDER, so every model on a batch-capable
+// provider inherited it. On OpenRouter batch is a per-model SKU that a minority of the
+// catalog carries, so the control appeared on models whose reservation was accepted and
+// then refused at submission (fix-batch-capability-and-chain-alignment).
+describe('listModels — batchCapable follows the MODEL on an aggregator', () => {
+  const prov = (over: Record<string, unknown>) => ({
+    ownerUserId: 'u1',
+    orgId: null,
+    name: 'p',
+    kind: 'api_key',
+    encryptedCredentials: null,
+    status: 'ok',
+    oauthPreset: null,
+    credentialExpiresAt: null,
+    credentialError: null,
+    createdAt: new Date(),
+    ...over,
+  });
+  const model = (over: Record<string, unknown>) => ({
+    displayName: null,
+    contextWindow: null,
+    supportsTools: false,
+    supportsVision: false,
+    supportsReasoning: false,
+    isFree: false,
+    inputPricePer1m: null,
+    outputPricePer1m: null,
+    listedInputPricePer1m: null,
+    listedOutputPricePer1m: null,
+    listedIsFree: false,
+    listedPriceCapturedAt: null,
+    variant: null,
+    lastSyncedAt: null,
+    ...over,
+  });
+  const providers = [
+    prov({
+      id: 'p-or',
+      protocol: 'openai_compatible',
+      baseUrl: 'https://openrouter.ai/api/v1',
+    }),
+    prov({
+      id: 'p-anth',
+      protocol: 'anthropic_compatible',
+      baseUrl: 'https://api.anthropic.com',
+    }),
+    prov({
+      id: 'p-local',
+      kind: 'local',
+      protocol: 'openai_compatible',
+      baseUrl: 'http://127.0.0.1:11434/v1',
+    }),
+  ];
+  const models = [
+    // An aggregator model the catalog DOES sell a batch tier for, and its twin.
+    model({ id: 'm-twinned', providerId: 'p-or', externalModelId: 'openai/gpt-6-astra' }),
+    model({
+      id: 'm-twin',
+      providerId: 'p-or',
+      externalModelId: 'openai/gpt-6-astra:batch',
+      variant: 'batch',
+    }),
+    // An aggregator model it does not. The seam is identical; the catalog is not.
+    model({ id: 'm-bare', providerId: 'p-or', externalModelId: 'minimax/minimax-m3' }),
+    // A twin on the SAME provider but for a DIFFERENT model — the pairing must be by
+    // base id, not merely "this provider has some twin somewhere".
+    model({
+      id: 'm-other-twin',
+      providerId: 'p-or',
+      externalModelId: 'deepseek/deepseek-v4:batch',
+      variant: 'batch',
+    }),
+    // Native: no batch rate in the bundled catalog and no twin convention at all.
+    model({ id: 'm-anth', providerId: 'p-anth', externalModelId: 'claude-sonnet-4-5' }),
+    model({ id: 'm-local', providerId: 'p-local', externalModelId: 'qwen3' }),
+  ];
+  const mkPort = (rows = models) =>
+    ({
+      providers: { list: () => Promise.resolve(providers) },
+      models: { listForPrincipal: () => Promise.resolve(rows) },
+      pricing: { priceAtMany: () => Promise.resolve([]) },
+    }) as unknown as PersistencePort;
+  const byId = (out: { id: string; batchCapable: boolean }[]) =>
+    new Map(out.map((m) => [m.id, m.batchCapable]));
+
+  it('requires a sibling twin on the aggregator and nowhere else', async () => {
+    const svc = mkProvidersService(mkPort(), factory(), runtime('selfhosted'));
+    const flags = byId(await svc.listModels(principal, {}));
+    expect(flags.get('m-twinned')).toBe(true);
+    // The regression this whole change exists for: same provider, same seam, no SKU.
+    expect(flags.get('m-bare')).toBe(false);
+    // A native provider that publishes no batch rate is still capable — deriving this
+    // from a resolved batch price instead would have made every Anthropic model false.
+    expect(flags.get('m-anth')).toBe(true);
+    expect(flags.get('m-local')).toBe(false);
+    // A non-routable twin is not itself reservable, so it reports false.
+    expect(flags.get('m-twin')).toBe(false);
+  });
+
+  it('does not let a display filter narrow what the catalog is known to contain', async () => {
+    // The twin index fed a display price before it fed a capability; built from the
+    // FILTERED rows, `?supportsVision=true` would drop a twin whose flags differ from
+    // its base's and report a batchable model as unbatchable — for a reason with nothing
+    // to do with batch.
+    const rows = [
+      model({
+        id: 'm-vis',
+        providerId: 'p-or',
+        externalModelId: 'openai/gpt-6-astra',
+        supportsVision: true,
+      }),
+      model({
+        id: 'm-vis-twin',
+        providerId: 'p-or',
+        externalModelId: 'openai/gpt-6-astra:batch',
+        variant: 'batch',
+        supportsVision: false,
+      }),
+      // The mirror case, for the sibling-base index the twin shortcut reads: here the
+      // filter keeps the TWIN and drops its base.
+      model({
+        id: 'm-hid',
+        providerId: 'p-or',
+        externalModelId: 'deepseek/deepseek-v4',
+        supportsVision: false,
+      }),
+      model({
+        id: 'm-hid-twin',
+        providerId: 'p-or',
+        externalModelId: 'deepseek/deepseek-v4:batch',
+        variant: 'batch',
+        supportsVision: true,
+      }),
+    ];
+    const svc = mkProvidersService(mkPort(rows), factory(), runtime('selfhosted'));
+    const out = await svc.listModels(principal, { supportsVision: true });
+    expect(out.map((m) => m.id).sort()).toEqual(['m-hid-twin', 'm-vis']);
+    expect(out.find((m) => m.id === 'm-vis')?.batchCapable).toBe(true);
+    expect(out.find((m) => m.id === 'm-hid-twin')?.baseExternalModelId).toBe(
+      'deepseek/deepseek-v4',
+    );
+  });
+});

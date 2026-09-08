@@ -12,7 +12,9 @@ import {
   MAX_MODELS_PER_TIER,
   PERSISTENCE_PORT,
   TIER_HEADER_NAME,
+  deriveProviderFamily,
   isNonRoutableVariant,
+  modelBatchCapable,
   parseModelVariant,
   parseRoutingTarget,
   type ModelRow,
@@ -291,13 +293,25 @@ export class RoutingConfigService {
         const m = owned.get(id);
         if (m) assertRoutable(m, 'model');
       }
-      // A reservation may only name a provider that can actually run a batch
-      // (add-batch-mode-routing). Checked for a member that INTRODUCES or RETAINS
-      // `batch` — never for one moving to `any`: a provider can lose its seam
-      // beneath a stored reservation, and since a PUT resubmits every entry, a
-      // blanket check would leave the tenant unable to edit that tier at all.
-      // Unreserving must always be reachable (D12).
+      // A reservation may only name a model that can actually run a batch
+      // (add-batch-mode-routing; narrowed to the MODEL by
+      // fix-batch-capability-and-chain-alignment). Checked for a member that
+      // INTRODUCES or RETAINS `batch` — never for one moving to `any`: a provider can
+      // lose its seam, or a catalog sync drop a model's batch tier, beneath a stored
+      // reservation, and since a PUT resubmits every entry, a blanket check would
+      // leave the tenant unable to edit that tier at all. Unreserving must always be
+      // reachable (D12).
       const providers = new Map((await this.db.providers.list(principal)).map((r) => [r.id, r]));
+      // Batch twins keyed by (provider, BASE external id) — the aggregator's own record
+      // of which models it sells a batch tier for, and the same pairing rule the
+      // dashboard's capability flag uses. Built from the models already loaded above,
+      // so the evidence costs no query.
+      const twins = new Set<string>();
+      for (const m of owned.values()) {
+        if (m.variant !== 'batch') continue;
+        const base = parseModelVariant(m.externalModelId)?.base;
+        if (base !== undefined) twins.add(`${m.providerId}\u0000${base}`);
+      }
       const stored = new Map(
         (await this.db.routingEntries.listForTier(principal, tierId)).map((e) => [e.modelId, e]),
       );
@@ -313,9 +327,25 @@ export class RoutingConfigService {
         // not own would describe someone else's configuration.
         if (m === undefined) continue;
         const prov = providers.get(m.providerId);
-        if (prov === undefined || prov.baseUrl === null || !providerCanBatch(prov)) {
+        const baseUrl = prov?.baseUrl ?? null;
+        if (prov === undefined || baseUrl === null || !providerCanBatch(prov)) {
           throw new UnprocessableEntityException(
             `"${m.externalModelId}" cannot be reserved for batch: its provider has no batch API`,
+          );
+        }
+        // The seam holds, which settles it on a native family. On an aggregator batch is
+        // a per-model SKU, so the model needs its own evidence — SAME rule the dashboard
+        // gates the reservation control on, so this endpoint can never refuse what the
+        // interface offered, nor accept what it withheld.
+        if (
+          !modelBatchCapable({
+            seam: true,
+            billingFamily: deriveProviderFamily(baseUrl),
+            hasBatchTwin: twins.has(`${m.providerId}\u0000${m.externalModelId}`),
+          })
+        ) {
+          throw new UnprocessableEntityException(
+            `"${m.externalModelId}" cannot be reserved for batch: its provider publishes no batch tier for this model`,
           );
         }
       }

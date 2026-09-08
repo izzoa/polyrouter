@@ -87,6 +87,31 @@ for (const vp of [
       expect(g!.undersized, 'move controls below the 44px floor').toEqual([]);
     });
 
+    test('the row still wraps as LINES, not one cell per line', async ({ page }) => {
+      // The narrow layer's whole arrangement is `flex-wrap` plus `flex: 1 1 100%` and
+      // `order` — every one of which a grid container ignores. If it stops restating
+      // `display: flex`, the row inherits the desktop grid, `subgrid` computes to `none`
+      // for want of a grid parent, and every cell stacks into its own line. Containment
+      // and overlap checks all still pass on that layout, so this is what catches it:
+      // the grip and the position badge belong on ONE line, side by side
+      // (fix-batch-capability-and-chain-alignment).
+      await open(page);
+      const out = await page.evaluate(() => {
+        const row = document.querySelector('.chain-row');
+        const h = row?.querySelector('.drag-handle')?.getBoundingClientRect();
+        const b = row?.querySelector('.pos-badge')?.getBoundingClientRect();
+        const id = row?.querySelector('.chain-id')?.getBoundingClientRect();
+        if (!row || !h || !b || !id) return null;
+        return {
+          badgeBesideHandle: b.left >= h.right - 0.5 && b.top < h.bottom - 0.5,
+          idOnItsOwnLine: id.top >= h.bottom - 0.5,
+        };
+      });
+      expect(out, 'no chain row rendered').not.toBeNull();
+      expect(out!.badgeBesideHandle, 'the row stacked one cell per line').toBe(true);
+      expect(out!.idOnItsOwnLine, 'the model id must take its own line here').toBe(true);
+    });
+
     test('a real tap reorders the chain', async ({ page }) => {
       await open(page);
       const first = () => page.locator('.chain-row').first().getAttribute('data-model-id');
@@ -244,8 +269,10 @@ test.describe('the batch reservation control (add-batch-mode-routing task 5.5)',
           docOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
         };
       });
-      expect(out.rows).toBe(3);
-      // Every entry in this fixture is on a batch-capable provider, so each row has one.
+      expect(out.rows).toBe(4);
+      // Three of the four fixture models are batch-capable; the fourth's provider offers
+      // no batch tier for it, so that row carries the empty cell and no switch
+      // (fix-batch-capability-and-chain-alignment).
       expect(out.switches).toBe(3);
       expect(out.checked, 'exactly the reserved entry reads as on').toBe(1);
       expect(out.names, 'each switch names its own entry').toBe(3);
@@ -325,5 +352,136 @@ test.describe('the reservation help escapes its tier card (add-batch-mode-help t
     await page.waitForTimeout(120);
     expect(await sw.getAttribute('aria-checked')).not.toBe(before);
     expect(await page.locator('.chain-help-shown').count()).toBe(0);
+  });
+});
+
+/** Every column's left edge, per row, plus the right edge of the action group. */
+async function columnEdges(page: Page) {
+  return page.evaluate(() => {
+    const rows = [...document.querySelectorAll('.chain-row')];
+    const edge = (sel: string, side: 'left' | 'right'): number[] =>
+      rows.map((r) => {
+        const el = r.querySelector(sel);
+        return el === null ? Number.NaN : el.getBoundingClientRect()[side];
+      });
+    return {
+      rows: rows.length,
+      cols: {
+        // `.chain-mode` matches the placeholder too — it carries the class so the empty
+        // cell occupies exactly the box the real one would.
+        handle: edge('.drag-handle', 'left'),
+        badge: edge('.pos-badge', 'left'),
+        id: edge('.chain-id', 'left'),
+        price: edge('.chain-price', 'left'),
+        mode: edge('.chain-mode', 'left'),
+        actions: edge('.chain-actions', 'left'),
+        // The × is the last thing in the group on every row; "Make primary" is absent on
+        // the primary row, so only a contained group keeps this edge stable.
+        actionsRight: edge('.chain-actions', 'right'),
+      },
+      // Anti-vacuity: if these ever became uniform the alignment assertion would pass
+      // under a per-row grid too, and would be measuring nothing.
+      modeCellsWithContent: rows.filter((r) => r.querySelector('.chain-mode')?.children.length)
+        .length,
+      priceLabels: new Set(rows.map((r) => r.querySelector('.chain-price')?.textContent ?? ''))
+        .size,
+      tallestOverShortest:
+        Math.max(...rows.map((r) => r.getBoundingClientRect().height)) /
+        Math.min(...rows.map((r) => r.getBoundingClientRect().height)),
+    };
+  });
+}
+
+/**
+ * The columns (fix-batch-capability-and-chain-alignment). This is a DESKTOP concern:
+ * below the narrow threshold the row deliberately reverts to a wrapping flex line, which
+ * the describes above measure.
+ *
+ * Why it needs a real browser: the defect was that each row's trailing group packed
+ * against its own width, and it survives any check that does not compare one row's
+ * geometry to another's.
+ */
+test.describe('chain row columns @desktop', () => {
+  test.use({ viewport: { width: 1280, height: 900 } });
+
+  test('the fixture is not uniform, so the alignment assertion measures something', async ({
+    page,
+  }) => {
+    await open(page);
+    const g = await columnEdges(page);
+    expect(g.rows, 'four rows, deliberately differing').toBe(4);
+    // One row's provider offers no batch tier for it: its reservation cell is empty.
+    expect(g.modeCellsWithContent, 'every row carries the control — nothing to expose').toBe(3);
+    // Four price labels of four different widths.
+    expect(g.priceLabels).toBe(4);
+    // One model id is long enough to wrap, so the rows differ in height too.
+    expect(g.tallestOverShortest).toBeGreaterThan(1.2);
+  });
+
+  test('every column edge is shared by every row of the tier', async ({ page }) => {
+    await open(page);
+    const g = await columnEdges(page);
+    for (const [name, edges] of Object.entries(g.cols)) {
+      expect(edges.some(Number.isNaN), `${name} is missing from a row`).toBe(false);
+      const spread = Math.max(...edges) - Math.min(...edges);
+      expect(spread, `${name} lands at ${edges.map((n) => n.toFixed(1)).join(' / ')}`).toBeLessThan(
+        0.5,
+      );
+    }
+  });
+
+  test('no cell paints outside its own column', async ({ page }) => {
+    // 1280 is the cramped case: the panel is 670px there against 755px at the layout's
+    // design width, and the row's content does not fit on one line either way. Something
+    // must wrap, and the columns decide WHICH — so this pins the outcome that a cell
+    // wraps INSIDE its column rather than painting past it, which is the failure mode a
+    // containment check cannot see (the box stays inside the row either way).
+    await open(page);
+    // The TEXT cells only. The reservation and the action group both carry controls whose
+    // hit area reaches the comfort floor through a `::before` larger than the control's
+    // own box, so their scroll width legitimately exceeds their client width and says
+    // nothing about the columns.
+    const over = await page.evaluate(() =>
+      [...document.querySelectorAll('.chain-row')].flatMap((row, i) =>
+        ['.chain-id', '.chain-price']
+          .map((sel) => ({ sel, el: row.querySelector(sel) }))
+          .filter(({ el }) => el !== null && el.scrollWidth > el.clientWidth + 1)
+          .map(({ sel }) => `row ${String(i)} ${sel}`),
+      ),
+    );
+    expect(over, 'a cell overflows its column').toEqual([]);
+  });
+
+  test('a row warning takes its own line and does not claim a column', async ({ page }) => {
+    // The reserved entry's model is batch-capable in the fixture, so the warning is
+    // induced here rather than fixtured: it is the STATE that matters, not its cause.
+    await open(page);
+    await page.evaluate(() => {
+      const row = document.querySelectorAll('.chain-row')[1];
+      const notes = document.createElement('div');
+      notes.className = 'chain-notes';
+      notes.textContent = 'reserved for batch, but this provider has no batch API';
+      row?.appendChild(notes);
+    });
+    await page.waitForTimeout(50);
+    const g = await columnEdges(page);
+    // The columns are unmoved...
+    for (const [name, edges] of Object.entries(g.cols)) {
+      const spread = Math.max(...edges) - Math.min(...edges);
+      expect(spread, `${name} moved when a warning rendered`).toBeLessThan(0.5);
+    }
+    // ...and the note spans the row rather than sitting in the actions' track.
+    const spans = await page.evaluate(() => {
+      const row = document.querySelectorAll('.chain-row')[1];
+      const notes = row?.querySelector('.chain-notes');
+      if (!row || !notes) return null;
+      const r = row.getBoundingClientRect();
+      const n = notes.getBoundingClientRect();
+      const id = row.querySelector('.chain-id')!.getBoundingClientRect();
+      return { widthRatio: n.width / r.width, belowContent: n.top >= id.bottom - 0.5 };
+    });
+    expect(spans).not.toBeNull();
+    expect(spans!.widthRatio, 'the note is confined to a column').toBeGreaterThan(0.8);
+    expect(spans!.belowContent, 'the note shares the content line').toBe(true);
   });
 });

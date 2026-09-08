@@ -690,10 +690,38 @@ select:focus {
   white-space: pre-wrap;
 }
 
+/* ---- the tier chain's columns (fix-batch-capability-and-chain-alignment) ----
+ *
+ * The GRID IS THE CHAIN, not the row. `display: grid` on `.chain-row` gives every row a
+ * track set of its own, sized from its own content — with content-sized tracks that is
+ * the same raggedness in different syntax, and it is only hidden by pinning each track to
+ * a figure chosen in advance, which trades one defect for a price column that clips a long
+ * label and wastes space on a short one. So the columns live here and each row adopts them
+ * with `subgrid`: sized from the whole chain, shared by definition.
+ *
+ * `minmax(0, …)` throughout with `min-width: 0` on the items, or one unshrinkable cell
+ * widens its own column and takes its row out of line with its neighbours — the same rail
+ * the requests and batches tables both needed. */
+.chain-list {
+  display: grid;
+  grid-template-columns:
+    auto /* the grip */
+    auto /* the position badge */
+    minmax(0, 1fr) /* the model id — takes the slack */
+    minmax(0, auto) /* the price */
+    minmax(0, auto) /* the batch reservation */
+    minmax(0, auto); /* the row's actions */
+  column-gap: 12px;
+}
+
 .chain-row {
-  display: flex;
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
   align-items: center;
-  gap: 12px;
+  /* Between the row's content and its annotation line, NOT between columns — the column
+     gutter is the chain's, inherited through the subgrid. */
+  row-gap: 4px;
   padding: 9px 18px;
   border-bottom: 1px solid var(--border2);
   cursor: grab;
@@ -702,11 +730,40 @@ select:focus {
   background: var(--hover);
 }
 
-/* The row's action group. `display: contents` above the threshold, so it contributes no
-   box and the row lays out exactly as it did before it existed — the same device phase 1
-   used to add a table-cell wrapper without moving desktop geometry. */
+/* The row's action group: ONE cell, right-aligned within it. It carried `display: contents`
+   before the columns existed, which under a grid promotes "Make primary" and the remove
+   control to cells of their own — so the primary row, which has no "Make primary", put its
+   × in the wrong track. Contained, the × lands at the same x on every row. */
 .chain-actions {
-  display: contents;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* The model id takes the chain's slack. `overflow-wrap: anywhere` reduces its MIN-CONTENT
+   size, which is what lets `minmax(0, 1fr)` hold that column when an id is longer than its
+   share, instead of the id pushing the column wider and taking the row out of line. */
+.chain-id {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.chain-price {
+  min-width: 0;
+}
+
+/* The row's annotations (a reservation its provider can no longer honour, a stored
+   non-routable member): one cell spanning every track, on its own line under the row's
+   content. As siblings of the cells they claimed the actions' column. */
+.chain-notes {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font:
+    400 10.5px 'Geist',
+    sans-serif;
+  color: var(--amber);
 }
 
 /* The batch reservation control (add-batch-mode-routing). Sits before the action group
@@ -720,8 +777,15 @@ select:focus {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex: none;
-  margin-left: 4px;
+  min-width: 0;
+}
+
+/* The reservation cell on a row that has no reservation control. RENDERED, not omitted:
+   auto-placement fills tracks in order, so an omitted cell pulls the actions one track
+   left. Carries no content and no margin, so it must match the real cell's box exactly —
+   which is why the offset the real one used to carry is gone rather than duplicated. */
+.chain-mode-blank {
+  display: block;
 }
 
 /* ---- the reservation's help text (add-batch-mode-help) ----
@@ -1366,9 +1430,30 @@ select:focus {
  * this change added anything, and no arrangement of one non-wrapping line fits five 44px
  * controls into 194px. */
 @media (max-width: 768px), (any-pointer: coarse) {
+  /* The columns are RETIRED here, not extended: this layer's whole arrangement is
+     `flex-wrap` plus `flex: 1 1 100%` and `order` on the children, every one of which a
+     grid container ignores. `display` is therefore RESTATED rather than inherited — left
+     as it stands the row would silently try to be a six-column grid at 320px — and the
+     chain reverts to `display: contents`, restoring the box tree the rows had before the
+     columns existed. */
+  .chain-list {
+    display: contents;
+  }
   .chain-row {
+    display: flex;
     flex-wrap: wrap;
     row-gap: 8px;
+  }
+  /* Belt-and-braces, not load-bearing: the row spans every track here anyway, so the
+     narrow layout holds without this. It keeps the box tree the rows had before the
+     columns existed, and covers the row losing its span. */
+  /* No track to hold open, so the placeholder is not a wrapping flex child. */
+  .chain-mode-blank {
+    display: none;
+  }
+  .chain-notes {
+    flex: 1 1 100%;
+    order: 4;
   }
 
   /* The model id takes its own line. It is the thing being reordered, so it is the one
@@ -1376,7 +1461,6 @@ select:focus {
   .chain-id {
     flex: 1 1 100%;
     order: 1;
-    overflow-wrap: anywhere;
   }
   .chain-price {
     order: 0;

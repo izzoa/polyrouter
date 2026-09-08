@@ -47,6 +47,12 @@ interface Tenant {
   modelIds: string[];
   /** A model on a BATCH-CAPABLE provider (add-batch-mode-routing). */
   batchModelId: string;
+  /**
+   * A model on the SAME aggregator provider that the catalog sells no batch tier for
+   * (fix-batch-capability-and-chain-alignment). Its provider carries the seam; the
+   * model does not carry the SKU.
+   */
+  bareAggModelId: string;
 }
 
 async function seedTenant(port: PersistencePort, pool: Pool, label: string): Promise<Tenant> {
@@ -81,7 +87,24 @@ async function seedTenant(port: PersistencePort, pool: Pool, label: string): Pro
   const batchModel = await port.models.createForProvider(principal, batchProvider.id, {
     externalModelId: 'm-batchable',
   });
-  return { userId, principal, modelIds, batchModelId: batchModel!.id };
+  // On an AGGREGATOR the seam is not enough: batch is a per-model SKU, and the twin row
+  // is the aggregator's own record of which models carry one
+  // (fix-batch-capability-and-chain-alignment). Written through the real port so the
+  // classification comes from the same place production reads it.
+  await port.models.createForProvider(principal, batchProvider.id, {
+    externalModelId: 'm-batchable:batch',
+    variant: 'batch',
+  });
+  const bareAgg = await port.models.createForProvider(principal, batchProvider.id, {
+    externalModelId: 'm-not-batchable',
+  });
+  return {
+    userId,
+    principal,
+    modelIds,
+    batchModelId: batchModel!.id,
+    bareAggModelId: bareAgg!.id,
+  };
 }
 
 describe('routing-config e2e', () => {
@@ -225,6 +248,22 @@ describe('routing-config e2e', () => {
     });
     expect(refused.status).toBe(422);
     expect(String(refused.body.message)).toMatch(/cannot be reserved for batch/);
+
+    // And so is one on the SAME aggregator provider that qualified above — the seam is
+    // shared, the batch SKU is not. This is the reservation the dashboard stopped
+    // offering; accepting it here would have left the tenant to discover it as a refused
+    // submission, or a job discarded for having no computable ceiling.
+    const noSku = await asA('put', entriesUrl).send({
+      entries: [{ modelId: A.bareAggModelId, mode: 'batch' }],
+    });
+    expect(noSku.status).toBe(422);
+    expect(String(noSku.body.message)).toMatch(/publishes no batch tier for this model/);
+    // Unreserved, the very same model is fine: the refusal is about the reservation, not
+    // about the model being unusable. Two entries, so the chain the closing assertion
+    // reads is still the one the last ACCEPTED write left.
+    expect(
+      (await asA('put', entriesUrl).send({ modelIds: [A.modelIds[0], A.bareAggModelId] })).status,
+    ).toBe(200);
 
     // Exactly one form: neither, or both, is ambiguous rather than a silent pick.
     expect((await asA('put', entriesUrl).send({})).status).toBe(422);

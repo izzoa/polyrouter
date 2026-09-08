@@ -118,6 +118,7 @@ export {
   MODEL_VARIANTS,
   NON_ROUTABLE_VARIANTS,
   isNonRoutableVariant,
+  modelBatchCapable,
   parseModelVariant,
   variantForProvider,
 } from './models/variants';

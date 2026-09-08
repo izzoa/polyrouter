@@ -14,6 +14,7 @@ import {
   deriveModelKey,
   deriveNativeFamilyKey,
   deriveProviderFamily,
+  modelBatchCapable,
   encryptSecret,
   resolveModelPrice,
   parseModelVariant,
@@ -328,6 +329,33 @@ function providerBatchCapable(p: ProviderRow | undefined): boolean {
       baseUrl: p.baseUrl,
     }) !== undefined
   );
+}
+
+/**
+ * A MODEL's batch capability (fix-batch-capability-and-chain-alignment): the
+ * provider's seam, plus — on an aggregator family, where batch is a per-model SKU —
+ * a batch-priced sibling twin for that model on that provider. The twin index is the
+ * one already built for `baseExternalModelId`, so this asks no question the listing
+ * had not already answered.
+ *
+ * The RULE lives in shared (`modelBatchCapable`) because the routing-entry write path
+ * applies it too: the flag the dashboard gates its control on and the reservation the
+ * API accepts must be the same judgement, or one will offer what the other refuses.
+ */
+function batchCapableFor(
+  m: ModelRow,
+  p: ProviderRow | undefined,
+  twinByBase: ReadonlyMap<string, ModelRow>,
+): boolean {
+  if (p === undefined || p.baseUrl === null) return false;
+  return modelBatchCapable({
+    seam: providerBatchCapable(p),
+    billingFamily: deriveProviderFamily(p.baseUrl),
+    // Keyed by (provider, BASE external id) — a base model's own id IS that key; a
+    // twin looked up by its suffixed id misses, which is right: a non-routable twin
+    // is not itself reservable.
+    hasBatchTwin: twinByBase.has(`${m.providerId}\u0000${m.externalModelId}`),
+  });
 }
 
 function toSafeModel(
@@ -650,7 +678,14 @@ export class ProvidersService {
   }
 
   async listModels(principal: Principal, q: ListModelsQueryDto): Promise<SafeModel[]> {
-    let rows = await this.db.models.listForPrincipal(principal);
+    // The whole catalog is kept beside the filtered projection: the two indexes below
+    // answer "what does this provider's catalog CONTAIN", which a display filter has no
+    // standing to narrow (fix-batch-capability-and-chain-alignment). Deriving them from
+    // `rows` let `?supportsVision=true` drop a twin whose flags differ from its base's
+    // and report a batch-capable model as incapable — for a reason with nothing to do
+    // with batch. Same query, so this costs nothing.
+    const all = await this.db.models.listForPrincipal(principal);
+    let rows = all;
     if (q.providerId !== undefined) rows = rows.filter((r) => r.providerId === q.providerId);
     if (q.supportsTools !== undefined)
       rows = rows.filter((r) => r.supportsTools === q.supportsTools);
@@ -686,7 +721,7 @@ export class ProvidersService {
     // Per-provider external-id index: a twin pairs ONLY with a base model on its
     // own provider (add-model-variant-detection).
     const idsByProvider = new Map<string, Set<string>>();
-    for (const r of rows) {
+    for (const r of all) {
       const set = idsByProvider.get(r.providerId) ?? new Set<string>();
       set.add(r.externalModelId);
       idsByProvider.set(r.providerId, set);
@@ -697,7 +732,7 @@ export class ProvidersService {
     // batch mode without it reports null for exactly the aggregator models whose batch
     // rate is most often knowable. These rows are already in `rows`, so no query.
     const twinByBase = new Map<string, ModelRow>();
-    for (const r of rows) {
+    for (const r of all) {
       if (r.variant !== 'batch') continue;
       const base = parseModelVariant(r.externalModelId)?.base;
       if (base !== undefined) twinByBase.set(`${r.providerId}\u0000${base}`, r);
@@ -714,7 +749,7 @@ export class ProvidersService {
         baseIdFor(r, idsByProvider.get(r.providerId) ?? new Set()),
         // The providers read above already happened for the display price, so this
         // adds no query — the projection stays bounded (invariant 9).
-        providerBatchCapable(provById.get(r.providerId)),
+        batchCapableFor(r, provById.get(r.providerId), twinByBase),
         // Batch mode over the SAME catalog rows (the batch pair lives on the row
         // already fetched), plus the sibling twin's captured rate as the last resort.
         toEffectivePrice(r, kind, catalogRow, nativeRow, {

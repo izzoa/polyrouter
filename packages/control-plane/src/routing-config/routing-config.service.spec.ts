@@ -363,11 +363,15 @@ describe('entry mode at write time (add-batch-mode-routing tasks 4.1/4.2/4.3)', 
       list: () => Promise.resolve(provs),
     };
   };
+  // NATIVE, deliberately: these tests are about the provider SEAM, and on a native
+  // family the seam settles batchability on its own. An aggregator would additionally
+  // need a per-model twin (fix-batch-capability-and-chain-alignment), which is the
+  // subject of its own describe below.
   const CAPABLE = {
     id: 'p1',
     kind: 'api_key',
-    protocol: 'openai_compatible',
-    baseUrl: 'https://openrouter.ai/api/v1',
+    protocol: 'anthropic_compatible',
+    baseUrl: 'https://api.anthropic.com',
   };
   const LOCAL = {
     id: 'p1',
@@ -429,5 +433,99 @@ describe('entry mode at write time (add-batch-mode-routing tasks 4.1/4.2/4.3)', 
         { modelId: 'm1', mode: 'any' },
       ]),
     ).rejects.toThrow(/duplicates/);
+  });
+});
+
+// The write path answers batch-capability with the SAME shared rule the dashboard's
+// control is gated on (fix-batch-capability-and-chain-alignment). Without this the
+// endpoint accepted exactly the reservation the interface had stopped offering, and the
+// tenant met it as a refused submission — or, under a block budget, as a job discarded
+// for having no computable ceiling.
+describe('a reservation on an aggregator needs a batch tier for THAT model', () => {
+  const AGG = {
+    id: 'p1',
+    kind: 'api_key',
+    protocol: 'openai_compatible',
+    baseUrl: 'https://openrouter.ai/api/v1',
+  };
+  const NATIVE = {
+    id: 'p1',
+    kind: 'api_key',
+    protocol: 'anthropic_compatible',
+    baseUrl: 'https://api.anthropic.com',
+  };
+  // `m-sku` is sold with a batch tier (its `:batch` twin is the aggregator's record of
+  // that); `m-bare` is not. Same provider, same seam. `m-elsewhere:batch` proves the
+  // pairing is by BASE ID and not merely "this provider has some twin".
+  const build = (provs: { id: string; kind: string; protocol: string; baseUrl: string }[]) => {
+    const built = svcWith({
+      tiers: [tier('t1')],
+      models: [
+        model('m-sku', null, 'openai/gpt-6-astra'),
+        model('m-twin', 'batch', 'openai/gpt-6-astra:batch'),
+        model('m-bare', null, 'minimax/minimax-m3'),
+        model('m-other-twin', 'batch', 'deepseek/deepseek-v4:batch'),
+      ],
+    });
+    (built.port as unknown as { providers: { list: () => Promise<unknown[]> } }).providers = {
+      list: () => Promise.resolve(provs),
+    };
+    return built;
+  };
+
+  it('accepts the model with a twin and refuses the one without, naming it', async () => {
+    const { svc } = build([AGG]);
+    await expect(
+      svc.replaceEntries(P, 't_t1', [{ modelId: 'm-sku', mode: 'batch' }]),
+    ).resolves.toMatchObject([{ modelId: 'm-sku', mode: 'batch' }]);
+    await expect(
+      svc.replaceEntries(P, 't_t1', [{ modelId: 'm-bare', mode: 'batch' }]),
+    ).rejects.toThrow(/"minimax\/minimax-m3" cannot be reserved for batch/);
+  });
+
+  it('says WHY it refused — the provider has the API, this model has no tier', async () => {
+    const { svc } = build([AGG]);
+    // Distinct from the seam refusal: telling a tenant with a working OpenRouter key
+    // that "its provider has no batch API" describes a configuration they do not have.
+    await expect(
+      svc.replaceEntries(P, 't_t1', [{ modelId: 'm-bare', mode: 'batch' }]),
+    ).rejects.toThrow(/publishes no batch tier for this model/);
+  });
+
+  it('accepts a native model with no published batch rate at all', async () => {
+    // The check that must NOT be "a batch price resolved": Anthropic publishes none.
+    const { svc } = build([NATIVE]);
+    await expect(
+      svc.replaceEntries(P, 't_t1', [{ modelId: 'm-bare', mode: 'batch' }]),
+    ).resolves.toMatchObject([{ modelId: 'm-bare', mode: 'batch' }]);
+  });
+
+  it('lets a tenant unreserve an entry whose model lost its batch tier', async () => {
+    // Capability now tracks the CATALOG, so a sync that drops a twin is a second way to
+    // reach the state the seam-loss exemption exists for. Same escape hatch.
+    const built = build([AGG]);
+    await built.svc.replaceEntries(P, 't_t1', [{ modelId: 'm-sku', mode: 'batch' }]);
+    (built.port as unknown as { models: { listForPrincipal: () => Promise<unknown[]> } }).models = {
+      listForPrincipal: () =>
+        Promise.resolve([model('m-sku', null, 'openai/gpt-6-astra'), model('m-bare')]),
+    };
+    // Retaining it — including through a bare-id reorder, which PRESERVES `batch` — is
+    // refused...
+    await expect(built.svc.replaceEntries(P, 't_t1', ['m-sku'])).rejects.toThrow(
+      /cannot be reserved for batch/,
+    );
+    // ...and unreserving is always reachable.
+    await expect(
+      built.svc.replaceEntries(P, 't_t1', [{ modelId: 'm-sku', mode: 'any' }]),
+    ).resolves.toMatchObject([{ modelId: 'm-sku', mode: 'any' }]);
+  });
+
+  it('never claims a twin it does not have: a twin for a DIFFERENT model does not count', async () => {
+    // `deepseek/deepseek-v4:batch` is on this very provider. Keying the evidence by
+    // provider alone — or by "any twin exists" — would have made `m-bare` reservable.
+    const { svc } = build([AGG]);
+    await expect(
+      svc.replaceEntries(P, 't_t1', [{ modelId: 'm-bare', mode: 'batch' }]),
+    ).rejects.toThrow(/cannot be reserved for batch/);
   });
 });

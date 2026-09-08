@@ -6,6 +6,7 @@ import {
   MODEL_VARIANTS,
   NON_ROUTABLE_VARIANTS,
   isNonRoutableVariant,
+  modelBatchCapable,
   parseModelVariant,
   variantForProvider,
 } from '../src/server';
@@ -80,5 +81,51 @@ describe('routability is derived from the variant', () => {
 
   it('keeps the non-routable set a subset of the known tokens', () => {
     for (const v of NON_ROUTABLE_VARIANTS) expect(MODEL_VARIANTS).toContain(v);
+  });
+});
+
+// The ONE rule the dashboard's `batchCapable` flag and the routing-entry write path both
+// apply (fix-batch-capability-and-chain-alignment). Two predicates for this question would
+// let the interface offer a reservation the API refuses, or refuse one it offers.
+describe('modelBatchCapable — the seam, plus per-model evidence on an aggregator', () => {
+  const base = { seam: true, billingFamily: 'openrouter', hasBatchTwin: false } as const;
+
+  it('requires a batch-priced sibling twin on an aggregator family', () => {
+    // OpenRouter sells batch as a per-model SKU — 69 of 431 models carried one when
+    // add-model-variant-detection measured it — so the seam does not make the catalog
+    // batchable and the twin is the aggregator's own record of which models are.
+    expect(modelBatchCapable({ ...base, hasBatchTwin: true })).toBe(true);
+    expect(modelBatchCapable({ ...base, hasBatchTwin: false })).toBe(false);
+  });
+
+  it('lets the seam alone decide on a native family, twin or no twin', () => {
+    // Native Anthropic publishes NO batch rate polyrouter can resolve and mints no
+    // twins. Demanding evidence here would report every Anthropic model unbatchable.
+    expect(modelBatchCapable({ seam: true, billingFamily: 'anthropic', hasBatchTwin: false })).toBe(
+      true,
+    );
+    expect(modelBatchCapable({ seam: true, billingFamily: 'openai', hasBatchTwin: false })).toBe(
+      true,
+    );
+  });
+
+  it('refuses whenever the provider has no seam, however the catalog looks', () => {
+    expect(modelBatchCapable({ ...base, seam: false, hasBatchTwin: true })).toBe(false);
+    expect(
+      modelBatchCapable({ seam: false, billingFamily: 'anthropic', hasBatchTwin: false }),
+    ).toBe(false);
+  });
+
+  it('is case- and whitespace-insensitive about the family, like every other family test', () => {
+    expect(modelBatchCapable({ ...base, billingFamily: ' OpenRouter ', hasBatchTwin: false })).toBe(
+      false,
+    );
+  });
+
+  it('lets the seam decide for an unmapped family', () => {
+    // Unreachable today (the seam is granted only to the three known families), and if
+    // one ever held it, it would not be an aggregator — so no per-model convention exists
+    // to demand evidence from.
+    expect(modelBatchCapable({ seam: true, billingFamily: null, hasBatchTwin: false })).toBe(true);
   });
 });

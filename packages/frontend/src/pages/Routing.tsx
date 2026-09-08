@@ -1691,241 +1691,260 @@ export function Routing() {
                       </Show>
                     </div>
                   </div>
-                  <For each={entries(t.id)}>
-                    {(entry, mi) => {
-                      const dragging = (): boolean => {
-                        const d = drag();
-                        return d !== null && d.tierId === t.id && d.modelId === entry.modelId;
-                      };
-                      return (
-                        <div
-                          class="chain-row"
-                          draggable={true}
-                          data-model-id={entry.modelId}
-                          data-dragging={dragging() ? 'true' : undefined}
-                          style={{ opacity: dragging() ? '0.4' : '1' }}
-                          onDragStart={(e) => {
-                            // A press that began on a move control must not drag the row.
-                            // Checked FIRST, before any drag state is entered.
-                            if (suppressDrag) {
-                              suppressDrag = false;
-                              e.preventDefault();
-                              return;
-                            }
-                            dragStartOrder = orderOf(t.id);
-                            setAnnounce(null); // a pointer drag retires the last keyboard move
-                            setDrag({ tierId: t.id, modelId: entry.modelId });
-                            app.beginTierDrag(t.id);
-                            if (e.dataTransfer) {
-                              e.dataTransfer.effectAllowed = 'move';
-                              // Firefox refuses to START a drag unless drag data is set.
-                              // The displayed model id is not credential material.
-                              e.dataTransfer.setData('text/plain', entryLabel(entry));
-                            }
-                          }}
-                          onDragOver={(e) => {
-                            // Unconditional — the row stays a valid drop target even when
-                            // the midpoint threshold is not met.
-                            e.preventDefault();
-                            if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-                            const d = drag();
-                            if (d === null || d.tierId !== t.id) return;
-                            const from = indexOfModel(t.id, d.modelId);
-                            const to = mi();
-                            if (from < 0 || from === to) return;
-                            // Hysteresis: commit to the hovered row only once the pointer
-                            // has crossed ITS midpoint in the direction of travel. Without
-                            // this, jitter on a row boundary re-triggers every dragover.
-                            const r = e.currentTarget.getBoundingClientRect();
-                            const mid = r.top + r.height / 2;
-                            if (from < to ? e.clientY <= mid : e.clientY >= mid) return;
-                            app.moveTierEntry(t.id, from, to);
-                          }}
-                          onDrop={(e) => {
-                            // Without this the drop resolves as CANCELLED and the browser
-                            // plays its snap-back animation — reading as "it didn't take".
-                            e.preventDefault();
-                            finishDrag();
-                          }}
-                          onDragEnd={finishDrag}
-                        >
-                          <button
-                            type="button"
-                            class="drag-handle"
-                            aria-label={`Reorder ${entryLabel(entry)}, position ${String(mi() + 1)} of ${String(entries(t.id).length)}. Press Alt with Arrow Up or Arrow Down to move.`}
-                            onKeyDown={(e) => {
-                              // Alt is required: swallowing a bare arrow from a focused
-                              // control would eat the user's page scroll.
-                              if (!e.altKey) return;
-                              if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
-                              e.preventDefault();
-                              keyboardMove(t.id, entry.modelId, e.key === 'ArrowUp' ? -1 : 1);
+                  {/* THE GRID (fix-batch-capability-and-chain-alignment). The tracks
+                      belong to the chain, not to the row: a grid declared per row sizes its
+                      tracks from that row's own content, which is the ragged layout this
+                      replaces. Each row adopts these columns with `subgrid`, so the column
+                      edges are shared by definition and sized from the whole chain. */}
+                  <div class="chain-list">
+                    <For each={entries(t.id)}>
+                      {(entry, mi) => {
+                        const dragging = (): boolean => {
+                          const d = drag();
+                          return d !== null && d.tierId === t.id && d.modelId === entry.modelId;
+                        };
+                        return (
+                          <div
+                            class="chain-row"
+                            draggable={true}
+                            data-model-id={entry.modelId}
+                            data-dragging={dragging() ? 'true' : undefined}
+                            style={{ opacity: dragging() ? '0.4' : '1' }}
+                            onDragStart={(e) => {
+                              // A press that began on a move control must not drag the row.
+                              // Checked FIRST, before any drag state is entered.
+                              if (suppressDrag) {
+                                suppressDrag = false;
+                                e.preventDefault();
+                                return;
+                              }
+                              dragStartOrder = orderOf(t.id);
+                              setAnnounce(null); // a pointer drag retires the last keyboard move
+                              setDrag({ tierId: t.id, modelId: entry.modelId });
+                              app.beginTierDrag(t.id);
+                              if (e.dataTransfer) {
+                                e.dataTransfer.effectAllowed = 'move';
+                                // Firefox refuses to START a drag unless drag data is set.
+                                // The displayed model id is not credential material.
+                                e.dataTransfer.setData('text/plain', entryLabel(entry));
+                              }
                             }}
+                            onDragOver={(e) => {
+                              // Unconditional — the row stays a valid drop target even when
+                              // the midpoint threshold is not met.
+                              e.preventDefault();
+                              if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+                              const d = drag();
+                              if (d === null || d.tierId !== t.id) return;
+                              const from = indexOfModel(t.id, d.modelId);
+                              const to = mi();
+                              if (from < 0 || from === to) return;
+                              // Hysteresis: commit to the hovered row only once the pointer
+                              // has crossed ITS midpoint in the direction of travel. Without
+                              // this, jitter on a row boundary re-triggers every dragover.
+                              const r = e.currentTarget.getBoundingClientRect();
+                              const mid = r.top + r.height / 2;
+                              if (from < to ? e.clientY <= mid : e.clientY >= mid) return;
+                              app.moveTierEntry(t.id, from, to);
+                            }}
+                            onDrop={(e) => {
+                              // Without this the drop resolves as CANCELLED and the browser
+                              // plays its snap-back animation — reading as "it didn't take".
+                              e.preventDefault();
+                              finishDrag();
+                            }}
+                            onDragEnd={finishDrag}
                           >
-                            <Icon name="grip" size={14} />
-                          </button>
-                          <span
-                            class="pos-badge"
-                            style={{ background: posStyle(mi())[1], color: posStyle(mi())[2] }}
-                          >
-                            {posStyle(mi())[0]}
-                          </span>
-                          <span
-                            class="mono chain-id"
-                            style="font:500 12px 'Geist Mono',monospace;color:var(--text);min-width:0"
-                          >
-                            {entryLabel(entry)}
-                          </span>
-                          <span
-                            class="mono chain-price"
-                            style="margin-left:auto;font:400 11px 'Geist Mono',monospace;color:var(--text3)"
-                          >
-                            {modelPriceLabel(modelById(entry.modelId))}
-                          </span>
-                          {/* The batch reservation (add-batch-mode-routing). Shown where
+                            <button
+                              type="button"
+                              class="drag-handle"
+                              aria-label={`Reorder ${entryLabel(entry)}, position ${String(mi() + 1)} of ${String(entries(t.id).length)}. Press Alt with Arrow Up or Arrow Down to move.`}
+                              onKeyDown={(e) => {
+                                // Alt is required: swallowing a bare arrow from a focused
+                                // control would eat the user's page scroll.
+                                if (!e.altKey) return;
+                                if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+                                e.preventDefault();
+                                keyboardMove(t.id, entry.modelId, e.key === 'ArrowUp' ? -1 : 1);
+                              }}
+                            >
+                              <Icon name="grip" size={14} />
+                            </button>
+                            <span
+                              class="pos-badge"
+                              style={{ background: posStyle(mi())[1], color: posStyle(mi())[2] }}
+                            >
+                              {posStyle(mi())[0]}
+                            </span>
+                            <span
+                              class="mono chain-id"
+                              style="font:500 12px 'Geist Mono',monospace;color:var(--text)"
+                            >
+                              {entryLabel(entry)}
+                            </span>
+                            <span
+                              class="mono chain-price"
+                              style="font:400 11px 'Geist Mono',monospace;color:var(--text3)"
+                            >
+                              {modelPriceLabel(modelById(entry.modelId))}
+                            </span>
+                            {/* The batch reservation (add-batch-mode-routing). Shown where
                               the provider can run a batch — and ALWAYS where the entry is
                               already reserved, however the provider looks now, because a
                               PUT resubmits every entry: suppressing it on capability
                               alone would leave a tenant whose provider lost its seam
                               unable to edit the tier at all (D12). */}
-                          <Show
-                            when={
-                              entry.mode === 'batch' ||
-                              (modelById(entry.modelId)?.batchCapable ?? false)
-                            }
-                          >
-                            <span class="chain-mode">
-                              {(() => {
-                                const [helpId, setHelpId] = createSignal<string>();
-                                return (
-                                  <>
-                                    <Toggle
-                                      on={entry.mode === 'batch'}
-                                      label={`Reserve ${entryLabel(entry)} for batch only`}
-                                      describedBy={helpId()}
-                                      onToggle={() =>
-                                        app.setTierEntryMode(
-                                          t.id,
-                                          entry.modelId,
-                                          entry.mode === 'batch' ? 'any' : 'batch',
-                                        )
-                                      }
-                                    />
-                                    <span
-                                      data-mode-label={entry.modelId}
-                                      style="font:400 10.5px 'Geist',sans-serif;color:var(--text3)"
-                                    >
-                                      batch only
-                                    </span>
-                                    <BatchModeHelp
-                                      entryLabel={entryLabel(entry)}
-                                      model={modelById(entry.modelId)}
-                                      onId={setHelpId}
-                                      onPress={() => {
-                                        suppressDrag = true;
-                                      }}
-                                    />
-                                  </>
-                                );
-                              })()}
-                            </span>
-                          </Show>
-                          {/* A reservation the provider can no longer honour. Same
-                              treatment as a stored non-routable member, and for the same
-                              reason: the tenant's signal must not be a rejected save. */}
-                          <Show
-                            when={
-                              entry.mode === 'batch' &&
-                              !(modelById(entry.modelId)?.batchCapable ?? false)
-                            }
-                          >
-                            <span
-                              data-mode-orphaned={entry.modelId}
-                              style="font:400 10.5px 'Geist',sans-serif;color:var(--amber)"
+                            <Show
+                              when={
+                                entry.mode === 'batch' ||
+                                (modelById(entry.modelId)?.batchCapable ?? false)
+                              }
+                              /* The empty cell is RENDERED, not omitted: grid auto-placement
+                               fills tracks in order, so a missing cell would pull the row's
+                               actions one track left and take this row out of line with its
+                               neighbours. Announced to nobody. */
+                              fallback={
+                                <span class="chain-mode chain-mode-blank" aria-hidden="true" />
+                              }
                             >
-                              reserved for batch, but this provider has no batch API
-                            </span>
-                          </Show>
-                          {/* A member stored before classification can be batch-only
-                              (add-model-variant-detection). Excluding it from the picker
-                              is not enough: without this, the tenant's only signal is a
-                              rejected save or a request that quietly routes elsewhere. */}
-                          <Show when={nonRoutableNote(modelById(entry.modelId))}>
-                            {(note) => (
-                              <span
-                                data-nonroutable={entry.modelId}
-                                style="font:400 10.5px 'Geist',sans-serif;color:var(--amber)"
-                              >
-                                {note()}
+                              <span class="chain-mode">
+                                {(() => {
+                                  const [helpId, setHelpId] = createSignal<string>();
+                                  return (
+                                    <>
+                                      <Toggle
+                                        on={entry.mode === 'batch'}
+                                        label={`Reserve ${entryLabel(entry)} for batch only`}
+                                        describedBy={helpId()}
+                                        onToggle={() =>
+                                          app.setTierEntryMode(
+                                            t.id,
+                                            entry.modelId,
+                                            entry.mode === 'batch' ? 'any' : 'batch',
+                                          )
+                                        }
+                                      />
+                                      <span
+                                        data-mode-label={entry.modelId}
+                                        style="font:400 10.5px 'Geist',sans-serif;color:var(--text3)"
+                                      >
+                                        batch only
+                                      </span>
+                                      <BatchModeHelp
+                                        entryLabel={entryLabel(entry)}
+                                        model={modelById(entry.modelId)}
+                                        onId={setHelpId}
+                                        onPress={() => {
+                                          suppressDrag = true;
+                                        }}
+                                      />
+                                    </>
+                                  );
+                                })()}
                               </span>
-                            )}
-                          </Show>
-                          {/* Action region. `display: contents` above the threshold, so at
+                            </Show>
+                            {/* Action region. `display: contents` above the threshold, so at
                               desktop these contribute no box and the row renders exactly as
                               it always has; below it, its own wrapping line. */}
-                          <div class="chain-actions">
-                            {/* Explicit move controls. Present only where a drag is
+                            <div class="chain-actions">
+                              {/* Explicit move controls. Present only where a drag is
                                 unavailable — HTML drag-and-drop never fires for touch, so
                                 without these a chain cannot be reordered on a phone at all. */}
-                            <For each={[-1, 1] as const}>
-                              {(delta) => (
+                              <For each={[-1, 1] as const}>
+                                {(delta) => (
+                                  <button
+                                    type="button"
+                                    class="chain-move"
+                                    data-dir={delta === -1 ? 'up' : 'down'}
+                                    disabled={
+                                      drag() !== null ||
+                                      mi() + delta < 0 ||
+                                      mi() + delta >= entries(t.id).length
+                                    }
+                                    aria-label={`Move ${entryLabel(entry)} ${delta === -1 ? 'up' : 'down'}`}
+                                    // Suppresses the ROW's drag, which would otherwise start
+                                    // from a press here: drag-and-drop selects the nearest
+                                    // draggable ancestor, so neither `draggable={false}` nor a
+                                    // listener on this button can prevent it — only cancelling
+                                    // the row's own dragstart can. The handle never sets this,
+                                    // which is what keeps its drag path working.
+                                    onPointerDown={() => {
+                                      suppressDrag = true;
+                                    }}
+                                    onPointerUp={() => {
+                                      suppressDrag = false;
+                                    }}
+                                    onPointerCancel={() => {
+                                      suppressDrag = false;
+                                    }}
+                                    onClick={() => {
+                                      buttonMove(t.id, entry.modelId, delta);
+                                    }}
+                                  >
+                                    <span aria-hidden="true">{delta === -1 ? '↑' : '↓'}</span>
+                                  </button>
+                                )}
+                              </For>
+                              <Show when={mi() > 0}>
                                 <button
                                   type="button"
-                                  class="chain-move"
-                                  data-dir={delta === -1 ? 'up' : 'down'}
-                                  disabled={
-                                    drag() !== null ||
-                                    mi() + delta < 0 ||
-                                    mi() + delta >= entries(t.id).length
-                                  }
-                                  aria-label={`Move ${entryLabel(entry)} ${delta === -1 ? 'up' : 'down'}`}
-                                  // Suppresses the ROW's drag, which would otherwise start
-                                  // from a press here: drag-and-drop selects the nearest
-                                  // draggable ancestor, so neither `draggable={false}` nor a
-                                  // listener on this button can prevent it — only cancelling
-                                  // the row's own dragstart can. The handle never sets this,
-                                  // which is what keeps its drag path working.
-                                  onPointerDown={() => {
-                                    suppressDrag = true;
-                                  }}
-                                  onPointerUp={() => {
-                                    suppressDrag = false;
-                                  }}
-                                  onPointerCancel={() => {
-                                    suppressDrag = false;
-                                  }}
-                                  onClick={() => {
-                                    buttonMove(t.id, entry.modelId, delta);
-                                  }}
+                                  class="link-accent"
+                                  style="font:400 11px 'Geist',sans-serif"
+                                  onClick={() => app.setPrimaryTierModel(t.id, entry.modelId)}
                                 >
-                                  <span aria-hidden="true">{delta === -1 ? '↑' : '↓'}</span>
+                                  Make primary
                                 </button>
-                              )}
-                            </For>
-                            <Show when={mi() > 0}>
+                              </Show>
                               <button
                                 type="button"
-                                class="link-accent"
-                                style="font:400 11px 'Geist',sans-serif"
-                                onClick={() => app.setPrimaryTierModel(t.id, entry.modelId)}
+                                class="icon-x"
+                                style="font-size:14px;padding:0 2px"
+                                aria-label={`Remove ${entryLabel(entry)} from tier ${t.key}`}
+                                onClick={() => app.removeTierModel(t.id, entry.modelId)}
                               >
-                                Make primary
+                                ×
                               </button>
-                            </Show>
-                            <button
-                              type="button"
-                              class="icon-x"
-                              style="font-size:14px;padding:0 2px"
-                              aria-label={`Remove ${entryLabel(entry)} from tier ${t.key}`}
-                              onClick={() => app.removeTierModel(t.id, entry.modelId)}
+                            </div>
+                            {/* The row's annotations: ONE cell spanning every track, on its own
+                              line under the row's content. As siblings of the cells these
+                              claimed the actions' column and pushed it out of the row — and
+                              a spanning cell placed BEFORE another still auto-places onto the
+                              next line, so this has to be the last child. */}
+                            <Show
+                              when={
+                                (entry.mode === 'batch' &&
+                                  !(modelById(entry.modelId)?.batchCapable ?? false)) ||
+                                nonRoutableNote(modelById(entry.modelId)) !== null
+                              }
                             >
-                              ×
-                            </button>
+                              <div class="chain-notes">
+                                {/* A reservation the provider can no longer honour. Same
+                                  treatment as a stored non-routable member, and for the same
+                                  reason: the tenant's signal must not be a rejected save. */}
+                                <Show
+                                  when={
+                                    entry.mode === 'batch' &&
+                                    !(modelById(entry.modelId)?.batchCapable ?? false)
+                                  }
+                                >
+                                  <span data-mode-orphaned={entry.modelId}>
+                                    reserved for batch, but this provider has no batch API
+                                  </span>
+                                </Show>
+                                {/* A member stored before classification can be batch-only
+                                  (add-model-variant-detection). Excluding it from the picker
+                                  is not enough: without this, the tenant's only signal is a
+                                  rejected save or a request that quietly routes elsewhere. */}
+                                <Show when={nonRoutableNote(modelById(entry.modelId))}>
+                                  {(note) => <span data-nonroutable={entry.modelId}>{note()}</span>}
+                                </Show>
+                              </div>
+                            </Show>
                           </div>
-                        </div>
-                      );
-                    }}
-                  </For>
+                        );
+                      }}
+                    </For>
+                  </div>
                   <Show when={entries(t.id).length === 0}>
                     <div style="padding:9px 18px;font:400 11.5px 'Geist',sans-serif;color:var(--text3)">
                       No models — add one below.

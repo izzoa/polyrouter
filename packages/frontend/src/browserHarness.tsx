@@ -195,24 +195,34 @@ const INVITES: AdminInviteDto[] = [
 // desktop geometry and to push the auto-layer switch out of reach of a hit test. Those
 // suites are asserting other things entirely, so the fixture this change needs is scoped
 // to the suite that needs it rather than perturbing them.
-const TIER_ENTRIES = ['claude-sonnet-4-5-20250929', 'gpt-5-mini-2025-08-07', 'llama-3.3-70b'].map(
-  (externalModelId, i) => ({
-    id: `te-${String(i)}`,
-    tierId: 'tier-default',
-    modelId: `m-${String(i)}`,
-    position: i,
-    // The middle entry is RESERVED for batch (add-batch-mode-routing), so the
-    // browser suite measures a chain that actually carries the reservation control
-    // and its warning states rather than a uniform row.
-    mode: i === 1 ? ('batch' as const) : ('any' as const),
-    model: {
-      id: `m-${String(i)}`,
-      providerId: 'p1',
-      externalModelId,
-      displayName: null,
-    },
-  }),
-);
+// FOUR entries, and deliberately NOT uniform: the columns can only be shown to be
+// shared if the rows differ in what would otherwise size them
+// (fix-batch-capability-and-chain-alignment). One row carries no reservation control
+// (so its cell is the empty placeholder), one model id is long enough to wrap, and the
+// price label differs in width on every row — under a per-ROW grid each of those sizes
+// its own tracks and the trailing cells land at four different positions, which is the
+// defect these fixtures exist to expose.
+const TIER_ENTRIES = [
+  'claude-sonnet-4-5-20250929',
+  'gpt-5-mini-2025-08-07',
+  'llama-3.3-70b',
+  'deepseek-ai/deepseek-v4-0324-instruct-experimental-longcontext-preview-20260401',
+].map((externalModelId, i) => ({
+  id: `te-${String(i)}`,
+  tierId: 'tier-default',
+  modelId: `m-${String(i)}`,
+  position: i,
+  // The middle entry is RESERVED for batch (add-batch-mode-routing), so the
+  // browser suite measures a chain that actually carries the reservation control
+  // and its warning states rather than a uniform row.
+  mode: i === 1 ? ('batch' as const) : ('any' as const),
+  model: {
+    id: `m-${String(i)}`,
+    providerId: 'p1',
+    externalModelId,
+    displayName: null,
+  },
+}));
 
 // Batch jobs (add-batch-inference, task 7.3). Ten columns is the widest table in the
 // app, so the batches fixture carries the worst case for EVERY one of them at once: the
@@ -315,7 +325,13 @@ const BATCH_JOBS: BatchJobDto[] = [
  * (add-batch-mode-routing task 5.5). Without these the entries reference ids absent
  * from the catalog and the control renders only where a reservation is already
  * stored — a real state, but not the one the geometry checks need to measure. */
-const CHAIN_MODELS = TIER_ENTRIES.map((e) => ({
+const CHAIN_PRICES = [
+  { inputPricePer1m: 3, outputPricePer1m: 15, isFree: false, source: 'bundled', estimated: false },
+  { inputPricePer1m: 0, outputPricePer1m: 0, isFree: true, source: 'local', estimated: false },
+  { inputPricePer1m: 0.3, outputPricePer1m: 1.1, isFree: false, source: 'listed', estimated: true },
+  null,
+] as const;
+const CHAIN_MODELS = TIER_ENTRIES.map((e, i) => ({
   id: e.modelId,
   providerId: 'p1',
   externalModelId: e.model.externalModelId,
@@ -327,11 +343,18 @@ const CHAIN_MODELS = TIER_ENTRIES.map((e) => ({
   isFree: false,
   inputPricePer1m: 1,
   outputPricePer1m: 2,
-  effectivePrice: null,
+  // Four price labels of four different widths ("$3.0000 / $15.0000 per 1M", "free",
+  // an ` · est.`-tagged pair, and "unpriced"), so a price column that is not shared
+  // is measurably not shared.
+  effectivePrice: CHAIN_PRICES[i] ?? null,
   listedPrice: null,
   variant: null,
   baseExternalModelId: null,
-  batchCapable: true,
+  // The THIRD row's provider offers no batch tier for it, so that row renders the empty
+  // reservation cell rather than the control — the case a grid declared per row gets
+  // wrong, because an absent cell there is a zero-width track and every cell after it
+  // shifts left.
+  batchCapable: i !== 2,
   batchEffectivePrice: null,
   lastSyncedAt: null,
 }));

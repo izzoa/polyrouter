@@ -17,11 +17,27 @@ import {
   type AnalyticsTimeseriesPoint,
   type AutoCounterfactualRates,
   type AutoPerformanceData,
+  type CalibrationEvidenceEntry,
   type PersistencePort,
   type Principal,
 } from '@polyrouter/shared/server';
 import { PricingService } from '../pricing/pricing.service';
 import { BODY_CAPTURE_CONFIG, type BodyCaptureConfig } from '../body-capture/body-capture.config';
+import {
+  ROUTING_CONFIG,
+  effectiveThresholds,
+  type RoutingConfig,
+} from '../proxy/routing.config';
+import {
+  CALIBRATION_CONFIG,
+  CALIBRATION_RAILS,
+  EDGE_WIDTH,
+  calibrationHalted,
+  RATE_HIGH,
+  RATE_LOW,
+  type CalibrationConfig,
+  type CalibrationRails,
+} from '../calibration/calibration.config';
 import type {
   AutoQueryDto,
   BreakdownQueryDto,
@@ -34,6 +50,10 @@ import type {
  * presentation (USD from micros, discriminated basis) — or null savings when
  * the `auto_high` basis is unresolvable/unpriced (never a fabricated zero). */
 export interface AutoPerformanceView extends Omit<AutoPerformanceData, 'savings'> {
+  /** Per-agent calibration evidence (add-per-agent-calibration-evidence).
+   * Additive; carries its own (calibration) window, so it does NOT follow the
+   * range every other figure on this response uses. */
+  calibrationEvidence: CalibrationEvidenceView;
   savings: {
     /** Null when zero rows were costable — unknown, never $0 (r3-High-2). */
     netUsd: number | null;
@@ -43,6 +63,34 @@ export interface AutoPerformanceView extends Omit<AutoPerformanceData, 'savings'
     uncostedRows: number;
     basis: { kind: 'tier' | 'model'; label: string; model: string; scoped: boolean };
   } | null;
+}
+
+/** The calibration-evidence block (add-per-agent-calibration-evidence). Carries
+ * its OWN window bounds, because it is calibration-window-scoped rather than
+ * range-scoped, and the rails a reader needs to interpret its counts: without
+ * `actingFloor` a consumer hardcodes 50, and without the decision rates a count
+ * shown against that floor implies that reaching it causes a move. */
+export interface CalibrationEvidenceView {
+  window: { from: string; to: string; days: number };
+  high: number;
+  low: number;
+  edgeWidth: number;
+  actingFloor: number;
+  rateHigh: number;
+  rateLow: number;
+  calibrationEpoch: number;
+  /** The most recent threshold event's timestamp; null when there has never been
+   * one. The clock the arrival rate of current-epoch evidence is measured against. */
+  epochStartedAt: string | null;
+  enabled: boolean;
+  /** The calibrator would decline to evaluate this tenant at all — contracted
+   * edge zones, or a degenerate instance pair. Reporting counts without this
+   * asserts a readiness that does not exist (fix-calibration-evidence-honesty). */
+  contracted: boolean;
+  /** The agent list is a bounded top-N; the TOTAL is still over every agent. */
+  truncated: boolean;
+  total: CalibrationEvidenceEntry;
+  agents: CalibrationEvidenceEntry[];
 }
 
 /** Max analytics window — bounds the *range* (not row count) so a pathological
@@ -78,7 +126,77 @@ export class AnalyticsService {
     @Inject(PERSISTENCE_PORT) private readonly db: PersistencePort,
     private readonly pricing: PricingService,
     @Inject(BODY_CAPTURE_CONFIG) private readonly bodyCfg: BodyCaptureConfig,
+    @Inject(ROUTING_CONFIG) private readonly routingCfg: RoutingConfig,
+    @Inject(CALIBRATION_CONFIG) private readonly calibrationCfg: CalibrationConfig,
+    @Inject(CALIBRATION_RAILS) private readonly calibrationRails: CalibrationRails,
   ) {}
+
+  /**
+   * Per-agent calibration evidence (add-per-agent-calibration-evidence).
+   *
+   * Computed over the CALIBRATION window — `CALIBRATION_WINDOW_DAYS` ending now —
+   * and NOT the caller's `from`/`to`. The calibrator reads a fixed rolling window;
+   * the endpoint's range is caller-chosen from an hour to a year. Reporting the
+   * caller's range would agree with `calibrationStats` on any fixture seeded with
+   * matching bounds and diverge in production the moment someone picks "24 hours",
+   * which is the precise failure this block exists to avoid.
+   *
+   * The geometry comes from the SAME `effectiveThresholds` call the calibrator and
+   * the hot path use — three callers, one formula — so a calibrated tenant's
+   * reported thresholds cannot drift from the ones that decided its rows.
+   */
+  async calibrationEvidence(
+    principal: Principal,
+    now = Date.now(),
+  ): Promise<CalibrationEvidenceView> {
+    const pref = await this.db.routingSettings.get(principal);
+    const eff = effectiveThresholds(this.routingCfg.structural, pref, this.calibrationRails);
+    const epoch = pref?.calibrationEpoch ?? 0;
+    // Anchor the window to the containing MINUTE, and query the same bounds we
+    // report. A window derived from a raw `Date.now()` moves every millisecond,
+    // which makes two reads of this endpoint differ for a reason that has nothing
+    // to do with the data — it churns the rendered bounds on every dashboard poll
+    // and makes the response impossible to compare. The cost is that the reported
+    // window trails the calibrator's exact rolling window by under a minute, on a
+    // window 14 days long.
+    const anchor = Math.floor(now / 60_000) * 60_000;
+    const from = new Date(anchor - this.calibrationCfg.windowDays * 86_400_000);
+    const to = new Date(anchor);
+    const [data, epochStartedAt] = await Promise.all([
+      this.db.analytics.calibrationEvidence(
+        principal,
+        { from, to },
+        { high: eff.high, low: eff.low, edgeWidth: EDGE_WIDTH, epoch },
+      ),
+      // The epoch's birth is the most recent threshold event; null when the
+      // tenant has never had one. Without it the ARRIVAL RATE of current
+      // evidence is not computable, and that rate is the number this block
+      // exists to supply.
+      this.db.calibrationEvents
+        .list(principal, 1)
+        .then((rows) => rows[0]?.createdAt ?? null)
+        .catch(() => null),
+    ]);
+    return {
+      window: { from: from.toISOString(), to: to.toISOString(), days: this.calibrationCfg.windowDays },
+      high: eff.high,
+      low: eff.low,
+      edgeWidth: EDGE_WIDTH,
+      // Runtime-configurable and scheduled to change in SQ-2 — a consumer that
+      // hardcoded it would break silently the day that lands.
+      actingFloor: this.calibrationCfg.minEdgeSamples,
+      rateHigh: RATE_HIGH,
+      rateLow: RATE_LOW,
+      calibrationEpoch: epoch,
+      epochStartedAt,
+      enabled: pref?.calibrationEnabled ?? false,
+      // From the calibrator's OWN predicate, shared rather than restated.
+      contracted: calibrationHalted(this.routingCfg.structural, eff, this.calibrationRails),
+      truncated: data.truncated,
+      total: data.total,
+      agents: data.agents,
+    };
+  }
 
   private get credentialKey(): string {
     return this.bodyCfg.credentialKey;
@@ -103,14 +221,13 @@ export class AnalyticsService {
   async autoPerformance(principal: Principal, q: AutoQueryDto): Promise<AutoPerformanceView> {
     const range = this.parseRange(q.from, q.to);
     const basis = await this.resolveAutoHighBasis(principal);
-    const data = await this.db.analytics.autoPerformance(
-      principal,
-      range,
-      q.bucket ?? 'day',
-      basis?.rates ?? null,
-    );
+    const [data, calibrationEvidence] = await Promise.all([
+      this.db.analytics.autoPerformance(principal, range, q.bucket ?? 'day', basis?.rates ?? null),
+      this.calibrationEvidence(principal),
+    ]);
     return {
       ...data,
+      calibrationEvidence,
       savings:
         data.savings !== null && basis !== null
           ? {

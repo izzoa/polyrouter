@@ -7,6 +7,7 @@ import {
   type ThresholdCalibrationEventInput,
 } from '@polyrouter/shared/server';
 import { effectiveThresholds, type StructuralConfig } from '../proxy/routing.config';
+import { calibrationHalted } from './calibration.config';
 import {
   COOLDOWN_DAYS,
   EDGE_WIDTH,
@@ -160,8 +161,9 @@ async function calibrateTenant(
   // INCLUSIVE overlap comparison: the zones are [high−w, high) and
   // (low, low+w], so equality means one shared score.
   const eff = effectiveThresholds(structural, v, rails);
-  if (round4(structural.high - structural.low) < rails.minGap) return 'skipped';
-  if (round4(eff.high - EDGE_WIDTH) <= round4(eff.low + EDGE_WIDTH)) return 'skipped';
+  // One shared definition with the read-time evidence report
+  // (fix-calibration-evidence-honesty) — same two conditions, same rounding.
+  if (calibrationHalted(structural, eff, rails)) return 'skipped';
 
   const anchorHigh = v.calibratedAnchorHigh ?? structural.high;
   const anchorLow = v.calibratedAnchorLow ?? structural.low;

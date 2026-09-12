@@ -768,12 +768,57 @@ export interface AutoPerformance {
     modalShare: number | null;
     collapsed: boolean | null;
   }[];
+  /** Per-agent calibration evidence (add-per-agent-calibration-evidence).
+   * CALIBRATION-window scoped — it carries its own `window` and does NOT follow
+   * the page's range selector, so the two must never be presented as the same
+   * measurement. `actingFloor` and the decision rates ride along because a
+   * consumer that hardcoded them breaks silently when they are reconfigured. */
+  calibrationEvidence: CalibrationEvidence;
   /** Workload mix (add-workload-telemetry): what kinds of work `auto` carried.
    * `evaluated` = workload-classified parent rows; `unclassified` = structural
    * rows without a class (legacy/fault); `since` is range-independent; classes
    * are the union of classified parents and attempt-inherited classes
    * (`requests: 0` when attempt-only); `spendUsd` null = no costable component. */
   workloadMix: WorkloadMix;
+}
+
+/** One edge under both epoch views. `currentEpoch` is what the calibrator can act
+ * on now; `window` is everything decided in the calibration window whatever its
+ * epoch. Both are reported because either alone misleads. */
+export interface CalibrationEdgeViews {
+  currentEpoch: { samples: number; failures: number };
+  window: { samples: number; failures: number };
+}
+
+export interface CalibrationEvidenceEntry {
+  agentId: string | null;
+  label: string | null;
+  highEdge: CalibrationEdgeViews;
+  lowEdge: CalibrationEdgeViews;
+  /** Decided ambiguous rows in NEITHER edge zone. Without it a 0/0 edge pair
+   * cannot be told apart from no traffic at all. */
+  middleRows: { currentEpoch: number; window: number };
+}
+
+export interface CalibrationEvidence {
+  window: { from: string; to: string; days: number };
+  high: number;
+  low: number;
+  edgeWidth: number;
+  actingFloor: number;
+  rateHigh: number;
+  rateLow: number;
+  calibrationEpoch: number;
+  epochStartedAt: string | null;
+  enabled: boolean;
+  /** The calibrator declines to evaluate this tenant at all (contracted zones
+   * or a degenerate instance pair) — counts without this imply a mechanism that
+   * is not running. */
+  contracted: boolean;
+  /** The agent list is a bounded top-N; `total` still covers every agent. */
+  truncated: boolean;
+  total: CalibrationEvidenceEntry;
+  agents: CalibrationEvidenceEntry[];
 }
 
 export interface WorkloadMixClass {

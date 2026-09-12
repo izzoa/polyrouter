@@ -64,6 +64,12 @@ interface LogSeed {
   structuralBand?: string;
   structuralScore?: number;
   structuralBandSource?: string;
+  /** add-per-agent-calibration-evidence: the calibrator's provenance + freshness
+   * rails. `escalationSource` distinguishes a quality-gate FAILURE from a
+   * cheap-error escalation (which is evidence for neither side), and
+   * `structuralEpoch` is what the current-epoch view matches on. */
+  escalationSource?: string | null;
+  structuralEpoch?: number | null;
   semanticBand?: string;
   semanticScore?: number;
   semanticSource?: string;
@@ -127,8 +133,8 @@ describe('analytics API (#17)', () => {
          routing_header_name, routing_header_value,
          semantic_band, semantic_score, semantic_source, semantic_revision, provider_kind,
          attempt_failures, workload_class, workload_score, workload_source, workload_revision,
-         batch_id, price_mode)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,'test',$8,$9,$10,$11,1,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37)`,
+         batch_id, price_mode, escalation_source, structural_epoch)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'test',$8,$9,$10,$11,1,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39)`,
       [
         id,
         owner,
@@ -167,6 +173,8 @@ describe('analytics API (#17)', () => {
         s.workloadRevision ?? null,
         s.batchId ?? null,
         s.priceMode ?? null,
+        s.escalationSource ?? null,
+        s.structuralEpoch ?? null,
       ],
     );
     return id;
@@ -1966,6 +1974,535 @@ describe('analytics API (#17)', () => {
     it('rejects an unknown mode rather than silently ignoring it', async () => {
       const res = await q('&mode=async');
       expect(res.status).toBe(400);
+    });
+  });
+  // add-agent-request-attribution task 1.3-1.5. The listing's `agentId` filter is
+  // an ADDITIONAL predicate inside the owner scope, matching the RECORDED
+  // `agent_id` (denormalized, no FK) rather than a live agent.
+  describe('agent filter on the request listing (add-agent-request-attribution)', () => {
+    let ta: string;
+    let tb: string;
+    let foreignAgent: string; // owned by TB, denormalized onto two of TA's rows
+    let ownAgent: string; // owned by TA
+    let goneAgent: string; // owned by TA, then deleted
+
+    beforeAll(async () => {
+      ta = await mkUser();
+      tb = await mkUser();
+      foreignAgent = await mkAgent(tb, 'ForeignAgent');
+      ownAgent = await mkAgent(ta, 'OwnAgent');
+
+      // TA holds TWO of its OWN rows carrying TB's agent id. No foreign key
+      // prevents this, and the recorder can produce it after an agent moves.
+      await seedLog(ta, { agentId: foreignAgent, cost: 1, at: DAY1, layer: 'explicit' });
+      await seedLog(ta, { agentId: foreignAgent, cost: 1, at: DAY1B, layer: 'explicit' });
+      // TA's own agent: 3 rows, one of them an error (for the composition test).
+      await seedLog(ta, { agentId: ownAgent, cost: 1, at: DAY2, layer: 'explicit' });
+      await seedLog(ta, { agentId: ownAgent, cost: 1, at: DAY2, layer: 'explicit' });
+      await seedLog(ta, {
+        agentId: ownAgent,
+        cost: 1,
+        at: DAY2,
+        layer: 'explicit',
+        status: 'error',
+      });
+      // TB holds 40 rows for the SAME agent id TA's two rows carry.
+      for (let i = 0; i < 40; i++) {
+        await seedLog(tb, { agentId: foreignAgent, cost: 1, at: DAY1, layer: 'explicit' });
+      }
+      // A deleted agent of TA with 6 rows — its history must outlive it.
+      goneAgent = await mkAgent(ta, 'GoneAgent');
+      for (let i = 0; i < 6; i++) {
+        await seedLog(ta, { agentId: goneAgent, cost: 1, at: DAY1, layer: 'explicit' });
+      }
+      await pool.query('DELETE FROM agent WHERE id = $1', [goneAgent]);
+    }, 60_000);
+
+    it('a denormalized foreign id returns only the caller\'s own rows, labelled null', async () => {
+      const res = await q('requests', ta, { ...RANGE, agentId: foreignAgent });
+      expect(res.status).toBe(200);
+      expect(res.body.rows).toHaveLength(2);
+      for (const row of res.body.rows) {
+        expect(row.agentId).toBe(foreignAgent);
+        // TB's agent NAME must never surface in TA's response.
+        expect(row.agentLabel).toBeNull();
+      }
+      expect(JSON.stringify(res.body)).not.toContain('ForeignAgent');
+
+      // The owner of that agent sees its own 40, with the real label, and none
+      // of TA's two rows.
+      const owned = await q('requests', tb, { ...RANGE, agentId: foreignAgent });
+      expect(owned.status).toBe(200);
+      expect(owned.body.rows).toHaveLength(40);
+      expect(owned.body.rows.every((r: { agentLabel: string }) => r.agentLabel === 'ForeignAgent')).toBe(
+        true,
+      );
+    });
+
+    it("returns a deleted agent's history with a null label; an unknown id is an empty page", async () => {
+      const gone = await q('requests', ta, { ...RANGE, agentId: goneAgent });
+      expect(gone.status).toBe(200);
+      expect(gone.body.rows).toHaveLength(6);
+      expect(gone.body.rows.every((r: { agentId: string }) => r.agentId === goneAgent)).toBe(true);
+      expect(gone.body.rows.every((r: { agentLabel: null }) => r.agentLabel === null)).toBe(true);
+
+      const unknown = await q('requests', ta, { ...RANGE, agentId: randomUUID() });
+      expect(unknown.status).toBe(200);
+      expect(unknown.body.rows).toHaveLength(0);
+      expect(unknown.body.nextCursor).toBeNull();
+    });
+
+    it('rejects an empty agentId rather than ignoring the filter', async () => {
+      const res = await request(server)
+        .get(`/api/analytics/requests?from=${RANGE.from}&to=${RANGE.to}&agentId=`)
+        .set('x-test-user', ta);
+      expect(res.status).toBe(400);
+    });
+
+    it('composes with other filters and pages within the filtered sequence', async () => {
+      // Conjunction: the agent's error row only.
+      const errs = await q('requests', ta, { ...RANGE, agentId: ownAgent, status: 'error' });
+      expect(errs.status).toBe(200);
+      expect(errs.body.rows).toHaveLength(1);
+      expect(errs.body.rows[0].status).toBe('error');
+
+      // The cursor continues the FILTERED sequence: 3 rows at limit 2 is two
+      // pages, and nothing from another agent leaks in.
+      const seen = new Set<string>();
+      let cursor: string | null = null;
+      let pages = 0;
+      for (;;) {
+        const query: Record<string, string | number> = { ...RANGE, agentId: ownAgent, limit: 2 };
+        if (cursor) query['cursor'] = cursor;
+        const res = await q('requests', ta, query);
+        expect(res.status).toBe(200);
+        for (const row of res.body.rows) {
+          expect(row.agentId).toBe(ownAgent);
+          expect(seen.has(row.id)).toBe(false);
+          seen.add(row.id);
+        }
+        cursor = res.body.nextCursor;
+        if (++pages > 10) throw new Error('pagination did not terminate');
+        if (!cursor) break;
+      }
+      expect(seen.size).toBe(3);
+      expect(pages).toBe(2);
+    });
+
+    it('omitting the filter is unchanged: every agent\'s rows are listed', async () => {
+      const res = await q('requests', ta, { ...RANGE, limit: 100 });
+      expect(res.status).toBe(200);
+      // 2 foreign-id + 3 own + 6 deleted-agent rows.
+      expect(res.body.rows).toHaveLength(11);
+    });
+  });
+  // add-agent-request-attribution task 2.1-2.2. Without a `requests` ranking a
+  // request-volume view inherits the spend ranking and silently truncates its
+  // highest-volume, lowest-cost rows.
+  describe('breakdown ranked by request count (add-agent-request-attribution)', () => {
+    let owner: string;
+    let busyFree: string; // most requests, zero spend
+    let costly: string; // fewest requests, most spend
+    let middling: string;
+
+    beforeAll(async () => {
+      owner = await mkUser();
+      busyFree = await mkAgent(owner, 'BusyFree');
+      costly = await mkAgent(owner, 'Costly');
+      middling = await mkAgent(owner, 'Middling');
+      // 5 requests on a free/local route: highest volume, zero cash.
+      for (let i = 0; i < 5; i++) {
+        await seedLog(owner, {
+          agentId: busyFree,
+          cost: 0,
+          at: DAY1,
+          providerKind: 'api_key',
+          layer: 'explicit',
+        });
+      }
+      await seedLog(owner, {
+        agentId: costly,
+        cost: 9,
+        at: DAY1,
+        providerKind: 'api_key',
+        layer: 'explicit',
+      });
+      await seedLog(owner, {
+        agentId: middling,
+        cost: 5,
+        at: DAY1,
+        providerKind: 'api_key',
+        layer: 'explicit',
+      });
+      // Keyless traffic — no agent id at all.
+      for (let i = 0; i < 3; i++) {
+        await seedLog(owner, {
+          cost: 1,
+          at: DAY2,
+          providerKind: 'api_key',
+          layer: 'explicit',
+        });
+      }
+    }, 60_000);
+
+    it('ranks a zero-spend high-volume agent first, where spend truncates it out', async () => {
+      // Spend ranking at limit 2 EXCLUDES the highest-volume agent entirely.
+      const bySpend = await q('breakdown', owner, {
+        ...RANGE,
+        dimension: 'agent',
+        metric: 'spend',
+        limit: 2,
+      });
+      expect(bySpend.status).toBe(200);
+      expect(bySpend.body.map((r: { key: string }) => r.key)).toEqual([costly, middling]);
+
+      // Request ranking puts it first.
+      const byRequests = await q('breakdown', owner, {
+        ...RANGE,
+        dimension: 'agent',
+        metric: 'requests',
+        limit: 2,
+      });
+      expect(byRequests.status).toBe(200);
+      expect(byRequests.body[0].key).toBe(busyFree);
+      expect(byRequests.body[0].requests).toBe(5);
+      expect(byRequests.body[0].spend).toBe(0);
+    });
+
+    it('returns keyless traffic under every metric rather than omitting it', async () => {
+      for (const metric of ['spend', 'tokens', 'requests']) {
+        const res = await q('breakdown', owner, {
+          ...RANGE,
+          dimension: 'agent',
+          metric,
+          limit: 100,
+        });
+        expect(res.status).toBe(200);
+        const keyless = res.body.find((r: { key: string }) => r.key === '');
+        expect(keyless).toBeDefined();
+        expect(keyless.requests).toBe(3);
+      }
+    });
+
+    it('rejects an unknown metric rather than silently ranking by spend', async () => {
+      const res = await q('breakdown', owner, {
+        ...RANGE,
+        dimension: 'agent',
+        metric: 'latency',
+      });
+      expect(res.status).toBe(400);
+    });
+  });
+  // add-per-agent-calibration-evidence tasks 1.3-1.6, 2.3-2.5. The block is
+  // CALIBRATION-window scoped (14 days ending now), so every fixture here is
+  // seeded relative to NOW — not to RANGE, which the rest of this file uses.
+  describe('per-agent calibration evidence (add-per-agent-calibration-evidence)', () => {
+    let owner: string;
+    let foreign: string;
+    let agentA: string;
+    let agentB: string;
+    let foreignAgent: string;
+    const recent = (hoursAgo: number): string =>
+      new Date(Date.now() - hoursAgo * 3_600_000).toISOString();
+
+    // Instance geometry: high 0.60, low 0.25, EDGE_WIDTH 0.05.
+    //   high zone [0.55, 0.60)   low zone (0.25, 0.30]   middle otherwise
+    const amb = (
+      agent: string | null,
+      score: number,
+      kind: 'pass' | 'gate' | 'cheap_error' | 'nullsrc' | 'cancelled' | 'declared',
+      epoch: number | null = 0,
+      hoursAgo = 24,
+    ): Promise<string> =>
+      seedLog(owner, {
+        agentId: agent,
+        cost: 0,
+        at: recent(hoursAgo),
+        layer: 'cascade',
+        structuralBand: 'ambiguous',
+        structuralScore: score,
+        structuralBandSource: kind === 'declared' ? 'declared' : 'threshold',
+        structuralEpoch: epoch,
+        ...(kind === 'pass' || kind === 'declared'
+          ? { status: 'success', escalated: false, qualitySignal: 0.9 }
+          : kind === 'gate'
+            ? { status: 'success', escalated: true, escalationSource: 'quality_gate' }
+            : kind === 'cheap_error'
+              ? { status: 'success', escalated: true, escalationSource: 'cheap_error' }
+              : kind === 'nullsrc'
+                ? { status: 'success', escalated: true, escalationSource: null }
+                : { status: 'cancelled', escalated: false }),
+      });
+
+    beforeAll(async () => {
+      owner = await mkUser();
+      foreign = await mkUser();
+      agentA = await mkAgent(owner, 'CalAgentA');
+      agentB = await mkAgent(owner, 'CalAgentB');
+      foreignAgent = await mkAgent(foreign, 'ForeignCalAgent');
+
+      // Agent A — the spec's exact-placement fixture.
+      for (let i = 0; i < 10; i++) await amb(agentA, 0.57, 'gate');
+      for (let i = 0; i < 20; i++) await amb(agentA, 0.57, 'pass');
+      for (let i = 0; i < 8; i++) await amb(agentA, 0.27, 'pass');
+      for (let i = 0; i < 35; i++) await amb(agentA, 0.45, 'pass');
+      // …and the rows that must count for NOTHING.
+      for (let i = 0; i < 5; i++) await amb(agentA, 0.57, 'cheap_error');
+      for (let i = 0; i < 3; i++) await amb(agentA, 0.57, 'nullsrc');
+      for (let i = 0; i < 4; i++) await amb(agentA, 0.57, 'cancelled');
+      for (let i = 0; i < 7; i++) await amb(agentA, 0.57, 'declared');
+
+      // Agent B — the epoch split: 6 window rows, 2 of them current-epoch (0).
+      for (let i = 0; i < 4; i++) await amb(agentB, 0.57, 'pass', 9);
+      for (let i = 0; i < 2; i++) await amb(agentB, 0.57, 'pass', 0);
+
+      // An OWNER row carrying the FOREIGN tenant's agent id (denormalized, no FK),
+      // and real evidence owned by that other tenant.
+      await amb(foreignAgent, 0.57, 'pass');
+      await seedLog(foreign, {
+        agentId: foreignAgent,
+        cost: 0,
+        at: recent(24),
+        layer: 'cascade',
+        structuralBand: 'ambiguous',
+        structuralScore: 0.57,
+        structuralBandSource: 'threshold',
+        structuralEpoch: 0,
+        status: 'success',
+        escalated: false,
+        qualitySignal: 0.9,
+      });
+
+      // Outside the 14-day calibration window — must be invisible.
+      await amb(agentA, 0.57, 'pass', 0, 24 * 20);
+    }, 120_000);
+
+    const block = async (user = owner, range = RANGE): Promise<Record<string, never>> => {
+      const res = await q('auto', user, range);
+      expect(res.status).toBe(200);
+      return res.body.calibrationEvidence;
+    };
+    const byAgent = (b: { agents: { agentId: string | null }[] }, id: string | null) =>
+      b.agents.find((a) => a.agentId === id);
+
+    it('places decided rows exactly, and counts the undecided ones nowhere', async () => {
+      const b = (await block()) as never as {
+        high: number;
+        low: number;
+        edgeWidth: number;
+        agents: { agentId: string | null }[];
+      };
+      expect(b.high).toBe(0.6);
+      expect(b.low).toBe(0.25);
+      expect(b.edgeWidth).toBe(0.05);
+
+      const a = byAgent(b as never, agentA) as never as {
+        label: string;
+        highEdge: { currentEpoch: { samples: number; failures: number } };
+        lowEdge: { currentEpoch: { samples: number; failures: number } };
+        middleRows: { currentEpoch: number; window: number };
+      };
+      expect(a.label).toBe('CalAgentA');
+      // 10 gate failures + 20 passes at 0.57 = 30 decided high-edge samples.
+      expect(a.highEdge.currentEpoch).toEqual({ samples: 30, failures: 10 });
+      expect(a.lowEdge.currentEpoch).toEqual({ samples: 8, failures: 0 });
+      // The dead middle — without this a 0/0 edge pair is uninterpretable.
+      expect(a.middleRows.currentEpoch).toBe(35);
+      // 5 cheap_error + 3 null-source + 4 cancelled + 7 declared appear nowhere.
+    });
+
+    it('reports both epoch views, so a bump reads as a reset and not an absence', async () => {
+      const b = await block();
+      const bAgent = byAgent(b as never, agentB) as never as {
+        highEdge: { currentEpoch: { samples: number }; window: { samples: number } };
+      };
+      expect(bAgent.highEdge.window.samples).toBe(6);
+      expect(bAgent.highEdge.currentEpoch.samples).toBe(2);
+    });
+
+    it('is calibration-window scoped: the caller range does not move it', async () => {
+      const narrow = await block(owner, {
+        from: new Date(Date.now() - 3_600_000).toISOString(),
+        to: new Date().toISOString(),
+      } as never);
+      const wide = await block(owner, {
+        from: new Date(Date.now() - 399 * 86_400_000).toISOString(),
+        to: new Date().toISOString(),
+      } as never);
+      const strip = (x: never): unknown => {
+        const c = JSON.parse(JSON.stringify(x)) as { window: { from: string; to: string } };
+        return c;
+      };
+      // Identical counts AND identical bounds across a 1-hour and a 399-day range.
+      expect(strip(narrow as never)).toEqual(strip(wide as never));
+      const w = (narrow as never as { window: { days: number } }).window;
+      expect(w.days).toBe(14);
+    });
+
+    it('never leaks another tenant, and rolls the total up from the parts', async () => {
+      const b = (await block()) as never as {
+        total: {
+          highEdge: { currentEpoch: { samples: number; failures: number } };
+          middleRows: { currentEpoch: number };
+        };
+        agents: { agentId: string | null; label: string | null }[];
+      };
+      // The owner's row carrying the FOREIGN agent id appears, labelled null —
+      // the other tenant's agent NAME must never surface here.
+      const f = byAgent(b as never, foreignAgent) as never as { label: string | null };
+      expect(f).toBeDefined();
+      expect(f.label).toBeNull();
+      expect(JSON.stringify(b)).not.toContain('ForeignCalAgent');
+
+      // Total = sum of the parts, by construction.
+      const sum = (b.agents as never as { highEdge: { currentEpoch: { samples: number } } }[])
+        .map((a) => a.highEdge.currentEpoch.samples)
+        .reduce((x, y) => x + y, 0);
+      expect(b.total.highEdge.currentEpoch.samples).toBe(sum);
+      // A's 30 + B's 2 + the foreign-id row's 1 = 33 (the 20-day-old row is out).
+      expect(b.total.highEdge.currentEpoch.samples).toBe(33);
+    });
+
+    it('carries the rails a reader needs, from config and never a literal', async () => {
+      const b = (await block()) as never as {
+        actingFloor: number;
+        rateHigh: number;
+        rateLow: number;
+        calibrationEpoch: number;
+        epochStartedAt: string | null;
+        enabled: boolean;
+      };
+      expect(b.actingFloor).toBe(50);
+      expect(b.rateHigh).toBe(0.65);
+      expect(b.rateLow).toBe(0.15);
+      expect(b.calibrationEpoch).toBe(0);
+      // This tenant has never had a threshold event.
+      expect(b.epochStartedAt).toBeNull();
+      expect(b.enabled).toBe(false);
+    });
+
+    it('agrees EXACTLY with what the calibrator counts', async () => {
+      // The load-bearing test: the instrument and the calibrator must see the
+      // same rows. Compared against the port the sweep itself calls.
+      const port = app.get<PersistencePort>(PERSISTENCE_PORT);
+      const now = Date.now();
+      const stats = await port.analytics.calibrationStats(
+        userPrincipal(owner),
+        { from: new Date(now - 14 * 86_400_000), to: new Date(now) },
+        { high: 0.6, low: 0.25, edgeWidth: 0.05, epoch: 0 },
+      );
+      const b = (await block()) as never as {
+        total: {
+          highEdge: { currentEpoch: { samples: number; failures: number } };
+          lowEdge: { currentEpoch: { samples: number; failures: number } };
+        };
+      };
+      expect(b.total.highEdge.currentEpoch).toEqual(stats.highEdge);
+      expect(b.total.lowEdge.currentEpoch).toEqual(stats.lowEdge);
+    });
+
+    it('an UNINITIALIZED tenant reads as epoch 0 with defined zero shapes', async () => {
+      const fresh = await mkUser();
+      const b = (await block(fresh)) as never as {
+        calibrationEpoch: number;
+        epochStartedAt: string | null;
+        total: { highEdge: { window: { samples: number } }; middleRows: { window: number } };
+        agents: unknown[];
+      };
+      // No settings row at all — epoch defaults to 0, nothing is NaN or missing.
+      expect(b.calibrationEpoch).toBe(0);
+      expect(b.epochStartedAt).toBeNull();
+      expect(b.total.highEdge.window.samples).toBe(0);
+      expect(b.total.middleRows.window).toBe(0);
+      expect(b.agents).toEqual([]);
+    });
+  });
+  // fix-calibration-evidence-honesty. Each of these would have caught a defect
+  // the original change shipped; 1.5(d) is the case its own task list required
+  // and did not deliver.
+  describe('calibration evidence honesty (fix-calibration-evidence-honesty)', () => {
+    let owner: string;
+    let nullScoreAgent: string;
+    const recent = (h: number): string => new Date(Date.now() - h * 3_600_000).toISOString();
+
+    beforeAll(async () => {
+      owner = await mkUser();
+      nullScoreAgent = await mkAgent(owner, 'NullScoreAgent');
+      // A decided ambiguous cascade row with NO structural_score. No CHECK makes
+      // the structural triple travel together, so this is schema-legal — and an
+      // unguarded complement drops it from high, low AND middle.
+      for (let i = 0; i < 4; i++) {
+        await seedLog(owner, {
+          agentId: nullScoreAgent,
+          cost: 0,
+          at: recent(12),
+          layer: 'cascade',
+          structuralBand: 'ambiguous',
+          structuralBandSource: 'threshold',
+          structuralEpoch: 0,
+          status: 'success',
+          escalated: false,
+          qualitySignal: 0.9,
+        });
+      }
+    }, 60_000);
+
+    it('counts a NULL-score decided row instead of dropping it from every bucket', async () => {
+      const res = await q('auto', owner, RANGE);
+      expect(res.status).toBe(200);
+      const b = res.body.calibrationEvidence as {
+        total: { middleRows: { window: number }; highEdge: { window: { samples: number } } };
+        agents: { agentId: string | null; middleRows: { window: number } }[];
+      };
+      const a = b.agents.find((x) => x.agentId === nullScoreAgent);
+      expect(a).toBeDefined(); // the NULL-score agent must not vanish entirely
+      // Counted once, in `middle` — decided, and in neither edge zone.
+      expect(a!.middleRows.window).toBe(4);
+      expect(b.total.middleRows.window).toBe(4);
+      expect(b.total.highEdge.window.samples).toBe(0);
+    });
+
+    it('a rail-violating contracted pair goes inert, so no halt is reported', async () => {
+      // Task 1.5(d)'s case, and what it actually reveals: from instance defaults
+      // 0.6/0.25 with maxDrift 0.1 a side, the TIGHTEST reachable gap is 0.15,
+      // while the zones only touch at a gap of 0.10 or less. So contracted
+      // geometry is UNREACHABLE by calibration drift — a pair narrow enough to
+      // touch necessarily breaches the drift rail and is inert, leaving the
+      // instance defaults in force. The unit test beside `calibrationHalted`
+      // covers the predicate itself; this pins the reachability.
+      await pool.query(
+        `INSERT INTO routing_settings
+           (id, owner_user_id, structural_enabled, cascade_enabled, semantic_enabled,
+            calibration_enabled, calibrated_high, calibrated_low,
+            calibrated_anchor_high, calibrated_anchor_low, calibration_epoch)
+         VALUES (gen_random_uuid(), $1, true, true, false, true, 0.55, 0.45, 0.6, 0.25, 0)`,
+        [owner],
+      );
+      try {
+        const res = await q('auto', owner, RANGE);
+        expect(res.status).toBe(200);
+        const b = res.body.calibrationEvidence as {
+          contracted: boolean;
+          high: number;
+          low: number;
+          enabled: boolean;
+        };
+        // The pair breaches maxDrift, so it is inert and the INSTANCE defaults
+        // are what the block reports — and what the calibrator would use.
+        expect(b.high).toBe(0.6);
+        expect(b.low).toBe(0.25);
+        expect(b.contracted).toBe(false);
+        expect(b.enabled).toBe(true);
+      } finally {
+        await pool.query('DELETE FROM routing_settings WHERE owner_user_id = $1', [owner]);
+      }
+    });
+
+    it('reports no halt for an ordinary tenant', async () => {
+      const res = await q('auto', owner, RANGE);
+      const b = res.body.calibrationEvidence as { contracted: boolean; truncated: boolean };
+      expect(b.contracted).toBe(false);
+      expect(b.truncated).toBe(false);
     });
   });
 });

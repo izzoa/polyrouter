@@ -7,6 +7,7 @@ import { Toggle } from '../components/Toggle';
 import { BatchModeHelp } from '../components/BatchModeHelp';
 import type { AutoLayers, TierEntryDto } from '../data/api';
 import { autoSeriesToChart, signalQualityGuidance, toAutoPerfVm } from '../data/autoPerf';
+import { edgeSummary, toCalibrationEvidenceVm } from '../data/calibrationEvidence';
 import {
   bandVms,
   scopedBandVms,
@@ -946,6 +947,14 @@ function AutoPerformance() {
   // Already-loaded data stays visible while a refetch replaces it (the loader's
   // seq/gen/range guards make late responses harmless).
   const vm = () => toAutoPerfVm(state.autoPerf.data);
+  /** Calibration evidence (add-per-agent-calibration-evidence). Derived separately
+   * from the auto-perf VM because it is CALIBRATION-window scoped and does not
+   * follow this page's range selector — keeping it out of `vm` is what stops the
+   * two being presented as one measurement. */
+  const calVm = () => {
+    const d = state.autoPerf.data?.calibrationEvidence;
+    return d === undefined ? null : toCalibrationEvidenceVm(d);
+  };
   const bucketSecs = () => (state.autoPerf.range === '24h' ? 3600 : 86_400);
   const chartData = () => autoSeriesToChart(state.autoPerf.data?.series ?? [], bucketSecs());
   const statFont = "font:400 11.5px 'Geist',sans-serif;color:var(--text3)";
@@ -1126,6 +1135,109 @@ function AutoPerformance() {
                     </div>
                   </Show>
                 </div>
+              </Show>
+              <Show when={calVm()} keyed>
+                {(cal) => (
+                  <div data-testid="calibration-evidence" style="margin-bottom:10px">
+                    <div style="font:500 11px 'Geist',sans-serif;color:var(--text2);margin-bottom:4px">
+                      Calibration evidence
+                    </div>
+                    {/* The window and the rails, read from the response — never
+                        literals. `actingFloor` is runtime-configurable and SQ-2 is
+                        scheduled to change it, so a hardcoded 50 here would go wrong
+                        silently the day that lands. */}
+                    <div
+                      data-testid="calibration-geometry"
+                      style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);line-height:1.5"
+                    >
+                      Last {cal.windowDays} days — the calibration window, not the range above.
+                      Edges are {cal.edgeWidth} wide either side of{' '}
+                      <span class="mono">{cal.low}</span> / <span class="mono">{cal.high}</span>;{' '}
+                      {cal.actingFloor} samples needed before an edge can move.
+                    </div>
+                    {/* THE DECIDING FIGURE. The calibrator acts on the tenant
+                        total — `calibrationStats` has no agent dimension — so a
+                        view showing only per-agent rows lets three agents at
+                        "30 of 50 needed" read as "no move possible" while the
+                        tenant sits at 90 and moves
+                        (fix-calibration-evidence-honesty). */}
+                    <div
+                      data-testid="cal-total"
+                      style="font:400 11px 'Geist',sans-serif;color:var(--text2);line-height:1.5;margin-top:4px"
+                    >
+                      <span style="font-weight:500">All agents</span>{' '}
+                      <span style="color:var(--text3);font-size:10.5px">
+                        — what the calibrator evaluates
+                      </span>
+                      <div style="color:var(--text3);font-size:10.5px">
+                        high — {edgeSummary(cal.total.high, cal.actingFloor)}
+                      </div>
+                      <div style="color:var(--text3);font-size:10.5px">
+                        low — {edgeSummary(cal.total.low, cal.actingFloor)}
+                      </div>
+                    </div>
+                    {/* A mechanism that is not running must not be implied by
+                        counts shown against a floor. */}
+                    <Show when={!cal.enabled}>
+                      <div
+                        data-testid="cal-disabled"
+                        style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);line-height:1.5"
+                      >
+                        Automatic calibration is off for this tenant — these figures are what it
+                        would read, not work it is doing.
+                      </div>
+                    </Show>
+                    <Show when={cal.contracted}>
+                      <div
+                        data-testid="cal-contracted"
+                        style="font:400 10.5px 'Geist',sans-serif;color:var(--amber);line-height:1.5"
+                      >
+                        Calibration is halted for this tenant: the edge zones touch, so the
+                        calibrator skips it whatever evidence accrues.
+                      </div>
+                    </Show>
+                    <Show when={cal.truncated}>
+                      <div
+                        data-testid="cal-truncated"
+                        style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);line-height:1.5"
+                      >
+                        Showing the top {cal.agents.length} agents by evidence; the total above
+                        covers every agent.
+                      </div>
+                    </Show>
+                    <For each={cal.agents}>
+                      {(a) => (
+                        <div style="font:400 11px 'Geist',sans-serif;color:var(--text2);line-height:1.5;margin-top:4px">
+                          <span style="font-weight:500">{a.label}</span>
+                          <div
+                            data-testid={`cal-edge-high-${a.high.state}`}
+                            style="color:var(--text3);font-size:10.5px"
+                          >
+                            high — {edgeSummary(a.high, cal.actingFloor)}
+                          </div>
+                          <div
+                            data-testid={`cal-edge-low-${a.low.state}`}
+                            style="color:var(--text3);font-size:10.5px"
+                          >
+                            low — {edgeSummary(a.low, cal.actingFloor)}
+                          </div>
+                          {/* The reader's next question after a collapse flag. Left to
+                              inference it produces the WRONG conclusion — "the
+                              calibrator is broken" from a correct system state. */}
+                          <Show when={a.deadMiddle}>
+                            <div
+                              data-testid="cal-dead-middle"
+                              style="color:var(--text3);font-size:10.5px"
+                            >
+                              {a.middleWindowRows} decided rows, all between the edge zones —
+                              nothing for the calibrator to read.
+                            </div>
+                          </Show>
+                        </div>
+                      )}
+                    </For>
+                  </div>
+                )}
               </Show>
               <Show when={v.savings} keyed>
                 {(sv) => (

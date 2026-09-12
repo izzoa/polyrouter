@@ -513,7 +513,12 @@ export interface AnalyticsBreakdownRow extends AnalyticsTokens {
 /** What a breakdown is ranked — and therefore TRUNCATED — by. The ranking has to happen
  * where rows are discarded: selecting the top N by spend and re-sorting them by tokens
  * silently omits anything that ranks highly on tokens and poorly on spend. */
-export type AnalyticsMetric = 'spend' | 'tokens';
+/** What a breakdown is RANKED and truncated by. `requests` exists because a
+ * dimension cannot honestly be ranked by a quantity it is not being displayed
+ * for: the default is spend at limit 10, so an agent issuing high volume on
+ * free, local or fully-cached routes accrues near-zero spend and is truncated
+ * out of a request-volume view entirely (add-agent-request-attribution). */
+export type AnalyticsMetric = 'spend' | 'tokens' | 'requests';
 
 export interface AnalyticsRequestsCursor {
   /** Full-precision `created_at::text` (µs), NOT a millisecond-truncated JS Date —
@@ -749,11 +754,53 @@ export interface AnalyticsAccessor {
     range: AnalyticsRange,
     args: { high: number; low: number; edgeWidth: number; epoch: number },
   ): Promise<CalibrationEdgeStats>;
+  /** PER-AGENT calibration evidence (add-per-agent-calibration-evidence) over the
+   * SAME population `calibrationStats` consumes — the shared predicate builders
+   * are the mechanism, so the instrument cannot drift from what the calibrator
+   * counts. `range` is the CALIBRATION window, never the caller's analytics
+   * range: the two answer different questions and agreeing on a fixture while
+   * diverging in production is exactly the failure this read exists to avoid. */
+  calibrationEvidence(
+    principal: Principal,
+    range: AnalyticsRange,
+    args: { high: number; low: number; edgeWidth: number; epoch: number },
+  ): Promise<CalibrationEvidenceData>;
 }
 
 export interface CalibrationEdgeStats {
   highEdge: { samples: number; failures: number };
   lowEdge: { samples: number; failures: number };
+}
+
+/** One edge under both epoch views. `currentEpoch` is what the calibrator can act
+ * on now; `window` is every decided edge row in the calibration window whatever
+ * its epoch. Reporting one without the other is the dishonesty this shape exists
+ * to prevent: `currentEpoch` alone hides evidence that exists after an epoch bump,
+ * `window` alone overstates what is usable. */
+export interface CalibrationEdgeViews {
+  currentEpoch: { samples: number; failures: number };
+  window: { samples: number; failures: number };
+}
+
+/** Evidence for one agent (or the tenant total). `middleRows` counts decided
+ * ambiguous rows in NEITHER edge zone — without it a zero on both edges cannot be
+ * told apart from no traffic, undecided traffic, or confident-band traffic. */
+export interface CalibrationEvidenceEntry {
+  agentId: string | null;
+  label: string | null;
+  highEdge: CalibrationEdgeViews;
+  lowEdge: CalibrationEdgeViews;
+  middleRows: { currentEpoch: number; window: number };
+}
+
+export interface CalibrationEvidenceData {
+  /** Summed over EVERY agent in the population, BEFORE `agents` is truncated —
+   * a total over the visible subset would under-report the one figure the
+   * calibrator actually evaluates (fix-calibration-evidence-honesty). */
+  total: CalibrationEvidenceEntry;
+  agents: CalibrationEvidenceEntry[];
+  /** The agent list hit its bound and is a top-N by window evidence. */
+  truncated: boolean;
 }
 
 /** Per-tenant automatic-routing layer preference (#20) + threshold

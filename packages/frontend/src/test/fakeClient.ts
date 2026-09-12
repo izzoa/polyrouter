@@ -13,8 +13,9 @@ import type {
   AnalyticsSummary,
   ApiClient,
   AutoLayers,
+  CalibrationEvidence,
   BreakdownDimension,
-  BreakdownMetric,
+  BreakdownRanking,
   BreakdownRow,
   BudgetDto,
   ChannelDto,
@@ -71,6 +72,79 @@ export const DEFAULT_LOGIN_CONFIG: LoginConfig = {
 };
 
 const NOW = '2026-07-15T00:00:00.000Z';
+
+/** Default calibration evidence (add-per-agent-calibration-evidence), shaped so the
+ * four per-edge states are all reachable from the default fake: `sufficient` +
+ * `absent` (agent-0), `accumulating` (agent-1), `reset` (agent-2), and a
+ * dead-middle agent whose edges are empty while decided rows sit between them. */
+export const DEFAULT_CALIBRATION_EVIDENCE: CalibrationEvidence = {
+  window: { from: '2026-07-01T00:00:00.000Z', to: '2026-07-15T00:00:00.000Z', days: 14 },
+  high: 0.6,
+  low: 0.25,
+  edgeWidth: 0.05,
+  actingFloor: 50,
+  rateHigh: 0.65,
+  rateLow: 0.15,
+  calibrationEpoch: 2,
+  epochStartedAt: '2026-07-08T00:00:00.000Z',
+  enabled: false,
+  contracted: false,
+  truncated: false,
+  total: {
+    agentId: null,
+    label: null,
+    highEdge: {
+      currentEpoch: { samples: 92, failures: 60 },
+      window: { samples: 150, failures: 90 },
+    },
+    lowEdge: { currentEpoch: { samples: 12, failures: 1 }, window: { samples: 12, failures: 1 } },
+    middleRows: { currentEpoch: 200, window: 260 },
+  },
+  agents: [
+    {
+      agentId: 'agent-0',
+      label: 'agent-0',
+      // Sufficient AND in the dead zone: 65% is the bound, 60/80 = 75% clears it,
+      // so use 40/80 = 50% to sit below it and prove "no move" renders.
+      highEdge: {
+        currentEpoch: { samples: 80, failures: 40 },
+        window: { samples: 120, failures: 60 },
+      },
+      lowEdge: { currentEpoch: { samples: 0, failures: 0 }, window: { samples: 0, failures: 0 } },
+      middleRows: { currentEpoch: 100, window: 130 },
+    },
+    {
+      agentId: 'agent-1',
+      label: 'agent-1',
+      highEdge: {
+        currentEpoch: { samples: 12, failures: 9 },
+        window: { samples: 12, failures: 9 },
+      },
+      lowEdge: { currentEpoch: { samples: 12, failures: 1 }, window: { samples: 12, failures: 1 } },
+      middleRows: { currentEpoch: 40, window: 40 },
+    },
+    {
+      agentId: 'agent-2',
+      label: 'agent-2',
+      // Window evidence with NOTHING current — the epoch bump must read as a
+      // reset, not as an absence.
+      highEdge: {
+        currentEpoch: { samples: 0, failures: 0 },
+        window: { samples: 18, failures: 11 },
+      },
+      lowEdge: { currentEpoch: { samples: 0, failures: 0 }, window: { samples: 0, failures: 0 } },
+      middleRows: { currentEpoch: 0, window: 30 },
+    },
+    {
+      agentId: 'agent-dead-middle',
+      label: null,
+      highEdge: { currentEpoch: { samples: 0, failures: 0 }, window: { samples: 0, failures: 0 } },
+      lowEdge: { currentEpoch: { samples: 0, failures: 0 }, window: { samples: 0, failures: 0 } },
+      middleRows: { currentEpoch: 60, window: 60 },
+    },
+  ],
+};
+
 
 export const DEFAULT_SUMMARY: AnalyticsSummary = {
   spend: 12.5,
@@ -333,6 +407,7 @@ export const DEFAULT_PRICING_STATUS: PricingStatus = {
 };
 
 export const DEFAULT_AUTO_PERF: AutoPerformance = {
+  calibrationEvidence: DEFAULT_CALIBRATION_EVIDENCE,
   evaluated: 40,
   bands: {
     high: { requests: 12, declared: 2, unroutable: 1 },

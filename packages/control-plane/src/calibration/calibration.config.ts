@@ -94,3 +94,23 @@ export function loadCalibrationConfig(): CalibrationConfig {
 export function railsOf(cfg: CalibrationConfig): CalibrationRails {
   return { maxDrift: cfg.maxDrift, minGap: MIN_GAP };
 }
+
+/** Is the calibrator HALTED for this tenant — would `calibrateTenant` decline to
+ * evaluate it at all (fix-calibration-evidence-honesty)?
+ *
+ * Two conditions, both pre-existing in the sweep: a degenerate INSTANCE pair
+ * narrower than the minimum gap, and effective edge zones that touch or overlap
+ * (inclusive, because the zones are [high−w, high) and (low, low+w], so equality
+ * means one shared score). Extracted so the calibrator and the read-time
+ * evidence report share ONE definition — a restatement in the analytics layer
+ * would be a second copy of a rule that has already moved once.
+ */
+export function calibrationHalted(
+  instance: { high: number; low: number },
+  effective: { high: number; low: number },
+  rails: CalibrationRails,
+): boolean {
+  const r4 = (n: number): number => Math.round(n * 10_000) / 10_000;
+  if (r4(instance.high - instance.low) < rails.minGap) return true;
+  return r4(effective.high - EDGE_WIDTH) <= r4(effective.low + EDGE_WIDTH);
+}

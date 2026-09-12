@@ -31,6 +31,7 @@ import {
   subscriptionMicrosSum,
   unknownMicrosSum,
 } from './cost-sql';
+import { computeCalibrationEvidence } from './calibration-evidence';
 import { computeSignalQuality } from './signal-quality';
 import { buildWorkloadMix } from './workload-mix';
 
@@ -62,6 +63,70 @@ function encodeCursor(row: { createdAtText: string; id: string }): string {
   // Encode the FULL-precision timestamp text (µs), not a ms-truncated JS Date, so
   // the next-page predicate can match rows sharing one batched `now()` (E3).
   return Buffer.from(`${row.createdAtText}|${row.id}`, 'utf8').toString('base64');
+}
+
+/* ── Calibration population, factored ──────────────────────────────────────────
+ *
+ * `calibrationStats` (what the CALIBRATOR acts on) and `calibrationEvidence`
+ * (what the operator SEES) must count the same rows. Two independently-written
+ * queries would drift on the next rail change — silently, and in the direction of
+ * the view being wrong, which is worse than no view at all. One set of builders is
+ * the mechanism that makes drift impossible rather than merely discouraged.
+ *
+ * Functions, not shared `SQL` constants: each call returns a fresh AST node, so no
+ * two queries can ever share and mutate one.
+ */
+
+/** A quality-DECIDED pass: served, scored, non-escalated, with a NULL escalation
+ * source. Fail-closed — anything unstated is invisible, never assumed passing. */
+const calibrationPass = (): SQL =>
+  sql`(not ${requestLogs.escalated} and ${requestLogs.escalationSource} is null and ${requestLogs.status} in ('success','fallback') and ${requestLogs.qualitySignal} is not null)`;
+
+/** A quality-gate escalation, counted regardless of the strong leg's later
+ * terminal status — the CHEAP verdict is what was decided. */
+const calibrationFailure = (): SQL =>
+  sql`(${requestLogs.escalated} and ${requestLogs.escalationSource} = 'quality_gate')`;
+
+const calibrationDecided = (): SQL => sql`(${calibrationPass()} or ${calibrationFailure()})`;
+
+/** Band / layer / provenance shape, WITHOUT the epoch. The epoch is the freshness
+ * rail and is applied separately, because the evidence view reports both an
+ * epoch-matched and an epoch-blind count over otherwise identical rows. */
+const calibrationShape = (): SQL =>
+  and(
+    sql`${requestLogs.structuralBand} = 'ambiguous'`,
+    sql`${requestLogs.decisionLayer} = 'cascade'`,
+    sql`${requestLogs.structuralBandSource} = 'threshold'`,
+  ) as SQL;
+
+interface CalibrationGeometry {
+  high: number;
+  low: number;
+  edgeWidth: number;
+}
+
+/** The two edge zones and the dead middle between them. Zone bounds are inclusive
+ * at their OUTER ends, matching the calibrator's own overlap check. `middle` is
+ * defined as the complement so a row can never be counted in two places, and so a
+ * score that has fallen outside the CURRENT pair still lands somewhere. */
+function calibrationZones(g: CalibrationGeometry): {
+  highZone: SQL;
+  lowZone: SQL;
+  middle: SQL;
+} {
+  const highZone = sql`(${requestLogs.structuralScore} >= ${g.high - g.edgeWidth} and ${requestLogs.structuralScore} < ${g.high})`;
+  const lowZone = sql`(${requestLogs.structuralScore} > ${g.low} and ${requestLogs.structuralScore} <= ${g.low + g.edgeWidth})`;
+  // The complement REFERENCES the zones rather than restating them — a second
+  // copy desynchronises the moment either boundary changes.
+  //
+  // The NULL arm is load-bearing (fix-calibration-evidence-honesty). No CHECK
+  // makes the structural band/score/source travel together, so a decided
+  // ambiguous row with a NULL score is schema-legal; and in three-valued logic
+  // `not (NULL >= x)` is UNKNOWN, which `count(*) filter` discards. Without this
+  // arm such a row falls out of high, low AND middle — vanishing from every
+  // count and reporting its agent as having no decided rows at all.
+  const middle = sql`(${requestLogs.structuralScore} is null or (not ${highZone} and not ${lowZone}))`;
+  return { highZone, lowZone, middle };
 }
 
 /** Subquery of the principal's provider ids — models are owned THROUGH providers. */
@@ -805,24 +870,18 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
     },
 
     async calibrationStats(principal, range, args) {
-      // The DECIDED population, fail-closed on provenance (r2-High-2): a pass
-      // is served+scored+non-escalated with a NULL escalation source; a
-      // failure is a quality-gate escalation regardless of the strong leg's
-      // terminal status. Epoch equality is the freshness rail (r2-Med-3) —
-      // rows decided under an earlier pair never re-qualify, whatever the
-      // async writer's insertion clock says.
+      // The DECIDED population, fail-closed on provenance (r2-High-2), built from
+      // the SHARED builders above so this and `calibrationEvidence` cannot drift.
+      // Epoch equality is the freshness rail (r2-Med-3) — rows decided under an
+      // earlier pair never re-qualify, whatever the async writer's clock says.
       const base = and(
         logRange(principal, range),
-        sql`${requestLogs.structuralBand} = 'ambiguous'`,
-        sql`${requestLogs.decisionLayer} = 'cascade'`,
-        sql`${requestLogs.structuralBandSource} = 'threshold'`,
+        calibrationShape(),
         sql`${requestLogs.structuralEpoch} = ${args.epoch}`,
       );
-      const pass = sql`(not ${requestLogs.escalated} and ${requestLogs.escalationSource} is null and ${requestLogs.status} in ('success','fallback') and ${requestLogs.qualitySignal} is not null)`;
-      const failure = sql`(${requestLogs.escalated} and ${requestLogs.escalationSource} = 'quality_gate')`;
-      const decided = sql`(${pass} or ${failure})`;
-      const highZone = sql`(${requestLogs.structuralScore} >= ${args.high - args.edgeWidth} and ${requestLogs.structuralScore} < ${args.high})`;
-      const lowZone = sql`(${requestLogs.structuralScore} > ${args.low} and ${requestLogs.structuralScore} <= ${args.low + args.edgeWidth})`;
+      const failure = calibrationFailure();
+      const decided = calibrationDecided();
+      const { highZone, lowZone } = calibrationZones(args);
       const [t] = await db
         .select({
           highSamples: intCount(sql`${decided} and ${highZone}`),
@@ -836,6 +895,61 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
         highEdge: { samples: t!.highSamples, failures: t!.highFailures },
         lowEdge: { samples: t!.lowSamples, failures: t!.lowFailures },
       };
+    },
+
+    async calibrationEvidence(principal, range, args) {
+      // SAME population as `calibrationStats` — shape + range from the shared
+      // builders, epoch applied per-count rather than in the WHERE, because the
+      // two views differ ONLY by it and must be read from identical rows.
+      const base = and(logRange(principal, range), calibrationShape());
+      const decided = calibrationDecided();
+      const failure = calibrationFailure();
+      const { highZone, lowZone, middle } = calibrationZones(args);
+      const current = sql`${requestLogs.structuralEpoch} = ${args.epoch}`;
+
+      const rows = await db
+        .select({
+          agentId: requestLogs.agentId,
+          highSamplesCurrent: intCount(sql`${decided} and ${highZone} and ${current}`),
+          highFailuresCurrent: intCount(sql`${failure} and ${highZone} and ${current}`),
+          highSamplesWindow: intCount(sql`${decided} and ${highZone}`),
+          highFailuresWindow: intCount(sql`${failure} and ${highZone}`),
+          lowSamplesCurrent: intCount(sql`${decided} and ${lowZone} and ${current}`),
+          lowFailuresCurrent: intCount(sql`${failure} and ${lowZone} and ${current}`),
+          lowSamplesWindow: intCount(sql`${decided} and ${lowZone}`),
+          lowFailuresWindow: intCount(sql`${failure} and ${lowZone}`),
+          middleCurrent: intCount(sql`${decided} and ${middle} and ${current}`),
+          middleWindow: intCount(sql`${decided} and ${middle}`),
+        })
+        .from(requestLogs)
+        .where(base)
+        .groupBy(requestLogs.agentId);
+
+      // Owner-scoped labels only: a deleted agent, a keyless row and an id
+      // denormalized from another tenant all resolve to null (the resolver has
+      // already dropped anything not owned).
+      const labels = await resolveLabels(
+        db,
+        principal,
+        'agent',
+        rows.map((r) => r.agentId).filter((v): v is string => v !== null),
+      );
+      return computeCalibrationEvidence(
+        rows.map((r) => ({
+          agentId: r.agentId,
+          highSamplesCurrent: Number(r.highSamplesCurrent),
+          highFailuresCurrent: Number(r.highFailuresCurrent),
+          highSamplesWindow: Number(r.highSamplesWindow),
+          highFailuresWindow: Number(r.highFailuresWindow),
+          lowSamplesCurrent: Number(r.lowSamplesCurrent),
+          lowFailuresCurrent: Number(r.lowFailuresCurrent),
+          lowSamplesWindow: Number(r.lowSamplesWindow),
+          lowFailuresWindow: Number(r.lowFailuresWindow),
+          middleCurrent: Number(r.middleCurrent),
+          middleWindow: Number(r.middleWindow),
+        })),
+        labels,
+      );
     },
 
     async listRequests(principal, query) {

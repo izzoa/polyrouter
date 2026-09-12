@@ -7,10 +7,12 @@ import {
   toSignalQualityVm,
   toWorkloadVm,
 } from './autoPerf';
+import { DEFAULT_CALIBRATION_EVIDENCE } from '../test/fakeClient';
 
 /** Baseline fixture mirroring the fakeClient default — mutated per case. */
 function fixture(over: Partial<AutoPerformance> = {}): AutoPerformance {
   return {
+    calibrationEvidence: DEFAULT_CALIBRATION_EVIDENCE,
     evaluated: 40,
     bands: {
       high: { requests: 12, declared: 2, unroutable: 1 },

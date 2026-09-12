@@ -115,10 +115,14 @@ export interface RequestLogDraft {
     readonly status?: number;
     readonly providerMessage?: string;
     readonly requestId?: string;
+    /** Retained classification values (fix-bad-request-dead-end) — allowlisted
+     * identifiers, re-checked defensively at the write below. */
+    readonly markers?: readonly string[];
   };
-  /** Per-attempt failure metadata (add-fallback-attempt-detail) — present only
-   * on `status='error'` drafts (the recorder enforces exclusivity). Structure
-   * only: the entry shape admits no free-text field. */
+  /** Per-attempt failure metadata (add-fallback-attempt-detail) — present on
+   * `status='error'` AND `status='fallback'` drafts (fix-bad-request-dead-end: the
+   * trail follows the WALK, not the terminal outcome; the recorder enforces that
+   * split). Structure only: the entry shape admits no free-text field. */
   readonly attemptFailures?: readonly AttemptFailureEntry[];
   /** The originating request's span context (#21 `recording.write` link);
    * absent when tracing is off. Never persisted. */
@@ -175,26 +179,36 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 const bodyBytesOf = (bodies: readonly CapturedBodyDraft[]): number =>
   bodies.reduce((n, b) => n + Buffer.byteLength(b.content, 'utf8'), 0);
 
-/** Map a draft's terminal-error detail to the four columns. Defense in depth is
+/** Map a draft's terminal-error detail to the five columns. Defense in depth is
  * CREDENTIAL-FREE (add-request-error-detail): the capture layer already ran the
  * exact-credential redaction (no secret is queued), so the writer re-applies
- * only the idempotent generic scrub + cap + request-id allowlist. */
+ * only the idempotent generic scrub + cap + request-id allowlist — and, for the
+ * retained markers, the same generic scrub plus a re-check of the identifier shape
+ * (fix-bad-request-dead-end). A marker that fails the re-check is DROPPED rather
+ * than stored: an array value must not ride the string path unchecked. */
+const MARKER_SHAPE = /^[A-Za-z0-9_.:-]{1,64}$/;
+
 function errorColumns(d: { readonly error?: RequestLogDraft['error'] }): {
   errorKind?: string;
   errorStatus?: number;
   errorMessage?: string;
   errorRequestId?: string;
+  errorMarkers?: string[];
 } {
   const e = d.error;
   if (e === undefined) return {};
   const message =
     e.providerMessage !== undefined ? scrubSecrets(e.providerMessage).slice(0, 300) : undefined;
   const requestId = sanitizeRequestId(e.requestId);
+  const markers = (e.markers ?? [])
+    .map((m: string) => scrubSecrets(m))
+    .filter((m: string) => MARKER_SHAPE.test(m));
   return {
     errorKind: e.kind,
     ...(e.status !== undefined ? { errorStatus: e.status } : {}),
     ...(message !== undefined && message !== '' ? { errorMessage: message } : {}),
     ...(requestId !== undefined ? { errorRequestId: requestId } : {}),
+    ...(markers.length > 0 ? { errorMarkers: markers } : {}),
   };
 }
 

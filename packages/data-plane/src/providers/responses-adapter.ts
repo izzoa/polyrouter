@@ -179,6 +179,7 @@ async function collectStream(
             ...(ev.diagnostic?.providerMessage !== undefined
               ? { providerMessage: ev.diagnostic.providerMessage }
               : {}),
+            ...(ev.diagnostic?.markers !== undefined ? { markers: ev.diagnostic.markers } : {}),
             ...(ev.diagnostic?.requestId !== undefined
               ? { requestId: ev.diagnostic.requestId }
               : {}),

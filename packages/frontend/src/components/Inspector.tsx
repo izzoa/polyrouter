@@ -243,6 +243,7 @@ export function Inspector() {
                               }}
                             >
                               {a.label}
+                              {a.markers !== null ? ` · ${a.markers.join(' · ')}` : ''}
                             </span>
                           </div>
                         )}
@@ -279,6 +280,23 @@ export function Inspector() {
                               {ev.message}
                             </span>
                           </div>
+                        </Show>
+                        {/* fix-bad-request-dead-end: where `provider said` is a
+                            fixed withheld marker, THIS is the only row that says why
+                            the provider refused. Absent markers drop the row — an
+                            empty diagnosis is worse than none. */}
+                        <Show when={ev.markers} keyed>
+                          {(ms) => (
+                            <div style="display:flex;justify-content:space-between;gap:16px">
+                              <span style="color:var(--text3)">classification</span>
+                              <span
+                                class="mono"
+                                style="font:500 11.5px 'Geist Mono',monospace;color:var(--text2);text-align:right;word-break:break-all"
+                              >
+                                {ms.join(' · ')}
+                              </span>
+                            </div>
+                          )}
                         </Show>
                         <Show when={ev.requestId !== null}>
                           <div style="display:flex;justify-content:space-between;gap:16px">

@@ -211,6 +211,24 @@ describe('request-logging e2e', () => {
     // a rescued 402: member 1 is dry, member 2 serves → status=fallback
     const rescued = await port.tiers.insert(principal, { key: 'rescued' });
     await port.routingEntries.replaceForTier(principal, rescued.id, [nofunds!.id, gpt4oModelId]);
+    // fix-bad-request-dead-end: THE reported incident — the primary 400s with a
+    // classification code and a prompt-echoing message, and a later member serves.
+    const badreqModel = await port.models.createForProvider(principal, provider.id, {
+      externalModelId: 'oai-badreq-rescued',
+    });
+    const badreqModel2 = await port.models.createForProvider(principal, provider.id, {
+      externalModelId: 'oai-badreq-allfail',
+    });
+    const allBad = await port.tiers.insert(principal, { key: 'rescued-badreq-allfail' });
+    await port.routingEntries.replaceForTier(principal, allBad.id, [
+      badreqModel!.id,
+      badreqModel2!.id,
+    ]);
+    const rescuedBad = await port.tiers.insert(principal, { key: 'rescued-badreq' });
+    await port.routingEntries.replaceForTier(principal, rescuedBad.id, [
+      badreqModel!.id,
+      gpt4oModelId,
+    ]);
     const permtier = await port.tiers.insert(principal, { key: 'nopermtier' });
     await port.routingEntries.replaceForTier(principal, permtier.id, [noperm!.id]);
     // add-fallback-attempt-detail: a SECOND provider whose breaker the mixed-chain
@@ -278,14 +296,17 @@ describe('request-logging e2e', () => {
     expect(row!.modelId).toBe(gpt4oModelId); // the served member, not the failed primary
     expect(row!.routingReason).toContain('fell back'); // sanitized trail
     // add-request-error-detail decision 2: a SERVED request carries no error detail —
-    // its bumps stay summarized by the trail alone.
+    // it has no TERMINAL error.
     expect(row!.errorKind).toBeNull();
     expect(row!.errorStatus).toBeNull();
     expect(row!.errorMessage).toBeNull();
     expect(row!.errorRequestId).toBeNull();
-    // add-fallback-attempt-detail: the per-attempt column shares the same
-    // error-only exclusivity gate — a served-with-bumps row keeps it null.
-    expect(row!.attemptFailures).toBeNull();
+    expect(row!.errorMarkers).toBeNull();
+    // fix-bad-request-dead-end: the per-attempt column follows the WALK, not the
+    // terminal status — a served-with-bumps row DOES carry its trail, because its
+    // earlier members genuinely failed and this is the only record of why it moved.
+    expect(row!.attemptFailures).not.toBeNull();
+    expect(row!.attemptFailures!.length).toBeGreaterThan(0);
   });
 
   describe('per-attempt failure metadata (add-fallback-attempt-detail)', () => {
@@ -541,8 +562,8 @@ describe('request-logging e2e', () => {
       expect(row!.errorMessage).toBe('[permission message withheld]');
     });
 
-    // A successful fallback keeps attempt_failures NULL by contract — the trail lives
-    // in routing_reason. Asserting the column would contradict this capability.
+    // fix-bad-request-dead-end: a successful fallback now carries the structural trail
+    // AS WELL AS the routing_reason summary — the five terminal columns stay null.
     it('a rescued 402 records status=fallback with its trail in routing_reason', async () => {
       const res = await request(server)
         .post('/v1/chat/completions')
@@ -554,8 +575,77 @@ describe('request-logging e2e', () => {
         (r) => r.status === 'fallback' && r.routingReason?.includes('insufficient_funds@'),
       );
       expect(row).toBeDefined();
-      expect(row!.attemptFailures).toBeNull();
-      expect(row!.errorKind).toBeNull(); // non-error rows carry no error detail
+      expect(row!.errorKind).toBeNull(); // no TERMINAL error on a recovered request
+      expect(row!.errorMarkers).toBeNull();
+      // …but the trail survives, naming the member that refused and its kind
+      expect(row!.attemptFailures).not.toBeNull();
+      expect(row!.attemptFailures!.map((e) => e.kind)).toContain('insufficient_funds');
+    });
+
+    // The other half of the disclosed cost: row COUNT is unchanged. A failed
+    // pre-commit member writes no billable ledger row of its own, so widening the walk
+    // does not multiply a refused request's recorded cost — an earlier draft of this
+    // change claimed it did, and that claim was false. Pinned here so it stays false.
+    it('an all-400 chain still records exactly ONE request-log row', async () => {
+      const before = (await port.requestLogs.list(principal)).length;
+      const res = await request(server)
+        .post('/v1/chat/completions')
+        .set('Authorization', `Bearer ${key}`)
+        .send({ model: 'rescued-badreq-allfail', messages: [] });
+      expect(res.status).toBe(400);
+      await writer.flush();
+      const rows = await port.requestLogs.list(principal);
+      expect(rows.length).toBe(before + 1); // ONE row, however many members were walked
+      const row = rows[0]!;
+      expect(row.status).toBe('error');
+      // …and its trail names every member that was dispatched
+      expect(row.attemptFailures!.length).toBeGreaterThanOrEqual(2);
+    });
+
+    // fix-bad-request-dead-end, END TO END: the incident this change exists for. The
+    // chain is walked instead of abandoned, the request succeeds, and the row explains
+    // WHY it moved — with the provider's classification retained and its prompt-echoing
+    // message still withheld. Both halves of the defect, on one row.
+    it('a rescued bad_request records the trail, the marker, and NO terminal detail', async () => {
+      const res = await request(server)
+        .post('/v1/chat/completions')
+        .set('Authorization', `Bearer ${key}`)
+        .send({ model: 'rescued-badreq', messages: [] });
+      expect(res.status).toBe(200); // the chain was WALKED, not abandoned
+      await writer.flush();
+      const row = (await port.requestLogs.list(principal)).find(
+        (r) => r.status === 'fallback' && r.routingReason?.includes('bad_request@'),
+      );
+      expect(row).toBeDefined();
+      // the five terminal columns stay null — a recovered request has no terminal error
+      expect(row!.errorKind).toBeNull();
+      expect(row!.errorMarkers).toBeNull();
+      // …and the trail carries the refusing member, its kind, its status and its marker
+      const entry = row!.attemptFailures!.find((e) => e.kind === 'bad_request');
+      expect(entry).toBeDefined();
+      expect(entry!.status).toBe(400);
+      expect(entry!.markers).toEqual(['context_length_exceeded']);
+      // invariant 8: the prompt fragment the provider echoed reaches NOTHING
+      expect(JSON.stringify(row)).not.toContain('my secret plan');
+    });
+
+    // invariant 8 under the marker path specifically: a provider that puts prose in a
+    // classification field gets it dropped, and the message policy is unchanged.
+    it('prose in a classification field is never persisted as a marker', async () => {
+      const res = await request(server)
+        .post('/v1/chat/completions')
+        .set('Authorization', `Bearer ${key}`)
+        .send({ model: 'oai-badreq', messages: [] });
+      expect(res.status).toBe(400);
+      await writer.flush();
+      const row = (await port.requestLogs.list(principal)).find(
+        (r) => r.status === 'error' && r.errorKind === 'bad_request',
+      );
+      expect(row).toBeDefined();
+      expect(row!.errorMessage).toBe('[validation message withheld]');
+      expect(row!.errorMarkers).toEqual(['context_length_exceeded']);
+      expect(JSON.stringify(row!.errorMarkers)).not.toContain(' '); // identifiers only
+      expect(JSON.stringify(row)).not.toContain('my secret plan');
     });
 
     it('a post-commit stream failure records the wire error event’s own message', async () => {

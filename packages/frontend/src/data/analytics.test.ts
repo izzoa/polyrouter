@@ -94,6 +94,7 @@ const ROW: RequestRow = {
   errorStatus: null,
   errorMessage: null,
   errorRequestId: null,
+  errorMarkers: null,
   attemptFailures: null,
   hasBodies: false,
 };
@@ -328,6 +329,7 @@ describe('toErrorView — the ERROR card gate + headline rules (add-request-erro
       headline: 'rate_limit · HTTP 429',
       message: 'Rate limit exceeded: free-models-per-day',
       requestId: 'req_1',
+      markers: null,
     });
   });
 
@@ -389,13 +391,26 @@ describe('toAttemptTrail / isTerminalSkip — the structural fallback trail (add
   it('renders dispatched failures with kind (+ HTTP status when recorded) and labels skips explicitly', () => {
     const trail = toAttemptTrail({ ...ROW, status: 'error', attemptFailures: entries });
     expect(trail).toEqual([
-      { model: 'gpt-x', label: 'unavailable · HTTP 529', legLabel: null, skipped: false },
-      { model: 'strong-y', label: 'rate_limit', legLabel: 'escalation', skipped: false },
+      {
+        model: 'gpt-x',
+        label: 'unavailable · HTTP 529',
+        legLabel: null,
+        skipped: false,
+        markers: null,
+      },
+      {
+        model: 'strong-y',
+        label: 'rate_limit',
+        legLabel: 'escalation',
+        skipped: false,
+        markers: null,
+      },
       {
         model: 'grok-z',
         label: 'skipped — circuit open (provider not contacted)',
         legLabel: null,
         skipped: true,
+        markers: null,
       },
     ]);
   });
@@ -503,5 +518,80 @@ describe('toInspectorView — workload verdict (add-workload-telemetry)', () => 
     const legacy = toInspectorView({ ...ROW, workloadClass: null, workloadSource: null });
     expect(legacy.workloadClass).toBeNull();
     expect(legacy.workloadSource).toBeNull();
+  });
+});
+
+// fix-bad-request-dead-end: the operator-facing half of the reported incident. A
+// RECOVERED request has no terminal error but very much has a trail, and a WITHHELD
+// message is only diagnosable through the retained classification.
+describe('toErrorView / toAttemptTrail — recovered rows and withheld messages', () => {
+  it('a fallback row renders NO error card but DOES render its trail', () => {
+    const row = {
+      ...ROW,
+      status: 'fallback',
+      errorKind: null,
+      errorStatus: null,
+      errorMessage: null,
+      errorRequestId: null,
+      errorMarkers: null,
+      attemptFailures: [
+        {
+          index: 0,
+          providerId: 'p1',
+          model: 'mimo-v2.5-pro',
+          kind: 'bad_request',
+          status: 400,
+          dispatched: true,
+          markers: ['context_length_exceeded'],
+        },
+      ],
+    } as unknown as RequestRow;
+    expect(toErrorView(row)).toBeNull(); // no terminal error → no card
+    const trail = toAttemptTrail(row);
+    expect(trail).toHaveLength(1);
+    expect(trail[0]!.model).toBe('mimo-v2.5-pro');
+    expect(trail[0]!.label).toBe('bad_request · HTTP 400');
+    expect(trail[0]!.markers).toEqual(['context_length_exceeded']);
+  });
+
+  it('a withheld message still shows its classification on the card', () => {
+    const row = {
+      ...ROW,
+      status: 'error',
+      errorKind: 'bad_request',
+      errorStatus: 400,
+      errorMessage: '[validation message withheld]',
+      errorRequestId: null,
+      errorMarkers: ['context_length_exceeded'],
+    } as unknown as RequestRow;
+    const ev = toErrorView(row);
+    expect(ev?.markers).toEqual(['context_length_exceeded']);
+    expect(ev?.message).toBe('[validation message withheld]');
+  });
+
+  it('an empty marker list normalizes to null — the row drops, never renders empty', () => {
+    const row = {
+      ...ROW,
+      status: 'error',
+      errorKind: 'unavailable',
+      errorStatus: 503,
+      errorMessage: null,
+      errorRequestId: null,
+      errorMarkers: [],
+    } as unknown as RequestRow;
+    expect(toErrorView(row)?.markers).toBeNull();
+  });
+
+  it('markers ALONE summon the card — a row with nothing else is still diagnosable', () => {
+    const row = {
+      ...ROW,
+      status: 'error',
+      errorKind: null,
+      errorStatus: null,
+      errorMessage: null,
+      errorRequestId: null,
+      errorMarkers: ['upstream_oversized'],
+    } as unknown as RequestRow;
+    expect(toErrorView(row)?.markers).toEqual(['upstream_oversized']);
   });
 });

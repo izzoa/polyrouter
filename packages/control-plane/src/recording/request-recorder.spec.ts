@@ -119,17 +119,41 @@ describe('RequestRecorder', () => {
     expect(d.attemptFailures).toEqual(attemptFailures);
   });
 
-  it('CENTRALLY discards the per-attempt trail on any non-error status (one gate, five columns)', () => {
+  // fix-bad-request-dead-end: the trail follows the WALK, the five error-detail
+  // columns follow the TERMINAL status. Two rules, not one — a request the chain
+  // RECOVERED has no terminal error but very much has a trail, and it is the only
+  // record of why the chain moved.
+  it('discards the per-attempt trail on success and cancelled — but KEEPS it on fallback', () => {
     const { recorder, enqueue } = makeRecorder();
     const attemptFailures = [
-      { index: 0, providerId: 'p1', model: 'a', kind: 'unavailable', dispatched: true },
+      { index: 0, providerId: 'p1', model: 'a', kind: 'bad_request', dispatched: true },
     ];
-    for (const status of ['success', 'fallback', 'cancelled'] as const) {
+    for (const status of ['success', 'cancelled'] as const) {
       recorder.record(ctx({ attemptFailures }), { status, outputChars: 0 });
     }
     for (const call of enqueue.mock.calls) {
       expect((call[0] as RequestLogDraft).attemptFailures).toBeUndefined();
     }
+    enqueue.mockClear();
+    recorder.record(ctx({ attemptFailures }), { status: 'fallback', outputChars: 0 });
+    const d = enqueue.mock.calls[0]![0] as RequestLogDraft;
+    expect(d.attemptFailures).toEqual(attemptFailures);
+  });
+
+  it('a recovered row still carries NO terminal error detail — the two gates are separate', () => {
+    const { recorder, enqueue } = makeRecorder();
+    recorder.record(
+      ctx({
+        attemptFailures: [
+          { index: 0, providerId: 'p1', model: 'a', kind: 'bad_request', dispatched: true },
+        ],
+      }),
+      // a caller that wrongly supplies error detail on a fallback row is still gated
+      { status: 'fallback', outputChars: 0, error: { kind: 'bad_request' } },
+    );
+    const d = enqueue.mock.calls[0]![0] as RequestLogDraft;
+    expect(d.error).toBeUndefined(); // terminal detail follows the terminal status
+    expect(d.attemptFailures).toHaveLength(1); // the trail follows the walk
   });
 
   describe('learning contribution (add-semantic-learning task 3.3)', () => {

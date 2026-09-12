@@ -226,6 +226,11 @@ export interface ErrorView {
   headline: string;
   message: string | null;
   requestId: string | null;
+  /** The provider's retained classification (fix-bad-request-dead-end). Where
+   * `message` is a fixed withheld marker this is the ONLY field that says why the
+   * provider refused, so the card must not suppress it. Null (row dropped), never
+   * an empty list — absent markers are unknown, not an empty diagnosis. */
+  markers: readonly string[] | null;
 }
 
 /** One rendered attempt line (add-fallback-attempt-detail). */
@@ -237,6 +242,10 @@ export interface AttemptView {
   /** Cascade leg tag (`cheap`/`escalation`); null for a primary chain. */
   legLabel: string | null;
   skipped: boolean;
+  /** THIS attempt's retained classification (fix-bad-request-dead-end), so a
+   * RECOVERED request's trail explains every refusal and not just its kind.
+   * Null when the entry carries none (including entries predating capture). */
+  markers: readonly string[] | null;
 }
 
 const SKIP_LABEL = 'skipped — circuit open (provider not contacted)';
@@ -253,6 +262,7 @@ export function toAttemptTrail(r: RequestRow): AttemptView[] {
         : `${a.kind}${a.status !== undefined && a.status !== null ? ` · HTTP ${String(a.status)}` : ''}`,
     legLabel: a.leg ?? null,
     skipped: a.dispatched === false,
+    markers: normalizeMarkers(a.markers ?? null),
   }));
 }
 
@@ -272,19 +282,38 @@ function normalizeDetail(v: string | null): string | null {
 
 /** The ERROR-card gate + headline rules. Card only for `status === 'error'`
  * AND ≥1 normalized field — legacy all-null error rows and non-error rows
- * (even ones carrying stray non-null detail) render exactly as before. */
+ * (even ones carrying stray non-null detail) render exactly as before. The
+ * FIVE error-detail fields normalize here (fix-bad-request-dead-end); an empty
+ * marker list normalizes to null exactly as an empty string does. */
 export function toErrorView(r: RequestRow): ErrorView | null {
   if (r.status !== 'error') return null;
   const kind = normalizeDetail(r.errorKind);
   const message = normalizeDetail(r.errorMessage);
   const requestId = normalizeDetail(r.errorRequestId);
   const status = r.errorStatus;
-  if (kind === null && message === null && requestId === null && status === null) return null;
+  const markers = normalizeMarkers(r.errorMarkers);
+  if (
+    kind === null &&
+    message === null &&
+    requestId === null &&
+    status === null &&
+    markers === null
+  ) {
+    return null;
+  }
   const headline =
     kind !== null && status !== null
       ? `${kind} · HTTP ${String(status)}`
       : (kind ?? (status !== null ? `HTTP ${String(status)}` : ''));
-  return { headline, message, requestId };
+  return { headline, message, requestId, markers };
+}
+
+/** Empty list → null, so the card drops the row rather than rendering an empty
+ * diagnosis. Values arrive already allowlisted; trimming is belt to that. */
+function normalizeMarkers(v: readonly string[] | null): readonly string[] | null {
+  if (v === null) return null;
+  const out = v.map((m) => m.trim()).filter((m) => m !== '');
+  return out.length > 0 ? out : null;
 }
 
 /** RequestRow → the inspector view-model. Reads snapshots only; a null served

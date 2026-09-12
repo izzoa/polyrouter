@@ -252,12 +252,17 @@ describe('openStream — outcome (usage capture for #11)', () => {
 });
 
 describe('fallbackEligible', () => {
+  // fix-bad-request-dead-end: `bad_request` moved OUT of the stop set. A 400 in a
+  // router describes the model polyrouter chose, not a defect in the caller's request.
+  it('walks the chain on a bad_request — the router cannot establish it is the caller', () => {
+    expect(fallbackEligible(new ProviderError('bad_request', 'context too long'))).toBe(true);
+  });
+
   it('continues on retryable/circuit-open, stops on the two non-retryable kinds', () => {
     expect(fallbackEligible(new ProviderError('rate_limit', 'x'))).toBe(true);
     expect(fallbackEligible(new ProviderError('unavailable', 'x'))).toBe(true);
     expect(fallbackEligible(new ProviderError('unknown_model', 'x'))).toBe(true);
     expect(fallbackEligible(new ProviderCircuitOpenError('p'))).toBe(true);
-    expect(fallbackEligible(new ProviderError('bad_request', 'x'))).toBe(false);
     expect(fallbackEligible(new CallCancelledError())).toBe(false);
   });
 
@@ -273,6 +278,15 @@ describe('fallbackEligible', () => {
 
   it('stops on policy_block — the router CAN try another member and must not', () => {
     expect(fallbackEligible(new ProviderError('policy_block', 'x'))).toBe(false);
+  });
+
+  // fix-bad-request-dead-end: the transport byte bound's guarantee. Walking on would
+  // re-drain a second over-cap body on the next member, so one hostile-but-address-safe
+  // endpoint could be made to flood once per chain member. This stop is resource
+  // protection, NOT a judgement that the caller's request was malformed — it must not
+  // be collapsed into the `policy_block` branch or into any "caller's fault" test.
+  it('stops on oversized_response — walking would re-drain a second over-cap body', () => {
+    expect(fallbackEligible(new ProviderError('oversized_response', 'over cap'))).toBe(false);
   });
 });
 
@@ -324,10 +338,72 @@ describe('runBufferedChain', () => {
     expect(r.failures[0]!.error.kind).toBe('rate_limit');
   });
 
-  it('stops the walk on a bad_request (no fallback)', async () => {
+  // fix-bad-request-dead-end: this is the change's headline, and the inversion of what
+  // this test used to assert. A 400 from a ROUTER-chosen member is evidence that THIS
+  // model refused, not that the request is malformed — so the chain is tried.
+  it('walks the chain on a bad_request and a later member serves', async () => {
     let secondCalled = false;
     const attempts = [
-      bufAttempt('p1', 'a', () => Promise.reject(new ProviderError('bad_request', 'nope'))),
+      bufAttempt('p1', 'a', () =>
+        Promise.reject(new ProviderError('bad_request', 'context length exceeded')),
+      ),
+      bufAttempt('p2', 'b', () => {
+        secondCalled = true;
+        return Promise.resolve(resp());
+      }),
+    ];
+    const r = await runBufferedChain(
+      newBreaker(),
+      attempts,
+      client,
+      { model: 'x', messages: [], params: {} },
+      { created: 1 },
+      new AbortController().signal,
+    );
+    expect(r.ok).toBe(true);
+    expect(secondCalled).toBe(true);
+    if (r.ok) {
+      expect(r.servedIndex).toBe(1);
+      // the refusing member enters the trail — the record of WHY the chain moved
+      expect(r.failures.map((f) => f.error.kind)).toEqual(['bad_request']);
+    }
+  });
+
+  // The client-named path, byte-identical by CONSTRUCTION rather than by a rule: a
+  // single-element chain has no next member, so eligibility changes nothing on the wire.
+  it('a single-element chain failing bad_request makes exactly one call', async () => {
+    let calls = 0;
+    const attempts = [
+      bufAttempt('p1', 'a', () => {
+        calls += 1;
+        return Promise.reject(new ProviderError('bad_request', 'nope'));
+      }),
+    ];
+    const r = await runBufferedChain(
+      newBreaker(),
+      attempts,
+      client,
+      { model: 'x', messages: [], params: {} },
+      { created: 1 },
+      new AbortController().signal,
+    );
+    expect(calls).toBe(1);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.kind).toBe('bad_request');
+      expect(r.callerAborted).toBe(false);
+    }
+  });
+
+  // fix-bad-request-dead-end: the byte bound's regression guard at the WALK level, not
+  // just the classifier level. Written in the same change that makes `bad_request`
+  // fallback-eligible, so if the two ever get collapsed again this fails loudly.
+  it('stops the walk on an oversized_response — no second over-cap body is drained', async () => {
+    let secondCalled = false;
+    const attempts = [
+      bufAttempt('p1', 'a', () =>
+        Promise.reject(new ProviderError('oversized_response', 'provider response body exceeds')),
+      ),
       bufAttempt('p2', 'b', () => {
         secondCalled = true;
         return Promise.resolve(resp());
@@ -343,7 +419,7 @@ describe('runBufferedChain', () => {
     );
     expect(r.ok).toBe(false);
     expect(secondCalled).toBe(false);
-    if (!r.ok) expect(r.callerAborted).toBe(false); // a provider/bad_request fault, not a caller abort
+    if (!r.ok) expect(r.error.kind).toBe('oversized_response');
   });
 
   // A-3: the loop-STOP is on the composite work signal (so a cheap-tier deadline halts
@@ -400,6 +476,82 @@ describe('openStreamChain', () => {
         listModels: () => Promise.resolve([]),
         testConnection: () => Promise.resolve({ ok: true, models: 0 }),
       } as unknown as ProviderAdapter),
+  });
+
+  // fix-bad-request-dead-end + invariant 3: pre-commit, a `bad_request` now WALKS.
+  // After the first token the member is committed and the same kind must terminate the
+  // stream instead — proven here by a second member that would have served and is
+  // never built. The retained markers ride the terminal error so the row stays
+  // diagnosable, and the committed member contributes no attempt entry.
+  it('a post-commit bad_request terminates without a swap; pre-commit it walks', async () => {
+    let secondBuilt = false;
+    const committed = [
+      streamAttempt('p1', async function* () {
+        yield START;
+        yield TEXT; // <- committed here
+        yield {
+          type: 'error',
+          error: { type: 'invalid_request_error', message: 'too long' },
+          diagnostic: {
+            kind: 'bad_request' as const,
+            providerMessage: '[validation message withheld]' as SanitizedMessage,
+            markers: ['context_length_exceeded'],
+          },
+        };
+      }),
+      {
+        ...streamAttempt('p2', async function* () {
+          yield START;
+          yield TEXT;
+          yield STOP;
+          yield END;
+        }),
+        buildAdapter: () => {
+          secondBuilt = true;
+          return Promise.reject(new Error('must never be built after commit'));
+        },
+      } as ChainAttempt,
+    ];
+    const r = await openStreamChain(
+      newBreaker(),
+      committed,
+      client,
+      { model: 'x', messages: [], params: {} },
+      OPTS,
+    );
+    if (r.kind !== 'stream') throw new Error('expected a committed stream');
+    const out = await collect(r.frames);
+    const o = await r.outcome;
+    expect(o.status).toBe('error');
+    expect(o.error?.kind).toBe('bad_request');
+    expect(o.error?.markers).toEqual(['context_length_exceeded']);
+    expect(secondBuilt).toBe(false); // invariant 3 — no swap after the first token
+    expect(out).toContain('upstream_error'); // a terminal frame, not a silent switch
+    expect(r.failures).toEqual([]); // the committed member is not an attempt entry
+  });
+
+  // The pre-commit twin of the above: the SAME kind, before any token, now walks.
+  it('walks pre-commit on a bad_request and the next member commits', async () => {
+    const attempts = [
+      streamAttempt('p1', async function* () {
+        throw new ProviderError('bad_request', 'nope');
+      }),
+      streamAttempt('p2', async function* () {
+        yield START;
+        yield TEXT;
+        yield STOP;
+        yield END;
+      }),
+    ];
+    const r = await openStreamChain(
+      newBreaker(),
+      attempts,
+      client,
+      { model: 'x', messages: [], params: {} },
+      OPTS,
+    );
+    expect(r.kind).toBe('stream');
+    if (r.kind === 'stream') expect(r.servedIndex).toBe(1);
   });
 
   it('falls back pre-commit and commits the next member', async () => {
@@ -735,7 +887,12 @@ describe('output-cap clamps + walk-stop boundaries (add-output-cap-guardrails)',
     for (const f of r.ok ? r.failures : []) expect(f.dispatched).not.toBe(false);
   });
 
-  it('a head bad_request stops the walk — the clamped tail is NOT consulted', async () => {
+  // fix-bad-request-dead-end INVERTS this: the retained dead end add-output-cap-
+  // guardrails recorded ("the tail is NOT consulted") is closed. An unknown-cap head
+  // member whose provider rejects the oversized value now falls back, so the clamped
+  // tail CAN serve what the head could not — and nothing inspected the rejection body
+  // to get there, which is what the original deferral was protecting against.
+  it('a head bad_request now reaches the clamped tail, which serves', async () => {
     let tailCalled = false;
     const attempts = [
       capAttempt('p1', 'head', () =>
@@ -759,10 +916,42 @@ describe('output-cap clamps + walk-stop boundaries (add-output-cap-guardrails)',
       { created: 1 },
       new AbortController().signal,
     );
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error.kind).toBe('bad_request');
-    expect(tailCalled).toBe(false);
+    expect(r.ok).toBe(true);
+    expect(tailCalled).toBe(true);
+    if (r.ok) expect(r.servedIndex).toBe(1);
   });
+
+  // …while the OTHER two stops still hold at the same boundary: deferral never turns a
+  // non-retryable stop into a tail consultation, whichever kind produced it.
+  it.each(['policy_block', 'oversized_response'] as const)(
+    'a head %s still stops the walk — the clamped tail is NOT consulted',
+    async (kind) => {
+      let tailCalled = false;
+      const attempts = [
+        capAttempt('p1', 'head', () => Promise.reject(new ProviderError(kind, 'stop'))),
+        capAttempt(
+          'p2',
+          'tail',
+          () => {
+            tailCalled = true;
+            return Promise.resolve(ok());
+          },
+          16_384,
+        ),
+      ];
+      const r = await runBufferedChain(
+        newBreaker(),
+        attempts,
+        client,
+        REQ,
+        { created: 1 },
+        new AbortController().signal,
+      );
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.kind).toBe(kind);
+      expect(tailCalled).toBe(false);
+    },
+  );
 
   it('a client cancellation stops the walk — no tail, callerAborted', async () => {
     let tailCalled = false;

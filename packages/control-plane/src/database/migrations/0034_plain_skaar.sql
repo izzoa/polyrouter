@@ -1,0 +1,2 @@
+ALTER TABLE "batch_job" DROP CONSTRAINT "batch_job_error_kind_valid";--> statement-breakpoint
+ALTER TABLE "batch_job" ADD CONSTRAINT "batch_job_error_kind_valid" CHECK ("batch_job"."error_kind" IS NULL OR "batch_job"."error_kind" IN ('auth', 'permission', 'rate_limit', 'unavailable', 'bad_request', 'unknown_model', 'insufficient_funds', 'content_policy', 'policy_block', 'upstream_rejected', 'oversized_response', 'credential', 'submit_lost', 'submit_unresolved', 'upstream_status_unknown', 'provider_missing'));

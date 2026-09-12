@@ -28,6 +28,7 @@ import {
   CallCancelledError,
   ProviderError,
   captureProviderMessage,
+  retainMarkers,
   classifyNetworkError,
   classifyResponse,
   classifyStreamError,
@@ -140,6 +141,13 @@ async function* sanitizeStreamErrors(
         secrets,
       },
     );
+    // fix-bad-request-dead-end: retention runs over the SAME wire fields, through the
+    // SAME three gates as the buffered path — never a looser rule because the wire
+    // shape is narrower. Without this the markers die with `wire` at this stage.
+    const markers = retainMarkers(
+      [wire.type, wire.code].filter((v): v is string => typeof v === 'string'),
+      secrets,
+    );
     yield {
       type: 'error',
       error: ev.error,
@@ -147,6 +155,7 @@ async function* sanitizeStreamErrors(
         kind: routingKind(kinds),
         ...(providerMessage !== null ? { providerMessage } : {}),
         ...(requestId !== undefined ? { requestId } : {}),
+        ...(markers.length > 0 ? { markers } : {}),
       },
     };
   }

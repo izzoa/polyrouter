@@ -222,6 +222,8 @@ describe('cascade routing e2e', () => {
       // denial (non-retryable → surfaced, on principle rather than futility).
       cheapNoFunds: 'oai-nofunds',
       cheapLegal: 'oai-legal',
+      // fix-bad-request-dead-end: the transport byte bound's cheap-leg fixture.
+      cheapOversized: 'oai-oversized',
       cheapLenstop: 'oai-lenstop',
     };
     for (const [k, ext] of Object.entries(external)) {
@@ -261,6 +263,9 @@ describe('cascade routing e2e', () => {
     ]);
     await port.routingEntries.replaceForTier(principal, await tier('cheap-nofunds'), [
       modelId['cheapNoFunds']!,
+    ]);
+    await port.routingEntries.replaceForTier(principal, await tier('cheap-oversized'), [
+      modelId['cheapOversized']!,
     ]);
     await port.routingEntries.replaceForTier(principal, await tier('cheap-legal'), [
       modelId['cheapLegal']!,
@@ -317,6 +322,7 @@ describe('cascade routing e2e', () => {
     structuralBand: string | null;
     structuralScore: number | null;
     structuralBandSource: string | null;
+    errorKind: string | null;
     routingReason: string;
     workloadClass: string | null;
     workloadScore: number | null;
@@ -610,16 +616,36 @@ describe('cascade routing e2e', () => {
     expect(row.escalated).toBe(true);
   });
 
-  it('does NOT escalate when the cheap leg fails non-retryably (bad_request) — A-21', async () => {
-    await setBand('auto_low', 'cheap-badreq'); // cheap tier returns a 400 (client-fault)
-    const res = await send('sysCheapBadReqUnique', false);
-    // A bad_request is the client's fault — the expensive tier would 400 too, so we
-    // surface it (4xx) instead of wasting an escalation.
-    expect(res.status).toBeGreaterThanOrEqual(400);
-    expect(res.status).toBeLessThan(500);
+  // fix-bad-request-dead-end INVERTS A-21 for `bad_request`. The strong tier is
+  // typically a DIFFERENT provider running a different model, and a 400 is the status
+  // under which providers report per-model capability limits — so suppressing
+  // escalation withheld the escalation path from exactly the requests a stronger model
+  // is most likely to serve. `policy_block` and `oversized_response` still surface.
+  // fix-bad-request-dead-end: the OTHER non-retryable kind at the cascade boundary.
+  // Escalating would drain a second over-cap body from the strong tier, so the cascade
+  // declines for resource protection — a different reason from the legal denial above,
+  // and the two branches must not be collapsed.
+  it('does NOT escalate when the cheap leg returns an over-cap body', async () => {
+    await setBand('auto_low', 'cheap-oversized');
+    const res = await send('sysCheapOversizedUnique', false);
+    expect(res.status).toBe(502); // the upstream misbehaved — not the caller's 400
     const row = await log();
-    expect(row.modelId).toBe(modelId['cheapBadReq']); // the cheap model — NO strong-tier escalation
+    expect(row.modelId).toBe(modelId['cheapOversized']); // never reached the strong tier
     expect(row.escalated).toBe(false);
+    expect(row.errorKind).toBe('oversized_response');
+    await setBand('auto_low', 'cheap-bad');
+  }, 20_000);
+
+  it('DOES escalate when the cheap leg fails with a bad_request — A-21 inverted', async () => {
+    await setBand('auto_low', 'cheap-badreq'); // cheap tier returns a 400
+    const res = await send('sysCheapBadReqUnique', false);
+    expect(res.status).toBe(200); // the strong tier served what the cheap model refused
+    const row = await log();
+    expect(row.modelId).toBe(modelId['strong']);
+    expect(row.escalated).toBe(true);
+    // the provenance rule is unchanged and exhaustive: a bad_request is now a
+    // RETRYABLE cheap-chain failure, so it records `cheap_error` — no new value.
+    expect(row.escalationSource).toBe('cheap_error');
     await setBand('auto_low', 'cheap-bad');
   });
 
@@ -660,14 +686,14 @@ describe('cascade routing e2e', () => {
     await setBand('auto_low', 'cheap-bad');
   });
 
-  it('does NOT escalate a STREAMED cheap bad_request either — A-21 (streaming cascade path)', async () => {
-    await setBand('auto_low', 'cheap-badreq'); // cheap tier 400s (pre-commit, no bytes)
+  it('DOES escalate a STREAMED cheap bad_request too — A-21 inverted (streaming path)', async () => {
+    await setBand('auto_low', 'cheap-badreq'); // cheap tier 400s PRE-commit (no bytes)
     const res = await send('sysStreamCheapBadReqUnique', true);
-    expect(res.status).toBeGreaterThanOrEqual(400); // surfaced 4xx, not escalated
-    expect(res.status).toBeLessThan(500);
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('[DONE]'); // one clean stream from the strong tier
     const row = await log();
-    expect(row.modelId).toBe(modelId['cheapBadReq']); // never reached the strong tier
-    expect(row.escalated).toBe(false);
+    expect(row.modelId).toBe(modelId['strong']);
+    expect(row.escalated).toBe(true);
     await setBand('auto_low', 'cheap-bad');
   });
 
@@ -943,20 +969,37 @@ describe('cascade routing e2e', () => {
       } finally {
         await port.routingEntries.replaceForTier(principal, defaultTierId, [modelId['default']!]);
       }
-      // NON-RETRYABLE: the scoped cheap 400s → surfaced (no escalation), scope still terminal.
+      // NON-RETRYABLE: the scoped cheap leg is LEGALLY denied → surfaced (no
+      // escalation), scope still terminal. fix-bad-request-dead-end moved
+      // `bad_request` out of the non-retryable set, so this case now uses
+      // `policy_block` — the coverage that matters here is that the scope fragment
+      // stays TERMINAL on the non-retryable reason form, whichever kind carries it.
+      await withScoped(
+        [{ matchType: 'auto_low', cls: 'code', target: 'tier:cheap-legal' }],
+        async () => {
+          await clearLogs();
+          const res = await sendWith('sysScopedLegal', codeBody('sysScopedLegal'));
+          expect(res.status).toBe(451);
+          const row = await log();
+          expect(row.escalated).toBe(false);
+          expect(row.modelId).toBe(modelId['cheapLegal']);
+          expect(row.routingReason).toMatch(
+            /^cascade: cheap failed non-retryably \(policy_block\).* scope=code$/,
+          );
+        },
+      );
+
+      // …and the scoped cheap 400 now ESCALATES, keeping its scope fragment terminal
+      // on the escalated reason form instead.
       await withScoped(
         [{ matchType: 'auto_low', cls: 'code', target: 'tier:cheap-badreq' }],
         async () => {
           await clearLogs();
           const res = await sendWith('sysScopedBadReq', codeBody('sysScopedBadReq'));
-          expect(res.status).toBeGreaterThanOrEqual(400);
-          expect(res.status).toBeLessThan(500);
+          expect(res.status).toBe(200);
           const row = await log();
-          expect(row.escalated).toBe(false);
-          expect(row.modelId).toBe(modelId['cheapBadReq']);
-          expect(row.routingReason).toMatch(
-            /^cascade: cheap failed non-retryably \(bad_request\).* scope=code$/,
-          );
+          expect(row.escalated).toBe(true);
+          expect(row.routingReason).toMatch(/ scope=code$/);
         },
       );
       // CLIENT DISCONNECT during the scoped cheap leg: exactly one cancelled row, scope terminal.

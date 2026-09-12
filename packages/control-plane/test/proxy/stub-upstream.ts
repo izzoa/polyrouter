@@ -681,10 +681,21 @@ export async function startStubUpstream(): Promise<StubUpstream> {
         res.writeHead(500, { 'content-type': 'application/json' });
         return res.end(JSON.stringify({ error: { message: 'stub failure' } }));
       }
-      // `*badreq*` → an HTTP 400 (a NON-retryable client-fault error → no fallback/escalation).
+      // `*badreq*` → an HTTP 400. fix-bad-request-dead-end: now fallback-ELIGIBLE — a
+      // 400 in a router describes the model the router CHOSE, not a defect in the
+      // caller's request. The body carries a `code` AND a prompt-echoing message, the
+      // exact shape of the reported incident: the code is retained as a marker, the
+      // message stays withheld, and the chain walks on.
       if (model.includes('badreq')) {
         res.writeHead(400, { 'content-type': 'application/json' });
-        return res.end(JSON.stringify({ error: { message: 'invalid request' } }));
+        return res.end(
+          JSON.stringify({
+            error: {
+              code: 'context_length_exceeded',
+              message: 'invalid request: messages[3] said "my secret plan is to eat lunch"',
+            },
+          }),
+        );
       }
       // fix-4xx-error-taxonomy. The 4xx statuses whose classification this change
       // corrects — each one a routing decision, not just a label.
@@ -714,6 +725,19 @@ export async function startStubUpstream(): Promise<StubUpstream> {
       if (model.includes('legal')) {
         res.writeHead(451, { 'content-type': 'application/json' });
         return res.end(JSON.stringify({ error: { message: 'unavailable for legal reasons' } }));
+      }
+      // `*oversized*` → a 200 whose BODY exceeds the buffered transport ceiling
+      // (DEFAULT_MAX_RESPONSE_BYTES, 10 MiB) → `oversized_response`
+      // (fix-bad-request-dead-end). The drain cancels the reader past the cap, so the
+      // walk must STOP: walking on would re-drain a second over-cap body on the next
+      // member, which is the flood this kind exists to prevent.
+      if (model.includes('oversized')) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        // 11 MiB of filler — comfortably past the cap, streamed so the drain trips
+        // mid-read exactly as it would against a real hostile endpoint.
+        const chunk = 'x'.repeat(1024 * 1024);
+        for (let i = 0; i < 11; i += 1) res.write(chunk);
+        return res.end();
       }
       // `*teapot*` → an unnamed 4xx → `upstream_rejected`: fallback-eligible and
       // strictly breaker-neutral.

@@ -121,6 +121,9 @@ function fromErrorEvent(ev: Extract<NormalizedStreamEvent, { type: 'error' }>): 
         ? { providerMessage: ev.diagnostic.providerMessage }
         : {}),
       ...(ev.diagnostic?.requestId !== undefined ? { requestId: ev.diagnostic.requestId } : {}),
+      // fix-bad-request-dead-end: CONSUME the adapter's retained markers, never
+      // re-derive them here — the raw wire fields are already gone at this point.
+      ...(ev.diagnostic?.markers !== undefined ? { markers: ev.diagnostic.markers } : {}),
     },
   );
 }

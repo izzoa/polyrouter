@@ -15,6 +15,19 @@ heading is started.
 
 ## [Unreleased]
 
+### Changed
+
+- **A provider 400 no longer abandons the fallback chain.** `bad_request` was the one kind for which fallback was disabled, on the reasoning that a malformed request would be rejected identically by every member. That does not hold in a router: a 400 is the status under which providers report **per-model capability limits** — an exceeded context window, unsupported tools, an unsupported response format — and those describe the model *polyrouter chose*, not a defect in what the caller sent. A tier whose primary refuses now walks to the next member and serves. Naming a concrete model is unaffected: it resolves to a single-element chain, so there is no next member and the wire response is identical. Under cascade, a cheap-leg 400 now escalates to the strong tier — typically a different provider — instead of being surfaced. This also closes the output-cap dead end, where an unknown-cap member's rejection stopped the walk before the clamped tail was consulted.
+- **A refused request now records the provider's classification, while its message stays withheld.** The reported incident was undiagnosable: the row read `bad_request · HTTP 400` with `[validation message withheld]`, and nothing said *why*. The structured classification values the error body carries (`type`, `code`, and named aggregator metadata keys) are now retained on the row and on each attempt, behind three gates — a named source, an identifier shape, and a credential scrub over every suffix join of the set. `error_message` is withheld exactly as before: a *message* is prose that routinely quotes the prompt, while a *classification label* is an identifier that carries the diagnosis. The request inspector shows it as a `classification` row.
+- **A request the chain RECOVERED now keeps its failure trail.** `attempt_failures` is written on `fallback` rows, not only `error` rows. Without this the fix above would erase its own evidence — the common outcome of a walked chain is a *successful* request whose earlier member refused, and that trail is the only record of why the chain moved.
+- **An oversized upstream response is now its own error kind.** A buffered provider body past the 10 MiB transport ceiling reports `oversized_response` instead of `bad_request`, returns **502 `upstream_oversized`** instead of 400, and settles the provider breaker **neutral** rather than as a health success. The kind exists so the byte bound's guarantee — never fall back, never trip — is carried by a kind that owns it: it previously rode `bad_request`, and would have been silently deleted by the change above, letting one hostile endpoint be drained once per chain member.
+
+### Upgrade notes
+
+- **Two migrations, both additive; no new environment variable.** One adds `error_markers` to `request_log`; the other rebuilds the `batch_job` error-kind CHECK constraint to admit the new kind. Existing rows are untouched and never backfilled — rows predating capture read as unknown.
+- **One wire-visible status change.** A provider response over the transport ceiling now returns `502 upstream_oversized` where it returned `400 invalid_request_error`. If you match on that 400 to detect it, match the 502 instead. Every other envelope is unchanged, including a named concrete model's 400.
+- **A tier request that used to fail fast may now take longer and succeed.** A malformed request costs one upstream call per configured chain member instead of one — latency and your provider's rate-limit budget, **not** recorded spend: a failed pre-commit member writes no billable row, so an exhausted chain still records exactly one request-log row.
+
 ## [0.18.2] — 2026-09-07
 
 [Release](https://github.com/izzoa/polyrouter/releases/tag/v0.18.2) ·

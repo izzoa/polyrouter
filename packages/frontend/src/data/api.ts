@@ -689,9 +689,15 @@ export interface RequestRow {
   errorStatus: number | null;
   errorMessage: string | null;
   errorRequestId: string | null;
+  /** The provider's retained classification values (fix-bad-request-dead-end).
+   * Where `errorMessage` is a fixed withheld marker, this is the only field that
+   * says WHY the provider refused. Allowlisted identifiers, never prose. */
+  errorMarkers: string[] | null;
   /** Per-attempt failure metadata (add-fallback-attempt-detail): the pre-commit
-   * walked failure/skip trail, verbatim from the stored column; null for
-   * non-error rows and rows predating the column. */
+   * walked failure/skip trail, verbatim from the stored column. Present on
+   * `error` AND `fallback` rows (fix-bad-request-dead-end: the trail follows the
+   * WALK, not the terminal status — a RECOVERED request's trail is the only record
+   * of why the chain moved); null for `success`/`cancelled` and legacy rows. */
   attemptFailures: AttemptFailureEntry[] | null;
   /** add-body-capture: this request has stored bodies (content NEVER rides the
    * listing — the inspector fetches lazily via `requestBodies`). */

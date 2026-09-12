@@ -567,12 +567,22 @@ export class CircuitBreaker {
  * would turn an unrecognized response into a laundering mechanism for a provider's
  * genuine failure history.
  *
- * Every other non-tripping kind PROVES the provider answered — `permission`,
+ * Every other non-tripping kind PROVES the provider is WORKING — `permission`,
  * `content_policy`, and `policy_block` are decisions from a working provider,
  * exactly like `bad_request` — so they settle as health successes.
+ * `oversized_response` is deliberately NOT among them: answering is not the same
+ * as working (fix-bad-request-dead-end).
  */
 export function outcomeForKind(kind: ProviderErrorKind): BreakerOutcome {
-  if (kind === 'credential' || kind === 'upstream_rejected') return 'neutral';
+  if (
+    kind === 'credential' ||
+    kind === 'upstream_rejected' ||
+    // fix-bad-request-dead-end: an over-cap body proves the provider sent BYTES, not
+    // that it is working. A health success here would close a half-open probe for a
+    // flooding upstream (handing it full traffic) or zero a closed record's failures.
+    kind === 'oversized_response'
+  )
+    return 'neutral';
   return breakerImpact(kind) ? 'trip' : 'success';
 }
 

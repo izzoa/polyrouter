@@ -545,6 +545,11 @@ export const requestLogs = pgTable(
     errorStatus: integer('error_status'),
     errorMessage: text('error_message'),
     errorRequestId: text('error_request_id'),
+    // fix-bad-request-dead-end: the provider's retained classification values for the
+    // TERMINAL error. `jsonb` (an array of strings) so a marker is queryable by
+    // containment rather than by substring-matching a delimited blob. Null for
+    // non-error rows and for rows predating capture — never backfilled.
+    errorMarkers: jsonb('error_markers').$type<string[]>(),
     // Per-attempt failure metadata (add-fallback-attempt-detail): the pre-commit
     // walked failure/skip trail across every executed leg, set ONLY on
     // status='error' rows; null for non-error rows and rows predating the

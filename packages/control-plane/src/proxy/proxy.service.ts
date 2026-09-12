@@ -1905,6 +1905,11 @@ function recordedError(err: ProviderError): RecordedError {
     ...(err.status !== undefined ? { status: err.status } : {}),
     ...(err.providerMessage !== undefined ? { providerMessage: err.providerMessage } : {}),
     ...(err.requestId !== undefined ? { requestId: err.requestId } : {}),
+    // fix-bad-request-dead-end: the retained classification. Where the message is a
+    // fixed withheld marker, this is the ONLY thing on the row that says why the
+    // provider refused — which is the half of the reported incident the message
+    // policy deliberately cannot solve.
+    ...(err.markers !== undefined ? { markers: err.markers } : {}),
   };
 }
 
@@ -1975,6 +1980,9 @@ export function attemptTrailEntries(
         model: m?.model.externalModelId ?? '?',
         kind: f.error.kind,
         ...(f.error.status !== undefined ? { status: f.error.status } : {}),
+        // fix-bad-request-dead-end: each member's OWN classification, so a RECOVERED
+        // request's trail explains every refusal, not just the terminal one.
+        ...(f.error.markers !== undefined ? { markers: f.error.markers } : {}),
         dispatched: f.dispatched !== false,
         ...(leg !== undefined ? { leg } : {}),
         ...(last && terminalError !== null && f.error === terminalError ? { terminal: true } : {}),

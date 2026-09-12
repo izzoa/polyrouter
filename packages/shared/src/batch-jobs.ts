@@ -50,6 +50,11 @@ export const BATCH_JOB_ERROR_KINDS = [
   'content_policy',
   'policy_block',
   'upstream_rejected',
+  // fix-bad-request-dead-end: this mirror has NO compile-time link to
+  // PROVIDER_ERROR_KINDS, and the batch transport is byte-bounded too — so a submit
+  // that hits the ceiling raises this kind and the CHECK constraint below would
+  // reject the durable settlement write without it.
+  'oversized_response',
   'credential',
   // batch-only
   'submit_lost', // the upstream provably never received the create

@@ -1,7 +1,8 @@
 // E11.1: a provider `base_url` is address-safe but its response is untrusted (no
 // allow-list), so the buffered (non-streaming) drain must bound memory itself. A
-// body over the cap rejects with a typed `bad_request` (neither trips the breaker
-// nor falls back); a normal body drains; streaming is NOT subject to the buffered
+// body over the cap rejects with a typed `oversized_response` (neither trips the
+// breaker nor falls back — fix-bad-request-dead-end gave that guarantee its own kind
+// so it could not be lost when `bad_request` became fallback-eligible); a normal body drains; streaming is NOT subject to the buffered
 // cap; and `parseModelList` bounds the entry count it will materialize.
 import { createOpenaiProviderAdapter } from './openai-adapter';
 import { parseModelList } from './http-adapter';
@@ -30,7 +31,7 @@ const request: NormalizedRequest = {
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 
 /** A 200 whose body streams `chunks` (each its own pull) then closes. */
-function streamedResponse(chunks: string[]): HttpResponse {
+function streamedResponse(chunks: string[], status = 200): HttpResponse {
   let i = 0;
   const body = new ReadableStream<Uint8Array>({
     pull(controller) {
@@ -43,8 +44,8 @@ function streamedResponse(chunks: string[]): HttpResponse {
     },
   });
   return {
-    status: 200,
-    ok: true,
+    status,
+    ok: status >= 200 && status < 300,
     headers: { get: () => null },
     body,
     text: () => Promise.resolve(chunks.join('')),
@@ -58,18 +59,48 @@ function adapterFor(chunks: string[]): ReturnType<typeof createOpenaiProviderAda
 }
 
 describe('E11.1 — buffered response byte cap', () => {
-  it('a buffered chat body over the cap rejects with a typed bad_request', async () => {
+  it('a buffered chat body over the cap rejects with a typed oversized_response', async () => {
     // ~10 chunks of 20 bytes = 200 bytes, well over the 64-byte cap.
     const chunks = Array.from({ length: 10 }, () => 'x'.repeat(20));
     await expect(adapterFor(chunks).chat(request)).rejects.toMatchObject({
       name: 'ProviderError',
-      kind: 'bad_request',
+      kind: 'oversized_response',
     });
   });
 
   it('a buffered listModels body over the cap rejects the same way (all buffered reads)', async () => {
     const chunks = Array.from({ length: 10 }, () => 'y'.repeat(20));
-    await expect(adapterFor(chunks).listModels()).rejects.toMatchObject({ kind: 'bad_request' });
+    await expect(adapterFor(chunks).listModels()).rejects.toMatchObject({
+      kind: 'oversized_response',
+    });
+  });
+
+  // fix-bad-request-dead-end: `provider-management` names FOUR buffered reads, and the
+  // guarantee must hold on every one of them — a hostile endpoint that can only be
+  // drained once via `chat` but repeatedly via `testConnection` is not bounded.
+  it('a buffered testConnection body over the cap reports the same kind', async () => {
+    // `testConnection` reports a TYPED result instead of throwing (provider-adapters),
+    // so the bound surfaces as the result's kind — the guarantee still holds on this
+    // buffered read, it is just observed through the result rather than a rejection.
+    const chunks = Array.from({ length: 10 }, () => 'z'.repeat(20));
+    await expect(adapterFor(chunks).testConnection()).resolves.toMatchObject({
+      ok: false,
+      kind: 'oversized_response',
+    });
+  });
+
+  it('an over-cap ERROR-body drain rejects on the bound, not on the upstream status', async () => {
+    // A non-2xx whose error body is itself over the cap: the drain trips FIRST, so the
+    // kind is the transport bound's, never the status's classification.
+    const client: HttpClient = () =>
+      Promise.resolve(
+        streamedResponse(
+          Array.from({ length: 10 }, () => 'e'.repeat(20)),
+          500,
+        ),
+      );
+    const adapter = createOpenaiProviderAdapter(config, { httpClient: client });
+    await expect(adapter.chat(request)).rejects.toMatchObject({ kind: 'oversized_response' });
   });
 
   it('a normal-sized body under the cap still drains and parses', async () => {

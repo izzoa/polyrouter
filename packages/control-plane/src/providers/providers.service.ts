@@ -203,6 +203,11 @@ const FIXED_MESSAGE: Record<string, string> = {
   content_policy: 'provider refused on content policy',
   policy_block: 'provider denied for legal reasons',
   upstream_rejected: 'provider rejected the request',
+  // fix-bad-request-dead-end. Operator-facing, so it uses this map's `provider …`
+  // phrasing rather than the client-facing `upstream …` string in PROVIDER_MAP, and it
+  // must stay DISTINCT from every other label — the exhaustive surface test asserts
+  // uniqueness, not merely presence, and this map degrades silently without it.
+  oversized_response: 'provider response exceeded the size limit',
 };
 
 function fixedMessage(kind: string): string {

@@ -53,6 +53,10 @@ describe('both protocol envelopes carry the distinction', () => {
     'policy_block',
     'permission',
     'upstream_rejected',
+    // fix-bad-request-dead-end: shares 502 with `insufficient_funds`/`auth`/
+    // `upstream_rejected`, so its FIXED MESSAGE is the sole carrier of the distinction
+    // in the Anthropic shape. The uniqueness assertion below is what enforces that.
+    'oversized_response',
   ] as const;
 
   it.each([...NEW_KINDS])('%s is distinguishable in the Anthropic shape', (kind) => {
@@ -89,5 +93,44 @@ describe('every taxonomy kind has an operator-facing label', () => {
   it('no two kinds share a label', () => {
     const labels = PROVIDER_ERROR_KINDS.map((k) => toSafeProviderMessage(k));
     expect(new Set(labels).size).toBe(PROVIDER_ERROR_KINDS.length);
+  });
+});
+
+// fix-bad-request-dead-end. The client-named path is byte-identical BY CONSTRUCTION
+// (a single-element chain has no next member), so the envelope must not move — this
+// is the regression guard for that claim, pinned in BOTH shapes.
+describe('a client-named model’s 400 renders exactly as before', () => {
+  it('OpenAI shape: 400 / invalid_request_error / code bad_request', () => {
+    const r = renderProxyError(
+      providerErrorToProxy(new ProviderError('bad_request', 'nope')),
+      'openai',
+    );
+    expect(r.status).toBe(400);
+    const body = r.body as { error: { type: string; code: string; message: string } };
+    expect(body.error.type).toBe('invalid_request_error');
+    expect(body.error.code).toBe('bad_request');
+  });
+
+  it('Anthropic shape: 400 with no code rendered at all', () => {
+    const r = renderProxyError(
+      providerErrorToProxy(new ProviderError('bad_request', 'nope')),
+      'anthropic',
+    );
+    expect(r.status).toBe(400);
+    expect(JSON.stringify(r.body)).not.toContain('code');
+  });
+
+  it('the transport bound is a DIFFERENT envelope — 502, not the caller’s 400', () => {
+    // The one wire-visible status change in this change: an over-cap upstream body
+    // used to surface as the caller's 400 and now reports the upstream failure it is.
+    const r = renderProxyError(
+      providerErrorToProxy(new ProviderError('oversized_response', 'over cap')),
+      'openai',
+    );
+    expect(r.status).toBe(502);
+    const body = r.body as { error: { code: string; message: string } };
+    expect(body.error.code).toBe('upstream_oversized');
+    expect(body.error.message).toBe('upstream response exceeded the size limit');
+    expect(body.error.message).not.toContain('bytes'); // never the cap or the body
   });
 });

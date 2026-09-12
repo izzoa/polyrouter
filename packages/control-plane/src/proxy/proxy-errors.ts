@@ -112,6 +112,18 @@ const PROVIDER_MAP: Record<ProviderErrorKind, Mapped> = {
     type: 'invalid_request_error',
     code: 'bad_request',
   },
+  // fix-bad-request-dead-end: a buffered upstream body past the transport ceiling.
+  // 502 because the UPSTREAM misbehaved — reporting it as the caller's 400 told a
+  // well-behaved client not to retry something that was never its fault. Like every
+  // other kind it must be distinguishable in BOTH envelopes by status + fixed message,
+  // since the Anthropic shape renders no `code`. The message names the cause and never
+  // the body, its content, or its size.
+  oversized_response: {
+    status: 502,
+    message: 'upstream response exceeded the size limit',
+    type: 'api_error',
+    code: 'upstream_oversized',
+  },
   // fix-4xx-error-taxonomy. `renderProxyError` drops `code` for the Anthropic
   // envelope, so each of these must be distinguishable by STATUS and fixed MESSAGE
   // in BOTH shapes — `code` is an OpenAI-only affordance, never the sole carrier.

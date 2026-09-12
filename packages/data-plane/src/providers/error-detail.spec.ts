@@ -364,6 +364,47 @@ describe('Responses buffered facade preserves the sanitized diagnostic (r3-Mediu
     expect(pe.providerMessage).toBe('upstream broke with token [redacted]');
     expect(pe.requestId).toBe('req_resp_1');
   });
+
+  // fix-bad-request-dead-end: this facade is the fourth file on the marker path. It
+  // re-wraps the stream diagnostic into a thrown ProviderError, so markers must be
+  // CONSUMED here rather than re-derived — the raw wire fields are already gone.
+  it('chat() carries the retained markers into the thrown ProviderError', async () => {
+    const sse =
+      'event: response.created\ndata: {"type":"response.created","response":{}}\n\n' +
+      'event: response.failed\ndata: ' +
+      JSON.stringify({
+        type: 'response.failed',
+        response: { error: { code: 'context_length_exceeded', message: 'too long' } },
+      }) +
+      '\n\n';
+    const { client } = recordingClient(() => sseResponse(sse));
+    const adapter = createResponsesProviderAdapter(
+      {
+        protocol: 'openai_responses',
+        baseUrl: 'https://chatgpt.example',
+        credential: 'zz9',
+        kind: 'subscription',
+        mode: 'selfhosted',
+        authScheme: 'oauth_bearer',
+        oauthAccountId: 'acct-123',
+        probeModel: 'gpt-5.4-mini',
+      },
+      { httpClient: client },
+    );
+    const req: NormalizedRequest = {
+      model: 'gpt-5.4-mini',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      params: {},
+    };
+    let thrown: unknown;
+    try {
+      await adapter.chat(req);
+    } catch (err) {
+      thrown = err;
+    }
+    const pe = thrown as { markers?: readonly string[] };
+    expect(pe.markers).toContain('context_length_exceeded');
+  });
 });
 
 describe('serializers never emit the diagnostic (client frames byte-identical)', () => {
@@ -382,6 +423,10 @@ describe('serializers never emit the diagnostic (client frames byte-identical)',
                 kind: 'insufficient_funds' as const,
                 providerMessage: asSanitized('SECRET-detail zz9'),
                 requestId: 'req_1',
+                // fix-bad-request-dead-end: the retained markers inherit the SAME
+                // guarantee as the carried kind — the client frames must stay
+                // byte-identical with or without them, on both protocols.
+                markers: ['context_length_exceeded'],
               },
             }
           : {}),
@@ -398,6 +443,55 @@ describe('serializers never emit the diagnostic (client frames byte-identical)',
     expect(withD).toBe(withoutD); // byte-identical — the diagnostic never hits the wire
     expect(withD).not.toContain('SECRET-detail');
     expect(withD).not.toContain('insufficient_funds'); // nor the carried kind
+    expect(withD).not.toContain('context_length_exceeded'); // nor the retained markers
+  });
+});
+
+// fix-bad-request-dead-end: markers must survive the adapter stage, where the raw
+// `wire` fields they derive from are stripped. Without this the streamed path records
+// no classification while its buffered HTTP twin records one.
+describe('streamed markers ride the diagnostic through the same three gates', () => {
+  const config = {
+    protocol: 'openai_compatible' as const,
+    baseUrl: 'https://api.openai.example/v1',
+    credential: 'zz9',
+    kind: 'api_key' as const,
+    mode: 'cloud' as const,
+  };
+  const request: NormalizedRequest = {
+    model: 'gpt-4o',
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+    params: {},
+  };
+  const collectErr = async (sse: string): Promise<NormalizedStreamEvent | undefined> => {
+    const { client } = recordingClient(() => sseResponse(sse));
+    const out: NormalizedStreamEvent[] = [];
+    for await (const ev of createOpenaiProviderAdapter(config, {
+      httpClient: client,
+    }).chatStream(request)) {
+      out.push(ev);
+    }
+    return out.find((e) => e.type === 'error');
+  };
+
+  it('retains an identifier-shaped wire type and code', async () => {
+    const sse = `data: ${JSON.stringify({
+      error: { type: 'invalid_request_error', code: 'context_length_exceeded', message: 'm' },
+    })}\n\n`;
+    const err = await collectErr(sse);
+    if (err?.type !== 'error') throw new Error('no error event');
+    expect(err.diagnostic?.markers).toEqual(['invalid_request_error', 'context_length_exceeded']);
+    // the message policy is unchanged — withheld, with the classification alongside
+    expect(err.diagnostic?.providerMessage).toBe(VALIDATION_WITHHELD);
+  });
+
+  it('applies the SAME gates as the buffered path — prose never rides the stream', async () => {
+    const sse = `data: ${JSON.stringify({
+      error: { type: 'your prompt said: hello bob', code: 'ctx_len', message: 'm' },
+    })}\n\n`;
+    const err = await collectErr(sse);
+    if (err?.type !== 'error') throw new Error('no error event');
+    expect(err.diagnostic?.markers).toEqual(['ctx_len']); // the prose type is dropped
   });
 });
 

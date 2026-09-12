@@ -38,6 +38,16 @@
  * - `upstream_rejected` any other 4xx — an upstream refusal we could not classify.
  *                     Evidence of nothing, so strictly NEUTRAL: it must not erase a
  *                     provider's accumulated failures. (fallback, NEUTRAL, withheld)
+ * - `oversized_response` a buffered provider body past the transport byte ceiling.
+ *                     Has NO upstream status of its own — it is raised by the drain,
+ *                     not by `classifyResponse`. It exists so the byte bound's
+ *                     no-fallback guarantee (`provider-management`) is carried by a
+ *                     kind that OWNS it: walking on would re-drain a second over-cap
+ *                     body on the next member, turning one hostile endpoint into a
+ *                     chain-length multiplier. NEUTRAL, not a health success —
+ *                     answering is not the same as working, and a success would
+ *                     close a half-open probe for a flooding upstream.
+ *                     (NO fallback, NEUTRAL, withheld)
  * - `credential`      A local credential-resolution failure (add-subscription-oauth):
  *                     a revoked OAuth grant (`reauthorize required`) or a transient
  *                     identity-provider outage. Fallback-eligible (the chain moves on)
@@ -55,6 +65,7 @@ export const PROVIDER_ERROR_KINDS = [
   'content_policy',
   'policy_block',
   'upstream_rejected',
+  'oversized_response',
   'credential',
 ] as const;
 
@@ -72,6 +83,10 @@ export interface ProviderErrorMeta {
   /** Factory-sanitized provider-verbatim message (add-request-error-detail);
    * persisted on `status=error` RequestLog rows, never client-facing. */
   readonly providerMessage?: SanitizedMessage;
+  /** The provider's own retained classification values (fix-bad-request-dead-end),
+   * admitted through the three gates. Persisted alongside the kind so a WITHHELD
+   * message is still diagnosable; never client-facing, never free text. */
+  readonly markers?: readonly string[];
 }
 
 export class ProviderError extends Error {
@@ -79,6 +94,7 @@ export class ProviderError extends Error {
   readonly status?: number;
   readonly requestId?: string;
   readonly providerMessage?: SanitizedMessage;
+  readonly markers?: readonly string[];
   constructor(kind: ProviderErrorKind, message: string, meta: ProviderErrorMeta = {}) {
     super(message);
     this.name = 'ProviderError';
@@ -86,6 +102,7 @@ export class ProviderError extends Error {
     if (meta.status !== undefined) this.status = meta.status;
     if (meta.requestId !== undefined) this.requestId = meta.requestId;
     if (meta.providerMessage !== undefined) this.providerMessage = meta.providerMessage;
+    if (meta.markers !== undefined && meta.markers.length > 0) this.markers = meta.markers;
   }
 }
 
@@ -108,15 +125,25 @@ export class CallCancelledError extends Error {
 /**
  * The proxy (#10) walks its chain on these. Exactly TWO kinds stop the walk, and
  * they stop it for DIFFERENT reasons — do not merge these branches:
- *   - `bad_request`  the caller's fault; every member would reject it identically,
- *                    so walking on is pure waste.
  *   - `policy_block` a 451 legal denial; another member might well SERVE it, and
  *                    that is exactly why we must not try (fix-4xx-error-taxonomy).
- * The first is futility, the second is principle. A refactor that collapses them
- * into "the caller's fault" reintroduces an automatic circumvention path.
+ *   - `oversized_response` a buffered body past the transport ceiling; walking on
+ *                    would re-drain a second over-cap body on the next member
+ *                    (fix-bad-request-dead-end).
+ * The first is principle, the second resource protection. NEITHER is a judgement
+ * that the caller's request was malformed — do not collapse them into one.
+ *
+ * `bad_request` is NOT among them (fix-bad-request-dead-end). It used to be, on the
+ * claim that "every member would reject it identically". That claim does not hold in
+ * a ROUTER: a 400 is the status under which providers report per-model capability
+ * limits — an exceeded context window, unsupported tools, an unsupported response
+ * format — and those describe the model polyrouter CHOSE, not a defect in what the
+ * caller sent. The rule was also unobservable where the caller did choose: a
+ * client-named concrete model resolves to a single-element chain, so the stop could
+ * only ever fire on owner-configured members.
  */
 export function shouldFallback(kind: ProviderErrorKind): boolean {
-  return kind !== 'bad_request' && kind !== 'policy_block';
+  return kind !== 'policy_block' && kind !== 'oversized_response';
 }
 
 /** What opens the provider-level breaker. Only conditions that make the provider
@@ -124,9 +151,10 @@ export function shouldFallback(kind: ProviderErrorKind): boolean {
  * (`rate_limit`), an outage (`unavailable`), and a dry account
  * (`insufficient_funds` — it rejects everything until a human tops it up).
  * Everything else describes one request or one model: `unknown_model` is
- * model-specific, `bad_request` is the client's fault, and `permission` /
+ * model-specific, `bad_request` is the client's fault, `permission` /
  * `content_policy` / `policy_block` are per-request decisions from a provider
- * that is demonstrably answering — none may disable it (fix-4xx-error-taxonomy). */
+ * that is demonstrably answering, and `oversized_response` is one misbehaving
+ * response — none may disable it (fix-4xx-error-taxonomy). */
 export function breakerImpact(kind: ProviderErrorKind): boolean {
   return (
     kind === 'rate_limit' ||
@@ -202,10 +230,14 @@ export function classifyResponse(
     { source: 'parsed-envelope', envelope },
     { kind, secrets },
   );
+  // Retention is uniform across kinds (the gates are kind-independent) and NEVER
+  // alters the classification above — `kind` is already decided at this point.
+  const markers = retainMarkers(walkEnvelope(envelope).retention, secrets);
   return new ProviderError(kind, curated, {
     ...meta,
     status,
     ...(providerMessage !== null ? { providerMessage } : {}),
+    ...(markers.length > 0 ? { markers } : {}),
   });
 }
 
@@ -332,18 +364,45 @@ export interface CaptureContext {
 
 const POLICY_MARKER = /content[_-]?filter|content[_-]?policy|moderation/i;
 
+/** Metadata keys whose values may be RETAINED (fix-bad-request-dead-end gate 1).
+ * Deliberately far narrower than the detection sweep below: a false positive when
+ * DETECTING a policy marker costs a label, while a false positive when PERSISTING
+ * costs invariant 8. The two read overlapping but distinct sources on purpose. */
+const RETENTION_METADATA_KEYS = ['error_type', 'type', 'code', 'reason'] as const;
+
+/** Gate 2's shape: an identifier, never prose. Echoed prompt content carries spaces
+ * or punctuation outside this set, or exceeds the length. */
+const MARKER_SHAPE = /^[A-Za-z0-9_.:-]{1,64}$/;
+/** Gate 2's bounds. A value breaching either is dropped WHOLE, never truncated —
+ * a truncated identifier is a different identifier (unknown-not-wrong). */
+export const MAX_RETAINED_MARKERS = 8;
+export const MAX_RETAINED_MARKER_BYTES = 256;
+
 /** Walk a parsed error envelope's nested `error` objects for the first string
  * `message`, collecting EVERY `type`/`code` string visited (bounded depth) — a
  * policy marker hidden behind an outer wrapper (`{type:'error',error:{type:
- * 'content_filter',…}}`) must still be seen (r3-High-1). */
-function walkEnvelope(envelope: unknown): { message?: string; markers: string[] } {
+ * 'content_filter',…}}`) must still be seen (r3-High-1) — and, SEPARATELY, the
+ * narrower set of values eligible for RETENTION (fix-bad-request-dead-end). */
+function walkEnvelope(envelope: unknown): {
+  message?: string;
+  markers: string[];
+  retention: string[];
+} {
   let node: unknown = envelope;
   const markers: string[] = [];
+  const retention: string[] = [];
   let message: string | undefined;
   for (let depth = 0; depth < 4 && typeof node === 'object' && node !== null; depth += 1) {
     const rec = node as Record<string, unknown>;
-    if (typeof rec['type'] === 'string') markers.push(rec['type']);
-    if (typeof rec['code'] === 'string') markers.push(rec['code']);
+    if (typeof rec['type'] === 'string') {
+      markers.push(rec['type']);
+      retention.push(rec['type']);
+    }
+    if (typeof rec['code'] === 'string') {
+      markers.push(rec['code']);
+      retention.push(rec['code']);
+    }
+    retention.push(...namedMetadataValues(rec['metadata']));
     // Nested provider-classification metadata (fix-4xx-error-taxonomy): aggregating
     // gateways commonly carry the REAL classification one level down (e.g. an
     // OpenRouter `error.metadata.error_type`), so an outward-only check misses
@@ -354,7 +413,61 @@ function walkEnvelope(envelope: unknown): { message?: string; markers: string[] 
     }
     node = rec['error'];
   }
-  return { ...(message !== undefined ? { message } : {}), markers };
+  return { ...(message !== undefined ? { message } : {}), markers, retention };
+}
+
+/** Retention gate 1's metadata source: the values of NAMED classification keys only,
+ * one level deep. The blind sweep in `metadataMarkers` is a detection source and must
+ * never be a retention source — it admits every string an aggregator chooses to put
+ * under `metadata`, which is exactly the shape invariant 8 cannot accept. */
+function namedMetadataValues(metadata: unknown): string[] {
+  if (typeof metadata !== 'object' || metadata === null) return [];
+  const rec = metadata as Record<string, unknown>;
+  const out: string[] = [];
+  for (const key of RETENTION_METADATA_KEYS) {
+    const v = rec[key];
+    if (typeof v === 'string') out.push(v);
+  }
+  return out;
+}
+
+/**
+ * Gates 2 and 3 (fix-bad-request-dead-end). Returns the retained markers, or an
+ * EMPTY list when the joint scrub trips — all-or-nothing by design.
+ *
+ * Gate 2: scrub each candidate ON ITS OWN first (its start is a word boundary, so a
+ * credential sitting whole in one field is redacted there and then fails the shape),
+ * then shape-test. Gate 3: scrub every SUFFIX join, seamlessly concatenated; if any
+ * is altered, drop the ENTIRE set.
+ *
+ * Gate 3 sweeps suffixes rather than joining once because a split credential whose
+ * leading fragment follows a word character defeats a single join: `['error',
+ * 'sk-abc123','45678']` joins to `errorsk-abc12345678`, where `\b` cannot match. The
+ * suffix at i=1 is `sk-abc12345678`, whose boundary is the string start. A DELIMITED
+ * join would break reconstruction and is not an alternative.
+ */
+export function retainMarkers(
+  candidates: readonly string[],
+  secrets: readonly string[] = [],
+): string[] {
+  const kept: string[] = [];
+  let bytes = 0;
+  for (const raw of candidates) {
+    if (kept.length >= MAX_RETAINED_MARKERS) break;
+    const scrubbed = scrubSecrets(raw, secrets);
+    if (!MARKER_SHAPE.test(scrubbed)) continue;
+    if (kept.includes(scrubbed)) continue;
+    const size = Buffer.byteLength(scrubbed, 'utf8');
+    if (bytes + size > MAX_RETAINED_MARKER_BYTES) continue; // dropped whole, never cut
+    kept.push(scrubbed);
+    bytes += size;
+  }
+  // Gate 3 runs over what SURVIVED gates 1-2, which is what would be persisted.
+  for (let i = 0; i < kept.length; i += 1) {
+    const joined = kept.slice(i).join('');
+    if (scrubSecrets(joined, secrets) !== joined) return [];
+  }
+  return kept;
 }
 
 /** String-valued entries of a `metadata` object, one level deep (arrays of strings

@@ -261,6 +261,7 @@ export function buildRequestRows(n: number): RequestRow[] {
       // Error rows carry terminal detail (add-request-error-detail); every other
       // status — and every legacy-shaped row — is all-null.
       errorKind: status === 'error' ? 'rate_limit' : null,
+      errorMarkers: status === 'error' ? ['context_length_exceeded'] : null,
       errorStatus: status === 'error' ? 429 : null,
       errorMessage: status === 'error' ? `Rate limit exceeded on #${String(i)}` : null,
       errorRequestId: status === 'error' ? `req_fake_${String(i)}` : null,

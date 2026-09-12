@@ -143,6 +143,11 @@ export interface RecordedError {
   readonly status?: number;
   readonly providerMessage?: string;
   readonly requestId?: string;
+  /** The provider's retained classification values (fix-bad-request-dead-end).
+   * Allowlisted identifiers, never prose — this is what makes a WITHHELD message
+   * diagnosable, which is the half of the reported incident the message policy
+   * cannot solve. */
+  readonly markers?: readonly string[];
 }
 
 export interface RecordOutcome {
@@ -260,9 +265,15 @@ export class RequestRecorder {
         ...(outcome.status === 'error' && outcome.error !== undefined
           ? { error: outcome.error }
           : {}),
-        // Same central gate for the per-attempt trail (add-fallback-attempt-
-        // detail): non-error rows persist a null column regardless of caller.
-        ...(outcome.status === 'error' &&
+        // The trail follows the WALK, not the terminal outcome
+        // (fix-bad-request-dead-end). This is a SEPARATE rule from the error-detail
+        // gate above, deliberately: the five columns describe a TERMINAL error, which
+        // a recovered request does not have, while the trail describes what the walk
+        // DID, which it very much does. Gating the trail on `status === 'error'` would
+        // discard the evidence for exactly the failures the widened `bad_request`
+        // eligibility now works around — the walk's own success would erase the record
+        // of why it was needed. `success` (no member failed) and `cancelled` keep null.
+        ...((outcome.status === 'error' || outcome.status === 'fallback') &&
         ctx.attemptFailures !== undefined &&
         ctx.attemptFailures.length > 0
           ? { attemptFailures: ctx.attemptFailures }

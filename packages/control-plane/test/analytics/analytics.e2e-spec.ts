@@ -569,10 +569,14 @@ describe('analytics API (#17)', () => {
     const all = await q('requests', A, { ...RANGE });
     for (const row of all.body.rows) {
       if (row.status !== 'error') {
-        // non-error rows carry all-null detail
+        // non-error rows carry no TERMINAL detail
         expect(row.errorKind).toBeNull();
         expect(row.errorMessage).toBeNull();
-        expect(row.attemptFailures).toBeNull(); // add-fallback-attempt-detail: same gate
+        expect(row.errorMarkers).toBeNull();
+        // fix-bad-request-dead-end: the trail follows the WALK, so it is null only on
+        // `success`/`cancelled` — a `fallback` row keeps it, and the listing must not
+        // contradict the recorder for exactly the rows the widened walk produces.
+        if (row.status !== 'fallback') expect(row.attemptFailures).toBeNull();
         // non-evaluated rows carry all-null telemetry
         expect(row.structuralBand).toBeNull();
         expect(row.structuralScore).toBeNull();

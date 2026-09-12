@@ -239,6 +239,20 @@
       "when": 1788808501916,
       "tag": "0033_light_sabretooth",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1789173857391,
+      "tag": "0034_plain_skaar",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1789174487335,
+      "tag": "0035_swift_korvac",
+      "breakpoints": true
     }
   ]
 }

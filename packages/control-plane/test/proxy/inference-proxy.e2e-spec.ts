@@ -118,6 +118,10 @@ async function seedTenant(
   await add(openai.id, 'oai-noperm');
   await add(openai.id, 'oai-legal');
   await add(openai.id, 'oai-teapot');
+  // fix-bad-request-dead-end fixtures
+  await add(openai.id, 'oai-badreq');
+  await add(openai.id, 'oai-badreq2');
+  await add(openai.id, 'oai-oversized');
   await add(openai.id, `${label}-secret`);
   // add-model-variant-detection fixtures. `variant` is set explicitly here because
   // these rows are created directly (no sync runs in this suite).
@@ -159,11 +163,23 @@ async function seedTenant(
     ['noperm', 'oai-noperm'],
     ['legal', 'oai-legal'],
     ['teapot', 'oai-teapot'],
+    // fix-bad-request-dead-end: THE reported incident, and the transport bound.
+    ['badreqchain', 'oai-badreq'],
+    ['oversizedchain', 'oai-oversized'],
   ] as const) {
     const tier = await port.tiers.insert(principal, { key });
     await port.routingEntries.replaceForTier(principal, tier.id, [
       models[head]!,
       models['gpt-4o']!,
+    ]);
+  }
+  // fix-bad-request-dead-end: a chain every member of which 400s. This is the shape
+  // whose cost the change DISCLOSES — one upstream call per member — so it is pinned.
+  {
+    const t = await port.tiers.insert(principal, { key: 'allbadreq' });
+    await port.routingEntries.replaceForTier(principal, t.id, [
+      models['oai-badreq']!,
+      models['oai-badreq2']!,
     ]);
   }
   // A chain whose members ALL sit on the dry provider — nothing can rescue it, so the
@@ -396,6 +412,44 @@ describe('inference proxy e2e', () => {
       expect(res.status).toBe(200);
       expect(res.text).toContain('data: [DONE]');
       expect(res.text).not.toContain('"upstream_error"');
+    });
+
+    // fix-bad-request-dead-end: THE headline. A router-chosen 400 is evidence that
+    // THIS model refused, not that the request is malformed — so the chain is walked
+    // and the request succeeds, where before it died on member 1.
+    it('a router-chosen 400 walks the chain and a later member serves', async () => {
+      const before = stub.requests.length;
+      const res = await chat(A.key, { model: 'badreqchain', messages: [] });
+      expect(res.status).toBe(200);
+      expect(res.body.choices[0].message.content).toContain('Hello from stub');
+      expect(stub.requests.length).toBe(before + 2); // BOTH members were dispatched
+    });
+
+    // The transport byte bound, proven at the proxy boundary and not just in units:
+    // ONE member is contacted, so a hostile endpoint cannot be made to flood once per
+    // chain member. This is the guarantee that would have been silently deleted had
+    // `oversized_response` not been given its own kind.
+    it('an over-cap response body stops the walk after exactly one member', async () => {
+      const before = stub.requests.length;
+      const res = await chat(A.key, { model: 'oversizedchain', messages: [] });
+      expect(res.status).toBe(502); // the upstream misbehaved — not the caller's 400
+      expect(res.body.error.code).toBe('upstream_oversized');
+      expect(stub.requests.length).toBe(before + 1); // ONLY the flooding member
+    }, 20_000);
+
+    // The DISCLOSED cost of the widened eligibility, pinned so it cannot grow
+    // silently: one upstream call per configured member, bounded by chain length and
+    // NOT by the breaker — a malformed request must never take a provider offline.
+    it('a malformed request costs one call per member and trips no breaker', async () => {
+      const before = stub.requests.length;
+      const res = await chat(A.key, { model: 'allbadreq', messages: [] });
+      expect(res.status).toBe(400); // the terminal rejection, in the caller's envelope
+      expect(stub.requests.length).toBe(before + 2); // exactly one per member, no more
+      // the breaker stays closed: a later request still reaches the SAME provider
+      const after = stub.requests.length;
+      const again = await chat(A.key, { model: 'allbadreq', messages: [] });
+      expect(again.status).toBe(400);
+      expect(stub.requests.length).toBe(after + 2); // dispatched again — never skipped
     });
 
     it.each([

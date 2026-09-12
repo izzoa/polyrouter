@@ -233,6 +233,13 @@ export type NormalizedStreamEvent =
           readonly type?: string;
           readonly code?: string;
         };
+        /** The provider's RETAINED classification values (fix-bad-request-dead-end),
+         * admitted at the adapter stage through the same three gates the buffered
+         * path uses. Present for the same reason `kind` is: the raw `wire` fields
+         * they derive from do not survive this stage, so a pre-commit streamed
+         * rejection would otherwise record no classification while its HTTP twin
+         * records one. Never serialized to a client frame. */
+        readonly markers?: readonly string[];
         /** The adapter's CROSS-FIELD classification (fix-4xx-error-taxonomy).
          * `wire` is removed at the adapter stage, so without this the routing and
          * breaker layers would re-derive a kind from the outward `error.type`

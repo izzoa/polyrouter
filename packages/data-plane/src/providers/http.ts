@@ -93,8 +93,13 @@ async function drainText(
       if (value) {
         bytes += value.length;
         if (bytes > maxBytes) {
+          // fix-bad-request-dead-end: its OWN kind, not `bad_request`. The
+          // no-fallback guarantee `provider-management` depends on (walking would
+          // re-drain a second over-cap body on the next member) must be carried by a
+          // kind that owns it — riding `bad_request` lost it the moment that kind
+          // became fallback-eligible. Message carries the cap only, never content.
           throw new ProviderError(
-            'bad_request',
+            'oversized_response',
             `provider response body exceeds ${String(maxBytes)} bytes`,
           );
         }

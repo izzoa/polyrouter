@@ -141,9 +141,15 @@ describe('provider error classification', () => {
     // unknown_model falls back but must NOT open the provider breaker
     expect(shouldFallback('unknown_model')).toBe(true);
     expect(breakerImpact('unknown_model')).toBe(false);
-    // bad_request: neither
-    expect(shouldFallback('bad_request')).toBe(false);
+    // bad_request (fix-bad-request-dead-end): the two classifiers moved INDEPENDENTLY.
+    // It is now fallback-eligible — a 400 describes the model the router chose — while
+    // its breaker treatment is unchanged: a provider that rejects a request answered.
+    expect(shouldFallback('bad_request')).toBe(true);
     expect(breakerImpact('bad_request')).toBe(false);
+    // oversized_response: the kind that now carries the no-fallback guarantee, and the
+    // ONLY non-tripping kind here that is also breaker-neutral rather than a success.
+    expect(shouldFallback('oversized_response')).toBe(false);
+    expect(breakerImpact('oversized_response')).toBe(false);
     // tripping kinds
     for (const k of ['rate_limit', 'unavailable', 'auth'] as const) {
       expect(shouldFallback(k)).toBe(true);
@@ -158,9 +164,9 @@ describe('provider error classification', () => {
 
   // Exhaustive by construction: driven by the canonical array, so a kind added later
   // without a deliberate decision fails here rather than silently inheriting a default.
-  it('shouldFallback is false for exactly two kinds, for two different reasons', () => {
+  it('shouldFallback is false for exactly the kinds that own a reason to stop', () => {
     const stops = PROVIDER_ERROR_KINDS.filter((k) => !shouldFallback(k));
-    expect([...stops].sort()).toEqual(['bad_request', 'policy_block']);
+    expect([...stops].sort()).toEqual(['oversized_response', 'policy_block']);
   });
 
   it('breakerImpact trips for exactly the provider-wide conditions', () => {
@@ -221,7 +227,7 @@ describe('provider error classification', () => {
 // add-subscription-oauth (codex round 3): the breaker OUTCOME for a credential failure
 // is strictly neutral — never 'success' (which would erase genuine failure counts or
 // close a half-open probe) and never 'trip'.
-import { outcomeForError } from './breaker';
+import { outcomeForError, outcomeForKind } from './breaker';
 
 describe('breaker outcome for credential failures', () => {
   it('credential errors settle as neutral, not success or trip', () => {
@@ -235,6 +241,34 @@ describe('breaker outcome for credential failures', () => {
   // it erase a provider's real failure history — the same reasoning `credential` uses.
   it('upstream_rejected is strictly neutral, never a health success', () => {
     expect(outcomeForError(new ProviderError('upstream_rejected', '418'))).toBe('neutral');
+  });
+
+  // fix-bad-request-dead-end: an over-cap body proves the provider sent bytes, not that
+  // it is healthy. A 'success' would CLOSE a half-open probe (handing a flooding
+  // upstream full production traffic) or zero a closed record's accumulated failures.
+  it('oversized_response is strictly neutral, never a health success', () => {
+    expect(outcomeForError(new ProviderError('oversized_response', 'over cap'))).toBe('neutral');
+  });
+
+  // Exhaustive by construction over the OUTCOME partition, not just the trip set: this
+  // is the guard whose absence let `oversized_response` silently inherit 'success'
+  // (fix-bad-request-dead-end). A kind added later lands in a branch deliberately.
+  it('outcomeForKind partitions the taxonomy exhaustively', () => {
+    const by = (o: string) =>
+      [...PROVIDER_ERROR_KINDS.filter((k) => outcomeForKind(k) === o)].sort();
+    expect(by('trip')).toEqual(['auth', 'insufficient_funds', 'rate_limit', 'unavailable']);
+    expect(by('neutral')).toEqual(['credential', 'oversized_response', 'upstream_rejected']);
+    expect(by('success')).toEqual([
+      'bad_request',
+      'content_policy',
+      'permission',
+      'policy_block',
+      'unknown_model',
+    ]);
+    // total: every kind lands in exactly one branch
+    expect(by('trip').length + by('neutral').length + by('success').length).toBe(
+      PROVIDER_ERROR_KINDS.length,
+    );
   });
 
   // These three PROVE the provider answered, so they settle success exactly as
@@ -307,5 +341,140 @@ describe('message policy for the new kinds', () => {
     ).toBe(true);
     expect(hasContentPolicyMarker(parseErrorEnvelope('{"error":{"type":"error"}}'))).toBe(false);
     expect(hasContentPolicyMarker(parseErrorEnvelope('not json'))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fix-bad-request-dead-end — marker retention behind three gates.
+// Invariant 8 is the acceptance criterion: the KIND and the retained CLASSIFICATION
+// carry the operator's diagnosis, and provider-authored prose never reaches storage.
+// ---------------------------------------------------------------------------
+import {
+  retainMarkers,
+  scrubSecrets,
+  MAX_RETAINED_MARKERS,
+  MAX_RETAINED_MARKER_BYTES,
+} from './errors';
+
+describe('marker retention — gate 2 (per-candidate scrub, then shape)', () => {
+  it('admits an identifier and drops prose', () => {
+    expect(retainMarkers(['context_length_exceeded'])).toEqual(['context_length_exceeded']);
+    // Echoed prompt content is prose: spaces and punctuation fail the shape.
+    expect(retainMarkers(['Your message at messages[3] was invalid, sorry.'])).toEqual([]);
+  });
+
+  it('drops an over-length token whole rather than truncating it', () => {
+    const long = 'a'.repeat(65); // one past the 64-char shape bound
+    expect(retainMarkers([long])).toEqual([]);
+  });
+
+  it('scrubs each candidate on its OWN before shaping — a whole credential never lands', () => {
+    // The value's start is a word boundary, so the heuristic matches here even though
+    // it would not match inside a seamless join. This is the pass gate 3 cannot replace.
+    expect(retainMarkers(['sk-proj-abc12345678'])).toEqual([]);
+    expect(retainMarkers(['error', 'sk-proj-abc12345678'])).toEqual(['error']);
+  });
+
+  it('dedupes and preserves order', () => {
+    expect(retainMarkers(['a', 'b', 'a', 'c'])).toEqual(['a', 'b', 'c']);
+  });
+
+  it('bounds the set by count and by total bytes, dropping whole values', () => {
+    const many = Array.from({ length: 20 }, (_v, i) => `k${String(i)}`);
+    expect(retainMarkers(many)).toHaveLength(MAX_RETAINED_MARKERS);
+    const chunky = Array.from({ length: 8 }, (_v, i) => `${String(i)}${'x'.repeat(60)}`);
+    const kept = retainMarkers(chunky);
+    const bytes = kept.reduce((n, m) => n + Buffer.byteLength(m, 'utf8'), 0);
+    expect(bytes).toBeLessThanOrEqual(MAX_RETAINED_MARKER_BYTES);
+    for (const m of kept) expect(m).toHaveLength(61); // never a cut-down fragment
+  });
+});
+
+describe('marker retention — gate 3 (scrub every suffix join)', () => {
+  const SECRET = 'sk-abc12345678';
+
+  it('drops the WHOLE set when a configured credential is split across two values', () => {
+    // Neither fragment matches alone; a seamless join reconstructs it. Configured
+    // secrets are matched by boundary-free substring replacement, so position does
+    // not matter for THESE — the suffix sweep exists for the heuristic path below.
+    expect(retainMarkers(['sk-abc123', '45678'], [SECRET])).toEqual([]);
+    expect(retainMarkers(['error', 'sk-abc123', '45678'], [SECRET])).toEqual([]);
+  });
+
+  it('keeps an unrelated error’s markers — the drop is per-error, not global', () => {
+    expect(retainMarkers(['rate_limit_exceeded'], [SECRET])).toEqual(['rate_limit_exceeded']);
+  });
+
+  // THE round-3 counterexample, and the reason this gate sweeps suffixes instead of
+  // joining once. Note it is the HEURISTIC path (an UNCONFIGURED key-shaped token — a
+  // caller's own key echoed by an aggregator): a CONFIGURED secret is matched by
+  // boundary-free substring replacement, so a single join would already catch it.
+  // Here the split fragment follows a word character, which defeats the per-candidate
+  // pass (fragments too short to match), the single whole-set join
+  // (`errorsk-abc12345678` — no \b before `sk`) AND a space-delimited join. Only the
+  // suffix at i=1 restores the string-start boundary. Do not simplify this away.
+  it('catches a split key-shaped token preceded by a word-char-ending value', () => {
+    const all = ['error', 'sk-abc123', '45678'];
+    expect(retainMarkers(all)).toEqual([]);
+    // prove the weaker forms really do miss it, so the test documents WHY
+    expect(all.every((c) => scrubSecrets(c) === c)).toBe(true); // per-candidate
+    expect(scrubSecrets(all.join(''))).toBe(all.join('')); // single whole-set join
+    expect(scrubSecrets(all.join(' '))).toBe(all.join(' ')); // round-2's proposed remedy
+    // and the suffix that does catch it
+    expect(scrubSecrets(all.slice(1).join(''))).not.toBe(all.slice(1).join(''));
+  });
+});
+
+describe('marker retention — gate 1 (named source) and classification independence', () => {
+  const body = (o: unknown) => JSON.stringify(o);
+
+  it('retains a named metadata key and never an unnamed one', () => {
+    const withNamed = classifyResponse(
+      400,
+      body({ error: { message: 'x', metadata: { error_type: 'context_length_exceeded' } } }),
+    );
+    expect(withNamed.markers).toContain('context_length_exceeded');
+    const withUnnamed = classifyResponse(
+      400,
+      body({ error: { message: 'x', metadata: { raw_upstream: 'looks_like_an_identifier' } } }),
+    );
+    expect(withUnnamed.markers ?? []).not.toContain('looks_like_an_identifier');
+  });
+
+  it('a policy marker under an UNNAMED metadata key is still DETECTED', () => {
+    // Detection and retention read deliberately different sources: the broad sweep
+    // still decides the 403 refinement even where the value may not be persisted.
+    const err = classifyResponse(403, body({ error: { metadata: { anything: 'content_filter' } } }));
+    expect(err.kind).toBe('content_policy');
+  });
+
+  it('retention is uniform across kinds', () => {
+    for (const [status, expected] of [
+      [400, 'bad_request'],
+      [403, 'permission'],
+      [429, 'rate_limit'],
+      [503, 'unavailable'],
+    ] as const) {
+      const err = classifyResponse(status, body({ error: { code: 'some_code', message: 'm' } }));
+      expect(err.kind).toBe(expected);
+      expect(err.markers).toEqual(['some_code']);
+    }
+  });
+
+  it('markers never change kind, shouldFallback or breakerImpact', () => {
+    const bare = classifyResponse(400, body({ error: { message: 'm' } }));
+    const marked = classifyResponse(400, body({ error: { code: 'ctx_len', message: 'm' } }));
+    expect(marked.kind).toBe(bare.kind);
+    expect(shouldFallback(marked.kind)).toBe(shouldFallback(bare.kind));
+    expect(breakerImpact(marked.kind)).toBe(breakerImpact(bare.kind));
+  });
+
+  it('a withheld message still leaves the classification readable', () => {
+    const err = classifyResponse(
+      400,
+      body({ error: { code: 'context_length_exceeded', message: 'your prompt said: hello bob' } }),
+    );
+    expect(err.providerMessage).toBe(VALIDATION_WITHHELD);
+    expect(err.markers).toEqual(['context_length_exceeded']);
   });
 });

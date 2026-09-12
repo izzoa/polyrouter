@@ -14,6 +14,7 @@ import {
   resetAuthState,
   setRegistrationMode,
   uniqueEmail,
+  closeApp,
 } from './auth-harness';
 
 const databaseUrl = loadConfig<{ DATABASE_URL: string }>().DATABASE_URL;
@@ -54,7 +55,7 @@ describe('auth flow, planes & agent keys (session-auth / agent-keys)', () => {
     server = app.getHttpServer();
   }, 60_000);
   afterAll(async () => {
-    await app.close();
+    await closeApp(app);
   });
   beforeEach(async () => {
     await resetAuthState(databaseUrl);
@@ -289,7 +290,7 @@ describe('self-host localhost auto-login (session-auth)', () => {
     server = app.getHttpServer();
   }, 60_000);
   afterAll(async () => {
-    await app.close();
+    await closeApp(app);
   });
   beforeEach(async () => {
     await resetAuthState(databaseUrl);
@@ -370,7 +371,7 @@ describe('boot reconciliation of crashed hooks (session-auth)', () => {
         await p.end();
       }
     } finally {
-      await app.close();
+      await closeApp(app);
     }
   }, 60_000);
 });

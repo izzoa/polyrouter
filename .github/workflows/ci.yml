@@ -107,28 +107,29 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
-      # Build the workspace deps once (turbo-cached); both e2e passes reuse it.
+      # Build the workspace deps once (turbo-cached); every e2e process reuses it.
       - run: npm run build
-      # The Better-Auth ESM e2e suites (auth.e2e, user-admin.e2e) intermittently
-      # fail jest's --experimental-vm-modules loader (`undefined … 'identifier'`/
-      # `'close'`) under the accumulated module-registry pressure of the full
-      # --runInBand run — they pass in their OWN fresh process (the auth stack is
-      # also proven by prod-topology booting the real server). The L2 semantic work
-      # added ~10 e2e suites, tipping this from intermittent to frequent, so split
-      # the run: the 37 stable suites in one jest process, the two flaky auth suites
-      # isolated in another. Each pass keeps one fresh-process retry — a genuine
-      # failure fails both attempts and still reds the job.
-      - name: e2e — all suites except the ESM-flaky auth suites
+      # `test:e2e` splits itself: the bulk of the suites in one jest process, then
+      # auth.e2e and user-admin.e2e each in their OWN process. They cannot share one.
+      # Better Auth is ESM-only (no CJS build), so loading it needs Node's native
+      # dynamic import, which is why this run sets --experimental-vm-modules. Under
+      # that flag jest caches an imported ESM module across test FILES but binds it to
+      # the VM context of whichever file imported it first; that context dies with the
+      # file, so the SECOND of the two to build an auth app imports into a dead realm
+      # and throws `... after the Jest environment has been torn down` from inside
+      # jest-runtime — surfacing as the `undefined … 'identifier'`/`'close'` errors.
+      #
+      # The previous workaround isolated the two auth suites as a GROUP, which cannot
+      # work: they still shared a process, so the second failed every time (8/8 when
+      # run as a pair; 17 and 8 pass when run apart). That is why this read as
+      # deterministic in CI and merely intermittent locally, where jest's cached-suite
+      # ordering changes which file owns the realm. The retry could not help either —
+      # it re-ran the same losing order.
+      - name: e2e (auth suites isolated per file by the runner)
         run: |
-          if ! npm run test:e2e -w packages/control-plane -- --testPathIgnorePatterns '/node_modules/' 'test/auth/'; then
-            echo "::warning title=e2e retried::non-auth e2e failed; re-running once on a fresh process"
-            npm run test:e2e -w packages/control-plane -- --testPathIgnorePatterns '/node_modules/' 'test/auth/'
-          fi
-      - name: e2e — auth suites, isolated in their own jest process
-        run: |
-          if ! npm run test:e2e -w packages/control-plane -- 'test/auth/'; then
-            echo "::warning title=e2e retried::auth e2e failed alone; re-running once on a fresh process (documented Better-Auth ESM flake)"
-            npm run test:e2e -w packages/control-plane -- 'test/auth/'
+          if ! npm run test:e2e -w packages/control-plane; then
+            echo "::warning title=e2e retried::e2e failed; re-running once on a fresh process"
+            npm run test:e2e -w packages/control-plane
           fi
 
   baseline-image-neutrality:

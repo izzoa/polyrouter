@@ -3,7 +3,7 @@
   "version": "0.17.1",
   "license": "AGPL-3.0-only",
   "private": true,
-  "description": "polyrouter control plane: dashboard API, auth, provider/tier/rule CRUD, analytics — serves the SPA and hosts the data-plane module",
+  "description": "polyrouter control plane: dashboard API, auth, provider/tier/rule CRUD, analytics \u2014 serves the SPA and hosts the data-plane module",
   "type": "commonjs",
   "scripts": {
     "build": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && node -e \"fs.cpSync('src/database/migrations','dist/database/migrations',{recursive:true})\"",
@@ -12,7 +12,7 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "test": "jest",
-    "test:e2e": "cross-env NODE_OPTIONS=--experimental-vm-modules jest --config jest-e2e.config.cjs --runInBand",
+    "test:e2e": "node scripts/e2e.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

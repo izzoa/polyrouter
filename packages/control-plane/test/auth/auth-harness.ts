@@ -71,6 +71,19 @@ export async function createAuthApp(extraModules: unknown[] = []): Promise<NestE
   return app;
 }
 
+/**
+ * Teardown that cannot mask a construction failure. When `beforeEach`/`beforeAll`
+ * throws, `app` is never assigned, and an unguarded `app.close()` then adds a second
+ * `Cannot read properties of undefined (reading 'close')` to EVERY test in the suite.
+ * That is what buried the real cause of the long-standing "auth e2e flake" behind 27
+ * identical TypeErrors for so long: the actual error was reported once, at the top of
+ * a wall of noise that looked like the failure itself. Close what exists; say nothing
+ * about what does not.
+ */
+export async function closeApp(app: NestExpressApplication | undefined): Promise<void> {
+  if (app !== undefined) await app.close();
+}
+
 /** A pristine identity/tenant state for order-independent auth tests. */
 export async function resetAuthState(databaseUrl: string): Promise<void> {
   const pool = new Pool({ connectionString: databaseUrl, max: 1 });

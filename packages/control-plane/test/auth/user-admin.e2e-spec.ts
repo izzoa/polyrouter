@@ -12,6 +12,7 @@ import {
   resetAuthState,
   setRegistrationMode,
   uniqueEmail,
+  closeApp,
 } from './auth-harness';
 
 /** user-administration e2e: registration gating, the invite lifecycle, admin
@@ -77,7 +78,7 @@ describe('user administration (user-administration)', () => {
   });
 
   afterEach(async () => {
-    await app.close();
+    await closeApp(app);
   });
 
   it('closes to invite_only: public signup refused post-bootstrap; admin can reopen', async () => {

@@ -108,6 +108,19 @@ describe('batch reservations — real infra (add-batch-inference D8)', () => {
     return { svc, counter };
   }
 
+  /**
+   * `waitReady` RESOLVES FALSE on its 2s timeout — it never throws. The counter's
+   * connections are built with `enableOfflineQueue: false`, so the FIRST command on a
+   * not-yet-ready connection throws immediately; `BudgetService` catches that under
+   * fail-open and returns `unenforced`. Discarding the boolean therefore turns a setup
+   * failure into a wrong-looking PRODUCT assertion — the test reports "expected
+   * reserved, received unenforced" and says nothing about the connection, which is
+   * what made this read as an intermittent budget bug. Assert readiness instead.
+   */
+  const ready = async (...cs: SpendCounter[]): Promise<void> => {
+    for (const c of cs) expect(await c.waitReady()).toBe(true);
+  };
+
   const jobValues = (agentId: string, ceiling: number | null): BatchJobInsertInput => ({
     id: `job-${randomUUID()}`,
     agentId,
@@ -173,6 +186,15 @@ describe('batch reservations — real infra (add-batch-inference D8)', () => {
     await redis.set(HEARTBEAT, String(Date.now()));
   });
 
+  // Every `instance()` DUPLICATES the Redis client twice (a fail-fast read conn and a
+  // reconcile write conn). Holding each test's counters until `afterAll` left ~16 live
+  // connections against the shared dev Redis by the end of the file — which is what
+  // pushed a fresh duplicate past `waitReady`'s 2s window during a loaded full run,
+  // while the file passed standalone. Release them per test so the pressure is bounded.
+  afterEach(() => {
+    for (const c of counters.splice(0)) c.onApplicationShutdown();
+  });
+
   async function budgetedUser(label: string, amount: number): Promise<string> {
     const owner = await makeUser(label);
     await port.budgets.insert(userPrincipal(owner), {
@@ -193,7 +215,7 @@ describe('batch reservations — real infra (add-batch-inference D8)', () => {
     const principal = userPrincipal(owner);
     const a = instance();
     const b = instance();
-    await Promise.all([a.counter.waitReady(), b.counter.waitReady()]);
+    await ready(a.counter, b.counter);
     const results = await Promise.all(
       Array.from(
         { length: 6 },
@@ -218,7 +240,7 @@ describe('batch reservations — real infra (add-batch-inference D8)', () => {
     const owner = await budgetedUser('interleave', 100);
     const principal = userPrincipal(owner);
     const { svc, counter } = instance();
-    await counter.waitReady();
+    await ready(counter);
     // (1) the job row, with its ceiling, BEFORE the Redis add (D6/D8)
     const row = await port.batchJobs.insert(principal, jobValues('ag', toMicros(4)));
     // (2) the scheduler runs in between: pending is recomputed FROM the rows
@@ -272,7 +294,7 @@ describe('batch reservations — real infra (add-batch-inference D8)', () => {
     const owner = await budgetedUser('leak', 100);
     const principal = userPrincipal(owner);
     const { svc, counter } = instance();
-    await counter.waitReady();
+    await ready(counter);
     expect((await svc.reserveForBatch(principal, null, toMicros(7))).outcome).toBe('reserved'); // the poller then "crashes" before releasing
     await port.batchJobs.insert(principal, jobValues('ag', null)); // an unbounded job admitted without a block budget elsewhere: contributes 0
     await runBudgetOccurrence(
@@ -292,12 +314,12 @@ describe('batch reservations — real infra (add-batch-inference D8)', () => {
     const principal = userPrincipal(owner);
     await redis.set(HEARTBEAT, String(Date.now() - 10 * STALE_MS));
     const open = instance(true);
-    await open.counter.waitReady();
+    await ready(open.counter);
     expect((await open.svc.reserveForBatch(principal, null, toMicros(1))).outcome).toBe(
       'unenforced',
     );
     const closed = instance(false);
-    await closed.counter.waitReady();
+    await ready(closed.counter);
     await expect(closed.svc.reserveForBatch(principal, null, toMicros(1))).rejects.toBeInstanceOf(
       BudgetEnforcementUnavailableError,
     );

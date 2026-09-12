@@ -110,6 +110,16 @@ export function modeToRequestParams(mode: RequestMode): { mode?: 'sync' | 'batch
   return mode === 'all' ? {} : { mode };
 }
 
+/** The agent selection as listing params (add-agent-request-attribution).
+ *
+ * DELIBERATELY separate from `filterToRequestParams`, whose input is the
+ * routing-layer chip enum. Overloading that enum would make the two filters
+ * mutually exclusive — and composing them is the whole point ("agent X's
+ * escalations"). `null` means no selection and contributes nothing. */
+export function agentToRequestParams(agentId: string | null): { agentId?: string } {
+  return agentId === null || agentId === '' ? {} : { agentId };
+}
+
 export function filterToRequestParams(filter: RequestFilter): RequestFilterParams {
   switch (filter) {
     case 'explicit':
@@ -375,4 +385,63 @@ export function toInspectorView(r: RequestRow): InspectorView {
     attemptTrail: toAttemptTrail(r),
     terminalSkipped: isTerminalSkip(r),
   };
+}
+
+/** What a group boundary shows when a row's agent cannot be named — a keyless
+ * request, a deleted agent, or an id denormalized from another tenant (which the
+ * owner-scoped label resolver deliberately leaves null).
+ *
+ * Matches the per-agent analytics precedent so the two surfaces say the same
+ * thing about the same rows. NOT `labelOf`: that falls back to the raw id, and
+ * the table must never render one (add-agent-request-attribution). */
+export const AGENT_UNATTRIBUTED = '(no agent)';
+
+/** Does `rows[i]` begin a new agent run?
+ *
+ * Compared on `agentId`, never on the label: two agents may share a NAME, and a
+ * keyless row followed by a deleted agent's row both label as null while being
+ * different agents. Index 0 always begins a run when there are rows, so the
+ * first group is labelled like every other. */
+export function startsAgentRun(
+  rows: readonly Pick<RequestRow, 'agentId'>[],
+  i: number,
+): boolean {
+  const row = rows[i];
+  if (row === undefined) return false;
+  if (i === 0) return true;
+  return row.agentId !== rows[i - 1]?.agentId;
+}
+
+/** The boundary's text for a row. Never the raw `agentId`. */
+export function agentRunLabel(row: Pick<RequestRow, 'agentLabel'>): string {
+  return row.agentLabel ?? AGENT_UNATTRIBUTED;
+}
+
+/** A deleted agent still owns its history, so its rows still return — but its
+ * owner-scoped label no longer resolves. Distinct from `AGENT_UNATTRIBUTED`:
+ * that is traffic with NO agent id, which cannot be filtered at all. */
+export const AGENT_DELETED = '(deleted agent)';
+
+/** One entry in the Overview agent strip. `filterable` is false ONLY for keyless
+ * traffic: an empty agent id is rejected by the listing (400), so offering the
+ * click-through would present a broken action. */
+export interface AgentStripEntry {
+  readonly key: string;
+  readonly label: string;
+  readonly requests: number;
+  readonly filterable: boolean;
+}
+
+/** Breakdown rows -> strip entries. PURE.
+ *
+ * Keyless traffic arrives under the endpoint's empty-string key; it is KEPT (an
+ * omitted row silently under-reports the total) but not made actionable. Rows
+ * with no activity never arrive at all, so "absent" needs no special case. */
+export function toAgentStrip(rows: readonly BreakdownRow[]): AgentStripEntry[] {
+  return rows.map((r) => ({
+    key: r.key,
+    label: r.key === '' ? AGENT_UNATTRIBUTED : (r.label ?? AGENT_DELETED),
+    requests: r.requests,
+    filterable: r.key !== '',
+  }));
 }

@@ -15,6 +15,12 @@ heading is started.
 
 ## [Unreleased]
 
+### Added
+
+- **Every request surface now says which agent it came from.** `request_log.agent_id` has always been stored and indexed, and the listing has always returned it — nothing used it, so answering "which agent is accruing these requests" meant opening the inspector one row at a time. The requests table now marks each change of agent with a labelled group boundary (keyed on the agent **id**, so two agents sharing a name still separate), the Requests page gains an agent filter that composes with the routing and mode filters, and the Overview page gains an agent strip naming each agent active in the range with its request count and a click-through to its filtered rows. No schema change and no migration.
+- **`GET /api/analytics/requests` accepts an `agentId` filter.** Applied inside the existing owner scope, never instead of it, and matching the **recorded** value: a deleted agent's history still returns (labelled null, because its name no longer resolves), and an id belonging to another tenant returns only the caller's own rows that happen to carry it — never another tenant's. An empty `agentId` is a 400 rather than a silently-ignored filter.
+- **`GET /api/analytics/breakdown` accepts `metric=requests`.** The endpoint ranks by spend at a default limit of 10, so an agent issuing high volume against free, local or fully-cached routes accrues near-zero spend and is truncated out of a request-volume view entirely. The Overview strip asks for this ranking with an explicit limit.
+
 ### Changed
 
 - **A provider 400 no longer abandons the fallback chain.** `bad_request` was the one kind for which fallback was disabled, on the reasoning that a malformed request would be rejected identically by every member. That does not hold in a router: a 400 is the status under which providers report **per-model capability limits** — an exceeded context window, unsupported tools, an unsupported response format — and those describe the model *polyrouter chose*, not a defect in what the caller sent. A tier whose primary refuses now walks to the next member and serves. Naming a concrete model is unaffected: it resolves to a single-element chain, so there is no next member and the wire response is identical. Under cascade, a cheap-leg 400 now escalates to the strong tier — typically a different provider — instead of being surfaced. This also closes the output-cap dead end, where an unknown-cap member's rejection stopped the walk before the clamped tail was consulted.

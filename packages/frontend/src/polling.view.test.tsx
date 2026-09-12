@@ -121,8 +121,16 @@ describe('dashboard pollers are visibility-gated', () => {
       // old mount-time loadInflight() call rather than adding to it.
       expect(client.countOf('summary')).toBe(1);
       expect(client.countOf('timeseries')).toBe(1);
-      expect(client.countOf('breakdown')).toBe(1);
       expect(client.countOf('inflight')).toBe(1);
+      // TWO breakdown calls at mount since add-agent-request-attribution: the `model`
+      // panel and the `agent` strip. Asserted as two DISTINCT dimensions rather than a
+      // bare count of 2 — that keeps this test catching the thing it exists for (the
+      // same dimension fetched twice) instead of merely tolerating one more call.
+      const dims = client.callLog
+        .filter((c) => c.method === 'breakdown')
+        .map((c) => c.args[0]);
+      expect(dims).toHaveLength(2);
+      expect(new Set(dims)).toEqual(new Set(['model', 'agent']));
     } finally {
       dispose();
     }

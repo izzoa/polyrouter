@@ -7,7 +7,7 @@ import {
   fmtElapsed,
   type BatchDisplayRow,
 } from '../data/batchBand';
-import { rowCostLabel } from '../data/analytics';
+import { agentRunLabel, rowCostLabel, startsAgentRun } from '../data/analytics';
 import { fmtTime, fmtTokens } from '../data/catalog';
 import { useApp } from '../state/context';
 import { Icon } from './Icon';
@@ -224,8 +224,36 @@ export function RequestRow(props: { r: RequestRow }) {
   );
 }
 
+/**
+ * The agent a run of rows belongs to (add-agent-request-attribution).
+ *
+ * A boundary rather than a tenth column: the listing is time-ordered and one
+ * agent's traffic arrives in runs, so a marker drawn only on CHANGE carries the
+ * same information without squeezing eight existing tracks or pushing the
+ * container-query stack breakpoint wider. It is a sibling block, NOT part of the
+ * row grid (the grid lives on `.req-row` itself), so it costs the table no track
+ * at any width and degrades into the stacked presentation unchanged.
+ *
+ * Text, never colour: the design lock is single-accent, and `dashboard-core`
+ * forbids indicating a state by a decorative mark alone.
+ */
+function AgentBoundary(props: { label: string }): JSX.Element {
+  return <div class="rs-agent-boundary">{props.label}</div>;
+}
+
 export function RequestRows(props: { rows: RequestRow[] }) {
-  return <For each={props.rows}>{(r) => <RequestRow r={r} />}</For>;
+  return (
+    <For each={props.rows}>
+      {(r, i) => (
+        <>
+          <Show when={startsAgentRun(props.rows, i())}>
+            <AgentBoundary label={agentRunLabel(r)} />
+          </Show>
+          <RequestRow r={r} />
+        </>
+      )}
+    </For>
+  );
 }
 
 /**

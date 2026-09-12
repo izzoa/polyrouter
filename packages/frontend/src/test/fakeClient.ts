@@ -1492,7 +1492,7 @@ export class FakeApiClient implements ApiClient {
     dimension: BreakdownDimension,
     range: AnalyticsRangeParams,
     limit?: number,
-    metric?: BreakdownMetric,
+    metric?: BreakdownRanking,
   ): Promise<BreakdownRow[]> {
     this.record('breakdown', dimension, range, limit, metric);
     if (this.analyticsFailure) return Promise.reject(this.analyticsFailure);
@@ -1500,7 +1500,8 @@ export class FakeApiClient implements ApiClient {
     // would let a client-side re-sort pass the very tests written to forbid it.
     const total = (r: BreakdownRow): number =>
       r.inputTokens + r.outputTokens + r.cacheReadTokens + r.cacheWriteTokens;
-    const rank = (r: BreakdownRow): number => (metric === 'tokens' ? total(r) : r.spend);
+    const rank = (r: BreakdownRow): number =>
+      metric === 'tokens' ? total(r) : metric === 'requests' ? r.requests : r.spend;
     return Promise.resolve(
       [...(this.breakdownResult[dimension] ?? [])]
         .sort((a, b) => rank(b) - rank(a) || a.key.localeCompare(b.key))
@@ -1528,6 +1529,13 @@ export class FakeApiClient implements ApiClient {
     if (query.batchId !== undefined) {
       const id = query.batchId;
       rows = rows.filter((r) => r.batchId === id);
+    }
+    // add-agent-request-attribution: the server matches the RECORDED `agent_id`.
+    // Modelled here so a test asserting a filtered list is not merely asserting
+    // that the parameter was sent.
+    if (query.agentId !== undefined) {
+      const agentId = query.agentId;
+      rows = rows.filter((r) => r.agentId === agentId);
     }
     const startIdx =
       query.cursor !== undefined ? rows.findIndex((r) => r.id === query.cursor) + 1 : 0;

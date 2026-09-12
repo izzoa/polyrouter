@@ -224,6 +224,7 @@ export class AnalyticsService {
       ...(q.escalated !== undefined ? { escalated: q.escalated } : {}),
       ...(q.mode !== undefined ? { mode: q.mode } : {}),
       ...(q.batchId !== undefined ? { batchId: q.batchId } : {}),
+      ...(q.agentId !== undefined ? { agentId: q.agentId } : {}),
     });
     // ONE batched existence read for the page (no N+1, no content).
     const withBodies = await this.db.bodyCapture.existsForRequests(

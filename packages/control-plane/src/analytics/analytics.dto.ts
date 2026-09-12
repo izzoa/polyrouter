@@ -8,6 +8,7 @@ import {
   IsIn,
   IsInt,
   IsISO8601,
+  IsNotEmpty,
   IsOptional,
   IsString,
   Max,
@@ -17,8 +18,10 @@ import {
 export const ANALYTICS_BUCKETS = ['hour', 'day', 'week', 'month'] as const;
 export const ANALYTICS_DIMENSIONS = ['model', 'provider', 'agent', 'tier'] as const;
 /** What a breakdown is RANKED and truncated by. Defaults to spend, so a caller that
- * predates this parameter is unaffected. */
-export const ANALYTICS_METRICS = ['spend', 'tokens'] as const;
+ * predates this parameter is unaffected. `requests` (add-agent-request-attribution)
+ * ranks by served request count — without it a request-volume view inherits a spend
+ * ranking and silently truncates its highest-volume, lowest-cost rows. */
+export const ANALYTICS_METRICS = ['spend', 'tokens', 'requests'] as const;
 
 /** Query-string int → number (validated by `@IsInt` after). */
 const toInt = ({ value }: { value: unknown }): unknown =>
@@ -111,4 +114,15 @@ export class RequestsQueryDto extends RangeQueryDto {
   @IsOptional()
   @IsString()
   batchId?: string;
+
+  /** add-agent-request-attribution: restrict to rows whose RECORDED `agent_id`
+   * equals this. Applied INSIDE the owner scope, never instead of it — so a
+   * foreign id can only ever match the caller's own denormalized rows.
+   * `@IsOptional()` skips null/undefined but NOT `''`, so `?agentId=` falls
+   * through to `@IsNotEmpty` and is a 400 rather than a silently-ignored
+   * filter (the `layer` precedent). */
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  agentId?: string;
 }

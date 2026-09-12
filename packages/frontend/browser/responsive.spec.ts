@@ -223,6 +223,31 @@ test.describe('phone width', () => {
     expect(shape.label).not.toBe('none');
   });
 
+  test('the agent run boundary survives the stacked reflow (add-agent-request-attribution)', async ({
+    page,
+  }) => {
+    await open(page, '#/requests');
+    const panel = await page
+      .locator('.rs-table-requests')
+      .evaluate((el) => el.getBoundingClientRect().width);
+    const boundaries = page.locator('.rs-agent-boundary');
+    expect(await boundaries.count(), 'no agent boundary rendered at all').toBeGreaterThan(0);
+
+    const first = boundaries.first();
+    // Still laid out (a stacked record must not collapse its own group label) …
+    await expect(first).toBeVisible();
+    const box = await first.evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      return { width: r.width, height: r.height, display: getComputedStyle(el).display };
+    });
+    expect(box.height, 'the boundary collapsed to zero height when stacked').toBeGreaterThan(0);
+    // … and it cannot be what makes the table overflow: it is a sibling block, not a
+    // participant in `.req-row`'s grid, so it can never be wider than the panel.
+    expect(box.width).toBeLessThanOrEqual(panel + 0.5);
+    // It must carry TEXT, not a decorative mark alone.
+    expect((await first.textContent())?.trim().length ?? 0).toBeGreaterThan(0);
+  });
+
   test('the batches table renders as stacked records, not a 10-column grid', async ({ page }) => {
     await open(page, '#/batches');
     const shape = await page.evaluate(() => {

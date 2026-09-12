@@ -9,7 +9,7 @@ import {
   RequestRows,
   RequestTableHead,
 } from '../components/RequestTable';
-import { bucketSeconds, pct, timeseriesToChart } from '../data/analytics';
+import { bucketSeconds, pct, timeseriesToChart, toAgentStrip } from '../data/analytics';
 import { BATCH_POLL_MS } from '../data/batchBand';
 import { inflightCadenceMs } from '../data/inflight';
 import { createPoller } from '../data/poller';
@@ -30,7 +30,14 @@ export function Overview(props: { live: boolean }) {
   createEffect(
     on(
       () => state.range,
-      () => void app.loadOverview(),
+      () => {
+        void app.loadOverview();
+        // The agent strip rides the RANGE, not the poll: per-agent volume over a
+        // window does not change meaningfully every 15 seconds, and adding a fifth
+        // endpoint to the polled fan-out would raise the idle cost of an open
+        // dashboard by a quarter for no freshness anyone can perceive.
+        void app.loadAgentStrip();
+      },
     ),
   );
 
@@ -69,6 +76,8 @@ export function Overview(props: { live: boolean }) {
     enabled: () => props.live,
   });
 
+  /** Strip entries, derived — keyless traffic kept but not made actionable. */
+  const agentStrip = () => toAgentStrip(state.agentStrip);
   const spend = () => state.analyticsSummary?.spend ?? 0;
   const reqs = () => state.analyticsSummary?.requests ?? 0;
   const metric = (): BreakdownMetric => state.breakdownMetric;
@@ -206,54 +215,134 @@ export function Overview(props: { live: boolean }) {
         />
       </div>
 
+      {/* Which agents are accruing this range's requests (add-agent-request-attribution).
+          Same low-weight strip pattern as Providers below — the page already carries four
+          stat cards, a chart, a breakdown panel and the recent-requests table, and the
+          design lock allows one focal point per screen, so a fifth PANEL would be the
+          wrong weight. Activating an agent hands the filtered evidence to Requests, which
+          is also what makes that filter discoverable. */}
+      {/* ONE panel, two labelled rows — agents and providers are both "the set of
+          things wired into this router, with their state". Two structurally identical
+          strips stacked would read as the same section repeated. */}
       <div
         class="panel"
-        style="display:flex;align-items:center;gap:16px;padding:11px 18px;flex-wrap:wrap;border-radius:10px"
+        style="display:flex;flex-direction:column;gap:8px;padding:11px 18px;border-radius:10px"
       >
-        <span class="upper-label" style="letter-spacing:.05em">
-          Providers
-        </span>
-        <Show
-          when={state.providers.length > 0}
-          fallback={
-            <span style="font:400 12px 'Geist',sans-serif;color:var(--text3)">
-              None yet — add one under Providers.
-            </span>
-          }
+        <div class="rs-wrap" style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+          <span class="upper-label" style="letter-spacing:.05em">
+            Agents
+          </span>
+          <Show
+            when={state.agentStripLoaded}
+            fallback={
+              <span style="font:400 12px 'Geist',sans-serif;color:var(--text3)">
+                {/* Never a zero here: an unloaded strip is UNKNOWN, not measured-empty —
+                  and a FAILED load must not keep reading as "still working". */}
+                {state.agentStripError === null ? 'Loading…' : 'Couldn’t load agent activity.'}
+              </span>
+            }
+          >
+            <Show
+              when={agentStrip().length > 0}
+              fallback={
+                <span style="font:400 12px 'Geist',sans-serif;color:var(--text3)">
+                  No agent activity in this range.
+                </span>
+              }
+            >
+              <For each={agentStrip()}>
+                {(a) => (
+                  <Show
+                    when={a.filterable}
+                    fallback={
+                      /* Keyless traffic: shown so the total is honest, but an empty agent
+                       id is a rejected filter, so there is no action to offer. */
+                      <span
+                        style="display:flex;align-items:center;gap:6px;font:400 12px 'Geist',sans-serif;color:var(--text3)"
+                        title="Requests recorded without an agent key"
+                      >
+                        {a.label}
+                        <span class="mono" style="font-size:11px">
+                          {a.requests.toLocaleString()}
+                        </span>
+                      </span>
+                    }
+                  >
+                    <button
+                      type="button"
+                      style="display:flex;align-items:center;gap:6px;font:400 12px 'Geist',sans-serif;color:var(--text2);cursor:pointer"
+                      aria-label={`${a.label} — ${String(a.requests)} requests; show them`}
+                      onClick={() => {
+                        app.setAgentFilter(a.key);
+                        app.go('requests');
+                      }}
+                    >
+                      {a.label}
+                      <span class="mono" style="font-size:11px;color:var(--text3)">
+                        {a.requests.toLocaleString()}
+                      </span>
+                    </button>
+                  </Show>
+                )}
+              </For>
+              <Show when={state.agentStripTruncated}>
+                <span style="font:400 11.5px 'Geist',sans-serif;color:var(--text3)">
+                  top {agentStrip().length} shown
+                </span>
+              </Show>
+            </Show>
+          </Show>
+        </div>
+
+        <div
+          class="rs-wrap"
+          style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding-top:8px;border-top:1px solid var(--border2)"
         >
-          <For each={state.providers}>
-            {(p) => (
-              <button
-                type="button"
-                style="display:flex;align-items:center;gap:6px;font:400 12px 'Geist',sans-serif;color:var(--text2);cursor:pointer"
-                aria-label={`${p.name} — ${
-                  p.status === 'ok' ? 'healthy' : p.status === 'error' ? 'failing' : 'not tested'
-                }`}
-                title={
-                  p.status === 'ok' ? 'healthy' : p.status === 'error' ? 'failing' : 'not tested'
-                }
-                onClick={() => app.go('providers')}
-              >
-                <span
-                  aria-hidden="true"
-                  style={{
-                    width: '6px',
-                    height: '6px',
-                    'border-radius': '50%',
-                    background:
-                      p.status === 'ok'
-                        ? 'var(--green)'
-                        : p.status === 'error'
-                          ? 'var(--red)'
-                          : 'var(--faint)',
-                  }}
-                />
-                {p.name}
-                {p.kind === 'local' ? ' · local' : ''}
-              </button>
-            )}
-          </For>
-        </Show>
+          <span class="upper-label" style="letter-spacing:.05em">
+            Providers
+          </span>
+          <Show
+            when={state.providers.length > 0}
+            fallback={
+              <span style="font:400 12px 'Geist',sans-serif;color:var(--text3)">
+                None yet — add one under Providers.
+              </span>
+            }
+          >
+            <For each={state.providers}>
+              {(p) => (
+                <button
+                  type="button"
+                  style="display:flex;align-items:center;gap:6px;font:400 12px 'Geist',sans-serif;color:var(--text2);cursor:pointer"
+                  aria-label={`${p.name} — ${
+                    p.status === 'ok' ? 'healthy' : p.status === 'error' ? 'failing' : 'not tested'
+                  }`}
+                  title={
+                    p.status === 'ok' ? 'healthy' : p.status === 'error' ? 'failing' : 'not tested'
+                  }
+                  onClick={() => app.go('providers')}
+                >
+                  <span
+                    aria-hidden="true"
+                    style={{
+                      width: '6px',
+                      height: '6px',
+                      'border-radius': '50%',
+                      background:
+                        p.status === 'ok'
+                          ? 'var(--green)'
+                          : p.status === 'error'
+                            ? 'var(--red)'
+                            : 'var(--faint)',
+                    }}
+                  />
+                  {p.name}
+                  {p.kind === 'local' ? ' · local' : ''}
+                </button>
+              )}
+            </For>
+          </Show>
+        </div>
       </div>
 
       <div

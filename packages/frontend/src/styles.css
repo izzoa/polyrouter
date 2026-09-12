@@ -378,6 +378,29 @@ select:focus {
   gap: 0 14px;
 }
 
+/* Agent run boundary in the request table (add-agent-request-attribution). A
+   sibling BLOCK, deliberately not part of `.req-row`'s grid — so it adds no
+   track at any width and needs no change to the column template or the
+   container-query stack breakpoint. Greyscale only: the palette is
+   single-accent, and identity is carried by the text, never by a hue. */
+.rs-agent-boundary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  /* The table's own rhythm: `.table-head` is 8px 18px and `.req-row` 9px 18px.
+     A group boundary is head-like, so it takes the head's value rather than
+     inventing an off-grid one. */
+  padding: 8px 18px;
+  background: var(--chip);
+  border-bottom: 1px solid var(--border2);
+  font:
+    500 10.5px 'Geist',
+    sans-serif;
+  color: var(--text3);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
 .req-row {
   display: grid;
   width: 100%;

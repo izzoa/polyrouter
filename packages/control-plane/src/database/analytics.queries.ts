@@ -493,7 +493,8 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
       // taking the top N by spend and re-sorting — silently drops a dimension value that
       // leads on tokens and trails on spend, producing a chart that is wrong only in what
       // is missing from it. Ties break on key so the row set is stable between requests.
-      const rank = (v: Agg): number => (metric === 'tokens' ? totalTokens(v) : v.micros);
+      const rank = (v: Agg): number =>
+        metric === 'tokens' ? totalTokens(v) : metric === 'requests' ? v.requests : v.micros;
       const top = [...agg.entries()]
         .sort((a, b) => rank(b[1]) - rank(a[1]) || a[0].localeCompare(b[0]))
         .slice(0, limit)
@@ -852,6 +853,13 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
       if (query.mode === 'batch') conds.push(sql`${requestLogs.batchId} is not null`);
       if (query.mode === 'sync') conds.push(sql`${requestLogs.batchId} is null`);
       if (query.batchId !== undefined) conds.push(eq(requestLogs.batchId, query.batchId));
+      // add-agent-request-attribution: an ADDITIONAL predicate, never a
+      // substitute for `conds[0]`'s ownership scope. `agent_id` is denormalized
+      // with no FK, so this deliberately matches the RECORDED value: a deleted
+      // agent's rows still return (their label resolves to null), and a foreign
+      // id matches only the caller's own rows that carry it — never another
+      // tenant's, because the owner predicate still stands beside it.
+      if (query.agentId !== undefined) conds.push(eq(requestLogs.agentId, query.agentId));
       if (query.cursor !== undefined) {
         // Bind the cursor timestamp as ::timestamptz so Postgres compares at the
         // column's full µs precision (the cursor carries the raw ::text value).

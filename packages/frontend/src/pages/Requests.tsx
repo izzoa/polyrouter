@@ -70,15 +70,36 @@ export function Requests(props: { live: boolean }) {
     const params = filterToRequestParams(state.reqFilter);
     if (params.status !== undefined || params.escalated !== undefined) return [];
     if (params.decisionLayers !== undefined) return []; // a job's mode is not a layer
-    return state.batchRows;
+    // The agent filter is ATTRIBUTABLE here (add-agent-request-attribution):
+    // `batch_job.agent_id` is NOT NULL and rides the wire, so a job is FILTERED —
+    // never hidden. Emptying this band would conceal running work the page can
+    // correctly place.
+    const agent = state.reqAgentId;
+    if (agent === null) return state.batchRows;
+    return state.batchRows.filter((r) => r.agentId === agent);
   });
 
-  const bandRows = createMemo(() =>
+  /** The in-flight band BEFORE the agent filter. Kept separate so the page can tell
+   * "nothing is running" apart from "running work exists that this filter cannot
+   * attribute" — the distinction the disclosure below depends on. */
+  const attributableInflight = createMemo(() =>
     projectInflightRows(
       state.inflightRows,
       new Set(state.requestList.map((r) => r.id)),
       filterToRequestParams(state.reqFilter),
     ),
+  );
+
+  /** `InflightEntry` carries no agent id, so under an agent filter these rows cannot
+   * be attributed. The band empties rather than displaying rows it cannot place. */
+  const bandRows = createMemo(() =>
+    state.reqAgentId === null ? attributableInflight() : [],
+  );
+
+  /** True only when the filter is HIDING live work. A permanent banner would train
+   * people to ignore it; this appears exactly when there is something to disclose. */
+  const inflightHidden = createMemo(
+    () => state.reqAgentId !== null && attributableInflight().length > 0,
   );
 
   // Freshness (add-requests-freshness). Routed through the SHARED aggregate budget, which
@@ -171,6 +192,31 @@ export function Requests(props: { live: boolean }) {
             </For>
           </div>
         </div>
+        {/* Agent selection is its OWN control, not another routing chip: the chips above
+            are one enum ("how was it routed") and the agent is an orthogonal axis, so the
+            two must compose rather than replace each other. A select rather than chips
+            because the list is unbounded — a tenant may run dozens of agents. */}
+        <div
+          class="rs-wrap"
+          style="display:flex;align-items:center;gap:6px;padding-left:10px;margin-left:10px;border-left:1px solid var(--border)"
+        >
+          <label
+            for="req-agent"
+            style="font:500 11px 'Geist',sans-serif;color:var(--text3);text-transform:uppercase;letter-spacing:.04em"
+          >
+            Agent
+          </label>
+          <select
+            class="select"
+            id="req-agent"
+            style="padding:4px 8px;font:500 12px 'Geist',sans-serif;max-width:180px"
+            value={state.reqAgentId ?? ''}
+            onChange={(e) => app.setAgentFilter(e.currentTarget.value === '' ? null : e.currentTarget.value)}
+          >
+            <option value="">All agents</option>
+            <For each={state.agents}>{(a) => <option value={a.id}>{a.name}</option>}</For>
+          </select>
+        </div>
         <div style="margin-left:auto;font:400 11.5px 'Geist',sans-serif;color:var(--text3)">
           {state.requestList.length} shown{state.requestCursor !== null ? '+' : ''} · click a row to
           inspect the decision
@@ -224,6 +270,21 @@ export function Requests(props: { live: boolean }) {
         </Show>
         <Show when={bandRows().length > 0}>
           <InflightRows rows={bandRows()} />
+        </Show>
+        {/* An emptied band must never read as "nothing is running". The in-flight
+            payload carries no agent id, so under an agent filter these rows exist but
+            cannot be placed — say that, rather than asserting an absence the page
+            cannot verify. `role="status"` because it appears without user action. */}
+        <Show when={inflightHidden()}>
+          <div
+            role="status"
+            class="rs-inflight-hidden"
+            style="padding:9px 18px;border-bottom:1px solid var(--border2);font:400 11.5px 'Geist',sans-serif;color:var(--text3)"
+          >
+            {attributableInflight().length} live request
+            {attributableInflight().length === 1 ? ' is' : 's are'} running but can’t be
+            attributed to an agent yet — clear the agent filter to see them.
+          </div>
         </Show>
         <Show
           when={state.requestList.length > 0}

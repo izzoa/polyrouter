@@ -537,6 +537,13 @@ export interface AnalyticsRequestsQuery {
   /** Exactly one owned job's items — the live band's targeted existence read.
    * Another tenant's job id simply matches nothing (the range is owner-scoped). */
   batchId?: string;
+  /** Exactly the rows whose RECORDED `agent_id` equals this
+   * (add-agent-request-attribution). `agent_id` is denormalized with NO foreign
+   * key, so this matches on the recorded value, not on a live agent: a DELETED
+   * agent's history still returns (labelled null), and a FOREIGN id returns only
+   * the caller's own rows that happen to carry it — the owner scope, applied
+   * alongside this, is what makes that safe. */
+  agentId?: string;
 }
 
 /** A request-log row enriched for the dashboard listing: owner-scoped labels

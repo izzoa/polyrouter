@@ -57,8 +57,15 @@ async function mountPage(
 }
 
 /** Recorded `breakdown` calls with their arguments. */
+/** Breakdown calls driven by the METRIC SELECTOR.
+ *
+ * The Overview agent strip (add-agent-request-attribution) also calls this endpoint,
+ * with a fixed `requests` ranking that no selector controls — and the App mounts
+ * Overview before navigating, so its call lands in the log even on a Costs harness.
+ * Excluded by its metric, which is exact: the selector only ever sends `spend` or
+ * `tokens`, so a genuine selector regression still fails these tests. */
 const breakdownCalls = (fake: FakeApiClient): { method: string; args: unknown[] }[] =>
-  fake.callLog.filter((c) => c.method === 'breakdown');
+  fake.callLog.filter((c) => c.method === 'breakdown' && c.args[3] !== 'requests');
 
 const metricButton = (host: HTMLElement, label: string): HTMLButtonElement | undefined =>
   [...host.querySelectorAll<HTMLButtonElement>('button.rs-seg')].find(

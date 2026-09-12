@@ -22,7 +22,11 @@ import {
 } from '../a11y';
 import { createStore, produce, type SetStoreFunction } from 'solid-js/store';
 import { DEFAULT_PAGE, hashForPage, pageFromHash } from './route';
-import { filterToRequestParams, modeToRequestParams } from '../data/analytics';
+import {
+  agentToRequestParams,
+  filterToRequestParams,
+  modeToRequestParams,
+} from '../data/analytics';
 import {
   EVENT_TYPES,
   type AdminInviteDto,
@@ -126,6 +130,11 @@ import type {
 
 /** Rows fetched per page of the requests list / "Load more". */
 const REQUEST_PAGE_SIZE = 25;
+/** The Overview agent strip asks for the API's hard cap EXPLICITLY
+ * (add-agent-request-attribution). The endpoint's default is 10 ranked by spend,
+ * which truncates out a high-volume agent on free or cached routes — the exact
+ * row the strip exists to surface. */
+const AGENT_STRIP_LIMIT = 100;
 /** Cost breakdown dimensions the dashboard renders (the tier dimension is unused). */
 type CostDimension = 'model' | 'provider' | 'agent';
 
@@ -138,6 +147,11 @@ export interface RequestWindow {
   /** The mode the window was frozen under (add-batch-inference), so the
    * new-rows probe counts exactly what the list would show. */
   mode: RequestMode;
+  /** The agent the window was frozen under (add-agent-request-attribution).
+   * On the window for the same reason `mode` is: the freshness probe builds its
+   * query from here, and a probe that ignored the agent would announce "N new"
+   * for traffic the user has filtered out. `null` = no selection. */
+  agentId: string | null;
 }
 
 export interface AppState {
@@ -159,7 +173,25 @@ export interface AppState {
     error: string | null;
     range: Range;
   };
+  /** Overview's agent strip (add-agent-request-attribution): per-agent request
+   * counts for the SELECTED range, ranked by requests. Its own slice, NOT
+   * `analyticsBreakdown.agent` — that one follows the shared spend/tokens
+   * preference, and a volume strip must not inherit a spend ranking. */
+  agentStrip: BreakdownRow[];
+  agentStripLoaded: boolean;
+  /** A FAILED strip load is not a slow one. Without this the strip renders its
+   * loading state forever, which reads as "still working" rather than "this did
+   * not load" — an absence presented as progress. */
+  agentStripError: string | null;
+  /** True when the request hit the cap, so the UI can disclose a top-N rather
+   * than present a partial list as complete. */
+  agentStripTruncated: boolean;
   reqFilter: RequestFilter;
+  /** The selected agent for the requests listing, or null for all
+   * (add-agent-request-attribution). Independent of `reqFilter` and `reqMode`
+   * so all three compose. Identity-scoped: an agent id belongs to ONE tenant,
+   * so unlike `reqFilter` it is cleared on a principal change. */
+  reqAgentId: string | null;
   /** add-batch-inference: the Requests page's execution-mode partition. Orthogonal
    * to `reqFilter` — one asks "how was it routed", the other "how was it run". */
   reqMode: RequestMode;
@@ -758,7 +790,12 @@ function initialState(): AppState {
     range: '24h',
     routingSection: 'auto',
     autoPerf: { data: null, loaded: false, error: null, range: '7d' },
+    agentStrip: [],
+    agentStripLoaded: false,
+    agentStripError: null,
+    agentStripTruncated: false,
     reqFilter: 'all',
+    reqAgentId: null,
     reqMode: 'all',
     selId: null,
     toast: null,
@@ -937,12 +974,19 @@ export interface AppStore {
   loadSemanticLearning: () => Promise<void>;
   setFilter: (filter: RequestFilter) => void;
   setMode: (mode: RequestMode) => void;
+  /** Select one agent for the requests listing, or null for all. Re-freezes the
+   * window exactly as `setFilter`/`setMode` do (add-agent-request-attribution). */
+  setAgentFilter: (agentId: string | null) => void;
   select: (id: string | null) => void;
   say: (msg: string) => void;
   clearToast: () => void;
   copy: (txt: string, msg?: string) => void;
   // observe (analytics, realized)
   loadOverview: () => Promise<void>;
+  /** Overview's agent strip. Deliberately NOT part of `loadOverview`: that is the
+   * POLLED fan-out, and per-agent range volume does not need 15-second freshness.
+   * Driven by the page's range effect — mount and range change only. */
+  loadAgentStrip: () => Promise<void>;
   loadCosts: () => Promise<void>;
   loadRecentRequests: () => Promise<void>;
   loadInflight: () => Promise<void>;
@@ -1321,6 +1365,12 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     // design, so the loading and error indicators must be reset here or the page latches a
     // spinner it can never clear. `reqFilter` is deliberately kept: a display preference,
     // not another owner's data.
+    //
+    // `reqAgentId` is the EXCEPTION to that rule (add-agent-request-attribution): an
+    // agent id belongs to exactly one tenant, so carrying it across a principal change
+    // would issue the next account's very first listing query under the previous
+    // account's agent. It is tenant data wearing a preference's clothes.
+    setState('reqAgentId', null);
     bump('requests');
     bump('newRows');
     // The Observe aggregates cross the boundary too (fix-analytics-identity-scope): spend
@@ -1331,11 +1381,16 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     bump('summary');
     bump('series');
     bump('breakdown');
+    bump('agentStrip');
     setState(
       produce((s) => {
         s.inflightRows = [];
         s.batchRows = [];
         s.recentRequests = [];
+        s.agentStrip = [];
+        s.agentStripLoaded = false;
+        s.agentStripError = null;
+        s.agentStripTruncated = false;
         s.analyticsSummary = null;
         s.analyticsSummaryLoading = false;
         s.analyticsSummaryError = null;
@@ -1816,7 +1871,15 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
   // `newRows` is the freshness probe's OWN generation (add-requests-freshness). Sharing
   // `requests` would let a probe cancel an append (or the reverse), and would let a late
   // probe restore the pill after the user had already clicked it or changed filters.
-  const generation = { summary: 0, series: 0, breakdown: 0, recent: 0, requests: 0, newRows: 0 };
+  const generation = {
+    summary: 0,
+    series: 0,
+    breakdown: 0,
+    agentStrip: 0,
+    recent: 0,
+    requests: 0,
+    newRows: 0,
+  };
   type SliceKey = keyof typeof generation;
   const bump = (key: SliceKey): number => (generation[key] += 1);
   const isCurrent = (key: SliceKey, token: number): boolean => generation[key] === token;
@@ -1874,6 +1937,35 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
 
   // The breakdowns are one shared slice (Overview loads `model`; Costs loads all
   // three) — one generation so a stale reply is discarded wholesale.
+  /** Overview's agent strip (add-agent-request-attribution): per-agent request
+   * counts over the SELECTED range.
+   *
+   * Ranked by `requests` with an EXPLICIT limit, never the endpoint's defaults —
+   * those are spend at limit 10, which omits exactly what this strip exists to
+   * show. Best-effort: a failure leaves `agentStripLoaded` false so the strip
+   * shows a neutral state rather than presenting an absence as a measured zero. */
+  const loadAgentStrip = async (): Promise<void> => {
+    const token = bump('agentStrip');
+    setState({ agentStripLoaded: false, agentStripError: null });
+    try {
+      const { from, to } = currentRange();
+      const rows = await client.breakdown('agent', { from, to }, AGENT_STRIP_LIMIT, 'requests');
+      if (!isCurrent('agentStrip', token)) return;
+      setState(
+        produce((s) => {
+          s.agentStrip = rows;
+          s.agentStripLoaded = true;
+          s.agentStripError = null;
+          // A full page means the cap may have hidden agents; the UI discloses it.
+          s.agentStripTruncated = rows.length >= AGENT_STRIP_LIMIT;
+        }),
+      );
+    } catch (e) {
+      if (!isCurrent('agentStrip', token)) return;
+      setState({ agentStripLoaded: false, agentStripError: err(e) });
+    }
+  };
+
   const loadBreakdowns = async (
     dims: CostDimension[],
     /** Overview passes `spend` EXPLICITLY: it shares this slice with Costs and must stay
@@ -2127,6 +2219,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         limit: NEW_ROWS_CAP,
         ...filterToRequestParams(window.filter),
         ...modeToRequestParams(window.mode),
+        ...agentToRequestParams(window.agentId),
       });
       if (!current()) return;
       setState('requestsNew', {
@@ -2337,13 +2430,20 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         // A reset ends the paging session and retires any pending disclosure.
         setState({ requestsPaged: false, requestsNew: null });
         const { from, to } = currentRange();
-        const window: RequestWindow = { from, to, filter: state.reqFilter, mode: state.reqMode };
+        const window: RequestWindow = {
+          from,
+          to,
+          filter: state.reqFilter,
+          mode: state.reqMode,
+          agentId: state.reqAgentId,
+        };
         const page = await client.requests({
           from,
           to,
           limit: REQUEST_PAGE_SIZE,
           ...filterToRequestParams(window.filter),
           ...modeToRequestParams(window.mode),
+          ...agentToRequestParams(window.agentId),
         });
         if (!current()) return;
         setState(
@@ -2367,6 +2467,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           cursor,
           ...filterToRequestParams(window.filter),
           ...modeToRequestParams(window.mode),
+          ...agentToRequestParams(window.agentId),
         });
         if (!current()) return;
         setState(
@@ -2713,6 +2814,10 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       setState('reqMode', reqMode);
       void loadRequests(true);
     },
+    setAgentFilter: (reqAgentId) => {
+      setState('reqAgentId', reqAgentId);
+      void loadRequests(true);
+    },
     select: (id) => setState({ selId: id, selBodies: { rows: null, loading: false, error: null } }),
     say,
     clearToast: () => {
@@ -2722,6 +2827,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     copy,
 
     loadOverview,
+    loadAgentStrip,
     loadCosts,
     loadRecentRequests,
     loadInflight,

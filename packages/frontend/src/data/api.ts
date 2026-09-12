@@ -595,7 +595,14 @@ export interface TimeseriesPoint {
 /** What a breakdown is ranked — and TRUNCATED — by. Ranking has to reach the server: it
  * returns a top-N, so re-sorting the response would silently omit anything that leads on
  * the chosen metric and trails on spend. */
+/** The USER-SELECTABLE breakdown metric (the Segmented control on Costs and
+ * Overview). Deliberately narrower than what the endpoint accepts. */
 export type BreakdownMetric = 'spend' | 'tokens';
+/** What the endpoint can RANK by. `requests` is asked for programmatically by
+ * the Overview agent strip (add-agent-request-attribution) and is deliberately
+ * NOT offered as a user preference — it is a property of that one view, not a
+ * setting shared with the Costs panels. */
+export type BreakdownRanking = BreakdownMetric | 'requests';
 
 /** `GET /breakdown` — top-N by the requested metric, desc. `key` is the dimension id
  * (`''` for a null dimension); `label` is the owner-scoped human label (null if deleted).
@@ -829,6 +836,9 @@ export interface RequestsQuery {
   mode?: 'sync' | 'batch';
   /** add-batch-inference: one owned job's settled items (the band's existence read). */
   batchId?: string;
+  /** add-agent-request-attribution: rows whose RECORDED `agent_id` equals this.
+   * An unknown or foreign id simply matches nothing the caller owns. */
+  agentId?: string;
 }
 
 /**
@@ -994,7 +1004,7 @@ export interface ApiClient {
     dimension: BreakdownDimension,
     range: AnalyticsRangeParams,
     limit?: number,
-    metric?: BreakdownMetric,
+    metric?: BreakdownRanking,
   ): Promise<BreakdownRow[]>;
   requests(query: RequestsQuery): Promise<RequestsPage>;
   /** add-inflight-requests: the owner's live in-flight snapshot for the Overview card. */
@@ -1273,6 +1283,7 @@ export const realClient: ApiClient = {
         escalated: query.escalated,
         mode: query.mode,
         batchId: query.batchId,
+        agentId: query.agentId,
       })}`,
     ),
   inflight: () => http<InflightSnapshot>(`${API_BASE}/analytics/inflight`),

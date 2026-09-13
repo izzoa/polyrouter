@@ -147,6 +147,28 @@ describe('LogWriter', () => {
     expect(rows[0]!.inputPriceSnapshot).toBe(2.5);
   });
 
+  it('carries the decision-time scope beside the epoch, both null when absent (add-per-agent-calibration)', async () => {
+    // The pair is the key: both counters default to 0 and advance on their own
+    // events, so an epoch with no scope cannot say whose evidence a row is.
+    // This test exists because the field WAS silently dropped once — a spread
+    // of an unknown property is not an excess-property error in TypeScript, so
+    // the stamp typechecked and never reached the column.
+    const { writer, insertMany } = makeWriter({});
+    writer.enqueue(draft({ structuralEpoch: 3, structuralScope: 'agent' }));
+    writer.enqueue(draft({ id: randomUUID(), structuralEpoch: 3, structuralScope: 'tenant' }));
+    writer.enqueue(draft({ id: randomUUID() })); // non-auto: neither is stamped
+    await writer.flush();
+    const [, rows] = insertMany.mock.calls[0] as [
+      Principal,
+      { structuralEpoch: number | null; structuralScope: string | null }[],
+    ];
+    expect(rows.map((r) => [r.structuralScope, r.structuralEpoch])).toEqual([
+      ['agent', 3],
+      ['tenant', 3],
+      [null, null],
+    ]);
+  });
+
   it('maps the per-attempt trail to the attempt_failures column, null when absent (add-fallback-attempt-detail)', async () => {
     const { writer, insertMany } = makeWriter({});
     const attemptFailures = [

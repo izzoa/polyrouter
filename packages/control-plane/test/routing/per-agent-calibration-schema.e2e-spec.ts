@@ -17,7 +17,9 @@
 //     failure mode the scope column was designed to avoid.
 import { randomUUID } from 'node:crypto';
 import { loadConfig } from '@polyrouter/shared';
+import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
+import { buildIdentityPort } from '../../src/database/port-identity';
 import { COMPOSE_HINT } from '../tenancy/harness';
 import '../../src/database/database.config';
 
@@ -182,6 +184,144 @@ describe('per-agent calibration schema (add-per-agent-calibration)', () => {
         [owner],
       );
       expect(Number(rows[0]!.n)).toBeGreaterThan(0);
+    });
+  });
+
+  describe('the hot-path projection carries the pair in ONE query (task 2.4)', () => {
+    it('findByPrefix returns the quad and epoch without a second round trip', async () => {
+      const id = await seedAgent('hotpath');
+      const { rows: prefixRow } = await pool.query<{ api_key_prefix: string }>(
+        `SELECT api_key_prefix FROM agent WHERE id=$1`,
+        [id],
+      );
+      const prefix = prefixRow[0]!.api_key_prefix;
+      await setQuad(id, 0.52, 0.32, 0.55, 0.3);
+
+      // Count statements at the POOL, so an extra query anywhere in the
+      // accessor shows up. The whole argument for putting the quad on `agent`
+      // rather than in its own table is that this stays at one.
+      let queries = 0;
+      const counting = new Pool({ connectionString: databaseUrl, max: 2 });
+      counting.on('acquire', () => undefined);
+      const origQuery = counting.query.bind(counting) as typeof counting.query;
+      (counting as unknown as { query: unknown }).query = (...args: unknown[]) => {
+        queries += 1;
+        return (origQuery as (...a: unknown[]) => unknown)(...args);
+      };
+      try {
+        const identity = buildIdentityPort(drizzle(counting));
+        const record = await identity.agentAuth.findByPrefix(prefix);
+        expect(record).not.toBeNull();
+        expect(record).toMatchObject({
+          id,
+          calibratedHigh: 0.52,
+          calibratedLow: 0.32,
+          calibratedAnchorHigh: 0.55,
+          calibratedAnchorLow: 0.3,
+          calibrationEpoch: 0,
+        });
+        expect(queries).toBe(1);
+      } finally {
+        await counting.end();
+      }
+    });
+
+    it('returns nulls for an agent that has not earned a pair', async () => {
+      const id = await seedAgent('nopair');
+      const { rows } = await pool.query<{ api_key_prefix: string }>(
+        `SELECT api_key_prefix FROM agent WHERE id=$1`,
+        [id],
+      );
+      const identity = buildIdentityPort(drizzle(pool));
+      const record = await identity.agentAuth.findByPrefix(rows[0]!.api_key_prefix);
+      expect(record).toMatchObject({
+        calibratedHigh: null,
+        calibratedLow: null,
+        calibratedAnchorHigh: null,
+        calibratedAnchorLow: null,
+        calibrationEpoch: 0,
+      });
+    });
+  });
+
+  describe('(scope, epoch) tells the two counters apart (tasks 3.2, 3.3)', () => {
+    const seedDecided = (
+      scope: string | null,
+      epoch: number | null,
+      agentId: string | null,
+    ): Promise<unknown> =>
+      pool.query(
+        `INSERT INTO request_log
+          (id, owner_user_id, agent_id, decision_layer, routing_reason, input_tokens,
+           output_tokens, usage_estimated, duration_ms, status, escalated, created_at,
+           structural_band, structural_score, structural_band_source,
+           structural_epoch, structural_scope, quality_signal)
+         VALUES ($1,$2,$3,'cascade','t',10,5,false,1,'success',false,now(),
+                 'ambiguous',0.57,'threshold',$4,$5,1)`,
+        [randomUUID(), owner, agentId, epoch, scope],
+      );
+
+    it('separates agent-decided from tenant-decided rows at the SAME epoch number', async () => {
+      // Both counters default to 0 and advance on their own events, so epoch 4
+      // at tenant scope and epoch 4 at agent scope are entirely ordinary and
+      // completely different populations. A scope-blind selection merges them.
+      const agentA = await seedAgent('scope-a');
+      await seedDecided('agent', 4, agentA);
+      await seedDecided('agent', 4, agentA);
+      await seedDecided('tenant', 4, agentA);
+      await seedDecided(null, null, agentA); // non-auto: neither stamped
+
+      const count = async (scope: string | null): Promise<number> => {
+        const { rows } = await pool.query<{ n: string }>(
+          scope === null
+            ? `SELECT count(*) AS n FROM request_log
+                 WHERE agent_id=$1 AND structural_scope IS NULL AND structural_epoch IS NULL`
+            : `SELECT count(*) AS n FROM request_log
+                 WHERE agent_id=$1 AND structural_scope=$2 AND structural_epoch=4`,
+          scope === null ? [agentA] : [agentA, scope],
+        );
+        return Number(rows[0]!.n);
+      };
+      expect(await count('agent')).toBe(2);
+      expect(await count('tenant')).toBe(1);
+      expect(await count(null)).toBe(1);
+
+      // The failure this guards: selecting on the epoch alone merges the two.
+      const { rows: blind } = await pool.query<{ n: string }>(
+        `SELECT count(*) AS n FROM request_log WHERE agent_id=$1 AND structural_epoch=4`,
+        [agentA],
+      );
+      expect(Number(blind[0]!.n)).toBe(3);
+    });
+
+    it('keeps a late-flushed row on its DECISION-time scope', async () => {
+      // Task 3.3. The writer is asynchronous, so a row decided under the agent
+      // scope can land after that agent's pair was cleared. It must still read
+      // as agent-scoped — the stamp records what decided it, not what is true
+      // now — and it is excluded from the agent's POST-clear evidence by the
+      // epoch bump, not by rewriting its scope.
+      const agentB = await seedAgent('late-flush');
+      await seedDecided('agent', 7, agentB); // decided at agent epoch 7
+      await pool.query(
+        `UPDATE agent SET calibrated_high=NULL, calibrated_low=NULL,
+           calibrated_anchor_high=NULL, calibrated_anchor_low=NULL,
+           calibration_epoch=8 WHERE id=$1`,
+        [agentB],
+      );
+
+      const { rows: stamp } = await pool.query<{
+        structural_scope: string;
+        structural_epoch: number;
+      }>(`SELECT structural_scope, structural_epoch FROM request_log WHERE agent_id=$1`, [agentB]);
+      expect(stamp[0]).toEqual({ structural_scope: 'agent', structural_epoch: 7 });
+
+      // Excluded from the CURRENT epoch's evidence by the epoch, not the scope.
+      const { rows: current } = await pool.query<{ n: string }>(
+        `SELECT count(*) AS n FROM request_log
+           WHERE agent_id=$1 AND structural_scope='agent' AND structural_epoch=8`,
+        [agentB],
+      );
+      expect(Number(current[0]!.n)).toBe(0);
     });
   });
 

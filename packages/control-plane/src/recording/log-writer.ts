@@ -90,6 +90,10 @@ export interface RequestLogDraft {
   readonly structuralBandSource?: string;
   /** Decision-time calibration epoch (add-auto-threshold-calibration). */
   readonly structuralEpoch?: number;
+  /** Decision-time calibration SCOPE (add-per-agent-calibration): which
+   * scope's pair decided the band. Travels with the epoch because both
+   * counters default to 0 — the pair is the key, not the epoch alone. */
+  readonly structuralScope?: string;
   /** L2 decision telemetry (add-semantic-routing); absent = null columns. */
   readonly semanticBand?: string;
   readonly semanticScore?: number;
@@ -509,6 +513,7 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
       structuralScore: d.structuralScore ?? null,
       structuralBandSource: d.structuralBandSource ?? null,
       structuralEpoch: d.structuralEpoch ?? null,
+      structuralScope: d.structuralScope ?? null,
       semanticBand: d.semanticBand ?? null,
       semanticScore: d.semanticScore ?? null,
       semanticSource: d.semanticSource ?? null,

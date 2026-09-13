@@ -1,3 +1,4 @@
+import type { AgentCalibrationAttachment } from '../auth/agent-key.guard';
 import { randomUUID } from 'node:crypto';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { SpanStatusCode, trace } from '@opentelemetry/api';
@@ -70,7 +71,7 @@ import {
   ROUTING_CONFIG,
   autoLayerCapability,
   effectiveAutoLayers as computeEffectiveLayers,
-  effectiveThresholds,
+  resolveThresholds,
   type RoutingConfig,
 } from './routing.config';
 import {
@@ -195,6 +196,7 @@ interface Prepared {
   /** The tenant's calibration epoch at decision time (add-auto-threshold-
    * calibration) — set exactly when the verdict is (evaluated requests). */
   structuralEpoch?: number;
+  structuralScope?: string;
   /** Layer 2's verdict when it EVALUATED this request (add-semantic-routing) —
    * recorded on every parent row alongside the structural verdict; undefined
    * when L2 did not run or faulted (fail-open never fabricates telemetry). */
@@ -350,9 +352,22 @@ export class ProxyService {
     headers: NodeJS.Dict<string | string[]>,
     agentId: string | null,
     signal: AbortSignal,
+    /** This agent's own calibrated pair, attached by the guard from the record
+     * it already read (add-per-agent-calibration). Null = inherit the tenant
+     * pair. Optional so the session-plane and every existing caller are
+     * unchanged; there is no new read and no new await on this path. */
+    agentCalibration: AgentCalibrationAttachment | null = null,
   ): Promise<unknown> {
     await this.enforceBudgets(principal, agentId);
-    const p = await this.prepare(principal, protocol, wireBody, headers, agentId, signal);
+    const p = await this.prepare(
+      principal,
+      protocol,
+      wireBody,
+      headers,
+      agentId,
+      signal,
+      agentCalibration,
+    );
     // Publish in-flight presence (add-inflight-requests): fire-and-forget after
     // routing, settled via `onSettle` when the parent row records. The catch is a
     // backstop for an unexpected throw that bypassed record().
@@ -409,9 +424,18 @@ export class ProxyService {
     headers: NodeJS.Dict<string | string[]>,
     signal: AbortSignal,
     agentId: string | null,
+    agentCalibration: AgentCalibrationAttachment | null = null,
   ): Promise<AsyncGenerator<string>> {
     await this.enforceBudgets(principal, agentId);
-    const p = await this.prepare(principal, protocol, wireBody, headers, agentId, signal);
+    const p = await this.prepare(
+      principal,
+      protocol,
+      wireBody,
+      headers,
+      agentId,
+      signal,
+      agentCalibration,
+    );
     const lease = this.beginInflight(p);
     try {
       return await this.streamServed(p, signal);
@@ -1089,12 +1113,21 @@ export class ProxyService {
     headers: NodeJS.Dict<string | string[]>,
     agentId: string | null,
     signal: AbortSignal,
+    agentCalibration: AgentCalibrationAttachment | null = null,
   ): Promise<Prepared> {
     // #21 `routing` span: covers route resolution, the structural/cascade
     // evaluation, and chain building. A no-op when tracing is off.
     const span = trace.getTracer(TRACER_NAME).startSpan('routing');
     try {
-      const p = await this.resolvePlan(principal, protocol, wireBody, headers, agentId, signal);
+      const p = await this.resolvePlan(
+        principal,
+        protocol,
+        wireBody,
+        headers,
+        agentId,
+        signal,
+        agentCalibration,
+      );
       span.setAttributes({
         'polyrouter.decision_layer': p.decision.decisionLayer,
         'polyrouter.tier': p.decision.tierKey ?? '',
@@ -1117,6 +1150,7 @@ export class ProxyService {
     headers: NodeJS.Dict<string | string[]>,
     agentId: string | null,
     signal: AbortSignal,
+    agentCalibration: AgentCalibrationAttachment | null = null,
   ): Promise<Prepared> {
     const startedAt = Date.now();
     // Pre-allocate the row id at admission so the in-flight registry entry and the
@@ -1152,6 +1186,13 @@ export class ProxyService {
     let cascadePlan: CascadePlan | null = null;
     let structuralVerdict: StructuralVerdict | undefined;
     let structuralEpoch: number | undefined;
+    // WHICH scope's pair decided the band (add-per-agent-calibration). Paired
+    // with the epoch because both counters default to 0 and advance
+    // independently, so the epoch alone cannot say whose evidence a row is.
+    // 'tenant' covers a row governed by the instance defaults too: the tenant
+    // is the scope that would calibrate it, and an unpromoted agent bootstraps
+    // from exactly these rows.
+    let structuralScope: 'tenant' | 'agent' | undefined;
     let semanticVerdict: SemanticVerdict | undefined;
     let workloadVerdict: WorkloadVerdict | undefined;
     let learningGate: LearningGate = DISABLED_LEARNING_GATE;
@@ -1162,14 +1203,28 @@ export class ProxyService {
       // skipped; the Layer-0 default then stands (invariant 1).
       const layers = await this.effectiveAutoLayers(principal);
       if (layers.structural) {
-        // Per-tenant calibrated thresholds (add-auto-threshold-calibration):
-        // resolved from the SAME settings read as the layer gates, degrade-
-        // shaped (any invalid/stale pair → instance defaults).
-        const thresholds = effectiveThresholds(
+        // Calibrated thresholds through the THREE-LEVEL chain (instance ->
+        // tenant -> agent; add-per-agent-calibration). The tenant pair comes
+        // from the SAME settings read as the layer gates; the agent pair rides
+        // the record the auth guard already held — no extra read, no extra
+        // await. Degrade-shaped at BOTH hops: an unusable agent pair falls to
+        // the tenant pair, an unusable tenant pair to the instance defaults.
+        const resolved = resolveThresholds(
           this.routingConfig.structural,
           layers.settings,
+          agentCalibration,
           this.calibrationRails,
         );
+        const thresholds = { high: resolved.high, low: resolved.low };
+        // The stamp travels as a PAIR, taken from the same resolution: an
+        // agent-decided row carries the AGENT's epoch, everything else the
+        // tenant's. Reading one from the resolver and the other from the
+        // settings row is how the two would drift apart.
+        const decidedScope: 'tenant' | 'agent' = resolved.scope === 'agent' ? 'agent' : 'tenant';
+        const decidedEpoch =
+          resolved.scope === 'agent'
+            ? (agentCalibration?.calibrationEpoch ?? 0)
+            : (layers.settings?.calibrationEpoch ?? 0);
         // Layer 1 CLASSIFICATION (band + workload verdicts) — no target lookup
         // yet (add-workload-routing D2): the workload stage runs between
         // classification and band resolution, so a claim pre-empts the band.
@@ -1256,13 +1311,15 @@ export class ProxyService {
         if (claimed !== null && classified.kind === 'classified') {
           decision = claimed; // decision_layer 'workload' — no band, no L2, no cascade
           structuralVerdict = classified.verdict;
-          structuralEpoch = layers.settings?.calibrationEpoch ?? 0;
+          structuralEpoch = decidedEpoch;
+          structuralScope = decidedScope;
           if (decidingWorkload !== undefined) workloadVerdict = decidingWorkload;
         } else if (evaln.kind !== 'skip') {
           // Telemetry (add-auto-decision-telemetry): every EVALUATED request
           // records its verdict — including ambiguous/unroutable fall-throughs.
           structuralVerdict = evaln.verdict;
-          structuralEpoch = layers.settings?.calibrationEpoch ?? 0;
+          structuralEpoch = decidedEpoch;
+          structuralScope = decidedScope;
           // Workload telemetry (add-workload-telemetry / add-semantic-workloads):
           // the DECIDING source's verdict rides the same commit; absent when no
           // source produced one.
@@ -1464,6 +1521,7 @@ export class ProxyService {
       structuredDemand: declaredStructuredOutput(ir),
       ...(structuralVerdict !== undefined ? { structuralVerdict } : {}),
       ...(structuralEpoch !== undefined ? { structuralEpoch } : {}),
+      ...(structuralScope !== undefined ? { structuralScope } : {}),
       ...(semanticVerdict !== undefined ? { semanticVerdict } : {}),
       ...(workloadVerdict !== undefined ? { workloadVerdict } : {}),
       learningGate,
@@ -1850,6 +1908,7 @@ function verdictFields(p: Prepared): {
   structuralScore?: number;
   structuralBandSource?: string;
   structuralEpoch?: number;
+  structuralScope?: string;
   semanticBand?: string;
   semanticScore?: number;
   semanticSource?: string;
@@ -1870,6 +1929,7 @@ function verdictFields(p: Prepared): {
           structuralBandSource: v.declared ? 'declared' : 'threshold',
           // Decision-time freshness stamp (add-auto-threshold-calibration).
           ...(p.structuralEpoch !== undefined ? { structuralEpoch: p.structuralEpoch } : {}),
+          ...(p.structuralScope !== undefined ? { structuralScope: p.structuralScope } : {}),
         }
       : {}),
     // Layer 2 telemetry (add-semantic-routing): the four columns travel

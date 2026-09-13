@@ -1,3 +1,4 @@
+import type { AgentCalibrationAttachment } from '../auth/agent-key.guard';
 import type { Request, Response } from 'express';
 import type { Principal } from '@polyrouter/shared/server';
 import type { ClientProtocol } from './proxy-errors';
@@ -23,6 +24,10 @@ export async function handleInference(
   // Refuse ALL new inference (streaming or not) once shutdown has begun.
   if (deps.registry.isDraining()) throw serviceUnavailable('server is shutting down');
   const agentId = (req as { agentId?: string }).agentId ?? null;
+  // add-per-agent-calibration: attached by the agent-key guard from the record
+  // it already read. Null for a session-plane caller, which has no agent pair.
+  const agentCalibration =
+    (req as { agentCalibration?: AgentCalibrationAttachment }).agentCalibration ?? null;
   const streaming = (body as { stream?: unknown } | null)?.stream === true;
   if (!streaming) {
     // Wire client disconnect to an abort so a buffered fallback walk stops.
@@ -37,6 +42,7 @@ export async function handleInference(
         req.headers,
         agentId,
         abort.signal,
+        agentCalibration,
       );
       res.status(200).json(wire); // a completion is 200, not Nest's POST-default 201
     } finally {
@@ -44,7 +50,7 @@ export async function handleInference(
     }
     return;
   }
-  await pumpSse(deps, protocol, principal, body, req, res, agentId);
+  await pumpSse(deps, protocol, principal, body, req, res, agentId, agentCalibration);
 }
 
 async function pumpSse(
@@ -55,6 +61,7 @@ async function pumpSse(
   req: Request,
   res: Response,
   agentId: string | null,
+  agentCalibration: AgentCalibrationAttachment | null,
 ): Promise<void> {
   if (deps.registry.isDraining()) throw serviceUnavailable('server is shutting down');
 
@@ -67,7 +74,15 @@ async function pumpSse(
   try {
     // Awaits the first successful event — a pre-commit failure throws here,
     // before any header is written, so the filter renders a clean HTTP error.
-    frames = await deps.svc.stream(principal, protocol, body, req.headers, abort.signal, agentId);
+    frames = await deps.svc.stream(
+      principal,
+      protocol,
+      body,
+      req.headers,
+      abort.signal,
+      agentId,
+      agentCalibration,
+    );
   } catch (err) {
     res.off('close', onClose);
     deps.registry.deregister(abort);

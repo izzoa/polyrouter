@@ -20,6 +20,15 @@ import { runCalibrationOccurrence } from '../../src/calibration/calibration.run'
 import { COMPOSE_HINT } from '../tenancy/harness';
 import '../../src/database/database.config';
 
+// NOTE for anyone running this file directly: `runCalibrationOccurrence` is a
+// SCHEDULER sweep and is deliberately NOT owner-scoped — it enumerates every
+// calibration-enabled tenant, and its hygiene pass every agent holding a pair,
+// across the whole database. Two suites that both call it will therefore sweep
+// each other's fixtures if they run concurrently. The project's e2e runner uses
+// `--runInBand` (scripts/e2e.mjs), which is what makes this safe; a bare
+// `npx jest` without it will fail intermittently, and that is the harness, not
+// the code.
+
 const databaseUrl = loadConfig<{ DATABASE_URL: string }>().DATABASE_URL;
 
 /** Instance defaults; the high edge zone is [0.55, 0.60). */

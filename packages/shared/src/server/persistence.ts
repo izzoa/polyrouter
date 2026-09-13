@@ -1094,7 +1094,7 @@ export interface CalibrationEventsAccessor {
      * agent's events, `'tenant'` for the tenant's own, omitted for both in one
      * chronological order. Always owner-scoped first, so a foreign agent id
      * selects nothing rather than disclosing another tenant's history. */
-    scope?: string | 'tenant',
+    scope?: string,
   ): Promise<ThresholdCalibrationEventRowView[]>;
 }
 

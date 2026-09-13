@@ -15,6 +15,10 @@ heading is started.
 
 ## [Unreleased]
 
+### Added
+
+- **Threshold calibration now works per agent, under the identical standard.** Calibration was tenant-wide — one pair, calibrated from every agent's rows pooled together — so the agent contributing most of the traffic set the thresholds every other agent inherited; on a measured instance one agent carried 84.6% of the decided ambiguous band. Each agent can now earn its own pair from its own evidence, on the **same** floor, statistic, step, drift cap, gap, hysteresis and cooldown. An agent that has not earned one inherits its tenant's, which is a correct outcome rather than a failure to act. Resolution runs instance → tenant → agent, degrading to the level above at each hop, with drift bounded twice so the two levels cannot compound — and no new hot-path read, because the pair rides a projection the auth guard already performs. The Routing page lists every agent with its pair, anchor and evidence, names the inheriting ones as inheriting rather than uncalibrated, offers a per-agent revert, and discloses a tenant pair no longer informed by the traffic it governs. No per-agent enable: the tenant's toggle stays the single consent boundary.
+
 ### Fixed
 
 - **A calibrated tenant could be frozen out of calibration permanently.** The minimum threshold gap (0.1) is exactly twice the edge width (2 x 0.05), so the two rails built on them were tangent and disagreed at the tie: a pair landing on exactly the minimum gap passed the writer's gap check, was stored, and was then treated as degenerate by the halt rule — leaving a tenant whose calibrator would never move again, whose pair no move could widen, and which no hygiene pass would retire. Admission and the hot-path re-validation now share one rule requiring the gap to clear **both** bounds. A pair like that can no longer be written, and one already stored reads as inert: routing falls back to the instance defaults, the halt clears, and the next run rebases it. No migration, and no threshold constant changed.

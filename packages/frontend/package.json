@@ -10,7 +10,8 @@
     "dev": "vite",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test:browser": "playwright test"
+    "test:browser": "playwright test --grep-invert @capture",
+    "test:browser:capture": "playwright test --grep @capture --reporter=list"
   },
   "dependencies": {
     "@polyrouter/shared": "*",

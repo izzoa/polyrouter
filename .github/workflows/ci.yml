@@ -65,6 +65,19 @@ jobs:
       - name: responsive browser suite
         run: npm run test:browser
         working-directory: packages/frontend
+      # Geometry CAPTURE (assert-browser-geometry-structurally task 4.1). Reports
+      # every surface's measured box on this runner; asserts nothing about the
+      # values and cannot fail on them. Eleven overlay surfaces have never been
+      # measured on Linux -- they pass INSIDE `LINE_SLACK = 40`, and the gating
+      # step above reports only failures, so a passing surface discloses nothing.
+      # A pass is not a measurement, and narrowing those allowances without this
+      # log would be inference. `continue-on-error` is belt and braces: a capture
+      # that can turn the build red is a baseline, and pinning fresh numbers from
+      # the runner is how the v0.12.0 failure happened.
+      - name: geometry capture (reports, never gates)
+        run: npm run test:browser:capture
+        working-directory: packages/frontend
+        continue-on-error: true
       - name: install.sh re-run idempotency (E13)
         run: sh test/install-rerun.test.sh
 

@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNotNull, lte, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNotNull, lt, lte, sql } from 'drizzle-orm';
 import {
   agents,
   assertUserPrincipal,
@@ -1070,6 +1070,39 @@ export function buildPersistencePort(db: Db): PersistencePort {
           })
           .from(agents)
           .where(ownershipPredicate(agents, principal));
+      },
+
+      async listWithCalibratedPair() {
+        // Deliberately NOT owner-scoped: the hygiene pass runs under the
+        // trusted scheduler and must see every tenant's agents, including
+        // tenants that have switched calibration off.
+        return db
+          .select({
+            id: agents.id,
+            ownerUserId: agents.ownerUserId,
+            calibratedHigh: agents.calibratedHigh,
+            calibratedLow: agents.calibratedLow,
+            calibratedAnchorHigh: agents.calibratedAnchorHigh,
+            calibratedAnchorLow: agents.calibratedAnchorLow,
+            calibrationEpoch: agents.calibrationEpoch,
+          })
+          .from(agents)
+          .where(isNotNull(agents.calibratedHigh));
+      },
+
+      async activity(principal, agentId, range) {
+        const [row] = await db
+          .select({ rows: sql<number>`cast(count(*) as int)` })
+          .from(requestLogs)
+          .where(
+            and(
+              ownershipPredicate(requestLogs, principal),
+              eq(requestLogs.agentId, agentId),
+              gte(requestLogs.createdAt, range.from),
+              lt(requestLogs.createdAt, range.to),
+            ),
+          );
+        return { rows: row?.rows ?? 0 };
       },
 
       async setCalibrated(principal, agentId, quad, expected, tenantPin, events) {

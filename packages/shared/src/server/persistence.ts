@@ -949,6 +949,21 @@ export interface TenantPin {
 export interface AgentCalibrationAccessor {
   /** Every agent of this tenant, with its calibration state. Owner-scoped. */
   listForCalibration(principal: Principal): Promise<CalibrationSweepAgent[]>;
+  /** EVERY agent holding a pair, across all tenants, regardless of any tenant's
+   * calibration flag — the hygiene pass must retire a stale pair even for a
+   * tenant that has since switched calibration off, or a disabled tenant's
+   * agent pair could lurk and silently reactivate. Trusted-scheduler scope. */
+  listWithCalibratedPair(): Promise<CalibrationSweepAgent[]>;
+  /** How alive an agent is in the window, for the starvation rail. `rows` is
+   * every request it made; `decidedAmbiguous` is the calibration population at
+   * its own scope. An agent with rows but no decided ambiguous rows has been
+   * silenced BY ITS PAIR; an agent with neither is simply not being used, and
+   * clearing its pair would punish absence rather than repair a ratchet. */
+  activity(
+    principal: Principal,
+    agentId: string,
+    range: AnalyticsRange,
+  ): Promise<{ rows: number }>;
   /** Write (or clear) one agent's pair under the two-sided CAS.
    *
    * Locks `routing_settings` FIRST, then the agent row — the fixed order that

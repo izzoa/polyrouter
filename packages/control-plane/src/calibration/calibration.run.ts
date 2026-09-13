@@ -140,6 +140,14 @@ export async function runCalibrationOccurrence(
     }
   }
 
+  // --- Pass A2: agent hygiene — stale-anchored pairs and self-silenced ones,
+  // for EVERY tenant regardless of its flag (add-per-agent-calibration).
+  try {
+    summary.rebases += await hygieneAgents(db, structural, cfg, rails, now, logger);
+  } catch (err) {
+    logger.warn(`agent hygiene failed: ${String((err as Error).message)}`);
+  }
+
   // --- Pass B: moves — calibration-enabled tenants only.
   let enabled: CalibrationSweepTenant[];
   try {
@@ -526,4 +534,123 @@ async function calibrateAgents(
     }
   }
   return out;
+}
+
+
+/** Pass A2 — agent hygiene (add-per-agent-calibration).
+ *
+ * Two reasons to retire an agent pair, both conditional clears back to
+ * inherited, audited, epoch advanced:
+ *
+ * 1. STALE ANCHOR or rail violation — the tenant moved (or the rails tightened)
+ *    and the pair no longer applies. This is also the automatic DEMOTION that
+ *    automatic promotion requires: nothing else would ever take a pair away.
+ *
+ * 2. STARVATION — the ratchet's recovery. A homogeneous agent whose score mass
+ *    sits inside an edge zone can have its threshold walked across that mass in
+ *    a few steps, after which every one of its rows bands confidently, stops
+ *    being an ambiguous cascade row, and its evidence stream ends. One-way into
+ *    silence, with no recovery: v1 assumed the next tenant move would rebase
+ *    it, but the silenced agent is usually the one supplying the volume, so its
+ *    tenant's pool may never reach the floor again.
+ *
+ * The starvation rail is deliberately NARROW, because the obvious version
+ * clears pairs for reasons that have nothing to do with the pair. The evidence
+ * population requires `decision_layer = 'cascade'`, so a tenant that switches
+ * cascade off would otherwise lose every agent pair one window later; and the
+ * window is bounded by `created_at`, the asynchronous INSERT time, so writer
+ * backlog can look like silence. It therefore fires only when the agent is
+ * demonstrably ALIVE — it made requests in the window — and produced no decided
+ * ambiguous rows anyway. An agent with no rows at all is simply not being used,
+ * and clearing its pair would punish absence rather than repair a ratchet. */
+async function hygieneAgents(
+  db: PersistencePort,
+  structural: Pick<StructuralConfig, 'high' | 'low'>,
+  cfg: CalibrationConfig,
+  rails: CalibrationRails,
+  now: number,
+  logger: Pick<Logger, 'warn' | 'log'>,
+): Promise<number> {
+  let held: CalibrationSweepAgent[];
+  try {
+    held = await db.agentCalibration.listWithCalibratedPair();
+  } catch {
+    return 0;
+  }
+  if (held.length === 0) return 0;
+
+  const window = { from: new Date(now - cfg.windowDays * DAY_MS), to: new Date(now) };
+  const parents = new Map<string, RoutingSettingsValue | null>();
+  let cleared = 0;
+
+  for (const a of held) {
+    try {
+      const principal = userPrincipal(a.ownerUserId);
+      if (!parents.has(a.ownerUserId)) {
+        parents.set(a.ownerUserId, await safeSettings(db, principal));
+      }
+      const parentValue = parents.get(a.ownerUserId) ?? null;
+      const parent =
+        parentValue === null
+          ? { high: structural.high, low: structural.low }
+          : effectiveThresholds(structural, parentValue, rails);
+
+      // (1) Does the pair still apply on top of the CURRENT parent?
+      const applied = effectiveThresholds(parent, a, rails);
+      let reason: 'stale' | 'starved' | null =
+        applied.high === parent.high && applied.low === parent.low ? 'stale' : null;
+
+      // (2) Starvation — only for a pair that IS still applying, and only when
+      // the agent is demonstrably alive. Cascade off for this tenant suppresses
+      // the rail entirely: the silence is the feature being off, not the pair.
+      if (reason === null && (parentValue?.cascadeEnabled ?? false)) {
+        const stats = await db.analytics.calibrationStats(principal, window, {
+          high: applied.high,
+          low: applied.low,
+          edgeWidth: EDGE_WIDTH,
+          epoch: a.calibrationEpoch,
+          scope: { kind: 'agent', agentId: a.id },
+        });
+        const decided =
+          stats.highEdge.samples + stats.lowEdge.samples;
+        if (decided === 0) {
+          const { rows } = await db.agentCalibration.activity(principal, a.id, window);
+          if (rows > 0) reason = 'starved';
+        }
+      }
+      if (reason === null) continue;
+
+      const ok = await db.agentCalibration.setCalibrated(
+        principal,
+        a.id,
+        null,
+        {
+          high: a.calibratedHigh,
+          low: a.calibratedLow,
+          anchorHigh: a.calibratedAnchorHigh,
+          anchorLow: a.calibratedAnchorLow,
+          epoch: a.calibrationEpoch,
+        },
+        // NO parent pin: a clear is a retreat to the level above and is correct
+        // against ANY parent. Pinning the old tuple would make hygiene expect
+        // the pre-move parent, find the post-move one, and no-op forever on
+        // exactly the stale state it exists to repair (r2b High-1).
+        null,
+        {
+          trigger: 'rebase',
+          oldHigh: a.calibratedHigh ?? parent.high,
+          oldLow: a.calibratedLow ?? parent.low,
+          newHigh: parent.high,
+          newLow: parent.low,
+          anchorHigh: parent.high,
+          anchorLow: parent.low,
+          reason: `agent ${reason}; oldAnchor=${fmt(a.calibratedAnchorHigh ?? -1)}/${fmt(a.calibratedAnchorLow ?? -1)}; parent=${fmt(parent.high)}/${fmt(parent.low)}`,
+        },
+      );
+      if (ok) cleared += 1;
+    } catch (err) {
+      logger.warn(`agent hygiene skipped one: ${String((err as Error).message)}`);
+    }
+  }
+  return cleared;
 }

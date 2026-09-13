@@ -9,6 +9,7 @@
  * adversarial content — a 26-character model id, a 50-character email — because short
  * placeholder data would make every overflow assertion pass for the wrong reason.
  */
+import { assertBetween, assertWithin } from './geometry-contract';
 import { expect, test, type Page } from '@playwright/test';
 
 /** The locked verification matrix (STYLESEED.md § Responsive). Dimensions, not widths:
@@ -439,6 +440,59 @@ test.describe('desktop width, fine pointer', () => {
     }
   });
 
+  test('controls stay under a ceiling as well as over the floor', async ({ page }) => {
+    // The hole this closes: `.endpoint-chip` LEFT the exact parity set in
+    // narrow-geometry-tolerances (correctly — the glyph change deliberately
+    // altered it), and its 24px floor above was added to replace the coverage.
+    // But a floor only catches a collapse. A height BLOW-OUT — a stray line-height,
+    // a wrapped label, a padding regression — passes both the floor and the
+    // parity set's silence, which is no coverage at all in that direction.
+    //
+    // STRUCTURAL, not a restored number (geometry-contract.ts): the chip's height
+    // is text-driven, and re-pinning it is exactly what caused the v0.12.0 CI
+    // failure. The ceiling is a "this is still one line of chrome" bound, wide
+    // enough that no legitimate rasteriser difference reaches it — macOS renders
+    // 28 and Linux 27 — and narrow enough that a second line (~50+) cannot hide.
+    const CEILING = 40;
+    // `.btn-primary` is here for the same reason and was in the same state: the
+    // semantic floor test covers it from below, nothing covered it from above,
+    // and it was the OTHER value collected across the bridge and discarded.
+    const SELECTORS = ['.endpoint-chip', '.btn-primary'] as const;
+    const seen = new Map<string, number>();
+
+    for (const name of PAGES) {
+      await page.goto(`/browser-harness.html#/${name}`);
+      await page.waitForSelector('html[data-harness-ready="true"]');
+      for (const sel of SELECTORS) {
+        const heights = await page.evaluate(
+          (s) =>
+            [...document.querySelectorAll(s)]
+              .map((e) => e.getBoundingClientRect().height)
+              .filter((h) => h > 0)
+              .map((h) => Math.round(h)),
+          sel,
+        );
+        for (const h of heights) {
+          assertBetween(h, 24, CEILING, `${sel} height on ${name}`);
+        }
+        seen.set(sel, (seen.get(sel) ?? 0) + heights.length);
+      }
+    }
+
+    // Not vacuous: a selector that never rendered anywhere would otherwise let
+    // this test pass while asserting nothing, which is the exact failure mode
+    // that left these two controls uncovered in the first place.
+    for (const sel of SELECTORS) {
+      expect(seen.get(sel) ?? 0, `${sel} never rendered on any page — nothing was asserted`).toBeGreaterThan(0);
+    }
+
+    // The chip also stays inside the bar that contains it — a relationship, so
+    // it holds whatever the rasteriser does to the text inside it.
+    await page.goto('/browser-harness.html#/requests');
+    await page.waitForSelector('html[data-harness-ready="true"]');
+    await assertWithin(page, '.endpoint-chip', '.rs-topbar');
+  });
+
   test('every batches row lines up with the head, cell edge for cell edge', async ({ page }) => {
     // What D17's `minmax(0, …)` tracks exist for, measured rather than declared. A bare
     // `fr` track takes an implicit `auto` minimum, so ONE unshrinkable cell — the stacked
@@ -554,10 +608,14 @@ test.describe('desktop parity against the released v0.11.0 baseline (task 8.8)',
       };
       return {
         sidebar: box('[data-pane="sidebar"]'),
+        // ONLY what `unchangedControls` asserts. `.btn-primary` and
+        // `.endpoint-chip` were collected here and never read — the loop below
+        // iterates the BASELINE, not this object — so two values crossed the
+        // bridge each run and were discarded, reading as coverage that did not
+        // exist. Both are now asserted under the geometry contract in
+        // "controls stay under a ceiling as well as over the floor".
         controls: {
           '.nav-item': h('.nav-item'),
-          '.btn-primary': h('.btn-primary'),
-          '.endpoint-chip': h('.endpoint-chip'),
           '.req-row': h('.req-row'),
         } as Record<string, number | null>,
       };

@@ -19,6 +19,17 @@ const TOUCH_INTERVAL_MS = 60_000;
 /** Bearer agent-key verification for the `/v1` plane (invariant 7): prefix
  * lookup → constant-time HMAC compare, uniform 401s, and a coalesced,
  * fire-and-forget `last_used_at` stamp that never blocks or crashes. */
+/** What the agent-key guard attaches beside `agentId` for the structural
+ * router (add-per-agent-calibration). A plain value object, not a credential:
+ * thresholds are routing inputs, so this widens no secret surface. */
+export interface AgentCalibrationAttachment {
+  calibratedHigh: number | null;
+  calibratedLow: number | null;
+  calibratedAnchorHigh: number | null;
+  calibratedAnchorLow: number | null;
+  calibrationEpoch: number;
+}
+
 @Injectable()
 export class AgentApiKeyGuard implements CanActivate {
   private readonly hmacSecret: string;
@@ -64,7 +75,22 @@ export class AgentApiKeyGuard implements CanActivate {
     }
 
     req.principal = userPrincipal(record.ownerUserId);
-    (req as AuthedRequest & { agentId?: string }).agentId = record.id;
+    const authed = req as AuthedRequest & {
+      agentId?: string;
+      agentCalibration?: AgentCalibrationAttachment;
+    };
+    authed.agentId = record.id;
+    // add-per-agent-calibration: the pair rides the record the guard already
+    // read. Attaching it here is what lets the structural router resolve the
+    // three-level chain without a second query — the same argument the tenant
+    // pair made for riding the settings read.
+    authed.agentCalibration = {
+      calibratedHigh: record.calibratedHigh,
+      calibratedLow: record.calibratedLow,
+      calibratedAnchorHigh: record.calibratedAnchorHigh,
+      calibratedAnchorLow: record.calibratedAnchorLow,
+      calibrationEpoch: record.calibrationEpoch,
+    };
     this.coalescedTouch(record.id);
     return true;
   }

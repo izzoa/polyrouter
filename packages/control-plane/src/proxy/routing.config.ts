@@ -295,38 +295,106 @@ export function autoLayerCapability(
  * cap, minimum gap — a rail-config change is never grandfathered). Anything
  * else → the instance defaults; a poisoned or stale row can never fail or
  * stall routing. */
-export function effectiveThresholds(
-  cfg: Pick<StructuralConfig, 'high' | 'low'>,
-  pref: {
-    calibratedHigh: number | null;
-    calibratedLow: number | null;
-    calibratedAnchorHigh: number | null;
-    calibratedAnchorLow: number | null;
-  } | null,
+/** A stored pair, at either scope. */
+export interface CalibratedPairRow {
+  calibratedHigh: number | null;
+  calibratedLow: number | null;
+  calibratedAnchorHigh: number | null;
+  calibratedAnchorLow: number | null;
+}
+
+const r4 = (n: number): number => Math.round(n * 10_000) / 10_000;
+
+/** Apply a stored pair ON TOP OF `base`, or return null when it is unusable.
+ *
+ * Scope-agnostic (add-per-agent-calibration): `base` is the instance defaults
+ * for a tenant pair, and the tenant's EFFECTIVE pair for an agent pair. Every
+ * rail reads identically at both levels — that is the whole point, and it is
+ * why this is one function rather than two that could drift apart.
+ *
+ * Returns null rather than `base` so the CALLER knows whether the level applied.
+ * `effectiveThresholds` collapses that back to `base` for its three existing
+ * callers, byte-identically. */
+function applyPair(
+  base: { high: number; low: number },
+  pref: CalibratedPairRow | null,
   rails: { maxDrift: number; minGap: number },
-): { high: number; low: number } {
-  const instance = { high: cfg.high, low: cfg.low };
-  if (pref === null) return instance;
+): { high: number; low: number } | null {
+  if (pref === null) return null;
   const { calibratedHigh: h, calibratedLow: l } = pref;
   const { calibratedAnchorHigh: ah, calibratedAnchorLow: al } = pref;
-  if (h === null || l === null || ah === null || al === null) return instance;
-  if (!Number.isFinite(h) || !Number.isFinite(l)) return instance;
-  if (h < 0 || h > 1 || l < 0 || l > 1 || l >= h) return instance;
-  if (ah !== cfg.high || al !== cfg.low) return instance; // anchor mismatch — stale pair is inert
-  if (h > ah || l < al) return instance; // expansion beyond the anchor — contraction only
+  if (h === null || l === null || ah === null || al === null) return null;
+  if (!Number.isFinite(h) || !Number.isFinite(l)) return null;
+  if (h < 0 || h > 1 || l < 0 || l > 1 || l >= h) return null;
+  if (ah !== base.high || al !== base.low) return null; // anchor mismatch — stale pair is inert
+  if (h > ah || l < al) return null; // expansion beyond the anchor — contraction only
   // Derived DIFFERENCES are rounded to 4 decimals before rail comparison:
   // binary floats make 0.58 − 0.48 come out below 0.1 and would wrongly
   // inert a rail-clean pair (the calibrator persists 4-decimal values).
-  const r4 = (n: number): number => Math.round(n * 10_000) / 10_000;
-  if (r4(ah - h) > rails.maxDrift || r4(l - al) > rails.maxDrift) return instance; // over-drift
+  if (r4(ah - h) > rails.maxDrift || r4(l - al) > rails.maxDrift) return null; // over-drift
   // BOTH gap bounds (fix-tangent-gap-rail): at the shipped constants the
   // minimum gap equals twice the edge width, so a pair admitted at exactly
   // `minGap` by an older writer has tangent edge zones and permanently halts
   // its tenant's calibrator. Re-validating it here is what makes the fix
-  // retroactive — the pair reads as inert, routing falls to the instance
-  // defaults, the halt clears, and the next run rebases the stale row.
-  if (!gapAdmissible(r4(h - l), rails)) return instance; // gap breach
+  // retroactive — the pair reads as inert, routing falls to the level above,
+  // the halt clears, and the next run rebases the stale row.
+  if (!gapAdmissible(r4(h - l), rails)) return null; // gap breach
   return { high: h, low: l };
+}
+
+export function effectiveThresholds(
+  cfg: Pick<StructuralConfig, 'high' | 'low'>,
+  pref: CalibratedPairRow | null,
+  rails: { maxDrift: number; minGap: number },
+): { high: number; low: number } {
+  const instance = { high: cfg.high, low: cfg.low };
+  return applyPair(instance, pref, rails) ?? instance;
+}
+
+/** Which level actually decided the thresholds a request was banded against.
+ * Stamped onto the row (`request_log.structural_scope`) so the two epoch
+ * counters can be told apart — see the schema comment. `instance` is recorded
+ * as a null scope: no calibrated pair decided it. */
+export type ThresholdScope = 'instance' | 'tenant' | 'agent';
+
+/** The THREE-LEVEL chain: instance defaults -> tenant pair -> agent pair
+ * (add-per-agent-calibration).
+ *
+ * Same degrade contract at each hop, and the direction matters: an unusable
+ * AGENT pair falls to the TENANT pair, never past it to the instance defaults.
+ * Skipping a level would silently discard a tenant's calibration because its
+ * agent's pair went stale, which is the opposite of degrading.
+ *
+ * The agent anchors to the tenant's EFFECTIVE pair, so a tenant move inerts
+ * every agent pair beneath it automatically (the anchor no longer matches) and
+ * the existing hygiene pass rebases them — that is the automatic demotion that
+ * automatic promotion requires.
+ *
+ * Drift is bounded TWICE. Anchoring to the tenant does not prevent the two
+ * levels compounding, it CREATES it: tenant at +cap and agent at +cap from the
+ * tenant is 2x cap from the instance defaults, outside the global safety
+ * envelope and potentially narrow enough that the resulting zones overlap. The
+ * second bound is what makes the cap mean what it says. */
+export function resolveThresholds(
+  cfg: Pick<StructuralConfig, 'high' | 'low'>,
+  tenantPref: CalibratedPairRow | null,
+  agentPref: CalibratedPairRow | null,
+  rails: { maxDrift: number; minGap: number },
+): { high: number; low: number; scope: ThresholdScope } {
+  const instance = { high: cfg.high, low: cfg.low };
+  const tenantPair = applyPair(instance, tenantPref, rails);
+  const tenant = tenantPair ?? instance;
+  const below: ThresholdScope = tenantPair === null ? 'instance' : 'tenant';
+
+  const agent = applyPair(tenant, agentPref, rails);
+  if (agent === null) return { ...tenant, scope: below };
+
+  // The GLOBAL bound, measured from the instance defaults rather than the
+  // parent. Without it the caps compound and the envelope is a fiction.
+  if (r4(cfg.high - agent.high) > rails.maxDrift || r4(agent.low - cfg.low) > rails.maxDrift) {
+    return { ...tenant, scope: below };
+  }
+  return { ...agent, scope: 'agent' };
 }
 
 /** The single "effective layers" formula (A-45): a layer is on iff the instance

@@ -141,6 +141,13 @@ export function buildIdentityPort(root: NodePgDatabase): IdentityPort {
             apiKeyHash: agents.apiKeyHash,
             apiKeyPrefix: agents.apiKeyPrefix,
             ownerDisabled: users.disabled,
+            // add-per-agent-calibration: five more columns on a projection the
+            // guard already runs. Same query, same join, same round trip.
+            calibratedHigh: agents.calibratedHigh,
+            calibratedLow: agents.calibratedLow,
+            calibratedAnchorHigh: agents.calibratedAnchorHigh,
+            calibratedAnchorLow: agents.calibratedAnchorLow,
+            calibrationEpoch: agents.calibrationEpoch,
           })
           .from(agents)
           .innerJoin(users, eq(users.id, agents.ownerUserId))

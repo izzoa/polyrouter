@@ -11,6 +11,20 @@ export interface AgentAuthRecord {
   /** Joined from the owner row: a disabled owner's keys must not authenticate
    * on /v1 (user-administration, invariant 7). Same lookup, no extra query. */
   ownerDisabled: boolean;
+  /** This agent's own calibrated pair (add-per-agent-calibration). NULL = it
+   * has not earned one and inherits its tenant's. Rides the projection the
+   * guard ALREADY performs — no extra round trip, no extra await, and no new
+   * failure mode: a failure of this read is the existing 401 path, unchanged.
+   *
+   * Not a credential and not a secret; it is a routing input, so carrying it on
+   * the attached record widens nothing (invariant 8). */
+  calibratedHigh: number | null;
+  calibratedLow: number | null;
+  calibratedAnchorHigh: number | null;
+  calibratedAnchorLow: number | null;
+  /** The agent's own calibration epoch, stamped onto rows it decides. Paired
+   * with `structural_scope`, because both counters default to 0. */
+  calibrationEpoch: number;
 }
 
 export interface AgentAuthAccessor {

@@ -53,6 +53,7 @@ import {
 } from '../../src/proxy/proxy.config';
 import { ROUTING_CONFIG, loadRoutingConfig } from '../../src/proxy/routing.config';
 import {
+  CALIBRATION_CONFIG,
   CALIBRATION_RAILS,
   loadCalibrationConfig,
   railsOf,
@@ -308,6 +309,9 @@ async function buildApp(): Promise<{ app: INestApplication; server: App }> {
         provide: CALIBRATION_RAILS,
         useFactory: (): CalibrationRails => railsOf(loadCalibrationConfig()),
       },
+      // add-per-agent-calibration: the read surface needs the acting floor
+      // itself, not just the rails derived from the config.
+      { provide: CALIBRATION_CONFIG, useFactory: loadCalibrationConfig },
       {
         provide: StructuralBaselineStore,
         inject: [REDIS_CLIENT],

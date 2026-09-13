@@ -21,6 +21,7 @@ import {
   type RequestLogRow,
 } from '@polyrouter/shared/server';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
+import type { CalibrationMembership } from '@polyrouter/shared/server';
 import type { Db } from './database.internal';
 import {
   cashMicrosSum,
@@ -98,6 +99,66 @@ const calibrationShape = (): SQL =>
     sql`${requestLogs.decisionLayer} = 'cascade'`,
     sql`${requestLogs.structuralBandSource} = 'threshold'`,
   ) as SQL;
+
+/** The THREE explicit membership selections (add-per-agent-calibration).
+ *
+ * Membership is legislated, not emergent. The scope stamp answers "which pair
+ * decided this row"; it cannot also answer "whose evidence is this row",
+ * because before an agent has a pair the honest answer is BOTH. Conflating
+ * them deadlocks bootstrap — an unpromoted agent has no agent-scoped rows and
+ * could never earn a first pair.
+ *
+ * A null scope reads as TENANT scope and is NEVER accepted at agent scope.
+ * That asymmetry is deliberate: null-scoped rows predate the column, agent
+ * pairs did not exist then, so they are tenant evidence by construction and
+ * the migration keeps every tenant's window intact.
+ *
+ * Note on a DELETED pair-holder: its agent-scoped rows stay excluded from the
+ * tenant pool by the SCOPE filter, which needs no agent row to work. Its older
+ * tenant-scoped rows — decided while it was still inheriting — do return to the
+ * tenant pool, and that is correct: there is no longer an agent whose
+ * independence needs protecting, and those rows were genuinely governed by the
+ * tenant pair when they were decided. */
+function calibrationMembership(
+  principal: Principal,
+  m: CalibrationMembership,
+  tenantEpoch: number,
+): SQL {
+  if (m.kind === 'agent') {
+    // A promoted agent: its OWN rows, agent-scoped only, at ITS epoch. The
+    // caller passes the agent epoch as `tenantEpoch` for this arm.
+    return and(
+      sql`${requestLogs.agentId} = ${m.agentId}`,
+      sql`${requestLogs.structuralScope} = 'agent'`,
+      sql`${requestLogs.structuralEpoch} = ${tenantEpoch}`,
+    ) as SQL;
+  }
+  const tenantScoped = sql`(${requestLogs.structuralScope} is null or ${requestLogs.structuralScope} = 'tenant')`;
+  if (m.kind === 'agent-bootstrap') {
+    // An unpromoted agent bootstraps from its own tenant-scoped rows. The
+    // overlap with the tenant selection below is deliberate and ends at
+    // promotion: while the agent has no pair, the tenant pair IS what governs
+    // it, so those rows legitimately inform both.
+    return and(
+      sql`${requestLogs.agentId} = ${m.agentId}`,
+      tenantScoped,
+      sql`${requestLogs.structuralEpoch} = ${tenantEpoch}`,
+    ) as SQL;
+  }
+  // The tenant: tenant-scoped rows whose agent holds NO pair of its own.
+  // Exclusion is by MEMBERSHIP and takes effect the moment a pair exists —
+  // not by waiting fourteen days for residual rows to age out. Waiting would
+  // let a newly-promoted agent's leftovers move the tenant pair, which stales
+  // that agent's anchor, which makes hygiene clear the pair it just earned.
+  // Owner-scoped like every other read (invariant 5): the exclusion set is
+  // THIS tenant's pair-holders, never another's.
+  const holdsPair = sql`select ${agents.id} from ${agents} where ${ownershipPredicate(agents, principal)} and ${agents.calibratedHigh} is not null`;
+  return and(
+    tenantScoped,
+    sql`${requestLogs.structuralEpoch} = ${tenantEpoch}`,
+    sql`(${requestLogs.agentId} is null or ${requestLogs.agentId} not in (${holdsPair}))`,
+  ) as SQL;
+}
 
 interface CalibrationGeometry {
   high: number;
@@ -877,7 +938,10 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
       const base = and(
         logRange(principal, range),
         calibrationShape(),
-        sql`${requestLogs.structuralEpoch} = ${args.epoch}`,
+        // Membership, explicit (add-per-agent-calibration). Defaults to the
+        // tenant so every caller predating the agent scope is unchanged —
+        // and the tenant arm now also EXCLUDES agents holding their own pair.
+        calibrationMembership(principal, args.scope ?? { kind: 'tenant' }, args.epoch),
       );
       const failure = calibrationFailure();
       const decided = calibrationDecided();

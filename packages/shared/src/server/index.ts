@@ -86,6 +86,7 @@ export type {
   CalibrationExpectedState,
   CalibrationSweepTenant,
   CalibrationEdgeStats,
+  CalibrationMembership,
   CalibrationEdgeViews,
   CalibrationEvidenceData,
   CalibrationEvidenceEntry,

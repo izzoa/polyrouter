@@ -721,6 +721,29 @@ export interface AutoPerformanceData {
   workloadMix: WorkloadMix;
 }
 
+/** Which population a calibration read selects (add-per-agent-calibration).
+ *
+ * Membership is legislated EXPLICITLY rather than emerging from the scope
+ * stamp, because the stamp answers "which pair decided this row" and that is a
+ * different question from "whose evidence is this row". Before an agent has a
+ * pair the honest answer to the second is BOTH — the tenant pair is what
+ * governs it — and conflating the two deadlocks bootstrap: an unpromoted agent
+ * has no agent-scoped rows, so it could never earn a first pair.
+ *
+ * - `tenant` — rows whose agent holds no pair of its own, at the tenant epoch.
+ *   Null-scoped rows count here: they predate the column, and agent pairs did
+ *   not exist then, so reading them as tenant-scoped is sound and is what keeps
+ *   the migration from discarding every tenant's evidence window.
+ * - `agent-bootstrap` — one unpromoted agent's OWN tenant-scoped rows. Overlaps
+ *   the tenant selection deliberately, and only until that agent is promoted.
+ * - `agent` — one promoted agent's rows, agent-scoped only, at the AGENT's
+ *   epoch. Never accepts a null scope: a null there would be a pre-migration
+ *   row, which no agent pair decided. */
+export type CalibrationMembership =
+  | { kind: 'tenant' }
+  | { kind: 'agent-bootstrap'; agentId: string }
+  | { kind: 'agent'; agentId: string };
+
 export interface AnalyticsAccessor {
   summary(principal: Principal, range: AnalyticsRange): Promise<AnalyticsSummary>;
   timeseries(
@@ -752,7 +775,15 @@ export interface AnalyticsAccessor {
   calibrationStats(
     principal: Principal,
     range: AnalyticsRange,
-    args: { high: number; low: number; edgeWidth: number; epoch: number },
+    args: {
+      high: number;
+      low: number;
+      edgeWidth: number;
+      epoch: number;
+      /** WHOSE evidence to count (add-per-agent-calibration). Omitted = the
+       * tenant's, which is every caller that predates the agent scope. */
+      scope?: CalibrationMembership;
+    },
   ): Promise<CalibrationEdgeStats>;
   /** PER-AGENT calibration evidence (add-per-agent-calibration-evidence) over the
    * SAME population `calibrationStats` consumes — the shared predicate builders

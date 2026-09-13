@@ -254,6 +254,50 @@ export class AutoLayersService {
     return this.get(principal);
   }
 
+  /** Per-AGENT revert (add-per-agent-calibration), on USER-WINS terms: it
+   * clears whatever pair is present under the row lock, so a calibrator move
+   * landing mid-flight cannot turn it into a silent no-op. It pins NO parent —
+   * a retreat to the level above is correct against any parent, and requiring
+   * the tenant tuple would make a revert fail exactly when the tenant had just
+   * moved. Touches one agent: the tenant pair and every sibling are untouched.
+   *
+   * Idempotent: reverting an already-inheriting agent is a 200 no-op that
+   * appends no event and does not advance the membership generation. */
+  async revertAgent(principal: Principal, agentId: string): Promise<AutoLayersView> {
+    const rows = await this.db.agentCalibration.listForCalibration(principal);
+    const a = rows.find((r) => r.id === agentId);
+    // A foreign or unknown id resolves to nothing here because the list is
+    // owner-scoped — no separate ownership check to forget (invariant 5).
+    if (a === undefined || a.calibratedHigh === null) return this.get(principal);
+
+    const pref = await this.db.routingSettings.get(principal);
+    const parent = effectiveThresholds(this.cfg.structural, pref, this.rails);
+    await this.db.agentCalibration.setCalibrated(
+      principal,
+      agentId,
+      null,
+      {
+        high: a.calibratedHigh,
+        low: a.calibratedLow,
+        anchorHigh: a.calibratedAnchorHigh,
+        anchorLow: a.calibratedAnchorLow,
+        epoch: a.calibrationEpoch,
+      },
+      null,
+      {
+        trigger: 'revert',
+        oldHigh: a.calibratedHigh,
+        oldLow: a.calibratedLow ?? parent.low,
+        newHigh: parent.high,
+        newLow: parent.low,
+        anchorHigh: parent.high,
+        anchorLow: parent.low,
+        reason: `agent revert; ${String(a.calibratedHigh)}/${String(a.calibratedLow)}→inherited`,
+      },
+    );
+    return this.get(principal);
+  }
+
   history(
     principal: Principal,
     limit?: number,

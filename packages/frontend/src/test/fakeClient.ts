@@ -376,6 +376,8 @@ export const DEFAULT_CALIBRATION: AutoLayers['calibration'] = {
   instanceLow: 0.25,
   effectiveHigh: 0.6,
   effectiveLow: 0.25,
+        agents: [],
+        tenantPairStarved: null,
 };
 
 export const DEFAULT_SEMANTIC_LEARNING_STATUS: SemanticLearningStatus = {
@@ -1272,6 +1274,35 @@ export class FakeApiClient implements ApiClient {
         calibratedLow: null,
         effectiveHigh: this.autoLayers.calibration.instanceHigh,
         effectiveLow: this.autoLayers.calibration.instanceLow,
+        // The AGENT list is deliberately untouched: a tenant revert stales
+        // agent anchors, it does not clear agent pairs. Hygiene resolves them
+        // on the next sweep, which is what the server does.
+      },
+    };
+    return Promise.resolve({ ...this.autoLayers });
+  }
+
+  agentCalibrationRevert(agentId: string): Promise<AutoLayers> {
+    this.record('agentCalibrationRevert');
+    this.autoLayers = {
+      ...this.autoLayers,
+      calibration: {
+        ...this.autoLayers.calibration,
+        // ONE agent returns to inheriting. The tenant pair and every sibling
+        // are untouched — the scoping this control has to get right.
+        agents: this.autoLayers.calibration.agents.map((a) =>
+          a.id === agentId
+            ? {
+                ...a,
+                calibratedHigh: null,
+                calibratedLow: null,
+                anchorHigh: null,
+                anchorLow: null,
+                active: false,
+                evidence: null,
+              }
+            : a,
+        ),
       },
     };
     return Promise.resolve({ ...this.autoLayers });

@@ -699,6 +699,92 @@ function SelfCalibration() {
               </button>
             </Show>
           </div>
+          {/* The FROZEN tenant pair (add-per-agent-calibration). It still governs
+              every inheriting agent while no longer being informed by the
+              traffic it governs, so it is disclosed rather than presented as
+              current. The revert beside it is the existing one. */}
+          <Show when={v.tenantStarved}>
+            <div
+              data-testid="tenant-pair-starved"
+              style="font:400 11.5px 'Geist',sans-serif;color:var(--text2);background:var(--chip);border-radius:6px;padding:6px 8px;margin-bottom:10px;line-height:1.5"
+            >
+              This pair is no longer being informed by the traffic it governs — both edges have
+              sat below the acting floor for a full window. It still applies to every agent
+              without its own pair.
+            </div>
+          </Show>
+
+          {/* PER-AGENT scope. Listed even when nobody holds a pair, because
+              "inheriting" is a state to name, not an absence to infer. */}
+          <div data-testid="agent-calibration" style="margin-bottom:10px">
+            <div style="font:500 11px 'Geist',sans-serif;color:var(--text2);margin-bottom:4px">
+              Per-agent thresholds
+            </div>
+            <Show
+              when={!v.noAgents}
+              fallback={
+                <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3)">
+                  No agents yet.
+                </div>
+              }
+            >
+              <div style="font:400 11px 'Geist',sans-serif;color:var(--text3);margin-bottom:8px">
+                An agent earns its own pair on the same evidence floor the tenant does.{' '}
+                {v.inheritingCount > 0
+                  ? `${String(v.inheritingCount)} inheriting this tenant's pair.`
+                  : 'All agents carry their own.'}
+              </div>
+              <For each={v.agents}>
+                {(a) => (
+                  <div
+                    data-testid="agent-calibration-row"
+                    style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;padding:4px 0;border-top:1px solid var(--border2)"
+                  >
+                    <span
+                      style="font:400 11.5px 'Geist',sans-serif;color:var(--text);flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                      title={a.name}
+                    >
+                      {a.name}
+                    </span>
+                    <Show
+                      when={a.pairLine}
+                      fallback={
+                        <span style="font:400 11px 'Geist',sans-serif;color:var(--text3)">
+                          inheriting
+                        </span>
+                      }
+                    >
+                      <span
+                        class="mono"
+                        style="font:500 11.5px 'Geist Mono',monospace;color:var(--text)"
+                      >
+                        {a.pairLine}
+                      </span>
+                      <span style="font:400 10.5px 'Geist',sans-serif;color:var(--text3)">
+                        {a.anchorLine}
+                      </span>
+                      <Show when={a.evidenceLine}>
+                        <span style="font:400 10.5px 'Geist',sans-serif;color:var(--text3)">
+                          {a.evidenceLine}
+                        </span>
+                      </Show>
+                      <button
+                        type="button"
+                        class="btn-ghost"
+                        data-testid="agent-revert"
+                        aria-label={`Revert ${a.name} to inherited thresholds`}
+                        style="font:400 11px 'Geist',sans-serif;color:var(--text2);cursor:pointer;text-decoration:underline;margin-left:auto"
+                        onClick={() => void app.revertAgentCalibration(a.id)}
+                      >
+                        Revert
+                      </button>
+                    </Show>
+                  </div>
+                )}
+              </For>
+            </Show>
+          </div>
+
           <Show when={state.calHistory.error}>
             <div style="font:400 11px 'Geist',sans-serif;color:var(--red)">
               Couldn’t load calibration history — {state.calHistory.error}{' '}

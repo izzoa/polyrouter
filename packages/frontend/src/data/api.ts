@@ -455,7 +455,26 @@ export interface AutoLayers {
     instanceLow: number;
     effectiveHigh: number;
     effectiveLow: number;
+    /** Per-agent scope (add-per-agent-calibration). Every agent, so the page
+     * can say INHERITING rather than leaving the reader to infer it. */
+    agents: AgentCalibration[];
+    /** The tenant pair is no longer informed by the traffic it governs; null
+     * when there is no tenant pair to freeze. */
+    tenantPairStarved: boolean | null;
   };
+}
+
+/** One agent's calibration state (add-per-agent-calibration). */
+export interface AgentCalibration {
+  id: string;
+  name: string;
+  calibratedHigh: number | null;
+  calibratedLow: number | null;
+  anchorHigh: number | null;
+  anchorLow: number | null;
+  epoch: number;
+  active: boolean;
+  evidence: { highSamples: number; lowSamples: number } | null;
 }
 
 /** L2 learning status (add-semantic-learning task 5.3): scalars only, for the
@@ -1027,6 +1046,9 @@ export interface ApiClient {
     calibration?: boolean;
   }): Promise<AutoLayers>;
   calibrationRevert(): Promise<AutoLayers>;
+  /** Per-agent revert (add-per-agent-calibration). Same idempotent contract as
+   * the tenant's: reverting an agent that already inherits is a 200 no-op. */
+  agentCalibrationRevert(agentId: string): Promise<AutoLayers>;
   calibrationHistory(limit?: number): Promise<CalibrationEvent[]>;
   semanticLearningStatus(): Promise<SemanticLearningStatus>;
   semanticLearningRevert(): Promise<SemanticLearningStatus>;
@@ -1257,6 +1279,11 @@ export const realClient: ApiClient = {
     http<AutoLayers>(`${API_BASE}/routing/auto-layers`, jsonInit('PUT', input)),
   calibrationRevert: () =>
     http<AutoLayers>(`${API_BASE}/routing/calibration/revert`, { method: 'POST' }),
+  agentCalibrationRevert: (agentId: string) =>
+    http<AutoLayers>(
+      `${API_BASE}/routing/calibration/agents/${encodeURIComponent(agentId)}/revert`,
+      { method: 'POST' },
+    ),
   semanticLearningStatus: () =>
     http<SemanticLearningStatus>(`${API_BASE}/routing/semantic-learning/status`),
   semanticLearningRevert: () =>

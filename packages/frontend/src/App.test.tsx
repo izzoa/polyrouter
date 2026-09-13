@@ -1474,6 +1474,8 @@ describe('dashboard shell (auth-gated)', () => {
           instanceLow: 0.25,
           effectiveHigh: 0.58,
           effectiveLow: 0.27,
+        agents: [],
+        tenantPairStarved: null,
         },
       },
       calibrationEvents: [

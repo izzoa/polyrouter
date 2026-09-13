@@ -968,6 +968,9 @@ export interface AppStore {
   deleteSelectedBodies: (id: string) => Promise<void>;
   setCalibration: (on: boolean) => Promise<void>;
   revertCalibration: () => Promise<void>;
+  /** Revert ONE agent to inheriting; leaves the tenant pair and every sibling
+   * untouched (add-per-agent-calibration). */
+  revertAgentCalibration: (agentId: string) => Promise<void>;
   loadCalHistory: () => Promise<void>;
   setSemanticLearning: (on: boolean) => Promise<void>;
   revertSemanticLearning: () => Promise<void>;
@@ -3728,6 +3731,18 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         const next = await client.calibrationRevert();
         setState('autoLayers', next);
         await loadCalHistory(); // the revert appended an event — refresh
+      } catch (e) {
+        say(err(e));
+      }
+    },
+    revertAgentCalibration: async (agentId: string) => {
+      try {
+        // The response is the WHOLE view, so the agent list, the tenant pair
+        // and the frozen flag all refresh together — no local mutation that
+        // could disagree with the server about what just happened.
+        const next = await client.agentCalibrationRevert(agentId);
+        setState('autoLayers', next);
+        await loadCalHistory();
       } catch (e) {
         say(err(e));
       }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { AutoLayers, CalibrationEvent } from './api';
+import type { AgentCalibration, AutoLayers, CalibrationEvent } from './api';
 import { toCalibrationVm, toHistoryRows } from './calibration';
 
 function layers(cal: Partial<AutoLayers['calibration']> = {}): AutoLayers {
@@ -20,6 +20,8 @@ function layers(cal: Partial<AutoLayers['calibration']> = {}): AutoLayers {
       instanceLow: 0.25,
       effectiveHigh: 0.6,
       effectiveLow: 0.25,
+      agents: [],
+      tenantPairStarved: null,
       ...cal,
     },
   };
@@ -67,6 +69,8 @@ describe('toCalibrationVm', () => {
         calibratedLow: 0.27,
         effectiveHigh: 0.58,
         effectiveLow: 0.27,
+        agents: [],
+        tenantPairStarved: null,
       }),
     )!;
     expect(vm.enabled).toBe(true);
@@ -113,5 +117,112 @@ describe('toHistoryRows', () => {
     const [row] = toHistoryRows([event({ trigger: 'rebase', edge: null })]);
     expect(row!.kind).toBe('rebase');
     expect(row!.movement).toBe('instance defaults changed — calibration reset');
+  });
+});
+
+describe('toCalibrationVm — the per-agent scope (add-per-agent-calibration)', () => {
+  const agent = (over: Partial<AgentCalibration> = {}): AgentCalibration => ({
+    id: 'a1',
+    name: 'markus',
+    calibratedHigh: null,
+    calibratedLow: null,
+    anchorHigh: null,
+    anchorLow: null,
+    epoch: 0,
+    active: false,
+    evidence: null,
+    ...over,
+  });
+
+  it('names the three states distinctly', () => {
+    // NO AGENTS is a different statement from "no agent has a pair", which is
+    // different again from "this one inherits". Collapsing them is how a
+    // correct system reads as a broken one.
+    expect(toCalibrationVm(layers())!.noAgents).toBe(true);
+
+    const inheriting = toCalibrationVm(layers({ agents: [agent()] }))!;
+    expect(inheriting.noAgents).toBe(false);
+    expect(inheriting.inheritingCount).toBe(1);
+    expect(inheriting.agents[0]!.state).toBe('inheriting');
+    // INHERITING is not "uncalibrated": the agent is routed by a real pair.
+    expect(inheriting.agents[0]!.pairLine).toBeNull();
+
+    const owned = toCalibrationVm(
+      layers({
+        agents: [
+          agent({
+            calibratedHigh: 0.53,
+            calibratedLow: 0.32,
+            anchorHigh: 0.55,
+            anchorLow: 0.3,
+            epoch: 2,
+            active: true,
+            evidence: { highSamples: 30, lowSamples: 8 },
+          }),
+        ],
+      }),
+    )!;
+    expect(owned.inheritingCount).toBe(0);
+    expect(owned.agents[0]).toMatchObject({
+      state: 'own pair',
+      pairLine: 'high 0.53 · low 0.32',
+      anchorLine: 'anchored to 0.55 / 0.3',
+      evidenceLine: '30 high · 8 low',
+    });
+  });
+
+  it('presents an INERT pair as inheriting, matching the tenant rule', () => {
+    // A stale-anchored pair is not routing, so showing its numbers would state
+    // a threshold that is not in effect — the same rule the tenant pair follows.
+    const vm = toCalibrationVm(
+      layers({
+        agents: [agent({ calibratedHigh: 0.53, calibratedLow: 0.32, active: false })],
+      }),
+    )!;
+    expect(vm.agents[0]!.state).toBe('inheriting');
+    expect(vm.agents[0]!.pairLine).toBeNull();
+    expect(vm.inheritingCount).toBe(1);
+  });
+
+  it('orders pair-holders first, then by name', () => {
+    const vm = toCalibrationVm(
+      layers({
+        agents: [
+          agent({ id: 'z', name: 'zeta' }),
+          agent({
+            id: 'm',
+            name: 'markus',
+            calibratedHigh: 0.53,
+            calibratedLow: 0.32,
+            active: true,
+          }),
+          agent({ id: 'a', name: 'alpha' }),
+        ],
+      }),
+    )!;
+    expect(vm.agents.map((a) => a.name)).toEqual(['markus', 'alpha', 'zeta']);
+  });
+
+  it('flags a frozen tenant pair only when the server reports one', () => {
+    expect(toCalibrationVm(layers())!.tenantStarved).toBe(false);
+    expect(toCalibrationVm(layers({ tenantPairStarved: false }))!.tenantStarved).toBe(false);
+    expect(toCalibrationVm(layers({ tenantPairStarved: true }))!.tenantStarved).toBe(true);
+  });
+
+  it('does not add a second enable control — the tenant flag is the only one', () => {
+    // The per-agent scope is inert while the tenant toggle is off, on the
+    // body_capture_override precedent, and the VM exposes no per-agent flag to
+    // build one from.
+    const vm = toCalibrationVm(
+      layers({
+        enabled: false,
+        agents: [agent({ calibratedHigh: 0.53, calibratedLow: 0.32, active: true })],
+      }),
+    )!;
+    expect(vm.enabled).toBe(false);
+    // Disabling the tenant toggle does NOT hide agent pairs or stop describing
+    // them as applying: disable means "stop moving", not "stop using".
+    expect(vm.agents[0]!.state).toBe('own pair');
+    expect(Object.keys(vm.agents[0]!)).not.toContain('enabled');
   });
 });

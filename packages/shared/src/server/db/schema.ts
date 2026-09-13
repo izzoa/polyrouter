@@ -191,12 +191,44 @@ export const agents = pgTable(
      * null = inherit the owner's global mode. INERT while the global mode is
      * 'off' — the master switch is the consent boundary. */
     bodyCaptureOverride: text('body_capture_override'),
+    /** Per-agent calibrated thresholds (add-per-agent-calibration). NULL =
+     * inherit the tenant pair; there is no promotion event and no per-agent
+     * enable flag — an agent has no pair until the calibrator earns it one,
+     * exactly as a tenant has none until the calibrator earns it one, under
+     * the IDENTICAL rails (same floor, step, drift cap, gap, cooldown).
+     *
+     * The anchor is the TENANT's effective pair the agent was calibrated
+     * against, NOT the instance defaults: anchoring to the instance would
+     * fail to stale the child when its parent moves. Drift is bounded twice —
+     * from this anchor AND from the instance defaults — so the two levels
+     * cannot compound to twice the cap (design Decision 4). */
+    calibratedHigh: doublePrecision('calibrated_high'),
+    calibratedLow: doublePrecision('calibrated_low'),
+    calibratedAnchorHigh: doublePrecision('calibrated_anchor_high'),
+    calibratedAnchorLow: doublePrecision('calibrated_anchor_low'),
+    calibrationEpoch: integer('calibration_epoch').default(0).notNull(),
     createdAt: createdAt(),
     lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
   },
   (t) => [
     uniqueIndex('agent_api_key_prefix_unique').on(t.apiKeyPrefix),
     index('agent_owner_idx').on(t.ownerUserId),
+    // The four calibrated_* columns travel together (all null or all set) —
+    // the same invariant routing_settings carries one level up. A partial quad
+    // would be a pair with half an anchor, which effectiveThresholds inerts
+    // silently; rejecting it at the database is how the tenant scope avoids
+    // storing one at all.
+    check(
+      'agent_calibration_quad',
+      sql`(${t.calibratedHigh} IS NULL) = (${t.calibratedLow} IS NULL) AND (${t.calibratedHigh} IS NULL) = (${t.calibratedAnchorHigh} IS NULL) AND (${t.calibratedHigh} IS NULL) = (${t.calibratedAnchorLow} IS NULL)`,
+    ),
+    // Range and ordering on BOTH pairs. The ANCHOR is checked too: an inverted
+    // anchor can never equal a valid tenant pair, so the row would be
+    // permanently inert rather than merely wrong — fail at write instead.
+    check(
+      'agent_calibration_range',
+      sql`(${t.calibratedHigh} IS NULL OR (${t.calibratedHigh} > 0 AND ${t.calibratedHigh} <= 1 AND ${t.calibratedLow} >= 0 AND ${t.calibratedLow} < ${t.calibratedHigh})) AND (${t.calibratedAnchorHigh} IS NULL OR (${t.calibratedAnchorHigh} > 0 AND ${t.calibratedAnchorHigh} <= 1 AND ${t.calibratedAnchorLow} >= 0 AND ${t.calibratedAnchorLow} < ${t.calibratedAnchorHigh}))`,
+    ),
     check(
       'agent_body_capture_override_valid',
       sql`${t.bodyCaptureOverride} IS NULL OR ${t.bodyCaptureOverride} IN ('always', 'never')`,
@@ -567,6 +599,24 @@ export const requestLogs = pgTable(
     /** The tenant's calibration_epoch at DECISION time for evaluated rows —
      * the calibrator's freshness stamp (immune to async writer lag). */
     structuralEpoch: integer('structural_epoch'),
+    /** WHICH SCOPE's pair decided this row (add-per-agent-calibration):
+     * 'tenant' | 'agent', null when unevaluated or predating the column.
+     *
+     * Load-bearing because the two epoch counters COLLIDE: both default to 0
+     * and both advance on their own events, so `structural_epoch = 1` alone is
+     * ambiguous between scopes and would admit agent-decided rows into the
+     * tenant's pool. `(structural_scope, structural_epoch)` is the key.
+     *
+     * Stamped at DECISION time and carried through the recorder like the epoch
+     * beside it — never derived at flush time, or a row decided before a scope
+     * change would be filed under the scope that replaced it.
+     *
+     * A null scope on an epoch-stamped row reads as TENANT scope in tenant
+     * selection (agent pairs did not exist before this column, so the reading
+     * is sound) and is NEVER accepted by agent selection. That asymmetry is
+     * what lets the migration run without discarding every tenant's evidence
+     * window. */
+    structuralScope: text('structural_scope'),
     createdAt: createdAt(),
   },
   (t) => [
@@ -603,6 +653,13 @@ export const requestLogs = pgTable(
     check(
       'request_log_escalation_source_valid',
       sql`${t.escalationSource} IS NULL OR (${t.escalationSource} IN ('quality_gate', 'cheap_error') AND ${t.escalated})`,
+    ),
+    // Two values or null (add-per-agent-calibration). Deliberately NOT tied to
+    // structural_epoch: a null scope beside a stamped epoch is exactly the
+    // pre-migration shape that tenant selection must keep reading.
+    check(
+      'request_log_structural_scope_valid',
+      sql`${t.structuralScope} IS NULL OR ${t.structuralScope} IN ('tenant', 'agent')`,
     ),
     // The four semantic columns travel together; band/source are enums-or-
     // null; the score is DB-bounded to the classifier's [-2, 2] range
@@ -826,6 +883,15 @@ export const routingSettings = pgTable(
     calibratedAnchorHigh: doublePrecision('calibrated_anchor_high'),
     calibratedAnchorLow: doublePrecision('calibrated_anchor_low'),
     calibrationEpoch: integer('calibration_epoch').default(0).notNull(),
+    /** Tenant MEMBERSHIP generation (add-per-agent-calibration, Decision 7).
+     * Advances whenever an agent of this tenant gains or loses its own pair,
+     * which is what changes the tenant's own evidence population. Both scopes
+     * CAS it: a tenant calibration write fails if membership moved under the
+     * evidence it read, and an agent write bumps it while CASing the tenant
+     * pair its anchor came from. Without it, a sweep in flight can commit a
+     * tenant move computed from a now-promoted agent's rows and demote that
+     * agent one sweep after it earned its pair. */
+    membershipGeneration: integer('membership_generation').default(0).notNull(),
     createdAt: createdAt(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
@@ -985,6 +1051,14 @@ export const thresholdCalibrationEvents = pgTable(
      * share one transaction timestamp — the ordinal is the deterministic
      * secondary sort so the high→low chain always replays in order. */
     ordinal: integer('ordinal').default(0).notNull(),
+    /** The agent this event concerns (add-per-agent-calibration); null = a
+     * TENANT-scope event, which is every event written before this column.
+     * Deliberately NO foreign key: the audit is append-only and must survive
+     * the agent being deleted — a retained event naming a vanished agent is
+     * the honest record, and a cascade would silently erase the history of a
+     * threshold that really did move. The per-edge cooldown reads this, so a
+     * per-agent move never consumes another scope's cooldown. */
+    agentId: text('agent_id'),
     createdAt: createdAt(),
   },
   (t) => [

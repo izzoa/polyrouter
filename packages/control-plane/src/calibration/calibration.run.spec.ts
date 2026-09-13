@@ -134,6 +134,85 @@ describe('runCalibrationOccurrence (add-auto-threshold-calibration)', () => {
     expect(statsArgs[0]).toMatchObject({ epoch: 3, high: 0.6, low: 0.25, edgeWidth: 0.05 });
   });
 
+  it('refuses a move that would land the pair on EXACTLY the minimum gap', async () => {
+    // fix-tangent-gap-rail. Unreachable from the default 0.6/0.25 (the tightest
+    // gap drift permits is 0.15), so the instance pair is configured narrow —
+    // the same arm of `calibrationHalted` that is reachable in practice.
+    // Instance 0.5/0.38 is a legal 0.12 gap; one high step lands on 0.48/0.38,
+    // a gap of exactly 0.10. The old `< minGap` check admitted that pair and
+    // the halt rail then froze the tenant permanently, with no move able to
+    // widen it again and no hygiene pass able to retire it.
+    const { port, calls } = fakePort({
+      enabled: [tenant('a', uncalibrated())],
+      stats: () => ({
+        highEdge: { samples: 57, failures: 43 },
+        lowEdge: { samples: 0, failures: 0 },
+      }),
+    });
+    const sum = await runCalibrationOccurrence(
+      port,
+      { high: 0.5, low: 0.38 },
+      CFG,
+      RAILS,
+      NOW,
+      silent,
+    );
+    expect(sum).toEqual({ tenants: 1, moves: 0, rebases: 0, skips: 0 });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('still applies a move that lands one step clear of the tangency', async () => {
+    // The control for the test above: from 0.52/0.38 the same qualifying edge
+    // lands on 0.50/0.38, a gap of 0.12, which is admissible under both bounds.
+    // Without this, "refuses the move" would also be satisfied by a rail that
+    // rejected everything.
+    const { port, calls } = fakePort({
+      enabled: [tenant('a', uncalibrated())],
+      stats: () => ({
+        highEdge: { samples: 57, failures: 43 },
+        lowEdge: { samples: 0, failures: 0 },
+      }),
+    });
+    const sum = await runCalibrationOccurrence(
+      port,
+      { high: 0.52, low: 0.38 },
+      CFG,
+      RAILS,
+      NOW,
+      silent,
+    );
+    expect(sum).toEqual({ tenants: 1, moves: 1, rebases: 0, skips: 0 });
+    expect(calls[0]!.quad).toEqual({
+      high: 0.5,
+      low: 0.38,
+      anchorHigh: 0.52,
+      anchorLow: 0.38,
+    });
+  });
+
+  it('arbitration re-check also refuses a tangent survivor', async () => {
+    // The OTHER admission site (`applied.length === 2`): both edges qualify,
+    // the joint pair breaches, arbitration keeps the stronger edge — and the
+    // survivor alone must still be gap-checked under both bounds.
+    const { port, calls } = fakePort({
+      enabled: [tenant('a', uncalibrated())],
+      stats: () => ({
+        highEdge: { samples: 57, failures: 43 },
+        lowEdge: { samples: 60, failures: 3 },
+      }),
+    });
+    const sum = await runCalibrationOccurrence(
+      port,
+      { high: 0.5, low: 0.38 },
+      CFG,
+      RAILS,
+      NOW,
+      silent,
+    );
+    expect(sum).toEqual({ tenants: 1, moves: 0, rebases: 0, skips: 0 });
+    expect(calls).toHaveLength(0);
+  });
+
   it('a quiet low edge raises low one step', async () => {
     const { port, calls } = fakePort({
       enabled: [tenant('a', uncalibrated())],

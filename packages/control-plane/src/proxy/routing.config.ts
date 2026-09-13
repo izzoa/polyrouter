@@ -1,4 +1,8 @@
 import { loadConfig, registerConfig, z } from '@polyrouter/shared';
+// One definition of the gap rail, shared with the calibrator that writes the
+// pairs this function re-validates (fix-tangent-gap-rail). `calibration.config`
+// imports only `@polyrouter/shared`, so this introduces no cycle.
+import { gapAdmissible } from '../calibration/calibration.config';
 import {
   DEFAULT_REASONING_ADJUST,
   DEFAULT_STRUCTURAL_WEIGHTS,
@@ -315,7 +319,13 @@ export function effectiveThresholds(
   // inert a rail-clean pair (the calibrator persists 4-decimal values).
   const r4 = (n: number): number => Math.round(n * 10_000) / 10_000;
   if (r4(ah - h) > rails.maxDrift || r4(l - al) > rails.maxDrift) return instance; // over-drift
-  if (r4(h - l) < rails.minGap) return instance; // gap breach
+  // BOTH gap bounds (fix-tangent-gap-rail): at the shipped constants the
+  // minimum gap equals twice the edge width, so a pair admitted at exactly
+  // `minGap` by an older writer has tangent edge zones and permanently halts
+  // its tenant's calibrator. Re-validating it here is what makes the fix
+  // retroactive — the pair reads as inert, routing falls to the instance
+  // defaults, the halt clears, and the next run rebases the stale row.
+  if (!gapAdmissible(r4(h - l), rails)) return instance; // gap breach
   return { high: h, low: l };
 }
 

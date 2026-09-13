@@ -95,6 +95,32 @@ export function railsOf(cfg: CalibrationConfig): CalibrationRails {
   return { maxDrift: cfg.maxDrift, minGap: MIN_GAP };
 }
 
+/** Is a `high − low` gap wide enough to be BOTH admissible and non-halting
+ * (fix-tangent-gap-rail)?
+ *
+ * TWO bounds, and neither implies the other:
+ *   1. `>= minGap` — the configured minimum gap.
+ *   2. `> 2 * EDGE_WIDTH` — strictly wider than the two edge zones, which are
+ *      `[high−w, high)` and `(low, low+w]`. At exactly `2w` they meet at one
+ *      shared score, which `calibrationHalted` treats (correctly) as degenerate.
+ *
+ * The shipped constants make them EQUAL — `MIN_GAP` is 0.1 and `2 * EDGE_WIDTH`
+ * is 0.1 — so before this predicate existed the two rails were tangent and tied
+ * in OPPOSITE directions: a candidate at exactly 0.1 passed admission (`< minGap`
+ * is false) and was then inerted by the halt rail (`<=` is true), permanently
+ * freezing the tenant it had just calibrated. Bound 2 is what refuses that move.
+ *
+ * NOT `> max(minGap, 2 * EDGE_WIDTH)`: that is right for today's constants but
+ * silently relaxes a LARGER configured `minGap` from `>=` to `>`, changing the
+ * admissible region for a knob nobody asked to change. Keep the bounds separate.
+ *
+ * Rounded to the same 4 decimals as every other rail comparison — a finer
+ * precision here would let the writer admit a pair the hot path instantly inerts. */
+export function gapAdmissible(gap: number, rails: CalibrationRails): boolean {
+  const g = Math.round(gap * 10_000) / 10_000;
+  return g >= rails.minGap && g > 2 * EDGE_WIDTH;
+}
+
 /** Is the calibrator HALTED for this tenant — would `calibrateTenant` decline to
  * evaluate it at all (fix-calibration-evidence-honesty)?
  *
@@ -104,13 +130,22 @@ export function railsOf(cfg: CalibrationConfig): CalibrationRails {
  * means one shared score). Extracted so the calibrator and the read-time
  * evidence report share ONE definition — a restatement in the analytics layer
  * would be a second copy of a rule that has already moved once.
+ *
+ * Both conditions are now `gapAdmissible` (fix-tangent-gap-rail), which is where
+ * the zone-touch comparison went: `high − w <= low + w` is exactly
+ * `gap <= 2 * EDGE_WIDTH`, i.e. the negation of that predicate's second bound.
+ * Applying the WHOLE predicate to the effective pair is equivalent-or-stricter —
+ * `effectiveThresholds` already refuses to return a pair below `minGap`, so the
+ * added first bound can only fire on an instance pair, which condition one
+ * covers anyway. Three call sites, one rule; that is the point of this helper.
  */
 export function calibrationHalted(
   instance: { high: number; low: number },
   effective: { high: number; low: number },
   rails: CalibrationRails,
 ): boolean {
-  const r4 = (n: number): number => Math.round(n * 10_000) / 10_000;
-  if (r4(instance.high - instance.low) < rails.minGap) return true;
-  return r4(effective.high - EDGE_WIDTH) <= r4(effective.low + EDGE_WIDTH);
+  return (
+    !gapAdmissible(instance.high - instance.low, rails) ||
+    !gapAdmissible(effective.high - effective.low, rails)
+  );
 }

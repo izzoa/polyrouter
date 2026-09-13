@@ -7,7 +7,7 @@ import {
   type ThresholdCalibrationEventInput,
 } from '@polyrouter/shared/server';
 import { effectiveThresholds, type StructuralConfig } from '../proxy/routing.config';
-import { calibrationHalted } from './calibration.config';
+import { calibrationHalted, gapAdmissible } from './calibration.config';
 import {
   COOLDOWN_DAYS,
   EDGE_WIDTH,
@@ -232,7 +232,11 @@ async function calibrateTenant(
     low: round4(eff.low + (list.some((c) => c.edge === 'low') ? cfg.step : 0)),
   });
   const gapOf = (pair: { high: number; low: number }): number => round4(pair.high - pair.low);
-  if (gapOf(finalPair(applied)) < rails.minGap && applied.length === 2) {
+  // `gapAdmissible`, not a bare `< minGap`: the minimum gap equals twice the
+  // edge width at the shipped constants, so a bare check admits a pair whose
+  // zones are tangent and which `calibrationHalted` then freezes forever
+  // (fix-tangent-gap-rail).
+  if (!gapAdmissible(gapOf(finalPair(applied)), rails) && applied.length === 2) {
     // Exact cross-multiplied comparison — integer arithmetic, no float noise;
     // a TRUE tie deterministically keeps the high edge (r3-Med-4).
     applied.sort((a, b) => {
@@ -242,7 +246,7 @@ async function calibrateTenant(
     });
     applied = [applied[0]!];
   }
-  if (gapOf(finalPair(applied)) < rails.minGap) return 'noop';
+  if (!gapAdmissible(gapOf(finalPair(applied)), rails)) return 'noop';
 
   const target = finalPair(applied);
   // Sequential per-edge events (high first) so before/after pairs chain

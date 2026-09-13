@@ -1001,6 +1001,11 @@ export interface ThresholdCalibrationEventRowView {
   edgeFailures: number | null;
   reason: string;
   createdAt: string;
+  /** Which agent this event concerns (add-per-agent-calibration); null = a
+   * TENANT-scope event, which is every event written before the column. The
+   * per-edge cooldown reads it, so a tenant move never places an agent's edge
+   * in cooldown and one agent's move never places another's. */
+  agentId: string | null;
 }
 
 /** Owner-scoped read/upsert of the tenant's auto-layer preference (one row per

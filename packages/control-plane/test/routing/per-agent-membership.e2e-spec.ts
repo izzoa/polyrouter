@@ -15,6 +15,8 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { userPrincipal } from '@polyrouter/shared/server';
 import { Pool } from 'pg';
 import { buildPersistencePort } from '../../src/database/port';
+import { buildCalibrationConfig, railsOf } from '../../src/calibration/calibration.config';
+import { runCalibrationOccurrence } from '../../src/calibration/calibration.run';
 import { COMPOSE_HINT } from '../tenancy/harness';
 import '../../src/database/database.config';
 
@@ -188,6 +190,146 @@ describe('calibration evidence membership (add-per-agent-calibration)', () => {
       // accumulation, the pair could never survive long enough to route on.
       const after = await stats();
       expect(after.highEdge.samples).toBe(before.highEdge.samples - 5);
+    });
+  });
+
+  describe('Pass C promotes an agent under the identical standard (task 4.4)', () => {
+    const CFG = buildCalibrationConfig({
+      CALIBRATION_SCHED_ENABLED: 'true',
+      CALIBRATION_SCHED_CRON: '0 4 * * *',
+      CALIBRATION_WINDOW_DAYS: 14,
+      CALIBRATION_MIN_EDGE_SAMPLES: 50,
+      CALIBRATION_STEP: 0.02,
+      CALIBRATION_MAX_DRIFT: 0.1,
+    });
+    const silent = { warn: () => {}, log: () => {} };
+
+    it('earns a first pair when its OWN rate qualifies and the tenant\'s does not', async () => {
+      // The scenario this whole change exists for. `hot` fails 83% of its
+      // decided high-edge rows; `calm` passes 95% of many more. Pooled, the
+      // tenant sits at ~21% — nowhere near the 65% bound — so the tenant pair
+      // never moves and `hot` is judged against thresholds `calm` set.
+      //
+      // Note the ordering that matters: Pass B runs first, and because `hot`
+      // holds no pair its rows legitimately inform the tenant too (the
+      // deliberate bootstrap overlap). The tenant not qualifying is what leaves
+      // that evidence available to Pass C at the unchanged epoch.
+      const hot = await seedAgent('hot');
+      const calm = await seedAgent('calm');
+      await pool.query(
+        `INSERT INTO routing_settings
+           (id, owner_user_id, structural_enabled, cascade_enabled, calibration_enabled)
+         VALUES (gen_random_uuid(), $1, true, true, true)
+         ON CONFLICT (owner_user_id) DO UPDATE SET calibration_enabled = true`,
+        [owner],
+      );
+      const seed = async (agentId: string, n: number, failures: number): Promise<void> => {
+        for (let i = 0; i < n; i += 1) {
+          await pool.query(
+            `INSERT INTO request_log
+              (id, owner_user_id, agent_id, decision_layer, routing_reason, input_tokens,
+               output_tokens, usage_estimated, duration_ms, status, escalated,
+               escalation_source, created_at, structural_band, structural_score,
+               structural_band_source, structural_epoch, structural_scope, quality_signal)
+             VALUES ($1,$2,$3,'cascade','t',10,5,false,1,'success',$4,$5,now(),
+                     'ambiguous',0.57,'threshold',0,'tenant',$6)`,
+            [
+              randomUUID(),
+              owner,
+              agentId,
+              i < failures,
+              i < failures ? 'quality_gate' : null,
+              i < failures ? 0 : 1,
+            ],
+          );
+        }
+      };
+      await seed(hot, 60, 50); // 83% failure, over the floor of 50
+      await seed(calm, 200, 10); // 5% failure — drags the pooled rate to ~21%
+
+      await runCalibrationOccurrence(
+        port,
+        { high: 0.6, low: 0.25 },
+        CFG,
+        railsOf(CFG),
+        Date.now(),
+        silent,
+      );
+
+      // The TENANT did not move: pooled, nothing qualifies.
+      const { rows: tenantRow } = await pool.query<{ calibrated_high: number | null }>(
+        `SELECT calibrated_high FROM routing_settings WHERE owner_user_id=$1`,
+        [owner],
+      );
+      expect(tenantRow[0]!.calibrated_high).toBeNull();
+
+      // `hot` earned its own pair, one step down, anchored to the tenant's
+      // effective pair (the instance defaults, since the tenant holds none).
+      const { rows: hotRow } = await pool.query<{
+        calibrated_high: number;
+        calibrated_anchor_high: number;
+        calibration_epoch: number;
+      }>(
+        `SELECT calibrated_high, calibrated_anchor_high, calibration_epoch
+           FROM agent WHERE id=$1`,
+        [hot],
+      );
+      expect(hotRow[0]!.calibrated_high).toBeCloseTo(0.58, 4);
+      expect(hotRow[0]!.calibrated_anchor_high).toBeCloseTo(0.6, 4);
+      expect(hotRow[0]!.calibration_epoch).toBe(1);
+
+      // `calm` earned nothing — its rate never approached the bound. Two agents
+      // of one tenant, one calibrated and one inheriting, which is the entire
+      // point of the change.
+      const { rows: calmRow } = await pool.query(
+        `SELECT calibrated_high FROM agent WHERE id=$1`,
+        [calm],
+      );
+      expect(calmRow[0]).toEqual({ calibrated_high: null });
+
+      // The move is audited AGAINST THE AGENT, so history and the per-edge
+      // cooldown can tell the two scopes apart.
+      const { rows: events } = await pool.query<{ edge: string }>(
+        `SELECT edge FROM threshold_calibration_event WHERE agent_id=$1`,
+        [hot],
+      );
+      expect(events).toHaveLength(1);
+      expect(events[0]!.edge).toBe('high');
+
+      // And membership advanced, so a tenant write computed before this loses.
+      const { rows: gen } = await pool.query<{ membership_generation: number }>(
+        `SELECT membership_generation FROM routing_settings WHERE owner_user_id=$1`,
+        [owner],
+      );
+      expect(gen[0]!.membership_generation).toBeGreaterThan(0);
+    });
+
+    it('leaves an agent below the floor inheriting — the designed steady state', async () => {
+      const quiet = await seedAgent('quiet');
+      for (let i = 0; i < 10; i += 1) {
+        await pool.query(
+          `INSERT INTO request_log
+            (id, owner_user_id, agent_id, decision_layer, routing_reason, input_tokens,
+             output_tokens, usage_estimated, duration_ms, status, escalated,
+             escalation_source, created_at, structural_band, structural_score,
+             structural_band_source, structural_epoch, structural_scope, quality_signal)
+           VALUES ($1,$2,$3,'cascade','t',10,5,false,1,'success',true,'quality_gate',now(),
+                   'ambiguous',0.57,'threshold',0,'tenant',0)`,
+          [randomUUID(), owner, quiet],
+        );
+      }
+      await runCalibrationOccurrence(
+        port,
+        { high: 0.6, low: 0.25 },
+        CFG,
+        railsOf(CFG),
+        Date.now(),
+        silent,
+      );
+      // 10 samples against a floor of 50. It earns nothing and keeps inheriting,
+      // which is invariant 1's degrade contract, not a failure to act.
+      const { rows } = await pool.query(`SELECT calibrated_high FROM agent WHERE id=$1`, [quiet]);
+      expect(rows[0]).toEqual({ calibrated_high: null });
     });
   });
 });

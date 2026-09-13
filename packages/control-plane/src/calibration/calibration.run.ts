@@ -5,6 +5,8 @@ import {
   type PersistencePort,
   type RoutingSettingsValue,
   type ThresholdCalibrationEventInput,
+  type ThresholdCalibrationEventRowView,
+  type CalibrationSweepAgent,
   type CalibrationEdgeStats,
 } from '@polyrouter/shared/server';
 import { effectiveThresholds, type StructuralConfig } from '../proxy/routing.config';
@@ -40,6 +42,23 @@ interface EdgeDecision {
 }
 
 const DAY_MS = 86_400_000;
+
+/** Per-edge cooldown, evaluated within ONE scope (add-per-agent-calibration).
+ * `agentId === null` selects the tenant's own events; an agent id selects that
+ * agent's. Nothing crosses: a tenant move places no agent's edge in cooldown,
+ * and one agent's move places none on another's. */
+function cooldownFor(
+  recent: readonly ThresholdCalibrationEventRowView[],
+  agentId: string | null,
+  now: number,
+): (edge: 'high' | 'low') => boolean {
+  const cooledSince = now - COOLDOWN_DAYS * DAY_MS;
+  return (edge) =>
+    recent.some(
+      (e) =>
+        e.agentId === agentId && e.edge === edge && Date.parse(e.createdAt) > cooledSince,
+    );
+}
 
 /** Threshold arithmetic is 4-decimal: repeated binary-float steps (0.47 −
  * 0.02 = 0.44999999999999996) would drift the stored pair, break the anchor
@@ -136,6 +155,12 @@ export async function runCalibrationOccurrence(
       const moved = await calibrateTenant(db, structural, cfg, rails, now, t);
       if (moved === 'moved') summary.moves += 1;
       else if (moved === 'skipped') summary.skips += 1;
+      // --- Pass C: the SAME standard, one scope down. Runs after the tenant's
+      // own pass so an agent anchors to the pair the tenant just settled on,
+      // rather than to one this occurrence is about to replace.
+      const agentOutcome = await calibrateAgents(db, structural, cfg, rails, now, t);
+      summary.moves += agentOutcome.moves;
+      summary.skips += agentOutcome.skips;
     } catch (err) {
       summary.skips += 1;
       logger.warn(`calibration skipped a tenant: ${String((err as Error).message)}`);
@@ -170,11 +195,13 @@ async function calibrateTenant(
   const anchorLow = v.calibratedAnchorLow ?? structural.low;
 
   // Per-edge cooldown from the tenant's recent events (daily cadence — 20
-  // rows comfortably cover the cooldown window).
-  const recent = await db.calibrationEvents.list(principal, 20);
-  const cooledSince = now - COOLDOWN_DAYS * DAY_MS;
-  const inCooldown = (edge: 'high' | 'low'): boolean =>
-    recent.some((e) => e.edge === edge && Date.parse(e.createdAt) > cooledSince);
+  // rows comfortably cover the cooldown window). SCOPED: only tenant-scope
+  // events (`agentId === null`) place a tenant edge in cooldown, so one
+  // agent's move never freezes the tenant's, nor another agent's
+  // (add-per-agent-calibration). The cooldown is per edge PER SCOPE, exactly
+  // as the floor and every other rail is.
+  const recent = await db.calibrationEvents.list(principal, 60);
+  const inCooldown = cooldownFor(recent, null, now);
 
   const stats = await db.analytics.calibrationStats(
     principal,
@@ -363,3 +390,140 @@ export function decideMove(p: MoveInputs): MoveOutcome {
 }
 
 
+
+
+/** The parent pair, re-read so a tenant move applied moments ago in Pass B is
+ * already reflected. Any failure degrades to the value the sweep already holds:
+ * this pass must never make a tenant's own move look skipped (invariant 1). */
+async function safeSettings(
+  db: PersistencePort,
+  principal: ReturnType<typeof userPrincipal>,
+): Promise<RoutingSettingsValue | null> {
+  try {
+    return await db.routingSettings.get(principal);
+  } catch {
+    return null;
+  }
+}
+
+/** Pass C — per-AGENT moves, under the identical standard (add-per-agent-calibration).
+ *
+ * Same floor, statistic, step, drift cap, gap, hysteresis, cooldown and
+ * contraction-only rule, because it calls `decideMove` — the one place any of
+ * those live. What differs is only the inputs: an agent anchors to its
+ * tenant's EFFECTIVE pair, draws its own evidence, carries its own epoch and
+ * cooldown, and is additionally bounded globally from the instance defaults.
+ *
+ * An agent below the floor simply earns nothing and keeps inheriting. That is
+ * the designed steady state, not a failure to act. */
+async function calibrateAgents(
+  db: PersistencePort,
+  structural: Pick<StructuralConfig, 'high' | 'low'>,
+  cfg: CalibrationConfig,
+  rails: CalibrationRails,
+  now: number,
+  t: CalibrationSweepTenant,
+): Promise<{ moves: number; skips: number }> {
+  const out = { moves: 0, skips: 0 };
+  const principal = userPrincipal(t.ownerUserId);
+  const v = t.value;
+
+  // The parent the agents refine.
+  const parentValue = (await safeSettings(db, principal)) ?? v;
+  const parent = effectiveThresholds(structural, parentValue, rails);
+
+  // A degenerate PARENT halts every agent beneath it: an agent's zones are
+  // carved out of the same interval, so if the parent's already touch, no
+  // agent pair inside it can avoid it (task 4.5). Same predicate as the tenant
+  // scope — a restatement here is how the two would drift apart.
+  if (calibrationHalted(structural, parent, rails)) return out;
+
+  let agentRows: CalibrationSweepAgent[];
+  let recent: ThresholdCalibrationEventRowView[];
+  try {
+    agentRows = await db.agentCalibration.listForCalibration(principal);
+    if (agentRows.length === 0) return out;
+    recent = await db.calibrationEvents.list(principal, 200);
+  } catch {
+    // An instance that has not yet wired the agent surfaces, or a transient
+    // read failure: the tenant scope is unaffected and keeps working. Degrade,
+    // never fail (invariant 1).
+    return out;
+  }
+  const window = { from: new Date(now - cfg.windowDays * DAY_MS), to: new Date(now) };
+
+  for (const a of agentRows) {
+    try {
+      const promoted = a.calibratedHigh !== null;
+      // A stale agent pair is Pass A's business (one level down), not a move's.
+      const own = effectiveThresholds(parent, a, rails);
+      if (promoted && own.high === parent.high && own.low === parent.low) continue;
+
+      // The agent's own zones must clear the shared gap rail inside the parent.
+      if (calibrationHalted(parent, own, rails)) {
+        out.skips += 1;
+        continue;
+      }
+
+      const stats = await db.analytics.calibrationStats(principal, window, {
+        high: own.high,
+        low: own.low,
+        edgeWidth: EDGE_WIDTH,
+        // Membership and freshness travel together: a promoted agent reads its
+        // OWN epoch over agent-scoped rows; an unpromoted one bootstraps from
+        // its tenant-scoped rows at the TENANT's epoch.
+        epoch: promoted ? a.calibrationEpoch : parentValue.calibrationEpoch,
+        scope: promoted
+          ? { kind: 'agent', agentId: a.id }
+          : { kind: 'agent-bootstrap', agentId: a.id },
+      });
+
+      const outcome = decideMove({
+        base: parent,
+        eff: own,
+        anchorHigh: a.calibratedAnchorHigh ?? parent.high,
+        anchorLow: a.calibratedAnchorLow ?? parent.low,
+        stats,
+        inCooldown: cooldownFor(recent, a.id, now),
+        cfg,
+        rails,
+        now,
+        globalBound: structural,
+      });
+      if (outcome.kind === 'noop') continue;
+
+      const applied = await db.agentCalibration.setCalibrated(
+        principal,
+        a.id,
+        {
+          high: outcome.target.high,
+          low: outcome.target.low,
+          anchorHigh: parent.high,
+          anchorLow: parent.low,
+        },
+        {
+          high: a.calibratedHigh,
+          low: a.calibratedLow,
+          anchorHigh: a.calibratedAnchorHigh,
+          anchorLow: a.calibratedAnchorLow,
+          epoch: a.calibrationEpoch,
+        },
+        // A promotion or move DERIVES its anchor from the parent, so it pins
+        // the parent it read (design Decision 7). A tenant move that lands
+        // first makes this fail rather than writing a pair stale on arrival.
+        {
+          high: parentValue.calibratedHigh,
+          low: parentValue.calibratedLow,
+          epoch: parentValue.calibrationEpoch,
+          membershipGeneration: parentValue.membershipGeneration,
+        },
+        outcome.events,
+      );
+      if (applied) out.moves += 1;
+      else out.skips += 1;
+    } catch {
+      out.skips += 1;
+    }
+  }
+  return out;
+}

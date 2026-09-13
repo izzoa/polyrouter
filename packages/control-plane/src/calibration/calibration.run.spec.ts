@@ -264,12 +264,51 @@ describe('runCalibrationOccurrence (add-auto-threshold-calibration)', () => {
           edgeFailures: 40,
           reason: 'r',
           createdAt: new Date(NOW - 1 * DAY).toISOString(), // within the 3-day cooldown
+          agentId: null, // a TENANT-scope event: only these cool a tenant edge
         },
       ],
     });
     const sum = await runCalibrationOccurrence(port, STRUCTURAL, CFG, RAILS, NOW, silent);
     expect(sum.moves).toBe(0);
     expect(calls).toHaveLength(0);
+  });
+
+  it('an AGENT-scope event never places the tenant edge in cooldown', async () => {
+    // Task 4.6. The cooldown is per edge PER SCOPE, exactly as the floor and
+    // every other rail is. An agent moving its own high edge must not freeze
+    // the tenant's, or one busy agent could stall its whole tenant.
+    const { port, calls } = fakePort({
+      enabled: [tenant('a', uncalibrated())],
+      stats: () => ({
+        highEdge: { samples: 80, failures: 70 },
+        lowEdge: { samples: 0, failures: 0 },
+      }),
+      recentEvents: [
+        {
+          id: 'e1',
+          trigger: 'calibrator',
+          oldHigh: 0.6,
+          oldLow: 0.25,
+          newHigh: 0.58,
+          newLow: 0.25,
+          anchorHigh: 0.6,
+          anchorLow: 0.25,
+          windowFrom: null,
+          windowTo: null,
+          edge: 'high',
+          edgeSamples: 50,
+          edgeFailures: 40,
+          reason: 'r',
+          createdAt: new Date(NOW - 1 * DAY).toISOString(),
+          agentId: 'agent-1', // an AGENT's move, not the tenant's
+        },
+      ],
+    });
+    const sum = await runCalibrationOccurrence(port, STRUCTURAL, CFG, RAILS, NOW, silent);
+    // Identical to the cooldown test above except for `agentId`, so this pins
+    // the scoping specifically rather than the cooldown generally.
+    expect(sum.moves).toBe(1);
+    expect(calls[0]!.quad).toMatchObject({ high: 0.58 });
   });
 
   it('the anchored drift cap stops a move at the boundary', async () => {

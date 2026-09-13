@@ -1046,6 +1046,7 @@ function createCalibrationEventsAccessor(db: Db): CalibrationEventsAccessor {
         edgeFailures: r.edgeFailures,
         reason: r.reason,
         createdAt: iso(r.createdAt) ?? '',
+        agentId: r.agentId,
       }));
     },
   };

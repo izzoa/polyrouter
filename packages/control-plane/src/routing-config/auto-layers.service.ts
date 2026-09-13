@@ -6,7 +6,13 @@ import {
   type RoutingSettingsValue,
   type ThresholdCalibrationEventRowView,
 } from '@polyrouter/shared/server';
-import { CALIBRATION_RAILS, type CalibrationRails } from '../calibration/calibration.config';
+import {
+  CALIBRATION_CONFIG,
+  CALIBRATION_RAILS,
+  EDGE_WIDTH,
+  type CalibrationConfig,
+  type CalibrationRails,
+} from '../calibration/calibration.config';
 import {
   ROUTING_CONFIG,
   autoLayerCapability,
@@ -63,10 +69,46 @@ export interface AutoLayersView {
     instanceLow: number;
     effectiveHigh: number;
     effectiveLow: number;
+    /** Per-agent scope (add-per-agent-calibration). Every agent of the tenant,
+     * so the UI can say INHERITING rather than leaving the reader to infer it
+     * from an absence. */
+    agents: AgentCalibrationView[];
+    /** The tenant pair is FROZEN: it holds a calibrated pair whose own
+     * post-exclusion evidence has been below the acting floor on BOTH edges
+     * for a full window. It is still governing every inheriting agent while no
+     * longer being informed by the traffic it governs, so it is disclosed
+     * rather than silently presented as current. Null when there is no tenant
+     * pair to freeze. */
+    tenantPairStarved: boolean | null;
   };
 }
 
+/** One agent's calibration state for the read surface. */
+export interface AgentCalibrationView {
+  id: string;
+  name: string;
+  /** Null = INHERITING the tenant pair. Not "uncalibrated": the agent is being
+   * routed by a real, possibly calibrated pair — its tenant's. */
+  calibratedHigh: number | null;
+  calibratedLow: number | null;
+  anchorHigh: number | null;
+  anchorLow: number | null;
+  epoch: number;
+  /** Whether the stored pair is the one actually routing. A pair whose anchor
+   * has gone stale is presented as inert, exactly as the tenant pair is. */
+  active: boolean;
+  /** Current-epoch evidence AT THIS AGENT'S SCOPE — only for a pair-holder,
+   * where the counts are what its own next move would be judged on. */
+  evidence: { highSamples: number; lowSamples: number } | null;
+}
+
 const DEFAULT_HISTORY_LIMIT = 20;
+/** Bound on the agent list this read renders, matching the sibling evidence
+ * endpoint: an unbounded list is an unbounded DOM and an unbounded query count. */
+const AGENT_SCOPE_CAP = 50;
+/** The CALIBRATION window, not the caller's analytics range — these counts are
+ * the calibrator's, and must agree with what it acts on. */
+const CALIBRATION_READ_WINDOW_DAYS = 14;
 
 /** Per-tenant auto-layer preference (#20) + threshold-calibration state.
  * Effective = capability × preference: capability is the boot-resolved
@@ -80,13 +122,93 @@ export class AutoLayersService {
     @Inject(PERSISTENCE_PORT) private readonly db: PersistencePort,
     @Inject(ROUTING_CONFIG) private readonly cfg: RoutingConfig,
     @Inject(CALIBRATION_RAILS) private readonly rails: CalibrationRails,
+    @Inject(CALIBRATION_CONFIG) private readonly calibrationCfg: CalibrationConfig,
     private readonly semantic: SemanticClassifierService,
     private readonly runtime: SemanticRuntimeService,
   ) {}
 
   async get(principal: Principal): Promise<AutoLayersView> {
     const pref = await this.db.routingSettings.get(principal);
-    return this.effective(pref);
+    const view = this.effective(pref);
+    // The per-agent scope is read-time only and must never make this endpoint
+    // fail: a tenant's own calibration state is the answer to this request, and
+    // the agent list is an addition to it (invariant 1).
+    try {
+      const scoped = await this.agentScope(principal, pref, view.calibration);
+      return { ...view, calibration: { ...view.calibration, ...scoped } };
+    } catch {
+      return view;
+    }
+  }
+
+  /** Per-agent calibration state plus the frozen-tenant-pair disclosure
+   * (add-per-agent-calibration).
+   *
+   * Evidence is fetched only for agents that HOLD a pair — that is the set
+   * whose counts mean something here (what its own next move is judged on),
+   * and it keeps this a small bounded read rather than one query per agent on
+   * a tenant with hundreds. Inheriting agents are still listed, because
+   * "INHERITING" is a state the reader needs named rather than inferred from
+   * an absence. */
+  private async agentScope(
+    principal: Principal,
+    pref: RoutingSettingsValue | null,
+    calibration: AutoLayersView['calibration'],
+  ): Promise<Pick<AutoLayersView['calibration'], 'agents' | 'tenantPairStarved'>> {
+    const rows = await this.db.agentCalibration.listForCalibration(principal);
+    const parent = { high: calibration.effectiveHigh, low: calibration.effectiveLow };
+    const window = {
+      from: new Date(Date.now() - CALIBRATION_READ_WINDOW_DAYS * 86_400_000),
+      to: new Date(),
+    };
+
+    const agents: AgentCalibrationView[] = [];
+    for (const a of rows.slice(0, AGENT_SCOPE_CAP)) {
+      const applied = effectiveThresholds(parent, a, this.rails);
+      const active =
+        a.calibratedHigh !== null && (applied.high !== parent.high || applied.low !== parent.low);
+      let evidence: AgentCalibrationView['evidence'] = null;
+      if (active) {
+        const s = await this.db.analytics.calibrationStats(principal, window, {
+          high: applied.high,
+          low: applied.low,
+          edgeWidth: EDGE_WIDTH,
+          epoch: a.calibrationEpoch,
+          scope: { kind: 'agent', agentId: a.id },
+        });
+        evidence = { highSamples: s.highEdge.samples, lowSamples: s.lowEdge.samples };
+      }
+      agents.push({
+        id: a.id,
+        name: a.name ?? a.id,
+        calibratedHigh: active ? a.calibratedHigh : null,
+        calibratedLow: active ? a.calibratedLow : null,
+        anchorHigh: a.calibratedAnchorHigh,
+        anchorLow: a.calibratedAnchorLow,
+        epoch: a.calibrationEpoch,
+        active,
+        evidence,
+      });
+    }
+
+    // The frozen-pair disclosure. Only meaningful when a tenant pair exists to
+    // be frozen: without one there is nothing being presented as current.
+    let tenantPairStarved: boolean | null = null;
+    if (calibration.calibratedHigh !== null) {
+      const t = await this.db.analytics.calibrationStats(principal, window, {
+        high: parent.high,
+        low: parent.low,
+        edgeWidth: EDGE_WIDTH,
+        epoch: pref?.calibrationEpoch ?? 0,
+        scope: { kind: 'tenant' },
+      });
+      // BOTH edges below the floor. The floor applies per edge, so a tenant at
+      // 70 high and 0 low is NOT starved — it has a live edge and will move.
+      tenantPairStarved =
+        t.highEdge.samples < this.calibrationCfg.minEdgeSamples &&
+        t.lowEdge.samples < this.calibrationCfg.minEdgeSamples;
+    }
+    return { agents, tenantPairStarved };
   }
 
   async set(principal: Principal, dto: AutoLayersDto): Promise<AutoLayersView> {
@@ -132,8 +254,12 @@ export class AutoLayersService {
     return this.get(principal);
   }
 
-  history(principal: Principal, limit?: number): Promise<ThresholdCalibrationEventRowView[]> {
-    return this.db.calibrationEvents.list(principal, limit ?? DEFAULT_HISTORY_LIMIT);
+  history(
+    principal: Principal,
+    limit?: number,
+    scope?: string,
+  ): Promise<ThresholdCalibrationEventRowView[]> {
+    return this.db.calibrationEvents.list(principal, limit ?? DEFAULT_HISTORY_LIMIT, scope);
   }
 
   private effective(pref: RoutingSettingsValue | null): AutoLayersView {
@@ -172,6 +298,8 @@ export class AutoLayersService {
         instanceLow,
         effectiveHigh: eff.high,
         effectiveLow: eff.low,
+        agents: [],
+        tenantPairStarved: null,
       },
     };
   }

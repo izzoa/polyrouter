@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { IsBoolean, IsInt, IsOptional, Max, Min } from 'class-validator';
+import { IsBoolean, IsInt, IsNotEmpty, IsOptional, IsString, Max, Min } from 'class-validator';
 
 /** The tenant's auto-layer preference (#20) — a full replacement of the layer
  * flags. `cascade → structural` and `semantic → structural` are normalized in
@@ -38,4 +38,13 @@ export class CalibrationHistoryQueryDto {
   @Min(1)
   @Max(100)
   limit?: number;
+
+  /** Narrow the history to ONE scope (add-per-agent-calibration): an agent id,
+   * or the literal `tenant` for the tenant's own events. Omitted returns both
+   * in one chronological order, which is what an operator wants by default —
+   * a threshold move is a threshold move whichever scope made it. */
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  scope?: string;
 }

@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, isNotNull, lt, lte, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, sql } from 'drizzle-orm';
 import {
   agents,
   assertUserPrincipal,
@@ -1020,11 +1020,22 @@ function createCalibrationEventsAccessor(db: Db): CalibrationEventsAccessor {
   const iso = (v: Date | string | null): string | null =>
     v == null ? null : v instanceof Date ? v.toISOString() : new Date(v).toISOString();
   return {
-    async list(principal, limit) {
+    async list(principal, limit, scope) {
       const rows = await db
         .select()
         .from(thresholdCalibrationEvents)
-        .where(ownershipPredicate(thresholdCalibrationEvents, principal))
+        .where(
+          and(
+            // Ownership FIRST, always: a foreign agent id then selects nothing
+            // rather than reaching another tenant's rows (invariant 5).
+            ownershipPredicate(thresholdCalibrationEvents, principal),
+            scope === undefined
+              ? undefined
+              : scope === 'tenant'
+                ? isNull(thresholdCalibrationEvents.agentId)
+                : eq(thresholdCalibrationEvents.agentId, scope),
+          ),
+        )
         .orderBy(
           desc(thresholdCalibrationEvents.createdAt),
           desc(thresholdCalibrationEvents.ordinal),
@@ -1062,6 +1073,7 @@ export function buildPersistencePort(db: Db): PersistencePort {
           .select({
             id: agents.id,
             ownerUserId: agents.ownerUserId,
+            name: agents.name,
             calibratedHigh: agents.calibratedHigh,
             calibratedLow: agents.calibratedLow,
             calibratedAnchorHigh: agents.calibratedAnchorHigh,

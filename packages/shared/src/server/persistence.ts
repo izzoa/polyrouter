@@ -915,6 +915,8 @@ export interface CalibrationSweepTenant {
 export interface CalibrationSweepAgent {
   id: string;
   ownerUserId: string;
+  /** For the read surface; the sweep itself never needs it. */
+  name?: string;
   calibratedHigh: number | null;
   calibratedLow: number | null;
   calibratedAnchorHigh: number | null;
@@ -1085,7 +1087,15 @@ export interface RoutingSettingsAccessor {
 /** Owner-scoped calibration history reads (the writes ride `setCalibrated`'s
  * transaction). */
 export interface CalibrationEventsAccessor {
-  list(principal: Principal, limit: number): Promise<ThresholdCalibrationEventRowView[]>;
+  list(
+    principal: Principal,
+    limit: number,
+    /** Narrow to ONE scope (add-per-agent-calibration): an agent id for that
+     * agent's events, `'tenant'` for the tenant's own, omitted for both in one
+     * chronological order. Always owner-scoped first, so a foreign agent id
+     * selects nothing rather than disclosing another tenant's history. */
+    scope?: string | 'tenant',
+  ): Promise<ThresholdCalibrationEventRowView[]>;
 }
 
 /* ---- semantic learning (add-semantic-learning: the sweep's Postgres half) ---- */

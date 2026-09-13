@@ -49,6 +49,6 @@ export class CalibrationController {
     @CurrentPrincipal() principal: Principal,
     @Query() q: CalibrationHistoryQueryDto,
   ): Promise<ThresholdCalibrationEventRowView[]> {
-    return this.svc.history(principal, q.limit);
+    return this.svc.history(principal, q.limit, q.scope);
   }
 }

@@ -4,6 +4,7 @@ import { SemanticModule } from '../semantic/semantic.module';
 import { ROUTING_CONFIG, loadRoutingConfig } from '../proxy/routing.config';
 import {
   CALIBRATION_RAILS,
+  CALIBRATION_CONFIG,
   loadCalibrationConfig,
   railsOf,
   type CalibrationRails,
@@ -30,6 +31,10 @@ import { TiersController } from './tiers.controller';
       provide: CALIBRATION_RAILS,
       useFactory: (): CalibrationRails => railsOf(loadCalibrationConfig()),
     },
+    // The read surface reports evidence against the SAME acting floor the
+    // calibrator uses (add-per-agent-calibration) — a second copy of that
+    // number is how a display starts contradicting the sweep.
+    { provide: CALIBRATION_CONFIG, useFactory: loadCalibrationConfig },
   ],
 })
 export class RoutingConfigModule {}

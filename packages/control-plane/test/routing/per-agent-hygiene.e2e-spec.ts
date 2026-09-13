@@ -293,6 +293,119 @@ describe('per-agent calibration hygiene (add-per-agent-calibration)', () => {
     });
   });
 
+  describe('read surfaces (tasks 6.1-6.4)', () => {
+    it('history narrows by scope, and a FOREIGN agent id discloses nothing', async () => {
+      await settings({ high: 0.55, low: 0.3, anchorHigh: 0.6, anchorLow: 0.25, epoch: 1 });
+      const mine = await seedAgent('mine', null);
+      const writeEvent = (agentId: string | null): Promise<unknown> =>
+        pool.query(
+          `INSERT INTO threshold_calibration_event
+             (id, owner_user_id, trigger, old_high, old_low, new_high, new_low,
+              anchor_high, anchor_low, reason, agent_id)
+           VALUES ($1,$2,'calibrator',0.6,0.25,0.58,0.25,0.6,0.25,'{}',$3)`,
+          [randomUUID(), owner, agentId],
+        );
+      await writeEvent(null); // a tenant-scope move
+      await writeEvent(mine); // one of this tenant's agents
+
+      const principal = userPrincipal(owner);
+      const both = await port.calibrationEvents.list(principal, 20);
+      expect(both).toHaveLength(2);
+      // Every event is labelled with its scope, so an operator reading the
+      // combined list never has to guess which level moved.
+      expect(both.map((e) => e.agentId).sort()).toEqual([mine, null].sort());
+
+      expect(await port.calibrationEvents.list(principal, 20, 'tenant')).toHaveLength(1);
+      expect(await port.calibrationEvents.list(principal, 20, mine)).toHaveLength(1);
+
+      // A FOREIGN agent id. Ownership is applied FIRST, so this selects
+      // nothing rather than reaching another tenant's rows (invariant 5).
+      const { rows: other } = await pool.query<{ id: string }>(
+        `INSERT INTO "user" (id, name, email, email_verified)
+         VALUES (gen_random_uuid(), 'other', $1, true) RETURNING id`,
+        [`other-${Date.now()}-${randomUUID()}@cal.test`],
+      );
+      const foreignOwner = other[0]!.id;
+      const foreignAgent = randomUUID();
+      await pool.query(
+        `INSERT INTO agent (id, owner_user_id, name, api_key_hash, api_key_prefix, harness_type)
+         VALUES ($1,$2,'f','h',$3,'generic')`,
+        [foreignAgent, foreignOwner, `poly_f_${randomUUID().slice(0, 8)}`],
+      );
+      await pool.query(
+        `INSERT INTO threshold_calibration_event
+           (id, owner_user_id, trigger, old_high, old_low, new_high, new_low,
+            anchor_high, anchor_low, reason, agent_id)
+         VALUES ($1,$2,'calibrator',0.6,0.25,0.58,0.25,0.6,0.25,'{}',$3)`,
+        [randomUUID(), foreignOwner, foreignAgent],
+      );
+      try {
+        expect(await port.calibrationEvents.list(principal, 20, foreignAgent)).toEqual([]);
+        // And the unscoped list still shows only our own two.
+        expect(await port.calibrationEvents.list(principal, 20)).toHaveLength(2);
+      } finally {
+        await pool.query(`DELETE FROM "user" WHERE id=$1`, [foreignOwner]);
+      }
+    });
+
+    it('reports an agent at its OWN epoch under a tenant at a different one', async () => {
+      // Task 6.3. Both counters default to 0 and advance independently, so the
+      // agent's counts must be taken at ITS epoch, not its tenant's.
+      await settings({ high: 0.55, low: 0.3, anchorHigh: 0.6, anchorLow: 0.25, epoch: 5 });
+      const child = await seedAgent('epoch-child', {
+        high: 0.53,
+        low: 0.32,
+        anchorHigh: 0.55,
+        anchorLow: 0.3,
+      });
+      await pool.query(`UPDATE agent SET calibration_epoch=2 WHERE id=$1`, [child]);
+      // Evidence at the AGENT's epoch 2, inside its own high edge [0.48, 0.53).
+      await seedDecidedAt(child, 3, 0.5, 2);
+      // A decoy at the TENANT's epoch 5 — must not be counted for the agent.
+      await seedDecidedAt(child, 7, 0.5, 5);
+
+      const stats = await port.analytics.calibrationStats(
+        userPrincipal(owner),
+        { from: new Date(Date.now() - 14 * 86_400_000), to: new Date() },
+        {
+          high: 0.53,
+          low: 0.32,
+          edgeWidth: 0.05,
+          epoch: 2,
+          scope: { kind: 'agent', agentId: child },
+        },
+      );
+      expect(stats.highEdge.samples).toBe(3);
+    });
+
+    it('flags a FROZEN tenant pair, and does not flag a live one', async () => {
+      // Task 6.4. A tenant holding a pair whose own post-exclusion evidence has
+      // been below the floor on BOTH edges is still governing every inheriting
+      // agent while no longer being informed by the traffic it governs.
+      await settings({ high: 0.55, low: 0.3, anchorHigh: 0.6, anchorLow: 0.25, epoch: 0 });
+      // Computed FRESH per call: `to` must be after the rows being counted, or
+      // the window silently excludes them (this test asserted 0 once for that
+      // reason, which is a real class of bug in any window-bounded read).
+      const range = (): { from: Date; to: Date } => ({
+        from: new Date(Date.now() - 14 * 86_400_000),
+        to: new Date(Date.now() + 60_000),
+      });
+      const geom = { high: 0.55, low: 0.3, edgeWidth: 0.05, epoch: 0 };
+
+      const starved = await port.analytics.calibrationStats(userPrincipal(owner), range(), geom);
+      expect(starved.highEdge.samples).toBeLessThan(50);
+      expect(starved.lowEdge.samples).toBeLessThan(50);
+
+      // Now give the tenant a live high edge: it is NOT starved, because the
+      // floor applies PER EDGE and it will move on the next qualifying run.
+      const live = await seedAgent('live', null); // holds no pair -> tenant evidence
+      await seedDecidedTenant(live, 60, 0.52);
+      const after = await port.analytics.calibrationStats(userPrincipal(owner), range(), geom);
+      expect(after.highEdge.samples).toBe(60);
+      expect(after.highEdge.samples).toBeGreaterThanOrEqual(50);
+    });
+  });
+
   /** Decided ambiguous cascade rows at the agent's own scope and epoch. */
   async function seedDecided(agentId: string, n: number, score: number): Promise<void> {
     for (let i = 0; i < n; i += 1) {
@@ -321,6 +434,43 @@ describe('per-agent calibration hygiene (add-per-agent-calibration)', () => {
          VALUES ($1,$2,$3,'structural','t',10,5,false,1,'success',false,now(),
                  'high',0.9,'threshold',1,'agent',1)`,
         [randomUUID(), owner, agentId],
+      );
+    }
+  }
+
+  /** Decided rows at an explicit epoch, agent scope. */
+  async function seedDecidedAt(
+    agentId: string,
+    n: number,
+    score: number,
+    epoch: number,
+  ): Promise<void> {
+    for (let i = 0; i < n; i += 1) {
+      await pool.query(
+        `INSERT INTO request_log
+          (id, owner_user_id, agent_id, decision_layer, routing_reason, input_tokens,
+           output_tokens, usage_estimated, duration_ms, status, escalated, created_at,
+           structural_band, structural_score, structural_band_source,
+           structural_epoch, structural_scope, quality_signal)
+         VALUES ($1,$2,$3,'cascade','t',10,5,false,1,'success',false,now(),
+                 'ambiguous',$4,'threshold',$5,'agent',1)`,
+        [randomUUID(), owner, agentId, score, epoch],
+      );
+    }
+  }
+
+  /** Decided rows at TENANT scope, epoch 0. */
+  async function seedDecidedTenant(agentId: string, n: number, score: number): Promise<void> {
+    for (let i = 0; i < n; i += 1) {
+      await pool.query(
+        `INSERT INTO request_log
+          (id, owner_user_id, agent_id, decision_layer, routing_reason, input_tokens,
+           output_tokens, usage_estimated, duration_ms, status, escalated, created_at,
+           structural_band, structural_score, structural_band_source,
+           structural_epoch, structural_scope, quality_signal)
+         VALUES ($1,$2,$3,'cascade','t',10,5,false,1,'success',false,now(),
+                 'ambiguous',$4,'threshold',0,'tenant',1)`,
+        [randomUUID(), owner, agentId, score],
       );
     }
   }

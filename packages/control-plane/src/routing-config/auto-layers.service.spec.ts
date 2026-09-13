@@ -6,6 +6,7 @@ import {
   type RoutingEnv,
 } from '../proxy/routing.config';
 import { AutoLayersService } from './auto-layers.service';
+import { buildCalibrationConfig } from '../calibration/calibration.config';
 import { SemanticClassifierService } from '../semantic/semantic-classifier.service';
 import type { SemanticRuntimeService } from '../semantic/semantic-runtime.service';
 import { Logger } from '@nestjs/common';
@@ -59,6 +60,14 @@ function cfg(autoLayers: string): RoutingConfig {
 }
 
 const principal: Principal = { kind: 'user', userId: 'u1' };
+const CAL_CFG = buildCalibrationConfig({
+  CALIBRATION_SCHED_ENABLED: 'true',
+  CALIBRATION_SCHED_CRON: '0 4 * * *',
+  CALIBRATION_WINDOW_DAYS: 14,
+  CALIBRATION_MIN_EDGE_SAMPLES: 50,
+  CALIBRATION_STEP: 0.02,
+  CALIBRATION_MAX_DRIFT: 0.1,
+});
 const RAILS = { maxDrift: 0.1, minGap: 0.1 };
 /** The calibration view block for an uncalibrated tenant (the layer tests). */
 const UNCAL_VIEW = {
@@ -69,6 +78,11 @@ const UNCAL_VIEW = {
   instanceLow: 0.25,
   effectiveHigh: 0.6,
   effectiveLow: 0.25,
+  // add-per-agent-calibration: this fake port has no agent accessor, so the
+  // per-agent read degrades to empty rather than failing the endpoint — which
+  // is the behaviour these cases should see and is worth pinning here.
+  agents: [],
+  tenantPairStarved: null,
 };
 
 /** A fake port whose routing-settings accessor is scripted per test. */
@@ -179,6 +193,7 @@ describe('AutoLayersService.get — effective = capability × preference', () =>
         fakePort({ get: c.pref }),
         cfg(c.layers),
         RAILS,
+        CAL_CFG,
         SEMANTIC_OFF,
         runtimeWith(false),
       );
@@ -209,6 +224,7 @@ describe('AutoLayersService.set — normalizes cascade → structural', () => {
       fakePort({ onUpsert: (v) => (stored = v) }),
       cfg('cascade'),
       RAILS,
+      CAL_CFG,
       SEMANTIC_OFF,
       runtimeWith(false),
     );
@@ -238,6 +254,7 @@ describe('AutoLayersService.set — normalizes cascade → structural', () => {
       fakePort({ onUpsert: (v) => (stored = v) }),
       cfg('cascade'),
       RAILS,
+      CAL_CFG,
       SEMANTIC_OFF,
       runtimeWith(false),
     );
@@ -251,6 +268,7 @@ describe('AutoLayersService.set — normalizes cascade → structural', () => {
       fakePort({ onUpsert: (v) => (stored = v) }),
       cfg('structural'), // cascade not available instance-wide
       RAILS,
+      CAL_CFG,
       SEMANTIC_OFF,
       runtimeWith(false),
     );
@@ -349,6 +367,7 @@ describe('AutoLayersService.get — the semantic capability surfaces its two hal
         fakePort({ get: null }),
         cfg(c.layers),
         RAILS,
+        CAL_CFG,
         c.classifier,
         runtimeWith((c as { embedder?: boolean }).embedder ?? c.ready),
       );
@@ -415,6 +434,7 @@ describe('AutoLayersService reflects a recovered classifier', () => {
         fakePort({ get: null }),
         cfg('semantic'),
         RAILS,
+        CAL_CFG,
         classifier,
         runtimeWith(true),
       ).get(principal);

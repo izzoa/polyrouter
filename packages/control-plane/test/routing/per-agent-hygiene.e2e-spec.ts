@@ -17,6 +17,10 @@ import { Pool } from 'pg';
 import { buildPersistencePort } from '../../src/database/port';
 import { buildCalibrationConfig, railsOf } from '../../src/calibration/calibration.config';
 import { runCalibrationOccurrence } from '../../src/calibration/calibration.run';
+import { AutoLayersService } from '../../src/routing-config/auto-layers.service';
+import { loadRoutingConfig } from '../../src/proxy/routing.config';
+import type { SemanticClassifierService } from '../../src/semantic/semantic-classifier.service';
+import type { SemanticRuntimeService } from '../../src/semantic/semantic-runtime.service';
 import { COMPOSE_HINT } from '../tenancy/harness';
 import '../../src/database/database.config';
 
@@ -124,6 +128,17 @@ describe('per-agent calibration hygiene (add-per-agent-calibration)', () => {
     );
     return rows[0]!.calibrated_high;
   };
+
+  /** The read surface under test, wired to the same port the sweep uses. */
+  const svc = (): AutoLayersService =>
+    new AutoLayersService(
+      port,
+      loadRoutingConfig(),
+      railsOf(CFG),
+      CFG,
+      { available: false, workloadReady: false } as unknown as SemanticClassifierService,
+      { available: false } as unknown as SemanticRuntimeService,
+    );
 
   const sweep = (): Promise<unknown> =>
     runCalibrationOccurrence(port, INSTANCE, CFG, railsOf(CFG), Date.now(), silent);
@@ -355,6 +370,34 @@ describe('per-agent calibration hygiene (add-per-agent-calibration)', () => {
       } finally {
         await pool.query(`DELETE FROM "user" WHERE id=$1`, [foreignOwner]);
       }
+    });
+
+    it('does NOT call a tenant frozen just because it moved (the epoch bump)', async () => {
+      // The flaw the calibration e2e caught: a threshold event bumps the epoch,
+      // which by design zeroes current-epoch evidence. Judging "below the floor"
+      // at that moment flags EVERY tenant that has just successfully moved —
+      // the opposite of frozen, and a disclosure that fires on healthy tenants
+      // is worse than none. The rule needs a full window since the last event.
+      await settings({ high: 0.58, low: 0.25, anchorHigh: 0.6, anchorLow: 0.25, epoch: 1 });
+      await pool.query(
+        `INSERT INTO threshold_calibration_event
+           (id, owner_user_id, trigger, old_high, old_low, new_high, new_low,
+            anchor_high, anchor_low, reason, created_at)
+         VALUES ($1,$2,'calibrator',0.6,0.25,0.58,0.25,0.6,0.25,'{}',now())`,
+        [randomUUID(), owner],
+      );
+      const justMoved = await svc().get(userPrincipal(owner));
+      expect(justMoved.calibration.tenantPairStarved).toBe(false);
+
+      // Age that event past the window and the disclosure becomes true: now the
+      // pair really has gone a full window without being informed.
+      await pool.query(
+        `UPDATE threshold_calibration_event SET created_at = now() - interval '20 days'
+          WHERE owner_user_id = $1`,
+        [owner],
+      );
+      const stale = await svc().get(userPrincipal(owner));
+      expect(stale.calibration.tenantPairStarved).toBe(true);
     });
 
     it('reports an agent at its OWN epoch under a tenant at a different one', async () => {

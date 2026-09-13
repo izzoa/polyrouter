@@ -193,7 +193,20 @@ export class AutoLayersService {
 
     // The frozen-pair disclosure. Only meaningful when a tenant pair exists to
     // be frozen: without one there is nothing being presented as current.
+    //
+    // And only after a FULL WINDOW has passed since the last threshold event.
+    // Without that clause this fires on every healthy tenant the moment it
+    // moves: the epoch bump deliberately zeroes current-epoch evidence, so
+    // "both edges below the floor right now" is the NORMAL state immediately
+    // after a successful move. A tenant that moved inside the window is still
+    // accumulating, which is the opposite of frozen.
     let tenantPairStarved: boolean | null = null;
+    if (calibration.calibratedHigh !== null) {
+      const [latest] = await this.db.calibrationEvents.list(principal, 1, 'tenant');
+      const movedInsideWindow =
+        latest !== undefined && Date.parse(latest.createdAt) > window.from.getTime();
+      if (movedInsideWindow) return { agents, tenantPairStarved: false };
+    }
     if (calibration.calibratedHigh !== null) {
       const t = await this.db.analytics.calibrationStats(principal, window, {
         high: parent.high,

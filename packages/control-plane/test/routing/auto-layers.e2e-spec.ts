@@ -103,6 +103,10 @@ describe('auto-layers endpoint e2e', () => {
     instanceLow: 0.25,
     effectiveHigh: 0.6,
     effectiveLow: 0.25,
+    // add-per-agent-calibration: this tenant has no agents, so the per-agent
+    // block is empty and there is no tenant pair to report as frozen.
+    agents: [],
+    tenantPairStarved: null,
   };
 
   it('requires a session (401 without a principal)', async () => {

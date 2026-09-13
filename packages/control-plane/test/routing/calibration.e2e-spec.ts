@@ -158,6 +158,11 @@ describe('threshold calibration e2e', () => {
       instanceLow: 0.25,
       effectiveHigh: 0.58,
       effectiveLow: 0.25,
+      // add-per-agent-calibration: no agents on this tenant. `tenantPairStarved`
+      // is FALSE rather than null here — a pair exists to be judged, and this
+      // one is live: the move above was made on 57 fresh high-edge samples.
+      agents: [],
+      tenantPairStarved: false,
     });
     const { rows } = await pool.query<{ calibration_epoch: number }>(
       `SELECT calibration_epoch FROM routing_settings WHERE owner_user_id = $1`,

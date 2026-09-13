@@ -41,6 +41,7 @@ function pref(v: {
     calibratedAnchorHigh: null,
     calibratedAnchorLow: null,
     calibrationEpoch: 0,
+  membershipGeneration: 0,
   };
 }
 

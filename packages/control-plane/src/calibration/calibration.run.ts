@@ -5,6 +5,7 @@ import {
   type PersistencePort,
   type RoutingSettingsValue,
   type ThresholdCalibrationEventInput,
+  type CalibrationEdgeStats,
 } from '@polyrouter/shared/server';
 import { effectiveThresholds, type StructuralConfig } from '../proxy/routing.config';
 import { calibrationHalted, gapAdmissible } from './calibration.config';
@@ -181,6 +182,77 @@ async function calibrateTenant(
     { high: eff.high, low: eff.low, edgeWidth: EDGE_WIDTH, epoch: v.calibrationEpoch },
   );
 
+  const outcome = decideMove({
+    base: structural,
+    eff,
+    anchorHigh,
+    anchorLow,
+    stats,
+    inCooldown,
+    cfg,
+    rails,
+    now,
+  });
+  if (outcome.kind === 'noop') return 'noop';
+
+  // Conditional transactional apply — observed state or nothing (r1-Med-5);
+  // one audit row per applied edge in the same transaction.
+  const ok = await db.routingSettings.setCalibrated(
+    principal,
+    {
+      high: outcome.target.high,
+      low: outcome.target.low,
+      anchorHigh: structural.high,
+      anchorLow: structural.low,
+    },
+    {
+      enabled: true,
+      high: v.calibratedHigh,
+      low: v.calibratedLow,
+      anchorHigh: v.calibratedAnchorHigh,
+      anchorLow: v.calibratedAnchorLow,
+      epoch: v.calibrationEpoch,
+    },
+    outcome.events,
+  );
+  return ok ? 'moved' : 'skipped'; // skipped = a concurrent user action won
+}
+
+/** The DECISION core, shared verbatim by both scopes (add-per-agent-calibration).
+ *
+ * Every rail value, the arbitration and the survivor re-check live here and
+ * nowhere else, so "the same standard at agent scope" is a fact about the code
+ * rather than a promise in a document. The scopes differ ONLY in what they pass
+ * in: the tenant anchors to the instance defaults, an agent to its tenant's
+ * effective pair, and an agent additionally carries `globalBound` so the two
+ * levels' drift caps cannot compound. */
+export interface MoveInputs {
+  /** The level ABOVE: instance defaults for a tenant, the tenant's effective
+   * pair for an agent. Used for the halt check and stamped as the event anchor. */
+  readonly base: { high: number; low: number };
+  /** This scope's current effective pair. */
+  readonly eff: { high: number; low: number };
+  /** The stored anchor this scope's drift is measured from. */
+  readonly anchorHigh: number;
+  readonly anchorLow: number;
+  readonly stats: CalibrationEdgeStats;
+  readonly inCooldown: (edge: 'high' | 'low') => boolean;
+  readonly cfg: CalibrationConfig;
+  readonly rails: CalibrationRails;
+  readonly now: number;
+  /** The instance defaults, for the GLOBAL drift bound. Agent scope only: a
+   * tenant at +cap and an agent at +cap beyond it is 2x cap from the instance,
+   * outside the safety envelope (design Decision 4). Omitted at tenant scope,
+   * where `anchorHigh`/`anchorLow` ARE the instance defaults. */
+  readonly globalBound?: { high: number; low: number };
+}
+
+export type MoveOutcome =
+  | { kind: 'noop' }
+  | { kind: 'move'; target: { high: number; low: number }; events: ThresholdCalibrationEventInput[] };
+
+export function decideMove(p: MoveInputs): MoveOutcome {
+  const { eff, cfg, rails, now, anchorHigh, anchorLow, stats } = p;
   const candidates: EdgeDecision[] = [];
   const he = stats.highEdge;
   if (he.samples >= cfg.minEdgeSamples) {
@@ -189,7 +261,7 @@ async function calibrateTenant(
       rate >= RATE_HIGH &&
       round4(eff.high - cfg.step) >= round4(anchorHigh - cfg.maxDrift) &&
       round4(eff.high - cfg.step) < eff.high && // never a zero-value move
-      !inCooldown('high')
+      !p.inCooldown('high')
     ) {
       candidates.push({
         edge: 'high',
@@ -208,7 +280,7 @@ async function calibrateTenant(
       rate <= RATE_LOW &&
       round4(eff.low + cfg.step) <= round4(anchorLow + cfg.maxDrift) &&
       round4(eff.low + cfg.step) > eff.low && // never a zero-value move
-      !inCooldown('low')
+      !p.inCooldown('low')
     ) {
       candidates.push({
         edge: 'low',
@@ -220,7 +292,7 @@ async function calibrateTenant(
       });
     }
   }
-  if (candidates.length === 0) return 'noop';
+  if (candidates.length === 0) return { kind: 'noop' };
 
   // EVERY final candidate is gap-checked (r2-High-1): joint first; if the
   // joint pair breaches, keep the stronger-evidenced edge (tie → high — its
@@ -246,9 +318,20 @@ async function calibrateTenant(
     });
     applied = [applied[0]!];
   }
-  if (!gapAdmissible(gapOf(finalPair(applied)), rails)) return 'noop';
+  if (!gapAdmissible(gapOf(finalPair(applied)), rails)) return { kind: 'noop' };
 
   const target = finalPair(applied);
+  // The GLOBAL bound (agent scope only): the caps must not compound across the
+  // two levels. Checked on the TARGET, so a move is refused rather than
+  // written and then inerted by the resolver on the next read.
+  const g = p.globalBound;
+  if (
+    g !== undefined &&
+    (round4(g.high - target.high) > cfg.maxDrift || round4(target.low - g.low) > cfg.maxDrift)
+  ) {
+    return { kind: 'noop' };
+  }
+
   // Sequential per-edge events (high first) so before/after pairs chain
   // linearly (r2-Low-7).
   applied.sort((a) => (a.edge === 'high' ? -1 : 1));
@@ -264,8 +347,8 @@ async function calibrateTenant(
       oldLow: cursor.low,
       newHigh: next.high,
       newLow: next.low,
-      anchorHigh: structural.high,
-      anchorLow: structural.low,
+      anchorHigh: p.base.high,
+      anchorLow: p.base.low,
       windowFrom: new Date(now - cfg.windowDays * DAY_MS),
       windowTo: new Date(now),
       edge: c.edge,
@@ -276,21 +359,7 @@ async function calibrateTenant(
     cursor = next;
     return e;
   });
-
-  // Conditional transactional apply — observed state or nothing (r1-Med-5);
-  // one audit row per applied edge in the same transaction.
-  const ok = await db.routingSettings.setCalibrated(
-    principal,
-    { high: target.high, low: target.low, anchorHigh: structural.high, anchorLow: structural.low },
-    {
-      enabled: true,
-      high: v.calibratedHigh,
-      low: v.calibratedLow,
-      anchorHigh: v.calibratedAnchorHigh,
-      anchorLow: v.calibratedAnchorLow,
-      epoch: v.calibrationEpoch,
-    },
-    events,
-  );
-  return ok ? 'moved' : 'skipped'; // skipped = a concurrent user action won
+  return { kind: 'move', target, events };
 }
+
+

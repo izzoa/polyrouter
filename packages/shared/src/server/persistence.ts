@@ -855,6 +855,12 @@ export interface RoutingSettingsValue {
   calibratedAnchorHigh: number | null;
   calibratedAnchorLow: number | null;
   calibrationEpoch: number;
+  /** Tenant MEMBERSHIP generation (add-per-agent-calibration). Advances when an
+   * agent of this tenant gains or loses its own pair — i.e. when the tenant's
+   * own evidence population changes. The tenant's conditional write CASes it,
+   * so a sweep cannot commit a move computed from evidence that has since
+   * changed hands. */
+  membershipGeneration: number;
 }
 
 /** The upsert input: layer flags required (the existing PUT contract);
@@ -891,12 +897,76 @@ export interface CalibrationExpectedState {
   anchorHigh: number | null;
   anchorLow: number | null;
   epoch: number;
+  /** The membership generation the EVIDENCE was read under
+   * (add-per-agent-calibration). Omitted by callers that are not acting on
+   * evidence — hygiene and revert retreat to the level above and are correct
+   * whatever the population did. */
+  membershipGeneration?: number;
 }
 
 /** A tenant surfaced by the calibration sweeps. */
 export interface CalibrationSweepTenant {
   ownerUserId: string;
   value: RoutingSettingsValue;
+}
+
+/** One agent's calibration state, as the per-agent sweep sees it
+ * (add-per-agent-calibration). */
+export interface CalibrationSweepAgent {
+  id: string;
+  ownerUserId: string;
+  calibratedHigh: number | null;
+  calibratedLow: number | null;
+  calibratedAnchorHigh: number | null;
+  calibratedAnchorLow: number | null;
+  calibrationEpoch: number;
+}
+
+/** The agent-side conditional-write state (add-per-agent-calibration). */
+export interface AgentCalibrationExpectedState {
+  high: number | null;
+  low: number | null;
+  anchorHigh: number | null;
+  anchorLow: number | null;
+  epoch: number;
+}
+
+/** The TENANT state an agent PROMOTION is pinned to (design Decision 7).
+ *
+ * Only a promotion carries this: it is deriving a value FROM the tenant pair,
+ * so a tenant move that lands first must make it fail rather than produce a
+ * pair that is stale on arrival. A hygiene clear or an operator revert passes
+ * null — both are retreats to the level above and are correct against ANY
+ * parent, and requiring the old tuple would make them unable to clear exactly
+ * the stale pairs they exist to clear. */
+export interface TenantPin {
+  high: number | null;
+  low: number | null;
+  epoch: number;
+  membershipGeneration: number;
+}
+
+export interface AgentCalibrationAccessor {
+  /** Every agent of this tenant, with its calibration state. Owner-scoped. */
+  listForCalibration(principal: Principal): Promise<CalibrationSweepAgent[]>;
+  /** Write (or clear) one agent's pair under the two-sided CAS.
+   *
+   * Locks `routing_settings` FIRST, then the agent row — the fixed order that
+   * keeps the lock graph acyclic, since the tenant write takes only the first.
+   * Bumps `membership_generation` iff this is a real null-transition, so a
+   * repeated or no-op revert cannot manufacture failed tenant writes.
+   *
+   * Returns false when any condition fails; callers treat that as "a concurrent
+   * writer won" and retry on the next occurrence. */
+  setCalibrated(
+    principal: Principal,
+    agentId: string,
+    quad: CalibratedQuad | null,
+    expected: AgentCalibrationExpectedState,
+    /** Promotion pins the parent; clear and revert pass null. */
+    tenantPin: TenantPin | null,
+    events: ThresholdCalibrationEventInput | ThresholdCalibrationEventInput[],
+  ): Promise<boolean>;
 }
 
 export interface ThresholdCalibrationEventInput {
@@ -1171,6 +1241,8 @@ export interface PersistencePort {
   requestAttempts: RequestAttemptAccessor;
   analytics: AnalyticsAccessor;
   routingSettings: RoutingSettingsAccessor;
+  /** Per-agent threshold calibration (add-per-agent-calibration). */
+  agentCalibration: AgentCalibrationAccessor;
   calibrationEvents: CalibrationEventsAccessor;
   semanticLearningEvents: SemanticLearningEventsAccessor;
   bodyCapture: BodyCaptureAccessor;

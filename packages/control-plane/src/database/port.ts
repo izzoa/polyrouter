@@ -639,6 +639,7 @@ const SETTINGS_VALUE_COLUMNS = {
   calibratedAnchorHigh: routingSettings.calibratedAnchorHigh,
   calibratedAnchorLow: routingSettings.calibratedAnchorLow,
   calibrationEpoch: routingSettings.calibrationEpoch,
+  membershipGeneration: routingSettings.membershipGeneration,
 };
 
 /** Per-tenant auto-layer preference (#20) + threshold calibration
@@ -727,6 +728,15 @@ function createRoutingSettingsAccessor(db: Db): RoutingSettingsAccessor {
         const row = current[0];
         if (!row) return false;
         if (row.calibrationEpoch !== expected.epoch) return false;
+        // Membership moved under the evidence this move was computed from, so
+        // the move is stale: no-op and recompute next occurrence. Omitted by
+        // hygiene and revert, which are correct against any population.
+        if (
+          expected.membershipGeneration !== undefined &&
+          row.membershipGeneration !== expected.membershipGeneration
+        ) {
+          return false;
+        }
         if (expected.enabled !== null && row.calibrationEnabled !== expected.enabled) return false;
         if (
           row.calibratedHigh !== expected.high ||
@@ -1044,6 +1054,129 @@ function createCalibrationEventsAccessor(db: Db): CalibrationEventsAccessor {
 export function buildPersistencePort(db: Db): PersistencePort {
   return {
     agents: createOwnedRepository(db, agents as unknown as AnyOwnedTable),
+
+    agentCalibration: {
+      async listForCalibration(principal) {
+        return db
+          .select({
+            id: agents.id,
+            ownerUserId: agents.ownerUserId,
+            calibratedHigh: agents.calibratedHigh,
+            calibratedLow: agents.calibratedLow,
+            calibratedAnchorHigh: agents.calibratedAnchorHigh,
+            calibratedAnchorLow: agents.calibratedAnchorLow,
+            calibrationEpoch: agents.calibrationEpoch,
+          })
+          .from(agents)
+          .where(ownershipPredicate(agents, principal));
+      },
+
+      async setCalibrated(principal, agentId, quad, expected, tenantPin, events) {
+        assertUserPrincipal(principal);
+        // LOCK ORDER, always: routing_settings first, then the agent row. The
+        // tenant write takes only the first, so this keeps the lock graph
+        // acyclic and the two can never deadlock (design Decision 7).
+        return db.transaction(async (tx) => {
+          const settingsRows = await tx
+            .select(SETTINGS_VALUE_COLUMNS)
+            .from(routingSettings)
+            .where(ownershipPredicate(routingSettings, principal))
+            .limit(1)
+            .for('update');
+          const settings = settingsRows[0];
+          if (!settings) return false;
+
+          // Only a PROMOTION pins the parent. A clear or revert passes null:
+          // both retreat to the level above and are correct against any parent,
+          // and requiring the old tuple would make them unable to clear exactly
+          // the stale pairs they exist to clear.
+          if (tenantPin !== null) {
+            if (
+              settings.calibratedHigh !== tenantPin.high ||
+              settings.calibratedLow !== tenantPin.low ||
+              settings.calibrationEpoch !== tenantPin.epoch ||
+              settings.membershipGeneration !== tenantPin.membershipGeneration
+            ) {
+              return false;
+            }
+          }
+
+          const agentRows = await tx
+            .select({
+              id: agents.id,
+              calibratedHigh: agents.calibratedHigh,
+              calibratedLow: agents.calibratedLow,
+              calibratedAnchorHigh: agents.calibratedAnchorHigh,
+              calibratedAnchorLow: agents.calibratedAnchorLow,
+              calibrationEpoch: agents.calibrationEpoch,
+            })
+            .from(agents)
+            .where(and(eq(agents.id, agentId), ownershipPredicate(agents, principal)))
+            .limit(1)
+            .for('update');
+          const agent = agentRows[0];
+          if (!agent) return false;
+          if (
+            agent.calibratedHigh !== expected.high ||
+            agent.calibratedLow !== expected.low ||
+            agent.calibratedAnchorHigh !== expected.anchorHigh ||
+            agent.calibratedAnchorLow !== expected.anchorLow ||
+            agent.calibrationEpoch !== expected.epoch
+          ) {
+            return false;
+          }
+
+          await tx
+            .update(agents)
+            .set({
+              calibratedHigh: quad?.high ?? null,
+              calibratedLow: quad?.low ?? null,
+              calibratedAnchorHigh: quad?.anchorHigh ?? null,
+              calibratedAnchorLow: quad?.anchorLow ?? null,
+              calibrationEpoch: agent.calibrationEpoch + 1,
+            })
+            .where(eq(agents.id, agentId));
+
+          // The generation moves ONLY on a real membership transition. A
+          // repeated or no-op revert must not bump it, or it would manufacture
+          // failed tenant writes out of nothing — and a clear that bumped
+          // unconditionally could drive a clear/fail/staler/clear cycle.
+          const had = agent.calibratedHigh !== null;
+          const has = quad !== null;
+          if (had !== has) {
+            await tx
+              .update(routingSettings)
+              .set({ membershipGeneration: settings.membershipGeneration + 1 })
+              .where(ownershipPredicate(routingSettings, principal));
+          }
+
+          const list = Array.isArray(events) ? events : [events];
+          if (list.length > 0) {
+            await tx.insert(thresholdCalibrationEvents).values(
+              list.map((e, i) => ({
+                ownerUserId: principal.userId,
+                agentId,
+                trigger: e.trigger,
+                oldHigh: e.oldHigh,
+                oldLow: e.oldLow,
+                newHigh: e.newHigh,
+                newLow: e.newLow,
+                anchorHigh: e.anchorHigh,
+                anchorLow: e.anchorLow,
+                windowFrom: e.windowFrom ?? null,
+                windowTo: e.windowTo ?? null,
+                edge: e.edge ?? null,
+                edgeSamples: e.edgeSamples ?? null,
+                edgeFailures: e.edgeFailures ?? null,
+                reason: e.reason,
+                ordinal: i,
+              })),
+            );
+          }
+          return true;
+        });
+      },
+    },
     providers: {
       ...createOwnedRepository(db, providers as unknown as AnyOwnedTable),
       // E10.2: delete + re-compact tier positions in one transaction, so a

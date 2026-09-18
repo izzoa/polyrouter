@@ -22,10 +22,14 @@
  *                 sizes. These are byte-identical across platforms and are the
  *                 coverage that catches a real regression. Do not soften them.
  *
- *   STRUCTURAL  — text layout decides it. Wrap-driven heights, shrink-wrapped
- *                 widths, line counts. Assert RELATIONSHIPS and BOUNDS: present,
- *                 on screen, inside its parent, above a target floor, under a
- *                 ceiling, ordered, scrollable when it overflows. Never a pixel.
+ *   SOFT        — text layout decides it. Wrap-driven heights, shrink-wrapped
+ *                 widths, line counts. Never an UNMEASURED pixel. Two legitimate
+ *                 forms, chosen by what the capture shows (see ON TOLERANCES):
+ *                   - zero cross-platform spread → a narrow MEASURED tolerance,
+ *                     which is the stricter of the two;
+ *                   - non-zero spread → RELATIONSHIPS and BOUNDS: present, on
+ *                     screen, inside its parent, above a floor, under a ceiling,
+ *                     ordered, scrollable when it overflows.
  *
  * ── HOW TO CLASSIFY ──────────────────────────────────────────────────────────
  *
@@ -47,20 +51,32 @@
  * The cost is real and worth stating: the allowance is asymmetric. On
  * `confirm:bodyCapture` a developer on macOS has 26px of room while CI has
  * roughly 8px left, so a change authored and passing locally can fail CI for no
- * reason visible on the developer's machine. Prefer a structural bound for NEW
- * soft-axis assertions; leave the existing measured slack alone unless the
- * capture run gives a reason to change it.
+ * reason visible on the developer's machine. That cost exists ONLY where the
+ * spread is non-zero. For a NEW soft-axis assertion, run the capture first
+ * (`npm run test:browser:capture`, and read the CI log for the Linux side):
+ * zero spread → a measured narrow tolerance; non-zero → a structural bound,
+ * with the asymmetry recorded beside it.
  *
- * Its DEFAULT allowances (`LINE_SLACK`, `WIDTH_SLACK`) are a different thing
- * again — an explicitly recorded gap. Eleven surfaces pass inside them and have
- * never been measured on Linux, and the file is emphatic that **a pass is not a
- * measurement**. Narrowing them without the capture run would be inference.
+ * Its DEFAULT allowances (`LINE_SLACK`, `WIDTH_SLACK`) were a different thing
+ * again — an explicitly recorded gap, because **a pass is not a measurement**.
+ * `geometryCapture.spec.ts` closed it on 2026-09-18: all thirteen surfaces were
+ * captured on macOS and ubuntu-latest, eleven were byte-identical, and the nine
+ * that had relied on the 40px default now carry measured 8px windows. The
+ * defaults now cover only surfaces added after that capture.
+ *
+ * What the capture taught, and it overturned this change's own first draft:
+ * WHERE THE CROSS-PLATFORM SPREAD IS ZERO, A NARROW MEASURED TOLERANCE IS
+ * STRICTLY MORE PROTECTIVE THAN A STRUCTURAL BOUND. The provider modal grew 31px
+ * in a feature change and still fitted a 900px viewport, so every structural
+ * check passed it; an 8px window does not. Structural bounds win only where the
+ * spread is non-zero and the window would be asymmetric. Measure first, then
+ * choose — which is the same rule as classification above.
  */
 import { expect, type Page } from '@playwright/test';
 
 /** Which kind an assertion is. Naming it at the call site is the point: a test
  * that cannot say which kind it is does not know what it is protecting. */
-export type AssertionKind = 'exact' | 'structural';
+export type AssertionKind = 'exact' | 'soft';
 
 export interface Rect {
   x: number;
@@ -130,9 +146,10 @@ export async function assertWithin(
 
 /** STRUCTURAL: a dimension sits inside [min, max].
  *
- * A CEILING is the half most easily forgotten, and forgetting it is a live bug
- * in this suite: `.endpoint-chip` kept its 24px floor when it left the exact
- * parity set, so a height blow-out now passes silently. Both bounds or neither. */
+ * A CEILING is the half most easily forgotten, and forgetting it was a real bug
+ * in this suite: `.endpoint-chip` kept only its 24px floor when it left the exact
+ * parity set, so a height blow-out passed silently until the ceiling test in
+ * `responsive.spec.ts` was added. Both bounds or neither. */
 export function assertBetween(
   actual: number,
   min: number,

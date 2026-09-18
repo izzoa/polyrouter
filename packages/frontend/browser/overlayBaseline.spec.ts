@@ -69,16 +69,20 @@ const TEXT_SIZED: Record<string, readonly Axis[]> = {
   toast: ['x', 'w'],
 };
 
-/** DEFAULT allowances, for soft axes whose cross-platform variance has not been measured.
+/** DEFAULT allowances — now ONLY for a surface added after 2026-09-18.
  *
  * These were sized against forced fallback-face swaps (Verdana, Georgia) — an accurate
- * measurement of a mechanism that does not occur, since Geist always loads. They are kept, not
- * derived: eleven surfaces still rely on them, and CI has never disclosed their values on the
- * runner. CI reports only the measurements that FAIL, so the ones that pass do so *inside*
- * these allowances — a pass is not a measurement, and narrowing them would be inference.
+ * measurement of a mechanism that does not occur, since Geist always loads. Until 2026-09-18
+ * nine surfaces relied on them and CI had never disclosed their values, and a pass inside a
+ * 40px window is not a measurement.
  *
- * Retiring them needs a capture-only CI run that logs every surface rather than only failures.
- * Until then they stay wide, and that is a known, recorded gap rather than a claim. */
+ * `geometryCapture.spec.ts` closed that gap: it runs in CI, logs every surface on every run,
+ * and on 2026-09-18 captured all thirteen on macOS and ubuntu-latest. Every current surface now
+ * has a MEASURED entry below, so nothing in the matrix reads these any more. They stay as the
+ * allowance for a surface added in future, which the capture will measure on its first push.
+ *
+ * What the 40px was hiding, recorded so the width of a default is never mistaken for safety:
+ * three modals had grown 27–31px in `e8f0c66` (the batch epic) and passed silently. */
 const LINE_SLACK = 40;
 const WIDTH_SLACK = 0.15;
 
@@ -89,6 +93,28 @@ const WIDTH_SLACK = 0.15;
  * Both entries are bounded by the runner's own printed numbers, not by inference — CI's
  * `toEqual` diff prints the full received box, with the unchanged elements as context. */
 const MEASURED_SLACK: Record<string, Partial<Record<Axis, number>>> = {
+  // ZERO cross-platform spread, captured 2026-09-18: byte-identical on macOS and ubuntu-latest
+  // (HeadlessChrome 151). Same convention as the two entries below — observed spread plus 8px
+  // for an environment this has not seen — which here is 0 + 8. `y` follows `h` on a centred
+  // modal, so both axes carry the same bound.
+  //
+  // Why a narrow tolerance rather than a structural bound on these: the capture proved the
+  // tolerance catches what a bound admits. The provider modal grew 31px and still fitted a
+  // 900px viewport, so "on screen" and "within the viewport" both passed it; an 8px window does
+  // not. Where the spread is zero the window is symmetric, so the asymmetry that makes wide
+  // tolerances dangerous cannot arise.
+  //
+  // Re-capture after 2026-10-19, when ubuntu-latest moves to Ubuntu 26: an OS image change is
+  // exactly what can move text layout, and the 8px margin is the only headroom for it.
+  'modal:newAgent': { y: 8, h: 8 },
+  'modal:newProvider': { y: 8, h: 8 },
+  'modal:editProvider': { y: 8, h: 8 },
+  'modal:newLimit': { y: 8, h: 8 },
+  'modal:channel': { y: 8, h: 8 },
+  'modal:keyReveal': { y: 8, h: 8 },
+  'confirm:disableCapture': { h: 8 },
+  accountMenu: { y: 8, h: 8 },
+  picker: { y: 8, h: 8 },
   toast: {
     // macOS 533, Ubuntu 24.04 and the CI runner both 557 → spread 24px. 32 leaves 8px for an
     // environment this has not seen.
@@ -108,10 +134,16 @@ const MEASURED_SLACK: Record<string, Partial<Record<Axis, number>>> = {
 const BASELINE: Record<string, [number, number, number, number]> = {
   drawer: [1000, 0, 440, 900],
   'modal:newAgent': [480, 324, 480, 252],
-  'modal:newProvider': [480, 98, 480, 705],
-  'modal:editProvider': [480, 98, 480, 705],
+  // RE-PINNED 2026-09-18 (was [480, 98, 480, 705]). `e8f0c66`, the batch epic, added fields to
+  // the provider form — a deliberate feature change, not rendering drift. The new value is
+  // byte-identical on macOS and ubuntu-latest, so re-pinning restores a regression guard; it
+  // does not re-create the v0.12.0 failure, which came from pinning a value the two platforms
+  // disagreed on. Everything below keeps its 4f3d039 provenance.
+  'modal:newProvider': [480, 82, 480, 736],
+  'modal:editProvider': [480, 82, 480, 736],
   'modal:newLimit': [480, 174, 480, 552],
-  'modal:channel': [480, 166, 480, 568],
+  // RE-PINNED 2026-09-18 (was [480, 166, 480, 568]), same cause and same evidence as above.
+  'modal:channel': [480, 153, 480, 595],
   'modal:keyReveal': [480, 341, 480, 219],
   'confirm:bodyCapture': [500, 270, 440, 160],
   'confirm:disableCapture': [500, 270, 440, 141],

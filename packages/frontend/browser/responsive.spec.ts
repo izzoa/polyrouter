@@ -631,10 +631,14 @@ test.describe('desktop parity against the released v0.11.0 baseline (task 8.8)',
       // `overlayBaseline.spec.ts`'s header for the full correction). The ±2 was sized against
       // forced face swaps, which do not occur.
       //
-      // It is kept anyway, and honestly: `.nav-item` and `.req-row` measure 31 and 35 on
-      // macOS, Ubuntu 22.04 and Ubuntu 24.04 alike, but CI has never disclosed their values —
-      // it reports only assertions that FAIL, and these pass. A pass is not a measurement, so
-      // narrowing this would be inference. Retiring it needs a capture-only CI run.
+      // It is kept, and the reason has CHANGED. It used to be that CI had never disclosed
+      // these values — it reports only assertions that FAIL — so narrowing would have been
+      // inference. `geometryCapture.spec.ts` now logs them on every CI run, and on 2026-09-18
+      // ubuntu-latest printed exactly 31 and 35, matching macOS: the cross-platform spread is
+      // ZERO. The ±2 is therefore no longer a stand-in for missing data. It is the
+      // unseen-environment margin, the same convention `overlayBaseline.spec.ts` uses (spread +
+      // margin), scaled to a 31px control rather than a 700px dialog — and it has a concrete
+      // job, because ubuntu-latest moves to Ubuntu 26 from 2026-10-19.
       expect(
         Math.abs(now.controls[sel]! - expected),
         `${sel} changed height at desktop (${expected} → ${now.controls[sel]})`,

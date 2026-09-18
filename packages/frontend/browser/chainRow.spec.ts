@@ -162,6 +162,14 @@ test.describe('desktop with a fine pointer', () => {
       .locator('.chain-row')
       .first()
       .evaluate((el) => Math.round(el.getBoundingClientRect().height));
+    // EXACT on purpose (geometry-contract.ts). A row's height can be text-driven
+    // when its content wraps, but this is a single-line row, and the exact value
+    // is MEASURED identical on both platforms: this assertion has passed on
+    // ubuntu-latest in every green CI run since 2026-09-07, and on macOS. Unlike
+    // a pass inside a slack window, a pass of an exact equality IS a measurement.
+    // A bound would give up 1px sensitivity for no cross-platform benefit. If copy
+    // ever grows enough to wrap on one platform first, this fails there — and the
+    // row really has become two lines for those users, so that failure is real.
     expect(h, 'the desktop row changed height').toBe(43);
   });
 

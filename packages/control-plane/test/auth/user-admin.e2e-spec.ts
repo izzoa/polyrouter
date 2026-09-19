@@ -33,9 +33,7 @@ describe('user administration (user-administration)', () => {
   let server: App;
   let databaseUrl: string;
 
-  const signUp = async (
-    email: string,
-  ): Promise<{ status: number; cookie: string[] }> => {
+  const signUp = async (email: string): Promise<{ status: number; cookie: string[] }> => {
     const res = await request(server)
       .post('/api/auth/sign-up/email')
       .send({ name: 'u', email, password: PASSWORD });

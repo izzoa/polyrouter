@@ -23,11 +23,7 @@ import {
 } from '@polyrouter/shared/server';
 import { PricingService } from '../pricing/pricing.service';
 import { BODY_CAPTURE_CONFIG, type BodyCaptureConfig } from '../body-capture/body-capture.config';
-import {
-  ROUTING_CONFIG,
-  effectiveThresholds,
-  type RoutingConfig,
-} from '../proxy/routing.config';
+import { ROUTING_CONFIG, effectiveThresholds, type RoutingConfig } from '../proxy/routing.config';
 import {
   CALIBRATION_CONFIG,
   CALIBRATION_RAILS,
@@ -178,7 +174,11 @@ export class AnalyticsService {
         .catch(() => null),
     ]);
     return {
-      window: { from: from.toISOString(), to: to.toISOString(), days: this.calibrationCfg.windowDays },
+      window: {
+        from: from.toISOString(),
+        to: to.toISOString(),
+        days: this.calibrationCfg.windowDays,
+      },
       high: eff.high,
       low: eff.low,
       edgeWidth: EDGE_WIDTH,

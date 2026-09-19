@@ -21,16 +21,12 @@ describe('calibrationHalted', () => {
 
   it('halts on a degenerate INSTANCE pair narrower than the minimum gap', () => {
     // The reachable arm: an operator configures the thresholds too close.
-    expect(
-      calibrationHalted({ high: 0.5, low: 0.45 }, { high: 0.5, low: 0.45 }, rails),
-    ).toBe(true);
+    expect(calibrationHalted({ high: 0.5, low: 0.45 }, { high: 0.5, low: 0.45 }, rails)).toBe(true);
     // A pair at EXACTLY the minimum gap clears arm 1 (0.10 is not < 0.10) and is
     // then caught by arm 2 — because MIN_GAP (0.1) equals 2 x EDGE_WIDTH (0.1),
     // so the narrowest gap the rail permits is precisely the one whose zones
     // meet. The two rails are exactly tangent; a usable pair needs gap > 0.10.
-    expect(calibrationHalted({ high: 0.5, low: 0.4 }, { high: 0.5, low: 0.4 }, rails)).toBe(
-      true,
-    );
+    expect(calibrationHalted({ high: 0.5, low: 0.4 }, { high: 0.5, low: 0.4 }, rails)).toBe(true);
     expect(calibrationHalted({ high: 0.52, low: 0.4 }, { high: 0.52, low: 0.4 }, rails)).toBe(
       false,
     );
@@ -40,9 +36,7 @@ describe('calibrationHalted', () => {
     // Zones are [high−w, high) and (low, low+w]; equality means one shared score.
     const instance = { high: 0.8, low: 0.1 }; // wide enough that arm 1 never fires
     // gap exactly 2*EDGE_WIDTH -> they meet at one score -> halted.
-    expect(
-      calibrationHalted(instance, { high: 0.5, low: 0.5 - 2 * EDGE_WIDTH }, rails),
-    ).toBe(true);
+    expect(calibrationHalted(instance, { high: 0.5, low: 0.5 - 2 * EDGE_WIDTH }, rails)).toBe(true);
     // One step wider -> they do not meet.
     expect(
       calibrationHalted(instance, { high: 0.5, low: 0.5 - 2 * EDGE_WIDTH - 0.01 }, rails),

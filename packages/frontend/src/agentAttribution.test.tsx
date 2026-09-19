@@ -26,7 +26,11 @@ const SRC = dirname(fileURLToPath(import.meta.url));
 const css = readFileSync(join(SRC, 'styles.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
 
 /** A minimal completed row — only the fields the boundary and the cells read. */
-function row(agentId: string | null, agentLabel: string | null, id = crypto.randomUUID()): RequestRow {
+function row(
+  agentId: string | null,
+  agentLabel: string | null,
+  id = crypto.randomUUID(),
+): RequestRow {
   return {
     id,
     createdAt: '2026-09-12T10:00:00.000Z',
@@ -158,9 +162,8 @@ describe('RequestRows renders the boundaries', () => {
 
 describe('the boundary costs the table no grid track', () => {
   it('leaves the request table at exactly NINE columns', () => {
-    const rule = /\.rs-table-requests \.table-head,\s*\.rs-table-requests \.req-row \{([^}]*)\}/.exec(
-      css,
-    );
+    const rule =
+      /\.rs-table-requests \.table-head,\s*\.rs-table-requests \.req-row \{([^}]*)\}/.exec(css);
     expect(rule, 'the request table column rule moved or was renamed').not.toBeNull();
     const template = /grid-template-columns:([^;]*);/.exec(rule![1]!)?.[1] ?? '';
     // `minmax(0, …)` tracks plus the fixed first column. Count the track heads, not

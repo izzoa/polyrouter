@@ -708,9 +708,9 @@ function SelfCalibration() {
               data-testid="tenant-pair-starved"
               style="font:400 11.5px 'Geist',sans-serif;color:var(--text2);background:var(--chip);border-radius:6px;padding:6px 8px;margin-bottom:10px;line-height:1.5"
             >
-              This pair is no longer being informed by the traffic it governs — both edges have
-              sat below the acting floor for a full window. It still applies to every agent
-              without its own pair.
+              This pair is no longer being informed by the traffic it governs — both edges have sat
+              below the acting floor for a full window. It still applies to every agent without its
+              own pair.
             </div>
           </Show>
 

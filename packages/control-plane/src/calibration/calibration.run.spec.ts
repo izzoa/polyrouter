@@ -454,7 +454,7 @@ describe('runCalibrationOccurrence (add-auto-threshold-calibration)', () => {
       calibratedAnchorHigh: 0.7, // anchored to OLD defaults
       calibratedAnchorLow: 0.2,
       calibrationEpoch: 5,
-  membershipGeneration: 0,
+      membershipGeneration: 0,
     });
     const { port, calls } = fakePort({ stored: [tenant('a', stale)], enabled: [] });
     const sum = await runCalibrationOccurrence(port, STRUCTURAL, CFG, RAILS, NOW, silent);

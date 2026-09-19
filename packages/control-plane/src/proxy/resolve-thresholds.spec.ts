@@ -10,11 +10,7 @@
  *     defaults. Anchoring to the tenant does not prevent the caps compounding,
  *     it creates the possibility; the global bound is what closes it.
  */
-import {
-  effectiveThresholds,
-  resolveThresholds,
-  type CalibratedPairRow,
-} from './routing.config';
+import { effectiveThresholds, resolveThresholds, type CalibratedPairRow } from './routing.config';
 
 const INSTANCE = { high: 0.6, low: 0.25 };
 const rails = { maxDrift: 0.1, minGap: 0.1 };

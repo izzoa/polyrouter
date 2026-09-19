@@ -402,10 +402,7 @@ export const AGENT_UNATTRIBUTED = '(no agent)';
  * keyless row followed by a deleted agent's row both label as null while being
  * different agents. Index 0 always begins a run when there are rows, so the
  * first group is labelled like every other. */
-export function startsAgentRun(
-  rows: readonly Pick<RequestRow, 'agentId'>[],
-  i: number,
-): boolean {
+export function startsAgentRun(rows: readonly Pick<RequestRow, 'agentId'>[], i: number): boolean {
   const row = rows[i];
   if (row === undefined) return false;
   if (i === 0) return true;

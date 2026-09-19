@@ -91,7 +91,9 @@ describe('per-agent calibration CAS (add-per-agent-calibration)', () => {
     epoch: 0,
   };
   const promotionQuad = { high: 0.53, low: 0.32, anchorHigh: 0.55, anchorLow: 0.3 };
-  const pinAt = (generation: number): { high: number; low: number; epoch: number; membershipGeneration: number } => ({
+  const pinAt = (
+    generation: number,
+  ): { high: number; low: number; epoch: number; membershipGeneration: number } => ({
     high: 0.55,
     low: 0.3,
     epoch: 1,

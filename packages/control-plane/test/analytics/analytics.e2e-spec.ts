@@ -2018,7 +2018,7 @@ describe('analytics API (#17)', () => {
       await pool.query('DELETE FROM agent WHERE id = $1', [goneAgent]);
     }, 60_000);
 
-    it('a denormalized foreign id returns only the caller\'s own rows, labelled null', async () => {
+    it("a denormalized foreign id returns only the caller's own rows, labelled null", async () => {
       const res = await q('requests', ta, { ...RANGE, agentId: foreignAgent });
       expect(res.status).toBe(200);
       expect(res.body.rows).toHaveLength(2);
@@ -2034,9 +2034,9 @@ describe('analytics API (#17)', () => {
       const owned = await q('requests', tb, { ...RANGE, agentId: foreignAgent });
       expect(owned.status).toBe(200);
       expect(owned.body.rows).toHaveLength(40);
-      expect(owned.body.rows.every((r: { agentLabel: string }) => r.agentLabel === 'ForeignAgent')).toBe(
-        true,
-      );
+      expect(
+        owned.body.rows.every((r: { agentLabel: string }) => r.agentLabel === 'ForeignAgent'),
+      ).toBe(true);
     });
 
     it("returns a deleted agent's history with a null label; an unknown id is an empty page", async () => {
@@ -2089,7 +2089,7 @@ describe('analytics API (#17)', () => {
       expect(pages).toBe(2);
     });
 
-    it('omitting the filter is unchanged: every agent\'s rows are listed', async () => {
+    it("omitting the filter is unchanged: every agent's rows are listed", async () => {
       const res = await q('requests', ta, { ...RANGE, limit: 100 });
       expect(res.status).toBe(200);
       // 2 foreign-id + 3 own + 6 deleted-agent rows.

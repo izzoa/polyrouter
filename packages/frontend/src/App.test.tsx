@@ -769,7 +769,16 @@ describe('dashboard shell (auth-gated)', () => {
       tiers: [DEFAULT_TIER, premium],
       tierEntries: {
         t1: [mkEntry('m1', 0)],
-        't-premium': [{ id: 'ep1', tierId: 't-premium', modelId: 'm2', position: 0, mode: 'any' as const, model: null }],
+        't-premium': [
+          {
+            id: 'ep1',
+            tierId: 't-premium',
+            modelId: 'm2',
+            position: 0,
+            mode: 'any' as const,
+            model: null,
+          },
+        ],
       },
       models: { p1: [mkModel('m1'), mkModel('m2')] },
       rules: [
@@ -850,7 +859,16 @@ describe('dashboard shell (auth-gated)', () => {
       tiers: [DEFAULT_TIER, premium],
       tierEntries: {
         t1: [mkEntry('m1', 0)],
-        't-premium': [{ id: 'ep1', tierId: 't-premium', modelId: 'm2', position: 0, mode: 'any' as const, model: null }],
+        't-premium': [
+          {
+            id: 'ep1',
+            tierId: 't-premium',
+            modelId: 'm2',
+            position: 0,
+            mode: 'any' as const,
+            model: null,
+          },
+        ],
       },
       models: { p1: [mkModel('m1'), mkModel('m2')] },
       rules: [
@@ -1013,7 +1031,16 @@ describe('dashboard shell (auth-gated)', () => {
       tiers: [DEFAULT_TIER, premium],
       tierEntries: {
         t1: [mkEntry('m1', 0)],
-        't-premium': [{ id: 'ep1', tierId: 't-premium', modelId: 'm2', position: 0, mode: 'any' as const, model: null }],
+        't-premium': [
+          {
+            id: 'ep1',
+            tierId: 't-premium',
+            modelId: 'm2',
+            position: 0,
+            mode: 'any' as const,
+            model: null,
+          },
+        ],
       },
       models: { p1: [mkModel('m1'), mkModel('m2')] },
       rules: [] as RuleDto[],
@@ -1152,7 +1179,16 @@ describe('dashboard shell (auth-gated)', () => {
       tiers: [DEFAULT_TIER, premium, empty],
       tierEntries: {
         t1: [mkEntry('m1', 0)],
-        't-premium': [{ id: 'ep1', tierId: 't-premium', modelId: 'm2', position: 0, mode: 'any' as const, model: null }],
+        't-premium': [
+          {
+            id: 'ep1',
+            tierId: 't-premium',
+            modelId: 'm2',
+            position: 0,
+            mode: 'any' as const,
+            model: null,
+          },
+        ],
         't-empty': [],
       },
       models: { p1: [mkModel('m1'), mkModel('m2')] },
@@ -1474,8 +1510,8 @@ describe('dashboard shell (auth-gated)', () => {
           instanceLow: 0.25,
           effectiveHigh: 0.58,
           effectiveLow: 0.27,
-        agents: [],
-        tenantPairStarved: null,
+          agents: [],
+          tenantPairStarved: null,
         },
       },
       calibrationEvents: [

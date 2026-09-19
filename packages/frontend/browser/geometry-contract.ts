@@ -150,16 +150,10 @@ export async function assertWithin(
  * in this suite: `.endpoint-chip` kept only its 24px floor when it left the exact
  * parity set, so a height blow-out passed silently until the ceiling test in
  * `responsive.spec.ts` was added. Both bounds or neither. */
-export function assertBetween(
-  actual: number,
-  min: number,
-  max: number,
-  label: string,
-): void {
-  expect(
-    actual >= min && actual <= max,
-    `${label} is ${actual}, outside [${min}, ${max}]`,
-  ).toBe(true);
+export function assertBetween(actual: number, min: number, max: number, label: string): void {
+  expect(actual >= min && actual <= max, `${label} is ${actual}, outside [${min}, ${max}]`).toBe(
+    true,
+  );
 }
 
 /** STRUCTURAL: every matching element clears a minimum size on both axes. */

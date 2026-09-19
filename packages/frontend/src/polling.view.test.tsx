@@ -126,9 +126,7 @@ describe('dashboard pollers are visibility-gated', () => {
       // panel and the `agent` strip. Asserted as two DISTINCT dimensions rather than a
       // bare count of 2 — that keeps this test catching the thing it exists for (the
       // same dimension fetched twice) instead of merely tolerating one more call.
-      const dims = client.callLog
-        .filter((c) => c.method === 'breakdown')
-        .map((c) => c.args[0]);
+      const dims = client.callLog.filter((c) => c.method === 'breakdown').map((c) => c.args[0]);
       expect(dims).toHaveLength(2);
       expect(new Set(dims)).toEqual(new Set(['model', 'agent']));
     } finally {
@@ -308,7 +306,9 @@ describe('the live in-flight cadence', () => {
 
   it('keeps the RequestTable latency ticking while the document is hidden', async () => {
     // `live={false}` isolates the clock from the pollers.
-    const client = new FakeApiClient({ inflight: { items: [liveRow()], available: true, truncated: false } });
+    const client = new FakeApiClient({
+      inflight: { items: [liveRow()], available: true, truncated: false },
+    });
     const store = createAppStore(client);
     const { host, dispose } = mount(store, false);
     try {
@@ -339,7 +339,9 @@ describe('the live in-flight cadence', () => {
 
 describe('live-row state is identity-scoped', () => {
   it('discards an in-flight response captured under the previous account', async () => {
-    const client = new DeferrableClient({ inflight: { items: [liveRow()], available: true, truncated: false } });
+    const client = new DeferrableClient({
+      inflight: { items: [liveRow()], available: true, truncated: false },
+    });
     const store = createAppStore(client);
     await store.bootstrap(); // signed in as A
     await flush();
@@ -359,7 +361,9 @@ describe('live-row state is identity-scoped', () => {
   });
 
   it('clears displayed live rows immediately on an account change', async () => {
-    const client = new FakeApiClient({ inflight: { items: [liveRow()], available: true, truncated: false } });
+    const client = new FakeApiClient({
+      inflight: { items: [liveRow()], available: true, truncated: false },
+    });
     const store = createAppStore(client);
     await store.bootstrap();
     await store.loadInflight();
@@ -373,7 +377,9 @@ describe('live-row state is identity-scoped', () => {
   });
 
   it('clears at a mid-session 401 re-gate, so a later sign-in cannot inherit rows', async () => {
-    const client = new DeferrableClient({ inflight: { items: [liveRow()], available: true, truncated: false } });
+    const client = new DeferrableClient({
+      inflight: { items: [liveRow()], available: true, truncated: false },
+    });
     const store = createAppStore(client);
     await store.bootstrap();
     await store.loadInflight();
@@ -406,7 +412,9 @@ describe('live-row state is identity-scoped', () => {
     // STORE-LEVEL with no page mounted: a mounted B would remount the Overview, whose
     // range effect starts a NEWER loadRecentRequests that would discard A's response
     // on its own — letting this pass even with the identity guard missing.
-    const client = new DeferrableClient({ inflight: { items: [liveRow()], available: true, truncated: false } });
+    const client = new DeferrableClient({
+      inflight: { items: [liveRow()], available: true, truncated: false },
+    });
     const store = createAppStore(client);
     await store.bootstrap();
     await flush();

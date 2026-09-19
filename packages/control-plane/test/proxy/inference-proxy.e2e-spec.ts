@@ -512,7 +512,6 @@ describe('inference proxy e2e', () => {
       expect(legal.status).toBe(451);
       expect(String(legal.body.error.message)).toMatch(/legal/i);
     });
-
   });
 
   it('shapes a malformed JSON body as a protocol 4xx', async () => {
@@ -654,7 +653,7 @@ describe('inference proxy e2e', () => {
     expect((await chat(A.key, { model: 'openai/gpt-6-astra', messages: [] })).status).toBe(200);
   });
 
-  it('names each twin\'s OWN base, and does not promise a route for an orphan', async () => {
+  it("names each twin's OWN base, and does not promise a route for an orphan", async () => {
     const withBase = await chat(A.key, { model: 'openai/gpt-6-astra:batch', messages: [] });
     const orphan = await chat(A.key, { model: 'anthropic/claude-opus-5:batch', messages: [] });
     expect(withBase.body.error.message).toContain('use "openai/gpt-6-astra" instead');

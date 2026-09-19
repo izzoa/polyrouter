@@ -55,8 +55,7 @@ function cooldownFor(
   const cooledSince = now - COOLDOWN_DAYS * DAY_MS;
   return (edge) =>
     recent.some(
-      (e) =>
-        e.agentId === agentId && e.edge === edge && Date.parse(e.createdAt) > cooledSince,
+      (e) => e.agentId === agentId && e.edge === edge && Date.parse(e.createdAt) > cooledSince,
     );
 }
 
@@ -284,7 +283,11 @@ export interface MoveInputs {
 
 export type MoveOutcome =
   | { kind: 'noop' }
-  | { kind: 'move'; target: { high: number; low: number }; events: ThresholdCalibrationEventInput[] };
+  | {
+      kind: 'move';
+      target: { high: number; low: number };
+      events: ThresholdCalibrationEventInput[];
+    };
 
 export function decideMove(p: MoveInputs): MoveOutcome {
   const { eff, cfg, rails, now, anchorHigh, anchorLow, stats } = p;
@@ -396,9 +399,6 @@ export function decideMove(p: MoveInputs): MoveOutcome {
   });
   return { kind: 'move', target, events };
 }
-
-
-
 
 /** The parent pair, re-read so a tenant move applied moments ago in Pass B is
  * already reflected. Any failure degrades to the value the sweep already holds:
@@ -536,7 +536,6 @@ async function calibrateAgents(
   return out;
 }
 
-
 /** Pass A2 — agent hygiene (add-per-agent-calibration).
  *
  * Two reasons to retire an agent pair, both conditional clears back to
@@ -611,8 +610,7 @@ async function hygieneAgents(
           epoch: a.calibrationEpoch,
           scope: { kind: 'agent', agentId: a.id },
         });
-        const decided =
-          stats.highEdge.samples + stats.lowEdge.samples;
+        const decided = stats.highEdge.samples + stats.lowEdge.samples;
         if (decided === 0) {
           const { rows } = await db.agentCalibration.activity(principal, a.id, window);
           if (rows > 0) reason = 'starved';

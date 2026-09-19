@@ -23,7 +23,12 @@ const flush = async (): Promise<void> => {
 };
 
 const tokens = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
-const brow = (key: string, label: string | null, spend: number, requests: number): BreakdownRow => ({
+const brow = (
+  key: string,
+  label: string | null,
+  spend: number,
+  requests: number,
+): BreakdownRow => ({
   key,
   label,
   spend,
@@ -82,9 +87,7 @@ describe('the strip asks for the right ranking', () => {
     await store.loadAgentStrip();
     await flush();
 
-    const call = fake.callLog.filter(
-      (c) => c.method === 'breakdown' && c.args[0] === 'agent',
-    );
+    const call = fake.callLog.filter((c) => c.method === 'breakdown' && c.args[0] === 'agent');
     expect(call.length, 'the strip never asked for the agent dimension').toBeGreaterThan(0);
     const [, , limit, metric] = call[call.length - 1]!.args;
     expect(metric, 'the strip inherited the spend ranking').toBe('requests');
@@ -106,9 +109,7 @@ describe('the strip asks for the right ranking', () => {
     await store.loadAgentStrip();
     await flush();
 
-    const after = fake.callLog.filter(
-      (c) => c.method === 'breakdown' && c.args[0] === 'agent',
-    );
+    const after = fake.callLog.filter((c) => c.method === 'breakdown' && c.args[0] === 'agent');
     expect(after.length, 'the strip did not refetch for the new range').toBeGreaterThan(before);
     expect(after[after.length - 1]!.args[3]).toBe('requests');
   });

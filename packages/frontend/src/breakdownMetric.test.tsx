@@ -98,9 +98,7 @@ describe('switching the metric REFETCHES', () => {
       expect(after.length, 'switching the metric did not refetch').toBeGreaterThan(0);
       expect(after.every((c) => c.args[3] === 'tokens')).toBe(true);
       // All three dimensions re-rank together — one selector, one screen.
-      expect(new Set(after.map((c) => c.args[0]))).toEqual(
-        new Set(['model', 'provider', 'agent']),
-      );
+      expect(new Set(after.map((c) => c.args[0]))).toEqual(new Set(['model', 'provider', 'agent']));
     } finally {
       h.dispose();
     }
@@ -158,9 +156,10 @@ describe('the panel copy follows the metric', () => {
         (t) => t.parentElement?.querySelectorAll('span')[1]?.textContent ?? '',
       );
       expect(values.length).toBeGreaterThan(0);
-      expect(values.some((v) => v.includes('$')), 'a token bar rendered a dollar value').toBe(
-        false,
-      );
+      expect(
+        values.some((v) => v.includes('$')),
+        'a token bar rendered a dollar value',
+      ).toBe(false);
       expect(values.some((v) => /[KM]$/.test(v))).toBe(true);
     } finally {
       h.dispose();
@@ -175,11 +174,19 @@ describe('the Overview headline', () => {
     // A genuinely cached workload: the shared fixture's 4.5K of cache disappears at two
     // decimal places, so a test against it would render the same string either way and
     // prove nothing. These numbers are chosen so the two answers differ AS DISPLAYED.
-    const cached = { inputTokens: 100_000, outputTokens: 20_000, cacheReadTokens: 400_000, cacheWriteTokens: 80_000 };
+    const cached = {
+      inputTokens: 100_000,
+      outputTokens: 20_000,
+      cacheReadTokens: 400_000,
+      cacheWriteTokens: 80_000,
+    };
     const h = await mountPage('Overview', cached);
     try {
       const expected =
-        (cached.inputTokens + cached.outputTokens + cached.cacheReadTokens + cached.cacheWriteTokens) /
+        (cached.inputTokens +
+          cached.outputTokens +
+          cached.cacheReadTokens +
+          cached.cacheWriteTokens) /
         1e6;
       const uncachedOnly = (cached.inputTokens + cached.outputTokens) / 1e6;
       expect(

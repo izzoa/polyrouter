@@ -172,8 +172,22 @@ describe('LogWriter', () => {
   it('maps the per-attempt trail to the attempt_failures column, null when absent (add-fallback-attempt-detail)', async () => {
     const { writer, insertMany } = makeWriter({});
     const attemptFailures = [
-      { index: 0, providerId: 'p1', model: 'a', kind: 'unavailable', status: 529, dispatched: true },
-      { index: 1, providerId: 'p2', model: 'b', kind: 'unavailable', dispatched: false, terminal: true },
+      {
+        index: 0,
+        providerId: 'p1',
+        model: 'a',
+        kind: 'unavailable',
+        status: 529,
+        dispatched: true,
+      },
+      {
+        index: 1,
+        providerId: 'p2',
+        model: 'b',
+        kind: 'unavailable',
+        dispatched: false,
+        terminal: true,
+      },
     ];
     writer.enqueue(draft({ status: 'error', attemptFailures }));
     writer.enqueue(draft({ id: randomUUID() }));
@@ -317,7 +331,8 @@ describe('LogWriter', () => {
         capturedAt: new Date('2026-07-15T00:00:00Z'),
       },
     ];
-    (h.writer as unknown as { bodyCfg: { queueBudgetBytes: number } }).bodyCfg.queueBudgetBytes = 1000;
+    (h.writer as unknown as { bodyCfg: { queueBudgetBytes: number } }).bodyCfg.queueBudgetBytes =
+      1000;
     const first = draft({ id: 'B1' });
     first.bodies = bodies('a');
     const second = draft({ id: 'B2' });

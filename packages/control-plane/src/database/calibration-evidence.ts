@@ -121,8 +121,8 @@ export function computeCalibrationEvidence(
   agents.sort(
     (a, b) =>
       b.highEdge.window.samples +
-      b.lowEdge.window.samples -
-      (a.highEdge.window.samples + a.lowEdge.window.samples) ||
+        b.lowEdge.window.samples -
+        (a.highEdge.window.samples + a.lowEdge.window.samples) ||
       (a.agentId ?? '￿').localeCompare(b.agentId ?? '￿'),
   );
   // Truncate AFTER the total has been accumulated over every row above. Summing

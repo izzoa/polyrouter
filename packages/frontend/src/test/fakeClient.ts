@@ -145,7 +145,6 @@ export const DEFAULT_CALIBRATION_EVIDENCE: CalibrationEvidence = {
   ],
 };
 
-
 export const DEFAULT_SUMMARY: AnalyticsSummary = {
   spend: 12.5,
   requests: 30,
@@ -376,8 +375,8 @@ export const DEFAULT_CALIBRATION: AutoLayers['calibration'] = {
   instanceLow: 0.25,
   effectiveHigh: 0.6,
   effectiveLow: 0.25,
-        agents: [],
-        tenantPairStarved: null,
+  agents: [],
+  tenantPairStarved: null,
 };
 
 export const DEFAULT_SEMANTIC_LEARNING_STATUS: SemanticLearningStatus = {

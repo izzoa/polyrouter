@@ -129,7 +129,7 @@ function tenant(owner: string, epoch = 0, generation = 0): SemanticLearningSweep
       calibratedAnchorHigh: null,
       calibratedAnchorLow: null,
       calibrationEpoch: 0,
-  membershipGeneration: 0,
+      membershipGeneration: 0,
     },
   };
 }

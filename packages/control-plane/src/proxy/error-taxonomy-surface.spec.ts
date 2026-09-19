@@ -60,7 +60,10 @@ describe('both protocol envelopes carry the distinction', () => {
   ] as const;
 
   it.each([...NEW_KINDS])('%s is distinguishable in the Anthropic shape', (kind) => {
-    const rendered = renderProxyError(providerErrorToProxy(new ProviderError(kind, 'x')), 'anthropic');
+    const rendered = renderProxyError(
+      providerErrorToProxy(new ProviderError(kind, 'x')),
+      'anthropic',
+    );
     const body = rendered.body as { type: string; error: { type: string; message: string } };
     expect(body.type).toBe('error');
     expect(body.error.message.length).toBeGreaterThan(0);

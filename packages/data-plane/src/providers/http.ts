@@ -375,7 +375,13 @@ export async function openRequest(
     // For a buffered read, keep the request abortable and bound the body drain by
     // an inter-chunk idle deadline (a stream is left to core's per-event timeout).
     if (idleTimeoutMs !== undefined) {
-      const guarded = guardBufferedBodyIdle(res, ctl, idleTimeoutMs, maxResponseBytes, ctx?.onBytes);
+      const guarded = guardBufferedBodyIdle(
+        res,
+        ctl,
+        idleTimeoutMs,
+        maxResponseBytes,
+        ctx?.onBytes,
+      );
       idleClear = guarded.clear;
       return { res: guarded.res, dispose };
     }

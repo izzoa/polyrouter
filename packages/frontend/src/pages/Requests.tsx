@@ -92,9 +92,7 @@ export function Requests(props: { live: boolean }) {
 
   /** `InflightEntry` carries no agent id, so under an agent filter these rows cannot
    * be attributed. The band empties rather than displaying rows it cannot place. */
-  const bandRows = createMemo(() =>
-    state.reqAgentId === null ? attributableInflight() : [],
-  );
+  const bandRows = createMemo(() => (state.reqAgentId === null ? attributableInflight() : []));
 
   /** True only when the filter is HIDING live work. A permanent banner would train
    * people to ignore it; this appears exactly when there is something to disclose. */
@@ -211,7 +209,9 @@ export function Requests(props: { live: boolean }) {
             id="req-agent"
             style="padding:4px 8px;font:500 12px 'Geist',sans-serif;max-width:180px"
             value={state.reqAgentId ?? ''}
-            onChange={(e) => app.setAgentFilter(e.currentTarget.value === '' ? null : e.currentTarget.value)}
+            onChange={(e) =>
+              app.setAgentFilter(e.currentTarget.value === '' ? null : e.currentTarget.value)
+            }
           >
             <option value="">All agents</option>
             <For each={state.agents}>{(a) => <option value={a.id}>{a.name}</option>}</For>
@@ -282,8 +282,8 @@ export function Requests(props: { live: boolean }) {
             style="padding:9px 18px;border-bottom:1px solid var(--border2);font:400 11.5px 'Geist',sans-serif;color:var(--text3)"
           >
             {attributableInflight().length} live request
-            {attributableInflight().length === 1 ? ' is' : 's are'} running but can’t be
-            attributed to an agent yet — clear the agent filter to see them.
+            {attributableInflight().length === 1 ? ' is' : 's are'} running but can’t be attributed
+            to an agent yet — clear the agent filter to see them.
           </div>
         </Show>
         <Show

@@ -138,8 +138,7 @@ function toEntry(
     middleWindowRows: e.middleRows.window,
     // Zero on BOTH edges while decided rows exist between them. A bare pair of
     // zeros here reads as "the calibrator is broken" when the system is correct.
-    deadMiddle:
-      high.windowSamples === 0 && low.windowSamples === 0 && e.middleRows.window > 0,
+    deadMiddle: high.windowSamples === 0 && low.windowSamples === 0 && e.middleRows.window > 0,
   };
 }
 
@@ -154,9 +153,7 @@ export function toCalibrationEvidenceVm(d: CalibrationEvidence): CalibrationEvid
     epochStartedAt: d.epochStartedAt,
     contracted: d.contracted,
     truncated: d.truncated,
-    agents: d.agents.map((a) =>
-      toEntry(a, d.actingFloor, d.epochStartedAt, d.rateHigh, d.rateLow),
-    ),
+    agents: d.agents.map((a) => toEntry(a, d.actingFloor, d.epochStartedAt, d.rateHigh, d.rateLow)),
     total: toEntry(d.total, d.actingFloor, d.epochStartedAt, d.rateHigh, d.rateLow),
   };
 }

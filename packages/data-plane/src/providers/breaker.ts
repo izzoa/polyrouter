@@ -162,7 +162,11 @@ export function applyRenew(
   now: number,
   cfg: BreakerConfig,
 ): BreakerRecord {
-  if (rec.state !== 'half_open' || tokenGeneration !== rec.generation || now >= rec.probeExpiresAt) {
+  if (
+    rec.state !== 'half_open' ||
+    tokenGeneration !== rec.generation ||
+    now >= rec.probeExpiresAt
+  ) {
     return rec;
   }
   // A renewal only ever EXTENDS the lease — `Math.max` guarantees it can never
@@ -196,12 +200,7 @@ export interface BreakerStore {
   ): Promise<BreakerCompletion>;
   /** Extend a live half-open probe's lease (see {@link applyRenew}). Best-effort
    * and idempotent — a stale-generation or expired-lease renewal is a no-op. */
-  renew(
-    providerId: string,
-    generation: number,
-    now: number,
-    cfg: BreakerConfig,
-  ): Promise<void>;
+  renew(providerId: string, generation: number, now: number, cfg: BreakerConfig): Promise<void>;
   /** Drop the provider's breaker record entirely (add-subscription-oauth): called ONLY
    * on a successful OAuth reauthorization, so a freshly reconnected provider is not
    * stuck serving a cooldown earned by its dead credential. NEVER called by ordinary

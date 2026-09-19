@@ -483,7 +483,10 @@ test.describe('desktop width, fine pointer', () => {
     // this test pass while asserting nothing, which is the exact failure mode
     // that left these two controls uncovered in the first place.
     for (const sel of SELECTORS) {
-      expect(seen.get(sel) ?? 0, `${sel} never rendered on any page — nothing was asserted`).toBeGreaterThan(0);
+      expect(
+        seen.get(sel) ?? 0,
+        `${sel} never rendered on any page — nothing was asserted`,
+      ).toBeGreaterThan(0);
     }
 
     // The chip also stays inside the bar that contains it — a relationship, so

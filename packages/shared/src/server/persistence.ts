@@ -961,11 +961,7 @@ export interface AgentCalibrationAccessor {
    * its own scope. An agent with rows but no decided ambiguous rows has been
    * silenced BY ITS PAIR; an agent with neither is simply not being used, and
    * clearing its pair would punish absence rather than repair a ratchet. */
-  activity(
-    principal: Principal,
-    agentId: string,
-    range: AnalyticsRange,
-  ): Promise<{ rows: number }>;
+  activity(principal: Principal, agentId: string, range: AnalyticsRange): Promise<{ rows: number }>;
   /** Write (or clear) one agent's pair under the two-sided CAS.
    *
    * Locks `routing_settings` FIRST, then the agent row — the fixed order that

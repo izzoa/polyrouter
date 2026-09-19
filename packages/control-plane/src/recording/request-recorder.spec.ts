@@ -107,8 +107,22 @@ describe('RequestRecorder', () => {
   it('carries the per-attempt trail on an error outcome (add-fallback-attempt-detail)', () => {
     const { recorder, enqueue } = makeRecorder();
     const attemptFailures = [
-      { index: 0, providerId: 'p1', model: 'a', kind: 'unavailable', status: 529, dispatched: true },
-      { index: 1, providerId: 'p2', model: 'b', kind: 'unavailable', dispatched: false, terminal: true },
+      {
+        index: 0,
+        providerId: 'p1',
+        model: 'a',
+        kind: 'unavailable',
+        status: 529,
+        dispatched: true,
+      },
+      {
+        index: 1,
+        providerId: 'p2',
+        model: 'b',
+        kind: 'unavailable',
+        dispatched: false,
+        terminal: true,
+      },
     ];
     recorder.record(ctx({ attemptFailures }), {
       status: 'error',
@@ -158,14 +172,23 @@ describe('RequestRecorder', () => {
 
   describe('learning contribution (add-semantic-learning task 3.3)', () => {
     const vec = new Float32Array([0.1, 0.2, 0.3]);
-    const withSink = (): { recorder: RequestRecorder; enqueue: jest.Mock; contribute: jest.Mock } => {
+    const withSink = (): {
+      recorder: RequestRecorder;
+      enqueue: jest.Mock;
+      contribute: jest.Mock;
+    } => {
       const enqueue = jest.fn();
       const contribute = jest.fn();
       const writer = { enqueue } as unknown as LogWriter;
       const recorder = new RequestRecorder(writer, new ProxyMetrics(), { contribute });
       return { recorder, enqueue, contribute };
     };
-    const learning = (enabled: boolean) => ({ evidence: vec, enabled, epoch: 0, revision: 'sha256:rev' });
+    const learning = (enabled: boolean) => ({
+      evidence: vec,
+      enabled,
+      epoch: 0,
+      revision: 'sha256:rev',
+    });
 
     it('contributes the served vector at settle, and NEVER puts it in the draft (invariant 8)', () => {
       const { recorder, enqueue, contribute } = withSink();
@@ -197,11 +220,15 @@ describe('RequestRecorder', () => {
 
     it('a throwing sink never breaks recording', () => {
       const enqueue = jest.fn();
-      const recorder = new RequestRecorder({ enqueue } as unknown as LogWriter, new ProxyMetrics(), {
-        contribute: () => {
-          throw new Error('sink boom');
+      const recorder = new RequestRecorder(
+        { enqueue } as unknown as LogWriter,
+        new ProxyMetrics(),
+        {
+          contribute: () => {
+            throw new Error('sink boom');
+          },
         },
-      });
+      );
       expect(() =>
         recorder.record(ctx({ learning: learning(true) }), { status: 'success', outputChars: 0 }),
       ).not.toThrow();

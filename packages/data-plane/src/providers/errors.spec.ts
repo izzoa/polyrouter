@@ -1,4 +1,5 @@
-import { ProviderError,
+import {
+  ProviderError,
   PROVIDER_ERROR_KINDS,
   FUNDS_WITHHELD,
   PERMISSION_WITHHELD,
@@ -51,7 +52,9 @@ describe('provider error classification', () => {
   });
 
   it('every mapped kind is a member of the canonical taxonomy', () => {
-    for (const status of [400, 401, 402, 403, 404, 405, 408, 409, 410, 413, 415, 422, 429, 451, 418, 500]) {
+    for (const status of [
+      400, 401, 402, 403, 404, 405, 408, 409, 410, 413, 415, 422, 429, 451, 418, 500,
+    ]) {
       expect(PROVIDER_ERROR_KINDS).toContain(classifyResponse(status, '').kind);
     }
   });
@@ -106,7 +109,11 @@ describe('provider error classification', () => {
   // `auth` opened the breaker on providers that were answering every other request.
   describe('the 401/403 split (fix-4xx-error-taxonomy)', () => {
     it.each([
-      ['a plain permission denial', '{"error":{"message":"no access to this model"}}', 'permission'],
+      [
+        'a plain permission denial',
+        '{"error":{"message":"no access to this model"}}',
+        'permission',
+      ],
       ['an HTML body', '<html>403 Forbidden</html>', 'permission'],
       ['an empty body', '', 'permission'],
       ['type=content_filter', '{"error":{"type":"content_filter"}}', 'content_policy'],
@@ -444,7 +451,10 @@ describe('marker retention — gate 1 (named source) and classification independ
   it('a policy marker under an UNNAMED metadata key is still DETECTED', () => {
     // Detection and retention read deliberately different sources: the broad sweep
     // still decides the 403 refinement even where the value may not be persisted.
-    const err = classifyResponse(403, body({ error: { metadata: { anything: 'content_filter' } } }));
+    const err = classifyResponse(
+      403,
+      body({ error: { metadata: { anything: 'content_filter' } } }),
+    );
     expect(err.kind).toBe('content_policy');
   });
 

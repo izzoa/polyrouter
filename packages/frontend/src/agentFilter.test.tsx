@@ -91,8 +91,7 @@ describe('the agent filter travels with the window, the probe and the identity',
     store = createAppStore(fake);
   });
 
-  const lastRequestsQuery = (): RequestsQuery =>
-    fake.lastArgs('requests')?.[0] as RequestsQuery;
+  const lastRequestsQuery = (): RequestsQuery => fake.lastArgs('requests')?.[0] as RequestsQuery;
 
   it('sends the agent on the listing query and composes with the routing filter', async () => {
     store.setAgentFilter('agent-1');

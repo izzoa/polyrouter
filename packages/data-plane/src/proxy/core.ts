@@ -257,7 +257,10 @@ interface LivenessToken {
  * upstream). Returns the RAW error pre-commit so the chain can classify it.
  */
 export async function openAttemptStream(
-  streamFactory: (signal: AbortSignal, onBytes: () => void) => AsyncGenerator<NormalizedStreamEvent>,
+  streamFactory: (
+    signal: AbortSignal,
+    onBytes: () => void,
+  ) => AsyncGenerator<NormalizedStreamEvent>,
   client: ProtocolAdapter,
   opts: ProxyStreamOptions,
 ): Promise<AttemptResult> {
@@ -652,7 +655,11 @@ export async function runBufferedChain(
           failures,
           callerAborted: ctx.isCallerAbort?.() === true,
         };
-      failures.push({ index: i, error: mapped, dispatched: !(err instanceof ProviderCircuitOpenError) });
+      failures.push({
+        index: i,
+        error: mapped,
+        dispatched: !(err instanceof ProviderCircuitOpenError),
+      });
       lastError = mapped;
     }
   }

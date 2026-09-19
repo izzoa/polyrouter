@@ -213,7 +213,7 @@ describe('calibration evidence membership (add-per-agent-calibration)', () => {
     });
     const silent = { warn: () => {}, log: () => {} };
 
-    it('earns a first pair when its OWN rate qualifies and the tenant\'s does not', async () => {
+    it("earns a first pair when its OWN rate qualifies and the tenant's does not", async () => {
       // The scenario this whole change exists for. `hot` fails 83% of its
       // decided high-edge rows; `calm` passes 95% of many more. Pooled, the
       // tenant sits at ~21% — nowhere near the 65% bound — so the tenant pair
@@ -290,10 +290,9 @@ describe('calibration evidence membership (add-per-agent-calibration)', () => {
       // `calm` earned nothing — its rate never approached the bound. Two agents
       // of one tenant, one calibrated and one inheriting, which is the entire
       // point of the change.
-      const { rows: calmRow } = await pool.query(
-        `SELECT calibrated_high FROM agent WHERE id=$1`,
-        [calm],
-      );
+      const { rows: calmRow } = await pool.query(`SELECT calibrated_high FROM agent WHERE id=$1`, [
+        calm,
+      ]);
       expect(calmRow[0]).toEqual({ calibrated_high: null });
 
       // The move is audited AGAINST THE AGENT, so history and the per-edge

@@ -15,6 +15,11 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.19.0] — 2026-09-18
+
+[Release](https://github.com/izzoa/polyrouter/releases/tag/v0.19.0) ·
+[Compare](https://github.com/izzoa/polyrouter/compare/v0.18.2...v0.19.0)
+
 ### Added
 
 - **Threshold calibration now works per agent, under the identical standard.** Calibration was tenant-wide — one pair, calibrated from every agent's rows pooled together — so the agent contributing most of the traffic set the thresholds every other agent inherited; on a measured instance one agent carried 84.6% of the decided ambiguous band. Each agent can now earn its own pair from its own evidence, on the **same** floor, statistic, step, drift cap, gap, hysteresis and cooldown. An agent that has not earned one inherits its tenant's, which is a correct outcome rather than a failure to act. Resolution runs instance → tenant → agent, degrading to the level above at each hop, with drift bounded twice so the two levels cannot compound — and no new hot-path read, because the pair rides a projection the auth guard already performs. The Routing page lists every agent with its pair, anchor and evidence, names the inheriting ones as inheriting rather than uncalibrated, offers a per-agent revert, and discloses a tenant pair no longer informed by the traffic it governs. No per-agent enable: the tenant's toggle stays the single consent boundary.
@@ -981,7 +986,8 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.18.2...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.19.0
 [0.18.2]: https://github.com/izzoa/polyrouter/releases/tag/v0.18.2
 [0.18.1]: https://github.com/izzoa/polyrouter/releases/tag/v0.18.1
 [0.18.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.18.0

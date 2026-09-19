@@ -1,5 +1,23 @@
 # @polyrouter/data-plane
 
+## 0.12.0
+
+### Minor Changes
+
+- d896201: A router-chosen HTTP 400 now falls back instead of abandoning the chain, and the
+  provider's own error classification is recorded so a withheld message is still
+  diagnosable. The transport byte bound gains its own error kind so its no-fallback
+  guarantee no longer depends on `bad_request`'s routing.
+
+### Patch Changes
+
+- Updated dependencies [78196ed]
+- Updated dependencies [7b4047a]
+- Updated dependencies [0539673]
+- Updated dependencies [d896201]
+- Updated dependencies [7b4047a]
+  - @polyrouter/shared@0.17.0
+
 ## 0.11.1
 
 ### Patch Changes

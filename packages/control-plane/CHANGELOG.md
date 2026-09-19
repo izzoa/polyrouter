@@ -1,5 +1,81 @@
 # @polyrouter/control-plane
 
+## 0.18.0
+
+### Minor Changes
+
+- 78196ed: Request surfaces now say which agent a request came from. The requests listing
+  gains an owner-scoped `agentId` filter, the table groups consecutive rows by
+  agent, and the Overview page names the agents accruing the range's traffic with
+  a click-through to their filtered rows. The breakdown endpoint gains a
+  `requests` ranking metric, without which a volume view inherits a spend ranking
+  and truncates out its highest-volume, lowest-cost agents.
+- 7b4047a: The Auto-performance view now shows, per agent, the edge-zone evidence the
+  threshold calibrator actually consumes — computed from the calibrator's own
+  predicates so the instrument cannot drift from what it measures. Each edge
+  reports both epoch views, its failure rate against the decision rate, and the
+  count of decided rows sitting between the zones, so a pair of zeros is
+  interpretable rather than alarming.
+- 0539673: Threshold calibration now works per agent, under the identical standard.
+
+  Calibration was tenant-wide: one `high`/`low` pair, calibrated from every
+  agent's rows pooled together, so the agent contributing most of the traffic set
+  the thresholds every other agent inherited. On a measured instance one agent
+  carried 84.6% of the decided ambiguous band. The structural layer already
+  reasons per agent — the size feature is a delta from that agent's own baseline —
+  so the scorer was per-agent and only the thresholds it was compared against
+  were not.
+
+  Each agent can now earn its own pair from its own evidence. The standard does
+  not change, only the scope it is applied at: same evidence floor, statistic,
+  step, drift cap, minimum gap, hysteresis, cooldown and contraction-only rule.
+  An agent that has not earned a pair inherits its tenant's, which is a correct
+  outcome rather than a failure to act, and most agents on most instances will
+  stay there.
+
+  Resolution runs instance defaults → tenant pair → agent pair, degrading to the
+  level above at each hop and never skipping one. Drift is bounded twice, from
+  the tenant anchor and globally from the instance defaults, so the two levels
+  cannot compound. There is no new hot-path read: the pair rides the projection
+  the agent-key guard already performs.
+
+  The Routing page lists every agent with its pair, anchor and evidence, names
+  the inheriting ones as inheriting rather than uncalibrated, offers a per-agent
+  revert, and discloses a tenant pair that is no longer informed by the traffic
+  it governs. The tenant's calibration toggle remains the single consent
+  boundary — there is no per-agent enable.
+
+- d896201: A router-chosen HTTP 400 now falls back instead of abandoning the chain, and the
+  provider's own error classification is recorded so a withheld message is still
+  diagnosable. The transport byte bound gains its own error kind so its no-fallback
+  guarantee no longer depends on `bad_request`'s routing.
+
+### Patch Changes
+
+- 7b4047a: Four ways the calibration-evidence view told an operator something false: the
+  tenant total the calibrator actually evaluates was computed but never rendered,
+  a NULL-score row vanished from every count, a tenant that never had a threshold
+  event was told its evidence was reset by one, and a halted calibrator reported
+  healthy evidence. The agent list is now bounded with the total still taken over
+  every agent, and a failure rate renders at a precision that cannot display its
+  own decision bound when the bound was not met.
+- af3db60: Fix a threshold-calibration rail that could permanently freeze a tenant's
+  calibrator. The minimum gap (0.1) equals twice the edge width (2 x 0.05), so a
+  calibrated pair landing on exactly the minimum gap passed the writer's gap check
+  and was then inerted by the halt rule — leaving the tenant with a pair no move
+  could widen and no hygiene pass would retire. Admission and the hot-path
+  re-validation now share one predicate requiring both bounds, so such a pair can
+  no longer be written, and any already stored is read as inert: routing falls back
+  to the instance defaults, calibration resumes, and the next run rebases the row.
+  No migration, and no change to any threshold constant.
+- Updated dependencies [78196ed]
+- Updated dependencies [7b4047a]
+- Updated dependencies [0539673]
+- Updated dependencies [d896201]
+- Updated dependencies [7b4047a]
+  - @polyrouter/shared@0.17.0
+  - @polyrouter/data-plane@0.12.0
+
 ## 0.17.1
 
 ### Patch Changes

@@ -136,6 +136,10 @@ async function seedTenant(
   await add(openai.id, 'openai/gpt-6-astra');
   await addVariant(openai.id, 'anthropic/claude-opus-5:batch', 'batch'); // orphan twin
   await addVariant(openai.id, 'meta/llama:free', 'free'); // routable variant (control)
+  // expand-models-listing: one bare id on TWO providers, so the listing must
+  // withhold the bare form and advertise only the two qualified ones.
+  await add(openai.id, 'dup-model');
+  await add(dryProvider.id, 'dup-model');
 
   await port.ensureDefaultTier(principal);
   const tiers = await port.tiers.list(principal);
@@ -627,6 +631,146 @@ describe('inference proxy e2e', () => {
     // A's key cannot reach B's model id — it isn't in A's config → unknown_model.
     const cross = await chat(A.key, { model: 'proxyB-secret', messages: [] });
     expect(cross.status).toBe(404);
+  });
+
+  // --- expand-models-listing: envelopes, metadata, retrieve ---
+
+  const AV = '2023-06-01'; // any anthropic-version value selects that envelope
+  const list = (key: string, anthropic = false) => {
+    const r = request(server).get('/v1/models').set('Authorization', `Bearer ${key}`);
+    return anthropic ? r.set('anthropic-version', AV) : r;
+  };
+  const retrieve = (key: string, id: string, anthropic = false) => {
+    const r = request(server).get(`/v1/models/${id}`).set('Authorization', `Bearer ${key}`);
+    return anthropic ? r.set('anthropic-version', AV) : r;
+  };
+  const idsOf = (body: { data: { id: string }[] }): string[] => body.data.map((m) => m.id);
+
+  it('chooses the envelope from anthropic-version, never the credential header', async () => {
+    // The guard accepts EITHER credential header for either SDK, so the protocol
+    // choice must not ride on it — otherwise drop-in and protocol contradict.
+    for (const cred of ['bearer', 'x-api-key'] as const) {
+      const base = () =>
+        cred === 'bearer'
+          ? request(server).get('/v1/models').set('Authorization', `Bearer ${A.key}`)
+          : request(server).get('/v1/models').set('x-api-key', A.key);
+
+      const oai = await base();
+      expect(oai.status).toBe(200);
+      expect(oai.body.object).toBe('list');
+      expect(oai.body).not.toHaveProperty('has_more');
+
+      const ant = await base().set('anthropic-version', AV);
+      expect(ant.status).toBe(200);
+      expect(ant.body.has_more).toBe(false);
+      expect(ant.body.first_id).toBe('auto');
+      expect(ant.body).not.toHaveProperty('object');
+      expect(ant.body.data[0].type).toBe('model');
+      expect(ant.body.data[0]).not.toHaveProperty('owned_by');
+    }
+  });
+
+  it('advertises the identical id set in both envelopes', async () => {
+    const oai = idsOf((await list(A.key)).body);
+    const ant = idsOf((await list(A.key, true)).body);
+    expect(ant).toEqual(oai);
+    for (const ids of [oai, ant]) {
+      // The same batch exclusion and the same ambiguity outcome under both shapes.
+      expect(ids).not.toContain('openai/gpt-6-astra:batch');
+      expect(ids.some((id) => id.endsWith(':openai/gpt-6-astra:batch'))).toBe(false);
+      expect(ids).toContain('openai/gpt-6-astra');
+      expect(ids).not.toContain('dup-model'); // on two providers → bare id withheld
+      expect(ids.filter((id) => id.endsWith(':dup-model'))).toHaveLength(2);
+      expect(ids).not.toContain('proxyB-secret');
+    }
+  });
+
+  it('keeps every pre-change OpenAI key and adds metadata without nulls', async () => {
+    const data = (await list(A.key)).body.data as Record<string, unknown>[];
+    const entry = data.find((m) => m.id === 'gpt-4o')!;
+    expect(entry).toMatchObject({ id: 'gpt-4o', object: 'model', owned_by: 'polyrouter' });
+    expect(typeof entry.created).toBe('number');
+    // These fixture providers are kind `local`, so the SHARED resolver prices them
+    // free — the same figure the dashboard shows for them.
+    expect(entry.pricing).toMatchObject({ is_free: true, source: 'local', estimated: false });
+    expect(entry.supports_tools).toBe(false);
+    // Never stored for these fixtures → absent, not null.
+    expect(entry).not.toHaveProperty('context_window');
+
+    // A virtual id describes nothing at all.
+    expect(data.find((m) => m.id === 'auto')).toEqual({
+      id: 'auto',
+      object: 'model',
+      created: entry.created,
+      owned_by: 'polyrouter',
+    });
+  });
+
+  it('retrieves an id with separators, in either spelling, matching the listing', async () => {
+    const data = (await list(A.key)).body.data as { id: string }[];
+    const qualified = data.find((m) => m.id.endsWith(':openai/gpt-6-astra'))!.id;
+    expect(qualified).toContain(':'); // "<providerId>:openai/gpt-6-astra" — spans segments
+
+    const direct = await retrieve(A.key, qualified);
+    expect(direct.status).toBe(200);
+    expect(direct.body).toEqual(data.find((m) => m.id === qualified));
+
+    // Percent-encoded and literal separators must not diverge.
+    const encoded = await retrieve(A.key, encodeURIComponent(qualified));
+    expect(encoded.status).toBe(200);
+    expect(encoded.body).toEqual(direct.body);
+  });
+
+  it('retrieves a virtual id with no descriptive metadata', async () => {
+    for (const id of ['auto', 'default', 'fast']) {
+      const res = await retrieve(A.key, id);
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ id, object: 'model', owned_by: 'polyrouter' });
+      expect(res.body).not.toHaveProperty('pricing');
+      expect(res.body).not.toHaveProperty('supports_tools');
+      expect(res.body).not.toHaveProperty('context_window');
+    }
+  });
+
+  it('404s every id the listing hides, never a 400 batch_only_model', async () => {
+    const ids = idsOf((await list(A.key)).body);
+    const openaiProviderId = ids.find((id) => id.endsWith(':gpt-4o'))!.split(':')[0]!;
+    const hidden = [
+      'openai/gpt-6-astra:batch', // batch twin, bare
+      `${openaiProviderId}:openai/gpt-6-astra:batch`, // batch twin, qualified
+      'dup-model', // ambiguous bare id
+      'proxyB-secret', // another tenant's model (invariant 5)
+      'nope-not-a-model',
+    ];
+    for (const id of hidden) {
+      const res = await retrieve(A.key, id);
+      expect(res.status).toBe(404); // the catalog reports what IS in it…
+      expect(res.body.error.code).toBe('model_not_found'); // …never batch_only_model
+      expect(res.body.error.message).not.toMatch(/batch-priced variant/);
+    }
+    // Another tenant's row is indistinguishable from one that never existed.
+    const other = await retrieve(A.key, 'proxyB-secret');
+    const absent = await retrieve(A.key, 'nope-not-a-model');
+    expect(other.body).toEqual(absent.body);
+  });
+
+  it("renders a retrieve failure in the caller's own error envelope", async () => {
+    const ant = await retrieve(A.key, 'nope-not-a-model', true);
+    expect(ant.status).toBe(404);
+    expect(ant.body.type).toBe('error'); // Anthropic shape, not the OpenAI one
+    expect(ant.body).not.toHaveProperty('error.code');
+  });
+
+  it('retrieves every listed id, in both envelopes', async () => {
+    for (const anthropic of [false, true]) {
+      const data = (await list(A.key, anthropic)).body.data as { id: string }[];
+      expect(data.length).toBeGreaterThan(5);
+      for (const entry of data) {
+        const res = await retrieve(A.key, entry.id, anthropic);
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual(entry); // list and retrieve agree, field for field
+      }
+    }
   });
 
   // --- batch-only variants (add-model-variant-detection) ---

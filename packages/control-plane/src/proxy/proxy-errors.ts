@@ -14,6 +14,23 @@ import type { BudgetHit } from '../budgets/budget-service';
 
 export type ClientProtocol = 'openai' | 'anthropic';
 
+/**
+ * A `/v1` route whose PATH cannot name its caller's protocol stamps it here, so
+ * the exception filter renders a failure in the same envelope the success would
+ * have used. Two routes need it: `/v1/batches` learns the protocol from the
+ * body's `endpoint` (add-batch-inference D22), and the models surface learns it
+ * from the `anthropic-version` header (expand-models-listing) because one URL
+ * serves both wires. Every other `/v1` path is decided by `protocolForPath`.
+ */
+export type ProtocolStamped = { clientProtocol?: ClientProtocol };
+
+export const stampClientProtocol = (req: object, protocol: ClientProtocol): void => {
+  (req as ProtocolStamped).clientProtocol = protocol;
+};
+
+export const stampedProtocol = (req: object): ClientProtocol | undefined =>
+  (req as ProtocolStamped).clientProtocol;
+
 /** A mapped, client-safe failure. Carries only fixed, public fields. */
 export class ProxyError extends Error {
   constructor(

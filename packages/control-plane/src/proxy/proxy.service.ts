@@ -7,7 +7,6 @@ import {
   AUTO_ALIAS,
   PERSISTENCE_PORT,
   deriveModelKey,
-  isNonRoutableVariant,
   type ModelRow,
   type PersistencePort,
   type Principal,
@@ -49,6 +48,8 @@ import {
   type WorkloadVerdict,
 } from '@polyrouter/data-plane';
 import { AdapterBuildError, ProviderAdapterBuilder } from '../providers/adapter-builder';
+import { loadPriceContext, toEffectivePrice } from '../pricing/model-price-context';
+import { buildCatalog, type CatalogEntry } from './models-catalog';
 import type { ClientProtocol } from './proxy-errors';
 import {
   badRequest,
@@ -494,31 +495,50 @@ export class ProxyService {
     return result.frames;
   }
 
-  /** Models + tier keys + `auto`, in the OpenAI list shape. */
-  async listModels(
-    principal: Principal,
-  ): Promise<{ object: 'list'; data: { id: string; object: 'model'; owned_by: string }[] }> {
-    const [all, tiers] = await Promise.all([
+  /**
+   * The advertised catalog: `auto`, the tier keys, and every routable model under
+   * its qualified id plus its bare id when unambiguous (expand-models-listing).
+   *
+   * Protocol-neutral — the controller renders it into the caller's envelope, so
+   * both shapes are built from ONE entry set and the routable filter and the
+   * ambiguity rule cannot drift between them.
+   *
+   * Prices resolve through the SAME shared bulk context the dashboard projection
+   * uses, so the two surfaces cannot report different figures for one model (one
+   * providers read + one key-filtered catalog read; never a query per model).
+   */
+  async listModels(principal: Principal): Promise<CatalogEntry[]> {
+    const [rows, tiers] = await Promise.all([
       this.db.models.listForPrincipal(principal),
       this.db.tiers.list(principal),
     ]);
-    // Only ROUTABLE models are advertised (add-model-variant-detection): a
-    // batch-priced variant cannot serve a synchronous request, so listing it would
-    // promise a route that does not exist. Ambiguity is computed over this same
-    // routable set, so a bare id advertised here always resolves the way the
-    // resolver's phase-1 matrix decides it.
-    const models = all.filter((m) => !isNonRoutableVariant(m.variant));
-    const seen = new Map<string, string>(); // external id → count for ambiguity
-    for (const m of models) seen.set(m.externalModelId, (seen.get(m.externalModelId) ?? '') + '.');
-    const ids: string[] = ['auto', ...tiers.map((t) => t.key)];
-    for (const m of models) {
-      ids.push(`${m.providerId}:${m.externalModelId}`); // always-routable qualified id
-      if ((seen.get(m.externalModelId) ?? '').length === 1) ids.push(m.externalModelId); // bare only if unique
-    }
-    return {
-      object: 'list',
-      data: ids.map((id) => ({ id, object: 'model', owned_by: 'polyrouter' })),
-    };
+    const prices = await loadPriceContext(this.db, principal, rows);
+    return buildCatalog(
+      rows.map((r) => ({
+        ...r,
+        effectivePrice: toEffectivePrice(
+          r,
+          prices.kindOf(r),
+          prices.catalogRowOf(r),
+          prices.nativeRowOf(r),
+        ),
+      })),
+      tiers.map((t) => t.key),
+    );
+  }
+
+  /**
+   * One advertised id (expand-models-listing). Served from the same builder as the
+   * listing, so retrieve and list report the same catalog: an id the listing hides
+   * — a non-routable variant under either spelling, an ambiguous bare id, another
+   * tenant's model — is `unknown_model` (404), never `batch_only_model`. That 400
+   * belongs to the ROUTING path, which explains why a request cannot be served; a
+   * catalog read reports what is in this catalog.
+   */
+  async retrieveModel(principal: Principal, id: string): Promise<CatalogEntry> {
+    const entry = (await this.listModels(principal)).find((e) => e.id === id);
+    if (entry === undefined) throw routeError({ error: 'unknown_model' });
+    return entry;
   }
 
   // --- cascade (Layer 3, #14) ---

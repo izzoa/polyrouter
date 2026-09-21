@@ -7,8 +7,8 @@ import {
   protocolForPath,
   renderProxyError,
   toProxyError,
+  stampedProtocol,
   unauthorized,
-  type ClientProtocol,
 } from './proxy-errors';
 import { isV1Path } from '../planes';
 
@@ -34,10 +34,10 @@ export class ProxyExceptionFilter extends BaseExceptionFilter {
       res.end();
       return;
     }
-    // A batch route learns its caller's protocol from the body's `endpoint`
-    // (add-batch-inference D22): once known it is stamped on the request; before
-    // that — and for every other /v1 path — the path decides.
-    const stamped = (req as { batchProtocol?: ClientProtocol }).batchProtocol;
+    // A route whose path cannot name the protocol stamps it once known — the
+    // batch body's `endpoint`, the models surface's `anthropic-version` header.
+    // Before that, and for every other /v1 path, the path decides.
+    const stamped = stampedProtocol(req);
     const { status, body } = renderProxyError(proxyErr, stamped ?? protocolForPath(req.path));
     res.status(status).json(body);
   }

@@ -16,13 +16,11 @@ import {
   deriveProviderFamily,
   modelBatchCapable,
   encryptSecret,
-  resolveModelPrice,
   parseModelVariant,
   serializePlainCredential,
   variantForProvider,
   type ModelInsertInput,
   type ModelPatch,
-  type ModelPriceRow,
   type PersistenceFacilities,
   type ModelRow,
   type PersistencePort,
@@ -31,6 +29,11 @@ import {
   type ProviderPatch,
   type ProviderRow,
 } from '@polyrouter/shared/server';
+import {
+  loadPriceContext,
+  toEffectivePrice,
+  type EffectivePrice,
+} from '../pricing/model-price-context';
 import {
   MAX_MODEL_ID_LEN,
   ProviderError,
@@ -96,24 +99,10 @@ export interface SafeProvider {
   createdAt: Date;
 }
 
-/** The provenance of an `EffectivePrice` — the billing-resolver sources plus the
- * display-only `listed` estimate (add-provider-price-sync-and-edit). */
-export type EffectivePriceSource =
-  'model' | 'local' | 'bundled' | 'refresh' | 'manual' | 'native_family' | 'listed';
-
-/** A model's current effective price for display (add-provider-price-sync-and-edit).
- * Resolved read-time through the SAME pure resolver the recorded-cost path uses
- * (record-listed-price-fallback): catalog → native-family → the per-provider `listed`
- * estimate, whichever wins. `estimated` is true for the `native_family` and `listed`
- * fallbacks. Historical RequestLog cost is the immutable request-time snapshot and is
- * unaffected by later price changes (invariant 4). */
-export interface EffectivePrice {
-  inputPricePer1m: number;
-  outputPricePer1m: number;
-  isFree: boolean;
-  source: EffectivePriceSource;
-  estimated: boolean;
-}
+// Effective-price types + resolution live in `pricing/model-price-context` so this
+// projection and the proxy's `/v1/models` cannot report different prices for one
+// model (expand-models-listing). Re-exported here for existing importers.
+export type { EffectivePrice, EffectivePriceSource } from '../pricing/model-price-context';
 
 export interface SafeModel {
   id: string;
@@ -263,57 +252,6 @@ function listedColumnsFrom(
     listedOutputPricePer1m: pricing.outputPricePer1m,
     listedIsFree: pricing.isFree ?? false,
     listedPriceCapturedAt: now,
-  };
-}
-
-/** Resolve a model's effective DISPLAY price (add-provider-price-sync-and-edit): the pure
- * billing resolver first (model-own for custom/local → local-free → catalog), and ONLY when
- * that is unknown, the per-provider `listed` estimate (flagged `estimated`). Display only —
- * this never recomputes historical cost (invariant 4). The caller supplies the catalog row
- * it already resolved for the model's derived key. */
-function toEffectivePrice(
-  model: ModelRow,
-  providerKind: string,
-  catalogRow: ModelPriceRow | null,
-  nativeCatalogRow: ModelPriceRow | null = null,
-  /** BATCH mode (add-batch-mode-help): the sibling aggregator twin whose captured
-   * rate is the last-resort estimate. It lives on the TWIN's own row — not on this
-   * model's and not on the catalog row — so a resolution that omitted it would
-   * report null for exactly the provider whose batch rate is most often knowable. */
-  batch: { twin: ModelRow | null } | null = null,
-): EffectivePrice | null {
-  // The listed fallback now lives in the shared resolver (record-listed-price-
-  // fallback), so display + recorded cost resolve identically — this supplies the
-  // model's captured listed estimate and maps whatever source wins.
-  const snap = resolveModelPrice(
-    {
-      providerKind,
-      modelInputPricePer1m: model.inputPricePer1m,
-      modelOutputPricePer1m: model.outputPricePer1m,
-      modelIsFree: model.isFree,
-      listedInputPricePer1m: model.listedInputPricePer1m,
-      listedOutputPricePer1m: model.listedOutputPricePer1m,
-      listedIsFree: model.listedIsFree ?? false,
-    },
-    catalogRow,
-    nativeCatalogRow,
-    batch === null
-      ? undefined
-      : {
-          mode: 'batch',
-          listedBatchInputPricePer1m: batch.twin?.listedInputPricePer1m ?? null,
-          listedBatchOutputPricePer1m: batch.twin?.listedOutputPricePer1m ?? null,
-        },
-  );
-  if (snap === null) return null;
-  return {
-    inputPricePer1m: snap.inputPricePer1m,
-    outputPricePer1m: snap.outputPricePer1m,
-    isFree: snap.isFree,
-    source: snap.source,
-    // Both the native-family (adjacent channel) and listed (provider's own
-    // estimate) fallbacks are estimates, not authoritative catalog rates.
-    estimated: snap.source === 'native_family' || snap.source === 'listed',
   };
 }
 
@@ -697,32 +635,11 @@ export class ProvidersService {
     if (q.supportsVision !== undefined) {
       rows = rows.filter((r) => r.supportsVision === q.supportsVision);
     }
-    // Resolve each model's effective DISPLAY price. Need the owning provider (kind +
-    // base_url) and the catalog version in effect now. One providers read + ONE
-    // key-filtered catalog read (priceAtMany) — never per-model queries or a full scan.
-    const providers = await this.db.providers.list(principal);
-    const provById = new Map(providers.map((p) => [p.id, p]));
-    const keyByModel = new Map<string, string>();
-    const nativeKeyByModel = new Map<string, string>();
-    const keys = new Set<string>();
-    for (const r of rows) {
-      const prov = provById.get(r.providerId);
-      if (prov === undefined || prov.baseUrl === null) continue;
-      const key = deriveModelKey(prov.baseUrl, r.externalModelId);
-      if (key !== null) {
-        keyByModel.set(r.id, key);
-        keys.add(key);
-        // Native-family fallback keys ride the SAME batch (derived up front — no
-        // follow-up query per exact-key miss; add-native-price-fallback).
-        const nativeKey = deriveNativeFamilyKey(key.slice(0, key.indexOf(':')), r.externalModelId);
-        if (nativeKey !== null) {
-          nativeKeyByModel.set(r.id, nativeKey);
-          keys.add(nativeKey);
-        }
-      }
-    }
-    const catalog = await this.db.pricing.priceAtMany([...keys], new Date());
-    const catByKey = new Map(catalog.map((c) => [c.modelKey, c]));
+    // Resolve each model's effective DISPLAY price through the SHARED bulk context
+    // (expand-models-listing): one providers read + ONE key-filtered catalog read —
+    // never per-model queries or a full scan — and the same derivation the proxy's
+    // `/v1/models` uses, so the two surfaces cannot report different prices.
+    const ctx = await loadPriceContext(this.db, principal, rows);
     // Per-provider external-id index: a twin pairs ONLY with a base model on its
     // own provider (add-model-variant-detection).
     const idsByProvider = new Map<string, Set<string>>();
@@ -743,18 +660,16 @@ export class ProvidersService {
       if (base !== undefined) twinByBase.set(`${r.providerId}\u0000${base}`, r);
     }
     let safe = rows.map((r) => {
-      const kind = provById.get(r.providerId)?.kind ?? 'custom';
-      const key = keyByModel.get(r.id);
-      const nativeKey = nativeKeyByModel.get(r.id);
-      const catalogRow = key !== undefined ? (catByKey.get(key) ?? null) : null;
-      const nativeRow = nativeKey !== undefined ? (catByKey.get(nativeKey) ?? null) : null;
+      const kind = ctx.kindOf(r);
+      const catalogRow = ctx.catalogRowOf(r);
+      const nativeRow = ctx.nativeRowOf(r);
       return toSafeModel(
         r,
         toEffectivePrice(r, kind, catalogRow, nativeRow),
         baseIdFor(r, idsByProvider.get(r.providerId) ?? new Set()),
-        // The providers read above already happened for the display price, so this
-        // adds no query — the projection stays bounded (invariant 9).
-        batchCapableFor(r, provById.get(r.providerId), twinByBase),
+        // The providers read inside the context already happened for the display
+        // price, so this adds no query — the projection stays bounded (invariant 9).
+        batchCapableFor(r, ctx.providerOf(r), twinByBase),
         // Batch mode over the SAME catalog rows (the batch pair lives on the row
         // already fetched), plus the sibling twin's captured rate as the last resort.
         toEffectivePrice(r, kind, catalogRow, nativeRow, {

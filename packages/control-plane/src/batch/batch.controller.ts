@@ -3,17 +3,19 @@ import type { Request, Response } from 'express';
 import type { Principal } from '@polyrouter/shared/server';
 import { AgentApiKeyGuard } from '../auth/agent-key.guard';
 import { CurrentPrincipal } from '../auth/principal.decorator';
-import { serviceUnavailable, type ClientProtocol } from '../proxy/proxy-errors';
+import {
+  serviceUnavailable,
+  stampClientProtocol,
+  type ClientProtocol,
+} from '../proxy/proxy-errors';
 import { StreamDrainRegistry } from '../proxy/stream-drain.registry';
 import { batchError, protocolForEndpoint } from './batch-errors';
 import { BatchService } from './batch.service';
 
-type BatchRequest = Request & { agentId?: string; batchProtocol?: ClientProtocol };
+type BatchRequest = Request & { agentId?: string };
 
 const agentOf = (req: Request): string | null => (req as BatchRequest).agentId ?? null;
-const stamp = (req: Request, protocol: ClientProtocol): void => {
-  (req as BatchRequest).batchProtocol = protocol;
-};
+const stamp = (req: Request, protocol: ClientProtocol): void => stampClientProtocol(req, protocol);
 
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;

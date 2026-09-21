@@ -15,6 +15,11 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.20.0] — 2026-09-21
+
+[Release](https://github.com/izzoa/polyrouter/releases/tag/v0.20.0) ·
+[Compare](https://github.com/izzoa/polyrouter/compare/v0.19.0...v0.20.0)
+
 ### Added
 
 - **`GET /v1/models` now describes what it advertises, and answers the Anthropic SDK in its own shape.** The listing returned ids and nothing else, so an agent could see *that* a model was routable but not its context window, its capabilities, or what it costs — figures the router already holds and already shows the dashboard. Real model ids now carry all of it, resolved through the same shared resolver the dashboard and the cost path use and marked when the figure is an estimate; `auto` and tier keys deliberately carry none, because a virtual id names a *set* of models and any single window or price for one is a fiction a client would truncate against. Unknown values are absent rather than null. Every entry also gains the `created` field the OpenAI schema requires. Because `anthropic.models.list()` hits the same URL as the OpenAI SDK, the envelope is now chosen by the `anthropic-version` header — never by the credential header, which either SDK may send; a caller without that header gets the OpenAI shape byte-for-byte as before. A new `GET /v1/models/{id}` serves every id the listing advertises, including ids containing `:` and `/` in either spelling, and 404s anything the listing hides.
@@ -990,7 +995,8 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.20.0
 [0.19.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.19.0
 [0.18.2]: https://github.com/izzoa/polyrouter/releases/tag/v0.18.2
 [0.18.1]: https://github.com/izzoa/polyrouter/releases/tag/v0.18.1

@@ -275,6 +275,10 @@ describe('output-cap guardrails e2e', () => {
     await add(anthropic.id, 'ocap-claude');
     await add(anthropic.id, 'nocap-claude');
     await add(sub.id, 'ocap-sub8k');
+    // honest-model-capabilities fixtures.
+    for (const ext of ['ocap-blind', 'ocap-sees', 'ocap-blind2', 'ocap-notools', 'ocap-silent']) {
+      await add(openai.id, ext);
+    }
 
     // Catalog caps (exact keys; 'nocap-*' models deliberately have NO rows).
     const seedCap = async (modelKey: string, maxOutputTokens: number): Promise<void> => {
@@ -297,6 +301,26 @@ describe('output-cap guardrails e2e', () => {
     await seedCap('openai:ocap-cheapfail1', 1);
     await seedCap('openai:ocap-strong1', 1);
     await seedCap('openai:ocap-default', 200_000);
+
+    // Capability rows (honest-model-capabilities). `cap-silent` deliberately gets
+    // NO row, so the ladder answers unknown for it and it can never defer.
+    const seedCaps = async (
+      modelKey: string,
+      flags: { supportsVision?: boolean; supportsTools?: boolean },
+    ): Promise<void> => {
+      await port.pricing.insertVersion({
+        modelKey,
+        inputPricePer1m: 1,
+        outputPricePer1m: 2,
+        ...flags,
+        source: 'manual',
+        validFrom: new Date('2026-01-01T00:00:00Z'),
+      });
+    };
+    await seedCaps('openai:ocap-blind', { supportsVision: false });
+    await seedCaps('openai:ocap-blind2', { supportsVision: false });
+    await seedCaps('openai:ocap-sees', { supportsVision: true });
+    await seedCaps('openai:ocap-notools', { supportsTools: false, supportsVision: true });
 
     await port.ensureDefaultTier(principal);
     const tiers = new Map((await port.tiers.list(principal)).map((t) => [t.key, t.id]));
@@ -325,6 +349,12 @@ describe('output-cap guardrails e2e', () => {
     await setTier('casc-cheap', ['ocap-cheap1']);
     await setTier('casc-cheapfail', ['ocap-cheapfail1']);
     await setTier('casc-strong', ['ocap-strong1']);
+    // honest-model-capabilities tiers: blind-first in every case, so a reorder is
+    // the only way the capable member can serve.
+    await setTier('cap-t', ['ocap-blind', 'ocap-sees']);
+    await setTier('cap-allshort', ['ocap-blind', 'ocap-blind2']);
+    await setTier('cap-unknown', ['ocap-silent', 'ocap-sees']);
+    await setTier('cap-tools', ['ocap-notools', 'ocap-sees']);
     await setBand('auto_high', 'casc-strong');
     await setBand('auto_low', 'casc-cheap');
 
@@ -371,6 +401,76 @@ describe('output-cap guardrails e2e', () => {
   const msg = { messages: [{ role: 'user', content: 'hello' }] };
 
   // --- 5.1: deferral, clamp order, fence, unknown, no-ask, Anthropic default ---
+
+  // --- honest-model-capabilities: capability deliverability ---
+
+  /** A request carrying an image content block — the structural vision demand. */
+  const visionMsg = {
+    messages: [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'what is this' },
+          { type: 'image_url', image_url: { url: 'https://example.test/a.png' } },
+        ],
+      },
+    ],
+  };
+
+  it('defers a model the catalog says cannot see, and the capable one serves', async () => {
+    const res = await chat({ model: 'cap-t', ...visionMsg });
+    expect(res.status).toBe(200);
+    // cap-blind is configured FIRST; only the capability plan moves it.
+    expect(dispatched.map((d) => d.model)).toEqual(['ocap-sees']);
+    const row = await lastLog();
+    expect(row.status).toBe('success'); // a deferral is not a failure
+    expect(row.routingReason).toContain('capability_deferred ocap-blind(vision)');
+    expect(row.routingReason).not.toContain('fell back'); // the trail stays empty
+  });
+
+  it('routes a text-only request byte-identically — no demand, no reorder', async () => {
+    const res = await chat({ model: 'cap-t', ...msg });
+    expect(res.status).toBe(200);
+    expect(dispatched.map((d) => d.model)).toEqual(['ocap-blind']); // configured order
+    expect((await lastLog()).routingReason).not.toContain('capability_deferred');
+  });
+
+  it('leaves an UNKNOWN model in place — silence is not a denial', async () => {
+    const res = await chat({ model: 'cap-unknown', ...visionMsg });
+    expect(res.status).toBe(200);
+    // cap-silent has no catalog row at all, so it keeps its configured position.
+    expect(dispatched.map((d) => d.model)).toEqual(['ocap-silent']);
+    expect((await lastLog()).routingReason).not.toContain('capability_deferred');
+  });
+
+  it('still dispatches an all-short chain, in configured order', async () => {
+    const res = await chat({ model: 'cap-allshort', ...visionMsg });
+    expect(res.status).toBe(200);
+    // Capability never refuses a request before dispatch and never shortens a
+    // chain: the leading group is simply empty (invariant 1).
+    expect(dispatched.map((d) => d.model)).toEqual(['ocap-blind']);
+    expect((await lastLog()).routingReason).not.toContain('capability_deferred');
+  });
+
+  it('demands tools independently of vision', async () => {
+    const res = await chat({
+      model: 'cap-tools',
+      ...msg,
+      tools: [{ type: 'function', function: { name: 'f', parameters: { type: 'object' } } }],
+    });
+    expect(res.status).toBe(200);
+    expect(dispatched.map((d) => d.model)).toEqual(['ocap-sees']);
+    expect((await lastLog()).routingReason).toContain('capability_deferred ocap-notools(tools)');
+  });
+
+  it('client-named fence: a named model is dispatched unchanged, capability notwithstanding', async () => {
+    const res = await chat({ model: `${openaiProviderId}:ocap-blind`, ...visionMsg });
+    expect(res.status).toBe(200);
+    // The client named the model; provider parity governs, so no reorder and no
+    // reason — there is no router choice to explain.
+    expect(dispatched.map((d) => d.model)).toEqual(['ocap-blind']);
+    expect((await lastLog()).routingReason).not.toContain('capability_deferred');
+  });
 
   it('defers the insufficient member: the capable one serves verbatim, success, reason-only', async () => {
     const res = await chat({ model: 'defer-t', max_completion_tokens: 100_000, ...msg });

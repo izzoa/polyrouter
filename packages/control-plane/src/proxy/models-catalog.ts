@@ -7,6 +7,7 @@
  * agreement, and computing them per envelope would let the two drift.
  */
 import { AUTO_ALIAS, isNonRoutableVariant } from '@polyrouter/shared/server';
+import type { EffectiveCapabilities } from '../pricing/model-price-context';
 
 /**
  * The router does not track model creation dates, so `created` is FIXED and
@@ -38,12 +39,12 @@ export interface CatalogModel {
   providerId: string;
   externalModelId: string;
   displayName: string | null;
-  contextWindow: number | null;
-  supportsTools: boolean;
-  supportsVision: boolean;
-  supportsReasoning: boolean;
   variant: string | null;
   effectivePrice: CatalogPrice | null;
+  /** Resolved by the SHARED capability ladder (honest-model-capabilities), not
+   * read from the model row — the row never carried capability truth, and the
+   * columns that looked as though they did had no writer at all. */
+  capabilities: EffectiveCapabilities;
 }
 
 /**
@@ -61,9 +62,16 @@ export interface CatalogEntry {
   id: string;
   displayName: string;
   contextWindow?: number;
+  /** Tri-state: `true`, `false`, or ABSENT = unknown. A rendered `false` asserts
+   * the model is known to lack the capability, which is a different and stronger
+   * claim than having no information — and a client reading it will route around
+   * a model that may well be capable. */
   supportsTools?: boolean;
   supportsVision?: boolean;
   supportsReasoning?: boolean;
+  /** Set only when some capability value resolved BELOW the exact catalog key
+   * (the aggregator native-family row, or the provider's own captured claim). */
+  capabilitiesEstimated?: boolean;
   price?: CatalogPrice;
 }
 
@@ -73,14 +81,19 @@ function virtualEntry(id: string): CatalogEntry {
 }
 
 function modelEntry(id: string, m: CatalogModel): CatalogEntry {
+  const c = m.capabilities;
   return {
     id,
     displayName: m.displayName ?? id,
-    // Absent, never null — see CatalogEntry.
-    ...(m.contextWindow !== null ? { contextWindow: m.contextWindow } : {}),
-    supportsTools: m.supportsTools,
-    supportsVision: m.supportsVision,
-    supportsReasoning: m.supportsReasoning,
+    // Absent, never null — and for the capability flags, absent rather than
+    // `false`: the resolver already omits what no tier of the ladder stated.
+    ...(c.contextWindow !== undefined ? { contextWindow: c.contextWindow } : {}),
+    ...(c.supportsTools !== undefined ? { supportsTools: c.supportsTools } : {}),
+    ...(c.supportsVision !== undefined ? { supportsVision: c.supportsVision } : {}),
+    ...(c.supportsReasoning !== undefined ? { supportsReasoning: c.supportsReasoning } : {}),
+    // `estimated` is true only when a value actually resolved from a lower tier,
+    // so this never marks an entry that describes nothing.
+    ...(c.estimated ? { capabilitiesEstimated: true } : {}),
     ...(m.effectivePrice !== null ? { price: m.effectivePrice } : {}),
   };
 }
@@ -120,6 +133,11 @@ function metadata(e: CatalogEntry): Record<string, unknown> {
     ...(e.supportsTools !== undefined ? { supports_tools: e.supportsTools } : {}),
     ...(e.supportsVision !== undefined ? { supports_vision: e.supportsVision } : {}),
     ...(e.supportsReasoning !== undefined ? { supports_reasoning: e.supportsReasoning } : {}),
+    // Flat booleans stay flat and the marker rides beside them: the consumers of
+    // this envelope are OpenAI- and Anthropic-SDK clients that read flat fields,
+    // so nesting the flags to hang one shared marker off the group would move a
+    // released field for symmetry no client benefits from.
+    ...(e.capabilitiesEstimated === true ? { capabilities_estimated: true } : {}),
     ...(e.price !== undefined
       ? {
           pricing: {

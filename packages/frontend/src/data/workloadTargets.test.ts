@@ -34,7 +34,7 @@ function model(id: string, over: Partial<Model> = {}): Model {
     providerId: 'p1',
     externalModelId: `ext-${id}`,
     displayName: null,
-    contextWindow: null,
+    // contextWindow omitted: absent = unknown (honest-model-capabilities)
     supportsTools: false,
     supportsVision: false,
     supportsReasoning: false,
@@ -68,11 +68,34 @@ function input(over: Partial<WorkloadTargetsInput> = {}): WorkloadTargetsInput {
     ],
     tierEntries: {
       't-coding': [
-        { id: 'e1', tierId: 't-coding', modelId: 'm1', position: 0, mode: 'any' as const, model: null },
-        { id: 'e2', tierId: 't-coding', modelId: 'm2', position: 1, mode: 'any' as const, model: null },
+        {
+          id: 'e1',
+          tierId: 't-coding',
+          modelId: 'm1',
+          position: 0,
+          mode: 'any' as const,
+          model: null,
+        },
+        {
+          id: 'e2',
+          tierId: 't-coding',
+          modelId: 'm2',
+          position: 1,
+          mode: 'any' as const,
+          model: null,
+        },
       ],
       't-empty': [],
-      't-default': [{ id: 'e3', tierId: 't-default', modelId: 'm2', position: 0, mode: 'any' as const, model: null }],
+      't-default': [
+        {
+          id: 'e3',
+          tierId: 't-default',
+          modelId: 'm2',
+          position: 0,
+          mode: 'any' as const,
+          model: null,
+        },
+      ],
     },
     models: [model('m1', { displayName: 'Coder' }), model('m2')],
     providers: [{ id: 'p1', name: 'OpenAI' } as never],

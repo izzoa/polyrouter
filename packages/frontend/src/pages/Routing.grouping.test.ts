@@ -7,7 +7,7 @@ const model = (id: string, providerId: string, externalModelId: string): Model =
   providerId,
   externalModelId,
   displayName: null,
-  contextWindow: null,
+  // contextWindow omitted: absent = unknown (honest-model-capabilities)
   supportsTools: false,
   supportsVision: false,
   supportsReasoning: false,
@@ -50,7 +50,10 @@ describe('groupModelsByProvider — the add-model dropdown optgroups', () => {
       'anthropic/claude-sonnet-5',
       'x-ai/grok-4.5',
     ]);
-    expect(groups[0]!.models.map((m) => m.externalModelId)).toEqual(['gpt-5.4-mini', 'gpt-5.6-sol']);
+    expect(groups[0]!.models.map((m) => m.externalModelId)).toEqual([
+      'gpt-5.4-mini',
+      'gpt-5.6-sol',
+    ]);
   });
 
   it('a model whose provider is unknown lands in an "Other" group, never dropped', () => {

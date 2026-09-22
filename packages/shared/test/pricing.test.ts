@@ -235,6 +235,48 @@ describe('parseLiteLlmCatalog', () => {
       expect(row?.inputPricePer1m).toBe(1); // the row and its prices survive
     }
   });
+
+  // honest-model-capabilities: a capability flag is THREE-valued. Before this,
+  // the parser emitted a flag only on `=== true`, so an explicit `false` and an
+  // absent key were indistinguishable — and the coercion downstream turned both
+  // into a stored `false`, asserting a negative no source had stated.
+  const flagEntry = (flags: Record<string, unknown>) => ({
+    'flag-model': {
+      litellm_provider: 'openai',
+      mode: 'chat',
+      input_cost_per_token: 0.000001,
+      output_cost_per_token: 0.000002,
+      ...flags,
+    },
+  });
+  const flagOf = (flags: Record<string, unknown>) => parseLiteLlmCatalog(flagEntry(flags))[0];
+
+  it('distinguishes an asserted true, an asserted false, and silence', () => {
+    expect(flagOf({ supports_vision: true })).toMatchObject({ supportsVision: true });
+
+    const asserted = flagOf({ supports_vision: false });
+    expect(asserted).toHaveProperty('supportsVision', false); // the negative is CARRIED
+    expect(asserted?.inputPricePer1m).toBe(1);
+
+    const silent = flagOf({});
+    expect(silent).not.toHaveProperty('supportsVision'); // omitted → stored null (unknown)
+    expect(silent?.inputPricePer1m).toBe(1);
+  });
+
+  it('treats a non-boolean flag as silence, never as truthy', () => {
+    for (const bad of ['true', 1, 0, null, {}, []]) {
+      const row = flagOf({ supports_function_calling: bad });
+      expect(row).not.toHaveProperty('supportsTools');
+      expect(row?.inputPricePer1m).toBe(1); // a bad flag never costs the row
+    }
+  });
+
+  it('resolves each of the three flags independently', () => {
+    const row = flagOf({ supports_function_calling: true, supports_reasoning: false });
+    expect(row).toMatchObject({ supportsTools: true, supportsReasoning: false });
+    // Silence on vision is not inferred from the other two being stated.
+    expect(row).not.toHaveProperty('supportsVision');
+  });
 });
 
 describe('deriveNativeFamilyKey (add-native-price-fallback)', () => {
@@ -245,12 +287,18 @@ describe('deriveNativeFamilyKey (add-native-price-fallback)', () => {
     expect(deriveNativeFamilyKey('openrouter', 'x-ai/grok-4.5')).toBe('xai:grok-4.5');
     expect(deriveNativeFamilyKey('openrouter', 'google/gemini-3-pro')).toBe('gemini:gemini-3-pro');
     expect(deriveNativeFamilyKey('openrouter', 'moonshotai/kimi-k3')).toBe('moonshot:kimi-k3');
-    expect(deriveNativeFamilyKey('openrouter', 'mistralai/mistral-large')).toBe('mistral:mistral-large');
-    expect(deriveNativeFamilyKey('openrouter', 'deepseek/deepseek-chat')).toBe('deepseek:deepseek-chat');
+    expect(deriveNativeFamilyKey('openrouter', 'mistralai/mistral-large')).toBe(
+      'mistral:mistral-large',
+    );
+    expect(deriveNativeFamilyKey('openrouter', 'deepseek/deepseek-chat')).toBe(
+      'deepseek:deepseek-chat',
+    );
   });
 
   it('trims each segment independently (stray whitespace from provider lists)', () => {
-    expect(deriveNativeFamilyKey('openrouter', ' MiniMax / MiniMax-M3 ')).toBe('minimax:minimax-m3');
+    expect(deriveNativeFamilyKey('openrouter', ' MiniMax / MiniMax-M3 ')).toBe(
+      'minimax:minimax-m3',
+    );
     expect(deriveNativeFamilyKey('openrouter', '  / model')).toBeNull(); // empty vendor after trim
     expect(deriveNativeFamilyKey('openrouter', 'minimax /  ')).toBeNull(); // empty id after trim
   });
@@ -384,8 +432,12 @@ describe('resolveModelPrice — listed fallback (record-listed-price-fallback)',
   });
 
   it('a half listed price (one rate null) is skipped → null', () => {
-    expect(resolveModelPrice({ ...withListed, listedOutputPricePer1m: null }, null, null)).toBeNull();
-    expect(resolveModelPrice({ ...withListed, listedInputPricePer1m: null }, null, null)).toBeNull();
+    expect(
+      resolveModelPrice({ ...withListed, listedOutputPricePer1m: null }, null, null),
+    ).toBeNull();
+    expect(
+      resolveModelPrice({ ...withListed, listedInputPricePer1m: null }, null, null),
+    ).toBeNull();
   });
 
   it('carries listedIsFree for a zero-priced listed estimate', () => {
@@ -468,7 +520,10 @@ describe('batch-tier pricing (add-batch-inference)', () => {
       },
     });
     const byKey = new Map(rows.map((r) => [r.modelKey, r]));
-    expect(byKey.get('openai:gpt-4o')).toMatchObject({ batchInputPricePer1m: 1, batchOutputPricePer1m: 4 });
+    expect(byKey.get('openai:gpt-4o')).toMatchObject({
+      batchInputPricePer1m: 1,
+      batchOutputPricePer1m: 4,
+    });
     // A half pair is never used; the row's synchronous prices are still parsed.
     expect(byKey.get('openai:half')).toMatchObject({ inputPricePer1m: 1, outputPricePer1m: 2 });
     expect(byKey.get('openai:half')).not.toHaveProperty('batchInputPricePer1m');
@@ -477,13 +532,23 @@ describe('batch-tier pricing (add-batch-inference)', () => {
 
   it('sync mode is byte-identical to today, with mode stamped', () => {
     const s = resolveModelPrice(input, row({}), null);
-    expect(s).toMatchObject({ inputPricePer1m: 2.5, outputPricePer1m: 10, source: 'bundled', mode: 'sync' });
+    expect(s).toMatchObject({
+      inputPricePer1m: 2.5,
+      outputPricePer1m: 10,
+      source: 'bundled',
+      mode: 'sync',
+    });
   });
 
   it('batch mode resolves the exact row pair with the row provenance', () => {
-    const s = resolveModelPrice(input, row({ batchInputPricePer1m: 1.25, batchOutputPricePer1m: 5 }), null, {
-      mode: 'batch',
-    });
+    const s = resolveModelPrice(
+      input,
+      row({ batchInputPricePer1m: 1.25, batchOutputPricePer1m: 5 }),
+      null,
+      {
+        mode: 'batch',
+      },
+    );
     expect(s).toMatchObject({
       inputPricePer1m: 1.25,
       outputPricePer1m: 5,
@@ -494,9 +559,19 @@ describe('batch-tier pricing (add-batch-inference)', () => {
   });
 
   it('batch mode falls to the native-family pair, flagged native_family', () => {
-    const native = row({ id: 'n1', modelKey: 'openai:gpt-4o', batchInputPricePer1m: 1, batchOutputPricePer1m: 4 });
+    const native = row({
+      id: 'n1',
+      modelKey: 'openai:gpt-4o',
+      batchInputPricePer1m: 1,
+      batchOutputPricePer1m: 4,
+    });
     const s = resolveModelPrice(input, row({}), native, { mode: 'batch' });
-    expect(s).toMatchObject({ inputPricePer1m: 1, outputPricePer1m: 4, source: 'native_family', mode: 'batch' });
+    expect(s).toMatchObject({
+      inputPricePer1m: 1,
+      outputPricePer1m: 4,
+      source: 'native_family',
+      mode: 'batch',
+    });
   });
 
   it('batch mode uses the twin listed rate only when no catalog pair exists, as an estimate', () => {
@@ -505,20 +580,38 @@ describe('batch-tier pricing (add-batch-inference)', () => {
       listedBatchInputPricePer1m: 5,
       listedBatchOutputPricePer1m: 25,
     });
-    expect(s).toMatchObject({ inputPricePer1m: 5, outputPricePer1m: 25, source: 'listed', priceVersionId: null, mode: 'batch' });
-    // ...and never beats a catalog pair.
-    const beaten = resolveModelPrice(input, row({ batchInputPricePer1m: 1.25, batchOutputPricePer1m: 5 }), null, {
+    expect(s).toMatchObject({
+      inputPricePer1m: 5,
+      outputPricePer1m: 25,
+      source: 'listed',
+      priceVersionId: null,
       mode: 'batch',
-      listedBatchInputPricePer1m: 5,
-      listedBatchOutputPricePer1m: 25,
     });
+    // ...and never beats a catalog pair.
+    const beaten = resolveModelPrice(
+      input,
+      row({ batchInputPricePer1m: 1.25, batchOutputPricePer1m: 5 }),
+      null,
+      {
+        mode: 'batch',
+        listedBatchInputPricePer1m: 5,
+        listedBatchOutputPricePer1m: 25,
+      },
+    );
     expect(beaten).toMatchObject({ source: 'bundled', inputPricePer1m: 1.25 });
   });
 
   it('batch mode never substitutes a synchronous rate, a model-own price, or local-free', () => {
     expect(resolveModelPrice(input, row({}), null, { mode: 'batch' })).toBeNull();
-    const custom: PriceResolutionInput = { ...input, providerKind: 'custom', modelInputPricePer1m: 1, modelOutputPricePer1m: 2 };
+    const custom: PriceResolutionInput = {
+      ...input,
+      providerKind: 'custom',
+      modelInputPricePer1m: 1,
+      modelOutputPricePer1m: 2,
+    };
     expect(resolveModelPrice(custom, null, null, { mode: 'batch' })).toBeNull();
-    expect(resolveModelPrice({ ...input, providerKind: 'local' }, null, null, { mode: 'batch' })).toBeNull();
+    expect(
+      resolveModelPrice({ ...input, providerKind: 'local' }, null, null, { mode: 'batch' }),
+    ).toBeNull();
   });
 });

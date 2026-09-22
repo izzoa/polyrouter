@@ -17,7 +17,7 @@ const NOW = '2026-09-04T00:00:00.000Z';
 const mkModel = (over: Partial<ModelDto> & Pick<ModelDto, 'id' | 'externalModelId'>): ModelDto => ({
   providerId: 'p-or',
   displayName: null,
-  contextWindow: null,
+  // contextWindow omitted: absent = unknown (honest-model-capabilities)
   supportsTools: false,
   supportsVision: false,
   supportsReasoning: false,

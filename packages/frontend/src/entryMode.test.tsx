@@ -37,7 +37,7 @@ const model = (id: string, over: Partial<ModelDto> = {}): ModelDto => ({
   providerId: 'p1',
   externalModelId: id,
   displayName: null,
-  contextWindow: null,
+  // contextWindow omitted: absent = unknown (honest-model-capabilities)
   supportsTools: false,
   supportsVision: false,
   supportsReasoning: false,

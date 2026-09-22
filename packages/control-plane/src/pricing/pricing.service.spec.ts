@@ -47,9 +47,12 @@ function makeStore() {
         maxOutputTokens: entry.maxOutputTokens ?? null,
         batchInputPricePer1m: entry.batchInputPricePer1m ?? null,
         batchOutputPricePer1m: entry.batchOutputPricePer1m ?? null,
-        supportsTools: entry.supportsTools ?? false,
-        supportsVision: entry.supportsVision ?? false,
-        supportsReasoning: entry.supportsReasoning ?? false,
+        // Mirrors the real port's tri-state write (honest-model-capabilities): a
+        // fake that coerced to false would make the null-aware change detection
+        // look correct here while the column stored a lie in production.
+        supportsTools: entry.supportsTools ?? null,
+        supportsVision: entry.supportsVision ?? null,
+        supportsReasoning: entry.supportsReasoning ?? null,
         isFree: entry.isFree ?? false,
         source: entry.source,
         validFrom: entry.validFrom,
@@ -196,9 +199,7 @@ describe('PricingService — refresh appends only on change', () => {
     const added = await svc.refresh({ source: 'litellm' }, day(2));
     expect(added).toBe(1);
     expect(await svc.priceAt('openai:new-model', AT)).toBeNull(); // AT is before the refresh
-    expect((await svc.priceAt('openai:new-model', day(3)))?.inputPricePer1m).toBe(
-      1,
-    );
+    expect((await svc.priceAt('openai:new-model', day(3)))?.inputPricePer1m).toBe(1);
   });
 });
 
@@ -221,9 +222,7 @@ describe('PricingService — output caps (add-output-cap-guardrails)', () => {
       day(4),
     );
     expect(capOnly).toBe(1);
-    expect((await svc.priceAt('openai:cap-model', day(5)))?.maxOutputTokens).toBe(
-      16384,
-    );
+    expect((await svc.priceAt('openai:cap-model', day(5)))?.maxOutputTokens).toBe(16384);
     expect((await svc.priceAt('openai:cap-model', day(3)))?.maxOutputTokens).toBe(
       8192, // history intact
     );
@@ -281,9 +280,165 @@ describe('PricingService — output caps (add-output-cap-guardrails)', () => {
       { inputPricePer1m: 1, outputPricePer1m: 2, maxOutputTokens: 4096 },
       day(2),
     );
-    expect((await svc.priceAt('openai:cap-rt', day(3)))?.maxOutputTokens).toBe(
-      4096,
+    expect((await svc.priceAt('openai:cap-rt', day(3)))?.maxOutputTokens).toBe(4096);
+  });
+});
+
+describe('bundled snapshot — the tri-state re-derive (honest-model-capabilities)', () => {
+  it('derives null capability flags for entries LiteLLM does not annotate', () => {
+    const byKey = new Map(BUNDLED_PRICES.map((p) => [p.modelKey, p]));
+    // gpt-4o is annotated for tools and vision, but LiteLLM states nothing about
+    // its reasoning support — that must be UNKNOWN, not a stored false.
+    const gpt4o = byKey.get('openai:gpt-4o');
+    expect(gpt4o).toMatchObject({ supportsTools: true, supportsVision: true });
+    expect(gpt4o).not.toHaveProperty('supportsReasoning');
+
+    // Across the whole snapshot, at least one flag is genuinely unstated —
+    // otherwise this guard would pass vacuously on a fully-annotated snapshot.
+    const unstated = BUNDLED_PRICES.filter(
+      (p) =>
+        p.supportsTools === undefined ||
+        p.supportsVision === undefined ||
+        p.supportsReasoning === undefined,
     );
+    expect(unstated.length).toBeGreaterThan(0);
+  });
+
+  it('reaches an instance that already seeded the PRIOR snapshot', async () => {
+    const { port, facilities } = makeStore();
+    const svc = new PricingService(port, facilities, runtime, noFetch);
+    const priorVersion = new Date('2026-09-05T00:00:00.000Z');
+
+    // An instance already carrying the prior snapshot's coerced `false`.
+    await svc.refresh(
+      {
+        source: 'body',
+        entries: [{ modelKey: 'openai:gpt-4o', inputPricePer1m: 2.5, outputPricePer1m: 10 }],
+      },
+      priorVersion,
+    );
+    expect((await svc.priceAt('openai:gpt-4o', priorVersion))?.supportsTools).toBeNull();
+
+    // Boot seeding at the BUMPED version supersedes it with the honest derive.
+    expect(await svc.seed()).toBeGreaterThan(0);
+    const current = await svc.priceAt('openai:gpt-4o', new Date('2027-01-01T00:00:00.000Z'));
+    expect(current?.supportsTools).toBe(true); // LiteLLM annotates gpt-4o
+    expect(current?.supportsReasoning).toBeNull(); // …and says nothing about reasoning
+
+    // The superseded row stays queryable at its own valid_from (invariant 4).
+    expect((await svc.priceAt('openai:gpt-4o', priorVersion))?.supportsTools).toBeNull();
+  });
+
+  it('appends nothing when the content changes but the version does not', async () => {
+    const { port, facilities } = makeStore();
+    const svc = new PricingService(port, facilities, runtime, noFetch);
+    await svc.seed();
+    // A re-derive landing at the SAME validFrom is discarded by the monotonicity
+    // rule — which is why the bump is the mechanism, not the bookkeeping.
+    expect(
+      await svc.refresh(
+        {
+          source: 'body',
+          entries: [
+            {
+              modelKey: 'openai:gpt-4o',
+              inputPricePer1m: 2.5,
+              outputPricePer1m: 10,
+              supportsReasoning: true,
+            },
+          ],
+        },
+        BUNDLED_CATALOG_VERSION,
+      ),
+    ).toBe(0);
+    const still = await svc.priceAt('openai:gpt-4o', new Date('2027-01-01T00:00:00.000Z'));
+    expect(still?.supportsReasoning).toBeNull(); // the stale value survives
+  });
+
+  it('carries a version later than the one it must supersede', () => {
+    // Without this bump `applyVersions` skips every corrected row on an instance
+    // that already seeded the prior snapshot (monotonicity: `validFrom <= latest`
+    // is a no-op), so the honest nulls would reach a fresh database and NO other.
+    // The snapshot's JSON is unchanged by this work, so nothing else signals it.
+    const supersedes = new Date('2026-09-05T00:00:00.000Z'); // add-batch-inference
+    expect(BUNDLED_CATALOG_VERSION.getTime()).toBeGreaterThan(supersedes.getTime());
+  });
+});
+
+describe('PricingService — tri-state capability flags (honest-model-capabilities)', () => {
+  const base = {
+    modelKey: 'openai:flag-model',
+    inputPricePer1m: 1,
+    outputPricePer1m: 2,
+  };
+
+  it('stores an unstated flag as null, distinguishable from an asserted false', async () => {
+    const { port, facilities } = makeStore();
+    const svc = new PricingService(port, facilities, runtime, noFetch);
+    await svc.refresh({ source: 'body', entries: [base] }, day(2));
+    expect((await svc.priceAt('openai:flag-model', day(3)))?.supportsTools).toBeNull();
+
+    await svc.refresh(
+      { source: 'body', entries: [{ ...base, modelKey: 'openai:stated', supportsTools: false }] },
+      day(2),
+    );
+    expect((await svc.priceAt('openai:stated', day(3)))?.supportsTools).toBe(false);
+  });
+
+  it('appends a version across the unknown boundary in BOTH directions', async () => {
+    const { port, facilities } = makeStore();
+    const svc = new PricingService(port, facilities, runtime, noFetch);
+    // unknown (flag omitted)
+    await svc.refresh({ source: 'body', entries: [base] }, day(2));
+    // identical → no-op, so the comparison is not merely "everything differs"
+    expect(await svc.refresh({ source: 'body', entries: [base] }, day(3))).toBe(0);
+
+    // unknown → false: a REAL change, not a no-op. A `?? false` comparison would
+    // read both sides as false here and swallow it.
+    expect(
+      await svc.refresh({ source: 'body', entries: [{ ...base, supportsTools: false }] }, day(4)),
+    ).toBe(1);
+    expect((await svc.priceAt('openai:flag-model', day(5)))?.supportsTools).toBe(false);
+
+    // false → unknown: the same boundary crossed the other way.
+    expect(await svc.refresh({ source: 'body', entries: [base] }, day(6))).toBe(1);
+    expect((await svc.priceAt('openai:flag-model', day(7)))?.supportsTools).toBeNull();
+
+    // History is intact at every step (invariant 4).
+    expect((await svc.priceAt('openai:flag-model', day(3)))?.supportsTools).toBeNull();
+    expect((await svc.priceAt('openai:flag-model', day(5)))?.supportsTools).toBe(false);
+  });
+
+  it('an override round-trips an ASSERTED negative, distinct from an omitted flag', async () => {
+    const { port, facilities } = makeStore();
+    const svc = new PricingService(port, facilities, runtime, noFetch);
+    // A trusted source asserting "this model cannot call tools" is real
+    // information — an operator correcting a wrong catalog row — and must survive
+    // the write as `false`, not be flattened into the unknown it is not.
+    await svc.override(
+      'openai:asserted',
+      { inputPricePer1m: 1, outputPricePer1m: 2, supportsTools: false },
+      day(2),
+    );
+    expect((await svc.priceAt('openai:asserted', day(3)))?.supportsTools).toBe(false);
+
+    // The same override omitting the flag stores unknown instead.
+    await svc.override('openai:omitted', { inputPricePer1m: 1, outputPricePer1m: 2 }, day(2));
+    expect((await svc.priceAt('openai:omitted', day(3)))?.supportsTools).toBeNull();
+  });
+
+  it('a flag-only change appends a version like any other flag change', async () => {
+    const { port, facilities } = makeStore();
+    const svc = new PricingService(port, facilities, runtime, noFetch);
+    const stated = { ...base, supportsVision: false };
+    await svc.refresh({ source: 'body', entries: [stated] }, day(2));
+    expect(await svc.refresh({ source: 'body', entries: [stated] }, day(3))).toBe(0);
+    // SAME prices, flipped flag → appends
+    expect(
+      await svc.refresh({ source: 'body', entries: [{ ...stated, supportsVision: true }] }, day(4)),
+    ).toBe(1);
+    expect((await svc.priceAt('openai:flag-model', day(5)))?.supportsVision).toBe(true);
+    expect((await svc.priceAt('openai:flag-model', day(3)))?.supportsVision).toBe(false);
   });
 });
 
@@ -303,7 +458,10 @@ describe('PricingService — batch-tier pair (add-batch-inference)', () => {
     // SAME sync prices, different batch pair → appends; history intact.
     expect(
       await svc.refresh(
-        { source: 'body', entries: [{ ...base, batchInputPricePer1m: 0.9, batchOutputPricePer1m: 3.6 }] },
+        {
+          source: 'body',
+          entries: [{ ...base, batchInputPricePer1m: 0.9, batchOutputPricePer1m: 3.6 }],
+        },
         day(4),
       ),
     ).toBe(1);
@@ -315,12 +473,21 @@ describe('PricingService — batch-tier pair (add-batch-inference)', () => {
     const { port, facilities } = makeStore();
     const svc = new PricingService(port, facilities, runtime, noFetch);
     await expect(
-      svc.override('x:y', { inputPricePer1m: 1, outputPricePer1m: 1, batchInputPricePer1m: 0.5 }, new Date()),
+      svc.override(
+        'x:y',
+        { inputPricePer1m: 1, outputPricePer1m: 1, batchInputPricePer1m: 0.5 },
+        new Date(),
+      ),
     ).rejects.toBeInstanceOf(UnprocessableEntityException);
     await expect(
       svc.override(
         'x:y',
-        { inputPricePer1m: 1, outputPricePer1m: 1, batchInputPricePer1m: -1, batchOutputPricePer1m: 1 },
+        {
+          inputPricePer1m: 1,
+          outputPricePer1m: 1,
+          batchInputPricePer1m: -1,
+          batchOutputPricePer1m: 1,
+        },
         new Date(),
       ),
     ).rejects.toBeInstanceOf(UnprocessableEntityException);
@@ -328,7 +495,9 @@ describe('PricingService — batch-tier pair (add-batch-inference)', () => {
       svc.refresh(
         {
           source: 'body',
-          entries: [{ modelKey: 'x:y', inputPricePer1m: 1, outputPricePer1m: 1, batchOutputPricePer1m: 2 }],
+          entries: [
+            { modelKey: 'x:y', inputPricePer1m: 1, outputPricePer1m: 1, batchOutputPricePer1m: 2 },
+          ],
         },
         new Date(),
       ),
@@ -354,10 +523,17 @@ describe('PricingService — batch-tier pair (add-batch-inference)', () => {
     expect(row?.batchInputPricePer1m).toBeNull();
     await svc.override(
       'anthropic:claude-opus-5',
-      { inputPricePer1m: 15, outputPricePer1m: 75, batchInputPricePer1m: 7.5, batchOutputPricePer1m: 37.5 },
+      {
+        inputPricePer1m: 15,
+        outputPricePer1m: 75,
+        batchInputPricePer1m: 7.5,
+        batchOutputPricePer1m: 37.5,
+      },
       day(2),
     );
-    expect((await svc.priceAt('anthropic:claude-opus-5', day(3)))?.batchOutputPricePer1m).toBe(37.5);
+    expect((await svc.priceAt('anthropic:claude-opus-5', day(3)))?.batchOutputPricePer1m).toBe(
+      37.5,
+    );
   });
 });
 

@@ -93,6 +93,98 @@ export function toEffectivePrice(
   };
 }
 
+/** A model's resolved capability description (honest-model-capabilities). Every
+ * field is OPTIONAL and an absent field means **unknown** — no tier of the ladder
+ * stated it. A `false` is an assertion ("this model cannot"), which is a stronger
+ * and different claim than silence; conflating the two is what made `/v1/models`
+ * advertise `supports_tools: false` for every model in existence. */
+export interface EffectiveCapabilities {
+  supportsTools?: boolean;
+  supportsVision?: boolean;
+  supportsReasoning?: boolean;
+  contextWindow?: number;
+  /** True when ANY resolved value came from below the exact catalog key — the
+   * aggregator native-family row or the provider's own captured claim. Coarse by
+   * design: per-field provenance would force a nested wire shape, and a caller
+   * needing certainty per flag is better served by the dashboard. */
+  estimated: boolean;
+}
+
+/** The per-provider capability claim captured at model sync (`listed_*` columns,
+ * see provider-management). Display-grade evidence: the provider's own statement
+ * about its own catalog, never a catalog value and never routing evidence. */
+export interface ListedCapabilityClaim {
+  supportsTools?: boolean | null;
+  supportsVision?: boolean | null;
+  supportsReasoning?: boolean | null;
+  contextWindow?: number | null;
+}
+
+/** Resolve ONE field down the ladder. Null and undefined are both "this tier did
+ * not say"; only an explicit value stops the descent, so an exact-key row that
+ * states tools but is silent on vision still lets the native row answer vision. */
+function pickTier<T>(
+  exact: T | null | undefined,
+  native: T | null | undefined,
+  listed: T | null | undefined,
+): { value: T | undefined; estimated: boolean } {
+  if (exact !== null && exact !== undefined) return { value: exact, estimated: false };
+  if (native !== null && native !== undefined) return { value: native, estimated: true };
+  if (listed !== null && listed !== undefined) return { value: listed, estimated: true };
+  return { value: undefined, estimated: false };
+}
+
+/**
+ * Resolve a model's effective DISPLAY capabilities: exact catalog key → aggregator
+ * native-family key → the per-provider listed claim, **per field**.
+ *
+ * Deliberately a LOOSER ladder than the one output caps admit (exact key only).
+ * A cap and a price are properties of the CHANNEL — an aggregator marks the price
+ * up and may cap output lower, and an overstated cap silently truncates a caller's
+ * response. Tool/vision/reasoning support is a property of the MODEL, which an
+ * aggregator reselling it serves as the same weights, so the adjacent-channel row
+ * is a sound description.
+ *
+ * It is NOT sound as routing evidence, and this resolution is never used as such:
+ * `fallback-routing` admits the exact key alone, because demoting a member below
+ * the order its owner configured on an inference that might be wrong trades a
+ * certain harm for a speculative one.
+ */
+export function toEffectiveCapabilities(
+  catalogRow: ModelPriceRow | null,
+  nativeCatalogRow: ModelPriceRow | null = null,
+  listed: ListedCapabilityClaim | null = null,
+): EffectiveCapabilities {
+  const tools = pickTier(
+    catalogRow?.supportsTools,
+    nativeCatalogRow?.supportsTools,
+    listed?.supportsTools,
+  );
+  const vision = pickTier(
+    catalogRow?.supportsVision,
+    nativeCatalogRow?.supportsVision,
+    listed?.supportsVision,
+  );
+  const reasoning = pickTier(
+    catalogRow?.supportsReasoning,
+    nativeCatalogRow?.supportsReasoning,
+    listed?.supportsReasoning,
+  );
+  const contextWindow = pickTier(
+    catalogRow?.contextWindow,
+    nativeCatalogRow?.contextWindow,
+    listed?.contextWindow,
+  );
+  return {
+    ...(tools.value !== undefined ? { supportsTools: tools.value } : {}),
+    ...(vision.value !== undefined ? { supportsVision: vision.value } : {}),
+    ...(reasoning.value !== undefined ? { supportsReasoning: reasoning.value } : {}),
+    ...(contextWindow.value !== undefined ? { contextWindow: contextWindow.value } : {}),
+    estimated:
+      tools.estimated || vision.estimated || reasoning.estimated || contextWindow.estimated,
+  };
+}
+
 /** The per-model inputs `toEffectivePrice` needs, resolved in BULK: one providers
  * read + ONE key-filtered catalog read, never a query per model (invariant 9). */
 export interface PriceContext {

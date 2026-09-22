@@ -135,12 +135,22 @@ describe('provider management', () => {
     stub.close();
   });
 
+  /** Catalog keys the capability tests seed. `model_price` is GLOBAL and
+   * append-only (no owner, no delete through the port), so unlike providers it
+   * does not fall out with the tenant — it is cleared here explicitly, or the
+   * next run collides on `(model_key, valid_from)`. */
+  const TEST_CATALOG_KEYS = [
+    'openrouter:openai/cap-exact',
+    'anthropic:cap-native',
+    'openrouter:vendor/contested',
+  ];
+
   beforeEach(async () => {
     await pool.query('DELETE FROM provider WHERE owner_user_id = ANY($1)', [[alice, bob]]);
+    await pool.query('DELETE FROM model_price WHERE model_key = ANY($1)', [TEST_CATALOG_KEYS]);
     nextTest = () => ({ ok: true, models: 0 });
     nextModels = () => [];
   });
-
 
   /** Direct-construction helper for the in-process service tests: passthrough lock
    * facilities + a plain-unwrap oauth stub (no OAuth envelopes are minted here). */
@@ -361,9 +371,7 @@ describe('provider management', () => {
 
   it('a later priceless re-sync clears a stale estimate', async () => {
     const created = await asAlice().send({ ...OR, credential: 'k' });
-    nextModels = () => [
-      { id: 'x/model', pricing: { inputPricePer1m: 2, outputPricePer1m: 4 } },
-    ];
+    nextModels = () => [{ id: 'x/model', pricing: { inputPricePer1m: 2, outputPricePer1m: 4 } }];
     await request(server)
       .post(`/api/providers/${created.body.id}/sync-models`)
       .set('x-test-user', alice);
@@ -431,6 +439,146 @@ describe('provider management', () => {
     await request(server).delete(`/api/providers/${created.body.id}`).set('x-test-user', alice);
   });
 
+  it('resolves capability from the catalog, with provenance, scoped to the tenant', async () => {
+    const port = app.get<PersistencePort>(PERSISTENCE_PORT);
+    const at = new Date('2020-01-01T00:00:00.000Z');
+    // The EXACT channel key describes one model; only the NATIVE-FAMILY key
+    // describes the other, so the second must come back marked as an estimate.
+    await port.pricing.insertVersion({
+      modelKey: 'openrouter:openai/cap-exact',
+      inputPricePer1m: 1,
+      outputPricePer1m: 2,
+      contextWindow: 128_000,
+      supportsTools: true,
+      supportsVision: false, // an ASSERTED negative
+      source: 'manual',
+      validFrom: at,
+    });
+    await port.pricing.insertVersion({
+      modelKey: 'anthropic:cap-native',
+      inputPricePer1m: 3,
+      outputPricePer1m: 4,
+      supportsVision: true,
+      source: 'manual',
+      validFrom: at,
+    });
+
+    const created = await asAlice().send({ ...OR, credential: 'k' });
+    nextModels = () => [
+      { id: 'openai/cap-exact' },
+      { id: 'anthropic/cap-native' },
+      { id: 'nobody/knows-this' }, // no catalog row at any tier -> unknown
+    ];
+    await request(server)
+      .post(`/api/providers/${created.body.id}/sync-models`)
+      .set('x-test-user', alice);
+
+    const body = (await listModelsFor(alice)).body as Record<string, unknown>[];
+    const byExt = new Map(body.map((m) => [m.externalModelId as string, m]));
+
+    const exact = byExt.get('openai/cap-exact')!;
+    expect(exact).toMatchObject({ supportsTools: true, supportsVision: false });
+    expect(exact).not.toHaveProperty('supportsReasoning'); // the row is silent
+    expect(exact).not.toHaveProperty('capabilitiesEstimated');
+
+    const native = byExt.get('anthropic/cap-native')!;
+    expect(native).toMatchObject({ supportsVision: true, capabilitiesEstimated: true });
+
+    // No tier describes this one: unknown is ABSENT, never a rendered false.
+    const unknown = byExt.get('nobody/knows-this')!;
+    expect(unknown).not.toHaveProperty('supportsTools');
+    expect(unknown).not.toHaveProperty('supportsVision');
+
+    // Capability filters match the RESOLVED value and never match unknown.
+    const toolsYes = await request(server)
+      .get('/api/models?supportsTools=true')
+      .set('x-test-user', alice);
+    const yesIds = toolsYes.body.map((m: { externalModelId: string }) => m.externalModelId);
+    expect(yesIds).toEqual(['openai/cap-exact']);
+    const visionNo = await request(server)
+      .get('/api/models?supportsVision=false')
+      .set('x-test-user', alice);
+    const noIds = visionNo.body.map((m: { externalModelId: string }) => m.externalModelId);
+    expect(noIds).toEqual(['openai/cap-exact']);
+
+    // Tenant scoping is unaffected: the catalog is global, the models are not.
+    expect((await listModelsFor(bob)).body).toEqual([]);
+
+    await request(server).delete(`/api/providers/${created.body.id}`).set('x-test-user', alice);
+  });
+
+  it('captures a provider capability claim as the ladder LAST tier, never as catalog data', async () => {
+    const port = app.get<PersistencePort>(PERSISTENCE_PORT);
+    const before = (await port.pricing.listLatest(new Date())).length;
+
+    const created = await asAlice().send({ ...OR, credential: 'k' });
+    nextModels = () => [
+      {
+        id: 'vendor/claimed',
+        capabilities: { supportsVision: true, supportsTools: false, contextWindow: 65_536 },
+      },
+      { id: 'vendor/silent' },
+    ];
+    await request(server)
+      .post(`/api/providers/${created.body.id}/sync-models`)
+      .set('x-test-user', alice);
+
+    const byExt = new Map(
+      ((await listModelsFor(alice)).body as Record<string, unknown>[]).map((m) => [
+        m.externalModelId as string,
+        m,
+      ]),
+    );
+    const claimed = byExt.get('vendor/claimed')!;
+    // No catalog row exists for this id at any tier, so the claim is what answers —
+    // and because it sits below the exact key, it is ALWAYS marked an estimate.
+    expect(claimed).toMatchObject({
+      supportsVision: true,
+      supportsTools: false,
+      contextWindow: 65_536,
+      capabilitiesEstimated: true,
+    });
+    expect(claimed).not.toHaveProperty('supportsReasoning'); // the provider was silent
+
+    // A model the provider says nothing about stays unknown.
+    const silent = byExt.get('vendor/silent')!;
+    expect(silent).not.toHaveProperty('supportsVision');
+    expect(silent).not.toHaveProperty('capabilitiesEstimated');
+
+    // The claim NEVER reaches the global catalog — it is per-provider display data.
+    expect((await port.pricing.listLatest(new Date())).length).toBe(before);
+
+    await request(server).delete(`/api/providers/${created.body.id}`).set('x-test-user', alice);
+  });
+
+  it('never lets a provider claim override what the catalog states', async () => {
+    const port = app.get<PersistencePort>(PERSISTENCE_PORT);
+    await port.pricing.insertVersion({
+      modelKey: 'openrouter:vendor/contested',
+      inputPricePer1m: 1,
+      outputPricePer1m: 2,
+      supportsVision: false, // the catalog says NO
+      source: 'manual',
+      validFrom: new Date('2020-01-01T00:00:00.000Z'),
+    });
+    const created = await asAlice().send({ ...OR, credential: 'k' });
+    nextModels = () => [
+      { id: 'vendor/contested', capabilities: { supportsVision: true } }, // the provider says YES
+    ];
+    await request(server)
+      .post(`/api/providers/${created.body.id}/sync-models`)
+      .set('x-test-user', alice);
+
+    const m = ((await listModelsFor(alice)).body as Record<string, unknown>[]).find(
+      (x) => x.externalModelId === 'vendor/contested',
+    )!;
+    // The catalog wins, and nothing is marked estimated — the exact key answered.
+    expect(m.supportsVision).toBe(false);
+    expect(m).not.toHaveProperty('capabilitiesEstimated');
+
+    await request(server).delete(`/api/providers/${created.body.id}`).set('x-test-user', alice);
+  });
+
   it('an endpoint change during an in-flight sync does not persist the old endpoint estimate', async () => {
     const port = app.get<PersistencePort>(PERSISTENCE_PORT);
     const principal: Principal = userPrincipal(alice);
@@ -457,7 +605,15 @@ describe('provider management', () => {
           });
           // A `:batch` id so the CLASSIFICATION is exercised too: it would classify
           // on the original (aggregator) endpoint, and must not once it moved.
-          return [{ id: 'race/model:batch', pricing: { inputPricePer1m: 9, outputPricePer1m: 9 } }];
+          return [
+            {
+              id: 'race/model:batch',
+              pricing: { inputPricePer1m: 9, outputPricePer1m: 9 },
+              // A capability claim from the OLD endpoint must not attach to the
+              // new one either (honest-model-capabilities).
+              capabilities: { supportsVision: true, supportsTools: true },
+            },
+          ];
         },
       }) as unknown as ProviderAdapter) as unknown as ProviderAdapterFactory;
     const svc = mkSvc(port, racingFactory, { key: 'a'.repeat(64), mode: 'selfhosted' });
@@ -470,6 +626,10 @@ describe('provider management', () => {
     // The moved endpoint voids the classification exactly as it voids the price
     // (add-model-variant-detection): both were derived from the old family.
     expect(m?.variant ?? null).toBeNull();
+    // …and the capability claim, for the same reason: it is the OLD provider's
+    // statement about the OLD provider's models.
+    expect(m).not.toHaveProperty('supportsVision');
+    expect(m).not.toHaveProperty('supportsTools');
     await port.providers.remove(principal, provider.id);
   });
 

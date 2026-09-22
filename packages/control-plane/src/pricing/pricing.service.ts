@@ -65,9 +65,12 @@ function toInput(entry: BundledPrice, validFrom: Date, source: string): ModelPri
     maxOutputTokens: entry.maxOutputTokens ?? null,
     batchInputPricePer1m: entry.batchInputPricePer1m ?? null,
     batchOutputPricePer1m: entry.batchOutputPricePer1m ?? null,
-    supportsTools: entry.supportsTools ?? false,
-    supportsVision: entry.supportsVision ?? false,
-    supportsReasoning: entry.supportsReasoning ?? false,
+    // Tri-state (honest-model-capabilities): an omitting source writes NULL, not
+    // false. `?? false` here is what turned "LiteLLM said nothing" into "this model
+    // cannot call tools" for the whole unannotated tail of the catalog.
+    supportsTools: entry.supportsTools ?? null,
+    supportsVision: entry.supportsVision ?? null,
+    supportsReasoning: entry.supportsReasoning ?? null,
     isFree: entry.isFree ?? false,
     source,
     validFrom,
@@ -82,9 +85,12 @@ function unchanged(entry: BundledPrice, latest: ModelPriceRow): boolean {
     (entry.cacheWritePricePer1m ?? null) === latest.cacheWritePricePer1m &&
     (entry.contextWindow ?? null) === latest.contextWindow &&
     (entry.maxOutputTokens ?? null) === latest.maxOutputTokens &&
-    (entry.supportsTools ?? false) === latest.supportsTools &&
-    (entry.supportsVision ?? false) === latest.supportsVision &&
-    (entry.supportsReasoning ?? false) === latest.supportsReasoning &&
+    // Null-aware (honest-model-capabilities): coercing to false here would make
+    // unknown → false and false → unknown compare EQUAL and be skipped as no-ops —
+    // and those are precisely the transitions the tri-state exists to record.
+    (entry.supportsTools ?? null) === latest.supportsTools &&
+    (entry.supportsVision ?? null) === latest.supportsVision &&
+    (entry.supportsReasoning ?? null) === latest.supportsReasoning &&
     (entry.isFree ?? false) === latest.isFree &&
     // The batch pair participates like a cap (add-batch-inference): a changed
     // batch rate for a model whose sync prices are unchanged is a new version.

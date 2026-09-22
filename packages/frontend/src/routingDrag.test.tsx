@@ -31,7 +31,7 @@ function mkModel(id: string): ModelDto {
     providerId: 'p1',
     externalModelId: `ext-${id}`,
     displayName: null,
-    contextWindow: null,
+    // contextWindow omitted: absent = unknown (honest-model-capabilities)
     supportsTools: false,
     supportsVision: false,
     supportsReasoning: false,

@@ -260,6 +260,27 @@
       "when": 1789263635860,
       "tag": "0036_cuddly_proemial_gods",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1790053572569,
+      "tag": "0037_lame_valkyrie",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1790055650212,
+      "tag": "0038_sleepy_wildside",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1790055656157,
+      "tag": "0039_rapid_jocasta",
+      "breakpoints": true
     }
   ]
 }

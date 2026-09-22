@@ -291,10 +291,15 @@ export const models = pgTable(
       .references(() => providers.id, { onDelete: 'cascade' }),
     externalModelId: text('external_model_id').notNull(),
     displayName: text('display_name'),
-    contextWindow: integer('context_window'),
-    supportsTools: boolean('supports_tools').default(false).notNull(),
-    supportsVision: boolean('supports_vision').default(false).notNull(),
-    supportsReasoning: boolean('supports_reasoning').default(false).notNull(),
+    // NOTE (honest-model-capabilities): `context_window` and the three
+    // `supports_*` flags used to live HERE and were DROPPED. No sync, CRUD, or
+    // migration path ever wrote them, so every row held only the column default
+    // — and the two surfaces that read them (`/v1/models` and `api/models`)
+    // reported that default as though it were an answer, advertising every model
+    // in existence as incapable of tools, vision, and reasoning. Capability is
+    // the global catalog's (`model_price`), per the archived provider contracts;
+    // what a PROVIDER claims about its own models is captured below under the
+    // `listed_` prefix, which names it as a claim rather than a fact.
     inputPricePer1m: doublePrecision('input_price_per_1m'),
     outputPricePer1m: doublePrecision('output_price_per_1m'),
     isFree: boolean('is_free').default(false).notNull(),
@@ -312,6 +317,22 @@ export const models = pgTable(
     listedOutputPricePer1m: doublePrecision('listed_output_price_per_1m'),
     listedIsFree: boolean('listed_is_free'),
     listedPriceCapturedAt: timestamp('listed_price_captured_at', { withTimezone: true }),
+    listedSupportsTools: boolean('listed_supports_tools'),
+    listedSupportsVision: boolean('listed_supports_vision'),
+    listedSupportsReasoning: boolean('listed_supports_reasoning'),
+    listedContextWindow: integer('listed_context_window'),
+    listedCapabilitiesCapturedAt: timestamp('listed_capabilities_captured_at', {
+      withTimezone: true,
+    }),
+    // Provider-listed CAPABILITY claim (honest-model-capabilities) — what the
+    // provider's own `/models` response states about its own models, captured at
+    // sync under the same discipline as the `listed_*` prices above: per-provider,
+    // display-grade, rewritten on EVERY sync (set or cleared to null, so a later
+    // claimless response cannot leave a stale claim), and cleared when the
+    // provider's base_url/protocol moves. Each flag is independently three-valued
+    // — null means the provider did not say, never "it cannot". It is the LAST
+    // tier of the display ladder (exact catalog -> native family -> this), is
+    // always surfaced as an estimate, and is NEVER routing evidence.
     // DERIVED aggregator SKU variant (add-model-variant-detection): null = none.
     // Written for every admitted model on EVERY sync — set or cleared, and carried
     // in the upsert's ON CONFLICT set so a re-sync corrects it rather than freezing
@@ -435,9 +456,18 @@ export const modelPrices = pgTable(
     contextWindow: integer('context_window'),
     // Output cap (add-output-cap-guardrails): null = unknown, never 0.
     maxOutputTokens: integer('max_output_tokens'),
-    supportsTools: boolean('supports_tools').default(false).notNull(),
-    supportsVision: boolean('supports_vision').default(false).notNull(),
-    supportsReasoning: boolean('supports_reasoning').default(false).notNull(),
+    // Capability flags are TRI-STATE (honest-model-capabilities): true = the source
+    // asserts support, false = the source asserts its absence, null = UNKNOWN, no
+    // source has said. The same three-valued meaning `max_output_tokens` above
+    // already carries. A non-nullable flag cannot express the third state and so
+    // reports every unannotated model as *known to lack* the capability — an
+    // assertion no source ever made, which is exactly how `/v1/models` came to
+    // advertise `supports_tools: false` for every model in existence. Null is what
+    // an omitting source writes; it is never coerced to false between the parser
+    // and this column (the coercion used to live in `toInput`/`unchanged`).
+    supportsTools: boolean('supports_tools'),
+    supportsVision: boolean('supports_vision'),
+    supportsReasoning: boolean('supports_reasoning'),
     isFree: boolean('is_free').default(false).notNull(),
     // Asynchronous batch-tier rates (add-batch-inference): USD per 1M, present
     // TOGETHER or absent together (a half rate is never stored), null = batch

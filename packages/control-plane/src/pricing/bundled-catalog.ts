@@ -226,6 +226,16 @@ const LITELLM_SNAPSHOT: Record<string, unknown> = {
 // the `openai` family only — NO `anthropic`-family entry has one (only Bedrock/
 // Vertex variants do), so a direct Anthropic provider's batch rate stays unknown
 // (unknown-not-wrong; an operator override can supply it) until LiteLLM does.
-export const BUNDLED_CATALOG_VERSION = new Date('2026-09-05T00:00:00.000Z');
+//
+// 2026-09-21: tri-state capability flags (honest-model-capabilities). NOTE that
+// the snapshot's JSON below is UNCHANGED by that work — what changed is the
+// parser (which now carries an explicit `false`) and the write path (which now
+// writes null instead of coercing an unstated flag to false). The derived rows
+// therefore differ even though a diff of this file shows no entry edited, so the
+// usual "content changed → bump the version" trigger does not fire for a reader
+// skimming it. The bump is REQUIRED regardless: `applyVersions` skips any entry
+// whose `validFrom` is not later than the stored one, so without it an instance
+// that already seeded 2026-09-05 keeps every coerced `false` forever.
+export const BUNDLED_CATALOG_VERSION = new Date('2026-09-21T00:00:00.000Z');
 
 export const BUNDLED_PRICES: BundledPrice[] = parseLiteLlmCatalog(LITELLM_SNAPSHOT);

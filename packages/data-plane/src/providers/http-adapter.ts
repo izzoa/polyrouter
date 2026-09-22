@@ -21,6 +21,7 @@ import {
   type ConnectionResult,
   type ProviderAdapter,
   type ProviderConfig,
+  type ProviderModelCapabilities,
   type ProviderModelInfo,
   type ProviderProtocol,
 } from './adapter';
@@ -497,6 +498,49 @@ function parseListedPricing(rec: Record<string, unknown>): ProviderModelInfo['pr
   };
 }
 
+/** A string array, or undefined when the value is not one. Entries that are not
+ * strings are dropped rather than coerced — a hostile list must not become a
+ * capability claim by stringifying. */
+function stringList(v: unknown): string[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  return v.filter((e): e is string => typeof e === 'string').map((e) => e.toLowerCase());
+}
+
+/**
+ * Parse an OpenRouter-style per-model CAPABILITY claim (honest-model-capabilities).
+ *
+ * Read defensively, on the same terms as the pricing block: an entry states a
+ * capability by LISTING it, so a present-but-absent-from-the-list value is a
+ * positive `false` while a missing list is silence (`undefined`). The distinction
+ * is the whole point — inferring `false` from a missing list would turn every
+ * provider that simply does not publish a modality list into a provider whose
+ * models are all declared incapable.
+ *
+ * Only `architecture.input_modalities` (image input), `supported_parameters`
+ * (`tools`, `reasoning`), and a positive-integer `context_length` participate.
+ * Anything malformed omits that capability and never costs the entry its id,
+ * display name, or pricing. No request is issued: this reads the model-list
+ * response already fetched.
+ */
+function parseListedCapabilities(rec: Record<string, unknown>): ProviderModelCapabilities {
+  const arch = rec['architecture'];
+  const modalities = stringList(
+    typeof arch === 'object' && arch !== null
+      ? (arch as Record<string, unknown>)['input_modalities']
+      : undefined,
+  );
+  const params = stringList(rec['supported_parameters']);
+  const ctx = rec['context_length'];
+  const contextWindow =
+    typeof ctx === 'number' && Number.isInteger(ctx) && ctx > 0 ? ctx : undefined;
+  return {
+    ...(params !== undefined ? { supportsTools: params.includes('tools') } : {}),
+    ...(modalities !== undefined ? { supportsVision: modalities.includes('image') } : {}),
+    ...(params !== undefined ? { supportsReasoning: params.includes('reasoning') } : {}),
+    ...(contextWindow !== undefined ? { contextWindow } : {}),
+  };
+}
+
 /**
  * Parse a `{ data: [{ id, <displayKey?> }] }` model list into ProviderModelInfo[].
  * Skips entries with a non-string, over-long (`> MAX_MODEL_ID_LEN`), or duplicate
@@ -522,10 +566,15 @@ export function parseModelList(json: unknown, displayKey?: string): ProviderMode
     seen.add(id);
     const display = displayKey !== undefined ? rec[displayKey] : undefined;
     const pricing = parseListedPricing(rec);
+    // An all-empty claim is omitted entirely, so a provider that states nothing
+    // behaves exactly as it did before this change.
+    const capabilities = parseListedCapabilities(rec);
+    const hasClaim = Object.keys(capabilities).length > 0;
     out.push({
       id,
       ...(typeof display === 'string' ? { displayName: display } : {}),
       ...(pricing !== undefined ? { pricing } : {}),
+      ...(hasClaim ? { capabilities } : {}),
     });
   }
   return out;

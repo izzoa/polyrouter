@@ -95,10 +95,37 @@ export interface ProviderListedPricing {
   readonly isFree?: boolean;
 }
 
+/**
+ * A provider's own CLAIM about one of its models (honest-model-capabilities),
+ * parallel in status to `ProviderListedPricing` above: non-authoritative
+ * information the provider states about its own catalog, which the control plane
+ * captures per model (`listed_supports_*`) and only ever surfaces as a clearly
+ * marked estimate. It is the LAST tier of the display ladder and is NEVER routing
+ * evidence — routing admits the exact catalog key alone (`fallback-routing`).
+ *
+ * Every field is THREE-valued and INDEPENDENT: present-and-true where the listing
+ * states the capability, present-and-false where it positively excludes it, and
+ * OMITTED where the listing says nothing. Omission is never rendered as `false` —
+ * a provider that enumerates its accepted modalities says nothing about tool
+ * calling by doing so, and inferring a negative from that silence would
+ * manufacture the exact false-negative this field exists to prevent.
+ *
+ * The adapter transports the claim and never derives one: no capability is ever
+ * inferred from a model id, a provider family, or any other heuristic.
+ */
+export interface ProviderModelCapabilities {
+  readonly supportsTools?: boolean;
+  readonly supportsVision?: boolean;
+  readonly supportsReasoning?: boolean;
+  /** Positive finite integer only; anything else is omitted (unknown-not-wrong). */
+  readonly contextWindow?: number;
+}
+
 export interface ProviderModelInfo {
   readonly id: string;
   readonly displayName?: string;
   readonly pricing?: ProviderListedPricing;
+  readonly capabilities?: ProviderModelCapabilities;
 }
 
 export type ConnectionResult =

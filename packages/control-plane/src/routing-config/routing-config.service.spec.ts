@@ -33,10 +33,7 @@ function model(id: string, variant: string | null = null, externalModelId?: stri
     providerId: 'p1',
     externalModelId: externalModelId ?? id,
     displayName: null,
-    contextWindow: null,
-    supportsTools: false,
-    supportsVision: false,
-    supportsReasoning: false,
+    // capability columns dropped from the model row (honest-model-capabilities)
     inputPricePer1m: null,
     outputPricePer1m: null,
     isFree: false,
@@ -44,6 +41,11 @@ function model(id: string, variant: string | null = null, externalModelId?: stri
     listedOutputPricePer1m: null,
     listedIsFree: null,
     listedPriceCapturedAt: null,
+    listedSupportsTools: null,
+    listedSupportsVision: null,
+    listedSupportsReasoning: null,
+    listedContextWindow: null,
+    listedCapabilitiesCapturedAt: null,
     variant,
     lastSyncedAt: null,
   };

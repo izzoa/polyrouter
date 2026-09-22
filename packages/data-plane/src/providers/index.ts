@@ -12,6 +12,7 @@ export type {
   CallContext,
   ProviderModelInfo,
   ProviderListedPricing,
+  ProviderModelCapabilities,
   ConnectionResult,
 } from './adapter';
 export { DEFAULT_FIRST_BYTE_TIMEOUT_MS, MAX_MODEL_ID_LEN } from './adapter';

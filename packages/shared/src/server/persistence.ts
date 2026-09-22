@@ -203,9 +203,11 @@ export type ModelPriceInput = {
   maxOutputTokens?: number | null;
   batchInputPricePer1m?: number | null;
   batchOutputPricePer1m?: number | null;
-  supportsTools?: boolean;
-  supportsVision?: boolean;
-  supportsReasoning?: boolean;
+  // Tri-state (honest-model-capabilities): null = unknown, no source has stated
+  // it. Nullable like the cap above, and for the same reason.
+  supportsTools?: boolean | null;
+  supportsVision?: boolean | null;
+  supportsReasoning?: boolean | null;
   isFree?: boolean;
   source: string;
   validFrom: Date;

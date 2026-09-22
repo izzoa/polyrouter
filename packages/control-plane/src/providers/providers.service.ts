@@ -31,8 +31,11 @@ import {
 } from '@polyrouter/shared/server';
 import {
   loadPriceContext,
+  toEffectiveCapabilities,
   toEffectivePrice,
+  type EffectiveCapabilities,
   type EffectivePrice,
+  type ListedCapabilityClaim,
 } from '../pricing/model-price-context';
 import {
   MAX_MODEL_ID_LEN,
@@ -44,6 +47,7 @@ import {
   type ProviderKind,
   type ProviderModelInfo,
   type ProviderListedPricing,
+  type ProviderModelCapabilities,
   batchFactoryFor,
   type BatchSeamInput,
 } from '@polyrouter/data-plane';
@@ -109,10 +113,16 @@ export interface SafeModel {
   providerId: string;
   externalModelId: string;
   displayName: string | null;
-  contextWindow: number | null;
-  supportsTools: boolean;
-  supportsVision: boolean;
-  supportsReasoning: boolean;
+  /** Resolved through the SHARED capability ladder (honest-model-capabilities),
+   * not read from the model row — the row's capability columns had no writer at
+   * all, so reading them reported the column default as though it were an answer.
+   * Tri-state: `true`, `false`, or ABSENT = unknown. */
+  contextWindow?: number;
+  supportsTools?: boolean;
+  supportsVision?: boolean;
+  supportsReasoning?: boolean;
+  /** Set only when a capability value resolved BELOW the exact catalog key. */
+  capabilitiesEstimated?: boolean;
   isFree: boolean;
   // User-editable model-own prices (#18 §7.7) — null when unpriced; the top of
   // `resolveModelPrice`'s precedence for custom/local models.
@@ -255,6 +265,55 @@ function listedColumnsFrom(
   };
 }
 
+/** Map an adapter-surfaced capability CLAIM to the model row's `listed_supports_*`
+ * columns (honest-model-capabilities). Same discipline as the listed price above,
+ * for the same reason: explicit nulls when the provider states nothing, so the
+ * sync upsert **clears** a stale claim rather than letting a claimless response
+ * leave an old one attached to the id.
+ *
+ * Each flag is carried independently — a provider that states vision but is silent
+ * on tools leaves the tools column null, never false. This records what the
+ * provider CLAIMS; it is never catalog truth and never routing evidence. */
+function listedCapabilityColumnsFrom(
+  capabilities: ProviderModelCapabilities | undefined,
+  now: Date,
+): Pick<
+  ModelInsertInput,
+  | 'listedSupportsTools'
+  | 'listedSupportsVision'
+  | 'listedSupportsReasoning'
+  | 'listedContextWindow'
+  | 'listedCapabilitiesCapturedAt'
+> {
+  if (capabilities === undefined) {
+    return {
+      listedSupportsTools: null,
+      listedSupportsVision: null,
+      listedSupportsReasoning: null,
+      listedContextWindow: null,
+      listedCapabilitiesCapturedAt: null,
+    };
+  }
+  return {
+    listedSupportsTools: capabilities.supportsTools ?? null,
+    listedSupportsVision: capabilities.supportsVision ?? null,
+    listedSupportsReasoning: capabilities.supportsReasoning ?? null,
+    listedContextWindow: capabilities.contextWindow ?? null,
+    listedCapabilitiesCapturedAt: now,
+  };
+}
+
+/** The `listed_*` capability claim read back off a model row, in the shape the
+ * shared ladder consumes as its last tier (honest-model-capabilities). */
+function listedCapabilityClaim(m: ModelRow): ListedCapabilityClaim {
+  return {
+    supportsTools: m.listedSupportsTools,
+    supportsVision: m.listedSupportsVision,
+    supportsReasoning: m.listedSupportsReasoning,
+    contextWindow: m.listedContextWindow,
+  };
+}
+
 /**
  * Whether a provider carries the batch adapter seam (add-batch-mode-routing).
  * Delegates to the data plane's SUBMISSION predicate, so the dashboard's control
@@ -307,16 +366,27 @@ function toSafeModel(
   baseExternalModelId: string | null = null,
   batchCapable = false,
   batchEffectivePrice: EffectivePrice | null = null,
+  capabilities: EffectiveCapabilities = { estimated: false },
 ): SafeModel {
   return {
     id: m.id,
     providerId: m.providerId,
     externalModelId: m.externalModelId,
     displayName: m.displayName,
-    contextWindow: m.contextWindow,
-    supportsTools: m.supportsTools,
-    supportsVision: m.supportsVision,
-    supportsReasoning: m.supportsReasoning,
+    // Absent, never null/false: an unknown capability must not read as a denial.
+    ...(capabilities.contextWindow !== undefined
+      ? { contextWindow: capabilities.contextWindow }
+      : {}),
+    ...(capabilities.supportsTools !== undefined
+      ? { supportsTools: capabilities.supportsTools }
+      : {}),
+    ...(capabilities.supportsVision !== undefined
+      ? { supportsVision: capabilities.supportsVision }
+      : {}),
+    ...(capabilities.supportsReasoning !== undefined
+      ? { supportsReasoning: capabilities.supportsReasoning }
+      : {}),
+    ...(capabilities.estimated ? { capabilitiesEstimated: true } : {}),
     isFree: m.isFree,
     inputPricePer1m: m.inputPricePer1m,
     outputPricePer1m: m.outputPricePer1m,
@@ -591,6 +661,9 @@ export class ProvidersService {
       const displayName =
         m.displayName !== undefined ? m.displayName.slice(0, MAX_MODEL_NAME_LEN) : undefined;
       const pricing = endpointMoved ? undefined : m.pricing;
+      // Same mid-flight rule as the price and the variant (honest-model-capabilities):
+      // a capability claim justified by the OLD endpoint must not attach to the new one.
+      const claimed = endpointMoved ? undefined : m.capabilities;
       // Always write the listed_* columns (set from the listed price, or null to CLEAR a
       // stale estimate) — a DISPLAY-only estimate, distinct from the billing user-price
       // columns, never a catalog/cost source (invariant 4).
@@ -602,6 +675,9 @@ export class ProvidersService {
         variant: variantForProvider(billingFamily, m.id)?.variant ?? null,
         ...(displayName !== undefined ? { displayName } : {}),
         ...listedColumnsFrom(pricing, now),
+        // ALWAYS written (set or cleared), so a later claimless sync cannot leave
+        // a stale capability attached to the id.
+        ...listedCapabilityColumnsFrom(claimed, now),
       };
       const row = await this.db.models.upsertForProvider(principal, provider.id, values);
       if (row) {
@@ -630,11 +706,10 @@ export class ProvidersService {
     const all = await this.db.models.listForPrincipal(principal);
     let rows = all;
     if (q.providerId !== undefined) rows = rows.filter((r) => r.providerId === q.providerId);
-    if (q.supportsTools !== undefined)
-      rows = rows.filter((r) => r.supportsTools === q.supportsTools);
-    if (q.supportsVision !== undefined) {
-      rows = rows.filter((r) => r.supportsVision === q.supportsVision);
-    }
+    // The capability filters are applied AFTER resolution, below — like the
+    // is_free filter and for the same reason (honest-model-capabilities). Applied
+    // to the model row they matched nothing for any tenant, the row's capability
+    // columns having never been written by any code path.
     // Resolve each model's effective DISPLAY price through the SHARED bulk context
     // (expand-models-listing): one providers read + ONE key-filtered catalog read —
     // never per-model queries or a full scan — and the same derivation the proxy's
@@ -675,12 +750,26 @@ export class ProvidersService {
         toEffectivePrice(r, kind, catalogRow, nativeRow, {
           twin: twinByBase.get(`${r.providerId}\u0000${r.externalModelId}`) ?? null,
         }),
+        // Capability off the SAME catalog rows the price just used — the ladder
+        // costs no query of its own. The provider-listed claim joins as the last
+        // tier once sync captures it (task 6.5).
+        toEffectiveCapabilities(catalogRow, nativeRow, listedCapabilityClaim(r)),
       );
     });
     // The is_free filter applies to the EFFECTIVE price (resolve, then filter), so a
     // catalog-less free-by-listing model still matches (add-provider-price-sync-and-edit).
     if (q.isFree !== undefined) {
       safe = safe.filter((m) => (m.effectivePrice?.isFree ?? false) === q.isFree);
+    }
+    // Capability filters match the RESOLVED value. Strict equality means an
+    // UNKNOWN capability (absent) matches neither `true` nor `false`: unknown is
+    // not a negative answer, and a filter that treated it as one would reproduce
+    // the defect this change removes, just one layer up.
+    if (q.supportsTools !== undefined) {
+      safe = safe.filter((m) => m.supportsTools === q.supportsTools);
+    }
+    if (q.supportsVision !== undefined) {
+      safe = safe.filter((m) => m.supportsVision === q.supportsVision);
     }
     return safe;
   }
@@ -749,6 +838,11 @@ export class ProvidersService {
       // Single-model read: no sibling set in hand, so the twin estimate is not
       // available here. Catalog and native-family batch rates still resolve.
       toEffectivePrice(updated, provider.kind, catalogRow, nativeRow, { twin: null }),
+      // Capabilities resolve on THIS path too, off the rows already fetched for
+      // the price: the client optimistically replaces its model from this
+      // response, so a `SafeModel` that described the model in the list and not
+      // here would make a pricing edit look like a capability regression.
+      toEffectiveCapabilities(catalogRow, nativeRow, listedCapabilityClaim(updated)),
     );
   }
 

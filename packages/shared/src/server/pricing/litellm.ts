@@ -42,6 +42,18 @@ function per1m(v: unknown): number | undefined {
   return n === undefined ? undefined : n * PER_MILLION;
 }
 
+/** A capability flag is THREE-valued (honest-model-capabilities): an explicit
+ * boolean is carried as it stands — `false` included — and anything else (absent,
+ * null, a string, a number) yields `undefined`, which the catalog stores as null.
+ *
+ * Reading a negative out of silence is the failure this guards: LiteLLM annotates
+ * only part of its catalog, so collapsing "absent" into `false` makes every
+ * unannotated model indistinguishable from one verified to lack the capability.
+ * Same unknown-not-wrong stance `max_output_tokens` above already takes. */
+function capabilityFlag(v: unknown): boolean | undefined {
+  return typeof v === 'boolean' ? v : undefined;
+}
+
 export function parseLiteLlmCatalog(json: unknown): BundledPrice[] {
   if (typeof json !== 'object' || json === null) return [];
   const out: BundledPrice[] = [];
@@ -74,6 +86,9 @@ export function parseLiteLlmCatalog(json: unknown): BundledPrice[] {
       batchIn !== undefined && batchOut !== undefined && batchIn >= 0 && batchOut >= 0
         ? { batchInputPricePer1m: batchIn, batchOutputPricePer1m: batchOut }
         : {};
+    const tools = capabilityFlag(e.supports_function_calling);
+    const vision = capabilityFlag(e.supports_vision);
+    const reasoning = capabilityFlag(e.supports_reasoning);
 
     out.push({
       modelKey: canonicalModelKey(provider, name),
@@ -83,9 +98,9 @@ export function parseLiteLlmCatalog(json: unknown): BundledPrice[] {
       ...(cacheWrite !== undefined ? { cacheWritePricePer1m: cacheWrite } : {}),
       ...(contextWindow !== undefined ? { contextWindow } : {}),
       ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
-      ...(e.supports_function_calling === true ? { supportsTools: true } : {}),
-      ...(e.supports_vision === true ? { supportsVision: true } : {}),
-      ...(e.supports_reasoning === true ? { supportsReasoning: true } : {}),
+      ...(tools !== undefined ? { supportsTools: tools } : {}),
+      ...(vision !== undefined ? { supportsVision: vision } : {}),
+      ...(reasoning !== undefined ? { supportsReasoning: reasoning } : {}),
       ...(isFree ? { isFree: true } : {}),
       ...batchPair,
     });

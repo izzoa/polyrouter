@@ -22,7 +22,8 @@ import {
   isRouteError,
   openStreamChain,
   participatingAsk,
-  planOutputCaps,
+  capabilityDemandOf,
+  planDeliverability,
   replayBufferedStream,
   resolveRoute,
   runBufferedChain,
@@ -48,7 +49,11 @@ import {
   type WorkloadVerdict,
 } from '@polyrouter/data-plane';
 import { AdapterBuildError, ProviderAdapterBuilder } from '../providers/adapter-builder';
-import { loadPriceContext, toEffectivePrice } from '../pricing/model-price-context';
+import {
+  loadPriceContext,
+  toEffectiveCapabilities,
+  toEffectivePrice,
+} from '../pricing/model-price-context';
 import { buildCatalog, type CatalogEntry } from './models-catalog';
 import type { ClientProtocol } from './proxy-errors';
 import {
@@ -134,11 +139,20 @@ interface CapacityAnnotations {
   readonly clampByIndex: ReadonlyMap<number, string>;
 }
 
-/** Late-bound cap lookup (add-output-cap-guardrails): `buildBundle`'s adapter
- * closures capture this ref BEFORE the batched cap resolution runs; dispatch
+/** What the catalog KNOWS about a chain member, at its EXACT key
+ * (honest-model-capabilities). Every field is optional and absent = unknown; a
+ * `false` is an assertion, and only an assertion defers a member. */
+export interface CatalogFacts {
+  readonly cap?: number;
+  readonly supportsTools?: boolean;
+  readonly supportsVision?: boolean;
+}
+
+/** Late-bound catalog lookup (add-output-cap-guardrails): `buildBundle`'s adapter
+ * closures capture this ref BEFORE the batched resolution runs; dispatch
  * happens after, so the closure reads the populated map. */
 interface CapsRef {
-  current: ReadonlyMap<string, number>;
+  current: ReadonlyMap<string, CatalogFacts>;
 }
 
 /** Cascade orchestration state (#14): the cheap chain + the escalation chain
@@ -512,6 +526,10 @@ export class ProxyService {
       this.db.models.listForPrincipal(principal),
       this.db.tiers.list(principal),
     ]);
+    // ONE shared context feeds BOTH the price and the capability ladder
+    // (honest-model-capabilities): the same providers read and the same
+    // key-filtered catalog batch the price already required, so describing a
+    // model's capabilities costs no additional query (invariant 9).
     const prices = await loadPriceContext(this.db, principal, rows);
     return buildCatalog(
       rows.map((r) => ({
@@ -522,6 +540,14 @@ export class ProxyService {
           prices.catalogRowOf(r),
           prices.nativeRowOf(r),
         ),
+        // Capability and context window come from the CATALOG, never the model
+        // row. The row's `supports_*`/`context_window` columns had no writer in
+        // any sync, CRUD, or migration path, so reading them returned the column
+        // default — which is how this surface came to advertise every model as
+        // incapable of everything.
+        // The provider-listed claim joins as the ladder's last tier once sync
+        // captures it (task 6.5); until then the ladder ends at native-family.
+        capabilities: toEffectiveCapabilities(prices.catalogRowOf(r), prices.nativeRowOf(r)),
       })),
       tiers.map((t) => t.key),
     );
@@ -1431,14 +1457,24 @@ export class ProxyService {
     // parity); an absent ask still resolves caps so the synthesized Anthropic
     // default can be capped to the dispatched model's limit (the closures in
     // `capsRef` read the populated map lazily at dispatch time).
+    //
+    // Capability deliverability (honest-model-capabilities) composes into the SAME
+    // plan: the demand comes from the request, the evidence from the same batched
+    // catalog read, and a member the catalog states cannot serve the request is
+    // deferred — never dropped. The client-named fence covers both: a caller who
+    // named the concrete model gets provider parity, not a reorder.
     const clientNamed = decision.decisionLayer === 'explicit' && decision.tierKey === null;
     const planAsk = clientNamed ? null : participatingAsk(ir.params.maxOutputTokens);
-    if (planAsk !== null || ir.params.maxOutputTokens === undefined) {
+    const demand = clientNamed ? [] : capabilityDemandOf(ir);
+    // The load condition covers capability on its own: a request carrying images
+    // with a NON-participating `max_tokens` (0, negative, fractional) satisfies
+    // neither cap arm, and would otherwise skip capability planning entirely.
+    if (planAsk !== null || ir.params.maxOutputTokens === undefined || demand.length > 0) {
       const allMeta = [
         ...primary.meta,
         ...(cascadeRaw !== null ? [...cascadeRaw.cheap.meta, ...cascadeRaw.strong.meta] : []),
       ];
-      capsRef.current = await resolveOutputCaps(
+      capsRef.current = await resolveCatalogFacts(
         (keys, at) => this.db.pricing.priceAtMany(keys, at),
         allMeta,
         new Date(startedAt),
@@ -1455,11 +1491,11 @@ export class ProxyService {
           attempts: [...strong.attempts, ...primary.attempts],
           meta: [...strong.meta, ...primary.meta],
         };
-        if (planAsk !== null) {
+        if (planAsk !== null || demand.length > 0) {
           // Plan per WALKED chain: the cheap chain and the CONCATENATED
           // strong-then-default escalation — never a source bundle alone.
-          const cheapPlan = planWalkedChain(cheap, planAsk, capsRef.current);
-          const escPlan = planWalkedChain(escalationRaw, planAsk, capsRef.current);
+          const cheapPlan = planWalkedChain(cheap, planAsk, capsRef.current, demand);
+          const escPlan = planWalkedChain(escalationRaw, planAsk, capsRef.current, demand);
           cascade = {
             cheap: cheapPlan.bundle,
             escalation: escPlan.bundle,
@@ -1482,8 +1518,8 @@ export class ProxyService {
         }
       }
     }
-    if (cascade === undefined && planAsk !== null) {
-      const plan = planWalkedChain(primary, planAsk, capsRef.current);
+    if (cascade === undefined && (planAsk !== null || demand.length > 0)) {
+      const plan = planWalkedChain(primary, planAsk, capsRef.current, demand);
       primary = plan.bundle;
       if (plan.capacity !== undefined) capacity = { primary: plan.capacity };
     }
@@ -1617,7 +1653,7 @@ export class ProxyService {
             principal,
             provider,
             signal,
-            key !== null ? capsRef.current.get(key) : undefined,
+            key !== null ? capsRef.current.get(key)?.cap : undefined,
             admission?.isProbe === true,
           );
         },
@@ -2072,15 +2108,22 @@ export function attemptTrailEntries(
   return entries.slice(0, ATTEMPT_FAILURES_MAX);
 }
 
-/** Plan ONE walked chain (add-output-cap-guardrails): the two-stage deferral
- * over atomically-paired attempts+meta, plus the recorded annotations. Tail
- * members get a per-attempt clamped copy (their OWN cap); clamp strings are
- * keyed by EFFECTIVE index and only recorded for dispatched attempts
- * (`capacitySuffix`). Caps resolve by the EXACT catalog key only. */
+/** Plan ONE walked chain (add-output-cap-guardrails; capability composed in by
+ * honest-model-capabilities): the deferral over atomically-paired attempts+meta,
+ * plus the recorded annotations. Tail members get a per-attempt clamped copy
+ * (their OWN cap); clamp strings are keyed by EFFECTIVE index and only recorded
+ * for dispatched attempts (`capacitySuffix`).
+ *
+ * Both dimensions resolve by the EXACT catalog key ONLY. For capability that is
+ * deliberately stricter than the read surfaces, which also consult the
+ * native-family row and the provider's own claim: those are marked estimates, and
+ * demoting a member below the order its owner configured on an estimate trades a
+ * certain harm for a speculative one. Silence therefore never defers. */
 export function planWalkedChain(
   bundle: Bundle,
-  ask: number,
-  caps: ReadonlyMap<string, number>,
+  ask: number | null,
+  caps: ReadonlyMap<string, CatalogFacts>,
+  demand: readonly string[] = [],
 ): { bundle: Bundle; capacity: CapacityAnnotations | undefined } {
   const inputs = bundle.attempts.map((attempt, i) => {
     const meta = bundle.meta[i]!;
@@ -2088,13 +2131,21 @@ export function planWalkedChain(
       meta.providerBaseUrl !== null
         ? deriveModelKey(meta.providerBaseUrl, meta.model.externalModelId)
         : null;
+    const facts = key !== null ? caps.get(key) : undefined;
     return {
       member: { attempt, meta },
-      cap: key !== null ? (caps.get(key) ?? null) : null,
+      cap: facts?.cap ?? null,
       label: meta.model.externalModelId,
+      // Only an ASSERTED `false` counts. An absent fact is unknown and keeps the
+      // member exactly where its owner put it (invariant 1).
+      capabilityShort: demand.filter(
+        (d) =>
+          (d === 'tools' && facts?.supportsTools === false) ||
+          (d === 'vision' && facts?.supportsVision === false),
+      ),
     };
   });
-  const plan = planOutputCaps(inputs, ask);
+  const plan = planDeliverability(inputs, ask);
   const attempts: ChainAttempt[] = [];
   const meta: AttemptMeta[] = [];
   const clampByIndex = new Map<number, string>();
@@ -2104,13 +2155,26 @@ export function planWalkedChain(
       attempts.push(m.member.attempt);
     } else {
       attempts.push({ ...m.member.attempt, maxOutputTokens: m.clampTo });
-      clampByIndex.set(i, `output_cap_clamped ${ask}→${m.clampTo} (${m.label})`);
+      clampByIndex.set(i, `output_cap_clamped ${ask ?? 0}→${m.clampTo} (${m.label})`);
     }
   });
-  const deferred =
+  const capReason =
     plan.deferred.length > 0
-      ? `output_cap_deferred ${plan.deferred.map((d) => `${d.label}(${d.cap}<${ask})`).join(', ')}`
+      ? `output_cap_deferred ${plan.deferred.map((d) => `${d.label}(${d.cap}<${ask ?? 0})`).join(', ')}`
       : null;
+  // A capability deferral is a ROUTING decision, not a member failure: it rides
+  // the routing reason and never enters the failure trail or the status
+  // precedence. Same shape and same placement as the capacity reason.
+  const capabilityReason =
+    plan.capabilityDeferred.length > 0
+      ? `capability_deferred ${plan.capabilityDeferred
+          .map((d) => `${d.label}(${d.capabilities.join('+')})`)
+          .join(', ')}`
+      : null;
+  const deferred =
+    capReason !== null && capabilityReason !== null
+      ? `${capReason}; ${capabilityReason}`
+      : (capReason ?? capabilityReason);
   const capacity =
     deferred !== null || clampByIndex.size > 0 ? { deferred, clampByIndex } : undefined;
   return { bundle: { attempts, meta }, capacity };
@@ -2154,20 +2218,33 @@ export function withCapacity(reason: string, ...suffixes: (string | null)[]): st
   return present.length === 0 ? reason : `${reason}; ${present.join('; ')}`;
 }
 
-/** EXACT-key output caps for the given members in ONE `priceAtMany` batch
- * (add-output-cap-guardrails): dedupe the derived keys across ALL walked
- * chains, one read at one instant. Fail-open: any rejection degrades every cap
- * to unknown — capacity discovery never fails an otherwise routable request
- * (invariant 1). No native-family fallback, no model-row source, no cache, and
- * NO bespoke deadline (the read shares the snapshot loads' pool posture). */
-export async function resolveOutputCaps(
+/** EXACT-key catalog facts for the given members in ONE `priceAtMany` batch
+ * (add-output-cap-guardrails; widened by honest-model-capabilities): dedupe the
+ * derived keys across ALL walked chains, one read at one instant, and project the
+ * output cap AND the capability flags off the SAME rows — three more columns on
+ * rows already fetched, so capability costs no query, no round trip, and no
+ * deadline of its own (invariant 9).
+ *
+ * Fail-open: any rejection degrades EVERY member to unknown — discovery never
+ * fails an otherwise routable request (invariant 1). No native-family fallback,
+ * no model-row source, no bare-id match, no cache, and NO bespoke deadline (the
+ * read shares the snapshot loads' pool posture). The estimate tiers describe a
+ * model on the read surfaces; they never demote a member here. */
+export async function resolveCatalogFacts(
   priceAtMany: (
     keys: readonly string[],
     at: Date,
-  ) => Promise<readonly { modelKey: string; maxOutputTokens: number | null }[]>,
+  ) => Promise<
+    readonly {
+      modelKey: string;
+      maxOutputTokens: number | null;
+      supportsTools?: boolean | null;
+      supportsVision?: boolean | null;
+    }[]
+  >,
   metas: readonly { providerBaseUrl: string | null; model: { externalModelId: string } }[],
   at: Date,
-): Promise<ReadonlyMap<string, number>> {
+): Promise<ReadonlyMap<string, CatalogFacts>> {
   const keys = new Set<string>();
   for (const m of metas) {
     if (m.providerBaseUrl === null) continue;
@@ -2177,14 +2254,20 @@ export async function resolveOutputCaps(
   if (keys.size === 0) return new Map();
   try {
     const rows = await priceAtMany([...keys], at);
-    const caps = new Map<string, number>();
+    const facts = new Map<string, CatalogFacts>();
     for (const r of rows) {
       const cap = r.maxOutputTokens;
-      if (cap !== null && Number.isInteger(cap) && cap > 0) caps.set(r.modelKey, cap);
+      facts.set(r.modelKey, {
+        ...(cap !== null && Number.isInteger(cap) && cap > 0 ? { cap } : {}),
+        // Null is UNKNOWN and is dropped here, so only an asserted boolean can
+        // ever reach the planner — and only an assertion defers a member.
+        ...(typeof r.supportsTools === 'boolean' ? { supportsTools: r.supportsTools } : {}),
+        ...(typeof r.supportsVision === 'boolean' ? { supportsVision: r.supportsVision } : {}),
+      });
     }
-    return caps;
+    return facts;
   } catch {
-    return new Map(); // fail-open (spec'd): all caps unknown, request routes as today
+    return new Map(); // fail-open (spec'd): all unknown, request routes as today
   }
 }
 

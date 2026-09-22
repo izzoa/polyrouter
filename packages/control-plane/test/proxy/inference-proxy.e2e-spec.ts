@@ -67,6 +67,40 @@ interface Tenant {
   models: Record<string, string>; // externalId -> model id
 }
 
+/** The global (NON-tenant) catalog rows the capability ladder is asserted against
+ * (honest-model-capabilities). Seeded ONCE, not per tenant: `model_price` has no
+ * owner, so a per-tenant insert collides on `(model_key, valid_from)` the moment a
+ * second tenant is seeded. The EXACT key describes the first model; only the
+ * NATIVE-FAMILY key describes the second, so its entry must come back marked. */
+const CATALOG_KEYS = {
+  exact: 'openai:gpt-5-described',
+  native: 'anthropic:claude-described',
+} as const;
+
+async function seedCatalog(port: PersistencePort): Promise<void> {
+  const at = new Date('2020-01-01T00:00:00.000Z');
+  await port.pricing.insertVersion({
+    modelKey: CATALOG_KEYS.exact,
+    inputPricePer1m: 1,
+    outputPricePer1m: 2,
+    contextWindow: 400_000,
+    supportsTools: true,
+    supportsVision: false, // an ASSERTED negative, distinct from silence
+    // supportsReasoning deliberately omitted -> unknown
+    source: 'manual',
+    validFrom: at,
+  });
+  await port.pricing.insertVersion({
+    modelKey: CATALOG_KEYS.native, // native family only; exact key misses
+    inputPricePer1m: 3,
+    outputPricePer1m: 15,
+    contextWindow: 200_000,
+    supportsVision: true,
+    source: 'manual',
+    validFrom: at,
+  });
+}
+
 async function seedTenant(
   port: PersistencePort,
   pool: Pool,
@@ -140,6 +174,25 @@ async function seedTenant(
   // withhold the bare form and advertise only the two qualified ones.
   await add(openai.id, 'dup-model');
   await add(dryProvider.id, 'dup-model');
+
+  // honest-model-capabilities: the stub's localhost base_url derives NO catalog
+  // family, so every fixture above resolves to unknown capabilities — correct,
+  // and exactly why two providers with real, derivable hosts are needed to
+  // exercise the ladder. Neither is ever dispatched to; they exist to be listed.
+  const catalogued = await port.providers.insert(principal, {
+    name: 'openai-catalogued',
+    kind: 'local',
+    protocol: 'openai_compatible',
+    baseUrl: 'https://api.openai.com/v1', // -> family `openai`
+  });
+  await add(catalogued.id, 'gpt-5-described');
+  const aggregator = await port.providers.insert(principal, {
+    name: 'openrouter-aggregator',
+    kind: 'local',
+    protocol: 'openai_compatible',
+    baseUrl: 'https://openrouter.ai/api/v1', // -> family `openrouter`
+  });
+  await add(aggregator.id, 'anthropic/claude-described');
 
   await port.ensureDefaultTier(principal);
   const tiers = await port.tiers.list(principal);
@@ -297,12 +350,18 @@ describe('inference proxy e2e', () => {
     await app.init();
     server = app.getHttpServer();
     const port = app.get<PersistencePort>(PERSISTENCE_PORT);
+    await seedCatalog(port);
     A = await seedTenant(port, pool, 'proxyA', stub.url);
     B = await seedTenant(port, pool, 'proxyB', stub.url);
   }, 60_000);
 
   afterAll(async () => {
     await pool.query('DELETE FROM "user" WHERE id = ANY($1)', [[A.userId, B.userId]]);
+    // The catalog is global and outlives the tenants, so it is cleaned up
+    // explicitly — otherwise a second run collides on (model_key, valid_from).
+    await pool.query('DELETE FROM model_price WHERE model_key = ANY($1)', [
+      [CATALOG_KEYS.exact, CATALOG_KEYS.native],
+    ]);
     await app.close();
     await pool.end();
     await stub.close();
@@ -693,7 +752,15 @@ describe('inference proxy e2e', () => {
     // These fixture providers are kind `local`, so the SHARED resolver prices them
     // free — the same figure the dashboard shows for them.
     expect(entry.pricing).toMatchObject({ is_free: true, source: 'local', estimated: false });
-    expect(entry.supports_tools).toBe(false);
+    // honest-model-capabilities: this fixture's provider is a localhost stub, so
+    // it derives no catalog family and NO tier of the ladder describes it. That
+    // is unknown, and unknown is ABSENT — a rendered `false` would assert the
+    // model is known to lack tools, which is what this surface used to claim for
+    // every model in existence.
+    expect(entry).not.toHaveProperty('supports_tools');
+    expect(entry).not.toHaveProperty('supports_vision');
+    expect(entry).not.toHaveProperty('supports_reasoning');
+    expect(entry).not.toHaveProperty('capabilities_estimated');
     // Never stored for these fixtures → absent, not null.
     expect(entry).not.toHaveProperty('context_window');
 
@@ -719,6 +786,55 @@ describe('inference proxy e2e', () => {
     const encoded = await retrieve(A.key, encodeURIComponent(qualified));
     expect(encoded.status).toBe(200);
     expect(encoded.body).toEqual(direct.body);
+  });
+
+  it('reports a catalog-described model exactly as the catalog states it', async () => {
+    const data = (await list(A.key)).body.data as Record<string, unknown>[];
+    const entry = data.find((m) => m.id === 'gpt-5-described')!;
+    expect(entry).toMatchObject({
+      context_window: 400_000,
+      supports_tools: true,
+      supports_vision: false, // the catalog ASSERTS the negative
+    });
+    // …and says nothing about reasoning, so neither do we.
+    expect(entry).not.toHaveProperty('supports_reasoning');
+    // Everything came from the EXACT key, so nothing is marked an estimate.
+    expect(entry).not.toHaveProperty('capabilities_estimated');
+  });
+
+  it('marks a model described only by its native-family row as estimated', async () => {
+    const data = (await list(A.key)).body.data as Record<string, unknown>[];
+    const entry = data.find((m) => m.id === 'anthropic/claude-described')!;
+    expect(entry).toMatchObject({
+      supports_vision: true,
+      context_window: 200_000,
+      capabilities_estimated: true,
+    });
+    expect(entry).not.toHaveProperty('supports_tools'); // the native row is silent
+  });
+
+  it('describes a model identically in both envelopes', async () => {
+    const openaiBody = (await list(A.key)).body.data as Record<string, unknown>[];
+    const anthropicBody = (await list(A.key, true)).body.data as Record<string, unknown>[];
+    for (const id of ['gpt-5-described', 'anthropic/claude-described']) {
+      const o = openaiBody.find((m) => m.id === id)!;
+      const a = anthropicBody.find((m) => m.id === id)!;
+      for (const k of [
+        'context_window',
+        'supports_tools',
+        'supports_vision',
+        'supports_reasoning',
+        'capabilities_estimated',
+      ]) {
+        expect(a[k]).toEqual(o[k]); // same value, or absent in both
+      }
+    }
+    // A virtual id still describes nothing in either envelope.
+    for (const body of [openaiBody, anthropicBody]) {
+      const auto = body.find((m) => m.id === 'auto')!;
+      expect(auto).not.toHaveProperty('supports_tools');
+      expect(auto).not.toHaveProperty('capabilities_estimated');
+    }
   });
 
   it('retrieves a virtual id with no descriptive metadata', async () => {

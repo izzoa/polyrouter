@@ -336,7 +336,7 @@ const CHAIN_MODELS = TIER_ENTRIES.map((e, i) => ({
   providerId: 'p1',
   externalModelId: e.model.externalModelId,
   displayName: null,
-  contextWindow: null,
+  // contextWindow omitted: absent = unknown (honest-model-capabilities)
   supportsTools: false,
   supportsVision: false,
   supportsReasoning: false,

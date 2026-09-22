@@ -180,10 +180,16 @@ export interface ModelDto {
   providerId: string;
   externalModelId: string;
   displayName: string | null;
-  contextWindow: number | null;
-  supportsTools: boolean;
-  supportsVision: boolean;
-  supportsReasoning: boolean;
+  /** Resolved server-side from the pricing catalog (honest-model-capabilities),
+   * never from the model row. Tri-state: `true`, `false`, or ABSENT = unknown —
+   * so a missing flag means "no source has said", not "this model cannot". */
+  contextWindow?: number;
+  supportsTools?: boolean;
+  supportsVision?: boolean;
+  supportsReasoning?: boolean;
+  /** Set only when a capability value resolved below the exact catalog key (the
+   * aggregator native-family row, or the provider's own captured claim). */
+  capabilitiesEstimated?: boolean;
   isFree: boolean;
   inputPricePer1m: number | null;
   outputPricePer1m: number | null;

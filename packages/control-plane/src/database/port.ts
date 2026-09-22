@@ -231,6 +231,14 @@ function createModelAccessor(db: Db): ModelAccessor {
           // (add-model-variant-detection): keeping it would leave a retained model
           // permanently non-routable on a provider now pointed elsewhere.
           variant: null,
+          // Likewise the capability CLAIM (honest-model-capabilities): it is the
+          // old provider's statement about the old provider's models, and the new
+          // endpoint has said nothing. The next sync repopulates it.
+          listedSupportsTools: null,
+          listedSupportsVision: null,
+          listedSupportsReasoning: null,
+          listedContextWindow: null,
+          listedCapabilitiesCapturedAt: null,
         })
         .where(
           and(
@@ -494,9 +502,12 @@ function createPricingCatalog(db: Db): PricingCatalog {
           maxOutputTokens: entry.maxOutputTokens ?? null,
           batchInputPricePer1m: entry.batchInputPricePer1m ?? null,
           batchOutputPricePer1m: entry.batchOutputPricePer1m ?? null,
-          supportsTools: entry.supportsTools ?? false,
-          supportsVision: entry.supportsVision ?? false,
-          supportsReasoning: entry.supportsReasoning ?? false,
+          // Tri-state (honest-model-capabilities): null = unknown reaches the column
+          // as null. This is the LAST layer before the write, so a `?? false` here
+          // would silently undo the honest null the service just resolved.
+          supportsTools: entry.supportsTools ?? null,
+          supportsVision: entry.supportsVision ?? null,
+          supportsReasoning: entry.supportsReasoning ?? null,
           isFree: entry.isFree ?? false,
           source: entry.source,
           validFrom: entry.validFrom,

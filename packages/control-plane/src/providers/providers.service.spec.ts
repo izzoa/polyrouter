@@ -3,6 +3,7 @@ import { batchFactoryFor } from '@polyrouter/data-plane';
 import { UnprocessableEntityException } from '@nestjs/common';
 import type {
   ModelInsertInput,
+  ModelPriceRow,
   ModelRow,
   PersistenceFacilities,
   PersistencePort,
@@ -88,10 +89,7 @@ function makePort(): FakePort {
         externalModelId: values.externalModelId,
         displayName: values.displayName ?? null,
         variant: values.variant ?? null,
-        contextWindow: null,
-        supportsTools: false,
-        supportsVision: false,
-        supportsReasoning: false,
+        // capability columns dropped from the model row (honest-model-capabilities)
         inputPricePer1m: null,
         outputPricePer1m: null,
         isFree: false,
@@ -99,6 +97,11 @@ function makePort(): FakePort {
         listedOutputPricePer1m: values.listedOutputPricePer1m ?? null,
         listedIsFree: values.listedIsFree ?? null,
         listedPriceCapturedAt: values.listedPriceCapturedAt ?? null,
+        listedSupportsTools: null,
+        listedSupportsVision: null,
+        listedSupportsReasoning: null,
+        listedContextWindow: null,
+        listedCapabilitiesCapturedAt: null,
         lastSyncedAt: values.lastSyncedAt ?? null,
       }),
   );
@@ -325,6 +328,57 @@ describe('ProvidersService — sync-models', () => {
     }
   });
 
+  it('captures a provider capability claim, and clears a stale one on a claimless sync', async () => {
+    // honest-model-capabilities: the claim follows the SAME freshness rule as the
+    // listed price — written for every admitted model on every sync, set or
+    // cleared — so a later claimless response cannot leave a stale capability
+    // attached to the id.
+    const { port, upsert } = makePort();
+    const seed = mkProvidersService(port, factory(), runtime('selfhosted'));
+    const prov = await seed.create(principal, {
+      ...baseCreate,
+      kind: 'custom',
+      baseUrl: 'https://1.1.1.1/v1',
+      credential: 'k',
+    });
+    const withClaim: ProviderModelInfo[] = [
+      {
+        id: 'm1',
+        // States vision and denies tools; says NOTHING about reasoning.
+        capabilities: { supportsVision: true, supportsTools: false, contextWindow: 128_000 },
+      },
+    ];
+    const svc = (listing: ProviderModelInfo[]) =>
+      mkProvidersService(
+        port,
+        factory({ listModels: () => Promise.resolve(listing) }),
+        runtime('selfhosted'),
+      );
+
+    await svc(withClaim).syncModels(principal, prov.id);
+    const captured = upsert.mock.calls.at(-1)![2];
+    expect(captured).toMatchObject({
+      listedSupportsVision: true,
+      listedSupportsTools: false, // the provider's asserted negative is real information
+      listedContextWindow: 128_000,
+    });
+    // Silence stays null — never coerced into a denial.
+    expect(captured.listedSupportsReasoning).toBeNull();
+    expect(captured.listedCapabilitiesCapturedAt).toBeInstanceOf(Date);
+
+    // A later sync that states nothing CLEARS the claim rather than preserving it.
+    upsert.mockClear();
+    await svc([{ id: 'm1' }]).syncModels(principal, prov.id);
+    const cleared = upsert.mock.calls.at(-1)![2];
+    expect(cleared).toMatchObject({
+      listedSupportsTools: null,
+      listedSupportsVision: null,
+      listedSupportsReasoning: null,
+      listedContextWindow: null,
+      listedCapabilitiesCapturedAt: null,
+    });
+  });
+
   it('derives the variant for an aggregator provider and clears it when the id stops yielding one', async () => {
     // add-model-variant-detection: written on EVERY sync, set or cleared, so a
     // classification can never outlive the id that produced it.
@@ -452,10 +506,7 @@ describe('listModels — native-family display batch (add-native-price-fallback)
       providerId: 'p-or',
       externalModelId: 'minimax/minimax-m3',
       displayName: null,
-      contextWindow: null,
-      supportsTools: false,
-      supportsVision: false,
-      supportsReasoning: false,
+      // capability columns dropped from the model row (honest-model-capabilities)
       isFree: false,
       inputPricePer1m: null,
       outputPricePer1m: null,
@@ -463,6 +514,11 @@ describe('listModels — native-family display batch (add-native-price-fallback)
       listedOutputPricePer1m: 1.1,
       listedIsFree: false,
       listedPriceCapturedAt: new Date('2026-07-19T00:00:00Z'),
+      listedSupportsTools: null,
+      listedSupportsVision: null,
+      listedSupportsReasoning: null,
+      listedContextWindow: null,
+      listedCapabilitiesCapturedAt: null,
       variant: null,
       lastSyncedAt: null,
     };
@@ -473,10 +529,7 @@ describe('listModels — native-family display batch (add-native-price-fallback)
       outputPricePer1m: 1.2,
       cacheReadPricePer1m: 0.06,
       cacheWritePricePer1m: null,
-      contextWindow: null,
-      supportsTools: false,
-      supportsVision: false,
-      supportsReasoning: false,
+      // capability columns dropped from the model row (honest-model-capabilities)
       isFree: false,
       source: 'refresh',
       validFrom: new Date('2026-07-01T00:00:00Z'),
@@ -732,10 +785,7 @@ describe('listModels — batchCapable follows the MODEL on an aggregator', () =>
   });
   const model = (over: Record<string, unknown>) => ({
     displayName: null,
-    contextWindow: null,
-    supportsTools: false,
-    supportsVision: false,
-    supportsReasoning: false,
+    // capability columns dropped from the model row (honest-model-capabilities)
     isFree: false,
     inputPricePer1m: null,
     outputPricePer1m: null,
@@ -743,6 +793,11 @@ describe('listModels — batchCapable follows the MODEL on an aggregator', () =>
     listedOutputPricePer1m: null,
     listedIsFree: false,
     listedPriceCapturedAt: null,
+    listedSupportsTools: null,
+    listedSupportsVision: null,
+    listedSupportsReasoning: null,
+    listedContextWindow: null,
+    listedCapabilitiesCapturedAt: null,
     variant: null,
     lastSyncedAt: null,
     ...over,
@@ -788,11 +843,16 @@ describe('listModels — batchCapable follows the MODEL on an aggregator', () =>
     model({ id: 'm-anth', providerId: 'p-anth', externalModelId: 'claude-sonnet-4-5' }),
     model({ id: 'm-local', providerId: 'p-local', externalModelId: 'qwen3' }),
   ];
-  const mkPort = (rows = models) =>
+  /** `prices` seeds the GLOBAL catalog these models resolve against — capability
+   * lives there now (honest-model-capabilities), never on the model row. */
+  const mkPort = (rows = models, prices: Partial<ModelPriceRow>[] = []) =>
     ({
       providers: { list: () => Promise.resolve(providers) },
       models: { listForPrincipal: () => Promise.resolve(rows) },
-      pricing: { priceAtMany: () => Promise.resolve([]) },
+      pricing: {
+        priceAtMany: (keys: readonly string[]) =>
+          Promise.resolve(prices.filter((r) => keys.includes(r.modelKey!))),
+      },
     }) as unknown as PersistencePort;
   const byId = (out: { id: string; batchCapable: boolean }[]) =>
     new Map(out.map((m) => [m.id, m.batchCapable]));
@@ -816,42 +876,98 @@ describe('listModels — batchCapable follows the MODEL on an aggregator', () =>
     // FILTERED rows, `?supportsVision=true` would drop a twin whose flags differ from
     // its base's and report a batchable model as unbatchable — for a reason with nothing
     // to do with batch.
+    //
+    // honest-model-capabilities: the vehicle changed — capability now resolves from
+    // the CATALOG rather than a model-row column that never had a writer — but the
+    // invariant is identical, so it is still asserted here through catalog rows.
     const rows = [
-      model({
-        id: 'm-vis',
-        providerId: 'p-or',
-        externalModelId: 'openai/gpt-6-astra',
-        supportsVision: true,
-      }),
+      model({ id: 'm-vis', providerId: 'p-or', externalModelId: 'openai/gpt-6-astra' }),
       model({
         id: 'm-vis-twin',
         providerId: 'p-or',
         externalModelId: 'openai/gpt-6-astra:batch',
         variant: 'batch',
-        supportsVision: false,
       }),
       // The mirror case, for the sibling-base index the twin shortcut reads: here the
       // filter keeps the TWIN and drops its base.
-      model({
-        id: 'm-hid',
-        providerId: 'p-or',
-        externalModelId: 'deepseek/deepseek-v4',
-        supportsVision: false,
-      }),
+      model({ id: 'm-hid', providerId: 'p-or', externalModelId: 'deepseek/deepseek-v4' }),
       model({
         id: 'm-hid-twin',
         providerId: 'p-or',
         externalModelId: 'deepseek/deepseek-v4:batch',
         variant: 'batch',
-        supportsVision: true,
       }),
     ];
-    const svc = mkProvidersService(mkPort(rows), factory(), runtime('selfhosted'));
+    const vis = (modelKey: string, supportsVision: boolean): Partial<ModelPriceRow> => ({
+      modelKey,
+      inputPricePer1m: 1,
+      outputPricePer1m: 2,
+      supportsVision,
+      supportsTools: null,
+      supportsReasoning: null,
+      contextWindow: null,
+      maxOutputTokens: null,
+      batchInputPricePer1m: null,
+      batchOutputPricePer1m: null,
+      isFree: false,
+    });
+    // A base and its twin deliberately DISAGREE on vision, in both directions.
+    const svc = mkProvidersService(
+      mkPort(rows, [
+        vis('openrouter:openai/gpt-6-astra', true),
+        vis('openrouter:openai/gpt-6-astra:batch', false),
+        vis('openrouter:deepseek/deepseek-v4', false),
+        vis('openrouter:deepseek/deepseek-v4:batch', true),
+      ]),
+      factory(),
+      runtime('selfhosted'),
+    );
     const out = await svc.listModels(principal, { supportsVision: true });
     expect(out.map((m) => m.id).sort()).toEqual(['m-hid-twin', 'm-vis']);
     expect(out.find((m) => m.id === 'm-vis')?.batchCapable).toBe(true);
     expect(out.find((m) => m.id === 'm-hid-twin')?.baseExternalModelId).toBe(
       'deepseek/deepseek-v4',
     );
+  });
+
+  it('matches a capability filter on the RESOLVED value, and never on unknown', async () => {
+    const rows = [
+      model({ id: 'm-yes', providerId: 'p-or', externalModelId: 'openai/gpt-6-astra' }),
+      model({ id: 'm-no', providerId: 'p-or', externalModelId: 'minimax/minimax-m3' }),
+      // No catalog row at all -> the ladder answers UNKNOWN for this one.
+      model({ id: 'm-unknown', providerId: 'p-or', externalModelId: 'deepseek/deepseek-v4' }),
+    ];
+    const row = (modelKey: string, supportsTools: boolean | null): Partial<ModelPriceRow> => ({
+      modelKey,
+      inputPricePer1m: 1,
+      outputPricePer1m: 2,
+      supportsTools,
+      supportsVision: null,
+      supportsReasoning: null,
+      contextWindow: null,
+      maxOutputTokens: null,
+      batchInputPricePer1m: null,
+      batchOutputPricePer1m: null,
+      isFree: false,
+    });
+    const port = mkPort(rows, [
+      row('openrouter:openai/gpt-6-astra', true),
+      row('openrouter:minimax/minimax-m3', false),
+    ]);
+    const svc = mkProvidersService(port, factory(), runtime('selfhosted'));
+
+    // Before this change these filters ran against a model-row column no code
+    // path ever wrote, so BOTH of them matched nothing for every tenant.
+    expect((await svc.listModels(principal, { supportsTools: true })).map((m) => m.id)).toEqual([
+      'm-yes',
+    ]);
+    // `false` means ASSERTED false — the unknown model is not a negative answer.
+    expect((await svc.listModels(principal, { supportsTools: false })).map((m) => m.id)).toEqual([
+      'm-no',
+    ]);
+    // Unfiltered, the unknown model is present and simply carries no flag.
+    const all = await svc.listModels(principal, {});
+    expect(all.map((m) => m.id).sort()).toEqual(['m-no', 'm-unknown', 'm-yes']);
+    expect(all.find((m) => m.id === 'm-unknown')).not.toHaveProperty('supportsTools');
   });
 });

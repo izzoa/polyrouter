@@ -14,11 +14,16 @@ const model = (over: Partial<CatalogModel> = {}): CatalogModel => ({
   providerId: 'openai',
   externalModelId: 'gpt-4o',
   displayName: 'GPT-4o',
-  contextWindow: 128_000,
-  supportsTools: true,
-  supportsVision: true,
-  supportsReasoning: false,
   variant: null,
+  // Resolved by the shared ladder before it reaches the builder
+  // (honest-model-capabilities) — the builder never reads a model row.
+  capabilities: {
+    supportsTools: true,
+    supportsVision: true,
+    supportsReasoning: false,
+    contextWindow: 128_000,
+    estimated: false,
+  },
   effectivePrice: {
     inputPricePer1m: 2.5,
     outputPricePer1m: 10,
@@ -102,12 +107,46 @@ describe('buildCatalog', () => {
 
   it('omits an unset context window and an unknown price rather than nulling them', () => {
     const e = byId(
-      buildCatalog([model({ contextWindow: null, effectivePrice: null })], []),
+      buildCatalog([model({ capabilities: { estimated: false }, effectivePrice: null })], []),
       'gpt-4o',
     );
     expect(e).not.toHaveProperty('contextWindow');
     expect(e).not.toHaveProperty('price');
     expect(e?.id).toBe('gpt-4o'); // the required fields survive
+  });
+
+  // --- honest-model-capabilities: unknown is ABSENT, never false ---
+
+  it('omits a capability no tier of the ladder stated, rather than rendering false', () => {
+    const e = byId(
+      buildCatalog([model({ capabilities: { supportsTools: true, estimated: false } })], []),
+      'gpt-4o',
+    );
+    expect(e?.supportsTools).toBe(true);
+    // A rendered `false` would assert the model is KNOWN to lack these — a
+    // stronger claim than silence, and the defect this change removes.
+    expect(e).not.toHaveProperty('supportsVision');
+    expect(e).not.toHaveProperty('supportsReasoning');
+    expect(e).not.toHaveProperty('contextWindow');
+  });
+
+  it('carries an ASSERTED false through as false', () => {
+    const e = byId(
+      buildCatalog([model({ capabilities: { supportsVision: false, estimated: false } })], []),
+      'gpt-4o',
+    );
+    expect(e).toHaveProperty('supportsVision', false);
+  });
+
+  it('marks an entry whose capabilities resolved below the exact catalog key', () => {
+    const exact = byId(buildCatalog([model()], []), 'gpt-4o');
+    expect(exact).not.toHaveProperty('capabilitiesEstimated');
+
+    const inferred = byId(
+      buildCatalog([model({ capabilities: { supportsVision: true, estimated: true } })], []),
+      'gpt-4o',
+    );
+    expect(inferred?.capabilitiesEstimated).toBe(true);
   });
 
   it('falls back to the id when no display name is stored', () => {
@@ -207,6 +246,37 @@ describe('catalog envelopes', () => {
       expect(virtual).not.toHaveProperty('context_window');
       expect(virtual).not.toHaveProperty('supports_tools');
       expect(virtual).not.toHaveProperty('pricing');
+      expect(virtual).not.toHaveProperty('capabilities_estimated');
+    }
+  });
+
+  it('renders the estimate marker in BOTH envelopes, and only when inferred', () => {
+    const inferred = buildCatalog(
+      [model({ capabilities: { supportsVision: true, estimated: true } })],
+      [],
+    );
+    for (const render of [renderOpenAiEntry, renderAnthropicEntry]) {
+      expect(render(byId(inferred, 'gpt-4o')!)).toMatchObject({
+        supports_vision: true,
+        capabilities_estimated: true,
+      });
+      // An exact-key result carries the flags with no marker beside them.
+      const exact = render(byId(entries, 'gpt-4o')!);
+      expect(exact).toMatchObject({ supports_tools: true });
+      expect(exact).not.toHaveProperty('capabilities_estimated');
+    }
+  });
+
+  it('omits an unknown flag from both envelopes rather than rendering false', () => {
+    const partial = buildCatalog(
+      [model({ capabilities: { supportsTools: true, estimated: false } })],
+      [],
+    );
+    for (const render of [renderOpenAiEntry, renderAnthropicEntry]) {
+      const body = render(byId(partial, 'gpt-4o')!);
+      expect(body).toHaveProperty('supports_tools', true);
+      expect(body).not.toHaveProperty('supports_vision');
+      expect(body).not.toHaveProperty('supports_reasoning');
     }
   });
 });

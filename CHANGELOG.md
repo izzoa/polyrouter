@@ -15,6 +15,11 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.21.0] — 2026-09-22
+
+[Release](https://github.com/izzoa/polyrouter/releases/tag/v0.21.0) ·
+[Compare](https://github.com/izzoa/polyrouter/compare/v0.20.0...v0.21.0)
+
 ### Changed
 
 - **`/v1/models` stops claiming every model is incapable of everything.** The listing advertised `supports_tools: false`, `supports_vision: false` and `supports_reasoning: false` for **every model in existence**, and never emitted `context_window` — because the columns it read had no writer anywhere in the codebase, so every read returned the column default as though it were an answer. Each flag is now `true`, `false`, or **absent**, where absent means no source has stated it: a rendered `false` asserts a model is *known* to lack a capability, which is a different and stronger claim than having no information. Capability resolves from the global pricing catalog — where the provider contracts always placed it — through a ladder of the exact catalog key, the aggregator native-family row, then the provider's own claim, with anything below the exact key marked as an estimate. The same defect made `GET /api/models?supportsTools=true` return an empty list for every tenant; that filter now matches resolved values, and matches neither `true` nor `false` for a model whose capability is unknown. Clients reading the previous universally-`false` value will see flags appear, disappear, and turn true.
@@ -1006,7 +1011,8 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.21.0
 [0.20.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.20.0
 [0.19.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.19.0
 [0.18.2]: https://github.com/izzoa/polyrouter/releases/tag/v0.18.2

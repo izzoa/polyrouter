@@ -1029,8 +1029,16 @@ export class FakeApiClient implements ApiClient {
     return Promise.resolve(provider);
   }
 
+  /** Set to make the next reauthorize start fail (add-provider-health-signals). */
+  oauthReauthorizeRejects: ApiError | null = null;
+
   oauthReauthorize(providerId: string): Promise<import('../data/api').OauthStartResult> {
     this.record('oauthReauthorize', providerId);
+    if (this.oauthReauthorizeRejects) {
+      const e = this.oauthReauthorizeRejects;
+      this.oauthReauthorizeRejects = null;
+      return Promise.reject(e);
+    }
     return Promise.resolve({
       sessionId: `sess-re-${providerId}`,
       authorizeUrl: `https://idp.example/authorize?state=st-re`,

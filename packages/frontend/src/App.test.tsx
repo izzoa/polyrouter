@@ -2330,6 +2330,111 @@ describe('provider card health line and Reconnect (add-provider-health-signals)'
     }
   });
 
+  // Field bug (v0.22.0): Reconnect opened the ADD-provider form — the wizard was
+  // gated on the preset list, which only `openModal` loads. Reconnect is its own mode.
+  const clickReconnect = (card: HTMLElement): void => {
+    [...card.querySelectorAll<HTMLElement>('button')]
+      .find((b) => b.textContent?.trim() === 'Reconnect')!
+      .click();
+  };
+
+  it('Reconnect as the first modal of the session shows the sign-in steps — never the add-provider form', async () => {
+    const fake = new FakeApiClient({ providers: [{ ...base, id: 'prov-first', name: 'OpenAI' }] });
+    const { host, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Providers');
+      await flush();
+      clickReconnect(cardOf(host, 'OpenAI'));
+      await flush();
+      const dialog = host.querySelector<HTMLElement>('[role="dialog"]')!;
+      expect(dialog.querySelector('#modal-title')?.textContent).toBe('Reconnect OpenAI');
+      expect(dialog.querySelector('[data-reconnect-view]')).not.toBeNull();
+      expect(dialog.textContent).toContain('Open sign-in link');
+      expect(dialog.querySelector('#f-ow-paste')).not.toBeNull();
+      // None of the add-provider form: no name, no kind picker, no Add provider.
+      expect(dialog.querySelector('#f-np-name')).toBeNull();
+      expect(dialog.textContent).not.toContain('Kind');
+      expect(
+        [...dialog.querySelectorAll('button')].map((b) => b.textContent?.trim()),
+      ).not.toContain('Add provider');
+    } finally {
+      dispose();
+    }
+  });
+
+  it('a leftover "Other subscription" toggle cannot hide the reconnect steps', async () => {
+    const fake = new FakeApiClient({ providers: [{ ...base, id: 'prov-adv', name: 'OpenAI' }] });
+    const store = createAppStore(fake);
+    const { host, dispose } = mount(store);
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Providers');
+      await flush();
+      store.openModal('newProvider');
+      store.setState('np', 'kind', 'sub');
+      store.setState('ow', 'advanced', true);
+      await flush();
+      store.closeModal();
+      await flush();
+      clickReconnect(cardOf(host, 'OpenAI'));
+      await flush();
+      const dialog = host.querySelector<HTMLElement>('[role="dialog"]')!;
+      expect(dialog.querySelector('#f-ow-paste')).not.toBeNull();
+      expect(dialog.querySelector('#f-np-name')).toBeNull();
+    } finally {
+      dispose();
+    }
+  });
+
+  it('a reconnect that cannot start says why and offers Try again', async () => {
+    const fake = new FakeApiClient({ providers: [{ ...base, id: 'prov-err', name: 'OpenAI' }] });
+    fake.oauthReauthorizeRejects = new ApiError(
+      503,
+      'Unavailable',
+      'connect is temporarily unavailable',
+    );
+    const { host, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Providers');
+      await flush();
+      clickReconnect(cardOf(host, 'OpenAI'));
+      await flush();
+      const dialog = host.querySelector<HTMLElement>('[role="dialog"]')!;
+      expect(dialog.textContent).toContain('connect is temporarily unavailable');
+      clickByText(dialog, 'button', 'Try again');
+      await flush();
+      expect(dialog.querySelector('#f-ow-paste')).not.toBeNull();
+      expect(fake.callLog.filter((c) => c.method === 'oauthReauthorize')).toHaveLength(2);
+    } finally {
+      dispose();
+    }
+  });
+
+  it('completing a reconnect renews the same row, closes the dialog, and runs one Test', async () => {
+    const fake = new FakeApiClient({ providers: [{ ...base, id: 'prov-done', name: 'OpenAI' }] });
+    const { host, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Providers');
+      await flush();
+      clickReconnect(cardOf(host, 'OpenAI'));
+      await flush();
+      const paste = host.querySelector<HTMLInputElement>('#f-ow-paste')!;
+      paste.value = 'http://localhost:1455/auth/callback?code=c&state=st-re';
+      paste.dispatchEvent(new Event('input', { bubbles: true }));
+      clickByText(host, '[role="dialog"] button', 'Connect');
+      await flush();
+      expect(fake.lastArgs('oauthComplete')?.[0]).toBe('sess-re-prov-done');
+      expect(host.querySelector('[role="dialog"]')).toBeNull();
+      expect(fake.callLog.filter((c) => c.method === 'testProvider')).toHaveLength(1);
+      expect(fake.providers.filter((p) => p.name === 'OpenAI')).toHaveLength(1); // same row
+    } finally {
+      dispose();
+    }
+  });
+
   it('a non-OAuth card has no Reconnect', async () => {
     const fake = new FakeApiClient({
       providers: [

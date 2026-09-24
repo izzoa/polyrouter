@@ -292,6 +292,11 @@ export interface AppState {
     error: string | null;
     /** "Other subscription (advanced)" — the classic paste form instead of a preset. */
     advanced: boolean;
+    /** Reconnect mode (add-provider-health-signals): the provider being renewed in
+     * place. While set, the modal shows ONLY the sign-in steps for it — independent
+     * of the preset list (a reconnect works even for a since-disabled preset) and of
+     * the "advanced" paste toggle. */
+    reconnect: { providerId: string; name: string } | null;
   };
 
   // Observe (analytics) slices — fetched from /api/analytics (#17). Each carries
@@ -838,7 +843,15 @@ function initialState(): AppState {
 
     na: { name: '', harness: 'openai_sdk', busy: false, error: null },
     np: emptyNp(),
-    ow: { presets: [], active: null, pasted: '', busy: false, error: null, advanced: false },
+    ow: {
+      presets: [],
+      active: null,
+      pasted: '',
+      busy: false,
+      error: null,
+      advanced: false,
+      reconnect: null,
+    },
     kr: emptyKeyReveal(),
 
     analyticsSummary: null,
@@ -3139,7 +3152,17 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     startOauthReauthorize: async (p) => {
       if (state.ow.busy) return;
       setState({ modal: 'newProvider', np: { ...emptyNp(), kind: 'sub' } });
-      setState('ow', { busy: true, error: null, presets: state.ow.presets });
+      // A dedicated reconnect mode — never the add-provider form: it must not depend
+      // on the preset list having loaded, nor on a leftover "advanced" toggle.
+      setState('ow', {
+        presets: state.ow.presets,
+        active: null,
+        pasted: '',
+        busy: true,
+        error: null,
+        advanced: false,
+        reconnect: { providerId: p.id, name: p.name },
+      });
       try {
         const start = await client.oauthReauthorize(p.id);
         setState('ow', {
@@ -3188,6 +3211,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
               busy: false,
               error: null,
               advanced: false,
+              reconnect: null,
             };
             s.modal = null;
           }),
@@ -3266,7 +3290,14 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         setState({ modal, na: { name: '', harness: 'openai_sdk', busy: false, error: null } });
       } else if (modal === 'newProvider') {
         setState({ modal, np: emptyNp() });
-        setState('ow', { active: null, pasted: '', busy: false, error: null, advanced: false });
+        setState('ow', {
+          active: null,
+          pasted: '',
+          busy: false,
+          error: null,
+          advanced: false,
+          reconnect: null,
+        });
         void loadOauthPresets();
       } else {
         setState('modal', modal);
@@ -3297,6 +3328,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
             busy: false,
             error: null,
             advanced: false,
+            reconnect: null,
           };
           s.modal = null;
         }),

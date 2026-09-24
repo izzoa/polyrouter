@@ -15,6 +15,10 @@ heading is started.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Reconnect opens the sign-in steps, not the add-provider form.** Clicking Reconnect before any other provider dialog showed the generic add form (the wizard waited on a preset list only "Add provider" loads), leaving no way to renew the sign-in; it now opens a dedicated "Reconnect <name>" view with the two sign-in steps, a starting state, and a Try-again on failure.
+
 ## [0.22.0] — 2026-09-24
 
 [Release](https://github.com/izzoa/polyrouter/releases/tag/v0.22.0) ·

@@ -15,6 +15,11 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.22.1] — 2026-09-24
+
+[Release](https://github.com/izzoa/polyrouter/releases/tag/v0.22.1) ·
+[Compare](https://github.com/izzoa/polyrouter/compare/v0.22.0...v0.22.1)
+
 ### Fixed
 
 - **Reconnect opens the sign-in steps, not the add-provider form.** Clicking Reconnect before any other provider dialog showed the generic add form (the wizard waited on a preset list only "Add provider" loads), leaving no way to renew the sign-in; it now opens a dedicated "Reconnect <name>" view with the two sign-in steps, a starting state, and a Try-again on failure.
@@ -1040,7 +1045,8 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.22.0...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.22.1...HEAD
+[0.22.1]: https://github.com/izzoa/polyrouter/releases/tag/v0.22.1
 [0.22.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.22.0
 [0.21.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.21.0
 [0.20.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.20.0

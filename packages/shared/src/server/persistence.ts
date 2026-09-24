@@ -69,6 +69,67 @@ export interface OwnedRepository<TRow, TInsertInput, TPatch> {
   remove(principal: Principal, id: string): Promise<boolean>;
 }
 
+/** Provider health (add-provider-health-signals). The CHECK record is `status` +
+ * its reason/source/time; the TRAFFIC record is written only on shared-breaker
+ * transitions. Which one is displayed is decided by a row-serialized revision. */
+export type ProviderCheckStatus = 'unknown' | 'ok' | 'error';
+export type ProviderCheckSource = 'test' | 'sync' | 'refresh' | 'reconnect' | 'edit';
+export type ProviderTrafficState = 'ok' | 'failing';
+
+/** One health observation. `kind` is kept only on a failing record (the write
+ * normalizes it away otherwise). A traffic observation carries the breaker-issued
+ * per-provider `seq` that totally orders traffic writes. */
+export type ProviderHealthPatch =
+  | {
+      readonly record: 'check';
+      readonly status: ProviderCheckStatus;
+      readonly kind: string | null;
+      readonly source: ProviderCheckSource;
+    }
+  | {
+      readonly record: 'traffic';
+      readonly state: ProviderTrafficState;
+      readonly kind: string | null;
+      readonly seq: number;
+    };
+
+/** The credential + endpoint an observation was made against. A health write
+ * applies only while the row still has exactly this incarnation, so nothing
+ * observed against a replaced credential or endpoint is ever recorded against
+ * its replacement. `envelope` is the stored ciphertext (random IV per write, so
+ * every credential mutation changes it); it is compared, never logged. */
+export interface ProviderIncarnation {
+  readonly envelope: string | null;
+  readonly baseUrl: string | null;
+  readonly protocol: string;
+}
+
+export interface ProviderAccessor extends OwnedRepository<
+  ProviderRow,
+  ProviderInsertInput,
+  ProviderPatch
+> {
+  /** One owner-scoped conditional UPDATE: applies only while the row has the
+   * observation's incarnation (and, for traffic, only when `seq` is newer than
+   * the recorded one); bumps `health_rev` and stamps the written record's
+   * revision. Returns whether a row changed. */
+  setHealth(
+    principal: Principal,
+    id: string,
+    patch: ProviderHealthPatch,
+    guard: ProviderIncarnation,
+  ): Promise<boolean>;
+  /** `update` plus, in the SAME statement, the check record reset to `unknown`
+   * (with `source`) and the traffic record cleared — for a write that changes the
+   * provider's incarnation (credential/endpoint edit, reauthorization). */
+  updateResettingHealth(
+    principal: Principal,
+    id: string,
+    patch: ProviderPatch,
+    source: 'edit' | 'reconnect',
+  ): Promise<ProviderRow | null>;
+}
+
 export type ModelInsertInput = Omit<(typeof models)['$inferInsert'], 'id' | 'providerId'>;
 export type ModelPatch = Partial<ModelInsertInput>;
 
@@ -1254,7 +1315,7 @@ export interface BodyCaptureAccessor {
  * unwritable against it. */
 export interface PersistencePort {
   agents: OwnedRepository<AgentRow, AgentInsertInput, AgentPatch>;
-  providers: OwnedRepository<ProviderRow, ProviderInsertInput, ProviderPatch>;
+  providers: ProviderAccessor;
   tiers: OwnedRepository<TierRow, TierInsertInput, TierPatch>;
   routingRules: OwnedRepository<RoutingRuleRow, RoutingRuleInsertInput, RoutingRulePatch>;
   notificationChannels: OwnedRepository<
@@ -1312,11 +1373,29 @@ export interface ReservationMaintenance {
  * system-owned columns its purpose names; none returns a query builder, a raw
  * handle, or a by-id read of an owned row. Consumed by scheduler and bootstrap
  * providers only — never by a request-handling module. */
+/** One OAuth-connected provider as the refresh sweep sees it — NON-SECRET
+ * identifying fields only (never the credential envelope). */
+export interface OauthSweepRow {
+  readonly id: string;
+  readonly ownerUserId: string;
+  readonly credentialExpiresAt: Date | null;
+}
+
+/** The OAuth proactive-refresh sweep's listing (add-provider-health-signals):
+ * OAuth-connected subscription providers ACROSS owners, list-only and id-paged
+ * (every row reachable every tick; no null-ordering gaps). It writes nothing —
+ * each refresh it leads to runs through the scoped `PersistencePort` under the
+ * row's own owner. No by-id read exists here. */
+export interface ProviderMaintenance {
+  listOauthConnected(page: { afterId: string | null; limit: number }): Promise<OauthSweepRow[]>;
+}
+
 export interface PersistenceMaintenance {
   /** B-1's classification pass (add-model-variant-detection), moved here. */
   models: ModelMaintenance;
   batchJobs: BatchJobMaintenance;
   reservations: ReservationMaintenance;
+  providers: ProviderMaintenance;
 }
 
 /** Privileged facilities (needed by #3's first-admin transaction). Callbacks

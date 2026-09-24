@@ -111,6 +111,14 @@ export type {
   TierPatch,
   UsersInfra,
   ReplaceEntryInput,
+  ProviderAccessor,
+  OauthSweepRow,
+  ProviderMaintenance,
+  ProviderCheckSource,
+  ProviderCheckStatus,
+  ProviderHealthPatch,
+  ProviderIncarnation,
+  ProviderTrafficState,
 } from './persistence';
 export {
   AGGREGATOR_FAMILIES,

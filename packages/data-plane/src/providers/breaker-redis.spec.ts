@@ -76,7 +76,10 @@ suite('RedisBreakerStore against real Redis', () => {
   });
 
   it('parity (generation guard): a stale-generation completion is ignored, matching InMemory', async () => {
-    for (const store of [new InMemoryBreakerStore(), new RedisBreakerStore(redis, prefix)] as const) {
+    for (const store of [
+      new InMemoryBreakerStore(),
+      new RedisBreakerStore(redis, prefix),
+    ] as const) {
       const pid = `stale-${store instanceof RedisBreakerStore ? 'red' : 'mem'}`;
       const a = await store.decide(pid, 0, cfg); // closed admission, generation G
       await open(store, pid, 0); // opens under a newer generation
@@ -138,6 +141,115 @@ suite('RedisBreakerStore against real Redis', () => {
 
     await red.renew(pid, probe.generation, 0, cfg);
     await red.complete(pid, probe.generation, 'success', 0, cfg); // still the current generation → closes
-    expect((await red.decide(pid, 0, cfg))).toMatchObject({ decision: 'allow', isProbe: false });
+    expect(await red.decide(pid, 0, cfg)).toMatchObject({ decision: 'allow', isProbe: false });
+  });
+
+  // ---- add-provider-health-signals (tasks 5.1/5.2): generations are never reused,
+  // and completions report `applied` + a strictly increasing per-provider `seq`.
+
+  it('a token admitted before the record expired is stale on the recreated record', async () => {
+    const short: BreakerConfig = { ...cfg, stateTtlMs: 150 };
+    for (const store of [
+      new InMemoryBreakerStore(),
+      new RedisBreakerStore(redis, prefix),
+    ] as const) {
+      const red = store instanceof RedisBreakerStore;
+      const pid = `expiry-${red ? 'red' : 'mem'}`;
+      const stale = await store.decide(pid, 1_000, short);
+      if (red) {
+        await sleep(250); // the Redis record's TTL lapses
+      } else {
+        // The in-memory store has no TTL; model expiry as the record's loss.
+        (store as unknown as { records: Map<string, unknown> }).records.delete(pid);
+      }
+      // Later traffic recreates the record — at a generation no earlier token carries.
+      const fresh = await store.decide(pid, 2_000, short);
+      expect(fresh.generation).not.toBe(stale.generation);
+      for (let i = 0; i < short.threshold; i += 1) {
+        const c = await store.complete(pid, stale.generation, 'trip', 2_000, short);
+        expect(c).toMatchObject({ applied: false, justOpened: false, seq: 0 });
+      }
+      expect((await store.decide(pid, 2_000, short)).decision).toBe('allow'); // still closed
+    }
+  });
+
+  it('five tripping completions admitted before a reset are all stale — closed, no open', async () => {
+    for (const store of [
+      new InMemoryBreakerStore(),
+      new RedisBreakerStore(redis, prefix),
+    ] as const) {
+      const pid = `reset-${store instanceof RedisBreakerStore ? 'red' : 'mem'}`;
+      const tokens = [];
+      for (let i = 0; i < 5; i += 1) tokens.push(await store.decide(pid, 1_000, cfg));
+      await store.reset(pid);
+      for (const tk of tokens) {
+        const c = await store.complete(pid, tk.generation, 'trip', 1_000, cfg);
+        expect(c).toMatchObject({ applied: false, justOpened: false });
+      }
+      const after = await store.decide(pid, 1_000, cfg);
+      expect(after).toMatchObject({ decision: 'allow', isProbe: false });
+    }
+  });
+
+  it('a record written before this change keeps its generation', async () => {
+    const red = new RedisBreakerStore(redis, prefix);
+    await redis.hset(`${prefix}legacy`, {
+      state: 'closed',
+      failures: 0,
+      openedAt: 0,
+      generation: 7,
+      probeExpiresAt: 0,
+    });
+    const a = await red.decide('legacy', 0, cfg);
+    expect(a.generation).toBe(7);
+    expect(await red.complete('legacy', 7, 'success', 0, cfg)).toMatchObject({ applied: true });
+  });
+
+  it('applied: stale → false; a closed zero-failure success and a half-open close → true', async () => {
+    for (const store of [
+      new InMemoryBreakerStore(),
+      new RedisBreakerStore(redis, prefix),
+    ] as const) {
+      const red = store instanceof RedisBreakerStore;
+      const pid = `applied-${red ? 'red' : 'mem'}`;
+      const a = await store.decide(pid, 0, cfg);
+      expect(await store.complete(pid, a.generation, 'success', 0, cfg)).toMatchObject({
+        applied: true,
+      });
+      expect(await store.complete(pid, a.generation - 1, 'success', 0, cfg)).toMatchObject({
+        applied: false,
+      });
+      expect(await store.complete(pid, a.generation, 'neutral', 0, cfg)).toMatchObject({
+        applied: false,
+      });
+      // Open, wait out the cooldown, admit the probe, close it.
+      await open(store, pid, 0);
+      if (red) await sleep(cfg.cooldownMs + 80);
+      const probe = await store.decide(pid, red ? 0 : cfg.cooldownMs + 1, cfg);
+      expect(probe.isProbe).toBe(true);
+      expect(
+        await store.complete(pid, probe.generation, 'success', red ? 0 : cfg.cooldownMs + 1, cfg),
+      ).toMatchObject({ applied: true });
+    }
+  });
+
+  it('seq strictly increases: same millisecond, across a reset, and across a record expiry', async () => {
+    const short: BreakerConfig = { ...cfg, stateTtlMs: 150 };
+    const red = new RedisBreakerStore(redis, prefix);
+    const pid = 'seq';
+    const seqs: number[] = [];
+    // A burst of applied completions — many land in the same server millisecond.
+    for (let i = 0; i < 20; i += 1) {
+      const a = await red.decide(pid, 0, short);
+      seqs.push((await red.complete(pid, a.generation, 'success', 0, short)).seq);
+    }
+    await red.reset(pid);
+    let a = await red.decide(pid, 0, short);
+    seqs.push((await red.complete(pid, a.generation, 'success', 0, short)).seq);
+    await sleep(250); // the record (incl. lastSeq) expires
+    a = await red.decide(pid, 0, short);
+    seqs.push((await red.complete(pid, a.generation, 'success', 0, short)).seq);
+    for (let i = 1; i < seqs.length; i += 1) expect(seqs[i]!).toBeGreaterThan(seqs[i - 1]!);
+    expect(Number.isSafeInteger(seqs[seqs.length - 1]!)).toBe(true);
   });
 });

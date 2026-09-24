@@ -232,6 +232,9 @@ export interface AppState {
   agentStatsLoaded: boolean;
   providers: Provider[];
   providersError: string | null;
+  /** add-provider-health-signals: providers whose post-reconnect Test is in flight
+   * (the card reads "Reconnected — checking…"); cleared when that Test settles. */
+  reconnectChecking: string[];
   models: Record<string, Model[]>;
 
   // user administration (admin-only Users page + public accept-invite)
@@ -540,6 +543,7 @@ function toProvider(p: ProviderDto): Provider {
     firstByteTimeoutMs: p.firstByteTimeoutMs,
     idleTimeoutMs: p.idleTimeoutMs,
     createdAt: p.createdAt,
+    health: p.health,
   };
 }
 
@@ -816,6 +820,7 @@ function initialState(): AppState {
     agentStatsLoaded: false,
     providers: [],
     providersError: null,
+    reconnectChecking: [],
     models: {},
 
     ua: {
@@ -2720,6 +2725,19 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     }
   };
 
+  const testProviderById = async (id: string): Promise<void> => {
+    try {
+      const result = await client.testProvider(id);
+      setState('providers', (p) => p.id === id, 'status', result.status);
+      say(result.ok ? 'Connection ok' : `Connection failed — ${result.message}`);
+      // add-provider-health-signals: reload so the card shows the test's RECORDED
+      // health (reason, source, time) — not just the status this result carries.
+      await loadProviders();
+    } catch (e) {
+      say(err(e));
+    }
+  };
+
   const acceptInvite = async (): Promise<void> => {
     if (state.ai.busy) return;
     const token = state.inviteToken;
@@ -3176,9 +3194,20 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         );
         say(
           isReauthorize
-            ? `${dto.name} reconnected — tokens will auto-refresh`
+            ? `${dto.name} reconnected — checking the connection…`
             : `${dto.name} connected — sync models to start routing`,
         );
+        // add-provider-health-signals: a reconnect verifies itself — ONE Test, with
+        // the card reading "Reconnected — checking…" until it settles (success or
+        // failure). A first connect keeps its sync prompt and runs no Test.
+        if (isReauthorize) {
+          setState('reconnectChecking', (ids) => [...ids, dto.id]);
+          try {
+            await testProviderById(dto.id);
+          } finally {
+            setState('reconnectChecking', (ids) => ids.filter((x) => x !== dto.id));
+          }
+        }
       } catch (e) {
         // The pasted value is credential material — cleared after every submit attempt.
         setState('ow', { busy: false, pasted: '', error: err(e) });
@@ -3188,19 +3217,12 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       if (state.ow.busy) return;
       setState('ow', { active: null, pasted: '', error: null });
     },
-    testProviderById: async (id) => {
-      try {
-        const result = await client.testProvider(id);
-        setState('providers', (p) => p.id === id, 'status', result.status);
-        say(result.ok ? 'Connection ok' : `Connection failed — ${result.message}`);
-      } catch (e) {
-        say(err(e));
-      }
-    },
+    testProviderById,
     syncProvider: async (id) => {
       try {
         const result = await client.syncModels(id);
         setState('providers', (p) => p.id === id, 'status', result.status);
+        await loadProviders();
         if (result.ok) {
           await loadModels(id);
           say(`Synced ${String(result.synced ?? 0)} models`);

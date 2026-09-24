@@ -186,6 +186,112 @@ describe('provider management', () => {
     expect(stored).not.toContain('sk-secret-e2e');
   });
 
+  // add-provider-health-signals (task 1.4): the list returns the DISPLAYED health
+  // — whichever record was recorded last, by revision, never by timestamp — with a
+  // fixed label, and never the sequence, the revisions, or the envelope.
+  it('exposes displayed health by recording order, with fixed labels and nothing internal', async () => {
+    const created = await asAlice().send({ ...CUSTOM, credential: 'sk-health-secret' });
+    expect(created.status).toBe(201);
+    const id = created.body.id as string;
+    const listOne = async (): Promise<Record<string, unknown>> => {
+      const res = await request(server).get('/api/providers').set('x-test-user', alice);
+      const row = (res.body as Array<Record<string, unknown>>).find((p) => p['id'] === id);
+      if (!row) throw new Error('provider missing from list');
+      return row;
+    };
+    // A fresh provider: no recorded health.
+    expect((await listOne())['health']).toEqual({
+      state: 'unknown',
+      kind: null,
+      message: null,
+      source: null,
+      at: null,
+    });
+    // Check recorded FIRST (rev 1, a LATER timestamp), traffic recorded AFTER (rev 2).
+    await pool.query(
+      `UPDATE provider SET status='error', last_error_kind='auth', status_source='test',
+         status_changed_at = now() + interval '1 hour', status_rev=1,
+         traffic_state='ok', traffic_at=now(), traffic_seq=123456, traffic_rev=2, health_rev=2
+       WHERE id=$1`,
+      [id],
+    );
+    let row = await listOne();
+    expect(row['health']).toMatchObject({ state: 'ok', kind: null, source: 'traffic' });
+    expect(row['lastErrorKind']).toBe('auth');
+    expect(row['lastErrorMessage']).toBe('authentication failed');
+    // The check re-recorded after the traffic record wins, despite an older timestamp.
+    await pool.query(
+      `UPDATE provider SET status_changed_at = now() - interval '1 hour', status_rev=3, health_rev=3
+       WHERE id=$1`,
+      [id],
+    );
+    row = await listOne();
+    expect(row['health']).toMatchObject({
+      state: 'error',
+      kind: 'auth',
+      message: 'authentication failed',
+      source: 'test',
+    });
+    const body = JSON.stringify(row);
+    for (const internal of [
+      'trafficSeq',
+      'statusRev',
+      'trafficRev',
+      'healthRev',
+      'encryptedCredentials',
+    ]) {
+      expect(row).not.toHaveProperty(internal);
+    }
+    expect(body).not.toContain('123456');
+    expect(body).not.toContain('sk-health-secret');
+    expect(body).not.toContain('poly-enc:');
+  });
+
+  it('an edit resets health for the new credential or endpoint; a name-only edit does not', async () => {
+    const created = await asAlice().send({ ...CUSTOM, credential: 'sk-edit-1' });
+    const id = created.body.id as string;
+    const seed = (): Promise<unknown> =>
+      pool.query(
+        `UPDATE provider SET status='error', last_error_kind='auth', status_source='test',
+           status_changed_at=now(), status_rev=1, traffic_state='failing', traffic_error_kind='auth',
+           traffic_at=now(), traffic_seq=10, traffic_rev=2, health_rev=2 WHERE id=$1`,
+        [id],
+      );
+    const health = async (): Promise<Record<string, unknown>> =>
+      (
+        await pool.query<Record<string, unknown>>(
+          `SELECT status, last_error_kind, status_source, traffic_state, traffic_seq, health_rev
+             FROM provider WHERE id=$1`,
+          [id],
+        )
+      ).rows[0]!;
+    const patch = (body: Record<string, unknown>): request.Test =>
+      request(server).patch(`/api/providers/${id}`).set('x-test-user', alice).send(body);
+
+    await seed();
+    expect((await patch({ name: 'renamed' })).status).toBe(200);
+    expect(await health()).toMatchObject({
+      status: 'error',
+      traffic_state: 'failing',
+      health_rev: '2',
+    });
+
+    for (const body of [{ credential: 'sk-edit-2' }, { baseUrl: 'https://1.0.0.1/v1' }]) {
+      await seed();
+      const res = await patch(body);
+      expect(res.status).toBe(200);
+      expect(await health()).toMatchObject({
+        status: 'unknown',
+        last_error_kind: null,
+        status_source: 'edit',
+        traffic_state: null,
+        traffic_seq: null,
+        health_rev: '3',
+      });
+      expect(res.body.health).toMatchObject({ state: 'unknown', source: 'edit' });
+    }
+  });
+
   it('rejects a private/metadata or userinfo base_url with 422', async () => {
     for (const baseUrl of [
       'http://169.254.169.254/v1',

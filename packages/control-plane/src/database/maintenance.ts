@@ -1,4 +1,4 @@
-import { and, asc, eq, gte, lt, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, gte, isNotNull, isNull, lt, sql } from 'drizzle-orm';
 import { BATCH_JOB_TERMINAL_STATUSES } from '@polyrouter/shared';
 import {
   batchJobs,
@@ -7,6 +7,7 @@ import {
   type BatchJobMaintenance,
   type ModelMaintenance,
   type PersistenceMaintenance,
+  type ProviderMaintenance,
   type ReservationMaintenance,
 } from '@polyrouter/shared/server';
 import type { Db } from './database.internal';
@@ -89,6 +90,33 @@ function createReservationMaintenance(db: Db): ReservationMaintenance {
   };
 }
 
+/** The OAuth refresh sweep's listing (add-provider-health-signals): connected,
+ * credentialed, not-errored OAuth providers across owners, id-paged (the partial
+ * `provider_oauth_sweep_idx`), each carrying its owner — and nothing secret. */
+function createProviderMaintenance(db: Db): ProviderMaintenance {
+  return {
+    async listOauthConnected({ afterId, limit }) {
+      return db
+        .select({
+          id: providers.id,
+          ownerUserId: providers.ownerUserId,
+          credentialExpiresAt: providers.credentialExpiresAt,
+        })
+        .from(providers)
+        .where(
+          and(
+            isNotNull(providers.oauthPreset),
+            isNotNull(providers.encryptedCredentials),
+            isNull(providers.credentialError),
+            ...(afterId !== null ? [gt(providers.id, afterId)] : []),
+          ),
+        )
+        .orderBy(asc(providers.id))
+        .limit(Math.max(0, limit));
+    },
+  };
+}
+
 /** Built inside the persistence module over the PRIVATE handle; only the
  * `PERSISTENCE_MAINTENANCE` token leaves it, and only through the maintenance
  * module (see `maintenance.module.ts`). No member returns a query builder or a
@@ -98,5 +126,6 @@ export function buildPersistenceMaintenance(db: Db): PersistenceMaintenance {
     models: createModelMaintenance(db),
     batchJobs: createBatchJobMaintenance(db),
     reservations: createReservationMaintenance(db),
+    providers: createProviderMaintenance(db),
   };
 }

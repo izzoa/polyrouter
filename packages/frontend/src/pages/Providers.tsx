@@ -1,24 +1,21 @@
-import { createSignal, For, Show } from 'solid-js';
+import { createSignal, For, onCleanup, onMount, Show } from 'solid-js';
 import type { ModelPricingInput } from '../data/api';
 import { fmtUsd } from '../data/format';
 import { isPriceEditableKind, providerKindLabel } from '../state/appState';
 import { isNonRoutableVariant } from '@polyrouter/shared';
 import { useApp } from '../state/context';
-import type { Model, Provider, ProviderStatus } from '../types';
+import type { Model, Provider } from '../types';
+import { providerHealthView, type HealthTone } from '../data/providerHealth';
 
-/** The status DOT's fill — appearance unchanged. */
-function statusDotColor(s: ProviderStatus): string {
-  return s === 'ok' ? 'var(--green)' : s === 'error' ? 'var(--red)' : 'var(--text3)';
+/** The status DOT's fill, by the health line's tone (add-provider-health-signals). */
+function toneDotColor(tone: HealthTone): string {
+  return tone === 'green' ? 'var(--green)' : tone === 'red' ? 'var(--red)' : 'var(--text3)';
 }
 
 /** The status LABEL's text colour. Split from the dot because the fill green is only
  * 2.7:1 on white — fine for a 6px dot, a WCAG failure for an 11.5px label. */
-function statusTextColor(s: ProviderStatus): string {
-  return s === 'ok' ? 'var(--green-text)' : s === 'error' ? 'var(--red)' : 'var(--text3)';
-}
-
-function statusLabel(s: ProviderStatus): string {
-  return s === 'ok' ? 'Healthy' : s === 'error' ? 'Last action failed' : 'Not tested yet';
+function toneTextColor(tone: HealthTone): string {
+  return tone === 'green' ? 'var(--green-text)' : tone === 'red' ? 'var(--red)' : 'var(--text3)';
 }
 
 /** The effective display price — resolved server-side (billing resolver, then the
@@ -31,7 +28,8 @@ function priceText(m: Model): string {
 }
 
 /** "· expires in Nh" from the non-secret credential expiry (blank when unknown/past —
- * the reauthorize state carries its own messaging). */
+ * the reauthorize state carries its own messaging). A token lifetime says nothing
+ * about upstream health, so it renders on its own neutral line. */
 function expiresLabel(iso: string | null): string {
   if (iso === null) return '';
   const ms = new Date(iso).getTime() - Date.now();
@@ -188,6 +186,12 @@ function ProviderCard(props: { p: Provider }) {
     if (next) void app.loadModels(props.p.id);
   };
 
+  // add-provider-health-signals: ONE status line, rendered from the server's
+  // displayed health (never re-derived here), stated in text — never colour alone.
+  const view = () =>
+    providerHealthView(props.p, Date.now(), state.reconnectChecking.includes(props.p.id));
+  const reconnect = (): void => void app.startOauthReauthorize(props.p);
+
   const remove = (): void => {
     if (
       globalThis.confirm(
@@ -203,11 +207,12 @@ function ProviderCard(props: { p: Provider }) {
       <div style="display:flex;align-items:center;justify-content:space-between">
         <div style="display:flex;align-items:center;gap:8px">
           <span
+            aria-hidden="true"
             style={{
               width: '8px',
               height: '8px',
               'border-radius': '50%',
-              background: statusDotColor(props.p.status),
+              background: toneDotColor(view().tone),
               flex: 'none',
             }}
           />
@@ -217,9 +222,33 @@ function ProviderCard(props: { p: Provider }) {
           {providerKindLabel(props.p.kind)}
         </span>
       </div>
-      <div style={{ font: "400 11.5px 'Geist',sans-serif", color: statusTextColor(props.p.status) }}>
-        {statusLabel(props.p.status)}
-      </div>
+      {/* ONE status slot: the reconnect-required banner, or the health line. */}
+      <Show
+        when={view().banner}
+        fallback={
+          <div
+            data-health-line
+            style={{ font: "400 11.5px 'Geist',sans-serif", color: toneTextColor(view().tone) }}
+          >
+            {view().text}
+          </div>
+        }
+      >
+        <div
+          data-health-line
+          style="display:flex;align-items:center;gap:10px;font:400 11px 'Geist',sans-serif;color:var(--amber);background:var(--amber-bg);border-radius:7px;padding:8px 10px"
+        >
+          <span>{view().text}</span>
+          <button
+            type="button"
+            class="btn-ghost"
+            style="margin-left:auto;flex:none"
+            onClick={reconnect}
+          >
+            Reconnect
+          </button>
+        </div>
+      </Show>
       <div
         class="mono"
         style="font:400 11px 'Geist Mono',monospace;color:var(--text3);word-break:break-all"
@@ -230,31 +259,10 @@ function ProviderCard(props: { p: Provider }) {
         {props.p.hasCredential ? 'credential set (encrypted)' : 'no credential'}
       </div>
 
-      <Show when={props.p.oauthPreset !== null}>
-        <Show
-          when={props.p.credentialError === 'reauthorize_required'}
-          fallback={
-            <div style="font:400 11px 'Geist',sans-serif;color:var(--green-text)">
-              <span
-                aria-hidden="true"
-                style="display:inline-block;width:6px;height:6px;border-radius:50%;background:currentColor;vertical-align:0.08em"
-              />{' '}
-              Connected · auto-refreshes{expiresLabel(props.p.credentialExpiresAt)}
-            </div>
-          }
-        >
-          <div style="display:flex;align-items:center;gap:10px;font:400 11px 'Geist',sans-serif;color:var(--amber);background:var(--amber-bg);border-radius:7px;padding:8px 10px">
-            <span>Sign-in expired — reconnect to keep routing through this subscription.</span>
-            <button
-              type="button"
-              class="btn-ghost"
-              style="margin-left:auto;flex:none"
-              onClick={() => void app.startOauthReauthorize(props.p)}
-            >
-              Reauthorize
-            </button>
-          </div>
-        </Show>
+      <Show when={props.p.oauthPreset !== null && !view().banner}>
+        <div data-token-line style="font:400 11px 'Geist',sans-serif;color:var(--text3)">
+          Signed in · renews automatically{expiresLabel(props.p.credentialExpiresAt)}
+        </div>
       </Show>
 
       <Show when={props.p.kind === 'subscription'}>
@@ -273,7 +281,11 @@ function ProviderCard(props: { p: Provider }) {
       </Show>
 
       <div style="display:flex;gap:6px;margin-top:2px;flex-wrap:wrap">
-        <button type="button" class="btn-ghost" onClick={() => void app.testProviderById(props.p.id)}>
+        <button
+          type="button"
+          class="btn-ghost"
+          onClick={() => void app.testProviderById(props.p.id)}
+        >
           Test
         </button>
         <button type="button" class="btn-ghost" onClick={() => void app.syncProvider(props.p.id)}>
@@ -282,6 +294,12 @@ function ProviderCard(props: { p: Provider }) {
         <button type="button" class="btn-ghost" onClick={toggleModels} aria-expanded={open()}>
           {open() ? 'Hide models' : 'Models'}
         </button>
+        {/* The banner carries Reconnect in the reconnect-required state — one per card. */}
+        <Show when={props.p.oauthPreset !== null && !view().banner}>
+          <button type="button" class="btn-ghost" onClick={reconnect}>
+            Reconnect
+          </button>
+        </Show>
         <button type="button" class="btn-ghost" onClick={() => app.openEditProvider(props.p)}>
           Edit
         </button>
@@ -359,7 +377,10 @@ function ProviderCard(props: { p: Provider }) {
                   data-orphan-batch={m.externalModelId}
                   style="display:flex;align-items:baseline;justify-content:space-between;gap:8px"
                 >
-                  <span class="mono" style="font:500 11.5px 'Geist Mono',monospace;color:var(--text3)">
+                  <span
+                    class="mono"
+                    style="font:500 11.5px 'Geist Mono',monospace;color:var(--text3)"
+                  >
                     {m.displayName ?? m.externalModelId}
                   </span>
                   <span style="font:400 10px 'Geist',sans-serif;color:var(--text3)">
@@ -378,6 +399,17 @@ function ProviderCard(props: { p: Provider }) {
 export function Providers() {
   const app = useApp();
   const { state } = app;
+  // add-provider-health-signals: health is recorded elsewhere (live traffic, the
+  // refresh sweep), so the list is reloaded when the page opens and whenever its tab
+  // becomes visible again — never only at login.
+  onMount(() => {
+    void app.loadProviders();
+    const onVisible = (): void => {
+      if (document.visibilityState === 'visible') void app.loadProviders();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    onCleanup(() => document.removeEventListener('visibilitychange', onVisible));
+  });
   return (
     <div class="rs-page" style="display:flex;flex-direction:column;gap:14px;max-width:1200px">
       <div style="display:flex;justify-content:space-between;align-items:center">

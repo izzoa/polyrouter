@@ -73,6 +73,20 @@ export const DEFAULT_LOGIN_CONFIG: LoginConfig = {
 
 const NOW = '2026-07-15T00:00:00.000Z';
 
+/** A provider with no recorded health (add-provider-health-signals) — spread into
+ * `ProviderDto` fixtures. */
+export const UNRECORDED_HEALTH = {
+  health: { state: 'unknown', kind: null, message: null, source: null, at: null },
+  lastErrorKind: null,
+  lastErrorMessage: null,
+  statusSource: null,
+  statusChangedAt: null,
+  trafficState: null,
+  trafficErrorKind: null,
+  trafficErrorMessage: null,
+  trafficAt: null,
+} as const satisfies Partial<ProviderDto>;
+
 /** Default calibration evidence (add-per-agent-calibration-evidence), shaped so the
  * four per-edge states are all reachable from the default fake: `sufficient` +
  * `absent` (agent-0), `accumulating` (agent-1), `reset` (agent-2), and a
@@ -928,6 +942,7 @@ export class FakeApiClient implements ApiClient {
       firstByteTimeoutMs: input.firstByteTimeoutMs ?? null,
       idleTimeoutMs: input.idleTimeoutMs ?? null,
       createdAt: NOW,
+      ...UNRECORDED_HEALTH,
     };
     this.providers = [...this.providers, provider];
     return Promise.resolve(provider);
@@ -972,6 +987,24 @@ export class FakeApiClient implements ApiClient {
   oauthComplete(sessionId: string, pasted: string): Promise<ProviderDto> {
     this.record('oauthComplete', sessionId, pasted);
     if (this.oauthCompleteRejects) return Promise.reject(this.oauthCompleteRejects);
+    // A reconnect session renews the SAME row in place and resets its health
+    // (mirrors the backend — add-provider-health-signals).
+    if (sessionId.startsWith('sess-re-')) {
+      const id = sessionId.slice('sess-re-'.length);
+      const existing = this.providers.find((p) => p.id === id);
+      if (existing) {
+        const renewed: ProviderDto = {
+          ...existing,
+          credentialError: null,
+          status: 'unknown',
+          ...UNRECORDED_HEALTH,
+          statusSource: 'reconnect',
+          health: { state: 'unknown', kind: null, message: null, source: 'reconnect', at: NOW },
+        };
+        this.providers = this.providers.map((p) => (p.id === id ? renewed : p));
+        return Promise.resolve(renewed);
+      }
+    }
     // Mirror the backend: the row is pinned to the session's preset — the ChatGPT
     // preset creates an `openai_responses` row (add-chatgpt-responses).
     const chatgpt = sessionId === 'sess-chatgpt';
@@ -990,6 +1023,7 @@ export class FakeApiClient implements ApiClient {
       credentialExpiresAt: NOW,
       credentialError: null,
       createdAt: NOW,
+      ...UNRECORDED_HEALTH,
     };
     this.providers = [...this.providers, provider];
     return Promise.resolve(provider);
@@ -1014,12 +1048,38 @@ export class FakeApiClient implements ApiClient {
 
   testProvider(id: string): Promise<ActionResult> {
     this.record('testProvider', id);
+    this.recordCheck(id, this.testResult, 'test');
     return Promise.resolve(this.testResult);
+  }
+
+  /** Mirror the backend's check record (add-provider-health-signals): a Test or a
+   * Sync writes the provider's status + health, which the next list returns. */
+  private recordCheck(id: string, result: ActionResult, source: 'test' | 'sync'): void {
+    this.providers = this.providers.map((p) =>
+      p.id !== id
+        ? p
+        : {
+            ...p,
+            status: result.ok ? 'ok' : 'error',
+            statusSource: source,
+            statusChangedAt: NOW,
+            lastErrorKind: result.ok ? null : (result.kind ?? 'unavailable'),
+            lastErrorMessage: result.ok ? null : result.message,
+            health: {
+              state: result.ok ? 'ok' : 'error',
+              kind: result.ok ? null : (result.kind ?? 'unavailable'),
+              message: result.ok ? null : result.message,
+              source,
+              at: NOW,
+            },
+          },
+    );
   }
 
   syncModels(id: string): Promise<ActionResult> {
     this.record('syncModels', id);
     const result = this.syncResult;
+    this.recordCheck(id, result, 'sync');
     if (result.ok && (result.synced ?? 0) > 0 && this.models[id] === undefined) {
       this.models[id] =
         this.syncSeed === null

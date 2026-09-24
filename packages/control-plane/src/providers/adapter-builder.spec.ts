@@ -67,6 +67,7 @@ describe('ProviderAdapterBuilder', () => {
       Promise.resolve({
         credential: 'oauth-ACCESS',
         authScheme: 'oauth_bearer' as const,
+        envelope: 'stored-cipher',
         oauthBeta: 'oauth-2025-04-20',
         probeModel: 'claude-x',
       }),
@@ -161,5 +162,62 @@ describe('ProviderAdapterBuilder', () => {
       const text = (f as Error).message;
       expect(text).not.toMatch(/SECRET|abababab|169\.254|10\.0\.0/);
     }
+  });
+
+  // add-provider-health-signals (task 3.1): the envelope the build ACTUALLY used
+  // comes back beside the config — never inside it.
+  describe('buildConfigWithCredential', () => {
+    it('reports the envelope a lazy refresh just wrote, not the row the caller loaded', async () => {
+      const loaded = row({
+        kind: 'subscription',
+        protocol: 'anthropic_compatible',
+        baseUrl: 'https://api.anthropic.com',
+        encryptedCredentials: 'poly-enc:v1:OLD-CIPHER',
+      });
+      const resolve = jest.fn(() =>
+        Promise.resolve({
+          credential: 'oauth-FRESH',
+          authScheme: 'oauth_bearer' as const,
+          envelope: 'poly-enc:v1:NEW-CIPHER', // written by the refresh inside the build
+        }),
+      );
+      const built = await builder(resolve).buildConfigWithCredential(principal, loaded, opts);
+      expect(built.usedEnvelope).toBe('poly-enc:v1:NEW-CIPHER');
+      expect(built.config.credential).toBe('oauth-FRESH');
+    });
+
+    it('reports the stored envelope for a plain credential and null for a keyless local provider', async () => {
+      const plain = row();
+      expect((await builder().buildConfigWithCredential(principal, plain, opts)).usedEnvelope).toBe(
+        plain.encryptedCredentials,
+      );
+      const local = row({
+        kind: 'local',
+        baseUrl: 'http://127.0.0.1:11434/v1',
+        encryptedCredentials: null,
+      });
+      expect(
+        (await builder(undefined, 'selfhosted').buildConfigWithCredential(principal, local, opts))
+          .usedEnvelope,
+      ).toBeNull();
+    });
+
+    it('never places the envelope in the adapter config', async () => {
+      const envelope = 'poly-enc:v1:MUST-NOT-LEAK';
+      const oauth = await builder(() =>
+        Promise.resolve({ credential: 'tok', authScheme: 'oauth_bearer' as const, envelope }),
+      ).buildConfigWithCredential(
+        principal,
+        row({
+          kind: 'subscription',
+          protocol: 'anthropic_compatible',
+          baseUrl: 'https://api.anthropic.com',
+        }),
+        opts,
+      );
+      expect(JSON.stringify(oauth.config)).not.toContain('MUST-NOT-LEAK');
+      const plain = await builder().buildConfigWithCredential(principal, row(), opts);
+      expect(JSON.stringify(plain.config)).not.toContain(plain.usedEnvelope!);
+    });
   });
 });

@@ -11,6 +11,8 @@ import type {
   ProviderInsertInput,
   ProviderPatch,
   ProviderRow,
+  ProviderHealthPatch,
+  ProviderIncarnation,
 } from '@polyrouter/shared/server';
 import { decryptSecret, resolvePlainCredentialValue } from '@polyrouter/shared/server';
 import {
@@ -77,6 +79,16 @@ function makePort(): FakePort {
     oauthPreset: values.oauthPreset ?? null,
     credentialExpiresAt: values.credentialExpiresAt ?? null,
     credentialError: values.credentialError ?? null,
+    lastErrorKind: values.lastErrorKind ?? null,
+    statusSource: values.statusSource ?? null,
+    statusChangedAt: values.statusChangedAt ?? null,
+    statusRev: values.statusRev ?? null,
+    trafficState: values.trafficState ?? null,
+    trafficErrorKind: values.trafficErrorKind ?? null,
+    trafficAt: values.trafficAt ?? null,
+    trafficSeq: values.trafficSeq ?? null,
+    trafficRev: values.trafficRev ?? null,
+    healthRev: values.healthRev ?? 0,
     firstByteTimeoutMs: values.firstByteTimeoutMs ?? null,
     idleTimeoutMs: values.idleTimeoutMs ?? null,
     createdAt: new Date(),
@@ -122,6 +134,75 @@ function makePort(): FakePort {
         return Promise.resolve(next);
       },
       remove: (_p: Principal, id: string) => Promise.resolve(rows.delete(id)),
+      // In-memory mirror of the guarded, revisioned health write (the real
+      // semantics are proven against Postgres in provider-health-writes.e2e).
+      setHealth: (
+        _p: Principal,
+        id: string,
+        patch: ProviderHealthPatch,
+        guard: ProviderIncarnation,
+      ) => {
+        const cur = rows.get(id);
+        if (
+          !cur ||
+          cur.encryptedCredentials !== guard.envelope ||
+          cur.baseUrl !== guard.baseUrl ||
+          cur.protocol !== guard.protocol
+        ) {
+          return Promise.resolve(false);
+        }
+        const rev = cur.healthRev + 1;
+        if (patch.record === 'check') {
+          rows.set(id, {
+            ...cur,
+            status: patch.status,
+            lastErrorKind: patch.status === 'error' ? patch.kind : null,
+            statusSource: patch.source,
+            statusChangedAt: new Date(),
+            statusRev: rev,
+            healthRev: rev,
+          });
+          return Promise.resolve(true);
+        }
+        if (cur.trafficSeq !== null && cur.trafficSeq >= patch.seq) return Promise.resolve(false);
+        rows.set(id, {
+          ...cur,
+          trafficState: patch.state,
+          trafficErrorKind: patch.state === 'failing' ? patch.kind : null,
+          trafficAt: new Date(),
+          trafficSeq: patch.seq,
+          trafficRev: rev,
+          healthRev: rev,
+        });
+        return Promise.resolve(true);
+      },
+      updateResettingHealth: (
+        _p: Principal,
+        id: string,
+        patch: ProviderPatch,
+        source: 'edit' | 'reconnect',
+      ) => {
+        const cur = rows.get(id);
+        if (!cur) return Promise.resolve(null);
+        const rev = cur.healthRev + 1;
+        const next = {
+          ...cur,
+          ...patch,
+          status: 'unknown',
+          lastErrorKind: null,
+          statusSource: source,
+          statusChangedAt: new Date(),
+          statusRev: rev,
+          trafficState: null,
+          trafficErrorKind: null,
+          trafficAt: null,
+          trafficSeq: null,
+          trafficRev: null,
+          healthRev: rev,
+        } as ProviderRow;
+        rows.set(id, next);
+        return Promise.resolve(next);
+      },
     },
     models: { upsertForProvider: upsert, listForPrincipal: () => Promise.resolve([]) },
   } as unknown as PersistencePort;

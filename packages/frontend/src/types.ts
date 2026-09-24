@@ -7,6 +7,7 @@ import type {
   EventType,
   Mode,
   ModelDto,
+  ProviderHealthDto,
   SmtpSecure,
 } from './data/api';
 
@@ -71,6 +72,9 @@ export interface Provider {
   firstByteTimeoutMs: number | null;
   idleTimeoutMs: number | null;
   createdAt: string;
+  /** add-provider-health-signals: the server-computed displayed health (the most
+   * recently recorded of the check and live-traffic records). */
+  health: ProviderHealthDto;
 }
 
 /** Aligned to the backend `SafeModel` (#7/#18). Prices are null when unpriced. */

@@ -676,6 +676,16 @@ export async function startStubUpstream(): Promise<StubUpstream> {
         }
         return json(200, render(b, true));
       }
+      // `*unauth*` → an HTTP 401 (a rejected credential: `auth`, which trips the
+      // breaker — add-provider-health-signals).
+      if (model.includes('unauth')) {
+        res.writeHead(401, { 'content-type': 'application/json' });
+        return res.end(
+          JSON.stringify({
+            error: { type: 'authentication_error', message: 'invalid credential' },
+          }),
+        );
+      }
       // `*srvfail*` → an HTTP 500 (a retryable upstream error → chain fallback).
       if (model.includes('srvfail')) {
         res.writeHead(500, { 'content-type': 'application/json' });

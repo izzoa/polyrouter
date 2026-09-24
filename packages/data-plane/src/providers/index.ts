@@ -106,7 +106,11 @@ export type {
   Admission,
   BreakerAdmission,
   BreakerCompletion,
+  BreakerCompletionSource,
   BreakerOpenListener,
+  BreakerSettleInfo,
+  BreakerSettleListener,
+  BreakerSettlement,
   BreakerStateListener,
 } from './breaker';
 export {

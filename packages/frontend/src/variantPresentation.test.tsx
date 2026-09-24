@@ -9,7 +9,7 @@ import { App } from './App';
 import { groupModelsByProvider, nonRoutableNote } from './pages/Routing';
 import { createAppStore, type AppStore } from './state/appState';
 import { AppProvider } from './state/context';
-import { DEFAULT_SESSION, FakeApiClient } from './test/fakeClient';
+import { DEFAULT_SESSION, FakeApiClient, UNRECORDED_HEALTH } from './test/fakeClient';
 import type { ModelDto, ProviderDto } from './data/api';
 
 const NOW = '2026-09-04T00:00:00.000Z';
@@ -85,6 +85,7 @@ const PROVIDER: ProviderDto = {
   firstByteTimeoutMs: null,
   idleTimeoutMs: null,
   createdAt: NOW,
+  ...UNRECORDED_HEALTH,
 };
 
 const flush = async (): Promise<void> => {

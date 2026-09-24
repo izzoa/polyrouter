@@ -212,12 +212,28 @@ export function Modals() {
                           Subscription — connected via {state.np.oauthPreset}
                         </span>
                         <span style="display:block;font:400 11px 'Geist',sans-serif;color:var(--text3);line-height:1.45;margin-top:3px">
-                          Endpoint, kind, and protocol are pinned by the connection. Use Reauthorize
-                          to refresh access
+                          Endpoint, kind, and protocol are pinned by the connection. Reconnect to
+                          sign in again — it renews this provider in place, keeping its models and
+                          routing
                           {state.np.protocol === 'openai_responses'
-                            ? ' — this provider only works with its OAuth sign-in (to start over, delete it and reconnect).'
-                            : ', or paste a credential below to convert it to an ordinary provider.'}
+                            ? '. This provider only works with its OAuth sign-in.'
+                            : ' — or paste a credential below to convert it to an ordinary provider.'}
                         </span>
+                        {/* add-provider-health-signals: the action the copy names is always
+                            right here — never a reference to a control that isn't shown. */}
+                        <button
+                          type="button"
+                          class="btn-ghost"
+                          style="margin-top:8px"
+                          onClick={() => {
+                            const editing = state.providers.find(
+                              (p) => p.id === state.np.editingId,
+                            );
+                            if (editing) void app.startOauthReauthorize(editing);
+                          }}
+                        >
+                          Reconnect
+                        </button>
                       </div>
                     </div>
                   }

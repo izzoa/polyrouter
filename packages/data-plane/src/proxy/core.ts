@@ -24,6 +24,7 @@ import {
   withBreakerStream,
   type BreakerAdmission,
   type BreakerOpenListener,
+  type BreakerSettleListener,
   type BreakerStateListener,
   type CircuitBreaker,
   type ProviderAdapter,
@@ -520,6 +521,11 @@ export interface ChainAttempt {
    * deferral's tail dispatches each member with `maxOutputTokens` clamped to
    * its OWN cap. Absent = the request's value verbatim. */
   readonly maxOutputTokens?: number;
+  /** THIS attempt's settle hook (add-provider-health-signals): invoked once when
+   * the attempt's breaker completion is settled on the shared primary store. Per
+   * attempt, so two members of the same provider each see their own outcome and
+   * the hook can close over what that attempt's own build resolved. */
+  readonly onSettle?: BreakerSettleListener;
 }
 
 export interface AttemptFailure {
@@ -634,6 +640,7 @@ export async function runBufferedChain(
         ctx.onBreakerState,
         ctx.isCallerAbort,
         attempt.probeLeaseMs,
+        attempt.onSettle,
       );
       return {
         ok: true,
@@ -723,6 +730,7 @@ export async function openStreamChain(
           opts.onBreakerState,
           opts.isCallerAbort,
           attempt.probeLeaseMs,
+          attempt.onSettle,
         ),
       client,
       { ...opts, firstEventBound: bound },

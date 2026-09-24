@@ -1,5 +1,6 @@
 import { For, Show, onMount } from 'solid-js';
 import { BASE_URL } from '../data/catalog';
+import { fmtWhen } from '../data/format';
 import { useApp } from '../state/context';
 import type { Agent } from '../types';
 
@@ -11,18 +12,15 @@ function fmtSpend(v: number): string {
 
 /** One column definition, consumed by the head and by each stacked record's field
  * labels — the two used to be independent literals with nothing keeping them aligned. */
-const COLUMNS = ['Agent', 'Harness', 'Key', 'Requests · 24h', 'Spend · 24h', 'Last used', 'Actions'] as const;
-
-function fmtWhen(iso: string | null): string {
-  if (!iso) return 'never';
-  const t = Date.parse(iso);
-  if (Number.isNaN(t)) return 'never';
-  const secs = Math.round((Date.now() - t) / 1000);
-  if (secs < 60) return 'just now';
-  if (secs < 3600) return `${String(Math.floor(secs / 60))}m ago`;
-  if (secs < 86400) return `${String(Math.floor(secs / 3600))}h ago`;
-  return new Date(t).toLocaleDateString();
-}
+const COLUMNS = [
+  'Agent',
+  'Harness',
+  'Key',
+  'Requests · 24h',
+  'Spend · 24h',
+  'Last used',
+  'Actions',
+] as const;
 
 export function Agents() {
   const app = useApp();
@@ -57,7 +55,9 @@ export function Agents() {
       <div class="panel rs-table-panel rs-table-agents" style="overflow:hidden;border-radius:10px">
         <div class="table-head">
           <For each={COLUMNS}>
-            {(c, i) => <div style={i() === COLUMNS.length - 1 ? 'text-align:right' : undefined}>{c}</div>}
+            {(c, i) => (
+              <div style={i() === COLUMNS.length - 1 ? 'text-align:right' : undefined}>{c}</div>
+            )}
           </For>
         </div>
         <Show
@@ -78,21 +78,32 @@ export function Agents() {
                   'align-items': 'center',
                 }}
               >
-                <div style="font-weight:500;color:var(--text)"><span class="rs-cell-label">Agent</span>{a.name}</div>
-                <div><span class="rs-cell-label">Harness</span>
+                <div style="font-weight:500;color:var(--text)">
+                  <span class="rs-cell-label">Agent</span>
+                  {a.name}
+                </div>
+                <div>
+                  <span class="rs-cell-label">Harness</span>
                   <span class="chip">{a.harness}</span>
                 </div>
-                <div class="mono" style="font-size:11px;color:var(--text3)"><span class="rs-cell-label">Key</span>
+                <div class="mono" style="font-size:11px;color:var(--text3)">
+                  <span class="rs-cell-label">Key</span>
                   {a.prefix}…
                 </div>
-                <div class="mono" style="font-size:11.5px;color:var(--text2)"><span class="rs-cell-label">Requests · 24h</span>
+                <div class="mono" style="font-size:11.5px;color:var(--text2)">
+                  <span class="rs-cell-label">Requests · 24h</span>
                   {state.agentStatsLoaded ? (state.agentStats[a.id]?.requests ?? 0) : '—'}
                 </div>
-                <div class="mono" style="font-size:11.5px;color:var(--text2)"><span class="rs-cell-label">Spend · 24h</span>
+                <div class="mono" style="font-size:11.5px;color:var(--text2)">
+                  <span class="rs-cell-label">Spend · 24h</span>
                   {state.agentStatsLoaded ? fmtSpend(state.agentStats[a.id]?.spend ?? 0) : '—'}
                 </div>
-                <div style="font-size:11.5px;color:var(--text3)"><span class="rs-cell-label">Last used</span>{fmtWhen(a.lastUsedAt)}</div>
-                <div class="rs-agent-actions"><span class="rs-cell-label">Actions</span>
+                <div style="font-size:11.5px;color:var(--text3)">
+                  <span class="rs-cell-label">Last used</span>
+                  {fmtWhen(a.lastUsedAt)}
+                </div>
+                <div class="rs-agent-actions">
+                  <span class="rs-cell-label">Actions</span>
                   <button type="button" class="btn-ghost" onClick={() => void app.rotateKey(a)}>
                     Rotate key
                   </button>

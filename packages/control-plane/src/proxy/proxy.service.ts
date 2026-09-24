@@ -41,14 +41,18 @@ import {
   type NormalizedResponse,
   type ProtocolAdapter,
   type ProviderAdapter,
-  type ProviderConfig,
   type RouteDecision,
   type RoutingSnapshot,
   type StructuralVerdict,
   type SemanticWorkloadVerdict,
   type WorkloadVerdict,
 } from '@polyrouter/data-plane';
-import { AdapterBuildError, ProviderAdapterBuilder } from '../providers/adapter-builder';
+import {
+  AdapterBuildError,
+  ProviderAdapterBuilder,
+  type BuiltAdapterConfig,
+} from '../providers/adapter-builder';
+import { attemptHealthHook, type AttemptHealthState } from './attempt-health';
 import {
   loadPriceContext,
   toEffectiveCapabilities,
@@ -1639,6 +1643,10 @@ export class ProxyService {
         idleTimeoutMs: bounds.idleTimeoutMs,
         eventMarginMs: this.rt.firstEventTimeoutMs - this.rt.firstByteTimeoutMs,
       });
+      // add-provider-health-signals: THIS attempt's own state — filled by its
+      // build, read by its settle hook — so two members of one provider (or two
+      // concurrent requests) never share an incarnation guard.
+      const health: AttemptHealthState = {};
       attempts.push({
         providerId: t.providerId,
         externalModelId: t.externalModelId,
@@ -1655,8 +1663,15 @@ export class ProxyService {
             signal,
             key !== null ? capsRef.current.get(key)?.cap : undefined,
             admission?.isProbe === true,
+            health,
           );
         },
+        onSettle: attemptHealthHook(
+          { db: this.db, oauth: this.oauth },
+          principal,
+          provider,
+          health,
+        ),
         // THIS member's stream watchdog bound (fix-long-call-timeouts): a
         // per-provider override must reach core even mid-chain beside
         // un-overridden members.
@@ -1699,10 +1714,21 @@ export class ProxyService {
     signal: AbortSignal,
     maxOutputCap?: number,
     probe = false,
+    health?: AttemptHealthState,
   ): Promise<ProviderAdapter> {
     let adapter: ProviderAdapter;
     try {
-      adapter = await this.buildAdapter(principal, provider, maxOutputCap, probe);
+      const built = await this.buildAdapter(principal, provider, maxOutputCap, probe);
+      adapter = built.adapter;
+      // add-provider-health-signals: THIS attempt's incarnation — the envelope its
+      // build actually used (a lazy refresh's new one), read by its settle hook.
+      if (health !== undefined) {
+        health.used = {
+          envelope: built.usedEnvelope,
+          baseUrl: provider.baseUrl,
+          protocol: provider.protocol,
+        };
+      }
     } catch (err) {
       this.metrics.upstreamSetupFailed(provider.name);
       if (err instanceof ProviderError && err.kind === 'credential') throw err;
@@ -1910,7 +1936,7 @@ export class ProxyService {
     provider: ProviderRow,
     maxOutputCap?: number,
     probe = false,
-  ): Promise<ProviderAdapter> {
+  ): Promise<{ adapter: ProviderAdapter; usedEnvelope: string | null }> {
     // Defensive synthesized default (add-output-cap-guardrails): where the IR
     // omits maxOutputTokens the Anthropic adapter synthesizes max_tokens from
     // this default — capped to the dispatched model's KNOWN limit so
@@ -1920,9 +1946,9 @@ export class ProxyService {
     // ONE shared builder for the request, batch, and management paths (add-batch-
     // inference D4): credentials, OAuth, SSRF, quirks, and bounds resolve in one
     // place; only the surface mapping of a build failure is the proxy's own.
-    let config: ProviderConfig;
+    let built: BuiltAdapterConfig;
     try {
-      config = await this.adapterBuilder.buildConfig(principal, provider, {
+      built = await this.adapterBuilder.buildConfigWithCredential(principal, provider, {
         defaultMaxOutputTokens,
         bounds: this.callBounds(provider, probe),
       });
@@ -1930,7 +1956,7 @@ export class ProxyService {
       if (err instanceof AdapterBuildError) throw serviceUnavailable(err.message);
       throw err;
     }
-    return this.factory(config);
+    return { adapter: this.factory(built.config), usedEnvelope: built.usedEnvelope };
   }
 }
 

@@ -187,6 +187,24 @@ export interface BreakerCompletion {
   readonly justOpened: boolean;
   readonly generation: number;
   readonly openedAt: number;
+  /** add-provider-health-signals: the completion APPLIED — its token generation
+   * was current and the outcome not neutral (a closed-state success that leaves
+   * the record unchanged still applied). A stale completion is `false`. */
+  readonly applied: boolean;
+  /** add-provider-health-signals: a per-provider event sequence, strictly
+   * increasing (including completions in the same millisecond, and across the
+   * record's expiry or reset); 0 when not applied. Lets a consumer order
+   * observations without comparing instance clocks. */
+  readonly seq: number;
+}
+
+/** Where a completion was settled: the shared primary store, the per-instance
+ * fallback, or neither (a primary-store FAULT). Only `primary` observations are
+ * shared-breaker facts (add-provider-health-signals). */
+export type BreakerCompletionSource = 'primary' | 'fallback' | 'fault';
+
+export interface BreakerSettlement extends BreakerCompletion {
+  readonly source: BreakerCompletionSource;
 }
 
 export interface BreakerStore {
@@ -212,9 +230,17 @@ export interface BreakerStore {
  * so it is atomic. Two breakers sharing one instance = two instances, one store. */
 export class InMemoryBreakerStore implements BreakerStore {
   private readonly records = new Map<string, BreakerRecord>();
+  /** Per-provider event sequence (parity with the Redis store's `lastSeq`). */
+  private readonly lastSeq = new Map<string, number>();
+
+  /** A record created where none exists takes a generation no earlier token can
+   * carry (seeded from the clock, never a fixed 0 — add-provider-health-signals). */
+  private recordFor(providerId: string, now: number): BreakerRecord {
+    return this.records.get(providerId) ?? { ...INITIAL_RECORD, generation: now };
+  }
 
   decide(providerId: string, now: number, cfg: BreakerConfig): Promise<Admission> {
-    const rec = this.records.get(providerId) ?? INITIAL_RECORD;
+    const rec = this.recordFor(providerId, now);
     const r = decide(rec, now, cfg);
     this.records.set(providerId, r.next);
     return Promise.resolve({ decision: r.decision, generation: r.generation, isProbe: r.isProbe });
@@ -227,24 +253,44 @@ export class InMemoryBreakerStore implements BreakerStore {
     now: number,
     cfg: BreakerConfig,
   ): Promise<BreakerCompletion> {
-    const rec = this.records.get(providerId) ?? INITIAL_RECORD;
+    const existed = this.records.has(providerId);
+    const rec = this.recordFor(providerId, now);
     const next = applyComplete(rec, generation, outcome, now, cfg);
-    this.records.set(providerId, next);
+    const applied = generation === rec.generation && outcome !== 'neutral';
+    // Redis parity: a stale completion against a MISSING record writes nothing (the
+    // Lua returns before its HMSET) — never materialize a phantom record here.
+    if (existed || applied) this.records.set(providerId, next);
+    let seq = 0;
+    if (applied) {
+      seq = Math.max(now * 1000, (this.lastSeq.get(providerId) ?? 0) + 1);
+      this.lastSeq.set(providerId, seq);
+    }
     return Promise.resolve({
       justOpened: rec.state !== 'open' && next.state === 'open',
       generation: next.generation,
       openedAt: next.openedAt,
+      applied,
+      seq,
     });
   }
 
   renew(providerId: string, generation: number, now: number, cfg: BreakerConfig): Promise<void> {
-    const rec = this.records.get(providerId) ?? INITIAL_RECORD;
-    this.records.set(providerId, applyRenew(rec, generation, now, cfg));
+    // Redis parity: RENEW_LUA only touches a live half-open record — a renewal
+    // against a missing record creates nothing.
+    const rec = this.records.get(providerId);
+    if (rec !== undefined) this.records.set(providerId, applyRenew(rec, generation, now, cfg));
     return Promise.resolve();
   }
 
+  /** Closed with no failures, the generation ADVANCED (never deleted to a
+   * reusable 0) — every call admitted before the reset completes stale. */
   reset(providerId: string): Promise<void> {
-    this.records.delete(providerId);
+    const now = Date.now();
+    const rec = this.records.get(providerId);
+    this.records.set(providerId, {
+      ...INITIAL_RECORD,
+      generation: Math.max((rec?.generation ?? 0) + 1, now),
+    });
     return Promise.resolve();
   }
 }
@@ -268,7 +314,7 @@ ${NOW_FROM_SERVER}
 local cooldown=tonumber(ARGV[1]); local lease=tonumber(ARGV[2]); local ttl=tonumber(ARGV[3])
 local h=redis.call('HMGET',KEYS[1],'state','failures','openedAt','generation','probeExpiresAt')
 local state=h[1] or 'closed'
-local failures=tonumber(h[2] or '0'); local openedAt=tonumber(h[3] or '0'); local generation=tonumber(h[4] or '0'); local probeExp=tonumber(h[5] or '0')
+local failures=tonumber(h[2] or '0'); local openedAt=tonumber(h[3] or '0'); local generation=tonumber(h[4] or now); local probeExp=tonumber(h[5] or '0')
 local decision='allow'; local isProbe=0
 if state=='closed' then decision='allow'
 elseif state=='open' then
@@ -286,12 +332,14 @@ return {decision,generation,isProbe}
 const COMPLETE_LUA = `
 ${NOW_FROM_SERVER}
 local tokenGen=tonumber(ARGV[1]); local outcome=ARGV[2]; local threshold=tonumber(ARGV[3]); local ttl=tonumber(ARGV[4])
-local h=redis.call('HMGET',KEYS[1],'state','failures','openedAt','generation','probeExpiresAt')
+local h=redis.call('HMGET',KEYS[1],'state','failures','openedAt','generation','probeExpiresAt','lastSeq')
 local state=h[1] or 'closed'
-local failures=tonumber(h[2] or '0'); local openedAt=tonumber(h[3] or '0'); local generation=tonumber(h[4] or '0'); local probeExp=tonumber(h[5] or '0')
+local failures=tonumber(h[2] or '0'); local openedAt=tonumber(h[3] or '0'); local generation=tonumber(h[4] or now); local probeExp=tonumber(h[5] or '0')
+local lastSeq=tonumber(h[6] or '0')
 local prev=state
-if tokenGen~=generation then return {0,generation,openedAt} end
-if outcome=='neutral' then return {0,generation,openedAt} end
+if tokenGen~=generation then return {0,generation,openedAt,0,0} end
+if outcome=='neutral' then return {0,generation,openedAt,0,0} end
+local seq=math.max(now*1000, lastSeq+1)
 if outcome=='success' then
   if state=='half_open' then state='closed'; failures=0; openedAt=0; generation=generation+1; probeExp=0
   elseif state=='closed' then failures=0 end
@@ -299,11 +347,27 @@ else
   if state=='half_open' then state='open'; failures=0; openedAt=now; generation=generation+1; probeExp=0
   elseif state=='closed' then failures=failures+1; if failures>=threshold then state='open'; failures=0; openedAt=now; generation=generation+1; probeExp=0 end end
 end
-redis.call('HMSET',KEYS[1],'state',state,'failures',failures,'openedAt',openedAt,'generation',generation,'probeExpiresAt',probeExp)
+redis.call('HMSET',KEYS[1],'state',state,'failures',failures,'openedAt',openedAt,'generation',generation,'probeExpiresAt',probeExp,'lastSeq',seq)
 redis.call('PEXPIRE',KEYS[1],ttl)
 local justOpened=0
 if prev~='open' and state=='open' then justOpened=1 end
-return {justOpened,generation,openedAt}
+return {justOpened,generation,openedAt,1,seq}
+`;
+
+// The reauthorization-only reset (add-subscription-oauth), made generation-safe
+// (add-provider-health-signals): closed with no failures and the generation
+// ADVANCED — never a DEL back to a reusable generation 0 — so every call admitted
+// before the reset completes as stale and cannot count against, or re-open, the
+// freshly reset breaker. `lastSeq` is kept (the sequence stays increasing). The
+// fixed TTL outlives any in-flight call; the next decide/complete re-applies the
+// configured state TTL.
+const RESET_LUA = `
+${NOW_FROM_SERVER}
+local h=redis.call('HMGET',KEYS[1],'generation')
+local generation=math.max(tonumber(h[1] or '0')+1, now)
+redis.call('HMSET',KEYS[1],'state','closed','failures',0,'openedAt',0,'generation',generation,'probeExpiresAt',0)
+redis.call('PEXPIRE',KEYS[1],86400000)
+return 1
 `;
 
 // Renew a live half-open probe's lease (E4.1). Mirrors `applyRenew`: extends only
@@ -364,11 +428,13 @@ export class RedisBreakerStore implements BreakerStore {
       outcome,
       cfg.threshold,
       cfg.stateTtlMs,
-    )) as [unknown, unknown, unknown];
+    )) as [unknown, unknown, unknown, unknown, unknown];
     return {
       justOpened: Number(res[0]) === 1,
       generation: Number(res[1]),
       openedAt: Number(res[2]),
+      applied: Number(res[3]) === 1,
+      seq: Number(res[4]),
     };
   }
 
@@ -389,7 +455,7 @@ export class RedisBreakerStore implements BreakerStore {
   }
 
   async reset(providerId: string): Promise<void> {
-    await this.redis.eval(`redis.call('DEL', KEYS[1]); return 1`, 1, this.key(providerId));
+    await this.redis.eval(RESET_LUA, 1, this.key(providerId));
   }
 }
 
@@ -502,7 +568,7 @@ export class CircuitBreaker {
    * `justOpened` is surfaced only for a **primary-store** transition (never on a
    * fallback open, never on a store fault) so `provider_down` alerts are one per
    * shared incident, not per instance. */
-  async complete(token: BreakerToken, outcome: BreakerOutcome): Promise<BreakerCompletion> {
+  async complete(token: BreakerToken, outcome: BreakerOutcome): Promise<BreakerSettlement> {
     try {
       const res = await token.store.complete(
         token.providerId,
@@ -511,10 +577,21 @@ export class CircuitBreaker {
         this.now(),
         this.cfg,
       );
-      return token.isPrimary ? res : { ...res, justOpened: false };
+      return token.isPrimary
+        ? { ...res, source: 'primary' }
+        : { ...res, justOpened: false, source: 'fallback' };
     } catch (err) {
       this.onError(err);
-      return { justOpened: false, generation: token.generation, openedAt: 0 };
+      // A primary-store FAULT is distinguishable (add-provider-health-signals): it
+      // is not a shared-breaker fact, so nothing downstream may treat it as one.
+      return {
+        justOpened: false,
+        generation: token.generation,
+        openedAt: 0,
+        applied: false,
+        seq: 0,
+        source: 'fault',
+      };
     }
   }
 
@@ -620,13 +697,35 @@ function notifyState(
   }
 }
 
-/** Complete + fire `onOpen` on a fresh open. The listener is best-effort and
- * MUST NOT throw into the call path (it's a fire-and-forget alert hook). */
+/** What one attempt's settlement observed (add-provider-health-signals). `kind`
+ * is the attempt's classified provider-error kind, or `null` for a genuinely
+ * served call (a resolved response, or a stream that reached its terminal stop). */
+export interface BreakerSettleInfo {
+  readonly outcome: BreakerOutcome;
+  readonly kind: ProviderErrorKind | null;
+  readonly justOpened: boolean;
+  readonly applied: boolean;
+  readonly seq: number;
+}
+
+/** A PER-ATTEMPT settle hook (add-provider-health-signals): invoked once per
+ * dispatched attempt, only for a completion settled on the shared PRIMARY store
+ * (never the per-instance fallback, never a store fault). Synchronous and
+ * best-effort — it must start any I/O fire-and-forget and never throw into the
+ * call path. Carried per attempt (not per chain) so two members of the same
+ * provider each observe their own settlement. */
+export type BreakerSettleListener = (info: BreakerSettleInfo) => void;
+
+/** Complete + fire `onOpen` on a fresh open, and the attempt's `onSettle` for a
+ * primary-store completion. Both hooks are best-effort and MUST NOT throw into
+ * the call path. */
 async function completeAndNotify(
   breaker: CircuitBreaker,
   token: BreakerToken,
   outcome: BreakerOutcome,
   onOpen: BreakerOpenListener | undefined,
+  onSettle?: BreakerSettleListener,
+  kind: ProviderErrorKind | null = null,
 ): Promise<void> {
   const res = await breaker.complete(token, outcome);
   if (res.justOpened && onOpen) {
@@ -636,6 +735,24 @@ async function completeAndNotify(
       /* an alert hook must never affect routing */
     }
   }
+  if (onSettle && res.source === 'primary') {
+    try {
+      onSettle({
+        outcome,
+        kind,
+        justOpened: res.justOpened,
+        applied: res.applied,
+        seq: res.seq,
+      });
+    } catch {
+      /* an observation hook must never affect routing */
+    }
+  }
+}
+
+/** The provider-error kind an attempt failed with (untyped → `unavailable`). */
+function kindOf(err: unknown): ProviderErrorKind {
+  return err instanceof ProviderError ? err.kind : 'unavailable';
 }
 
 /** The internally-throttled, token-closing lease renewal (probe patience): a
@@ -680,6 +797,7 @@ export async function withBreaker<T>(
   onState?: BreakerStateListener,
   isCallerAbort?: () => boolean,
   minProbeLeaseMs?: number,
+  onSettle?: BreakerSettleListener,
 ): Promise<T> {
   const { decision, token } = await breaker.before(providerId, minProbeLeaseMs);
   notifyState(onState, providerId, decision, token.isProbe);
@@ -692,12 +810,12 @@ export async function withBreaker<T>(
   try {
     const result = await fn(admission);
     settled = true;
-    await completeAndNotify(breaker, token, 'success', onOpen);
+    await completeAndNotify(breaker, token, 'success', onOpen, onSettle, null);
     return result;
   } catch (err) {
     settled = true;
     const outcome = isCallerAbort?.() === true ? 'neutral' : outcomeForError(err);
-    await completeAndNotify(breaker, token, outcome, onOpen);
+    await completeAndNotify(breaker, token, outcome, onOpen, onSettle, kindOf(err));
     throw err;
   }
 }
@@ -717,16 +835,20 @@ export async function* withBreakerStream(
   onState?: BreakerStateListener,
   isCallerAbort?: () => boolean,
   minProbeLeaseMs?: number,
+  onSettle?: BreakerSettleListener,
 ): AsyncGenerator<NormalizedStreamEvent> {
   const { decision, token } = await breaker.before(providerId, minProbeLeaseMs);
   notifyState(onState, providerId, decision, token.isProbe);
   if (decision === 'skip') throw new ProviderCircuitOpenError(providerId);
 
   let settled = false;
-  const settle = async (outcome: BreakerOutcome): Promise<void> => {
+  const settle = async (
+    outcome: BreakerOutcome,
+    kind: ProviderErrorKind | null = null,
+  ): Promise<void> => {
     if (settled) return;
     settled = true;
-    await completeAndNotify(breaker, token, outcome, onOpen);
+    await completeAndNotify(breaker, token, outcome, onOpen, onSettle, kind);
   };
 
   // A half-open probe settles only at stream end, but LLM streams routinely
@@ -758,13 +880,15 @@ export async function* withBreakerStream(
         // through the shared rule, so a `code`-only marker reaches the breaker with
         // the same kind the chain walk sees — and so a neutral-settling kind stays
         // neutral here instead of being flattened into a health success.
-        await settle(outcomeForKind(ev.diagnostic?.kind ?? classifyStreamError(ev.error.type)));
+        const evKind = ev.diagnostic?.kind ?? classifyStreamError(ev.error.type);
+        await settle(outcomeForKind(evKind), evKind);
       }
       renewOnActivity();
       yield ev;
     }
     if (!sawError) {
-      await settle(sawTerminalStop ? 'success' : 'trip'); // no terminal stop → truncated
+      // no terminal stop → truncated (an untyped trip: `unavailable`)
+      await (sawTerminalStop ? settle('success', null) : settle('trip', 'unavailable'));
     }
   } catch (err) {
     // Neutrality is authoritative from the caller-abort predicate when supplied:
@@ -776,11 +900,11 @@ export async function* withBreakerStream(
     // neutral behavior.
     const callerGone = isCallerAbort !== undefined ? isCallerAbort() : isCancellation(err);
     if (callerGone) {
-      await settle('neutral');
+      await settle('neutral', kindOf(err));
     } else if (isCancellation(err)) {
-      await settle('trip');
+      await settle('trip', 'unavailable');
     } else {
-      await settle(outcomeForError(err));
+      await settle(outcomeForError(err), kindOf(err));
     }
     throw err;
   } finally {

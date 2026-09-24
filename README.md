@@ -680,10 +680,24 @@ Subscription providers can connect through a guided **OAuth wizard** instead of 
 token by hand: pick a preset (**Claude Pro/Max** or **ChatGPT Plus/Pro**), sign in at the
 provider's link, and paste the redirect URL — or the `code#state` string it shows — back
 into the dashboard. polyrouter verifies the `state`, exchanges the code (PKCE), and stores
-the access + refresh tokens **encrypted at rest**. Tokens **auto-refresh** before expiry
-(safe across multiple requests and instances); if the provider revokes the grant, the card
-flags the expired sign-in with a **Reauthorize** button that reopens the connect wizard, and your fallback chain keeps
-serving traffic meanwhile.
+the access + refresh tokens **encrypted at rest**. Tokens renew **in the background**, safe
+across multiple requests and instances:
+
+- **Near expiry** — a scheduled sweep (every 15 minutes) renews any sign-in within an hour of
+  expiring, so an idle provider never lapses; a request arriving first renews it on the spot.
+- **Daily liveness check** — each sign-in is also re-verified about once a day, so a grant the
+  provider has **revoked** turns into "reconnect" on its own, without waiting for traffic to
+  hit it. These checks are budgeted per sweep, so a first deploy (when nothing is marked
+  verified yet) spreads them over several sweeps instead of dialling every provider at once.
+- **A live 401** — when the provider rejects a sign-in that should still be valid, polyrouter
+  makes **one** background renewal attempt (at most once per 10 minutes per credential); the
+  rejected request itself falls back through your chain exactly as before.
+
+The sweep only ever calls each provider's **token endpoint** — it never sends a model request,
+so it spends none of your plan. Every OAuth card has a **Reconnect** action at any time (not only
+after a revoked sign-in): it reopens the connect wizard and renews the same provider in place,
+keeping its models and routing entries. The card shows one status line — the most recent of your
+last check (Test, Sync) and what live traffic observed — with the reason and how long ago.
 
 Honest caveats:
 
@@ -706,7 +720,7 @@ Honest caveats:
 - **The ToS compliance note above applies** — pair a subscription with a pay-per-token
   fallback provider.
 - **Key rotation:** changing `PROVIDER_CREDENTIAL_KEY` invalidates stored credentials;
-  OAuth-connected providers will then ask to be reauthorized.
+  OAuth-connected providers will then ask to be reconnected.
 
 ### Users & registration
 

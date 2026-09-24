@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, or, sql } from 'drizzle-orm';
 import {
   agents,
   assertUserPrincipal,
@@ -27,6 +27,11 @@ import {
   type PersistencePort,
   type PricingCatalog,
   type Principal,
+  type ProviderAccessor,
+  type ProviderHealthPatch,
+  type ProviderIncarnation,
+  type ProviderPatch,
+  type ProviderRow,
   type RequestAttemptAccessor,
   type RequestLogAccessor,
   type RoutingEntryAccessor,
@@ -86,6 +91,108 @@ function createOwnedRepository<TRow, TInsertInput, TPatch>(
     async remove(principal, id) {
       const rows = await buildRemove(db, table, principal, id);
       return rows.length > 0;
+    },
+  };
+}
+
+/** Only while the row still has the observation's incarnation — the credential
+ * ciphertext, base_url, and protocol it was made against (add-provider-health-
+ * signals). Null-safe on the nullable columns. */
+function incarnationMatches(guard: ProviderIncarnation) {
+  return and(
+    guard.envelope === null
+      ? isNull(providers.encryptedCredentials)
+      : eq(providers.encryptedCredentials, guard.envelope),
+    guard.baseUrl === null ? isNull(providers.baseUrl) : eq(providers.baseUrl, guard.baseUrl),
+    eq(providers.protocol, guard.protocol),
+  );
+}
+
+/** The provider health writes (add-provider-health-signals). Every write is ONE
+ * owner-scoped UPDATE that bumps `health_rev` and stamps the written record's
+ * revision from the same SET — Postgres evaluates every SET expression against
+ * the row version being replaced, and row locks serialize concurrent UPDATEs
+ * (READ COMMITTED re-checks the WHERE on the committed version), so revisions are
+ * a total recording order with the row as the only authority. */
+function createProviderHealthWrites(
+  db: Db,
+): Pick<ProviderAccessor, 'setHealth' | 'updateResettingHealth'> {
+  const bump = sql`${providers.healthRev} + 1`;
+  return {
+    async setHealth(
+      principal: Principal,
+      id: string,
+      patch: ProviderHealthPatch,
+      guard: ProviderIncarnation,
+    ) {
+      const owned = and(eq(providers.id, id), ownershipPredicate(providers, principal));
+      if (patch.record === 'check') {
+        const rows = await db
+          .update(providers)
+          .set({
+            status: patch.status,
+            // A kind describes a failure only — normalized away otherwise.
+            lastErrorKind: patch.status === 'error' ? patch.kind : null,
+            statusSource: patch.source,
+            statusChangedAt: sql`now()`,
+            statusRev: bump,
+            healthRev: bump,
+          })
+          .where(and(owned, incarnationMatches(guard)))
+          .returning({ id: providers.id });
+        return rows.length > 0;
+      }
+      const rows = await db
+        .update(providers)
+        .set({
+          trafficState: patch.state,
+          trafficErrorKind: patch.state === 'failing' ? patch.kind : null,
+          trafficAt: sql`now()`,
+          trafficSeq: patch.seq,
+          trafficRev: bump,
+          healthRev: bump,
+        })
+        .where(
+          and(
+            owned,
+            incarnationMatches(guard),
+            // The breaker-issued sequence totally orders one provider's traffic
+            // observations: a delayed older write never overwrites a newer one.
+            or(isNull(providers.trafficSeq), lt(providers.trafficSeq, patch.seq)),
+          ),
+        )
+        .returning({ id: providers.id });
+      return rows.length > 0;
+    },
+    async updateResettingHealth(
+      principal: Principal,
+      id: string,
+      patch: ProviderPatch,
+      source: 'edit' | 'reconnect',
+    ) {
+      const clean = stripProtected(patch);
+      const rows = await db
+        .update(providers)
+        .set({
+          ...clean,
+          // The new incarnation starts with no health of its own: the check
+          // record resets and the traffic record clears in the SAME statement
+          // that changes the credential/endpoint, so nothing can interleave.
+          status: 'unknown',
+          lastErrorKind: null,
+          statusSource: source,
+          statusChangedAt: sql`now()`,
+          statusRev: bump,
+          trafficState: null,
+          trafficErrorKind: null,
+          trafficAt: null,
+          trafficSeq: null,
+          trafficRev: null,
+          healthRev: bump,
+        })
+        .where(and(eq(providers.id, id), ownershipPredicate(providers, principal)))
+        .returning();
+      return (rows[0] as ProviderRow | undefined) ?? null;
     },
   };
 }
@@ -1236,6 +1343,7 @@ export function buildPersistencePort(db: Db): PersistencePort {
     },
     providers: {
       ...createOwnedRepository(db, providers as unknown as AnyOwnedTable),
+      ...createProviderHealthWrites(db),
       // E10.2: delete + re-compact tier positions in one transaction, so a
       // cascade that removed a position-0 model leaves the tier routable.
       async remove(principal: Principal, id: string): Promise<boolean> {

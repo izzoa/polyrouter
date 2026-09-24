@@ -34,7 +34,7 @@ import {
   OAUTH_TOKEN_FETCH,
 } from '../../src/subscription-oauth/subscription-oauth.service';
 import type { OauthPreset } from '../../src/subscription-oauth/presets';
-import type { TokenSet } from '../../src/subscription-oauth/oauth-client';
+import { TokenEndpointError, type TokenSet } from '../../src/subscription-oauth/oauth-client';
 import { uniqueEmail } from '../auth/auth-harness';
 import { COMPOSE_HINT } from '../tenancy/harness';
 import '../../src/providers/providers.config';
@@ -62,8 +62,17 @@ class TestPrincipalGuard implements CanActivate {
 let exchanges: Array<Record<string, string>> = [];
 let exchangeInputs: Array<{ encoding?: string; grant?: string; body: Record<string, string> }> = [];
 let nextTokens: () => Promise<TokenSet> = () =>
-  Promise.resolve({ accessToken: 'at-e2e-1', refreshToken: 'rt-e2e-1', expiresAt: Date.now() + 3_600_000 });
+  Promise.resolve({
+    accessToken: 'at-e2e-1',
+    refreshToken: 'rt-e2e-1',
+    expiresAt: Date.now() + 3_600_000,
+  });
 let factoryConfigs: Array<Record<string, unknown>> = [];
+// add-provider-health-signals: validating-call accounting + a controllable
+// testConnection result for the endpoint-sourced (non-bundled) probe.
+let chatCalls = 0;
+let testConnCalls = 0;
+let nextTestConn: () => Promise<unknown> = () => Promise.resolve({ ok: true, models: 0 });
 let nextChat: () => Promise<unknown> = () =>
   Promise.resolve({ content: [{ type: 'text', text: 'ok' }], stopReason: 'stop' });
 
@@ -189,11 +198,17 @@ describe('subscription OAuth connect (e2e)', () => {
         factoryConfigs.push(cfg as Record<string, unknown>);
         return {
           protocol: 'anthropic_compatible',
-          chat: () => nextChat(),
+          chat: () => {
+            chatCalls += 1;
+            return nextChat();
+          },
           chatStream: async function* () {
             /* n/a */
           },
-          testConnection: () => Promise.resolve({ ok: true, models: 0 }),
+          testConnection: () => {
+            testConnCalls += 1;
+            return nextTestConn();
+          },
           listModels: () => Promise.resolve([]),
         };
       }) as unknown as import('../../src/providers/providers.service').ProviderAdapterFactory)
@@ -242,7 +257,20 @@ describe('subscription OAuth connect (e2e)', () => {
     exchanges = [];
     exchangeInputs = [];
     factoryConfigs = [];
-    nextChat = () => Promise.resolve({ content: [{ type: 'text', text: 'ok' }], stopReason: 'stop' });
+    chatCalls = 0;
+    testConnCalls = 0;
+    nextTestConn = () => Promise.resolve({ ok: true, models: 0 });
+    // Test-repair claims and forced-refresh claims are per window; clear between tests.
+    {
+      const r = app.get<import('ioredis').Redis>(REDIS_CLIENT);
+      const claims = [
+        ...(await r.keys('oauth:test-forced:*')),
+        ...(await r.keys('oauth:forced:*')),
+      ];
+      if (claims.length > 0) await r.del(...claims);
+    }
+    nextChat = () =>
+      Promise.resolve({ content: [{ type: 'text', text: 'ok' }], stopReason: 'stop' });
     upstreamHeaders = [];
     nextTokens = () =>
       Promise.resolve({
@@ -302,8 +330,12 @@ describe('subscription OAuth connect (e2e)', () => {
     const { sessionId, state } = await startConnect();
     // wrong state
     expect(
-      (await as(alice, '/api/providers/oauth/complete').send({ sessionId, pasted: 'c#wrong-state' }))
-        .status,
+      (
+        await as(alice, '/api/providers/oauth/complete').send({
+          sessionId,
+          pasted: 'c#wrong-state',
+        })
+      ).status,
     ).toBe(422);
     // session was atomically consumed by the failed attempt → a replay is unknown
     const replay = await as(alice, '/api/providers/oauth/complete').send({
@@ -319,9 +351,10 @@ describe('subscription OAuth connect (e2e)', () => {
       pasted: 'just-a-code',
     });
     expect(bare.status).toBe(422);
-    const count = await pool.query('SELECT count(*)::int c FROM provider WHERE owner_user_id = $1', [
-      alice,
-    ]);
+    const count = await pool.query(
+      'SELECT count(*)::int c FROM provider WHERE owner_user_id = $1',
+      [alice],
+    );
     expect(count.rows[0].c).toBe(0);
   });
 
@@ -331,7 +364,11 @@ describe('subscription OAuth connect (e2e)', () => {
       new Promise((r) =>
         setTimeout(
           () =>
-            r({ accessToken: 'at-e2e-1', refreshToken: 'rt-e2e-1', expiresAt: Date.now() + 3_600_000 }),
+            r({
+              accessToken: 'at-e2e-1',
+              refreshToken: 'rt-e2e-1',
+              expiresAt: Date.now() + 3_600_000,
+            }),
           30,
         ),
       );
@@ -380,9 +417,10 @@ describe('subscription OAuth connect (e2e)', () => {
       kind: 'subscription',
     });
     // A durable dead grant fails locally and surfaces the DISTINCT reauthorize message.
-    await pool.query("UPDATE provider SET credential_error = 'reauthorize_required' WHERE id = $1", [
-      created.body.id,
-    ]);
+    await pool.query(
+      "UPDATE provider SET credential_error = 'reauthorize_required' WHERE id = $1",
+      [created.body.id],
+    );
     const dead = await request(server)
       .post(`/api/providers/${created.body.id}/test-connection`)
       .set('x-test-user', alice);
@@ -422,7 +460,10 @@ describe('subscription OAuth connect (e2e)', () => {
     });
     const id = created.body.id;
     // Simulate a dead grant (durable state), then reauthorize.
-    await pool.query("UPDATE provider SET credential_error = 'reauthorize_required' WHERE id = $1", [id]);
+    await pool.query(
+      "UPDATE provider SET credential_error = 'reauthorize_required' WHERE id = $1",
+      [id],
+    );
     const re = await as(alice, `/api/providers/oauth/reauthorize/${id}`).send({});
     expect(re.status).toBe(200);
     const reState = new URL(re.body.authorizeUrl).searchParams.get('state')!;
@@ -452,12 +493,100 @@ describe('subscription OAuth connect (e2e)', () => {
       pasted: `c3#${re2State}`,
     });
     expect(stale.status).toBe(422); // provider changed — nothing restored
-    const after = await pool.query<{ encrypted_credentials: string | null; oauth_preset: string | null }>(
-      'SELECT encrypted_credentials, oauth_preset FROM provider WHERE id = $1',
-      [id],
-    );
+    const after = await pool.query<{
+      encrypted_credentials: string | null;
+      oauth_preset: string | null;
+    }>('SELECT encrypted_credentials, oauth_preset FROM provider WHERE id = $1', [id]);
     expect(after.rows[0]!.encrypted_credentials).toBeNull(); // the clear stands
     expect(after.rows[0]!.oauth_preset).toBeNull(); // metadata never outlives the envelope
+  });
+
+  // add-provider-health-signals (task 2.2): reconnect is available in EVERY state
+  // and resets both health records in the same locked write that installs the new
+  // credential — models survive, the breaker is reset.
+  it('reauthorize from any state renews in place and resets both health records', async () => {
+    const redis = app.get<import('ioredis').Redis>(REDIS_CLIENT);
+    const states: Array<[string, string]> = [
+      ['ok', `status='ok', status_source='test', status_rev=1, health_rev=1`],
+      [
+        'failing traffic',
+        `traffic_state='failing', traffic_error_kind='auth', traffic_seq=5, traffic_rev=1, health_rev=1`,
+      ],
+      [
+        'failed test',
+        `status='error', last_error_kind='auth', status_source='test', status_rev=1, health_rev=1`,
+      ],
+      ['unknown', `status='unknown'`],
+      [
+        'reauthorize_required',
+        `credential_error='reauthorize_required', status='error', last_error_kind='credential',
+         status_source='refresh', status_rev=1, health_rev=1`,
+      ],
+    ];
+    for (const [label, seed] of states) {
+      // Each state spends four connect-endpoint calls; clear the per-principal and
+      // per-IP throttles between states exactly as beforeEach does between tests.
+      const throttled = [
+        ...(await redis.keys('rl:oauthp:*')),
+        ...(await redis.keys('rl:oauthc:*')),
+      ];
+      if (throttled.length > 0) await redis.del(...throttled);
+      const { sessionId, state } = await startConnect();
+      const created = await as(alice, '/api/providers/oauth/complete').send({
+        sessionId,
+        pasted: `c#${state}`,
+      });
+      const id = created.body.id as string;
+      // A completed exchange verifies the grant for the refresh sweep's liveness window.
+      expect(await redis.get(`oauth:verified:${id}`)).toBe('1');
+      await redis.del(`oauth:verified:${id}`);
+      await pool.query(
+        `INSERT INTO model (id, provider_id, external_model_id) VALUES (gen_random_uuid(), $1, 'keep-me')`,
+        [id],
+      );
+      await pool.query(`UPDATE provider SET ${seed} WHERE id = $1`, [id]);
+      await redis.hset(`cb:${id}`, {
+        state: 'open',
+        failures: 0,
+        openedAt: Date.now(),
+        generation: 7,
+      });
+
+      const re = await as(alice, `/api/providers/oauth/reauthorize/${id}`).send({});
+      expect(re.status).toBe(200);
+      const reState = new URL(re.body.authorizeUrl).searchParams.get('state')!;
+      const done = await as(alice, '/api/providers/oauth/complete').send({
+        sessionId: re.body.sessionId,
+        pasted: `c2#${reState}`,
+      });
+      expect({ label, status: done.status }).toEqual({ label, status: 200 });
+      expect(done.body.id).toBe(id);
+      expect(done.body.credentialError).toBeNull();
+      expect(done.body.health).toMatchObject({ state: 'unknown', source: 'reconnect', kind: null });
+      const row = (
+        await pool.query<Record<string, unknown>>(
+          `SELECT status, last_error_kind, status_source, traffic_state, traffic_seq, traffic_rev
+             FROM provider WHERE id = $1`,
+          [id],
+        )
+      ).rows[0]!;
+      expect({ label, row }).toEqual({
+        label,
+        row: {
+          status: 'unknown',
+          last_error_kind: null,
+          status_source: 'reconnect',
+          traffic_state: null,
+          traffic_seq: null,
+          traffic_rev: null,
+        },
+      });
+      const models = await pool.query('SELECT 1 FROM model WHERE provider_id = $1', [id]);
+      expect(models.rowCount).toBe(1);
+      // The breaker no longer holds the pre-reconnect open state.
+      expect(await redis.hget(`cb:${id}`, 'state')).not.toBe('open');
+      expect(await redis.get(`oauth:verified:${id}`)).toBe('1'); // reconnect verifies too
+    }
   });
 
   it('editing an OAuth provider: endpoint drift is rejected; credential replace clears metadata', async () => {
@@ -491,16 +620,13 @@ describe('subscription OAuth connect (e2e)', () => {
 
   it('FORGERY: a pasted polycred marker via create stays a plain credential', async () => {
     const forged = `polycred:v1:{"v":1,"kind":"oauth","preset":"stub-claude","accessToken":"x","refreshToken":"y","expiresAt":9999999999999}`;
-    const res = await request(server)
-      .post('/api/providers')
-      .set('x-test-user', alice)
-      .send({
-        name: 'forge',
-        kind: 'subscription',
-        protocol: 'anthropic_compatible',
-        baseUrl: preset.baseUrl,
-        credential: forged,
-      });
+    const res = await request(server).post('/api/providers').set('x-test-user', alice).send({
+      name: 'forge',
+      kind: 'subscription',
+      protocol: 'anthropic_compatible',
+      baseUrl: preset.baseUrl,
+      credential: forged,
+    });
     expect(res.status).toBe(201);
     expect(res.body.oauthPreset).toBeNull(); // never becomes OAuth-connected
     const rows = await pool.query<{ encrypted_credentials: string }>(
@@ -552,6 +678,175 @@ describe('subscription OAuth connect (e2e)', () => {
       .set('x-test-user', alice)
       .send({ name: 'renamed-bundled' })
       .expect(200);
+  });
+
+  // ---- add-provider-health-signals: Sync (task 2.4) and Test repair (task 4.1) ----
+
+  const HOURS_240 = 240 * 60 * 60 * 1000;
+
+  /** Connect a provider of `presetId` whose access token expires in `expiresInMs`. */
+  async function connectWith(presetId: string, expiresInMs: number): Promise<string> {
+    nextTokens = () =>
+      Promise.resolve({
+        accessToken: 'at-connect',
+        refreshToken: 'rt-connect',
+        expiresAt: Date.now() + expiresInMs,
+      });
+    const start = await as(alice, '/api/providers/oauth/start').send({ preset: presetId });
+    const state = new URL(start.body.authorizeUrl).searchParams.get('state')!;
+    const created = await as(alice, '/api/providers/oauth/complete').send({
+      sessionId: start.body.sessionId,
+      pasted: `c#${state}`,
+    });
+    expect(created.status).toBe(200);
+    exchanges = [];
+    return created.body.id as string;
+  }
+
+  const checkRecord = async (id: string): Promise<Record<string, unknown>> =>
+    (
+      await pool.query<Record<string, unknown>>(
+        `SELECT status, last_error_kind, status_source, credential_error FROM provider WHERE id = $1`,
+        [id],
+      )
+    ).rows[0]!;
+
+  const post = (id: string, action: 'test-connection' | 'sync-models'): request.Test =>
+    request(server).post(`/api/providers/${id}/${action}`).set('x-test-user', alice);
+
+  it('a metadata-only (bundled) sync seeds models and does not claim health', async () => {
+    const id = await connectWith('stub-bundled', HOURS_240);
+    await pool.query(
+      `UPDATE provider SET status='error', last_error_kind='auth', status_source='test',
+         status_rev=1, health_rev=1 WHERE id=$1`,
+      [id],
+    );
+    const sync = await post(id, 'sync-models');
+    expect(sync.body.synced).toBe(2);
+    expect(await checkRecord(id)).toMatchObject({
+      status: 'error',
+      last_error_kind: 'auth',
+      status_source: 'test',
+    });
+  });
+
+  it('a sync that never listed does not overwrite the credential failure it hit', async () => {
+    // Near expiry, so the sync's adapter build refreshes — and the IdP says invalid_grant.
+    const id = await connectWith('stub-claude', 60_000);
+    nextTokens = () => Promise.reject(new TokenEndpointError('invalid_grant'));
+    const sync = await post(id, 'sync-models');
+    expect(sync.body).toMatchObject({ ok: false, kind: 'credential' });
+    expect(await checkRecord(id)).toMatchObject({
+      status: 'error',
+      last_error_kind: 'credential',
+      status_source: 'refresh', // the refresh's own record stands — not overwritten by 'sync'
+      credential_error: 'reauthorize_required',
+    });
+  });
+
+  it('an endpoint-sourced sync records its check (source sync)', async () => {
+    const id = await connectWith('stub-claude', HOURS_240);
+    const sync = await post(id, 'sync-models');
+    expect(sync.body.ok).toBe(true);
+    expect(await checkRecord(id)).toMatchObject({ status: 'ok', status_source: 'sync' });
+  });
+
+  it('Test on a 240h token rejected with 401 repairs it: one refresh, one re-probe, ok', async () => {
+    const id = await connectWith('stub-bundled', HOURS_240);
+    let calls = 0;
+    const { ProviderError } = await import('@polyrouter/data-plane');
+    nextChat = () =>
+      ++calls === 1
+        ? Promise.reject(new ProviderError('auth', 'rejected'))
+        : Promise.resolve({ content: [{ type: 'text', text: 'ok' }], stopReason: 'stop' });
+    const res = await post(id, 'test-connection');
+    expect(res.body).toMatchObject({ ok: true, status: 'ok' });
+    expect(exchanges).toHaveLength(1); // the forced refresh — despite 240h of validity left
+    expect(exchanges[0]).toMatchObject({ grant_type: 'refresh_token' });
+    expect(chatCalls).toBe(2);
+    expect(await checkRecord(id)).toMatchObject({ status: 'ok', status_source: 'test' });
+  });
+
+  it('Test whose repair hits invalid_grant reports reauthorize required', async () => {
+    const id = await connectWith('stub-bundled', HOURS_240);
+    const { ProviderError } = await import('@polyrouter/data-plane');
+    nextChat = () => Promise.reject(new ProviderError('auth', 'rejected'));
+    nextTokens = () => Promise.reject(new TokenEndpointError('invalid_grant'));
+    const res = await post(id, 'test-connection');
+    expect(res.body).toMatchObject({
+      ok: false,
+      kind: 'credential',
+      message: 'credential needs reauthorization',
+    });
+    expect(chatCalls).toBe(1);
+    expect(await checkRecord(id)).toMatchObject({
+      credential_error: 'reauthorize_required',
+      status: 'error',
+      last_error_kind: 'credential',
+      status_source: 'test',
+    });
+  });
+
+  it('Test on a persistent 401 reports auth after ≤2 probes; a second Test within the window does not dial the IdP', async () => {
+    const id = await connectWith('stub-bundled', HOURS_240);
+    const { ProviderError } = await import('@polyrouter/data-plane');
+    nextChat = () => Promise.reject(new ProviderError('auth', 'rejected'));
+    const first = await post(id, 'test-connection');
+    expect(first.body).toMatchObject({ ok: false, kind: 'auth' });
+    expect(chatCalls).toBe(2);
+    expect(exchanges).toHaveLength(1);
+    const second = await post(id, 'test-connection');
+    expect(second.body).toMatchObject({ ok: false, kind: 'auth' });
+    expect(chatCalls).toBe(3); // one probe, no repair
+    expect(exchanges).toHaveLength(1); // rate-limited: zero new exchanges
+    expect(await checkRecord(id)).toMatchObject({
+      status: 'error',
+      last_error_kind: 'auth',
+      status_source: 'test',
+    });
+  });
+
+  it('Test on a non-OAuth provider never refreshes: one validating call', async () => {
+    const created = await request(server).post('/api/providers').set('x-test-user', alice).send({
+      name: 'plain',
+      kind: 'api_key',
+      protocol: 'anthropic_compatible',
+      baseUrl: 'https://1.1.1.1/v1',
+      credential: 'sk-plain',
+    });
+    nextTestConn = () => Promise.resolve({ ok: false, kind: 'auth', message: 'denied' });
+    const res = await post(created.body.id as string, 'test-connection');
+    expect(res.body).toMatchObject({ ok: false, kind: 'auth' });
+    expect(testConnCalls).toBe(1);
+    expect(exchanges).toHaveLength(0);
+  });
+
+  it('a Test that finishes after a reconnect records nothing', async () => {
+    const id = await connectWith('stub-bundled', HOURS_240);
+    let release!: () => void;
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    nextChat = async () => {
+      await held;
+      return { content: [{ type: 'text', text: 'ok' }], stopReason: 'stop' };
+    };
+    const pending = post(id, 'test-connection').then((r) => r);
+    // Reconnect while the probe is in flight.
+    const re = await as(alice, `/api/providers/oauth/reauthorize/${id}`).send({});
+    const reState = new URL(re.body.authorizeUrl).searchParams.get('state')!;
+    const done = await as(alice, '/api/providers/oauth/complete').send({
+      sessionId: re.body.sessionId,
+      pasted: `c2#${reState}`,
+    });
+    expect(done.status).toBe(200);
+    release();
+    const res = await pending;
+    expect(res.body.ok).toBe(true); // the caller still gets its result…
+    expect(await checkRecord(id)).toMatchObject({
+      status: 'unknown', // …but it is not recorded against the new credential
+      status_source: 'reconnect',
+    });
   });
 
   it('cross-tenant reauthorize fails closed', async () => {
@@ -645,9 +940,10 @@ describe('subscription OAuth connect (e2e)', () => {
       pasted: pasteUrl(second.state),
     });
     expect(badClaim.status).toBe(422);
-    const count = await pool.query('SELECT count(*)::int c FROM provider WHERE owner_user_id = $1', [
-      alice,
-    ]);
+    const count = await pool.query(
+      'SELECT count(*)::int c FROM provider WHERE owner_user_id = $1',
+      [alice],
+    );
     expect(count.rows[0].c).toBe(0); // nothing written by either failure
   });
 
@@ -704,16 +1000,13 @@ describe('subscription OAuth connect (e2e)', () => {
       'gpt-5-codex',
     ]);
     // Manual create with the upstream-only protocol: rejected by the public DTO enum.
-    const create = await request(server)
-      .post('/api/providers')
-      .set('x-test-user', alice)
-      .send({
-        name: 'hand-rolled',
-        kind: 'subscription',
-        protocol: 'openai_responses',
-        baseUrl: 'https://2.2.2.2/',
-        credential: 'sk-x',
-      });
+    const create = await request(server).post('/api/providers').set('x-test-user', alice).send({
+      name: 'hand-rolled',
+      kind: 'subscription',
+      protocol: 'openai_responses',
+      baseUrl: 'https://2.2.2.2/',
+      credential: 'sk-x',
+    });
     expect([400, 422]).toContain(create.status);
     // Explicitly supplying it on an update is rejected the same way.
     const explicit = await request(server)
@@ -745,10 +1038,10 @@ describe('subscription OAuth connect (e2e)', () => {
       .send({ credential: '' });
     expect(clear.status).toBe(422);
     // Envelope + preset untouched by the rejected edits.
-    const before = await pool.query<{ oauth_preset: string | null; encrypted_credentials: string | null }>(
-      'SELECT oauth_preset, encrypted_credentials FROM provider WHERE id = $1',
-      [id],
-    );
+    const before = await pool.query<{
+      oauth_preset: string | null;
+      encrypted_credentials: string | null;
+    }>('SELECT oauth_preset, encrypted_credentials FROM provider WHERE id = $1', [id]);
     expect(before.rows[0]!.oauth_preset).toBe('stub-chatgpt');
     expect(before.rows[0]!.encrypted_credentials).not.toBeNull();
     // And the row remains fully REAUTHORIZABLE end-to-end.
@@ -766,7 +1059,9 @@ describe('subscription OAuth connect (e2e)', () => {
       'SELECT encrypted_credentials FROM provider WHERE id = $1',
       [id],
     );
-    const parsed = parseCredentialEnvelope(decryptSecret(after.rows[0]!.encrypted_credentials, KEY));
+    const parsed = parseCredentialEnvelope(
+      decryptSecret(after.rows[0]!.encrypted_credentials, KEY),
+    );
     expect(parsed.kind === 'oauth' && parsed.cred.accessToken).toBe('at-e2e-3');
     expect(parsed.kind === 'oauth' && parsed.cred.accountId).toBe('acct-e2e-77');
   });
@@ -774,7 +1069,8 @@ describe('subscription OAuth connect (e2e)', () => {
   it('CHATGPT REAL wire: exactly the three identity headers, no fingerprints, store:false; stream + 401 probe', async () => {
     // A local Responses-shaped upstream. VERIFIED LIVE: the wire is STREAMING-ONLY
     // (buffered chat() folds the SSE), and rejects max_output_tokens/sampling.
-    const seen: Array<{ headers: Record<string, string | string[] | undefined>; body: string }> = [];
+    const seen: Array<{ headers: Record<string, string | string[] | undefined>; body: string }> =
+      [];
     const okSse = (): string => {
       const frames = [
         { type: 'response.created', response: { id: 'r1', model: 'gpt-5.4-mini' } },
@@ -802,7 +1098,8 @@ describe('subscription OAuth connect (e2e)', () => {
     await new Promise<void>((r) => respUpstream.listen(0, '127.0.0.1', r));
     const base = `http://127.0.0.1:${String((respUpstream.address() as AddressInfo).port)}`;
     try {
-      const { createResponsesProviderAdapter, ProviderError } = await import('@polyrouter/data-plane');
+      const { createResponsesProviderAdapter, ProviderError } =
+        await import('@polyrouter/data-plane');
       const adapter = createResponsesProviderAdapter({
         protocol: 'openai_responses',
         baseUrl: base,

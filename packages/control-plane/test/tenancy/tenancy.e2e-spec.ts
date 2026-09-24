@@ -372,6 +372,79 @@ describe('batch jobs are owner-scoped on every surface (add-batch-inference, tas
       (harness.maintenance.batchJobs as unknown as Record<string, unknown>)['findById'],
     ).toBeUndefined();
   });
+
+  // add-provider-health-signals (task 7.1): the OAuth refresh sweep's listing.
+  it('the OAuth sweep lists every tenant’s connected providers — id-paged, owner-carrying, nothing secret', async () => {
+    // 501 OAuth rows for alice (a third of them with an unknown expiry), plus bob's.
+    await harness.pool.query(
+      `INSERT INTO provider (id, owner_user_id, name, kind, protocol, base_url, encrypted_credentials,
+                             oauth_preset, credential_expires_at)
+       SELECT gen_random_uuid(), $1, 'sweep', 'subscription', 'anthropic_compatible',
+              'https://1.1.1.1/v1', 'poly-enc:v1:sealed', 'claude',
+              CASE WHEN g % 3 = 0 THEN NULL ELSE now() + (g || ' minutes')::interval END
+         FROM generate_series(1, 501) AS g`,
+      [alice.userId],
+    );
+    const bobs = await harness.port.providers.insert(bob.principal, {
+      name: 'bob-sub',
+      kind: 'subscription',
+      protocol: 'anthropic_compatible',
+      baseUrl: 'https://1.1.1.1/v1',
+      encryptedCredentials: 'poly-enc:v1:bob',
+      oauthPreset: 'claude',
+    });
+    // Excluded: errored, cleared, and non-OAuth rows.
+    const excluded = [
+      await harness.port.providers.insert(alice.principal, {
+        name: 'errored',
+        kind: 'subscription',
+        protocol: 'anthropic_compatible',
+        baseUrl: 'https://1.1.1.1/v1',
+        encryptedCredentials: 'x',
+        oauthPreset: 'claude',
+        credentialError: 'reauthorize_required',
+      }),
+      await harness.port.providers.insert(alice.principal, {
+        name: 'cleared',
+        kind: 'subscription',
+        protocol: 'anthropic_compatible',
+        baseUrl: 'https://1.1.1.1/v1',
+        oauthPreset: 'claude',
+      }),
+      await harness.port.providers.insert(alice.principal, {
+        name: 'plain',
+        kind: 'api_key',
+        protocol: 'anthropic_compatible',
+        baseUrl: 'https://1.1.1.1/v1',
+        encryptedCredentials: 'x',
+      }),
+    ].map((r) => r.id);
+
+    const seen: Array<{ id: string; ownerUserId: string; credentialExpiresAt: Date | null }> = [];
+    let afterId: string | null = null;
+    for (;;) {
+      const page = await harness.maintenance.providers.listOauthConnected({ afterId, limit: 100 });
+      if (page.length === 0) break;
+      for (const row of page) {
+        // Only the three non-secret identifying fields — never the envelope.
+        expect(Object.keys(row).sort()).toEqual(['credentialExpiresAt', 'id', 'ownerUserId']);
+      }
+      seen.push(...page);
+      afterId = page[page.length - 1]!.id;
+    }
+    const ids = seen.map((r) => r.id);
+    expect(new Set(ids).size).toBe(ids.length); // each row exactly once
+    const alices = seen.filter((r) => r.ownerUserId === alice.userId);
+    expect(alices).toHaveLength(501);
+    expect(alices.filter((r) => r.credentialExpiresAt === null)).toHaveLength(167);
+    expect(seen.find((r) => r.id === bobs.id)?.ownerUserId).toBe(bob.userId);
+    for (const id of excluded) expect(ids).not.toContain(id);
+    expect(JSON.stringify(seen)).not.toContain('poly-enc');
+    // List-only: no by-id read on this surface either.
+    expect(
+      (harness.maintenance.providers as unknown as Record<string, unknown>)['findById'],
+    ).toBeUndefined();
+  });
 });
 
 describe('the maintenance token is a real module boundary (add-batch-inference, task 2.2)', () => {
@@ -410,8 +483,9 @@ describe('the maintenance token is a real module boundary (add-batch-inference, 
       expect(typeof m.models.classifyVariants).toBe('function');
       expect(typeof m.batchJobs.listNonTerminal).toBe('function');
       expect(typeof m.reservations.pendingMicrosFor).toBe('function');
+      expect(typeof m.providers.listOauthConnected).toBe('function');
       // No member — at any depth — is a query builder or a raw handle.
-      for (const surface of [m, m.models, m.batchJobs, m.reservations]) {
+      for (const surface of [m, m.models, m.batchJobs, m.reservations, m.providers]) {
         const rec = surface as unknown as Record<string, unknown>;
         for (const forbidden of ['query', 'execute', 'select', 'transaction', 'insert', 'db']) {
           expect(rec[forbidden]).toBeUndefined();

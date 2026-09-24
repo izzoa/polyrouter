@@ -42,6 +42,16 @@ export interface AdapterBuildOptions {
   readonly assertAddress?: boolean;
 }
 
+/** A built adapter config plus the stored credential envelope it was built from
+ * (add-provider-health-signals). `usedEnvelope` is INTERNAL — the compare key for
+ * a forced refresh and the health incarnation guard — and is deliberately kept
+ * OUT of the config, so it never reaches an adapter, a log line, or a response.
+ * Null for a keyless local provider. */
+export interface BuiltAdapterConfig {
+  readonly config: ProviderConfig;
+  readonly usedEnvelope: string | null;
+}
+
 export interface AdapterBuilderRuntime {
   /** Provider-credential encryption key (#7). */
   readonly key: string;
@@ -69,6 +79,17 @@ export class ProviderAdapterBuilder {
     provider: ProviderRow,
     opts: AdapterBuildOptions,
   ): Promise<ProviderConfig> {
+    return (await this.buildConfigWithCredential(principal, provider, opts)).config;
+  }
+
+  /** `buildConfig` plus the envelope the build actually used — for a subscription
+   * provider, the one `resolveCredential` resolved (the NEWLY written one when the
+   * build lazily refreshed); otherwise the stored envelope. */
+  async buildConfigWithCredential(
+    principal: Principal,
+    provider: ProviderRow,
+    opts: AdapterBuildOptions,
+  ): Promise<BuiltAdapterConfig> {
     if (provider.baseUrl === null) {
       throw new AdapterBuildError('no_base_url', 'provider has no base_url');
     }
@@ -110,12 +131,15 @@ export class ProviderAdapterBuilder {
     if (kind === 'subscription' && provider.encryptedCredentials !== null) {
       const r = await this.oauth.resolveCredential(principal, provider);
       return {
-        ...common,
-        credential: r.credential,
-        authScheme: r.authScheme,
-        ...(r.oauthBeta !== undefined ? { oauthBeta: r.oauthBeta } : {}),
-        ...(r.oauthAccountId !== undefined ? { oauthAccountId: r.oauthAccountId } : {}),
-        ...(r.probeModel !== undefined ? { probeModel: r.probeModel } : {}),
+        config: {
+          ...common,
+          credential: r.credential,
+          authScheme: r.authScheme,
+          ...(r.oauthBeta !== undefined ? { oauthBeta: r.oauthBeta } : {}),
+          ...(r.oauthAccountId !== undefined ? { oauthAccountId: r.oauthAccountId } : {}),
+          ...(r.probeModel !== undefined ? { probeModel: r.probeModel } : {}),
+        },
+        usedEnvelope: r.envelope,
       };
     }
     let credential = '';
@@ -128,6 +152,6 @@ export class ProviderAdapterBuilder {
     } else if (kind !== 'local') {
       throw new AdapterBuildError('no_credential', 'provider has no credential');
     }
-    return { ...common, credential };
+    return { config: { ...common, credential }, usedEnvelope: provider.encryptedCredentials };
   }
 }

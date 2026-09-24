@@ -13,7 +13,7 @@
  *  - only a successful REAUTHORIZATION resets the provider breaker — an ordinary
  *    refresh preserves genuine upstream failure history (codex round 2).
  */
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import {
   Inject,
   Injectable,
@@ -39,6 +39,7 @@ import {
 } from '@polyrouter/shared/server';
 import { ProviderError, RedisBreakerStore, type AuthScheme } from '@polyrouter/data-plane';
 import { AdvisoryLockTimeoutError } from '../database/port';
+import { incarnationOf, reauthorizeRequiredCheck } from '../providers/provider-health';
 import type { Redis } from 'ioredis';
 import {
   ConnectSessionStore,
@@ -47,7 +48,12 @@ import {
   type ConnectSession,
 } from './connect-sessions';
 import { AccountClaimError, extractChatgptAccountId } from './account-claim';
-import { TokenEndpointError, fetchTokenSet, type OauthTokenFetch, type TokenSet } from './oauth-client';
+import {
+  TokenEndpointError,
+  fetchTokenSet,
+  type OauthTokenFetch,
+  type TokenSet,
+} from './oauth-client';
 import { PasteParseError, parsePastedRedirect } from './paste';
 import { OAUTH_PRESETS, buildAuthorizeUrl, findPreset, type OauthPreset } from './presets';
 
@@ -78,9 +84,41 @@ const LOCK_WAIT_MS = 20_000;
 
 const backoffKey = (providerId: string): string => `oauth:backoff:${providerId}`;
 
+// ---- add-provider-health-signals ----
+/** A grant verified by a successful exchange/refresh is not liveness-due again for
+ * this long (the proactive sweep's liveness window). */
+export const VERIFIED_TTL_MS = 24 * 60 * 60 * 1000;
+/** A liveness check that failed transiently is retried no sooner than this. */
+export const VERIFIED_RETRY_TTL_MS = 60 * 60 * 1000;
+/** One 401-triggered forced refresh per provider and credential per window. */
+const FORCED_COOLDOWN_MS = 10 * 60 * 1000;
+/** One test-connection inline repair per provider per window. */
+const TEST_REPAIR_COOLDOWN_MS = 60 * 1000;
+
+export const verifiedKey = (providerId: string): string => `oauth:verified:${providerId}`;
+/** Fenced by a fingerprint of the credential version — a SHA-256 of the stored
+ * ciphertext (not secret; its hash reveals nothing), truncated. */
+const forcedClaimKey = (providerId: string, envelope: string): string =>
+  `oauth:forced:${providerId}:${createHash('sha256').update(envelope).digest('hex').slice(0, 16)}`;
+const testRepairKey = (providerId: string): string => `oauth:test-forced:${providerId}`;
+
+export type ForceRefreshReason = '401' | 'test' | 'scheduled';
+/** refreshed — the token endpoint rotated the tokens; adopted — the stored
+ * credential had already changed (another path renewed it); transient — IdP
+ * unreachable/5xx, backoff held, or the lock wait timed out (nothing written);
+ * reauthorize_required — durably recorded; aborted — deleted, cleared, or not an
+ * OAuth credential (nothing written). */
+export type ForceRefreshOutcome =
+  'refreshed' | 'adopted' | 'transient' | 'reauthorize_required' | 'aborted';
+
 export interface ResolvedCredential {
   readonly credential: string;
   readonly authScheme: AuthScheme;
+  /** INTERNAL (add-provider-health-signals): the stored envelope ciphertext this
+   * resolution used — the newly written one after a lazy refresh. The compare key
+   * for a forced refresh and the health incarnation guard. Never logged, never
+   * placed in an adapter config, never returned by any API. */
+  readonly envelope: string;
   readonly oauthBeta?: string;
   /** TRUSTED envelope data for the Responses protocol (add-chatgpt-responses):
    * emitted as the `chatgpt-account-id` header. Never logged or exposed. */
@@ -103,6 +141,24 @@ function principalKeyOf(principal: Principal): string {
  * preset's pinned protocol, so the two can never disagree. */
 function presetRequiresAccountId(preset: OauthPreset): boolean {
   return preset.protocol === 'openai_responses';
+}
+
+/** The ONE durable reauthorize-required write (add-provider-health-signals): the
+ * credential state plus the shared `credential`/`refresh` check record, both inside
+ * the caller's credential lock. Neither write changes the incarnation, so the
+ * health write's guard (the row as just re-read under the lock) always holds. */
+async function markReauthorizeRequired(
+  tx: PersistencePort,
+  principal: Principal,
+  fresh: ProviderRow,
+): Promise<void> {
+  await tx.providers.update(principal, fresh.id, { credentialError: 'reauthorize_required' });
+  await tx.providers.setHealth(
+    principal,
+    fresh.id,
+    reauthorizeRequiredCheck(),
+    incarnationOf(fresh),
+  );
 }
 
 function reauthorizeRequired(): ProviderError {
@@ -232,7 +288,9 @@ export class SubscriptionOauthService {
       session.principalKey !== principalKeyOf(principal) ||
       session.authSessionId !== authSessionId
     ) {
-      throw new UnprocessableEntityException('unknown or expired connect session — restart connect');
+      throw new UnprocessableEntityException(
+        'unknown or expired connect session — restart connect',
+      );
     }
     const preset = this.presets.find(session.preset);
     if (!preset) throw new UnprocessableEntityException('unknown subscription preset');
@@ -314,7 +372,7 @@ export class SubscriptionOauthService {
     );
 
     if (session.providerId === undefined) {
-      return this.db.providers.insert(principal, {
+      const inserted = await this.db.providers.insert(principal, {
         name: session.name ?? preset.displayName,
         kind: 'subscription',
         protocol: preset.protocol,
@@ -324,6 +382,8 @@ export class SubscriptionOauthService {
         credentialExpiresAt: new Date(tokens.expiresAt),
         credentialError: null,
       });
+      await this.markVerified(inserted.id);
+      return inserted;
     }
 
     // Reauthorize: replace in place UNDER the credential lock, re-verifying the row is
@@ -331,36 +391,53 @@ export class SubscriptionOauthService {
     // completion (deleted/cleared/changed provider) writes nothing.
     const providerId = session.providerId;
     const presetId = session.preset;
-    const row = await this.facilities.withAdvisoryLock(credentialLockKey(providerId), async (tx) => {
-      const fresh = await tx.providers.findById(principal, providerId);
-      if (
-        !fresh ||
-        fresh.kind !== 'subscription' ||
-        fresh.oauthPreset !== presetId ||
-        fresh.encryptedCredentials === null
-      ) {
-        throw new UnprocessableEntityException('provider changed — restart connect');
-      }
-      const updated = await tx.providers.update(principal, providerId, {
-        encryptedCredentials: envelope,
-        credentialExpiresAt: new Date(tokens.expiresAt),
-        credentialError: null,
-      });
-      if (!updated) throw new NotFoundException();
-      return updated;
-    });
+    const row = await this.facilities.withAdvisoryLock(
+      credentialLockKey(providerId),
+      async (tx) => {
+        const fresh = await tx.providers.findById(principal, providerId);
+        if (
+          !fresh ||
+          fresh.kind !== 'subscription' ||
+          fresh.oauthPreset !== presetId ||
+          fresh.encryptedCredentials === null
+        ) {
+          throw new UnprocessableEntityException('provider changed — restart connect');
+        }
+        // add-provider-health-signals: a reconnect is a new incarnation — the check
+        // record resets to `unknown` (source `reconnect`) and the traffic record
+        // clears in this SAME write, so nothing observed against the dead
+        // credential is ever displayed (or recorded) for the new one.
+        const updated = await tx.providers.updateResettingHealth(
+          principal,
+          providerId,
+          {
+            encryptedCredentials: envelope,
+            credentialExpiresAt: new Date(tokens.expiresAt),
+            credentialError: null,
+          },
+          'reconnect',
+        );
+        if (!updated) throw new NotFoundException();
+        return updated;
+      },
+    );
     // Reauthorize-ONLY breaker reset: the freshly reconnected provider must not serve a
     // cooldown earned by its dead credential. (Ordinary refresh never does this.)
     await this.breakerStore.reset(providerId).catch(() => undefined);
+    await this.markVerified(providerId);
     return row;
   }
 
   // ---- credential resolution (both adapter-build sites) ----
 
-  async resolveCredential(principal: Principal, provider: ProviderRow): Promise<ResolvedCredential> {
+  async resolveCredential(
+    principal: Principal,
+    provider: ProviderRow,
+  ): Promise<ResolvedCredential> {
     if (provider.encryptedCredentials === null) {
       throw new ProviderError('credential', 'provider has no credential');
     }
+    const stored = provider.encryptedCredentials;
     // Durable credential-error: fail locally BEFORE any decrypt/IdP work — a dead
     // grant (or an unreadable envelope recorded below) is never re-probed per request.
     // A Responses row keeps failing fast even after a PATCH cleared its preset (the
@@ -373,7 +450,7 @@ export class SubscriptionOauthService {
     }
     let parsed;
     try {
-      parsed = parseCredentialEnvelope(decryptSecret(provider.encryptedCredentials, this.rt.key));
+      parsed = parseCredentialEnvelope(decryptSecret(stored, this.rt.key));
     } catch (err) {
       // For a row that CLAIMS an OAuth connection, an undecryptable (wrong key) or
       // marker-malformed envelope is a durable credential failure: persist
@@ -393,7 +470,7 @@ export class SubscriptionOauthService {
         await this.persistCredentialError(principal, provider.id).catch(() => undefined);
         throw tampered();
       }
-      return { credential: parsed.value, authScheme: 'api_key' };
+      return { credential: parsed.value, authScheme: 'api_key', envelope: stored };
     }
     const preset = this.coherentPreset(provider, parsed.cred);
     // A Responses envelope without its account id is tampered/incomplete — durable
@@ -404,12 +481,12 @@ export class SubscriptionOauthService {
     }
     const now = Date.now();
     if (parsed.cred.expiresAt - now > REFRESH_MARGIN_MS) {
-      return this.resolved(parsed.cred.accessToken, preset, parsed.cred.accountId); // cheap path
+      return this.resolved(stored, parsed.cred.accessToken, preset, parsed.cred.accountId); // cheap path
     }
     // Transient-failure backoff: don't re-dial the IdP; serve the still-valid token.
     if ((await this.redis.get(backoffKey(provider.id)).catch(() => null)) !== null) {
       if (parsed.cred.expiresAt > now) {
-        return this.resolved(parsed.cred.accessToken, preset, parsed.cred.accountId);
+        return this.resolved(stored, parsed.cred.accessToken, preset, parsed.cred.accountId);
       }
       throw idpUnavailable();
     }
@@ -423,6 +500,7 @@ export class SubscriptionOauthService {
   }
 
   private resolved(
+    envelope: string,
     accessToken: string,
     preset: OauthPreset,
     accountId?: string,
@@ -430,6 +508,7 @@ export class SubscriptionOauthService {
     return {
       credential: accessToken,
       authScheme: 'oauth_bearer',
+      envelope,
       ...(preset.oauthBeta !== undefined ? { oauthBeta: preset.oauthBeta } : {}),
       ...(accountId !== undefined ? { oauthAccountId: accountId } : {}),
       ...(preset.probeModel !== undefined ? { probeModel: preset.probeModel } : {}),
@@ -457,13 +536,19 @@ export class SubscriptionOauthService {
   private async persistCredentialError(principal: Principal, providerId: string): Promise<void> {
     await this.facilities.withAdvisoryLock(
       credentialLockKey(providerId),
-      (tx) =>
-        tx.providers.update(principal, providerId, {
-          credentialError: 'reauthorize_required',
-          status: 'error',
-        }),
+      async (tx) => {
+        const fresh = await tx.providers.findById(principal, providerId);
+        if (fresh) await markReauthorizeRequired(tx, principal, fresh);
+      },
       { lockTimeoutMs: LOCK_WAIT_MS },
     );
+  }
+
+  /** Mark the grant verified for the proactive sweep's liveness window
+   * (add-provider-health-signals). Best-effort: a lost key costs one budgeted
+   * liveness re-check, never a failure. */
+  private async markVerified(providerId: string, ttlMs = VERIFIED_TTL_MS): Promise<void> {
+    await this.redis.set(verifiedKey(providerId), '1', 'PX', ttlMs).catch(() => undefined);
   }
 
   /** The single-flight refresh: a GENUINELY bounded lock wait (transaction-local
@@ -478,11 +563,19 @@ export class SubscriptionOauthService {
     presetHint: OauthPreset,
   ): Promise<ResolvedCredential> {
     try {
-      return await this.facilities.withAdvisoryLock(
+      const r = await this.facilities.withAdvisoryLock(
         credentialLockKey(providerId),
         (tx) => this.refreshUnderLock(tx, principal, providerId),
         { lockTimeoutMs: LOCK_WAIT_MS },
       );
+      // A failure that WROTE durable state is returned, not thrown, from inside the
+      // lock: `withAdvisoryLock` runs a transaction, and a throw would roll back the
+      // very `reauthorize_required` write the spec requires to be durable
+      // (add-provider-health-signals found this — it was never persisted before).
+      if (!r.ok) throw r.error;
+      // Only a REAL exchange verifies the grant — set after the lock's commit.
+      if (r.exchanged) await this.markVerified(providerId);
+      return r.resolved;
     } catch (err) {
       if (!(err instanceof AdvisoryLockTimeoutError)) throw err;
       const fresh = await this.db.providers.findById(principal, providerId);
@@ -491,24 +584,35 @@ export class SubscriptionOauthService {
           decryptSecret(fresh.encryptedCredentials, this.rt.key),
         );
         if (reread.kind === 'oauth' && reread.cred.expiresAt - Date.now() > 0) {
-          return this.resolved(reread.cred.accessToken, presetHint, reread.cred.accountId);
+          return this.resolved(
+            fresh.encryptedCredentials,
+            reread.cred.accessToken,
+            presetHint,
+            reread.cred.accountId,
+          );
         }
       }
       throw idpUnavailable();
     }
   }
 
+  /** The lazy (pre-request) refresh under the lock. A failure that wrote durable
+   * state is RETURNED (the caller throws it after the transaction commits). */
   private async refreshUnderLock(
     tx: PersistencePort,
     principal: Principal,
     providerId: string,
-  ): Promise<ResolvedCredential> {
+  ): Promise<
+    | { readonly ok: true; readonly resolved: ResolvedCredential; readonly exchanged: boolean }
+    | { readonly ok: false; readonly error: ProviderError }
+  > {
     const fresh = await tx.providers.findById(principal, providerId);
     // Deleted row / cleared credential / no-longer-oauth: abort, write nothing.
     if (!fresh || fresh.encryptedCredentials === null) throw reauthorizeRequired();
+    const stored = fresh.encryptedCredentials;
     let parsed;
     try {
-      parsed = parseCredentialEnvelope(decryptSecret(fresh.encryptedCredentials, this.rt.key));
+      parsed = parseCredentialEnvelope(decryptSecret(stored, this.rt.key));
     } catch {
       throw tampered();
     }
@@ -516,37 +620,61 @@ export class SubscriptionOauthService {
       // A concurrent PATCH converted it to a pasted credential — adopt that. Except
       // for the Responses protocol, which cannot run on one: durable tampered state.
       if (fresh.protocol === 'openai_responses') {
-        await tx.providers.update(principal, providerId, {
-          credentialError: 'reauthorize_required',
-          status: 'error',
-        });
-        throw tampered();
+        await markReauthorizeRequired(tx, principal, fresh);
+        return { ok: false, error: tampered() };
       }
-      return { credential: parsed.value, authScheme: 'api_key' };
+      return {
+        ok: true,
+        resolved: { credential: parsed.value, authScheme: 'api_key', envelope: stored },
+        exchanged: false,
+      };
     }
     const preset = this.coherentPreset(fresh, parsed.cred);
     if (fresh.credentialError !== null) throw reauthorizeRequired();
     // A Responses envelope missing its account id: durable tampered (mirrors
     // resolveCredential — this path can be reached first by a queued waiter).
     if (presetRequiresAccountId(preset) && parsed.cred.accountId === undefined) {
-      await tx.providers.update(principal, providerId, {
-        credentialError: 'reauthorize_required',
-        status: 'error',
-      });
-      throw tampered();
+      await markReauthorizeRequired(tx, principal, fresh);
+      return { ok: false, error: tampered() };
     }
+    const cred = parsed.cred;
+    const grace = (): ResolvedCredential =>
+      // Grace serves the FULL resolution — dropping accountId here would fail
+      // Responses adapter construction while the token is still valid (r3).
+      this.resolved(stored, cred.accessToken, preset, cred.accountId);
     const now = Date.now();
-    if (parsed.cred.expiresAt - now > REFRESH_MARGIN_MS) {
-      return this.resolved(parsed.cred.accessToken, preset, parsed.cred.accountId); // another instance won
+    if (cred.expiresAt - now > REFRESH_MARGIN_MS) {
+      return { ok: true, resolved: grace(), exchanged: false }; // another instance won
     }
     // Backoff RE-CHECK under the lock: a waiter queued before another instance's
     // transient failure must not dial the IdP the moment it acquires the lock.
     if ((await this.redis.get(backoffKey(providerId)).catch(() => null)) !== null) {
-      if (parsed.cred.expiresAt > now) {
-        return this.resolved(parsed.cred.accessToken, preset, parsed.cred.accountId);
-      }
-      throw idpUnavailable();
+      if (cred.expiresAt > now) return { ok: true, resolved: grace(), exchanged: false };
+      return { ok: false, error: idpUnavailable() };
     }
+    const r = await this.exchangeUnderLock(tx, principal, fresh, cred, preset);
+    if (r.kind === 'refreshed') return { ok: true, resolved: r.resolved, exchanged: true };
+    if (r.kind === 'reauthorize_required') return { ok: false, error: reauthorizeRequired() };
+    // Transient: tokens untouched, backoff set; margin grace for a lazy caller only.
+    if (cred.expiresAt > now) return { ok: true, resolved: grace(), exchanged: false };
+    return { ok: false, error: idpUnavailable() };
+  }
+
+  /** The token-endpoint exchange + in-lock persist, shared by the lazy and forced
+   * paths. `invalid_grant` → durable reauthorize-required (breaker-neutral by
+   * kind); any other failure → transient: tokens untouched, short cross-instance
+   * backoff. The breaker is never touched here. */
+  private async exchangeUnderLock(
+    tx: PersistencePort,
+    principal: Principal,
+    fresh: ProviderRow,
+    cred: OauthCredential,
+    preset: OauthPreset,
+  ): Promise<
+    | { readonly kind: 'refreshed'; readonly resolved: ResolvedCredential }
+    | { readonly kind: 'reauthorize_required' }
+    | { readonly kind: 'transient' }
+  > {
     let tokens: TokenSet;
     try {
       tokens = await this.tokenFetch({
@@ -555,46 +683,160 @@ export class SubscriptionOauthService {
         mode: this.rt.mode,
         encoding: preset.tokenRequestEncoding,
         grant: 'refresh',
-        body: { grant_type: 'refresh_token', refresh_token: parsed.cred.refreshToken },
+        body: { grant_type: 'refresh_token', refresh_token: cred.refreshToken },
       });
     } catch (err) {
       if (err instanceof TokenEndpointError && err.kind === 'invalid_grant') {
         // Durable reauthorize-required (visible after reload); subsequent resolutions
-        // fail locally. Breaker-NEUTRAL by error kind.
-        await tx.providers.update(principal, providerId, {
-          credentialError: 'reauthorize_required',
-          status: 'error',
-        });
-        throw reauthorizeRequired();
+        // fail locally.
+        await markReauthorizeRequired(tx, principal, fresh);
+        return { kind: 'reauthorize_required' };
       }
-      // Transient: keep tokens untouched; short cross-instance backoff; margin grace.
       await this.redis
-        .set(backoffKey(providerId), '1', 'PX', BACKOFF_MS, 'NX')
+        .set(backoffKey(fresh.id), '1', 'PX', BACKOFF_MS, 'NX')
         .catch(() => undefined);
-      if (parsed.cred.expiresAt > now) {
-        // Grace serves the FULL resolution — dropping accountId here would fail
-        // Responses adapter construction while the token is still valid (r3).
-        return this.resolved(parsed.cred.accessToken, preset, parsed.cred.accountId);
-      }
-      throw idpUnavailable();
+      return { kind: 'transient' };
     }
-    await tx.providers.update(principal, providerId, {
-      encryptedCredentials: encryptSecret(
-        serializeOauthCredential({
-          preset: preset.id,
-          accessToken: tokens.accessToken,
-          // Refresh-omission retention: a response without refresh_token keeps the
-          // stored one (non-rotating endpoints).
-          refreshToken: tokens.refreshToken ?? parsed.cred.refreshToken,
-          expiresAt: tokens.expiresAt,
-          // The account id is exchange-time data — RETAINED through every rotation.
-          ...(parsed.cred.accountId !== undefined ? { accountId: parsed.cred.accountId } : {}),
-        }),
-        this.rt.key,
-      ),
+    const envelope = encryptSecret(
+      serializeOauthCredential({
+        preset: preset.id,
+        accessToken: tokens.accessToken,
+        // Refresh-omission retention: a response without refresh_token keeps the
+        // stored one (non-rotating endpoints).
+        refreshToken: tokens.refreshToken ?? cred.refreshToken,
+        expiresAt: tokens.expiresAt,
+        // The account id is exchange-time data — RETAINED through every rotation.
+        ...(cred.accountId !== undefined ? { accountId: cred.accountId } : {}),
+      }),
+      this.rt.key,
+    );
+    await tx.providers.update(principal, fresh.id, {
+      encryptedCredentials: envelope,
       credentialExpiresAt: new Date(tokens.expiresAt),
       credentialError: null,
     });
-    return this.resolved(tokens.accessToken, preset, parsed.cred.accountId);
+    return {
+      kind: 'refreshed',
+      resolved: this.resolved(envelope, tokens.accessToken, preset, cred.accountId),
+    };
+  }
+
+  // ---- out-of-band (forced) refresh — add-provider-health-signals ----
+
+  /** A FORCED refresh keyed on the stored credential the caller actually used
+   * (`usedEnvelope`, the ciphertext — random IV per write, so every credential
+   * mutation changes it). Under the per-provider lock, in order: the stored
+   * envelope differs → `adopted` (another path renewed it; no exchange, no write);
+   * a deleted/cleared/non-OAuth row → `aborted`; a durable credential error →
+   * `reauthorize_required`; the transient backoff held → `transient`; OTHERWISE the
+   * token endpoint is called REGARDLESS of expiry — never the lazy path's "fresh
+   * enough" early return, so a 240h token rejected upstream is really refreshed. A
+   * transient failure reports `transient` (margin grace serves only a lazy caller).
+   * Never touches the breaker. May reject on an unexpected persistence error. */
+  async forceRefresh(
+    principal: Principal,
+    providerId: string,
+    usedEnvelope: string,
+    _reason: ForceRefreshReason,
+  ): Promise<ForceRefreshOutcome> {
+    let outcome: ForceRefreshOutcome;
+    try {
+      outcome = await this.facilities.withAdvisoryLock(
+        credentialLockKey(providerId),
+        (tx) => this.forceUnderLock(tx, principal, providerId, usedEnvelope),
+        { lockTimeoutMs: LOCK_WAIT_MS },
+      );
+    } catch (err) {
+      if (err instanceof AdvisoryLockTimeoutError) return 'transient';
+      throw err;
+    }
+    if (outcome === 'refreshed' || outcome === 'adopted') await this.markVerified(providerId);
+    return outcome;
+  }
+
+  private async forceUnderLock(
+    tx: PersistencePort,
+    principal: Principal,
+    providerId: string,
+    usedEnvelope: string,
+  ): Promise<ForceRefreshOutcome> {
+    const fresh = await tx.providers.findById(principal, providerId);
+    if (!fresh || fresh.encryptedCredentials === null) return 'aborted';
+    if (fresh.encryptedCredentials !== usedEnvelope) return 'adopted';
+    if (fresh.oauthPreset === null && fresh.protocol !== 'openai_responses') return 'aborted';
+    if (fresh.credentialError !== null) return 'reauthorize_required';
+    let parsed;
+    try {
+      parsed = parseCredentialEnvelope(decryptSecret(fresh.encryptedCredentials, this.rt.key));
+    } catch {
+      // An OAuth row whose envelope cannot be read is durably unusable.
+      await markReauthorizeRequired(tx, principal, fresh);
+      return 'reauthorize_required';
+    }
+    if (parsed.kind === 'plain') {
+      if (fresh.protocol === 'openai_responses') {
+        await markReauthorizeRequired(tx, principal, fresh);
+        return 'reauthorize_required';
+      }
+      return 'aborted'; // a pasted credential has nothing to refresh
+    }
+    let preset: OauthPreset;
+    try {
+      preset = this.coherentPreset(fresh, parsed.cred);
+    } catch {
+      return 'aborted';
+    }
+    if (presetRequiresAccountId(preset) && parsed.cred.accountId === undefined) {
+      await markReauthorizeRequired(tx, principal, fresh);
+      return 'reauthorize_required';
+    }
+    if ((await this.redis.get(backoffKey(providerId)).catch(() => null)) !== null) {
+      return 'transient';
+    }
+    const r = await this.exchangeUnderLock(tx, principal, fresh, parsed.cred, preset);
+    return r.kind;
+  }
+
+  /** The proxy's 401 trigger: at most ONE forced refresh per provider AND per stored
+   * credential per cooldown window, claimed atomically across instances. The claim
+   * is fenced by a fingerprint of the credential the failing attempt used, so a late
+   * 401 from a replaced credential can never consume its replacement's window. Fails
+   * CLOSED (no claim → no refresh) and NEVER rejects — it runs off the request path. */
+  async requestForcedRefresh(
+    principal: Principal,
+    providerId: string,
+    usedEnvelope: string,
+  ): Promise<ForceRefreshOutcome | 'skipped'> {
+    try {
+      const claimed = await this.redis.set(
+        forcedClaimKey(providerId, usedEnvelope),
+        '1',
+        'PX',
+        FORCED_COOLDOWN_MS,
+        'NX',
+      );
+      if (claimed !== 'OK') return 'skipped';
+      return await this.forceRefresh(principal, providerId, usedEnvelope, '401');
+    } catch {
+      return 'skipped';
+    }
+  }
+
+  /** test-connection's repair limiter: at most one inline repair per provider per
+   * minute. Fails CLOSED — a held claim or an unavailable Redis means no repair. */
+  async claimTestRepair(providerId: string): Promise<boolean> {
+    try {
+      return (
+        (await this.redis.set(
+          testRepairKey(providerId),
+          '1',
+          'PX',
+          TEST_REPAIR_COOLDOWN_MS,
+          'NX',
+        )) === 'OK'
+      );
+    } catch {
+      return false;
+    }
   }
 }

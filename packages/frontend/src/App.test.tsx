@@ -12,6 +12,7 @@ import {
   DEFAULT_SESSION,
   DEFAULT_CALIBRATION,
   FakeApiClient,
+  UNRECORDED_HEALTH,
 } from './test/fakeClient';
 
 const flush = async (): Promise<void> => {
@@ -1767,6 +1768,7 @@ describe('dashboard shell (auth-gated)', () => {
           firstByteTimeoutMs: null,
           idleTimeoutMs: null,
           createdAt: '2026-07-15T00:00:00.000Z',
+          ...UNRECORDED_HEALTH,
         },
       ],
     });
@@ -2129,6 +2131,230 @@ describe('Routing rail sections (section-routing-rail)', () => {
       }
       expect(panels(host)).toEqual(auto);
       expect(bandPanel(host)?.textContent).toContain('(1 unroutable in the selected 7d range)');
+    } finally {
+      dispose();
+    }
+  });
+});
+
+// add-provider-health-signals (task 8.4): ONE truthful status line from the
+// server's displayed health; the token lifetime on its own neutral line; Reconnect
+// on every OAuth card — never gated on the reauthorize-required state.
+describe('provider card health line and Reconnect (add-provider-health-signals)', () => {
+  const base = {
+    kind: 'subscription',
+    protocol: 'openai_responses',
+    baseUrl: 'https://chatgpt.com/',
+    status: 'error',
+    maxTokensSpelling: 'auto' as const,
+    hasCredential: true,
+    oauthPreset: 'chatgpt',
+    credentialExpiresAt: new Date(Date.now() + 240 * 3_600_000).toISOString(),
+    credentialError: null,
+    firstByteTimeoutMs: null,
+    idleTimeoutMs: null,
+    createdAt: '2026-07-15T00:00:00.000Z',
+    ...UNRECORDED_HEALTH,
+  };
+
+  const cardOf = (host: HTMLElement, name: string): HTMLElement => {
+    const card = [...host.querySelectorAll<HTMLElement>('.card')].find((c) =>
+      c.textContent?.includes(name),
+    );
+    if (!card) throw new Error(`card ${name} missing`);
+    return card;
+  };
+
+  it('a failing card states the reason and age once — no "Connected" or "Healthy" beside it', async () => {
+    const fake = new FakeApiClient({
+      providers: [
+        {
+          ...base,
+          id: 'prov-failing',
+          name: 'OpenAI',
+          health: {
+            state: 'failing',
+            kind: 'auth',
+            message: 'authentication failed',
+            source: 'traffic',
+            at: new Date(Date.now() - 12 * 60_000).toISOString(),
+          },
+        },
+      ],
+    });
+    const { host, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Providers');
+      await flush();
+      const card = cardOf(host, 'OpenAI');
+      const line = card.querySelector('[data-health-line]')?.textContent ?? '';
+      expect(line).toContain('authentication failed');
+      expect(line).toContain('seen in live traffic 12m ago');
+      expect(line).toContain('reconnect if this persists');
+      expect(card.querySelectorAll('[data-health-line]')).toHaveLength(1);
+      expect(card.textContent).not.toMatch(/Connected|Healthy|Last action failed/);
+      // The token lifetime is a separate, neutral line.
+      expect(card.querySelector('[data-token-line]')?.textContent).toMatch(
+        /Signed in · renews automatically · expires in 240h/,
+      );
+    } finally {
+      dispose();
+    }
+  });
+
+  it('Reconnect is offered on a HEALTHY OAuth card and starts the reauthorize flow', async () => {
+    const fake = new FakeApiClient({
+      providers: [
+        {
+          ...base,
+          id: 'prov-healthy',
+          name: 'Claude',
+          protocol: 'anthropic_compatible',
+          oauthPreset: 'claude',
+          status: 'ok',
+          health: {
+            state: 'ok',
+            kind: null,
+            message: null,
+            source: 'test',
+            at: new Date().toISOString(),
+          },
+        },
+      ],
+    });
+    const { host, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Providers');
+      await flush();
+      const card = cardOf(host, 'Claude');
+      const reconnect = [...card.querySelectorAll<HTMLElement>('button')].find(
+        (b) => b.textContent?.trim() === 'Reconnect',
+      );
+      expect(reconnect).toBeDefined();
+      reconnect!.click();
+      await flush();
+      expect(
+        fake.callLog.some((c) => c.method === 'oauthReauthorize' && c.args[0] === 'prov-healthy'),
+      ).toBe(true);
+    } finally {
+      dispose();
+    }
+  });
+
+  it('the Edit dialog of an OAuth provider (incl. a Responses row) offers the Reconnect it names', async () => {
+    const fake = new FakeApiClient({
+      providers: [{ ...base, id: 'prov-resp', name: 'ChatGPT' }],
+    });
+    const { host, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Providers');
+      await flush();
+      const card = cardOf(host, 'ChatGPT');
+      [...card.querySelectorAll<HTMLElement>('button')]
+        .find((b) => b.textContent?.trim() === 'Edit')!
+        .click();
+      await flush();
+      const dialog = host.querySelector<HTMLElement>('[role="dialog"]');
+      expect(dialog).not.toBeNull();
+      const text = dialog!.textContent ?? '';
+      expect(text).toContain('Reconnect');
+      expect(text).not.toContain('Reauthorize'); // never names a control that isn't there
+      const reconnect = [...dialog!.querySelectorAll<HTMLElement>('button')].find(
+        (b) => b.textContent?.trim() === 'Reconnect',
+      );
+      expect(reconnect).toBeDefined();
+      reconnect!.click();
+      await flush();
+      expect(
+        fake.callLog.some((c) => c.method === 'oauthReauthorize' && c.args[0] === 'prov-resp'),
+      ).toBe(true);
+    } finally {
+      dispose();
+    }
+  });
+
+  it('opening the Providers page, and returning to its tab, reloads the provider list', async () => {
+    const fake = new FakeApiClient({ providers: [{ ...base, id: 'prov-r', name: 'Reloaded' }] });
+    const { host, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      const lists = (): number => fake.callLog.filter((c) => c.method === 'listProviders').length;
+      const atLogin = lists();
+      clickByText(host, '.nav-item span', 'Providers');
+      await flush();
+      expect(lists()).toBe(atLogin + 1);
+      document.dispatchEvent(new Event('visibilitychange'));
+      await flush();
+      expect(lists()).toBe(atLogin + 2);
+    } finally {
+      dispose();
+    }
+  });
+
+  it('the reconnect-required state shows its banner in the status slot with exactly one Reconnect', async () => {
+    const fake = new FakeApiClient({
+      providers: [
+        {
+          ...base,
+          id: 'prov-dead',
+          name: 'Expired',
+          credentialError: 'reauthorize_required',
+          health: {
+            state: 'reauthorize_required',
+            kind: 'credential',
+            message: 'credential needs reauthorization',
+            source: 'refresh',
+            at: new Date().toISOString(),
+          },
+        },
+      ],
+    });
+    const { host, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Providers');
+      await flush();
+      const card = cardOf(host, 'Expired');
+      expect(card.querySelectorAll('[data-health-line]')).toHaveLength(1);
+      expect(card.querySelector('[data-health-line]')?.textContent).toMatch(/Sign-in expired/);
+      const reconnects = [...card.querySelectorAll('button')].filter(
+        (b) => b.textContent?.trim() === 'Reconnect',
+      );
+      expect(reconnects).toHaveLength(1);
+      expect(card.querySelector('[data-token-line]')).toBeNull();
+    } finally {
+      dispose();
+    }
+  });
+
+  it('a non-OAuth card has no Reconnect', async () => {
+    const fake = new FakeApiClient({
+      providers: [
+        {
+          ...base,
+          id: 'prov-key',
+          name: 'OpenRouter',
+          kind: 'api_key',
+          protocol: 'openai_compatible',
+          baseUrl: 'https://openrouter.ai/api/v1',
+          oauthPreset: null,
+          credentialExpiresAt: null,
+        },
+      ],
+    });
+    const { host, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Providers');
+      await flush();
+      const card = cardOf(host, 'OpenRouter');
+      expect([...card.querySelectorAll('button')].map((b) => b.textContent?.trim())).not.toContain(
+        'Reconnect',
+      );
+      expect(card.querySelector('[data-token-line]')).toBeNull();
     } finally {
       dispose();
     }

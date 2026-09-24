@@ -493,6 +493,87 @@ describe('providers (create → test → sync, kind mapping, pricing)', () => {
     expect(fake.lastArgs('oauthReauthorize')?.[0]).toBe(provider.id);
   });
 
+  // add-provider-health-signals (task 8.6): a reconnect verifies itself — ONE Test,
+  // with the card's checking state held from its start until it settles.
+  async function connectedStore(fake: FakeApiClient) {
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    s.openModal('newProvider');
+    s.setState('np', 'kind', 'sub');
+    await s.startOauthConnect('claude');
+    s.setState('ow', 'pasted', 'the-code#st');
+    await s.completeOauthConnect();
+    return s;
+  }
+
+  it('a first connect runs no Test', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    await connectedStore(fake);
+    expect(fake.calls).not.toContain('testProvider');
+  });
+
+  it.each([
+    ['succeeds', true],
+    ['fails', false],
+  ])('a reconnect runs exactly one Test and shows checking until it %s', async (_label, ok) => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    const s = await connectedStore(fake);
+    const provider = s.state.providers.find((p) => p.oauthPreset === 'claude')!;
+    let settle!: () => void;
+    const held = new Promise<void>((r) => {
+      settle = r;
+    });
+    const realTest = fake.testProvider.bind(fake);
+    const testSpy = vi.spyOn(fake, 'testProvider').mockImplementation(async (id: string) => {
+      await held;
+      if (!ok) throw new ApiError(503, 'Unavailable', 'provider unavailable');
+      return realTest(id);
+    });
+    await s.startOauthReauthorize(provider);
+    s.setState('ow', 'pasted', 'code#st-re');
+    const done = s.completeOauthConnect();
+    await tick();
+    expect(s.state.reconnectChecking).toContain(provider.id);
+    settle();
+    await done;
+    expect(s.state.reconnectChecking).not.toContain(provider.id);
+    expect(testSpy).toHaveBeenCalledTimes(1);
+    expect(testSpy).toHaveBeenCalledWith(provider.id);
+  });
+
+  it('a Test reloads the list so the card carries the recorded health, not just the status', async () => {
+    const fake = new FakeApiClient({
+      session: DEFAULT_SESSION,
+      testResult: {
+        ok: false,
+        status: 'error',
+        kind: 'auth',
+        message: 'authentication failed',
+        traceId: 't',
+      },
+    });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    await addProvider(s, {
+      name: 'p',
+      kind: 'api',
+      protocol: 'openai_compatible',
+      baseUrl: 'https://api.example.com/v1',
+      credential: 'sk-x',
+    });
+    const id = s.state.providers[0]!.id;
+    const before = fake.callLog.length;
+    await s.testProviderById(id);
+    const after = fake.callLog.slice(before).map((c) => c.method);
+    expect(after).toEqual(['testProvider', 'listProviders']);
+    expect(s.state.providers[0]!.health).toMatchObject({
+      state: 'error',
+      kind: 'auth',
+      message: 'authentication failed',
+      source: 'test',
+    });
+  });
+
   it('does not dismiss the provider modal while an OAuth exchange is in flight', () => {
     const fake = new FakeApiClient({ session: DEFAULT_SESSION });
     const s = createAppStore(fake);

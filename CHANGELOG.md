@@ -15,6 +15,21 @@ heading is started.
 
 ## [Unreleased]
 
+### Added
+
+- **Provider health from live traffic.** A provider card now shows the most recent of its last check (Test, Sync, credential refresh, reconnect, edit) and what live traffic observed — failing when its circuit breaker opens, healthy when a served request recovers it — with the reason and how long ago, so a failing provider is visible without clicking Test; stale observations can never overwrite newer ones, and writes happen only on a transition, off the request path.
+- **Background OAuth renewal.** A 15-minute sweep renews sign-ins near expiry and re-verifies each grant about daily (budgeted per sweep), so a revoked sign-in turns into "reconnect" on its own; a live 401 triggers one background renewal, and Test repairs a rejected-but-unexpired token or reports reconnect. The sweep calls only token endpoints, never a model API.
+
+### Changed
+
+- **Reconnect is always available** on every OAuth card and in the Edit dialog — it renews the provider in place (models and routing kept) and runs one Test afterwards; the card's contradictory "Last action failed" / "Connected" pair is now one status line plus a neutral token-lifetime line.
+
+### Fixed
+
+- **A revoked OAuth sign-in is durably recorded** — the refresh path wrote "reauthorize required" inside a transaction it then rolled back, so every request re-dialled the dead grant.
+- **A bundled-preset Sync no longer marks a provider healthy** without contacting it (ChatGPT).
+- **In-flight requests with a dead credential can no longer reopen a just-reconnected provider's breaker** — breaker generations are no longer reused after a reset or an idle expiry.
+
 ## [0.21.0] — 2026-09-22
 
 [Release](https://github.com/izzoa/polyrouter/releases/tag/v0.21.0) ·

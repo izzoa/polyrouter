@@ -265,12 +265,36 @@ export const providers = pgTable(
     oauthPreset: text('oauth_preset'),
     credentialExpiresAt: timestamp('credential_expires_at', { withTimezone: true }),
     credentialError: text('credential_error'),
+    // Provider health (add-provider-health-signals). TWO non-secret records, each
+    // with one ordering authority, so a stale observation can never overwrite a
+    // newer one. The CHECK record is `status` plus its reason/source/time — written
+    // only by a deliberate check (test, network sync, refresh failure) or reset by a
+    // credential/endpoint change (reconnect, edit). The TRAFFIC record is written
+    // only on shared-breaker transitions, ordered by the breaker-issued `traffic_seq`.
+    // Which record is DISPLAYED is decided by `status_rev` vs `traffic_rev`: every
+    // health write bumps the row-serialized `health_rev` and stamps the record it
+    // writes — a recording order, never a comparison of clocks. The timestamps are
+    // display-only. `traffic_seq` and the revisions are never exposed.
+    lastErrorKind: text('last_error_kind'),
+    statusSource: text('status_source'), // test | sync | refresh | reconnect | edit
+    statusChangedAt: timestamp('status_changed_at', { withTimezone: true }),
+    statusRev: bigint('status_rev', { mode: 'number' }),
+    trafficState: text('traffic_state'), // ok | failing
+    trafficErrorKind: text('traffic_error_kind'),
+    trafficAt: timestamp('traffic_at', { withTimezone: true }),
+    trafficSeq: bigint('traffic_seq', { mode: 'number' }),
+    trafficRev: bigint('traffic_rev', { mode: 'number' }),
+    healthRev: bigint('health_rev', { mode: 'number' }).default(0).notNull(),
     firstByteTimeoutMs: integer('first_byte_timeout_ms'),
     idleTimeoutMs: integer('idle_timeout_ms'),
     createdAt: createdAt(),
   },
   (t) => [
     index('provider_owner_idx').on(t.ownerUserId),
+    // The OAuth refresh sweep pages connected subscription providers by id.
+    index('provider_oauth_sweep_idx')
+      .on(t.id)
+      .where(sql`${t.oauthPreset} IS NOT NULL`),
     check(
       'provider_first_byte_timeout_range',
       sql`${t.firstByteTimeoutMs} IS NULL OR (${t.firstByteTimeoutMs} >= 1000 AND ${t.firstByteTimeoutMs} <= 3600000)`,

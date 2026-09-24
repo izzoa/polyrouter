@@ -281,6 +281,13 @@
       "when": 1790055656157,
       "tag": "0039_rapid_jocasta",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1790246482134,
+      "tag": "0040_omniscient_whistler",
+      "breakpoints": true
     }
   ]
 }

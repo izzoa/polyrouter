@@ -96,6 +96,20 @@ export type ApiProviderProtocol = 'openai_compatible' | 'anthropic_compatible';
 export type ApiMaxTokensSpelling = 'auto' | 'max_completion_tokens' | 'max_tokens';
 export type ProviderStatus = 'unknown' | 'ok' | 'error';
 
+/** add-provider-health-signals: the provider's DISPLAYED health, computed by the
+ * server — whichever of its check record and live-traffic record was recorded
+ * last. The dashboard renders it and never re-derives precedence. `message` is a
+ * fixed operator label for the kind (never an upstream message). */
+export type ProviderHealthState = 'reauthorize_required' | 'ok' | 'error' | 'failing' | 'unknown';
+export type ProviderHealthSource = 'test' | 'sync' | 'refresh' | 'reconnect' | 'edit' | 'traffic';
+export interface ProviderHealthDto {
+  state: ProviderHealthState;
+  kind: string | null;
+  message: string | null;
+  source: ProviderHealthSource | null;
+  at: string | null;
+}
+
 export interface ProviderDto {
   id: string;
   name: string;
@@ -114,6 +128,16 @@ export interface ProviderDto {
   firstByteTimeoutMs: number | null;
   idleTimeoutMs: number | null;
   createdAt: string;
+  health: ProviderHealthDto;
+  /** The two raw records (non-secret) behind `health`. */
+  lastErrorKind: string | null;
+  lastErrorMessage: string | null;
+  statusSource: string | null;
+  statusChangedAt: string | null;
+  trafficState: string | null;
+  trafficErrorKind: string | null;
+  trafficErrorMessage: string | null;
+  trafficAt: string | null;
 }
 
 /** The instance timeout defaults (fix-long-call-timeouts) — for honest

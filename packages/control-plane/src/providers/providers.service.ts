@@ -27,6 +27,7 @@ import {
   type Principal,
   type ProviderInsertInput,
   type ProviderPatch,
+  type ProviderIncarnation,
   type ProviderRow,
 } from '@polyrouter/shared/server';
 import {
@@ -38,12 +39,17 @@ import {
   type ListedCapabilityClaim,
 } from '../pricing/model-price-context';
 import {
+  displayedProviderHealth,
+  incarnationOf,
+  recordProviderHealth,
+  type DisplayedHealth,
+} from './provider-health';
+import {
   MAX_MODEL_ID_LEN,
   ProviderError,
   createProviderAdapter,
   type ConnectionResult,
   type ProviderAdapter,
-  type ProviderConfig,
   type ProviderKind,
   type ProviderModelInfo,
   type ProviderListedPricing,
@@ -58,7 +64,11 @@ import type {
   UpdateModelPricingDto,
   UpdateProviderDto,
 } from './providers.dto';
-import { AdapterBuildError, ProviderAdapterBuilder } from './adapter-builder';
+import {
+  AdapterBuildError,
+  ProviderAdapterBuilder,
+  type BuiltAdapterConfig,
+} from './adapter-builder';
 import { SubscriptionOauthService } from '../subscription-oauth/subscription-oauth.service';
 
 export type ProviderAdapterFactory = typeof createProviderAdapter;
@@ -81,6 +91,13 @@ export interface ProvidersRuntime {
 }
 export const PROVIDERS_RUNTIME = 'polyrouter:providers-runtime';
 
+/** An adapter plus the incarnation (credential envelope + endpoint) it was built
+ * against — the guard every health write from a management action carries. */
+interface BuiltAdapter {
+  readonly adapter: ProviderAdapter;
+  readonly incarnation: ProviderIncarnation;
+}
+
 export interface SafeProvider {
   id: string;
   name: string;
@@ -101,6 +118,28 @@ export interface SafeProvider {
   firstByteTimeoutMs: number | null;
   idleTimeoutMs: number | null;
   createdAt: Date;
+  /** add-provider-health-signals: the DISPLAYED health — whichever of the check
+   * and traffic records was recorded last (computed here, never re-derived by the
+   * dashboard). `message` is a fixed operator label, never an upstream message. */
+  health: SafeProviderHealth;
+  // The two raw records (non-secret). The ordering sequence and the revisions are
+  // internal and never exposed.
+  lastErrorKind: string | null;
+  lastErrorMessage: string | null;
+  statusSource: string | null;
+  statusChangedAt: Date | null;
+  trafficState: string | null;
+  trafficErrorKind: string | null;
+  trafficErrorMessage: string | null;
+  trafficAt: Date | null;
+}
+
+export interface SafeProviderHealth {
+  state: DisplayedHealth['state'];
+  kind: string | null;
+  message: string | null;
+  source: DisplayedHealth['source'];
+  at: Date | null;
 }
 
 // Effective-price types + resolution live in `pricing/model-price-context` so this
@@ -235,6 +274,25 @@ export function toSafe(p: ProviderRow): SafeProvider {
     firstByteTimeoutMs: p.firstByteTimeoutMs,
     idleTimeoutMs: p.idleTimeoutMs,
     createdAt: p.createdAt,
+    health: toSafeHealth(displayedProviderHealth(p)),
+    lastErrorKind: p.lastErrorKind,
+    lastErrorMessage: p.lastErrorKind !== null ? fixedMessage(p.lastErrorKind) : null,
+    statusSource: p.statusSource,
+    statusChangedAt: p.statusChangedAt,
+    trafficState: p.trafficState,
+    trafficErrorKind: p.trafficErrorKind,
+    trafficErrorMessage: p.trafficErrorKind !== null ? fixedMessage(p.trafficErrorKind) : null,
+    trafficAt: p.trafficAt,
+  };
+}
+
+function toSafeHealth(h: DisplayedHealth): SafeProviderHealth {
+  return {
+    state: h.state,
+    kind: h.kind,
+    message: h.kind !== null ? fixedMessage(h.kind) : null,
+    source: h.source,
+    at: h.at,
   };
 }
 
@@ -536,15 +594,26 @@ export class ProvidersService {
           }
         : {}),
     };
+    // add-provider-health-signals: an edit that changes the provider's INCARNATION
+    // (credential, base_url, or protocol) resets its check record to `unknown` and
+    // clears its traffic record in the SAME statement — no health observed against
+    // the old credential/endpoint is ever displayed for the new one. A supplied
+    // credential always changes the incarnation (re-encryption uses a fresh IV).
+    const incarnationChanges =
+      dto.credential !== undefined ||
+      normalized !== existing.baseUrl ||
+      (dto.protocol !== undefined && dto.protocol !== existing.protocol);
+    const write = (port: PersistencePort): Promise<ProviderRow | null> =>
+      incarnationChanges
+        ? port.providers.updateResettingHealth(principal, id, patch, 'edit')
+        : port.providers.update(principal, id, patch);
     // A credential mutation on an OAuth provider serializes on the same per-provider
     // lock as refresh/reauthorize, so an in-flight refresh's conditional write can
     // never clobber or resurrect this mutation.
     const row =
       isOauthConnected && dto.credential !== undefined
-        ? await this.facilities.withAdvisoryLock(credentialLockKey(id), (tx) =>
-            tx.providers.update(principal, id, patch),
-          )
-        : await this.db.providers.update(principal, id, patch);
+        ? await this.facilities.withAdvisoryLock(credentialLockKey(id), (tx) => write(tx))
+        : await write(this.db);
     if (!row) throw new NotFoundException();
     // A model-own price left over from a custom/local kind would display for a now
     // catalog-priced provider (the resolver already ignores it — E5.4); clear it for
@@ -572,58 +641,133 @@ export class ProvidersService {
 
   async testConnection(principal: Principal, id: string): Promise<ActionResult> {
     const provider = await this.requireProvider(principal, id);
-    const bundledPreset = this.bundledPresetFor(provider);
-    let result: ConnectionResult;
+    let built: BuiltAdapter;
     try {
       // buildAdapter is inside the sanitize-try: a credential-resolution failure
       // (e.g. reauthorize_required — add-subscription-oauth) must surface as a
       // sanitized action result, not an unhandled 500.
-      const adapter = await this.buildAdapter(principal, provider);
-      if (bundledPreset !== undefined) {
-        // Bundled model sourcing (add-subscription-oauth): the models endpoint is not
-        // available under this preset, so the DESIGNATED validating call is a minimal
-        // 1-token chat probe — an invalid/revoked credential still surfaces as a typed
-        // auth failure and is never masked by the bundled list.
-        await adapter.chat({
-          model: bundledPreset.bundledModels?.[0] ?? 'probe',
-          messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
-          params: { maxOutputTokens: 1 },
-        });
-        result = { ok: true, models: bundledPreset.bundledModels?.length ?? 0 };
-      } else {
-        result = await adapter.testConnection();
-      }
+      built = await this.buildAdapter(principal, provider);
     } catch (err) {
       // The 422 client contract (e.g. missing credential) stays a thrown 422 — only
       // adapter/credential-resolution failures become sanitized action results.
       if (err instanceof UnprocessableEntityException) throw err;
       const sanitized = this.sanitizeThrow(err);
-      await this.db.providers.update(principal, id, { status: 'error' });
+      // The Test is the check the user asked for: a build-time credential failure is
+      // recorded as ITS result (add-provider-health-signals).
+      await this.recordCheck(principal, id, sanitized, 'test', incarnationOf(provider));
       return sanitized;
     }
+    let result = await this.probe(provider, built.adapter);
+    let probedWith = built.incarnation;
+    // add-provider-health-signals: a 401 on an OAuth provider gets ONE rate-limited
+    // repair — a forced refresh keyed on the credential the probe used, then ONE
+    // re-probe — so Test either fixes a rejected-but-unexpired token or reports
+    // reconnect. At most two validating calls; a held claim or an unavailable
+    // Redis reports the 401 as-is without contacting the identity provider.
+    if (
+      !result.ok &&
+      result.kind === 'auth' &&
+      provider.oauthPreset !== null &&
+      built.incarnation.envelope !== null &&
+      (await this.oauth.claimTestRepair(id))
+    ) {
+      const outcome = await this.oauth
+        .forceRefresh(principal, id, built.incarnation.envelope, 'test')
+        .catch((): 'transient' => 'transient');
+      if (outcome === 'reauthorize_required') {
+        result = { ok: false, kind: 'credential', message: 'credential needs reauthorization' };
+      } else if (outcome === 'refreshed' || outcome === 'adopted') {
+        const fresh = await this.db.providers.findById(principal, id);
+        if (fresh !== null) {
+          try {
+            const rebuilt = await this.buildAdapter(principal, fresh);
+            probedWith = rebuilt.incarnation;
+            result = await this.probe(fresh, rebuilt.adapter);
+          } catch (err) {
+            if (err instanceof UnprocessableEntityException) throw err;
+            const kind = err instanceof ProviderError ? err.kind : 'unavailable';
+            result = { ok: false, kind, message: fixedMessage(kind) };
+            probedWith = incarnationOf(fresh);
+          }
+        }
+      }
+    }
     const sanitized = this.sanitizeConnection(result);
-    await this.db.providers.update(principal, id, { status: sanitized.ok ? 'ok' : 'error' });
+    // Guarded by the incarnation of the LAST probe: a Test that finishes after a
+    // reconnect/edit replaced the credential records nothing.
+    await this.recordCheck(principal, id, sanitized, 'test', probedWith);
     return sanitized;
+  }
+
+  /** The designated validating call, normalized to a typed result: a bundled-model
+   * preset's minimal 1-token chat probe (an invalid/revoked credential still
+   * surfaces as a typed auth failure and is never masked by the bundled list), or
+   * the adapter's cheap `testConnection()`. */
+  private async probe(provider: ProviderRow, adapter: ProviderAdapter): Promise<ConnectionResult> {
+    const bundledPreset = this.bundledPresetFor(provider);
+    try {
+      if (bundledPreset !== undefined) {
+        await adapter.chat({
+          model: bundledPreset.bundledModels?.[0] ?? 'probe',
+          messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+          params: { maxOutputTokens: 1 },
+        });
+        return { ok: true, models: bundledPreset.bundledModels?.length ?? 0 };
+      }
+      return await adapter.testConnection();
+    } catch (err) {
+      const kind = err instanceof ProviderError ? err.kind : 'unavailable';
+      return { ok: false, kind, message: fixedMessage(kind) };
+    }
+  }
+
+  /** Record a check result (add-provider-health-signals) — guarded by the
+   * incarnation the check ran against; never rejects. */
+  private async recordCheck(
+    principal: Principal,
+    id: string,
+    result: ActionResult,
+    source: 'test' | 'sync',
+    against: ProviderIncarnation,
+  ): Promise<void> {
+    await recordProviderHealth(
+      this.db,
+      principal,
+      id,
+      {
+        record: 'check',
+        status: result.ok ? 'ok' : 'error',
+        kind: result.ok ? null : (result.kind ?? 'unavailable'),
+        source,
+      },
+      against,
+    );
   }
 
   async syncModels(principal: Principal, id: string): Promise<ActionResult> {
     const provider = await this.requireProvider(principal, id);
     const bundledPreset = this.bundledPresetFor(provider);
     let models: ProviderModelInfo[];
+    // add-provider-health-signals: health is written ONLY when an authenticated
+    // listing call was made — set once the adapter is built. A bundled (metadata-
+    // only) sync checks nothing, and a build-time credential failure has already
+    // recorded its own check under the credential lock; neither writes here.
+    let listedWith: ProviderIncarnation | null = null;
     try {
       if (bundledPreset !== undefined) {
         // Bundled model sourcing: seed the preset's list (preset-sourced, no network) —
         // the credential itself is validated by test-connection's designated probe.
         models = (bundledPreset.bundledModels ?? []).map((m) => ({ id: m }));
       } else {
-        const adapter = await this.buildAdapter(principal, provider);
-        models = await adapter.listModels();
+        const built = await this.buildAdapter(principal, provider);
+        listedWith = built.incarnation;
+        models = await built.adapter.listModels();
       }
     } catch (err) {
       if (err instanceof UnprocessableEntityException) throw err; // 422 contract
 
       const sanitized = this.sanitizeThrow(err);
-      await this.db.providers.update(principal, id, { status: 'error' });
+      if (listedWith !== null) await this.recordCheck(principal, id, sanitized, 'sync', listedWith);
       return sanitized;
     }
     const deduped = new Map<string, ProviderModelInfo>();
@@ -685,8 +829,7 @@ export class ProvidersService {
         if (pricing !== undefined) pricesCaptured += 1;
       }
     }
-    await this.db.providers.update(principal, id, { status: 'ok' });
-    return {
+    const result: ActionResult = {
       ok: true,
       status: 'ok',
       message: 'catalog synced',
@@ -694,6 +837,8 @@ export class ProvidersService {
       synced,
       pricesCaptured,
     };
+    if (listedWith !== null) await this.recordCheck(principal, id, result, 'sync', listedWith);
+    return result;
   }
 
   async listModels(principal: Principal, q: ListModelsQueryDto): Promise<SafeModel[]> {
@@ -865,24 +1010,31 @@ export class ProvidersService {
     return preset !== undefined && preset.modelsSource === 'bundled' ? preset : undefined;
   }
 
-  private async buildAdapter(
-    principal: Principal,
-    provider: ProviderRow,
-  ): Promise<ProviderAdapter> {
-    return this.factory(await this.buildAdapterConfig(principal, provider));
+  /** Build an adapter plus the incarnation it was built against (the envelope
+   * the build actually used — see `buildConfigWithCredential`). */
+  private async buildAdapter(principal: Principal, provider: ProviderRow): Promise<BuiltAdapter> {
+    const built = await this.buildAdapterConfig(principal, provider);
+    return {
+      adapter: this.factory(built.config),
+      incarnation: {
+        envelope: built.usedEnvelope,
+        baseUrl: provider.baseUrl,
+        protocol: provider.protocol,
+      },
+    };
   }
 
   private async buildAdapterConfig(
     principal: Principal,
     provider: ProviderRow,
-  ): Promise<ProviderConfig> {
+  ): Promise<BuiltAdapterConfig> {
     // The SAME shared builder the proxy and batch paths use (add-batch-inference
     // D4). Management keeps its call-time SSRF semantics — test-connection reports
     // a refused address through the adapter's typed result rather than a 422 —
     // so the build-time gate is skipped here; the guarded transport still refuses
     // at connect. A missing base_url/credential is this surface's 422.
     try {
-      return await this.adapterBuilder.buildConfig(principal, provider, {
+      return await this.adapterBuilder.buildConfigWithCredential(principal, provider, {
         defaultMaxOutputTokens: 4096,
         assertAddress: false,
       });

@@ -15,6 +15,11 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.23.0] — 2026-09-24
+
+[Release](https://github.com/izzoa/polyrouter/releases/tag/v0.23.0) ·
+[Compare](https://github.com/izzoa/polyrouter/compare/v0.22.1...v0.23.0)
+
 ### Added
 
 - **Retired models are flagged, and removable.** A model a provider's listing stops offering is marked "no longer offered" on the Providers page, in the model picker, and on every tier entry and rule that routes to it (routing is unchanged); Remove deletes it after stating the tier entries and rules it affects.
@@ -28,6 +33,12 @@ heading is started.
 
 - **ChatGPT Test failed on a healthy sign-in** ("invalid request to provider") after OpenAI retired `gpt-5.4-mini`, the model Test used.
 - A model's provider-listed context window and vision claim were only written on its first sync; they are now rewritten on every sync.
+
+### Upgrade notes
+
+- One additive migration (`0041`) runs on boot: a nullable `unlisted_since` column on `model`. No backfill — every existing model counts as offered until its provider's next listing.
+- A new background job re-lists every provider's models about once a day, spread over hourly ticks (40 providers per tick). The first ticks after upgrading work through your providers round-robin; it only calls model listings, and never changes a provider's status. A ChatGPT subscription's next listing adds the current models (GPT-6 Astra/Sol/Luna) and marks `gpt-5.4-mini` / `gpt-5.4` "no longer offered" — click **Sync models** to see it immediately.
+- Anything routed to a model marked "no longer offered" keeps working exactly as before (a rejection falls through your chain); move those routes to a current model, then **Remove** the old one.
 
 ## [0.22.1] — 2026-09-24
 
@@ -1059,7 +1070,8 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.22.1...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.23.0...HEAD
+[0.23.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.23.0
 [0.22.1]: https://github.com/izzoa/polyrouter/releases/tag/v0.22.1
 [0.22.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.22.0
 [0.21.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.21.0

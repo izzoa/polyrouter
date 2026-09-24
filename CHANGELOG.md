@@ -15,6 +15,11 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.22.0] — 2026-09-24
+
+[Release](https://github.com/izzoa/polyrouter/releases/tag/v0.22.0) ·
+[Compare](https://github.com/izzoa/polyrouter/compare/v0.21.0...v0.22.0)
+
 ### Added
 
 - **Provider health from live traffic.** A provider card now shows the most recent of its last check (Test, Sync, credential refresh, reconnect, edit) and what live traffic observed — failing when its circuit breaker opens, healthy when a served request recovers it — with the reason and how long ago, so a failing provider is visible without clicking Test; stale observations can never overwrite newer ones, and writes happen only on a transition, off the request path.
@@ -29,6 +34,11 @@ heading is started.
 - **A revoked OAuth sign-in is durably recorded** — the refresh path wrote "reauthorize required" inside a transaction it then rolled back, so every request re-dialled the dead grant.
 - **A bundled-preset Sync no longer marks a provider healthy** without contacting it (ChatGPT).
 - **In-flight requests with a dead credential can no longer reopen a just-reconnected provider's breaker** — breaker generations are no longer reused after a reset or an idle expiry.
+
+### Upgrade notes
+
+- One additive migration (`0040`) runs on boot: nullable health columns on `provider` plus a partial index. There is no backfill; an existing provider keeps its `status` and shows it without a source until its next check or traffic transition.
+- The first OAuth refresh sweep after upgrading finds no grant marked verified, so it spreads its liveness checks over several 15-minute ticks (25 per tick) rather than dialling every identity provider at once. It calls only token endpoints.
 
 ## [0.21.0] — 2026-09-22
 
@@ -1026,7 +1036,8 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.21.0...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.22.0...HEAD
+[0.22.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.22.0
 [0.21.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.21.0
 [0.20.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.20.0
 [0.19.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.19.0

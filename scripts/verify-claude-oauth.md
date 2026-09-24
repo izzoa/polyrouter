@@ -28,9 +28,12 @@ Route a tier at a Claude model on this provider and send one `/v1/messages` requ
 agent key. Expected: a normal completion. **If the API rejects the request in a way that
 implies the request must imitate Claude Code beyond the documented headers (`Authorization:
 Bearer` + `anthropic-beta`), STOP — the no-spoofing rule applies: the preset stays disabled
-and the limitation gets documented instead.** Check whether `/v1/models` works under the
-OAuth token; if it does not, change the preset to `modelsSource: 'bundled'` and populate its
-`bundledModels` (the designated cheap validating call becomes the test path).
+and the limitation gets documented instead.** Check that `/v1/models` works under the
+OAuth token — it is both how the preset gets its models and what Test calls. No preset
+carries a model id any more (add-live-subscription-models: a bundled list goes stale the
+day the provider retires a model), so if the listing ever stops working under OAuth,
+Test and Sync fail with a typed provider error and the preset stays disabled until a
+working listing is found — never a hard-coded model list.
 
 ## 4. One forced refresh
 
@@ -55,6 +58,6 @@ On a fully passing run: keep `enabled: true`, update the constants in `presets.t
 anything that drifted (record the verification date in its comment), and commit. On any
 failure: revert to `enabled: false` and document the failure here.
 
-| Date | Result | Notes |
-|---|---|---|
+| Date       | Result                                      | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ---------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 2026-07-18 | **pass** (completion pending account quota) | Real Claude Pro/Max account, dev stack on Node 24. Connect via the `code#state` page ✓ (the exchange CARRIES `state` in its JSON body — now the per-preset `includeStateInExchange: true`); OAuth `/v1/models` works (10 models — `modelsSource: 'endpoint'` confirmed); test-connection ✓; a real forced refresh rotated the envelope and jumped `credential_expires_at` ✓ (8h access tokens). The proxied completion returned the account's own usage-window `429` — surfaced as a typed `rate_limit_error`, which is the correct behavior; re-run one completion when the account window resets. Environment finding: the token client now pins `Accept-Encoding: identity` after a zstd-encoded IdP response crashed undici on Node 22 (dev must run the engines-pinned Node 24). |

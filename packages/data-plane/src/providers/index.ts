@@ -11,11 +11,12 @@ export type {
   AuthScheme,
   CallContext,
   ProviderModelInfo,
+  ModelListing,
   ProviderListedPricing,
   ProviderModelCapabilities,
   ConnectionResult,
 } from './adapter';
-export { DEFAULT_FIRST_BYTE_TIMEOUT_MS, MAX_MODEL_ID_LEN } from './adapter';
+export { DEFAULT_FIRST_BYTE_TIMEOUT_MS, MAX_MODEL_ID_LEN, MAX_PARSED_MODELS } from './adapter';
 export {
   ProviderError,
   ProviderCircuitOpenError,

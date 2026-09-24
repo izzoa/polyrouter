@@ -25,6 +25,7 @@ const model = (id: string, externalModelId: string): Model => ({
   batchCapable: true,
   batchEffectivePrice: null,
   lastSyncedAt: null,
+  unlistedSince: null,
 });
 
 const GROUPS: ModelGroup[] = [

@@ -96,7 +96,6 @@ const PRESET: OauthPreset = {
   tokenRequestEncoding: 'json',
   includeStateInExchange: true,
   oauthBeta: 'oauth-2025-04-20',
-  modelsSource: 'endpoint',
   enabled: true,
 };
 

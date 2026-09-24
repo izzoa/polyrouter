@@ -54,6 +54,7 @@ function model(id: string, over: Partial<Model> = {}): Model {
     batchCapable: true,
     batchEffectivePrice: null,
     lastSyncedAt: null,
+    unlistedSince: null,
     ...over,
   };
 }

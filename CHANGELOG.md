@@ -15,6 +15,20 @@ heading is started.
 
 ## [Unreleased]
 
+### Added
+
+- **Retired models are flagged, and removable.** A model a provider's listing stops offering is marked "no longer offered" on the Providers page, in the model picker, and on every tier entry and rule that routes to it (routing is unchanged); Remove deletes it after stating the tier entries and rules it affects.
+- **Every provider's model list refreshes itself about once a day** — API-key, custom, local, and subscription alike — in a budgeted background job that only lists models (no chat, no Test) and never changes a provider's status.
+
+### Changed
+
+- **Subscription models come from the provider.** The ChatGPT preset lists the backend's own catalog instead of a built-in list, and Test for every subscription is the model listing — it names no model, so a retirement can't fail it.
+
+### Fixed
+
+- **ChatGPT Test failed on a healthy sign-in** ("invalid request to provider") after OpenAI retired `gpt-5.4-mini`, the model Test used.
+- A model's provider-listed context window and vision claim were only written on its first sync; they are now rewritten on every sync.
+
 ## [0.22.1] — 2026-09-24
 
 [Release](https://github.com/izzoa/polyrouter/releases/tag/v0.22.1) ·

@@ -137,7 +137,6 @@ export class ProviderAdapterBuilder {
           authScheme: r.authScheme,
           ...(r.oauthBeta !== undefined ? { oauthBeta: r.oauthBeta } : {}),
           ...(r.oauthAccountId !== undefined ? { oauthAccountId: r.oauthAccountId } : {}),
-          ...(r.probeModel !== undefined ? { probeModel: r.probeModel } : {}),
         },
         usedEnvelope: r.envelope,
       };

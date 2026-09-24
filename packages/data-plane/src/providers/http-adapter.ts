@@ -19,6 +19,7 @@ import {
   MAX_PARSED_MODELS,
   type CallContext,
   type ConnectionResult,
+  type ModelListing,
   type ProviderAdapter,
   type ProviderConfig,
   type ProviderModelCapabilities,
@@ -52,14 +53,12 @@ export interface HttpAdapterSpec {
   readonly chatPath: string;
   /** Optional (add-chatgpt-responses): a protocol without a models endpoint omits BOTH
    * `modelsPath` and `parseModels` — `listModels()` then rejects with a typed,
-   * non-tripping error (never an implicit empty list), and `testConnection()` uses
-   * `probeRequest` instead of aliasing `listModels()`. */
+   * non-tripping error (never an implicit empty list), and `testConnection()` fails
+   * typed. No shipped protocol does: no adapter carries a probe model any more
+   * (add-live-subscription-models — a bundled probe model went stale on retirement). */
   readonly modelsPath?: string;
   authHeaders(credential: string): Record<string, string>;
   parseModels?(json: unknown): ProviderModelInfo[];
-  /** The designated validating probe for a models-less protocol: a minimal chat
-   * request (1 max token) whose model comes from TRUSTED preset-registry data. */
-  readonly probeRequest?: NormalizedRequest;
   /** Optional cursor pagination for the models endpoint (e.g. Anthropic's
    * `has_more` + `last_id`). When present, `listModels` follows pages — appending
    * `param=<cursor>` — until `nextCursor` returns null; when absent it fetches once. */
@@ -340,7 +339,7 @@ export function createHttpProviderAdapter(
     }
   }
 
-  async function listModels(ctx?: CallContext): Promise<ProviderModelInfo[]> {
+  async function listModels(ctx?: CallContext): Promise<ModelListing> {
     if (modelsUrl === null || spec.parseModels === undefined) {
       // Explicitly unsupported (never an implicit empty list); bad_request is
       // non-tripping and non-fallback — a deliberate "this surface does not exist".
@@ -348,6 +347,10 @@ export function createHttpProviderAdapter(
     }
     try {
       const all: ProviderModelInfo[] = [];
+      // add-live-subscription-models: every early stop that leaves the provider's
+      // catalog unread is MARKED, so the unlisted-model reconciliation never mistakes a
+      // partial listing for the whole catalog.
+      const partial = (): ModelListing => Object.assign(all, { truncated: true as const });
       const seen = new Set<string>(); // dedup ids across pages
       const seenCursors = new Set<string>(); // detect a stuck/cycling cursor
       let cursor: string | null = null;
@@ -371,27 +374,27 @@ export function createHttpProviderAdapter(
           }
           const json = await res.json();
           for (const m of spec.parseModels(json)) {
-            if (all.length >= MAX_PARSED_MODELS) return all; // total cap across pages
+            if (all.length >= MAX_PARSED_MODELS) return partial(); // total cap across pages
             if (seen.has(m.id)) continue;
             seen.add(m.id);
             all.push(m);
           }
+          // Cap reached (the page parser itself stops at it): the rest is unread.
+          if (all.length >= MAX_PARSED_MODELS) return partial();
           // No pagination hook → single-page provider (e.g. OpenAI): done after one fetch.
           if (spec.modelsPagination === undefined) return all;
-          // Cap reached exactly at a page boundary: stop HERE so a `has_more` doesn't
-          // fetch (and possibly fail on) a page we'd discard anyway.
-          if (all.length >= MAX_PARSED_MODELS) return all;
           const next = spec.modelsPagination.nextCursor(json);
-          // Done, or a stuck/repeating cursor (a buggy/hostile endpoint) — stop rather
-          // than issue redundant requests until the page bound.
-          if (next === null || seenCursors.has(next)) return all;
+          if (next === null) return all; // the provider says there is no more
+          // A stuck/repeating cursor (a buggy/hostile endpoint) — stop rather than issue
+          // redundant requests until the page bound, and say the listing is partial.
+          if (seenCursors.has(next)) return partial();
           seenCursors.add(next);
           cursor = next;
         } finally {
           dispose();
         }
       }
-      return all; // page-count safety bound reached — return what we have (bounded)
+      return partial(); // page-count safety bound reached — bounded, and marked partial
     } catch (err) {
       rethrowTyped(err);
     }
@@ -400,13 +403,7 @@ export function createHttpProviderAdapter(
   async function testConnection(ctx?: CallContext): Promise<ConnectionResult> {
     try {
       if (spec.modelsPath === undefined) {
-        if (spec.probeRequest === undefined) {
-          throw new ProviderError('credential', 'no validating probe configured');
-        }
-        // The designated 1-token probe: a revoked/invalid credential surfaces as a
-        // typed auth failure exactly like any other action — never masked.
-        await chat(spec.probeRequest, ctx);
-        return { ok: true, models: 0 };
+        throw new ProviderError('credential', 'no validating probe configured');
       }
       const models = await listModels(ctx);
       return { ok: true, models: models.length };
@@ -560,7 +557,9 @@ export function parseModelList(json: unknown, displayKey?: string): ProviderMode
     if (typeof entry !== 'object' || entry === null) continue;
     const rec = entry as Record<string, unknown>;
     const id = rec['id'];
-    if (typeof id !== 'string') continue;
+    // A blank id names no model (add-live-subscription-models): admitted, it would make a
+    // listing of nothing look non-empty — and flag the provider's whole catalog.
+    if (typeof id !== 'string' || id.trim() === '') continue;
     if (id.length > MAX_MODEL_ID_LEN) continue; // skip before it consumes the cap
     if (seen.has(id)) continue; // dedup before the cap: a repeat can't starve valids
     seen.add(id);

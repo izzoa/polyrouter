@@ -1,8 +1,10 @@
 /**
  * Bundled OAuth presets (add-subscription-oauth). Every URL/id here is a FIXED
  * constant — never user input (no new SSRF surface; exchanges still flow through the
- * guarded fetch as defense-in-depth). Model sourcing is DECLARED per preset, never a
- * runtime fallback that could mask an auth failure.
+ * guarded fetch as defense-in-depth). A preset carries NO model id
+ * (add-live-subscription-models): every preset's models come from its provider's own
+ * authenticated listing, and Test is that listing — so an upstream model retirement
+ * can never make a preset stale.
  *
  * The Claude constants are ecosystem-known (Claude Code's public OAuth client), not a
  * documented contract — they are verify-at-implementation, and the preset ships
@@ -10,8 +12,6 @@
  * sends only the documented/ecosystem headers (Bearer + anthropic-beta) and never
  * imitates the first-party client beyond them (no-spoofing rule).
  */
-
-export type ModelsSource = 'endpoint' | 'bundled';
 
 export interface OauthPreset {
   readonly id: string;
@@ -40,12 +40,6 @@ export interface OauthPreset {
   readonly includeStateInExchange: boolean;
   /** The `anthropic-beta` value OAuth tokens require (threaded to the adapter). */
   readonly oauthBeta?: string;
-  readonly modelsSource: ModelsSource;
-  /** Bundled model ids, used only when modelsSource === 'bundled'. */
-  readonly bundledModels?: readonly string[];
-  /** The designated validating-probe model for a models-endpoint-less protocol —
-   * the FIRST bundled model; threaded to the adapter as trusted registry data. */
-  readonly probeModel?: string;
   /** Enablement gate: flipped to true ONLY after the live golden verification passes
    * (an enabled-and-known-broken preset must not ship). */
   readonly enabled: boolean;
@@ -70,7 +64,6 @@ export const CLAUDE_PRESET: OauthPreset = {
   tokenRequestEncoding: 'json',
   includeStateInExchange: true, // verified live 2026-07-18: the exchange succeeds with it
   oauthBeta: 'oauth-2025-04-20',
-  modelsSource: 'endpoint',
   // VERIFIED LIVE 2026-07-18 (scripts/verify-claude-oauth.md): connect + paste,
   // OAuth /v1/models (10 models), and a real forced refresh all pass. The proxied
   // completion returned the account's own usage-window 429 (surfaced typed) — an
@@ -106,13 +99,10 @@ export const CHATGPT_PRESET: OauthPreset = {
   // Verified live 2026-07-18: auth.openai.com 400s (`unknown_parameter: state`) on a
   // state-bearing exchange body — the param must be OMITTED for this preset.
   includeStateInExchange: false,
-  modelsSource: 'bundled',
-  // VERIFIED LIVE 2026-07-18 against the backend's own allowlist (the gpt-5.x ids
-  // from ecosystem knowledge were rejected). First entry doubles as the designated
-  // probe model — the cheapest of the set. `codex-auto-review` exists upstream but
-  // is purpose-built for Codex's review feature and deliberately not bundled.
-  bundledModels: ['gpt-5.4-mini', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4'],
-  probeModel: 'gpt-5.4-mini', // the first bundled model — the designated probe target
+  // No bundled model list and no probe model (add-live-subscription-models): the
+  // Responses adapter lists the backend's own catalog (verified live 2026-09-24) and
+  // Test is that listing. The July bundle's probe model `gpt-5.4-mini` was retired
+  // 2026-09-22 and turned every Test red — the reason no preset names a model.
   // VERIFIED LIVE 2026-07-18 (scripts/verify-chatgpt-oauth.md): connect + account-id
   // claim, buffered + streamed completions, live tool calling, and a real forced
   // refresh (account id retained) all pass with ONLY the three documented headers.

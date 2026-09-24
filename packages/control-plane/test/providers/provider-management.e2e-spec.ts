@@ -790,4 +790,162 @@ describe('provider management', () => {
     );
     expect(shared).toHaveLength(1);
   });
+
+  // ---- add-live-subscription-models: unlisted models (task 6.1) ----
+  describe('unlisted models (add-live-subscription-models)', () => {
+    const CUSTOM = {
+      name: 'custom',
+      kind: 'custom',
+      protocol: 'openai_compatible',
+      baseUrl: 'https://1.1.1.1/v1',
+      credential: 'k',
+    };
+    const sync = (id: string, list: ProviderModelInfo[]): request.Test => {
+      nextModels = () => list;
+      return request(server).post(`/api/providers/${id}/sync-models`).set('x-test-user', alice);
+    };
+    type M = { id: string; externalModelId: string; unlistedSince: string | null };
+    const modelsOf = async (providerId: string, who = alice): Promise<M[]> =>
+      (
+        (await request(server).get(`/api/models?providerId=${providerId}`).set('x-test-user', who))
+          .body as M[]
+      ).sort((x, y) => x.externalModelId.localeCompare(y.externalModelId));
+    const byExt = (list: M[], ext: string): M => list.find((m) => m.externalModelId === ext)!;
+
+    it('flags a model the provider stopped listing, keeps the first time, and clears it on return', async () => {
+      const { body: p } = await asAlice().send(CUSTOM);
+      await sync(p.id, [{ id: 'keep' }, { id: 'retired' }]).expect(200);
+      expect((await modelsOf(p.id)).every((m) => m.unlistedSince === null)).toBe(true);
+
+      await sync(p.id, [{ id: 'keep' }]).expect(200);
+      const first = byExt(await modelsOf(p.id), 'retired').unlistedSince;
+      expect(first).not.toBeNull();
+      expect(byExt(await modelsOf(p.id), 'keep').unlistedSince).toBeNull();
+
+      await sync(p.id, [{ id: 'keep' }]).expect(200); // still absent: earliest kept
+      expect(byExt(await modelsOf(p.id), 'retired').unlistedSince).toBe(first);
+
+      await sync(p.id, [{ id: 'keep' }, { id: 'retired' }]).expect(200); // back again
+      expect(byExt(await modelsOf(p.id), 'retired').unlistedSince).toBeNull();
+    });
+
+    it('an empty listing flags nothing', async () => {
+      const { body: p } = await asAlice().send(CUSTOM);
+      await sync(p.id, [{ id: 'a' }]).expect(200);
+      await sync(p.id, []).expect(200);
+      expect(byExt(await modelsOf(p.id), 'a').unlistedSince).toBeNull();
+    });
+
+    it('a listing made with a replaced credential flags nothing (incarnation guard)', async () => {
+      const { body: p } = await asAlice().send(CUSTOM);
+      await sync(p.id, [{ id: 'a' }, { id: 'b' }]).expect(200);
+      const port = app.get<PersistencePort>(PERSISTENCE_PORT);
+      const row = (await port.providers.findById(userPrincipal(alice), p.id))!;
+      const stale = { envelope: 'an-older-cipher', baseUrl: row.baseUrl, protocol: row.protocol };
+      const applied = await port.models.reconcileListing(
+        userPrincipal(alice),
+        p.id,
+        ['a'],
+        new Date(),
+        stale,
+      );
+      expect(applied).toBe(false);
+      expect(byExt(await modelsOf(p.id), 'b').unlistedSince).toBeNull();
+      // Another tenant can never reconcile alice's provider, even with the right guard.
+      const current = {
+        envelope: row.encryptedCredentials,
+        baseUrl: row.baseUrl,
+        protocol: row.protocol,
+      };
+      expect(
+        await port.models.reconcileListing(userPrincipal(bob), p.id, ['a'], new Date(), current),
+      ).toBe(false);
+      expect(byExt(await modelsOf(p.id), 'b').unlistedSince).toBeNull();
+    });
+
+    it('DELETE removes only an unlisted model: 204, 409 while listed, 404 across tenants', async () => {
+      const { body: p } = await asAlice().send(CUSTOM);
+      await sync(p.id, [{ id: 'keep' }, { id: 'gone' }]).expect(200);
+      await sync(p.id, [{ id: 'keep' }]).expect(200);
+      const list = await modelsOf(p.id);
+      const gone = byExt(list, 'gone');
+      const keep = byExt(list, 'keep');
+
+      // Another tenant: 404 whether flagged or not — existence is not disclosed.
+      await request(server).delete(`/api/models/${gone.id}`).set('x-test-user', bob).expect(404);
+      await request(server).delete(`/api/models/${keep.id}`).set('x-test-user', bob).expect(404);
+      // Still listed: 409, nothing changes.
+      await request(server).delete(`/api/models/${keep.id}`).set('x-test-user', alice).expect(409);
+      // Unlisted: removed.
+      await request(server).delete(`/api/models/${gone.id}`).set('x-test-user', alice).expect(204);
+      expect((await modelsOf(p.id)).map((m) => m.externalModelId)).toEqual(['keep']);
+      await request(server).delete(`/api/models/${gone.id}`).set('x-test-user', alice).expect(404);
+    });
+
+    it('removal compacts tier positions; a model: rule keeps its (now unresolved) target', async () => {
+      const { body: p } = await asAlice().send(CUSTOM);
+      await sync(p.id, [{ id: 'm0' }, { id: 'm1' }, { id: 'm2' }]).expect(200);
+      await sync(p.id, [{ id: 'm0' }, { id: 'm2' }]).expect(200);
+      const list = await modelsOf(p.id);
+      const port = app.get<PersistencePort>(PERSISTENCE_PORT);
+      const who = userPrincipal(alice);
+      const tier = await port.tiers.insert(who, { key: `unl-${Date.now()}` });
+      for (const [i, ext] of ['m0', 'm1', 'm2'].entries()) {
+        await port.routingEntries.add(who, {
+          tierId: tier.id,
+          modelId: byExt(list, ext).id,
+          position: i,
+        });
+      }
+      const rule = await port.routingRules.insert(who, {
+        matchType: 'header',
+        headerValue: 'unl',
+        target: `model:${byExt(list, 'm1').id}`,
+      });
+      await request(server)
+        .delete(`/api/models/${byExt(list, 'm1').id}`)
+        .set('x-test-user', alice)
+        .expect(204);
+      const entries = await port.routingEntries.listForTier(who, tier.id);
+      expect(entries.map((e) => [e.position, e.modelId])).toEqual([
+        [0, byExt(list, 'm0').id],
+        [1, byExt(list, 'm2').id],
+      ]);
+      expect((await port.routingRules.findById(who, rule.id))?.target).toBe(
+        `model:${byExt(list, 'm1').id}`,
+      );
+      await port.routingRules.remove(who, rule.id);
+      await port.tiers.remove(who, tier.id);
+    });
+
+    it('a base_url change clears the unlisted flag with the other endpoint-derived columns', async () => {
+      const { body: p } = await asAlice().send(CUSTOM);
+      await sync(p.id, [{ id: 'a' }, { id: 'b' }]).expect(200);
+      await sync(p.id, [{ id: 'a' }]).expect(200);
+      expect(byExt(await modelsOf(p.id), 'b').unlistedSince).not.toBeNull();
+      await request(server)
+        .patch(`/api/providers/${p.id}`)
+        .set('x-test-user', alice)
+        .send({ baseUrl: 'https://8.8.8.8/v1' })
+        .expect(200);
+      expect(byExt(await modelsOf(p.id), 'b').unlistedSince).toBeNull();
+    });
+
+    it('a re-sync rewrites the listed capability claim instead of freezing the first insert', async () => {
+      const { body: p } = await asAlice().send(CUSTOM);
+      await sync(p.id, [{ id: 'c', capabilities: { contextWindow: 1_000 } }]).expect(200);
+      await sync(p.id, [{ id: 'c', capabilities: { contextWindow: 2_000 } }]).expect(200);
+      const read = async (): Promise<{ w: number | null; at: Date | null }> => {
+        const r = await pool.query<{ w: number | null; at: Date | null }>(
+          `SELECT listed_context_window AS w, listed_capabilities_captured_at AS at
+             FROM model WHERE provider_id = $1 AND external_model_id = 'c'`,
+          [p.id],
+        );
+        return r.rows[0]!;
+      };
+      expect((await read()).w).toBe(2_000);
+      await sync(p.id, [{ id: 'c' }]).expect(200); // claimless: cleared, not preserved
+      expect(await read()).toEqual({ w: null, at: null });
+    });
+  });
 });

@@ -110,6 +110,19 @@ export function nonRoutableNote(m: Model | null | undefined): string | null {
     : `batch-only — cannot serve; use ${base}`;
 }
 
+/** The note shown wherever routing points at a model its provider no longer lists
+ * (add-live-subscription-models). Null for an offered model. "May" — a listing can
+ * omit a model that still works, and routing still dispatches it, so the dashboard
+ * never claims a failure it has not seen. */
+export function unlistedNote(
+  m: Model | null | undefined,
+  providerName: string | undefined,
+): string | null {
+  if (!m || m.unlistedSince === null) return null;
+  const name = m.displayName ?? m.externalModelId;
+  return `${name} is no longer listed by ${providerName ?? 'its provider'} — requests to it may fail`;
+}
+
 /** The BAND TARGETS section (add-band-target-ui): auto_high/auto_low made
  * dashboard-configurable — the effective rule in the PROXY's order, atomic
  * retargeting, snapshot-scoped guarantees with post-mutation reconciles, and
@@ -151,6 +164,16 @@ function TargetSummary(props: { target: BandTargetState; unset: string }) {
                 {' '}
                 {tt.provider ?? 'unknown provider'} · {modelPriceLabel(tt.model)}
               </span>
+              <Show when={unlistedNote(tt.model, tt.provider ?? undefined)}>
+                {(note) => (
+                  <span
+                    data-unlisted-target={tt.model.id}
+                    style="display:block;font:400 10.5px 'Geist',sans-serif;color:var(--amber)"
+                  >
+                    {note()}
+                  </span>
+                )}
+              </Show>
             </span>
           ) : null
         }
@@ -1677,6 +1700,8 @@ export function Routing() {
   });
 
   const modelById = (id: string): Model | undefined => state.allModels.find((m) => m.id === id);
+  const providerNameFor = (m: Model | undefined): string | undefined =>
+    m === undefined ? undefined : state.providers.find((p) => p.id === m.providerId)?.name;
   const entryLabel = (e: TierEntryDto): string =>
     e.model?.externalModelId ?? modelById(e.modelId)?.externalModelId ?? e.modelId;
   const entries = (tierId: string): TierEntryDto[] => state.tierEntries[tierId] ?? [];
@@ -2112,7 +2137,8 @@ export function Routing() {
                               when={
                                 (entry.mode === 'batch' &&
                                   !(modelById(entry.modelId)?.batchCapable ?? false)) ||
-                                nonRoutableNote(modelById(entry.modelId)) !== null
+                                nonRoutableNote(modelById(entry.modelId)) !== null ||
+                                unlistedNote(modelById(entry.modelId), undefined) !== null
                               }
                             >
                               <div class="chain-notes">
@@ -2135,6 +2161,19 @@ export function Routing() {
                                   rejected save or a request that quietly routes elsewhere. */}
                                 <Show when={nonRoutableNote(modelById(entry.modelId))}>
                                   {(note) => <span data-nonroutable={entry.modelId}>{note()}</span>}
+                                </Show>
+                                {/* add-live-subscription-models: the provider's listing no
+                                  longer offers this member. Routing still sends to it and a
+                                  rejection walks the chain — this says why it may. */}
+                                <Show
+                                  when={unlistedNote(
+                                    modelById(entry.modelId),
+                                    providerNameFor(modelById(entry.modelId)),
+                                  )}
+                                >
+                                  {(note) => (
+                                    <span data-unlisted-entry={entry.modelId}>{note()}</span>
+                                  )}
                                 </Show>
                               </div>
                             </Show>
@@ -2285,6 +2324,24 @@ export function Routing() {
                       </span>
                       <Icon name="arrowRight" size={12} style="color:var(--faint)" />
                       <span style="color:var(--text)">{ru.target}</span>
+                      <Show
+                        when={
+                          ru.target.startsWith('model:') &&
+                          unlistedNote(
+                            modelById(ru.target.slice('model:'.length)),
+                            providerNameFor(modelById(ru.target.slice('model:'.length))),
+                          )
+                        }
+                      >
+                        {(note) => (
+                          <span
+                            data-unlisted-rule={ru.id}
+                            style="font:400 10.5px 'Geist',sans-serif;color:var(--amber)"
+                          >
+                            {note()}
+                          </span>
+                        )}
+                      </Show>
                       <button
                         type="button"
                         class="icon-x"

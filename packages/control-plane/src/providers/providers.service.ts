@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import {
   Inject,
   Injectable,
+  ConflictException,
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
@@ -46,11 +47,14 @@ import {
 } from './provider-health';
 import {
   MAX_MODEL_ID_LEN,
+  MAX_PARSED_MODELS,
+  CallCancelledError,
   ProviderError,
   createProviderAdapter,
   type ConnectionResult,
   type ProviderAdapter,
   type ProviderKind,
+  type ModelListing,
   type ProviderModelInfo,
   type ProviderListedPricing,
   type ProviderModelCapabilities,
@@ -206,6 +210,10 @@ export interface SafeModel {
    * a reason to substitute the synchronous price. */
   batchEffectivePrice: EffectivePrice | null;
   lastSyncedAt: Date | null;
+  /** add-live-subscription-models: when the provider's listing FIRST stopped
+   * offering this model, or null while it is offered. Display + guarded removal
+   * only — never a routing input. */
+  unlistedSince: Date | null;
 }
 
 /** Sanitized action result — a fixed public message keyed on `{kind,status}`
@@ -463,6 +471,7 @@ function toSafeModel(
     batchCapable,
     batchEffectivePrice,
     lastSyncedAt: m.lastSyncedAt,
+    unlistedSince: m.unlistedSince,
   };
 }
 
@@ -492,6 +501,12 @@ export class ProvidersService {
     this.key = runtime.key;
     this.mode = runtime.mode;
     this.adapterBuilder = new ProviderAdapterBuilder(runtime, oauth);
+  }
+
+  /** Whether a loopback `local` provider can be dialled here (selfhosted only) — the
+   * scheduled catalog refresh skips local rows elsewhere rather than failing them. */
+  get allowsLocalProviders(): boolean {
+    return this.mode === 'selfhosted';
   }
 
   async list(principal: Principal): Promise<SafeProvider[]> {
@@ -657,7 +672,7 @@ export class ProvidersService {
       await this.recordCheck(principal, id, sanitized, 'test', incarnationOf(provider));
       return sanitized;
     }
-    let result = await this.probe(provider, built.adapter);
+    let result = await this.probe(built.adapter);
     let probedWith = built.incarnation;
     // add-provider-health-signals: a 401 on an OAuth provider gets ONE rate-limited
     // repair — a forced refresh keyed on the credential the probe used, then ONE
@@ -682,7 +697,7 @@ export class ProvidersService {
           try {
             const rebuilt = await this.buildAdapter(principal, fresh);
             probedWith = rebuilt.incarnation;
-            result = await this.probe(fresh, rebuilt.adapter);
+            result = await this.probe(rebuilt.adapter);
           } catch (err) {
             if (err instanceof UnprocessableEntityException) throw err;
             const kind = err instanceof ProviderError ? err.kind : 'unavailable';
@@ -699,21 +714,12 @@ export class ProvidersService {
     return sanitized;
   }
 
-  /** The designated validating call, normalized to a typed result: a bundled-model
-   * preset's minimal 1-token chat probe (an invalid/revoked credential still
-   * surfaces as a typed auth failure and is never masked by the bundled list), or
-   * the adapter's cheap `testConnection()`. */
-  private async probe(provider: ProviderRow, adapter: ProviderAdapter): Promise<ConnectionResult> {
-    const bundledPreset = this.bundledPresetFor(provider);
+  /** The validating call, normalized to a typed result: the adapter's cheap
+   * `testConnection()` — the model LISTING for every provider, subscription presets
+   * included (add-live-subscription-models), so it names no model and an upstream
+   * retirement can never fail it. */
+  private async probe(adapter: ProviderAdapter): Promise<ConnectionResult> {
     try {
-      if (bundledPreset !== undefined) {
-        await adapter.chat({
-          model: bundledPreset.bundledModels?.[0] ?? 'probe',
-          messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
-          params: { maxOutputTokens: 1 },
-        });
-        return { ok: true, models: bundledPreset.bundledModels?.length ?? 0 };
-      }
       return await adapter.testConnection();
     } catch (err) {
       const kind = err instanceof ProviderError ? err.kind : 'unavailable';
@@ -744,34 +750,50 @@ export class ProvidersService {
     );
   }
 
-  async syncModels(principal: Principal, id: string): Promise<ActionResult> {
+  /**
+   * List the provider's models and upsert them, then reconcile which stored models
+   * the provider no longer lists (add-live-subscription-models). `recordHealth:false`
+   * is the scheduled catalog refresh's mode: a background catalog read is not a
+   * check of the provider, so it writes no health record either way.
+   */
+  async syncModels(
+    principal: Principal,
+    id: string,
+    opts: { readonly recordHealth?: boolean; readonly signal?: AbortSignal } = {},
+  ): Promise<ActionResult> {
+    const recordHealth = opts.recordHealth ?? true;
+    // Read LIVE each time (a call, so no stale narrowing): the abort can land at any
+    // point — during the listing, or while the rows are being written.
+    const aborted = (): boolean => opts.signal?.aborted === true;
     const provider = await this.requireProvider(principal, id);
-    const bundledPreset = this.bundledPresetFor(provider);
-    let models: ProviderModelInfo[];
+    let models: ModelListing;
     // add-provider-health-signals: health is written ONLY when an authenticated
-    // listing call was made — set once the adapter is built. A bundled (metadata-
-    // only) sync checks nothing, and a build-time credential failure has already
-    // recorded its own check under the credential lock; neither writes here.
+    // listing call was made — set once the adapter is built. A build-time credential
+    // failure has already recorded its own check under the credential lock, so it
+    // writes nothing here.
     let listedWith: ProviderIncarnation | null = null;
     try {
-      if (bundledPreset !== undefined) {
-        // Bundled model sourcing: seed the preset's list (preset-sourced, no network) —
-        // the credential itself is validated by test-connection's designated probe.
-        models = (bundledPreset.bundledModels ?? []).map((m) => ({ id: m }));
-      } else {
-        const built = await this.buildAdapter(principal, provider);
-        listedWith = built.incarnation;
-        models = await built.adapter.listModels();
-      }
+      const built = await this.buildAdapter(principal, provider);
+      listedWith = built.incarnation;
+      models = await built.adapter.listModels(
+        opts.signal !== undefined ? { signal: opts.signal } : undefined,
+      );
+      // A caller that stopped (the scheduled refresh on shutdown) writes nothing.
+      if (aborted()) throw new CallCancelledError();
     } catch (err) {
       if (err instanceof UnprocessableEntityException) throw err; // 422 contract
 
       const sanitized = this.sanitizeThrow(err);
-      if (listedWith !== null) await this.recordCheck(principal, id, sanitized, 'sync', listedWith);
+      if (recordHealth && listedWith !== null) {
+        await this.recordCheck(principal, id, sanitized, 'sync', listedWith);
+      }
       return sanitized;
     }
     const deduped = new Map<string, ProviderModelInfo>();
-    for (const m of models) deduped.set(m.id, m);
+    // A blank id names no model — never upserted, and never allowed to make an empty
+    // listing look non-empty to the reconciliation below (defense in depth: the
+    // adapters' parsers drop them too).
+    for (const m of models) if (m.id.trim() !== '') deduped.set(m.id, m);
     // A concurrent edit could have changed the endpoint while `listModels()` was in
     // flight; a listed price captured from the OLD endpoint must not be persisted for the
     // new one. Re-read and, if base_url/protocol moved, treat the response as priceless
@@ -800,6 +822,10 @@ export class ProvidersService {
     const now = new Date();
     for (const m of deduped.values()) {
       if (attempts >= MAX_SYNCED_MODELS) break;
+      // A caller that stopped mid-write (the scheduled refresh's deadline or shutdown)
+      // stops upserting here; what landed is idempotent, and the reconciliation below
+      // is skipped, so a cancelled sync never flags anything.
+      if (aborted()) break;
       if (m.id.length > MAX_MODEL_ID_LEN) continue;
       attempts += 1;
       const displayName =
@@ -829,6 +855,30 @@ export class ProvidersService {
         if (pricing !== undefined) pricesCaptured += 1;
       }
     }
+    // Unlisted-model reconciliation (add-live-subscription-models): flag every stored
+    // model this listing no longer offers, clear every one it does. Against the FULL
+    // deduped listing (a model beyond the upsert cap is still offered), and skipped
+    // outright when the listing cannot be trusted to be complete and current — empty
+    // (a glitch must not flag a whole catalog), at the parse cap (possibly truncated),
+    // or from an endpoint the provider has since moved off.
+    // The port re-checks, under the provider's row lock, that the credential and
+    // endpoint are still the ones this listing was made with (a reconnect to another
+    // account must not have its catalog flagged by the old one's listing).
+    if (
+      !aborted() &&
+      deduped.size > 0 &&
+      models.truncated !== true &&
+      models.length < MAX_PARSED_MODELS &&
+      !endpointMoved
+    ) {
+      await this.db.models.reconcileListing(
+        principal,
+        provider.id,
+        [...deduped.keys()],
+        now,
+        listedWith,
+      );
+    }
     const result: ActionResult = {
       ok: true,
       status: 'ok',
@@ -837,8 +887,20 @@ export class ProvidersService {
       synced,
       pricesCaptured,
     };
-    if (listedWith !== null) await this.recordCheck(principal, id, result, 'sync', listedWith);
+    if (recordHealth && listedWith !== null) {
+      await this.recordCheck(principal, id, result, 'sync', listedWith);
+    }
     return result;
+  }
+
+  /** The scheduled catalog refresh's per-provider action (add-live-subscription-
+   * models): exactly the manual sync — listing, upsert, reconciliation — writing no
+   * health record. Runs under the provider's own owner. */
+  refreshCatalog(principal: Principal, id: string, signal?: AbortSignal): Promise<ActionResult> {
+    return this.syncModels(principal, id, {
+      recordHealth: false,
+      ...(signal !== undefined ? { signal } : {}),
+    });
   }
 
   async listModels(principal: Principal, q: ListModelsQueryDto): Promise<SafeModel[]> {
@@ -929,6 +991,17 @@ export class ProvidersService {
    * present). Editing the current price never rewrites historical cost — the
    * recorder snapshots prices at completion (invariant 4).
    */
+  /** Remove a model the provider no longer lists (add-live-subscription-models).
+   * 404 when it is not the principal's (or gone), 409 while the provider still lists
+   * it — enforced inside the owner-scoped delete, so a concurrent re-listing wins. */
+  async removeUnlistedModel(principal: Principal, id: string): Promise<void> {
+    const outcome = await this.db.models.removeUnlisted(principal, id);
+    if (outcome === 'not_found') throw new NotFoundException();
+    if (outcome === 'listed') {
+      throw new ConflictException('the provider still lists this model');
+    }
+  }
+
   async updateModelPricing(
     principal: Principal,
     id: string,
@@ -1002,12 +1075,6 @@ export class ProvidersService {
     // Re-gate the stored base_url before any outbound action (defense in depth).
     await this.normalizeAndGateBaseUrl(provider.kind as ProviderKind, provider.baseUrl);
     return provider;
-  }
-
-  /** The provider's OAuth preset when it declares bundled model sourcing. */
-  private bundledPresetFor(provider: ProviderRow) {
-    const preset = this.oauth.presetFor(provider);
-    return preset !== undefined && preset.modelsSource === 'bundled' ? preset : undefined;
   }
 
   /** Build an adapter plus the incarnation it was built against (the envelope

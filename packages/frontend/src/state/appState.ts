@@ -1070,6 +1070,9 @@ export interface AppStore {
   deleteProvider: (id: string) => Promise<void>;
   loadModels: (providerId: string) => Promise<void>;
   setModelPrice: (providerId: string, modelId: string, body: ModelPricingInput) => Promise<void>;
+  /** Remove a model the provider no longer lists (add-live-subscription-models), after
+   * a confirmation that states how many tier entries and rules the removal affects. */
+  removeUnlistedModel: (providerId: string, model: Model) => Promise<void>;
   // modals
   openModal: (modal: ModalKind) => void;
   closeModal: () => void;
@@ -3282,6 +3285,46 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       } catch (e) {
         say(err(e));
       }
+    },
+
+    removeUnlistedModel: async (providerId, model) => {
+      // Count what the removal touches from a FRESH read — the Routing page may never
+      // have been opened, and a stale count would understate the consequence.
+      let impact: string;
+      try {
+        const [tiers, rules] = await Promise.all([client.listTiers(), client.listRules()]);
+        const chains = await Promise.all(tiers.map((t) => client.listTierEntries(t.id)));
+        const entries = chains.flat().filter((e) => e.modelId === model.id).length;
+        const targeted = rules.filter((r) => r.target === `model:${model.id}`).length;
+        impact =
+          `${String(entries)} tier ${entries === 1 ? 'entry' : 'entries'} will be dropped and ` +
+          `${String(targeted)} ${targeted === 1 ? 'rule' : 'rules'} will lose its target.`;
+      } catch {
+        impact = 'Any tier entries using it are dropped, and rules targeting it lose their target.';
+      }
+      const name = model.displayName ?? model.externalModelId;
+      if (!globalThis.confirm(`Remove ${name}? The provider no longer lists it. ${impact}`)) return;
+      try {
+        await client.removeModel(model.id);
+      } catch (e) {
+        say(`Couldn’t remove ${name}: ${err(e)}`);
+        return;
+      }
+      setState(
+        produce((s) => {
+          s.models[providerId] = (s.models[providerId] ?? []).filter((m) => m.id !== model.id);
+          s.allModels = s.allModels.filter((m) => m.id !== model.id);
+          for (const tierId of Object.keys(s.tierEntries)) {
+            s.tierEntries[tierId] = s.tierEntries[tierId]!.filter((e) => e.modelId !== model.id);
+          }
+          for (const tierId of Object.keys(s.confirmedEntries)) {
+            s.confirmedEntries[tierId] = s.confirmedEntries[tierId]!.filter(
+              (e) => e.modelId !== model.id,
+            );
+          }
+        }),
+      );
+      say(`${name} removed`);
     },
 
     openModal: (modal) => {

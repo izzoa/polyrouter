@@ -16,6 +16,7 @@ import type {
 } from '@polyrouter/shared/server';
 import { decryptSecret, resolvePlainCredentialValue } from '@polyrouter/shared/server';
 import {
+  MAX_PARSED_MODELS,
   ProviderError,
   type ConnectionResult,
   type ProviderAdapter,
@@ -60,6 +61,10 @@ interface FakePort {
   port: PersistencePort;
   rows: Map<string, ProviderRow>;
   upsert: jest.Mock<Promise<ModelRow | null>, [Principal, string, ModelInsertInput]>;
+  reconcileListing: jest.Mock<
+    Promise<boolean>,
+    [Principal, string, readonly string[], Date, ProviderIncarnation]
+  >;
 }
 
 function makePort(): FakePort {
@@ -115,7 +120,17 @@ function makePort(): FakePort {
         listedContextWindow: null,
         listedCapabilitiesCapturedAt: null,
         lastSyncedAt: values.lastSyncedAt ?? null,
+        unlistedSince: null,
       }),
+  );
+  const reconcileListing = jest.fn(
+    (
+      _p: Principal,
+      _id: string,
+      _ids: readonly string[],
+      _now: Date,
+      _guard: ProviderIncarnation,
+    ): Promise<boolean> => Promise.resolve(true),
   );
   const port = {
     providers: {
@@ -204,9 +219,13 @@ function makePort(): FakePort {
         return Promise.resolve(next);
       },
     },
-    models: { upsertForProvider: upsert, listForPrincipal: () => Promise.resolve([]) },
+    models: {
+      upsertForProvider: upsert,
+      reconcileListing,
+      listForPrincipal: () => Promise.resolve([]),
+    },
   } as unknown as PersistencePort;
-  return { port, rows, upsert };
+  return { port, rows, upsert, reconcileListing };
 }
 
 function factory(overrides: Partial<ProviderAdapter> = {}): ProviderAdapterFactory {
@@ -562,6 +581,129 @@ describe('ProvidersService — sync-models', () => {
       (c) => (c[2] as ModelInsertInput).externalModelId === 'longname',
     );
     expect((longNameCall?.[2] as ModelInsertInput).displayName?.length).toBe(512);
+  });
+});
+
+describe('ProvidersService — unlisted reconciliation (add-live-subscription-models)', () => {
+  async function setup(listModels: ProviderAdapter['listModels']) {
+    const made = makePort();
+    const seed = mkProvidersService(made.port, factory(), runtime('selfhosted'));
+    const prov = await seed.create(principal, {
+      ...baseCreate,
+      kind: 'custom',
+      baseUrl: 'https://1.1.1.1/v1',
+      credential: 'k',
+    });
+    const setHealth = jest.spyOn(made.port.providers, 'setHealth');
+    const svc = mkProvidersService(made.port, factory({ listModels }), runtime('selfhosted'));
+    return { ...made, prov, svc, setHealth };
+  }
+  const ids = (n: number, prefix = 'm'): ProviderModelInfo[] =>
+    Array.from({ length: n }, (_, i) => ({ id: `${prefix}${String(i)}` }));
+
+  it('reconciles against the FULL deduped listing — beyond the upsert cap too', async () => {
+    const listing = [...ids(2_001), { id: 'm0' }]; // one repeat; 2,001 distinct
+    const { svc, prov, reconcileListing, upsert } = await setup(() => Promise.resolve(listing));
+    await svc.syncModels(principal, prov.id);
+    expect(upsert).toHaveBeenCalledTimes(2_000); // MAX_SYNCED_MODELS
+    expect(reconcileListing).toHaveBeenCalledTimes(1);
+    const [, providerId, listed] = reconcileListing.mock.calls[0]!;
+    expect(providerId).toBe(prov.id);
+    expect(listed).toHaveLength(2_001);
+    // Guarded by the incarnation the listing was made with (checked in the port).
+    expect(reconcileListing.mock.calls[0]![4]).toEqual({
+      envelope: expect.any(String) as unknown,
+      baseUrl: 'https://1.1.1.1/v1',
+      protocol: 'openai_compatible',
+    });
+    expect(listed).toContain('m2000'); // offered but never upserted: still not flagged
+  });
+
+  it('skips reconciliation for an empty listing, a listing at the parse cap, or a failed listing', async () => {
+    const empty = await setup(() => Promise.resolve([]));
+    await empty.svc.syncModels(principal, empty.prov.id);
+    expect(empty.reconcileListing).not.toHaveBeenCalled();
+
+    // Blank ids name no model: a listing of only blanks is an EMPTY listing.
+    const blanks = await setup(() => Promise.resolve([{ id: '' }, { id: '  ' }]));
+    await blanks.svc.syncModels(principal, blanks.prov.id);
+    expect(blanks.upsert).not.toHaveBeenCalled();
+    expect(blanks.reconcileListing).not.toHaveBeenCalled();
+
+    const capped = await setup(() => Promise.resolve(ids(MAX_PARSED_MODELS)));
+    await capped.svc.syncModels(principal, capped.prov.id);
+    expect(capped.reconcileListing).not.toHaveBeenCalled();
+
+    // A listing the adapter marked partial (stuck cursor / page bound) is not the catalog.
+    const partial = await setup(() =>
+      Promise.resolve(Object.assign(ids(3), { truncated: true as const })),
+    );
+    await partial.svc.syncModels(principal, partial.prov.id);
+    expect(partial.upsert).toHaveBeenCalledTimes(3); // what was read is still synced
+    expect(partial.reconcileListing).not.toHaveBeenCalled();
+
+    const failed = await setup(() => Promise.reject(new ProviderError('unavailable', 'down')));
+    const r = await failed.svc.syncModels(principal, failed.prov.id);
+    expect(r.ok).toBe(false);
+    expect(failed.reconcileListing).not.toHaveBeenCalled();
+  });
+
+  it('skips reconciliation when the endpoint moved while the listing was in flight', async () => {
+    const ref: { rows?: Map<string, ProviderRow>; id: string } = { id: '' };
+    const moved = await setup(() => {
+      const cur = ref.rows!.get(ref.id)!;
+      ref.rows!.set(ref.id, { ...cur, baseUrl: 'https://8.8.8.8/v1' });
+      return Promise.resolve(ids(3));
+    });
+    ref.rows = moved.rows;
+    ref.id = moved.prov.id;
+    await moved.svc.syncModels(principal, moved.prov.id);
+    expect(moved.upsert).toHaveBeenCalledTimes(3); // rows still synced, priceless
+    expect(moved.reconcileListing).not.toHaveBeenCalled();
+  });
+
+  it('a listing aborted by its caller (shutdown) writes nothing', async () => {
+    const stop = new AbortController();
+    const { svc, prov, upsert, reconcileListing } = await setup(() => {
+      stop.abort(); // shutdown lands while the listing is in flight
+      return Promise.resolve(ids(2));
+    });
+    const r = await svc.refreshCatalog(principal, prov.id, stop.signal);
+    expect(r.ok).toBe(false);
+    expect(upsert).not.toHaveBeenCalled();
+    expect(reconcileListing).not.toHaveBeenCalled();
+  });
+
+  it('a caller that aborts mid-write stops upserting and never reconciles', async () => {
+    const stop = new AbortController();
+    const made = await setup(() => Promise.resolve(ids(5)));
+    made.upsert.mockImplementationOnce((_p, providerId, values) => {
+      stop.abort(); // the deadline lands while the first write is in flight
+      return Promise.resolve({
+        id: 'x',
+        providerId,
+        externalModelId: values.externalModelId,
+      } as never);
+    });
+    await made.svc.refreshCatalog(principal, made.prov.id, stop.signal);
+    expect(made.upsert).toHaveBeenCalledTimes(1);
+    expect(made.reconcileListing).not.toHaveBeenCalled();
+  });
+
+  it('refreshCatalog is the same sync but writes no health record, success or failure', async () => {
+    const ok = await setup(() => Promise.resolve(ids(2)));
+    const r = await ok.svc.refreshCatalog(principal, ok.prov.id);
+    expect(r.ok).toBe(true);
+    expect(ok.reconcileListing).toHaveBeenCalledTimes(1);
+    expect(ok.setHealth).not.toHaveBeenCalled();
+    // A manual sync of the same provider DOES record its check.
+    await ok.svc.syncModels(principal, ok.prov.id);
+    expect(ok.setHealth).toHaveBeenCalledTimes(1);
+
+    const bad = await setup(() => Promise.reject(new ProviderError('auth', 'nope')));
+    const f = await bad.svc.refreshCatalog(principal, bad.prov.id);
+    expect(f.ok).toBe(false);
+    expect(bad.setHealth).not.toHaveBeenCalled();
   });
 });
 

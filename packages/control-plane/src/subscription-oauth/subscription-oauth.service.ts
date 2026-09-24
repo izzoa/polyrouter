@@ -123,9 +123,6 @@ export interface ResolvedCredential {
   /** TRUSTED envelope data for the Responses protocol (add-chatgpt-responses):
    * emitted as the `chatgpt-account-id` header. Never logged or exposed. */
   readonly oauthAccountId?: string;
-  /** TRUSTED preset-registry data: the designated validating-probe model for a
-   * models-endpoint-less protocol. */
-  readonly probeModel?: string;
 }
 
 export interface StartResult {
@@ -511,7 +508,6 @@ export class SubscriptionOauthService {
       envelope,
       ...(preset.oauthBeta !== undefined ? { oauthBeta: preset.oauthBeta } : {}),
       ...(accountId !== undefined ? { oauthAccountId: accountId } : {}),
-      ...(preset.probeModel !== undefined ? { probeModel: preset.probeModel } : {}),
     };
   }
 

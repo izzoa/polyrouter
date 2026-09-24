@@ -113,6 +113,7 @@ export type {
   ReplaceEntryInput,
   ProviderAccessor,
   OauthSweepRow,
+  CatalogRefreshRow,
   ProviderMaintenance,
   ProviderCheckSource,
   ProviderCheckStatus,

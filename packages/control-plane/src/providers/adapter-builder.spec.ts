@@ -69,7 +69,6 @@ describe('ProviderAdapterBuilder', () => {
         authScheme: 'oauth_bearer' as const,
         envelope: 'stored-cipher',
         oauthBeta: 'oauth-2025-04-20',
-        probeModel: 'claude-x',
       }),
     );
     const cfg = await builder(resolve).buildConfig(
@@ -86,9 +85,9 @@ describe('ProviderAdapterBuilder', () => {
       credential: 'oauth-ACCESS',
       authScheme: 'oauth_bearer',
       oauthBeta: 'oauth-2025-04-20',
-      probeModel: 'claude-x',
       kind: 'subscription',
     });
+    expect('probeModel' in cfg).toBe(false); // add-live-subscription-models
   });
 
   it('lets a credential-kind OAuth failure pass through untouched (breaker-neutral, fallback-eligible)', async () => {

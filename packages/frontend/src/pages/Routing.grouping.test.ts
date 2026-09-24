@@ -21,6 +21,7 @@ const model = (id: string, providerId: string, externalModelId: string): Model =
   batchCapable: true,
   batchEffectivePrice: null,
   lastSyncedAt: null,
+  unlistedSince: null,
 });
 
 const providers = [

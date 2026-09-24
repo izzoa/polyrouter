@@ -48,6 +48,7 @@ function model(id: string, variant: string | null = null, externalModelId?: stri
     listedCapabilitiesCapturedAt: null,
     variant,
     lastSyncedAt: null,
+    unlistedSince: null,
   };
 }
 

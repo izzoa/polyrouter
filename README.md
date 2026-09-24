@@ -694,9 +694,16 @@ across multiple requests and instances:
   rejected request itself falls back through your chain exactly as before.
 
 The sweep only ever calls each provider's **token endpoint** — it never sends a model request,
-so it spends none of your plan. Every OAuth card has a **Reconnect** action at any time (not only
-after a revoked sign-in): it reopens the connect wizard and renews the same provider in place,
-keeping its models and routing entries. The card shows one status line — the most recent of your
+so it spends none of your plan.
+
+**Models come from the provider, never from polyrouter.** Both presets list their models from
+the provider's own authenticated catalog, and **Test is that listing** — it names no model, so a
+model the provider retires can never turn Test red. The daily model-list refresh
+([below](#model-lists-stay-current)) keeps subscriptions current like every other provider.
+
+Every OAuth card has a **Reconnect** action at any time (not only after a revoked sign-in): it
+reopens the connect wizard and renews the same provider in place, keeping its models and routing
+entries. The card shows one status line — the most recent of your
 last check (Test, Sync) and what live traffic observed — with the reason and how long ago.
 
 Honest caveats:
@@ -721,6 +728,22 @@ Honest caveats:
   fallback provider.
 - **Key rotation:** changing `PROVIDER_CREDENTIAL_KEY` invalidates stored credentials;
   OAuth-connected providers will then ask to be reconnected.
+
+### Model lists stay current
+
+polyrouter **re-lists every provider's models about once a day** in the background — API-key,
+custom, local, and subscription providers alike (anything with a credential, or a local server;
+a provider waiting to be reconnected is skipped; local servers only on a self-hosted instance).
+It only calls the provider's model listing — never a chat or a Test — spreads the work
+round-robin over hourly ticks, backs off from an endpoint that keeps failing (1h, 2h, 4h … up to
+a day), and a listing's success or failure never changes the provider's status. (Getting a
+listing still renews an expiring sign-in as any request would, so a sign-in the provider has
+revoked is still recorded as "reconnect".) New models appear on their own. A model the provider **stops listing** is
+marked **"no longer offered"** — on the Providers page, in the model picker, and on every tier
+entry or rule that routes to it — rather than silently kept or deleted. Routing still sends to it
+(a rejection falls through your chain as usual); once you've moved your routing off it,
+**Remove** deletes it, after telling you which tier entries and rules it affects. **Sync models**
+still refreshes a provider on demand.
 
 ### Users & registration
 

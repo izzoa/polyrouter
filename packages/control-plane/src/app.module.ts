@@ -13,6 +13,7 @@ import { BodyCaptureModule } from './body-capture/body-capture.module';
 import { BudgetsModule } from './budgets/budgets.module';
 import { BudgetSchedulerModule } from './budgets/budget-scheduler.module';
 import { OauthRefreshSchedulerModule } from './subscription-oauth/oauth-refresh-scheduler.module';
+import { ModelCatalogSchedulerModule } from './providers/model-catalog-scheduler.module';
 import { CalibrationModule } from './calibration/calibration.module';
 import { SemanticLearningModule } from './semantic/semantic-learning.module';
 import { LearningContributionModule } from './semantic/learning-contribution.module';
@@ -50,6 +51,7 @@ import { RoutingConfigModule } from './routing-config/routing-config.module';
     BudgetsModule,
     BudgetSchedulerModule,
     OauthRefreshSchedulerModule,
+    ModelCatalogSchedulerModule,
     CalibrationModule,
     SemanticLearningModule,
     LearningContributionModule,

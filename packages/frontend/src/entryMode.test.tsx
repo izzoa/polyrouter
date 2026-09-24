@@ -51,6 +51,7 @@ const model = (id: string, over: Partial<ModelDto> = {}): ModelDto => ({
   batchCapable: true,
   batchEffectivePrice: null,
   lastSyncedAt: null,
+  unlistedSince: null,
   ...over,
 });
 

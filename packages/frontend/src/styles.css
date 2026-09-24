@@ -670,6 +670,15 @@ select:focus {
 .mp-option:hover {
   background: var(--chip);
 }
+/* add-live-subscription-models: a model the provider no longer lists — stated in words,
+   in the neutral secondary tone (never colour alone). */
+.mp-unlisted {
+  font:
+    400 11px 'Geist',
+    sans-serif;
+  color: var(--text3);
+}
+
 .mp-price {
   margin-left: auto;
   font:

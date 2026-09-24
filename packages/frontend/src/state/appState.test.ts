@@ -80,6 +80,7 @@ function mkModel(id: string): ModelDto {
     batchCapable: true,
     batchEffectivePrice: null,
     lastSyncedAt: null,
+    unlistedSince: null,
   };
 }
 /** The model ids of the confirmed baseline for a tier. It stores `{modelId, mode}`

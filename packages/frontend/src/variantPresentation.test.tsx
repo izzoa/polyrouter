@@ -31,6 +31,7 @@ const mkModel = (over: Partial<ModelDto> & Pick<ModelDto, 'id' | 'externalModelI
   batchCapable: true,
   batchEffectivePrice: null,
   lastSyncedAt: NOW,
+  unlistedSince: null,
   ...over,
 });
 

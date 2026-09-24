@@ -3,16 +3,22 @@
  * Responses API, reached only through a subscription-OAuth preset. OAuth-ONLY, and
  * exactly THREE identity-bearing headers — Bearer + `chatgpt-account-id` + the
  * ecosystem-established Responses beta — never `x-api-key`, never client
- * fingerprints (`originator`, session ids), never imitation `instructions`
- * (the sharpened no-spoofing rule). No models endpoint is used: `listModels()`
- * rejects typed, and `testConnection()` is the designated minimal probe against
- * the preset's trusted `probeModel`.
+ * fingerprints (`originator`, a first-party user agent, session ids), never
+ * imitation `instructions` (the sharpened no-spoofing rule).
  *
  * VERIFIED LIVE (2026-07-18): the backend accepts ONLY streaming requests
  * ("Stream must be set to true") — so `chat()` is implemented as
  * stream-and-collect over the SSE wire, folding the normalized events back into
  * a NormalizedResponse. It also rejects `max_output_tokens` and sampling params
  * (dropped in the translate module, documented).
+ *
+ * Model listing (add-live-subscription-models) reads the backend's OWN catalog —
+ * the endpoint the Codex CLI reads — so no model id is ever bundled: a retired
+ * model can't go stale in polyrouter, and `testConnection()` is that listing
+ * (it names no model). VERIFIED LIVE 2026-09-24 with exactly the three identity
+ * headers: `client_version` is REQUIRED (400 without it), and a lower value
+ * withholds models whose `minimal_client_version` exceeds it — so a stale pin can
+ * only hide the newest models, never fail the listing.
  */
 import { createResponsesAdapter } from '../proxy/translate';
 import type {
@@ -23,20 +29,72 @@ import type {
   NormalizedStreamEvent,
   NormalizedUsage,
 } from '../proxy/translate';
-import { SsrfError } from '@polyrouter/shared/server';
-import { CallCancelledError, ProviderError, classifyStreamError } from './errors';
+import { ProviderError, classifyStreamError } from './errors';
 import {
   DEFAULT_FIRST_BYTE_TIMEOUT_MS,
+  MAX_MODEL_ID_LEN,
+  MAX_PARSED_MODELS,
   type CallContext,
-  type ConnectionResult,
   type ProviderAdapter,
   type ProviderConfig,
+  type ProviderModelCapabilities,
+  type ProviderModelInfo,
 } from './adapter';
 import { createHttpProviderAdapter, type AdapterDeps } from './http-adapter';
 
 /** Ecosystem-established Responses beta header (verified live, 6.2). */
 const RESPONSES_BETA = 'responses=experimental';
 const CHAT_PATH = '/backend-api/codex/responses';
+/** The catalog's REQUIRED compatibility parameter (verified live 2026-09-24) — the
+ * current Codex CLI release. Not identity: no user agent, `originator`, or session
+ * rides with it. Bump when a new model family needs a newer value to be listed
+ * (scripts/verify-chatgpt-oauth.md); a stale value only withholds the newest models. */
+export const CHATGPT_CATALOG_CLIENT_VERSION = '0.156.1';
+const MODELS_PATH = `/backend-api/codex/models?client_version=${CHATGPT_CATALOG_CLIENT_VERSION}`;
+
+/** Parse the backend catalog `{ models: [...] }` defensively. A body without a
+ * `models` array is catalog-shape DRIFT and fails typed — never "ok, zero models",
+ * which would pass Test and hide the drift. An entry is OFFERED
+ * only with a non-empty string `slug` and `visibility` `list` (or absent) — `hide` /
+ * `none` entries are purpose-built or withheld (e.g. `codex-auto-review`). The
+ * catalog states a context window and input modalities, so those ride as the
+ * provider-listed capability CLAIM; it says nothing about tools or reasoning, so
+ * those stay absent (silence is never a claim). Malformed entries drop alone. */
+export function parseChatgptCatalog(json: unknown): ProviderModelInfo[] {
+  const list =
+    typeof json === 'object' && json !== null && 'models' in json ? json.models : undefined;
+  if (!Array.isArray(list)) {
+    throw new ProviderError('unavailable', 'unrecognized model catalog response');
+  }
+  const out: ProviderModelInfo[] = [];
+  const seen = new Set<string>();
+  for (const entry of list as unknown[]) {
+    if (out.length >= MAX_PARSED_MODELS) break;
+    if (typeof entry !== 'object' || entry === null) continue;
+    const rec = entry as Record<string, unknown>;
+    const slug = rec['slug'];
+    if (typeof slug !== 'string' || slug.trim() === '' || slug.length > MAX_MODEL_ID_LEN) continue;
+    const visibility = rec['visibility'];
+    if (visibility !== undefined && visibility !== 'list') continue;
+    if (seen.has(slug)) continue;
+    seen.add(slug);
+    const display = rec['display_name'];
+    const capabilities: { contextWindow?: number; supportsVision?: boolean } = {};
+    const ctxWindow = rec['context_window'];
+    if (typeof ctxWindow === 'number' && Number.isInteger(ctxWindow) && ctxWindow > 0) {
+      capabilities.contextWindow = ctxWindow;
+    }
+    const modalities = rec['input_modalities'];
+    if (Array.isArray(modalities)) capabilities.supportsVision = modalities.includes('image');
+    const claim: ProviderModelCapabilities = capabilities;
+    out.push({
+      id: slug,
+      ...(typeof display === 'string' && display !== '' ? { displayName: display } : {}),
+      ...(Object.keys(claim).length > 0 ? { capabilities: claim } : {}),
+    });
+  }
+  return out;
+}
 
 /** Byte-re-armable idle guard for the buffered facade (fix-long-call-timeouts).
  * The streaming-only wire's buffered `chat` folds a stream OUTSIDE core, so
@@ -221,18 +279,15 @@ export function createResponsesProviderAdapter(
   if (config.oauthAccountId === undefined || config.oauthAccountId === '') {
     throw new ProviderError('credential', 'openai_responses requires the account id');
   }
-  if (config.probeModel === undefined || config.probeModel === '') {
-    throw new ProviderError('credential', 'openai_responses requires the preset probe model');
-  }
   const accountId = config.oauthAccountId;
-  const probeModel = config.probeModel;
   const inner = createHttpProviderAdapter(config, deps, {
     protocol: 'openai_responses',
     translate: createResponsesAdapter(config.quirks ?? {}),
     chatPath: CHAT_PATH,
-    // No modelsPath/parseModels: listModels() rejects typed; testConnection is
-    // OVERRIDDEN below (the spec-level probe would ride the inner buffered chat,
-    // which this streaming-only wire rejects).
+    // The backend's own catalog (add-live-subscription-models): listModels() reads
+    // it, and the shared testConnection() aliases it — no probe chat, no model id.
+    modelsPath: MODELS_PATH,
+    parseModels: parseChatgptCatalog,
     authHeaders: (credential) => ({
       Authorization: `Bearer ${credential}`,
       'chatgpt-account-id': accountId,
@@ -246,30 +301,5 @@ export function createResponsesProviderAdapter(
     config.idleTimeoutMs ?? config.firstByteTimeoutMs ?? DEFAULT_FIRST_BYTE_TIMEOUT_MS;
   const chat = (request: NormalizedRequest, ctx?: CallContext): Promise<NormalizedResponse> =>
     collectStream(guardEventIdle((c) => inner.chatStream(request, c), idleTimeoutMs, ctx));
-  // The designated validating probe (the backend has no cap param — the prompt
-  // itself keeps the answer minimal; subscription usage is flat-rate). Mirrors the
-  // shared adapter's testConnection error mapping.
-  async function testConnection(ctx?: CallContext): Promise<ConnectionResult> {
-    try {
-      await chat(
-        {
-          model: probeModel,
-          messages: [
-            { role: 'user', content: [{ type: 'text', text: 'Reply with exactly: pong' }] },
-          ],
-          params: {},
-        },
-        ctx,
-      );
-      return { ok: true, models: 0 };
-    } catch (err) {
-      if (err instanceof ProviderError) return { ok: false, kind: err.kind, message: err.message };
-      if (err instanceof CallCancelledError) {
-        return { ok: false, kind: 'unavailable', message: 'call cancelled' };
-      }
-      if (err instanceof SsrfError) return { ok: false, kind: 'unavailable', message: err.message };
-      return { ok: false, kind: 'unavailable', message: 'connection failed' };
-    }
-  }
-  return { ...inner, chat, testConnection };
+  return { ...inner, chat };
 }

@@ -54,9 +54,6 @@ export interface ProviderConfig {
    * TRUSTED envelope data threaded by credential resolution, never user input.
    * Emitted as the `chatgpt-account-id` header; required for `openai_responses`. */
   readonly oauthAccountId?: string;
-  /** The designated validating-probe model for a models-endpoint-less protocol —
-   * TRUSTED preset-registry data (the preset's first bundled model). */
-  readonly probeModel?: string;
   /** Anthropic requires max_tokens; used when the IR omits maxOutputTokens. */
   readonly defaultMaxOutputTokens?: number;
   /** Abort if no response headers / first stream event arrive in time. */
@@ -128,6 +125,12 @@ export interface ProviderModelInfo {
   readonly capabilities?: ProviderModelCapabilities;
 }
 
+/** A model listing (add-live-subscription-models). `truncated` is set when the
+ * adapter stopped before the provider's catalog was exhausted — the parse cap, the
+ * page bound, or a stuck/repeating cursor — so a partial listing is never read as
+ * the full catalog (a model on an unread page must not look retired). */
+export type ModelListing = ProviderModelInfo[] & { readonly truncated?: true };
+
 export type ConnectionResult =
   | { readonly ok: true; readonly models: number }
   | { readonly ok: false; readonly kind: string; readonly message: string };
@@ -136,7 +139,7 @@ export interface ProviderAdapter {
   readonly protocol: ProviderProtocol;
   chat(request: NormalizedRequest, ctx?: CallContext): Promise<NormalizedResponse>;
   chatStream(request: NormalizedRequest, ctx?: CallContext): AsyncGenerator<NormalizedStreamEvent>;
-  listModels(ctx?: CallContext): Promise<ProviderModelInfo[]>;
+  listModels(ctx?: CallContext): Promise<ModelListing>;
   testConnection(ctx?: CallContext): Promise<ConnectionResult>;
   /** The optional asynchronous batch seam (add-batch-inference): present ONLY
    * when the provider family has a batch API — attached by the factory, never by

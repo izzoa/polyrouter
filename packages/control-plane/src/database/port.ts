@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, or, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, not, or, sql } from 'drizzle-orm';
 import {
   agents,
   assertUserPrincipal,
@@ -273,6 +273,19 @@ function createModelAccessor(db: Db): ModelAccessor {
         // sync — an id whose variant changed, or one wrongly classified before a
         // provider was repointed, could never be corrected by a re-sync.
         if ('variant' in rest) set['variant'] = rest['variant'];
+        // The provider-listed capability CLAIM (honest-model-capabilities) follows the
+        // same freshness rule as the listed price: rewritten on EVERY sync (set or
+        // cleared). It was missing here, so a claim froze at a row's first insert
+        // (fixed in add-live-subscription-models, whose ChatGPT claims depend on it).
+        for (const k of [
+          'listedSupportsTools',
+          'listedSupportsVision',
+          'listedSupportsReasoning',
+          'listedContextWindow',
+          'listedCapabilitiesCapturedAt',
+        ] as const) {
+          if (k in rest) set[k] = rest[k];
+        }
         const rows = await tx
           .insert(models)
           .values(insertValues)
@@ -307,6 +320,81 @@ function createModelAccessor(db: Db): ModelAccessor {
         if (rows.length === 0) return false;
         await compactTiers(tx, principal); // E10.2: keep tier positions contiguous after the cascade
         return true;
+      });
+    },
+    async reconcileListing(principal, providerId, listedIds, now, guard) {
+      // add-live-subscription-models: one transaction so a reader never sees a
+      // half-reconciled catalog. The provider row is locked and must still carry the
+      // incarnation the listing was made with — a reconnect to another account or an
+      // endpoint edit that commits after the listing turns this into a no-op (it waits
+      // on the lock instead of interleaving). Both statements are owner-scoped.
+      const ids = [...listedIds];
+      return db.transaction(async (tx) => {
+        const parent = await tx
+          .select({ id: providers.id })
+          .from(providers)
+          .where(
+            and(
+              eq(providers.id, providerId),
+              ownershipPredicate(providers, principal),
+              incarnationMatches(guard),
+            ),
+          )
+          .for('update')
+          .limit(1);
+        if (parent.length === 0) return false;
+        const owned = and(
+          eq(models.providerId, providerId),
+          inArray(models.providerId, ownedProviderIds(tx, principal)),
+        );
+        if (ids.length > 0) {
+          await tx
+            .update(models)
+            .set({ unlistedSince: null })
+            .where(
+              and(owned, isNotNull(models.unlistedSince), inArray(models.externalModelId, ids)),
+            );
+        }
+        await tx
+          .update(models)
+          .set({ unlistedSince: now })
+          .where(
+            and(
+              owned,
+              isNull(models.unlistedSince),
+              ...(ids.length > 0 ? [not(inArray(models.externalModelId, ids))] : []),
+            ),
+          );
+        return true;
+      });
+    },
+    async removeUnlisted(principal, id) {
+      return db.transaction(async (tx) => {
+        await lockOwnerTiers(tx, principal); // same lock order as `remove`
+        const rows = await tx
+          .delete(models)
+          .where(
+            and(
+              eq(models.id, id),
+              isNotNull(models.unlistedSince), // re-listed concurrently → no-op
+              inArray(models.providerId, ownedProviderIds(tx, principal)),
+            ),
+          )
+          .returning({ id: models.id });
+        if (rows.length > 0) {
+          await compactTiers(tx, principal);
+          return 'removed' as const;
+        }
+        // Nothing deleted: distinguish "yours but still listed" from "not yours /
+        // gone" with an owner-scoped read — another tenant's model is `not_found`.
+        const still = await tx
+          .select({ id: models.id })
+          .from(models)
+          .where(
+            and(eq(models.id, id), inArray(models.providerId, ownedProviderIds(tx, principal))),
+          )
+          .limit(1);
+        return still.length > 0 ? ('listed' as const) : ('not_found' as const);
       });
     },
     async clearPricingForProvider(principal, providerId) {
@@ -346,6 +434,9 @@ function createModelAccessor(db: Db): ModelAccessor {
           listedSupportsReasoning: null,
           listedContextWindow: null,
           listedCapabilitiesCapturedAt: null,
+          // add-live-subscription-models: the flag describes the OLD endpoint's
+          // listing; the next sync against the new one re-derives it.
+          unlistedSince: null,
         })
         .where(
           and(

@@ -344,7 +344,6 @@ describe('Responses buffered facade preserves the sanitized diagnostic (r3-Mediu
         mode: 'selfhosted',
         authScheme: 'oauth_bearer',
         oauthAccountId: 'acct-123',
-        probeModel: 'gpt-5.4-mini',
       },
       { httpClient: client },
     );
@@ -387,7 +386,6 @@ describe('Responses buffered facade preserves the sanitized diagnostic (r3-Mediu
         mode: 'selfhosted',
         authScheme: 'oauth_bearer',
         oauthAccountId: 'acct-123',
-        probeModel: 'gpt-5.4-mini',
       },
       { httpClient: client },
     );
@@ -540,7 +538,6 @@ describe('classifyResponse — providerMessage capture', () => {
         mode: 'selfhosted',
         authScheme: 'oauth_bearer',
         oauthAccountId: 'acct-123',
-        probeModel: 'gpt-5.4-mini',
       },
       { httpClient: client },
     );

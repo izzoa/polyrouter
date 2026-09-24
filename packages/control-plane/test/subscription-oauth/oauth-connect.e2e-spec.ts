@@ -28,7 +28,7 @@ import { Pool } from 'pg';
 import { configureApp } from '../../src/app.setup';
 import type { AuthedRequest } from '../../src/auth/principal.decorator';
 import { ProvidersModule } from '../../src/providers/providers.module';
-import { PROVIDER_ADAPTER_FACTORY } from '../../src/providers/providers.service';
+import { PROVIDER_ADAPTER_FACTORY, ProvidersService } from '../../src/providers/providers.service';
 import {
   OAUTH_PRESET_LOOKUP,
   OAUTH_TOKEN_FETCH,
@@ -69,12 +69,14 @@ let nextTokens: () => Promise<TokenSet> = () =>
   });
 let factoryConfigs: Array<Record<string, unknown>> = [];
 // add-provider-health-signals: validating-call accounting + a controllable
-// testConnection result for the endpoint-sourced (non-bundled) probe.
+// testConnection result (the model listing — no preset names a model).
 let chatCalls = 0;
 let testConnCalls = 0;
 let nextTestConn: () => Promise<unknown> = () => Promise.resolve({ ok: true, models: 0 });
 let nextChat: () => Promise<unknown> = () =>
   Promise.resolve({ content: [{ type: 'text', text: 'ok' }], stopReason: 'stop' });
+// add-live-subscription-models: every preset lists its models; this is the listing.
+let nextListModels: () => Promise<unknown> = () => Promise.resolve([]);
 
 // A valid ChatGPT-shaped id_token: the account id lives at the NESTED claim.
 const b64url = (obj: unknown): string => Buffer.from(JSON.stringify(obj)).toString('base64url');
@@ -99,7 +101,7 @@ describe('subscription OAuth connect (e2e)', () => {
   let upstreamBase: string;
   let upstreamHeaders: Array<Record<string, string | string[] | undefined>>;
   let preset: OauthPreset;
-  let bundledPreset: OauthPreset;
+  let rootPreset: OauthPreset;
   let chatgptPreset: OauthPreset;
 
   const mkUser = async (): Promise<string> =>
@@ -131,9 +133,9 @@ describe('subscription OAuth connect (e2e)', () => {
     await new Promise<void>((r) => upstream.listen(0, '127.0.0.1', r));
     upstreamBase = `http://127.0.0.1:${String((upstream.address() as AddressInfo).port)}`;
 
-    bundledPreset = {
-      id: 'stub-bundled',
-      displayName: 'Stub Bundled',
+    rootPreset = {
+      id: 'stub-root',
+      displayName: 'Stub Root',
       // Canonical ROOT URL (href form, trailing slash) — regression guard for codex r3:
       // a name-only PATCH against a root-URL preset must NOT read as endpoint drift.
       baseUrl: 'https://3.3.3.3/',
@@ -146,8 +148,6 @@ describe('subscription OAuth connect (e2e)', () => {
       tokenRequestEncoding: 'json',
       includeStateInExchange: true,
       oauthBeta: 'oauth-2025-04-20',
-      modelsSource: 'bundled',
-      bundledModels: ['bundled-model-a', 'bundled-model-b'],
       enabled: true,
     };
     chatgptPreset = {
@@ -164,9 +164,6 @@ describe('subscription OAuth connect (e2e)', () => {
       redirectUri: 'http://localhost:1455/auth/callback',
       tokenRequestEncoding: 'form',
       includeStateInExchange: false,
-      modelsSource: 'bundled',
-      bundledModels: ['gpt-5', 'gpt-5-codex'],
-      probeModel: 'gpt-5',
       enabled: true,
     };
     preset = {
@@ -185,7 +182,6 @@ describe('subscription OAuth connect (e2e)', () => {
       tokenRequestEncoding: 'json',
       includeStateInExchange: true,
       oauthBeta: 'oauth-2025-04-20',
-      modelsSource: 'endpoint',
       enabled: true,
     };
 
@@ -209,7 +205,7 @@ describe('subscription OAuth connect (e2e)', () => {
             testConnCalls += 1;
             return nextTestConn();
           },
-          listModels: () => Promise.resolve([]),
+          listModels: () => nextListModels(),
         };
       }) as unknown as import('../../src/providers/providers.service').ProviderAdapterFactory)
       .overrideProvider(OAUTH_TOKEN_FETCH)
@@ -223,12 +219,12 @@ describe('subscription OAuth connect (e2e)', () => {
         find: (id: string) =>
           id === 'stub-claude'
             ? preset
-            : id === 'stub-bundled'
-              ? bundledPreset
+            : id === 'stub-root'
+              ? rootPreset
               : id === 'stub-chatgpt'
                 ? chatgptPreset
                 : undefined,
-        list: () => [preset, bundledPreset, chatgptPreset],
+        list: () => [preset, rootPreset, chatgptPreset],
       })
       .compile();
     app = moduleRef.createNestApplication<NestExpressApplication>();
@@ -260,6 +256,7 @@ describe('subscription OAuth connect (e2e)', () => {
     chatCalls = 0;
     testConnCalls = 0;
     nextTestConn = () => Promise.resolve({ ok: true, models: 0 });
+    nextListModels = () => Promise.resolve([]);
     // Test-repair claims and forced-refresh claims are per window; clear between tests.
     {
       const r = app.get<import('ioredis').Redis>(REDIS_CLIENT);
@@ -638,8 +635,8 @@ describe('subscription OAuth connect (e2e)', () => {
     expect(parsed.kind === 'plain' && parsed.value).toBe(forged);
   });
 
-  it('a bundled-models preset seeds the preset list and never masks an auth failure (codex r3)', async () => {
-    const start = await as(alice, '/api/providers/oauth/start').send({ preset: 'stub-bundled' });
+  it('a preset lists its models, Test names no model, and an auth failure is never masked', async () => {
+    const start = await as(alice, '/api/providers/oauth/start').send({ preset: 'stub-root' });
     const state = new URL(start.body.authorizeUrl).searchParams.get('state')!;
     const created = await as(alice, '/api/providers/oauth/complete').send({
       sessionId: start.body.sessionId,
@@ -647,7 +644,8 @@ describe('subscription OAuth connect (e2e)', () => {
     });
     expect(created.status).toBe(200);
     const id = created.body.id;
-    // sync-models seeds the bundled list — no models endpoint involved.
+    // add-live-subscription-models: sync-models is the provider's own listing.
+    nextListModels = () => Promise.resolve([{ id: 'listed-a' }, { id: 'listed-b' }]);
     const sync = await request(server)
       .post(`/api/providers/${id}/sync-models`)
       .set('x-test-user', alice);
@@ -656,27 +654,29 @@ describe('subscription OAuth connect (e2e)', () => {
       .get(`/api/models?providerId=${id}`)
       .set('x-test-user', alice);
     expect(models.body.map((m: { externalModelId: string }) => m.externalModelId).sort()).toEqual([
-      'bundled-model-a',
-      'bundled-model-b',
+      'listed-a',
+      'listed-b',
     ]);
-    // test-connection uses the DESIGNATED validating probe (a chat call).
+    // test-connection is the adapter's listing-backed testConnection — never a chat.
     const ok = await request(server)
       .post(`/api/providers/${id}/test-connection`)
       .set('x-test-user', alice);
     expect(ok.body.ok).toBe(true);
+    expect(testConnCalls).toBe(1);
+    expect(chatCalls).toBe(0);
     // A revoked/invalid credential surfaces as a typed auth failure — never masked.
-    const { ProviderError } = await import('@polyrouter/data-plane');
-    nextChat = () => Promise.reject(new ProviderError('auth', 'denied'));
+    nextTestConn = () => Promise.resolve({ ok: false, kind: 'auth', message: 'denied' });
     const dead = await request(server)
       .post(`/api/providers/${id}/test-connection`)
       .set('x-test-user', alice);
     expect(dead.body.ok).toBe(false);
     expect(dead.body.kind).toBe('auth');
+    expect(chatCalls).toBe(0);
     // Name-only PATCH on the ROOT-canonical preset URL succeeds (no false drift 422).
     await request(server)
       .patch(`/api/providers/${id}`)
       .set('x-test-user', alice)
-      .send({ name: 'renamed-bundled' })
+      .send({ name: 'renamed-root' })
       .expect(200);
   });
 
@@ -714,15 +714,20 @@ describe('subscription OAuth connect (e2e)', () => {
   const post = (id: string, action: 'test-connection' | 'sync-models'): request.Test =>
     request(server).post(`/api/providers/${id}/${action}`).set('x-test-user', alice);
 
-  it('a metadata-only (bundled) sync seeds models and does not claim health', async () => {
-    const id = await connectWith('stub-bundled', HOURS_240);
+  it('the scheduled catalog refresh lists and reconciles, but does not claim health', async () => {
+    // add-live-subscription-models: a background catalog read is not a check.
+    const id = await connectWith('stub-root', HOURS_240);
     await pool.query(
       `UPDATE provider SET status='error', last_error_kind='auth', status_source='test',
          status_rev=1, health_rev=1 WHERE id=$1`,
       [id],
     );
-    const sync = await post(id, 'sync-models');
-    expect(sync.body.synced).toBe(2);
+    nextListModels = () => Promise.resolve([{ id: 'listed-a' }, { id: 'listed-b' }]);
+    const svc = app.get(ProvidersService);
+    const r = await svc.refreshCatalog(userPrincipal(alice), id);
+    expect(r).toMatchObject({ ok: true, synced: 2 });
+    expect(testConnCalls).toBe(0);
+    expect(chatCalls).toBe(0);
     expect(await checkRecord(id)).toMatchObject({
       status: 'error',
       last_error_kind: 'auth',
@@ -752,25 +757,23 @@ describe('subscription OAuth connect (e2e)', () => {
   });
 
   it('Test on a 240h token rejected with 401 repairs it: one refresh, one re-probe, ok', async () => {
-    const id = await connectWith('stub-bundled', HOURS_240);
+    const id = await connectWith('stub-root', HOURS_240);
     let calls = 0;
-    const { ProviderError } = await import('@polyrouter/data-plane');
-    nextChat = () =>
-      ++calls === 1
-        ? Promise.reject(new ProviderError('auth', 'rejected'))
-        : Promise.resolve({ content: [{ type: 'text', text: 'ok' }], stopReason: 'stop' });
+    nextTestConn = () =>
+      Promise.resolve(
+        ++calls === 1 ? { ok: false, kind: 'auth', message: 'rejected' } : { ok: true, models: 1 },
+      );
     const res = await post(id, 'test-connection');
     expect(res.body).toMatchObject({ ok: true, status: 'ok' });
     expect(exchanges).toHaveLength(1); // the forced refresh — despite 240h of validity left
     expect(exchanges[0]).toMatchObject({ grant_type: 'refresh_token' });
-    expect(chatCalls).toBe(2);
+    expect(testConnCalls).toBe(2);
     expect(await checkRecord(id)).toMatchObject({ status: 'ok', status_source: 'test' });
   });
 
   it('Test whose repair hits invalid_grant reports reauthorize required', async () => {
-    const id = await connectWith('stub-bundled', HOURS_240);
-    const { ProviderError } = await import('@polyrouter/data-plane');
-    nextChat = () => Promise.reject(new ProviderError('auth', 'rejected'));
+    const id = await connectWith('stub-root', HOURS_240);
+    nextTestConn = () => Promise.resolve({ ok: false, kind: 'auth', message: 'rejected' });
     nextTokens = () => Promise.reject(new TokenEndpointError('invalid_grant'));
     const res = await post(id, 'test-connection');
     expect(res.body).toMatchObject({
@@ -778,7 +781,7 @@ describe('subscription OAuth connect (e2e)', () => {
       kind: 'credential',
       message: 'credential needs reauthorization',
     });
-    expect(chatCalls).toBe(1);
+    expect(testConnCalls).toBe(1);
     expect(await checkRecord(id)).toMatchObject({
       credential_error: 'reauthorize_required',
       status: 'error',
@@ -788,16 +791,15 @@ describe('subscription OAuth connect (e2e)', () => {
   });
 
   it('Test on a persistent 401 reports auth after ≤2 probes; a second Test within the window does not dial the IdP', async () => {
-    const id = await connectWith('stub-bundled', HOURS_240);
-    const { ProviderError } = await import('@polyrouter/data-plane');
-    nextChat = () => Promise.reject(new ProviderError('auth', 'rejected'));
+    const id = await connectWith('stub-root', HOURS_240);
+    nextTestConn = () => Promise.resolve({ ok: false, kind: 'auth', message: 'rejected' });
     const first = await post(id, 'test-connection');
     expect(first.body).toMatchObject({ ok: false, kind: 'auth' });
-    expect(chatCalls).toBe(2);
+    expect(testConnCalls).toBe(2);
     expect(exchanges).toHaveLength(1);
     const second = await post(id, 'test-connection');
     expect(second.body).toMatchObject({ ok: false, kind: 'auth' });
-    expect(chatCalls).toBe(3); // one probe, no repair
+    expect(testConnCalls).toBe(3); // one probe, no repair
     expect(exchanges).toHaveLength(1); // rate-limited: zero new exchanges
     expect(await checkRecord(id)).toMatchObject({
       status: 'error',
@@ -822,14 +824,14 @@ describe('subscription OAuth connect (e2e)', () => {
   });
 
   it('a Test that finishes after a reconnect records nothing', async () => {
-    const id = await connectWith('stub-bundled', HOURS_240);
+    const id = await connectWith('stub-root', HOURS_240);
     let release!: () => void;
     const held = new Promise<void>((r) => {
       release = r;
     });
-    nextChat = async () => {
+    nextTestConn = async () => {
       await held;
-      return { content: [{ type: 'text', text: 'ok' }], stopReason: 'stop' };
+      return { ok: true, models: 1 };
     };
     const pending = post(id, 'test-connection').then((r) => r);
     // Reconnect while the probe is in flight.
@@ -947,7 +949,7 @@ describe('subscription OAuth connect (e2e)', () => {
     expect(count.rows[0].c).toBe(0); // nothing written by either failure
   });
 
-  it('CHATGPT refresh: an omitted refresh_token is retained, the account id survives, and the factory gets accountId+probeModel', async () => {
+  it('CHATGPT refresh: an omitted refresh_token is retained, the account id survives, and the factory gets the account id and no model id', async () => {
     // Connect with a NEAR-EXPIRY token so the next resolution refreshes.
     nextTokens = () => Promise.resolve(chatgptTokens({ expiresAt: Date.now() + 60_000 }));
     const { sessionId, state } = await startChatgpt();
@@ -981,13 +983,14 @@ describe('subscription OAuth connect (e2e)', () => {
       credential: 'at-e2e-2',
       authScheme: 'oauth_bearer',
       oauthAccountId: 'acct-e2e-77',
-      probeModel: 'gpt-5',
     });
+    expect('probeModel' in factoryConfigs.at(-1)!).toBe(false); // add-live-subscription-models
   });
 
-  it('CHATGPT: bundled sync seeds the preset models; manual create/update with the protocol is rejected; name-only edit works', async () => {
+  it('CHATGPT: sync lists the backend catalog; manual create/update with the protocol is rejected; name-only edit works', async () => {
     const id = await connectChatgpt();
-    // sync-models seeds the bundled list.
+    // add-live-subscription-models: sync-models is the backend catalog listing.
+    nextListModels = () => Promise.resolve([{ id: 'gpt-5' }, { id: 'gpt-5-codex' }]);
     const sync = await request(server)
       .post(`/api/providers/${id}/sync-models`)
       .set('x-test-user', alice);
@@ -1066,11 +1069,14 @@ describe('subscription OAuth connect (e2e)', () => {
     expect(parsed.kind === 'oauth' && parsed.cred.accountId).toBe('acct-e2e-77');
   });
 
-  it('CHATGPT REAL wire: exactly the three identity headers, no fingerprints, store:false; stream + 401 probe', async () => {
+  it('CHATGPT REAL wire: exactly the three identity headers, no fingerprints, store:false; stream; the catalog listing is Test', async () => {
     // A local Responses-shaped upstream. VERIFIED LIVE: the wire is STREAMING-ONLY
     // (buffered chat() folds the SSE), and rejects max_output_tokens/sampling.
-    const seen: Array<{ headers: Record<string, string | string[] | undefined>; body: string }> =
-      [];
+    const seen: Array<{
+      url: string | undefined;
+      headers: Record<string, string | string[] | undefined>;
+      body: string;
+    }> = [];
     const okSse = (): string => {
       const frames = [
         { type: 'response.created', response: { id: 'r1', model: 'gpt-5.4-mini' } },
@@ -1091,15 +1097,14 @@ describe('subscription OAuth connect (e2e)', () => {
       let body = '';
       req.on('data', (c: Buffer) => (body += c.toString()));
       req.on('end', () => {
-        seen.push({ headers: req.headers, body });
+        seen.push({ url: req.url, headers: req.headers, body });
         handler(req, res, body);
       });
     });
     await new Promise<void>((r) => respUpstream.listen(0, '127.0.0.1', r));
     const base = `http://127.0.0.1:${String((respUpstream.address() as AddressInfo).port)}`;
     try {
-      const { createResponsesProviderAdapter, ProviderError } =
-        await import('@polyrouter/data-plane');
+      const { createResponsesProviderAdapter } = await import('@polyrouter/data-plane');
       const adapter = createResponsesProviderAdapter({
         protocol: 'openai_responses',
         baseUrl: base,
@@ -1108,7 +1113,6 @@ describe('subscription OAuth connect (e2e)', () => {
         mode: 'selfhosted',
         authScheme: 'oauth_bearer',
         oauthAccountId: 'acct-e2e-77',
-        probeModel: 'gpt-5.4-mini',
       });
       // Buffered chat over the REAL transport — rides the streaming wire.
       const res = await adapter.chat({
@@ -1147,9 +1151,29 @@ describe('subscription OAuth connect (e2e)', () => {
       }
       expect(text).toBe('Hello');
       expect(sawStop).toBe(true);
-      // listModels is typed-unsupported (bundled sourcing) — no request is made.
-      await expect(adapter.listModels()).rejects.toBeInstanceOf(ProviderError);
-      // The designated probe surfaces a revoked credential as typed auth.
+      // add-live-subscription-models: listModels() GETs the backend's own catalog
+      // with the required client_version, carrying the SAME three identity headers.
+      handler = (_req, res) => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            models: [
+              { slug: 'gpt-6-luna', display_name: 'GPT-6-Luna', visibility: 'list' },
+              { slug: 'codex-auto-review', visibility: 'hide' },
+            ],
+          }),
+        );
+      };
+      const listed = await adapter.listModels();
+      expect(listed).toEqual([{ id: 'gpt-6-luna', displayName: 'GPT-6-Luna' }]);
+      const listReq = seen.at(-1)!;
+      expect(listReq.url).toMatch(/^\/backend-api\/codex\/models\?client_version=\d+\.\d+\.\d+$/);
+      expect(listReq.headers['authorization']).toBe('Bearer at-e2e-1');
+      expect(listReq.headers['chatgpt-account-id']).toBe('acct-e2e-77');
+      expect(listReq.headers['originator']).toBeUndefined();
+      expect(listReq.body).toBe(''); // a GET — no chat body
+      // Test IS the listing: a revoked credential surfaces as typed auth, no chat sent.
+      const before = seen.length;
       handler = (_req, res) => {
         res.writeHead(401, { 'content-type': 'application/json' });
         res.end('{"error":"invalid_token"}');
@@ -1157,10 +1181,8 @@ describe('subscription OAuth connect (e2e)', () => {
       const dead = await adapter.testConnection();
       expect(dead.ok).toBe(false);
       if (!dead.ok) expect(dead.kind).toBe('auth');
-      const probeWire = JSON.parse(seen.at(-1)!.body) as Record<string, unknown>;
-      expect(probeWire['model']).toBe('gpt-5.4-mini'); // the preset probe model
-      expect(probeWire['stream']).toBe(true);
-      expect('max_output_tokens' in probeWire).toBe(false);
+      expect(seen).toHaveLength(before + 1);
+      expect(seen.at(-1)!.body).toBe('');
     } finally {
       respUpstream.close();
     }

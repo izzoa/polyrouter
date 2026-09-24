@@ -39,7 +39,8 @@ Record and pin back into the code/goldens if they differ:
 
 ## 3. One proxied completion (the wire goldens' live check)
 
-Sync models (should seed the **bundled** list), route a tier at a ChatGPT model on this
+Sync models (lists the backend's **own catalog** — `GET /backend-api/codex/models?client_version=…`;
+since add-live-subscription-models no model id is bundled), route a tier at a ChatGPT model on this
 provider, and send one `/v1/chat/completions` request with an agent key. Expected: a
 normal completion, and a streamed request delivers deltas.
 
@@ -47,8 +48,11 @@ Verify/record against the pinned constants:
 
 - the chat path (`/backend-api/codex/responses`) and the beta header value
   (`responses=experimental`) are accepted;
-- the **bundled model ids** (`gpt-5`, `gpt-5-codex`) are real — fix the preset's
-  `bundledModels`/`probeModel` to the verified list if not;
+- the **catalog listing** answers `200 {"models":[…]}` with ONLY the three identity headers,
+  and Test (which IS that listing — it names no model) reports ok; if the newest model
+  family is missing, bump `CHATGPT_CATALOG_CLIENT_VERSION` in
+  `packages/data-plane/src/providers/responses-adapter.ts` to the current Codex CLI
+  release (a stale value only withholds models newer than it — it never fails the listing);
 - `max_output_tokens`, `store: false`, and the `input`/`instructions` request fields are
   accepted as pinned in `translate/responses.ts` (a 4xx naming a field means the golden
   files need the verified name);
@@ -107,6 +111,25 @@ session fingerprints, no imitation instructions (the no-spoofing rule holds).
   rejected. A models endpoint EXISTS (`GET /backend-api/codex/models?client_version=…`)
   but requires a client-version identifier — left unused (bundled sourcing) per the
   no-fingerprint stance; revisit if the bundled list drifts.
+
+### Re-verified 2026-09-24 (add-live-subscription-models)
+
+The bundled list DID drift: OpenAI retired `gpt-5.4-mini` (the bundled probe model) and
+`gpt-5.4` around 2026-09-22 and added GPT-6 Astra/Sol/Luna, so every Test of a healthy
+sign-in failed with a 400. Read-only probes of the catalog with a real ChatGPT account:
+
+| Request                                               | Result                                                                |
+| ----------------------------------------------------- | --------------------------------------------------------------------- |
+| the three identity headers + `client_version=0.156.1` | `200 {"models":[…]}`, 9 entries, `ETag`                               |
+| same, no `client_version`                             | `400` — `client_version` "Field required"                             |
+| same, `client_version=0.0.0`                          | `200`, 7 entries — models needing a newer client withheld             |
+| no `OpenAI-Beta` header                               | `200` — the header is not needed here (sent anyway: one identity set) |
+
+No `originator`, user agent, or session header was needed — `client_version` is a
+compatibility parameter, not identity. polyrouter now lists this catalog (only
+`visibility: list` entries), Test is that listing, and a daily refresh flags models the
+catalog stops offering (`unlisted_since`) instead of any preset naming a model.
+
 - Event names, `store:false`, `instructions`, tools/`tool_choice`/`parallel_tool_calls`,
   and the usage shape (incl. `input_tokens_details.cached_tokens`) all matched the
   golden files; extra `response.in_progress`/`response.content_part.*` events fall

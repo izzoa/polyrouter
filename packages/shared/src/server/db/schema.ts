@@ -367,6 +367,12 @@ export const models = pgTable(
     // (`NON_ROUTABLE_VARIANTS`), never stored as its own flag that could drift.
     variant: text('variant'),
     lastSyncedAt: timestamp('last_synced_at', { withTimezone: true }),
+    // add-live-subscription-models: null while the provider's latest successful,
+    // complete listing offers this model; otherwise when polyrouter FIRST saw it
+    // absent (kept on later absent listings, cleared when it returns). The row is
+    // never pruned for it — history, tiers, and rules keep referencing it — and it is
+    // never a routing input: display + guarded removal only.
+    unlistedSince: timestamp('unlisted_since', { withTimezone: true }),
   },
   (t) => [
     uniqueIndex('model_provider_external_unique').on(t.providerId, t.externalModelId),

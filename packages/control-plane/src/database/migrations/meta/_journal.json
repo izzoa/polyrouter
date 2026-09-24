@@ -288,6 +288,13 @@
       "when": 1790246482134,
       "tag": "0040_omniscient_whistler",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1790262170828,
+      "tag": "0041_first_wallop",
+      "breakpoints": true
     }
   ]
 }

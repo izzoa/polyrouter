@@ -38,12 +38,21 @@ describe('preset invariants', () => {
     expect(url.searchParams.get('scope')).toContain('openid'); // id_token source
   });
 
-  it('the ChatGPT preset pins the Responses protocol, form encoding, and a bundled probe', () => {
+  it('the ChatGPT preset pins the Responses protocol and form encoding', () => {
     expect(CHATGPT_PRESET.protocol).toBe('openai_responses');
     expect(CHATGPT_PRESET.tokenRequestEncoding).toBe('form');
-    expect(CHATGPT_PRESET.modelsSource).toBe('bundled');
-    // The designated probe model is the FIRST bundled model (kept coherent).
-    expect(CHATGPT_PRESET.probeModel).toBe(CHATGPT_PRESET.bundledModels?.[0]);
+  });
+
+  it('no preset carries a model id (add-live-subscription-models)', () => {
+    // A bundled model list or probe model goes stale the day the upstream retires
+    // it (gpt-5.4-mini, 2026-09-22) — every preset lists its models instead.
+    for (const preset of [CLAUDE_PRESET, CHATGPT_PRESET]) {
+      const keys = Object.keys(preset);
+      expect(keys).not.toContain('bundledModels');
+      expect(keys).not.toContain('probeModel');
+      expect(keys).not.toContain('modelsSource');
+      expect(JSON.stringify(preset)).not.toMatch(/"(gpt|claude)-[0-9]/);
+    }
   });
 
   it('pins the per-preset exchange `state` quirk (verified live 2026-07-18)', () => {

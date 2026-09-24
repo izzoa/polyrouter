@@ -440,6 +440,30 @@ describe('batch jobs are owner-scoped on every surface (add-batch-inference, tas
     expect(seen.find((r) => r.id === bobs.id)?.ownerUserId).toBe(bob.userId);
     for (const id of excluded) expect(ids).not.toContain(id);
     expect(JSON.stringify(seen)).not.toContain('poly-enc');
+
+    // add-live-subscription-models: the model-catalog refresh's listing — every provider
+    // that can list its models (credentialed, or local), minus any awaiting reconnect;
+    // identifying fields only, each row exactly once, across owners.
+    const catalog: Array<{ id: string; ownerUserId: string }> = [];
+    let cAfter: string | null = null;
+    for (;;) {
+      const page = await harness.maintenance.providers.listCatalogRefreshable({
+        afterId: cAfter,
+        limit: 100,
+        includeLocal: true,
+      });
+      if (page.length === 0) break;
+      for (const row of page) expect(Object.keys(row).sort()).toEqual(['id', 'ownerUserId']);
+      catalog.push(...page);
+      cAfter = page[page.length - 1]!.id;
+    }
+    const cIds = catalog.map((r) => r.id);
+    expect(new Set(cIds).size).toBe(cIds.length);
+    expect(cIds).toContain(excluded[2]); // the plain api_key row: listable
+    expect(cIds).not.toContain(excluded[0]); // awaiting reconnect
+    expect(cIds).not.toContain(excluded[1]); // no credential
+    expect(catalog.find((r) => r.id === bobs.id)?.ownerUserId).toBe(bob.userId);
+    expect(JSON.stringify(catalog)).not.toContain('poly-enc');
     // List-only: no by-id read on this surface either.
     expect(
       (harness.maintenance.providers as unknown as Record<string, unknown>)['findById'],
@@ -484,6 +508,7 @@ describe('the maintenance token is a real module boundary (add-batch-inference, 
       expect(typeof m.batchJobs.listNonTerminal).toBe('function');
       expect(typeof m.reservations.pendingMicrosFor).toBe('function');
       expect(typeof m.providers.listOauthConnected).toBe('function');
+      expect(typeof m.providers.listCatalogRefreshable).toBe('function');
       // No member — at any depth — is a query builder or a raw handle.
       for (const surface of [m, m.models, m.batchJobs, m.reservations, m.providers]) {
         const rec = surface as unknown as Record<string, unknown>;

@@ -43,7 +43,6 @@ const PRESET: OauthPreset = {
   tokenRequestEncoding: 'json',
   includeStateInExchange: true,
   oauthBeta: 'oauth-2025-04-20',
-  modelsSource: 'endpoint',
   enabled: true,
 };
 
@@ -61,9 +60,6 @@ const RESPONSES_PRESET: OauthPreset = {
   redirectUri: 'http://localhost:1455/auth/callback',
   tokenRequestEncoding: 'form',
   includeStateInExchange: false,
-  modelsSource: 'bundled',
-  bundledModels: ['gpt-5', 'gpt-5-codex'],
-  probeModel: 'gpt-5',
   enabled: true,
 };
 
@@ -544,7 +540,7 @@ describe('Responses-protocol credentials (add-chatgpt-responses)', () => {
     expect(h.rows.size).toBe(0);
   });
 
-  it('cheap path threads oauthAccountId + probeModel (trusted envelope/registry data)', async () => {
+  it('cheap path threads oauthAccountId (trusted envelope data) and no model id', async () => {
     const h = await harness();
     const row = responsesRow({
       encryptedCredentials: responsesEnvelope(Date.now() + 3_600_000, 'acct-9'),
@@ -554,7 +550,6 @@ describe('Responses-protocol credentials (add-chatgpt-responses)', () => {
       credential: 'at-1',
       authScheme: 'oauth_bearer',
       oauthAccountId: 'acct-9',
-      probeModel: 'gpt-5',
       envelope: row.encryptedCredentials,
     });
     expect(h.fetches).toHaveLength(0);
@@ -664,7 +659,6 @@ describe('Responses-protocol credentials (add-chatgpt-responses)', () => {
       credential: 'at-1',
       authScheme: 'oauth_bearer',
       oauthAccountId: 'acct-9',
-      probeModel: 'gpt-5',
       envelope: row.encryptedCredentials, // grace: the untouched stored envelope
     });
   });
@@ -680,7 +674,8 @@ describe('Responses-protocol credentials (add-chatgpt-responses)', () => {
       Promise.resolve({ accessToken: 'at-2', expiresAt: Date.now() + 3_600_000 }),
     );
     const r = await h.svc.resolveCredential(principal, row);
-    expect(r).toMatchObject({ credential: 'at-2', oauthAccountId: 'acct-9', probeModel: 'gpt-5' });
+    expect(r).toMatchObject({ credential: 'at-2', oauthAccountId: 'acct-9' });
+    expect('probeModel' in r).toBe(false);
     expect(h.fetchInputs.at(-1)).toMatchObject({ encoding: 'form', grant: 'refresh' });
     const parsed = parseCredentialEnvelope(
       decryptSecret(h.rows.get(row.id)!.encryptedCredentials!, KEY),

@@ -19,6 +19,7 @@ import {
 @Module({
   imports: [DatabaseModule, SubscriptionOauthModule],
   controllers: [ProvidersController, ModelsController],
+  exports: [ProvidersService],
   providers: [
     ProvidersService,
     { provide: PROVIDER_ADAPTER_FACTORY, useValue: createProviderAdapter },

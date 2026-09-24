@@ -357,6 +357,7 @@ const CHAIN_MODELS = TIER_ENTRIES.map((e, i) => ({
   batchCapable: i !== 2,
   batchEffectivePrice: null,
   lastSyncedAt: null,
+  unlistedSince: null,
 }));
 
 const autoPerf = workloadAutoPerf();

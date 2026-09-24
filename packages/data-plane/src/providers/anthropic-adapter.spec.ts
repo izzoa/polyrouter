@@ -71,6 +71,7 @@ describe('Anthropic provider adapter', () => {
     const adapter = createAnthropicProviderAdapter(config, { httpClient: client });
     const models = await adapter.listModels();
     expect(models.map((m) => m.id)).toEqual(['m1', 'm2']); // both pages accumulated
+    expect(models.truncated).toBeUndefined(); // complete: the provider said no more
     expect(calls).toHaveLength(2);
     expect(calls[0]!.url).toBe('https://api.anthropic.example/v1/models');
     expect(calls[1]!.url).toBe('https://api.anthropic.example/v1/models?after_id=m1'); // cursor carried
@@ -94,8 +95,44 @@ describe('Anthropic provider adapter', () => {
       return jsonResponse({ data: [{ id: `m${n}` }], has_more: true, last_id: 'STUCK' });
     });
     const adapter = createAnthropicProviderAdapter(config, { httpClient: client });
-    await adapter.listModels();
+    const models = await adapter.listModels();
     expect(calls.length).toBeLessThanOrEqual(2); // cursor cycle detected — not 50 requests
+    // add-live-subscription-models: the unread rest is MARKED, so a partial listing is
+    // never reconciled as the whole catalog.
+    expect(models.truncated).toBe(true);
+  });
+
+  it('marks a listing cut at the page bound as truncated (add-live-subscription-models)', async () => {
+    let n = 0;
+    const { calls, client } = recordingClient(() => {
+      n += 1; // always more, always a NEW cursor — only the page bound stops it
+      return jsonResponse({ data: [{ id: `m${n}` }], has_more: true, last_id: `c${n}` });
+    });
+    const models = await createAnthropicProviderAdapter(config, {
+      httpClient: client,
+    }).listModels();
+    expect(calls.length).toBe(50);
+    expect(models.truncated).toBe(true);
+  });
+
+  it('drops blank model ids — a listing of nothing must not look non-empty', async () => {
+    const { client } = recordingClient(() =>
+      jsonResponse({ data: [{ id: '' }, { id: '   ' }, { id: 'real' }], has_more: false }),
+    );
+    const models = await createAnthropicProviderAdapter(config, {
+      httpClient: client,
+    }).listModels();
+    expect(models.map((m) => m.id)).toEqual(['real']);
+  });
+
+  it('a complete single-page listing is not marked truncated', async () => {
+    const { client } = recordingClient(() =>
+      jsonResponse({ data: [{ id: 'only' }], has_more: false }),
+    );
+    const models = await createAnthropicProviderAdapter(config, {
+      httpClient: client,
+    }).listModels();
+    expect(models.truncated).toBeUndefined();
   });
 
   it('streams events whose text concatenates', async () => {

@@ -9,6 +9,7 @@ import {
 } from 'solid-js';
 import { useLayer } from '../a11y';
 import { useAppOptional } from '../state/context';
+import { unlistedText } from '../data/unlisted';
 import { visibleBounds } from '../visualViewport';
 import type { Model } from '../types';
 import { Icon } from './Icon';
@@ -41,6 +42,19 @@ export function filterModelGroups(groups: readonly ModelGroup[], query: string):
     if (models.length > 0) out.push({ label: g.label, models });
   }
   return out;
+}
+
+/** add-live-subscription-models: within each group, models the provider no longer
+ * lists go after the offered ones (a stable partition — the caller's order is kept
+ * inside each part). They stay selectable: the user owns their routing. */
+export function offeredFirstGroups(groups: readonly ModelGroup[]): ModelGroup[] {
+  return groups.map((g) => ({
+    label: g.label,
+    models: [
+      ...g.models.filter((m) => m.unlistedSince === null),
+      ...g.models.filter((m) => m.unlistedSince !== null),
+    ],
+  }));
 }
 
 interface PanelPos {
@@ -83,7 +97,7 @@ export function ModelPicker(props: ModelPickerProps) {
   let inputEl: HTMLInputElement | undefined;
   let rootEl: HTMLDivElement | undefined;
 
-  const filtered = createMemo(() => filterModelGroups(props.groups, query()));
+  const filtered = createMemo(() => filterModelGroups(offeredFirstGroups(props.groups), query()));
   const flat = createMemo(() => filtered().flatMap((g) => g.models));
   const total = createMemo(() => props.groups.reduce((n, g) => n + g.models.length, 0));
   const activeModel = (): Model | undefined => flat()[activeIdx()];
@@ -349,7 +363,23 @@ export function ModelPicker(props: ModelPickerProps) {
                         classList={{ active: activeModel()?.id === m.id }}
                         onClick={() => commit(m)}
                       >
-                        <span>{m.externalModelId}</span>
+                        <span>
+                          {m.externalModelId}
+                          <Show when={m.unlistedSince}>
+                            {(since) => (
+                              <span
+                                class="mp-unlisted"
+                                data-unlisted-option
+                                title={unlistedText(since()).label}
+                              >
+                                {' '}
+                                · no longer offered
+                                {/* The date joins the option's accessible name. */}
+                                <span class="sr-only"> since {unlistedText(since()).day}</span>
+                              </span>
+                            )}
+                          </Show>
+                        </span>
                         <span class="mp-price">{props.priceLabel(m)}</span>
                       </div>
                     )}

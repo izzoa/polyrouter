@@ -560,6 +560,7 @@ function fakeModel(providerId: string, n: number): ModelDto {
     batchCapable: true,
     batchEffectivePrice: null,
     lastSyncedAt: NOW,
+    unlistedSince: null,
   };
 }
 
@@ -1104,6 +1105,28 @@ export class FakeApiClient implements ApiClient {
         ? Object.values(this.models).flat()
         : [...(this.models[providerId] ?? [])];
     return this.gate().then(() => snapshot);
+  }
+
+  /** add-live-subscription-models: when set, `removeModel` rejects with it. */
+  removeModelRejects: ApiError | null = null;
+
+  removeModel(id: string): Promise<void> {
+    this.record('removeModel', id);
+    if (this.removeModelRejects) return Promise.reject(this.removeModelRejects);
+    for (const [pid, list] of Object.entries(this.models)) {
+      const model = list.find((m) => m.id === id);
+      if (!model) continue;
+      // Mirrors the server: only an unlisted model can go (409 otherwise).
+      if (model.unlistedSince === null) {
+        return Promise.reject(new ApiError(409, 'conflict', 'the provider still lists this model'));
+      }
+      this.models[pid] = list.filter((m) => m.id !== id);
+      for (const [tierId, entries] of Object.entries(this.tierEntries)) {
+        this.tierEntries[tierId] = entries.filter((e) => e.modelId !== id);
+      }
+      return Promise.resolve();
+    }
+    return Promise.reject(new ApiError(404, 'not_found', 'not found'));
   }
 
   updateModelPricing(id: string, body: ModelPricingInput): Promise<ModelDto> {

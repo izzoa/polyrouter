@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, gte, isNotNull, isNull, lt, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, gte, isNotNull, isNull, lt, ne, or, sql } from 'drizzle-orm';
 import { BATCH_JOB_TERMINAL_STATUSES } from '@polyrouter/shared';
 import {
   batchJobs,
@@ -107,6 +107,22 @@ function createProviderMaintenance(db: Db): ProviderMaintenance {
           and(
             isNotNull(providers.oauthPreset),
             isNotNull(providers.encryptedCredentials),
+            isNull(providers.credentialError),
+            ...(afterId !== null ? [gt(providers.id, afterId)] : []),
+          ),
+        )
+        .orderBy(asc(providers.id))
+        .limit(Math.max(0, limit));
+    },
+    async listCatalogRefreshable({ afterId, limit, includeLocal }) {
+      return db
+        .select({ id: providers.id, ownerUserId: providers.ownerUserId })
+        .from(providers)
+        .where(
+          and(
+            includeLocal
+              ? or(isNotNull(providers.encryptedCredentials), eq(providers.kind, 'local'))
+              : and(isNotNull(providers.encryptedCredentials), ne(providers.kind, 'local')),
             isNull(providers.credentialError),
             ...(afterId !== null ? [gt(providers.id, afterId)] : []),
           ),

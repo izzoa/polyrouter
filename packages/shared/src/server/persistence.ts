@@ -156,6 +156,26 @@ export interface ModelAccessor {
   ): Promise<ModelRow | null>;
   update(principal: Principal, id: string, patch: ModelPatch): Promise<ModelRow | null>;
   remove(principal: Principal, id: string): Promise<boolean>;
+  /** Reconcile a provider's rows against a successful, complete listing
+   * (add-live-subscription-models), owner-scoped, in one transaction: clear
+   * `unlisted_since` on every row whose external id is in `listedIds`, and set it to
+   * `now` on every other row still null (the earliest observation is kept). Applies
+   * ONLY while the provider still has the incarnation the listing was made with
+   * (credential ciphertext, base URL, protocol — the row is locked for the
+   * transaction), so a listing from a replaced account or endpoint never flags the
+   * new one's models. Resolves whether it applied. */
+  reconcileListing(
+    principal: Principal,
+    providerId: string,
+    listedIds: readonly string[],
+    now: Date,
+    guard: ProviderIncarnation,
+  ): Promise<boolean>;
+  /** Remove a model ONLY while it is unlisted (add-live-subscription-models): the
+   * `unlisted_since IS NOT NULL` condition sits inside the owner-scoped DELETE, so a
+   * concurrent re-listing turns it into `'listed'`. Same tier-first lock and tier
+   * compaction as `remove`. */
+  removeUnlisted(principal: Principal, id: string): Promise<'removed' | 'listed' | 'not_found'>;
   /** Clear all of a provider's models' user-set unit prices (owner-scoped),
    * returning the count cleared. Used when a provider's kind leaves custom/local
    * so a stale price can't be displayed for a now-catalog-priced provider. */
@@ -166,8 +186,10 @@ export interface ModelAccessor {
    * the prior endpoint — an estimate captured there must not be displayed for a
    * different one (add-provider-price-sync-and-edit), and a family-scoped
    * classification must not keep a retained model non-routable after the provider is
-   * repointed away from that family (add-model-variant-detection). Both repopulate on
-   * the next sync. Never touches the billing user-price columns. */
+   * repointed away from that family (add-model-variant-detection). The unlisted flag
+   * describes the prior endpoint's listing too, so it is cleared with them
+   * (add-live-subscription-models). All repopulate on the next sync. Never touches the
+   * billing user-price columns. */
   clearListedPricingForProvider(principal: Principal, providerId: string): Promise<number>;
 }
 
@@ -1386,8 +1408,27 @@ export interface OauthSweepRow {
  * (every row reachable every tick; no null-ordering gaps). It writes nothing —
  * each refresh it leads to runs through the scoped `PersistencePort` under the
  * row's own owner. No by-id read exists here. */
+/** One provider the daily model-catalog refresh may list (add-live-subscription-
+ * models) — identifying fields only, never the credential. */
+export interface CatalogRefreshRow {
+  readonly id: string;
+  readonly ownerUserId: string;
+}
+
 export interface ProviderMaintenance {
   listOauthConnected(page: { afterId: string | null; limit: number }): Promise<OauthSweepRow[]>;
+  /** The model-catalog refresh's listing (add-live-subscription-models): EVERY
+   * provider that can list its models — one holding a credential, or a `local` one
+   * (which may run without) — across owners, excluding any whose credential needs
+   * reauthorization (listing it would only fail). List-only and id-paged, like the
+   * sweep's; each refresh runs through the scoped port under the row's own owner. */
+  listCatalogRefreshable(page: {
+    afterId: string | null;
+    limit: number;
+    /** `local` providers are listable only where a loopback endpoint is allowed
+     * (`MODE=selfhosted`); in cloud they would fail every attempt. */
+    includeLocal: boolean;
+  }): Promise<CatalogRefreshRow[]>;
 }
 
 export interface PersistenceMaintenance {

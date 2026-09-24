@@ -1,0 +1,1 @@
+ALTER TABLE "model" ADD COLUMN "unlisted_since" timestamp with time zone;

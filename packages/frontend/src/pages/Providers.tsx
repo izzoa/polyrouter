@@ -1,6 +1,7 @@
 import { createSignal, For, onCleanup, onMount, Show } from 'solid-js';
 import type { ModelPricingInput } from '../data/api';
 import { fmtUsd } from '../data/format';
+import { unlistedText } from '../data/unlisted';
 import { isPriceEditableKind, providerKindLabel } from '../state/appState';
 import { isNonRoutableVariant } from '@polyrouter/shared';
 import { useApp } from '../state/context';
@@ -96,6 +97,15 @@ function splitVariants(models: Model[]): {
   return { rows, batchByBase, orphans };
 }
 
+/** add-live-subscription-models: offered models first, then the ones the provider no
+ * longer lists — each group in the server's order (a stable partition, not a re-sort). */
+function offeredFirst(models: Model[]): Model[] {
+  return [
+    ...models.filter((m) => m.unlistedSince === null),
+    ...models.filter((m) => m.unlistedSince !== null),
+  ];
+}
+
 /** Inline price editor for custom/local models only (#18 §7.7). Writes exactly one
  * of { isFree } or { inputPricePer1m, outputPricePer1m } — matching the server's
  * request-shape rule. */
@@ -178,7 +188,8 @@ function ProviderCard(props: { p: Provider }) {
   const editable = () => isPriceEditableKind(props.p.kind);
   const models = (): Model[] => state.models[props.p.id] ?? [];
   // Batch twins are folded into the models they price (add-model-variant-detection).
-  const split = () => splitVariants(models());
+  // Models the provider no longer lists sort after the offered ones.
+  const split = () => splitVariants(offeredFirst(models()));
 
   const toggleModels = (): void => {
     const next = !open();
@@ -320,11 +331,17 @@ function ProviderCard(props: { p: Provider }) {
           >
             <For each={split().rows}>
               {(m) => (
-                <div style="display:flex;flex-direction:column;gap:2px">
+                <div
+                  style="display:flex;flex-direction:column;gap:2px"
+                  data-unlisted={m.unlistedSince !== null ? m.externalModelId : undefined}
+                >
                   <div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px">
                     <span
                       class="mono"
-                      style="font:500 11.5px 'Geist Mono',monospace;color:var(--text)"
+                      style={{
+                        font: "500 11.5px 'Geist Mono',monospace",
+                        color: m.unlistedSince !== null ? 'var(--text3)' : 'var(--text)',
+                      }}
                     >
                       {m.displayName ?? m.externalModelId}
                     </span>
@@ -338,6 +355,32 @@ function ProviderCard(props: { p: Provider }) {
                       {priceText(m)}
                     </span>
                   </div>
+                  {/* add-live-subscription-models: the provider's latest listing no longer
+                      offers this model. Stated in words, grey — routing still sends to it,
+                      so this is information and a way to clean up, not an alarm. */}
+                  <Show when={m.unlistedSince}>
+                    {(since) => (
+                      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+                        <span
+                          data-unlisted-line
+                          title={unlistedText(since()).label}
+                          aria-label={unlistedText(since()).label}
+                          style="font:400 10.5px 'Geist',sans-serif;color:var(--text3)"
+                        >
+                          {unlistedText(since()).line}
+                        </span>
+                        <button
+                          type="button"
+                          class="btn-ghost btn-ghost--amber"
+                          style="flex:none"
+                          aria-label={`Remove ${m.displayName ?? m.externalModelId}`}
+                          onClick={() => void app.removeUnlistedModel(props.p.id, m)}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    )}
+                  </Show>
                   <Show
                     when={editable()}
                     fallback={
@@ -362,6 +405,20 @@ function ProviderCard(props: { p: Provider }) {
                         style="font:400 10px 'Geist',sans-serif;color:var(--text3)"
                       >
                         {batchRateText(twin())} · not routable
+                        {/* add-live-subscription-models: a batch twin the provider stopped
+                            listing says so on the rate line it is shown as. */}
+                        <Show when={twin().unlistedSince}>
+                          {(since) => (
+                            <span
+                              data-unlisted-twin={twin().externalModelId}
+                              title={unlistedText(since()).label}
+                            >
+                              {' '}
+                              · no longer offered
+                              <span class="sr-only"> since {unlistedText(since()).day}</span>
+                            </span>
+                          )}
+                        </Show>
                       </div>
                     )}
                   </Show>
@@ -385,7 +442,28 @@ function ProviderCard(props: { p: Provider }) {
                   </span>
                   <span style="font:400 10px 'Geist',sans-serif;color:var(--text3)">
                     batch-only · not routable
+                    <Show when={m.unlistedSince}>
+                      {(since) => (
+                        <span title={unlistedText(since()).label}>
+                          {' '}
+                          · no longer offered
+                          <span class="sr-only"> since {unlistedText(since()).day}</span>
+                        </span>
+                      )}
+                    </Show>
                   </span>
+                  {/* An orphan twin has no base row to ride on — its Remove lives here. */}
+                  <Show when={m.unlistedSince !== null}>
+                    <button
+                      type="button"
+                      class="btn-ghost btn-ghost--amber"
+                      style="flex:none"
+                      aria-label={`Remove ${m.displayName ?? m.externalModelId}`}
+                      onClick={() => void app.removeUnlistedModel(props.p.id, m)}
+                    >
+                      Remove
+                    </button>
+                  </Show>
                 </div>
               )}
             </For>

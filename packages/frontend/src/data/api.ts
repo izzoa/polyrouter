@@ -243,6 +243,10 @@ export interface ModelDto {
    * batch price resolves from any source. Never the synchronous price standing in. */
   batchEffectivePrice: EffectivePrice | null;
   lastSyncedAt: string | null;
+  /** add-live-subscription-models: when the provider's listing FIRST stopped offering
+   * this model (ISO), or null while it is offered. Display + guarded removal only —
+   * routing still dispatches it. */
+  unlistedSince: string | null;
 }
 
 /** Exactly one of these two shapes (enforced server-side, request-shape 422). */
@@ -1057,6 +1061,8 @@ export interface ApiClient {
   syncModels(id: string): Promise<ActionResult>;
   listModels(providerId?: string): Promise<ModelDto[]>;
   updateModelPricing(id: string, body: ModelPricingInput): Promise<ModelDto>;
+  /** Remove a model the provider no longer lists (204); 409 while it is still listed. */
+  removeModel(id: string): Promise<void>;
   listTiers(): Promise<TierDto[]>;
   createTier(input: CreateTierInput): Promise<TierDto>;
   updateTier(id: string, patch: UpdateTierInput): Promise<TierDto>;
@@ -1277,6 +1283,8 @@ export const realClient: ApiClient = {
     ),
   updateModelPricing: (id, body) =>
     http<ModelDto>(`${API_BASE}/models/${encodeURIComponent(id)}`, jsonInit('PATCH', body)),
+  removeModel: (id) =>
+    http<void>(`${API_BASE}/models/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   listTiers: () => http<TierDto[]>(`${API_BASE}/routing/tiers`),
   createTier: (input) => http<TierDto>(`${API_BASE}/routing/tiers`, jsonInit('POST', input)),
   updateTier: (id, patch) =>

@@ -56,7 +56,6 @@ const PRESET: OauthPreset = {
   redirectUri: 'https://idp.example/oauth/code/callback',
   tokenRequestEncoding: 'json',
   includeStateInExchange: true,
-  modelsSource: 'endpoint',
   enabled: true,
 };
 

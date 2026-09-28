@@ -15,6 +15,11 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.24.0] — 2026-09-28
+
+[Release](https://github.com/izzoa/polyrouter/releases/tag/v0.24.0) ·
+[Compare](https://github.com/izzoa/polyrouter/compare/v0.23.0...v0.24.0)
+
 ### Added
 
 - **Stream keepalives.** A streaming response that has sent nothing for ~15s (`PROXY_STREAM_HEARTBEAT_MS`) gets a protocol-native keepalive, and one with no first token after ~20s (`PROXY_STREAM_EARLY_COMMIT_MS`) starts its `200` + SSE headers early — so Cloudflare and other proxies no longer drop slow or thinking streams. Keepalives are never model output; fallback and cascade still run until the first token.
@@ -1088,7 +1093,8 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.23.0...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.24.0...HEAD
+[0.24.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.24.0
 [0.23.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.23.0
 [0.22.1]: https://github.com/izzoa/polyrouter/releases/tag/v0.22.1
 [0.22.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.22.0

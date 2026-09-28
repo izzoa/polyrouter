@@ -3,6 +3,7 @@ export * from './proxy/translate';
 export * from './providers';
 export * from './routing';
 export * from './proxy/core';
+export { terminalErrorFrame } from './proxy/stream-error';
 export * from './proxy/output-caps';
 export * from './proxy/cascade';
 export * from './proxy/body-capture';

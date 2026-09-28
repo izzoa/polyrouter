@@ -146,15 +146,17 @@ describe('InflightRegistry (real Redis)', () => {
     const before = await client.pttl(keys.entry);
 
     // A renew on a LIVE entry extends its absolute deadline.
-    await (client as unknown as { inflightRenew: (...a: unknown[]) => Promise<number> })
-      .inflightRenew(keys.entry, keys.marker, 600_000);
+    await (
+      client as unknown as { inflightRenew: (...a: unknown[]) => Promise<number> }
+    ).inflightRenew(keys.entry, keys.marker, 600_000);
     expect(await client.pttl(keys.entry)).toBeGreaterThan(before);
 
     // After settle, a still-scheduled renew must create NOTHING.
     lease.settle();
     expect(await waitFor(async () => (await client.exists(keys.entry)) === 0)).toBe(true);
-    await (client as unknown as { inflightRenew: (...a: unknown[]) => Promise<number> })
-      .inflightRenew(keys.entry, keys.marker, 600_000);
+    await (
+      client as unknown as { inflightRenew: (...a: unknown[]) => Promise<number> }
+    ).inflightRenew(keys.entry, keys.marker, 600_000);
     expect(await client.exists(keys.entry)).toBe(0);
   });
 
@@ -182,5 +184,68 @@ describe('InflightRegistry (real Redis)', () => {
     expect(await waitFor(async () => (await client.zscore(keys.index, e.requestId)) === null)).toBe(
       true,
     ); // and reclaimed
+  });
+
+  // ---- add-stream-keepalive (task 4.4): the escalation relabel ----
+
+  const strong = {
+    tierAssigned: 'heavy',
+    modelLabel: 'mimo-v2.6-pro',
+    providerLabel: 'XiaomiMiMo',
+  } as const;
+
+  it('relabel replaces the labels in place and keeps the lease expiry', async () => {
+    const p = principal();
+    const e = entry();
+    const keys = inflightKeysFor(p, e.requestId);
+    const lease = reg.mark(p, e);
+    expect(await waitFor(async () => (await client.exists(keys.entry)) === 1)).toBe(true);
+    const expiryBefore = await client.pexpiretime(keys.entry);
+    lease.relabel(strong);
+    expect(
+      await waitFor(async () => (await reg.list(p)).items[0]?.modelLabel === 'mimo-v2.6-pro'),
+    ).toBe(true);
+    const [row] = (await reg.list(p)).items;
+    expect(row).toMatchObject({
+      id: e.requestId,
+      startedAt: e.startedAt,
+      decisionLayer: 'cascade',
+      protocol: 'openai',
+      ...strong,
+    });
+    // KEEPTTL: the absolute expiry is exactly what the lease set (neither extended
+    // nor shortened by the relabel).
+    expect(await client.pexpiretime(keys.entry)).toBe(expiryBefore);
+    lease.settle();
+  });
+
+  it('relabel is EXISTS-ONLY: it never creates an entry', async () => {
+    const p = principal();
+    const e = entry();
+    const keys = inflightKeysFor(p, e.requestId);
+    // Straight at the script, bypassing the lease: no entry, no marker.
+    await (
+      client as unknown as { inflightRelabel: (...a: unknown[]) => Promise<number> }
+    ).inflightRelabel(keys.entry, keys.marker, JSON.stringify({ ...e, ...strong }));
+    expect(await client.exists(keys.entry)).toBe(0);
+    expect(await client.zscore(keys.index, e.requestId)).toBeNull();
+  });
+
+  it('a relabel after settle is refused — no resurrection', async () => {
+    const p = principal();
+    const e = entry();
+    const keys = inflightKeysFor(p, e.requestId);
+    const lease = reg.mark(p, e);
+    expect(await waitFor(async () => (await client.exists(keys.entry)) === 1)).toBe(true);
+    lease.settle();
+    expect(await waitFor(async () => (await client.exists(keys.entry)) === 0)).toBe(true);
+    lease.relabel(strong); // locally a no-op after settle
+    // …and even a relabel that reaches Redis late is refused by the settled marker.
+    await (
+      client as unknown as { inflightRelabel: (...a: unknown[]) => Promise<number> }
+    ).inflightRelabel(keys.entry, keys.marker, JSON.stringify({ ...e, ...strong }));
+    await settled();
+    expect(await client.exists(keys.entry)).toBe(0);
+    expect((await reg.list(p)).items).toEqual([]);
   });
 });

@@ -30,10 +30,21 @@ export interface InflightEntry {
   readonly protocol: string;
 }
 
+/** The labels a cascade escalation relabels (add-stream-keepalive). */
+export interface InflightLabels {
+  readonly tierAssigned: string | null;
+  readonly modelLabel: string | null;
+  readonly providerLabel: string | null;
+}
+
 /** Handle returned by `mark`: `settle()` stops renewals SYNCHRONOUSLY and best-
- * effort clears the entry. Idempotent — safe to call from any settle path. */
+ * effort clears the entry. Idempotent — safe to call from any settle path.
+ * `relabel()` (add-stream-keepalive) replaces the live entry's labels when a cascade
+ * escalates: exists-only, refused once settled, lease expiry unchanged, and a no-op
+ * after `settle()` — fire-and-forget on exactly `renew`'s terms. */
 export interface InflightLease {
   settle(): void;
+  relabel(labels: InflightLabels): void;
 }
 
 /**
@@ -48,6 +59,8 @@ export interface InflightLease {
  */
 export interface InflightTransitions {
   started(principal: Principal, entry: InflightEntry): void;
+  /** A live entry was relabelled (add-stream-keepalive): same row shape as `started`. */
+  updated(principal: Principal, entry: InflightEntry): void;
   settled(principal: Principal, requestId: string): void;
 }
 
@@ -146,6 +159,16 @@ if ttl > 0 then redis.call('SET', KEYS[3], '1', 'PX', ttl) end
 return 1
 `;
 
+// KEYS: 1=entry 2=marker ; ARGV: 1=json. Exists-only and settle-aware like RENEW:
+// it never creates an entry, a settled marker refuses it (no resurrection), and
+// KEEPTTL keeps the lease's PEXPIREAT exactly as it was (Redis >= 6.0).
+const RELABEL_LUA = `
+if redis.call('EXISTS', KEYS[2]) == 1 then return 0 end
+if redis.call('EXISTS', KEYS[1]) == 0 then return 0 end
+redis.call('SET', KEYS[1], ARGV[1], 'KEEPTTL')
+return 1
+`;
+
 interface RegistryCommands {
   inflightMark(
     entryKey: string,
@@ -159,6 +182,7 @@ interface RegistryCommands {
     indexTtlMs: number,
   ): Promise<number>;
   inflightRenew(entryKey: string, markerKey: string, leaseMs: number): Promise<number>;
+  inflightRelabel(entryKey: string, markerKey: string, json: string): Promise<number>;
   inflightClear(
     entryKey: string,
     indexKey: string,
@@ -166,6 +190,19 @@ interface RegistryCommands {
     id: string,
     admissionCutoff: number,
   ): Promise<number>;
+}
+
+/** The stored metadata JSON — one shape for `mark` and `relabel`. */
+function entryJson(entry: InflightEntry): string {
+  return JSON.stringify({
+    requestId: entry.requestId,
+    startedAt: entry.startedAt,
+    decisionLayer: entry.decisionLayer,
+    tierAssigned: entry.tierAssigned,
+    modelLabel: entry.modelLabel,
+    providerLabel: entry.providerLabel,
+    protocol: entry.protocol,
+  });
 }
 
 @Injectable()
@@ -185,12 +222,22 @@ export class InflightRegistry implements OnModuleInit, OnApplicationShutdown {
     this.redis.defineCommand('inflightMark', { numberOfKeys: 3, lua: MARK_LUA });
     this.redis.defineCommand('inflightRenew', { numberOfKeys: 2, lua: RENEW_LUA });
     this.redis.defineCommand('inflightClear', { numberOfKeys: 3, lua: CLEAR_LUA });
+    this.redis.defineCommand('inflightRelabel', { numberOfKeys: 2, lua: RELABEL_LUA });
     this.cmds = this.redis as unknown as RegistryCommands;
   }
 
   onModuleInit(): void {
     this.sweepTimer = setInterval(() => void this.sweepOnce(), this.cfg.sweepIntervalMs);
     this.sweepTimer.unref?.();
+    // Best-effort pre-load (add-stream-keepalive): with every script cached, the
+    // EVALSHA→NOSCRIPT→EVAL retry that could reorder a relabel ahead of its own mark
+    // does not occur in the common case. Never awaited; a failure changes nothing
+    // (a later NOSCRIPT still degrades only to a stale label, never a ghost).
+    for (const lua of [MARK_LUA, RENEW_LUA, CLEAR_LUA, RELABEL_LUA]) {
+      void Promise.resolve()
+        .then(() => this.redis.script('LOAD', lua))
+        .catch(() => undefined);
+    }
   }
 
   /** Stage (i) of publication: bounded, synchronous, and it can NEVER escape — a
@@ -219,15 +266,7 @@ export class InflightRegistry implements OnModuleInit, OnApplicationShutdown {
     const iKey = indexKey(tag);
     const mKey = markerKey(tag, entry.requestId);
     const admissionCutoff = entry.startedAt + this.cfg.admissionLifetimeMs + this.cfg.skewMs;
-    const json = JSON.stringify({
-      requestId: entry.requestId,
-      startedAt: entry.startedAt,
-      decisionLayer: entry.decisionLayer,
-      tierAssigned: entry.tierAssigned,
-      modelLabel: entry.modelLabel,
-      providerLabel: entry.providerLabel,
-      protocol: entry.protocol,
-    });
+    const json = entryJson(entry);
     this.fire(() =>
       this.cmds.inflightMark(
         eKey,
@@ -257,8 +296,16 @@ export class InflightRegistry implements OnModuleInit, OnApplicationShutdown {
         if (closed) return;
         closed = true; // synchronous close: no renewal fires after this returns
         clearInterval(timer);
-        this.fire(() => this.cmds.inflightClear(eKey, iKey, mKey, entry.requestId, admissionCutoff));
+        this.fire(() =>
+          this.cmds.inflightClear(eKey, iKey, mKey, entry.requestId, admissionCutoff),
+        );
         this.publishTransition(() => this.transitions?.settled(principal, entry.requestId));
+      },
+      relabel: (labels: InflightLabels): void => {
+        if (closed) return; // after settle: nothing to relabel, locally or in Redis
+        const next: InflightEntry = { ...entry, ...labels };
+        this.fire(() => this.cmds.inflightRelabel(eKey, mKey, entryJson(next)));
+        this.publishTransition(() => this.transitions?.updated(principal, next));
       },
     };
   }

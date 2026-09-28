@@ -148,6 +148,25 @@ function openaiStream(res: ServerResponse, model: string): void {
   // `*neverend*` → commit (role + one token) then hold the stream open forever;
   // only an upstream abort (drain deadline, client disconnect) ends it.
   if (model.includes('neverend')) return;
+  // `*thinkgap*` (add-stream-keepalive) → commit (role + one token), then ~700ms of
+  // reasoning-only chunks the translator DROPS (the client-facing stream goes silent,
+  // exactly as a thinking model's does), then the answer and the terminator.
+  if (model.includes('thinkgap')) {
+    let n = 0;
+    const think = setInterval(() => {
+      if (res.writableEnded || res.destroyed) return clearInterval(think);
+      chunk([{ index: 0, delta: { reasoning_content: 'hmm' }, finish_reason: null }]);
+      n += 1;
+      if (n >= 7) {
+        clearInterval(think);
+        chunk([{ index: 0, delta: { content: ' done' }, finish_reason: null }]);
+        chunk([{ index: 0, delta: {}, finish_reason: 'stop' }]);
+        res.write('data: [DONE]\n\n');
+        res.end();
+      }
+    }, 100);
+    return;
+  }
   // `*slowtail*` → commit immediately, then finish after a delay — an
   // "in-flight" stream the lifecycle e2e can drain/disconnect deterministically.
   if (model.includes('slowtail')) {
@@ -759,6 +778,18 @@ export async function startStubUpstream(): Promise<StubUpstream> {
       if (model.includes('hang')) {
         res.writeHead(200, { 'content-type': 'application/json' });
         return; // never end — the caller's deadline aborts it
+      }
+      // `*slowfail*` (add-stream-keepalive) → a PRE-HEADERS delay, then a 500: a
+      // pre-commit failure that lands AFTER the proxy's early response commit.
+      if (model.includes('slowfail')) {
+        setTimeout(() => {
+          if (res.socket?.destroyed) return;
+          res.writeHead(500, { 'content-type': 'application/json' });
+          res.end(
+            JSON.stringify({ error: { message: 'SECRET slow failure', type: 'server_error' } }),
+          );
+        }, 700);
+        return;
       }
       // `*slowhead*` → a PRE-HEADERS delay (fix-long-call-timeouts): trips the
       // effective first-byte bound unless the provider's override raised it.

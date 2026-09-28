@@ -140,7 +140,10 @@ export const emptyStream = (): StreamState => ({ live: [], settling: [], termina
 /** How long a terminal marker is kept (bounded — same order as the settling grace). */
 export const TERMINAL_MARKER_MS = INFLIGHT_GRACE_MS;
 
-const pruneTerminal = (terminal: Readonly<Record<string, number>>, now: number): Record<string, number> => {
+const pruneTerminal = (
+  terminal: Readonly<Record<string, number>>,
+  now: number,
+): Record<string, number> => {
   const out: Record<string, number> = {};
   for (const [id, at] of Object.entries(terminal)) if (now - at < TERMINAL_MARKER_MS) out[id] = at;
   return out;
@@ -159,6 +162,25 @@ export function applyStarted(
   if (recentIds.has(row.id)) return { ...prev, terminal }; // durable row wins
   if (prev.live.some((r) => r.id === row.id)) return { ...prev, terminal }; // duplicate
   return { ...prev, live: [...prev.live, row], terminal };
+}
+
+/** A live entry was relabelled (add-stream-keepalive): a cascade escalation moved it
+ * to the strong tier. Applied IN PLACE to a displayed live row with that id, and
+ * NEVER adds or resurrects one — an id already settled (terminal marker, which also
+ * covers the settling bridge), shown as a durable row, or not displayed at all is left
+ * alone; the next authoritative snapshot (which reads the relabelled entry) converges
+ * any view that missed or ignored the event. */
+export function applyUpdated(
+  prev: StreamState,
+  row: InflightRow,
+  recentIds: ReadonlySet<string>,
+  now: number,
+): StreamState {
+  const terminal = pruneTerminal(prev.terminal, now);
+  if (terminal[row.id] !== undefined) return { ...prev, terminal }; // settled already
+  if (recentIds.has(row.id)) return { ...prev, terminal }; // durable row wins
+  if (!prev.live.some((r) => r.id === row.id)) return { ...prev, terminal }; // never adds
+  return { ...prev, live: prev.live.map((r) => (r.id === row.id ? row : r)), terminal };
 }
 
 /** An explicit settle: POSITIVE evidence, no inference needed. The row moves into the

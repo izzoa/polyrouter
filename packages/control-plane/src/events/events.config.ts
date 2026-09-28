@@ -1,4 +1,5 @@
 import { loadConfig, registerConfig, z } from '@polyrouter/shared';
+import { INTERMEDIARY_REAP_FLOOR_MS } from '../intermediary';
 
 /**
  * Dashboard event-stream config (phase2-add-dashboard-event-stream). All knobs are
@@ -7,9 +8,10 @@ import { loadConfig, registerConfig, z } from '@polyrouter/shared';
 
 export const EVENTS_CONFIG = 'polyrouter:events-config';
 
-/** The idle-reap window common to reverse proxies / LBs / CDNs. The heartbeat must
- * stay comfortably under it or an idle stream is silently dropped. */
-export const INTERMEDIARY_REAP_FLOOR_MS = 60_000;
+/** The idle-reap window common to reverse proxies / LBs / CDNs (shared with the `/v1`
+ * stream keepalive — add-stream-keepalive). The heartbeat must stay comfortably under
+ * it or an idle stream is silently dropped. */
+export { INTERMEDIARY_REAP_FLOOR_MS };
 
 registerConfig(
   'events',

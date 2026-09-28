@@ -30,6 +30,9 @@ export interface EventStreamOptions {
   /** The authoritative view: initial, after a `resync`, or a server re-snapshot. */
   onSnapshot: (snap: StreamSnapshotPayload) => void;
   onStarted: (row: InflightRow) => void;
+  /** add-stream-keepalive: a cascade escalation relabelled a live entry. Optional so
+   * existing callers are unchanged; applied in place, never adding a row. */
+  onUpdated?: (row: InflightRow) => void;
   onSettled: (id: string) => void;
   onInvalidated: () => void;
   /** add-batch-inference (D18): a batch job advanced. A metadata-only NUDGE — it
@@ -200,6 +203,7 @@ export function createEventStream(opts: EventStreamOptions): EventStreamHandle {
       opts.onSnapshot(p);
     });
     on('inflight.started', (data) => opts.onStarted((data as { row: InflightRow }).row));
+    on('inflight.updated', (data) => opts.onUpdated?.((data as { row: InflightRow }).row));
     on('inflight.settled', (data) => opts.onSettled((data as { id: string }).id));
     on('analytics.invalidated', () => opts.onInvalidated());
     on('batch.updated', () => opts.onBatchUpdated?.());

@@ -90,7 +90,11 @@ import {
   type RecordingContext,
   type RequestCaptureState,
 } from '../recording/request-recorder';
-import { InflightRegistry, type InflightEntry } from '../inflight/inflight-registry';
+import {
+  InflightRegistry,
+  type InflightEntry,
+  type InflightLabels,
+} from '../inflight/inflight-registry';
 import { BodyCaptureService } from '../body-capture/body-capture.service';
 import { ProxyMetrics } from '../observability/proxy-metrics';
 import { observeAdapter } from '../observability/observe-adapter';
@@ -159,6 +163,17 @@ interface CapsRef {
   current: ReadonlyMap<string, CatalogFacts>;
 }
 
+/** The in-flight labels for a planned member — ONE mapping for the admit-write and
+ * the escalation relabel (add-stream-keepalive), so the two can never disagree on
+ * field names; each is null when absent (never `undefined` on the wire). */
+function inflightLabelsOf(m: AttemptMeta | undefined): InflightLabels {
+  return {
+    tierAssigned: m?.tierKey ?? null,
+    modelLabel: m?.model.externalModelId ?? null,
+    providerLabel: m?.providerName ?? null,
+  };
+}
+
 /** Cascade orchestration state (#14): the cheap chain + the escalation chain
  * (`strong ++ default`, so a down strong tier still rescues to the reliable core). */
 interface CascadeBundle {
@@ -202,6 +217,10 @@ interface Prepared {
   /** Set after the in-flight `mark` (add-inflight-requests); invoked by the
    * recorder at settle to clear the entry + stop its lease. */
   onSettle?: () => void;
+  /** Set after the in-flight `mark` (add-stream-keepalive); invoked ONCE when a
+   * cascade hands the request to its escalation bundle, relabelling the live entry
+   * with that bundle's first planned member. Fire-and-forget, never awaited. */
+  onEscalate?: (meta: AttemptMeta | undefined) => void;
   protocol: ClientProtocol;
   routed: NormalizedRequest;
   /** The request's declared machine-parseable-output flag, captured ONCE at
@@ -728,6 +747,8 @@ export class ProxyService {
      * detail): today's reason strings drop them; the parent trail must not. */
     cheapFailures: readonly AttemptFailure[],
   ): Promise<unknown> {
+    // add-stream-keepalive: the live row now names the strong tier, before its walk.
+    p.onEscalate?.(c.escalation.meta[0]);
     const result = await runBufferedChain(
       this.breaker,
       c.escalation.attempts,
@@ -976,6 +997,8 @@ export class ProxyService {
      * detail) — aggregated ahead of the escalation leg on the parent trail. */
     cheapFailures: readonly AttemptFailure[],
   ): Promise<AsyncGenerator<string>> {
+    // add-stream-keepalive: the live row now names the strong tier, before its walk.
+    p.onEscalate?.(c.escalation.meta[0]);
     const result = await openStreamChain(this.breaker, c.escalation.attempts, p.client, p.routed, {
       signal,
       firstEventTimeoutMs: this.rt.firstEventTimeoutMs,
@@ -1877,8 +1900,10 @@ export class ProxyService {
   private beginInflight(p: Prepared): { settle: () => void } {
     const lease = this.inflight?.mark(p.principal, this.inflightEntryOf(p)) ?? {
       settle: (): void => undefined,
+      relabel: (): void => undefined,
     };
     p.onSettle = () => lease.settle();
+    p.onEscalate = (meta) => lease.relabel(inflightLabelsOf(meta));
     return lease;
   }
 
@@ -1892,9 +1917,7 @@ export class ProxyService {
       requestId: p.requestId,
       startedAt: p.startedAt,
       decisionLayer: p.cascade !== undefined ? 'cascade' : p.decision.decisionLayer,
-      tierAssigned: m?.tierKey ?? null,
-      modelLabel: m?.model.externalModelId ?? null,
-      providerLabel: m?.providerName ?? null,
+      ...inflightLabelsOf(m),
       protocol: p.protocol,
     };
   }

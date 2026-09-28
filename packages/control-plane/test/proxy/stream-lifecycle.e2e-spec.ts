@@ -122,7 +122,12 @@ interface BootedApp {
   onRequestFailed: jest.Mock;
 }
 
-async function bootApp(streamDrainDeadlineMs: number): Promise<BootedApp> {
+async function bootApp(
+  streamDrainDeadlineMs: number,
+  // add-stream-keepalive: test-sized keepalive/early-commit bounds (boot validation is
+  // bypassed on purpose — sub-second values keep the suite fast). Absent = defaults.
+  streamKeepalive?: { heartbeatMs: number; earlyCommitMs: number },
+): Promise<BootedApp> {
   const store = new RecordingBreakerStore();
   const providerDown = jest.fn();
   // Observable recorder + failure-spike producer so A-3 can assert a client disconnect
@@ -173,7 +178,14 @@ async function bootApp(streamDrainDeadlineMs: number): Promise<BootedApp> {
         provide: BudgetService,
         useValue: { checkBlocked: () => Promise.resolve(null), notifyBlocked: () => undefined },
       },
-      { provide: PROXY_RUNTIME, useValue: { ...loadProxyRuntime(), streamDrainDeadlineMs } },
+      {
+        provide: PROXY_RUNTIME,
+        useValue: {
+          ...loadProxyRuntime(),
+          streamDrainDeadlineMs,
+          ...(streamKeepalive !== undefined ? { streamKeepalive } : {}),
+        },
+      },
       { provide: PROXY_ADAPTER_FACTORY, useValue: createProviderAdapter },
       { provide: PROXY_BREAKER, useValue: new CircuitBreaker(store, { config: THRESHOLD_1 }) },
       { provide: ROUTING_CONFIG, useFactory: loadRoutingConfig },
@@ -218,12 +230,19 @@ interface StreamClient {
   destroy(): void;
 }
 
-/** Raw streaming client on a dedicated non-keep-alive agent. */
-function openStream(port: number, key: string, model: string): Promise<StreamClient> {
+/** Raw streaming client on a dedicated non-keep-alive agent. `anthropic` speaks the
+ * client's `/v1/messages` protocol (cross-protocol to the OpenAI-shaped stub). */
+function openStream(
+  port: number,
+  key: string,
+  model: string,
+  protocol: 'openai' | 'anthropic' = 'openai',
+): Promise<StreamClient> {
   const agent = new http.Agent({ keepAlive: false });
   const payload = JSON.stringify({
     model,
     stream: true,
+    ...(protocol === 'anthropic' ? { max_tokens: 64 } : {}),
     messages: [{ role: 'user', content: 'hi' }],
   });
   return new Promise((resolve, reject) => {
@@ -233,7 +252,7 @@ function openStream(port: number, key: string, model: string): Promise<StreamCli
         host: '127.0.0.1',
         port,
         method: 'POST',
-        path: '/v1/chat/completions',
+        path: protocol === 'anthropic' ? '/v1/messages' : '/v1/chat/completions',
         headers: {
           authorization: `Bearer ${key}`,
           'content-type': 'application/json',
@@ -372,7 +391,18 @@ describe('stream lifecycle e2e (drain / disconnect / backpressure)', () => {
       baseUrl: stub.url,
     });
     const models: Record<string, string> = {};
-    for (const ext of ['gpt-4o', 'oai-bigframes', 'oai-slowtail', 'oai-neverend']) {
+    for (const ext of [
+      'gpt-4o',
+      'oai-bigframes',
+      'oai-slowtail',
+      'oai-neverend',
+      // add-stream-keepalive fixtures
+      'oai-thinkgap',
+      'oai-slowhead',
+      'oai-slowfail',
+      'oai-srvfail',
+      'oai-hang',
+    ]) {
       const m = await port.models.createForProvider(principal, provider.id, {
         externalModelId: ext,
       });
@@ -396,8 +426,13 @@ describe('stream lifecycle e2e (drain / disconnect / backpressure)', () => {
   // assertion can never leave a socket alive to delay process exit (forceExit
   // is gone — a leak would otherwise hang until the CI job timeout).
   const openClients: StreamClient[] = [];
-  function openStreamTracked(p: number, k: string, model: string): Promise<StreamClient> {
-    return openStream(p, k, model).then((c) => {
+  function openStreamTracked(
+    p: number,
+    k: string,
+    model: string,
+    protocol: 'openai' | 'anthropic' = 'openai',
+  ): Promise<StreamClient> {
+    return openStream(p, k, model, protocol).then((c) => {
       openClients.push(c);
       return c;
     });
@@ -540,4 +575,100 @@ describe('stream lifecycle e2e (drain / disconnect / backpressure)', () => {
       client?.destroy();
     }
   }, 30_000);
+
+  // ---- add-stream-keepalive (task 6.1): keepalives + the delayed early commit ----
+  describe('keepalive + early response commit (add-stream-keepalive)', () => {
+    const KA = { heartbeatMs: 200, earlyCommitMs: 250 };
+    let k: BootedApp;
+    beforeAll(async () => {
+      k = await bootApp(5_000, KA);
+    });
+    afterAll(async () => {
+      await k.app.close();
+    });
+    const count = (s: string, needle: string): number => s.split(needle).length - 1;
+
+    it('bridges a thinking gap with comment keepalives (OpenAI) and still delivers the answer', async () => {
+      const c = await openStreamTracked(k.port, key, 'oai-thinkgap');
+      const body = await withTimeout(c.done, 10_000, 'thinkgap stream');
+      expect(c.res.headers['x-accel-buffering']).toBe('no');
+      expect(count(body, ': keep-alive\n\n')).toBeGreaterThanOrEqual(2); // ~700ms silent
+      expect(body).toContain('done');
+      expect(body.endsWith('data: [DONE]\n\n')).toBe(true); // nothing after the terminator
+      expect(body).not.toContain('reasoning_content'); // dropped, as before
+    }, 30_000);
+
+    it('uses Anthropic pings after message_start, and nothing before it', async () => {
+      const c = await openStreamTracked(k.port, key, 'oai-thinkgap', 'anthropic');
+      const body = await withTimeout(c.done, 10_000, 'anthropic thinkgap stream');
+      const firstEvent = body.indexOf('event: ');
+      expect(body.slice(firstEvent)).toMatch(/^event: message_start/);
+      expect(count(body, 'event: ping\n')).toBeGreaterThanOrEqual(2);
+      expect(body.indexOf('event: ping')).toBeGreaterThan(body.indexOf('event: message_start'));
+      expect(body).toContain('event: message_stop');
+    }, 30_000);
+
+    it('a slow first event commits the response early (200 + comments), then streams the content', async () => {
+      const c = await openStreamTracked(k.port, key, 'oai-slowhead'); // 1s pre-headers
+      expect(c.res.statusCode).toBe(200);
+      const body = await withTimeout(c.done, 10_000, 'slowhead stream');
+      const beforeContent = body.slice(0, body.indexOf('data: '));
+      expect(count(beforeContent, ': keep-alive\n\n')).toBeGreaterThanOrEqual(2);
+      expect(body).toContain('Hello');
+      expect(body.endsWith('data: [DONE]\n\n')).toBe(true);
+    }, 30_000);
+
+    it('a pre-commit failure after the early commit arrives as one in-stream error, still recorded as the error', async () => {
+      k.recorded.mockClear();
+      const c = await openStreamTracked(k.port, key, 'oai-slowfail'); // 700ms, then 500
+      expect(c.res.statusCode).toBe(200); // the preamble already went out
+      const body = await withTimeout(c.done, 10_000, 'slowfail stream');
+      const frames = body.split('\n\n').filter((f) => f.startsWith('data: {'));
+      expect(frames).toHaveLength(1);
+      expect(frames[0]).toMatch(/^data: \{"error":\{"message":/);
+      expect(body.endsWith('data: [DONE]\n\n')).toBe(true);
+      expect(body).not.toContain('SECRET');
+      // The service records the request exactly as it would the HTTP-error case.
+      const deadline = Date.now() + 5_000;
+      while (k.recorded.mock.calls.length === 0 && Date.now() < deadline) await sleep(25);
+      expect(k.recorded.mock.calls.map((call) => call[1].status)).toEqual(['error']);
+    }, 30_000);
+
+    it('a fast failure is still a clean HTTP error status', async () => {
+      const c = await openStreamTracked(k.port, key, 'oai-srvfail'); // immediate 500
+      expect(c.res.statusCode).toBe(503);
+      expect(c.res.headers['content-type']).toMatch(/application\/json/);
+      const body = await withTimeout(c.done, 10_000, 'srvfail body');
+      expect(body).not.toContain('keep-alive');
+    }, 30_000);
+
+    it("with both knobs 0 a slow stream carries only the upstream frames (today's bytes)", async () => {
+      const off = await bootApp(5_000, { heartbeatMs: 0, earlyCommitMs: 0 });
+      try {
+        const c = await openStream(off.port, key, 'oai-thinkgap');
+        const body = await withTimeout(c.done, 10_000, 'thinkgap stream, knobs off');
+        expect(body).not.toContain(': keep-alive');
+        expect(body).toContain('done');
+        c.destroy();
+      } finally {
+        await off.app.close();
+      }
+    }, 30_000);
+
+    it('shutdown during a pre-commit wait completes within the drain deadline and releases the socket', async () => {
+      const app = await bootApp(500, KA);
+      let c: StreamClient | undefined;
+      try {
+        c = await openStream(app.port, key, 'oai-hang'); // headers, never a first event
+        await withTimeout(c.firstFrame, 5_000, 'the early-commit preamble');
+        expect(c.text()).toContain(': keep-alive');
+        const started = Date.now();
+        await withTimeout(app.app.close(), 5_000, 'app.close() during a pre-commit wait');
+        expect(Date.now() - started).toBeLessThan(3_000);
+        await withTimeout(c.done, 5_000, 'client stream end after shutdown');
+      } finally {
+        c?.destroy();
+      }
+    }, 30_000);
+  });
 });

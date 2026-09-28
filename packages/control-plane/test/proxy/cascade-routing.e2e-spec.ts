@@ -31,6 +31,11 @@ import { mintAgentKey } from '../../src/agents/agent-keys';
 import { ChatCompletionsController } from '../../src/proxy/chat-completions.controller';
 import { ProxyExceptionFilter } from '../../src/proxy/proxy-exception.filter';
 import {
+  InflightRegistry,
+  type InflightEntry,
+  type InflightLabels,
+} from '../../src/inflight/inflight-registry';
+import {
   PROXY_ADAPTER_FACTORY,
   PROXY_BREAKER,
   PROXY_RUNTIME,
@@ -89,6 +94,26 @@ function body(system: string, stream = false): Record<string, unknown> {
   };
 }
 
+/** add-stream-keepalive: a recording in-flight registry, so the escalation relabel is
+ * asserted through the REAL cascade wiring (ProxyService treats the registry as
+ * optional; this harness otherwise has none). */
+const inflightCalls: Array<
+  | { op: 'mark'; entry: InflightEntry }
+  | { op: 'relabel'; labels: InflightLabels }
+  | { op: 'settle' }
+> = [];
+const recordingInflight = {
+  mark: (_p: unknown, entry: InflightEntry) => {
+    inflightCalls.push({ op: 'mark', entry });
+    return {
+      settle: (): void => void inflightCalls.push({ op: 'settle' }),
+      relabel: (labels: InflightLabels): void => void inflightCalls.push({ op: 'relabel', labels }),
+    };
+  },
+};
+const relabels = (): InflightLabels[] =>
+  inflightCalls.flatMap((c) => (c.op === 'relabel' ? [c.labels] : []));
+
 async function buildApp(): Promise<{ app: INestApplication; server: App }> {
   const moduleRef = await Test.createTestingModule({
     imports: [
@@ -112,6 +137,7 @@ async function buildApp(): Promise<{ app: INestApplication; server: App }> {
         },
       },
       StreamDrainRegistry,
+      { provide: InflightRegistry, useValue: recordingInflight },
       StructuralRouter,
       WorkloadRouter,
       CascadeRouter,
@@ -417,7 +443,11 @@ describe('cascade routing e2e', () => {
 
   it('a good cheap answer is served without escalation (one row, no ledger)', async () => {
     await setBand('auto_low', 'cheap-good');
+    inflightCalls.length = 0;
     const res = await send('sysGood');
+    // add-stream-keepalive: admitted on the cheap tier, never relabelled.
+    expect(inflightCalls.filter((c) => c.op === 'mark')).toHaveLength(1);
+    expect(relabels()).toEqual([]);
     expect(res.status).toBe(200);
     const row = await log();
     expect(row.modelId).toBe(modelId['cheapGood']);
@@ -433,7 +463,16 @@ describe('cascade routing e2e', () => {
   });
 
   it('a bad cheap answer escalates; the served row is strong + a cheap ledger row records the spend', async () => {
+    inflightCalls.length = 0;
     const res = await send('sysBad');
+    // add-stream-keepalive: admitted on the cheap member, relabelled ONCE to the strong
+    // tier's first member — explicit labels, never `undefined` (buffered path).
+    const marks = inflightCalls.flatMap((c) => (c.op === 'mark' ? [c.entry] : []));
+    expect(marks).toHaveLength(1);
+    expect(marks[0]).toMatchObject({ modelLabel: 'oai-empty', providerLabel: 'stub' });
+    expect(relabels()).toEqual([
+      { tierAssigned: 'premium', modelLabel: 'gpt-4o-hi', providerLabel: 'stub' },
+    ]);
     expect(res.status).toBe(200);
     const row = await log();
     expect(row.modelId).toBe(modelId['strong']); // served by strong
@@ -608,7 +647,12 @@ describe('cascade routing e2e', () => {
   });
 
   it('streams only the strong tier on escalation (no cheap output, no swap)', async () => {
+    inflightCalls.length = 0;
     const res = await send('sysStream', true);
+    // add-stream-keepalive: the streaming escalation relabels once, too.
+    expect(relabels()).toEqual([
+      { tierAssigned: 'premium', modelLabel: 'gpt-4o-hi', providerLabel: 'stub' },
+    ]);
     expect(res.status).toBe(200);
     expect(res.text).toContain('[DONE]'); // one clean stream
     const row = await log();
@@ -763,6 +807,7 @@ describe('cascade routing e2e', () => {
   it('with cascade disabled, an ambiguous auto request serves via the default tier', async () => {
     process.env['ROUTING_AUTO_LAYERS'] = 'structural';
     const off = await buildApp();
+    inflightCalls.length = 0;
     try {
       const res = await request(off.server)
         .post('/v1/chat/completions')
@@ -773,6 +818,8 @@ describe('cascade routing e2e', () => {
       const row = await log();
       expect(row.decisionLayer).toBe('default');
       expect(row.tierAssigned).toBe('default');
+      // add-stream-keepalive: a plain (non-cascade) chain is never relabelled.
+      expect(relabels()).toEqual([]);
     } finally {
       await off.app.close();
       process.env['ROUTING_AUTO_LAYERS'] = 'structural,cascade';

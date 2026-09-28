@@ -74,6 +74,7 @@ import {
 import {
   applySettled,
   applyStarted,
+  applyUpdated,
   applyStreamSnapshot,
   emptyStream,
   inflightDisplay,
@@ -2345,6 +2346,13 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         bumpInflight();
         const ids = recentIdSet();
         inflightState = applyStarted(inflightState, row, ids, Date.now());
+        setState('inflightRows', inflightDisplay(inflightState, ids));
+      },
+      onUpdated: (row) => {
+        if (!fresh()) return;
+        bumpInflight(); // supersede any poll still in flight
+        const ids = recentIdSet();
+        inflightState = applyUpdated(inflightState, row, ids, Date.now());
         setState('inflightRows', inflightDisplay(inflightState, ids));
       },
       onSettled: (id) => {

@@ -15,6 +15,24 @@ heading is started.
 
 ## [Unreleased]
 
+### Added
+
+- **Stream keepalives.** A streaming response that has sent nothing for ~15s (`PROXY_STREAM_HEARTBEAT_MS`) gets a protocol-native keepalive, and one with no first token after ~20s (`PROXY_STREAM_EARLY_COMMIT_MS`) starts its `200` + SSE headers early — so Cloudflare and other proxies no longer drop slow or thinking streams. Keepalives are never model output; fallback and cascade still run until the first token.
+
+### Changed
+
+- **The running row follows a cascade escalation** on the Requests page, switching to the strong model as soon as the cascade escalates.
+- **Invariant 3 is reworded**: the model (not the HTTP response) commits at the first token; a transport preamble with no model output may come first.
+
+### Fixed
+
+- Long streams behind a CDN were cut off at about two minutes and recorded as "Cancelled".
+- A client disconnect or shutdown while waiting for a first token now ends the response at once; streams send `X-Accel-Buffering: no`.
+
+### Upgrade notes
+
+- A streaming request that fails **after** the ~20s early start now gets its error as an in-stream event (same type and message) instead of an HTTP status. Fast failures are unchanged. Set `PROXY_STREAM_EARLY_COMMIT_MS=0` to keep HTTP statuses for every failure before the first token, and `PROXY_STREAM_HEARTBEAT_MS=0` to turn keepalives off.
+
 ## [0.23.0] — 2026-09-24
 
 [Release](https://github.com/izzoa/polyrouter/releases/tag/v0.23.0) ·

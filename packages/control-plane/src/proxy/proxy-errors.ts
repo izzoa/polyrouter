@@ -3,9 +3,12 @@
  * is rendered as a fixed message in the caller's own envelope — never the raw
  * upstream body, request id, or credential.
  */
+import { HttpException, UnauthorizedException } from '@nestjs/common';
 import {
   ProviderCircuitOpenError,
   ProviderError,
+  formatSseData,
+  formatSseEvent,
   type ProviderErrorKind,
   type RouteError,
   type RouteErrorKind,
@@ -261,6 +264,37 @@ export function renderProxyError(
     status: err.status,
     body: { error: { message: err.publicMessage, type: err.errorType, code: err.code } },
   };
+}
+
+/** Map ANY thrown value to the client-safe ProxyError the `/v1` exception filter
+ * renders — moved here (add-stream-keepalive) so a stream that has already made its
+ * early response commit maps a late pre-commit failure EXACTLY as the HTTP path
+ * would, then frames it in-stream. Fixed, non-leaking messages throughout. */
+export function asProxyError(exception: unknown): ProxyError {
+  if (exception instanceof ProxyError) return exception;
+  if (exception instanceof UnauthorizedException) return unauthorized();
+  if (exception instanceof HttpException) {
+    const status = exception.getStatus();
+    // Fixed, non-leaking message by status class (never Nest's default body).
+    if (status === 401) return unauthorized();
+    const message = status < 500 ? 'invalid request' : 'internal proxy error';
+    const type = status < 500 ? 'invalid_request_error' : 'api_error';
+    return new ProxyError(status, message, type, null);
+  }
+  // Unknown thrown value (incl. a #6 ProviderError) → mapped or generic 500.
+  const mapped = toProxyError(exception);
+  return mapped instanceof ProxyError ? mapped : internalError();
+}
+
+/** A ProxyError as ONE in-stream SSE frame in the client's own streaming-error shape
+ * (add-stream-keepalive): the SAME body `renderProxyError` gives the HTTP path, minus
+ * the status the early response commit already spent. OpenAI clients treat a
+ * `data: {"error":…}` frame as a stream error and stop at `[DONE]`; Anthropic ends the
+ * stream on an `error` event. */
+export function proxyErrorFrame(protocol: ClientProtocol, err: ProxyError): string {
+  const { body } = renderProxyError(err, protocol);
+  if (protocol === 'anthropic') return formatSseEvent('error', body);
+  return formatSseData(body) + 'data: [DONE]\n\n';
 }
 
 /** Client protocol from the request path (`/v1/messages` is Anthropic;

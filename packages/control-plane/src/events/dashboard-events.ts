@@ -39,6 +39,9 @@ export type DashboardEvent =
       readonly reconciliationIntervalMs: number;
     }
   | { readonly type: 'inflight.started'; readonly row: StreamInflightRow }
+  // add-stream-keepalive: a cascade escalation relabelled a live entry — the same row
+  // shape as `started`, applied IN PLACE by consumers (never adds or resurrects a row).
+  | { readonly type: 'inflight.updated'; readonly row: StreamInflightRow }
   | { readonly type: 'inflight.settled'; readonly id: string }
   | { readonly type: 'analytics.invalidated' }
   /** A batch job advanced (add-batch-inference D18). A metadata-only NUDGE: it

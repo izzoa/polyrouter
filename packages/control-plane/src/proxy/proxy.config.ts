@@ -1,5 +1,6 @@
 import { createProviderAdapter } from '@polyrouter/data-plane';
 import { loadConfig, registerConfig, z } from '@polyrouter/shared';
+import { INTERMEDIARY_REAP_FLOOR_MS } from '../intermediary';
 import { loadProvidersConfig, resolveCredentialKey } from '../providers/providers.config';
 
 /** DI tokens for the proxy layer. */
@@ -37,11 +38,22 @@ const MAX_TIMEOUT_MS = 3_600_000;
  * (the adapter's typed `unavailable` timeout must win a pre-headers race, E1.3). */
 export const proxyConfigSchema = z.object({
   PROXY_MAX_BODY_BYTES: z.coerce.number().int().positive().default(DEFAULT_MAX_BODY_BYTES),
-  PROXY_FIRST_EVENT_TIMEOUT_MS: z.coerce.number().int().positive().max(MAX_TIMEOUT_MS).default(30_000),
+  PROXY_FIRST_EVENT_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(MAX_TIMEOUT_MS)
+    .default(30_000),
   PROXY_EVENT_TIMEOUT_MARGIN_MS: z.coerce.number().int().positive().max(60_000).default(500),
   // Inter-chunk idle deadline for buffered upstream reads (E4.3). Raise it
   // alongside PROXY_FIRST_EVENT_TIMEOUT_MS for slow local models.
   PROXY_IDLE_TIMEOUT_MS: z.coerce.number().int().positive().max(MAX_TIMEOUT_MS).default(30_000),
+  // add-stream-keepalive: the longest a committed `/v1` stream may leave its client
+  // silent before a keepalive, and the longest a stream waits for its first event
+  // before an early RESPONSE commit (200 + SSE headers). `0` disables each — hence
+  // nonnegative, not positive. Bounded below the intermediary reap floor at build.
+  PROXY_STREAM_HEARTBEAT_MS: z.coerce.number().int().nonnegative().default(15_000),
+  PROXY_STREAM_EARLY_COMMIT_MS: z.coerce.number().int().nonnegative().default(20_000),
 });
 
 registerConfig('proxy', proxyConfigSchema);
@@ -51,7 +63,37 @@ export type ProxyRawConfig = {
   PROXY_FIRST_EVENT_TIMEOUT_MS: number;
   PROXY_EVENT_TIMEOUT_MARGIN_MS: number;
   PROXY_IDLE_TIMEOUT_MS: number;
+  PROXY_STREAM_HEARTBEAT_MS: number;
+  PROXY_STREAM_EARLY_COMMIT_MS: number;
 };
+
+/** The `/v1` stream keepalive settings (add-stream-keepalive). `0` = disabled. */
+export interface StreamKeepaliveConfig {
+  /** Max client-facing silence on a committed stream before a keepalive. */
+  readonly heartbeatMs: number;
+  /** Max wait for the first event before the early response commit. */
+  readonly earlyCommitMs: number;
+}
+
+/** Validate the keepalive knobs against the intermediary reap floor (fail boot fast,
+ * naming the knob): a value at or above it would silently reintroduce the drop the
+ * knob exists to prevent. `0` (disabled) is always accepted. */
+export function resolveStreamKeepalive(proxy: ProxyRawConfig): StreamKeepaliveConfig {
+  for (const [knob, v] of [
+    ['PROXY_STREAM_HEARTBEAT_MS', proxy.PROXY_STREAM_HEARTBEAT_MS],
+    ['PROXY_STREAM_EARLY_COMMIT_MS', proxy.PROXY_STREAM_EARLY_COMMIT_MS],
+  ] as const) {
+    if (v !== 0 && v >= INTERMEDIARY_REAP_FLOOR_MS) {
+      throw new Error(
+        `${knob} must be 0 (disabled) or below the ~${String(INTERMEDIARY_REAP_FLOOR_MS)}ms intermediary idle-reap window`,
+      );
+    }
+  }
+  return {
+    heartbeatMs: proxy.PROXY_STREAM_HEARTBEAT_MS,
+    earlyCommitMs: proxy.PROXY_STREAM_EARLY_COMMIT_MS,
+  };
+}
 
 export type ProxyAdapterFactory = typeof createProviderAdapter;
 
@@ -72,6 +114,8 @@ export interface ProxyRuntime {
   readonly maxBodyBytes: number;
   /** Max time to wait for in-flight streams to finish on shutdown. */
   readonly streamDrainDeadlineMs: number;
+  /** `/v1` stream keepalive + early response commit (add-stream-keepalive). */
+  readonly streamKeepalive: StreamKeepaliveConfig;
 }
 
 /** Pure derivation of the body/timeout bounds from the validated proxy config,
@@ -95,12 +139,14 @@ export function resolveProxyBounds(proxy: ProxyRawConfig): {
 /** Resolve the proxy runtime from config (reuses #7's credential-key logic). */
 export function loadProxyRuntime(): ProxyRuntime {
   const { providers, base } = loadProvidersConfig();
-  const bounds = resolveProxyBounds(loadConfig<ProxyRawConfig>());
+  const raw = loadConfig<ProxyRawConfig>();
+  const bounds = resolveProxyBounds(raw);
   return {
     key: resolveCredentialKey(providers, base),
     mode: base.MODE,
     defaultMaxOutputTokens: 4096,
     ...bounds,
     streamDrainDeadlineMs: 15_000,
+    streamKeepalive: resolveStreamKeepalive(raw),
   };
 }

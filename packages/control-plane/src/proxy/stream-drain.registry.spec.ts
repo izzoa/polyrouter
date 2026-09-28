@@ -16,6 +16,7 @@ const runtime = (streamDrainDeadlineMs: number): ProxyRuntime => ({
   idleTimeoutMs: 30_000,
   maxBodyBytes: 10_485_760,
   streamDrainDeadlineMs,
+  streamKeepalive: { heartbeatMs: 0, earlyCommitMs: 0 },
 });
 
 describe('StreamDrainRegistry', () => {

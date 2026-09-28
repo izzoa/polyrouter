@@ -4,6 +4,7 @@ import type { InflightRow, InflightSnapshot } from './api';
 import {
   applySettled,
   applyStarted,
+  applyUpdated,
   applyStreamSnapshot,
   emptyStream,
   inflightDisplay,
@@ -120,6 +121,48 @@ class FakeSource implements EventSourceLike {
   }
 }
 
+// add-stream-keepalive (task 5.2): a cascade escalation's relabel is applied IN PLACE —
+// the running row now names the strong model — and never adds or resurrects a row.
+describe('applyUpdated (inflight.updated)', () => {
+  const strong = {
+    tierAssigned: 'heavy',
+    modelLabel: 'mimo-v2.6-pro',
+    providerLabel: 'XiaomiMiMo',
+  };
+
+  it("changes a running row's model and provider in place, keeping its position", () => {
+    let s = applyStarted(emptyStream(), row('a', { modelLabel: 'minimax-m3' }), NONE, 1);
+    s = applyStarted(s, row('b'), NONE, 1);
+    s = applyUpdated(s, row('a', strong), NONE, 2);
+    expect(s.live.map((r) => r.id)).toEqual(['a', 'b']); // no duplicate, no reorder
+    expect(s.live[0]).toMatchObject(strong);
+    expect(inflightDisplay(s, NONE).find((r) => r.id === 'a')).toMatchObject(strong);
+  });
+
+  it('ignores a stale update for a settled id or one whose durable row is shown', () => {
+    const started = applyStarted(emptyStream(), row('a'), NONE, 1);
+    const settled = applySettled(started, 'a', 2).next;
+    const late = applyUpdated(settled, row('a', strong), NONE, 3);
+    expect(late.live).toEqual([]); // not resurrected
+    expect(late.settling.map((x) => x.row.modelLabel)).toEqual(['m']); // bridge untouched
+    const durable = applyUpdated(started, row('a', strong), new Set(['a']), 3);
+    expect(durable.live[0]!.modelLabel).toBe('m'); // the durable row wins
+  });
+
+  it('adds nothing for an id it is not displaying', () => {
+    const s = applyUpdated(emptyStream(), row('x', strong), NONE, 1);
+    expect(s.live).toEqual([]);
+  });
+
+  it('prunes expired terminal markers like applyStarted does', () => {
+    const started = applyStarted(emptyStream(), row('a'), NONE, 1);
+    const settled = applySettled(started, 'a', 2).next;
+    expect(settled.terminal['a']).toBe(2);
+    const later = applyUpdated(settled, row('zz'), NONE, 2 + 10 * 60_000);
+    expect(later.terminal['a']).toBeUndefined();
+  });
+});
+
 describe('createEventStream', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
@@ -156,12 +199,23 @@ describe('createEventStream', () => {
     expect(seen.every((h) => h !== 'live')).toBe(true);
   });
 
+  it('delivers inflight.updated to onUpdated (add-stream-keepalive)', () => {
+    const src = new FakeSource();
+    const updated: InflightRow[] = [];
+    createRoot((d) => {
+      createEventStream(
+        opts({ factory: () => src, onUpdated: (r: InflightRow) => updated.push(r) }),
+      );
+      src.emit('inflight.updated', { row: row('a', { modelLabel: 'mimo-v2.6-pro' }) });
+      d();
+    });
+    expect(updated.map((r) => r.modelLabel)).toEqual(['mimo-v2.6-pro']);
+  });
+
   it('reports live on a frame, and adopts the server-advertised intervals', () => {
     const src = new FakeSource();
     createRoot((d) => {
-      const h = createEventStream(
-        opts({ factory: () => src }),
-      );
+      const h = createEventStream(opts({ factory: () => src }));
       expect(h.health()).toBe('connecting');
       src.emit('snapshot', {
         items: [],
@@ -198,9 +252,7 @@ describe('createEventStream', () => {
   it('treats a stream gone quiet past its tolerance as unhealthy', () => {
     const src = new FakeSource();
     createRoot((d) => {
-      const h = createEventStream(
-        opts({ factory: () => src }),
-      );
+      const h = createEventStream(opts({ factory: () => src }));
       src.emit('snapshot', {
         items: [],
         available: true,

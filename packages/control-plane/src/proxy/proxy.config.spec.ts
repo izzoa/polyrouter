@@ -2,13 +2,20 @@
 // bounds derivation — core's first/inter-event bound is always the adapter
 // first-byte bound + a strictly positive margin, so the adapter's typed
 // `unavailable` timeout wins a pre-headers race (E1.3).
-import { proxyConfigSchema, resolveProxyBounds, type ProxyRawConfig } from './proxy.config';
+import {
+  proxyConfigSchema,
+  resolveProxyBounds,
+  resolveStreamKeepalive,
+  type ProxyRawConfig,
+} from './proxy.config';
 
 const raw = (over: Partial<ProxyRawConfig> = {}): ProxyRawConfig => ({
   PROXY_MAX_BODY_BYTES: 10_485_760,
   PROXY_FIRST_EVENT_TIMEOUT_MS: 30_000,
   PROXY_EVENT_TIMEOUT_MARGIN_MS: 500,
   PROXY_IDLE_TIMEOUT_MS: 30_000,
+  PROXY_STREAM_HEARTBEAT_MS: 15_000,
+  PROXY_STREAM_EARLY_COMMIT_MS: 20_000,
   ...over,
 });
 
@@ -19,6 +26,8 @@ describe('proxyConfigSchema', () => {
       PROXY_FIRST_EVENT_TIMEOUT_MS: 30_000,
       PROXY_EVENT_TIMEOUT_MARGIN_MS: 500,
       PROXY_IDLE_TIMEOUT_MS: 30_000,
+      PROXY_STREAM_HEARTBEAT_MS: 15_000,
+      PROXY_STREAM_EARLY_COMMIT_MS: 20_000,
     });
   });
 
@@ -34,6 +43,8 @@ describe('proxyConfigSchema', () => {
       PROXY_FIRST_EVENT_TIMEOUT_MS: 120_000,
       PROXY_EVENT_TIMEOUT_MARGIN_MS: 250,
       PROXY_IDLE_TIMEOUT_MS: 90_000,
+      PROXY_STREAM_HEARTBEAT_MS: 15_000,
+      PROXY_STREAM_EARLY_COMMIT_MS: 20_000,
     });
   });
 
@@ -77,5 +88,35 @@ describe('resolveProxyBounds', () => {
     expect(b.firstByteTimeoutMs).toBe(120_000);
     expect(b.firstEventTimeoutMs).toBe(120_500);
     expect(b.firstEventTimeoutMs).toBeGreaterThan(b.firstByteTimeoutMs);
+  });
+});
+
+// add-stream-keepalive (task 1.2): the two stream knobs — defaulted on, `0` is the
+// documented opt-out, and anything at or above the intermediary reap floor fails boot
+// naming the knob (it would silently reintroduce the drop it exists to prevent).
+describe('stream keepalive knobs (add-stream-keepalive)', () => {
+  it('defaults both on, and accepts 0 as the opt-out', () => {
+    expect(resolveStreamKeepalive(raw())).toEqual({ heartbeatMs: 15_000, earlyCommitMs: 20_000 });
+    const off = proxyConfigSchema.parse({
+      PROXY_STREAM_HEARTBEAT_MS: '0',
+      PROXY_STREAM_EARLY_COMMIT_MS: '0',
+    });
+    expect(resolveStreamKeepalive(off)).toEqual({ heartbeatMs: 0, earlyCommitMs: 0 });
+  });
+
+  it.each(['PROXY_STREAM_HEARTBEAT_MS', 'PROXY_STREAM_EARLY_COMMIT_MS'] as const)(
+    '%s at or above the reap floor fails, naming the knob',
+    (knob) => {
+      expect(() => resolveStreamKeepalive(raw({ [knob]: 60_000 }))).toThrow(knob);
+      expect(() => resolveStreamKeepalive(raw({ [knob]: 90_000 }))).toThrow(knob);
+      expect(() => resolveStreamKeepalive(raw({ [knob]: 59_999 }))).not.toThrow();
+    },
+  );
+
+  it('rejects negative and non-integer values at parse', () => {
+    expect(proxyConfigSchema.safeParse({ PROXY_STREAM_HEARTBEAT_MS: '-1' }).success).toBe(false);
+    expect(proxyConfigSchema.safeParse({ PROXY_STREAM_EARLY_COMMIT_MS: '1.5' }).success).toBe(
+      false,
+    );
   });
 });

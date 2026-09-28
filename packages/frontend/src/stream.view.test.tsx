@@ -110,7 +110,9 @@ describe('the event stream drives the live view', () => {
     document.body.innerHTML = '';
   });
 
-  const boot = async (client = new FakeApiClient()): Promise<{ store: AppStore; dispose: () => void }> => {
+  const boot = async (
+    client = new FakeApiClient(),
+  ): Promise<{ store: AppStore; dispose: () => void }> => {
     const store = createAppStore(client);
     store.setStreamFactory(factory);
     const { dispose } = mount(store);
@@ -170,6 +172,46 @@ describe('the event stream drives the live view', () => {
     }
   });
 
+  it('an escalation relabel updates the running row in place (add-stream-keepalive)', async () => {
+    const { store, dispose } = await boot();
+    try {
+      FakeSource.last?.emit('snapshot', SNAPSHOT());
+      await flush();
+      FakeSource.last?.emit('inflight.started', {
+        row: { ...row('esc-1'), tierAssigned: 'utility', modelLabel: 'minimax/minimax-m3' },
+      });
+      await flush();
+      expect(store.state.inflightRows.map((r) => r.modelLabel)).toEqual(['minimax/minimax-m3']);
+      FakeSource.last?.emit('inflight.updated', {
+        row: {
+          ...row('esc-1'),
+          tierAssigned: 'heavy',
+          modelLabel: 'mimo-v2.6-pro',
+          providerLabel: 'XiaomiMiMo',
+        },
+      });
+      await flush();
+      // Same row, now naming the strong model — no second row, no blink.
+      expect(store.state.inflightRows).toHaveLength(1);
+      expect(store.state.inflightRows[0]).toMatchObject({
+        id: 'esc-1',
+        tierAssigned: 'heavy',
+        modelLabel: 'mimo-v2.6-pro',
+        providerLabel: 'XiaomiMiMo',
+      });
+      // A relabel for a request that already settled never brings it back.
+      FakeSource.last?.emit('inflight.settled', { id: 'esc-1' });
+      await flush();
+      FakeSource.last?.emit('inflight.updated', { row: row('esc-1') });
+      FakeSource.last?.emit('inflight.updated', { row: row('never-started') });
+      await flush();
+      expect(store.state.inflightRows.map((r) => r.id)).toEqual(['esc-1']); // the bridge only
+      expect(store.state.inflightRows[0]!.modelLabel).toBe('mimo-v2.6-pro');
+    } finally {
+      dispose();
+    }
+  });
+
   it('SELF-CORRECTS a dropped publish via the bounded reconciliation read', async () => {
     // The stream stays connected and heart-beating, but a `started` never arrives —
     // liveness alone would leave the view silently wrong forever.
@@ -196,7 +238,9 @@ describe('the event stream drives the live view', () => {
   });
 
   it('re-snapshots on a resync directive', async () => {
-    const client = new FakeApiClient({ inflight: { items: [row('after-resync')], available: true, truncated: false } });
+    const client = new FakeApiClient({
+      inflight: { items: [row('after-resync')], available: true, truncated: false },
+    });
     const { store, dispose } = await boot(client);
     try {
       FakeSource.last?.emit('snapshot', SNAPSHOT());

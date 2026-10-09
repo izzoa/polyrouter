@@ -1,4 +1,5 @@
 export const APP_NAME = 'polyrouter';
+export * from './budget-progress';
 /** The polyrouter project's canonical public URL — used as the `HTTP-Referer` for OpenRouter
  * app attribution (add-openrouter-attribution). Deliberately NOT named `APP_URL`, which is the
  * operator's own instance origin (auth callbacks/cookies). A project constant, not per-instance. */

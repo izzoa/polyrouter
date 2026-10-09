@@ -15,6 +15,10 @@ heading is started.
 
 ## [Unreleased]
 
+### Added
+
+- **Budget progress in Limits.** Each budget shows cumulative recorded spend against its UTC period ceiling, usage percentage, remaining allowance or overage, separate pending batches, and freshness and cost provenance.
+
 ## [0.24.0] — 2026-09-28
 
 [Release](https://github.com/izzoa/polyrouter/releases/tag/v0.24.0) ·

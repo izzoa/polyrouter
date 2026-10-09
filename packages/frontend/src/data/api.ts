@@ -1,5 +1,6 @@
 import type { AttemptFailureEntry, HarnessType, RuleMatchType } from '@polyrouter/shared';
 import { API_BASE, PROXY_BASE } from './catalog';
+import { validBudgetProgressIds, type BudgetProgressResponse } from '@polyrouter/shared';
 
 /**
  * Typed `fetch` layer over the real backend (#18). Everything is same-origin in
@@ -1091,6 +1092,7 @@ export interface ApiClient {
   pricingStatus(): Promise<PricingStatus>;
   pricingRefresh(): Promise<{ added: number }>;
   listBudgets(): Promise<BudgetDto[]>;
+  budgetProgress(ids: readonly string[]): Promise<BudgetProgressResponse>;
   createBudget(input: CreateBudgetInput): Promise<BudgetDto>;
   updateBudget(id: string, patch: UpdateBudgetInput): Promise<BudgetDto>;
   deleteBudget(id: string): Promise<{ deleted: boolean }>;
@@ -1336,6 +1338,21 @@ export const realClient: ApiClient = {
       `${API_BASE}/routing/calibration/history${limit !== undefined ? `?limit=${String(limit)}` : ''}`,
     ),
   listBudgets: () => http<BudgetDto[]>(`${API_BASE}/budgets`),
+  budgetProgress: async (ids) => {
+    if (!validBudgetProgressIds(ids))
+      throw new ApiError(400, 'invalid_ids', 'Choose 1–20 distinct budget ids');
+    try {
+      return await http<BudgetProgressResponse>(
+        `${API_BASE}/budgets/progress?${new URLSearchParams({ ids: ids.join(',') }).toString()}`,
+      );
+    } catch (error) {
+      throw new ApiError(
+        isApiError(error) ? error.status : 503,
+        'budget_progress_unavailable',
+        'Budget progress is temporarily unavailable',
+      );
+    }
+  },
   createBudget: (input) => http<BudgetDto>(`${API_BASE}/budgets`, jsonInit('POST', input)),
   updateBudget: (id, patch) =>
     http<BudgetDto>(`${API_BASE}/budgets/${encodeURIComponent(id)}`, jsonInit('PATCH', patch)),

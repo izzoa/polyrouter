@@ -24,6 +24,12 @@ import type {
 import type { Principal } from './tenancy';
 import type { BatchEndpoint, BatchJobErrorKind, BatchJobStatus } from '../batch-jobs';
 import type { PriceMode } from './pricing/resolve';
+import type { BudgetProgressResponse } from '../budget-progress';
+
+/** Bounded owner-scoped snapshot; exposes no database or maintenance handle. */
+export interface BudgetProgressAccessor {
+  read(principal: Principal, ids: readonly string[]): Promise<BudgetProgressResponse>;
+}
 
 /** Injection tokens for the persistence seam (spec §11.1 + the workspace
  * dependency matrix): the control-plane database module PROVIDES these; the
@@ -1346,6 +1352,7 @@ export interface PersistencePort {
     NotificationChannelPatch
   >;
   budgets: OwnedRepository<BudgetRow, BudgetInsertInput, BudgetPatch>;
+  budgetProgress: BudgetProgressAccessor;
   models: ModelAccessor;
   routingEntries: RoutingEntryAccessor;
   requestLogs: RequestLogAccessor;

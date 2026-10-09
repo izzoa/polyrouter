@@ -1,19 +1,39 @@
-import { For, onMount, Show } from 'solid-js';
+import { createSignal, For, onCleanup, onMount, Show } from 'solid-js';
+import { createPoller } from '../data/poller';
+import { BudgetProgress, budgetBasis } from '../components/BudgetProgress';
 import type { BudgetDto } from '../data/api';
 import { useApp } from '../state/context';
 
-// NOTE (#20 deferred): the live "current spend" bar the prototype showed is gone —
-// the budget API is config-only and the reconciled spend counter isn't exposed yet.
-// This page configures budgets; live spend lands with a later change.
-
-export function Limits() {
+export function Limits(props: { live?: boolean }) {
   const app = useApp();
   const { state } = app;
-
-  onMount(() => void app.loadLimits());
+  const [now, setNow] = createSignal(performance.now());
+  onMount(() => {
+    void app.loadLimits();
+    const timer = setInterval(() => setNow(performance.now()), 1000);
+    onCleanup(() => clearInterval(timer));
+  });
+  onCleanup(() => app.stopLimitsProgress());
+  createPoller({
+    fn: (reason) =>
+      app.requestAggregateRefresh(
+        () => app.loadBudgetProgress(reason === 'resume'),
+        reason === 'resume',
+      ),
+    intervalMs: () => 15000,
+    enabled: () => props.live !== false,
+    runImmediately: false,
+  });
+  const retry = (): void => {
+    void app.requestAggregateRefresh(() => app.loadBudgetProgress(true), true);
+  };
 
   const removeBudget = (b: BudgetDto): void => {
-    if (globalThis.confirm(`Delete budget "${b.name}"? New requests will no longer be enforced by it.`)) {
+    if (
+      globalThis.confirm(
+        `Delete budget "${b.name}"? New requests will no longer be enforced by it.`,
+      )
+    ) {
       void app.deleteBudget(b.id);
     }
   };
@@ -28,10 +48,11 @@ export function Limits() {
 
   return (
     <div class="rs-page" style="display:flex;flex-direction:column;gap:14px;max-width:1200px">
-      <div style="display:flex;justify-content:space-between;align-items:center">
+      <div class="limits-intro">
         <div style="font:400 12.5px 'Geist',sans-serif;color:var(--text3)">
-          Spend counters are atomic across instances — a blocked budget stops requests everywhere at
-          once.
+          Progress counts recorded spend from the UTC period start, including earlier spend.
+          Postpaid requests and reconciliation can exceed a cap; allowance after pending batches
+          does not guarantee admission.
         </div>
         <button type="button" class="btn-primary" onClick={() => app.openBudget()}>
           New budget
@@ -55,11 +76,9 @@ export function Limits() {
         <div class="rs-grid-2" style="display:grid;gap:12px">
           <For each={state.budgets}>
             {(b) => (
-              <div class="panel card" style={{ opacity: b.enabled ? '1' : '0.6' }}>
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-                  <div class="section-title" style="color:var(--text)">
-                    {b.name}
-                  </div>
+              <article class="panel card budget-card" aria-label={b.name}>
+                <div class="budget-card-header">
+                  <h2 class="section-title budget-card-title">{b.name}</h2>
                   <span
                     style={{
                       padding: '2px 9px',
@@ -72,27 +91,26 @@ export function Limits() {
                     {b.action === 'alert' ? 'Alert' : 'Block'}
                   </span>
                 </div>
-                <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:8px">
-                  <span style="font:600 20px 'Geist',sans-serif;letter-spacing:-.02em">
-                    ${b.amount.toFixed(2)}
-                  </span>
-                  <span style="font:400 12px 'Geist',sans-serif;color:var(--text3)">
-                    / {b.window}
-                  </span>
-                  <span
-                    class="chip"
-                    style="margin-left:auto;font:500 10.5px 'Geist',sans-serif;color:var(--text3)"
-                  >
-                    {scopeLabel(b)}
-                  </span>
+                <div class="budget-scope">
+                  {scopeLabel(b)} · {budgetBasis(b)}
                 </div>
+                <div class="budget-config">
+                  Budget $
+                  {b.amount > 0 && b.amount < 0.01 ? b.amount.toString() : b.amount.toFixed(2)} /{' '}
+                  {b.window}
+                </div>
+                <BudgetProgress
+                  budget={b}
+                  scope={scopeLabel(b)}
+                  entry={state.budgetProgress[b.id]}
+                  now={now()}
+                  retry={retry}
+                />
                 <div style="font:400 11px 'Geist',sans-serif;color:var(--text3);line-height:1.5">
                   <Show
                     when={b.notifyChannelIds.length > 0}
                     fallback={
-                      b.action === 'block'
-                        ? 'hard stop — requests rejected at limit'
-                        : 'no channels wired'
+                      b.action === 'block' ? 'block action · postpaid cap' : 'no channels wired'
                     }
                   >
                     notifies: {b.notifyChannelIds.map(channelName).join(', ')}
@@ -120,7 +138,7 @@ export function Limits() {
                     {b.enabled ? 'enabled' : 'disabled'}
                   </span>
                 </div>
-              </div>
+              </article>
             )}
           </For>
         </div>

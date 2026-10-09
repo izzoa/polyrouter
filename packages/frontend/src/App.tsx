@@ -114,7 +114,7 @@ function Shell(props: { live: boolean }) {
               <Routing />
             </Match>
             <Match when={state.page === 'limits'}>
-              <Limits />
+              <Limits live={props.live} />
             </Match>
             <Match when={state.page === 'settings'}>
               <Settings />

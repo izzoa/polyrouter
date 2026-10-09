@@ -95,7 +95,13 @@ response bodies unless you opt in.
   snapshotted as a clearly-marked estimate that never overrides a real catalog price.
 - **Budgets that actually block** — day/week/month windows, global or per-agent,
   alert-or-block at the threshold, enforced via **atomic Redis counters** that stay
-  correct across multiple proxy instances.
+  correct across multiple proxy instances. Limits shows each budget's recorded usage
+  against its ceiling, remaining allowance or overage, and UTC reset on a cumulative
+  graph. It counts the whole calendar period, including spend before creation.
+  Pending batch ceilings stay separate from recorded spend; postpaid requests can
+  overshoot a cap. Cash and subscription-value bases, estimates, unpriced activity,
+  stale data, and unavailable progress are labelled explicitly. See the
+  [budget progress API and semantics](packages/control-plane/src/budgets/README.md).
 - **Async notifications** — SMTP and/or [Apprise](https://github.com/caronc/apprise)
   channels for budget alerts/blocks, provider-down, and failure spikes; deliveries are
   queued off the request path, deduplicated, and a failing channel never blocks a request

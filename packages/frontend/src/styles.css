@@ -1977,3 +1977,124 @@ select:focus {
     scroll-behavior: auto !important;
   }
 }
+
+/* Limits: readable recorded progress, with fixed period axes and a neutral ceiling. */
+.limits-intro {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.limits-intro > div {
+  max-width: 78ch;
+  line-height: 1.6;
+}
+.limits-intro > button {
+  flex-shrink: 0;
+}
+.budget-card {
+  min-width: 0;
+}
+.budget-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.budget-card-header > span {
+  flex-shrink: 0;
+}
+.budget-card-title {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+.budget-scope,
+.budget-config {
+  font:
+    400 12px/1.6 'Geist',
+    sans-serif;
+  color: var(--text3);
+  overflow-wrap: anywhere;
+}
+.budget-config {
+  margin-bottom: 12px;
+}
+.budget-progress {
+  font:
+    400 12px/1.6 'Geist',
+    sans-serif;
+  color: var(--text2);
+}
+.budget-progress-headline {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.budget-progress-headline strong {
+  font:
+    600 24px/1.25 'Geist',
+    sans-serif;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+.budget-percentage {
+  font:
+    500 13px 'Geist Mono',
+    monospace;
+  color: var(--text);
+}
+.budget-allowance {
+  margin: 6px 0 12px;
+}
+.budget-figure {
+  margin: 0 0 12px;
+}
+.budget-chart {
+  min-width: 0;
+  width: 100%;
+  overflow: hidden;
+}
+.budget-chart-key {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 12px;
+  font-size: 11px;
+}
+.budget-chart-key > span:first-child {
+  color: var(--accent-deep);
+}
+.budget-ceiling-key::before {
+  content: '';
+  display: inline-block;
+  width: 16px;
+  border-top: 1px dashed var(--text3);
+  margin-right: 5px;
+  vertical-align: middle;
+}
+.budget-figure figcaption {
+  font:
+    400 11px/1.6 'Geist',
+    sans-serif;
+  color: var(--text3);
+  overflow-wrap: anywhere;
+}
+.budget-freshness {
+  display: block;
+  margin-top: 6px;
+}
+.budget-progress-status {
+  min-height: 72px;
+  padding: 4px 0 12px;
+}
+@media (max-width: 768px) {
+  .limits-intro {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 12px;
+  }
+}

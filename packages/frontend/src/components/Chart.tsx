@@ -11,7 +11,7 @@ import { useApp } from '../state/context';
 export interface ChartProps {
   /** `[secs[], ...ys[][]]` — x is epoch SECONDS (uPlot's native unit). Single
    * series by default; pass `series` metadata for a multi-series chart. */
-  data: [number[], ...number[][]];
+  data: [number[], ...(number | null)[][]];
   label?: string;
   height?: number;
   /** Multi-series mode (add-auto-performance-view): one entry per y-array.
@@ -19,6 +19,10 @@ export interface ChartProps {
    * by DASH pattern (never color alone — WCAG 1.4.1); label rendering is the
    * caller's (direct labels beside the chart). */
   series?: { label: string; dash?: number[] }[];
+  xExtent?: [number, number];
+  yExtent?: [number, number];
+  yFormat?: (value: number) => string;
+  utc?: boolean;
 }
 
 const DEFAULT_HEIGHT = 150;
@@ -55,8 +59,38 @@ export function Chart(props: ChartProps) {
       height: height(),
       legend: { show: false },
       cursor: { show: false },
-      scales: { x: { time: true } },
-      axes: [axis, { ...axis }],
+      ...(props.utc
+        ? { tzDate: (ts: number) => uPlot.tzDate(new Date(ts * 1000), 'Etc/UTC') }
+        : {}),
+      scales: {
+        x: { time: true, ...(props.xExtent ? { range: () => props.xExtent! } : {}) },
+        ...(props.yExtent ? { y: { range: () => props.yExtent! } } : {}),
+      },
+      axes: [
+        {
+          ...axis,
+          ...(props.utc
+            ? {
+                space: 75,
+                values: (_u: uPlot, ticks: number[]) =>
+                  ticks.map((t) =>
+                    props.xExtent && props.xExtent[1] - props.xExtent[0] > 86400
+                      ? new Date(t * 1000).toISOString().slice(5, 10)
+                      : new Date(t * 1000).toISOString().slice(11, 16),
+                  ),
+              }
+            : {}),
+        },
+        {
+          ...axis,
+          ...(props.yFormat
+            ? {
+                size: 58,
+                values: (_u: uPlot, ticks: number[]) => ticks.map((v) => props.yFormat!(v)),
+              }
+            : {}),
+        },
+      ],
       series:
         props.series !== undefined
           ? [

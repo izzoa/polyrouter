@@ -21,11 +21,13 @@ import { App } from './App';
 import { createAppStore } from './state/appState';
 import { AppProvider } from './state/context';
 import { DEFAULT_AUTO_PERF, FakeApiClient } from './test/fakeClient';
+import { fakeBudgetProgress } from './test/budgetProgressFixture';
 import type {
   AdminInviteDto,
   AgentDto,
   AutoPerformance,
   BatchJobDto,
+  BudgetDto,
   WorkloadMix,
 } from './data/api';
 import './styles.css';
@@ -371,6 +373,87 @@ const client = new FakeApiClient({
     : {}),
   ...(autoPerf ? { autoPerf } : {}),
 });
+// Budget-progress fixtures are opt-in; the existing layout baselines retain their data.
+if (params.has('budget')) {
+  const base: BudgetDto = {
+    id: 'budget-progress-1',
+    name: 'Daily cap for Lobechat — production research and document processing',
+    scope: 'agent',
+    agentId: AGENTS[0]!.id,
+    amount: 25,
+    window: 'day',
+    action: 'block',
+    meteringBasis: 'cash',
+    enabled: true,
+    notifyChannelIds: [],
+    createdAt: '2026-10-08T00:00:00.000Z',
+  };
+  client.budgets = [
+    base,
+    {
+      ...base,
+      id: 'budget-progress-2',
+      name: 'Monthly subscription value',
+      scope: 'global',
+      agentId: null,
+      window: 'month',
+      meteringBasis: 'notional',
+      action: 'alert',
+      amount: 100,
+    },
+    {
+      ...base,
+      id: 'budget-progress-3',
+      name: 'Disabled budget with recorded overage',
+      enabled: false,
+    },
+    {
+      ...base,
+      id: 'budget-progress-4',
+      name: 'Tiny threshold with unpriced and estimated usage',
+      amount: 0.0000001,
+    },
+    { ...base, id: 'budget-progress-5', name: 'Weekly budget with no activity', window: 'week' },
+  ];
+  client.progressReply = (ids) => {
+    if (params.get('budget') === 'unavailable')
+      return Promise.reject(new Error('progress unavailable'));
+    const asOf = '2026-10-08T12:00:00.000Z';
+    return Promise.resolve({
+      asOf,
+      results: ids.map((id) => {
+        const b = client.budgets.find((row) => row.id === id);
+        if (!b) return { id, availability: 'not_found' as const };
+        const spent =
+          id === 'budget-progress-5'
+            ? 0
+            : id === 'budget-progress-3'
+              ? 26500000
+              : id === 'budget-progress-4'
+                ? 1
+                : 12400000;
+        const result = fakeBudgetProgress(b, asOf, spent, id === 'budget-progress-1' ? 3000000 : 0);
+        if (id === 'budget-progress-4')
+          result.provenance = {
+            meteredRows: 4,
+            unpricedRows: 1,
+            unknownSpendMicros: 1,
+            usageEstimated: true,
+            priceEstimated: true,
+          };
+        if (spent > 1) {
+          const start = Date.parse(result.period.start),
+            end = Date.parse(asOf);
+          result.points = [0, 0.2, 0.4, 0.6, 0.8, 1].map((fraction, i) => ({
+            at: new Date(start + (end - start) * fraction).toISOString(),
+            spentMicros: Math.round(spent * [0, 0.1, 0.15, 0.65, 0.8, 1][i]!),
+          }));
+        }
+        return result;
+      }),
+    });
+  };
+}
 if (client.session) client.session = { ...client.session, role, email: LONG_EMAIL };
 // Keep the fake's own well-formed rows and lengthen only what drives overflow: a long
 // model id and provider label are the realistic worst case for the requests table.

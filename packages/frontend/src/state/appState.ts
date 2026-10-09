@@ -106,6 +106,11 @@ function bandRuleInScope(
 }
 import { BASE_URL } from '../data/catalog';
 import { rangeToParams } from '../data/range';
+import {
+  budgetFingerprint,
+  createBudgetProgressLoader,
+  type BudgetProgressEntry,
+} from '../data/budgetProgress';
 import type {
   Agent,
   AuthView,
@@ -412,6 +417,7 @@ export interface AppState {
 
   // Budgets (#20) — Limits page.
   budgets: BudgetDto[];
+  budgetProgress: Record<string, BudgetProgressEntry>;
   budgetsLoading: boolean;
   budgetsError: string | null;
   bf: BudgetForm;
@@ -915,6 +921,7 @@ function initialState(): AppState {
     tf: { key: '', displayName: '', busy: false, error: null },
 
     budgets: [],
+    budgetProgress: {},
     budgetsLoading: false,
     budgetsError: null,
     bf: emptyBudgetForm(),
@@ -1117,6 +1124,8 @@ export interface AppStore {
   toggleAutoLayer: (layer: 'structural' | 'cascade' | 'semantic') => Promise<void>;
   // limits (#20)
   loadLimits: () => Promise<void>;
+  loadBudgetProgress: (force?: boolean) => Promise<void>;
+  stopLimitsProgress: () => void;
   openBudget: (budget?: BudgetDto) => void;
   saveBudget: () => Promise<void>;
   deleteBudget: (id: string) => Promise<void>;
@@ -1192,10 +1201,13 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
   // --- realized loaders ---
 
   const loadAgents = async (): Promise<void> => {
+    const gen = identityGen;
     try {
       const rows = await client.listAgents();
+      if (gen !== identityGen) return;
       setState({ agents: rows.map(toAgent), agentsError: null });
     } catch (e) {
+      if (gen !== identityGen) return;
       setState('agentsError', err(e));
     }
   };
@@ -1353,6 +1365,13 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
 
   const resetIdentityScoped = (): void => {
     identityGen += 1;
+    bumpBudgets();
+    bumpChannels();
+    limitsReadGen += 1;
+    progressLoader.cancel();
+    deletedBudgets.clear();
+    pendingBudgets.clear();
+    lastAggregateAt = 0;
     // Overlay state is identity-scoped: an expanded narrow-width nav that outlives a
     // sign-out would greet the next session with a scrim over `inert` content.
     setState('navExpanded', false);
@@ -1409,6 +1428,18 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     bump('agentStrip');
     setState(
       produce((s) => {
+        s.budgets = [];
+        s.budgetProgress = {};
+        s.budgetsLoading = false;
+        s.budgetsError = null;
+        s.agents = [];
+        s.agentsError = null;
+        s.channels = [];
+        s.channelsLoading = false;
+        s.channelsError = null;
+        s.bf = emptyBudgetForm();
+        s.toast = null;
+        s.modal = null;
         s.inflightRows = [];
         s.batchRows = [];
         s.recentRequests = [];
@@ -1854,36 +1885,73 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
   };
 
   const loadLimits = async (): Promise<void> => {
+    const gen = identityGen;
+    await Promise.all([loadBudgetConfiguration(), loadChannels(), loadAgents()]);
+    if (gen === identityGen) await requestAggregateRefresh(() => progressLoader.load(true), true);
+  };
+
+  let limitsReadGen = 0;
+  const deletedBudgets = new Set<string>();
+  const pendingBudgets = new Set<string>();
+  const loadBudgetConfiguration = async (): Promise<void> => {
+    const read = ++limitsReadGen;
+    const gen = identityGen;
+    const seq = budgetsSeq;
+    const current = () => gen === identityGen && seq === budgetsSeq && read === limitsReadGen;
     setState({ budgetsLoading: true, budgetsError: null });
-    // Guard each list independently: a budget mutation must not discard the channel
-    // refresh (and vice versa) — only the raced domain is stale.
-    const bSeq = budgetsSeq;
-    const cSeq = channelsSeq;
     try {
-      const [budgets, channels] = await Promise.all([client.listBudgets(), client.listChannels()]);
+      const budgets = await client.listBudgets();
+      if (!current()) return;
       setState(
         produce((s) => {
-          if (budgetsSeq === bSeq) s.budgets = budgets;
-          if (channelsSeq === cSeq) s.channels = channels;
+          s.budgets = budgets.filter((b) => !deletedBudgets.has(b.id));
+          for (const id of Object.keys(s.budgetProgress)) {
+            const b = s.budgets.find((item) => item.id === id);
+            const snap = s.budgetProgress[id]?.snapshot;
+            if (!b || (snap && budgetFingerprint(b) !== budgetFingerprint(snap.budget)))
+              delete s.budgetProgress[id];
+          }
         }),
       );
     } catch (e) {
-      if (budgetsSeq === bSeq) setState('budgetsError', err(e));
+      if (current()) setState('budgetsError', err(e));
     } finally {
-      setState('budgetsLoading', false);
+      if (current()) setState('budgetsLoading', false);
     }
   };
+  const progressLoader = createBudgetProgressLoader({
+    client,
+    budgets: () => state.budgets.filter((b) => !pendingBudgets.has(b.id)),
+    entries: () => state.budgetProgress,
+    identity: () => identityGen,
+    active: () => state.page === 'limits' && globalThis.document?.visibilityState !== 'hidden',
+    reconcile: loadBudgetConfiguration,
+    // A forced trailing cycle starts later than the original gate call. Count
+    // that actual start in the shared floor so a poller's deferred resume cannot
+    // add another immediate read when the single-flight cycle finishes.
+    onCycleStart: () => {
+      lastAggregateAt = Date.now();
+    },
+    set: (id, entry) =>
+      setState(
+        produce((s) => {
+          if (entry) s.budgetProgress[id] = entry;
+          else delete s.budgetProgress[id];
+        }),
+      ),
+  });
 
   const loadChannels = async (): Promise<void> => {
     setState({ channelsLoading: true, channelsError: null });
     const cSeq = channelsSeq;
+    const gen = identityGen;
     try {
       const channels = await client.listChannels();
-      if (channelsSeq === cSeq) setState('channels', channels); // discard if a mutation raced in
+      if (gen === identityGen && channelsSeq === cSeq) setState('channels', channels);
     } catch (e) {
-      if (channelsSeq === cSeq) setState('channelsError', err(e));
+      if (gen === identityGen && channelsSeq === cSeq) setState('channelsError', err(e));
     } finally {
-      setState('channelsLoading', false);
+      if (gen === identityGen && channelsSeq === cSeq) setState('channelsLoading', false);
     }
   };
 
@@ -2275,15 +2343,17 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
   };
 
   const currentAggregateLoader = (): (() => Promise<void>) | null =>
-    state.page === 'costs'
-      ? loadCosts
-      : state.page === 'overview'
-        ? loadOverview
-        : // Returned `null` before add-requests-freshness, which is why the
-          // `analytics.invalidated` nudge was silently dropped on the Requests page.
-          state.page === 'requests'
-          ? refreshRequestsPage
-          : null;
+    state.page === 'limits'
+      ? () => progressLoader.load()
+      : state.page === 'costs'
+        ? loadCosts
+        : state.page === 'overview'
+          ? loadOverview
+          : // Returned `null` before add-requests-freshness, which is why the
+            // `analytics.invalidated` nudge was silently dropped on the Requests page.
+            state.page === 'requests'
+            ? refreshRequestsPage
+            : null;
   /** A nudge NEVER fetches while hidden — the stream is closed then anyway, and phase
    * 1's single catch-up owns the return. */
   const onAnalyticsNudge = (): void => {
@@ -2374,6 +2444,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         // rather than adding one, so a job advancing item by item cannot become a
         // read storm (D18).
         void requestBatchRefresh();
+        if (state.page === 'limits') onAnalyticsNudge();
       },
       onResync: () => {
         if (!fresh()) return;
@@ -2554,6 +2625,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
    * this, so a record inspector opened on one page is never left open over
    * another however the change arrived. */
   const setPage = (page: Page): void => {
+    if (state.page !== page) progressLoader.cancel();
     if (state.page !== page || state.selId !== null) setState({ page, selId: null });
   };
 
@@ -3896,12 +3968,14 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     deleteSelectedBodies,
 
     loadLimits,
+    loadBudgetProgress: (force = false) => progressLoader.load(force),
+    stopLimitsProgress: () => progressLoader.cancel(),
     openBudget: (budget) => {
       setState({ modal: 'newLimit', bf: budget ? budgetFormFrom(budget) : emptyBudgetForm() });
     },
     saveBudget: async () => {
       if (state.bf.busy) return; // single-flight — no double-submit duplicates
-      const f = state.bf;
+      const f = { ...state.bf, notifyChannelIds: [...state.bf.notifyChannelIds] };
       const name = f.name.trim();
       if (!name) {
         setState('bf', 'error', 'Name is required');
@@ -3913,6 +3987,10 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         return;
       }
       setState('bf', { busy: true, error: null });
+      const gen = identityGen;
+      bumpBudgets();
+      if (f.id) pendingBudgets.add(f.id);
+      progressLoader.cancel(f.id ? [f.id] : []);
       const body: CreateBudgetInput = {
         name,
         scope: f.scope,
@@ -3928,6 +4006,12 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         if (f.id) {
           const patch: UpdateBudgetInput = body;
           const updated = await client.updateBudget(f.id, patch);
+          if (
+            gen !== identityGen ||
+            deletedBudgets.has(f.id) ||
+            !state.budgets.some((b) => b.id === f.id)
+          )
+            return;
           bumpBudgets(); // invalidate an in-flight budgets loader (stale-overwrite)
           setState(
             produce((s) => {
@@ -3940,6 +4024,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           say('Budget updated');
         } else {
           const created = await client.createBudget(body);
+          if (gen !== identityGen) return;
           bumpBudgets();
           setState(
             produce((s) => {
@@ -3951,17 +4036,38 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           say('Budget created');
         }
       } catch (e) {
+        if (gen !== identityGen) return;
         setState('bf', { busy: false, error: err(e) });
+      } finally {
+        if (gen === identityGen) {
+          await loadBudgetConfiguration();
+          if (f.id) pendingBudgets.delete(f.id);
+          await requestAggregateRefresh(() => progressLoader.load(true), true);
+        }
       }
     },
     deleteBudget: async (id) => {
+      const gen = identityGen;
+      bumpBudgets();
+      deletedBudgets.add(id);
+      pendingBudgets.add(id);
+      progressLoader.cancel([id]);
       try {
         await client.deleteBudget(id);
+        if (gen !== identityGen) return;
         bumpBudgets();
         setState('budgets', (list) => list.filter((b) => b.id !== id));
         say('Budget deleted');
       } catch (e) {
+        if (gen !== identityGen) return;
         say(err(e));
+      } finally {
+        if (gen === identityGen) {
+          deletedBudgets.delete(id);
+          await loadBudgetConfiguration();
+          pendingBudgets.delete(id);
+          await requestAggregateRefresh(() => progressLoader.load(true), true);
+        }
       }
     },
 

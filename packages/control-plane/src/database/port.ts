@@ -48,6 +48,8 @@ import { createAnalyticsAccessor } from './analytics.queries';
 import { createBatchJobAccessor } from './batch-jobs.queries';
 import { createBodyCaptureAccessor } from './body-capture.queries';
 import type { Db } from './database.internal';
+import { Pool } from 'pg';
+import { createBudgetProgressAccessor } from './budget-progress.queries';
 import {
   buildFindById,
   buildInsertValues,
@@ -1454,6 +1456,9 @@ export function buildPersistencePort(db: Db): PersistencePort {
       notificationChannels as unknown as AnyOwnedTable,
     ),
     budgets: createOwnedRepository(db, budgets as unknown as AnyOwnedTable),
+    budgetProgress: createBudgetProgressAccessor(
+      '$client' in db && db.$client instanceof Pool ? db.$client : undefined,
+    ),
     models: createModelAccessor(db),
     routingEntries: createRoutingEntryAccessor(db),
     requestLogs: createRequestLogAccessor(db),

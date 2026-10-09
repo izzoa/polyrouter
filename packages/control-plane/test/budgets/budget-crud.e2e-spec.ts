@@ -20,6 +20,7 @@ import { configureApp } from '../../src/app.setup';
 import type { AuthedRequest } from '../../src/auth/principal.decorator';
 import { DatabaseModule } from '../../src/database/database.module';
 import { BudgetsController } from '../../src/budgets/budgets.controller';
+import { BudgetProgressService } from '../../src/budgets/budget-progress.service';
 import { BudgetsCrudService } from '../../src/budgets/budgets.crud';
 import { BudgetCache } from '../../src/budgets/budget-cache';
 import { BUDGETS_CONFIG, resolveBudgetsConfig } from '../../src/budgets/budgets.config';
@@ -80,6 +81,7 @@ describe('budget CRUD + tenant isolation', () => {
         { provide: BUDGETS_CONFIG, useFactory: resolveBudgetsConfig },
         BudgetCache,
         BudgetsCrudService,
+        BudgetProgressService,
         { provide: APP_GUARD, useClass: TestPrincipalGuard },
       ],
     }).compile();

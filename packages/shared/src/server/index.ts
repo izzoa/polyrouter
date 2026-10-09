@@ -49,6 +49,7 @@ export type {
   RequestBodyView,
   BudgetInsertInput,
   BudgetPatch,
+  BudgetProgressAccessor,
   ModelAccessor,
   ModelInsertInput,
   ModelPatch,

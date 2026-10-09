@@ -6,6 +6,7 @@ import { ObservabilityModule } from '../observability/observability.module';
 import { BudgetsController } from './budgets.controller';
 import { BudgetsCrudService } from './budgets.crud';
 import { BudgetCache } from './budget-cache';
+import { BudgetProgressService } from './budget-progress.service';
 import { BudgetService } from './budget-service';
 import { SpendCounter } from './spend-counter';
 import { BUDGETS_CONFIG, resolveBudgetsConfig } from './budgets.config';
@@ -29,6 +30,7 @@ import { BUDGETS_CONFIG, resolveBudgetsConfig } from './budgets.config';
     BudgetCache,
     BudgetService,
     BudgetsCrudService,
+    BudgetProgressService,
   ],
   // The reconcile `BudgetScheduler` lives in `BudgetSchedulerModule` (controller-
   // free, so it may import the persistence maintenance half — add-batch-inference

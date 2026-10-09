@@ -1,4 +1,6 @@
-import { Body, Controller, Delete, Get, Header, Param, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Header, Param, Patch, Post, Query } from '@nestjs/common';
+import { BudgetProgressService } from './budget-progress.service';
+import { BudgetProgressQueryDto } from './budget-progress.dto';
 import type { Principal } from '@polyrouter/shared/server';
 import { CurrentPrincipal } from '../auth/principal.decorator';
 import { BudgetsCrudService } from './budgets.crud';
@@ -8,11 +10,20 @@ import { CreateBudgetDto, UpdateBudgetDto } from './budgets.dto';
  * CRUD (#16, spec §5/§10). Every access is tenant-isolated via `db.budgets`. */
 @Controller('api/budgets')
 export class BudgetsController {
-  constructor(private readonly svc: BudgetsCrudService) {}
+  constructor(
+    private readonly svc: BudgetsCrudService,
+    private readonly progress: BudgetProgressService,
+  ) {}
 
   @Get()
   list(@CurrentPrincipal() principal: Principal) {
     return this.svc.list(principal);
+  }
+
+  @Get('progress')
+  @Header('Cache-Control', 'no-store')
+  getProgress(@CurrentPrincipal() principal: Principal, @Query() query: BudgetProgressQueryDto) {
+    return this.progress.read(principal, query.ids);
   }
 
   @Get(':id')

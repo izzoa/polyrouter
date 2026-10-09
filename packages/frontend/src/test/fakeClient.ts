@@ -1,4 +1,6 @@
 import { ApiError } from '../data/api';
+import type { BudgetProgressResponse } from '@polyrouter/shared';
+import { fakeBudgetProgress } from './budgetProgressFixture';
 import type {
   ActionResult,
   AdminInviteDto,
@@ -1542,6 +1544,21 @@ export class FakeApiClient implements ApiClient {
     return this.gate().then(() => snapshot);
   }
 
+  progressReply: ((ids: readonly string[]) => Promise<BudgetProgressResponse>) | undefined;
+  budgetProgress(ids: readonly string[]): Promise<BudgetProgressResponse> {
+    this.record('budgetProgress', ids);
+    if (this.progressReply) return this.progressReply(ids);
+    const asOf = new Date().toISOString();
+    const response: BudgetProgressResponse = {
+      asOf,
+      results: ids.map((id) => {
+        const budget = this.budgets.find((b) => b.id === id);
+        return budget ? fakeBudgetProgress(budget, asOf) : { id, availability: 'not_found' };
+      }),
+    };
+    return this.gate().then(() => response);
+  }
+
   createBudget(input: CreateBudgetInput): Promise<BudgetDto> {
     this.record('createBudget', input);
     if (input.scope === 'agent' && (input.agentId === undefined || input.agentId === '')) {
@@ -1583,6 +1600,7 @@ export class FakeApiClient implements ApiClient {
       ...(patch.window !== undefined ? { window: patch.window } : {}),
       ...(patch.action !== undefined ? { action: patch.action } : {}),
       ...(patch.amount !== undefined ? { amount: patch.amount } : {}),
+      ...(patch.meteringBasis !== undefined ? { meteringBasis: patch.meteringBasis } : {}),
       ...(patch.notifyChannelIds !== undefined ? { notifyChannelIds: patch.notifyChannelIds } : {}),
       ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
       scope,

@@ -1223,8 +1223,10 @@ describe('stale-loader-overwrite guards (#20 verify pass)', () => {
     await tick();
     s.openBudget();
     s.setState('bf', { name: 'b1', scope: 'global', amount: '5', window: 'day', action: 'alert' });
-    await s.saveBudget(); // adds b1, bumps budgetsSeq
+    // Only the original stale read stays held; mutation reconciliation can read
+    // the new server configuration before refreshing progress.
     fake.gateReads = false;
+    await s.saveBudget(); // adds b1, bumps budgetsSeq
     fake.openGate();
     await reload;
     expect(s.state.budgets.some((b) => b.name === 'b1')).toBe(true);

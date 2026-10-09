@@ -15,9 +15,18 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.25.0] — 2026-10-09
+
+[Release](https://github.com/izzoa/polyrouter/releases/tag/v0.25.0) ·
+[Compare](https://github.com/izzoa/polyrouter/compare/v0.24.0...v0.25.0)
+
 ### Added
 
 - **Budget progress in Limits.** Each budget shows cumulative recorded spend against its UTC period ceiling, usage percentage, remaining allowance or overage, separate pending batches, and freshness and cost provenance.
+
+### Upgrade notes
+
+- No migrations. Pull `ghcr.io/izzoa/polyrouter:0.25.0` (or `:latest`) and restart. Progress covers the whole current UTC calendar period, including activity before a budget was created. Budget enforcement, reservation reconciliation, and notification delivery retain their existing behavior.
 
 ## [0.24.0] — 2026-09-28
 
@@ -1097,7 +1106,8 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.24.0...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.25.0...HEAD
+[0.25.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.25.0
 [0.24.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.24.0
 [0.23.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.23.0
 [0.22.1]: https://github.com/izzoa/polyrouter/releases/tag/v0.22.1

@@ -1,5 +1,19 @@
 # @polyrouter/frontend
 
+## 0.25.0
+
+### Minor Changes
+
+- cf37825: Show recorded progress for each budget in Limits, with a cumulative UTC-period graph,
+  remaining allowance or overage, pending batch ceilings, and cost provenance. Add the
+  session-scoped, read-only budget progress API and refresh cards safely across account,
+  configuration, navigation, and period changes.
+
+### Patch Changes
+
+- Updated dependencies [cf37825]
+  - @polyrouter/shared@0.20.0
+
 ## 0.24.0
 
 ### Minor Changes

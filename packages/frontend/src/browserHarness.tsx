@@ -463,6 +463,20 @@ client.requestRows = client.requestRows.map((r) => ({
   providerLabel: LONG_PROVIDER,
 }));
 
+// Not-billed fixture (zero-cost-unbilled-errors), opt-in via `?unbilled=1` so the default
+// harness stays byte-identical for every other suite. `$0 · not billed` is wider than the
+// 0.6fr cost track, so a layout suite needs a row that actually carries it: every error
+// row becomes a request no provider ran (cost 0, `billed = false`, estimated tokens kept),
+// and the summary reports them so the Costs caption renders.
+if (params.get('unbilled') === '1') {
+  client.requestRows = client.requestRows.map((r) =>
+    r.status === 'error'
+      ? { ...r, billed: false, cost: 0, attemptCostMicros: 0, usageEstimated: true }
+      : r,
+  );
+  client.summaryResult = { ...client.summaryResult, notBilledRequests: 6 };
+}
+
 const store = createAppStore(client);
 const host = document.getElementById('root');
 if (!host) throw new Error('harness root missing');

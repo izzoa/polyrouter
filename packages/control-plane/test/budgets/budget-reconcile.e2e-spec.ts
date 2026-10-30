@@ -115,6 +115,58 @@ describe('budget reconcile + enforcement — real infra (#16)', () => {
     );
   }
 
+  /** Rows for a request no provider ran, as the recorder writes them
+   * (zero-cost-unbilled-errors): an `error` row with the routing-grade token estimate
+   * and a snapshot-source rate kept as evidence, and `cost = 0` + `billed = false`.
+   * `legacy` writes the PRE-change shape of the same request instead: the estimate
+   * priced into `cost` (54,040 tokens at $2/1M) with the marker NULL. */
+  async function seedBurst(
+    owner: string,
+    count: number,
+    shape: 'not_billed' | 'legacy',
+    at: Date,
+  ): Promise<void> {
+    for (let i = 0; i < count; i++) {
+      await pool.query(
+        `INSERT INTO request_log
+          (id, owner_user_id, decision_layer, routing_reason, input_tokens, output_tokens, duration_ms, status, cost, usage_estimated, price_source, provider_kind, billed, created_at)
+         VALUES ($1,$2,'default','test',54040,0,1,'error',$3,true,'native_family','api_key',$4,$5)`,
+        [
+          randomUUID(),
+          owner,
+          shape === 'legacy' ? 0.10808 : 0,
+          shape === 'legacy' ? null : false,
+          at,
+        ],
+      );
+    }
+  }
+  /** One billed, exactly-priced success row: the real spend a burst must not move. */
+  async function seedExact(owner: string, cost: number, at: Date): Promise<void> {
+    await pool.query(
+      `INSERT INTO request_log
+        (id, owner_user_id, decision_layer, routing_reason, input_tokens, output_tokens, duration_ms, status, cost, price_source, provider_kind, billed, created_at)
+       VALUES ($1,$2,'default','test',0,0,1,'success',$3,'bundled','api_key',true,$4)`,
+      [randomUUID(), owner, cost, at],
+    );
+  }
+  async function globalBudget(
+    owner: string,
+    action: 'block' | 'alert',
+    amount: number,
+  ): Promise<void> {
+    await port.budgets.insert(userPrincipal(owner), {
+      name: `${action}-burst`,
+      scope: 'global',
+      agentId: null,
+      window: 'month',
+      action,
+      amount,
+      notifyChannelIds: '',
+      enabled: true,
+    });
+  }
+
   const globalKey = (owner: string, w: 'day' | 'week' | 'month') =>
     counter.key(owner, 'global', 'global', w, periodInfo(w, new Date()).periodId, 'notional');
   const agentKey = (owner: string, agentId: string, w: 'day' | 'week' | 'month') =>
@@ -244,6 +296,97 @@ describe('budget reconcile + enforcement — real infra (#16)', () => {
     // a different owner (no budgets, no spend) is unaffected
     const other = await makeUser('blk-other');
     expect(await svc.checkBlocked(userPrincipal(other), null)).toBeNull();
+  });
+
+  describe('requests no provider ran (zero-cost-unbilled-errors)', () => {
+    const service = (producers: NotificationProducers): BudgetService =>
+      new BudgetService(
+        new BudgetCache(port, CFG(true)),
+        counter,
+        producers,
+        METRICS,
+        reader,
+        CFG(true),
+      );
+
+    it('a burst of not-billed rows leaves the reconciled counter unchanged and the next request admitted', async () => {
+      const owner = await makeUser('burst');
+      const principal = userPrincipal(owner);
+      const now = new Date();
+      // $3 of real spend under a $3.50 block cap.
+      await seedExact(owner, 3, now);
+      await globalBudget(owner, 'block', 3.5);
+      const producers = capturingProducers();
+      await runBudgetOccurrence(reader, counter, producers, Date.now(), STALE_MS);
+      expect((await counter.read([globalKey(owner, 'month')]))[0]).toBe(3_000_000);
+      expect(await service(producers).checkBlocked(principal, null)).toBeNull();
+
+      // The field report: six `auto` requests in four seconds, every chain member
+      // skipped by an open circuit. Priced as before, they would add $0.65 and trip the cap.
+      await seedBurst(owner, 6, 'not_billed', new Date());
+      await runBudgetOccurrence(reader, counter, producers, Date.now(), STALE_MS);
+
+      expect((await counter.read([globalKey(owner, 'month')]))[0]).toBe(3_000_000);
+      const spend = await reader.spendMicrosFor(
+        owner,
+        null,
+        new Date(now.getTime() - 60_000),
+        new Date(Date.now() + 60_000),
+        'notional',
+      );
+      expect(spend).toMatchObject({ micros: 3_000_000, estimatedMicros: 0 });
+      // The next request is admitted: nothing blocks the agent.
+      expect(await service(producers).checkBlocked(principal, null)).toBeNull();
+    });
+
+    it('the same burst recorded the pre-change way trips the block (the contrast)', async () => {
+      const owner = await makeUser('burst-legacy');
+      const principal = userPrincipal(owner);
+      const now = new Date();
+      await seedExact(owner, 3, now);
+      await seedBurst(owner, 6, 'legacy', now);
+      await globalBudget(owner, 'block', 3.5);
+      const producers = capturingProducers();
+      await runBudgetOccurrence(reader, counter, producers, Date.now(), STALE_MS);
+      // 3.00 + 6 x round(0.10808 x 1e6) µ$: legacy rows keep metering exactly as recorded,
+      // and the estimate provenance they raise is still reported.
+      expect((await counter.read([globalKey(owner, 'month')]))[0]).toBe(3_648_480);
+      const hit = await service(producers).checkBlocked(principal, null);
+      expect(hit).not.toBeNull();
+      expect(hit!.spentMicros).toBe(3_648_480);
+      const spend = await reader.spendMicrosFor(
+        owner,
+        null,
+        new Date(now.getTime() - 60_000),
+        new Date(Date.now() + 60_000),
+        'notional',
+      );
+      expect(spend.estimatedMicros).toBe(648_480);
+    });
+
+    it('the alert is not flagged as estimated when its only estimates are not-billed rows', async () => {
+      const clean = await makeUser('alert-unbilled');
+      const legacy = await makeUser('alert-legacy');
+      const now = new Date();
+      for (const owner of [clean, legacy]) {
+        await seedExact(owner, 10, now);
+        await seedBurst(owner, 4, owner === clean ? 'not_billed' : 'legacy', now);
+        await globalBudget(owner, 'alert', 5);
+      }
+      const { svc, events } = capture();
+      const producers = new NotificationProducers(svc, redis, PRODUCERS_CFG);
+      await runBudgetOccurrence(reader, counter, producers, Date.now(), STALE_MS);
+
+      const alertFor = (owner: string) =>
+        events.filter((e) => e.type === 'budget_alert' && e.scope.ownerUserId === owner);
+      expect(alertFor(clean)).toHaveLength(1);
+      // The producer carries `spendEstimated` only when true or unknown: absent = exact.
+      expect(alertFor(clean)[0]!.fields).toMatchObject({ spent: '$10.00', threshold: '$5.00' });
+      expect(alertFor(clean)[0]!.fields).not.toHaveProperty('spendEstimated');
+      // The legacy shape of the same burst still says the figure is an estimate.
+      expect(alertFor(legacy)).toHaveLength(1);
+      expect(alertFor(legacy)[0]!.fields).toMatchObject({ spendEstimated: 'true' });
+    });
   });
 
   it('routes a stale reconcile heartbeat through the named fail mode', async () => {

@@ -170,6 +170,153 @@ describe('RequestRecorder', () => {
     expect(d.attemptFailures).toHaveLength(1); // the trail follows the walk
   });
 
+  // zero-cost-unbilled-errors D2: the proxy folds the walk's evidence into
+  // `unbilledWalk`, the RECORDER decides. The table is spelled out row by row (not
+  // derived from the gate's own expression) so a gate that drops a conjunct fails.
+  describe('not-billed gate (zero-cost-unbilled-errors)', () => {
+    const usage = { inputTokens: 30, outputTokens: 12 };
+    const rows: {
+      readonly name: string;
+      readonly status: 'success' | 'error' | 'fallback' | 'cancelled';
+      readonly unbilledWalk: boolean | undefined;
+      readonly withUsage: boolean;
+      readonly billed: boolean;
+    }[] = [
+      {
+        name: 'error + flag',
+        status: 'error',
+        unbilledWalk: true,
+        withUsage: false,
+        billed: false,
+      },
+      {
+        name: 'cancelled + flag',
+        status: 'cancelled',
+        unbilledWalk: true,
+        withUsage: false,
+        billed: false,
+      },
+      {
+        name: 'error + flag false',
+        status: 'error',
+        unbilledWalk: false,
+        withUsage: false,
+        billed: true,
+      },
+      {
+        name: 'error + flag absent',
+        status: 'error',
+        unbilledWalk: undefined,
+        withUsage: false,
+        billed: true,
+      },
+      {
+        name: 'cancelled + flag absent',
+        status: 'cancelled',
+        unbilledWalk: undefined,
+        withUsage: false,
+        billed: true,
+      },
+      {
+        name: 'cancelled + flag false',
+        status: 'cancelled',
+        unbilledWalk: false,
+        withUsage: false,
+        billed: true,
+      },
+      {
+        name: 'success never, even with the flag',
+        status: 'success',
+        unbilledWalk: true,
+        withUsage: false,
+        billed: true,
+      },
+      {
+        name: 'fallback never, even with the flag',
+        status: 'fallback',
+        unbilledWalk: true,
+        withUsage: false,
+        billed: true,
+      },
+      {
+        name: 'error + flag but provider usage present',
+        status: 'error',
+        unbilledWalk: true,
+        withUsage: true,
+        billed: true,
+      },
+      {
+        name: 'cancelled + flag but provider usage present',
+        status: 'cancelled',
+        unbilledWalk: true,
+        withUsage: true,
+        billed: true,
+      },
+      {
+        name: 'success + flag + usage',
+        status: 'success',
+        unbilledWalk: true,
+        withUsage: true,
+        billed: true,
+      },
+    ];
+
+    it.each(rows)('$name -> billed=$billed', ({ status, unbilledWalk, withUsage, billed }) => {
+      const { recorder, enqueue } = makeRecorder();
+      recorder.record(ctx(), {
+        status,
+        outputChars: 0,
+        ...(withUsage ? { providerUsage: usage } : {}),
+        ...(unbilledWalk !== undefined ? { unbilledWalk } : {}),
+      });
+      const d = enqueue.mock.calls[0]![0] as RequestLogDraft;
+      expect(d.billed).toBe(billed);
+    });
+
+    it('a not-billed draft keeps its estimate, usage_estimated, error detail and trail unchanged', () => {
+      const { recorder, enqueue } = makeRecorder();
+      const attemptFailures = [
+        { index: 0, providerId: 'p1', model: 'a', kind: 'unavailable', dispatched: false },
+        {
+          index: 1,
+          providerId: 'p2',
+          model: 'b',
+          kind: 'unavailable',
+          dispatched: false,
+          terminal: true,
+        },
+      ];
+      const error = { kind: 'unavailable', providerMessage: 'circuit open' };
+      recorder.record(ctx({ requestChars: 400, attemptFailures }), {
+        status: 'error',
+        outputChars: 0,
+        unbilledWalk: true,
+        error,
+      });
+      const d = enqueue.mock.calls[0]![0] as RequestLogDraft;
+      expect(d.billed).toBe(false);
+      // The chars/4 routing estimate and its flag are the evidence the row keeps.
+      expect(d.usage).toMatchObject({ inputTokens: 100, outputTokens: 0, estimated: true });
+      expect(d.error).toEqual(error);
+      expect(d.attemptFailures).toEqual(attemptFailures);
+      expect(d.status).toBe('error');
+    });
+
+    it('the attempt ledger never carries the marker — a superseded cheap call ran', () => {
+      const enqueueAttempt = jest.fn();
+      const writer = { enqueue: jest.fn(), enqueueAttempt } as unknown as LogWriter;
+      const recorder = new RequestRecorder(writer, new ProxyMetrics());
+      recorder.recordAttempt(
+        'req-1',
+        ctx(),
+        { status: 'fallback', outputChars: 8, unbilledWalk: true },
+        0,
+      );
+      const a = enqueueAttempt.mock.calls[0]![0] as Record<string, unknown>;
+      expect('billed' in a).toBe(false);
+    });
+  });
+
   describe('learning contribution (add-semantic-learning task 3.3)', () => {
     const vec = new Float32Array([0.1, 0.2, 0.3]);
     const withSink = (): {

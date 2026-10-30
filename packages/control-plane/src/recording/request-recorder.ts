@@ -167,6 +167,12 @@ export interface RecordOutcome {
    * recorder centrally discards it otherwise; a served or cancelled request
    * records no provider fault). */
   readonly error?: RecordedError;
+  /** The proxy's fold of the walk's billing evidence (zero-cost-unbilled-errors
+   * D2): true iff EVERY executed attempt was never sent or provider-rejected (the
+   * data-plane's `walkUnbilled`). It is only an INPUT to the recorder's central
+   * not-billed gate below — never the decision itself — and absent means "no
+   * evidence", which records billed exactly as before this change (fail-safe). */
+  readonly unbilledWalk?: boolean;
 }
 
 /** DI token for the OPTIONAL learning-evidence sink (add-semantic-learning task
@@ -223,6 +229,14 @@ export class RequestRecorder {
     try {
       const durationMs = Math.max(0, Date.now() - ctx.startedAt);
       const usage = this.usageOf(ctx, outcome);
+      // THE not-billed decision site (zero-cost-unbilled-errors D2): one place, every
+      // path, like the error-detail and body-capture gates. A success/fallback row —
+      // or one carrying provider-reported usage — can never be not-billed even if a
+      // call site passed the flag wrongly; the DB CHECK backstops the status half.
+      const notBilled =
+        outcome.unbilledWalk === true &&
+        (outcome.status === 'error' || outcome.status === 'cancelled') &&
+        outcome.providerUsage === undefined;
       const draft: RequestLogDraft = {
         id,
         principal: ctx.principal,
@@ -250,6 +264,10 @@ export class RequestRecorder {
         ...(ctx.workloadRevision !== undefined ? { workloadRevision: ctx.workloadRevision } : {}),
         durationMs,
         status: outcome.status,
+        // The token estimate, `usage_estimated`, error detail and trail ride the draft
+        // unchanged: a not-billed row keeps its evidence, only its cost is zeroed (by
+        // the writer, which still resolves the price snapshot).
+        billed: !notBilled,
         usage,
         pricing: pricingOf(ctx),
         ...(outcome.escalated !== undefined ? { escalated: outcome.escalated } : {}),

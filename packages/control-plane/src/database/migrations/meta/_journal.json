@@ -295,6 +295,13 @@
       "when": 1790262170828,
       "tag": "0041_first_wallop",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1793205756424,
+      "tag": "0042_wise_giant_girl",
+      "breakpoints": true
     }
   ]
 }

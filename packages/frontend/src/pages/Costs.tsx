@@ -38,6 +38,10 @@ export function Costs(props: { live: boolean }) {
   const nativeSpend = () => state.analyticsSummary?.nativeFamilySpend ?? 0;
   const free = () => state.analyticsSummary?.freeRequests ?? 0;
   const unpriced = () => state.analyticsSummary?.unpricedRequests ?? 0;
+  // Requests no provider ran (zero-cost-unbilled-errors). NOT a fifth mix category and not
+  // in `total()`: the four segments are computed over requests that ran, and this count is
+  // disclosed as one muted caption so the mix does not silently lose rows.
+  const notBilled = () => state.analyticsSummary?.notBilledRequests ?? 0;
   // Priced requests split by what actually costs money. `paidRequests` remains the
   // priced TOTAL for API consumers; the card shows the two halves.
   const subPriced = () => state.analyticsSummary?.subscriptionPricedRequests ?? 0;
@@ -83,7 +87,8 @@ export function Costs(props: { live: boolean }) {
             <span style="color:var(--text3)">{estimated()} requests ~estimated</span>
             <Show when={nativeSpend() > 0}>
               <span style="color:var(--text3)">
-                {' '}· includes ${nativeSpend().toFixed(4)} estimate-priced
+                {' '}
+                · includes ${nativeSpend().toFixed(4)} estimate-priced
               </span>
             </Show>
             {/* Prepaid traffic is NOT added to the headline — it is money already spent
@@ -97,8 +102,8 @@ export function Costs(props: { live: boolean }) {
             </Show>
             <Show when={unknownSpend() > 0}>
               <div style="color:var(--text3);margin-top:2px">
-                includes ${unknownSpend().toFixed(4)} recorded before subscription
-                tracking — cannot be classified
+                includes ${unknownSpend().toFixed(4)} recorded before subscription tracking — cannot
+                be classified
               </div>
             </Show>
           </div>
@@ -119,31 +124,54 @@ export function Costs(props: { live: boolean }) {
             <div
               style={{ width: `${String(segWidth(cashPriced()))}%`, background: 'var(--accent)' }}
             />
-            <div style={{ width: `${String(segWidth(unpriced()))}%`, background: 'var(--faint)' }} />
+            <div
+              style={{ width: `${String(segWidth(unpriced()))}%`, background: 'var(--faint)' }}
+            />
           </div>
           {/* Counts beside percentages: this card is routinely rendered over samples
               small enough that a percentage alone implies precision the sample lacks. */}
           <div style="display:flex;gap:12px;font:400 11px 'Geist',sans-serif;color:var(--text3);flex-wrap:wrap">
             <span>
-              <span aria-hidden="true" style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--green-text);vertical-align:0.02em" /> free {segPct(free())}% ({free()})
+              <span
+                aria-hidden="true"
+                style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--green-text);vertical-align:0.02em"
+              />{' '}
+              free {segPct(free())}% ({free()})
             </span>
             <span>
-              <span aria-hidden="true" style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--accent-deep);vertical-align:0.02em" /> subscription{' '}
-              {segPct(subPriced())}% ({subPriced()})
+              <span
+                aria-hidden="true"
+                style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--accent-deep);vertical-align:0.02em"
+              />{' '}
+              subscription {segPct(subPriced())}% ({subPriced()})
             </span>
             <span>
-              <span aria-hidden="true" style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--accent);vertical-align:0.02em" /> other priced {segPct(cashPriced())}% (
-              {cashPriced()})
+              <span
+                aria-hidden="true"
+                style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--accent);vertical-align:0.02em"
+              />{' '}
+              other priced {segPct(cashPriced())}% ({cashPriced()})
             </span>
             <span>
-              <span aria-hidden="true" style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--faint);vertical-align:0.02em" /> unpriced {segPct(unpriced())}% (
-              {unpriced()})
+              <span
+                aria-hidden="true"
+                style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--faint);vertical-align:0.02em"
+              />{' '}
+              unpriced {segPct(unpriced())}% ({unpriced()})
             </span>
           </div>
           <div style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);margin-top:6px">
-            By request count. Subscription requests are prepaid at a flat rate, so their
-            cost is reported separately rather than counted as spend.
+            By request count. Subscription requests are prepaid at a flat rate, so their cost is
+            reported separately rather than counted as spend.
           </div>
+          <Show when={notBilled() > 0}>
+            <div
+              data-testid="not-billed-caption"
+              style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);margin-top:4px"
+            >
+              {notBilled()} not billed — requests no provider ran, so they are not in the mix above.
+            </div>
+          </Show>
         </div>
         <div class="panel card">
           <div class="stat-label">Cost integrity</div>
@@ -161,7 +189,10 @@ export function Costs(props: { live: boolean }) {
       {/* ONE selector for all three panels: re-ranking model, provider and agent together
           is what makes the comparison legible, and three independent metric states on one
           screen is more machinery than the question deserves. */}
-      <div class="rs-wrap" style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+      <div
+        class="rs-wrap"
+        style="display:flex;align-items:center;justify-content:space-between;gap:10px"
+      >
         <div style="font:400 12px 'Geist',sans-serif;color:var(--text3)">
           {metric() === 'tokens'
             ? 'Ranked by tokens consumed — all recorded work, including cached and superseded cascade attempts.'

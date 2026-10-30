@@ -373,7 +373,14 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
           // (including a zero-cost subscription or local row). Only positive-cost rows
           // are split by provider kind. `paidRequests` is retained as the priced TOTAL
           // so existing consumers are not broken; the split is additive beside it.
-          freeRequests: intCount(sql`${requestLogs.cost} = 0`),
+          //
+          // A `billed = false` row (zero-cost-unbilled-errors) is `cost = 0` too, but
+          // no provider ran it, so it is NOT free traffic: it is counted apart in
+          // `notBilledRequests`. `IS DISTINCT FROM` keeps a legacy NULL row free.
+          freeRequests: intCount(
+            sql`${requestLogs.cost} = 0 and ${requestLogs.billed} is distinct from false`,
+          ),
+          notBilledRequests: intCount(sql`${requestLogs.billed} = false`),
           paidRequests: intCount(sql`${requestLogs.cost} > 0`),
           unpricedRequests: intCount(sql`${requestLogs.cost} is null`),
           subscriptionPricedRequests: intCount(
@@ -443,6 +450,7 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
         estimatedCount: Number(log?.estimatedCount ?? 0),
         batchRequests: Number(log?.batchRequests ?? 0),
         freeRequests: Number(log?.freeRequests ?? 0),
+        notBilledRequests: Number(log?.notBilledRequests ?? 0),
         paidRequests: Number(log?.paidRequests ?? 0),
         unpricedRequests: Number(log?.unpricedRequests ?? 0),
         subscriptionPricedRequests: Number(log?.subscriptionPricedRequests ?? 0),

@@ -602,6 +602,14 @@ export const requestLogs = pgTable(
     providerKind: text('provider_kind'),
     usageEstimated: boolean('usage_estimated').default(false).notNull(),
     cost: doublePrecision('cost'),
+    // The not-billed marker (zero-cost-unbilled-errors): `false` = a pre-commit
+    // error/cancel whose every attempt was never sent or provider-rejected, so no
+    // provider ran it — `cost` is then a KNOWN 0 (not null = unknown) while the token
+    // estimate, `usage_estimated` and the price snapshot stay as evidence. `true` =
+    // billed as recorded. NULL = the row predates the column (never backfilled) and
+    // reads as billed as recorded, which is also what an older app version writes
+    // after a rollback. Every row written by this version carries true or false.
+    billed: boolean('billed'),
     durationMs: integer('duration_ms').notNull(),
     status: text('status').notNull(), // success | error (fallback/escalated: #12/#13)
     // L1 decision telemetry (add-auto-decision-telemetry): the verdict of the
@@ -773,6 +781,15 @@ export const requestLogs = pgTable(
     check(
       'request_log_batch_price_mode_compat',
       sql`${t.priceMode} IS DISTINCT FROM 'batch' OR ${t.batchId} IS NOT NULL`,
+    ),
+    // A not-billed row is a pre-commit error/cancel with a KNOWN zero cost
+    // (zero-cost-unbilled-errors D4). `cost IS NOT NULL` is explicit on purpose: a
+    // bare `cost = 0` is NULL (not false) for a NULL cost, and a CHECK only rejects
+    // false, so the NULL-cost row the spec forbids would slip through. NULL and
+    // true `billed` are unconstrained (legacy rows, rollback writers).
+    check(
+      'request_log_not_billed_consistent',
+      sql`${t.billed} IS DISTINCT FROM false OR (${t.cost} IS NOT NULL AND ${t.cost} = 0 AND ${t.status} IN ('error', 'cancelled'))`,
     ),
   ],
 );

@@ -34,6 +34,7 @@ function logRow(over: Partial<RequestLogInsertInput> = {}): RequestLogInsertInpu
     priceVersionId: 'v1',
     usageEstimated: false,
     cost: 0.1,
+    billed: true,
     durationMs: 5,
     status: 'success',
     escalated: false,

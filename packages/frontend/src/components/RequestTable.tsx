@@ -7,7 +7,7 @@ import {
   fmtElapsed,
   type BatchDisplayRow,
 } from '../data/batchBand';
-import { agentRunLabel, rowCostLabel, startsAgentRun } from '../data/analytics';
+import { agentRunLabel, NOT_BILLED_LABEL, rowCostLabel, startsAgentRun } from '../data/analytics';
 import { fmtTime, fmtTokens } from '../data/catalog';
 import { useApp } from '../state/context';
 import { Icon } from './Icon';
@@ -193,7 +193,14 @@ export function RequestRow(props: { r: RequestRow }) {
       </Cell>
       <Cell label="Cost">
         <span class="mono" style="font-size:11px;color:var(--text)">
-          {rowCostLabel(props.r)}
+          {/* zero-cost-unbilled-errors: the not-billed label is wider than the 0.6fr cost
+              track, and a plain string would wrap mid-phrase ("$0 · not" / "billed"). Two
+              no-wrap halves wrap only at the dot; the words go muted, no new colour. The
+              text content is still exactly `$0 · not billed`. */}
+          <Show when={rowCostLabel(props.r) === NOT_BILLED_LABEL} fallback={rowCostLabel(props.r)}>
+            <span style="white-space:nowrap">$0 ·</span>{' '}
+            <span style="white-space:nowrap;color:var(--text3)">not billed</span>
+          </Show>
         </span>
       </Cell>
       <Cell label="Latency">

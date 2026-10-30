@@ -136,6 +136,13 @@ function openaiStream(res: ServerResponse, model: string): void {
       `data: ${JSON.stringify({ id: 'chatcmpl-stub', object: 'chat.completion.chunk', created: 1, model, choices })}\n\n`,
     );
   };
+  // `*noout*` (zero-cost-unbilled-errors) → a 200 stream that ends with NO output at all:
+  // a pre-commit failure with no upstream status that the provider may have worked on.
+  if (model.includes('noout')) {
+    res.write('data: [DONE]\n\n');
+    res.end();
+    return;
+  }
   chunk([{ index: 0, delta: { role: 'assistant' }, finish_reason: null }]);
   chunk([{ index: 0, delta: { content: 'Hello' }, finish_reason: null }]);
   if (model.includes('miderror')) {
@@ -710,6 +717,13 @@ export async function startStubUpstream(): Promise<StubUpstream> {
         res.writeHead(500, { 'content-type': 'application/json' });
         return res.end(JSON.stringify({ error: { message: 'stub failure' } }));
       }
+      // `*ratelimit*` (zero-cost-unbilled-errors) → an HTTP 429: a retryable upstream
+      // REJECTION (the provider answered with an error status, so the attempt is
+      // provably unbilled), unlike a timeout the provider may still be working on.
+      if (model.includes('ratelimit')) {
+        res.writeHead(429, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: { message: 'stub rate limited' } }));
+      }
       // `*badreq*` → an HTTP 400. fix-bad-request-dead-end: now fallback-ELIGIBLE — a
       // 400 in a router describes the model the router CHOSE, not a defect in the
       // caller's request. The body carries a `code` AND a prompt-echoing message, the
@@ -793,15 +807,21 @@ export async function startStubUpstream(): Promise<StubUpstream> {
       }
       // `*slowhead*` → a PRE-HEADERS delay (fix-long-call-timeouts): trips the
       // effective first-byte bound unless the provider's override raised it.
+      // `*slowheadlong*` (zero-cost-unbilled-errors) waits 5s instead of 1s, so a suite can
+      // run a first-byte bound far above its normal request latency (a 300ms bound flaked
+      // on a loaded machine) and still have a stall that outlasts it.
       if (model.includes('slowhead')) {
-        setTimeout(() => {
-          if (res.socket?.destroyed) return; // the adapter already aborted
-          if (path.endsWith('/chat/completions')) {
-            return stream ? openaiStream(res, model) : void openaiJson(res, model);
-          }
-          res.writeHead(404);
-          res.end();
-        }, 1_000);
+        setTimeout(
+          () => {
+            if (res.socket?.destroyed) return; // the adapter already aborted
+            if (path.endsWith('/chat/completions')) {
+              return stream ? openaiStream(res, model) : void openaiJson(res, model);
+            }
+            res.writeHead(404);
+            res.end();
+          },
+          model.includes('slowheadlong') ? 5_000 : 1_000,
+        );
         return;
       }
       if (path.endsWith('/chat/completions')) {

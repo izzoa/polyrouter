@@ -157,3 +157,51 @@ describe('Costs — the four-way request mix', () => {
     }
   });
 });
+
+describe('Costs — requests no provider ran are captioned, not counted (zero-cost-unbilled-errors)', () => {
+  // 8 free + 20 paid ran; 6 more were never sent or were rejected. `requests` counts all 34
+  // and the mix is computed over the 28 that ran.
+  const RAN_AND_NOT_BILLED = {
+    requests: 34,
+    freeRequests: 8,
+    subscriptionPricedRequests: 0,
+    cashPricedRequests: 20,
+    unpricedRequests: 0,
+    notBilledRequests: 6,
+  };
+
+  it('computes the segments over the 28 requests that ran and shows a muted "6 not billed" caption', async () => {
+    const h = await mountCosts(RAN_AND_NOT_BILLED);
+    try {
+      const text = h.host.textContent ?? '';
+      // 8/28 = 29% and 20/28 = 71%. Over 34 they would read 24% and 59% — the 6 not-billed
+      // rows must not sit in the denominator, and must not inflate "free".
+      expect(text).toContain('free 29% (8)');
+      expect(text).toContain('other priced 71% (20)');
+      const caption = h.host.querySelector<HTMLElement>('[data-testid="not-billed-caption"]');
+      expect(caption?.textContent).toContain('6 not billed');
+      // Muted, never a new colour: the existing text3 token.
+      expect(caption?.getAttribute('style')).toContain('var(--text3)');
+      // No fifth category: still exactly four bar segments and four legend entries.
+      const bar = h.host.querySelector<HTMLElement>('[data-testid="mix-bar"]');
+      expect(bar?.children).toHaveLength(4);
+      const widths = [...(bar?.children ?? [])].map((s) =>
+        parseFloat((s as HTMLElement).style.width),
+      );
+      expect(widths).toEqual([29, 0, 71, 0]);
+    } finally {
+      h.dispose();
+    }
+  });
+
+  it('renders no caption, and the mix exactly as before, when the range has none', async () => {
+    const h = await mountCosts({ ...RAN_AND_NOT_BILLED, requests: 28, notBilledRequests: 0 });
+    try {
+      expect(h.host.querySelector('[data-testid="not-billed-caption"]')).toBeNull();
+      expect(h.host.textContent).not.toContain('not billed');
+      expect(h.host.textContent).toContain('free 29% (8)');
+    } finally {
+      h.dispose();
+    }
+  });
+});

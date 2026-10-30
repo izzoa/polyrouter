@@ -90,6 +90,9 @@ interface LogSeed {
   attemptFailures?: unknown[];
   routingHeaderName?: string;
   routingHeaderValue?: string;
+  /** The not-billed marker (zero-cost-unbilled-errors). Omitted = NULL, a row that
+   * predates the column: every older seed in this file stays a legacy row. */
+  billed?: boolean | null;
 }
 
 describe('analytics API (#17)', () => {
@@ -133,8 +136,8 @@ describe('analytics API (#17)', () => {
          routing_header_name, routing_header_value,
          semantic_band, semantic_score, semantic_source, semantic_revision, provider_kind,
          attempt_failures, workload_class, workload_score, workload_source, workload_revision,
-         batch_id, price_mode, escalation_source, structural_epoch)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,'test',$8,$9,$10,$11,1,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39)`,
+         batch_id, price_mode, escalation_source, structural_epoch, billed)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'test',$8,$9,$10,$11,1,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40)`,
       [
         id,
         owner,
@@ -175,6 +178,7 @@ describe('analytics API (#17)', () => {
         s.priceMode ?? null,
         s.escalationSource ?? null,
         s.structuralEpoch ?? null,
+        s.billed ?? null,
       ],
     );
     return id;
@@ -2503,6 +2507,264 @@ describe('analytics API (#17)', () => {
       const b = res.body.calibrationEvidence as { contracted: boolean; truncated: boolean };
       expect(b.contracted).toBe(false);
       expect(b.truncated).toBe(false);
+    });
+  });
+
+  // ── zero-cost-unbilled-errors: a request no provider ran is not "free" ─────────
+  describe('not-billed requests (zero-cost-unbilled-errors)', () => {
+    let N: string;
+    let M: string;
+    /** Seeded ids by role, so an assertion names the row it is about. */
+    const id: Record<string, string> = {};
+    // Every token figure below is distinct so a mis-attributed row cannot cancel out.
+    const FIELD_REPORT_TOKENS = 54_040;
+
+    beforeAll(async () => {
+      N = await mkUser();
+      M = await mkUser();
+      // Interleaved on purpose: the not-billed rows sit between billed, legacy and
+      // unpriced ones, never alone at the start or the end of the seed order.
+      id['freeSuccess'] = await seedLog(N, {
+        cost: 0,
+        tin: 10,
+        tout: 5,
+        at: DAY1,
+        providerKind: 'api_key',
+        priceSource: 'bundled',
+        billed: true,
+      });
+      id['notBilledError'] = await seedLog(N, {
+        cost: 0,
+        tin: FIELD_REPORT_TOKENS,
+        tout: 0,
+        status: 'error',
+        estimated: true,
+        at: DAY1,
+        providerKind: 'api_key',
+        priceSource: 'native_family',
+        errorKind: 'unavailable',
+        billed: false,
+      });
+      id['legacyFree'] = await seedLog(N, { cost: 0, tin: 7, tout: 3, at: DAY1B, billed: null });
+      id['paid'] = await seedLog(N, {
+        cost: 1.5,
+        tin: 100,
+        tout: 50,
+        at: DAY1B,
+        providerKind: 'api_key',
+        priceSource: 'bundled',
+        billed: true,
+      });
+      id['notBilledCancelled'] = await seedLog(N, {
+        cost: 0,
+        tin: 1000,
+        tout: 0,
+        status: 'cancelled',
+        estimated: true,
+        at: DAY2,
+        providerKind: 'subscription',
+        priceSource: 'native_family',
+        billed: false,
+      });
+      id['subscriptionPaid'] = await seedLog(N, {
+        cost: 3,
+        tin: 200,
+        tout: 80,
+        at: DAY2,
+        providerKind: 'subscription',
+        priceSource: 'bundled',
+        billed: true,
+      });
+      // A cascade whose cheap call served and was superseded, then every escalation
+      // member was rejected: a not-billed parent that still has real attempt cost.
+      id['notBilledCascade'] = await seedLog(N, {
+        cost: 0,
+        tin: 500,
+        tout: 0,
+        status: 'error',
+        estimated: true,
+        at: DAY2,
+        providerKind: 'api_key',
+        priceSource: 'bundled',
+        billed: false,
+      });
+      await seedAttempt(id['notBilledCascade']!, N, { cost: 0.4, at: DAY2 });
+      // A billed estimated error row (a first-event timeout) and a legacy one: both
+      // keep their recorded estimated cost and stay priced requests.
+      id['billedError'] = await seedLog(N, {
+        cost: 0.25,
+        tin: 300,
+        tout: 0,
+        status: 'error',
+        estimated: true,
+        at: DAY2,
+        providerKind: 'api_key',
+        priceSource: 'native_family',
+        billed: true,
+      });
+      id['legacyError'] = await seedLog(N, {
+        cost: 0.1,
+        tin: 400,
+        tout: 0,
+        status: 'error',
+        estimated: true,
+        at: DAY1B,
+        priceSource: 'native_family',
+        billed: null,
+      });
+      id['unpriced'] = await seedLog(N, {
+        cost: null,
+        tin: 20,
+        tout: 0,
+        status: 'error',
+        estimated: true,
+        at: DAY1B,
+        billed: true,
+      });
+      // Another tenant's not-billed rows must never move N's counters.
+      await seedLog(M, { cost: 0, status: 'error', at: DAY1, billed: false });
+      await seedLog(M, { cost: 0, status: 'cancelled', at: DAY2, billed: false });
+    }, 30_000);
+
+    afterAll(async () => {
+      await pool.query('DELETE FROM "user" WHERE id = ANY($1)', [[N, M]]);
+    });
+
+    const rowsById = async (user: string): Promise<Map<string, Record<string, unknown>>> => {
+      const res = await q('requests', user, { ...RANGE, limit: 50 }).expect(200);
+      return new Map(
+        (res.body.rows as Record<string, unknown>[]).map((r) => [r['id'] as string, r]),
+      );
+    };
+
+    it('the listing carries billed verbatim: a not-billed row and a free row both cost 0', async () => {
+      const rows = await rowsById(N);
+      expect(rows.size).toBe(10);
+      const notBilled = rows.get(id['notBilledError']!)!;
+      const free = rows.get(id['freeSuccess']!)!;
+      // Same recorded cost; only the marker tells them apart.
+      expect(notBilled['cost']).toBe(0);
+      expect(free['cost']).toBe(0);
+      expect(notBilled['billed']).toBe(false);
+      expect(free['billed']).toBe(true);
+      // The marker does not change what the other fields already mean: the estimate
+      // flag, the snapshot source, the rolled-up price-estimated flag and the tokens.
+      expect(notBilled).toMatchObject({
+        status: 'error',
+        usageEstimated: true,
+        priceSource: 'native_family',
+        priceEstimated: true,
+        inputTokens: FIELD_REPORT_TOKENS,
+        attemptCostMicros: 0,
+      });
+      expect(free).toMatchObject({ priceEstimated: false, attemptCostMicros: 0 });
+      expect(notBilled).not.toHaveProperty('ownerUserId');
+    });
+
+    it('the listing reads a legacy row as null and derives nothing', async () => {
+      const rows = await rowsById(N);
+      const legacyFree = rows.get(id['legacyFree']!)!;
+      expect(legacyFree).toHaveProperty('billed');
+      expect(legacyFree['billed']).toBeNull();
+      expect(legacyFree).toMatchObject({ cost: 0, status: 'success', inputTokens: 7 });
+      const legacyError = rows.get(id['legacyError']!)!;
+      expect(legacyError['billed']).toBeNull();
+      expect(legacyError).toMatchObject({ cost: 0.1, status: 'error', priceEstimated: true });
+      // Every row carries the key with exactly the seeded value: true, false or null.
+      expect(Object.fromEntries([...rows].map(([rowId, r]) => [rowId, r['billed']]))).toEqual({
+        [id['freeSuccess']!]: true,
+        [id['notBilledError']!]: false,
+        [id['legacyFree']!]: null,
+        [id['paid']!]: true,
+        [id['notBilledCancelled']!]: false,
+        [id['subscriptionPaid']!]: true,
+        [id['notBilledCascade']!]: false,
+        [id['billedError']!]: true,
+        [id['legacyError']!]: null,
+        [id['unpriced']!]: true,
+      });
+    });
+
+    it('a not-billed parent keeps its superseded attempt cost in the listing', async () => {
+      const row = (await rowsById(N)).get(id['notBilledCascade']!)!;
+      expect(row['billed']).toBe(false);
+      expect(row['cost']).toBe(0);
+      // The cheap call really ran and is billed in the attempt ledger.
+      expect(row['attemptCostMicros']).toBe(400_000);
+    });
+
+    it('the summary separates not-billed requests from free ones', async () => {
+      const res = await q('summary', N, RANGE).expect(200);
+      // free: the free-model success + the legacy zero-cost row (billed NULL). The
+      // not-billed error, cancelled and cascade rows are cost 0 too but are NOT free.
+      expect(res.body.freeRequests).toBe(2);
+      expect(res.body.notBilledRequests).toBe(3);
+      // The other classifiers are unchanged: priced = the paid row, the subscription
+      // row, the billed estimated error and the legacy estimated error; unpriced = the
+      // one null-cost row; the subscription/cash split follows the provider kind.
+      expect(res.body.paidRequests).toBe(4);
+      expect(res.body.unpricedRequests).toBe(1);
+      expect(res.body.subscriptionPricedRequests).toBe(1);
+      expect(res.body.cashPricedRequests).toBe(3);
+      // The four categories plus not-billed partition every request exactly once.
+      expect(
+        res.body.freeRequests +
+          res.body.notBilledRequests +
+          res.body.paidRequests +
+          res.body.unpricedRequests,
+      ).toBe(res.body.requests);
+    });
+
+    it('the summary keeps counts, tokens and spend as recorded', async () => {
+      const res = await q('summary', N, RANGE).expect(200);
+      // Not-billed rows stay inside requests / errorCount / tokens / estimatedCount.
+      expect(res.body.requests).toBe(10);
+      expect(res.body.successCount).toBe(4);
+      expect(res.body.fallbackCount).toBe(0);
+      // error rows: not-billed error + not-billed cascade + billed + legacy + unpriced
+      // (the not-billed cancelled row is not an `error`).
+      expect(res.body.errorCount).toBe(5);
+      expect(res.body.estimatedCount).toBe(6);
+      // Estimated tokens are still counted, across both ledgers: the field-report row's
+      // 54,040 + every other row + the superseded cheap call's 20/5.
+      expect(res.body.inputTokens).toBe(56_597);
+      expect(res.body.outputTokens).toBe(143);
+      // Spend: 1.5 + 0.25 + 0.1 + the 0.4 cheap attempt. The subscription row is the
+      // flat-rate component and the not-billed rows add exactly nothing.
+      expect(res.body.spend).toBeCloseTo(2.25, 9);
+      expect(res.body.cashSpend).toBeCloseTo(1.75, 9);
+      expect(res.body.unknownSpend).toBeCloseTo(0.5, 9);
+      expect(res.body.subscriptionSpend).toBeCloseTo(3, 9);
+      expect(res.body.nativeFamilySpend).toBeCloseTo(0.35, 9);
+    });
+
+    it('a time series counts not-billed requests but adds no spend for them', async () => {
+      const res = await q('timeseries', N, { ...RANGE, bucket: 'day' }).expect(200);
+      const byDay = new Map(
+        (res.body as { bucket: string; requests: number; spend: number }[]).map((p) => [
+          p.bucket.slice(0, 10),
+          p,
+        ]),
+      );
+      // 03-10: free, not-billed error, legacy free, paid, legacy error, unpriced.
+      expect(byDay.get('2025-03-10')!.requests).toBe(6);
+      expect(byDay.get('2025-03-10')!.spend).toBeCloseTo(1.6, 9); // 1.5 + 0.1
+      // 03-11: not-billed cancelled, subscription, not-billed cascade, billed error.
+      expect(byDay.get('2025-03-11')!.requests).toBe(4);
+      expect(byDay.get('2025-03-11')!.spend).toBeCloseTo(0.65, 9); // 0.25 + 0.4 attempt
+    });
+
+    it("is tenant-isolated: another owner's not-billed rows never count here", async () => {
+      const mine = await q('summary', N, RANGE).expect(200);
+      const theirs = await q('summary', M, RANGE).expect(200);
+      expect(mine.body.notBilledRequests).toBe(3);
+      expect(theirs.body).toMatchObject({
+        requests: 2,
+        freeRequests: 0,
+        notBilledRequests: 2,
+        errorCount: 1,
+      });
+      expect(theirs.body.spend).toBeCloseTo(0, 9);
     });
   });
 });

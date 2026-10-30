@@ -2,3 +2,4 @@
  * DB writer + pricing integration live in the control plane. */
 export { computeCost, estimateTokens, resolveUsage } from './cost';
 export type { ResolvedUsage, UsageInputs } from './cost';
+export { walkUnbilled } from './billing';

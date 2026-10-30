@@ -88,6 +88,11 @@ describe('request-logging e2e', () => {
     process.env['BIND_ADDRESS'] = '127.0.0.1';
     process.env['PROVIDER_CREDENTIAL_KEY'] = 'c'.repeat(64);
     process.env['API_KEY_HMAC_SECRET'] = HMAC;
+    // zero-cost-unbilled-errors: the stub's 5s pre-headers delay (`slowheadlong`) must trip
+    // the instance first-byte bound so a REAL timeout (an attempt the provider may
+    // still be working on) is reachable. Every other model answers in milliseconds; the
+    // bound is 1.5s, not tighter, so a loaded machine cannot time out an ordinary call.
+    process.env['PROXY_FIRST_EVENT_TIMEOUT_MS'] = '1500';
     stub = await startStubUpstream();
 
     const databaseUrl = loadConfig<{ DATABASE_URL: string }>().DATABASE_URL;
@@ -255,6 +260,7 @@ describe('request-logging e2e', () => {
   }, 60_000);
 
   afterAll(async () => {
+    delete process.env['PROXY_FIRST_EVENT_TIMEOUT_MS']; // never leak into later suites
     await pool.query('DELETE FROM "user" WHERE id = $1', [userId]);
     await app.close();
     await pool.end();
@@ -282,6 +288,7 @@ describe('request-logging e2e', () => {
     expect(row.durationMs).toBeGreaterThanOrEqual(0);
     expect(JSON.stringify(row)).not.toContain('hi'); // no prompt/response body
     expect(row.attemptFailures).toBeNull(); // add-fallback-attempt-detail: success rows carry none
+    expect(row.billed).toBe(true); // zero-cost-unbilled-errors: a served row is always billed
   });
 
   it('records status=fallback against the SERVED model with a failure trail (#12)', async () => {
@@ -295,6 +302,7 @@ describe('request-logging e2e', () => {
     expect(row).toBeDefined();
     expect(row!.modelId).toBe(gpt4oModelId); // the served member, not the failed primary
     expect(row!.routingReason).toContain('fell back'); // sanitized trail
+    expect(row!.billed).toBe(true); // zero-cost-unbilled-errors: a fallback row is always billed
     // add-request-error-detail decision 2: a SERVED request carries no error detail —
     // it has no TERMINAL error.
     expect(row!.errorKind).toBeNull();
@@ -939,6 +947,381 @@ describe('request-logging e2e', () => {
       (r) => r.decisionLayer === 'listed-fallback-e2e' && r.id !== row!.id && r.cost !== null,
     );
     expect(afterCatalog!.priceSource).toBe('manual'); // catalog beats listed once present
+  });
+
+  // zero-cost-unbilled-errors: a request no provider ran is recorded at cost 0 and
+  // `billed = false`; any attempt the provider MAY have run keeps today's estimate.
+  // Real requests through the real proxy, recorder and writer against the stub.
+  describe('not-billed rows (zero-cost-unbilled-errors)', () => {
+    type LogRow = Awaited<ReturnType<PersistencePort['requestLogs']['list']>>[number];
+    // Every member is PRICED (a model-own 2 / 10 per 1M on a local provider), so a row
+    // that was wrongly billed carries a visibly non-zero estimate rather than a free 0.
+    const PRICE = { inputPricePer1m: 2, outputPricePer1m: 10 };
+    const PROMPT = 'y'.repeat(400); // ~100 estimated input tokens (chars/4)
+    const estimate = (tokens: number): number => (tokens * PRICE.inputPricePer1m) / 1_000_000;
+    let seq = 0;
+
+    /** One chain member on its OWN fresh provider: a breaker is per provider, so one
+     * test's failures can never turn a later test's attempt into a circuit-open skip. */
+    async function member(
+      externalModelId: string,
+    ): Promise<{ providerId: string; modelId: string }> {
+      seq += 1;
+      const provider = await port.providers.insert(principal, {
+        name: `zc-${String(seq)}`,
+        kind: 'local',
+        protocol: 'openai_compatible',
+        baseUrl: stub.url,
+      });
+      const model = await port.models.createForProvider(principal, provider.id, {
+        externalModelId,
+        ...PRICE,
+      });
+      return { providerId: provider.id, modelId: model!.id };
+    }
+    /** A tier whose key is unique per call, so a row is found by `tier_assigned`. */
+    async function tierOf(members: readonly { modelId: string }[]): Promise<string> {
+      seq += 1;
+      const key = `zc-tier-${String(seq)}`;
+      const tier = await port.tiers.insert(principal, { key });
+      await port.routingEntries.replaceForTier(
+        principal,
+        tier.id,
+        members.map((m) => m.modelId),
+      );
+      return key;
+    }
+    async function openCircuit(providerId: string): Promise<void> {
+      const breaker = app.get<CircuitBreaker>(PROXY_BREAKER);
+      for (let i = 0; i < 5; i += 1) {
+        const { token } = await breaker.before(providerId);
+        await breaker.complete(token, 'trip');
+      }
+    }
+    const chat = (model: string, stream = false) =>
+      request(server)
+        .post('/v1/chat/completions')
+        .set('Authorization', `Bearer ${key}`)
+        .send({ model, stream, messages: [{ role: 'user', content: PROMPT }] });
+    /** The tier's row. A streamed outcome records in a microtask after the stream ends,
+     * so poll rather than assume the first flush sees it. */
+    async function rowOf(tierKey: string): Promise<LogRow> {
+      const deadline = Date.now() + 5_000;
+      for (;;) {
+        await writer.flush();
+        const row = (await port.requestLogs.list(principal)).find(
+          (r) => r.tierAssigned === tierKey,
+        );
+        if (row !== undefined) return row;
+        if (Date.now() > deadline) throw new Error(`no request_log row for tier ${tierKey}`);
+        await new Promise((r) => setTimeout(r, 25));
+      }
+    }
+    /** What every NOT-billed row must keep besides its zero cost: the routing-grade
+     * estimate and the price snapshot (the rate that would have applied). */
+    function expectNotBilled(row: LogRow): void {
+      expect(row).toMatchObject({
+        billed: false,
+        cost: 0,
+        usageEstimated: true,
+        inputPriceSnapshot: PRICE.inputPricePer1m,
+        outputPriceSnapshot: PRICE.outputPricePer1m,
+        priceSource: 'model',
+      });
+      expect(row.inputTokens).toBeGreaterThanOrEqual(100);
+      // The cost this row WOULD have booked before the change — non-zero, so `cost: 0`
+      // above is a real decision and not a free model's coincidence.
+      expect(estimate(row.inputTokens!)).toBeGreaterThan(0);
+    }
+    /** A BILLED error row: today's behavior, the estimate priced at the snapshot. */
+    function expectBilledEstimate(row: LogRow): void {
+      expect(row).toMatchObject({ billed: true, usageEstimated: true });
+      expect(row.inputPriceSnapshot).toBe(PRICE.inputPricePer1m);
+      expect(row.cost).toBeGreaterThan(0);
+      // A post-commit row also carries the estimate of the tokens already streamed.
+      const outputCost = ((row.outputTokens ?? 0) * PRICE.outputPricePer1m) / 1_000_000;
+      expect(row.cost).toBeCloseTo(estimate(row.inputTokens!) + outputCost, 10);
+    }
+
+    it('every member skipped by an open circuit records $0, keeping the estimate, the snapshot and the trail', async () => {
+      const a = await member('oai-zc-open-a');
+      const b = await member('oai-zc-open-b');
+      await openCircuit(a.providerId);
+      await openCircuit(b.providerId);
+      const tierKey = await tierOf([a, b]);
+      const contacted = stub.requests.length;
+
+      const res = await chat(tierKey);
+      expect(res.status).toBeGreaterThanOrEqual(500);
+      expect(stub.requests.length).toBe(contacted); // the provider was never contacted
+
+      const row = await rowOf(tierKey);
+      expect(row.status).toBe('error');
+      expectNotBilled(row);
+      expect(row.errorKind).toBe('unavailable'); // the terminal error detail is untouched
+      expect(row.attemptFailures).toHaveLength(2);
+      for (const e of row.attemptFailures!) expect(e).toMatchObject({ dispatched: false });
+    });
+
+    it('a chain mixing a skip and a rejection records not billed (not_sent + rejected)', async () => {
+      const open = await member('oai-zc-mix-open');
+      const limited = await member('oai-zc-ratelimit-mix');
+      await openCircuit(open.providerId);
+      // The rejection FIRST and the skip last, and the reverse order in the next test.
+      const tierKey = await tierOf([limited, open]);
+      const res = await chat(tierKey);
+      expect(res.status).toBeGreaterThanOrEqual(400);
+      const row = await rowOf(tierKey);
+      expectNotBilled(row);
+      expect(row.attemptFailures).toHaveLength(2);
+    });
+
+    it('the skip FIRST and the rejection last records not billed too', async () => {
+      const open = await member('oai-zc-mix-open2');
+      const limited = await member('oai-zc-ratelimit-mix2');
+      await openCircuit(open.providerId);
+      const tierKey = await tierOf([open, limited]);
+      await chat(tierKey);
+      expectNotBilled(await rowOf(tierKey));
+    });
+
+    it.each([[false], [true]])(
+      'an all-429 chain (stream=%s) records not billed — every attempt got an error response',
+      async (stream) => {
+        const a = await member('oai-zc-ratelimit-a');
+        const b = await member('oai-zc-ratelimit-b');
+        const tierKey = await tierOf([a, b]);
+        const contacted = stub.requests.length;
+
+        const res = await chat(tierKey, stream);
+        expect(res.status).toBeGreaterThanOrEqual(400);
+        expect(stub.requests.length).toBe(contacted + 2); // both members really answered
+
+        const row = await rowOf(tierKey);
+        expect(row.status).toBe('error');
+        expectNotBilled(row);
+        expect(row.errorStatus).toBe(429);
+        expect(row.attemptFailures).toHaveLength(2);
+        for (const e of row.attemptFailures!) {
+          expect(e).toMatchObject({ dispatched: true, status: 429 });
+        }
+      },
+    );
+
+    it.each([[false], [true]])(
+      'a non-retryable 451 stop after a 429 records not billed (stream=%s)',
+      async (stream) => {
+        const limited = await member('oai-zc-ratelimit-451');
+        const legal = await member('oai-zc-legal');
+        const never = await member('oai-zc-after-legal');
+        const tierKey = await tierOf([limited, legal, never]);
+        const contacted = stub.requests.length;
+
+        const res = await chat(tierKey, stream);
+        expect(res.status).toBe(451);
+        expect(stub.requests.length).toBe(contacted + 2); // the third member was never tried
+
+        const row = await rowOf(tierKey);
+        expect(row.status).toBe('error');
+        expectNotBilled(row);
+        expect(row.errorKind).toBe('policy_block');
+      },
+    );
+
+    it('a 400 rejection records not billed', async () => {
+      const bad = await member('oai-zc-badreq');
+      const tierKey = await tierOf([bad]);
+      const res = await chat(tierKey);
+      expect(res.status).toBe(400);
+      const row = await rowOf(tierKey);
+      expectNotBilled(row);
+      expect(row.errorKind).toBe('bad_request');
+    });
+
+    it('a first-byte timeout keeps today’s estimate (the provider may still be working)', async () => {
+      const slow = await member('oai-zc-slowheadlong');
+      const tierKey = await tierOf([slow]);
+      const res = await chat(tierKey);
+      expect(res.status).toBeGreaterThanOrEqual(500);
+      const row = await rowOf(tierKey);
+      expect(row.status).toBe('error');
+      expectBilledEstimate(row);
+      expect(row.errorStatus).toBeNull(); // locally synthesized: no upstream status
+    });
+
+    it('a STREAMED first-event timeout keeps today’s estimate', async () => {
+      // `hang`: 200 headers, then no bytes — the stream's first event never arrives.
+      const hung = await member('oai-zc-hang');
+      const tierKey = await tierOf([hung]);
+      const res = await chat(tierKey, true);
+      expect(res.status).toBeGreaterThanOrEqual(500);
+      const row = await rowOf(tierKey);
+      expect(row.status).toBe('error');
+      expectBilledEstimate(row);
+    });
+
+    it('a non-retryable over-cap body after a 429 stays billed — the terminal attempt joins the fold', async () => {
+      // `oversized` ends the walk WITHOUT entering `failures` (a non-retryable stop), so
+      // a fold over the failures alone would see only the 429 and wrongly zero the row.
+      const limited = await member('oai-zc-ratelimit-cap');
+      const big = await member('oai-zc-oversized');
+      const tierKey = await tierOf([limited, big]);
+      const res = await chat(tierKey);
+      expect(res.status).toBe(502);
+      const row = await rowOf(tierKey);
+      expect(row.errorKind).toBe('oversized_response');
+      expectBilledEstimate(row);
+    }, 20_000);
+
+    // ONE uncertain attempt anywhere in the walk keeps the whole row billed, however
+    // many other members were rejected. The timeout sits at EVERY position so a fold
+    // that only reads the first (or last) member fails.
+    it.each([
+      { layout: 'TRR', stream: false },
+      { layout: 'RTR', stream: false },
+      { layout: 'RRT', stream: false },
+      { layout: 'RTR', stream: true },
+    ])('a mixed chain $layout (stream=$stream) stays billed', async ({ layout, stream }) => {
+      const members = [];
+      for (const c of layout) {
+        members.push(await member(c === 'T' ? 'oai-zc-slowheadlong' : 'oai-zc-ratelimit-mixed'));
+      }
+      const tierKey = await tierOf(members);
+      const contacted = stub.requests.length;
+      const res = await chat(tierKey, stream);
+      expect(res.status).toBeGreaterThanOrEqual(400);
+      // Every member was walked: the timeout did not stop the chain.
+      expect(stub.requests.length).toBe(contacted + layout.length);
+      const row = await rowOf(tierKey);
+      expect(row.status).toBe('error');
+      expectBilledEstimate(row);
+    });
+
+    it.each(['completion', 'stream'] as const)(
+      'a client abort before the first member is dispatched records not billed (%s)',
+      async (mode) => {
+        const m = await member('oai-zc-gone');
+        const tierKey = await tierOf([m]);
+        const contacted = stub.requests.length;
+        const gone = new AbortController();
+        gone.abort(); // the client left before the walk reached member 0
+        const svc = app.get(ProxyService);
+        const wire = { model: tierKey, messages: [{ role: 'user', content: PROMPT }] };
+        const call =
+          mode === 'completion'
+            ? svc.completion(principal, 'openai', wire, {}, null, gone.signal)
+            : svc.stream(principal, 'openai', wire, {}, gone.signal, null);
+        await expect(call).rejects.toBeDefined();
+        expect(stub.requests.length).toBe(contacted); // nothing was in flight
+
+        const row = await rowOf(tierKey);
+        expect(row.status).toBe('cancelled');
+        expectNotBilled(row);
+      },
+    );
+
+    it('a post-commit stream error stays billed', async () => {
+      const mid = await member('oai-zc-miderror');
+      const tierKey = await tierOf([mid]);
+      const res = await chat(tierKey, true);
+      expect(res.status).toBe(200); // committed, then the terminal frame
+      const row = await rowOf(tierKey);
+      expect(row.status).toBe('error');
+      expectBilledEstimate(row);
+    });
+
+    it('a client cancel AFTER the first token stays billed', async () => {
+      // `neverend`: role + one token, then the upstream holds the stream open.
+      const open = await member('oai-zc-neverend');
+      const tierKey = await tierOf([open]);
+      const gone = new AbortController();
+      const frames = await app
+        .get(ProxyService)
+        .stream(
+          principal,
+          'openai',
+          { model: tierKey, messages: [{ role: 'user', content: PROMPT }] },
+          {},
+          gone.signal,
+          null,
+        );
+      const it = frames[Symbol.asyncIterator]();
+      expect((await it.next()).done).toBe(false); // the first token reached the client
+      gone.abort(); // …then the client hangs up
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline && !(await it.next()).done) {
+        /* drain to the terminal frame */
+      }
+      const row = await rowOf(tierKey);
+      expect(row.status).toBe('cancelled');
+      expectBilledEstimate(row);
+    });
+
+    it('a not-billed row is immutable: a later catalog price change leaves $0 and its snapshot', async () => {
+      // A KNOWN-host provider so the catalog price resolves (deriveModelKey is pure — no
+      // network). A fresh key keeps the test idempotent: the catalog is global.
+      const modelKey = 'openai:zc-unbilled-e2e';
+      await pool.query(`DELETE FROM model_price WHERE model_key = $1`, [modelKey]);
+      await pricing.override(
+        modelKey,
+        { inputPricePer1m: 3, outputPricePer1m: 6 },
+        new Date(Date.now() - 60_000),
+      );
+      const ctx: RecordingContext = {
+        principal,
+        requestId: randomUUID(),
+        agentId: null,
+        protocol: 'openai',
+        providerId: 'p-known',
+        providerName: 'openai-known',
+        modelId: gpt4oModelId,
+        tierAssigned: null,
+        decisionLayer: 'unbilled-immutable-e2e',
+        routingReason: 'unbilled immutable e2e',
+        provider: { baseUrl: 'https://api.openai.com/v1', kind: 'api_key' },
+        model: {
+          externalModelId: 'zc-unbilled-e2e',
+          inputPricePer1m: null,
+          outputPricePer1m: null,
+          isFree: false,
+          listedInputPricePer1m: null,
+          listedOutputPricePer1m: null,
+          listedIsFree: null,
+        },
+        startedAt: Date.now(),
+        requestChars: 4_000, // ~1000 estimated input tokens
+      };
+      recorder.record(ctx, {
+        status: 'error',
+        outputChars: 0,
+        unbilledWalk: true,
+        error: { kind: 'unavailable', status: 429, providerMessage: 'rate limited' },
+      });
+      await writer.flush();
+      const find = async (): Promise<LogRow> =>
+        (await port.requestLogs.list(principal)).find(
+          (r) => r.decisionLayer === 'unbilled-immutable-e2e',
+        )!;
+      const recorded = await find();
+      expect(recorded).toMatchObject({
+        billed: false,
+        cost: 0,
+        usageEstimated: true,
+        inputPriceSnapshot: 3,
+        outputPriceSnapshot: 6,
+      });
+      expect(recorded.inputTokens).toBeGreaterThan(0);
+
+      await pricing.override(modelKey, { inputPricePer1m: 999, outputPricePer1m: 999 }, new Date());
+      const again = await port.requestLogs.findById(principal, recorded.id);
+      expect(again).toMatchObject({
+        billed: false,
+        cost: 0,
+        inputPriceSnapshot: 3,
+        outputPriceSnapshot: 6,
+        priceVersionId: recorded.priceVersionId,
+      });
+    });
   });
 
   it('a log-write failure never fails the request or throws', async () => {

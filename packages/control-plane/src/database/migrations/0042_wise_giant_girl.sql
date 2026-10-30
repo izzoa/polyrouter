@@ -1,0 +1,2 @@
+ALTER TABLE "request_log" ADD COLUMN "billed" boolean;--> statement-breakpoint
+ALTER TABLE "request_log" ADD CONSTRAINT "request_log_not_billed_consistent" CHECK ("request_log"."billed" IS DISTINCT FROM false OR ("request_log"."cost" IS NOT NULL AND "request_log"."cost" = 0 AND "request_log"."status" IN ('error', 'cancelled')));

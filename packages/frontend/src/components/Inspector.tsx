@@ -401,10 +401,19 @@ export function Inspector() {
                       <span style="color:var(--text);font-weight:500">{view().totalCost}</span>
                     </div>
                   </div>
-                  <div style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);margin-top:6px">
-                    {view().usageEstimated
-                      ? 'Provider omitted usage — output estimated from stream, flagged ~.'
-                      : 'Token counts from provider usage; unit prices snapshotted at request time.'}
+                  {/* zero-cost-unbilled-errors: one muted note in place of the usage
+                      caption — "provider omitted usage" would be untrue of a call no
+                      provider ran. About the SERVED call only, so it stays true when
+                      the attempt line above carries a superseded call's real cost. */}
+                  <div
+                    data-testid={view().notBilled ? 'not-billed-note' : undefined}
+                    style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);margin-top:6px"
+                  >
+                    {view().notBilled
+                      ? 'Not billed — the served call was never sent or was rejected by the provider, so nothing was charged for it.'
+                      : view().usageEstimated
+                        ? 'Provider omitted usage — output estimated from stream, flagged ~.'
+                        : 'Token counts from provider usage; unit prices snapshotted at request time.'}
                   </div>
                 </div>
 

@@ -171,15 +171,26 @@ async function aggregateProgress(
     providerKind: AnyPgColumn;
     usageEstimated: AnyPgColumn;
     priceSource: AnyPgColumn;
-  }) => ({
-    bucket: sql<number>`floor(extract(epoch from (${row.createdAt} - ${start.toISOString()}::timestamptz)) / ${bucketSeconds})::int`,
-    micros: microsSum(row.cost),
-    meteredRows: sql<number>`count(*)::int`,
-    unpricedRows: sql<number>`count(*) filter (where ${row.cost} is null)::int`,
-    unknownSpendMicros: unknownMicrosSum(row.cost, row.providerKind),
-    usageEstimated: sql<boolean>`coalesce(bool_or(${row.usageEstimated}), false)`,
-    priceEstimated: sql<boolean>`coalesce(bool_or(${row.priceSource} in ('native_family', 'listed')), false)`,
-  });
+    /** The not-billed marker (zero-cost-unbilled-errors). Only `request_log` has it:
+     * `request_attempt` rows are superseded cascade calls that ran, always billed. */
+    billed?: AnyPgColumn;
+  }) => {
+    // A `billed = false` row meters a known $0, so its estimated tokens and
+    // snapshot-source rate describe nothing the budget counted. They are kept out of
+    // the provenance caveat only; the row still counts in `meteredRows` and `micros`.
+    // `IS DISTINCT FROM` (not `<>`) is load-bearing: a legacy NULL row must keep
+    // raising provenance exactly as recorded.
+    const counted = row.billed ? sql` filter (where ${row.billed} is distinct from false)` : sql``;
+    return {
+      bucket: sql<number>`floor(extract(epoch from (${row.createdAt} - ${start.toISOString()}::timestamptz)) / ${bucketSeconds})::int`,
+      micros: microsSum(row.cost),
+      meteredRows: sql<number>`count(*)::int`,
+      unpricedRows: sql<number>`count(*) filter (where ${row.cost} is null)::int`,
+      unknownSpendMicros: unknownMicrosSum(row.cost, row.providerKind),
+      usageEstimated: sql<boolean>`coalesce(bool_or(${row.usageEstimated})${counted}, false)`,
+      priceEstimated: sql<boolean>`coalesce(bool_or(${row.priceSource} in ('native_family', 'listed'))${counted}, false)`,
+    };
+  };
   const logFields = fields(requestLogs);
   const logs = await db
     .select(logFields)

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { PersistencePort, PriceSnapshot, Principal } from '@polyrouter/shared/server';
 import { userPrincipal } from '@polyrouter/shared/server';
+import { computeCost } from '@polyrouter/data-plane';
 import { ProxyMetrics } from '../observability/proxy-metrics';
 import type { PricingService } from '../pricing/pricing.service';
 import {
@@ -32,6 +33,7 @@ function draft(over: Partial<RequestLogDraft> = {}): RequestLogDraft {
     routingReason: 'default tier',
     durationMs: 5,
     status: 'success',
+    billed: true,
     usage: { inputTokens: 10, outputTokens: 5, estimated: false },
     pricing: {
       externalModelId: 'gpt-4o',
@@ -472,5 +474,141 @@ describe('LogWriter', () => {
     // Parent never became durable → its child is orphaned and not inserted (rather than
     // repeatedly FK-failing the attempt batch).
     expect(attemptInsertMany).not.toHaveBeenCalled();
+  });
+});
+
+// zero-cost-unbilled-errors D3: the writer derives (cost, billed) TOGETHER from the
+// draft's verdict + status, so the `request_log_not_billed_consistent` CHECK can
+// never be violated from here.
+describe('LogWriter not-billed rows (zero-cost-unbilled-errors)', () => {
+  type Row = {
+    cost: number | null;
+    billed: boolean;
+    status: string;
+    inputTokens: number;
+    outputTokens: number;
+    usageEstimated: boolean;
+    inputPriceSnapshot: number | null;
+    priceSource: string | null;
+    priceVersionId: string | null;
+  };
+  const estimated = { inputTokens: 54_040, outputTokens: 0, estimated: true } as const;
+  const rowOf = (insertMany: jest.Mock, i = 0): Row =>
+    (insertMany.mock.calls[0] as [Principal, Row[]])[1][i]!;
+
+  it('writes cost 0 + billed false, and still stores the snapshot, source, tokens and estimate flag', async () => {
+    const native = { ...snapshot(), source: 'native_family' as const };
+    const { writer, insertMany, resolveForModel } = makeWriter({
+      resolveForModel: jest.fn().mockResolvedValue(native),
+    });
+    writer.enqueue(draft({ status: 'error', billed: false, usage: estimated }));
+    await writer.flush();
+    // The snapshot is still resolved: it is the rate that WOULD have applied.
+    expect(resolveForModel).toHaveBeenCalledTimes(1);
+    expect(rowOf(insertMany)).toMatchObject({
+      cost: 0,
+      billed: false,
+      status: 'error',
+      inputTokens: 54_040,
+      outputTokens: 0,
+      usageEstimated: true,
+      inputPriceSnapshot: 2.5,
+      priceSource: 'native_family',
+      priceVersionId: 'v1',
+    });
+  });
+
+  it('an UNPRICED not-billed draft writes cost 0 (a known zero), not NULL (unknown)', async () => {
+    const { writer, insertMany } = makeWriter({
+      resolveForModel: jest.fn().mockResolvedValue(null),
+    });
+    writer.enqueue(draft({ id: 'nb', status: 'error', billed: false, usage: estimated }));
+    writer.enqueue(draft({ id: 'b', status: 'error', billed: true, usage: estimated }));
+    await writer.flush();
+    const rows = (insertMany.mock.calls[0] as [Principal, (Row & { id: string })[]])[1];
+    const notBilled = rows.find((r) => r.id === 'nb')!;
+    const billed = rows.find((r) => r.id === 'b')!;
+    expect(notBilled.cost).toBe(0);
+    expect(notBilled.cost).not.toBeNull();
+    expect(notBilled.billed).toBe(false);
+    expect(notBilled.inputPriceSnapshot).toBeNull();
+    expect(notBilled.priceSource).toBeNull();
+    // Contrast: an unpriced BILLED row stays unknown (null), exactly as before.
+    expect(billed.cost).toBeNull();
+    expect(billed.billed).toBe(true);
+  });
+
+  it('a billed draft is written with the byte-identical computed cost and billed true', async () => {
+    const { writer, insertMany } = makeWriter({});
+    const usage = { inputTokens: 1234, outputTokens: 567, estimated: false } as const;
+    writer.enqueue(draft({ id: 'ok', status: 'success', billed: true, usage }));
+    writer.enqueue(draft({ id: 'err', status: 'error', billed: true, usage: estimated }));
+    await writer.flush();
+    const rows = (insertMany.mock.calls[0] as [Principal, (Row & { id: string })[]])[1];
+    expect(rows.find((r) => r.id === 'ok')).toMatchObject({
+      billed: true,
+      cost: computeCost(usage, snapshot()),
+    });
+    // A billed ERROR keeps today's estimate cost (a first-event timeout, say).
+    const billedError = rows.find((r) => r.id === 'err')!;
+    expect(billedError.billed).toBe(true);
+    expect(billedError.cost).toBe(computeCost(estimated, snapshot()));
+    expect(billedError.cost).toBeGreaterThan(0);
+  });
+
+  it('a cancelled not-billed draft is written not-billed too', async () => {
+    const { writer, insertMany } = makeWriter({});
+    writer.enqueue(draft({ status: 'cancelled', billed: false, usage: estimated }));
+    await writer.flush();
+    expect(rowOf(insertMany)).toMatchObject({ cost: 0, billed: false, status: 'cancelled' });
+  });
+
+  it('emits a zero to recordCost for a not-billed row and no cost series', async () => {
+    const { writer, metrics } = makeWriter({});
+    const spy = jest.spyOn(metrics, 'recordCost');
+    writer.enqueue(draft({ id: 'nb', status: 'error', billed: false, usage: estimated }));
+    writer.enqueue(draft({ id: 'b', status: 'success', billed: true }));
+    await writer.flush();
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(spy.mock.calls[0]).toEqual(['openai', 'gpt-4o', 0]);
+    expect(spy.mock.calls[1]![2]).toBeGreaterThan(0); // the billed sibling still counts
+    // 75 µ$ for the billed row only — the not-billed row added nothing.
+    expect(await metrics.metricsText()).toContain(
+      'polyrouter_cost_microusd_total{provider="openai",model="gpt-4o"} 75',
+    );
+  });
+
+  it.each(['success', 'fallback'] as const)(
+    'a malformed draft (billed=false with status %s) degrades to billed with its computed cost',
+    async (status) => {
+      const { writer, insertMany } = makeWriter({});
+      const usage = { inputTokens: 10, outputTokens: 5, estimated: false } as const;
+      // A sibling valid row in the same owner group must survive: one bad draft must
+      // not fail the group's insert (which is retried and then DROPPED).
+      writer.enqueue(draft({ id: 'bad', status, billed: false, usage }));
+      writer.enqueue(draft({ id: 'sib', status: 'error', billed: false, usage: estimated }));
+      await writer.flush();
+      expect(insertMany).toHaveBeenCalledTimes(1);
+      const rows = (insertMany.mock.calls[0] as [Principal, (Row & { id: string })[]])[1];
+      expect(rows).toHaveLength(2);
+      const bad = rows.find((r) => r.id === 'bad')!;
+      expect(bad.billed).toBe(true);
+      expect(bad.cost).toBe(computeCost(usage, snapshot()));
+      expect(bad.cost).toBeGreaterThan(0);
+      expect(rows.find((r) => r.id === 'sib')).toMatchObject({ billed: false, cost: 0 });
+    },
+  );
+
+  it('never writes the marker on the attempt ledger — a superseded cheap call ran', async () => {
+    const { writer, attemptInsertMany } = makeWriter({});
+    writer.enqueue(draft({ id: 'L1', status: 'error', billed: false, usage: estimated }));
+    writer.enqueueAttempt(attemptDraft({ id: 'A1', requestLogId: 'L1' }));
+    await writer.flush();
+    const [, attemptRows] = attemptInsertMany.mock.calls[0] as [
+      unknown,
+      (Record<string, unknown> & { cost: number })[],
+    ];
+    expect('billed' in attemptRows[0]!).toBe(false);
+    expect(attemptRows[0]!.cost).toBeGreaterThan(0); // the cheap call keeps its real cost
   });
 });

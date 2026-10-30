@@ -10,6 +10,7 @@ import {
   type RequestStatus,
   type TimeseriesPoint,
 } from './api';
+import { fmtUsd } from './format';
 
 /** Pure view-model transforms over the #17 analytics shapes — unit-tested, and
  * the single source Overview/Costs/Requests/Inspector render from. All cost/price
@@ -139,10 +140,25 @@ export function filterToRequestParams(filter: RequestFilter): RequestFilterParam
   }
 }
 
+/** What a request no provider ran reads as (zero-cost-unbilled-errors): a KNOWN
+ * $0, never the `~` estimate marker — the row keeps its estimated tokens, but
+ * nothing was billed for them. */
+export const NOT_BILLED_LABEL = '$0 · not billed';
+
+/** `billed === false` (a legacy `null` reads as billed as recorded) AND no attempt
+ * ledger cost. The table and inspector totals deliberately include
+ * `request_attempt` cost, so a cascade whose superseded cheap call has real spend
+ * must keep its normal total — `$0 · not billed` there would hide real cost. */
+function totalIsNotBilled(row: Pick<RequestRow, 'billed' | 'attemptCostMicros'>): boolean {
+  return row.billed === false && row.attemptCostMicros === 0;
+}
+
 /** The table's total-cost cell: micros-exact total, `~` when the cost is an
  * estimate — usage estimated OR the price is estimated (native-family/listed),
- * matching the inspector's `· est.` marking. */
+ * matching the inspector's `· est.` marking. A not-billed request with no attempt
+ * cost reads `$0 · not billed` instead (zero-cost-unbilled-errors). */
 export function rowCostLabel(row: RequestRow): string {
+  if (totalIsNotBilled(row)) return NOT_BILLED_LABEL;
   return `${fmtMicros(totalCostMicros(row))}${row.usageEstimated || row.priceEstimated ? '~' : ''}`;
 }
 
@@ -164,7 +180,9 @@ function priceView(
   // estimates — marked on EVERY priced row, the zero-priced (free) case included.
   const est = source === 'native_family' || source === 'listed' ? ' · est.' : '';
   if (v === 0) return { label, value: `$0 free${est}`, free: true, unpriced: false };
-  return { label, value: `$${String(v)} / 1M${est}`, free: false, unpriced: false };
+  // Display precision (zero-cost-unbilled-errors): raw `String(v)` printed float
+  // artifacts such as `$0.09999999999999999 / 1M`. The stored snapshot is untouched.
+  return { label, value: `${fmtUsd(v)} / 1M${est}`, free: false, unpriced: false };
 }
 
 export interface InspectorView {
@@ -199,12 +217,18 @@ export interface InspectorView {
   cacheReadTokens: number | null;
   cacheWriteTokens: number | null;
   prices: PriceSnapshotView[];
-  /** `unpriced` when served `cost` is null — distinct from `$0.0000`. */
+  /** `unpriced` when served `cost` is null — distinct from `$0.0000`. `$0 · not
+   * billed` for a `billed = false` row, whatever its attempt cost. */
   servedCost: string;
   attemptCost: string;
-  /** `unpriced` when served `cost` is null (invariant 4 — no recompute). */
+  /** `unpriced` when served `cost` is null (invariant 4 — no recompute). `$0 · not
+   * billed` only for a not-billed row whose attempt cost is also zero. */
   totalCost: string;
   totalMicros: number;
+  /** zero-cost-unbilled-errors: the served call was never sent or was rejected, so
+   * nothing was billed for it (`billed === false`). Drives the one inspector note;
+   * true even when an attempt line carries cost. */
+  notBilled: boolean;
   usageEstimated: boolean;
   /** Rendered price-source line (null hidden); `native_family` reads as an estimate. */
   priceSourceLabel: string | null;
@@ -361,13 +385,20 @@ export function toInspectorView(r: RequestRow): InspectorView {
       priceView('cache read', r.cacheReadPriceSnapshot, r.priceSource),
       priceView('cache write', r.cacheWritePriceSnapshot, r.priceSource),
     ],
-    servedCost: r.cost === null ? 'unpriced' : fmtMicros(Math.round(r.cost * 1_000_000)),
+    servedCost:
+      r.billed === false
+        ? NOT_BILLED_LABEL
+        : r.cost === null
+          ? 'unpriced'
+          : fmtMicros(Math.round(r.cost * 1_000_000)),
     attemptCost: fmtMicros(r.attemptCostMicros),
-    totalCost:
-      r.cost === null
+    totalCost: totalIsNotBilled(r)
+      ? NOT_BILLED_LABEL
+      : r.cost === null
         ? 'unpriced'
         : `${fmtMicros(totalCostMicros(r))}${r.priceEstimated ? ' · est.' : ''}`,
     totalMicros: totalCostMicros(r),
+    notBilled: r.billed === false,
     usageEstimated: r.usageEstimated,
     priceSourceLabel:
       r.priceSource === null

@@ -342,8 +342,14 @@ export interface PricingCatalog {
  * principal at `insertMany`. */
 export type RequestLogInsertInput = Omit<
   (typeof requestLogs)['$inferInsert'],
-  'ownerUserId' | 'orgId'
-> & { id: string };
+  'ownerUserId' | 'orgId' | 'billed'
+> & {
+  id: string;
+  /** The not-billed marker (zero-cost-unbilled-errors): REQUIRED so every writer
+   * states it — the column is nullable only for rows that predate it and for an
+   * older app version after a rollback, never for a row this version writes. */
+  billed: boolean;
+};
 
 /** Immutable request-log audit records (#11). Written in batches per principal
  * (owner forced from the principal — not caller input), inserted idempotently
@@ -535,8 +541,15 @@ export interface AnalyticsSummary {
    * so this count makes their share visible rather than silent, and marks the
    * population every latency figure must exclude (a job's wall time is hours). */
   batchRequests: number;
-  /** Served-request classification by served cost: 0 / >0 / null. */
+  /** Served-request classification by served cost: 0 / >0 / null. A zero-cost request
+   * that was billed (`billed` true or NULL), so a free-model or legacy row; a
+   * `billed = false` request is counted in `notBilledRequests` instead
+   * (zero-cost-unbilled-errors). */
   freeRequests: number;
+  /** Requests no provider ran (`billed = false`): pre-commit errors or cancels that
+   * were never sent or were rejected. Additive beside `freeRequests`; they are inside
+   * `requests`, `errorCount` and the token totals as before, and contribute $0 spend. */
+  notBilledRequests: number;
   /** Total priced (cost > 0) requests — retained so existing consumers keep working;
    * the subscription/cash split below is additive beside it. */
   paidRequests: number;

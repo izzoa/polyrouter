@@ -5,6 +5,7 @@ import {
   fallbackRate,
   filterToRequestParams,
   pct,
+  NOT_BILLED_LABEL,
   rowCostLabel,
   isTerminalSkip,
   successRate,
@@ -36,6 +37,7 @@ const SUMMARY: AnalyticsSummary = {
   estimatedCount: 3,
   batchRequests: 0,
   freeRequests: 8,
+  notBilledRequests: 0,
   paidRequests: 20,
   unpricedRequests: 2,
   nativeFamilySpend: 0,
@@ -71,6 +73,7 @@ const ROW: RequestRow = {
   attemptCostMicros: 0,
   durationMs: 1200,
   usageEstimated: false,
+  billed: true,
   priceSource: null,
   batchId: null,
   priceMode: null,
@@ -518,6 +521,164 @@ describe('toInspectorView — workload verdict (add-workload-telemetry)', () => 
     const legacy = toInspectorView({ ...ROW, workloadClass: null, workloadSource: null });
     expect(legacy.workloadClass).toBeNull();
     expect(legacy.workloadSource).toBeNull();
+  });
+});
+
+/** The field-report row (2026-10-27): an `auto` → `workload:research` request whose every
+ * chain member was skipped (circuit open). 54,040 estimated input tokens at $2 / 1M used
+ * to book $0.1081~; now it is recorded `cost = 0`, `billed = false`, tokens and snapshot kept. */
+const FIELD_REPORT: RequestRow = {
+  ...ROW,
+  id: 'r-field',
+  status: 'error',
+  inputTokens: 54_040,
+  outputTokens: 0,
+  cacheReadTokens: null,
+  cacheWriteTokens: null,
+  inputPriceSnapshot: 2,
+  outputPriceSnapshot: 8,
+  cacheReadPriceSnapshot: null,
+  cacheWritePriceSnapshot: null,
+  cost: 0,
+  attemptCostMicros: 0,
+  usageEstimated: true,
+  billed: false,
+  priceSource: 'native_family',
+  priceEstimated: true,
+};
+
+describe('not-billed rows (zero-cost-unbilled-errors)', () => {
+  it('the table cell reads `$0 · not billed`, never a ~ estimate', () => {
+    expect(rowCostLabel(FIELD_REPORT)).toBe(NOT_BILLED_LABEL);
+    expect(rowCostLabel(FIELD_REPORT)).toBe('$0 · not billed');
+    expect(rowCostLabel(FIELD_REPORT)).not.toContain('~');
+  });
+
+  it('the inspector shows not billed for served AND total, the note flag, and keeps tokens and est. price rows', () => {
+    const v = toInspectorView(FIELD_REPORT);
+    expect(v.notBilled).toBe(true);
+    expect(v.servedCost).toBe('$0 · not billed');
+    expect(v.totalCost).toBe('$0 · not billed');
+    expect(v.totalCost).not.toContain('est.');
+    expect(v.totalMicros).toBe(0);
+    // Token counts, the estimate flag and the price rows render exactly as before.
+    expect(v.inputTokens).toBe(54_040);
+    expect(v.usageEstimated).toBe(true);
+    expect(v.priceEstimated).toBe(true);
+    expect(v.priceSourceLabel).toBe('native family · estimate');
+    expect(v.prices.map((p) => p.value)).toEqual([
+      '$2 / 1M · est.',
+      '$8 / 1M · est.',
+      'unpriced',
+      'unpriced',
+    ]);
+  });
+
+  it('a not-billed PARENT with real attempt cost keeps its normal total, but the served call still reads not billed', () => {
+    // A cascade whose cheap call served and was superseded, and whose escalation was then
+    // rejected: the parent row is not billed, the attempt ledger holds the cheap call's cost.
+    const parent: RequestRow = { ...FIELD_REPORT, attemptCostMicros: 1_500 };
+    const v = toInspectorView(parent);
+    expect(v.notBilled).toBe(true);
+    expect(v.servedCost).toBe('$0 · not billed');
+    expect(v.attemptCost).toBe('$0.0015');
+    // The real spend is NEVER hidden behind `$0 · not billed`.
+    expect(v.totalCost).not.toContain('not billed');
+    expect(v.totalCost).toBe('$0.0015 · est.');
+    expect(v.totalMicros).toBe(1_500);
+    expect(rowCostLabel(parent)).not.toContain('not billed');
+    expect(rowCostLabel(parent)).toBe('$0.0015~');
+    // Without any estimate marker the same total is a plain amount.
+    const exact: RequestRow = {
+      ...parent,
+      usageEstimated: false,
+      priceEstimated: false,
+      priceSource: 'bundled',
+    };
+    expect(rowCostLabel(exact)).toBe('$0.0015');
+    expect(toInspectorView(exact).totalCost).toBe('$0.0015');
+    expect(toInspectorView(exact).servedCost).toBe('$0 · not billed');
+  });
+
+  it('free and legacy rows are unchanged, and only a `billed = false` row reads not billed', () => {
+    const free: RequestRow = { ...ROW, id: 'free', cost: 0, billed: true };
+    const legacyEstimated: RequestRow = {
+      ...ROW,
+      id: 'legacy',
+      status: 'error',
+      billed: null,
+      usageEstimated: true,
+      cost: 0.0042,
+    };
+    const legacyZero: RequestRow = { ...legacyEstimated, id: 'legacy0', cost: 0 };
+    const paid: RequestRow = { ...ROW, id: 'paid', billed: true };
+    // The not-billed row sits mid-collection: a pass here cannot come from index 0.
+    const rows = [free, legacyEstimated, FIELD_REPORT, legacyZero, paid];
+    expect(rows.map(rowCostLabel)).toEqual([
+      '$0.0000',
+      '$0.0042~',
+      '$0 · not billed',
+      // a legacy zero-cost row is NOT retroactively relabelled
+      '$0.0000~',
+      '$0.0020',
+    ]);
+    expect(rows.map((r) => toInspectorView(r).notBilled)).toEqual([
+      false,
+      false,
+      true,
+      false,
+      false,
+    ]);
+    expect(rows.map((r) => toInspectorView(r).servedCost)).toEqual([
+      '$0.0000',
+      '$0.0042',
+      '$0 · not billed',
+      '$0.0000',
+      '$0.0020',
+    ]);
+    expect(rows.map((r) => toInspectorView(r).totalCost)).toEqual([
+      '$0.0000',
+      '$0.0042',
+      '$0 · not billed',
+      '$0.0000',
+      '$0.0020',
+    ]);
+  });
+});
+
+describe('inspector unit prices render at display precision (zero-cost-unbilled-errors)', () => {
+  const priced = (over: Partial<RequestRow>): string[] =>
+    toInspectorView({ ...ROW, ...over }).prices.map((p) => p.value);
+
+  it('a float-artifact snapshot reads `$0.1 / 1M`, with the est. marker when the source is an estimate', () => {
+    const artifact = {
+      inputPriceSnapshot: 3,
+      outputPriceSnapshot: 15,
+      cacheReadPriceSnapshot: 0.09999999999999999,
+      cacheWritePriceSnapshot: null,
+    };
+    expect(priced(artifact)).toEqual(['$3 / 1M', '$15 / 1M', '$0.1 / 1M', 'unpriced']);
+    expect(priced({ ...artifact, priceSource: 'native_family' })).toEqual([
+      '$3 / 1M · est.',
+      '$15 / 1M · est.',
+      '$0.1 / 1M · est.',
+      'unpriced',
+    ]);
+  });
+
+  it('ordinary prices, `$0 free` and `unpriced` read as before; real sub-dollar prices keep their digits', () => {
+    expect(
+      priced({
+        inputPriceSnapshot: 0,
+        outputPriceSnapshot: 0.0375,
+        cacheReadPriceSnapshot: 2.5,
+        cacheWritePriceSnapshot: null,
+      }),
+    ).toEqual(['$0 free', '$0.0375 / 1M', '$2.5 / 1M', 'unpriced']);
+    // Display only: the view never rewrites the stored snapshot on the row.
+    const row = { ...ROW, cacheReadPriceSnapshot: 0.09999999999999999 };
+    toInspectorView(row);
+    expect(row.cacheReadPriceSnapshot).toBe(0.09999999999999999);
   });
 });
 

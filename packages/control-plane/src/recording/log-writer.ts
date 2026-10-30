@@ -82,6 +82,12 @@ export interface RequestLogDraft {
   readonly routingHeader?: { readonly name: string; readonly value: string | null };
   readonly durationMs: number;
   readonly status: 'success' | 'error' | 'fallback' | 'cancelled';
+  /** The recorder's not-billed verdict (zero-cost-unbilled-errors D2) — ALWAYS
+   * present. `false` asks the writer to record a known $0 for a request no
+   * provider ran; the writer re-derives the (cost, billed) pair from it plus the
+   * status (below), so a malformed draft degrades to billed instead of reaching
+   * the `request_log_not_billed_consistent` CHECK. */
+  readonly billed: boolean;
   readonly usage: ResolvedUsage;
   readonly pricing: DraftPricing;
   /** L1 decision telemetry (add-auto-decision-telemetry); absent = null columns. */
@@ -478,6 +484,16 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
       this.cfg.opTimeoutMs,
       'price lookup',
     );
+    // The (cost, billed) pair is derived TOGETHER so the not-billed CHECK can never
+    // be violated from here (zero-cost-unbilled-errors D3): only an error/cancelled
+    // draft that asked for not-billed is one, so a malformed draft (billed=false on a
+    // success/fallback) degrades to billed with its computed cost — one bad row must
+    // not poison its owner's whole insert group (a failed group is retried, then
+    // dropped). The price snapshot is still resolved and stored below: it is the rate
+    // that would have applied, and it keeps "snapshot null <=> unpriced" true. A
+    // not-billed cost is a KNOWN 0, so it is 0 even when the model is unpriced (null
+    // would read as "unknown").
+    const notBilled = d.billed === false && (d.status === 'error' || d.status === 'cancelled');
     return {
       id: d.id,
       agentId: d.agentId,
@@ -503,7 +519,8 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
       // that priced the row, so it can never disagree with the price snapshot.
       providerKind: d.pricing.providerKind,
       usageEstimated: d.usage.estimated,
-      cost: computeCost(d.usage, price),
+      cost: notBilled ? 0 : computeCost(d.usage, price),
+      billed: !notBilled,
       durationMs: d.durationMs,
       status: d.status,
       escalated: d.escalated ?? false,

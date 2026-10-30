@@ -152,6 +152,11 @@ export class BatchSettlement {
         providerKind: job.providerKind,
         usageEstimated: usage.estimated,
         cost,
+        // Every batch item is BILLED as recorded (zero-cost-unbilled-errors): a failed
+        // item keeps its per-item input estimate priced at the batch snapshot — batch
+        // APIs have their own failure/expiry semantics, so zero-costing them is a
+        // follow-up, not this change. Written explicitly so no new row is NULL.
+        billed: true,
         // The time the CALLER actually waited: the job's wall time. Latency
         // aggregates exclude batch rows precisely because of this (D10).
         durationMs,

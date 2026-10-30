@@ -175,6 +175,7 @@ export const DEFAULT_SUMMARY: AnalyticsSummary = {
   estimatedCount: 3,
   batchRequests: 0,
   freeRequests: 8,
+  notBilledRequests: 0,
   paidRequests: 20,
   unpricedRequests: 2,
   nativeFamilySpend: 0,
@@ -325,6 +326,9 @@ export function buildRequestRows(n: number): RequestRow[] {
       attemptCostMicros: i % 7 === 0 ? 250 : 0,
       durationMs: 500 + i * 10,
       usageEstimated: i % 8 === 0,
+      // Every default row is billed: a not-billed row (zero-cost-unbilled-errors) is a
+      // specific recorded state, so the tests that need one build it explicitly.
+      billed: true,
       priceSource: null,
       priceEstimated: false,
       batchId: null,

@@ -71,6 +71,8 @@ import '../../src/pricing/pricing.config';
 import { SubscriptionOauthService } from '../../src/subscription-oauth/subscription-oauth.service';
 
 const HMAC = 'a'.repeat(64);
+/** The model-own rate every fixture model carries (zero-cost-unbilled-errors). */
+const PRICE = { inputPricePer1m: 2, outputPricePer1m: 10 } as const;
 
 /** An AMBIGUOUS `auto` request (size ~.3 + one tool schema ~.13 → between the
  * low/high thresholds). A unique `system` keeps the baseline bucket fresh. */
@@ -255,6 +257,10 @@ describe('cascade routing e2e', () => {
     for (const [k, ext] of Object.entries(external)) {
       modelId[k] = (await port.models.createForProvider(principal, provider.id, {
         externalModelId: ext,
+        // zero-cost-unbilled-errors: every model is PRICED (a model-own rate on the local
+        // provider), so a row recorded as billed carries a visibly non-zero estimate and
+        // a not-billed row's `cost = 0` is a decision, not a free model's coincidence.
+        ...PRICE,
       }))!.id;
     }
     await port.ensureDefaultTier(principal);
@@ -354,6 +360,11 @@ describe('cascade routing e2e', () => {
     workloadScore: number | null;
     workloadSource: string | null;
     workloadRevision: string | null;
+    status: string;
+    billed: boolean | null;
+    cost: number | null;
+    usageEstimated: boolean;
+    inputPriceSnapshot: number | null;
   }> {
     const logs = await port.requestLogs.list(principal);
     return logs[logs.length - 1]!;
@@ -590,6 +601,10 @@ describe('cascade routing e2e', () => {
     // A-3: a CLIENT disconnect is `cancelled`, not a provider `error` — so it never
     // inflates the error rate or a failure-spike alert. Still exactly one recorded row.
     expect(row.status).toBe('cancelled');
+    // zero-cost-unbilled-errors: a cancel while the cheap attempt was IN FLIGHT is not
+    // provably unbilled, so the row is billed exactly as before (this site passes no
+    // billing evidence).
+    expect(row.billed).toBe(true);
     expect(row.escalated).toBe(false);
     expect(row.decisionLayer).toBe('cascade');
     expect(row.modelId).toBe(modelId['cheapHang']); // the cheap model — NO strong-tier escalation
@@ -1093,6 +1108,264 @@ describe('cascade routing e2e', () => {
         );
       } finally {
         await port.tiers.remove(principal, empty.id);
+        await setBand('auto_low', 'cheap-bad');
+      }
+    });
+  });
+  // zero-cost-unbilled-errors: the four cascade sites that end a request BEFORE the first
+  // token fold the billing evidence of EVERY executed leg — the failed cheap leg and the
+  // failed escalation leg — but never a cheap call that SERVED and was superseded (it has
+  // its own request_attempt row). `billed` is the recorded verdict; each fixture model is
+  // priced, so a billed row's cost is visibly non-zero.
+  describe('billing of cascade rows that end before the first token (zero-cost-unbilled-errors)', () => {
+    const estimate = (tokens: number): number => (tokens * PRICE.inputPricePer1m) / 1_000_000;
+    let seq = 0;
+
+    /** A FRESH provider and model per call. A circuit breaker is per provider and opens
+     * after a few consecutive failures, so models that fail on purpose must never share
+     * a provider with another request: a tripped breaker would turn a later request's
+     * real 429 or timeout into a circuit-open skip and change the verdict under test. */
+    async function fresh(externalModelId: string): Promise<string> {
+      seq += 1;
+      const provider = await port.providers.insert(principal, {
+        name: `zc-casc-${String(seq)}`,
+        kind: 'local',
+        protocol: 'openai_compatible',
+        baseUrl: stub.url,
+      });
+      return (await port.models.createForProvider(principal, provider.id, {
+        externalModelId,
+        ...PRICE,
+      }))!.id;
+    }
+    /** A tier of fresh models, bound to a band; the tier key is unique per call. */
+    async function bindBand(
+      matchType: 'auto_high' | 'auto_low',
+      externalModelIds: readonly string[],
+    ): Promise<void> {
+      seq += 1;
+      const key = `zc-casc-tier-${String(seq)}`;
+      const ids: string[] = [];
+      for (const ext of externalModelIds) ids.push(await fresh(ext));
+      const t = await port.tiers.insert(principal, { key });
+      await port.routingEntries.replaceForTier(principal, t.id, ids);
+      await setBand(matchType, key);
+    }
+    /** Run `fn` with the strong tier AND the default tier each answering 500, so an
+     * escalation walk (strong ++ default) is rejected end to end; restore the fixtures
+     * afterwards. */
+    async function withDeadEscalation(fn: () => Promise<void>): Promise<void> {
+      const defaultTierId = (await port.tiers.list(principal)).find((t) => t.key === 'default')!.id;
+      await bindBand('auto_high', ['oai-srvfail']);
+      await port.routingEntries.replaceForTier(principal, defaultTierId, [
+        await fresh('oai-srvfail'),
+      ]);
+      try {
+        await fn();
+      } finally {
+        await port.routingEntries.replaceForTier(principal, defaultTierId, [modelId['default']!]);
+        await setBand('auto_high', 'premium');
+        await setBand('auto_low', 'cheap-bad');
+      }
+    }
+    function expectNotBilled(row: Awaited<ReturnType<typeof log>>): void {
+      expect(row).toMatchObject({
+        status: 'error',
+        billed: false,
+        cost: 0,
+        usageEstimated: true,
+        inputPriceSnapshot: PRICE.inputPricePer1m,
+      });
+      expect(row.inputTokens).toBeGreaterThan(0);
+      expect(estimate(row.inputTokens!)).toBeGreaterThan(0); // what it would have booked
+    }
+    function expectBilled(row: Awaited<ReturnType<typeof log>>): void {
+      expect(row).toMatchObject({ status: 'error', billed: true, usageEstimated: true });
+      expect(row.cost).toBeCloseTo(estimate(row.inputTokens!), 10);
+      expect(row.cost).toBeGreaterThan(0);
+    }
+
+    it.each([[false], [true]])(
+      'a cheap 429 then an all-rejected escalation records a not-billed parent (stream=%s)',
+      async (stream) => {
+        await bindBand('auto_low', ['oai-ratelimit']);
+        await withDeadEscalation(async () => {
+          const before = stub.requests.length;
+          const res = await send(`sysCheap429EscRejected${String(stream)}`, stream);
+          expect(res.status).toBeGreaterThanOrEqual(500);
+          expect(stub.requests.length - before).toBe(3); // cheap + both escalation members answered
+          const row = await log();
+          expectNotBilled(row);
+          expect(row.escalated).toBe(true);
+          expect(row.escalationSource).toBe('cheap_error');
+          expect(await port.requestAttempts.listForRequest(principal, row.id)).toHaveLength(0);
+        });
+      },
+    );
+
+    it.each([[false], [true]])(
+      'a cheap timeout then an all-rejected escalation stays billed (stream=%s)',
+      async (stream) => {
+        // The hung cheap call may still be running when the deadline cuts it: uncertain,
+        // so the rejected escalation does not make the whole request provably unbilled.
+        await bindBand('auto_low', ['oai-hang']);
+        await withDeadEscalation(async () => {
+          const res = await send(`sysCheapTimeoutEscRejected${String(stream)}`, stream);
+          expect(res.status).toBeGreaterThanOrEqual(500);
+          const row = await log();
+          expectBilled(row);
+          expect(row.escalated).toBe(true);
+        });
+      },
+    );
+
+    it.each([
+      // A non-retryable stop: the over-cap body ends the walk without entering `failures`.
+      { stream: false, strong: 'oai-oversized', kind: 'oversized_response' },
+      // A retryable pre-commit failure that DOES enter `failures`: a stream with no output.
+      { stream: true, strong: 'oai-noout', kind: 'unavailable' },
+    ])(
+      'a cheap 429 then an escalation that ends uncertain stays billed (stream=$stream)',
+      async ({ stream, strong, kind }) => {
+        // The ESCALATION side of the fold: the strong tier ends on an attempt the provider
+        // may have been working on, so the cheap leg's lone rejection must not decide it.
+        await bindBand('auto_low', ['oai-ratelimit']);
+        await bindBand('auto_high', [strong]);
+        const defaultTierId = (await port.tiers.list(principal)).find(
+          (t) => t.key === 'default',
+        )!.id;
+        // The default tier is walked after the strong one: keep it rejected, not serving.
+        await port.routingEntries.replaceForTier(principal, defaultTierId, [
+          await fresh('oai-srvfail'),
+        ]);
+        try {
+          const res = await send(`sysCheap429EscUncertain${String(stream)}`, stream);
+          expect(res.status).toBeGreaterThanOrEqual(500);
+          const row = await log();
+          expect(row.errorKind).toBe(kind);
+          expectBilled(row);
+        } finally {
+          await port.routingEntries.replaceForTier(principal, defaultTierId, [modelId['default']!]);
+          await setBand('auto_high', 'premium');
+          await setBand('auto_low', 'cheap-bad');
+        }
+      },
+      20_000,
+    );
+
+    it.each([[false], [true]])(
+      'a superseded cheap call then an all-rejected escalation: the parent is not billed, the cheap attempt keeps its real cost (stream=%s)',
+      async (stream) => {
+        await setBand('auto_low', 'cheap-bad'); // an empty answer: served, then superseded
+        await withDeadEscalation(async () => {
+          const res = await send(`sysSupersededEscRejected${String(stream)}`, stream);
+          expect(res.status).toBeGreaterThanOrEqual(500);
+          const row = await log();
+          expectNotBilled(row);
+          expect(row.escalated).toBe(true);
+          expect(row.escalationSource).toBe('quality_gate');
+          const attempts = await port.requestAttempts.listForRequest(principal, row.id);
+          expect(attempts).toHaveLength(1);
+          expect(attempts[0]!.modelId).toBe(modelId['cheapBad']);
+          // The stub reports 3 in / 2 out tokens at 2 / 10 per 1M: real spend, untouched.
+          expect(attempts[0]!.usageEstimated).toBe(false);
+          expect(attempts[0]!.cost).toBeCloseTo((3 * 2 + 2 * 10) / 1_000_000, 10);
+        });
+      },
+    );
+
+    it.each([[false], [true]])(
+      'a non-retryable cheap 451 records not billed (stream=%s)',
+      async (stream) => {
+        await bindBand('auto_low', ['oai-legal']);
+        try {
+          const before = stub.requests.length;
+          const res = await send(`sysCheapLegalNotBilled${String(stream)}`, stream);
+          expect(res.status).toBe(451);
+          expect(stub.requests.length - before).toBe(1); // no escalation
+          const row = await log();
+          expectNotBilled(row);
+          expect(row.escalated).toBe(false);
+          expect(row.errorKind).toBe('policy_block');
+        } finally {
+          await setBand('auto_low', 'cheap-bad');
+        }
+      },
+    );
+
+    it.each([[false], [true]])(
+      'a non-retryable cheap over-cap body stays billed (stream=%s)',
+      async (stream) => {
+        await bindBand('auto_low', ['oai-oversized']);
+        try {
+          const res = await send(`sysCheapOversizedBilled${String(stream)}`, stream);
+          expect(res.status).toBe(502);
+          const row = await log();
+          expect(row.errorKind).toBe('oversized_response');
+          expect(row.escalated).toBe(false);
+          expectBilled(row);
+        } finally {
+          await setBand('auto_low', 'cheap-bad');
+        }
+      },
+      20_000,
+    );
+
+    it.each(['completion', 'stream'] as const)(
+      'a client abort before any cheap member is dispatched records a not-billed cancelled row (%s)',
+      async (mode) => {
+        // The cheap leg's walker stamps a loop-start abort `not_sent`; both cancel sites must
+        // fold that evidence (an abort that lands IN FLIGHT stays billed: the tests above/below).
+        await bindBand('auto_low', ['oai-ratelimit']);
+        try {
+          const before = stub.requests.length;
+          const gone = new AbortController();
+          gone.abort(); // the client left before the cheap walk reached member 0
+          const svc = app.get(ProxyService);
+          const wire = body(`sysPreAbortedCheapLeg${mode}`, mode === 'stream');
+          const call =
+            mode === 'completion'
+              ? svc.completion(principal, 'openai', wire, {}, null, gone.signal)
+              : svc.stream(principal, 'openai', wire, {}, gone.signal, null);
+          await expect(call).rejects.toBeDefined();
+          expect(stub.requests.length).toBe(before); // nothing was dispatched
+          await writer.flush();
+          const row = await log();
+          expect(row).toMatchObject({
+            status: 'cancelled',
+            billed: false,
+            cost: 0,
+            escalated: false,
+            usageEstimated: true,
+            inputPriceSnapshot: PRICE.inputPricePer1m,
+          });
+          expect(row.inputTokens).toBeGreaterThan(0);
+          expect(await port.requestAttempts.listForRequest(principal, row.id)).toHaveLength(0);
+        } finally {
+          await setBand('auto_low', 'cheap-bad');
+        }
+      },
+    );
+
+    it('a STREAMED client disconnect during the cheap leg records one billed cancelled row', async () => {
+      await bindBand('auto_low', ['oai-hang']); // cheap upstream hangs; ~600ms cheap deadline
+      try {
+        const req = request(server)
+          .post('/v1/chat/completions')
+          .set('Authorization', `Bearer ${key}`)
+          .send(body('sysStreamedClientAbortDuringCheapLeg', true));
+        setTimeout(() => {
+          req.abort();
+        }, 150);
+        await expect(req).rejects.toThrow();
+        await new Promise((r) => setTimeout(r, 150));
+        await writer.flush();
+        const logs = await port.requestLogs.list(principal);
+        expect(logs).toHaveLength(1);
+        // An attempt was in flight when the client left: not provably unbilled.
+        expect(logs[0]).toMatchObject({ status: 'cancelled', billed: true, escalated: false });
+        expect(logs[0]!.cost).toBeGreaterThan(0);
+      } finally {
         await setBand('auto_low', 'cheap-bad');
       }
     });

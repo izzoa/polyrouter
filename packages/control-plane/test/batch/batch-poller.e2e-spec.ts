@@ -110,6 +110,9 @@ describe('batch poller + settlement — Phase B §4 (add-batch-inference)', () =
       expect(r.outputPriceSnapshot).toBe(job.outputPriceSnapshot);
       expect(r.priceSource).toBe(job.priceSource);
       expect(r.providerKind).toBe('local');
+      // Every settled item — failed ones included — is written BILLED, explicitly
+      // (zero-cost-unbilled-errors): a new row's marker is never NULL.
+      expect(r.billed).toBe(true);
       expect(r.decisionLayer).toBe('explicit');
       expect(r.routingReason).toMatch(/ batch$/);
       expect(r.agentId).toBe(t.agentId);

@@ -1,12 +1,20 @@
 /* eslint-disable @typescript-eslint/require-await, require-yield -- fake async generators in tests */
+import * as http from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { SsrfError } from '@polyrouter/shared/server';
 import {
   openStream,
   runBuffered,
   runBufferedChain,
   openStreamChain,
   fallbackEligible,
+  attemptBilling,
+  chainBillingEvidence,
+  type AttemptBilling,
+  type AttemptFailure,
   type ChainAttempt,
 } from './core';
+import { walkUnbilled } from '../recording';
 import {
   getAdapter,
   type NormalizedStreamEvent,
@@ -18,12 +26,19 @@ import {
   CircuitBreaker,
   DEFAULT_BREAKER_CONFIG,
   InMemoryBreakerStore,
+  PROVIDER_ERROR_KINDS,
   ProviderCircuitOpenError,
   ProviderError,
+  classifyNetworkError,
+  classifyResponse,
+  createGuardedHttpClient,
   createOpenaiProviderAdapter,
   type HttpClient,
+  type HttpResponse,
   type ProviderAdapter,
+  type ProviderConfig,
 } from '../providers';
+import { errorResponse } from '../providers/testkit.testkit';
 
 const OPTS = { firstEventTimeoutMs: 1000, created: 1_700_000_000 };
 
@@ -1057,5 +1072,770 @@ describe('output-cap clamps + walk-stop boundaries (add-output-cap-guardrails)',
       expect(r.failures[0]?.dispatched).toBe(true);
     }
     expect(seen).toEqual([100_000, 8_192]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Billing evidence (zero-cost-unbilled-errors). The chain walkers classify each
+// attempt at the catch boundary where the RAW error is still visible, so a request
+// no provider ran can later be recorded as not billed. These pin the D1 table, the
+// terminal-evidence rules, and — through the REAL producers, not hand-built errors
+// — that no locally synthesized failure ever carries an upstream status.
+// ---------------------------------------------------------------------------
+
+describe('attemptBilling — design D1 table (zero-cost-unbilled-errors)', () => {
+  const flattened = (): ProviderError =>
+    new ProviderError('unavailable', 'upstream request failed');
+
+  it('a circuit-open skip is not_sent', () => {
+    expect(attemptBilling(new ProviderCircuitOpenError('p1'), flattened())).toBe('not_sent');
+  });
+
+  it('an SSRF refusal is not_sent although its mapped error looks exactly like a timeout', () => {
+    const mapped = flattened(); // what toProviderError makes of any non-ProviderError throw
+    expect(mapped.status).toBeUndefined();
+    expect(
+      attemptBilling(new SsrfError('blocked_ip', 'resolves to a blocked address'), mapped),
+    ).toBe('not_sent');
+    // The same mapped error WITHOUT the raw SSRF class is an unknown failure — the raw
+    // class is the only discriminator, which is why classification lives at the catch.
+    expect(attemptBilling(new Error('socket hang up'), mapped)).toBe('uncertain');
+  });
+
+  it('a credential-kind failure is not_sent, with or without a status', () => {
+    const bare = new ProviderError('credential', 'reauthorize required');
+    const withStatus = new ProviderError('credential', 'idp unavailable', { status: 503 });
+    expect(attemptBilling(bare, bare)).toBe('not_sent');
+    expect(attemptBilling(withStatus, withStatus)).toBe('not_sent');
+  });
+
+  it('a caller cancel is uncertain — an attempt was in flight', () => {
+    expect(attemptBilling(new CallCancelledError(), flattened())).toBe('uncertain');
+    // The raw class outranks the status rule: a cancel is never read as a provider answer,
+    // even if a mapped shape ever carried a status alongside it.
+    const odd = new ProviderError('unavailable', 'x', { status: 499 });
+    expect(attemptBilling(new CallCancelledError(), odd)).toBe('uncertain');
+  });
+
+  it.each([
+    [429, 'rate_limit'],
+    [400, 'bad_request'],
+    [503, 'unavailable'],
+    [451, 'policy_block'],
+    [401, 'auth'],
+    [402, 'insufficient_funds'],
+    [404, 'unavailable'],
+  ] as const)('an upstream %s response is rejected', (status, kind) => {
+    const e = classifyResponse(status, '');
+    expect(e.status).toBe(status);
+    expect(e.kind).toBe(kind);
+    expect(attemptBilling(e, e)).toBe('rejected');
+  });
+
+  it('a 3xx redirect refusal (status-bearing, as providers/http.ts builds it) is rejected', () => {
+    const e = new ProviderError('unavailable', 'provider redirected (302)', { status: 302 });
+    expect(attemptBilling(e, e)).toBe('rejected');
+  });
+
+  // The status decides, never the kind: every kind WITHOUT a status is a local or
+  // transport failure the provider may still be running, and every kind WITH one is
+  // an answered rejection. Iterating the canonical list means a new kind cannot slip in.
+  it.each(PROVIDER_ERROR_KINDS)(
+    'kind %s: status-less is uncertain, status-bearing is rejected',
+    (kind) => {
+      const bare = new ProviderError(kind, 'x');
+      const answered = new ProviderError(kind, 'x', { status: 500 });
+      if (kind === 'credential') {
+        expect(attemptBilling(bare, bare)).toBe('not_sent');
+        expect(attemptBilling(answered, answered)).toBe('not_sent');
+        return;
+      }
+      expect(attemptBilling(bare, bare)).toBe('uncertain');
+      expect(attemptBilling(answered, answered)).toBe('rejected');
+    },
+  );
+
+  it('an unrecognised raw throw is uncertain', () => {
+    expect(attemptBilling(new TypeError('boom'), flattened())).toBe('uncertain');
+    expect(
+      attemptBilling(Object.assign(new Error('aborted'), { name: 'AbortError' }), flattened()),
+    ).toBe('uncertain');
+  });
+});
+
+describe('chainBillingEvidence', () => {
+  const failure = (index: number, billing?: AttemptBilling): AttemptFailure => ({
+    index,
+    error: new ProviderError('unavailable', 'x'),
+    ...(billing !== undefined ? { billing } : {}),
+  });
+
+  it('lists every pushed failure in order, then the terminal attempt', () => {
+    expect(
+      chainBillingEvidence({
+        failures: [failure(0, 'rejected'), failure(1, 'not_sent'), failure(2, 'uncertain')],
+        terminalBilling: 'rejected',
+      }),
+    ).toEqual(['rejected', 'not_sent', 'uncertain', 'rejected']);
+  });
+
+  it('adds nothing when no terminal evidence is present', () => {
+    expect(
+      chainBillingEvidence({ failures: [failure(0, 'not_sent'), failure(1, 'rejected')] }),
+    ).toEqual(['not_sent', 'rejected']);
+    expect(chainBillingEvidence({ failures: [] })).toEqual([]);
+  });
+
+  // Fail-safe: a failure built without a class must not vanish from the evidence — it
+  // reads as uncertain, so the walk can only be billed, never wrongly zeroed.
+  it('reads a failure that carries no class as uncertain (never drops it)', () => {
+    const evidence = chainBillingEvidence({
+      failures: [failure(0, 'rejected'), failure(1), failure(2, 'not_sent')],
+    });
+    expect(evidence).toEqual(['rejected', 'uncertain', 'not_sent']);
+    expect(walkUnbilled(evidence)).toBe(false);
+  });
+});
+
+type WalkMode = 'buffered' | 'stream';
+
+interface Walked {
+  readonly error: ProviderError;
+  readonly failures: readonly AttemptFailure[];
+  readonly terminalBilling: AttemptBilling | undefined;
+  readonly callerAborted: boolean;
+}
+
+interface WalkOptions {
+  readonly signal?: AbortSignal;
+  readonly isCallerAbort?: () => boolean;
+  readonly firstEventTimeoutMs?: number;
+}
+
+/** Run one chain through the walker under test and return its (necessarily error)
+ * result in a mode-neutral shape, so every billing case runs against BOTH walkers. */
+async function walkChain(
+  mode: WalkMode,
+  attempts: readonly ChainAttempt[],
+  over: WalkOptions = {},
+): Promise<Walked> {
+  // Threshold 1: a tripping failure opens its provider, so a later member of the
+  // SAME provider is a genuine circuit-open skip raised by the real breaker.
+  const breaker = new CircuitBreaker(new InMemoryBreakerStore(), {
+    config: { ...DEFAULT_BREAKER_CONFIG, threshold: 1 },
+  });
+  const client = getAdapter('openai');
+  const req = { model: 'x', messages: [], params: {} };
+  const signal = over.signal ?? new AbortController().signal;
+  const isCallerAbort = over.isCallerAbort;
+  if (mode === 'buffered') {
+    const r = await runBufferedChain(
+      breaker,
+      attempts,
+      client,
+      req,
+      { created: 1, ...(isCallerAbort !== undefined ? { isCallerAbort } : {}) },
+      signal,
+    );
+    if (r.ok) throw new Error('expected the walk to fail');
+    return {
+      error: r.error,
+      failures: r.failures,
+      terminalBilling: r.terminalBilling,
+      callerAborted: r.callerAborted,
+    };
+  }
+  const r = await openStreamChain(breaker, attempts, client, req, {
+    firstEventTimeoutMs: over.firstEventTimeoutMs ?? 1000,
+    created: 1,
+    signal,
+    ...(isCallerAbort !== undefined ? { isCallerAbort } : {}),
+  });
+  if (r.kind === 'stream') throw new Error('expected the walk to fail');
+  return {
+    error: r.error,
+    failures: r.failures,
+    terminalBilling: r.terminalBilling,
+    callerAborted: r.callerAborted,
+  };
+}
+
+/** A member that fails with `fault` (a value, or a thunk run at dispatch time) — and,
+ * for `SKIP`, one that must never be built because its provider's circuit is open. */
+const SKIP = Symbol('circuit-open skip');
+type Fault = Error | (() => Error) | typeof SKIP;
+
+function faultAttempt(providerId: string, fault: Fault): ChainAttempt {
+  const fail = (): Promise<never> => {
+    if (fault === SKIP) return Promise.reject(new Error('a skipped member must never be built'));
+    return Promise.reject(typeof fault === 'function' ? fault() : fault);
+  };
+  return {
+    providerId,
+    externalModelId: providerId,
+    buildAdapter: () =>
+      fault === SKIP
+        ? fail()
+        : Promise.resolve({
+            protocol: 'openai_compatible',
+            chat: fail,
+            chatStream: async function* () {
+              await fail();
+            },
+            listModels: () => Promise.resolve([]),
+            testConnection: () => Promise.resolve({ ok: true, models: 0 }),
+          } as unknown as ProviderAdapter),
+  };
+}
+
+/** Members named p0, p1, …; a SKIP reuses the PREVIOUS member's provider so the
+ * breaker (threshold 1) that member just tripped actually skips it. */
+function faultChain(faults: readonly Fault[]): ChainAttempt[] {
+  const ids: string[] = [];
+  faults.forEach((f, i) => ids.push(f === SKIP ? ids[i - 1]! : `p${String(i)}`));
+  return faults.map((f, i) => faultAttempt(ids[i]!, f));
+}
+
+describe.each(['buffered', 'stream'] as const)(
+  'billing evidence on the %s chain walker (zero-cost-unbilled-errors)',
+  (mode) => {
+    const rate429 = (): ProviderError => classifyResponse(429, '');
+    const unavail503 = (): ProviderError => classifyResponse(503, '');
+    const bad400 = (): ProviderError => classifyResponse(400, '');
+    const credential = (): ProviderError => new ProviderError('credential', 'reauthorize required');
+    const eventTimeout = (): ProviderError =>
+      new ProviderError('unavailable', 'upstream event timeout');
+    const network = (): ProviderError =>
+      classifyNetworkError(
+        Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }),
+      );
+
+    interface Case {
+      readonly name: string;
+      readonly faults: readonly Fault[];
+      /** `billing` of each pushed failure, in order. */
+      readonly billing: readonly AttemptBilling[];
+      /** `dispatched` of each pushed failure — must be unchanged by this change. */
+      readonly dispatched: readonly boolean[];
+      readonly terminal?: AttemptBilling;
+      readonly unbilled: boolean;
+    }
+
+    const cases: readonly Case[] = [
+      {
+        name: 'an uncertain FIRST member keeps the walk billed',
+        faults: [network(), rate429(), credential()],
+        billing: ['uncertain', 'rejected', 'not_sent'],
+        dispatched: [true, true, true],
+        unbilled: false,
+      },
+      {
+        name: 'an uncertain MIDDLE member keeps the walk billed',
+        faults: [rate429(), eventTimeout(), unavail503()],
+        billing: ['rejected', 'uncertain', 'rejected'],
+        dispatched: [true, true, true],
+        unbilled: false,
+      },
+      {
+        name: 'an uncertain LAST member keeps the walk billed',
+        faults: [rate429(), bad400(), eventTimeout()],
+        billing: ['rejected', 'rejected', 'uncertain'],
+        dispatched: [true, true, true],
+        unbilled: false,
+      },
+      {
+        name: 'rejections, a circuit skip and a credential failure fold to unbilled',
+        faults: [unavail503(), SKIP, rate429(), credential()],
+        billing: ['rejected', 'not_sent', 'rejected', 'not_sent'],
+        dispatched: [true, false, true, true],
+        unbilled: true,
+      },
+      {
+        name: 'a lone credential failure is not_sent with no terminal evidence',
+        faults: [credential()],
+        billing: ['not_sent'],
+        dispatched: [true],
+        unbilled: true,
+      },
+      {
+        name: 'a non-retryable 451 stop carries its class and never enters failures',
+        faults: [rate429(), SKIP, classifyResponse(451, '')],
+        billing: ['rejected', 'not_sent'],
+        dispatched: [true, false],
+        terminal: 'rejected',
+        unbilled: true,
+      },
+      {
+        name: 'a non-retryable oversized_response (no status) is an uncertain terminal',
+        faults: [rate429(), new ProviderError('oversized_response', 'body exceeds the cap')],
+        billing: ['rejected'],
+        dispatched: [true],
+        terminal: 'uncertain',
+        unbilled: false,
+      },
+      {
+        name: 'an in-flight caller cancel (CallCancelledError) is an uncertain terminal',
+        faults: [unavail503(), rate429(), new CallCancelledError()],
+        billing: ['rejected', 'rejected'],
+        dispatched: [true, true],
+        terminal: 'uncertain',
+        unbilled: false,
+      },
+      {
+        name: 'an SSRF refusal at a later position is a not_sent terminal',
+        faults: [
+          unavail503(),
+          rate429(),
+          new SsrfError('blocked_ip', 'resolves to a blocked address'),
+        ],
+        billing: ['rejected', 'rejected'],
+        dispatched: [true, true],
+        terminal: 'not_sent',
+        unbilled: true,
+      },
+      {
+        name: 'an unrecognised raw throw is an uncertain terminal',
+        faults: [rate429(), new TypeError('boom')],
+        billing: ['rejected'],
+        dispatched: [true],
+        terminal: 'uncertain',
+        unbilled: false,
+      },
+    ];
+
+    it.each(cases)('$name', async (c) => {
+      const w = await walkChain(mode, faultChain(c.faults));
+      expect(w.failures.map((f) => f.billing)).toEqual(c.billing);
+      expect(w.failures.map((f) => f.dispatched)).toEqual(c.dispatched);
+      expect(w.terminalBilling).toBe(c.terminal);
+      expect(walkUnbilled(chainBillingEvidence(w))).toBe(c.unbilled);
+    });
+
+    it('an SSRF terminal maps to a status-less `unavailable` — only the raw class made it not_sent', async () => {
+      const w = await walkChain(
+        mode,
+        faultChain([rate429(), new SsrfError('not_https', 'http is only allowed here')]),
+      );
+      expect(w.error.kind).toBe('unavailable');
+      expect(w.error.status).toBeUndefined();
+      expect(w.terminalBilling).toBe('not_sent');
+    });
+
+    it('a non-retryable stop leaves the terminal attempt out of failures', async () => {
+      const w = await walkChain(mode, faultChain([rate429(), SKIP, classifyResponse(451, '')]));
+      expect(w.failures.map((f) => f.index)).toEqual([0, 1]); // the 451 at index 2 is the terminal
+      expect(w.error.kind).toBe('policy_block');
+    });
+
+    it('an empty chain carries not_sent as its terminal evidence', async () => {
+      const w = await walkChain(mode, []);
+      expect(w.failures).toEqual([]);
+      expect(w.error.message).toBe('no chain members');
+      expect(w.terminalBilling).toBe('not_sent');
+      expect(chainBillingEvidence(w)).toEqual(['not_sent']);
+      expect(walkUnbilled(chainBillingEvidence(w))).toBe(true);
+    });
+
+    it('an abort before the first member dispatches carries not_sent', async () => {
+      const gone = new AbortController();
+      gone.abort();
+      let dispatched = false;
+      const w = await walkChain(
+        mode,
+        [
+          faultAttempt('p0', () => {
+            dispatched = true;
+            return new Error('must not dispatch');
+          }),
+        ],
+        { signal: gone.signal, isCallerAbort: () => true },
+      );
+      expect(dispatched).toBe(false);
+      expect(w.callerAborted).toBe(true);
+      expect(w.failures).toEqual([]);
+      expect(w.terminalBilling).toBe('not_sent');
+      expect(walkUnbilled(chainBillingEvidence(w))).toBe(true);
+    });
+
+    // The abort lands DURING member 1 (of 3), after it already failed: the next member
+    // is never dispatched, so the stop itself is not_sent — and the executed members
+    // still count, in their own classes.
+    it.each([
+      ['a client abort', true],
+      ['a cheap-tier deadline abort', false],
+    ] as const)(
+      '%s before the NEXT member dispatches carries not_sent after the executed ones',
+      async (_n, client) => {
+        const ac = new AbortController();
+        let third = false;
+        const w = await walkChain(
+          mode,
+          [
+            faultAttempt('p0', rate429()),
+            faultAttempt('p1', () => {
+              ac.abort();
+              return unavail503();
+            }),
+            faultAttempt('p2', () => {
+              third = true;
+              return new Error('must not dispatch');
+            }),
+          ],
+          { signal: ac.signal, isCallerAbort: () => client },
+        );
+        expect(third).toBe(false);
+        expect(w.callerAborted).toBe(client);
+        expect(w.failures.map((f) => f.billing)).toEqual(['rejected', 'rejected']);
+        expect(w.terminalBilling).toBe('not_sent');
+        expect(chainBillingEvidence(w)).toEqual(['rejected', 'rejected', 'not_sent']);
+        expect(walkUnbilled(chainBillingEvidence(w))).toBe(true);
+      },
+    );
+
+    it('an abort after an UNCERTAIN member still folds billed', async () => {
+      const ac = new AbortController();
+      const w = await walkChain(
+        mode,
+        [
+          faultAttempt('p0', () => {
+            ac.abort();
+            return eventTimeout();
+          }),
+          faultAttempt('p1', new Error('must not dispatch')),
+        ],
+        { signal: ac.signal, isCallerAbort: () => true },
+      );
+      expect(chainBillingEvidence(w)).toEqual(['uncertain', 'not_sent']);
+      expect(walkUnbilled(chainBillingEvidence(w))).toBe(false);
+    });
+  },
+);
+
+// The synthesized "cancelled" error the loop-start abort returns has no attempt behind
+// it: it is classified by the terminal rule, not by its (status-less) shape.
+describe('the loop-start cancelled error is local (zero-cost-unbilled-errors)', () => {
+  it.each(['buffered', 'stream'] as const)('%s: carries no status', async (mode) => {
+    const gone = new AbortController();
+    gone.abort();
+    const w = await walkChain(mode, [faultAttempt('p0', new Error('unused'))], {
+      signal: gone.signal,
+      isCallerAbort: () => true,
+    });
+    expect(w.error.message).toBe('cancelled');
+    expect(w.error.status).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The invariant this change leans on: a status exists ONLY when the provider
+// answered. Every locally synthesized failure below is produced by its REAL source
+// (core, the adapter, the guarded client) — not a hand-built look-alike — so a
+// future local error that gains a status flips a row here instead of silently
+// zeroing a request that a provider may have billed.
+// ---------------------------------------------------------------------------
+
+describe('locally synthesized failures stay uncertain; provider answers are rejected (zero-cost-unbilled-errors)', () => {
+  const REAL_CFG = {
+    protocol: 'openai_compatible' as const,
+    baseUrl: 'https://api.openai.example/v1',
+    credential: 'sk-test',
+    kind: 'api_key' as const,
+    mode: 'cloud' as const,
+    firstByteTimeoutMs: 5_000,
+    idleTimeoutMs: 5_000,
+  };
+  const realAttempt = (
+    providerId: string,
+    httpClient: HttpClient,
+    over: Partial<ProviderConfig> = {},
+  ): ChainAttempt => ({
+    providerId,
+    externalModelId: 'm',
+    buildAdapter: () =>
+      Promise.resolve(createOpenaiProviderAdapter({ ...REAL_CFG, ...over }, { httpClient })),
+  });
+
+  const neverHeaders: HttpClient = (_url, init) =>
+    new Promise((_resolve, reject) => {
+      const abort = (): void => reject(new DOMException('aborted', 'AbortError'));
+      if (init.signal?.aborted) return abort();
+      init.signal?.addEventListener('abort', abort, { once: true });
+    });
+
+  const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
+  const bodyResponse = (body: ReadableStream<Uint8Array>): HttpResponse => ({
+    status: 200,
+    ok: true,
+    headers: { get: () => null },
+    body,
+    text: () => Promise.resolve(''),
+    json: () => Promise.resolve({}),
+  });
+  /** 200 headers, one chunk, then silence — a wedged body. Honors the abort the way
+   * undici does (the read errors), so a watchdog that fires can actually unwind. */
+  const stalledBody: HttpClient = (_url, init) => {
+    let sent = false;
+    return Promise.resolve(
+      bodyResponse(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            const onAbort = (): void =>
+              controller.error(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+            if (init.signal?.aborted) onAbort();
+            else init.signal?.addEventListener('abort', onAbort, { once: true });
+          },
+          pull(controller) {
+            if (!sent) {
+              sent = true;
+              controller.enqueue(enc('{"partial":'));
+              return undefined;
+            }
+            return new Promise<void>(() => {});
+          },
+        }),
+      ),
+    );
+  };
+  const oversizedBody: HttpClient = () => {
+    let i = 0;
+    return Promise.resolve(
+      bodyResponse(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (i < 10) {
+              controller.enqueue(enc('x'.repeat(20)));
+              i += 1;
+            } else controller.close();
+          },
+        }),
+      ),
+    );
+  };
+  const connectionRefused: HttpClient = () =>
+    Promise.reject(
+      Object.assign(new Error('connect ECONNREFUSED 10.1.2.3:443'), { code: 'ECONNREFUSED' }),
+    );
+
+  interface Setup {
+    readonly attempts: readonly ChainAttempt[];
+    readonly over?: WalkOptions;
+  }
+  interface LocalRow {
+    readonly name: string;
+    readonly modes: readonly WalkMode[];
+    readonly setup: (mode: WalkMode) => Setup;
+    readonly message?: RegExp;
+  }
+
+  const streamGen = (
+    providerId: string,
+    gen: (req: unknown, ctx?: { signal?: AbortSignal }) => AsyncGenerator<NormalizedStreamEvent>,
+  ): ChainAttempt => ({
+    providerId,
+    externalModelId: providerId,
+    buildAdapter: () =>
+      Promise.resolve({
+        protocol: 'openai_compatible',
+        chat: () => Promise.reject(new Error('unused')),
+        chatStream: gen,
+        listModels: () => Promise.resolve([]),
+        testConnection: () => Promise.resolve({ ok: true, models: 0 }),
+      } as unknown as ProviderAdapter),
+  });
+
+  const rows: readonly LocalRow[] = [
+    {
+      name: 'a first-byte timeout (adapter)',
+      modes: ['buffered', 'stream'],
+      setup: () => ({ attempts: [realAttempt('p0', neverHeaders, { firstByteTimeoutMs: 40 })] }),
+      message: /first-byte/,
+    },
+    {
+      name: 'a first-event timeout (core)',
+      modes: ['stream'],
+      setup: () => ({
+        attempts: [
+          streamGen('p0', async function* (_req: unknown, ctx?: { signal?: AbortSignal }) {
+            // Never yields; core's watchdog must fire, then unwind through the abort.
+            await new Promise<void>((resolve) => {
+              if (ctx?.signal?.aborted) return resolve();
+              ctx?.signal?.addEventListener('abort', () => resolve(), { once: true });
+            });
+          }),
+        ],
+        over: { firstEventTimeoutMs: 40 },
+      }),
+      message: /upstream event timeout/,
+    },
+    {
+      name: 'a buffered body idle timeout (adapter)',
+      modes: ['buffered'],
+      setup: () => ({ attempts: [realAttempt('p0', stalledBody, { idleTimeoutMs: 40 })] }),
+      message: /idle timeout/,
+    },
+    {
+      // The streamed body has no adapter idle guard pre-first-token; core's watchdog owns it.
+      name: 'a wedged 200 stream body (core watchdog over the real adapter)',
+      modes: ['stream'],
+      setup: () => ({
+        attempts: [realAttempt('p0', stalledBody)],
+        over: { firstEventTimeoutMs: 60 },
+      }),
+      message: /upstream event timeout/,
+    },
+    {
+      name: 'upstream produced no output (core)',
+      modes: ['stream'],
+      setup: () => ({
+        attempts: [
+          streamGen('p0', async function* () {
+            /* ends without a single event */
+          }),
+        ],
+      }),
+      message: /produced no output/,
+    },
+    {
+      name: 'oversized_response (transport drain)',
+      modes: ['buffered'],
+      setup: () => ({ attempts: [realAttempt('p0', oversizedBody, { maxResponseBytes: 64 })] }),
+      message: /exceeds/,
+    },
+    {
+      name: 'a network fault',
+      modes: ['buffered', 'stream'],
+      setup: () => ({ attempts: [realAttempt('p0', connectionRefused)] }),
+      message: /provider connection failed/,
+    },
+    {
+      name: 'a pre-first-token in-stream error event',
+      modes: ['stream'],
+      setup: () => ({
+        attempts: [
+          streamGen('p0', async function* () {
+            yield { type: 'error', error: { type: 'overloaded', message: 'try later' } };
+          }),
+        ],
+      }),
+    },
+    {
+      name: 'a pre-first-token in-stream error event carrying a provider kind',
+      modes: ['stream'],
+      setup: () => ({
+        attempts: [
+          streamGen('p0', async function* () {
+            yield {
+              type: 'error',
+              error: { type: 'error', message: 'out of credit' },
+              diagnostic: { kind: 'insufficient_funds' },
+            } as NormalizedStreamEvent;
+          }),
+        ],
+      }),
+    },
+    {
+      name: 'a client cancel while the attempt is in flight',
+      modes: ['buffered', 'stream'],
+      setup: () => {
+        const ac = new AbortController();
+        setTimeout(() => ac.abort(), 25);
+        return {
+          attempts: [realAttempt('p0', neverHeaders)],
+          over: { signal: ac.signal, isCallerAbort: () => ac.signal.aborted },
+        };
+      },
+    },
+  ];
+
+  describe.each(['buffered', 'stream'] as const)('%s walker', (mode) => {
+    it.each(rows.filter((r) => r.modes.includes(mode)))('$name is uncertain', async (row) => {
+      const { attempts, over } = row.setup(mode);
+      // The failing member sits at an UNEQUAL position (behind a rejected one), so a
+      // classifier that only ever looks at the head of the chain cannot pass.
+      const chain = [faultAttempt('pre', classifyResponse(429, '')), ...attempts];
+      const w = await walkChain(mode, chain, over);
+      expect(w.error.status).toBeUndefined(); // synthesized locally: no upstream status
+      if (row.message !== undefined) expect(w.error.message).toMatch(row.message);
+      const evidence = chainBillingEvidence(w);
+      expect(evidence).toEqual(['rejected', 'uncertain']);
+      expect(walkUnbilled(evidence)).toBe(false);
+      for (const f of w.failures) expect(f.dispatched).toBe(true);
+    });
+
+    // The EXCEPTIONS: local, and provably never sent — each stamped by the walker, not
+    // inferred from the (status-less) error shape.
+    it('an SSRF refusal by the real guarded client is not_sent', async () => {
+      const guarded = createGuardedHttpClient({ mode: 'cloud', providerKind: 'api_key' });
+      const w = await walkChain(mode, [
+        faultAttempt('pre', classifyResponse(503, '')),
+        realAttempt('p1', guarded, { baseUrl: 'http://10.0.0.1/v1' }),
+      ]);
+      expect(w.error.status).toBeUndefined();
+      expect(chainBillingEvidence(w)).toEqual(['rejected', 'not_sent']);
+      expect(walkUnbilled(chainBillingEvidence(w))).toBe(true);
+    });
+
+    it('an empty chain and a loop-start cancel are not_sent', async () => {
+      const empty = await walkChain(mode, []);
+      expect(empty.error.status).toBeUndefined();
+      expect(chainBillingEvidence(empty)).toEqual(['not_sent']);
+    });
+
+    // A status exists only when the provider ANSWERED: real adapter, real
+    // classifyResponse. 451 stops the walk (terminal); the rest walk on (failures).
+    it.each([429, 400, 503, 451, 401, 402])(
+      'an upstream %s response is rejected',
+      async (status) => {
+        const answered: HttpClient = () =>
+          Promise.resolve(errorResponse(status, JSON.stringify({ error: { message: 'nope' } })));
+        const w = await walkChain(mode, [
+          faultAttempt('pre', network()),
+          realAttempt('p1', answered),
+        ]);
+        expect(w.error.status).toBe(status);
+        expect(chainBillingEvidence(w)).toEqual(['uncertain', 'rejected']);
+        expect(w.terminalBilling === 'rejected').toBe(status === 451);
+      },
+    );
+  });
+
+  function network(): ProviderError {
+    return classifyNetworkError(
+      Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }),
+    );
+  }
+
+  describe('a real 3xx redirect refusal', () => {
+    let server: http.Server;
+    let port = 0;
+    beforeAll(async () => {
+      server = http.createServer((req, res) => {
+        req.resume();
+        res.writeHead(302, { location: 'http://elsewhere.example/v1/chat/completions' });
+        res.end();
+      });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      port = (server.address() as AddressInfo).port;
+    });
+    afterAll(async () => {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    });
+
+    it.each(['buffered', 'stream'] as const)(
+      '%s: carries the 3xx status and is rejected',
+      async (mode) => {
+        const guarded = createGuardedHttpClient({ mode: 'selfhosted', providerKind: 'local' });
+        const w = await walkChain(mode, [
+          faultAttempt('pre', network()),
+          realAttempt('p1', guarded, {
+            kind: 'local',
+            mode: 'selfhosted',
+            baseUrl: `http://127.0.0.1:${String(port)}/v1`,
+          }),
+        ]);
+        expect(w.error.status).toBe(302);
+        expect(chainBillingEvidence(w)).toEqual(['uncertain', 'rejected']);
+      },
+    );
   });
 });

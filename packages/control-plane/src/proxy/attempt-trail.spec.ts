@@ -1,6 +1,11 @@
 import { ATTEMPT_FAILURES_MAX } from '@polyrouter/shared';
 import { ProviderError, type AttemptFailure } from '@polyrouter/data-plane';
-import { attemptTrailEntries, reasonWithTrail, type AttemptTrailLeg } from './proxy.service';
+import {
+  attemptTrailEntries,
+  cheapCancelOutcome,
+  reasonWithTrail,
+  type AttemptTrailLeg,
+} from './proxy.service';
 
 const err = (kind: ConstructorParameters<typeof ProviderError>[0], status?: number) =>
   new ProviderError(kind, `${kind} fixture`, status !== undefined ? { status } : {});
@@ -48,7 +53,14 @@ describe('attemptTrailEntries (add-fallback-attempt-detail)', () => {
       null,
     );
     expect(entries).toEqual([
-      { index: 0, providerId: 'prov-a', model: 'a', kind: 'unavailable', status: 529, dispatched: true },
+      {
+        index: 0,
+        providerId: 'prov-a',
+        model: 'a',
+        kind: 'unavailable',
+        status: 529,
+        dispatched: true,
+      },
       { index: 1, providerId: 'prov-b', model: 'b', kind: 'unavailable', dispatched: false },
     ]);
   });
@@ -80,7 +92,11 @@ describe('attemptTrailEntries (add-fallback-attempt-detail)', () => {
     // Same instance appearing in the CHEAP leg must not be marked — only the
     // final leg's tail can be the chain's terminal error.
     const legs: AttemptTrailLeg[] = [
-      { failures: [fail(0, escTerminal), fail(1, err('rate_limit', 429))], meta: cheapMeta, leg: 'cheap' },
+      {
+        failures: [fail(0, escTerminal), fail(1, err('rate_limit', 429))],
+        meta: cheapMeta,
+        leg: 'cheap',
+      },
       { failures: [fail(0, escTerminal)], meta: escMeta, leg: 'escalation' },
     ];
     const entries = attemptTrailEntries(legs, escTerminal);
@@ -97,7 +113,16 @@ describe('attemptTrailEntries (add-fallback-attempt-detail)', () => {
       [{ failures: [fail(0, err('unavailable', 500))], meta: metaOf('a') }],
       null,
     );
-    const allowed = new Set(['index', 'providerId', 'model', 'kind', 'status', 'dispatched', 'leg', 'terminal']);
+    const allowed = new Set([
+      'index',
+      'providerId',
+      'model',
+      'kind',
+      'status',
+      'dispatched',
+      'leg',
+      'terminal',
+    ]);
     for (const e of entries) for (const k of Object.keys(e)) expect(allowed.has(k)).toBe(true);
   });
 
@@ -106,5 +131,45 @@ describe('attemptTrailEntries (add-fallback-attempt-detail)', () => {
     const meta = metaOf(...Array.from({ length: n }, (_, i) => `m${String(i)}`));
     const failures = Array.from({ length: n }, (_, i) => fail(i, err('unavailable')));
     expect(attemptTrailEntries([{ failures, meta }], null)).toHaveLength(ATTEMPT_FAILURES_MAX);
+  });
+});
+
+describe('cheapCancelOutcome (zero-cost-unbilled-errors)', () => {
+  // A client abort during the cascade's cheap leg: billed unless the walk provably
+  // dispatched nothing. Both the buffered and the streamed cancel site build their
+  // outcome here, so these cases pin both.
+  it('records not billed when the abort lands before any cheap member is dispatched', () => {
+    expect(cheapCancelOutcome({ failures: [], terminalBilling: 'not_sent' })).toEqual({
+      status: 'cancelled',
+      outputChars: 0,
+      escalated: false,
+      qualitySignal: null,
+      unbilledWalk: true,
+    });
+  });
+
+  it('records not billed when earlier members were skipped or rejected and the abort preceded the next dispatch', () => {
+    const failures = [
+      { ...fail(0, err('unavailable'), false), billing: 'not_sent' as const },
+      { ...fail(1, err('rate_limit', 429), true), billing: 'rejected' as const },
+    ];
+    expect(cheapCancelOutcome({ failures, terminalBilling: 'not_sent' }).unbilledWalk).toBe(true);
+  });
+
+  it('stays billed when the abort lands while an attempt is in flight', () => {
+    expect(cheapCancelOutcome({ failures: [], terminalBilling: 'uncertain' }).unbilledWalk).toBe(
+      false,
+    );
+  });
+
+  it('stays billed when a rejected member is followed by an in-flight abort', () => {
+    // The uncertain terminal sits AFTER a not-billed failure: one uncertain attempt anywhere
+    // in the walk keeps the row billed.
+    const failures = [{ ...fail(0, err('rate_limit', 429), true), billing: 'rejected' as const }];
+    expect(cheapCancelOutcome({ failures, terminalBilling: 'uncertain' }).unbilledWalk).toBe(false);
+  });
+
+  it('stays billed when no evidence is available (fail-safe)', () => {
+    expect(cheapCancelOutcome({ failures: [] }).unbilledWalk).toBe(false);
   });
 });

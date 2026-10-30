@@ -88,16 +88,29 @@ describe('budget progress — real PostgreSQL snapshot, without Redis', () => {
     time = earlier,
     estimated = false,
     source = 'bundled',
+    // zero-cost-unbilled-errors: the not-billed marker (NULL = a legacy row) and the
+    // status it needs (`billed = false` is only legal on error/cancelled with cost 0).
+    billed: boolean | null = null,
+    status = 'success',
   ) {
     const id = randomUUID();
     await pool.query(
       `INSERT INTO request_log
-      (id,owner_user_id,agent_id,decision_layer,routing_reason,input_tokens,output_tokens,duration_ms,status,cost,provider_kind,usage_estimated,price_source,created_at)
-      VALUES ($1,$2,$3,'explicit','test',1,1,1,'success',$4,$5,$6,$7,$8)`,
-      [id, user, agentId, cost, kind, estimated, source, time],
+      (id,owner_user_id,agent_id,decision_layer,routing_reason,input_tokens,output_tokens,duration_ms,status,cost,provider_kind,usage_estimated,price_source,created_at,billed)
+      VALUES ($1,$2,$3,'explicit','test',1,1,1,$9,$4,$5,$6,$7,$8,$10)`,
+      [id, user, agentId, cost, kind, estimated, source, time, status, billed],
     );
     return id;
   }
+  /** A request no provider ran: cost 0, `billed = false`, an `error` (or `cancelled`)
+   * row that still carries its estimated tokens and a snapshot-source rate. */
+  const notBilled = (
+    kind: string | null = 'api_key',
+    estimated = true,
+    source = 'native_family',
+    status = 'error',
+    agentId = agent,
+  ) => log(owner, kind, 0, agentId, earlier, estimated, source, false, status);
   async function attempt(
     parent: string,
     user = owner,
@@ -342,6 +355,130 @@ describe('budget progress — real PostgreSQL snapshot, without Redis', () => {
       provenance: { meteredRows: 2, unpricedRows: 1, usageEstimated: true, priceEstimated: true },
     });
     expect(Object.keys(port.budgetProgress)).toEqual(['read']);
+  });
+  describe('not-billed rows (zero-cost-unbilled-errors)', () => {
+    it('raise neither provenance flag, yet still count as metered activity', async () => {
+      await log(owner, 'api_key', 2); // an exact-priced billed row: the baseline
+      // Each flag is isolated, so neither can hide behind the other: this row would
+      // raise usage provenance only, and the next price provenance only.
+      await notBilled('api_key', true, 'bundled');
+      await notBilled('api_key', false, 'listed');
+      // The field-report shape: estimated tokens priced from a native-family rate.
+      await notBilled('api_key', true, 'native_family');
+      // A cancelled not-billed row is the same population.
+      await notBilled('api_key', true, 'native_family', 'cancelled');
+      const result = await read([cash]);
+      expect(available(result)).toMatchObject({ spentMicros: 2000000 });
+      expect(available(result).provenance).toEqual({
+        // All five rows are still metered activity: the period is not "empty".
+        meteredRows: 5,
+        unpricedRows: 0,
+        unknownSpendMicros: 0,
+        usageEstimated: false,
+        priceEstimated: false,
+      });
+    });
+
+    it('raise no provenance under the notional basis either, subscription rows included', async () => {
+      await log(owner, 'api_key', 2);
+      await notBilled('subscription', true, 'native_family');
+      await notBilled('api_key', true, 'listed');
+      const result = await read([cash, notional]);
+      // cash drops the subscription component, notional keeps it: only the row COUNT
+      // differs, and neither basis is told its spend is an estimate.
+      expect(available(result).provenance).toMatchObject({
+        meteredRows: 2,
+        usageEstimated: false,
+        priceEstimated: false,
+      });
+      expect(available(result, 1).provenance).toMatchObject({
+        meteredRows: 3,
+        usageEstimated: false,
+        priceEstimated: false,
+      });
+      expect(available(result, 1).spentMicros).toBe(2000000);
+    });
+
+    it('a billed estimated error row still raises usage provenance', async () => {
+      // A first-event timeout keeps today's estimate: billed = true.
+      await log(owner, 'api_key', 0.5, agent, earlier, true, 'bundled', true, 'error');
+      const result = available(await read());
+      expect(result.spentMicros).toBe(500000);
+      expect(result.provenance).toMatchObject({
+        meteredRows: 1,
+        usageEstimated: true,
+        priceEstimated: false,
+      });
+    });
+
+    it('a legacy row (billed NULL) with an estimated cost still raises both flags', async () => {
+      // Written before the marker existed, so it reads as billed as recorded.
+      await log(owner, 'api_key', 0.5, agent, earlier, true, 'native_family', null, 'error');
+      const result = available(await read());
+      expect(result.spentMicros).toBe(500000);
+      expect(result.provenance).toMatchObject({
+        meteredRows: 1,
+        usageEstimated: true,
+        priceEstimated: true,
+      });
+    });
+
+    it('a billed estimated row raises the flags beside the not-billed ones it outnumbers', async () => {
+      // Three not-billed rows around ONE billed estimated row: the filter must
+      // exclude exactly the not-billed rows, not suppress the flag wholesale.
+      await notBilled('api_key', true, 'native_family');
+      await log(owner, 'api_key', 0.25, agent, earlier, true, 'listed', true, 'error');
+      await notBilled('api_key', true, 'listed', 'cancelled');
+      await notBilled('api_key', true, 'native_family');
+      const result = available(await read());
+      expect(result.spentMicros).toBe(250000);
+      expect(result.provenance).toMatchObject({
+        meteredRows: 4,
+        usageEstimated: true,
+        priceEstimated: true,
+      });
+    });
+
+    it("a not-billed parent does not hide its superseded attempt's own provenance", async () => {
+      // A cascade: the cheap call served and was superseded (a real, estimated
+      // `request_attempt` cost), then every escalation member was rejected, so the
+      // parent is not billed. request_attempt has no `billed` column: its provenance
+      // must still count, on the agent-scoped (joined) and the global read alike.
+      const parent = await notBilled('api_key', true, 'bundled');
+      await attempt(parent, owner, 0.4, earlier, 'api_key', true, 'native_family');
+      const global = await budget(owner, 'cash', 'global', null);
+      const result = await read([cash, global]);
+      for (const i of [0, 1]) {
+        expect(available(result, i).spentMicros).toBe(400000);
+        expect(available(result, i).provenance).toMatchObject({
+          meteredRows: 2, // the not-billed parent and its attempt
+          usageEstimated: true,
+          priceEstimated: true,
+        });
+      }
+    });
+
+    it('the same rows raise both flags once their marker is NULL (a legacy period)', async () => {
+      // The marker alone decides it: strip it and the flags return, nothing else moves.
+      await log(owner, 'api_key', 2);
+      const ids = [
+        await notBilled('api_key', true, 'bundled'),
+        await notBilled('api_key', true, 'native_family'),
+      ];
+      expect(available(await read()).provenance).toMatchObject({
+        usageEstimated: false,
+        priceEstimated: false,
+      });
+      // NULL is what a row written before the migration (or by an older app) reads as.
+      await pool.query('UPDATE request_log SET billed=NULL WHERE id=ANY($1)', [ids]);
+      const legacy = available(await read());
+      expect(legacy.spentMicros).toBe(2000000);
+      expect(legacy.provenance).toMatchObject({
+        meteredRows: 3,
+        usageEstimated: true,
+        priceEstimated: true,
+      });
+    });
   });
   it('keeps finite current-period pending separate, including partial settlement, then releases at terminal', async () => {
     const live = await batch();

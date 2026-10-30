@@ -596,7 +596,9 @@ export type RequestStatus = 'success' | 'fallback' | 'error' | 'cancelled';
 
 /** `GET /summary` — owner-scoped aggregates over the range. `spend` is USD (both
  * ledgers, µ$-rounded so it reconciles with budgets); free/paid/unpriced classify
- * served requests by cost 0 / >0 / null. */
+ * served requests by cost 0 / >0 / null — over requests that ran: a not-billed
+ * request (zero-cost-unbilled-errors) is counted in `notBilledRequests` instead,
+ * never as free. */
 export interface AnalyticsSummary {
   spend: number;
   requests: number;
@@ -612,7 +614,12 @@ export interface AnalyticsSummary {
   /** Settled batch items in the range (add-batch-inference) — part of `requests`
    * and `spend`, surfaced so their share is visible rather than silent. */
   batchRequests: number;
+  /** Zero-cost requests that were billed (billed true or legacy null); a
+   * `billed = false` row is NOT free (zero-cost-unbilled-errors). */
   freeRequests: number;
+  /** Requests no provider ran (zero-cost-unbilled-errors): recorded cost 0 and
+   * `billed = false`. Part of `requests`, in none of the four mix categories. */
+  notBilledRequests: number;
   /** Priced total, retained for compatibility; the split below is additive. */
   paidRequests: number;
   unpricedRequests: number;
@@ -712,6 +719,11 @@ export interface RequestRow {
   attemptCostMicros: number;
   durationMs: number;
   usageEstimated: boolean;
+  /** zero-cost-unbilled-errors: `false` = no provider ran this request (never
+   * sent, or the provider rejected it) so its cost is a known $0 even though its
+   * token counts are estimates; `true` = billed; `null` = the row predates the
+   * marker and reads as billed as recorded. Verbatim from the listing. */
+  billed: boolean | null;
   /** Served row's snapshot provenance; null = unpriced or predates the column. */
   priceSource: string | null;
   /** add-batch-inference: the batch job this item settled under; null = a

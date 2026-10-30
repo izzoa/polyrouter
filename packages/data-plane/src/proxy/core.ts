@@ -6,6 +6,7 @@
  * `StreamOutcome`/response so the control plane can record tokens without
  * buffering the body. No HTTP, no DB, no Nest.
  */
+import { SsrfError } from '@polyrouter/shared/server';
 import {
   mergePartialUsage,
   type ProtocolAdapter,
@@ -528,6 +529,34 @@ export interface ChainAttempt {
   readonly onSettle?: BreakerSettleListener;
 }
 
+/** Whether a provider could have billed one chain attempt (zero-cost-unbilled-
+ * errors). `not_sent`: the request never left the router. `rejected`: the
+ * provider answered with an error response (an upstream HTTP status). `uncertain`:
+ * the provider may have been working when we stopped. Internal evidence, never
+ * persisted — and deliberately NOT `dispatched`, which keeps meaning "circuit-open
+ * skip" only so the inspector's "skipped — circuit open" label stays truthful. */
+export type AttemptBilling = 'not_sent' | 'rejected' | 'uncertain';
+
+/** Classify ONE attempt from the RAW thrown value plus its mapped ProviderError.
+ * Only the catch boundary can tell an SSRF refusal (never connected) from a
+ * timeout: `toProviderError` maps both to a status-less `unavailable`. A status is
+ * set solely by `classifyResponse` (an upstream non-2xx) and the 3xx redirect
+ * refusal, so every locally synthesized error (timeouts, `no output`,
+ * `oversized_response`, network faults, in-stream error events) lacks one and
+ * stays `uncertain` — a client cancel included, since an attempt was in flight. */
+export function attemptBilling(rawErr: unknown, mapped: ProviderError): AttemptBilling {
+  if (
+    rawErr instanceof ProviderCircuitOpenError ||
+    rawErr instanceof SsrfError ||
+    mapped.kind === 'credential'
+  ) {
+    return 'not_sent';
+  }
+  if (rawErr instanceof CallCancelledError) return 'uncertain';
+  if (mapped.status !== undefined) return 'rejected';
+  return 'uncertain';
+}
+
 export interface AttemptFailure {
   readonly index: number;
   readonly error: ProviderError;
@@ -536,6 +565,23 @@ export interface AttemptFailure {
    * guardrails). Captured at the catch boundary where the raw error class is
    * still visible; absent (older callers) reads as dispatched. */
   readonly dispatched?: boolean;
+  /** Billing evidence for this attempt (zero-cost-unbilled-errors), captured at
+   * the same catch boundary by `attemptBilling`. Absent reads as `uncertain`
+   * (`chainBillingEvidence`), so a failure built without it can only keep today's
+   * billed behavior. */
+  readonly billing?: AttemptBilling;
+}
+
+/** The billing evidence of ONE chain error result: every pushed failure's class,
+ * plus the terminal attempt's when it never entered `failures`. A failure that
+ * carries no class counts as `uncertain` (fail-safe: never drops evidence). */
+export function chainBillingEvidence(result: {
+  readonly failures: readonly AttemptFailure[];
+  readonly terminalBilling?: AttemptBilling | undefined;
+}): AttemptBilling[] {
+  const evidence = result.failures.map((f): AttemptBilling => f.billing ?? 'uncertain');
+  if (result.terminalBilling !== undefined) evidence.push(result.terminalBilling);
+  return evidence;
 }
 
 /** The per-attempt request: the member's model id, plus its clamp when the
@@ -563,6 +609,12 @@ export type BufferedChainResult =
        * mark it `cancelled` (not a provider `error`) without racing a late disconnect
        * that lands during breaker persistence after a genuine provider failure (A-3). */
       readonly callerAborted: boolean;
+      /** Billing evidence for the attempt that ended the walk WITHOUT entering
+       * `failures` (zero-cost-unbilled-errors): a non-retryable stop carries that
+       * attempt's class; an empty chain and a loop-start abort (no member
+       * dispatched) carry `not_sent`. Absent after an exhausted walk of dispatched
+       * attempts — those are all in `failures`. */
+      readonly terminalBilling?: AttemptBilling;
     };
 
 export type StreamChainResult =
@@ -572,6 +624,8 @@ export type StreamChainResult =
       readonly failures: readonly AttemptFailure[];
       /** See `BufferedChainResult.callerAborted` — the pre-commit chain equivalent. */
       readonly callerAborted: boolean;
+      /** See `BufferedChainResult.terminalBilling`. */
+      readonly terminalBilling?: AttemptBilling;
     }
   | (CommittedStream & {
       readonly servedIndex: number;
@@ -621,6 +675,9 @@ export async function runBufferedChain(
         error: new ProviderError('unavailable', 'cancelled'),
         failures,
         callerAborted: ctx.isCallerAbort?.() === true,
+        // The abort landed BEFORE the next member was dispatched: nothing in flight
+        // for this stop (zero-cost-unbilled-errors).
+        terminalBilling: 'not_sent',
       };
     const attempt = attempts[i]!;
     const req = attemptRequest(request, attempt);
@@ -655,22 +712,36 @@ export async function runBufferedChain(
       // indistinguishable from a real provider outage by error alone — the pure client
       // signal (what the breaker also trusts) is the discriminator, read HERE at the
       // failure boundary rather than re-derived later at record time (A-3).
+      // Billing evidence is read HERE too, while the raw class is still visible
+      // (zero-cost-unbilled-errors): a non-retryable stop never enters `failures`, so
+      // it rides the result as `terminalBilling`.
+      const billing = attemptBilling(err, mapped);
       if (!fallbackEligible(err))
         return {
           ok: false,
           error: mapped,
           failures,
           callerAborted: ctx.isCallerAbort?.() === true,
+          terminalBilling: billing,
         };
       failures.push({
         index: i,
         error: mapped,
         dispatched: !(err instanceof ProviderCircuitOpenError),
+        billing,
       });
       lastError = mapped;
     }
   }
-  return { ok: false, error: lastError, failures, callerAborted: ctx.isCallerAbort?.() === true };
+  return {
+    ok: false,
+    error: lastError,
+    failures,
+    callerAborted: ctx.isCallerAbort?.() === true,
+    // An empty chain dispatched nothing; a walk that ran members has every
+    // attempt in `failures` already.
+    ...(attempts.length === 0 ? { terminalBilling: 'not_sent' as const } : {}),
+  };
 }
 
 /** Walk the chain for a streaming request, honoring the commit boundary: retry
@@ -694,6 +765,8 @@ export async function openStreamChain(
         error: new ProviderError('unavailable', 'cancelled'),
         failures,
         callerAborted: opts.isCallerAbort?.() === true,
+        // Before the next member was dispatched (zero-cost-unbilled-errors).
+        terminalBilling: 'not_sent',
       };
     const attempt = attempts[i]!;
     const req = attemptRequest(request, attempt);
@@ -745,6 +818,9 @@ export async function openStreamChain(
       };
     }
     const mapped = toProviderError(result.error);
+    // Billing evidence from the RAW error, before it is flattened (zero-cost-
+    // unbilled-errors) — see the buffered walker.
+    const billing = attemptBilling(result.error, mapped);
     // Pre-commit failure: a caller abort is `unavailable` after adapter normalization,
     // so consult the pure client signal at the failure boundary (A-3).
     if (!fallbackEligible(result.error))
@@ -753,11 +829,13 @@ export async function openStreamChain(
         error: mapped,
         failures,
         callerAborted: opts.isCallerAbort?.() === true,
+        terminalBilling: billing,
       };
     failures.push({
       index: i,
       error: mapped,
       dispatched: !(result.error instanceof ProviderCircuitOpenError),
+      billing,
     });
     lastError = mapped;
   }
@@ -766,6 +844,7 @@ export async function openStreamChain(
     error: lastError,
     failures,
     callerAborted: opts.isCallerAbort?.() === true,
+    ...(attempts.length === 0 ? { terminalBilling: 'not_sent' as const } : {}),
   };
 }
 

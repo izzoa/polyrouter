@@ -134,6 +134,8 @@ describe('budget block enforcement — proxy path (#16)', () => {
   let stub: StubUpstream;
   let over: Tenant; // spend far above its budget
   let under: Tenant; // spend far below its budget
+  let burst: Tenant; // $0.50 real spend + a burst of NOT-BILLED rows, under a $1 cap
+  let legacyBurst: Tenant; // the same burst written the pre-change way (estimate in cost)
 
   async function seedSpend(owner: string, cost: number): Promise<void> {
     await pool.query(
@@ -141,6 +143,18 @@ describe('budget block enforcement — proxy path (#16)', () => {
         (id, owner_user_id, decision_layer, routing_reason, input_tokens, output_tokens, duration_ms, status, cost, created_at)
        VALUES (gen_random_uuid(),$1,'default','test',0,0,1,'success',$2, now())`,
       [owner, cost],
+    );
+  }
+  /** One request no provider ran, as the recorder writes it (zero-cost-unbilled-errors):
+   * an `error` row with the routing-grade estimate and a snapshot-source rate kept as
+   * evidence. `legacy` is the pre-change shape of the same request: the estimate priced
+   * into `cost` (54,040 tokens at $2/1M) and a NULL marker. */
+  async function seedBurstRow(owner: string, shape: 'not_billed' | 'legacy'): Promise<void> {
+    await pool.query(
+      `INSERT INTO request_log
+        (id, owner_user_id, decision_layer, routing_reason, input_tokens, output_tokens, duration_ms, status, cost, usage_estimated, price_source, provider_kind, billed, created_at)
+       VALUES (gen_random_uuid(),$1,'default','test',54040,0,1,'error',$2,true,'native_family','local',$3, now())`,
+      [owner, shape === 'legacy' ? 0.10808 : 0, shape === 'legacy' ? null : false],
     );
   }
   const reconcile = () =>
@@ -246,11 +260,24 @@ describe('budget block enforcement — proxy path (#16)', () => {
     under = await seedTenant(port, pool, 'under', stub.url, { amount: 100 });
     await seedSpend(over.userId, 20); // $20 spent vs a $5 cap
     await seedSpend(under.userId, 1); // $1 spent vs a $100 cap
+    // Six requests in four seconds with every chain member skipped (the field report):
+    // as legacy rows they add 6 x $0.108 to $0.50 and cross a $1 cap; as not-billed rows
+    // they add nothing.
+    burst = await seedTenant(port, pool, 'burst', stub.url, { amount: 1 });
+    legacyBurst = await seedTenant(port, pool, 'legacy-burst', stub.url, { amount: 1 });
+    await seedSpend(burst.userId, 0.5);
+    await seedSpend(legacyBurst.userId, 0.5);
+    for (let i = 0; i < 6; i++) {
+      await seedBurstRow(burst.userId, 'not_billed');
+      await seedBurstRow(legacyBurst.userId, 'legacy');
+    }
     await reconcile(); // sole writer sets both counters + the heartbeat
   }, 60_000);
 
   afterAll(async () => {
-    await pool.query('DELETE FROM "user" WHERE id = ANY($1)', [[over.userId, under.userId]]);
+    await pool.query('DELETE FROM "user" WHERE id = ANY($1)', [
+      [over.userId, under.userId, burst.userId, legacyBurst.userId],
+    ]);
     await app.close();
     await pool.end();
     await stub.close();
@@ -301,6 +328,31 @@ describe('budget block enforcement — proxy path (#16)', () => {
     });
     expect(res.status).toBe(200);
     expect(stub.requests.length).toBe(before + 1);
+  });
+
+  it('admits the next request after a burst of not-billed requests (zero-cost-unbilled-errors)', async () => {
+    await freshHeartbeat();
+    const before = stub.requests.length;
+    const res = await chat(burst.key, {
+      model: 'gpt-4o',
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+    // $0.50 real spend + six not-billed rows (metered at a known $0) is under the $1 cap.
+    expect(res.status).toBe(200);
+    expect(stub.requests.length).toBe(before + 1);
+  });
+
+  it('still blocks when the same burst carries the pre-change estimated cost', async () => {
+    await freshHeartbeat();
+    const before = stub.requests.length;
+    const res = await chat(legacyBurst.key, {
+      model: 'gpt-4o',
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+    // $0.50 + 6 x $0.10808 = $1.15 crosses the $1 cap: legacy rows meter as recorded.
+    expect(res.status).toBe(402);
+    expect(res.body.error.code).toBe('budget_exceeded');
+    expect(stub.requests.length).toBe(before);
   });
 
   it('a stopped scheduler (stale heartbeat) fails closed with 503, no upstream call', async () => {

@@ -17,6 +17,7 @@ import {
 import {
   BoundedBlockCollector,
   ProviderError,
+  chainBillingEvidence,
   declaredStructuredOutput,
   getAdapter,
   isRouteError,
@@ -30,6 +31,8 @@ import {
   probePatienceOf,
   serializeClientRequest,
   shouldFallback,
+  walkUnbilled,
+  type AttemptBilling,
   type AttemptFailure,
   type BreakerAdmission,
   type BreakerOpenListener,
@@ -88,6 +91,7 @@ import {
   RequestRecorder,
   type RecordedError,
   type RecordingContext,
+  type RecordOutcome,
   type RequestCaptureState,
 } from '../recording/request-recorder';
 import {
@@ -448,6 +452,7 @@ export class ProxyService {
       status: result.callerAborted ? 'cancelled' : 'error',
       outputChars: 0,
       error: recordedError(result.error),
+      unbilledWalk: walkUnbilled(chainBillingEvidence(result)),
     });
     if (!result.callerAborted) this.notifyFailed(p.principal);
     throw toProxyError(result.error);
@@ -503,6 +508,7 @@ export class ProxyService {
         status: result.callerAborted ? 'cancelled' : 'error',
         outputChars: 0,
         error: recordedError(result.error),
+        unbilledWalk: walkUnbilled(chainBillingEvidence(result)),
       });
       if (!result.callerAborted) this.notifyFailed(p.principal);
       throw providerErrorToProxy(result.error);
@@ -658,6 +664,7 @@ export class ProxyService {
         // The served-then-superseded cheap leg's pre-serve failures survive
         // escalation on the parent trail (add-fallback-attempt-detail).
         cheap.failures,
+        chainBillingEvidence(cheap),
       );
     }
     if (cheap.callerAborted) {
@@ -681,7 +688,7 @@ export class ProxyService {
           ),
           c.scope,
         ),
-        { status: 'cancelled', outputChars: 0, escalated: false, qualitySignal: null },
+        cheapCancelOutcome(cheap),
       );
       throw toProxyError(cheap.error);
     }
@@ -718,6 +725,9 @@ export class ProxyService {
           // The non-retryable failure never enters `failures` — the detail
           // source is the cheap attempt's OWN error (add-request-error-detail).
           error: recordedError(cheap.error),
+          // One leg ran, so its own evidence (the failures plus the terminal that
+          // never entered them) is the whole walk (zero-cost-unbilled-errors).
+          unbilledWalk: walkUnbilled(chainBillingEvidence(cheap)),
         },
       );
       throw toProxyError(cheap.error);
@@ -732,6 +742,7 @@ export class ProxyService {
       signal,
       capacitySuffix('cheap', p.capacity?.cheap, null, cheap.failures),
       cheap.failures,
+      chainBillingEvidence(cheap),
     );
   }
 
@@ -746,6 +757,11 @@ export class ProxyService {
     /** The executed cheap leg's pre-commit failures (add-fallback-attempt-
      * detail): today's reason strings drop them; the parent trail must not. */
     cheapFailures: readonly AttemptFailure[],
+    /** The executed cheap leg's billing evidence (zero-cost-unbilled-errors): its
+     * failures plus a terminal that never entered them. A cheap call that SERVED
+     * and was superseded contributes only its pre-serve failures — it has its own
+     * request_attempt row, and the parent row concerns the attempts that failed. */
+    cheapBilling: readonly AttemptBilling[],
   ): Promise<unknown> {
     // add-stream-keepalive: the live row now names the strong tier, before its walk.
     p.onEscalate?.(c.escalation.meta[0]);
@@ -789,6 +805,7 @@ export class ProxyService {
           qualitySignal: score,
           escalationSource: source,
           error: recordedError(result.error),
+          unbilledWalk: walkUnbilled([...cheapBilling, ...chainBillingEvidence(result)]),
         },
       );
       // The superseded cheap call was still billed — its ledger row must exist
@@ -911,6 +928,7 @@ export class ProxyService {
         signal,
         capacitySuffix('cheap', p.capacity?.cheap, cheap.servedIndex, cheap.failures),
         cheap.failures,
+        chainBillingEvidence(cheap),
       );
     }
     if (cheap.callerAborted) {
@@ -933,7 +951,7 @@ export class ProxyService {
           ),
           c.scope,
         ),
-        { status: 'cancelled', outputChars: 0, escalated: false, qualitySignal: null },
+        cheapCancelOutcome(cheap),
       );
       throw providerErrorToProxy(cheap.error);
     }
@@ -968,6 +986,8 @@ export class ProxyService {
           // The non-retryable failure never enters `failures` — the detail
           // source is the cheap attempt's OWN error (add-request-error-detail).
           error: recordedError(cheap.error),
+          // See the buffered cascade: the cheap leg's evidence is the whole walk.
+          unbilledWalk: walkUnbilled(chainBillingEvidence(cheap)),
         },
       );
       throw providerErrorToProxy(cheap.error);
@@ -982,6 +1002,7 @@ export class ProxyService {
       signal,
       capacitySuffix('cheap', p.capacity?.cheap, null, cheap.failures),
       cheap.failures,
+      chainBillingEvidence(cheap),
     );
   }
 
@@ -996,6 +1017,8 @@ export class ProxyService {
     /** The executed cheap leg's pre-commit failures (add-fallback-attempt-
      * detail) — aggregated ahead of the escalation leg on the parent trail. */
     cheapFailures: readonly AttemptFailure[],
+    /** See `escalateBuffered`: the executed cheap leg's billing evidence. */
+    cheapBilling: readonly AttemptBilling[],
   ): Promise<AsyncGenerator<string>> {
     // add-stream-keepalive: the live row now names the strong tier, before its walk.
     p.onEscalate?.(c.escalation.meta[0]);
@@ -1036,6 +1059,7 @@ export class ProxyService {
           qualitySignal: score,
           escalationSource: source,
           error: recordedError(result.error),
+          unbilledWalk: walkUnbilled([...cheapBilling, ...chainBillingEvidence(result)]),
         },
       );
       // The superseded cheap call was still billed — ledger it even on total
@@ -2257,6 +2281,24 @@ export function capacitySuffix(
  * limit (add-output-cap-guardrails): unknown or larger cap → the configured
  * default unchanged. Applies on every path, client-named included — there is
  * no client value to preserve when the IR omits the ask. */
+/** The `cancelled` outcome of a client abort during a cascade's cheap leg. An abort that
+ * lands while an attempt is in flight is `uncertain` (the provider may have run it, so
+ * the row stays billed); one that lands before the next cheap member dispatches is
+ * stamped `not_sent` by the walker, so only that one records not billed. Shared by the
+ * buffered and streamed paths so they cannot drift (zero-cost-unbilled-errors). */
+export function cheapCancelOutcome(cheap: {
+  readonly failures: readonly AttemptFailure[];
+  readonly terminalBilling?: AttemptBilling | undefined;
+}): RecordOutcome {
+  return {
+    status: 'cancelled',
+    outputChars: 0,
+    escalated: false,
+    qualitySignal: null,
+    unbilledWalk: walkUnbilled(chainBillingEvidence(cheap)),
+  };
+}
+
 export function cappedDefault(configuredDefault: number, knownCap: number | undefined): number {
   return knownCap !== undefined ? Math.min(configuredDefault, knownCap) : configuredDefault;
 }

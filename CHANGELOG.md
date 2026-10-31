@@ -15,6 +15,11 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.26.0] — 2026-10-31
+
+[Release](https://github.com/izzoa/polyrouter/releases/tag/v0.26.0) ·
+[Compare](https://github.com/izzoa/polyrouter/compare/v0.25.0...v0.26.0)
+
 ### Added
 
 - **Retired models are removed automatically.** A model a provider has not listed for seven days is deleted on the next sync, unless a tier chain or rule uses it (those stay flagged "no longer offered"). On by default for every provider and switchable per provider in its edit dialog; the sync result and toast report how many were removed. **Upgrade:** the first sync after upgrading deletes existing unreferenced "no longer offered" models, and a deleted `custom`/`local` model loses its typed-in price. One migration.
@@ -28,6 +33,12 @@ heading is started.
 
 - **Requests no provider ran no longer book a cost.** A request skipped by open circuits, refused locally, or rejected by the provider records `$0` and reads "not billed" instead of an estimated cost, so a retry storm against a down provider can no longer trip a `block` budget. Budgets and alerts meter it as zero, the Costs mix counts it apart from free requests, and existing rows are not rewritten.
 - The request inspector no longer prints floating-point artifacts in unit prices (`$0.09999999999999999 / 1M`).
+
+### Upgrade notes
+
+- **One migration** (`0043`, adds `provider.auto_prune_unlisted`) runs on boot. Pull `ghcr.io/izzoa/polyrouter:0.26.0` (or `:latest`) and restart.
+- **The first sync after upgrading deletes retired models.** Every model already marked "no longer offered" that no tier chain or rule uses is removed on that provider's next sync (a manual Sync, or the next daily catalog refresh). A deleted `custom`/`local` model loses any price you typed in for it, and a stale `:batch` twin takes its base model's batch rate with it. Models a tier or rule still uses are never deleted. If you would rather keep them, turn off **Remove retired models automatically** in each provider's edit dialog before the first sync.
+- Request history and recorded cost are untouched. Routing behavior is unchanged.
 
 ## [0.25.0] — 2026-10-09
 
@@ -1120,7 +1131,8 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.25.0...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.26.0...HEAD
+[0.26.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.26.0
 [0.25.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.25.0
 [0.24.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.24.0
 [0.23.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.23.0

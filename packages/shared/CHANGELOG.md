@@ -1,5 +1,84 @@
 # @polyrouter/shared
 
+## 0.21.0
+
+### Minor Changes
+
+- 99f66cd: Retired models are removed automatically
+
+  **Upgrade note:** on the first sync after upgrading (a manual Sync, or the next daily
+  catalog refresh), every model already marked "no longer offered" that no tier chain or
+  rule uses is deleted. A deleted `custom` or `local` model also loses any price you typed
+  in for it, and a stale `:batch` twin takes its base model's batch rate with it. If a
+  model comes back, the next sync re-creates it as a new row. Turn this off per provider
+  with **Remove retired models automatically** in the provider's edit dialog.
+
+  A sync used to flag a model the provider stopped listing and leave it until you removed
+  it by hand. Now, when a successful listing sync finds a model that has stayed unlisted
+  for seven days, it deletes the model, unless a tier chain or a `model:` rule still uses
+  it. Referenced models are never deleted and stay flagged, so routing never changes under
+  you. A listing that is empty, truncated, from a replaced credential, or aborted prunes
+  nothing, and request history and recorded cost are untouched.
+
+  - A new per-provider switch, `autoPruneUnlisted` (on by default, including for existing
+    providers), is accepted on provider create and update and shown in the edit dialog.
+  - A sync result carries `pruned`, and the Sync toast says how many retired models were
+    removed; the daily refresh logs the total.
+  - Saving a tier chain or a rule that names a model now locks that model's row first, so
+    a save and a prune can never interleave: one wins, and a save that loses is rejected as
+    naming an unknown model.
+  - One migration adds `provider.auto_prune_unlisted`.
+
+- 0c2301b: The Routing page is organized around the order the proxy runs
+
+  The Routing page is now two tabs. **Tiers & headers**, where a visit lands, holds the
+  tier chains and the header rules. **Auto routing** is full width and replaces the
+  rail's Auto / Tuning / Rules sections with a numbered pipeline in proxy order:
+  Classify (L1), Workload claim, Confident band, Semantic (L2), Cascade (L3), and
+  Default. Each stage shows its layer switch where it has one, how many requests it
+  routed, and a one-line setup summary. Its details hold the content of the old Auto
+  performance, self-calibration, and semantic learning cards, with all of their
+  controls. A focal summary sets the cascade savings estimate, labelled as covering
+  the residual cascade only, beside a bar of per-stage exits.
+
+  A **Targets matrix** replaces the Band targets and Workload targets cards and the
+  per-workload class picker. It shows every band and workload target at once: one row
+  for any request and one per workload class, with Claim, Strong, Cheap, and Detected
+  columns. Inherited and claimed cells say so in text.
+
+  The measured figures now have designed loading, failure, and zero-traffic states,
+  and a failed load can be retried. Configuration controls never wait on the
+  aggregation, and the layer switches no longer read as off while the layer view is
+  still loading.
+
+  `GET /api/analytics/auto` gains `exits`: disjoint per-stage counts of evaluated
+  `auto` requests (`workload`, `structural`, `semantic`, `cascade`, `default`) that
+  sum to `evaluated`. Every existing figure is unchanged. Routing behavior is
+  unchanged, and there is no migration.
+
+### Patch Changes
+
+- 887f3e3: Requests no provider ran no longer book a cost
+
+  A request that failed because every chain member was skipped by an open circuit
+  (or was refused locally, or was rejected by the provider with an error response)
+  was still recorded with an estimated cost: the router priced a guess at the prompt
+  size. Budgets metered that guess, so a retry storm against a down provider could
+  trip a `block` budget over spend that never happened.
+
+  Such a request now records `$0`, keeps its token estimate and price snapshot, and is
+  marked **not billed** in the Requests table and the inspector. Budgets and alerts
+  meter it as zero and no longer raise their "estimated" caveat from it, and the Costs
+  request mix counts it separately instead of as a free request. A request the provider
+  may have run (a timeout, a dropped connection, a stream that failed after its first
+  token, a client cancel) is recorded exactly as before.
+
+  Existing rows are not rewritten, so a budget period that already holds this spend
+  clears at its normal reset.
+
+  The inspector's unit prices also no longer print floating-point artifacts such as
+  `$0.09999999999999999 / 1M`.
+
 ## 0.20.0
 
 ### Minor Changes

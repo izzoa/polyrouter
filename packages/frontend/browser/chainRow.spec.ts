@@ -396,6 +396,14 @@ async function columnEdges(page: Page) {
       tallestOverShortest:
         Math.max(...rows.map((r) => r.getBoundingClientRect().height)) /
         Math.min(...rows.map((r) => r.getBoundingClientRect().height)),
+      // How many rows' model id breaks onto a second line — one fragment top per line.
+      wrappedIds: rows.filter((r) => {
+        const id = r.querySelector('.chain-id');
+        if (!id) return false;
+        const range = document.createRange();
+        range.selectNodeContents(id);
+        return new Set([...range.getClientRects()].map((x) => Math.round(x.top))).size > 1;
+      }).length,
     };
   });
 }
@@ -422,8 +430,14 @@ test.describe('chain row columns @desktop', () => {
     expect(g.modeCellsWithContent, 'every row carries the control — nothing to expose').toBe(3);
     // Four price labels of four different widths.
     expect(g.priceLabels).toBe(4);
-    // One model id is long enough to wrap, so the rows differ in height too.
-    expect(g.tallestOverShortest).toBeGreaterThan(1.2);
+    // One model id is long enough to wrap, so the rows differ in height too. Asserted as
+    // the wrap itself, then as a height difference: since redesign-auto-routing-pipeline
+    // the chains span the whole Tiers & headers tab (1020px at 1280, not the 670px they
+    // had beside the rail), so the long id breaks onto two lines rather than more and the
+    // row grows 43 → 51px. A ratio pinned to the old, taller wrap measured the panel's
+    // width, not the fixture's non-uniformity.
+    expect(g.wrappedIds, 'no model id wraps — every row is one line tall').toBeGreaterThan(0);
+    expect(g.tallestOverShortest).toBeGreaterThan(1.1);
   });
 
   test('every column edge is shared by every row of the tier', async ({ page }) => {
@@ -439,9 +453,10 @@ test.describe('chain row columns @desktop', () => {
   });
 
   test('no cell paints outside its own column', async ({ page }) => {
-    // 1280 is the cramped case: the panel is 670px there against 755px at the layout's
-    // design width, and the row's content does not fit on one line either way. Something
-    // must wrap, and the columns decide WHICH — so this pins the outcome that a cell
+    // 1280 is the cramped case: the narrowest desktop panel this suite measures (1020px
+    // since the chains took the full Tiers & headers tab; 670px beside the old rail), and
+    // the long row's content still does not fit on one line. Something must wrap, and the
+    // columns decide WHICH — so this pins the outcome that a cell
     // wraps INSIDE its column rather than painting past it, which is the failure mode a
     // containment check cannot see (the box stays inside the row either way).
     await open(page);

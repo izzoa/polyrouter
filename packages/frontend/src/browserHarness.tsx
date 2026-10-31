@@ -20,7 +20,7 @@ import { render } from 'solid-js/web';
 import { App } from './App';
 import { createAppStore } from './state/appState';
 import { AppProvider } from './state/context';
-import { DEFAULT_AUTO_PERF, FakeApiClient } from './test/fakeClient';
+import { DEFAULT_AUTO_PERF, FakeApiClient, UNRECORDED_HEALTH } from './test/fakeClient';
 import { fakeBudgetProgress } from './test/budgetProgressFixture';
 import type {
   AdminInviteDto,
@@ -125,7 +125,15 @@ const ATTEMPT_ONLY_WORKLOAD_MIX: WorkloadMix = {
 
 function workloadAutoPerf(): AutoPerformance | undefined {
   const which = params.get('workload');
-  if (which === 'boundary') return { ...DEFAULT_AUTO_PERF, workloadMix: BOUNDARY_WORKLOAD_MIX };
+  // `exits.workload` is Σ classes[].routed (7 code + 2 structured), taken from the
+  // confident-band exit so the five still sum to `evaluated`.
+  if (which === 'boundary')
+    return {
+      ...DEFAULT_AUTO_PERF,
+      exits: { workload: 9, structural: 13, semantic: 5, cascade: 10, default: 3 },
+      workloadMix: BOUNDARY_WORKLOAD_MIX,
+    };
+  // Every class routes 0, so the default fixture's exits already hold.
   if (which === 'attempt-only')
     return { ...DEFAULT_AUTO_PERF, workloadMix: ATTEMPT_ONLY_WORKLOAD_MIX };
   return undefined;
@@ -475,6 +483,101 @@ if (params.get('unbilled') === '1') {
       : r,
   );
   client.summaryResult = { ...client.summaryResult, notBilledRequests: 6 };
+}
+
+// Targets-matrix fixture (redesign-auto-routing-pipeline, task 7.2), opt-in via
+// `?targets=1` so the default harness stays byte-identical for every other suite. It is
+// the measured worst case for the matrix's `table-fit-targets` threshold: every cell
+// state at once — a model target carrying the long model id, the long provider label and
+// a price, a tier target with fallbacks, a shadowed duplicate, an unresolved scoped rule
+// under a usable claim, an empty-tier claim and scoped band, and an API-created rule on
+// an inert reserved row — over a catalog whose labels push every picker to its cap.
+if (params.get('targets') === '1') {
+  const pid = 'p-targets';
+  client.providers = [
+    {
+      id: pid,
+      name: LONG_PROVIDER,
+      kind: 'api_key',
+      protocol: 'anthropic',
+      baseUrl: null,
+      status: 'ok',
+      maxTokensSpelling: 'auto',
+      hasCredential: true,
+      oauthPreset: null,
+      credentialExpiresAt: null,
+      credentialError: null,
+      firstByteTimeoutMs: null,
+      idleTimeoutMs: null,
+      createdAt: '2026-08-01T09:00:00.000Z',
+      ...UNRECORDED_HEALTH,
+    },
+  ];
+  const ids = [
+    LONG_MODEL,
+    'gpt-5-mini-2025-08-07',
+    'deepseek-ai/deepseek-v4-0324-instruct-experimental-longcontext-preview-20260401',
+  ];
+  client.models = {
+    [pid]: ids.map((externalModelId, i) => ({
+      ...CHAIN_MODELS[i]!,
+      id: `m-t${String(i)}`,
+      providerId: pid,
+      externalModelId,
+    })),
+  };
+  const tier = (id: string, key: string) => ({
+    id,
+    key,
+    displayName: null,
+    description: null,
+    createdAt: '2026-08-01T09:00:00.000Z',
+  });
+  client.tiers = [
+    tier('tier-default', 'default'),
+    tier('t-nightly', 'nightly-reprocessing'),
+    tier('t-empty', 'empty-staging'),
+  ];
+  client.tierEntries = {
+    't-nightly': ids.map((_, i) => ({
+      id: `te-n${String(i)}`,
+      tierId: 't-nightly',
+      modelId: `m-t${String(i)}`,
+      position: i,
+      mode: 'any' as const,
+      model: null,
+    })),
+    't-empty': [],
+  };
+  const rule = (
+    id: string,
+    matchType: 'auto_high' | 'auto_low' | 'auto_workload',
+    workloadClass: string | null,
+    target: string,
+    priority = 0,
+  ) => ({
+    id,
+    matchType,
+    workloadClass,
+    headerName: 'x-polyrouter-tier',
+    headerValue: null,
+    target,
+    priority,
+    createdAt: '2026-08-01T09:00:00.000Z',
+  });
+  client.rules = [
+    rule('g-high', 'auto_high', null, 'model:m-t0', 5),
+    rule('g-high-dupe', 'auto_high', null, 'model:m-t1'),
+    rule('g-low', 'auto_low', null, 'tier:nightly-reprocessing'),
+    rule('code-claim', 'auto_workload', 'code', 'tier:nightly-reprocessing'),
+    rule('code-high', 'auto_high', 'code', 'tier:retired-coding-tier', 5),
+    rule('code-high-dupe', 'auto_high', 'code', 'tier:retired-coding-tier'),
+    rule('vision-high', 'auto_high', 'vision', 'model:m-t0'),
+    rule('structured-claim', 'auto_workload', 'structured', 'tier:empty-staging'),
+    rule('structured-high', 'auto_high', 'structured', 'tier:empty-staging'),
+    rule('research-claim', 'auto_workload', 'research', 'model:m-t0', 5),
+    rule('research-claim-dupe', 'auto_workload', 'research', 'model:m-t1'),
+  ];
 }
 
 const store = createAppStore(client);

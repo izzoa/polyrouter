@@ -167,10 +167,9 @@ export interface AppState {
   /** The sidebar setup-guide card was dismissed (persisted per browser). */
   setupDismissed: boolean;
   range: Range;
-  /** The user's LAST EXPLICIT choice of Routing-rail section (section-routing-rail).
-   * What actually renders is derived on the page: a section that stops being
-   * offered falls back to `auto` for display while this keeps the choice, so it
-   * is restored if the capability comes back. */
+  /** The Routing page's active tab (redesign-auto-routing-pipeline). Both tabs are
+   * always offered, so this is exactly what renders — a session-scoped choice that
+   * survives in-app navigation and is never written to the URL. */
   routingSection: RoutingSection;
   /** Auto-performance section (add-auto-performance-view), Routing-local range. */
   autoPerf: {
@@ -811,7 +810,7 @@ function initialState(): AppState {
     theme: 'light',
     setupDismissed: readSetupDismissed(),
     range: '24h',
-    routingSection: 'auto',
+    routingSection: 'tiers',
     autoPerf: { data: null, loaded: false, error: null, range: '7d' },
     agentStrip: [],
     agentStripLoaded: false,
@@ -980,12 +979,15 @@ export interface AppStore {
   setNavExpanded: (open: boolean) => void;
   setAccountMenuOpen: (open: boolean) => void;
   setRange: (range: Range) => void;
-  /** Routing-rail section (section-routing-rail). */
+  /** Routing-page tab (redesign-auto-routing-pipeline). */
   setRoutingSection: (section: RoutingSection) => void;
   /** Refetches; it does not re-sort. See `loadBreakdowns`. */
   setBreakdownMetric: (metric: BreakdownMetric) => void;
   /** Auto-performance section (add-auto-performance-view): Routing-local range. */
   loadAutoPerf: () => Promise<void>;
+  /** The failure state's Retry (redesign-auto-routing-pipeline): refetches for
+   * the CURRENT range through `loadAutoPerf`, so its race guards still apply. */
+  retryAutoPerf: () => Promise<void>;
   setAutoPerfRange: (range: Range) => void;
   /** Threshold calibration (add-auto-threshold-calibration). */
   /** Pricing catalog (add-pricing-refresh-ui). */
@@ -1099,8 +1101,12 @@ export interface AppStore {
   beginTierDrag: (tierId: string) => void;
   /** Resolve a hold. `changed` commits the user's order and drops deferred state;
    *  `unchanged` applies deferred state without writing; `abandon` discards both
-   *  (page teardown, tier deletion, sign-out) — a boolean cannot express that third case. */
-  endTierDrag: (tierId: string, outcome: 'changed' | 'unchanged' | 'abandon') => void;
+   *  (tier deletion, sign-out) — a boolean cannot express that third case. `revert`
+   *  abandons too, then repaints the chain from server truth: for chains torn down
+   *  mid-drag (a page or tab change), where nothing else would correct the
+   *  half-dragged order the user would otherwise come back to
+   *  (redesign-auto-routing-pipeline). */
+  endTierDrag: (tierId: string, outcome: 'changed' | 'unchanged' | 'abandon' | 'revert') => void;
   /** Add a model to a tier's chain. `mode` reserves it (add-batch-mode-routing);
    * for a model already in the chain a stated mode sets it in place rather than
    * being a no-op, since a duplicate entry would be refused. */
@@ -1161,8 +1167,9 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
   // Monotonic stamp for auto-performance loads (r3-High-1 race guard).
   let autoPerfSeq = 0;
   // The same guard for the two card-scoped loaders, which became racy once their
-  // cards mount and unmount with a rail section (section-routing-rail D8): flipping
-  // to Tuning and back starts a second GET while the first is still in flight.
+  // cards mount and unmount with the page's layout (section-routing-rail D8; now the
+  // Auto routing tab): flipping away and back starts a second GET while the first
+  // is still in flight.
   let calHistorySeq = 0;
   // Semantic learning's counter is a GENERATION over every `semLearn` writer, not
   // just its loader: `revertSemanticLearning` commits an authoritative response, so
@@ -2923,6 +2930,15 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     setRoutingSection: (section) => setState('routingSection', section),
     setBreakdownMetric,
     loadAutoPerf,
+    retryAutoPerf: () => {
+      // Out of a failure, show Loading rather than the error: a cleared error over
+      // the data the loader KEEPS on failure would present that earlier load as
+      // current. A retry with no failure standing is a plain same-range refetch,
+      // which may keep the figures it replaces visible until it commits.
+      if (state.autoPerf.error !== null)
+        setState('autoPerf', { data: null, loaded: false, error: null });
+      return loadAutoPerf();
+    },
     setAutoPerfRange: (range) => {
       // Clear stale data so the section shows Loading for the new range, never
       // old-range numbers under a new-range selector (r3-High-1) — then fetch
@@ -3517,8 +3533,27 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       // drag, which is exactly what "abandoned means no-op" forbids.
       if (dragHold !== tierId) return;
       dragHold = null;
-      if (outcome === 'abandon' || deletedTiers.has(tierId)) {
+      if (outcome === 'abandon' || outcome === 'revert' || deletedTiers.has(tierId)) {
+        const pending = tierPending.get(tierId);
         dropPending(tierId);
+        // The visible chain still carries the drag's local moves, which were never
+        // written. Server truth is the deferred snapshot when one arrived during the
+        // hold, else the confirmed baseline — the same baseline a failed write rolls
+        // back to. A write still queued or in flight repaints on its own response (or
+        // rolls back), so the chain is left to it.
+        if (
+          outcome === 'revert' &&
+          !deletedTiers.has(tierId) &&
+          state.tierEntries[tierId] !== undefined &&
+          !tierDesired.has(tierId) &&
+          !tierInFlight.has(tierId)
+        ) {
+          setState(
+            'tierEntries',
+            tierId,
+            pending ?? buildEntries(tierId, [...(state.confirmedEntries[tierId] ?? [])]),
+          );
+        }
         return;
       }
       if (outcome === 'changed') {

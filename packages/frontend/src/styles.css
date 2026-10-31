@@ -37,8 +37,14 @@
   --green-bg: #e9f6ef;
   --amber: #c8901a;
   --amber-bg: #fbf3dc;
+  /* Amber and red as TEXT, for the reason `--green-text` exists: the fills read 2.8:1
+     (amber) and 3.9:1 (red) on white, under the 4.5:1 text floor. Dots, bars, borders and
+     chip fills keep `--amber` / `--red`. Values from the approved Auto routing mockup
+     (redesign-auto-routing-pipeline): 5.1:1 and 5.8:1 on --chip, the lightest surface. */
+  --amber-text: #8a5d00;
   --red: #e5484d;
   --red-bg: #fdecec;
+  --red-text: #b42318;
   --accent-bg: color-mix(in oklab, var(--accent) 9%, var(--panel));
   --accent-deep: color-mix(in oklab, var(--accent) 78%, var(--text) 22%);
   /* Flat-borders lock (STYLESEED.md): shadows are whispers ≤ 8% alpha, themed OFF in dark. */
@@ -66,8 +72,12 @@
   --green-bg: #12291d;
   --amber: #e7b03c;
   --amber-bg: #2e2712;
+  /* Dark mode already clears 4.5:1 (amber 8.0:1, red 4.6:1 on --chip), so text matches
+     the fill. */
+  --amber-text: #e7b03c;
   --red: #f2555a;
   --red-bg: #391a1c;
+  --red-text: #f2555a;
   --shadow: none;
   --shadow-pop: none;
   --shadow-drawer: none;
@@ -990,7 +1000,7 @@ select:focus {
  * change the lock and this file together, never one alone.
  *
  * Locked values (STYLESEED.md § Responsive):
- *   narrow 768px viewport · table-fit 960/680/660px container
+ *   narrow 768px viewport · table-fit 960/680/660px container · table-fit-targets 940px
  *   rail-collapsed 56px · gutter-narrow 18px 16px · target-base 24px · target-comfort 44px
  *
  * WHY CLASSES, NOT ELEMENT SELECTORS: layout lives in 783 inline style attributes, and an
@@ -1088,9 +1098,6 @@ select:focus {
 .rs-grid-2 {
   grid-template-columns: 1fr 1fr;
 }
-.rs-grid-2-1 {
-  grid-template-columns: 2fr 1fr;
-}
 .rs-grid-label {
   grid-template-columns: 140px 1fr;
 }
@@ -1179,7 +1186,6 @@ select:focus {
 
   /* Page grids drop to a single column, or to two where four is the desktop shape. */
   .rs-grid-2,
-  .rs-grid-2-1,
   .rs-grid-label,
   .rs-grid-main-side {
     grid-template-columns: 1fr;
@@ -1193,7 +1199,6 @@ select:focus {
      column forces the TRACK wider than its container — the grid blows out and the panel
      overflows even though the template says 1fr. `min-width: 0` restores the intent. */
   .rs-grid-2 > *,
-  .rs-grid-2-1 > *,
   .rs-grid-3 > *,
   .rs-grid-4 > *,
   .rs-grid-label > *,
@@ -1959,6 +1964,488 @@ select:focus {
   .rs-table-users td > .rs-cell-label {
     flex: none;
     min-width: 0;
+  }
+}
+
+/* ---- The Auto routing tab (redesign-auto-routing-pipeline) ----
+   Its rows are wrapping flex rows, not grids: each row reflows on its own at any width,
+   so there is no track template to restate below `narrow` and no column header to fall
+   out of line with them. Every figure carries its own caption instead. */
+.ar-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+.ar-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 16px 32px;
+}
+.ar-focal {
+  flex: 0 1 260px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+/* The screen's one focal point: the only accent-coloured figure on the tab. */
+.ar-focal-figure {
+  font:
+    600 34px/1.1 'Geist',
+    sans-serif;
+  letter-spacing: -0.03em;
+  color: var(--accent);
+}
+.ar-exits {
+  flex: 999 1 380px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 10px;
+}
+.ar-bar {
+  display: flex;
+  gap: 2px;
+  height: 12px;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.ar-seg {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+}
+.ar-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ar-legend > li {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font:
+    400 11.5px 'Geist',
+    sans-serif;
+  color: var(--text2);
+}
+.ar-key {
+  display: inline-block;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+/* Five neutral shades in stage order, darkest first — never the accent, and never told
+   apart by shade alone: the legend states every stage's name, count and share as text. */
+.ar-seg[data-exit='workload'],
+.ar-key[data-exit='workload'] {
+  background: var(--text);
+}
+.ar-seg[data-exit='structural'],
+.ar-key[data-exit='structural'] {
+  background: var(--text2);
+}
+.ar-seg[data-exit='semantic'],
+.ar-key[data-exit='semantic'] {
+  background: var(--text3);
+}
+.ar-seg[data-exit='cascade'],
+.ar-key[data-exit='cascade'] {
+  background: var(--faint);
+}
+.ar-seg[data-exit='default'],
+.ar-key[data-exit='default'] {
+  background: var(--chip);
+  border: 1px solid var(--text3);
+}
+.ar-note {
+  margin: 0 18px 12px;
+  padding: 8px 12px;
+  background: var(--hover);
+  border-radius: 8px;
+  font:
+    400 12px/1.5 'Geist',
+    sans-serif;
+  color: var(--text2);
+}
+/* A control inside the note's sentence. It keeps its target floor — 24px, 44px below
+   `narrow` — on its BOX, and negative block margins hand the excess back so the line
+   box stays one line-height tall. Without them its line grew by the floor's surplus and
+   the sentence read with one ragged gap (26px of it at phone width). The hit area spills
+   into the half-leading above and below, which holds no other target. */
+.ar-note-link {
+  margin-block: calc((1lh - 24px) / 2);
+  color: var(--text);
+  text-decoration: underline;
+}
+@media (max-width: 768px) {
+  .ar-note-link {
+    margin-block: calc((1lh - 44px) / 2);
+  }
+}
+.ar-stages {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ar-stage {
+  border-top: 1px solid var(--border2);
+}
+.ar-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 12px 18px;
+}
+.ar-num {
+  flex: 0 0 16px;
+  font:
+    400 11.5px 'Geist Mono',
+    monospace;
+  color: var(--text3);
+}
+.ar-name {
+  flex: 0 1 200px;
+  min-width: 0;
+}
+.ar-switch {
+  flex: 0 0 44px;
+  display: flex;
+  justify-content: center;
+}
+.ar-count {
+  flex: 0 0 104px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.ar-setup {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+.ar-action {
+  flex: 0 0 88px;
+  display: flex;
+  justify-content: flex-end;
+}
+.ar-expander {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.ar-expander svg {
+  transition: transform 0.12s;
+}
+.ar-expander[aria-expanded='true'] svg {
+  transform: rotate(180deg);
+}
+.ar-detail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 0 18px 16px 50px;
+}
+/* A block inside a stage detail. Nested in a panel, so a hairline and the nested radius
+   (outer 10px panel, less its inset) — no second shadow. */
+.ar-card {
+  flex: 1 1 280px;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.ar-card-title {
+  font:
+    500 11.5px 'Geist',
+    sans-serif;
+  color: var(--text2);
+  margin-bottom: 6px;
+}
+.ar-foot {
+  padding: 10px 18px 14px;
+  border-top: 1px solid var(--border2);
+  font:
+    400 11.5px/1.5 'Geist',
+    sans-serif;
+  color: var(--text3);
+}
+/* Loading placeholders. Neutral and decorative — the text beside each says "Loading". */
+.ar-skel {
+  display: inline-block;
+  border-radius: 4px;
+  background: var(--chip);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+.ar-skel-count {
+  width: 48px;
+  height: 20px;
+}
+.ar-skel-switch {
+  width: 30px;
+  height: 17px;
+  border-radius: 9px;
+}
+.ar-skel-figure {
+  width: 150px;
+  max-width: 100%;
+  height: 38px;
+}
+.ar-skel-line {
+  display: block;
+  width: 100%;
+  height: 12px;
+}
+.ar-skel-short {
+  display: block;
+  width: 60%;
+  height: 12px;
+}
+@media (max-width: 768px) {
+  /* Line one keeps the number, the name and the switch together; the figure and the
+     expander share the next, and the setup takes a line of its own.
+
+     Line one is CLAIMED, not left to fit: the name's basis is the whole line less the
+     16px number, the 44px switch column and the two 12px gaps (+1px against subpixel
+     rounding), so nothing else can join it. A `flex: 1 1 0` name gave the figure and the
+     expander the first claim on the line wherever they fit — at 390px the Classify name
+     kept 23px, its tag broke one word per line and "Structural" ran under the switch, and
+     the figure joined line one on some rows and not others. Every stage row, switch or
+     not, keeps the 44px switch column, so the rows still line up with each other. */
+  .ar-row {
+    padding: 12px 14px;
+    column-gap: 12px;
+  }
+  .ar-name {
+    flex: 1 1 calc(100% - 85px);
+    /* Only a string with no break opportunity at all can still be wider than the line;
+       it breaks rather than painting under the switch. */
+    overflow-wrap: anywhere;
+  }
+  .ar-count {
+    flex: 0 1 auto;
+  }
+  .ar-setup {
+    flex: 1 1 100%;
+    order: 5;
+  }
+  .ar-action {
+    flex: 0 0 auto;
+    margin-left: auto;
+  }
+  .ar-detail {
+    padding: 0 14px 14px;
+  }
+  .ar-note {
+    margin: 0 14px 12px;
+  }
+  .ar-foot {
+    padding: 10px 14px 14px;
+  }
+  /* A workload-mix row wraps to two lines here (its bar and spend drop under the label),
+     so a hairline between rows keeps each bar with its own label rather than reading as
+     the next row's. Desktop rows stay one unpadded flex line. */
+  .ar-wl > .rs-wrap {
+    padding: 4px 0;
+  }
+  .ar-wl > .rs-wrap + .rs-wrap {
+    border-top: 1px solid var(--border2);
+  }
+}
+.ar-skel-note {
+  width: 72px;
+  height: 10px;
+  vertical-align: middle;
+}
+
+/* ---- The Targets matrix (redesign-auto-routing-pipeline D9) ----
+ *
+ * A grid, not a semantic table: each row is a `role="group"` named by its workload, and
+ * every cell carries its OWN field label as real text. At desktop the header row names
+ * the columns for sighted readers (it is `aria-hidden`) and the labels are visually
+ * hidden but still read; below `table-fit-targets` the header goes and the same labels
+ * show. One DOM at every width, so a cell's picker keeps one accessible name.
+ *
+ * The container is the matrix's own wrapper inside its panel, never a page wrapper —
+ * the same rule as the table panels above. */
+.rs-targets {
+  container-type: inline-size;
+  container-name: rs-targets;
+  padding: 0 18px;
+}
+/* `display` lives HERE, on the one class the container query restates: a query adds no
+   specificity, so a second, more specific rule declaring `display: grid` would keep the
+   matrix a five-column grid at 320px however well the query matched (the batches table
+   learned this the hard way). `minmax(0, …)` so one long value cannot widen its own track
+   and shift every other column. */
+.rs-grid-targets {
+  display: grid;
+  grid-template-columns:
+    minmax(0, 0.6fr) minmax(0, 1.2fr) minmax(0, 1.2fr) minmax(0, 1.2fr)
+    minmax(0, 0.55fr);
+  gap: 0 14px;
+  align-items: start;
+}
+.tm-head {
+  padding: 8px 0;
+  border-top: 1px solid var(--border2);
+  font:
+    500 10.5px 'Geist',
+    sans-serif;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text3);
+}
+.tm-head-rule {
+  font:
+    400 10px 'Geist Mono',
+    monospace;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.tm-head-sub {
+  display: block;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.tm-head-detected {
+  text-align: right;
+}
+.tm-row {
+  padding: 10px 0;
+  border-top: 1px solid var(--border2);
+}
+.tm-name {
+  min-width: 0;
+}
+/* The tab's one tag: a matrix row's detection source and a stage row's paused status
+   render as the same chip, so a tag means one thing however it is filled. */
+.ar-tag {
+  display: inline-block;
+  font:
+    400 10.5px 'Geist',
+    sans-serif;
+  color: var(--text2);
+  background: var(--chip);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+.tm-cell {
+  min-width: 0;
+}
+.tm-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.tm-detected .tm-body {
+  align-items: flex-end;
+  text-align: right;
+}
+.tm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+/* The picker's cap. Here rather than inline so the stacked record can release it — an
+   inline `max-width` would outrank the container query and push a 220px select out of a
+   200px phone column. */
+.tm-picker {
+  max-width: 220px;
+}
+.tm-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 6px;
+}
+/* A cell's field label: read by assistive tech at every width, shown only when stacked.
+   The `.sr-only` treatment, restated so the query below can undo it. */
+.tm-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* `table-fit-targets` (STYLESEED.md § Responsive): 940px of container content box, measured
+   the way `table-fit-requests` was — headless Chromium, real stylesheet and fonts, the
+   harness's `?targets=1` worst case, the content box swept 1300 → 560px in 2px steps with
+   this query disabled. Every column holds its content down to 926px; at 924px the pickers
+   (their 220px `.tm-picker` cap) overflow their 219px tracks in all three target columns at
+   once. Text never sets the limit — model ids and provider labels break at their hyphens.
+   Rounded up as the other table-fit values were (946 → 960), so the matrix reflows before
+   it fails, never after. Below it each row becomes a stacked record, every field under its
+   own real label. */
+@container rs-targets (max-width: 940px) {
+  .rs-grid-targets {
+    display: block;
+  }
+  /* AFTER the rule above: the header row is also `.rs-grid-targets`, and at equal
+     specificity the later rule wins — in the other order the header stayed on screen. */
+  .tm-head {
+    display: none;
+  }
+  .tm-name {
+    padding-bottom: 4px;
+  }
+  .tm-cell {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 12px;
+    align-items: baseline;
+    padding: 4px 0;
+  }
+  .tm-label {
+    position: static;
+    flex: 0 0 120px;
+    width: auto;
+    height: auto;
+    margin: 0;
+    overflow: visible;
+    clip: auto;
+    white-space: normal;
+    font:
+      500 10.5px 'Geist',
+      sans-serif;
+    color: var(--text3);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .tm-label .mono {
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  /* Beside its label while there is room; on a line of its own when there is not. */
+  .tm-body {
+    flex: 1 1 200px;
+    overflow-wrap: break-word;
+  }
+  .tm-detected .tm-body {
+    align-items: flex-start;
+    text-align: left;
+  }
+  /* The cap holds where there is room and gives way where there is not — a phone column
+     is narrower than 220px. */
+  .tm-picker {
+    max-width: min(220px, 100%);
   }
 }
 

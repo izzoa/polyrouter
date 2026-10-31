@@ -18,6 +18,7 @@ import type { JSX } from 'solid-js';
 import { render } from 'solid-js/web';
 import { afterEach, describe, expect, it } from 'vitest';
 import { Icon } from './components/Icon';
+import { EXPANDABLE_STAGES, expandAllStages, openTab, type RoutingTab } from './test/routingTabs';
 
 const mount = (node: () => JSX.Element): HTMLElement => {
   const host = document.createElement('div');
@@ -106,10 +107,9 @@ describe('a completed setup step survives the mark being decorative', () => {
 
   it('announces completion', () => {
     const host = mount(() => <Step label="Connect a provider" done={true} />);
-    expect(
-      accessibleText(host),
-      'completion was left to a green ring — colour alone',
-    ).toContain('completed');
+    expect(accessibleText(host), 'completion was left to a green ring — colour alone').toContain(
+      'completed',
+    );
   });
 
   it('an incomplete step does not announce completion', () => {
@@ -167,10 +167,9 @@ describe('the REAL request table, not a replica', () => {
     const cascade = rows.filter((r) => accessibleText(r).includes('cascade'));
     expect(cascade.length, 'fixture has no escalated (cascade) row to check').toBeGreaterThan(0);
     for (const row of cascade) {
-      expect(
-        accessibleText(row),
-        'a real escalated row does not announce escalation',
-      ).toContain('escalated');
+      expect(accessibleText(row), 'a real escalated row does not announce escalation').toContain(
+        'escalated',
+      );
     }
     // And the mark itself stays out of the accessible name.
     expect(cascade[0]?.querySelector('[data-icon="escalated"]')?.getAttribute('aria-hidden')).toBe(
@@ -214,6 +213,7 @@ describe('replacing a glyph with artwork did not strip any accessible name', () 
         if (!named) nameless.push(`${where}: <${el.tagName.toLowerCase()}> ${el.className}`);
       }
     };
+    const ROUTING_TABS: readonly RoutingTab[] = ['Tiers & headers', 'Auto routing'];
     const railSegments = (): HTMLButtonElement[] => [
       ...host.querySelectorAll<HTMLButtonElement>('[data-testid="routing-sections"] .rs-seg'),
     ];
@@ -233,21 +233,44 @@ describe('replacing a glyph with artwork did not strip any accessible name', () 
         for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 0));
       }
 
-      // The Routing rail is sectioned (section-routing-rail): only the ACTIVE
-      // section's cards are in the DOM. Sweep every offered section, or this
-      // sweep's reach silently shrinks to Auto and the next unnamed icon button
-      // added to Tuning or Rules ships unaudited.
-      const labels = railSegments().map((b) => b.textContent?.trim() ?? '');
-      if (labels.length === 0) {
+      // The Routing page has two tabs (redesign-auto-routing-pipeline), and only the
+      // ACTIVE tab's cards are in the DOM. Sweep both, or this sweep's reach silently
+      // shrinks to Tiers & headers and the next unnamed icon button added to Auto
+      // routing ships unaudited.
+      if (page !== 'routing') {
         scan(page);
         continue;
       }
-      for (const label of labels) {
-        railSegments()
-          .find((b) => b.textContent?.trim() === label)
-          ?.click();
+      expect(
+        railSegments().map((b) => b.textContent?.trim()),
+        'the Routing page does not offer both of its tabs',
+      ).toEqual([...ROUTING_TABS]);
+      for (const tab of ROUTING_TABS) {
+        await openTab(host, tab);
+        // On Auto routing a stage's detail is only in the DOM while that stage is
+        // expanded, and stages start collapsed — so open every one. The count is asserted
+        // BEFORE expanding: a pipeline that did not render (or a tab that did not open)
+        // would otherwise leave nothing to expand, and a scan of the collapsed rows would
+        // pass vacuously over every control inside the details.
+        if (tab === 'Auto routing') {
+          const expanders = (): HTMLButtonElement[] => [
+            ...host.querySelectorAll<HTMLButtonElement>(
+              '[data-testid="auto-pipeline"] button[aria-expanded]',
+            ),
+          ];
+          expect(
+            expanders().map((b) => b.getAttribute('aria-label')),
+            'Auto routing does not offer exactly five stage expanders',
+          ).toEqual(EXPANDABLE_STAGES.map((name) => `${name} details`));
+          await expandAllStages(host);
+          expect(
+            expanders().map((b) => b.getAttribute('aria-expanded')),
+            'a stage stayed collapsed, so its detail went unswept',
+          ).toEqual(['true', 'true', 'true', 'true', 'true']);
+          expect(host.querySelectorAll('[data-testid="stage-detail"]')).toHaveLength(5);
+        }
         for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 0));
-        scan(`${page}/${label}`);
+        scan(`${page}/${tab}`);
       }
     }
     expect(

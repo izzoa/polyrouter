@@ -227,22 +227,3 @@ export function anyScopedBandRule(rules: RuleDto[]): boolean {
     (r) => (r.matchType === 'auto_high' || r.matchType === 'auto_low') && !isGenericRule(r),
   );
 }
-
-/** The class's Workload-target CLAIM state (add-workload-scoped-bands, clink r1 M4):
- * `usable` — the effective `auto_workload` rule resolves to a usable target and
- * claims the class's requests FIRST (scoped bands stay dormant while it does);
- * `unusable` — a target is configured but empty/unresolved, so it does NOT claim
- * and the scoped bands apply; `none` — no rule. */
-export type WorkloadClaimState = 'none' | 'usable' | 'unusable';
-
-export function workloadClaimState(
-  input: TargetCatalog & { rules: RuleDto[] },
-  cls: string,
-): WorkloadClaimState {
-  const ofClass = input.rules
-    .filter((r) => r.matchType === 'auto_workload' && r.workloadClass === cls)
-    .sort(effectiveRuleOrder);
-  const effective = ofClass[0];
-  if (effective === undefined) return 'none';
-  return targetUsable(resolveTargetState(input, effective.target)) ? 'usable' : 'unusable';
-}

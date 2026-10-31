@@ -19,6 +19,7 @@ import { createAppStore, type AppStore } from './state/appState';
 import { AppProvider } from './state/context';
 import { DEFAULT_CALIBRATION_EVIDENCE, FakeApiClient, DEFAULT_AUTO_PERF } from './test/fakeClient';
 import { ApiError, type CalibrationEvidence } from './data/api';
+import { expandStage, openAutoTab } from './test/routingTabs';
 
 const flush = async (): Promise<void> => {
   await Promise.resolve();
@@ -143,16 +144,14 @@ describe('the section renders honestly', () => {
       ),
       host,
     );
-    // The Auto-performance card lives in the TUNING section, which is offered
-    // only while the structural capability is available and the user is standing
-    // on it. Driven through state rather than clicks — this suite is about what
-    // the section SAYS, and the rail's own behaviour is covered elsewhere.
+    // Calibration evidence lives in the Classify stage's detail on the AUTO ROUTING
+    // tab, inside content gated on the structural capability. Showing the tab is
+    // what fetches the aggregation (once per visit).
     await store.loadRouting();
     await flush();
     store.setState('autoLayers', 'structuralAvailable', true);
-    store.setRoutingSection('tuning');
-    await store.loadAutoPerf();
-    await flush();
+    await openAutoTab(host);
+    await expandStage(host, 'Classify');
     return host;
   };
 
@@ -164,10 +163,10 @@ describe('the section renders honestly', () => {
     const geom = section(host)?.querySelector('[data-testid="calibration-geometry"]');
     expect(geom, 'no geometry line rendered').not.toBeNull();
     const text = geom?.textContent ?? '';
-    // The window is the CALIBRATION window, and says so — the page's range
-    // selector controls a different measurement entirely.
-    expect(text).toContain('14 days');
-    expect(text).toMatch(/not the range/i);
+    // The window is the CALIBRATION window, and says so — a labelled window of its
+    // own, because the tab's range selector controls a different measurement entirely.
+    expect(text).toContain('Last 14 days — its own window, not the tab’s range.');
+    expect(text).not.toMatch(/above|below/); // named, never placed
     expect(text).toContain('50'); // the acting floor, from the response
     expect(text).toContain('0.6');
     expect(text).toContain('0.25');
@@ -212,10 +211,9 @@ describe('the section renders honestly', () => {
   });
 
   it('renders no section, and no figures, when the aggregation failed', async () => {
-    // The Routing page fetches auto-perf itself (it is cross-consumed by the Band
-    // and Workload target cards), so "not yet loaded" is not a state a user sits
-    // in. The state that matters is a FAILED load: the block must be absent
-    // rather than rendering zeros that would read as measured counts.
+    // The state that matters is a FAILED load: the block must be absent rather than
+    // rendering zeros that would read as measured counts. (Loading is the tab's
+    // designed placeholder state, covered with the other designed states.)
     const client = new FakeApiClient({
       analyticsFailure: new ApiError(500, 'Server Error', 'boom'),
     });
@@ -233,11 +231,13 @@ describe('the section renders honestly', () => {
     await store.loadRouting();
     await flush();
     store.setState('autoLayers', 'structuralAvailable', true);
-    store.setRoutingSection('tuning');
-    await store.loadAutoPerf();
-    await flush();
+    await openAutoTab(host);
+    const detail = await expandStage(host, 'Classify');
 
     expect(store.state.autoPerf.data).toBeNull();
+    // The Classify stage IS open, and says its figures failed — so the absence below
+    // is the failure's doing, not a closed tab's or a collapsed stage's.
+    expect(detail.querySelector('[data-testid="detail-failed"]')).not.toBeNull();
     expect(section(host)).toBeNull();
   });
 });
@@ -270,9 +270,8 @@ describe('honesty fixes (fix-calibration-evidence-honesty)', () => {
     await store.loadRouting();
     await flush();
     store.setState('autoLayers', 'structuralAvailable', true);
-    store.setRoutingSection('tuning');
-    await store.loadAutoPerf();
-    await flush();
+    await openAutoTab(host);
+    await expandStage(host, 'Classify');
     return host;
   };
 

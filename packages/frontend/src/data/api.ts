@@ -810,6 +810,18 @@ export interface AutoPerformance {
     source: { bundled: number; learned: number };
   };
   fallthrough: number;
+  /** Disjoint per-stage exits (redesign-auto-routing-pipeline D6): the evaluated
+   * rows by the stage that ROUTED them, on `decision_layer` alone — `default` is
+   * the complement, so the five sum to `evaluated`. Unlike `bands.*`, a
+   * workload-claimed confident row counts once, under `workload`. Optional: an
+   * older server omits it, and the counts then read as unavailable, never zero. */
+  exits?: {
+    workload: number;
+    structural: number;
+    semantic: number;
+    cascade: number;
+    default: number;
+  };
   series: { bucket: string; high: number; low: number; ambiguous: number }[];
   telemetrySince: string | null;
   savings: {

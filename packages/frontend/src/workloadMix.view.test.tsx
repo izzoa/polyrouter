@@ -5,6 +5,7 @@ import type { AutoPerformance } from './data/api';
 import { DEFAULT_AUTO_PERF, FakeApiClient } from './test/fakeClient';
 import { createAppStore, type AppStore } from './state/appState';
 import { AppProvider } from './state/context';
+import { expandStage, openAutoTab } from './test/routingTabs';
 
 /** add-workload-telemetry 5.1/5.2 §render: the Workload mix block's states on the
  * real Routing page, and the inspector's workload chip (VM logic is unit-tested
@@ -68,14 +69,10 @@ async function mount(
   nav?.click();
   await flush();
   if (page === 'Routing') {
-    // The workload mix lives inside Auto performance, in the rail's Tuning
-    // section (section-routing-rail). Switch here rather than in every case.
-    const seg = [
-      ...host.querySelectorAll<HTMLButtonElement>('[data-testid="routing-sections"] .rs-seg'),
-    ].find((b) => b.textContent?.trim() === 'Tuning');
-    if (!seg) throw new Error('Routing section "Tuning" is not offered');
-    seg.click();
-    await flush();
+    // The workload mix is the Workload claim stage's detail on the Auto routing tab
+    // (redesign-auto-routing-pipeline). Open both here rather than in every case.
+    await openAutoTab(host);
+    await expandStage(host, 'Workload claim');
   }
   return {
     host,

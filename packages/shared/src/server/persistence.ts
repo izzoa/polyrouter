@@ -867,6 +867,22 @@ export interface AutoPerformanceData {
   signalQuality: AgentSignalQuality[];
   /** Workload mix (add-workload-telemetry D6). */
   workloadMix: WorkloadMix;
+  /** Disjoint per-stage exits (redesign-auto-routing-pipeline D6): the SAME
+   * banded population as `evaluated`, partitioned by the stage that ROUTED each
+   * row on `decision_layer` alone. Every key but `default` is an equality;
+   * `default` is the complement, so the five sum to `evaluated` by construction
+   * (a banded row the proxy never writes on the auto path — a seeded `explicit`
+   * or `header` — lands in `default`, not in a gap). The band-qualified figures
+   * stay SUBSETS: `fallthrough` ⊆ `default`, `cascade.requests` ⊆ `cascade`,
+   * `semantic.routed` ⊆ `semantic`. Always present; 0, never null, at zero
+   * evaluated rows. */
+  exits: {
+    workload: number;
+    structural: number;
+    semantic: number;
+    cascade: number;
+    default: number;
+  };
 }
 
 /** Which population a calibration read selects (add-per-agent-calibration).

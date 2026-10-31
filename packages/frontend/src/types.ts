@@ -26,10 +26,11 @@ export type Page =
 
 export type Theme = 'light' | 'dark';
 export type Range = '24h' | '7d' | '30d';
-/** Which section of the Routing page's automatic-routing rail is showing
- * (section-routing-rail). In-memory only: the hash grammar is `#/routing` with
- * no suffix, so a full reload starts on `auto`. */
-export type RoutingSection = 'auto' | 'tuning' | 'rules';
+/** Which tab of the Routing page is showing: `tiers` (Tiers & headers — the
+ * Layer-0 chains and header rules) or `auto` (Auto routing) — redesign-auto-routing-pipeline.
+ * In-memory only: the hash grammar is `#/routing` with no suffix, so a full
+ * reload lands on `tiers`. */
+export type RoutingSection = 'tiers' | 'auto';
 export type RequestFilter = 'all' | 'explicit' | 'auto' | 'fallback' | 'escalated';
 
 /** How a request was RUN, orthogonal to how it was routed (add-batch-inference).

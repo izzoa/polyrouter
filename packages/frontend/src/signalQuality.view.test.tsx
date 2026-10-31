@@ -5,6 +5,7 @@ import type { AutoLayers, AutoPerformance } from './data/api';
 import { DEFAULT_AUTO_PERF, FakeApiClient } from './test/fakeClient';
 import { createAppStore, type AppStore } from './state/appState';
 import { AppProvider } from './state/context';
+import { expandStage, openAutoTab } from './test/routingTabs';
 
 /** add-auto-signal-honesty §render: the Signal quality section's three states
  * on the real Routing page (VM/guidance logic is unit-tested in
@@ -80,14 +81,10 @@ async function mountRouting(
   );
   nav?.click();
   await flush();
-  // Signal quality lives inside Auto performance, in the rail's Tuning section
-  // (section-routing-rail). Switch here rather than in every case.
-  const seg = [
-    ...host.querySelectorAll<HTMLButtonElement>('[data-testid="routing-sections"] .rs-seg'),
-  ].find((b) => b.textContent?.trim() === 'Tuning');
-  if (!seg) throw new Error('Routing section "Tuning" is not offered');
-  seg.click();
-  await flush();
+  // Signal quality lives in the Classify stage's detail on the Auto routing tab
+  // (redesign-auto-routing-pipeline). Open both here rather than in every case.
+  await openAutoTab(host);
+  await expandStage(host, 'Classify');
   return {
     host,
     store,
@@ -123,9 +120,7 @@ describe('Signal quality section (add-auto-signal-honesty)', () => {
   it('MIXED state: flagged list AND coverage line render together', async () => {
     h = await mountRouting([sq(), sq({ agentId: 'a2', label: 'small', collapsed: null })]);
     expect(section(h)!.textContent).toContain('markus');
-    expect(coverage(h)!.textContent).toBe(
-      '1 of 2 agents have enough evaluated traffic to assess',
-    );
+    expect(coverage(h)!.textContent).toBe('1 of 2 agents have enough evaluated traffic to assess');
   });
 
   it('coverage-only state renders neutrally, and all-healthy renders nothing', async () => {

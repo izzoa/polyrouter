@@ -1465,6 +1465,92 @@ describe('auto-performance range race (add-auto-performance-view r3-High-1)', ()
   });
 });
 
+describe('auto-performance retry (redesign-auto-routing-pipeline 4.2)', () => {
+  type AutoPerfResult = Awaited<ReturnType<FakeApiClient['autoPerformance']>>;
+
+  /** Hold every aggregation request open; the test settles each one by hand. */
+  function holdAutoPerf(fake: FakeApiClient) {
+    const pending: { resolve: (v: AutoPerfResult) => void; reject: (e: unknown) => void }[] = [];
+    fake.autoPerformance = () =>
+      new Promise((resolve, reject) => pending.push({ resolve, reject }));
+    return pending;
+  }
+
+  it('a failed load, then a retry, commits the new data — showing Loading, not the stale figures, meanwhile', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    const base = fake.autoPerfResult;
+    const s = createAppStore(fake);
+    s.setAutoPerfRange('30d');
+    await tick();
+    expect(s.state.autoPerf.data?.evaluated).toBe(base.evaluated);
+
+    // A later refetch fails: the loader keeps the old data beside the error.
+    fake.analyticsFailure = new ApiError(504, 'Gateway Timeout', 'timeout');
+    await s.loadAutoPerf();
+    expect(s.state.autoPerf.error).not.toBeNull();
+    expect(s.state.autoPerf.data).not.toBeNull();
+
+    fake.analyticsFailure = null;
+    const pending = holdAutoPerf(fake);
+    const retry = s.retryAutoPerf();
+    // In flight: no error, and no figure from the earlier load presented as current.
+    expect(s.state.autoPerf.error).toBeNull();
+    expect(s.state.autoPerf.data).toBeNull();
+    expect(s.state.autoPerf.loaded).toBe(false);
+    // …for the range that was selected, not a reset one.
+    expect(s.state.autoPerf.range).toBe('30d');
+    expect(pending).toHaveLength(1);
+
+    pending[0]!.resolve({ ...base, evaluated: 777 });
+    await retry;
+    expect(s.state.autoPerf.data?.evaluated).toBe(777);
+    expect(s.state.autoPerf.error).toBeNull();
+    expect(s.state.autoPerf.loaded).toBe(true);
+    expect(s.state.autoPerf.range).toBe('30d');
+  });
+
+  it('a retry that fails again shows the failure again', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    fake.analyticsFailure = new ApiError(504, 'Gateway Timeout', 'timeout');
+    const s = createAppStore(fake);
+    await s.loadAutoPerf();
+    expect(s.state.autoPerf.error).not.toBeNull();
+    await s.retryAutoPerf();
+    expect(fake.calls.filter((c) => c === 'autoPerformance')).toHaveLength(2);
+    expect(s.state.autoPerf.error).not.toBeNull();
+    expect(s.state.autoPerf.data).toBeNull();
+    expect(s.state.autoPerf.loaded).toBe(true);
+  });
+
+  it('an older in-flight response landing after the retry never overwrites it', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    const base = fake.autoPerfResult;
+    const pending = holdAutoPerf(fake);
+    const s = createAppStore(fake);
+    const first = s.loadAutoPerf(); // held open
+    const retry = s.retryAutoPerf(); // the newer request
+    expect(pending).toHaveLength(2);
+
+    pending[1]!.resolve({ ...base, evaluated: 999 });
+    await retry;
+    expect(s.state.autoPerf.data?.evaluated).toBe(999);
+
+    // The superseded request lands last — as data, and as a failure — and is dropped.
+    pending[0]!.resolve({ ...base, evaluated: 1 });
+    await first;
+    expect(s.state.autoPerf.data?.evaluated).toBe(999);
+
+    const second = s.loadAutoPerf();
+    const retry2 = s.retryAutoPerf();
+    pending[3]!.resolve({ ...base, evaluated: 500 });
+    await retry2;
+    pending[2]!.reject(new ApiError(500, 'Internal', 'late failure'));
+    await second;
+    expect(s.state.autoPerf.data?.evaluated).toBe(500);
+    expect(s.state.autoPerf.error).toBeNull();
+  });
+});
+
 describe('identity-scoped cache isolation (add-auto-threshold-calibration r3-High-1)', () => {
   it('sign-out clears calibration history, auto-layers, and auto-perf caches', async () => {
     const fake = new FakeApiClient({
@@ -2070,14 +2156,46 @@ describe('pricing-catalog slice (add-pricing-refresh-ui)', () => {
   });
 });
 
-describe('Routing-rail section state (section-routing-rail)', () => {
-  it('starts on the Auto section and remembers an explicit choice', () => {
+describe('Routing-page tab state (redesign-auto-routing-pipeline)', () => {
+  it('starts on Tiers & headers and remembers an explicit choice', () => {
     const s = createAppStore(new FakeApiClient({ session: DEFAULT_SESSION }));
+    expect(s.state.routingSection).toBe('tiers');
+    s.setRoutingSection('auto');
     expect(s.state.routingSection).toBe('auto');
-    s.setRoutingSection('tuning');
-    expect(s.state.routingSection).toBe('tuning');
-    s.setRoutingSection('rules');
-    expect(s.state.routingSection).toBe('rules');
+    s.setRoutingSection('tiers');
+    expect(s.state.routingSection).toBe('tiers');
+  });
+
+  it('a reverted drag repaints the chain from server truth and writes nothing', async () => {
+    // The chains unmount on a tab switch while the page — and its loaded routing —
+    // lives on, so nothing reloads to correct a half-dragged order. `revert` does.
+    const fake = routingFake();
+    const s = createAppStore(fake);
+    await s.loadRouting();
+    const ids = (): string[] => (s.state.tierEntries['t1'] ?? []).map((e) => e.modelId);
+
+    // No server response during the hold: server truth is the confirmed baseline.
+    s.beginTierDrag('t1');
+    s.moveTierEntry('t1', 0, 2); // the drag's local, unwritten move
+    expect(ids()).toEqual(['m2', 'm3', 'm1']);
+    s.endTierDrag('t1', 'revert');
+    expect(ids()).toEqual(['m1', 'm2', 'm3']);
+
+    // A refresh that lands during the hold is deferred — and is the truth to repaint.
+    fake.tierEntries['t1'] = [mkEntry('t1', 'm3', 0), mkEntry('t1', 'm1', 1)];
+    s.beginTierDrag('t1');
+    s.moveTierEntry('t1', 0, 1);
+    await s.loadRouting();
+    expect(ids()).toEqual(['m2', 'm1', 'm3']); // held: the visible chain is untouched
+    s.endTierDrag('t1', 'revert');
+    expect(ids()).toEqual(['m3', 'm1']);
+    expect(fake.calls).not.toContain('replaceTierEntries');
+
+    // `abandon` keeps its contract: it discards without repainting.
+    s.beginTierDrag('t1');
+    s.moveTierEntry('t1', 0, 1);
+    s.endTierDrag('t1', 'abandon');
+    expect(ids()).toEqual(['m1', 'm3']);
   });
 });
 

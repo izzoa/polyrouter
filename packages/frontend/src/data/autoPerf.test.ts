@@ -33,6 +33,7 @@ function fixture(over: Partial<AutoPerformance> = {}): AutoPerformance {
       source: { bundled: 6, learned: 2 },
     },
     fallthrough: 2,
+    exits: { workload: 0, structural: 22, semantic: 5, cascade: 10, default: 3 },
     series: [],
     telemetrySince: '2026-07-10T00:00:00.000Z',
     savings: {

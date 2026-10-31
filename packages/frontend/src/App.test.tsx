@@ -2,7 +2,15 @@ import { APP_NAME } from '@polyrouter/shared';
 import { render } from 'solid-js/web';
 import { ApiError } from './data/api';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { AutoLayers, ChannelDto, ModelDto, RuleDto, TierDto, TierEntryDto } from './data/api';
+import type {
+  AgentCalibration,
+  AutoLayers,
+  ChannelDto,
+  ModelDto,
+  RuleDto,
+  TierDto,
+  TierEntryDto,
+} from './data/api';
 import { App } from './App';
 import { createAppStore, type AppStore } from './state/appState';
 import { AppProvider } from './state/context';
@@ -14,6 +22,19 @@ import {
   FakeApiClient,
   UNRECORDED_HEALTH,
 } from './test/fakeClient';
+import {
+  EXPANDABLE_STAGES,
+  buttonByText,
+  expandAllStages,
+  expandStage,
+  openAutoTab,
+  openTab,
+  stageExpander,
+  targetPicker,
+  targetsCell,
+  targetsMatrix,
+  targetsRow,
+} from './test/routingTabs';
 
 const flush = async (): Promise<void> => {
   for (let i = 0; i < 4; i++) await new Promise((r) => setTimeout(r, 0));
@@ -93,21 +114,6 @@ function clickByText(host: HTMLElement, selector: string, text: string): void {
   el.click();
 }
 
-/** Switch the Routing page's rail to a section (section-routing-rail). Scoped to
- * the rail's own group so it can never hit `RangeSelector`, which uses the same
- * `Segmented` control — and throws loudly if the section is not offered, rather
- * than silently leaving the rail on Auto. Awaits a flush because a card that
- * fetches on first mount (calibration history, learning status) only starts that
- * fetch when its section opens. */
-async function openSection(host: HTMLElement, label: 'Auto' | 'Tuning' | 'Rules'): Promise<void> {
-  const seg = [
-    ...host.querySelectorAll<HTMLButtonElement>('[data-testid="routing-sections"] .rs-seg'),
-  ].find((b) => b.textContent?.trim() === label);
-  if (!seg) throw new Error(`Routing section "${label}" is not offered`);
-  seg.click();
-  await flush();
-}
-
 describe('dashboard shell (auth-gated)', () => {
   afterEach(() => {
     localStorage.clear();
@@ -155,11 +161,11 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
       expect(store.state.page).toBe('routing');
-      expect(host.textContent).toContain('Automatic routing');
-      // Header rules moved to the rail's Rules section — assert it there rather
-      // than dropping half of what this test covers.
-      await openSection(host, 'Rules');
+      // The visit lands on Tiers & headers, which holds the header rules…
       expect(host.textContent).toContain('x-polyrouter-tier');
+      // …and the automatic-routing controls are one tab away.
+      await openAutoTab(host);
+      expect(host.querySelector('[data-testid="auto-pipeline"]')).not.toBeNull();
       clickByText(host, '.nav-item span', 'Settings');
       expect(host.textContent).toContain('Prompt & response bodies');
     } finally {
@@ -326,9 +332,21 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
-      expect(host.textContent).toContain('off instance-wide (ROUTING_AUTO_LAYERS)');
-      // add-auto-performance-view: no structural layer -> no performance section
+      await openTab(host, 'Auto routing');
+      // The hint is on the Classify stage's row, beside its (locked) switch.
+      const classify = host.querySelector<HTMLElement>('[data-stage="classify"]')!;
+      expect(classify.querySelector('[data-testid="stage-hint"]')?.textContent).toBe(
+        'off instance-wide (ROUTING_AUTO_LAYERS)',
+      );
+      expect(
+        classify
+          .querySelector('[aria-label="Toggle L1 · Structural"]')
+          ?.getAttribute('aria-disabled'),
+      ).toBe('true');
+      // add-auto-performance-view: no structural layer -> no performance section, and no
+      // stage carries a figure slot at all.
       expect(host.textContent).not.toContain('Auto performance');
+      expect(host.querySelectorAll('[data-testid="stage-figure"]')).toHaveLength(0);
     } finally {
       dispose();
     }
@@ -354,8 +372,11 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
-      // Honest available copy — no "cloud tier" contradiction survives.
-      expect(host.textContent).toContain(
+      await openTab(host, 'Auto routing');
+      // Honest available copy — no "cloud tier" contradiction survives. The layer's
+      // description heads the Semantic stage's detail.
+      const detail = await expandStage(host, 'Semantic');
+      expect(detail.textContent).toContain(
         "Embedding classifier over the ambiguous slice — routes what structural can't read",
       );
       expect(host.textContent).not.toContain('cloud tier');
@@ -377,9 +398,10 @@ describe('dashboard shell (auth-gated)', () => {
 
   /** The single off-instance-wide hint rendered for the (only) unavailable
    * layer in these fakes — exact-matched so a hint can never smuggle in a
-   * mention of a half that is already satisfied. */
+   * mention of a half that is already satisfied. Read from the pipeline's stage
+   * rows, where each layer's switch and hint live. */
   const offInstanceHint = (host: HTMLElement): string | undefined =>
-    Array.from(host.querySelectorAll('div.mono'))
+    Array.from(host.querySelectorAll('[data-testid="pipeline-stage"] [data-testid="stage-hint"]'))
       .map((el) => el.textContent ?? '')
       .find((t) => t.startsWith('off instance-wide'));
 
@@ -405,6 +427,7 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
+      await openTab(host, 'Auto routing');
       // The affordance explains its own absence and names both enabling envs.
       expect(offInstanceHint(host)).toBe(
         'off instance-wide — optional module; needs SEMANTIC_MODEL_PATH (or the -semantic image) + semantic in ROUTING_AUTO_LAYERS',
@@ -445,6 +468,7 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
+      await openTab(host, 'Auto routing');
       const hint = offInstanceHint(host);
       expect(hint).toBe('off instance-wide — model loaded; add semantic to ROUTING_AUTO_LAYERS');
       // Never points at the half that is already satisfied.
@@ -477,6 +501,7 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
+      await openTab(host, 'Auto routing');
       const hint = offInstanceHint(host);
       expect(hint).toBe(
         'off instance-wide — no ready model; check SEMANTIC_MODEL_PATH + boot logs, or run the -semantic image',
@@ -515,6 +540,7 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
+      await openTab(host, 'Auto routing');
       const hint = offInstanceHint(host);
       expect(hint).toContain('centroids did not build');
       expect(hint).toContain('boot log');
@@ -550,6 +576,7 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
+      await openTab(host, 'Auto routing');
       const hint = offInstanceHint(host);
       expect(hint).toContain('centroids did not build');
       expect(hint).toContain('ROUTING_AUTO_LAYERS');
@@ -582,9 +609,11 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
-      // Open the card's own section first — otherwise this would pass because the
-      // section is closed, not because the semantic layer is ineffective.
-      await openSection(host, 'Tuning');
+      // Open the card's own tab AND stage first — otherwise this would pass because
+      // the tab or the detail is closed, not because the semantic layer is ineffective.
+      await openTab(host, 'Auto routing');
+      const detail = await expandStage(host, 'Semantic');
+      expect(detail.querySelector('[data-testid="ap-semantic-slice"]')).not.toBeNull(); // open
       expect(host.textContent).not.toContain('Semantic learning');
     } finally {
       dispose();
@@ -612,7 +641,8 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
-      await openSection(host, 'Tuning');
+      await openTab(host, 'Auto routing');
+      await expandStage(host, 'Semantic'); // the card is the Semantic stage's detail
       expect(host.textContent).toContain('Semantic learning');
       expect(host.textContent).toContain('active: bundled anchors');
       expect(host.textContent).toContain('No learning events yet.');
@@ -668,7 +698,8 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
-      await openSection(host, 'Tuning');
+      await openTab(host, 'Auto routing');
+      await expandStage(host, 'Semantic'); // the card is the Semantic stage's detail
       expect(host.textContent).toContain('active: learned centroids');
       expect(host.textContent).toContain('learning from 12 low · 5 high');
       expect(host.textContent).toContain('drift 0.03/0.05 · sim 0.97/0.95');
@@ -706,7 +737,8 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
-      await openSection(host, 'Tuning');
+      await openTab(host, 'Auto routing');
+      await expandStage(host, 'Semantic'); // the card is the Semantic stage's detail
       expect(host.textContent).toContain('active: bundled anchors');
       expect(host.textContent).toContain('inactive');
       expect(host.textContent).not.toContain('active: learned centroids');
@@ -730,7 +762,8 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
-      await openSection(host, 'Tuning');
+      await openTab(host, 'Auto routing');
+      await expandStage(host, 'Semantic'); // the card is the Semantic stage's detail
       // Shell renders: title + a toggle reflecting the auto-layers truth (on).
       expect(host.textContent).toContain('Semantic learning');
       const sw = host.querySelector<HTMLButtonElement>('[aria-label="Semantic learning"]');
@@ -793,44 +826,44 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
-      const panel = () =>
-        [...host.querySelectorAll<HTMLElement>('.panel')].find((p) =>
-          p.textContent?.includes('Band targets'),
-        );
-      const text = () => panel()?.textContent ?? '';
+      await openTab(host, 'Auto routing');
+      // The Any request row's Strong and Cheap cells are the GENERIC bands.
+      const any = () => targetsRow(host, 'any');
+      const strong = () => targetsCell(host, 'any', 'strong');
+      const cheap = () => targetsCell(host, 'any', 'cheap');
       // Effective (priority 5) shown with chain preview; duplicate disclosed.
-      expect(text()).toContain('tier: premium');
-      expect(text()).toContain('1 shadowed duplicate rule');
-      // The cheap band is unset with its consequence copy; cascade needs both.
-      expect(text()).toContain('Not set — confident low verdicts fall through to default');
-      expect(text()).toContain('Cascade needs both bands usable');
-      // Cleanup removes only the shadowed rule.
-      const cleanup = [...panel()!.querySelectorAll<HTMLElement>('button')].find(
-        (b) => b.textContent?.trim() === 'clean up',
+      expect(strong().textContent).toContain('tier: premium');
+      expect(strong().textContent).toContain('1 shadowed duplicate rule');
+      // The cheap band is unset with its consequence copy; cascade needs both — a note on
+      // the Any request row, which is the only row the check reads.
+      expect(cheap().textContent).toContain(
+        'Not set — confident low verdicts fall through to default',
       );
-      cleanup?.click();
+      expect(any().textContent).toContain('Cascade needs both bands usable');
+      // Cleanup removes only the shadowed rule.
+      buttonByText(strong(), 'clean up')!.click();
       await flush();
       expect(store.state.rules.filter((r) => r.matchType === 'auto_high')).toHaveLength(1);
       expect(store.state.rules.some((r) => r.id === 'r-eff')).toBe(true);
-      // Keyboard-native picker: setting the cheap band via the select.
-      const selects = panel()!.querySelectorAll<HTMLSelectElement>('select');
+      // Keyboard-native picker, named for its cell: setting the cheap band via the select.
       // The pickers REST on their placeholder — never on a real option (the
       // v0.5.0 bug showed "default" because nothing selected the placeholder).
-      expect(selects[0]!.value).toBe('');
-      expect(selects[1]!.value).toBe('');
-      const cheapSelect = selects[1]!;
+      expect(targetPicker(host, 'Strong target for any request').value).toBe('');
+      const cheapSelect = targetPicker(host, 'Cheap target for any request');
+      expect(cheapSelect.value).toBe('');
+      expect(cheap().contains(cheapSelect)).toBe(true);
       cheapSelect.value = 'tier:default';
       cheapSelect.dispatchEvent(new Event('change', { bubbles: true }));
       await flush();
       expect(store.state.rules.some((r) => r.matchType === 'auto_low')).toBe(true);
-      expect(cheapSelect.value).toBe(''); // back on the placeholder after applying
-      expect(text()).not.toContain('Cascade needs both bands usable');
-      expect(text()).toContain('uses the Layer-0 default chain');
+      // The same element, back on the placeholder after applying — the cell updated in
+      // place rather than rebuilding under the user.
+      expect(cheapSelect.isConnected).toBe(true);
+      expect(cheapSelect.value).toBe('');
+      expect(any().textContent).not.toContain('Cascade needs both bands usable');
+      expect(cheap().textContent).toContain('uses the Layer-0 default chain');
       // Clear removes the whole band again.
-      const clear = [...panel()!.querySelectorAll<HTMLElement>('button')].filter(
-        (b) => b.textContent?.trim() === 'Clear',
-      )[1];
-      clear?.click();
+      buttonByText(cheap(), 'Clear')!.click();
       await flush();
       expect(store.state.rules.some((r) => r.matchType === 'auto_low')).toBe(false);
     } finally {
@@ -912,67 +945,77 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
-      const panel = () => host.querySelector<HTMLElement>('[data-testid="workload-targets"]');
-      const text = () => panel()?.textContent ?? '';
-      // Precedence copy + the live/reserved split.
-      expect(text()).toContain('before band targets, Layer 2, and the cascade');
-      expect(text()).toContain('an explicit model or the tier header still wins');
-      const rows = () => [...panel()!.querySelectorAll<HTMLElement>('[data-testid="wt-row"]')];
-      expect(rows()).toHaveLength(5);
-      expect(rows().map((r) => r.textContent?.includes('auto_workload ·'))).toEqual([
-        true,
-        true,
-        true,
-        true,
-        true,
+      await openTab(host, 'Auto routing');
+      const matrix = targetsMatrix(host);
+      const claimCell = (cls: 'code' | 'vision' | 'research' | 'writing') =>
+        targetsCell(host, cls, 'claim');
+      // The precedence line, stated plainly at the top of the matrix.
+      const precedence = matrix.querySelector('[data-testid="targets-precedence"]')!.textContent;
+      expect(precedence).toContain('before band targets, Layer 2, and the cascade');
+      expect(precedence).toContain('An explicit model or the tier header still wins');
+      // One row per taxonomy class after the Any request row, every class's Claim cell
+      // naming the rule type it reads and writes.
+      const rows = [...matrix.querySelectorAll<HTMLElement>('[data-testid="targets-row"]')];
+      expect(rows.map((r) => r.dataset['row'])).toEqual([
+        'any',
+        'code',
+        'vision',
+        'structured',
+        'research',
+        'writing',
       ]);
-      // Effective (priority 5) shown with chain preview; duplicate disclosed; routed count from auto data.
-      expect(rows()[0]!.textContent).toContain('CODE');
-      expect(rows()[0]!.textContent).toContain('tier: premium');
-      expect(rows()[0]!.textContent).toContain('1 shadowed duplicate rule');
-      expect(rows()[0]!.querySelector('[data-testid="wt-routed"]')!.textContent).toContain(
-        '2 routed of 6 detected',
+      for (const r of rows.slice(1)) {
+        const label = r.querySelector('[data-column="claim"] .tm-label')!.textContent;
+        expect(label).toContain('Claim');
+        expect(label).toContain('auto_workload');
+      }
+      // Effective (priority 5) shown with chain preview; duplicate disclosed; the routed
+      // count from auto data sits in the row's Detected cell.
+      expect(targetsRow(host, 'code').textContent).toContain('Code');
+      expect(claimCell('code').textContent).toContain('tier: premium');
+      expect(claimCell('code').textContent).toContain('1 shadowed duplicate rule');
+      const detected = targetsRow(host, 'code').querySelector('[data-testid="targets-detected"]')!;
+      expect(detected.textContent?.replace(/\s+/g, ' ')).toContain('6 detected · 2 routed');
+      expect(detected.querySelector('[data-testid="wt-routed"]')!.textContent).toContain(
+        '2 routed',
       );
-      // Unset live rows carry their consequence copy and a picker resting on the placeholder.
-      expect(rows()[1]!.textContent).toContain('Vision requests');
-      expect(rows()[1]!.textContent).toContain(
+      expect(detected.textContent).toContain('Detected · 7d'); // framed to the range
+      // Unset live claims carry their consequence copy and a picker resting on the placeholder.
+      expect(claimCell('vision').textContent).toContain('Vision requests');
+      expect(claimCell('vision').textContent).toContain(
         'band targets, then L2 and the cascade where enabled, then default',
       );
-      expect(text()).toContain('vision › structured › code'); // classifier precedence disclosed (clink r5 L1)
-      expect(text()).toContain('configured code thresholds');
-      const visionSelect = rows()[1]!.querySelector<HTMLSelectElement>('select')!;
-      expect(visionSelect.getAttribute('aria-label')).toBe('Vision workload target');
+      const matrixFoot = matrix.querySelector('[data-testid="targets-footnote"]')!.textContent;
+      expect(matrixFoot).toContain('vision › structured › code'); // classifier precedence disclosed (clink r5 L1)
+      expect(matrixFoot).toContain('configured code thresholds');
+      const visionSelect = targetPicker(host, 'Claim target for vision');
+      expect(claimCell('vision').contains(visionSelect)).toBe(true);
       expect(visionSelect.value).toBe('');
-      // Reserved rows: heading, no picker, no Clear — the API-created research rule is disclosed read-only.
-      expect(panel()!.querySelector('[data-testid="wt-reserved-heading"]')!.textContent).toContain(
-        'semantic source only',
-      );
-      const research = rows().find((r) => r.textContent?.includes('RESEARCH'))!;
-      expect(research.querySelector('select')).toBeNull();
+      // Reserved claims: no picker, no Clear — the API-created research rule is disclosed
+      // read-only, and the row says it is inert, naming the missing half.
       expect(
-        [...research.querySelectorAll('button')].some((b) => b.textContent?.trim() === 'Clear'),
-      ).toBe(false);
-      expect(research.querySelector('[data-testid="wt-reserved-note"]')!.textContent).toContain(
-        'stays inert until the semantic workload source emits research',
-      );
+        matrix.querySelector('[data-testid="targets-reserved-footnote"]')!.textContent,
+      ).toContain('not detected here yet');
+      expect(claimCell('research').querySelector('select')).toBeNull();
+      expect(buttonByText(claimCell('research'), 'Clear')).toBeUndefined();
+      expect(
+        claimCell('research').querySelector('[data-testid="cell-reserved-note"]')!.textContent,
+      ).toContain('stays inert until the semantic workload source emits research');
+      expect(
+        targetsRow(host, 'research').querySelector('[data-testid="targets-inert-note"]')!
+          .textContent,
+      ).toContain('inert until the semantic workload source is effective');
       // A reserved duplicate is DISCLOSED but never actionable here (clink r5 M3).
-      expect(research.querySelector('[data-testid="wt-shadowed"]')!.textContent).toContain(
-        '1 shadowed duplicate rule',
-      );
-      expect(research.querySelector('[data-testid="wt-shadowed"]')!.textContent).toContain(
-        'API-created',
-      );
-      expect(
-        [...research.querySelectorAll('button')].some((b) => b.textContent?.trim() === 'clean up'),
-      ).toBe(false);
-      const writing = rows().find((r) => r.textContent?.includes('WRITING'))!;
-      expect(writing.textContent).toContain('not detected on this instance yet');
-      expect(writing.querySelector('select')).toBeNull();
+      const reservedDupe = claimCell('research').querySelector('[data-testid="cell-shadowed"]')!;
+      expect(reservedDupe.textContent).toContain('1 shadowed duplicate rule');
+      expect(reservedDupe.textContent).toContain('API-created');
+      expect(buttonByText(claimCell('research'), 'clean up')).toBeUndefined();
+      // An inert reserved row has no routed figure to show.
+      expect(targetsRow(host, 'research').querySelector('[data-testid="wt-routed"]')).toBeNull();
+      expect(claimCell('writing').textContent).toContain('not detected on this instance yet');
+      expect(claimCell('writing').querySelector('select')).toBeNull();
       // Cleanup removes only the shadowed code rule; the research rule is untouched.
-      const cleanup = [...rows()[0]!.querySelectorAll<HTMLElement>('button')].find(
-        (b) => b.textContent?.trim() === 'clean up',
-      );
-      cleanup?.click();
+      buttonByText(claimCell('code'), 'clean up')!.click();
       await flush();
       expect(store.state.rules.filter((r) => r.workloadClass === 'code').map((r) => r.id)).toEqual([
         'r-eff',
@@ -987,35 +1030,33 @@ describe('dashboard shell (auth-gated)', () => {
         target: 'tier:default',
       });
       expect(visionSelect.value).toBe('');
-      expect(rows()[1]!.textContent).toContain('uses the Layer-0 default chain');
+      expect(claimCell('vision').textContent).toContain('uses the Layer-0 default chain');
       // Clear removes the vision rule again.
-      const clear = [...rows()[1]!.querySelectorAll<HTMLElement>('button')].find(
-        (b) => b.textContent?.trim() === 'Clear',
-      );
-      clear?.click();
+      buttonByText(claimCell('vision'), 'Clear')!.click();
       await flush();
       expect(store.state.rules.some((r) => r.workloadClass === 'vision')).toBe(false);
-      // Auto-performance: the disclosure + widened residual note + per-row routed.
-      // It lives in the rail's Tuning section; the rows above were in Auto.
-      await openSection(host, 'Tuning');
-      const perf = [...host.querySelectorAll<HTMLElement>('.panel')].find((p) =>
-        p.textContent?.includes('Auto performance'),
-      )!;
-      expect(perf.querySelector('[data-testid="ap-workload-disclosure"]')!.textContent).toContain(
-        'include 2 workload-routed requests',
-      );
+      // Auto-performance: the disclosure + widened residual note + per-row routed, each
+      // in the stage it describes on the same Auto routing tab.
+      const classify = await expandStage(host, 'Classify');
+      expect(
+        classify.querySelector('[data-testid="ap-workload-disclosure"]')!.textContent,
+      ).toContain('include 2 workload-routed requests');
       // DEFAULT_AUTO_PERF also routes semantically — the note names BOTH causes.
-      expect(perf.querySelector('[data-testid="ap-residual-note"]')!.textContent).toContain(
+      const cascade = await expandStage(host, 'Cascade');
+      expect(cascade.querySelector('[data-testid="ap-residual-note"]')!.textContent).toContain(
         'Semantically- and workload-routed requests never enter the cascade',
       );
-      const mixRows = [...perf.querySelectorAll<HTMLElement>('[data-testid="workload-row"]')];
+      const claim = await expandStage(host, 'Workload claim');
+      const mixRows = [...claim.querySelectorAll<HTMLElement>('[data-testid="workload-row"]')];
       expect(
         mixRows[0]!.querySelector('[data-testid="workload-row-routed"]')!.textContent,
       ).toContain('2 routed');
       expect(mixRows[1]!.querySelector('[data-testid="workload-row-routed"]')).toBeNull(); // `none` never routes
-      expect(perf.querySelector('[data-testid="workload-mix-footnote"]')!.textContent).toContain(
-        'Classification itself never routes',
-      );
+      const footnote = claim.querySelector('[data-testid="workload-mix-footnote"]')!.textContent;
+      expect(footnote).toContain('Classification itself never routes');
+      // Names the Claim's home, never a position or a card that no longer exists.
+      expect(footnote).toContain('its Claim in the Targets matrix');
+      expect(footnote).not.toContain('Workload targets card');
     } finally {
       dispose();
     }
@@ -1069,42 +1110,37 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(mounted.host, '.nav-item span', 'Routing');
       await flush();
-      const panel = mounted.host.querySelector<HTMLElement>('[data-testid="workload-targets"]')!;
-      const rows = [...panel.querySelectorAll<HTMLElement>('[data-testid="wt-row"]')];
-      const research = rows.find((r) => r.textContent?.includes('RESEARCH'))!;
-      const select = research.querySelector<HTMLSelectElement>('select');
-      expect(select).not.toBeNull();
-      expect(select!.getAttribute('aria-label')).toBe('Research workload target');
-      expect(research.textContent).toContain('detected by the semantic workload source');
-      expect(panel.querySelector('[data-testid="wt-reserved-heading"]')!.textContent).toContain(
-        '(live)',
-      );
-      expect(panel.textContent).toContain(
-        'detected by the semantic workload source (one bounded embed',
-      );
+      await openTab(mounted.host, 'Auto routing');
+      const host = mounted.host;
+      const research = () => targetsCell(host, 'research', 'claim');
+      const select = targetPicker(host, 'Claim target for research');
+      expect(research().contains(select)).toBe(true);
+      expect(research().textContent).toContain('detected by the semantic workload source');
+      // A live reserved row is no longer inert, and its Detected cell shows routed counts.
+      expect(
+        targetsRow(host, 'research').querySelector('[data-testid="targets-inert-note"]'),
+      ).toBeNull();
+      expect(
+        targetsRow(host, 'research').querySelector('[data-testid="wt-routed"]'),
+      ).not.toBeNull();
+      expect(
+        targetsMatrix(host).querySelector('[data-testid="targets-reserved-footnote"]')!.textContent,
+      ).toContain('detected by the semantic workload source (one bounded embed');
       // setting research via the picker creates the rule like any structural class
-      select!.value = 'tier:premium';
-      select!.dispatchEvent(new Event('change', { bubbles: true }));
+      select.value = 'tier:premium';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
       await flush();
       expect(mounted.store.state.rules.find((r) => r.workloadClass === 'research')).toMatchObject({
         matchType: 'auto_workload',
         target: 'tier:premium',
       });
-      const researchAfter = [...panel.querySelectorAll<HTMLElement>('[data-testid="wt-row"]')].find(
-        (r) => r.textContent?.includes('RESEARCH'),
-      )!; // re-query: the row re-rendered with the reconciled rule
-      expect(researchAfter.textContent).toContain('tier: premium');
+      // the cell re-rendered with the reconciled rule
+      expect(research().textContent).toContain('tier: premium');
       // and Clear is offered for the live reserved row
-      const clear = [...researchAfter.querySelectorAll<HTMLElement>('button')].find(
-        (b) => b.textContent?.trim() === 'Clear',
-      );
-      expect(clear).toBeDefined();
-      // the Auto-performance mix footnote flips too (rail's Tuning section)
-      await openSection(mounted.host, 'Tuning');
-      const perf = [...mounted.host.querySelectorAll<HTMLElement>('.panel')].find((p) =>
-        p.textContent?.includes('Auto performance'),
-      )!;
-      expect(perf.querySelector('[data-testid="workload-mix-footnote"]')!.textContent).toContain(
+      expect(buttonByText(research(), 'Clear')).toBeDefined();
+      // the Auto-performance mix footnote flips too (the Workload claim stage, same tab)
+      const claim = await expandStage(mounted.host, 'Workload claim');
+      expect(claim.querySelector('[data-testid="workload-mix-footnote"]')!.textContent).toContain(
         'detected by the semantic workload source',
       );
     } finally {
@@ -1120,15 +1156,18 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(mounted.host, '.nav-item span', 'Routing');
       await flush();
-      const panel = mounted.host.querySelector<HTMLElement>('[data-testid="workload-targets"]')!;
-      const research = [...panel.querySelectorAll<HTMLElement>('[data-testid="wt-row"]')].find(
-        (r) => r.textContent?.includes('RESEARCH'),
-      )!;
+      await openTab(mounted.host, 'Auto routing');
+      const research = targetsCell(mounted.host, 'research', 'claim');
       expect(research.querySelector('select')).toBeNull();
-      expect(panel.querySelector('[data-testid="wt-reserved-heading"]')!.textContent).toContain(
-        'toggled off for this tenant',
-      );
+      expect(
+        targetsRow(mounted.host, 'research').querySelector('[data-testid="targets-inert-note"]')!
+          .textContent,
+      ).toContain('toggled off for this tenant');
       expect(research.textContent).toContain('not detected on this instance yet');
+      // An inert row's claim cannot route, so no routed figure is shown for it.
+      expect(
+        targetsRow(mounted.host, 'research').querySelector('[data-testid="wt-routed"]'),
+      ).toBeNull();
     } finally {
       mounted.dispose();
     }
@@ -1142,16 +1181,21 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(mounted.host, '.nav-item span', 'Routing');
       await flush();
-      const panel = mounted.host.querySelector<HTMLElement>('[data-testid="workload-targets"]')!;
-      expect(panel.querySelector('[data-testid="wt-reserved-heading"]')!.textContent).toContain(
-        'workload anchors did not build',
-      );
+      await openTab(mounted.host, 'Auto routing');
+      expect(
+        targetsRow(mounted.host, 'writing').querySelector('[data-testid="targets-inert-note"]')!
+          .textContent,
+      ).toContain('workload anchors did not build');
+      expect(
+        targetsMatrix(mounted.host).querySelector('[data-testid="targets-reserved-footnote"]')!
+          .textContent,
+      ).toContain('workload anchors did not build');
     } finally {
       mounted.dispose();
     }
   });
 
-  it('Band targets: per-workload bands — class picker, scoped set/clear, generic rows untouched, claim notes (add-workload-scoped-bands)', async () => {
+  it("Targets matrix: every class row's own Strong/Cheap pair at once — scoped set/clear, generic cells untouched, claim annotations (add-workload-scoped-bands)", async () => {
     const mkRule = (over: Partial<RuleDto>): RuleDto => ({
       id: 'r-x',
       matchType: 'auto_high',
@@ -1216,26 +1260,34 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
-      const panel = () =>
-        [...host.querySelectorAll<HTMLElement>('.panel')].find((p) =>
-          p.textContent?.includes('Band targets'),
-        )!;
-      const block = () => panel().querySelector<HTMLElement>('[data-testid="bt-scoped"]')!;
-      // Generic rows consider generic rules only: the higher-priority scoped rule is NOT the generic effective.
-      expect(panel().textContent).toContain('tier: premium');
-      expect(panel().textContent).not.toContain('shadowed duplicate');
-      // The block shows code by default: STRONG = scoped (default tier), CHEAP unset with the generic copy.
-      expect(block()).not.toBeNull();
-      const high = () =>
-        block().querySelector<HTMLElement>('[data-testid="bt-scoped-row-auto_high"]')!;
-      const low = () =>
-        block().querySelector<HTMLElement>('[data-testid="bt-scoped-row-auto_low"]')!;
-      expect(high().textContent).toContain('tier: default');
-      expect(low().textContent).toContain('code requests use the generic cheap target');
-      expect(block().querySelector('[data-testid="bt-scoped-claim"]')).toBeNull(); // no claim for code
-      // Set the code CHEAP band via its picker → a scoped auto_low rule with the class; generic rules untouched.
-      const cheapPicker = low().querySelector<HTMLSelectElement>('select')!;
-      expect(cheapPicker.getAttribute('aria-label')).toBe('CHEAP target for code');
+      await openTab(host, 'Auto routing');
+      // The Any request cells consider generic rules only: the higher-priority scoped rule
+      // is NOT the generic effective one, and is no generic duplicate either.
+      expect(targetsCell(host, 'any', 'strong').textContent).toContain('tier: premium');
+      expect(targetsRow(host, 'any').textContent).not.toContain('shadowed duplicate');
+      // code: Strong is its own scoped rule (default tier); Cheap inherits and names the
+      // Any request target it falls back to — here unset, so it says where verdicts go.
+      const codeHigh = () => targetsCell(host, 'code', 'strong');
+      const codeLow = () => targetsCell(host, 'code', 'cheap');
+      expect(codeHigh().dataset['kind']).toBe('set');
+      expect(codeHigh().textContent).toContain('tier: default');
+      expect(codeLow().dataset['kind']).toBe('inherit');
+      expect(codeLow().textContent).toContain('= any');
+      expect(codeLow().textContent).toContain('code requests use the Any request cheap target');
+      expect(codeLow().textContent).toContain('which is not set');
+      // vision: Strong inherits the generic premium target BY NAME.
+      expect(targetsCell(host, 'vision', 'strong').textContent).toContain(
+        'use the Any request strong target: tier: premium',
+      );
+      // No claim for code → no claimed annotation, no claim note on its row.
+      expect(targetsRow(host, 'code').querySelector('[data-testid="cell-claimed"]')).toBeNull();
+      expect(
+        targetsRow(host, 'code').querySelector('[data-testid="targets-claim-note"]'),
+      ).toBeNull();
+      // Set the code Cheap cell via its picker → a scoped auto_low rule with the class;
+      // generic rules untouched.
+      const cheapPicker = targetPicker(host, 'Cheap target for code');
+      expect(codeLow().contains(cheapPicker)).toBe(true);
       cheapPicker.value = 'tier:premium';
       cheapPicker.dispatchEvent(new Event('change', { bubbles: true }));
       await flush();
@@ -1246,34 +1298,176 @@ describe('dashboard shell (auth-gated)', () => {
       expect(
         store.state.rules.some((r) => r.matchType === 'auto_low' && r.workloadClass === null),
       ).toBe(false); // no generic cheap was created
-      // Switch the class to vision: the empty scoped cheap is flagged unroutable-for-class; the usable claim note shows.
-      const select = block().querySelector<HTMLSelectElement>(
-        'select[aria-label="Workload class for the scoped bands"]',
-      )!;
-      select.value = 'vision';
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-      await flush();
-      expect(block().querySelector('[data-testid="bt-scoped-claim"]')!.textContent).toContain(
-        'claims its requests first',
-      );
-      expect(low().textContent).toContain('unroutable for the class');
-      // Clear the vision cheap band → only that scope's rule goes.
-      const clear = [...low().querySelectorAll<HTMLElement>('button')].find(
-        (b) => b.textContent?.trim() === 'Clear',
-      );
-      clear?.click();
+      expect(codeLow().dataset['kind']).toBe('set');
+      expect(codeLow().textContent).not.toContain('= any');
+      // vision has a usable claim: both band cells are annotated as not consulted, and the
+      // empty scoped cheap is still flagged unroutable-for-class beneath the annotation.
+      const visionLow = () => targetsCell(host, 'vision', 'cheap');
+      for (const col of ['strong', 'cheap'] as const) {
+        const cell = targetsCell(host, 'vision', col);
+        expect(cell.dataset['claimed']).toBe('true');
+        expect(cell.querySelector('[data-testid="cell-claimed"]')!.textContent).toContain(
+          'takes these requests first',
+        );
+      }
+      expect(visionLow().textContent).toContain('unroutable for the class');
+      // Clear the vision cheap cell → only that scope's rule goes.
+      buttonByText(visionLow(), 'Clear')!.click();
       await flush();
       expect(store.state.rules.some((r) => r.id === 'vision-low')).toBe(false);
       expect(store.state.rules.some((r) => r.id === 'code-high')).toBe(true);
       expect(store.state.rules.some((r) => r.id === 'g-high')).toBe(true);
-      // An UNUSABLE claim (empty tier) shows the other note.
+      // An UNUSABLE claim (empty tier) does not claim: the annotations go, and the row
+      // says the bands apply.
       store.setState('rules', (rs) =>
         rs.map((r) => (r.id === 'claim' ? { ...r, target: 'tier:empty' } : r)),
       );
       await flush();
-      expect(block().querySelector('[data-testid="bt-scoped-claim"]')!.textContent).toContain(
-        'set but unusable',
+      expect(targetsRow(host, 'vision').querySelector('[data-testid="cell-claimed"]')).toBeNull();
+      const note = targetsRow(host, 'vision').querySelector('[data-testid="targets-claim-note"]');
+      expect(note!.textContent).toContain('set but unusable');
+      expect(note!.textContent).toContain('the bands apply');
+    } finally {
+      dispose();
+    }
+  });
+
+  it("Targets matrix: a claimed class keeps each band cell's own target, disclosures, picker and Clear — the claim is an annotation, never a replacement", async () => {
+    // A usable claim on code, over a scoped Strong rule whose tier was deleted. Hidden
+    // under the claim, that broken rule would go live, unwarned, the moment the claim is
+    // cleared — so the cell must keep presenting it, and keep it fixable.
+    const coding: TierDto = { ...DEFAULT_TIER, id: 't-coding', key: 'coding', displayName: null };
+    const rule = (over: Partial<RuleDto>): RuleDto => ({
+      id: 'r',
+      matchType: 'auto_workload',
+      workloadClass: 'code',
+      headerName: 'x-polyrouter-tier',
+      headerValue: null,
+      target: 'tier:coding',
+      priority: 0,
+      createdAt: NOW,
+      ...over,
+    });
+    const fake = new FakeApiClient({
+      tiers: [DEFAULT_TIER, coding],
+      tierEntries: {
+        t1: [mkEntry('m1', 0)],
+        't-coding': [{ ...mkEntry('m2', 0), id: 'e-coding', tierId: 't-coding' }],
+      },
+      models: { p1: [mkModel('m1'), mkModel('m2')] },
+      rules: [
+        rule({ id: 'code-claim' }),
+        rule({ id: 'code-high', matchType: 'auto_high', target: 'tier:gone' }),
+        rule({ id: 'code-high-dupe', matchType: 'auto_high', target: 'tier:gone', priority: -1 }),
+      ],
+    });
+    const { host, store, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Routing');
+      await flush();
+      await openTab(host, 'Auto routing');
+      const strong = () => targetsCell(host, 'code', 'strong');
+      // Claimed — and still the cell's own unresolved state, with its disclosures.
+      expect(strong().dataset['claimed']).toBe('true');
+      expect(strong().dataset['kind']).toBe('unresolved');
+      expect(strong().querySelector('[data-testid="cell-claimed"]')).not.toBeNull();
+      expect(strong().textContent).toContain('tier:gone');
+      expect(strong().textContent).toContain('unroutable for the class');
+      expect(strong().textContent).toContain('Recreating the tier key rebinds this rule.');
+      expect(strong().textContent).toContain('1 shadowed duplicate rule');
+      // …and still operable: the picker is live and Clear is offered.
+      const picker = targetPicker(host, 'Strong target for code');
+      expect(strong().contains(picker)).toBe(true);
+      expect(picker.disabled).toBe(false);
+      const clear = buttonByText(strong(), 'Clear')!;
+      expect(clear.getAttribute('aria-label')).toBe('Clear Strong target for code');
+      expect(clear.disabled).toBe(false);
+      // The Cheap cell is claimed too, and inherits — still with its own picker.
+      expect(targetsCell(host, 'code', 'cheap').dataset['claimed']).toBe('true');
+      expect(targetPicker(host, 'Cheap target for code').disabled).toBe(false);
+      // Fixing the broken rule under the claim retargets THAT rule — the claim stays.
+      picker.value = 'tier:coding';
+      picker.dispatchEvent(new Event('change', { bubbles: true }));
+      await flush();
+      expect(store.state.rules.find((r) => r.id === 'code-high')!.target).toBe('tier:coding');
+      expect(store.state.rules.find((r) => r.id === 'code-claim')!.target).toBe('tier:coding');
+      expect(strong().dataset['kind']).toBe('set');
+      expect(strong().dataset['claimed']).toBe('true');
+    } finally {
+      dispose();
+    }
+  });
+
+  it('Targets matrix: ONE unverified notice names the paused column and retries; a batch-only target is flagged in its cell', async () => {
+    const batchOnly: ModelDto = {
+      ...mkModel('m-batch'),
+      variant: 'batch',
+      baseExternalModelId: 'ext-m1',
+    };
+    const fake = new FakeApiClient({
+      tiers: [DEFAULT_TIER],
+      tierEntries: { t1: [mkEntry('m1', 0)] },
+      models: { p1: [mkModel('m1'), batchOnly] },
+      rules: [
+        {
+          id: 'vision-low',
+          matchType: 'auto_low',
+          workloadClass: 'vision',
+          headerName: 'x-polyrouter-tier',
+          headerValue: null,
+          target: 'model:m-batch',
+          priority: 0,
+          createdAt: NOW,
+        },
+      ],
+    });
+    const { host, store, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Routing');
+      await flush();
+      await openTab(host, 'Auto routing');
+      // The batch-only note sits in the cell whose rule targets the variant, and only there.
+      const note = targetsCell(host, 'vision', 'cheap').querySelector(
+        '[data-testid="cell-nonroutable"]',
       );
+      expect(note?.textContent).toBe('batch-only — cannot serve; use ext-m1');
+      expect(targetsMatrix(host).querySelectorAll('[data-testid="cell-nonroutable"]')).toHaveLength(
+        1,
+      );
+      const notices = () =>
+        targetsMatrix(host).querySelectorAll<HTMLElement>('[data-testid="targets-unverified"]');
+      expect(notices()).toHaveLength(0);
+
+      // A band write could not be verified: the Strong and Cheap columns pause, in EVERY
+      // row; the Claim column does not.
+      store.setState('bt', 'unverified', true);
+      await flush();
+      expect(notices()).toHaveLength(1);
+      expect(notices()[0]!.textContent).toContain('Routing may have changed — the refresh failed');
+      expect(notices()[0]!.textContent).toContain('Strong and Cheap columns');
+      expect(notices()[0]!.textContent).not.toContain('Claim column');
+      expect(targetPicker(host, 'Strong target for any request').disabled).toBe(true);
+      expect(targetPicker(host, 'Cheap target for vision').disabled).toBe(true);
+      expect(buttonByText(targetsCell(host, 'vision', 'cheap'), 'Clear')!.disabled).toBe(true);
+      expect(targetPicker(host, 'Claim target for code').disabled).toBe(false);
+
+      // A claim write too: still ONE notice, now naming both, and the Claim column pauses.
+      store.setState('wt', 'unverified', true);
+      await flush();
+      expect(notices()).toHaveLength(1);
+      expect(notices()[0]!.textContent).toContain('Claim column');
+      expect(targetPicker(host, 'Claim target for code').disabled).toBe(true);
+
+      // Retry is the reconcile: it re-lists the rules and, once that commits, clears both.
+      const lists = fake.calls.filter((c) => c === 'listRules').length;
+      buttonByText(notices()[0]!, 'Retry')!.click();
+      await flush();
+      expect(fake.calls.filter((c) => c === 'listRules').length).toBeGreaterThan(lists);
+      expect(notices()).toHaveLength(0);
+      expect(targetPicker(host, 'Strong target for any request').disabled).toBe(false);
+      expect(targetPicker(host, 'Claim target for code').disabled).toBe(false);
     } finally {
       dispose();
     }
@@ -1541,7 +1735,8 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
-      await openSection(host, 'Tuning');
+      await openTab(host, 'Auto routing');
+      await expandStage(host, 'Classify'); // self-calibration is the Classify stage's
       const text = host.textContent ?? '';
       expect(text).toContain('Self-calibration');
       expect(text).toContain('high 0.58 · low 0.27');
@@ -1563,6 +1758,99 @@ describe('dashboard shell (auth-gated)', () => {
     }
   });
 
+  it('Self-calibration lists per-agent pairs with their own revert, and discloses a frozen tenant pair (add-per-agent-calibration)', async () => {
+    const agent = (over: Partial<AgentCalibration>): AgentCalibration => ({
+      id: 'a-x',
+      name: 'x',
+      calibratedHigh: null,
+      calibratedLow: null,
+      anchorHigh: null,
+      anchorLow: null,
+      epoch: 0,
+      active: false,
+      evidence: null,
+      ...over,
+    });
+    const fake = new FakeApiClient({
+      tiers: [DEFAULT_TIER],
+      autoLayers: {
+        structural: true,
+        cascade: true,
+        structuralAvailable: true,
+        cascadeAvailable: true,
+        semantic: false,
+        semanticAvailable: false,
+        semanticLearning: false,
+        semanticLearningAvailable: false,
+        calibration: {
+          ...DEFAULT_CALIBRATION,
+          enabled: true,
+          calibratedHigh: 0.58,
+          calibratedLow: 0.27,
+          effectiveHigh: 0.58,
+          effectiveLow: 0.27,
+          tenantPairStarved: true,
+          agents: [
+            agent({ id: 'a-inherit', name: 'lobechat' }),
+            agent({
+              id: 'a-own',
+              name: 'markus',
+              calibratedHigh: 0.53,
+              calibratedLow: 0.32,
+              anchorHigh: 0.58,
+              anchorLow: 0.27,
+              epoch: 2,
+              active: true,
+              evidence: { highSamples: 30, lowSamples: 8 },
+            }),
+          ],
+        },
+      },
+    });
+    const { host, store, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Routing');
+      await flush();
+      await openAutoTab(host);
+      const detail = await expandStage(host, 'Classify');
+      // The frozen tenant pair is disclosed, not presented as current.
+      expect(detail.querySelector('[data-testid="tenant-pair-starved"]')?.textContent).toContain(
+        'no longer being informed by the traffic it governs',
+      );
+      // Pair-holders first; an inheriting agent is named as a state, with no revert.
+      const rows = () => [
+        ...detail.querySelectorAll<HTMLElement>('[data-testid="agent-calibration-row"]'),
+      ];
+      expect(rows().map((r) => r.querySelector('span')?.textContent)).toEqual([
+        'markus',
+        'lobechat',
+      ]);
+      expect(rows()[0]!.textContent).toContain('high 0.53 · low 0.32');
+      expect(rows()[0]!.textContent).toContain('anchored to 0.58 / 0.27');
+      expect(rows()[1]!.textContent).toContain('inheriting');
+      expect(rows()[1]!.querySelector('[data-testid="agent-revert"]')).toBeNull();
+      expect(detail.textContent).toContain('1 inheriting this tenant');
+      // The agent's revert touches that agent only: its row returns to inheriting.
+      const revert = rows()[0]!.querySelector<HTMLButtonElement>('[data-testid="agent-revert"]')!;
+      expect(revert.getAttribute('aria-label')).toBe('Revert markus to inherited thresholds');
+      revert.click();
+      await flush();
+      expect(fake.calls).toContain('agentCalibrationRevert');
+      expect(fake.calls).not.toContain('calibrationRevert');
+      expect(
+        store.state.autoLayers?.calibration.agents?.find((a) => a.id === 'a-own')?.active,
+      ).toBe(false);
+      const after = host.querySelector<HTMLElement>('[id="ar-detail-classify"]')!;
+      expect(after.querySelectorAll('[data-testid="agent-revert"]')).toHaveLength(0);
+      expect(after.textContent).toContain('2 inheriting this tenant');
+      // The tenant pair is untouched by an agent revert.
+      expect(after.textContent).toContain('Revert to defaults');
+    } finally {
+      dispose();
+    }
+  });
+
   it('renders the Auto performance section with rates, savings + coverage, and a local range', async () => {
     const fake = new FakeApiClient({ tiers: [DEFAULT_TIER] });
     const { host, store, dispose } = mount(createAppStore(fake));
@@ -1570,39 +1858,49 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
-      await openSection(host, 'Tuning');
-      const text = host.textContent ?? '';
-      expect(text).toContain('Auto performance');
+      await openTab(host, 'Auto routing');
+      // The focal summary: the savings figure and the evaluated count.
+      const summary = host.querySelector<HTMLElement>('[data-testid="auto-summary"]')!;
+      expect(summary.textContent).toContain('Auto performance');
       // DEFAULT_AUTO_PERF: evaluated 40; cascade 10 with 7 passed / 1 escalated.
-      expect(text).toContain('evaluated');
-      expect(text).toContain('40');
-      expect(text).toContain('70%');
-      // Savings honesty contract: net + basis label + '· est.' + visible coverage.
-      expect(text).toContain('$1.6200');
-      expect(text).toContain('premium');
-      expect(text).toContain('est.');
-      expect(text).toContain('based on 6 of 7 quality-passed requests');
+      expect(summary.textContent).toContain('40');
+      expect(summary.textContent).toContain('auto requests evaluated');
+      // Savings honesty contract: net + basis label + '· est.' + visible coverage —
+      // and labelled as covering the residual cascade only, never all auto traffic.
+      const savings = summary.querySelector<HTMLElement>('[data-testid="auto-savings"]')!;
+      expect(savings.querySelector('.ar-focal-figure')?.textContent).toBe('$1.6200');
+      expect(savings.textContent).toContain('at today’s premium rate');
+      expect(savings.textContent).toContain('· est.');
+      expect(savings.textContent).toContain(
+        'Covers only the residual cascade’s quality-passed requests — never all auto traffic',
+      );
+      expect(savings.textContent).toContain('based on 6 of 7 quality-passed requests');
+      expect(savings.textContent).toContain('(some rows uncostable)');
       // No class-scoped band rules in the fixture → no basis disclosure (add-workload-scoped-bands).
       expect(host.querySelector('[data-testid="ap-basis-scoped"]')).toBeNull();
-      // Unroutable diagnostic (1 in the fixture, high band): the perf panel
-      // names the AFFECTED band and points at Band targets (cause-neutral —
-      // scoped to the panel so the band section's keys can't satisfy it).
-      const perfPanel = [...host.querySelectorAll<HTMLElement>('.panel')].find((p) =>
-        p.textContent?.includes('Auto performance'),
-      );
-      expect(perfPanel?.textContent).toContain('strong (auto_high)');
-      // Names the card, never its position — the two are in different sections now.
-      expect(perfPanel?.textContent).toContain('the Band targets card');
-      expect(perfPanel?.textContent).not.toContain('Band targets above');
-      // The section's range control is LOCAL: clicking 30d must not move the
-      // global Observe range (24h default), only autoPerf.range.
+      // The four-way cascade split is the Cascade stage's.
+      const cascade = await expandStage(host, 'Cascade');
+      expect(cascade.textContent).toContain('quality-pass');
+      expect(cascade.textContent).toContain('70%');
+      expect(cascade.textContent).toContain('failed/cancelled before escalation');
+      // Unroutable diagnostic (1 in the fixture, high band): the Default stage names
+      // the AFFECTED band and points at its column in the Targets matrix
+      // (cause-neutral — scoped to the detail so a target cell's keys can't satisfy it).
+      const fallback = await expandStage(host, 'Default');
+      const callout = fallback.querySelector<HTMLElement>('[data-testid="default-unroutable"]');
+      expect(callout?.textContent).toContain('strong (auto_high)');
+      expect(callout?.textContent).not.toContain('cheap (auto_low)');
+      // Names the matrix and its column, never a position (a cross-reference names its target).
+      expect(callout?.textContent).toContain('the Targets matrix’s Strong column');
+      expect(callout?.textContent).not.toMatch(/above|below/);
+      // The tab's range control is LOCAL: clicking 30d must not move the global
+      // Observe range (24h default), only autoPerf.range.
       expect(store.state.autoPerf.range).toBe('7d');
       const globalBefore = store.state.range;
-      const section = [...host.querySelectorAll<HTMLElement>('.panel')].find((p) =>
-        p.textContent?.includes('Auto performance'),
-      );
-      if (!section) throw new Error('Auto performance panel missing');
-      const btn = [...section.querySelectorAll<HTMLElement>('button')].find(
+      const range = host.querySelector<HTMLElement>('[data-testid="auto-range"]');
+      if (!range) throw new Error('the tab range control is missing');
+      expect(range.getAttribute('role')).toBe('group');
+      const btn = [...range.querySelectorAll<HTMLElement>('button')].find(
         (b) => b.textContent?.trim() === '30d',
       );
       if (!btn) throw new Error('30d range button missing');
@@ -1610,6 +1908,10 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       expect(store.state.autoPerf.range).toBe('30d');
       expect(store.state.range).toBe(globalBefore);
+      // Every figure is framed to the new range.
+      expect(host.querySelector('[data-testid="auto-pipeline"]')?.textContent).toContain(
+        'in the selected 30d range',
+      );
       expect(fake.calls.filter((c) => c === 'autoPerformance').length).toBeGreaterThanOrEqual(2);
     } finally {
       dispose();
@@ -1623,21 +1925,23 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
-      await openSection(host, 'Tuning');
-      const perfPanel = [...host.querySelectorAll<HTMLElement>('.panel')].find((p) =>
-        p.textContent?.includes('Auto performance'),
-      );
-      const text = perfPanel?.textContent ?? '';
+      await openTab(host, 'Auto routing');
       // DEFAULT_AUTO_PERF.semantic: evaluated 8, routed 5 (3 high / 2 low),
-      // source 2 learned / 6 bundled, outcomes 3/1/1/0.
-      expect(text).toContain('L2 evaluated');
-      expect(text).toContain('L2 routed');
-      expect(text).toContain('3 high / 2 low');
-      expect(text).toContain('learned');
-      expect(text).toContain('bundled');
-      // Routed traffic ⇒ residual-cascade labeling + the denominator footnote.
-      expect(text).toContain('residual cascade');
-      expect(text).toContain('never enter the cascade');
+      // source 2 learned / 6 bundled, outcomes 3/1/1/0 — in the Semantic stage.
+      const semantic = (await expandStage(host, 'Semantic')).textContent ?? '';
+      expect(semantic).toContain('L2 evaluated');
+      expect(semantic).toContain('L2 routed');
+      expect(semantic).toContain('3 high / 2 low');
+      expect(semantic).toContain('learned');
+      expect(semantic).toContain('bundled');
+      // Routed traffic ⇒ residual-cascade labeling + the denominator footnote, on the
+      // Cascade stage's split — and the note names the focal figure, not a position.
+      const cascade = await expandStage(host, 'Cascade');
+      expect(cascade.textContent).toContain('residual cascade');
+      const note = cascade.querySelector('[data-testid="ap-residual-note"]')?.textContent ?? '';
+      expect(note).toContain('never enter the cascade');
+      expect(note).toContain('the focal savings figure');
+      expect(note).not.toMatch(/above|below/);
     } finally {
       dispose();
     }
@@ -1659,7 +1963,7 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
-      await openSection(host, 'Tuning');
+      await openTab(host, 'Auto routing');
       const note = host.querySelector<HTMLElement>('[data-testid="ap-basis-scoped"]');
       expect(note).not.toBeNull();
       expect(note!.textContent).toContain('basis = the generic strong target');
@@ -1693,26 +1997,21 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
-      const panel = () =>
-        [...host.querySelectorAll<HTMLElement>('.panel')].find((p) =>
-          p.textContent?.includes('Band targets'),
-        )!;
-      const block = () => panel().querySelector<HTMLElement>('[data-testid="bt-scoped"]')!;
-      const low = () =>
-        block().querySelector<HTMLElement>('[data-testid="bt-scoped-row-auto_low"]')!;
-      // Set the code CHEAP band (no code rule exists → create → the server rejects it).
-      const picker = low().querySelector<HTMLSelectElement>(
-        'select[aria-label="CHEAP target for code"]',
-      )!;
+      await openTab(host, 'Auto routing');
+      const low = () => targetsCell(host, 'code', 'cheap');
+      // Set the code Cheap cell (no code rule exists → create → the server rejects it).
+      const picker = targetPicker(host, 'Cheap target for code');
       picker.value = 'tier:default';
       picker.dispatchEvent(new Event('change', { bubbles: true }));
       await flush();
-      const err = low().querySelector<HTMLElement>('[data-testid="bt-scoped-error"]');
+      const err = low().querySelector<HTMLElement>('[data-testid="cell-error"]');
       expect(err).not.toBeNull();
       expect(err!.textContent).toContain('bad scoped target');
-      // Exactly ONE rendering of the message in the whole card — the generic CHEAP row is clean.
-      expect(panel().textContent.split('bad scoped target').length - 1).toBe(1);
-      expect(panel().querySelectorAll('[data-testid="bt-scoped-error"]')).toHaveLength(1);
+      // Exactly ONE rendering of the message in the whole matrix — the Any request Cheap
+      // cell, and every other class's Cheap cell, are clean.
+      const matrix = targetsMatrix(host);
+      expect(matrix.textContent.split('bad scoped target').length - 1).toBe(1);
+      expect(matrix.querySelectorAll('[data-testid="cell-error"]')).toHaveLength(1);
     } finally {
       dispose();
     }
@@ -1736,16 +2035,18 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
-      await openSection(host, 'Tuning');
-      const perfPanel = [...host.querySelectorAll<HTMLElement>('.panel')].find((p) =>
-        p.textContent?.includes('Auto performance'),
-      );
-      const text = perfPanel?.textContent ?? '';
-      // No fabricated zeros; no residual labeling when nothing was routed.
-      expect(text).not.toContain('L2 evaluated');
-      expect(text).not.toContain('residual cascade');
-      // The rest of the section still renders.
-      expect(text).toContain('Auto performance');
+      await openTab(host, 'Auto routing');
+      // No fabricated zeros: the slice is stated as empty, never drawn as measured 0s…
+      const semantic = await expandStage(host, 'Semantic');
+      const slice = semantic.querySelector('[data-testid="ap-semantic-slice"]')?.textContent ?? '';
+      expect(slice).not.toContain('L2 evaluated');
+      expect(slice).toContain('Nothing reached Layer 2 in this range.');
+      // …and no residual labeling of the cascade split when nothing was routed.
+      const cascade = await expandStage(host, 'Cascade');
+      const split = cascade.querySelector('[data-testid="ap-cascade"]')?.textContent ?? '';
+      expect(split).toContain('quality-pass'); // the split itself still renders
+      expect(split).not.toContain('residual cascade');
+      expect(cascade.querySelector('[data-testid="ap-residual-note"]')).toBeNull();
     } finally {
       dispose();
     }
@@ -1822,17 +2123,17 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
+      await openTab(host, 'Auto routing');
       const first = fake.calls.filter((c) => c === 'autoPerformance').length;
       expect(first).toBeGreaterThanOrEqual(1);
       clickByText(host, '.nav-item span', 'Requests'); // leave…
       await flush();
       clickByText(host, '.nav-item span', 'Routing'); // …and return
       await flush();
-      // A revisit refetches (stale-while-revalidate: old data stayed visible).
-      // Note both counts were taken WITHOUT opening Tuning: the fetch is owned by
-      // the page now, not by the card (section-routing-rail D2).
+      // A revisit refetches (stale-while-revalidate: old data stayed visible). The
+      // remembered tab is Auto routing, so the revisit shows it — and that first show
+      // of the visit is what fetches (redesign-auto-routing-pipeline D5).
       expect(fake.calls.filter((c) => c === 'autoPerformance').length).toBeGreaterThan(first);
-      await openSection(host, 'Tuning');
       expect(host.textContent).toContain('Auto performance');
     } finally {
       dispose();
@@ -1868,22 +2169,20 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
-      await openSection(host, 'Rules');
+      // The header-rules card is on Tiers & headers, where the visit lands.
       expect(host.textContent).toContain('tier:heavy'); // the header rule is shown + deletable
-      // The auto rule stays OUT of the Header-rules panel — but IS now
-      // presented by Band targets (add-band-target-ui), as unresolved here.
+      // The auto rule stays OUT of the Header-rules panel — but IS now presented by the
+      // Targets matrix's Any request Strong cell (add-band-target-ui), as unresolved here.
       const headerPanel = [...host.querySelectorAll<HTMLElement>('.panel')].find((p) =>
         p.textContent?.includes('Header rules'),
       );
       expect(headerPanel?.textContent).not.toContain('auto-band-xyz');
-      // Band targets sits in the Auto section — switch rather than drop the half
-      // of this test that proves the auto rule surfaces there.
-      await openSection(host, 'Auto');
-      const bandPanel = [...host.querySelectorAll<HTMLElement>('.panel')].find((p) =>
-        p.textContent?.includes('Band targets'),
-      );
-      expect(bandPanel?.textContent).toContain('model:auto-band-xyz');
-      expect(bandPanel?.textContent).toContain('Target unresolved');
+      // The matrix sits on the Auto routing tab — switch rather than drop the half of
+      // this test that proves the auto rule surfaces there.
+      await openTab(host, 'Auto routing');
+      const strong = targetsCell(host, 'any', 'strong');
+      expect(strong.textContent).toContain('model:auto-band-xyz');
+      expect(strong.textContent).toContain('Target unresolved');
     } finally {
       dispose();
     }
@@ -1918,8 +2217,8 @@ describe('dashboard shell (auth-gated)', () => {
   });
 });
 
-describe('Routing rail sections (section-routing-rail)', () => {
-  /** Everything the Routing page can write. The section control touches none of it. */
+describe('Routing tabs (redesign-auto-routing-pipeline)', () => {
+  /** Everything the Routing page can write. The tab control touches none of it. */
   const ROUTING_WRITES = [
     'createTier',
     'updateTier',
@@ -1934,10 +2233,17 @@ describe('Routing rail sections (section-routing-rail)', () => {
   ];
   const writesOf = (fake: FakeApiClient): string[] =>
     fake.calls.filter((c) => ROUTING_WRITES.includes(c));
+  const fetchesOf = (fake: FakeApiClient): number =>
+    fake.calls.filter((c) => c === 'autoPerformance').length;
 
-  const railFake = (over: Partial<AutoLayers> = {}): FakeApiClient =>
+  const tabsFake = (
+    over: Partial<AutoLayers> = {},
+    chain: { models?: string[]; entries?: string[] } = {},
+  ): FakeApiClient =>
     new FakeApiClient({
       tiers: [DEFAULT_TIER],
+      models: { p1: (chain.models ?? ['m1', 'm2', 'm3']).map(mkModel) },
+      tierEntries: { t1: (chain.entries ?? ['m1', 'm2', 'm3']).map((m, i) => mkEntry(m, i)) },
       autoLayers: {
         structural: true,
         cascade: true,
@@ -1956,182 +2262,646 @@ describe('Routing rail sections (section-routing-rail)', () => {
     clickByText(host, '.nav-item span', 'Routing');
     await flush();
   };
-  const segments = (host: HTMLElement): string[] =>
-    [...host.querySelectorAll<HTMLElement>('[data-testid="routing-sections"] .rs-seg')].map(
-      (b) => b.textContent?.trim() ?? '',
-    );
+  const segments = (host: HTMLElement): HTMLButtonElement[] => [
+    ...host.querySelectorAll<HTMLButtonElement>('[data-testid="routing-sections"] .rs-seg'),
+  ];
+  const labels = (host: HTMLElement): string[] =>
+    segments(host).map((b) => b.textContent?.trim() ?? '');
   const pressed = (host: HTMLElement): string[] =>
-    [
-      ...host.querySelectorAll<HTMLElement>(
-        '[data-testid="routing-sections"] .rs-seg[aria-pressed="true"]',
-      ),
-    ].map((b) => b.textContent?.trim() ?? '');
-  const bandPanel = (host: HTMLElement): HTMLElement | undefined =>
-    [...host.querySelectorAll<HTMLElement>('.panel')].find((p) =>
-      p.textContent?.includes('Band targets'),
-    );
+    segments(host)
+      .filter((b) => b.getAttribute('aria-pressed') === 'true')
+      .map((b) => b.textContent?.trim() ?? '');
+  /** The Targets matrix, or null when it is not rendered — for absence assertions
+   * (`targetsMatrix` throws instead, for presence). */
+  const matrixOrNull = (host: HTMLElement): HTMLElement | null =>
+    host.querySelector<HTMLElement>('[data-testid="targets-matrix"]');
+  /** Each card's title, in DOM order — the tab's panels and the blocks inside its
+   * stage details alike. */
   const panels = (host: HTMLElement): string[] =>
-    [...host.querySelectorAll<HTMLElement>('.panel')]
-      .map((p) => p.querySelector('h2,h3')?.textContent?.trim() ?? '')
-      .filter((t) => t !== '');
+    [...host.querySelectorAll<HTMLElement>('.rs-page .section-title')].map(
+      (t) => t.textContent?.trim() ?? '',
+    );
+  /** The first tier card's chain, in DOM order. */
+  const chainRows = (host: HTMLElement): HTMLElement[] => [
+    ...(host
+      .querySelector<HTMLElement>('[data-tier-id="t1"]')
+      ?.querySelectorAll<HTMLElement>('.chain-row') ?? []),
+  ];
+  const order = (host: HTMLElement): string[] =>
+    chainRows(host).map((r) => r.dataset['modelId'] ?? '?');
+  const replacements = (fake: FakeApiClient): string[][] =>
+    fake.callLog
+      .filter((c) => c.method === 'replaceTierEntries')
+      .map((c) => (c.args[1] as { modelId: string }[]).map((e) => e.modelId));
 
-  it('starts on Auto with ONLY the Auto cards mounted (2.1)', async () => {
-    const { host, dispose } = mount(createAppStore(railFake()));
-    try {
-      await flush();
-      await openRouting(host);
-      const text = host.textContent ?? '';
-      // Auto's three cards are here…
-      expect(text).toContain('Automatic routing');
-      expect(bandPanel(host)).not.toBeUndefined();
-      expect(host.querySelector('[data-testid="workload-targets"]')).not.toBeNull();
-      // …and nothing from Tuning or Rules is in the DOM at all (unmounted, not hidden).
-      expect(text).not.toContain('Auto performance');
-      expect(text).not.toContain('Self-calibration');
-      expect(text).not.toContain('Header rules');
-      expect(host.querySelector('[data-testid="signal-quality"]')).toBeNull();
-    } finally {
-      dispose();
-    }
-  });
-
-  it('offers three sections, marks the active one, and swaps the rail without touching the chains (2.3)', async () => {
-    const fake = railFake();
+  it('lands on Tiers & headers with ONLY the Layer-0 content mounted', async () => {
+    const fake = tabsFake();
     const { host, dispose } = mount(createAppStore(fake));
     try {
       await flush();
       await openRouting(host);
-      expect(segments(host)).toEqual(['Auto', 'Tuning', 'Rules']);
-      expect(pressed(host)).toEqual(['Auto']);
+      const group = host.querySelector<HTMLElement>('[data-testid="routing-sections"]');
+      expect(group?.getAttribute('role')).toBe('group');
+      expect(group?.getAttribute('aria-label')).not.toBe('');
+      expect(labels(host)).toEqual(['Tiers & headers', 'Auto routing']);
+      expect(pressed(host)).toEqual(['Tiers & headers']);
+      // The selected state is programmatic on every segment, not only the active one.
+      expect(segments(host).map((b) => b.getAttribute('aria-pressed'))).toEqual(['true', 'false']);
+      // The tier chains, the add-tier header and the header-rules card are here…
+      const text = host.textContent ?? '';
+      expect(host.querySelector('[data-tier-id="t1"]')).not.toBeNull();
+      expect(text).toContain('New tier key');
+      expect(text).toContain('Add tier');
+      expect(text).toContain('Header rules');
+      // …the first panel is still a tier card (the chain suites rely on it)…
+      expect(host.querySelector('.panel')?.getAttribute('data-tier-id')).toBe('t1');
+      // …and nothing from Auto routing is in the DOM at all (unmounted, not hidden).
+      expect(host.querySelector('[data-testid="auto-pipeline"]')).toBeNull();
+      expect(text).not.toContain('Auto performance');
+      expect(matrixOrNull(host)).toBeNull();
+      expect(host.querySelector('[aria-label="Strong target for any request"]')).toBeNull();
+      expect(host.querySelector('[aria-label="Toggle L1 · Structural"]')).toBeNull();
+      // A visit that never shows Auto routing never needs its aggregation.
+      expect(fetchesOf(fake)).toBe(0);
+    } finally {
+      dispose();
+    }
+  });
+
+  it('swaps the page body on a switch and writes nothing', async () => {
+    const fake = tabsFake();
+    const { host, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      await openRouting(host);
+      const before = writesOf(fake);
+
+      await openTab(host, 'Auto routing');
+      expect(pressed(host)).toEqual(['Auto routing']);
+      expect(host.querySelector('[data-testid="auto-pipeline"]')).not.toBeNull();
+      expect(matrixOrNull(host)).not.toBeNull();
+      expect(host.textContent).toContain('Auto performance');
+      // The Layer-0 content left with its tab.
+      expect(host.textContent).not.toContain('New tier key');
+      expect(host.textContent).not.toContain('Header rules');
+      expect(host.querySelector('[data-tier-id]')).toBeNull();
+
+      await openTab(host, 'Tiers & headers');
+      expect(pressed(host)).toEqual(['Tiers & headers']);
+      expect(host.textContent).toContain('Header rules');
+      expect(host.querySelector('[data-tier-id="t1"]')).not.toBeNull();
+      expect(host.querySelector('[data-testid="auto-pipeline"]')).toBeNull();
 
       // A switch is presentation only: no routing configuration is written.
-      const before = writesOf(fake);
-      await openSection(host, 'Rules');
-      expect(pressed(host)).toEqual(['Rules']);
-      expect(host.textContent).toContain('Header rules');
-      expect(bandPanel(host)).toBeUndefined();
-      expect(writesOf(fake)).toEqual(before);
-
-      // The tier chains and the add-tier header are outside the rail and stay put
-      // in every section — that is what makes sectioning safe for band work.
-      for (const section of ['Auto', 'Tuning', 'Rules'] as const) {
-        await openSection(host, section);
-        expect(host.textContent).toContain('Add tier');
-        expect(host.textContent).toContain('New tier key');
-        expect(host.textContent).toContain('drag to reorder');
-      }
       expect(writesOf(fake)).toEqual(before);
     } finally {
       dispose();
     }
   });
 
-  it('does not offer Tuning when the structural capability is unavailable, and falls back to Auto on a live flip (2.2)', async () => {
-    const store = createAppStore(railFake());
+  it('offers both tabs when the structural capability is unavailable — never selectable-but-empty', async () => {
+    const fake = tabsFake({
+      structural: false,
+      structuralAvailable: false,
+      cascadeAvailable: false,
+    });
+    const { host, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      await openRouting(host);
+      expect(labels(host)).toEqual(['Tiers & headers', 'Auto routing']);
+      await openTab(host, 'Auto routing');
+      expect(pressed(host)).toEqual(['Auto routing']);
+      // The layers still render, each explaining its own absence…
+      expect(host.querySelector('[aria-label="Toggle L1 · Structural"]')).not.toBeNull();
+      expect(host.textContent).toContain('off instance-wide');
+      // …while every target and measured figure is absent, and nothing was fetched.
+      expect(matrixOrNull(host)).toBeNull();
+      expect(host.querySelector('[aria-label="Strong target for any request"]')).toBeNull();
+      expect(host.textContent).not.toContain('Auto performance');
+      expect(fetchesOf(fake)).toBe(0);
+    } finally {
+      dispose();
+    }
+  });
+
+  it('hands focus to the tab control when an availability flip unmounts the focused content', async () => {
+    const store = createAppStore(tabsFake());
     const { host, dispose } = mount(store);
     try {
       await flush();
       await openRouting(host);
-      await openSection(host, 'Tuning');
-      expect(pressed(host)).toEqual(['Tuning']);
+      await openTab(host, 'Auto routing');
+      // A Targets matrix picker — content gated on the structural capability. Focus it,
+      // as a keyboard user working there would.
+      const picker = host.querySelector<HTMLSelectElement>('.rs-page select');
+      expect(picker).not.toBeNull();
+      expect(targetsMatrix(host).contains(picker)).toBe(true);
+      picker!.focus();
+      expect(document.activeElement).toBe(picker);
 
-      // The capability goes away underneath the user (a re-poll of auto-layers).
+      // The capability goes away underneath the user (a re-poll of auto-layers): the
+      // focused picker leaves the DOM, which would otherwise drop focus to <body>.
       store.setState('autoLayers', 'structuralAvailable', false);
       await flush();
-      expect(segments(host)).toEqual(['Auto', 'Rules']); // no empty section is offered
-      expect(pressed(host)).toEqual(['Auto']);
-      expect(host.textContent).toContain('Automatic routing');
-      expect(host.textContent).not.toContain('Auto performance');
-      // The user's explicit choice is REMEMBERED, not overwritten — it comes back
-      // with the capability.
-      expect(store.state.routingSection).toBe('tuning');
-      store.setState('autoLayers', 'structuralAvailable', true);
-      await flush();
-      expect(pressed(host)).toEqual(['Tuning']);
+      expect(picker!.isConnected).toBe(false);
+      const focused = document.activeElement as HTMLElement;
+      expect(focused).not.toBe(document.body);
+      expect(focused.textContent?.trim()).toBe('Auto routing');
+      expect(focused.getAttribute('aria-pressed')).toBe('true');
+      expect(focused.closest('[data-testid="routing-sections"]')).not.toBeNull();
     } finally {
       dispose();
     }
   });
 
-  it('remembers the section across in-app navigation without touching the URL (2.4)', async () => {
-    const store = createAppStore(railFake());
+  it('leaves focus alone on a flip when it was not inside the unmounted content', async () => {
+    const store = createAppStore(tabsFake());
     const { host, dispose } = mount(store);
     try {
       await flush();
       await openRouting(host);
+      await openTab(host, 'Auto routing');
+      // Focus on a control that survives the flip — and is not the segment the guard
+      // would pick — must stay exactly where the user put it.
+      const tiers = segments(host).find((b) => b.textContent?.trim() === 'Tiers & headers')!;
+      tiers.focus();
+      store.setState('autoLayers', 'structuralAvailable', false);
+      await flush();
+      expect(document.activeElement).toBe(tiers);
+    } finally {
+      dispose();
+    }
+  });
+
+  it('remembers the tab across in-app navigation without touching the URL; a reload lands on Tiers & headers', async () => {
+    const store = createAppStore(tabsFake());
+    const first = mount(store);
+    try {
+      await flush();
+      await openRouting(first.host);
       expect(window.location.hash).toBe('#/routing');
-      await openSection(host, 'Tuning');
-      expect(window.location.hash).toBe('#/routing'); // no `/tuning` suffix is invented
+      await openTab(first.host, 'Auto routing');
+      expect(window.location.hash).toBe('#/routing'); // no `/auto` suffix is invented
+      clickByText(first.host, '.nav-item span', 'Requests');
+      await flush();
+      clickByText(first.host, '.nav-item span', 'Routing');
+      await flush();
+      expect(window.location.hash).toBe('#/routing');
+      expect(pressed(first.host)).toEqual(['Auto routing']);
+      expect(first.host.querySelector('[data-testid="auto-pipeline"]')).not.toBeNull();
+    } finally {
+      first.dispose();
+    }
+    // A full reload is a fresh store: the choice was in memory only.
+    const reloaded = mount(createAppStore(tabsFake()));
+    try {
+      await flush();
+      await openRouting(reloaded.host);
+      expect(window.location.hash).toBe('#/routing');
+      expect(pressed(reloaded.host)).toEqual(['Tiers & headers']);
+    } finally {
+      reloaded.dispose();
+    }
+  });
+
+  it('fetches the aggregation on the first show per visit: a round-trip does not refetch, a revisit does', async () => {
+    const fake = tabsFake();
+    const { host, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      await openRouting(host);
+      expect(fetchesOf(fake)).toBe(0); // landed on Tiers & headers
+      await openTab(host, 'Auto routing');
+      expect(fetchesOf(fake)).toBe(1);
+      // What the fetch feeds is on screen (DEFAULT_AUTO_PERF: 1 unroutable, high band).
+      expect(targetsMatrix(host).textContent).toContain('(1 unroutable in the selected 7d range)');
+
+      await openTab(host, 'Tiers & headers');
+      await openTab(host, 'Auto routing');
+      expect(fetchesOf(fake)).toBe(1); // a tab round-trip keeps this visit's figures
+
+      clickByText(host, '.nav-item span', 'Requests'); // leave…
+      await flush();
+      clickByText(host, '.nav-item span', 'Routing'); // …and return, on the remembered tab
+      await flush();
+      expect(fetchesOf(fake)).toBe(2);
+
+      // A revisit that stays on Tiers & headers does not fetch until the tab shows.
+      await openTab(host, 'Tiers & headers');
       clickByText(host, '.nav-item span', 'Requests');
       await flush();
       clickByText(host, '.nav-item span', 'Routing');
       await flush();
-      expect(window.location.hash).toBe('#/routing');
-      expect(pressed(host)).toEqual(['Tuning']);
-      expect(host.textContent).toContain('Auto performance');
+      expect(fetchesOf(fake)).toBe(2);
+      await openTab(host, 'Auto routing');
+      expect(fetchesOf(fake)).toBe(3);
     } finally {
       dispose();
     }
   });
 
-  it('restores focus to the active segment when the focused section stops being offered (2.5)', async () => {
-    const store = createAppStore(railFake());
-    const { host, dispose } = mount(store);
-    try {
-      await flush();
-      await openRouting(host);
-      await openSection(host, 'Tuning');
-      const tuning = [
-        ...host.querySelectorAll<HTMLButtonElement>('[data-testid="routing-sections"] .rs-seg'),
-      ].find((b) => b.textContent?.trim() === 'Tuning')!;
-      tuning.focus();
-      expect(document.activeElement).toBe(tuning);
-
-      // Tuning is withdrawn — the focused button is removed from the DOM, which
-      // would otherwise drop focus to <body> and lose the keyboard user's place.
-      store.setState('autoLayers', 'structuralAvailable', false);
-      await flush();
-      expect(document.activeElement).not.toBe(document.body);
-      expect((document.activeElement as HTMLElement).textContent?.trim()).toBe('Auto');
-      expect((document.activeElement as HTMLElement).getAttribute('aria-pressed')).toBe('true');
-    } finally {
-      dispose();
-    }
-  });
-
-  it('loads the auto-performance aggregation on an Auto-only visit — Band and Workload targets read it (3.2)', async () => {
-    const fake = railFake();
+  it('persists the final order of a keyboard burst left mid-flight by a tab switch', async () => {
+    const fake = tabsFake(
+      {},
+      { models: ['m1', 'm2', 'm3', 'm4'], entries: ['m1', 'm2', 'm3', 'm4'] },
+    );
     const { host, dispose } = mount(createAppStore(fake));
     try {
       await flush();
       await openRouting(host);
-      // Tuning is never opened in this test; the fetch belongs to the page.
-      expect(fake.calls.filter((c) => c === 'autoPerformance').length).toBeGreaterThanOrEqual(1);
-      expect(host.textContent).not.toContain('Auto performance');
+      fake.deferTierWrites = true;
+      // Walk m1 to the bottom, faster than a write completes: the first PUT goes out,
+      // the rest coalesce in the store behind it.
+      for (let i = 0; i < 3; i++) {
+        const handle = chainRows(host)[i]!.querySelector<HTMLElement>('.drag-handle')!;
+        handle.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'ArrowDown', altKey: true, bubbles: true }),
+        );
+        await flush();
+      }
+      expect(order(host)).toEqual(['m2', 'm3', 'm4', 'm1']);
 
-      // Band targets shows its range-scoped unroutable count (DEFAULT_AUTO_PERF: 1 high)…
-      expect(bandPanel(host)?.textContent).toContain('(1 unroutable in the selected 7d range)');
-      // …and Workload targets its per-class `routed` counts.
-      const wt = host.querySelector<HTMLElement>('[data-testid="workload-targets"]')!;
-      expect(wt.querySelector('[data-testid="wt-routed"]')).not.toBeNull();
+      // Leave the tab with the burst unwritten — the chains unmount.
+      await openTab(host, 'Auto routing');
+      expect(host.querySelector('[data-tier-id]')).toBeNull();
+      let guard = 0;
+      while (fake.tierWriteQueue.length > 0 && guard++ < 6) {
+        fake.tierWriteQueue.shift()?.settle('resolve');
+        await flush();
+      }
+      expect(replacements(fake).at(-1)).toEqual(['m2', 'm3', 'm4', 'm1']);
+
+      // Coming back shows the server's order — the burst's final order.
+      await openTab(host, 'Tiers & headers');
+      expect(order(host)).toEqual(['m2', 'm3', 'm4', 'm1']);
     } finally {
       dispose();
     }
   });
 
-  it('keeps the rail intact across repeated section switching (no card loses content)', async () => {
-    const { host, dispose } = mount(createAppStore(railFake()));
+  it('abandons a live drag on a tab switch, exactly as a page teardown does', async () => {
+    const fake = tabsFake();
+    const { host, store, dispose } = mount(createAppStore(fake));
     try {
       await flush();
       await openRouting(host);
+      // happy-dom has no DragEvent; the handlers touch only these members (see
+      // routingDrag.test.tsx). Rows 40px tall, so row i's midpoint is at 40i + 20.
+      chainRows(host).forEach((row, i) => {
+        row.getBoundingClientRect = (): DOMRect =>
+          ({ top: i * 40, bottom: i * 40 + 40, height: 40 }) as DOMRect;
+      });
+      const fire = (el: HTMLElement, type: string, clientY?: number): void => {
+        const ev = new Event(type, { bubbles: true, cancelable: true });
+        Object.defineProperty(ev, 'dataTransfer', {
+          value: { effectAllowed: '', dropEffect: '', setData: () => undefined },
+        });
+        if (clientY !== undefined) Object.defineProperty(ev, 'clientY', { value: clientY });
+        el.dispatchEvent(ev);
+      };
+      fire(chainRows(host)[0]!, 'dragstart');
+      fire(chainRows(host)[2]!, 'dragover', 110); // past row 2's midpoint
+      expect(order(host)).toEqual(['m2', 'm3', 'm1']); // the drag's local, unwritten move
+      const before = writesOf(fake);
+
+      await openTab(host, 'Auto routing');
+      expect(writesOf(fake)).toEqual(before); // an abandoned drag writes nothing
+      // The store's hold is released: a late completion from the vanished row is inert.
+      store.endTierDrag('t1', 'changed');
+      await flush();
+      expect(writesOf(fake)).toEqual(before);
+
+      // Returning shows the server's order, not the half-dragged one.
+      await openTab(host, 'Tiers & headers');
+      expect(order(host)).toEqual(['m1', 'm2', 'm3']);
+    } finally {
+      dispose();
+    }
+  });
+
+  it('keeps every card intact across repeated tab switching (no card loses content)', async () => {
+    const { host, dispose } = mount(createAppStore(tabsFake()));
+    try {
+      await flush();
+      await openRouting(host);
+      await openTab(host, 'Auto routing');
+      // Stages start collapsed (a tab switch resets them), so open all five each time.
+      await expandAllStages(host);
       const auto = panels(host);
+      // Non-vacuous: the comparison below is over the real cards, in the tab's order —
+      // self-calibration moved into the Classify stage's detail, not out of the tab.
+      expect(auto).toEqual(['Auto performance', 'Pipeline', 'Self-calibration', 'Targets']);
+      const blocks = (): string[] =>
+        [...host.querySelectorAll<HTMLElement>('[data-testid="stage-detail"] [data-testid]')].map(
+          (e) => e.dataset['testid'] ?? '',
+        );
+      const before = blocks();
+      expect(before).toEqual(
+        expect.arrayContaining(['ap-band-verdicts', 'calibration-evidence', 'workload-mix']),
+      );
       for (let i = 0; i < 3; i++) {
-        await openSection(host, 'Tuning');
-        await openSection(host, 'Rules');
-        await openSection(host, 'Auto');
+        await openTab(host, 'Tiers & headers');
+        await openTab(host, 'Auto routing');
       }
+      expect(stageExpander(host, 'Classify').getAttribute('aria-expanded')).toBe('false');
+      await expandAllStages(host);
       expect(panels(host)).toEqual(auto);
-      expect(bandPanel(host)?.textContent).toContain('(1 unroutable in the selected 7d range)');
+      expect(blocks()).toEqual(before);
+      expect(targetsMatrix(host).textContent).toContain('(1 unroutable in the selected 7d range)');
+    } finally {
+      dispose();
+    }
+  });
+
+  const stageRows = (host: HTMLElement): HTMLElement[] => [
+    ...host.querySelectorAll<HTMLElement>('[data-testid="pipeline-stage"]'),
+  ];
+  const stageRow = (host: HTMLElement, id: string): HTMLElement => {
+    const row = host.querySelector<HTMLElement>(
+      `[data-testid="pipeline-stage"][data-stage="${id}"]`,
+    );
+    if (!row) throw new Error(`no "${id}" stage row`);
+    return row;
+  };
+  const squash = (t: string | null | undefined): string => (t ?? '').replace(/\s+/g, ' ').trim();
+
+  it('renders the six stages in proxy order — switches only on 1, 4 and 5 — with disjoint counts that sum to evaluated', async () => {
+    const fake = tabsFake();
+    const { host, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      await openRouting(host);
+      await openTab(host, 'Auto routing');
+      const rows = stageRows(host);
+      expect(rows.map((r) => r.dataset['stage'])).toEqual([
+        'classify',
+        'workload',
+        'band',
+        'semantic',
+        'cascade',
+        'default',
+      ]);
+      expect(rows.map((r) => r.querySelector('.ar-num')?.textContent)).toEqual([
+        '1',
+        '2',
+        '3',
+        '4',
+        '5',
+        '6',
+      ]);
+      // Only the layers carry a switch, with their unchanged accessible names.
+      expect(
+        rows.map((r) => r.querySelector('[role="switch"]')?.getAttribute('aria-label') ?? null),
+      ).toEqual([
+        'Toggle L1 · Structural',
+        null,
+        null,
+        'Toggle L2 · Semantic',
+        'Toggle L3 · Cascade',
+        null,
+      ]);
+      expect(rows[0]!.textContent).toContain('L1 · Structural');
+      expect(rows[3]!.textContent).toContain('L2 · Semantic');
+      expect(rows[4]!.textContent).toContain('L3 · Cascade');
+      // DEFAULT_AUTO_PERF exits {0, 22, 5, 10, 3} partition evaluated (40).
+      expect(
+        rows.map((r) => squash(r.querySelector('[data-testid="stage-figure"]')?.textContent)),
+      ).toEqual([
+        '40 evaluated',
+        '0 0% · routed here',
+        '22 55% · routed here',
+        '5 13% · routed here',
+        '10 25% · routed here',
+        '3 8% · routed here',
+      ]);
+      // The summary bar: a segment per non-zero exit, and every exit in the text legend.
+      const bar = host.querySelector<HTMLElement>('[data-testid="exit-bar"]')!;
+      expect(bar.getAttribute('aria-hidden')).toBe('true'); // the legend carries it as text
+      expect(
+        [...bar.querySelectorAll<HTMLElement>('.ar-seg')].map((e) => e.dataset['exit']),
+      ).toEqual(['structural', 'semantic', 'cascade', 'default']);
+      const legend = [...host.querySelectorAll<HTMLElement>('[data-testid="exit-legend"] li')].map(
+        (li) => squash(li.textContent),
+      );
+      expect(legend).toEqual([
+        'Workload claim 0 0%',
+        'Confident band 22 55%',
+        'Semantic 5 13%',
+        'Cascade 10 25%',
+        'Default 3 8%',
+      ]);
+      // Setup summaries read configuration, never a figure.
+      expect(
+        squash(stageRow(host, 'band').querySelector('[data-testid="stage-setup"]')?.textContent),
+      ).toBe('Strong to unset · Cheap to unset');
+      // Layer 0 decides first; unevaluated traffic is disclosed, not counted.
+      const note = host.querySelector('[data-testid="layer0-note"]')?.textContent ?? '';
+      expect(note).toContain('explicit model');
+      expect(note).toContain('explicit tier');
+      expect(note).toContain('x-polyrouter-tier');
+      const foot = host.querySelector('[data-testid="pipeline-unevaluated"]')?.textContent ?? '';
+      expect(foot).toContain('Layer 1 never evaluated');
+      expect(foot).toContain('without being counted');
+      expect(foot).toContain('selected 7d range');
+    } finally {
+      dispose();
+    }
+  });
+
+  it('pauses stages 2–5 in text at full contrast when Layer 1 is off — no dimming — while an opt-in L2/L3 off reads neutral', async () => {
+    const off = mount(createAppStore(tabsFake({ structural: false })));
+    try {
+      await flush();
+      await openRouting(off.host);
+      await openTab(off.host, 'Auto routing');
+      const status = (id: string): string | null =>
+        stageRow(off.host, id).querySelector('[data-testid="stage-status"]')?.textContent ?? null;
+      expect(['workload', 'band', 'semantic', 'cascade'].map(status)).toEqual([
+        'paused · needs L1',
+        'paused · needs L1',
+        'paused · needs L1',
+        'paused · needs L1',
+      ]);
+      expect(status('classify')).toBeNull();
+      expect(status('default')).toBeNull();
+      const classifySetup = stageRow(off.host, 'classify').querySelector<HTMLElement>(
+        '[data-testid="stage-setup"]',
+      )!;
+      expect(classifySetup.textContent).toBe(
+        'Off — new auto requests go straight to the default tier',
+      );
+      // Text, never dimming: no stage row — nor anything in it — is faded.
+      for (const row of stageRows(off.host)) {
+        const line = row.querySelector<HTMLElement>('.ar-row')!;
+        expect(line.getAttribute('style') ?? '').not.toMatch(/opacity/);
+        expect(line.querySelectorAll('[style*="opacity"]')).toHaveLength(0);
+      }
+    } finally {
+      off.dispose();
+    }
+
+    const optIn = mount(
+      createAppStore(tabsFake({ cascade: false, semantic: false, semanticAvailable: true })),
+    );
+    try {
+      await flush();
+      await openRouting(optIn.host);
+      await openTab(optIn.host, 'Auto routing');
+      expect(optIn.host.querySelectorAll('[data-testid="stage-status"]')).toHaveLength(0);
+      for (const [id, copy] of [
+        ['semantic', 'Off — the ambiguous slice goes straight to the default tier'],
+        ['cascade', 'Off — still-ambiguous requests use the default tier'],
+      ] as const) {
+        const setup = stageRow(optIn.host, id).querySelector<HTMLElement>(
+          '[data-testid="stage-setup"]',
+        )!;
+        expect(setup.textContent).toBe(copy);
+        expect(setup.style.color).toBe('var(--text2)'); // neutral, never the caution tone
+        expect(stageRow(optIn.host, id).textContent).toContain(
+          'Any count shown is history from when it was on',
+        );
+      }
+    } finally {
+      optIn.dispose();
+    }
+  });
+
+  it('shows the switches loading — never "off instance-wide" — before the auto-layers view arrives', async () => {
+    const fake = tabsFake();
+    fake.getAutoLayers = () => new Promise<AutoLayers>(() => undefined); // never arrives
+    const { host, store, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      await openRouting(host);
+      await openTab(host, 'Auto routing');
+      expect(store.state.autoLayers).toBeNull();
+      expect(host.querySelectorAll('[data-testid="switch-loading"]')).toHaveLength(3);
+      expect(host.querySelector('[data-testid="auto-pipeline"] [role="switch"]')).toBeNull();
+      expect(host.textContent).not.toContain('off instance-wide');
+      expect(host.querySelectorAll('[data-testid="stage-hint"]')).toHaveLength(0);
+      for (const id of ['classify', 'semantic', 'cascade']) {
+        expect(stageRow(host, id).querySelector('[data-testid="stage-setup"]')?.textContent).toBe(
+          'Loading…',
+        );
+      }
+      // Nothing claims to be paused or off while the view is unknown.
+      expect(host.querySelectorAll('[data-testid="stage-status"]')).toHaveLength(0);
+    } finally {
+      dispose();
+    }
+  });
+
+  it('each expander is a real button toggling aria-expanded, and expanding writes nothing', async () => {
+    const fake = tabsFake();
+    const { host, dispose } = mount(createAppStore(fake));
+    try {
+      await flush();
+      await openRouting(host);
+      await openTab(host, 'Auto routing');
+      const before = writesOf(fake);
+      // Exactly five expanders: every stage but Confident band, which points at the
+      // Targets area instead.
+      expect(
+        host.querySelectorAll('[data-testid="auto-pipeline"] button[aria-expanded]'),
+      ).toHaveLength(5);
+      const band = stageRow(host, 'band');
+      expect(band.querySelector('button[aria-expanded]')).toBeNull();
+      expect(band.querySelector('button')?.textContent?.trim()).toBe('Targets');
+      for (const name of EXPANDABLE_STAGES) {
+        const btn = stageExpander(host, name);
+        expect(btn.tagName).toBe('BUTTON');
+        expect(btn.getAttribute('type')).toBe('button');
+        expect(btn.getAttribute('aria-expanded'), `${name} starts collapsed`).toBe('false');
+        btn.click();
+        await flush();
+        expect(btn.getAttribute('aria-expanded')).toBe('true');
+        const id = btn.getAttribute('aria-controls')!;
+        const region = host.querySelector<HTMLElement>(`[id="${id}"]`);
+        expect(region?.getAttribute('role')).toBe('region');
+        expect(region?.getAttribute('aria-label')).toBe(`${name} details`);
+        btn.click();
+        await flush();
+        expect(btn.getAttribute('aria-expanded')).toBe('false');
+        expect(host.querySelector(`[id="${id}"]`)).toBeNull();
+      }
+      expect(writesOf(fake)).toEqual(before);
+    } finally {
+      dispose();
+    }
+  });
+
+  it('the Default stage reconciles what fell through and discloses unevaluated traffic', async () => {
+    const { host, dispose } = mount(createAppStore(tabsFake()));
+    try {
+      await flush();
+      await openRouting(host);
+      await openTab(host, 'Auto routing');
+      const detail = await expandStage(host, 'Default');
+      // DEFAULT_AUTO_PERF: default 3 = high.unroutable 1 + low.unroutable 0 + fallthrough 2.
+      const figures = squash(detail.querySelector('[data-testid="ap-default"]')?.textContent);
+      expect(figures).toContain('routed to the default tier 3');
+      expect(figures).toContain('confident high, no usable Strong target 1');
+      expect(figures).toContain('confident low, no usable Cheap target 0');
+      expect(squash(detail.querySelector('[data-testid="default-fallthrough"]')?.textContent)).toBe(
+        'ambiguous, no later stage took it 2',
+      );
+      expect(detail.querySelector('[data-testid="default-unevaluated"]')?.textContent).toContain(
+        'Layer 1 never evaluated',
+      );
+    } finally {
+      dispose();
+    }
+  });
+
+  it('the Confident band row points at the Targets area, and the Layer-0 note at Tiers & headers', async () => {
+    const { host, dispose } = mount(createAppStore(tabsFake()));
+    try {
+      await flush();
+      await openRouting(host);
+      await openTab(host, 'Auto routing');
+      const targets = stageRow(host, 'band').querySelector<HTMLButtonElement>('button')!;
+      targets.click();
+      await flush();
+      const area = document.activeElement as HTMLElement;
+      expect(area.id).toBe('auto-targets');
+      // It lands on the matrix itself, whose Strong and Cheap columns the row names.
+      expect(area).toBe(targetsMatrix(host));
+      expect(targetsCell(host, 'any', 'strong')).not.toBeNull();
+      expect(targetsCell(host, 'any', 'cheap')).not.toBeNull();
+      // The note's cross-reference is a real control naming its tab — and focus follows.
+      const link = [
+        ...host.querySelectorAll<HTMLButtonElement>('[data-testid="layer0-note"] button'),
+      ].find((b) => b.textContent?.trim() === 'Tiers & headers')!;
+      link.focus();
+      link.click();
+      await flush();
+      expect(pressed(host)).toEqual(['Tiers & headers']);
+      expect((document.activeElement as HTMLElement).textContent?.trim()).toBe('Tiers & headers');
+    } finally {
+      dispose();
+    }
+  });
+
+  it('hands focus to the tab control when an availability flip unmounts a focused stage detail', async () => {
+    const store = createAppStore(tabsFake());
+    const { host, dispose } = mount(store);
+    try {
+      await flush();
+      await openRouting(host);
+      await openTab(host, 'Auto routing');
+      const detail = await expandStage(host, 'Classify');
+      const sw = detail.querySelector<HTMLButtonElement>('[aria-label="Self-calibration"]')!;
+      sw.focus();
+      expect(document.activeElement).toBe(sw);
+      store.setState('autoLayers', 'structuralAvailable', false);
+      await flush();
+      expect(sw.isConnected).toBe(false);
+      const focused = document.activeElement as HTMLElement;
+      expect(focused.textContent?.trim()).toBe('Auto routing');
+      expect(focused.closest('[data-testid="routing-sections"]')).not.toBeNull();
+      // The stage itself stays — only what needs the capability went.
+      expect(stageExpander(host, 'Classify').getAttribute('aria-expanded')).toBe('true');
     } finally {
       dispose();
     }

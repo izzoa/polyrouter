@@ -6,7 +6,6 @@ import {
   bandVms,
   effectiveRuleOrder,
   scopedBandVms,
-  workloadClaimState,
   type BandTargetsInput,
 } from './bandTargets';
 import { DEFAULT_AUTO_PERF } from '../test/fakeClient';
@@ -310,62 +309,5 @@ describe('class-scoped bands (add-workload-scoped-bands)', () => {
     expect(structured.anyScoped).toBe(false);
     expect(anyScopedBandRule(rules)).toBe(true);
     expect(anyScopedBandRule([rule({ id: 'g' })])).toBe(false);
-  });
-
-  it('workloadClaimState distinguishes none / usable / unusable claims by the EFFECTIVE auto_workload rule', () => {
-    expect(workloadClaimState(input(), 'code')).toBe('none');
-    const usable = rule({
-      id: 'w',
-      matchType: 'auto_workload',
-      workloadClass: 'code',
-      target: 'tier:premium',
-    });
-    expect(workloadClaimState(input({ rules: [usable] }), 'code')).toBe('usable');
-    const empty = rule({
-      id: 'w2',
-      matchType: 'auto_workload',
-      workloadClass: 'code',
-      target: 'tier:empty',
-    });
-    const catalog = input({
-      rules: [empty],
-      tiers: [
-        { id: 't-premium', key: 'premium', displayName: null, description: null, createdAt: T0 },
-        { id: 't-empty', key: 'empty', displayName: null, description: null, createdAt: T0 },
-      ],
-      tierEntries: {
-        't-premium': [
-          {
-            id: 'e1',
-            tierId: 't-premium',
-            modelId: 'm1',
-            position: 0,
-            mode: 'any' as const,
-            model: null,
-          },
-        ],
-        't-empty': [],
-      },
-    });
-    expect(workloadClaimState(catalog, 'code')).toBe('unusable');
-    expect(
-      workloadClaimState(
-        input({
-          rules: [
-            rule({
-              id: 'w3',
-              matchType: 'auto_workload',
-              workloadClass: 'code',
-              target: 'tier:ghost',
-            }),
-          ],
-        }),
-        'code',
-      ),
-    ).toBe('unusable');
-    // the HIGHER-priority rule decides
-    expect(workloadClaimState(input({ rules: [empty, { ...usable, priority: 9 }] }), 'code')).toBe(
-      'usable',
-    );
   });
 });

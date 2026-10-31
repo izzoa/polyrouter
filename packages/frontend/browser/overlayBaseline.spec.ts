@@ -149,7 +149,12 @@ const BASELINE: Record<string, [number, number, number, number]> = {
   'confirm:disableCapture': [500, 270, 440, 141],
   'nav:expanded': [0, 0, 208, 844],
   accountMenu: [18, 661, 171, 139],
-  picker: [253, 266, 320, 76],
+  // RE-PINNED 2026-10-30 (was [253, 266, 320, 76]). redesign-auto-routing-pipeline put the
+  // page-level tab control (a 30px `Segmented` plus the page's 14px gap) above the tier
+  // chains (D1/D3), so the first chain's input — the picker's anchor — sits exactly 44px
+  // lower. A deliberate layout change, not rendering drift: x, width and height are
+  // unchanged, and the shift is the control's box, not text.
+  picker: [253, 310, 320, 76],
   toast: [454, 843, 533, 35],
 };
 

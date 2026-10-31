@@ -732,6 +732,19 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
           fallthrough: intCount(
             sql`${requestLogs.structuralBand} = 'ambiguous' and ${requestLogs.decisionLayer} = 'default'`,
           ),
+          // Disjoint per-stage exits (redesign-auto-routing-pipeline D6): the stage
+          // that ROUTED each banded row, on `decision_layer` alone — no band
+          // qualifier, so a malformed `semantic`+ambiguous row still counts once.
+          // `default` is the COMPLEMENT, not an equality: no CHECK constrains the
+          // column (NOT NULL only), so a banded row the proxy never writes on the
+          // auto path lands there instead of opening a gap — Σ exits = evaluated.
+          exitWorkload: intCount(sql`${requestLogs.decisionLayer} = 'workload'`),
+          exitStructural: intCount(sql`${requestLogs.decisionLayer} = 'structural'`),
+          exitSemantic: intCount(sql`${requestLogs.decisionLayer} = 'semantic'`),
+          exitCascade: intCount(sql`${requestLogs.decisionLayer} = 'cascade'`),
+          exitDefault: intCount(
+            sql`${requestLogs.decisionLayer} not in ('workload','structural','semantic','cascade')`,
+          ),
         })
         .from(requestLogs)
         .where(banded);
@@ -935,6 +948,13 @@ export function createAnalyticsAccessor(db: Db): AnalyticsAccessor {
         savings,
         signalQuality,
         workloadMix,
+        exits: {
+          workload: t!.exitWorkload,
+          structural: t!.exitStructural,
+          semantic: t!.exitSemantic,
+          cascade: t!.exitCascade,
+          default: t!.exitDefault,
+        },
       };
     },
 

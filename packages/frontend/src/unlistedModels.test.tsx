@@ -250,8 +250,9 @@ describe('Routing page — anything routed to an unlisted model says so', () => 
       route: 'routing',
       ruleTargets: ['model:gpt-5.4-mini', 'model:gpt-6-luna'],
     });
-    h.store.setState('routingSection', 'rules');
-    await flush();
+    // The header-rules card is on Tiers & headers — the tab a visit lands on — so
+    // the note is there without any tab switch (redesign-auto-routing-pipeline).
+    expect(h.store.state.routingSection).toBe('tiers');
     expect(h.host.querySelector('[data-unlisted-rule="r0"]')?.textContent).toBe(
       'gpt-5.4-mini is no longer listed by OpenAI — requests to it may fail',
     );
@@ -264,6 +265,15 @@ describe('Routing page — anything routed to an unlisted model says so', () => 
       ruleTargets: ['model:gpt-5.4-mini'],
       matchType: 'auto_high',
     });
+    // Band targets live on the Auto routing tab, which is not mounted on landing —
+    // proves the open below is what puts the note on screen, not a stale DOM.
+    expect(h.host.querySelector('[data-unlisted-target]')).toBeNull();
+    const tab = [
+      ...h.host.querySelectorAll<HTMLButtonElement>('[data-testid="routing-sections"] .rs-seg'),
+    ].find((b) => b.textContent?.trim() === 'Auto routing');
+    if (!tab) throw new Error('the Auto routing tab is not offered');
+    tab.click();
+    await flush();
     const note = h.host.querySelector('[data-unlisted-target="gpt-5.4-mini"]');
     expect(note?.textContent).toMatch(/no longer listed by OpenAI — requests to it may fail/);
   });

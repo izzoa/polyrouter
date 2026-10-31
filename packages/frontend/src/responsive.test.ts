@@ -118,7 +118,6 @@ describe('page grids reflow', () => {
     const desktop = css.replace(narrow, '');
     for (const cls of [
       '.rs-grid-2',
-      '.rs-grid-2-1',
       '.rs-grid-label',
       '.rs-grid-3',
       '.rs-grid-4',
@@ -267,9 +266,41 @@ describe('interactive target floors', () => {
 describe('table query containers', () => {
   it('declares inline-size containers with distinct names', () => {
     expect(css).toContain('container-type: inline-size');
-    for (const name of ['rs-requests', 'rs-batches', 'rs-agents', 'rs-users']) {
+    for (const name of ['rs-requests', 'rs-batches', 'rs-agents', 'rs-users', 'rs-targets']) {
       expect(css).toContain(`container-name: ${name}`);
     }
+  });
+
+  it('reflows the Targets matrix at its locked table-fit, the same value in the lock and here', () => {
+    // redesign-auto-routing-pipeline task 7.2. A literal, like every other threshold, and
+    // changed together with STYLESEED.md — never one alone.
+    const lock = readFileSync(join(SRC, '..', '..', '..', 'STYLESEED.md'), 'utf8');
+    const locked = /\|\s*`table-fit-targets`\s*\|\s*\*\*(\d+)px\*\*/.exec(lock)?.[1];
+    expect(locked, 'table-fit-targets is missing from the STYLESEED.md lock').toBeDefined();
+    const body = atRuleBody(`@container rs-targets (max-width: ${locked ?? '?'}px)`);
+    // The stacked record: the header row goes, the grid becomes a block, and the per-cell
+    // field labels — real elements, visually hidden at desktop — are shown.
+    expect(body).toMatch(/\.tm-head\s*\{[^}]*display:\s*none/);
+    expect(body).toMatch(/\.rs-grid-targets\s*\{[^}]*display:\s*block/);
+    // The header row carries BOTH classes, so its `display: none` must come later in the
+    // block or the equal-specificity `display: block` keeps it on screen.
+    expect(body.search(/\.tm-head\s*\{/)).toBeGreaterThan(body.search(/\.rs-grid-targets\s*\{/));
+    expect(body).toMatch(/\.tm-label\s*\{[^}]*position:\s*static/);
+    // The picker's cap gives way, so a 220px select cannot push a phone column wider.
+    expect(body).toMatch(/\.tm-picker\s*\{[^}]*max-width:\s*min\(220px,\s*100%\)/);
+  });
+
+  it('holds the Targets grid, its display and the picker cap in classes a query can reach', () => {
+    // An inline `display`, `grid-template-columns` or `max-width` outranks the container
+    // query, which would then match and change nothing.
+    const query = atRuleBody('@container rs-targets');
+    const outside = css.replace(query, '');
+    expect(outside).toMatch(/\.rs-grid-targets\s*\{[^}]*display:\s*grid[^}]*grid-template-columns/);
+    expect(outside).toMatch(/\.tm-picker\s*\{[^}]*max-width:\s*220px/);
+    const routing = readFileSync(join(SRC, 'pages/Routing.tsx'), 'utf8');
+    expect(routing).toContain('class="rs-targets"');
+    expect(routing).toContain('class="tm-picker"');
+    expect(routing, 'the picker cap moved back inline').not.toContain('max-width:220px');
   });
 
   it('never establishes a query container on a shell pane', () => {

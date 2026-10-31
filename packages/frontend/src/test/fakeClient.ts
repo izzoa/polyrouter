@@ -449,6 +449,9 @@ export const DEFAULT_AUTO_PERF: AutoPerformance = {
     source: { bundled: 6, learned: 2 },
   },
   fallthrough: 2,
+  // Sums to `evaluated`; default = high.unroutable + low.unroutable + fallthrough,
+  // cascade = cascade.requests, workload = Σ workloadMix.classes[].routed (all 0).
+  exits: { workload: 0, structural: 22, semantic: 5, cascade: 10, default: 3 },
   series: [
     { bucket: '2026-07-14T00:00:00.000Z', high: 6, low: 8, ambiguous: 5 },
     { bucket: '2026-07-15T00:00:00.000Z', high: 6, low: 8, ambiguous: 7 },

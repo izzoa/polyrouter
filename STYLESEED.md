@@ -23,6 +23,7 @@
 | `table-fit-batches` | **960px** container | The 10-column batches table reflows to stacked records (same width as requests: more columns, not a different problem) |
 | `table-fit-agents` | **680px** container | The 7-column agents table reflows |
 | `table-fit-users` | **660px** container | Both semantic `<table>`s on the Users page reflow |
+| `table-fit-targets` | **940px** container | The Routing page's 5-track Targets matrix reflows to one stacked record per workload row (measured 924, rounded up; set by the 220px cell pickers, not by text) |
 | `rail-collapsed` | **56px** | Width of the collapsed icon rail (44px target + 6px each side) |
 | `gutter-narrow` | **18px 16px** | Page padding below `narrow` (from `22px 26px`) |
 | `density-narrow` | `.card` `16px 18px` → **`14px 14px`**; gaps unchanged | The only density steps that change below `narrow` |
@@ -70,6 +71,8 @@ what found this.
 **Table thresholds are per table and were measured, not chosen** — see `measurements.md` in the responsive change. They are container widths, not viewport widths: a table cares about the space it actually gets, which is roughly `viewport − 208px sidebar − gutters`.
 
 **Known and intended consequence:** because `table-fit-requests` is 960px, the requests table reflows to cards below roughly a **1220px viewport** — on narrow desktops, not only phones. At 946px of panel that table has a sub-60px column, so the wide layout is genuinely unreadable there. This is the one sanctioned exception to "desktop rendering is unchanged", alongside controls growing to meet `target-base`.
+
+`table-fit-targets` was measured the same way in `redesign-auto-routing-pipeline` (the rig and its derivation are recorded beside the query in `styles.css`). Its container is the matrix's own content box, about `viewport − 298px` (sidebar, gutters, panel border and the matrix's 18px inset), so the Targets matrix shows stacked records below roughly a **1240px viewport**. A 1280px laptop keeps the grid.
 
 **What the comfort floor does and does not promise.** It is 44px of *height* on every
 interactive control, plus 44px of *width* on controls with no text to widen them (the rail

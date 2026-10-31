@@ -224,6 +224,33 @@ describe('analytics API (#17)', () => {
   const q = (path: string, user: string, query: Record<string, string | number | boolean>) =>
     request(server).get(`/api/analytics/${path}`).set('x-test-user', user).query(query);
 
+  /** The auto aggregation's disjoint per-stage exits (redesign-auto-routing-pipeline). */
+  type Exits = Record<'workload' | 'structural' | 'semantic' | 'cascade' | 'default', number>;
+  const ZERO_EXITS: Exits = { workload: 0, structural: 0, semantic: 0, cascade: 0, default: 0 };
+  const exitSum = (e: Exits): number =>
+    e.workload + e.structural + e.semantic + e.cascade + e.default;
+  /** The auto response's keys before `exits` existed, sorted. */
+  const PRE_EXITS_KEYS = [
+    'bands',
+    'calibrationEvidence',
+    'cascade',
+    'evaluated',
+    'fallthrough',
+    'savings',
+    'semantic',
+    'series',
+    'signalQuality',
+    'telemetrySince',
+    'workloadMix',
+  ];
+  /** `exits` is purely additive: stripped of it, the response has exactly the keys it
+   * had before, so the pre-existing figures pinned beside each call are all that
+   * remains — nothing was renamed, dropped or reshaped to make room. */
+  const expectExitsAdditive = (body: Record<string, unknown>): void => {
+    const { exits: _exits, ...rest } = body;
+    expect(Object.keys(rest).sort()).toEqual(PRE_EXITS_KEYS);
+  };
+
   beforeAll(async () => {
     process.env['NODE_ENV'] = 'test';
     process.env['PROVIDER_CREDENTIAL_KEY'] = 'c'.repeat(64);
@@ -947,6 +974,22 @@ describe('analytics API (#17)', () => {
       escalated: 2,
     });
     expect(body.fallthrough).toBe(2);
+    // Exits (redesign-auto-routing-pipeline): the three structural routes, all seven
+    // cascade rows whatever their outcome, and a default made of the unroutable high
+    // plus both ambiguous fall-throughs — the partition sums to evaluated exactly.
+    expect(body.exits).toEqual({
+      workload: 0,
+      structural: 3,
+      semantic: 0,
+      cascade: 7,
+      default: 3,
+    });
+    expect(exitSum(body.exits)).toBe(body.evaluated);
+    expect(body.exits.default).toBe(
+      body.bands.high.unroutable + body.bands.low.unroutable + body.fallthrough,
+    );
+    expect(body.exits.cascade).toBe(body.cascade.requests);
+    expectExitsAdditive(body);
     // Savings: rows P1 (cf 3600µ − 1000µ = +2600µ) and P2 (cf 360µ − 1000000µ = −999640µ);
     // the null-cost row excluded + disclosed. net = gross − excess EXACTLY.
     expect(body.savings).toMatchObject({
@@ -967,10 +1010,13 @@ describe('analytics API (#17)', () => {
     // The earliest banded row EVER is the suite's earlier error-detail seed
     // (DAY1B) — range-independence is exactly the point.
     expect(before.body.telemetrySince).toBe('2025-03-10T11:30:00.000Z');
+    // Zero evaluated with telemetry on record: every exit is 0 — never null or absent.
+    expect(before.body.exits).toEqual(ZERO_EXITS);
     // Isolation: B sees only its own row.
     const bRes = await q('auto', B, { ...RANGE });
     expect(bRes.body.evaluated).toBe(1);
     expect(bRes.body.savings).toBeNull(); // B has no auto_high rule — basis unresolvable
+    expect(bRes.body.exits).toEqual({ ...ZERO_EXITS, structural: 1 });
   });
 
   it('auto: wholly-uncostable savings are null-money with coverage, cache-rate exclusion works, model basis resolves, guards fire (r3 folds)', async () => {
@@ -1123,7 +1169,8 @@ describe('analytics API (#17)', () => {
     // Legacy: no L2 (semantic_band null) → invisible to the whole slice.
     await sem({ layer: 'cascade', status: 'success' });
 
-    const s = (await q('auto', C, { ...RANGE, bucket: 'day' })).body.semantic;
+    const body = (await q('auto', C, { ...RANGE, bucket: 'day' })).body;
+    const s = body.semantic;
     expect(s.evaluated).toBe(7); // 5 routed + 1 not-routed + 1 ambiguous-semantic; legacy null excluded
     expect(s.routed).toEqual({ high: 3, low: 2 });
     // DISJOINT + EXHAUSTIVE over the 5 ROUTED rows — the ambiguous-semantic row is excluded.
@@ -1133,6 +1180,153 @@ describe('analytics API (#17)', () => {
     );
     // Source over evaluated: 3 learned (2 success + 1 error), 4 bundled (2 low + not-routed + ambiguous).
     expect(s.source).toEqual({ bundled: 4, learned: 3 });
+    // Exits read `decision_layer` alone (redesign-auto-routing-pipeline): all six
+    // semantic rows exit at semantic — the malformed ambiguous-band one included —
+    // while `semantic.routed` (5) stays the band-qualified subset; the not-routed L2
+    // row and the legacy row both exit at cascade. The partition still sums exactly.
+    expect(body.exits).toEqual({ ...ZERO_EXITS, semantic: 6, cascade: 2 });
+    expect(exitSum(body.exits)).toBe(body.evaluated);
+    expect(body.evaluated).toBe(8);
+    expectExitsAdditive(body);
+  });
+
+  it('auto: exits partition every stage and reconcile with the band-qualified figures, tenant-scoped (redesign-auto-routing-pipeline)', async () => {
+    const E = await mkUser();
+    const F = await mkUser(); // the counterpart: same range, every layer, never in E's figures
+    const at = '2025-03-12T10:00:00.000Z';
+    const RW = 'structural/v1/c1/eeeeeeeeeeee';
+    const row = (
+      owner: string,
+      layer: string,
+      band: 'high' | 'low' | 'ambiguous',
+      over: Partial<LogSeed> = {},
+    ): Promise<string> =>
+      seedLog(owner, {
+        cost: 0.001,
+        at,
+        layer,
+        structuralBand: band,
+        structuralScore: band === 'high' ? 0.7 : band === 'low' ? 0.1 : 0.45,
+        structuralBandSource: 'threshold',
+        ...over,
+      });
+    const wl = (cls: string): Partial<LogSeed> => ({
+      workloadClass: cls,
+      workloadScore: 0.4,
+      workloadSource: 'structural',
+      workloadRevision: RW,
+    });
+    const l2 = (band: 'high' | 'low'): Partial<LogSeed> => ({
+      semanticBand: band,
+      semanticScore: 0.3,
+      semanticSource: 'bundled',
+      semanticRevision: 'sha256:rev',
+    });
+
+    // Workload: a claimed confident band (exits at the claim, still a bands.high
+    // request) and a claimed ambiguous request.
+    await row(E, 'workload', 'high', wl('code'));
+    await row(E, 'workload', 'ambiguous', wl('structured'));
+    // Structural: one route per confident band.
+    await row(E, 'structural', 'high');
+    await row(E, 'structural', 'low');
+    // Semantic: an ambiguous request L2 routed.
+    await row(E, 'semantic', 'ambiguous', l2('low'));
+    // Cascade: every outcome exits here — passed, errored (unpriced: exits read no
+    // cost), cancelled, escalated.
+    await row(E, 'cascade', 'ambiguous', { qualitySignal: 1 });
+    await row(E, 'cascade', 'ambiguous', { status: 'error', cost: null });
+    await row(E, 'cascade', 'ambiguous', { status: 'cancelled' });
+    await row(E, 'cascade', 'ambiguous', { escalated: true, qualitySignal: 0.2 });
+    // Default: confident bands retained for lack of a usable target, an ambiguous
+    // request L2 classified confidently but could not route, and one the cascade
+    // did not take.
+    await row(E, 'default', 'high');
+    await row(E, 'default', 'low');
+    await row(E, 'default', 'ambiguous', l2('high'));
+    await row(E, 'default', 'ambiguous');
+    // F: one banded row at each layer, in the same range.
+    await row(F, 'workload', 'low', wl('vision'));
+    await row(F, 'structural', 'high');
+    await row(F, 'semantic', 'ambiguous', l2('high'));
+    await row(F, 'cascade', 'ambiguous');
+    await row(F, 'default', 'high');
+
+    const res = await q('auto', E, { ...RANGE, bucket: 'day' });
+    expect(res.status).toBe(200);
+    const body = res.body;
+    expect(body.exits).toEqual({ workload: 2, structural: 2, semantic: 1, cascade: 4, default: 4 });
+    expect(body.evaluated).toBe(13);
+    expect(exitSum(body.exits)).toBe(body.evaluated);
+    // The claimed high exits at the claim, not the band — yet bands.high still counts it.
+    expect(body.bands.high).toEqual({ requests: 3, declared: 0, unroutable: 1 });
+    expect(body.bands.low).toEqual({ requests: 2, declared: 0, unroutable: 1 });
+    expect(body.bands.ambiguous.requests).toBe(8);
+    // Default reconciles on proxy-written rows; the fall-through is a subset of it,
+    // the L2-confident-but-unroutable row included.
+    expect(body.fallthrough).toBe(2);
+    expect(body.exits.default).toBe(
+      body.bands.high.unroutable + body.bands.low.unroutable + body.fallthrough,
+    );
+    // Every cascade row exits at cascade whatever its outcome.
+    expect(body.cascade).toEqual({
+      requests: 4,
+      qualityPassed: 1,
+      qualityUnknown: 0,
+      failedOrCancelled: 2,
+      escalated: 1,
+    });
+    expect(body.exits.cascade).toBe(body.cascade.requests);
+    // The workload exit is the per-class routed count, summed.
+    const classes = body.workloadMix.classes as { class: string; routed: number }[];
+    expect(body.exits.workload).toBe(classes.reduce((a, c) => a + c.routed, 0));
+    // `semantic.routed` stays the band-qualified subset of the semantic exit.
+    expect(body.semantic.routed).toEqual({ high: 0, low: 1 });
+    expect(body.semantic.evaluated).toBe(2);
+    expectExitsAdditive(body);
+
+    // F's figures are its own and never E's.
+    const f = (await q('auto', F, { ...RANGE, bucket: 'day' })).body;
+    expect(f.exits).toEqual({ workload: 1, structural: 1, semantic: 1, cascade: 1, default: 1 });
+    expect(exitSum(f.exits)).toBe(f.evaluated);
+  });
+
+  it('auto: unevaluated traffic is outside every exit, and a banded row the proxy never writes lands in default (redesign-auto-routing-pipeline)', async () => {
+    const H = await mkUser();
+    const at = '2025-03-13T10:00:00.000Z';
+    // No structural band: a header-rule win, `auto` routed while Layer 1 was off or
+    // faulted, and pre-telemetry rows recorded at the stage layers themselves.
+    await seedLog(H, {
+      cost: 0.001,
+      at,
+      layer: 'header',
+      routingHeaderName: 'x-polyrouter-tier',
+      routingHeaderValue: 'fast',
+    });
+    await seedLog(H, { cost: 0.001, at, layer: 'default' });
+    await seedLog(H, { cost: 0.001, at, layer: 'structural' });
+    await seedLog(H, { cost: 0.001, at, layer: 'cascade' });
+    await seedLog(H, { cost: 0.001, at, layer: 'explicit' });
+
+    // Zero evaluated, no telemetry on record: still five zeros, never null or absent.
+    const none = (await q('auto', H, { ...RANGE, bucket: 'day' })).body;
+    expect(none.evaluated).toBe(0);
+    expect(none.telemetrySince).toBeNull();
+    expect(none.exits).toEqual(ZERO_EXITS);
+    expectExitsAdditive(none);
+
+    // Banded rows at layers the proxy never writes on the auto path land in default,
+    // so the sum still equals evaluated — which is why the reconciliation with the
+    // band-qualified figures holds on proxy-written rows only.
+    const banded = { cost: 0.001, at, structuralScore: 0.7, structuralBandSource: 'threshold' };
+    await seedLog(H, { ...banded, layer: 'explicit', structuralBand: 'high' });
+    await seedLog(H, { ...banded, layer: 'header', structuralBand: 'ambiguous' });
+    const body = (await q('auto', H, { ...RANGE, bucket: 'day' })).body;
+    expect(body.evaluated).toBe(2);
+    expect(body.exits).toEqual({ ...ZERO_EXITS, default: 2 });
+    expect(exitSum(body.exits)).toBe(body.evaluated);
+    expect(body.bands.high.unroutable + body.bands.low.unroutable + body.fallthrough).toBe(0);
+    expectExitsAdditive(body);
   });
 
   it('auto: per-agent signal quality — binned modal, tri-state verdicts, label-safe foreign id, half-open boundary (add-auto-signal-honesty)', async () => {
@@ -1495,6 +1689,24 @@ describe('analytics API (#17)', () => {
         }[]
       ).find((r) => r.agentId === xa)!;
       expect(sq).toMatchObject({ bandedRows: 8, ambiguousRows: 3 });
+      // Exits (redesign-auto-routing-pipeline): all four claims exit at the workload
+      // stage — the claimed HIGH that bands.high still counts included — one structural
+      // route, and three defaults (the two unroutable highs + the `none` fall-through).
+      expect(body.exits).toEqual({
+        workload: 4,
+        structural: 1,
+        semantic: 0,
+        cascade: 0,
+        default: 3,
+      });
+      expect(exitSum(body.exits)).toBe(8);
+      expect(body.exits.workload).toBe(
+        [...by.values()].reduce((a, c) => a + (c['routed'] as number), 0),
+      );
+      expect(body.exits.default).toBe(
+        body.bands.high.unroutable + body.bands.low.unroutable + body.fallthrough,
+      );
+      expectExitsAdditive(body);
     });
 
     it('listing: layer=workload returns exactly the claimed rows; calibrationStats is byte-identical with and without them', async () => {

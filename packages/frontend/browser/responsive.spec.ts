@@ -45,29 +45,71 @@ async function open(page: Page, hash = '', query = ''): Promise<void> {
   await page.waitForSelector('[data-pane="sidebar"]');
 }
 
-/** Switch the Routing page's rail to a section (section-routing-rail). Its cards MOUNT
- * AND UNMOUNT with the section, so a test asserting on a Tuning or Rules card must
- * switch first — otherwise it fails as a `waitForSelector` TIMEOUT on an element that
- * is simply not in the DOM, which reads like flake and is not. */
-async function openRoutingSection(page: Page, label: string): Promise<void> {
+/** The Routing page's two tabs (redesign-auto-routing-pipeline D1–D3), in the order the
+ * tab control offers them. */
+const ROUTING_TABS = ['Tiers & headers', 'Auto routing'] as const;
+type RoutingTab = (typeof ROUTING_TABS)[number];
+
+/** The five stages with a detail — every stage except Confident band, which links to the
+ * Targets matrix instead (D8). */
+const EXPANDABLE_STAGES = ['Classify', 'Workload claim', 'Semantic', 'Cascade', 'Default'] as const;
+type StageName = (typeof EXPANDABLE_STAGES)[number];
+
+/** Switch the Routing page to a tab. Each tab MOUNTS AND UNMOUNTS with the switch (D4),
+ * so a test asserting on Auto routing content must switch first — otherwise it fails as
+ * a `waitForSelector` TIMEOUT on an element that is simply not in the DOM, which reads
+ * like flake and is not. Scoped to the tab control's own group, so it can never hit the
+ * range selector, which is the same `Segmented` control. */
+async function openRoutingSection(page: Page, label: RoutingTab): Promise<void> {
   const seg = page
     .locator('[data-testid="routing-sections"] .rs-seg')
     .filter({ hasText: new RegExp(`^${label}$`) });
   await seg.waitFor({ state: 'visible' });
   await seg.click();
-  await expect(seg, `Routing section "${label}" did not become active`).toHaveAttribute(
+  await expect(seg, `Routing tab "${label}" did not become active`).toHaveAttribute(
     'aria-pressed',
     'true',
   );
 }
 
+/** Open one stage's detail on the Auto routing tab and wait for it to render. Stages
+ * start collapsed and their details mount only when opened, so a test reading a
+ * detail's content must expand it first. */
+async function expandStage(page: Page, name: StageName): Promise<void> {
+  const btn = page.locator(`button.ar-expander[aria-label="${name} details"]`);
+  await btn.waitFor({ state: 'visible' });
+  if ((await btn.getAttribute('aria-expanded')) !== 'true') await btn.click();
+  await expect(btn, `stage "${name}" did not expand`).toHaveAttribute('aria-expanded', 'true');
+  const id = await btn.getAttribute('aria-controls');
+  expect(id, `stage "${name}" names no detail`).not.toBeNull();
+  await page.locator(`[id="${id ?? ''}"]`).waitFor({ state: 'visible' });
+}
+
+/** Open every stage's detail, asserting there are EXACTLY five expanders. The count is
+ * the point: the sweeps only measure rendered DOM, so a stage that lost its expander —
+ * or a sweep that quietly stopped expanding — would otherwise shrink the measured
+ * surface and still report green. */
+async function expandAllStages(page: Page): Promise<void> {
+  await page.waitForSelector('[data-testid="pipeline-stage"]');
+  const expanders = page.locator('button.ar-expander');
+  await expect(
+    expanders,
+    'Auto routing must offer exactly five stage expanders — the sweep would otherwise measure a collapsed tab',
+  ).toHaveCount(EXPANDABLE_STAGES.length);
+  for (const name of EXPANDABLE_STAGES) await expandStage(page, name);
+  await expect(page.locator('[data-testid="stage-detail"]')).toHaveCount(EXPANDABLE_STAGES.length);
+  // Measure settled figures, not the loading placeholders a detail shows first.
+  await expect(page.locator('[data-testid="detail-loading"]')).toHaveCount(0);
+}
+
 /** Every distinct rendered state of a page that the all-page sweeps must measure.
- * Only `routing` has more than one: sectioning its rail (section-routing-rail) means
- * the initially-rendered DOM is Auto ALONE — no Auto-performance range control, no
- * calibration or learning actions, no header-rules inputs. A sweep that measures only
- * what `goto` paints would silently shrink to Auto and stop guarding the rest, which
- * is exactly the failure the comfort-target sweep exists to prevent (see :197).
- * Yields a label per state, with the page already switched to it. */
+ * Only `routing` has more than one: its tabs (redesign-auto-routing-pipeline) unmount
+ * whichever one is not shown, and Auto routing's stage details mount only when opened.
+ * A sweep that measured only what `goto` paints would silently shrink to Tiers &
+ * headers — no pipeline, no stage detail, no Targets matrix — which is exactly the
+ * failure the comfort-target sweep exists to prevent. So every tab is visited, and on
+ * Auto routing every stage is expanded. Yields a label per state, with the page
+ * already switched to it. */
 async function* pageStates(page: Page, name: string): AsyncGenerator<string> {
   await page.goto(`/browser-harness.html#/${name}`);
   await page.waitForSelector('html[data-harness-ready="true"]');
@@ -76,18 +118,18 @@ async function* pageStates(page: Page, name: string): AsyncGenerator<string> {
       (b.textContent ?? '').trim(),
     ),
   );
-  if (sections.length === 0) {
-    // Not a silent fallback on `routing`: if the rail's testid is renamed the sweeps
-    // would quietly go back to measuring Auto alone and still report green — the exact
-    // vacuous pass this generator exists to prevent.
-    expect(name, 'the Routing rail exposes no sections — the sweep would cover Auto only').not.toBe(
-      'routing',
-    );
+  if (name !== 'routing') {
+    expect(sections, `${name} unexpectedly renders the Routing tab control`).toEqual([]);
     yield name;
     return;
   }
-  for (const label of sections) {
+  // Not a silent fallback: if the tab control's testid or labels change, the sweeps
+  // would quietly go back to measuring the landing tab alone and still report green —
+  // the exact vacuous pass this generator exists to prevent.
+  expect(sections, 'the Routing tab control does not offer both tabs').toEqual([...ROUTING_TABS]);
+  for (const label of ROUTING_TABS) {
     await openRoutingSection(page, label);
+    if (label === 'Auto routing') await expandAllStages(page);
     yield `${name}/${label}`;
   }
 }
@@ -328,9 +370,17 @@ test.describe('phone width', () => {
   test('the switch meets the floor by hit area, not by its box', async ({ page }) => {
     // Its 30x17 visual is locked design. Conformance therefore has to be established by
     // hit-testing — measuring the rectangle would report a false failure.
+    //
+    // The auto-layer switches live on the Auto routing tab, which a visit does not land
+    // on (D2) — so the tab is opened first and the switch is taken from the pipeline, never
+    // "the first `.toggle` on the page", which on Tiers & headers is not a layer switch.
     await open(page, '#/routing');
+    await openRoutingSection(page, 'Auto routing');
+    const sw = page.locator('[data-testid="auto-pipeline"] .ar-switch .toggle').first();
+    await sw.waitFor({ state: 'visible' });
+    await sw.scrollIntoViewIfNeeded();
     const hit = await page.evaluate(() => {
-      const t = document.querySelector('.toggle');
+      const t = document.querySelector('[data-testid="auto-pipeline"] .ar-switch .toggle');
       if (!t) return null;
       const r = t.getBoundingClientRect();
       const owns = (dx: number, dy: number): boolean => {
@@ -411,32 +461,38 @@ test.describe('desktop width, fine pointer', () => {
     //
     // 24, not the 44px comfort target: 44 is `target-comfort`, which the lock scopes to
     // below `narrow` and to coarse pointers. Desktop with a mouse is held to the base floor.
+    //
+    // Every rendered state, as the phone sweep does: Routing lands on Tiers & headers, so
+    // a plain `goto` would never measure the pipeline, its stage details or the Targets
+    // matrix's pickers at desktop width.
     for (const name of PAGES) {
-      await page.goto(`/browser-harness.html#/${name}`);
-      await page.waitForSelector('html[data-harness-ready="true"]');
-      const small = await page.evaluate(() => {
-        const out: string[] = [];
-        // Semantic, matching the phone-width test — a class list only ever covers controls
-        // somebody remembered to class.
-        for (const el of document.querySelectorAll<HTMLElement>(
-          'button, a[href], input, select, textarea, [role="menuitem"]',
-        )) {
-          const r = el.getBoundingClientRect();
-          if (r.width === 0 || r.height === 0) continue; // not rendered in this state
-          // The same locked exceptions the phone-width assertion carries.
-          if (el.classList.contains('toggle')) continue;
-          if (el instanceof HTMLInputElement && (el.type === 'checkbox' || el.type === 'radio'))
-            continue;
-          if (r.height < 24 || r.width < 24) {
-            out.push(
-              `${el.tagName}.${el.className.toString().split(/\s+/)[0] ?? ''}` +
-                ` ${String(Math.round(r.width))}x${String(Math.round(r.height))}`,
-            );
+      for await (const state of pageStates(page, name)) {
+        const small = await page.evaluate(() => {
+          const out: string[] = [];
+          // Semantic, matching the phone-width test — a class list only ever covers controls
+          // somebody remembered to class.
+          for (const el of document.querySelectorAll<HTMLElement>(
+            'button, a[href], input, select, textarea, [role="menuitem"]',
+          )) {
+            const r = el.getBoundingClientRect();
+            if (r.width === 0 || r.height === 0) continue; // not rendered in this state
+            // The same locked exceptions the phone-width assertion carries.
+            if (el.classList.contains('toggle')) continue;
+            if (el instanceof HTMLInputElement && (el.type === 'checkbox' || el.type === 'radio'))
+              continue;
+            if (r.height < 24 || r.width < 24) {
+              out.push(
+                `${el.tagName}.${el.className.toString().split(/\s+/)[0] ?? ''}` +
+                  ` ${String(Math.round(r.width))}x${String(Math.round(r.height))}`,
+              );
+            }
           }
-        }
-        return out;
-      });
-      expect(small, `controls under the 24px base floor on ${name} at desktop width`).toEqual([]);
+          return out;
+        });
+        expect(small, `controls under the 24px base floor on ${state} at desktop width`).toEqual(
+          [],
+        );
+      }
     }
   });
 
@@ -859,12 +915,19 @@ async function workloadRowTexts(page: Page): Promise<string[]> {
 
 const ROW = '[data-testid="workload-row"]';
 
+/** The workload mix lives in the Workload claim stage's detail on the Auto routing tab
+ * (redesign-auto-routing-pipeline D8): open the tab, then that stage. */
+async function openWorkloadMix(page: Page): Promise<void> {
+  await openRoutingSection(page, 'Auto routing');
+  await expandStage(page, 'Workload claim');
+}
+
 test.describe('Workload-mix rows at phone width', () => {
   test.use({ viewport: { width: 320, height: 568 } });
 
   test('the default fixture rows stay inside the pane, whole and unclipped', async ({ page }) => {
     await open(page, '#/routing');
-    await openRoutingSection(page, 'Tuning'); // the mix lives in Auto performance
+    await openWorkloadMix(page);
     await page.waitForSelector(ROW);
     const geom = await paneOverflow(page, ROW);
     const texts = await workloadRowTexts(page);
@@ -884,7 +947,7 @@ test.describe('Workload-mix rows at phone width', () => {
 
   test('every pricing / routing state stays inside the pane', async ({ page }) => {
     await open(page, '#/routing', '?workload=boundary');
-    await openRoutingSection(page, 'Tuning');
+    await openWorkloadMix(page);
     await page.waitForSelector(ROW);
     const geom = await paneOverflow(page, ROW);
     const texts = await workloadRowTexts(page);
@@ -912,7 +975,7 @@ test.describe('Workload-mix rows at phone width', () => {
 
   test('the attempt-only state renders its row and note inside the pane', async ({ page }) => {
     await open(page, '#/routing', '?workload=attempt-only');
-    await openRoutingSection(page, 'Tuning');
+    await openWorkloadMix(page);
     await page.waitForSelector('[data-testid="workload-mix"]');
     const note = await page.locator('[data-testid="workload-mix-attempt-only"]').textContent();
     expect(note, 'the attempt-only disclosure must render, not the empty affordance').toContain(
@@ -947,7 +1010,7 @@ for (const vp of [
       page,
     }) => {
       await open(page, '#/routing');
-      await openRoutingSection(page, 'Tuning');
+      await openWorkloadMix(page);
       await page.waitForSelector('[data-testid="workload-row"]');
       const rows = await page.evaluate(() =>
         [...document.querySelectorAll('[data-testid="workload-row"]')].map((row) => {
@@ -988,3 +1051,306 @@ for (const vp of [
     });
   });
 }
+
+/** The Targets matrix (redesign-auto-routing-pipeline D9, task 7.2), measured on its
+ * worst case: `?targets=1` puts every cell state on screen at once — the long model id
+ * and provider label, a tier with fallbacks, shadowed and unresolved rules, an empty-tier
+ * claim — over a catalog whose labels push every picker to its 220px cap. Below
+ * `table-fit-targets` each row must become a stacked record; these prove it does at the
+ * WCAG reflow width, and that its field labels are real text rather than paint. */
+const MATRIX_COLUMNS = ['claim', 'strong', 'cheap'] as const;
+const MATRIX_ROWS = 6; // "Any request" + code, vision, structured, research, writing
+
+async function openTargetsMatrix(page: Page): Promise<void> {
+  await open(page, '#/routing', '?targets=1');
+  await openRoutingSection(page, 'Auto routing');
+  // The whole tab, details included: an overflow the matrix causes and one a stage
+  // detail causes look the same from the document's side.
+  await expandAllStages(page);
+  await page.locator('[data-testid="targets-matrix"]').waitFor({ state: 'visible' });
+  await expect(page.locator('[data-testid="targets-row"]')).toHaveCount(MATRIX_ROWS);
+}
+
+test.describe('Targets matrix at the reflow width (?targets=1)', () => {
+  test.use({ viewport: { width: 320, height: 568 } });
+
+  test('the worst-case matrix does not overflow the document or its pane', async ({ page }) => {
+    await openTargetsMatrix(page);
+    const overflow = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+    }));
+    expect(
+      overflow.scrollWidth,
+      `the Targets matrix overflows at 320x568 (${String(overflow.scrollWidth)} > ${String(overflow.clientWidth)})`,
+    ).toBeLessThanOrEqual(overflow.clientWidth + 1);
+    // Glyphs as well as boxes: a long model id spilling a cell whose own box fits would
+    // pass the document check above.
+    const geom = await paneOverflow(page, '[data-testid="targets-matrix"]');
+    expect(geom.count).toBe(1);
+    expect(geom.escapes, 'Targets matrix content escapes the pane at 320px').toEqual([]);
+  });
+
+  test('every stacked field carries a real, visible label element', async ({ page }) => {
+    await openTargetsMatrix(page);
+    const shape = await page.evaluate(() => {
+      const head = document.querySelector('.tm-head');
+      const rows = [...document.querySelectorAll<HTMLElement>('[data-testid="targets-row"]')];
+      const problems: string[] = [];
+      const fields: { row: string; column: string; label: string }[] = [];
+      const generated = (el: Element): boolean =>
+        ['::before', '::after'].some((p) => {
+          const c = getComputedStyle(el, p).content;
+          return c !== 'none' && c !== 'normal' && c !== '""';
+        });
+      for (const row of rows) {
+        const id = row.dataset['row'] ?? '?';
+        const grid = row.querySelector(':scope > .rs-grid-targets');
+        const display = grid ? getComputedStyle(grid).display : 'missing';
+        if (display !== 'block') problems.push(`${id}: row grid is ${display}, not stacked`);
+        const cells = row.querySelectorAll<HTMLElement>(
+          '[data-testid="targets-cell"], [data-testid="targets-detected"]',
+        );
+        for (const cell of cells) {
+          const column =
+            cell.dataset['testid'] === 'targets-detected'
+              ? 'detected'
+              : (cell.dataset['column'] ?? '?');
+          const label = cell.querySelector(':scope > .tm-label');
+          if (!label) {
+            problems.push(`${id}/${column}: no label element`);
+            continue;
+          }
+          const text = (label.textContent ?? '').replace(/\s+/g, ' ').trim();
+          const s = getComputedStyle(label);
+          const r = label.getBoundingClientRect();
+          const c = cell.getBoundingClientRect();
+          // Real: a DOM element with its own text — not a pseudo-element, not an
+          // aria-label — laid out in flow at a readable size, inside its own cell.
+          if (text.length === 0) problems.push(`${id}/${column}: empty label`);
+          if (generated(label) || generated(cell))
+            problems.push(`${id}/${column}: label text is generated content`);
+          if (s.position !== 'static') problems.push(`${id}/${column}: label is ${s.position}`);
+          if (s.display === 'none' || s.visibility !== 'visible')
+            problems.push(`${id}/${column}: label is hidden`);
+          const clip = s.getPropertyValue('clip');
+          if (clip !== 'auto' || s.overflow !== 'visible')
+            problems.push(
+              `${id}/${column}: label is clipped (clip=${clip}, overflow=${s.overflow})`,
+            );
+          if (r.width < 20 || r.height < 8)
+            problems.push(`${id}/${column}: label is ${String(r.width)}x${String(r.height)}`);
+          if (r.left < c.left - 0.5 || r.right > c.right + 0.5 || r.top < c.top - 0.5)
+            problems.push(`${id}/${column}: label sits outside its cell`);
+          fields.push({ row: id, column, label: text });
+        }
+      }
+      return {
+        head: head ? getComputedStyle(head).display : null,
+        rows: rows.length,
+        fields,
+        problems: problems.slice(0, 12),
+      };
+    });
+    // Stacked: the column header goes, so the per-field labels are the only names left.
+    expect(shape.head, 'the column header still shows in the stacked layout').toBe('none');
+    expect(shape.rows).toBe(MATRIX_ROWS);
+    expect(shape.problems, 'stacked matrix labels').toEqual([]);
+    // Every field of every row is labelled — three targets and the detected count — and
+    // each label names its own column, rule id included.
+    expect(shape.fields).toHaveLength(MATRIX_ROWS * (MATRIX_COLUMNS.length + 1));
+    const want: Record<string, RegExp> = {
+      claim: /^Claim auto_workload$/,
+      strong: /^Strong auto_high$/,
+      cheap: /^Cheap auto_low$/,
+      detected: /^Detected · \w+$/,
+    };
+    for (const f of shape.fields) {
+      expect(f.label, `${f.row}/${f.column} label`).toMatch(want[f.column] ?? /^$/);
+    }
+  });
+});
+
+test.describe('Targets matrix above table-fit-targets (?targets=1)', () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  test('stays a grid under its header, with the field labels read but not shown', async ({
+    page,
+  }) => {
+    // The other side of the threshold: at 1440 the matrix's content box clears 940px, so
+    // the query must NOT fire. The labels stay in the DOM — every picker keeps one
+    // accessible name at every width — but are visually hidden behind the header.
+    await openTargetsMatrix(page);
+    const shape = await page.evaluate(() => {
+      const head = document.querySelector('.tm-head');
+      const row = document.querySelector('[data-testid="targets-row"] > .rs-grid-targets');
+      const labels = [...document.querySelectorAll('[data-testid="targets-row"] .tm-label')];
+      return {
+        head: head ? getComputedStyle(head).display : null,
+        row: row ? getComputedStyle(row).display : null,
+        labels: labels.length,
+        shown: labels.filter((l) => l.getBoundingClientRect().width > 1).length,
+        empty: labels.filter((l) => (l.textContent ?? '').trim().length === 0).length,
+      };
+    });
+    expect(shape.head).toBe('grid');
+    expect(shape.row).toBe('grid');
+    expect(shape.labels).toBe(MATRIX_ROWS * (MATRIX_COLUMNS.length + 1));
+    expect(shape.empty, 'a field label lost its text').toBe(0);
+    expect(shape.shown, 'field labels show beside the column header at desktop').toBe(0);
+  });
+});
+
+/** Geometry of every pipeline stage row, for the narrow wrap and the desktop one-liner.
+ * Measured from the row's own children, which are flat flex items at every width. */
+async function stageRowGeometry(page: Page) {
+  return page.evaluate(() =>
+    [...document.querySelectorAll<HTMLElement>('[data-testid="pipeline-stage"]')].map((li) => {
+      const row = li.querySelector('.ar-row');
+      const box = (sel: string) => {
+        const el = row?.querySelector(sel);
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return r.width === 0 && r.height === 0
+          ? null
+          : { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width };
+      };
+      // The layer tag's line count: one fragment per line it occupies.
+      const tag = row?.querySelector('.ar-name .mono');
+      let tagLines = 0;
+      if (tag) {
+        const range = document.createRange();
+        range.selectNodeContents(tag);
+        tagLines = new Set([...range.getClientRects()].map((r) => Math.round(r.top))).size;
+      }
+      return {
+        stage: li.dataset['stage'] ?? '?',
+        num: box('.ar-num'),
+        name: box('.ar-name'),
+        nameScroll: row?.querySelector('.ar-name')?.scrollWidth ?? 0,
+        nameClient: row?.querySelector('.ar-name')?.clientWidth ?? 0,
+        sw: box('.ar-switch'),
+        count: box('.ar-count'),
+        setup: box('.ar-setup'),
+        action: box('.ar-action'),
+        tagLines,
+      };
+    }),
+  );
+}
+
+for (const vp of [
+  { name: '320x568', width: 320, height: 568 },
+  { name: '390x844', width: 390, height: 844 },
+] as const) {
+  test.describe(`Pipeline stage rows wrap cleanly @ ${vp.name}`, () => {
+    test.use({ viewport: { width: vp.width, height: vp.height } });
+
+    test('number, name and switch share line one; the rest wraps below', async ({ page }) => {
+      // The shipped defect: the name block was a `flex: 1 1 0` item that the figure and
+      // the expander out-claimed, so at 390px the Classify name kept 23px — its tag broke
+      // one word per line and "Structural" ran under the switch.
+      await open(page, '#/routing');
+      await openRoutingSection(page, 'Auto routing');
+      const rows = await stageRowGeometry(page);
+      expect(rows).toHaveLength(6);
+      for (const r of rows) {
+        const at = `stage ${r.stage} at ${vp.name}`;
+        expect(
+          r.num && r.name && r.sw && r.setup && r.action,
+          `${at}: a part is missing`,
+        ).toBeTruthy();
+        if (!r.num || !r.name || !r.sw || !r.setup || !r.action) continue;
+        // Line one: the name block keeps the line's width, never a sliver of it …
+        expect(r.name.width, `${at}: the name block is squeezed`).toBeGreaterThanOrEqual(100);
+        expect(r.nameScroll, `${at}: the name spills its block`).toBeLessThanOrEqual(
+          r.nameClient + 1,
+        );
+        expect(r.tagLines, `${at}: the layer tag breaks word by word`).toBeLessThanOrEqual(2);
+        // … the switch sits beside it, on the same line and clear of it.
+        expect(r.sw.left, `${at}: the switch overlaps the name`).toBeGreaterThanOrEqual(
+          r.name.right - 0.5,
+        );
+        expect(
+          r.sw.top <= r.name.bottom && r.sw.bottom >= r.name.top,
+          `${at}: the switch left line one`,
+        ).toBe(true);
+        // The figure, the setup and the expander all start below line one.
+        const lineOne = Math.max(r.name.bottom, r.num.bottom);
+        if (r.count)
+          expect(r.count.top, `${at}: the figure joined line one`).toBeGreaterThanOrEqual(
+            lineOne - 0.5,
+          );
+        expect(r.action.top, `${at}: the expander joined line one`).toBeGreaterThanOrEqual(
+          lineOne - 0.5,
+        );
+        expect(r.setup.top, `${at}: the setup joined line one`).toBeGreaterThanOrEqual(
+          lineOne - 0.5,
+        );
+      }
+    });
+
+    test('the Layer-0 note keeps an even line rhythm around its link', async ({ page }) => {
+      // Its "Tiers & headers" button keeps the 44px comfort floor on its box; before the
+      // fix that box also set its LINE's height, so the sentence read with one ragged gap.
+      await open(page, '#/routing');
+      await openRoutingSection(page, 'Auto routing');
+      const m = await page.evaluate(() => {
+        const note = document.querySelector('[data-testid="layer0-note"]');
+        if (!note) return null;
+        const tops = new Set<number>();
+        const walker = document.createTreeWalker(note, NodeFilter.SHOW_TEXT);
+        for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+          if (!(n.textContent ?? '').trim()) continue;
+          const range = document.createRange();
+          range.selectNodeContents(n);
+          for (const r of range.getClientRects()) tops.add(Math.round(r.top));
+        }
+        // Fragments of one line can differ by a pixel (mono vs sans); fold them.
+        const lines = [...tops]
+          .sort((a, b) => a - b)
+          .filter((t, i, a) => i === 0 || t - a[i - 1]! > 3);
+        const btn = note.querySelector('button');
+        return {
+          gaps: lines.slice(1).map((t, i) => t - lines[i]!),
+          btn: btn ? btn.getBoundingClientRect().height : 0,
+        };
+      });
+      expect(m, 'no Layer-0 note').not.toBeNull();
+      expect(m!.gaps.length, 'the note should wrap at phone width').toBeGreaterThan(0);
+      expect(m!.btn, 'the link lost its comfort target').toBeGreaterThanOrEqual(44);
+      const spread = Math.max(...m!.gaps) - Math.min(...m!.gaps);
+      expect(spread, `uneven note lines: ${m!.gaps.join(', ')}`).toBeLessThanOrEqual(1);
+    });
+  });
+}
+
+test.describe('Pipeline stage rows at desktop', () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  test('each row stays one line of columns', async ({ page }) => {
+    // The narrow wrap must not reach desktop: there every part of a row sits side by side,
+    // in DOM order, on one line.
+    await open(page, '#/routing');
+    await openRoutingSection(page, 'Auto routing');
+    const rows = await stageRowGeometry(page);
+    expect(rows).toHaveLength(6);
+    for (const r of rows) {
+      const parts = [r.num, r.name, r.sw, r.count, r.setup, r.action].filter(
+        (p): p is NonNullable<typeof p> => p !== null,
+      );
+      for (let i = 1; i < parts.length; i++) {
+        const a = parts[i - 1]!;
+        const b = parts[i]!;
+        expect(b.left, `stage ${r.stage}: part ${String(i)} wrapped or reordered`).toBeGreaterThan(
+          a.left,
+        );
+        expect(
+          b.top < a.bottom && a.top < b.bottom,
+          `stage ${r.stage}: part ${String(i)} left the row's line`,
+        ).toBe(true);
+      }
+      expect(r.name?.width, `stage ${r.stage}: the name column moved`).toBe(200);
+    }
+  });
+});

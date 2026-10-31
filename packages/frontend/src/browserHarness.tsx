@@ -370,6 +370,32 @@ const CHAIN_MODELS = TIER_ENTRIES.map((e, i) => ({
   unlistedSince: null,
 }));
 
+// `?bodies=1` (compact-settings-layout): capture on, with enough agents for the override
+// grid to have more than one row and column to measure. Opt-in, so the default Settings
+// baseline (one agent, capture off) is untouched.
+const BODY_CAPTURE_AGENTS = [
+  'Eigent',
+  'Warp',
+  'Zed',
+  'BrowserOS',
+  'markus',
+  'Lobechat',
+  'Cline',
+  'Aider',
+].map((name, i) => ({ id: `bc-agent-${String(i)}`, name, override: null }));
+const bodyCaptureStatus =
+  params.get('bodies') === '1'
+    ? {
+        mode: 'all' as const,
+        retentionDays: 30,
+        droppedCount: 0,
+        lastPurgeAt: null,
+        lastPurgeCount: 0,
+        available: true,
+        agents: BODY_CAPTURE_AGENTS,
+      }
+    : undefined;
+
 const autoPerf = workloadAutoPerf();
 const client = new FakeApiClient({
   agents: AGENTS,
@@ -380,6 +406,7 @@ const client = new FakeApiClient({
     ? { tierEntries: { 'tier-default': TIER_ENTRIES }, models: { p1: CHAIN_MODELS } }
     : {}),
   ...(autoPerf ? { autoPerf } : {}),
+  ...(bodyCaptureStatus ? { bodyCaptureStatus } : {}),
 });
 // Budget-progress fixtures are opt-in; the existing layout baselines retain their data.
 if (params.has('budget')) {

@@ -21,6 +21,7 @@ heading is started.
 
 ### Changed
 
+- **Settings uses the width of the screen.** The page is no longer capped at 760px: the Instance summary runs across the top, Prompt & response bodies sits beside Notifications and the Pricing catalog, and the agent overrides flow in columns at content width instead of one full-width bar each. Panels stack in the same order at phone width. No setting or behavior changed.
 - **The Routing page follows the proxy's order.** Two tabs replace the Auto / Tuning / Rules rail: Tiers & headers (chains and header rules) and Auto routing, a numbered six-stage pipeline with per-stage counts whose details hold the former Auto performance, self-calibration, and semantic learning cards. A Targets matrix shows every band and workload target at once, measured figures get loading, failure (with Retry), and zero-traffic states, and `GET /api/analytics/auto` adds disjoint per-stage `exits`.
 
 ### Fixed

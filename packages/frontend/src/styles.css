@@ -1110,6 +1110,25 @@ select:focus {
 .rs-grid-main-side {
   grid-template-columns: 1fr 300px;
 }
+/* Settings' per-agent override cells flow in as many columns as fit (compact-settings-layout).
+   Self-adapting, so it needs no entry in the narrow block. `min(220px, 100%)` lets a track
+   shrink to a container narrower than one cell instead of overflowing it. It is a class, not
+   an inline template, because an inline declaration outranks any class and responsive.test.ts
+   forbids it at these sites. */
+.rs-grid-fit {
+  grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr));
+}
+/* Short-choice selects take their content's width instead of their panel's. Declared after
+   `.select` (width: 100%) so they win at equal specificity; `max-width: 100%` is the cap that
+   keeps a fixed width honourable on a phone. */
+.rs-select-md {
+  width: 150px;
+  max-width: 100%;
+}
+.rs-select-sm {
+  width: 112px;
+  max-width: 100%;
+}
 
 /* Baseline hit target — every width, no exceptions. WCAG 2.5.8 AA is 24px; several
    controls shipped at 19–27px. This is the ONLY floor that touches desktop, because an

@@ -1354,3 +1354,216 @@ test.describe('Pipeline stage rows at desktop', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------------------
+// Settings layout (compact-settings-layout). The Settings page was a 760px column of four
+// stacked panels with a near-full-width <select> per agent; it now uses the standard 1200px
+// container and, above the narrow threshold, two columns under a full-width Instance strip.
+// Everything here runs against `?bodies=1`: capture on and eight agents, so the override grid
+// has rows and columns to measure. With the default fixture (one agent, capture off) most of
+// these assertions would pass for the wrong reason.
+// ---------------------------------------------------------------------------------------
+
+async function openSettings(page: Page): Promise<void> {
+  await open(page, '#/settings', '?bodies=1');
+  await page.waitForSelector('[data-testid="instance-strip"]');
+  await page.waitForSelector('select[aria-label^="Capture override for"]');
+}
+
+/** Rendered box of the Settings panel carrying exactly this title. */
+async function settingsPanel(page: Page, title: string) {
+  const panel = page
+    .locator('.rs-page .panel')
+    .filter({ has: page.locator('.section-title', { hasText: new RegExp(`^\\s*${title}\\s*$`) }) })
+    .first();
+  const box = await panel.boundingBox();
+  expect(box, `the "${title}" panel did not render`).not.toBeNull();
+  return box!;
+}
+
+async function overrideSelectBoxes(page: Page) {
+  const boxes = await page
+    .locator('select[aria-label^="Capture override for"]')
+    .evaluateAll((els) =>
+      els.map((e) => {
+        const r = e.getBoundingClientRect();
+        return { x: r.x, y: r.y, width: r.width, height: r.height };
+      }),
+    );
+  expect(boxes, 'the fixture must render all eight agents').toHaveLength(8);
+  return boxes;
+}
+
+for (const vp of MATRIX) {
+  test.describe(`Settings layout @ ${vp.name}`, () => {
+    test.use({ viewport: { width: vp.width, height: vp.height } });
+
+    test('does not overflow the document or its pane, and every control meets its floor', async ({
+      page,
+    }) => {
+      await openSettings(page);
+      const overflow = await page.evaluate(() => ({
+        scrollWidth: document.documentElement.scrollWidth,
+        clientWidth: document.documentElement.clientWidth,
+      }));
+      expect(overflow.scrollWidth, `Settings overflows at ${vp.name}`).toBeLessThanOrEqual(
+        overflow.clientWidth + 1,
+      );
+      const escapes = await page.evaluate(() => {
+        const pane = document.querySelector('[data-pane="content"]');
+        if (!pane) return ['no content pane'];
+        const right = pane.getBoundingClientRect().right;
+        const out: string[] = [];
+        for (const el of pane.querySelectorAll('*')) {
+          const s = getComputedStyle(el);
+          if (s.position === 'fixed' || s.position === 'absolute') continue;
+          const r = el.getBoundingClientRect();
+          if (r.width === 0) continue;
+          if (r.right > right + 1)
+            out.push(`${el.tagName} over=${String(Math.round(r.right - right))}`);
+        }
+        return out;
+      });
+      expect(escapes, `in-flow Settings content escapes its pane at ${vp.name}`).toEqual([]);
+      // 24px at every width; 44px in the block axis at or below the narrow threshold.
+      const floor = vp.width <= 768 ? 44 : 24;
+      const small = await page.evaluate((min) => {
+        const out: string[] = [];
+        for (const el of document.querySelectorAll<HTMLElement>(
+          '[data-pane="content"] button, [data-pane="content"] select, [data-pane="content"] a[href]',
+        )) {
+          if (el.classList.contains('toggle')) continue;
+          const r = el.getBoundingClientRect();
+          if (r.width === 0 || r.height === 0) continue;
+          if (r.height + 0.5 < min) out.push(`${el.tagName} ${String(Math.round(r.height))}px`);
+        }
+        return out;
+      }, floor);
+      expect(small, `Settings controls under ${String(floor)}px at ${vp.name}`).toEqual([]);
+
+      // The sweeps skip bare radios (a locked exception), so the mode options carry their own
+      // 24px floor on the LABEL; nothing else would notice it shrinking back to ~16px.
+      const labelHeights = await page
+        .locator('[role="radiogroup"][aria-label="Capture mode"] label')
+        .evaluateAll((els) => els.map((e) => e.getBoundingClientRect().height));
+      expect(labelHeights, 'the three mode options must render').toHaveLength(3);
+      for (const h of labelHeights) {
+        expect(
+          h + 0.5,
+          `a mode option label is ${String(h)}px tall at ${vp.name}`,
+        ).toBeGreaterThanOrEqual(24);
+      }
+    });
+  });
+}
+
+test.describe('Settings layout: wide', () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  test('uses the standard page width, as wide as another page, and wider than 760px', async ({
+    page,
+  }) => {
+    await openSettings(page);
+    const settings = await page.locator('.rs-page').first().boundingBox();
+    await page.goto('/browser-harness.html#/agents');
+    await page.waitForSelector('html[data-harness-ready="true"]');
+    const agents = await page.locator('.rs-page').first().boundingBox();
+    expect(settings!.width, 'Settings kept its 760px cap').toBeGreaterThan(760);
+    expect(Math.abs(settings!.width - agents!.width)).toBeLessThanOrEqual(1);
+  });
+
+  test('two columns under a full-width Instance strip: Bodies left; Notifications over Pricing right', async ({
+    page,
+  }) => {
+    await openSettings(page);
+    const instance = await settingsPanel(page, 'Instance');
+    const bodies = await settingsPanel(page, 'Prompt & response bodies');
+    const notify = await settingsPanel(page, 'Notifications');
+    const pricing = await settingsPanel(page, 'Pricing catalog');
+
+    // Instance spans both columns and sits above them.
+    expect(instance.width).toBeGreaterThanOrEqual(bodies.width + notify.width);
+    expect(bodies.y).toBeGreaterThanOrEqual(instance.y + instance.height - 1);
+    expect(notify.y).toBeGreaterThanOrEqual(instance.y + instance.height - 1);
+    // Bodies is a column to the LEFT of the right-hand panels, and they share a top edge.
+    expect(bodies.x + bodies.width).toBeLessThanOrEqual(notify.x + 1);
+    expect(Math.abs(bodies.y - notify.y)).toBeLessThanOrEqual(1);
+    // Notifications and Pricing stack in the right column, same left edge and width.
+    expect(pricing.y).toBeGreaterThanOrEqual(notify.y + notify.height - 1);
+    expect(Math.abs(pricing.x - notify.x)).toBeLessThanOrEqual(1);
+    expect(Math.abs(pricing.width - notify.width)).toBeLessThanOrEqual(1);
+  });
+
+  test('the page is shorter than one tall bar per agent would make it', async ({ page }) => {
+    await openSettings(page);
+    const bodies = await settingsPanel(page, 'Prompt & response bodies');
+    const selects = await overrideSelectBoxes(page);
+    // Eight agents in 2+ columns: strictly fewer rows than agents.
+    const rows = new Set(selects.map((s) => Math.round(s.y))).size;
+    expect(rows, 'overrides still occupy a row per agent').toBeLessThan(selects.length);
+    expect(bodies.height).toBeLessThan(560);
+  });
+
+  test('override selects take their content width and flow in more than one column', async ({
+    page,
+  }) => {
+    await openSettings(page);
+    const selects = await overrideSelectBoxes(page);
+    for (const s of selects) expect(s.width).toBeLessThanOrEqual(160);
+    const columns = new Set(selects.map((s) => Math.round(s.x))).size;
+    expect(columns, 'overrides sit in one column').toBeGreaterThanOrEqual(2);
+    const retention = await page.locator('select[aria-label="Retention"]').boundingBox();
+    expect(retention!.width).toBeLessThanOrEqual(160);
+  });
+
+  test('the mode options sit in one row', async ({ page }) => {
+    await openSettings(page);
+    const ys = await page
+      .locator('[role="radiogroup"][aria-label="Capture mode"] label')
+      .evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().y)));
+    expect(ys).toHaveLength(3);
+    expect(new Set(ys).size, 'the three mode options wrapped onto separate rows').toBe(1);
+  });
+
+  test('no second "30 days" beside the retention select', async ({ page }) => {
+    await openSettings(page);
+    const text = await page
+      .locator('select[aria-label="Retention"]')
+      .evaluate((el) => (el.parentElement?.textContent ?? '').replace(/\s+/g, ' ').trim());
+    // The select's own options are its only text; nothing trails it.
+    expect(await page.locator('select[aria-label="Retention"] ~ span').count()).toBe(0);
+    expect(text).toContain('30 days');
+  });
+});
+
+test.describe('Settings layout: at the threshold and below', () => {
+  test('at 1025px the panels are still two columns and nothing is clipped', async ({ page }) => {
+    await page.setViewportSize({ width: 1025, height: 768 });
+    await openSettings(page);
+    const bodies = await settingsPanel(page, 'Prompt & response bodies');
+    const notify = await settingsPanel(page, 'Notifications');
+    expect(bodies.x + bodies.width).toBeLessThanOrEqual(notify.x + 1);
+    expect(notify.x + notify.width).toBeLessThanOrEqual(1025);
+  });
+
+  test('at 390px the panels stack in one column in the order Instance, Bodies, Notifications, Pricing', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await openSettings(page);
+    const boxes = [
+      await settingsPanel(page, 'Instance'),
+      await settingsPanel(page, 'Prompt & response bodies'),
+      await settingsPanel(page, 'Notifications'),
+      await settingsPanel(page, 'Pricing catalog'),
+    ];
+    for (let i = 1; i < boxes.length; i += 1) {
+      expect(
+        boxes[i]!.y,
+        `panel ${String(i)} is not below panel ${String(i - 1)}`,
+      ).toBeGreaterThanOrEqual(boxes[i - 1]!.y + boxes[i - 1]!.height - 1);
+      expect(Math.abs(boxes[i]!.x - boxes[0]!.x)).toBeLessThanOrEqual(1);
+      expect(Math.abs(boxes[i]!.width - boxes[0]!.width)).toBeLessThanOrEqual(1);
+    }
+  });
+});

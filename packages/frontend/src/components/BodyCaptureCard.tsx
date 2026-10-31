@@ -81,10 +81,14 @@ export function BodyCaptureCard() {
       <Show when={bc()?.available && bc()} keyed>
         {(s) => (
           <div style="margin-top:12px;display:flex;flex-direction:column;gap:12px">
-            <div role="radiogroup" aria-label="Capture mode" style="display:flex;flex-direction:column;gap:6px">
+            <div
+              role="radiogroup"
+              aria-label="Capture mode"
+              style="display:flex;flex-wrap:wrap;gap:4px 20px"
+            >
               <For each={['off', 'errors_only', 'all'] as Mode[]}>
                 {(mode) => (
-                  <label style="display:flex;align-items:center;gap:8px;font:400 12.5px 'Geist',sans-serif;color:var(--text2);cursor:pointer">
+                  <label style="display:flex;align-items:center;gap:8px;min-height:24px;font:400 12.5px 'Geist',sans-serif;color:var(--text2);cursor:pointer">
                     <input
                       type="radio"
                       name="bc-mode"
@@ -102,7 +106,7 @@ export function BodyCaptureCard() {
               <div style="color:var(--text3)">Retention</div>
               <div style="display:flex;align-items:center;gap:8px">
                 <select
-                  class="select"
+                  class="select rs-select-md"
                   aria-label="Retention"
                   value={s.retentionDays === null ? 'forever' : String(s.retentionDays)}
                   disabled={state.bc.busy}
@@ -129,7 +133,11 @@ export function BodyCaptureCard() {
                   </For>
                   <option value="forever">keep forever…</option>
                 </select>
-                <span style="color:var(--text3)">{retentionLabel()}</span>
+                {/* "30 days" beside a select that already says "30 days" is noise; only the
+                    explicit keep-forever state carries information (compact-settings-layout). */}
+                <Show when={s.retentionDays === null}>
+                  <span style="color:var(--text3)">{retentionLabel()}</span>
+                </Show>
               </div>
               <div style="color:var(--text3)">Status</div>
               <div style="color:var(--text3)">
@@ -148,15 +156,20 @@ export function BodyCaptureCard() {
                   Inert while capture is off — the mode above is the master switch.
                 </div>
               </Show>
-              <div style="display:flex;flex-direction:column;gap:5px">
+              <div class="rs-grid-fit" style="display:grid;gap:6px 18px">
                 <For each={s.agents}>
                   {(a) => (
-                    <div style="display:flex;align-items:center;gap:10px;font:400 12px 'Geist',sans-serif;color:var(--text2)">
-                      <span class="mono" style="font-size:11.5px;min-width:0">
+                    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;min-width:0;font:400 12px 'Geist',sans-serif;color:var(--text2)">
+                      <span
+                        class="mono"
+                        title={a.name}
+                        style="font-size:11.5px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                      >
                         {a.name}
                       </span>
                       <select
-                        class="select"
+                        class="select rs-select-sm"
+                        style="flex:none"
                         aria-label={`Capture override for ${a.name}`}
                         value={a.override ?? 'inherit'}
                         disabled={state.bc.busy}

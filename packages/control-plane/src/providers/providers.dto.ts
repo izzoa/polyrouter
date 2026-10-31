@@ -98,6 +98,15 @@ export class CreateProviderDto {
   @ValidateIf((_, v) => v !== undefined)
   @IsIn(MAX_TOKENS_SPELLINGS)
   maxTokensSpelling?: MaxTokensSpelling;
+
+  /** add-auto-prune-unlisted-models: whether a successful sync deletes this provider's
+   * unreferenced models after they have stayed unlisted for seven days. Omitted keeps the
+   * default (create: on) or the stored value (update). `ValidateIf(!undefined)` with NO
+   * `IsOptional` — `IsOptional` would also skip `null`, letting a fourth value through to
+   * a NOT NULL column; an explicit `null` is a 400. */
+  @ValidateIf((_, v) => v !== undefined)
+  @IsBoolean()
+  autoPruneUnlisted?: boolean;
 }
 
 export class UpdateProviderDto {
@@ -144,6 +153,15 @@ export class UpdateProviderDto {
   @ValidateIf((_, v) => v !== undefined)
   @IsIn(MAX_TOKENS_SPELLINGS)
   maxTokensSpelling?: MaxTokensSpelling;
+
+  /** add-auto-prune-unlisted-models: whether a successful sync deletes this provider's
+   * unreferenced models after they have stayed unlisted for seven days. Omitted keeps the
+   * default (create: on) or the stored value (update). `ValidateIf(!undefined)` with NO
+   * `IsOptional` — `IsOptional` would also skip `null`, letting a fourth value through to
+   * a NOT NULL column; an explicit `null` is a 400. */
+  @ValidateIf((_, v) => v !== undefined)
+  @IsBoolean()
+  autoPruneUnlisted?: boolean;
 }
 
 const asBool = ({ value }: { value: unknown }): unknown =>

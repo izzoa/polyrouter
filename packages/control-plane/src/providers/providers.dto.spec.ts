@@ -88,3 +88,33 @@ describe('maxTokensSpelling DTO validation (add-max-tokens-spelling)', () => {
     );
   });
 });
+
+describe('autoPruneUnlisted DTO validation (add-auto-prune-unlisted-models)', () => {
+  it('accepts true, false and an omitted field on create and update', async () => {
+    for (const v of [true, false]) {
+      expect(
+        await propsWithErrors(CreateProviderDto, { ...validCreate, autoPruneUnlisted: v }),
+      ).not.toContain('autoPruneUnlisted');
+      expect(await propsWithErrors(UpdateProviderDto, { autoPruneUnlisted: v })).not.toContain(
+        'autoPruneUnlisted',
+      );
+    }
+    expect(await propsWithErrors(CreateProviderDto, { ...validCreate })).not.toContain(
+      'autoPruneUnlisted',
+    );
+    expect(await propsWithErrors(UpdateProviderDto, {})).not.toContain('autoPruneUnlisted');
+  });
+
+  // `IsOptional` would skip `null` and let it reach a NOT NULL column; the field must use
+  // `ValidateIf(!undefined)` so `null` is a 400 rather than a database error.
+  it('rejects an explicit null and non-booleans on create and update (→ 400)', async () => {
+    for (const v of [null, 'true', 1, 'yes']) {
+      expect(
+        await propsWithErrors(CreateProviderDto, { ...validCreate, autoPruneUnlisted: v }),
+      ).toContain('autoPruneUnlisted');
+      expect(await propsWithErrors(UpdateProviderDto, { autoPruneUnlisted: v })).toContain(
+        'autoPruneUnlisted',
+      );
+    }
+  });
+});

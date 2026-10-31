@@ -35,6 +35,10 @@ import {
   type RequestAttemptAccessor,
   type RequestLogAccessor,
   type RoutingEntryAccessor,
+  type RoutingRuleAccessor,
+  type RoutingRuleInsertInput,
+  type RoutingRulePatch,
+  type RoutingRuleRow,
   type RoutingSettingsAccessor,
   type CalibrationEventsAccessor,
   type SemanticLearningEventsAccessor,
@@ -43,6 +47,7 @@ import {
   type TierRow,
   replaceEntryModelId,
 } from '@polyrouter/shared/server';
+import { parseRoutingTarget } from '@polyrouter/shared';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { createAnalyticsAccessor } from './analytics.queries';
 import { createBatchJobAccessor } from './batch-jobs.queries';
@@ -100,6 +105,17 @@ function createOwnedRepository<TRow, TInsertInput, TPatch>(
 /** Only while the row still has the observation's incarnation — the credential
  * ciphertext, base_url, and protocol it was made against (add-provider-health-
  * signals). Null-safe on the nullable columns. */
+/** Whether an error (or anything on its `cause` chain — Drizzle wraps driver errors) carries
+ * the PostgreSQL SQLSTATE `code`. */
+function isPgError(err: unknown, code: string): boolean {
+  let cur: unknown = err;
+  for (let i = 0; i < 4 && cur; i += 1) {
+    if ((cur as { code?: unknown }).code === code) return true;
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 function incarnationMatches(guard: ProviderIncarnation) {
   return and(
     guard.envelope === null
@@ -206,6 +222,52 @@ function ownedProviderIds(db: Db, principal: Principal) {
     .select({ id: providers.id })
     .from(providers)
     .where(ownershipPredicate(providers, principal));
+}
+
+/** The routing-rule repository plus the writes that lock a `model:` target's row
+ * `FOR KEY SHARE` in the same transaction (add-auto-prune-unlisted-models). */
+function createRuleAccessor(db: Db): RoutingRuleAccessor {
+  const repo = (d: Db) =>
+    createOwnedRepository<RoutingRuleRow, RoutingRuleInsertInput, RoutingRulePatch>(
+      d,
+      routingRules,
+    );
+  /** True when the target needs no lock or its model row exists, is the principal's, and
+   * is now locked. */
+  const lockModelTarget = async (
+    tx: Db,
+    principal: Principal,
+    target: string,
+  ): Promise<boolean> => {
+    const parsed = parseRoutingTarget(target);
+    if (parsed === null || parsed.kind !== 'model') return true;
+    const rows = await tx
+      .select({ id: models.id })
+      .from(models)
+      .where(
+        and(eq(models.id, parsed.id), inArray(models.providerId, ownedProviderIds(tx, principal))),
+      )
+      .limit(1)
+      .for('key share', { of: models });
+    return rows.length > 0;
+  };
+  return {
+    ...repo(db),
+    async insertLockingTarget(principal, values) {
+      return db.transaction(async (tx) => {
+        if (!(await lockModelTarget(tx, principal, values.target))) return 'target_gone' as const;
+        return repo(tx).insert(principal, values);
+      });
+    },
+    async updateLockingTarget(principal, id, patch) {
+      return db.transaction(async (tx) => {
+        if (patch.target !== undefined && !(await lockModelTarget(tx, principal, patch.target))) {
+          return 'target_gone' as const;
+        }
+        return repo(tx).update(principal, id, patch);
+      });
+    },
+  };
 }
 
 function createModelAccessor(db: Db): ModelAccessor {
@@ -399,6 +461,85 @@ function createModelAccessor(db: Db): ModelAccessor {
         return still.length > 0 ? ('listed' as const) : ('not_found' as const);
       });
     },
+    async pruneUnlisted(principal, providerId, cutoff, guard, isCancelled) {
+      // add-auto-prune-unlisted-models. The common sync has nothing stale: answer that
+      // with one unlocked read, before any lock is taken.
+      const staleOwned = and(
+        eq(models.providerId, providerId),
+        inArray(models.providerId, ownedProviderIds(db, principal)),
+        isNotNull(models.unlistedSince),
+        lte(models.unlistedSince, cutoff),
+      );
+      const stale = await db.select({ id: models.id }).from(models).where(staleOwned).limit(1);
+      if (stale.length === 0) return 0;
+      try {
+        return await db.transaction(async (tx) => {
+          // The only wait this transaction can have is the provider row below. Bound it, so
+          // a sync whose caller has given up cannot sit here and delete after its deadline.
+          await tx.execute(sql`SET LOCAL lock_timeout = '5s'`);
+          const parent = await tx
+            .select({ id: providers.id })
+            .from(providers)
+            .where(
+              and(
+                eq(providers.id, providerId),
+                ownershipPredicate(providers, principal),
+                incarnationMatches(guard),
+                eq(providers.autoPruneUnlisted, true), // a toggle-off that committed wins
+              ),
+            )
+            .for('update')
+            .limit(1);
+          if (parent.length === 0) return 0;
+          // Statement 1: lock the candidates. FOR UPDATE conflicts with the FOR KEY SHARE
+          // every writer of a model reference takes first, and SKIP LOCKED means a row a
+          // writer holds right now is left for the next sync rather than waited on — so
+          // this transaction never waits on a model, tier or rule row (no lock cycle).
+          const candidates = await tx
+            .select({ id: models.id })
+            .from(models)
+            .where(
+              and(
+                eq(models.providerId, providerId),
+                inArray(models.providerId, ownedProviderIds(tx, principal)),
+                isNotNull(models.unlistedSince),
+                lte(models.unlistedSince, cutoff),
+              ),
+            )
+            .orderBy(models.id)
+            .for('update', { skipLocked: true });
+          if (candidates.length === 0) return 0;
+          // The locks are held and nothing is deleted yet: the last point a caller that
+          // has stopped (the scheduled refresh's deadline or shutdown) can stop this.
+          if (isCancelled()) return 0;
+          // Statement 2 is a NEW statement, so it reads a fresh READ COMMITTED snapshot:
+          // every reference committed before it started is visible, and none can commit
+          // after (its writer is blocked on a row this transaction holds).
+          const deleted = await tx
+            .delete(models)
+            .where(
+              and(
+                inArray(
+                  models.id,
+                  candidates.map((c) => c.id),
+                ),
+                inArray(models.providerId, ownedProviderIds(tx, principal)), // in-statement ownership
+                isNotNull(models.unlistedSince), // re-checked inside the statement
+                lte(models.unlistedSince, cutoff),
+                sql`NOT EXISTS (SELECT 1 FROM ${routingEntries} WHERE ${routingEntries.modelId} = ${models.id})`,
+                sql`NOT EXISTS (SELECT 1 FROM ${routingRules} WHERE ${ownershipPredicate(routingRules, principal)} AND ${routingRules.target} = 'model:' || ${models.id})`,
+              ),
+            )
+            .returning({ id: models.id });
+          return deleted.length;
+        });
+      } catch (err) {
+        // 55P03 lock_not_available: the provider row stayed locked past the bound. Nothing
+        // was deleted; the next sync tries again.
+        if (isPgError(err, '55P03')) return 0;
+        throw err;
+      }
+    },
     async clearPricingForProvider(principal, providerId) {
       const rows = await db
         .update(models)
@@ -533,7 +674,8 @@ function createRoutingEntryAccessor(db: Db): RoutingEntryAccessor {
               inArray(models.providerId, ownedProviderIds(tx, principal)),
             ),
           )
-          .limit(1);
+          .limit(1)
+          .for('key share', { of: models }); // see replaceForTier
         if (model.length === 0) return null;
         const rows = await tx
           .insert(routingEntries)
@@ -583,6 +725,9 @@ function createRoutingEntryAccessor(db: Db): RoutingEntryAccessor {
         // Every distinct id must be an owned model (owned through its provider).
         const uniqueIds = [...new Set(orderedModelIds)];
         if (uniqueIds.length > 0) {
+          // FOR KEY SHARE (add-auto-prune-unlisted-models): a prune holds these rows
+          // FOR UPDATE while it deletes, so a chain naming a model it is deleting waits,
+          // re-reads, and is rejected as unknown instead of cascading away silently.
           const owned = await tx
             .select({ id: models.id })
             .from(models)
@@ -591,7 +736,8 @@ function createRoutingEntryAccessor(db: Db): RoutingEntryAccessor {
                 inArray(models.id, uniqueIds),
                 inArray(models.providerId, ownedProviderIds(tx, principal)),
               ),
-            );
+            )
+            .for('key share', { of: models });
           const ownedIds = new Set(owned.map((r) => r.id));
           const unknown = uniqueIds.filter((id) => !ownedIds.has(id));
           if (unknown.length > 0) return { status: 'unknown_models' as const, modelIds: unknown };
@@ -1450,7 +1596,7 @@ export function buildPersistencePort(db: Db): PersistencePort {
       },
     },
     tiers: createOwnedRepository(db, tiers as unknown as AnyOwnedTable),
-    routingRules: createOwnedRepository(db, routingRules as unknown as AnyOwnedTable),
+    routingRules: createRuleAccessor(db),
     notificationChannels: createOwnedRepository(
       db,
       notificationChannels as unknown as AnyOwnedTable,

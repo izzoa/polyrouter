@@ -71,6 +71,9 @@ export interface Provider {
   /** Upstream patience overrides (fix-long-call-timeouts); null = inherit. */
   firstByteTimeoutMs: number | null;
   idleTimeoutMs: number | null;
+  /** add-auto-prune-unlisted-models: whether a sync deletes this provider's unreferenced
+   * models once they have stayed unlisted for seven days. */
+  autoPruneUnlisted: boolean;
   createdAt: string;
   /** add-provider-health-signals: the server-computed displayed health (the most
    * recently recorded of the check and live-traffic records). */

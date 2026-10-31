@@ -249,6 +249,68 @@ describe('tenant isolation across owned resources', () => {
     );
   });
 
+  // add-auto-prune-unlisted-models: the prune and the rule-target lock are owner-scoped.
+  it('another tenant can neither prune my retired models nor target them from a rule', async () => {
+    const bobsProvider = await harness.port.providers.insert(bob.principal, providerValues);
+    const bobsModel = (await harness.port.models.createForProvider(bob.principal, bobsProvider.id, {
+      externalModelId: `bp-${Math.random().toString(36).slice(2, 8)}`,
+    }))!;
+    await harness.pool.query(
+      `UPDATE model SET unlisted_since = now() - interval '30 days' WHERE id = $1`,
+      [bobsModel.id],
+    );
+    const guard = {
+      envelope: bobsProvider.encryptedCredentials,
+      baseUrl: bobsProvider.baseUrl,
+      protocol: bobsProvider.protocol,
+    };
+    const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
+    // Alice, holding the correct incarnation guard, still prunes nothing of Bob's.
+    expect(
+      await harness.port.models.pruneUnlisted(
+        alice.principal,
+        bobsProvider.id,
+        cutoff,
+        guard,
+        () => false,
+      ),
+    ).toBe(0);
+    expect(await harness.port.models.findById(bob.principal, bobsModel.id)).not.toBeNull();
+
+    // Alice cannot point a rule at Bob's model (it reads as gone to her), on insert or update.
+    expect(
+      await harness.port.routingRules.insertLockingTarget(alice.principal, {
+        matchType: 'default',
+        target: `model:${bobsModel.id}`,
+      }),
+    ).toBe('target_gone');
+    const hers = await harness.port.routingRules.insert(alice.principal, {
+      matchType: 'default',
+      target: 'tier:default',
+    });
+    expect(
+      await harness.port.routingRules.updateLockingTarget(alice.principal, hers.id, {
+        target: `model:${bobsModel.id}`,
+      }),
+    ).toBe('target_gone');
+    expect((await harness.port.routingRules.findById(alice.principal, hers.id))!.target).toBe(
+      'tier:default',
+    );
+
+    // Bob prunes his own.
+    expect(
+      await harness.port.models.pruneUnlisted(
+        bob.principal,
+        bobsProvider.id,
+        cutoff,
+        guard,
+        () => false,
+      ),
+    ).toBe(1);
+    expect(await harness.port.models.findById(bob.principal, bobsModel.id)).toBeNull();
+  });
+
   it('privileged facilities hand out a scoped port, never a raw handle', async () => {
     const result = await harness.facilities.withTransaction(async (tx) => {
       const surface = tx as unknown as Record<string, unknown>;

@@ -80,6 +80,7 @@ export type {
   RequestLogAccessor,
   RequestLogInsertInput,
   RoutingEntryAccessor,
+  RoutingRuleAccessor,
   RoutingSettingsAccessor,
   RoutingSettingsUpsert,
   RoutingSettingsValue,

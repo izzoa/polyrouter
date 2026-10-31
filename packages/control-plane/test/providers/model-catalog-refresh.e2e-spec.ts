@@ -375,4 +375,55 @@ describe('model-catalog refresh (e2e)', () => {
       status_source: 'refresh',
     });
   });
+
+  // add-auto-prune-unlisted-models
+  it("a due provider's refresh prunes a stale unreferenced model, keeps the rest, and lists exactly once", async () => {
+    const p = await keyedRow(alice);
+    const day = 24 * 60 * MIN;
+    const seed = async (ext: string, daysUnlisted: number): Promise<string> => {
+      const row = (await port.models.upsertForProvider(alice, p.id, { externalModelId: ext }))!;
+      await pool.query(`UPDATE model SET unlisted_since = $1 WHERE id = $2`, [
+        new Date(Date.now() - daysUnlisted * day),
+        row.id,
+      ]);
+      return row.id;
+    };
+    await seed('m-stale', 30); // pruned
+    await seed('m-recent', 2); // inside the grace period
+    const used = await seed('m-used', 30); // old, but a tier chain uses it
+    const tier = await port.tiers.insert(alice, { key: `catalog-prune-${Date.now()}-${++n}` });
+    await port.routingEntries.add(alice, { tierId: tier.id, modelId: used, position: 0 });
+    await pool.query(
+      `UPDATE provider SET status='error', last_error_kind='auth', status_source='test',
+         status_rev=1, health_rev=1 WHERE id=$1`,
+      [p.id],
+    );
+
+    const r = await scheduler.catalogOnce(FAST);
+    expect(r.pruned).toBeGreaterThanOrEqual(1);
+    expect(callsFor(p.credential)).toEqual(['list']); // one listing, nothing else
+    expect((await modelRows(p.id)).map((m) => m['external_model_id'])).toEqual([
+      'm-new',
+      'm-recent',
+      'm-used',
+    ]);
+    // Health-silent: the pruning wrote no check record either.
+    expect(await stored(p.id)).toMatchObject({
+      status: 'error',
+      last_error_kind: 'auth',
+      status_source: 'test',
+    });
+  });
+
+  it('the switch off: the refresh still flags, but deletes nothing', async () => {
+    const p = await keyedRow(alice);
+    await pool.query(`UPDATE provider SET auto_prune_unlisted = false WHERE id = $1`, [p.id]);
+    const row = (await port.models.upsertForProvider(alice, p.id, { externalModelId: 'm-old' }))!;
+    await pool.query(`UPDATE model SET unlisted_since = now() - interval '30 days' WHERE id = $1`, [
+      row.id,
+    ]);
+    const r = await scheduler.catalogOnce(FAST);
+    expect(r.refreshed).toBeGreaterThanOrEqual(1);
+    expect((await modelRows(p.id)).map((m) => m['external_model_id'])).toEqual(['m-new', 'm-old']);
+  });
 });

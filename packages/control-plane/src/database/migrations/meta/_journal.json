@@ -302,6 +302,13 @@
       "when": 1793205756424,
       "tag": "0042_wise_giant_girl",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1793470438105,
+      "tag": "0043_complex_richard_fisk",
+      "breakpoints": true
     }
   ]
 }

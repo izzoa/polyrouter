@@ -29,7 +29,11 @@ export interface CatalogRefreshDeps {
   /** The provider's listing sync, health-silent. Resolves `ok:false` on a typed
    * failure; may also reject (contained here). `signal` aborts it at the per-row
    * deadline — an aborted listing writes nothing. */
-  refresh(principal: Principal, id: string, signal: AbortSignal): Promise<{ readonly ok: boolean }>;
+  refresh(
+    principal: Principal,
+    id: string,
+    signal: AbortSignal,
+  ): Promise<{ readonly ok: boolean; readonly pruned?: number }>;
   /** The ids (of those given) whose catalog is currently marked fresh. */
   freshAmong(ids: readonly string[]): Promise<ReadonlySet<string>>;
   /** Mark a catalog fresh (or failed) for `ttlMs`. */
@@ -70,6 +74,9 @@ export interface CatalogRefreshResult {
   readonly failed: number;
   readonly timeout: number;
   readonly carriedOver: number;
+  /** Retired, unreferenced models the tick's refreshes deleted
+   * (add-auto-prune-unlisted-models). */
+  readonly pruned: number;
 }
 
 const DEADLINE = Symbol('deadline');
@@ -116,6 +123,7 @@ export async function runModelCatalogRefresh(
   let refreshed = 0;
   let failed = 0;
   let timeout = 0;
+  let pruned = 0;
   const markFresh = (id: string, ttlMs: number): Promise<void> =>
     deps.markFresh(id, ttlMs).catch(() => undefined);
   const succeeded = async (id: string): Promise<void> => {
@@ -153,6 +161,7 @@ export async function runModelCatalogRefresh(
       }
       if (r.ok) {
         refreshed += 1;
+        pruned += r.pruned ?? 0;
         await succeeded(row.id);
       } else {
         failed += 1;
@@ -198,5 +207,6 @@ export async function runModelCatalogRefresh(
     failed,
     timeout,
     carriedOver: due.length - started,
+    pruned,
   };
 }

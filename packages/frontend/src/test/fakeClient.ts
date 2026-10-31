@@ -948,6 +948,7 @@ export class FakeApiClient implements ApiClient {
       credentialError: null,
       firstByteTimeoutMs: input.firstByteTimeoutMs ?? null,
       idleTimeoutMs: input.idleTimeoutMs ?? null,
+      autoPruneUnlisted: true,
       createdAt: NOW,
       ...UNRECORDED_HEALTH,
     };
@@ -1029,6 +1030,7 @@ export class FakeApiClient implements ApiClient {
       idleTimeoutMs: null,
       credentialExpiresAt: NOW,
       credentialError: null,
+      autoPruneUnlisted: true,
       createdAt: NOW,
       ...UNRECORDED_HEALTH,
     };

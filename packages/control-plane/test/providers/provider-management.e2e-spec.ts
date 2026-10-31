@@ -948,4 +948,500 @@ describe('provider management', () => {
       expect(await read()).toEqual({ w: null, at: null });
     });
   });
+
+  // ---- add-auto-prune-unlisted-models: the port-level prune (real Postgres) ----
+  describe('auto-prune of unlisted models (add-auto-prune-unlisted-models)', () => {
+    const DAY = 24 * 60 * 60 * 1000;
+    const NOW = new Date('2026-10-31T12:00:00Z');
+    const CUTOFF = new Date(NOW.getTime() - 7 * DAY);
+    let tierSeq = 0;
+
+    // Rules and tiers are not removed with a provider: clear this describe's own.
+    beforeEach(async () => {
+      await pool.query('DELETE FROM routing_rule WHERE owner_user_id = ANY($1)', [[alice, bob]]);
+      await pool.query('DELETE FROM tier WHERE owner_user_id = ANY($1)', [[alice, bob]]);
+    });
+
+    const port = (): PersistencePort => app.get<PersistencePort>(PERSISTENCE_PORT);
+    const who = (id = alice): Principal => userPrincipal(id);
+
+    /** A custom provider owned by `owner`, with an optional auto-prune switch. */
+    const mkProvider = async (owner = alice, autoPruneUnlisted = true) =>
+      port().providers.insert(who(owner), {
+        name: 'prune',
+        kind: 'custom',
+        protocol: 'openai_compatible',
+        baseUrl: 'https://1.1.1.1/v1',
+        autoPruneUnlisted,
+      });
+    const guardOf = async (providerId: string, owner = alice) => {
+      const row = (await port().providers.findById(who(owner), providerId))!;
+      return { envelope: row.encryptedCredentials, baseUrl: row.baseUrl, protocol: row.protocol };
+    };
+    /** A model row, unlisted since `since` (null = listed). Returns its id. */
+    const mkModel = async (
+      providerId: string,
+      ext: string,
+      since: Date | null,
+      owner = alice,
+    ): Promise<string> => {
+      const row = (await port().models.upsertForProvider(who(owner), providerId, {
+        externalModelId: ext,
+        lastSyncedAt: NOW,
+      }))!;
+      await pool.query('UPDATE model SET unlisted_since = $1 WHERE id = $2', [since, row.id]);
+      return row.id;
+    };
+    const prune = async (
+      providerId: string,
+      opts: {
+        owner?: string;
+        cancelled?: boolean;
+        guard?: Awaited<ReturnType<typeof guardOf>>;
+      } = {},
+    ): Promise<number> =>
+      port().models.pruneUnlisted(
+        who(opts.owner ?? alice),
+        providerId,
+        CUTOFF,
+        opts.guard ?? (await guardOf(providerId)),
+        () => opts.cancelled === true,
+      );
+    const remaining = async (providerId: string): Promise<string[]> =>
+      (
+        await pool.query<{ e: string }>(
+          'SELECT external_model_id AS e FROM model WHERE provider_id = $1 ORDER BY 1',
+          [providerId],
+        )
+      ).rows.map((r) => r.e);
+    const mkTier = async (owner = alice) =>
+      port().tiers.insert(who(owner), { key: `prune-${Date.now()}-${++tierSeq}` });
+
+    it('prunes a stale unreferenced model, keeps one inside the grace period, and honours the exact boundary', async () => {
+      const p = await mkProvider();
+      await mkModel(p.id, 'stale', new Date(CUTOFF.getTime() - DAY));
+      await mkModel(p.id, 'boundary', CUTOFF); // exactly 7 days: pruned
+      await mkModel(p.id, 'just-inside', new Date(CUTOFF.getTime() + 60_000)); // 6d23h59m
+      await mkModel(p.id, 'listed', null);
+      expect(await prune(p.id)).toBe(2);
+      expect(await remaining(p.id)).toEqual(['just-inside', 'listed']);
+    });
+
+    it('a model flagged, cleared, then flagged again restarts its grace period', async () => {
+      const p = await mkProvider();
+      await mkModel(p.id, 'flap', new Date(CUTOFF.getTime() - 30 * DAY));
+      const guard = await guardOf(p.id);
+      // It returns: the reconcile clears the old flag…
+      expect(await port().models.reconcileListing(who(), p.id, ['flap'], NOW, guard)).toBe(true);
+      // …and a later listing omits it again: the flag restarts at the new time.
+      expect(await port().models.reconcileListing(who(), p.id, ['other'], NOW, guard)).toBe(true);
+      expect(await prune(p.id)).toBe(0);
+      expect(await remaining(p.id)).toEqual(['flap']);
+    });
+
+    it('never prunes a model that sits in a tier chain, and leaves positions alone', async () => {
+      const p = await mkProvider();
+      const keep = await mkModel(p.id, 'in-chain', new Date(CUTOFF.getTime() - 30 * DAY));
+      const drop = await mkModel(p.id, 'dropped', new Date(CUTOFF.getTime() - 30 * DAY));
+      const other = await mkModel(p.id, 'listed', null);
+      const tier = await mkTier();
+      await port().routingEntries.add(who(), { tierId: tier.id, modelId: other, position: 0 });
+      await port().routingEntries.add(who(), { tierId: tier.id, modelId: keep, position: 1 });
+      expect(await prune(p.id)).toBe(1);
+      expect(await remaining(p.id)).toEqual(['in-chain', 'listed']);
+      const entries = await port().routingEntries.listForTier(who(), tier.id);
+      expect(entries.map((e) => [e.modelId, e.position])).toEqual([
+        [other, 0],
+        [keep, 1],
+      ]);
+      expect(drop).toBeDefined();
+    });
+
+    it.each([
+      ['header', { headerValue: 'x' }],
+      ['default', {}],
+      ['auto_high', {}],
+      ['auto_low', {}],
+      ['auto_workload', { workloadClass: 'code' }],
+      ['auto_high', { workloadClass: 'vision' }], // a workload-scoped band
+    ] as const)('never prunes a model that is a %s rule target %j', async (matchType, extra) => {
+      const p = await mkProvider();
+      const id = await mkModel(p.id, 'targeted', new Date(CUTOFF.getTime() - 30 * DAY));
+      await mkModel(p.id, 'free', new Date(CUTOFF.getTime() - 30 * DAY));
+      await port().routingRules.insert(who(), { matchType, target: `model:${id}`, ...extra });
+      expect(await prune(p.id)).toBe(1);
+      expect(await remaining(p.id)).toEqual(['targeted']);
+    });
+
+    it('prunes nothing while the provider switch is off, and the flag survives', async () => {
+      const p = await mkProvider(alice, false);
+      await mkModel(p.id, 'stale', new Date(CUTOFF.getTime() - 30 * DAY));
+      expect(await prune(p.id)).toBe(0);
+      expect(await remaining(p.id)).toEqual(['stale']);
+    });
+
+    it('prunes nothing for a replaced credential, another tenant, or a cancelled caller', async () => {
+      const p = await mkProvider();
+      await mkModel(p.id, 'stale', new Date(CUTOFF.getTime() - 30 * DAY));
+      const current = await guardOf(p.id);
+      expect(await prune(p.id, { guard: { ...current, envelope: 'an-older-cipher' } })).toBe(0);
+      expect(await prune(p.id, { owner: bob, guard: current })).toBe(0);
+      expect(await prune(p.id, { cancelled: true })).toBe(0);
+      expect(await remaining(p.id)).toEqual(['stale']);
+      expect(await prune(p.id)).toBe(1); // the same call, uncancelled and current, prunes
+    });
+
+    it("two tenants with the same external id: only the syncing tenant's row is pruned", async () => {
+      const a = await mkProvider(alice);
+      const b = await mkProvider(bob);
+      const old = new Date(CUTOFF.getTime() - 30 * DAY);
+      await mkModel(a.id, 'shared', old, alice);
+      await mkModel(b.id, 'shared', old, bob);
+      expect(await prune(a.id)).toBe(1);
+      expect(await remaining(a.id)).toEqual([]);
+      expect(await remaining(b.id)).toEqual(['shared']);
+    });
+
+    it('prunes a stale :batch twin on its own evidence and keeps its referenced base', async () => {
+      const p = await mkProvider();
+      const base = await mkModel(p.id, 'openai/gpt-x', null);
+      const twin = await mkModel(p.id, 'openai/gpt-x:batch', new Date(CUTOFF.getTime() - DAY));
+      await pool.query(`UPDATE model SET variant = 'batch' WHERE id = $1`, [twin]);
+      const tier = await mkTier();
+      await port().routingEntries.add(who(), { tierId: tier.id, modelId: base, position: 0 });
+      expect(await prune(p.id)).toBe(1);
+      expect(await remaining(p.id)).toEqual(['openai/gpt-x']);
+    });
+
+    // ---- through the HTTP surface: the switch, and a real sync pruning ----
+    const apiCustom = {
+      name: 'custom',
+      kind: 'custom',
+      protocol: 'openai_compatible',
+      baseUrl: 'https://1.1.1.1/v1',
+      credential: 'k',
+    };
+    const syncAs = (id: string, list: ProviderModelInfo[], who = alice): request.Test => {
+      nextModels = () => list;
+      return request(server).post(`/api/providers/${id}/sync-models`).set('x-test-user', who);
+    };
+    const backdate = (providerId: string, ext: string, days: number): Promise<unknown> =>
+      pool.query(
+        `UPDATE model SET unlisted_since = now() - make_interval(days => $3)
+          WHERE provider_id = $1 AND external_model_id = $2`,
+        [providerId, ext, days],
+      );
+
+    it('the switch defaults on, round-trips through create and PATCH, and rejects null and other tenants', async () => {
+      const created = await asAlice().send(apiCustom).expect(201);
+      expect(created.body.autoPruneUnlisted).toBe(true);
+      const off = await asAlice()
+        .send({ ...apiCustom, autoPruneUnlisted: false })
+        .expect(201);
+      expect(off.body.autoPruneUnlisted).toBe(false);
+
+      const patch = (id: string, body: object, who = alice): request.Test =>
+        request(server).patch(`/api/providers/${id}`).set('x-test-user', who).send(body);
+      expect(
+        (await patch(created.body.id, { autoPruneUnlisted: false }).expect(200)).body
+          .autoPruneUnlisted,
+      ).toBe(false);
+      expect(
+        (await patch(created.body.id, { name: 'renamed' }).expect(200)).body.autoPruneUnlisted,
+      ).toBe(false); // omitted preserves
+      expect(
+        (await patch(created.body.id, { autoPruneUnlisted: true }).expect(200)).body
+          .autoPruneUnlisted,
+      ).toBe(true);
+      expect(
+        (await request(server).get(`/api/providers/${created.body.id}`).set('x-test-user', alice))
+          .body.autoPruneUnlisted,
+      ).toBe(true);
+
+      // An explicit null is a 400 (a NOT NULL column must never see it), as is a non-boolean.
+      await patch(created.body.id, { autoPruneUnlisted: null }).expect(400);
+      await patch(created.body.id, { autoPruneUnlisted: 'yes' }).expect(400);
+      await asAlice()
+        .send({ ...apiCustom, autoPruneUnlisted: null })
+        .expect(400);
+      // Another tenant cannot change it; the row is unchanged.
+      await patch(created.body.id, { autoPruneUnlisted: false }, bob).expect(404);
+      expect(
+        (await request(server).get(`/api/providers/${created.body.id}`).set('x-test-user', alice))
+          .body.autoPruneUnlisted,
+      ).toBe(true);
+    });
+
+    it('a sync prunes a retired model only after the grace period, and reports how many', async () => {
+      const { body: p } = await asAlice().send(apiCustom);
+      expect(
+        (await syncAs(p.id, [{ id: 'keep' }, { id: 'retired' }]).expect(200)).body.pruned,
+      ).toBe(0);
+
+      // First omission: flagged now, inside the grace period, so kept.
+      const first = await syncAs(p.id, [{ id: 'keep' }]).expect(200);
+      expect(first.body.pruned).toBe(0);
+      expect(await remaining(p.id)).toEqual(['keep', 'retired']);
+
+      // Six days later: still inside the grace period.
+      await backdate(p.id, 'retired', 6);
+      expect((await syncAs(p.id, [{ id: 'keep' }]).expect(200)).body.pruned).toBe(0);
+      expect(await remaining(p.id)).toEqual(['keep', 'retired']);
+
+      // Eight days: pruned, and the count is reported.
+      await backdate(p.id, 'retired', 8);
+      const pruned = await syncAs(p.id, [{ id: 'keep' }]).expect(200);
+      expect(pruned.body).toMatchObject({ ok: true, pruned: 1 });
+      expect(await remaining(p.id)).toEqual(['keep']);
+    });
+
+    it('a model that came back, a referenced model, and a switched-off provider are never pruned', async () => {
+      const { body: p } = await asAlice().send(apiCustom);
+      await syncAs(p.id, [{ id: 'back' }, { id: 'used' }, { id: 'gone' }]).expect(200);
+      await syncAs(p.id, []).expect(200); // empty: flags nothing
+      await syncAs(p.id, [{ id: 'keep' }]).expect(200); // flags back, used, gone
+      const ids = Object.fromEntries(
+        (
+          await pool.query<{ id: string; e: string }>(
+            'SELECT id, external_model_id AS e FROM model WHERE provider_id = $1',
+            [p.id],
+          )
+        ).rows.map((r) => [r.e, r.id]),
+      );
+      const tier = await mkTier();
+      await port().routingEntries.add(who(), {
+        tierId: tier.id,
+        modelId: ids['used']!,
+        position: 0,
+      });
+      for (const e of ['back', 'used', 'gone']) await backdate(p.id, e, 30);
+
+      // 'back' is listed again: its flag clears and it survives; 'used' is referenced; 'gone' goes.
+      const r = await syncAs(p.id, [{ id: 'keep' }, { id: 'back' }]).expect(200);
+      expect(r.body.pruned).toBe(1);
+      expect(await remaining(p.id)).toEqual(['back', 'keep', 'used']);
+
+      // Switched off: the same retired model is flagged and kept.
+      await request(server)
+        .patch(`/api/providers/${p.id}`)
+        .set('x-test-user', alice)
+        .send({ autoPruneUnlisted: false })
+        .expect(200);
+      await backdate(p.id, 'used', 30);
+      await syncAs(p.id, [{ id: 'keep' }, { id: 'back' }, { id: 'new' }]).expect(200);
+      await pool.query(
+        `UPDATE model SET unlisted_since = now() - interval '30 days' WHERE id = $1`,
+        [ids['back']],
+      );
+      const off = await syncAs(p.id, [{ id: 'keep' }, { id: 'new' }]).expect(200);
+      expect(off.body.pruned).toBe(0);
+      expect(await remaining(p.id)).toContain('back');
+    });
+
+    it('an empty, truncated, or failed listing prunes nothing, however old the flags', async () => {
+      const { body: p } = await asAlice().send(apiCustom);
+      await syncAs(p.id, [{ id: 'keep' }, { id: 'old' }]).expect(200);
+      await syncAs(p.id, [{ id: 'keep' }]).expect(200);
+      await backdate(p.id, 'old', 30);
+
+      expect((await syncAs(p.id, []).expect(200)).body.pruned).toBe(0);
+      const truncated = Object.assign([{ id: 'keep' }], { truncated: true as const });
+      expect((await syncAs(p.id, truncated).expect(200)).body.pruned).toBe(0);
+      nextModels = () => {
+        throw new Error('listing failed');
+      };
+      const failed = await request(server)
+        .post(`/api/providers/${p.id}/sync-models`)
+        .set('x-test-user', alice);
+      expect(failed.body.pruned).toBeUndefined();
+      expect(await remaining(p.id)).toEqual(['keep', 'old']);
+    });
+
+    // ---- the reference/prune race, with real row locks on separate connections ----
+    // A held lock stands in for "the other side is mid-transaction", so each case is
+    // deterministic: no sleeps decide the outcome, only lock order does.
+    const held: import('pg').PoolClient[] = [];
+    const holdLocks = async (): Promise<import('pg').PoolClient> => {
+      const c = await pool.connect();
+      held.push(c);
+      await c.query('BEGIN');
+      return c;
+    };
+    // A failing assertion must not leave a connection holding a row lock: that would hang
+    // the pool's shutdown and mask the real failure.
+    afterEach(async () => {
+      for (const c of held.splice(0)) {
+        try {
+          await c.query('ROLLBACK');
+        } catch {
+          /* already finished */
+        }
+        try {
+          c.release();
+        } catch {
+          /* already released by the test */
+        }
+      }
+    });
+    /** Resolve once some backend is blocked on a lock (the writer waiting on the prune). */
+    const waitForLockWaiter = async (): Promise<void> => {
+      for (let i = 0; i < 200; i += 1) {
+        const r = await pool.query<{ n: string }>(
+          `SELECT count(*) AS n FROM pg_stat_activity
+            WHERE datname = current_database() AND wait_event_type = 'Lock'`,
+        );
+        if (Number(r.rows[0]!.n) > 0) return;
+        await new Promise((res) => setTimeout(res, 25));
+      }
+      throw new Error('no backend ever waited on a lock');
+    };
+    const entryCount = async (modelId: string): Promise<number> =>
+      Number(
+        (
+          await pool.query<{ n: string }>(
+            'SELECT count(*) AS n FROM routing_entry WHERE model_id = $1',
+            [modelId],
+          )
+        ).rows[0]!.n,
+      );
+    const modelExists = async (id: string): Promise<boolean> =>
+      (await pool.query('SELECT 1 FROM model WHERE id = $1', [id])).rowCount === 1;
+
+    it('a prune parked on the provider row that is cancelled meanwhile deletes nothing', async () => {
+      const p = await mkProvider();
+      await mkModel(p.id, 'stale', new Date(CUTOFF.getTime() - 30 * DAY));
+      // Another sync holds the provider row (reconcileListing takes it FOR UPDATE).
+      const holder = await holdLocks();
+      await holder.query('SELECT id FROM provider WHERE id = $1 FOR UPDATE', [p.id]);
+      let cancelled = false;
+      const pruning = port().models.pruneUnlisted(
+        who(),
+        p.id,
+        CUTOFF,
+        await guardOf(p.id),
+        () => cancelled,
+      );
+      await waitForLockWaiter(); // the prune is waiting for the provider row
+      cancelled = true; // the scheduled refresh's deadline lands while it waits
+      await holder.query('COMMIT');
+      holder.release();
+      await expect(pruning).resolves.toBe(0);
+      expect(await remaining(p.id)).toEqual(['stale']);
+    });
+
+    it('a chain write that already references the model wins: the prune skips the locked row', async () => {
+      const p = await mkProvider();
+      const id = await mkModel(p.id, 'stale', new Date(CUTOFF.getTime() - 30 * DAY));
+      const tier = await mkTier();
+      // The writer's FK insert takes FOR KEY SHARE on the model row; it has not committed.
+      const writer = await holdLocks();
+      try {
+        await writer.query(
+          `INSERT INTO routing_entry (id, tier_id, model_id, position)
+           VALUES (gen_random_uuid()::text, $1, $2, 0)`,
+          [tier.id, id],
+        );
+        expect(await prune(p.id)).toBe(0); // skipped, not waited on, not deleted
+      } finally {
+        await writer.query('COMMIT');
+        writer.release();
+      }
+      expect(await modelExists(id)).toBe(true);
+      expect(await entryCount(id)).toBe(1);
+      expect(await prune(p.id)).toBe(0); // and now it is referenced
+    });
+
+    it('a chain write that loses to the prune is rejected as an unknown model, never cascaded', async () => {
+      const p = await mkProvider();
+      const id = await mkModel(p.id, 'stale', new Date(CUTOFF.getTime() - 30 * DAY));
+      const tier = await mkTier();
+      // The prune holds the row FOR UPDATE and is about to delete it.
+      const pruner = await holdLocks();
+      await pruner.query('SELECT id FROM model WHERE id = $1 FOR UPDATE', [id]);
+      const write = port().routingEntries.replaceForTier(who(), tier.id, [id]);
+      await waitForLockWaiter(); // the chain write is parked on the model row
+      await pruner.query('DELETE FROM model WHERE id = $1', [id]);
+      await pruner.query('COMMIT');
+      pruner.release();
+      await expect(write).resolves.toMatchObject({ status: 'unknown_models' });
+      expect(await entryCount(id)).toBe(0);
+    });
+
+    it('a single-entry add that loses to the prune returns nothing and saves nothing', async () => {
+      const p = await mkProvider();
+      const id = await mkModel(p.id, 'stale', new Date(CUTOFF.getTime() - 30 * DAY));
+      const tier = await mkTier();
+      const pruner = await holdLocks();
+      await pruner.query('SELECT id FROM model WHERE id = $1 FOR UPDATE', [id]);
+      const write = port().routingEntries.add(who(), { tierId: tier.id, modelId: id, position: 0 });
+      await waitForLockWaiter();
+      await pruner.query('DELETE FROM model WHERE id = $1', [id]);
+      await pruner.query('COMMIT');
+      pruner.release();
+      await expect(write).resolves.toBeNull();
+      expect(await entryCount(id)).toBe(0);
+    });
+
+    it('a rule write that loses to the prune reports the target gone and saves nothing', async () => {
+      const p = await mkProvider();
+      const existing = await port().routingRules.insert(who(), {
+        matchType: 'default',
+        target: 'tier:default',
+      });
+      const writes = [
+        (id: string) =>
+          port().routingRules.insertLockingTarget(who(), {
+            matchType: 'default',
+            target: `model:${id}`,
+          }),
+        (id: string) =>
+          port().routingRules.updateLockingTarget(who(), existing.id, { target: `model:${id}` }),
+      ];
+      const tried: string[] = [];
+      for (const [n, write] of writes.entries()) {
+        const id = await mkModel(p.id, `stale-${n}`, new Date(CUTOFF.getTime() - 30 * DAY));
+        const pruner = await holdLocks();
+        await pruner.query('SELECT id FROM model WHERE id = $1 FOR UPDATE', [id]);
+        tried.push(id);
+        const pending = write(id);
+        await waitForLockWaiter();
+        await pruner.query('DELETE FROM model WHERE id = $1', [id]);
+        await pruner.query('COMMIT');
+        pruner.release();
+        await expect(pending).resolves.toBe('target_gone');
+      }
+      const rules = await port().routingRules.list(who());
+      expect(rules.filter((r) => tried.some((id) => r.target === `model:${id}`))).toHaveLength(0);
+      expect(rules.find((r) => r.id === existing.id)!.target).toBe('tier:default');
+    });
+
+    it('a rule write that holds the model first wins: the prune skips it and the rule resolves', async () => {
+      const p = await mkProvider();
+      const id = await mkModel(p.id, 'stale', new Date(CUTOFF.getTime() - 30 * DAY));
+      const writer = await holdLocks();
+      try {
+        // What `insertLockingTarget` holds between its check and its insert.
+        await writer.query('SELECT id FROM model WHERE id = $1 FOR KEY SHARE', [id]);
+        expect(await prune(p.id)).toBe(0);
+      } finally {
+        await writer.query('COMMIT');
+        writer.release();
+      }
+      const rule = await port().routingRules.insertLockingTarget(who(), {
+        matchType: 'default',
+        target: `model:${id}`,
+      });
+      expect(rule).not.toBe('target_gone');
+      expect(await prune(p.id)).toBe(0); // referenced now
+      expect(await modelExists(id)).toBe(true);
+    });
+
+    it('recorded history cannot be touched: only routing_entry holds a foreign key to model', async () => {
+      const r = await pool.query<{ t: string }>(
+        `SELECT conrelid::regclass::text AS t FROM pg_constraint
+          WHERE contype = 'f' AND confrelid = 'model'::regclass ORDER BY 1`,
+      );
+      expect(r.rows.map((x) => x.t)).toEqual(['routing_entry']);
+    });
+  });
 });

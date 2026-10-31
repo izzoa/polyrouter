@@ -1,0 +1,1 @@
+ALTER TABLE "provider" ADD COLUMN "auto_prune_unlisted" boolean DEFAULT true NOT NULL;

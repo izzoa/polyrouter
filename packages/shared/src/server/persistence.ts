@@ -75,6 +75,31 @@ export interface OwnedRepository<TRow, TInsertInput, TPatch> {
   remove(principal: Principal, id: string): Promise<boolean>;
 }
 
+/** Routing rules: the owned repository plus the two writes that take a `FOR KEY SHARE`
+ * lock on a `model:` target's row in the SAME transaction as the write
+ * (add-auto-prune-unlisted-models). A rule's `target` has no foreign key, so without the
+ * lock a prune could delete the model between the service's existence check and the
+ * insert, leaving a rule that names a deleted model. `'target_gone'` means the named
+ * model no longer exists (or is not the principal's); nothing was written. A `tier:`
+ * target takes no lock. */
+export interface RoutingRuleAccessor extends OwnedRepository<
+  RoutingRuleRow,
+  RoutingRuleInsertInput,
+  RoutingRulePatch
+> {
+  insertLockingTarget(
+    principal: Principal,
+    values: RoutingRuleInsertInput,
+  ): Promise<RoutingRuleRow | 'target_gone'>;
+  /** `null` when the rule is not the principal's (or gone). The target is locked only
+   * when the patch changes it. */
+  updateLockingTarget(
+    principal: Principal,
+    id: string,
+    patch: RoutingRulePatch,
+  ): Promise<RoutingRuleRow | 'target_gone' | null>;
+}
+
 /** Provider health (add-provider-health-signals). The CHECK record is `status` +
  * its reason/source/time; the TRAFFIC record is written only on shared-breaker
  * transitions. Which one is displayed is decided by a row-serialized revision. */
@@ -182,6 +207,25 @@ export interface ModelAccessor {
    * concurrent re-listing turns it into `'listed'`. Same tier-first lock and tier
    * compaction as `remove`. */
   removeUnlisted(principal: Principal, id: string): Promise<'removed' | 'listed' | 'not_found'>;
+  /** Delete the provider's models that have stayed unlisted since `cutoff` or earlier
+   * AND that nothing references — no `routing_entry` for the model and no rule whose
+   * target is `model:<id>` (add-auto-prune-unlisted-models). Owner-scoped; returns the
+   * number of rows deleted (0 when nothing qualified, the provider's
+   * `auto_prune_unlisted` is off, the provider no longer has the incarnation the listing
+   * was made with, or `isCancelled()` is true once the locks are held).
+   *
+   * Takes NO tier locks and never waits on a model row: it locks the provider row, then
+   * the candidate rows `FOR UPDATE SKIP LOCKED`, then deletes in a second statement. Every
+   * writer that creates a reference to a model takes `FOR KEY SHARE` on the row first, so
+   * a save and a prune cannot interleave (a row a writer holds is skipped; a row the prune
+   * holds makes the writer wait, then reject the save as naming an unknown model). */
+  pruneUnlisted(
+    principal: Principal,
+    providerId: string,
+    cutoff: Date,
+    guard: ProviderIncarnation,
+    isCancelled: () => boolean,
+  ): Promise<number>;
   /** Clear all of a provider's models' user-set unit prices (owner-scoped),
    * returning the count cleared. Used when a provider's kind leaves custom/local
    * so a stale price can't be displayed for a now-catalog-priced provider. */
@@ -1358,7 +1402,7 @@ export interface PersistencePort {
   agents: OwnedRepository<AgentRow, AgentInsertInput, AgentPatch>;
   providers: ProviderAccessor;
   tiers: OwnedRepository<TierRow, TierInsertInput, TierPatch>;
-  routingRules: OwnedRepository<RoutingRuleRow, RoutingRuleInsertInput, RoutingRulePatch>;
+  routingRules: RoutingRuleAccessor;
   notificationChannels: OwnedRepository<
     NotificationChannelRow,
     NotificationChannelInsertInput,

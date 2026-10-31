@@ -15,6 +15,10 @@ heading is started.
 
 ## [Unreleased]
 
+### Added
+
+- **Retired models are removed automatically.** A model a provider has not listed for seven days is deleted on the next sync, unless a tier chain or rule uses it (those stay flagged "no longer offered"). On by default for every provider and switchable per provider in its edit dialog; the sync result and toast report how many were removed. **Upgrade:** the first sync after upgrading deletes existing unreferenced "no longer offered" models, and a deleted `custom`/`local` model loses its typed-in price. One migration.
+
 ### Fixed
 
 - **Requests no provider ran no longer book a cost.** A request skipped by open circuits, refused locally, or rejected by the provider records `$0` and reads "not billed" instead of an estimated cost, so a retry storm against a down provider can no longer trip a `block` budget. Budgets and alerts meter it as zero, the Costs mix counts it apart from free requests, and existing rows are not rewritten.

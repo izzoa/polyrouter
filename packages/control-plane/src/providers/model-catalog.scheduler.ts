@@ -149,7 +149,8 @@ export class ModelCatalogScheduler implements OnApplicationBootstrap, OnApplicat
     if (c.refreshed > 0 || c.failed > 0 || c.timeout > 0) {
       this.logger.log(
         `model catalog refresh: ${String(c.examined)} examined, ${String(c.refreshed)} refreshed, ` +
-          `${String(c.failed + c.timeout)} failed, ${String(c.carriedOver)} carried over`,
+          `${String(c.failed + c.timeout)} failed, ${String(c.carriedOver)} carried over` +
+          (c.pruned > 0 ? `, ${String(c.pruned)} retired models pruned` : ''),
       );
     }
   }

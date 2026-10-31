@@ -287,6 +287,11 @@ export const providers = pgTable(
     healthRev: bigint('health_rev', { mode: 'number' }).default(0).notNull(),
     firstByteTimeoutMs: integer('first_byte_timeout_ms'),
     idleTimeoutMs: integer('idle_timeout_ms'),
+    // add-auto-prune-unlisted-models: when true, a successful listing sync deletes this
+    // provider's models that have stayed unlisted for UNLISTED_PRUNE_AFTER_MS and that no
+    // tier entry or rule references. Defaults ON, for every existing row too (a constant
+    // default is a metadata-only ADD COLUMN in PostgreSQL 16).
+    autoPruneUnlisted: boolean('auto_prune_unlisted').default(true).notNull(),
     createdAt: createdAt(),
   },
   (t) => [

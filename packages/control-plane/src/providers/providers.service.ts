@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import {
   Inject,
   Injectable,
+  Logger,
   ConflictException,
   NotFoundException,
   UnprocessableEntityException,
@@ -86,6 +87,11 @@ export const PROVIDER_ADAPTER_FACTORY = 'polyrouter:provider-adapter-factory';
  * is defense-in-depth for any adapter path that bypasses `parseModelList`. */
 const MAX_SYNCED_MODELS = 2_000;
 const MAX_MODEL_NAME_LEN = 512;
+/** add-auto-prune-unlisted-models: how long a model must have stayed continuously unlisted
+ * (since its `unlisted_since`) before a successful sync may delete it, when nothing
+ * references it and the provider's `auto_prune_unlisted` is on. Elapsed time since the
+ * first observed omission, not a count of listings. */
+export const UNLISTED_PRUNE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Resolved config the service needs (encryption key + runtime mode). Provided
  * by the module via `loadProvidersConfig`; injected directly in unit tests. */
@@ -121,6 +127,8 @@ export interface SafeProvider {
   /** Upstream patience overrides (fix-long-call-timeouts); null = inherit. */
   firstByteTimeoutMs: number | null;
   idleTimeoutMs: number | null;
+  /** add-auto-prune-unlisted-models: sync deletes unreferenced models unlisted 7+ days. */
+  autoPruneUnlisted: boolean;
   createdAt: Date;
   /** add-provider-health-signals: the DISPLAYED health — whichever of the check
    * and traffic records was recorded last (computed here, never re-derived by the
@@ -229,6 +237,10 @@ export interface ActionResult {
   // Count of models for which a provider-listed DISPLAY estimate was stored this sync
   // (add-provider-price-sync-and-edit). Display only — never billing.
   pricesCaptured?: number;
+  /** Models this sync deleted as retired and unreferenced (add-auto-prune-unlisted-models):
+   * set on every successful sync, 0 when nothing qualified, the provider's switch is off, or
+   * reconciliation was skipped; absent on a failed one. */
+  pruned?: number;
 }
 
 const FIXED_MESSAGE: Record<string, string> = {
@@ -281,6 +293,7 @@ export function toSafe(p: ProviderRow): SafeProvider {
     credentialError: p.credentialError,
     firstByteTimeoutMs: p.firstByteTimeoutMs,
     idleTimeoutMs: p.idleTimeoutMs,
+    autoPruneUnlisted: p.autoPruneUnlisted,
     createdAt: p.createdAt,
     health: toSafeHealth(displayedProviderHealth(p)),
     lastErrorKind: p.lastErrorKind,
@@ -487,6 +500,7 @@ function baseIdFor(m: ModelRow, siblings: ReadonlySet<string>): string | null {
 
 @Injectable()
 export class ProvidersService {
+  private readonly logger = new Logger(ProvidersService.name);
   private readonly key: string;
   private readonly mode: 'selfhosted' | 'cloud';
   private readonly adapterBuilder: ProviderAdapterBuilder;
@@ -539,6 +553,8 @@ export class ProvidersService {
       ...(dto.idleTimeoutMs !== undefined ? { idleTimeoutMs: dto.idleTimeoutMs } : {}),
       // Mapped by hand (like every field here) — omit to take the schema `auto` default.
       ...(dto.maxTokensSpelling !== undefined ? { maxTokensSpelling: dto.maxTokensSpelling } : {}),
+      // Omit to take the schema default (on).
+      ...(dto.autoPruneUnlisted !== undefined ? { autoPruneUnlisted: dto.autoPruneUnlisted } : {}),
     };
     return toSafe(await this.db.providers.insert(principal, values));
   }
@@ -595,6 +611,7 @@ export class ProvidersService {
       ...(dto.idleTimeoutMs !== undefined ? { idleTimeoutMs: dto.idleTimeoutMs } : {}),
       // Omitted preserves the stored value (an explicit null was already rejected at the DTO).
       ...(dto.maxTokensSpelling !== undefined ? { maxTokensSpelling: dto.maxTokensSpelling } : {}),
+      ...(dto.autoPruneUnlisted !== undefined ? { autoPruneUnlisted: dto.autoPruneUnlisted } : {}),
       // Present-but-empty clears; omitted (undefined) preserves the envelope. New
       // plain values are WRAPPED in the typed envelope (forgery-proof by construction).
       ...(dto.credential !== undefined
@@ -818,6 +835,7 @@ export class ProvidersService {
     // `attempts` bounds DB round-trips (a skipped id doesn't consume the budget).
     let synced = 0;
     let pricesCaptured = 0;
+    let pruned = 0;
     let attempts = 0;
     const now = new Date();
     for (const m of deduped.values()) {
@@ -871,13 +889,31 @@ export class ProvidersService {
       models.length < MAX_PARSED_MODELS &&
       !endpointMoved
     ) {
-      await this.db.models.reconcileListing(
+      const reconciled = await this.db.models.reconcileListing(
         principal,
         provider.id,
         [...deduped.keys()],
         now,
         listedWith,
       );
+      // Prune only after a reconcile that APPLIED (so every trust guard above and the
+      // incarnation check already held), while this caller is still live, and when the
+      // provider's switch was on at the start of the sync; the port re-checks the switch
+      // and the incarnation under the provider's row lock. Housekeeping must never fail a
+      // sync that has already succeeded, so a failure here logs and reports zero.
+      if (reconciled && provider.autoPruneUnlisted && !aborted()) {
+        try {
+          pruned = await this.db.models.pruneUnlisted(
+            principal,
+            provider.id,
+            new Date(now.getTime() - UNLISTED_PRUNE_AFTER_MS),
+            listedWith,
+            aborted,
+          );
+        } catch {
+          this.logger.warn('model catalog: pruning retired models failed');
+        }
+      }
     }
     const result: ActionResult = {
       ok: true,
@@ -886,6 +922,7 @@ export class ProvidersService {
       traceId: randomUUID(),
       synced,
       pricesCaptured,
+      pruned,
     };
     if (recordHealth && listedWith !== null) {
       await this.recordCheck(principal, id, result, 'sync', listedWith);

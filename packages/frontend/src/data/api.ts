@@ -128,6 +128,10 @@ export interface ProviderDto {
   /** Upstream patience overrides (fix-long-call-timeouts); null = inherit. */
   firstByteTimeoutMs: number | null;
   idleTimeoutMs: number | null;
+  /** add-auto-prune-unlisted-models: sync deletes unreferenced models unlisted 7+ days.
+   * The server always sends it; optional here so older test doubles still type-check, and
+   * read as on (the server default) when absent. */
+  autoPruneUnlisted?: boolean;
   createdAt: string;
   health: ProviderHealthDto;
   /** The two raw records (non-secret) behind `health`. */
@@ -182,6 +186,8 @@ export interface UpdateProviderInput {
   /** Explicit null clears back to inherit; omitted preserves. */
   firstByteTimeoutMs?: number | null;
   idleTimeoutMs?: number | null;
+  /** Omitted preserves the stored value; the server rejects an explicit null. */
+  autoPruneUnlisted?: boolean;
 }
 
 /** Provenance of a model's effective display price. `listed` is the display-only
@@ -262,6 +268,8 @@ export interface ActionResult {
   message: string;
   traceId: string;
   synced?: number;
+  /** Retired, unreferenced models this sync deleted (add-auto-prune-unlisted-models). */
+  pruned?: number;
 }
 
 export interface TierDto {

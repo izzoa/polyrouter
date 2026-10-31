@@ -279,6 +279,10 @@ export interface AppState {
      * patch (credential rotate/clear still follows the SO-1 rules) and the modal
      * renders those fields read-only. */
     oauthPreset: string | null;
+    /** add-auto-prune-unlisted-models: the edit-only toggle, and the value the modal
+     * opened with — the PATCH carries the field only when it changed. */
+    autoPruneUnlisted: boolean;
+    origAutoPruneUnlisted: boolean;
   };
   /** Transient key-reveal — raw key/snippet live here ONLY, never persisted. */
   kr: { title: string; key: string; snippet: string; harness: Harness };
@@ -554,6 +558,7 @@ function toProvider(p: ProviderDto): Provider {
     credentialError: p.credentialError,
     firstByteTimeoutMs: p.firstByteTimeoutMs,
     idleTimeoutMs: p.idleTimeoutMs,
+    autoPruneUnlisted: p.autoPruneUnlisted ?? true,
     createdAt: p.createdAt,
     health: p.health,
   };
@@ -597,6 +602,8 @@ function emptyNp(): AppState['np'] {
     clearCredential: false,
     origKind: 'api',
     oauthPreset: null,
+    autoPruneUnlisted: true,
+    origAutoPruneUnlisted: true,
   };
 }
 
@@ -3160,6 +3167,10 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
                     parseTimeoutS(form.firstByteTimeoutS, 'First-byte patience') ?? null,
                   idleTimeoutMs: parseTimeoutS(form.idleTimeoutS, 'Idle patience') ?? null,
                 };
+          // Sent only when changed, so an unrelated edit never rewrites the switch.
+          if (form.autoPruneUnlisted !== form.origAutoPruneUnlisted) {
+            patch.autoPruneUnlisted = form.autoPruneUnlisted;
+          }
           const typed = form.credential.trim();
           if (form.clearCredential) patch.credential = '';
           else if (typed) patch.credential = typed;
@@ -3206,6 +3217,8 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           firstByteTimeoutS:
             p.firstByteTimeoutMs === null ? '' : String(p.firstByteTimeoutMs / 1000),
           idleTimeoutS: p.idleTimeoutMs === null ? '' : String(p.idleTimeoutMs / 1000),
+          autoPruneUnlisted: p.autoPruneUnlisted,
+          origAutoPruneUnlisted: p.autoPruneUnlisted,
         },
       });
       void loadTimeoutDefaults();
@@ -3332,7 +3345,16 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         await loadProviders();
         if (result.ok) {
           await loadModels(id);
-          say(`Synced ${String(result.synced ?? 0)} models`);
+          // A sync that deleted retired models says so (add-auto-prune-unlisted-models);
+          // one that deleted none stays silent about it.
+          const pruned = result.pruned ?? 0;
+          say(
+            pruned > 0
+              ? `Synced ${String(result.synced ?? 0)} models, removed ${String(pruned)} retired ${
+                  pruned === 1 ? 'model' : 'models'
+                }`
+              : `Synced ${String(result.synced ?? 0)} models`,
+          );
         } else {
           say(`Sync failed — ${result.message}`);
         }

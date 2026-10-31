@@ -603,6 +603,30 @@ export function Modals() {
                         the durable fix for heavy chains.
                       </div>
                     </div>
+                    {/* add-auto-prune-unlisted-models: edit only — a provider that does not
+                    exist yet has nothing to prune. */}
+                    <Show when={state.np.editingId !== null}>
+                      <div>
+                        <label
+                          for="f-np-autoprune"
+                          style="display:flex;align-items:center;gap:6px;min-height:24px;font:500 11.5px 'Geist',sans-serif;color:var(--text2)"
+                        >
+                          <input
+                            type="checkbox"
+                            id="f-np-autoprune"
+                            checked={state.np.autoPruneUnlisted}
+                            onChange={(e) =>
+                              setState('np', 'autoPruneUnlisted', e.currentTarget.checked)
+                            }
+                          />
+                          Remove retired models automatically
+                        </label>
+                        <div style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);line-height:1.5;margin-top:4px">
+                          Models this provider has not listed for 7 days are removed on the next
+                          sync, unless a tier or rule uses them.
+                        </div>
+                      </div>
+                    </Show>
                     <div style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);line-height:1.5">
                       Custom base URLs are SSRF-checked — private and metadata ranges are rejected.
                       Credentials are encrypted at rest.

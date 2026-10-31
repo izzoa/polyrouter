@@ -397,7 +397,14 @@ export class RoutingConfigService {
       target: dto.target,
       priority: dto.priority ?? 0,
     };
-    return toSafeRule(await this.db.routingRules.insert(principal, values));
+    // The existence check above gives the friendly message; this write re-takes the
+    // model row FOR KEY SHARE in the same transaction (add-auto-prune-unlisted-models),
+    // so a prune that deleted the model in between turns into the same 422.
+    const written = await this.db.routingRules.insertLockingTarget(principal, values);
+    if (written === 'target_gone') {
+      throw new UnprocessableEntityException('target model does not exist');
+    }
+    return toSafeRule(written);
   }
 
   async updateRule(principal: Principal, id: string, dto: UpdateRuleDto): Promise<SafeRule> {
@@ -427,7 +434,10 @@ export class RoutingConfigService {
       ...(dto.target !== undefined ? { target: dto.target } : {}),
       ...(dto.priority !== undefined ? { priority: dto.priority } : {}),
     };
-    const row = await this.db.routingRules.update(principal, id, patch);
+    const row = await this.db.routingRules.updateLockingTarget(principal, id, patch);
+    if (row === 'target_gone') {
+      throw new UnprocessableEntityException('target model does not exist');
+    }
     if (!row) throw new NotFoundException();
     return toSafeRule(row);
   }

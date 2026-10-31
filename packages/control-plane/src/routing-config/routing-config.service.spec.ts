@@ -74,6 +74,13 @@ function makePort(seed: { tiers: TierRow[]; models: ModelRow[]; rules?: RoutingR
   const models = [...seed.models];
   const rules = [...(seed.rules ?? [])];
   const entriesByTier = new Map<string, RoutingEntryRow[]>();
+  // Model ids the locking rule writes report as gone, though `models.findById` still
+  // finds them: a prune that wins the race between the service's check and its write.
+  const lockGone = new Set<string>();
+  const targetGone = (target: string | undefined): boolean => {
+    const id = target?.startsWith('model:') ? target.slice('model:'.length) : null;
+    return id !== null && (lockGone.has(id) || !models.some((m) => m.id === id));
+  };
   let seq = 0;
   const port = {
     tiers: {
@@ -124,6 +131,19 @@ function makePort(seed: { tiers: TierRow[]; models: ModelRow[]; rules?: RoutingR
         if (i < 0) return Promise.resolve(false);
         rules.splice(i, 1);
         return Promise.resolve(true);
+      },
+      insertLockingTarget: (_p: Principal, values: Partial<RoutingRuleRow>) => {
+        if (targetGone(values.target)) return Promise.resolve('target_gone' as const);
+        const row = rule({ ...values, id: `r_new${++seq}` });
+        rules.push(row);
+        return Promise.resolve(row);
+      },
+      updateLockingTarget: (_p: Principal, id: string, patch: Partial<RoutingRuleRow>) => {
+        if (targetGone(patch.target)) return Promise.resolve('target_gone' as const);
+        const r = rules.find((x) => x.id === id);
+        if (!r) return Promise.resolve(null);
+        Object.assign(r, patch);
+        return Promise.resolve(r);
       },
     },
     // The seam check reads providers (add-batch-mode-routing): a batch-capable
@@ -183,7 +203,7 @@ function makePort(seed: { tiers: TierRow[]; models: ModelRow[]; rules?: RoutingR
       },
     },
   };
-  return { port: port as unknown as PersistencePort, tiers, rules };
+  return { port: port as unknown as PersistencePort, tiers, rules, lockGone };
 }
 
 function svcWith(seed: Parameters<typeof makePort>[0]) {
@@ -306,6 +326,28 @@ describe('RoutingConfigService — rules', () => {
       target: 'model:m1',
     });
     expect(ok.target).toBe('model:m1');
+  });
+
+  it('rejects a rule whose model target is deleted between the check and the write', async () => {
+    // add-auto-prune-unlisted-models: the existence check passes, then a prune wins the
+    // row lock; the locking write reports the model gone and nothing is saved.
+    const { svc, rules, lockGone } = svcWith({
+      ...seed(),
+      rules: [rule({ id: 'r1', matchType: 'default', headerValue: null, target: 'tier:default' })],
+    });
+    lockGone.add('m1');
+    await expect(
+      svc.createRule(P, { matchType: 'default', target: 'model:m1' }),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    await expect(svc.updateRule(P, 'r1', { target: 'model:m1' })).rejects.toBeInstanceOf(
+      UnprocessableEntityException,
+    );
+    expect(rules).toHaveLength(1);
+    expect(rules[0]!.target).toBe('tier:default');
+    // An update that leaves the target alone never reports a gone target.
+    await expect(svc.updateRule(P, 'r1', { priority: 5 })).resolves.toMatchObject({
+      priority: 5,
+    });
   });
 
   it('requires header_value for header rules and normalizes header_name', async () => {

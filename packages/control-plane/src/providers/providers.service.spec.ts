@@ -24,6 +24,7 @@ import {
 } from '@polyrouter/data-plane';
 import {
   ProvidersService,
+  UNLISTED_PRUNE_AFTER_MS,
   type ProviderAdapterFactory,
   type ProvidersRuntime,
 } from './providers.service';
@@ -65,6 +66,10 @@ interface FakePort {
     Promise<boolean>,
     [Principal, string, readonly string[], Date, ProviderIncarnation]
   >;
+  pruneUnlisted: jest.Mock<
+    Promise<number>,
+    [Principal, string, Date, ProviderIncarnation, () => boolean]
+  >;
 }
 
 function makePort(): FakePort {
@@ -96,6 +101,7 @@ function makePort(): FakePort {
     healthRev: values.healthRev ?? 0,
     firstByteTimeoutMs: values.firstByteTimeoutMs ?? null,
     idleTimeoutMs: values.idleTimeoutMs ?? null,
+    autoPruneUnlisted: values.autoPruneUnlisted ?? true,
     createdAt: new Date(),
   });
   const upsert = jest.fn(
@@ -131,6 +137,15 @@ function makePort(): FakePort {
       _now: Date,
       _guard: ProviderIncarnation,
     ): Promise<boolean> => Promise.resolve(true),
+  );
+  const pruneUnlisted = jest.fn(
+    (
+      _p: Principal,
+      _id: string,
+      _cutoff: Date,
+      _guard: ProviderIncarnation,
+      _isCancelled: () => boolean,
+    ): Promise<number> => Promise.resolve(0),
   );
   const port = {
     providers: {
@@ -222,10 +237,11 @@ function makePort(): FakePort {
     models: {
       upsertForProvider: upsert,
       reconcileListing,
+      pruneUnlisted,
       listForPrincipal: () => Promise.resolve([]),
     },
   } as unknown as PersistencePort;
-  return { port, rows, upsert, reconcileListing };
+  return { port, rows, upsert, reconcileListing, pruneUnlisted };
 }
 
 function factory(overrides: Partial<ProviderAdapter> = {}): ProviderAdapterFactory {
@@ -704,6 +720,153 @@ describe('ProvidersService — unlisted reconciliation (add-live-subscription-mo
     const f = await bad.svc.refreshCatalog(principal, bad.prov.id);
     expect(f.ok).toBe(false);
     expect(bad.setHealth).not.toHaveBeenCalled();
+  });
+});
+
+describe('ProvidersService — auto-prune of unlisted models (add-auto-prune-unlisted-models)', () => {
+  async function setup(
+    listModels: ProviderAdapter['listModels'],
+    create: { autoPruneUnlisted?: boolean } = {},
+  ) {
+    const made = makePort();
+    const seed = mkProvidersService(made.port, factory(), runtime('selfhosted'));
+    const prov = await seed.create(principal, {
+      ...baseCreate,
+      kind: 'custom',
+      baseUrl: 'https://1.1.1.1/v1',
+      credential: 'k',
+      ...create,
+    });
+    const svc = mkProvidersService(made.port, factory({ listModels }), runtime('selfhosted'));
+    return { ...made, prov, svc };
+  }
+  const ids = (n: number): ProviderModelInfo[] =>
+    Array.from({ length: n }, (_, i) => ({ id: `m${String(i)}` }));
+
+  it('prunes after an applied reconcile, with the 7-day cutoff and the listing incarnation', async () => {
+    const { svc, prov, reconcileListing, pruneUnlisted } = await setup(() =>
+      Promise.resolve(ids(3)),
+    );
+    pruneUnlisted.mockResolvedValueOnce(4);
+    const before = Date.now();
+    const r = await svc.syncModels(principal, prov.id);
+    const after = Date.now();
+    expect(r).toMatchObject({ ok: true, synced: 3, pruned: 4 });
+    expect(pruneUnlisted).toHaveBeenCalledTimes(1);
+    const [, providerId, cutoff, guard, isCancelled] = pruneUnlisted.mock.calls[0]!;
+    expect(providerId).toBe(prov.id);
+    // Exactly seven days before the sync's own clock.
+    expect(cutoff.getTime()).toBeGreaterThanOrEqual(before - UNLISTED_PRUNE_AFTER_MS);
+    expect(cutoff.getTime()).toBeLessThanOrEqual(after - UNLISTED_PRUNE_AFTER_MS);
+    expect(guard).toEqual(reconcileListing.mock.calls[0]![4]); // same incarnation
+    expect(isCancelled()).toBe(false);
+  });
+
+  it('a successful sync that pruned nothing still reports pruned: 0; a failed one reports none', async () => {
+    const ok = await setup(() => Promise.resolve(ids(2)));
+    expect((await ok.svc.syncModels(principal, ok.prov.id)).pruned).toBe(0);
+    const bad = await setup(() => Promise.reject(new ProviderError('unavailable', 'down')));
+    const f = await bad.svc.syncModels(principal, bad.prov.id);
+    expect(f.ok).toBe(false);
+    expect('pruned' in f).toBe(false);
+  });
+
+  it('never prunes when reconciliation was skipped or did not apply', async () => {
+    const empty = await setup(() => Promise.resolve([]));
+    expect((await empty.svc.syncModels(principal, empty.prov.id)).pruned).toBe(0);
+    expect(empty.pruneUnlisted).not.toHaveBeenCalled();
+
+    const capped = await setup(() => Promise.resolve(ids(MAX_PARSED_MODELS)));
+    await capped.svc.syncModels(principal, capped.prov.id);
+    expect(capped.pruneUnlisted).not.toHaveBeenCalled();
+
+    const partial = await setup(() =>
+      Promise.resolve(Object.assign(ids(3), { truncated: true as const })),
+    );
+    await partial.svc.syncModels(principal, partial.prov.id);
+    expect(partial.pruneUnlisted).not.toHaveBeenCalled();
+
+    // The port refused the reconcile (a replaced credential, another tenant, an edit).
+    const refused = await setup(() => Promise.resolve(ids(3)));
+    refused.reconcileListing.mockResolvedValueOnce(false);
+    expect((await refused.svc.syncModels(principal, refused.prov.id)).pruned).toBe(0);
+    expect(refused.pruneUnlisted).not.toHaveBeenCalled();
+
+    // The endpoint moved while the listing was in flight.
+    const ref: { rows?: Map<string, ProviderRow>; id: string } = { id: '' };
+    const moved = await setup(() => {
+      const cur = ref.rows!.get(ref.id)!;
+      ref.rows!.set(ref.id, { ...cur, baseUrl: 'https://8.8.8.8/v1' });
+      return Promise.resolve(ids(3));
+    });
+    ref.rows = moved.rows;
+    ref.id = moved.prov.id;
+    await moved.svc.syncModels(principal, moved.prov.id);
+    expect(moved.pruneUnlisted).not.toHaveBeenCalled();
+  });
+
+  it('never prunes while the provider switch is off', async () => {
+    const { svc, prov, reconcileListing, pruneUnlisted } = await setup(
+      () => Promise.resolve(ids(3)),
+      { autoPruneUnlisted: false },
+    );
+    const r = await svc.syncModels(principal, prov.id);
+    expect(r).toMatchObject({ ok: true, pruned: 0 });
+    expect(reconcileListing).toHaveBeenCalledTimes(1); // still flags and clears
+    expect(pruneUnlisted).not.toHaveBeenCalled();
+  });
+
+  it('a caller that aborts before the prune never reaches the port; one that aborts later is told', async () => {
+    const stop = new AbortController();
+    const early = await setup(() => Promise.resolve(ids(2)));
+    early.reconcileListing.mockImplementationOnce(() => {
+      stop.abort(); // the deadline lands between the reconcile and the prune
+      return Promise.resolve(true);
+    });
+    await early.svc.refreshCatalog(principal, early.prov.id, stop.signal);
+    expect(early.pruneUnlisted).not.toHaveBeenCalled();
+
+    // The port is handed a live view of the signal, so it can stop at its own last moment.
+    const late = new AbortController();
+    const made = await setup(() => Promise.resolve(ids(2)));
+    await made.svc.refreshCatalog(principal, made.prov.id, late.signal);
+    const isCancelled = made.pruneUnlisted.mock.calls[0]![4];
+    expect(isCancelled()).toBe(false);
+    late.abort();
+    expect(isCancelled()).toBe(true);
+  });
+
+  it('a prune that throws is logged and reported as zero; the sync still succeeded', async () => {
+    const { svc, prov, pruneUnlisted } = await setup(() => Promise.resolve(ids(2)));
+    pruneUnlisted.mockRejectedValueOnce(new Error('connection reset'));
+    const r = await svc.syncModels(principal, prov.id);
+    expect(r).toMatchObject({ ok: true, synced: 2, pruned: 0 });
+  });
+
+  it('the switch defaults on, is set on create, and is preserved or changed on update', async () => {
+    const { port } = makePort();
+    const svc = mkProvidersService(port, factory(), runtime('selfhosted'));
+    const base = { ...baseCreate, kind: 'custom' as const, baseUrl: 'https://1.1.1.1/v1' };
+    const dflt = await svc.create(principal, { ...base, credential: 'k' });
+    expect(dflt.autoPruneUnlisted).toBe(true);
+    const off = await svc.create(principal, { ...base, credential: 'k', autoPruneUnlisted: false });
+    expect(off.autoPruneUnlisted).toBe(false);
+
+    // Omitted preserves, in both directions.
+    expect((await svc.update(principal, off.id, { name: 'renamed' })).autoPruneUnlisted).toBe(
+      false,
+    );
+    expect((await svc.update(principal, dflt.id, { name: 'renamed' })).autoPruneUnlisted).toBe(
+      true,
+    );
+    // An explicit value changes it, and the safe view reads it back.
+    expect(
+      (await svc.update(principal, dflt.id, { autoPruneUnlisted: false })).autoPruneUnlisted,
+    ).toBe(false);
+    expect((await svc.get(principal, dflt.id)).autoPruneUnlisted).toBe(false);
+    expect(
+      (await svc.update(principal, off.id, { autoPruneUnlisted: true })).autoPruneUnlisted,
+    ).toBe(true);
   });
 });
 

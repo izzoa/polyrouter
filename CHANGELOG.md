@@ -15,6 +15,11 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.27.0] — 2026-11-01
+
+[Release](https://github.com/izzoa/polyrouter/releases/tag/v0.27.0) ·
+[Compare](https://github.com/izzoa/polyrouter/compare/v0.26.0...v0.27.0)
+
 ### Changed
 
 - **The Auto routing tab separates what auto did from what you set.** A Pipeline panel reads out each stage's status now, its count, share and bar for the range, and its history when a stage was not running; a Setup panel holds the three layer switches, the Targets matrix (now Claim, Strong and Cheap, with no Detected column) and two drawers for self-calibration and semantic learning. Estimated net savings moved to the Cascade row and is shown to the cent, and every row's action lines up. No routing behavior or API changed.
@@ -1135,7 +1140,8 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.26.0...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.27.0...HEAD
+[0.27.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.27.0
 [0.26.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.26.0
 [0.25.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.25.0
 [0.24.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.24.0

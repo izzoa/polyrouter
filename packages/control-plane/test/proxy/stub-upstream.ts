@@ -3,6 +3,8 @@
 // can drive error modes: `*miderror*` fails after a token, `*firsterror*` fails
 // as the first event. Bound to 127.0.0.1 so a `local` provider passes the SSRF
 // gate under MODE=selfhosted.
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo, Socket } from 'node:net';
 
@@ -195,8 +197,54 @@ function openaiStream(res: ServerResponse, model: string): void {
  * fires only when a frame has genuinely left for the socket (not parked in an
  * unbounded local buffer). Each content marker is `<i>:<64KiB pad>` so the
  * client can assert complete, ordered delivery. */
-export const BIG_FRAME_COUNT = 120;
 const BIG_FRAME_PAD = 'x'.repeat(64 * 1024);
+const MiB = 1024 * 1024;
+
+/** The most a host's TCP stack can autotune ONE connection's send and receive
+ * buffers to, in bytes, or null when it cannot be read: Linux `tcp_wmem`/`tcp_rmem`
+ * maxima from /proc; macOS `autosndbufmax`/`autorcvbufmax` from sysctl. */
+function tcpAutotuneCeilings(): { send: number; recv: number } | null {
+  const third = (file: string): number => Number(readFileSync(file, 'utf8').trim().split(/\s+/)[2]);
+  try {
+    if (process.platform === 'linux') {
+      return {
+        send: third('/proc/sys/net/ipv4/tcp_wmem'),
+        recv: third('/proc/sys/net/ipv4/tcp_rmem'),
+      };
+    }
+    if (process.platform === 'darwin') {
+      const [send, recv] = execFileSync(
+        'sysctl',
+        ['-n', 'net.inet.tcp.autosndbufmax', 'net.inet.tcp.autorcvbufmax'],
+        { encoding: 'utf8' },
+      )
+        .trim()
+        .split(/\s+/)
+        .map(Number);
+      return { send: send!, recv: recv! };
+    }
+  } catch {
+    // Unreadable: fall through to the fixed count.
+  }
+  return null;
+}
+
+/** Enough frames that the stream CANNOT fit in every buffer between the stub and a
+ * paused client, so "the stub stalled mid-stream" proves backpressure on any host.
+ * The chain holds two TCP connections (stub→proxy, proxy→client), each able to
+ * autotune to the send ceiling on one end and the receive ceiling on the other,
+ * plus a generous allowance for the userland stream buffers in between; 25% on
+ * top. A fixed 120 × 64 KiB (7.5 MiB) stream fit inside one receive buffer on a
+ * runner whose kernel autotunes `tcp_rmem` to 32 MiB, so whether it stalled came
+ * down to autotuning timing (it failed twice in one CI run, passed in the next). */
+function bigFrameCount(): number {
+  const FIXED = 120;
+  const c = tcpAutotuneCeilings();
+  if (c === null || !(c.send > 0) || !(c.recv > 0)) return FIXED;
+  const capacity = 2 * (c.send + c.recv) + 8 * MiB;
+  return Math.max(FIXED, Math.ceil((capacity * 1.25) / BIG_FRAME_PAD.length));
+}
+export const BIG_FRAME_COUNT = bigFrameCount();
 
 function openaiStreamBigFrames(res: ServerResponse, model: string, onFrame: () => void): void {
   sse(res);

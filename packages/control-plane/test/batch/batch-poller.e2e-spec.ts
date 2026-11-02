@@ -60,6 +60,21 @@ describe('batch poller + settlement — Phase B §4 (add-batch-inference)', () =
     (await h.counter.readWithPending([spendKey(t)]))[0]!.pending;
   const itemsOf = async (t: Tenant, jobId: string) =>
     (await h.port.requestLogs.list(t.principal)).filter((r) => r.batchId === jobId);
+  /** A poller with no in-memory state, sharing the app's singletons — what a
+   * restart produces, and the only way to sweep under a different margin. */
+  const freshPoller = (windowMarginMs = 3_600_000): BatchPoller =>
+    new BatchPoller(
+      h.redis,
+      h.port,
+      h.maintenance,
+      { enabled: true, maxItems: 10, maxBodyBytes: 1024, pollIntervalMs: 15_000, windowMarginMs },
+      h.app.get(BatchService),
+      h.settlement!,
+      h.app.get(BudgetService),
+      h.app.get(NotificationProducers),
+      h.metrics,
+      h.events,
+    );
 
   beforeAll(async () => {
     h = await createBatchHarness({ withPoller: true });
@@ -135,27 +150,9 @@ describe('batch poller + settlement — Phase B §4 (add-batch-inference)', () =
     await poller.sweep();
     completeStubBatch(await upstreamOf(t, id));
 
-    // A new instance with no in-memory state — exactly what a restart produces.
-    const fresh = new BatchPoller(
-      h.redis,
-      h.port,
-      h.maintenance,
-      {
-        enabled: true,
-        maxItems: 10,
-        maxBodyBytes: 1024,
-        pollIntervalMs: 15_000,
-        windowMarginMs: 3_600_000,
-      },
-      h.app.get(BatchService),
-      h.settlement!,
-      // The same singletons the app holds — a restart re-reads the database, not
-      // in-memory state, which is exactly what this proves.
-      h.app.get(BudgetService),
-      h.app.get(NotificationProducers),
-      h.metrics,
-      h.events,
-    );
+    // A new instance with no in-memory state — exactly what a restart produces. It
+    // shares the app's singletons: a restart re-reads the database, not memory.
+    const fresh = freshPoller();
     try {
       await fresh.sweep();
     } finally {
@@ -237,20 +234,30 @@ describe('batch poller + settlement — Phase B §4 (add-batch-inference)', () =
     const id = (await submit(t.key, doc('gpt-4o', [item('e1')]))).body.id as string;
     const reserved = (await jobOf(t, id)).reservedCeilingMicros!;
     // Past the completion window plus the margin, but the upstream still says it runs.
+    // The release is keyed on `submitted_at`'s budget period, so the job stays in the
+    // CURRENT UTC month (backdating days crossed into last month on the 1st–3rd and
+    // released the wrong counter): a 1 ms window from the month's start, swept with
+    // no margin, is past its deadline on every date.
     await h.pool.query(
-      `UPDATE batch_job SET submitted_at = now() - interval '3 days' WHERE id = $1`,
+      `UPDATE batch_job SET submitted_at = date_trunc('month', now(), 'UTC'), completion_window_ms = 1 WHERE id = $1`,
       [id],
     );
     const upstream = await upstreamOf(t, id);
     upstream.status = 'in_progress';
-    await poller.sweep();
-    expect((await jobOf(t, id)).status).toBe('in_progress');
-    expect(await pendingOf(t)).toBe(reserved);
+    const noMargin = freshPoller(0);
+    let job: BatchJobRow;
+    try {
+      await noMargin.sweep();
+      expect((await jobOf(t, id)).status).toBe('in_progress');
+      expect(await pendingOf(t)).toBe(reserved);
 
-    // Only when the upstream can no longer find it does the job expire.
-    h.stub.batches.delete(upstream.id);
-    await poller.sweep();
-    const job = await jobOf(t, id);
+      // Only when the upstream can no longer find it does the job expire.
+      h.stub.batches.delete(upstream.id);
+      await noMargin.sweep();
+      job = await jobOf(t, id);
+    } finally {
+      await noMargin.onApplicationShutdown();
+    }
     expect(job.status).toBe('expired');
     expect(job.terminalAt).not.toBeNull();
     expect(await pendingOf(t)).toBe(0);

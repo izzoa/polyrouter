@@ -111,7 +111,9 @@ async function expandAllStages(page: Page): Promise<void> {
  * Auto routing every stage is expanded. Yields a label per state, with the page
  * already switched to it. */
 async function* pageStates(page: Page, name: string): AsyncGenerator<string> {
-  await page.goto(`/browser-harness.html#/${name}`);
+  // Routing runs on `?semantic=1` (split-auto-routing-readout-setup): the semantic layer
+  // effective, so its Semantic learning drawer can open and be measured too.
+  await page.goto(`/browser-harness.html${name === 'routing' ? '?semantic=1' : ''}#/${name}`);
   await page.waitForSelector('html[data-harness-ready="true"]');
   const sections: string[] = await page.evaluate(() =>
     [...document.querySelectorAll('[data-testid="routing-sections"] .rs-seg')].map((b) =>
@@ -131,6 +133,18 @@ async function* pageStates(page: Page, name: string): AsyncGenerator<string> {
     await openRoutingSection(page, label);
     if (label === 'Auto routing') await expandAllStages(page);
     yield `${name}/${label}`;
+    if (label !== 'Auto routing') continue;
+    // The tuning drawers mount only when opened — measure each, then close it.
+    for (const drawer of ['calibration', 'learning'] as const) {
+      await page.locator(`[data-testid="tuning-entry"][data-tuning="${drawer}"]`).click();
+      await page
+        .locator(`[data-testid="tuning-drawer"][data-tuning="${drawer}"]`)
+        .waitFor({ state: 'visible' });
+      await page.waitForTimeout(250); // the entrance transform, as the overlay suites wait
+      yield `${name}/${label}/drawer:${drawer}`;
+      await page.keyboard.press('Escape');
+      await expect(page.locator('[data-testid="tuning-drawer"]')).toHaveCount(0);
+    }
   }
 }
 
@@ -371,16 +385,17 @@ test.describe('phone width', () => {
     // Its 30x17 visual is locked design. Conformance therefore has to be established by
     // hit-testing — measuring the rectangle would report a false failure.
     //
-    // The auto-layer switches live on the Auto routing tab, which a visit does not land
-    // on (D2) — so the tab is opened first and the switch is taken from the pipeline, never
-    // "the first `.toggle` on the page", which on Tiers & headers is not a layer switch.
+    // The auto-layer switches live in the Auto routing tab's Setup panel, which a visit
+    // does not land on — so the tab is opened first and the switch is taken from the Layers
+    // cells, never "the first `.toggle` on the page", which on Tiers & headers is not a
+    // layer switch.
     await open(page, '#/routing');
     await openRoutingSection(page, 'Auto routing');
-    const sw = page.locator('[data-testid="auto-pipeline"] .ar-switch .toggle').first();
+    const sw = page.locator('[data-testid="auto-layers"] .toggle').first();
     await sw.waitFor({ state: 'visible' });
     await sw.scrollIntoViewIfNeeded();
     const hit = await page.evaluate(() => {
-      const t = document.querySelector('[data-testid="auto-pipeline"] .ar-switch .toggle');
+      const t = document.querySelector('[data-testid="auto-layers"] .toggle');
       if (!t) return null;
       const r = t.getBoundingClientRect();
       const owns = (dx: number, dy: number): boolean => {
@@ -1108,14 +1123,9 @@ test.describe('Targets matrix at the reflow width (?targets=1)', () => {
         const grid = row.querySelector(':scope > .rs-grid-targets');
         const display = grid ? getComputedStyle(grid).display : 'missing';
         if (display !== 'block') problems.push(`${id}: row grid is ${display}, not stacked`);
-        const cells = row.querySelectorAll<HTMLElement>(
-          '[data-testid="targets-cell"], [data-testid="targets-detected"]',
-        );
+        const cells = row.querySelectorAll<HTMLElement>('[data-testid="targets-cell"]');
         for (const cell of cells) {
-          const column =
-            cell.dataset['testid'] === 'targets-detected'
-              ? 'detected'
-              : (cell.dataset['column'] ?? '?');
+          const column = cell.dataset['column'] ?? '?';
           const label = cell.querySelector(':scope > .tm-label');
           if (!label) {
             problems.push(`${id}/${column}: no label element`);
@@ -1156,14 +1166,13 @@ test.describe('Targets matrix at the reflow width (?targets=1)', () => {
     expect(shape.head, 'the column header still shows in the stacked layout').toBe('none');
     expect(shape.rows).toBe(MATRIX_ROWS);
     expect(shape.problems, 'stacked matrix labels').toEqual([]);
-    // Every field of every row is labelled — three targets and the detected count — and
-    // each label names its own column, rule id included.
-    expect(shape.fields).toHaveLength(MATRIX_ROWS * (MATRIX_COLUMNS.length + 1));
+    // Every field of every row is labelled — the three targets; no Detected column
+    // (split-auto-routing-readout-setup D9) — and each label names its own column.
+    expect(shape.fields).toHaveLength(MATRIX_ROWS * MATRIX_COLUMNS.length);
     const want: Record<string, RegExp> = {
-      claim: /^Claim auto_workload$/,
-      strong: /^Strong auto_high$/,
-      cheap: /^Cheap auto_low$/,
-      detected: /^Detected · \w+$/,
+      claim: /^Claim$/,
+      strong: /^Strong$/,
+      cheap: /^Cheap$/,
     };
     for (const f of shape.fields) {
       expect(f.label, `${f.row}/${f.column} label`).toMatch(want[f.column] ?? /^$/);
@@ -1177,7 +1186,7 @@ test.describe('Targets matrix above table-fit-targets (?targets=1)', () => {
   test('stays a grid under its header, with the field labels read but not shown', async ({
     page,
   }) => {
-    // The other side of the threshold: at 1440 the matrix's content box clears 940px, so
+    // The other side of the threshold: at 1440 the matrix's content box clears 900px, so
     // the query must NOT fire. The labels stay in the DOM — every picker keeps one
     // accessible name at every width — but are visually hidden behind the header.
     await openTargetsMatrix(page);
@@ -1195,99 +1204,295 @@ test.describe('Targets matrix above table-fit-targets (?targets=1)', () => {
     });
     expect(shape.head).toBe('grid');
     expect(shape.row).toBe('grid');
-    expect(shape.labels).toBe(MATRIX_ROWS * (MATRIX_COLUMNS.length + 1));
+    expect(shape.labels).toBe(MATRIX_ROWS * MATRIX_COLUMNS.length);
     expect(shape.empty, 'a field label lost its text').toBe(0);
     expect(shape.shown, 'field labels show beside the column header at desktop').toBe(0);
   });
+
+  test('every picker in a row shares one top line, whatever the value above it', async ({
+    page,
+  }) => {
+    // split-auto-routing-readout-setup D9: a cell is three rows of its row's subgrid —
+    // value, picker + Clear, notes — so a long model id or a two-line inherit value in one
+    // cell cannot push its picker below its neighbours'.
+    await openTargetsMatrix(page);
+    const rows = await page.evaluate(() =>
+      [...document.querySelectorAll<HTMLElement>('[data-testid="targets-row"]')].map((row) => ({
+        row: row.dataset['row'] ?? '?',
+        tops: [...row.querySelectorAll<HTMLElement>('.tm-picker')].map(
+          (p) => p.getBoundingClientRect().top,
+        ),
+      })),
+    );
+    expect(rows).toHaveLength(MATRIX_ROWS);
+    let measured = 0;
+    for (const r of rows) {
+      if (r.tops.length < 2) continue;
+      measured += 1;
+      expect(
+        Math.max(...r.tops) - Math.min(...r.tops),
+        `${r.row}: pickers do not share a top line (${r.tops.map((t) => t.toFixed(1)).join(', ')})`,
+      ).toBeLessThanOrEqual(1);
+    }
+    // Non-vacuous: rows with two or more pickers exist in the worst-case fixture.
+    expect(measured).toBeGreaterThanOrEqual(3);
+  });
 });
 
-/** Geometry of every pipeline stage row, for the narrow wrap and the desktop one-liner.
- * Measured from the row's own children, which are flat flex items at every width. */
-async function stageRowGeometry(page: Page) {
-  return page.evaluate(() =>
-    [...document.querySelectorAll<HTMLElement>('[data-testid="pipeline-stage"]')].map((li) => {
-      const row = li.querySelector('.ar-row');
-      const box = (sel: string) => {
-        const el = row?.querySelector(sel);
-        if (!el) return null;
-        const r = el.getBoundingClientRect();
-        return r.width === 0 && r.height === 0
-          ? null
-          : { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width };
-      };
-      // The layer tag's line count: one fragment per line it occupies.
-      const tag = row?.querySelector('.ar-name .mono');
-      let tagLines = 0;
-      if (tag) {
-        const range = document.createRange();
-        range.selectNodeContents(tag);
-        tagLines = new Set([...range.getClientRects()].map((r) => Math.round(r.top))).size;
-      }
+// ---------------------------------------------------------------------------------------
+// Pipeline rows line up by construction (split-auto-routing-readout-setup D2). The list is
+// one grid and every row a subgrid of its columns, so the assertions here are about EDGES:
+// every action box at one position, every row's first line shared, and the phone records'
+// one right edge. The geometry is read from the rendered rows, never from declarations.
+// ---------------------------------------------------------------------------------------
+
+type Box = {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+  width: number;
+  height: number;
+};
+
+/** Every Pipeline row's parts, as rendered boxes. The status and the name are read by their
+ * FIRST line, so a status that wraps (or a savings block below) cannot hide a part that
+ * left line one. */
+async function pipelineRows(page: Page) {
+  return page.evaluate(() => {
+    const rect = (el: Element | null | undefined): Box | null => {
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 && r.height === 0) return null;
       return {
-        stage: li.dataset['stage'] ?? '?',
-        num: box('.ar-num'),
-        name: box('.ar-name'),
-        nameScroll: row?.querySelector('.ar-name')?.scrollWidth ?? 0,
-        nameClient: row?.querySelector('.ar-name')?.clientWidth ?? 0,
-        sw: box('.ar-switch'),
-        count: box('.ar-count'),
-        setup: box('.ar-setup'),
-        action: box('.ar-action'),
-        tagLines,
+        left: r.left,
+        right: r.right,
+        top: r.top,
+        bottom: r.bottom,
+        width: r.width,
+        height: r.height,
       };
-    }),
+    };
+    /** The first line box of an element's text. */
+    const firstLine = (el: Element | null | undefined): Box | null => {
+      if (!el) return null;
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const lines = [...range.getClientRects()].filter((r) => r.width > 0);
+      if (lines.length === 0) return null;
+      const top = Math.min(...lines.map((r) => r.top));
+      const first = lines.filter((r) => r.top < top + 2);
+      return {
+        left: Math.min(...first.map((r) => r.left)),
+        right: Math.max(...first.map((r) => r.right)),
+        top,
+        bottom: Math.max(...first.map((r) => r.bottom)),
+        width: 0,
+        height: Math.max(...first.map((r) => r.bottom)) - top,
+      };
+    };
+    return [...document.querySelectorAll<HTMLElement>('[data-testid="pipeline-stage"]')].map(
+      (li) => ({
+        stage: li.dataset['stage'] ?? '?',
+        num: rect(li.querySelector('.ar-num')),
+        name: firstLine(li.querySelector('.ar-name > div span')),
+        status: firstLine(li.querySelector('.ar-status-line')),
+        count: rect(li.querySelector('.ar-figcount')),
+        action: rect(li.querySelector('.ar-action button')),
+        dom: [...li.querySelectorAll('.ar-row > *')].map((e) => e.className.toString()),
+      }),
+    );
+  });
+}
+
+type Rows = Awaited<ReturnType<typeof pipelineRows>>;
+
+/** The action boxes' shared edges: one width, one height, one left and right edge. */
+function actionEdgeProblems(rows: Rows, tolerance = 0.5): string[] {
+  const boxes = rows.map((r) => r.action).filter((b): b is Box => b !== null);
+  if (boxes.length !== rows.length)
+    return [`${String(rows.length - boxes.length)} rows have no action box`];
+  const out: string[] = [];
+  for (const k of ['width', 'height', 'left', 'right'] as const) {
+    const vals = boxes.map((b) => b[k]);
+    if (Math.max(...vals) - Math.min(...vals) > tolerance)
+      out.push(`action ${k} differs: ${vals.map((v) => v.toFixed(1)).join(', ')}`);
+  }
+  return out;
+}
+
+/** Two boxes share a line when they overlap vertically. */
+const sameLine = (a: Box, b: Box): boolean => a.top < b.bottom - 1 && b.top < a.bottom - 1;
+
+/** How many column tracks the Pipeline grid has — each `pipeline-fit` mode restates them
+ * (one-line 7, two-line 6, phone 3), which only works when the container is the wrapper. */
+async function pipelineTracks(page: Page): Promise<number> {
+  return page.evaluate(
+    () =>
+      getComputedStyle(document.querySelector('.ar-stages')!)
+        .gridTemplateColumns.split(' ')
+        .filter(Boolean).length,
   );
 }
+
+async function openPipeline(page: Page, query = ''): Promise<void> {
+  await open(page, '#/routing', query);
+  await openRoutingSection(page, 'Auto routing');
+  await page.locator('[data-testid="pipeline-stage"] [data-testid="stage-bar"]').first().waitFor();
+}
+
+test.describe('Pipeline rows at desktop width', () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  test('the six action boxes share their edges, and every first line holds its row', async ({
+    page,
+  }) => {
+    await openPipeline(page);
+    expect(await pipelineTracks(page), 'the one-line tracks').toBe(7);
+    const rows = await pipelineRows(page);
+    expect(rows).toHaveLength(6);
+    expect(actionEdgeProblems(rows), 'action boxes').toEqual([]);
+    for (const r of rows) {
+      const at = `stage ${r.stage}`;
+      for (const part of ['num', 'name', 'status', 'count', 'action'] as const)
+        expect(r[part], `${at}: no ${part}`).not.toBeNull();
+      // One line: number, name, first status line, count and action all overlap it — even
+      // where the row's status wraps or Cascade's savings block follows below.
+      const line = r.action!;
+      for (const part of ['num', 'name', 'status', 'count'] as const)
+        expect(sameLine(r[part]!, line), `${at}: ${part} left the row's first line`).toBe(true);
+      expect(line.height, `${at}: the action is under the base target`).toBeGreaterThanOrEqual(24);
+      expect(line.width, `${at}: the action box is not its track`).toBeGreaterThanOrEqual(95.5);
+    }
+    // The Cascade row really does carry a later line here (its savings block), so the
+    // first-line assertion above covered the case it exists for.
+    expect(await page.locator('[data-stage="cascade"] [data-testid="auto-savings"]').count()).toBe(
+      1,
+    );
+  });
+
+  test('a mutation back to the 88px right-aligned slot is caught', async ({ page }) => {
+    // The defect this change fixed: a right-aligned flex slot whose buttons were as wide as
+    // their labels, so Details and Targets ended at one edge and started at two.
+    await openPipeline(page);
+    await page.addStyleTag({
+      content:
+        '.ar-action{display:flex !important;justify-content:flex-end !important}.ar-act{width:auto !important}',
+    });
+    expect(actionEdgeProblems(await pipelineRows(page)).length).toBeGreaterThan(0);
+  });
+});
+
+for (const vp of [
+  { name: '1025x768', width: 1025, height: 768, comfort: false },
+  { name: '768x1024', width: 768, height: 1024, comfort: true },
+] as const) {
+  test.describe(`Pipeline rows in two-line mode @ ${vp.name}`, () => {
+    test.use({ viewport: { width: vp.width, height: vp.height } });
+
+    test('the status takes line two; number, name, count and action keep line one', async ({
+      page,
+    }) => {
+      await openPipeline(page);
+      expect(await pipelineTracks(page), 'the two-line tracks were not restated').toBe(6);
+      const rows = await pipelineRows(page);
+      expect(rows).toHaveLength(6);
+      expect(actionEdgeProblems(rows), 'action boxes').toEqual([]);
+      for (const r of rows) {
+        const at = `stage ${r.stage} at ${vp.name}`;
+        const line = r.action!;
+        for (const part of ['num', 'name', 'count'] as const)
+          expect(sameLine(r[part]!, line), `${at}: ${part} left line one`).toBe(true);
+        expect(r.status!.top, `${at}: the status did not move to line two`).toBeGreaterThanOrEqual(
+          Math.max(r.name!.bottom, r.num!.bottom) - 0.5,
+        );
+        expect(line.height, `${at}: action height`).toBeGreaterThanOrEqual(vp.comfort ? 44 : 24);
+      }
+    });
+
+    test('a container moved onto the grid itself is caught', async ({ page }) => {
+      // The container must be the WRAPPER: a container query styles only descendants, so
+      // on the grid it could never restate the grid's own tracks, and the rows would stay
+      // one-line here.
+      await openPipeline(page);
+      await page.addStyleTag({
+        content:
+          '.ar-pipeline{container-type:normal !important;container-name:none !important}.ar-stages{container-type:inline-size;container-name:rs-pipeline}',
+      });
+      // The child placements still fire (they are the container's descendants), but the
+      // grid's own tracks cannot be restated from a query on itself.
+      expect(await pipelineTracks(page), 'the mutation went unnoticed').not.toBe(6);
+    });
+  });
+}
+
+test.describe('Pipeline rows under a coarse pointer above narrow', () => {
+  test.use({ viewport: { width: 1440, height: 900 }, hasTouch: true, isMobile: false });
+
+  test('the action boxes grow to the comfort target and keep their edges', async ({ page }) => {
+    await openPipeline(page);
+    const rows = await pipelineRows(page);
+    expect(actionEdgeProblems(rows)).toEqual([]);
+    for (const r of rows) {
+      expect(r.action!.height, `stage ${r.stage}`).toBeGreaterThanOrEqual(44);
+      expect(r.action!.width, `stage ${r.stage}`).toBeGreaterThanOrEqual(95.5);
+    }
+  });
+});
 
 for (const vp of [
   { name: '320x568', width: 320, height: 568 },
   { name: '390x844', width: 390, height: 844 },
 ] as const) {
-  test.describe(`Pipeline stage rows wrap cleanly @ ${vp.name}`, () => {
+  test.describe(`Pipeline rows as phone records @ ${vp.name}`, () => {
     test.use({ viewport: { width: vp.width, height: vp.height } });
 
-    test('number, name and switch share line one; the rest wraps below', async ({ page }) => {
-      // The shipped defect: the name block was a `flex: 1 1 0` item that the figure and
-      // the expander out-claimed, so at 390px the Classify name kept 23px — its tag broke
-      // one word per line and "Structural" ran under the switch.
-      await open(page, '#/routing');
-      await openRoutingSection(page, 'Auto routing');
-      const rows = await stageRowGeometry(page);
+    test('one 44x44 disclosure per row on one right edge, in DOM order', async ({ page }) => {
+      await openPipeline(page);
+      expect(await pipelineTracks(page), 'the phone tracks were not restated').toBe(3);
+      const rows = await pipelineRows(page);
       expect(rows).toHaveLength(6);
+      const actions = rows.map((r) => r.action!);
+      for (const [i, a] of actions.entries()) {
+        const at = `stage ${rows[i]!.stage} at ${vp.name}`;
+        expect(a.width, `${at}: width`).toBeGreaterThanOrEqual(44);
+        expect(a.height, `${at}: height`).toBeGreaterThanOrEqual(44);
+        expect(Math.abs(a.right - actions[0]!.right), `${at}: right edge`).toBeLessThanOrEqual(0.5);
+      }
       for (const r of rows) {
         const at = `stage ${r.stage} at ${vp.name}`;
-        expect(
-          r.num && r.name && r.sw && r.setup && r.action,
-          `${at}: a part is missing`,
-        ).toBeTruthy();
-        if (!r.num || !r.name || !r.sw || !r.setup || !r.action) continue;
-        // Line one: the name block keeps the line's width, never a sliver of it …
-        expect(r.name.width, `${at}: the name block is squeezed`).toBeGreaterThanOrEqual(100);
-        expect(r.nameScroll, `${at}: the name spills its block`).toBeLessThanOrEqual(
-          r.nameClient + 1,
-        );
-        expect(r.tagLines, `${at}: the layer tag breaks word by word`).toBeLessThanOrEqual(2);
-        // … the switch sits beside it, on the same line and clear of it.
-        expect(r.sw.left, `${at}: the switch overlaps the name`).toBeGreaterThanOrEqual(
-          r.name.right - 0.5,
-        );
-        expect(
-          r.sw.top <= r.name.bottom && r.sw.bottom >= r.name.top,
-          `${at}: the switch left line one`,
-        ).toBe(true);
-        // The figure, the setup and the expander all start below line one.
-        const lineOne = Math.max(r.name.bottom, r.num.bottom);
+        // Line one: number, name, action. Then the status; then the figure.
+        expect(sameLine(r.num!, r.action!), `${at}: action left line one`).toBe(true);
+        expect(sameLine(r.name!, r.action!), `${at}: name left line one`).toBe(true);
+        expect(r.status!.top, `${at}: status above line one`).toBeGreaterThanOrEqual(r.action!.top);
         if (r.count)
-          expect(r.count.top, `${at}: the figure joined line one`).toBeGreaterThanOrEqual(
-            lineOne - 0.5,
+          expect(r.count.top, `${at}: figure above the status`).toBeGreaterThanOrEqual(
+            r.status!.top,
           );
-        expect(r.action.top, `${at}: the expander joined line one`).toBeGreaterThanOrEqual(
-          lineOne - 0.5,
-        );
-        expect(r.setup.top, `${at}: the setup joined line one`).toBeGreaterThanOrEqual(
-          lineOne - 0.5,
-        );
+        // Visual order equals DOM order: number, name, action, status, figure.
+        expect(r.dom.slice(0, 4), `${at}: DOM order`).toEqual([
+          'ar-num',
+          'ar-name',
+          'ar-action',
+          'ar-status',
+        ]);
       }
+      // Each action is named — on a phone it is icon-only.
+      const names = await page
+        .locator('[data-testid="pipeline-stage"] .ar-action button')
+        .evaluateAll((els) => els.map((e) => e.getAttribute('aria-label')));
+      expect(names).toEqual([
+        'Classify details',
+        'Workload claim details',
+        'Go to Targets, Strong column',
+        'Semantic details',
+        'Cascade details',
+        'Default details',
+      ]);
+      const overflow = await page.evaluate(
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      );
+      expect(overflow, 'the document overflows').toBeLessThanOrEqual(1);
     });
 
     test('the Layer-0 note keeps an even line rhythm around its link', async ({ page }) => {
@@ -1325,35 +1530,21 @@ for (const vp of [
   });
 }
 
-test.describe('Pipeline stage rows at desktop', () => {
-  test.use({ viewport: { width: 1440, height: 900 } });
+for (const vp of MATRIX) {
+  test.describe(`the Pipeline keeps its list semantics @ ${vp.name}`, () => {
+    test.use({ viewport: { width: vp.width, height: vp.height } });
 
-  test('each row stays one line of columns', async ({ page }) => {
-    // The narrow wrap must not reach desktop: there every part of a row sits side by side,
-    // in DOM order, on one line.
-    await open(page, '#/routing');
-    await openRoutingSection(page, 'Auto routing');
-    const rows = await stageRowGeometry(page);
-    expect(rows).toHaveLength(6);
-    for (const r of rows) {
-      const parts = [r.num, r.name, r.sw, r.count, r.setup, r.action].filter(
-        (p): p is NonNullable<typeof p> => p !== null,
-      );
-      for (let i = 1; i < parts.length; i++) {
-        const a = parts[i - 1]!;
-        const b = parts[i]!;
-        expect(b.left, `stage ${r.stage}: part ${String(i)} wrapped or reordered`).toBeGreaterThan(
-          a.left,
-        );
-        expect(
-          b.top < a.bottom && a.top < b.bottom,
-          `stage ${r.stage}: part ${String(i)} left the row's line`,
-        ).toBe(true);
-      }
-      expect(r.name?.width, `stage ${r.stage}: the name column moved`).toBe(200);
-    }
+    test('one list of exactly six items, the column header excluded', async ({ page }) => {
+      // Computed role semantics (not a DOM count): the `ol` carries an explicit `role="list"`
+      // because WebKit drops list semantics from a marker-less list. This rig runs Chromium
+      // only, so WebKit is covered by that role, not by this test.
+      await openPipeline(page);
+      const pipeline = page.locator('[data-testid="auto-pipeline"]');
+      await expect(pipeline.getByRole('list')).toHaveCount(1);
+      await expect(pipeline.getByRole('list').getByRole('listitem')).toHaveCount(6);
+    });
   });
-});
+}
 
 // ---------------------------------------------------------------------------------------
 // Settings layout (compact-settings-layout). The Settings page was a 760px column of four

@@ -163,9 +163,12 @@ describe('the section renders honestly', () => {
     const geom = section(host)?.querySelector('[data-testid="calibration-geometry"]');
     expect(geom, 'no geometry line rendered').not.toBeNull();
     const text = geom?.textContent ?? '';
-    // The window is the CALIBRATION window, and says so — a labelled window of its
-    // own, because the tab's range selector controls a different measurement entirely.
-    expect(text).toContain('Last 14 days — its own window, not the tab’s range.');
+    // The window is the CALIBRATION window, and the heading says so — a labelled window of
+    // its own, because the Pipeline's range control frames a different measurement.
+    const heading = section(host)?.querySelector('[data-testid="calibration-window"]');
+    expect(heading?.textContent?.replace(/\s+/g, ' ').trim()).toBe(
+      'Calibration evidence · last 14 days — its own window, not the Pipeline range',
+    );
     expect(text).not.toMatch(/above|below/); // named, never placed
     expect(text).toContain('50'); // the acting floor, from the response
     expect(text).toContain('0.6');

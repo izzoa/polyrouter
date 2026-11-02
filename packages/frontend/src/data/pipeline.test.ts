@@ -194,38 +194,21 @@ describe('toPipelineVm — figures', () => {
     ]);
   });
 
-  it('the exits sum to evaluated, and the bar totals evaluated', () => {
+  it('the exits sum to evaluated', () => {
     const vm = toPipelineVm(input());
     const counts = vm.stages
       .slice(1)
       .map((s) => (s.figure.kind === 'count' ? s.figure.count : Number.NaN));
     expect(counts.reduce((a, n) => a + n, 0)).toBe(40);
-    expect(vm.exitBar?.total).toBe(40);
-    expect(vm.exitBar?.legend.reduce((a, e) => a + e.count, 0)).toBe(40);
-  });
-
-  it('the bar omits a zero exit while the legend keeps it, in stage order', () => {
-    const vm = toPipelineVm(input());
-    expect(vm.exitBar?.legend.map((e) => [e.number, e.label, e.count, e.share])).toEqual([
-      [2, 'Workload claim', 0, '0%'],
-      [3, 'Confident band', 22, '55%'],
-      [4, 'Semantic', 5, '13%'],
-      [5, 'Cascade', 10, '25%'],
-      [6, 'Default', 3, '8%'],
-    ]);
-    expect(vm.exitBar?.segments.map((e) => e.exit)).toEqual([
-      'structural',
-      'semantic',
-      'cascade',
-      'default',
-    ]);
   });
 
   it('the Default detail reconciles: default = high.unroutable + low.unroutable + fallthrough', () => {
     const vm = toPipelineVm(input());
     const d = vm.defaultDetail;
-    expect(d).toEqual({ total: 3, unroutable: { high: 1, low: 0 }, fallthrough: 2, other: 0 });
-    expect(d?.total).toBe(
+    // The routed-here total is the Default ROW's count; the detail does not repeat it.
+    expect(d).toEqual({ unroutable: { high: 1, low: 0 }, fallthrough: 2, other: 0 });
+    const row = stage(vm, 'default').figure;
+    expect(row.kind === 'count' ? row.count : NaN).toBe(
       (d?.unroutable.high ?? 0) + (d?.unroutable.low ?? 0) + (d?.fallthrough ?? 0),
     );
   });
@@ -239,7 +222,6 @@ describe('toPipelineVm — figures', () => {
         }),
       }),
     );
-    expect(vm.defaultDetail?.total).toBe(4);
     expect(vm.defaultDetail?.other).toBe(1);
   });
 
@@ -250,9 +232,7 @@ describe('toPipelineVm — figures', () => {
     expect(vm.measured).toBe('unavailable');
     expect(stage(vm, 'classify').figure).toEqual({ kind: 'count', count: 40, share: null });
     for (const s of vm.stages.slice(1)) expect(s.figure).toEqual({ kind: 'unavailable' });
-    expect(vm.exitBar).toBeNull();
     expect(vm.defaultDetail).toEqual({
-      total: null,
       unroutable: { high: 1, low: 0 },
       fallthrough: 2,
       other: null,
@@ -264,7 +244,6 @@ describe('toPipelineVm — figures', () => {
     const vm = toPipelineVm(input({ data: null }));
     expect(vm.measured).toBe('loading');
     for (const s of vm.stages) expect(s.figure).toEqual({ kind: 'placeholder' });
-    expect(vm.exitBar).toBeNull();
     expect(vm.defaultDetail).toBeNull();
     expect(vm.perf).toBeNull();
   });
@@ -273,7 +252,6 @@ describe('toPipelineVm — figures', () => {
     const vm = toPipelineVm(input({ data: perf(), error: 'timeout' }));
     expect(vm.measured).toBe('error');
     for (const s of vm.stages) expect(s.figure.kind).not.toBe('count');
-    expect(vm.exitBar).toBeNull();
     expect(vm.defaultDetail).toBeNull();
     expect(vm.perf).toBeNull();
     expect(JSON.stringify(vm)).not.toContain('"count":');
@@ -295,10 +273,8 @@ describe('toPipelineVm — figures', () => {
     expect(stage(vm, 'classify').figure).toEqual({ kind: 'count', count: 0, share: null });
     for (const s of vm.stages.slice(1))
       expect(s.figure).toEqual({ kind: 'count', count: 0, share: '—' });
-    expect(vm.exitBar).toBeNull();
     expect(JSON.stringify(vm)).not.toContain('NaN');
     expect(vm.defaultDetail).toEqual({
-      total: 0,
       unroutable: { high: 0, low: 0 },
       fallthrough: 0,
       other: 0,
@@ -342,7 +318,6 @@ describe('toPipelineVm — figures', () => {
       kind: 'unavailable',
       hint: 'off instance-wide (ROUTING_AUTO_LAYERS)',
     });
-    expect(vm.exitBar).toBeNull();
     expect(vm.defaultDetail).toBeNull();
     expect(vm.perf).toBeNull();
   });
@@ -353,7 +328,7 @@ describe('toPipelineVm — switches and off-states', () => {
     const vm = toPipelineVm(input({ autoLayers: null }));
     for (const id of ['classify', 'semantic', 'cascade'] as const) {
       expect(stage(vm, id).switchState).toEqual({ kind: 'loading' });
-      expect(stage(vm, id).setup).toBe('Loading…');
+      expect(stage(vm, id).statusNow.loading).toBe(true);
     }
     expect(vm.stages.every((s) => s.status === null)).toBe(true);
     expect(JSON.stringify(vm.stages)).not.toContain('off instance-wide');
@@ -364,10 +339,9 @@ describe('toPipelineVm — switches and off-states', () => {
       input({ autoLayers: layers({ structural: false, semantic: false, cascade: false }) }),
     );
     expect(stage(vm, 'classify').status).toEqual({ kind: 'off', tone: 'caution' });
-    expect(stage(vm, 'classify').setup).toBe(
+    expect(stage(vm, 'classify').statusNow.text).toBe(
       'Off — new auto requests go straight to the default tier',
     );
-    expect(stage(vm, 'classify').setupSub).toBe('Stages 2–5 pause without Layer 1’s verdicts');
     for (const id of ['workload', 'band', 'semantic', 'cascade'] as const) {
       expect(stage(vm, id).status).toEqual({ kind: 'paused', label: 'paused · needs L1' });
     }
@@ -376,28 +350,29 @@ describe('toPipelineVm — switches and off-states', () => {
     expect(JSON.stringify(vm.stages)).not.toMatch(/opacity|dim|muted|faint/i);
     // A paused stage whose OWN layer is off says so — it never describes a switched-off
     // layer as routing (the server clears L2/L3 with L1, so this is the common case).
-    expect(stage(vm, 'semantic').setup).toBe('Off');
-    expect(stage(vm, 'cascade').setup).toBe('Off');
-    expect(stage(vm, 'semantic').setupSub).toBe('Any count shown is history from when it was on');
+    expect(stage(vm, 'semantic').statusNow.text).toBe('Off');
+    expect(stage(vm, 'cascade').statusNow.text).toBe('Off');
+    expect(stage(vm, 'semantic').caption).toBe('routed while L1 was on');
   });
 
   it('a paused stage whose own layer is on keeps its configuration summary', () => {
     const vm = toPipelineVm(input({ autoLayers: layers({ structural: false }) }));
     expect(stage(vm, 'semantic').status).toEqual({ kind: 'paused', label: 'paused · needs L1' });
-    expect(stage(vm, 'semantic').setup).toBe('Routes the ambiguous slice Layer 1 can’t read');
+    expect(stage(vm, 'semantic').statusNow.text).toBe('On · learning off');
     expect(stage(vm, 'cascade').status).toEqual({ kind: 'paused', label: 'paused · needs L1' });
-    expect(stage(vm, 'cascade').setup).toBe(
-      'Tries cheap first, escalates on a failed quality check',
+    expect(stage(vm, 'cascade').statusNow.text).toBe(
+      'On · Cheap first (tier:cheap), escalates to Strong (tier:premium)',
     );
   });
 
   it('L2 off alone is neutral and says where its traffic goes', () => {
     const vm = toPipelineVm(input({ autoLayers: layers({ semantic: false }) }));
     expect(stage(vm, 'semantic').status).toEqual({ kind: 'off', tone: 'neutral' });
-    expect(stage(vm, 'semantic').setup).toBe(
-      'Off — the ambiguous slice goes straight to the cascade',
-    );
-    expect(stage(vm, 'semantic').setupSub).toBe('Any count shown is history from when it was on');
+    expect(stage(vm, 'semantic').statusNow).toMatchObject({
+      text: 'Off — the ambiguous slice goes straight to the cascade',
+      tone: 'neutral',
+    });
+    expect(stage(vm, 'semantic').caption).toBe('routed while on');
     expect(stage(vm, 'cascade').status).toBeNull();
     expect(stage(vm, 'workload').status).toBeNull();
     // Its count is still shown — as history for the range.
@@ -406,11 +381,13 @@ describe('toPipelineVm — switches and off-states', () => {
 
   it('L2 and L3 off: the ambiguous slice goes to the default tier, both neutral', () => {
     const vm = toPipelineVm(input({ autoLayers: layers({ semantic: false, cascade: false }) }));
-    expect(stage(vm, 'semantic').setup).toBe(
+    expect(stage(vm, 'semantic').statusNow.text).toBe(
       'Off — the ambiguous slice goes straight to the default tier',
     );
     expect(stage(vm, 'cascade').status).toEqual({ kind: 'off', tone: 'neutral' });
-    expect(stage(vm, 'cascade').setup).toBe('Off — still-ambiguous requests use the default tier');
+    expect(stage(vm, 'cascade').statusNow.text).toBe(
+      'Off — still-ambiguous requests use the default tier',
+    );
   });
 
   it('an instance-unavailable L2 carries its missing-half hint and a neutral off-state', () => {
@@ -429,27 +406,183 @@ describe('toPipelineVm — switches and off-states', () => {
   });
 });
 
-describe('toPipelineVm — setup summaries', () => {
-  it('Classify states the effective thresholds and the self-calibration state', () => {
+describe('toPipelineVm — configuration never waits on the aggregation', () => {
+  it('statuses and switches are identical loading, failed or ready', () => {
+    const config = (vm: { stages: StageRowVm[] }) =>
+      vm.stages.map((s) => [s.statusNow, s.status, s.switchState]);
+    const ready = config(toPipelineVm(input()));
+    expect(config(toPipelineVm(input({ data: null })))).toEqual(ready);
+    expect(config(toPipelineVm(input({ error: 'boom' })))).toEqual(ready);
+  });
+});
+
+/* ── split-auto-routing-readout-setup: status now, history captions, verdicts ── */
+
+function status(vm: { stages: StageRowVm[] }, id: StageRowVm['id']) {
+  return stage(vm, id).statusNow;
+}
+
+/** Every string a stage's status carries, for "never contains" checks. */
+function statusText(vm: { stages: StageRowVm[] }): string {
+  return JSON.stringify(vm.stages.map((s) => s.statusNow));
+}
+
+describe('toPipelineVm — status now (D3)', () => {
+  it('describes the current configuration of every stage', () => {
     const vm = toPipelineVm(input());
-    expect(stage(vm, 'classify').setup).toBe('Thresholds high 0.6 · low 0.25');
-    expect(stage(vm, 'classify').setupSub).toBe('instance defaults · self-calibration off');
+    expect(status(vm, 'classify')).toMatchObject({
+      loading: false,
+      text: 'On · thresholds high 0.6 · low 0.25 · instance defaults',
+      tone: 'neutral',
+    });
+    expect(status(vm, 'workload').text).toBe('No class claims now');
+    expect(status(vm, 'band')).toMatchObject({
+      text: 'Strong: tier:premium · Cheap: tier:cheap',
+      tone: 'neutral',
+      routes: [
+        { from: 'Strong', to: 'tier:premium' },
+        { from: 'Cheap', to: 'tier:cheap' },
+      ],
+      lines: [{ text: 'For requests no claim took', tone: 'neutral' }],
+    });
+    expect(status(vm, 'semantic').text).toBe('On · learning off');
+    expect(status(vm, 'cascade')).toMatchObject({
+      text: 'On · Cheap first (tier:cheap), escalates to Strong (tier:premium)',
+      tone: 'neutral',
+      lines: [
+        {
+          text: 'A class’s own Strong or Cheap target replaces that leg for the class',
+          tone: 'neutral',
+        },
+      ],
+    });
+    expect(status(vm, 'default')).toMatchObject({
+      text: 'Always on',
+      lines: [{ text: 'Where auto lands when a stage is off or a target is unusable' }],
+    });
   });
 
-  it('Confident band and Cascade read the generic band targets', () => {
-    const vm = toPipelineVm(input());
-    expect(stage(vm, 'band').setup).toBe('Strong: tier:premium · Cheap: tier:cheap');
-    // The arrows are drawn by the view (no font carries one), so the pairs are data.
-    expect(stage(vm, 'band').setupRoutes).toEqual([
-      { from: 'Strong', to: 'tier:premium' },
-      { from: 'Cheap', to: 'tier:cheap' },
+  it('no status phrase contains an arrow character — pairs travel as routes', () => {
+    const vm = toPipelineVm(
+      input({
+        rules: [
+          ...GENERIC,
+          rule({
+            id: 'w',
+            matchType: 'auto_workload',
+            workloadClass: 'code',
+            target: 'tier:cheap',
+          }),
+        ],
+      }),
+    );
+    expect(statusText(vm)).not.toContain('→');
+    expect(status(vm, 'workload').routes).toEqual([{ from: 'code', to: 'tier:cheap' }]);
+    expect(status(vm, 'workload').text).toBe('code: tier:cheap');
+    expect(status(vm, 'workload').lines).toEqual([
+      { text: '1 of 5 classes claims — the rest pass to stage 3', tone: 'neutral' },
     ]);
-    expect(stage(vm, 'band').setupSub).toBeNull();
-    expect(stage(vm, 'cascade').setupSub).toBe('tier:cheap first, then tier:premium');
-    expect(stage(vm, 'semantic').setupSub).toBe('learning off');
   });
 
-  it('a class-scoped rule is named on Confident band but never replaces the generic target', () => {
+  it('loading auto-layers: stages 1–5 show a loading status, Default does not', () => {
+    const vm = toPipelineVm(input({ autoLayers: null }));
+    for (const id of ['classify', 'workload', 'band', 'semantic', 'cascade'] as const) {
+      expect(status(vm, id).loading).toBe(true);
+      expect(stage(vm, id).caption).toBeNull();
+    }
+    expect(status(vm, 'default').loading).toBe(false);
+    expect(statusText(vm)).not.toMatch(/navailable|off instance/);
+  });
+
+  it('Layer 1 off: Classify is a caution, its dependants keep describing themselves', () => {
+    const vm = toPipelineVm(
+      input({ autoLayers: layers({ structural: false, semantic: false, cascade: false }) }),
+    );
+    expect(status(vm, 'classify')).toMatchObject({
+      text: 'Off — new auto requests go straight to the default tier',
+      tone: 'caution',
+      lines: [{ text: 'Stages 2–5 pause without Layer 1’s verdicts', tone: 'neutral' }],
+    });
+    expect(status(vm, 'semantic').text).toBe('Off');
+    expect(status(vm, 'cascade').text).toBe('Off');
+  });
+
+  it('L2 and L3 off are neutral and say where traffic goes instead', () => {
+    const vm = toPipelineVm(input({ autoLayers: layers({ semantic: false, cascade: false }) }));
+    expect(status(vm, 'semantic')).toMatchObject({
+      text: 'Off — the ambiguous slice goes straight to the default tier',
+      tone: 'neutral',
+    });
+    expect(status(vm, 'cascade')).toMatchObject({
+      text: 'Off — still-ambiguous requests use the default tier',
+      tone: 'neutral',
+    });
+  });
+
+  it('an instance that cannot run a layer says it is unavailable, neutrally for L2/L3', () => {
+    const vm = toPipelineVm(
+      input({
+        autoLayers: layers({
+          semantic: false,
+          semanticAvailable: false,
+          cascade: false,
+          cascadeAvailable: false,
+        }),
+      }),
+    );
+    expect(status(vm, 'semantic')).toMatchObject({
+      text: 'Unavailable on this instance',
+      tone: 'neutral',
+      lines: [{ text: 'The ambiguous slice goes straight to the default tier' }],
+    });
+    expect(status(vm, 'cascade')).toMatchObject({
+      text: 'Unavailable on this instance',
+      tone: 'neutral',
+    });
+  });
+
+  it('without the structural capability: Classify unavailable, stages 2–5 need L1, none paused', () => {
+    const vm = toPipelineVm(
+      input({
+        autoLayers: layers({
+          structural: false,
+          structuralAvailable: false,
+          semantic: false,
+          cascade: false,
+        }),
+        data: null,
+      }),
+    );
+    expect(status(vm, 'classify')).toMatchObject({
+      text: 'Unavailable on this instance',
+      tone: 'caution',
+    });
+    for (const id of ['workload', 'band', 'semantic', 'cascade'] as const) {
+      expect(status(vm, id).text).toBe('Needs L1 — unavailable on this instance');
+      expect(stage(vm, id).status?.kind).not.toBe('paused');
+    }
+    expect(statusText(vm)).not.toContain('paused');
+  });
+
+  it('a set but unusable generic target keeps its mark and turns Confident band to caution', () => {
+    const empty = toPipelineVm(
+      input({ rules: [rule({ id: 'hi', matchType: 'auto_high', target: 'tier:hollow' })] }),
+    );
+    expect(status(empty, 'band')).toMatchObject({
+      text: 'Strong: tier:hollow (empty) · Cheap: not set',
+      tone: 'caution',
+    });
+    const gone = toPipelineVm(
+      input({ rules: [rule({ id: 'hi', matchType: 'auto_high', target: 'tier:deleted' })] }),
+    );
+    expect(status(gone, 'band').text).toBe('Strong: tier:deleted (unresolved) · Cheap: not set');
+    expect(status(gone, 'band').tone).toBe('caution');
+    // Unset alone is a configuration choice, never a caution.
+    const unset = toPipelineVm(input({ rules: [GENERIC[0]!] }));
+    expect(status(unset, 'band').tone).toBe('neutral');
+  });
+
+  it('Confident band names unclaimed classes with their own targets, never claimed ones', () => {
     const vm = toPipelineVm(
       input({
         rules: [
@@ -457,102 +590,351 @@ describe('toPipelineVm — setup summaries', () => {
           rule({ id: 'v', matchType: 'auto_high', workloadClass: 'vision', target: 'model:m1' }),
           rule({ id: 'c1', matchType: 'auto_high', workloadClass: 'code', target: 'tier:cheap' }),
           rule({ id: 'c2', matchType: 'auto_low', workloadClass: 'code', target: 'tier:cheap' }),
+          // structured is claimed: its scoped Strong is never consulted, so never named
+          rule({
+            id: 's1',
+            matchType: 'auto_high',
+            workloadClass: 'structured',
+            target: 'tier:cheap',
+          }),
+          rule({
+            id: 's2',
+            matchType: 'auto_workload',
+            workloadClass: 'structured',
+            target: 'tier:premium',
+          }),
         ],
       }),
     );
-    expect(stage(vm, 'band').setup).toBe('Strong: tier:premium · Cheap: tier:cheap');
-    expect(stage(vm, 'band').setupSub).toBe(
-      'code has its own Strong and Cheap targets · vision has its own Strong target',
+    expect(status(vm, 'band').lines[0]?.text).toBe(
+      'For requests no claim took · code uses its own Strong and Cheap · vision uses its own Strong',
     );
+    expect(status(vm, 'band').lines[0]?.text).not.toContain('structured');
   });
 
-  it('degraded generic targets say so, and a half-configured cascade names the fall-through', () => {
-    const vm = toPipelineVm(
-      input({ rules: [rule({ id: 'hi', matchType: 'auto_high', target: 'tier:hollow' })] }),
-    );
-    expect(stage(vm, 'band').setup).toBe('Strong: tier:hollow (empty) · Cheap: unset');
-    expect(stage(vm, 'cascade').setupSub).toBe(
-      'Needs usable Strong and Cheap targets — ambiguous requests stay on the default tier until both are',
-    );
-    const gone = toPipelineVm(
-      input({ rules: [rule({ id: 'hi', matchType: 'auto_high', target: 'tier:deleted' })] }),
-    );
-    expect(stage(gone, 'band').setup).toBe('Strong: tier:deleted (unresolved) · Cheap: unset');
-  });
-
-  it('Workload claim lists only usable, live claims', () => {
-    const none = toPipelineVm(input());
-    expect(stage(none, 'workload').setup).toBe('No class claims — every request passes to stage 3');
-    expect(stage(none, 'workload').setupRoutes).toBeNull(); // prose, not pairs
-    expect(stage(none, 'workload').setupSub).toBeNull();
-
+  it('a configured claim that steers nothing is a caution line on Workload claim', () => {
     const vm = toPipelineVm(
       input({
         rules: [
           ...GENERIC,
           rule({
-            id: 'w1',
-            matchType: 'auto_workload',
-            workloadClass: 'code',
-            target: 'tier:premium',
-          }),
-          // configured but empty: does not claim
-          rule({
-            id: 'w2',
+            id: 'w',
             matchType: 'auto_workload',
             workloadClass: 'vision',
             target: 'tier:hollow',
           }),
-          // reserved class, semantic workload source not effective: inert
-          rule({
-            id: 'w3',
-            matchType: 'auto_workload',
-            workloadClass: 'research',
-            target: 'tier:cheap',
-          }),
         ],
       }),
     );
-    expect(stage(vm, 'workload').setup).toBe('code: tier:premium');
-    expect(stage(vm, 'workload').setupRoutes).toEqual([{ from: 'code', to: 'tier:premium' }]);
-    expect(stage(vm, 'workload').setupSub).toBe(
-      '1 of 5 classes claims — the rest pass to stage 3 · 1 configured claim steers nothing',
-    );
+    expect(status(vm, 'workload').text).toBe('No class claims now');
+    expect(status(vm, 'workload').lines).toEqual([
+      { text: '1 configured claim steers nothing', tone: 'caution' },
+    ]);
+  });
 
-    const live = toPipelineVm(
+  it('status now is identical whether the aggregation is loading, failed or ready', () => {
+    const all = (vm: { stages: StageRowVm[] }) => vm.stages.map((s) => s.statusNow);
+    const ready = all(toPipelineVm(input()));
+    expect(all(toPipelineVm(input({ data: null })))).toEqual(ready);
+    expect(all(toPipelineVm(input({ error: 'boom' })))).toEqual(ready);
+  });
+});
+
+describe('cascadePairs — each leg resolves on its own (D3)', () => {
+  const codeCheap = rule({
+    id: 'cc',
+    matchType: 'auto_low',
+    workloadClass: 'code',
+    target: 'tier:cheap',
+  });
+  const strongOnly = [rule({ id: 'hi', matchType: 'auto_high', target: 'tier:premium' })];
+
+  it('generic Cheap unset + an unclaimed code with its own Cheap: code cascades, not caution', () => {
+    const vm = toPipelineVm(input({ rules: [...strongOnly, codeCheap] }));
+    expect(status(vm, 'cascade')).toMatchObject({
+      text: 'On · Cheap first (not set), escalates to Strong (tier:premium)',
+      tone: 'neutral',
+      lines: [{ text: 'Only code can cascade — other ambiguous requests go to Default' }],
+    });
+    expect(stage(vm, 'cascade').caption).toBe('routed here');
+    expect(vm.cascadeHistory).toBe(false);
+  });
+
+  it('a scoped Cheap that is set but empty never falls back to the generic one', () => {
+    const vm = toPipelineVm(
       input({
-        autoLayers: layers({ semanticWorkload: true, semanticWorkloadAvailable: true }),
         rules: [
+          ...GENERIC,
+          rule({ id: 'cc', matchType: 'auto_low', workloadClass: 'code', target: 'tier:hollow' }),
+        ],
+      }),
+    );
+    // The generic pair is usable, so the cascade runs — but not through code's pair.
+    expect(status(vm, 'cascade').tone).toBe('neutral');
+    const onlyScoped = toPipelineVm(
+      input({
+        rules: [
+          ...strongOnly,
+          rule({ id: 'cc', matchType: 'auto_low', workloadClass: 'code', target: 'tier:hollow' }),
+        ],
+      }),
+    );
+    expect(status(onlyScoped, 'cascade')).toMatchObject({
+      text: 'On, but needs usable Strong and Cheap targets',
+      tone: 'caution',
+      lines: [{ text: 'Cheap: not set · Strong: tier:premium' }],
+    });
+  });
+
+  it('a claimed class’s scoped pair does not count — its claim wins', () => {
+    const vm = toPipelineVm(
+      input({
+        rules: [
+          ...strongOnly,
+          codeCheap,
           rule({
-            id: 'w1',
+            id: 'w',
             matchType: 'auto_workload',
             workloadClass: 'code',
             target: 'tier:premium',
           }),
-          rule({
-            id: 'w3',
-            matchType: 'auto_workload',
-            workloadClass: 'research',
-            target: 'model:m1',
-          }),
         ],
       }),
     );
-    expect(stage(live, 'workload').setup).toBe('code: tier:premium · research: ext-m1');
-    expect(stage(live, 'workload').setupRoutes).toEqual([
-      { from: 'code', to: 'tier:premium' },
-      { from: 'research', to: 'ext-m1' },
-    ]);
-    expect(stage(live, 'workload').setupSub).toBe(
-      '2 of 5 classes claim — the rest pass to stage 3',
-    );
+    expect(status(vm, 'cascade').text).toBe('On, but needs usable Strong and Cheap targets');
+    expect(stage(vm, 'cascade').caption).toBe('routed while it could run');
+    expect(vm.cascadeHistory).toBe(true);
   });
 
-  it('configuration never waits on the aggregation: setups are identical loading, failed or ready', () => {
-    const setups = (vm: { stages: StageRowVm[] }) =>
-      vm.stages.map((s) => [s.setup, s.setupRoutes, s.setupSub, s.status, s.switchState]);
-    const ready = setups(toPipelineVm(input()));
-    expect(setups(toPipelineVm(input({ data: null })))).toEqual(ready);
-    expect(setups(toPipelineVm(input({ error: 'boom' })))).toEqual(ready);
+  it('several classes are listed in words', () => {
+    const vm = toPipelineVm(
+      input({
+        rules: [
+          ...strongOnly,
+          codeCheap,
+          rule({ id: 'vc', matchType: 'auto_low', workloadClass: 'vision', target: 'tier:cheap' }),
+        ],
+      }),
+    );
+    expect(status(vm, 'cascade').lines[0]?.text).toBe(
+      'Only code and vision can cascade — other ambiguous requests go to Default',
+    );
+  });
+});
+
+describe('toPipelineVm — history captions (D3)', () => {
+  it('a running pipeline captions every count as what it routed', () => {
+    const vm = toPipelineVm(input());
+    expect(vm.stages.map((s) => s.caption)).toEqual([
+      'evaluated',
+      'routed here',
+      'routed here',
+      'routed here',
+      'routed here',
+      'routed here',
+    ]);
+    expect(vm.cascadeHistory).toBe(false);
+  });
+
+  it('Layer 1 off: Classify counts were evaluated while it was on, stages 2–5 routed while it was on', () => {
+    const vm = toPipelineVm(input({ autoLayers: layers({ structural: false }) }));
+    expect(vm.stages.map((s) => s.caption)).toEqual([
+      'evaluated while L1 was on',
+      'routed while L1 was on',
+      'routed while L1 was on',
+      'routed while L1 was on',
+      'routed while L1 was on',
+      'routed here',
+    ]);
+    expect(vm.cascadeHistory).toBe(true);
+  });
+
+  it('L2 or L3 off: that stage routed while on, and the savings cover earlier cascades', () => {
+    const vm = toPipelineVm(input({ autoLayers: layers({ semantic: false, cascade: false }) }));
+    expect(stage(vm, 'semantic').caption).toBe('routed while on');
+    expect(stage(vm, 'cascade').caption).toBe('routed while on');
+    expect(stage(vm, 'band').caption).toBe('routed here');
+    expect(vm.cascadeHistory).toBe(true);
+  });
+
+  it('no usable band target anywhere: Confident band routed under earlier targets', () => {
+    const vm = toPipelineVm(input({ rules: [] }));
+    expect(stage(vm, 'band').caption).toBe('routed under earlier targets');
+    // A class with a usable target of its own still routes some requests: no history.
+    const scoped = toPipelineVm(
+      input({
+        rules: [
+          rule({ id: 'v', matchType: 'auto_high', workloadClass: 'vision', target: 'model:m1' }),
+        ],
+      }),
+    );
+    expect(stage(scoped, 'band').caption).toBe('routed here');
+  });
+
+  it('no live claim now but claim traffic in the range: routed under earlier claims', () => {
+    const data = perf({
+      exits: { workload: 4, structural: 18, semantic: 5, cascade: 10, default: 3 },
+    });
+    expect(stage(toPipelineVm(input({ data })), 'workload').caption).toBe(
+      'routed under earlier claims',
+    );
+    // A zero claim exit is not history.
+    expect(stage(toPipelineVm(input()), 'workload').caption).toBe('routed here');
+  });
+
+  it('an unverified column withholds every caption the stale snapshot would produce', () => {
+    const data = perf({
+      exits: { workload: 4, structural: 18, semantic: 5, cascade: 10, default: 3 },
+    });
+    for (const unverified of [
+      { bands: true, claims: false },
+      { bands: false, claims: true },
+    ]) {
+      const vm = toPipelineVm({ ...input({ data, rules: [] }), unverified });
+      expect(stage(vm, 'workload').caption).toBe('routed here');
+      expect(stage(vm, 'band').caption).toBe('routed here');
+      expect(stage(vm, 'cascade').caption).toBe('routed here');
+      expect(vm.cascadeHistory).toBe(false);
+      for (const id of ['workload', 'band', 'cascade'] as const) {
+        expect(status(vm, id).lines).toContainEqual({
+          text: 'Last loaded targets — routing may have changed; see Targets',
+          tone: 'caution',
+        });
+      }
+      // Classify, Semantic and Default do not read the rules snapshot.
+      for (const id of ['classify', 'semantic', 'default'] as const)
+        expect(JSON.stringify(status(vm, id))).not.toContain('Last loaded targets');
+    }
+    // The same snapshot verified does draw the conclusions.
+    const verified = toPipelineVm(input({ data, rules: [] }));
+    expect(stage(verified, 'workload').caption).toBe('routed under earlier claims');
+    expect(stage(verified, 'band').caption).toBe('routed under earlier targets');
+    expect(stage(verified, 'cascade').caption).toBe('routed while it could run');
+  });
+});
+
+describe('toPipelineVm — Classify verdicts', () => {
+  it('states the verdict counts worded as verdicts, under the figures’ designed states', () => {
+    const ready = stage(toPipelineVm(input()), 'classify').verdicts;
+    expect(ready).toEqual({
+      kind: 'value',
+      text: 'verdicts: 12 high · 16 low · 12 ambiguous',
+      claimed: null,
+    });
+    expect(stage(toPipelineVm(input({ data: null })), 'classify').verdicts).toEqual({
+      kind: 'placeholder',
+    });
+    expect(stage(toPipelineVm(input({ error: 'boom' })), 'classify').verdicts).toEqual({
+      kind: 'none',
+    });
+    for (const id of ['workload', 'band', 'semantic', 'cascade', 'default'] as const)
+      expect(stage(toPipelineVm(input()), id).verdicts).toBeNull();
+  });
+
+  it('Layer 1 off captions the verdicts as history; a workload claim’s share is disclosed', () => {
+    const off = stage(
+      toPipelineVm(input({ autoLayers: layers({ structural: false }) })),
+      'classify',
+    ).verdicts;
+    expect(off).toMatchObject({
+      text: 'verdicts while L1 was on: 12 high · 16 low · 12 ambiguous',
+    });
+    const data = perf({
+      workloadMix: {
+        ...DEFAULT_AUTO_PERF.workloadMix,
+        classes: [
+          {
+            class: 'code',
+            requests: 5,
+            spendUsd: 0.1,
+            unpricedRequests: 0,
+            unpricedAttempts: 0,
+            routed: 3,
+          },
+        ],
+      },
+    });
+    expect(stage(toPipelineVm(input({ data })), 'classify').verdicts).toMatchObject({
+      claimed: '3 of these were served by a Workload claim, not a band target',
+    });
+  });
+});
+
+describe('toPipelineVm — per-row bars (D1)', () => {
+  it('stages 2–6 draw a track at their exit’s share; the five shares sum to evaluated', () => {
+    const vm = toPipelineVm(input());
+    expect(stage(vm, 'classify').bar).toBeNull();
+    const ratios = vm.stages.slice(1).map((s) => (s.bar?.kind === 'track' ? s.bar.ratio : NaN));
+    expect(ratios).toEqual([0, 22 / 40, 5 / 40, 10 / 40, 3 / 40]);
+    expect(ratios.reduce((a, r) => a + r, 0)).toBeCloseTo(1, 10);
+  });
+
+  it('a zero exit keeps an empty track rather than no bar', () => {
+    expect(stage(toPipelineVm(input()), 'workload').bar).toEqual({ kind: 'track', ratio: 0 });
+  });
+
+  it('loading shows placeholders; zero, failure, no exits and no capability draw none', () => {
+    for (const s of toPipelineVm(input({ data: null })).stages.slice(1))
+      expect(s.bar).toEqual({ kind: 'placeholder' });
+    const zero = perf({
+      evaluated: 0,
+      fallthrough: 0,
+      exits: { workload: 0, structural: 0, semantic: 0, cascade: 0, default: 0 },
+    });
+    const noExits = perf();
+    delete noExits.exits;
+    for (const vm of [
+      toPipelineVm(input({ data: zero })),
+      toPipelineVm(input({ error: 'boom' })),
+      toPipelineVm(input({ data: noExits })),
+      toPipelineVm(
+        input({
+          autoLayers: layers({ structural: false, structuralAvailable: false }),
+          data: null,
+        }),
+      ),
+    ])
+      for (const s of vm.stages) expect(s.bar).toBeNull();
+  });
+});
+
+describe('toPipelineVm — the Confident band alert (D5)', () => {
+  const unroutable = (high: number, low: number) =>
+    perf({
+      bands: {
+        ...DEFAULT_AUTO_PERF.bands,
+        high: { ...DEFAULT_AUTO_PERF.bands.high, unroutable: high },
+        low: { ...DEFAULT_AUTO_PERF.bands.low, unroutable: low },
+      },
+    });
+
+  it('names one band’s column when only it fell through', () => {
+    expect(toPipelineVm(input({ data: unroutable(1, 0) })).bandAlert).toEqual({
+      text: '1 confident high verdict had no usable Strong target and went to Default — check the missing-or-unusable target in the Targets matrix’s Strong column, on the Any request and class rows',
+      columns: ['strong'],
+    });
+    expect(toPipelineVm(input({ data: unroutable(0, 3) })).bandAlert).toMatchObject({
+      text: expect.stringMatching(/^3 confident low verdicts had no usable Cheap target/) as string,
+      columns: ['cheap'],
+    });
+  });
+
+  it('names both columns, Strong first, when both fell through', () => {
+    expect(toPipelineVm(input({ data: unroutable(2, 5) })).bandAlert).toMatchObject({
+      text: expect.stringContaining('Strong and Cheap columns') as string,
+      columns: ['strong', 'cheap'],
+    });
+  });
+
+  it('is absent while loading, after a failure, and at zero — never a placeholder', () => {
+    expect(toPipelineVm(input({ data: null })).bandAlert).toBeNull();
+    expect(toPipelineVm(input({ data: unroutable(1, 1), error: 'boom' })).bandAlert).toBeNull();
+    expect(toPipelineVm(input({ data: unroutable(0, 0) })).bandAlert).toBeNull();
+  });
+
+  it('never names the Any request target as the cause (the count is not scope-aware)', () => {
+    const text = toPipelineVm(input({ data: unroutable(1, 1) })).bandAlert?.text ?? '';
+    expect(text).not.toMatch(/Any request (Strong|Cheap) target/);
+    expect(text).not.toMatch(/\b(above|below)\b/);
   });
 });

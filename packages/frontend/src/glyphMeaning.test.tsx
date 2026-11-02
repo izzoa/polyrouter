@@ -18,7 +18,13 @@ import type { JSX } from 'solid-js';
 import { render } from 'solid-js/web';
 import { afterEach, describe, expect, it } from 'vitest';
 import { Icon } from './components/Icon';
-import { EXPANDABLE_STAGES, expandAllStages, openTab, type RoutingTab } from './test/routingTabs';
+import {
+  EXPANDABLE_STAGES,
+  expandAllStages,
+  openTab,
+  openTuning,
+  type RoutingTab,
+} from './test/routingTabs';
 
 const mount = (node: () => JSX.Element): HTMLElement => {
   const host = document.createElement('div');
@@ -189,7 +195,25 @@ describe('replacing a glyph with artwork did not strip any accessible name', () 
     const { AppProvider } = await import('./state/context');
     const { FakeApiClient } = await import('./test/fakeClient');
 
-    const store = createAppStore(new FakeApiClient({}));
+    const { DEFAULT_CALIBRATION } = await import('./test/fakeClient');
+
+    // The semantic layer EFFECTIVE, so the Semantic learning drawer (and its revert
+    // confirmation) can open and be swept — the default fake has Layer 2 unavailable.
+    const store = createAppStore(
+      new FakeApiClient({
+        autoLayers: {
+          structural: true,
+          cascade: true,
+          structuralAvailable: true,
+          cascadeAvailable: true,
+          semantic: true,
+          semanticAvailable: true,
+          semanticLearning: true,
+          semanticLearningAvailable: true,
+          calibration: DEFAULT_CALIBRATION,
+        },
+      }),
+    );
     const host = document.createElement('div');
     document.body.appendChild(host);
     render(
@@ -271,6 +295,21 @@ describe('replacing a glyph with artwork did not strip any accessible name', () 
         }
         for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 0));
         scan(`${page}/${tab}`);
+        // The tuning drawers (split-auto-routing-readout-setup D8) are overlays with an
+        // icon-only close button — exactly the controls this sweep exists for, and absent
+        // until opened. Open each, assert it really opened, then sweep it.
+        if (tab === 'Auto routing') {
+          for (const name of ['calibration', 'learning'] as const) {
+            const drawer = await openTuning(host, name);
+            expect(
+              drawer.querySelector('.drawer-close'),
+              `${name} drawer has no close`,
+            ).not.toBeNull();
+            scan(`${page}/${tab}/drawer:${name}`);
+            drawer.querySelector<HTMLButtonElement>('.drawer-close')?.click();
+            for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 0));
+          }
+        }
       }
     }
     expect(

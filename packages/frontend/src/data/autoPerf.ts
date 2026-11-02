@@ -1,5 +1,7 @@
+import { STRUCTURAL_WORKLOAD_CLASSES, WORKLOAD_CLASSES } from '@polyrouter/shared';
 import type { AutoLayers, AutoPerformance } from './api';
 import { fmtMicros } from './api';
+import { WORKLOAD_ROW_ORDER } from './workloadTargets';
 
 /** View-model for the Routing page's AUTO PERFORMANCE section
  * (add-auto-performance-view). Pure — every display rule unit-testable. */
@@ -114,6 +116,19 @@ export interface AutoPerfVm {
   };
 }
 
+/** The net-savings amount (split-auto-routing-readout-setup D6), from a MAGNITUDE in
+ * micro-dollars — the sign travels separately, so a negative net is never clamped.
+ * Cents from $0.01 up, four decimals from $0.0001, and `< $0.0001` below that: a
+ * non-zero amount is never printed as zero. `fmtMicros` stays the four-decimal
+ * formatter every other figure uses. */
+export function fmtNetSavings(micros: number): string {
+  const m = Math.abs(micros);
+  if (m === 0) return '$0.00';
+  if (m >= 10_000) return `$${(m / 1_000_000).toFixed(2)}`;
+  if (m >= 100) return `$${(m / 1_000_000).toFixed(4)}`;
+  return '< $0.0001';
+}
+
 const pct = (part: number, whole: number): string =>
   whole === 0 ? '0%' : `${((part / whole) * 100).toFixed(0)}%`;
 
@@ -163,9 +178,14 @@ export function toAutoPerfVm(data: AutoPerformance | null): AutoPerfVm | null {
       s === null
         ? null
         : {
-            net: s.netUsd === null ? null : fmtMicros(Math.round(Math.abs(s.netUsd) * 1_000_000)),
+            // Cents from $0.01, four decimals below, `< $0.0001` for a non-zero speck
+            // (split-auto-routing-readout-setup D6) — a magnitude, the sign rides
+            // `negative`, so a negative net is never clamped away.
+            net:
+              s.netUsd === null ? null : fmtNetSavings(Math.round(Math.abs(s.netUsd) * 1_000_000)),
             negative: s.netUsd !== null && s.netUsd < 0,
-            excess: s.excessUsd === null ? null : fmtMicros(Math.round(s.excessUsd * 1_000_000)),
+            excess:
+              s.excessUsd === null ? null : fmtNetSavings(Math.round(s.excessUsd * 1_000_000)),
             basisLabel: s.basis.label,
             basisScoped: s.basis.scoped === true,
             coverage: `based on ${String(s.rows)} of ${String(eligible)} quality-passed requests`,
@@ -223,6 +243,26 @@ export function toWorkloadVm(wm: AutoPerformance['workloadMix']): AutoPerfVm['wo
         : null,
   };
 }
+
+/** The detectable classes with NO row in the loaded workload mix
+ * (split-auto-routing-readout-setup D10), in the matrix's row order — so an absent class
+ * reads as "no detections in this range", the guarantee the matrix's Detected column used
+ * to carry. Structural classes are always detectable; `research` and `writing` only while
+ * the semantic workload source is effective. A class present only through attempt spend
+ * HAS a row, so it is never named. `none` is not a class to detect. */
+export function undetectedClasses(
+  rows: readonly { class: string }[],
+  semanticWorkload: boolean,
+): string[] {
+  const present = new Set(rows.map((r) => r.class));
+  return WORKLOAD_ROW_ORDER.filter(
+    (c) => (semanticWorkload || !SEMANTIC_ONLY.has(c)) && !present.has(c),
+  );
+}
+
+const SEMANTIC_ONLY: ReadonlySet<string> = new Set(
+  WORKLOAD_CLASSES.filter((c) => !(STRUCTURAL_WORKLOAD_CLASSES as readonly string[]).includes(c)),
+);
 
 /** Pure signal-quality view derivation (add-auto-signal-honesty): flagged
  * rows + the below-floor coverage line are INDEPENDENT (a flag never hides

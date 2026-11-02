@@ -16,6 +16,14 @@ export interface Surface {
   readonly open: (page: Page) => Promise<void>;
   /** True when the surface only exists below the narrow threshold. */
   readonly narrowOnly?: boolean;
+  /** Harness query a surface needs (`?semantic=1`), appended by every suite's `open`.
+   * Opt-in per surface, so the default harness stays byte-identical for the others. */
+  readonly query?: string;
+}
+
+/** The harness URL a surface is opened on. */
+export function harnessUrl(s: Pick<Surface, 'query'>): string {
+  return `/browser-harness.html${s.query ?? ''}`;
 }
 
 /** Drives the harness store directly — see `browserHarness.tsx` for why. */
@@ -32,6 +40,16 @@ async function store(page: Page, fn: string, ...args: unknown[]): Promise<void> 
     [fn, args] as [string, unknown[]],
   );
   await page.waitForTimeout(60);
+}
+
+/** Opens one of the Auto routing tab's tuning drawers from its Layers cell entry
+ * (split-auto-routing-readout-setup D8) — clicked, so the real invoker is what it returns
+ * focus to. */
+async function openTuningDrawer(page: Page, name: 'calibration' | 'learning'): Promise<void> {
+  await store(page, 'go', 'routing');
+  await store(page, 'setRoutingSection', 'auto');
+  await page.locator(`[data-testid="tuning-entry"][data-tuning="${name}"]`).click();
+  await page.waitForSelector(`[data-testid="tuning-drawer"][data-tuning="${name}"]`);
 }
 
 export const MODAL_KINDS = [
@@ -54,6 +72,17 @@ export const SURFACES: readonly Surface[] = [
       await page.locator('button.req-row').first().click();
       await page.waitForSelector('.drawer');
     },
+  },
+  {
+    name: 'drawer:selfCalibration',
+    sel: '[data-testid="tuning-drawer"][data-tuning="calibration"]',
+    open: (page) => openTuningDrawer(page, 'calibration'),
+  },
+  {
+    name: 'drawer:semanticLearning',
+    sel: '[data-testid="tuning-drawer"][data-tuning="learning"]',
+    query: '?semantic=1',
+    open: (page) => openTuningDrawer(page, 'learning'),
   },
   ...MODAL_KINDS.map(
     (kind): Surface => ({

@@ -1,7 +1,13 @@
 interface ToggleProps {
   on: boolean;
   size?: 'sm' | 'md';
+  /** "Do not toggle" — an in-flight write elsewhere (busy). Keeps the on/off look. */
   locked?: boolean;
+  /** The instance cannot enable this switch at all (split-auto-routing-readout-setup
+   * D7): drawn distinct from off AND from busy — a transparent track with a dashed
+   * border — announced as disabled, and inert on click. The caller also states
+   * "Unavailable" in text, so the drawing is never the only signal. */
+  unavailable?: boolean;
   onToggle: () => void;
   /** Accessible name for the switch (icon-only control). */
   label: string;
@@ -11,29 +17,33 @@ interface ToggleProps {
   describedBy?: string | undefined;
 }
 
-/** The prototype's switch control (small = layers/channels, medium = settings). */
+/** The prototype's switch control (small = layers/channels, medium = settings). The
+ * track colour lives in classes (`toggle--on` / `toggle--off` / `toggle--unavailable`),
+ * not inline, so the unavailable presentation can override it. */
 export function Toggle(props: ToggleProps) {
   const dims = () =>
     props.size === 'md'
       ? { w: 34, h: 19, knob: 15, onLeft: 17 }
       : { w: 30, h: 17, knob: 13, onLeft: 15 };
+  const inert = (): boolean => props.locked === true || props.unavailable === true;
+  const stateClass = (): string =>
+    props.unavailable === true ? 'toggle--unavailable' : props.on ? 'toggle--on' : 'toggle--off';
   return (
     <button
       type="button"
-      class="toggle"
+      class={`toggle ${stateClass()}`}
       role="switch"
       aria-checked={props.on}
-      aria-disabled={props.locked === true ? true : undefined}
+      aria-disabled={inert() ? true : undefined}
       aria-label={props.label}
       aria-describedby={props.describedBy}
       style={{
         width: `${String(dims().w)}px`,
         height: `${String(dims().h)}px`,
-        background: props.on ? 'var(--accent)' : 'var(--text3)',
-        cursor: props.locked === true ? 'not-allowed' : 'pointer',
+        cursor: inert() ? 'not-allowed' : 'pointer',
       }}
       onClick={() => {
-        if (props.locked === true) return;
+        if (inert()) return;
         props.onToggle();
       }}
     >
@@ -42,7 +52,7 @@ export function Toggle(props: ToggleProps) {
         style={{
           width: `${String(dims().knob)}px`,
           height: `${String(dims().knob)}px`,
-          left: props.on ? `${String(dims().onLeft)}px` : '2px',
+          left: props.on && props.unavailable !== true ? `${String(dims().onLeft)}px` : '2px',
         }}
       />
     </button>

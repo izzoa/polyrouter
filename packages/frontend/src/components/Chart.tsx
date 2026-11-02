@@ -19,6 +19,11 @@ export interface ChartProps {
    * by DASH pattern (never color alone — WCAG 1.4.1); label rendering is the
    * caller's (direct labels beside the chart). */
   series?: { label: string; dash?: number[] }[];
+  /** Series 0 takes the locked accent (stroke + fill) — the default, which Overview and
+   * BudgetChart rely on. `false` draws it as a neutral solid `--text` line with no fill,
+   * for a chart that must not compete with a screen's one accent figure
+   * (split-auto-routing-readout-setup D11: the band-mix chart). */
+  accentFirst?: boolean;
   xExtent?: [number, number];
   yExtent?: [number, number];
   yFormat?: (value: number) => string;
@@ -34,6 +39,7 @@ export function Chart(props: ChartProps) {
   let observer: ResizeObserver | undefined;
 
   const height = (): number => props.height ?? DEFAULT_HEIGHT;
+  const accentFirst = (): boolean => props.accentFirst !== false;
 
   const build = (): void => {
     if (!container) return;
@@ -97,8 +103,13 @@ export function Chart(props: ChartProps) {
               {},
               ...props.series.map((meta, i) => ({
                 label: meta.label,
-                stroke: i === 0 ? cssVar('--accent', '#4f5dff') : cssVar('--text3', '#6a6c73'),
-                ...(i === 0 ? { fill: cssVar('--accent-bg', '#eff0ff') } : {}),
+                stroke:
+                  i !== 0
+                    ? cssVar('--text3', '#6a6c73')
+                    : accentFirst()
+                      ? cssVar('--accent', '#4f5dff')
+                      : cssVar('--text', '#17181a'),
+                ...(i === 0 && accentFirst() ? { fill: cssVar('--accent-bg', '#eff0ff') } : {}),
                 ...(meta.dash !== undefined ? { dash: meta.dash } : {}),
                 width: i === 0 ? 2 : 1.5,
                 points: { show: false },
@@ -108,8 +119,8 @@ export function Chart(props: ChartProps) {
               {},
               {
                 label: props.label ?? 'requests',
-                stroke: cssVar('--accent', '#4f5dff'),
-                fill: cssVar('--accent-bg', '#eff0ff'),
+                stroke: accentFirst() ? cssVar('--accent', '#4f5dff') : cssVar('--text', '#17181a'),
+                ...(accentFirst() ? { fill: cssVar('--accent-bg', '#eff0ff') } : {}),
                 width: 2,
                 points: { show: false },
               },

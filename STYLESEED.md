@@ -23,7 +23,10 @@
 | `table-fit-batches` | **960px** container | The 10-column batches table reflows to stacked records (same width as requests: more columns, not a different problem) |
 | `table-fit-agents` | **680px** container | The 7-column agents table reflows |
 | `table-fit-users` | **660px** container | Both semantic `<table>`s on the Users page reflow |
-| `table-fit-targets` | **940px** container | The Routing page's 5-track Targets matrix reflows to one stacked record per workload row (measured 924, rounded up; set by the 220px cell pickers, not by text) |
+| `table-fit-targets` | **900px** container | The Routing page's 4-track Targets matrix (Workload, Claim, Strong, Cheap) reflows to one stacked record per workload row (re-measured 2026-11-01 for three target columns: the 220px cell pickers overflow at 882, rounded up; set by the pickers, not by text) |
+| `pipeline-fit` (two-line) | **840px** container | The Auto routing Pipeline's rows move their status to line 2, keeping number, name, figure and action on line 1 (measured 826: the Classify status runs past two lines; rounded up) |
+| `pipeline-fit` (phone) | **540px** container | The Pipeline's rows become phone records: number, name and a 44×44 icon-only action, then the status, then the figure, every field under its visible label (measured 530: a stage name wraps; rounded up) |
+| `layers-fit` | **500px** container | The Setup panel's three Layers cells stack to one column (measured 482: a cell's name line wraps; rounded up) |
 | `rail-collapsed` | **56px** | Width of the collapsed icon rail (44px target + 6px each side) |
 | `gutter-narrow` | **18px 16px** | Page padding below `narrow` (from `22px 26px`) |
 | `density-narrow` | `.card` `16px 18px` → **`14px 14px`**; gaps unchanged | The only density steps that change below `narrow` |
@@ -72,7 +75,9 @@ what found this.
 
 **Known and intended consequence:** because `table-fit-requests` is 960px, the requests table reflows to cards below roughly a **1220px viewport** — on narrow desktops, not only phones. At 946px of panel that table has a sub-60px column, so the wide layout is genuinely unreadable there. This is the one sanctioned exception to "desktop rendering is unchanged", alongside controls growing to meet `target-base`.
 
-`table-fit-targets` was measured the same way in `redesign-auto-routing-pipeline` (the rig and its derivation are recorded beside the query in `styles.css`). Its container is the matrix's own content box, about `viewport − 298px` (sidebar, gutters, panel border and the matrix's 18px inset), so the Targets matrix shows stacked records below roughly a **1240px viewport**. A 1280px laptop keeps the grid.
+`table-fit-targets` was measured the same way in `redesign-auto-routing-pipeline`, and re-measured in `split-auto-routing-readout-setup` when the Detected column left (the rig and its derivation are recorded beside the query in `styles.css`). Its container is the matrix's own content box, about `viewport − 298px` (sidebar, gutters, panel border and the matrix's 18px inset), so the Targets matrix shows stacked records below roughly a **1200px viewport**. A 1280px laptop keeps the grid.
+
+`pipeline-fit` and `layers-fit` are measured the same way, on their own wrappers' content boxes: the Pipeline's rows are about `viewport − 262px` wide (sidebar, gutters, panel border), so they are one line from roughly a **1100px viewport**, two lines on a 1025×768 or 768×1024 screen, and phone records at 390 and 320. These are container modes and do not line up with `narrow`; the rows never use `narrow` for their layout, only its comfort target for their action boxes.
 
 **What the comfort floor does and does not promise.** It is 44px of *height* on every
 interactive control, plus 44px of *width* on controls with no text to widen them (the rail

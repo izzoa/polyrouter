@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { AutoLayers, AutoPerformance } from './api';
 import {
+  fmtNetSavings,
+  undetectedClasses,
   autoSeriesToChart,
   signalQualityGuidance,
   toAutoPerfVm,
@@ -210,9 +212,9 @@ describe('toAutoPerfVm', () => {
     it('positive net: formatted USD, coverage counts eligible = rows + uncosted', () => {
       const vm = toAutoPerfVm(fixture())!;
       const sv = vm.savings!;
-      expect(sv.net).toBe('$1.6200');
+      expect(sv.net).toBe('$1.62');
       expect(sv.negative).toBe(false);
-      expect(sv.excess).toBe('$0.2200');
+      expect(sv.excess).toBe('$0.22');
       expect(sv.basisLabel).toBe('premium');
       expect(sv.coverage).toBe('based on 6 of 7 quality-passed requests');
       expect(sv.incomplete).toBe(true); // uncostedRows > 0
@@ -234,8 +236,8 @@ describe('toAutoPerfVm', () => {
       )!;
       const sv = vm.savings!;
       expect(sv.negative).toBe(true);
-      expect(sv.net).toBe('$0.9790'); // magnitude — the UI adds the framing
-      expect(sv.excess).toBe('$0.9980');
+      expect(sv.net).toBe('$0.98'); // magnitude — the UI adds the framing
+      expect(sv.excess).toBe('$1.00');
       expect(sv.incomplete).toBe(false);
       expect(sv.coverage).toBe('based on 2 of 2 quality-passed requests');
     });
@@ -541,5 +543,46 @@ describe('toWorkloadVm (add-workload-telemetry D7)', () => {
     )!;
     expect(empty.workload).toBeNull();
     expect(empty.workloadZero).toBe('empty'); // structural telemetrySince does not stand in
+  });
+});
+
+describe('fmtNetSavings (split-auto-routing-readout-setup D6)', () => {
+  const usd = (d: number): number => Math.round(d * 1_000_000);
+  it('shows cents from $0.01 up', () => {
+    expect(fmtNetSavings(usd(0.01))).toBe('$0.01');
+    expect(fmtNetSavings(usd(1.62))).toBe('$1.62');
+    expect(fmtNetSavings(usd(12.5))).toBe('$12.50');
+  });
+  it('shows four decimals between $0.0001 and $0.01', () => {
+    expect(fmtNetSavings(usd(0.0001))).toBe('$0.0001');
+    expect(fmtNetSavings(usd(0.004))).toBe('$0.0040');
+    expect(fmtNetSavings(usd(0.0099))).toBe('$0.0099');
+  });
+  it('never prints a non-zero amount as zero', () => {
+    expect(fmtNetSavings(usd(0.00004))).toBe('< $0.0001');
+    expect(fmtNetSavings(1)).toBe('< $0.0001');
+    expect(fmtNetSavings(0)).toBe('$0.00');
+  });
+  it('formats a magnitude — a signed input is never clamped to zero', () => {
+    expect(fmtNetSavings(-usd(1.62))).toBe('$1.62');
+    expect(fmtNetSavings(-usd(0.003))).toBe('$0.0030');
+  });
+});
+
+describe('undetectedClasses (split-auto-routing-readout-setup D10)', () => {
+  const r = (...classes: string[]) => classes.map((c) => ({ class: c }));
+  it('lists the detectable classes with no row, in the matrix row order', () => {
+    expect(undetectedClasses(r('code', 'none'), false)).toEqual(['vision', 'structured']);
+    expect(undetectedClasses(r(), false)).toEqual(['code', 'vision', 'structured']);
+  });
+  it('adds research and writing only while the semantic workload source is effective', () => {
+    expect(undetectedClasses(r('code', 'vision', 'structured'), false)).toEqual([]);
+    expect(undetectedClasses(r('code', 'vision', 'structured', 'research'), true)).toEqual([
+      'writing',
+    ]);
+  });
+  it('never names `none`, and a row of any kind counts as present', () => {
+    expect(undetectedClasses(r('none'), false)).not.toContain('none');
+    expect(undetectedClasses(r('code', 'vision', 'structured'), false)).toEqual([]);
   });
 });

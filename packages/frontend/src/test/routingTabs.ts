@@ -113,3 +113,49 @@ export function buttonByText(root: HTMLElement, text: string): HTMLButtonElement
     (b) => b.textContent?.trim() === text,
   );
 }
+
+/* ── The tuning drawers (split-auto-routing-readout-setup D8) ─────────────────────── */
+
+export type TuningName = 'calibration' | 'learning';
+
+/** A Layers cell's tuning entry. Throws when it is not offered (the tab is closed, or the
+ * card's own precondition does not hold) — use a plain query to assert its absence. */
+export function tuningEntry(host: HTMLElement, name: TuningName): HTMLButtonElement {
+  const el = host.querySelector<HTMLButtonElement>(
+    `[data-testid="tuning-entry"][data-tuning="${name}"]`,
+  );
+  if (!el) throw new Error(`no ${name} tuning entry — is the Auto routing tab open?`);
+  return el;
+}
+
+/** The open tuning drawer, or null. */
+export function tuningDrawerOrNull(host: HTMLElement, name: TuningName): HTMLElement | null {
+  return host.querySelector<HTMLElement>(`[data-testid="tuning-drawer"][data-tuning="${name}"]`);
+}
+
+/** Open a tuning drawer from its entry (a no-op when it is already open) and return it. */
+export async function openTuning(host: HTMLElement, name: TuningName): Promise<HTMLElement> {
+  const entry = tuningEntry(host, name);
+  if (entry.getAttribute('aria-expanded') !== 'true') {
+    // A real activation focuses the control first (keyboard, or a pointer in most
+    // browsers); `click()` alone does not, and the drawer returns focus to its invoker.
+    entry.focus();
+    entry.click();
+    await settle();
+  }
+  const drawer = tuningDrawerOrNull(host, name);
+  if (!drawer) throw new Error(`the ${name} tuning drawer did not open`);
+  return drawer;
+}
+
+/* ── Pipeline rows (split-auto-routing-readout-setup D2) ─────────────────────────────── */
+
+/** A row cell's visible text, whitespace-squashed, WITHOUT its field labels — the "Status
+ * now" / "Requests, 7d" labels are real text for assistive tech (shown on a phone) and
+ * would otherwise prefix every figure. */
+export function cellText(el: Element | null | undefined): string {
+  if (!el) return '';
+  const clone = el.cloneNode(true) as Element;
+  for (const label of clone.querySelectorAll('.ar-fieldlabel')) label.remove();
+  return (clone.textContent ?? '').replace(/\s+/g, ' ').trim();
+}

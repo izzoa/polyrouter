@@ -15,14 +15,17 @@ import { unregisteredModalSurfaces } from './a11y';
 import { App } from './App';
 import { createAppStore, type AppStore } from './state/appState';
 import { AppProvider } from './state/context';
-import { FakeApiClient } from './test/fakeClient';
+import { DEFAULT_CALIBRATION, FakeApiClient } from './test/fakeClient';
+import { openAutoTab, openTuning } from './test/routingTabs';
 
 const flush = async (): Promise<void> => {
   for (let i = 0; i < 4; i++) await new Promise((r) => setTimeout(r, 0));
 };
 
-async function mount(): Promise<{ host: HTMLElement; store: AppStore; dispose: () => void }> {
-  const store = createAppStore(new FakeApiClient());
+async function mount(
+  client: FakeApiClient = new FakeApiClient(),
+): Promise<{ host: HTMLElement; store: AppStore; dispose: () => void }> {
+  const store = createAppStore(client);
   const host = document.createElement('div');
   document.body.appendChild(host);
   const dispose = render(
@@ -80,6 +83,42 @@ describe('every surface claiming aria-modal is a registered layer', () => {
       h.dispose();
     }
   });
+
+  // split-auto-routing-readout-setup D8: the two tuning drawers are new dialogs. Both are
+  // conditional — opened from a Layers cell, the learning one only while the semantic layer
+  // is effective — so a page walk never renders them.
+  for (const [name, entry] of [
+    ['self-calibration', 'calibration'],
+    ['semantic-learning', 'learning'],
+  ] as const) {
+    it(`holds for the ${name} tuning drawer`, async () => {
+      const h = await mount(
+        new FakeApiClient({
+          autoLayers: {
+            structural: true,
+            cascade: true,
+            structuralAvailable: true,
+            cascadeAvailable: true,
+            semantic: true,
+            semanticAvailable: true,
+            semanticLearning: false,
+            semanticLearningAvailable: true,
+            calibration: DEFAULT_CALIBRATION,
+          },
+        }),
+      );
+      try {
+        h.store.go('routing');
+        await flush();
+        await openAutoTab(h.host);
+        const drawer = await openTuning(h.host, entry);
+        expect(drawer.getAttribute('aria-modal'), 'drawer did not open as a dialog').toBe('true');
+        expectEveryModalRegistered(h.host, h.store, `${name} drawer`);
+      } finally {
+        h.dispose();
+      }
+    });
+  }
 
   it('holds for a modal', async () => {
     const h = await mount();

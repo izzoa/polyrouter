@@ -18,8 +18,18 @@ import { Segmented } from '../components/Segmented';
 import { Toggle } from '../components/Toggle';
 import { BatchModeHelp } from '../components/BatchModeHelp';
 import type { TierEntryDto } from '../data/api';
-import { semanticWorkloadMissingHalf } from '../data/autoLayerHints';
-import { autoSeriesToChart, signalQualityGuidance, type AutoPerfVm } from '../data/autoPerf';
+import {
+  layerSwitchState,
+  semanticWorkloadMissingHalf,
+  structuralLayers,
+  type LayerRow,
+} from '../data/autoLayerHints';
+import {
+  autoSeriesToChart,
+  signalQualityGuidance,
+  undetectedClasses,
+  type AutoPerfVm,
+} from '../data/autoPerf';
 import {
   edgeSummary,
   toCalibrationEvidenceVm,
@@ -27,10 +37,11 @@ import {
 } from '../data/calibrationEvidence';
 import {
   toPipelineVm,
-  type ExitBarVm,
   type PipelineVm,
   type StageId,
   type StageRowVm,
+  type StatusNowVm,
+  type StatusTone,
 } from '../data/pipeline';
 import type { BandTargetState } from '../data/bandTargets';
 import {
@@ -44,6 +55,7 @@ import { isNonRoutableVariant } from '@polyrouter/shared';
 import { toCalibrationVm, toHistoryRows } from '../data/calibration';
 import { toLearningHistoryRows, toLearningVm } from '../data/semanticLearning';
 import { fmtUsd } from '../data/format';
+import { useModalSurface } from '../a11y';
 import { useApp } from '../state/context';
 import type { Model, Range, RoutingSection } from '../types';
 import { Icon } from '../components/Icon';
@@ -154,8 +166,8 @@ function TargetSummary(props: { target: BandTargetState; unset: string }) {
       <Show when={t().kind === 'tier' && t()} keyed>
         {(tt) =>
           tt.kind === 'tier' ? (
-            <span style="font:500 12px 'Geist',sans-serif;color:var(--accent-deep)">
-              tier: {tt.key}
+            <span style="font:500 12px 'Geist',sans-serif;color:var(--text)">
+              tier:{tt.key}
               <Show when={!tt.empty}>
                 <span style={TARGET_SUB_FONT}>
                   {' '}
@@ -173,7 +185,7 @@ function TargetSummary(props: { target: BandTargetState; unset: string }) {
       <Show when={t().kind === 'model' && t()} keyed>
         {(tt) =>
           tt.kind === 'model' ? (
-            <span style="font:500 12px 'Geist',sans-serif;color:var(--accent-deep)">
+            <span style="font:500 12px 'Geist',sans-serif;color:var(--text)">
               {tt.label}
               <span style={TARGET_SUB_FONT}>
                 {' '}
@@ -265,28 +277,41 @@ function TargetPicker(props: {
  * field label repeats so a stacked record (and a screen reader, at every width) never
  * loses it. */
 const TARGET_COLUMNS: Record<TargetColumn, { label: string; rule: string; sub: string }> = {
-  claim: { label: 'Claim', rule: 'auto_workload', sub: 'stage 2 · takes its class first' },
-  strong: { label: 'Strong', rule: 'auto_high', sub: 'stage 3 · confident high' },
-  cheap: { label: 'Cheap', rule: 'auto_low', sub: 'stage 3 · confident low' },
+  claim: { label: 'Claim', rule: 'auto_workload', sub: 'takes its class first' },
+  strong: { label: 'Strong', rule: 'auto_high', sub: 'confident high' },
+  cheap: { label: 'Cheap', rule: 'auto_low', sub: 'confident low' },
 };
 
+/** The two cells a Targets control lands on (D12): the Any request row's Strong and
+ * Cheap cell WRAPPERS — never the picker, so a stray Arrow key on arrival cannot retarget
+ * live routing; the picker is one Tab away. */
+export const TARGET_ANCHORS = {
+  strong: 'auto-targets-any-strong',
+  cheap: 'auto-targets-any-cheap',
+} as const;
+
+/** The one note the reserved rows share while their source is not effective; every inert
+ * Claim cell points at it. */
+const RESERVED_NOTE_ID = 'tm-reserved-note';
+
 /**
- * The TARGETS MATRIX (redesign-auto-routing-pipeline D9): every band and workload target
- * at once. An "Any request" row carries the GENERIC band rules, then one row per workload
- * class; the columns are Claim (`auto_workload`), Strong (`auto_high`), Cheap
- * (`auto_low`) and Detected. Read left to right, a row is the proxy's precedence: a
- * usable, live claim first, else the class's own band target, else the generic one.
+ * The TARGETS MATRIX (redesign-auto-routing-pipeline D9; split-auto-routing-readout-setup
+ * D9): every claim and band target at once, inside the Setup panel. An "Any request" row
+ * carries the GENERIC band rules, then one row per workload class; the columns are Claim
+ * (`auto_workload`), Strong (`auto_high`) and Cheap (`auto_low`). Read left to right, a row
+ * is the proxy's precedence: a usable, live claim first, else the class's own band target,
+ * else the generic one. It shows no range-scoped figure — per-class counts are read in the
+ * Workload claim detail, the unroutable counts in the Pipeline — so it never waits on the
+ * aggregation.
  *
- * It replaces the Band targets and Workload targets cards and their class dropdown, and
- * every guarantee they made carries over, because each cell renders the same pieces off
- * the same store actions: effective-rule resolution (the view-models), pessimistic,
+ * Every guarantee the band and workload cards made carries over, because each cell renders
+ * the same pieces off the same store actions: effective-rule resolution, pessimistic,
  * snapshot-scoped writes reconciled after each, the unverified state, shadowed-duplicate
  * cleanup, and reserved-class gating. Busy and error keep the store's grain — per band
  * across every scope (`bt`), per class (`wt`).
  *
  * Rows render through `<Index>`: they never reorder, so a recompute (a reconcile, a
- * re-poll, the aggregation landing) updates each row in place, and a focused picker
- * keeps its focus.
+ * re-poll) updates each row in place, and a focused picker keeps its focus.
  */
 function TargetsMatrix() {
   const app = useApp();
@@ -300,11 +325,6 @@ function TargetsMatrix() {
         tierEntries: state.tierEntries,
         models: state.allModels,
         providers: state.providers,
-      },
-      autoPerf: {
-        data: state.autoPerf.data,
-        error: state.autoPerf.error,
-        range: state.autoPerf.range,
       },
       semanticWorkload: state.autoLayers?.semanticWorkload ?? false,
       missingHalf: missingHalf(),
@@ -320,42 +340,39 @@ function TargetsMatrix() {
     ].join(' and the ');
 
   return (
-    // The Confident band row's Targets control scrolls here and focuses the panel. The
-    // global focus ring shows when that was done from the keyboard (never on a click), and
-    // the scroll margin keeps the ring clear of the pane's top edge.
+    // The Pipeline's Targets controls land on a cell inside; when the band columns are
+    // unverified they land on the notice, or here. The scroll margin keeps the focus ring
+    // clear of the pane's top edge.
     <section
       id={TARGETS_ID}
       tabindex="-1"
-      class="panel"
       data-testid="targets-matrix"
       aria-labelledby="ar-targets-title"
       style="scroll-margin-top:12px"
     >
-      <div style="padding:16px 18px 12px">
-        <div class="section-title" id="ar-targets-title" style="margin-bottom:2px">
-          Targets
-        </div>
-        <div
-          data-testid="targets-precedence"
-          style="font:400 12px 'Geist',sans-serif;color:var(--text3);line-height:1.5;max-width:760px"
-        >
-          Where stages 2 and 3 send a request. Read a row left to right: a usable Claim takes its
-          class's{' '}
-          <span class="mono" style="font-size:11px">
-            auto
-          </span>{' '}
-          requests first — before band targets, Layer 2, and the cascade; otherwise a confident
-          verdict goes to the row's Strong or Cheap target, and a class with no target of its own in
-          a column uses the Any request row's ("= any"). Ambiguous requests go on to Layer 2 and the
-          cascade, which tries cheap first. An explicit model or the tier header still wins over all
-          of it.
-        </div>
+      <div class="ar-sub-title" id="ar-targets-title">
+        Targets
+      </div>
+      <div
+        data-testid="targets-precedence"
+        style="padding:0 18px 12px;font:400 12px 'Geist',sans-serif;color:var(--text3);line-height:1.5;max-width:760px"
+      >
+        Where stages 2 and 3 send a request, read left to right: a usable Claim takes its class's{' '}
+        <span class="mono" style="font-size:11px">
+          auto
+        </span>{' '}
+        requests first — before band targets, Layer 2, and the cascade; otherwise a confident
+        verdict goes to the row's Strong or Cheap target, and a class with none of its own in a
+        column uses the Any request row's. Ambiguous requests go on to Layer 2 and the cascade. An
+        explicit model or the tier header still wins over all of it.
       </div>
       {/* ONE notice for the whole matrix: a write landed (or may have) but the reconcile
           after it failed, so the matrix cannot claim the server's truth. The affected
           column's snapshot-dependent actions stay disabled until a reconcile commits. */}
       <Show when={state.bt.unverified || state.wt.unverified}>
         <div
+          id={TARGETS_UNVERIFIED_ID}
+          tabindex="-1"
           data-testid="targets-unverified"
           style="margin:0 18px 12px;font:400 11px 'Geist',sans-serif;color:var(--red-text);line-height:1.5"
         >
@@ -375,20 +392,37 @@ function TargetsMatrix() {
           <For each={['claim', 'strong', 'cheap'] as const}>
             {(col) => (
               <div>
-                {TARGET_COLUMNS[col].label}{' '}
-                <span class="mono tm-head-rule">{TARGET_COLUMNS[col].rule}</span>
-                <span class="tm-head-sub">{TARGET_COLUMNS[col].sub}</span>
+                {TARGET_COLUMNS[col].label}
+                <span class="tm-head-sub"> · {TARGET_COLUMNS[col].sub}</span>
               </div>
             )}
           </For>
-          <div class="tm-head-detected">Detected · {state.autoPerf.range}</div>
         </div>
         <Index each={vm().rows}>
           {(row) => <TargetsRow row={row()} matrix={vm()} missingHalf={missingHalf()} />}
         </Index>
+        <Show when={vm().reservedNote}>
+          {(note) => (
+            <div id={RESERVED_NOTE_ID} class="tm-reserved-note" data-testid="targets-reserved-note">
+              {note()}
+            </div>
+          )}
+        </Show>
       </div>
       <div class="ar-foot" data-testid="targets-footnote">
-        Detection is structural: fenced code above the configured code thresholds, an image in the
+        Claim cells read and write{' '}
+        <span class="mono" style="font-size:10.5px">
+          auto_workload
+        </span>{' '}
+        rules; Strong,{' '}
+        <span class="mono" style="font-size:10.5px">
+          auto_high
+        </span>
+        ; Cheap,{' '}
+        <span class="mono" style="font-size:10.5px">
+          auto_low
+        </span>
+        . Detection is structural: fenced code above the configured code thresholds, an image in the
         request, a declared JSON output format. When several fire, one class wins: vision ›
         structured › code.{' '}
         <span data-testid="targets-reserved-footnote">
@@ -397,14 +431,14 @@ function TargetsMatrix() {
             : `Research and writing are not detected here yet (${missingHalf()}) — their rows go live when the semantic workload source is effective.`}
         </span>{' '}
         A class row's Strong and Cheap cells route by difficulty within that class. Busy and error
-        states are per band across every row, and per class for claims; the focal savings basis
-        stays the Any request row's Strong target.
+        states are per band across every row, and per class for claims; the Cascade row's savings
+        basis stays the Any request row's Strong target.
       </div>
     </section>
   );
 }
 
-/** One matrix row: the row's name, its three target cells and its Detected cell, then
+/** One matrix row: the row's name with its detection signal, its three target cells, then
  * the notes that belong to the row rather than to one cell. */
 function TargetsRow(props: { row: TargetsRowVm; matrix: TargetsMatrixVm; missingHalf: string }) {
   const r = () => props.row;
@@ -419,8 +453,7 @@ function TargetsRow(props: { row: TargetsRowVm; matrix: TargetsMatrixVm; missing
   };
   const hasNotes = (): boolean =>
     unusableClaim() !== null ||
-    r().inertNote !== null ||
-    (isAny() && (props.matrix.cascadeNeedsBoth || props.matrix.sameDestination));
+    (isAny() && (props.matrix.cascadeNote !== null || props.matrix.sameDestination));
 
   return (
     <div
@@ -436,20 +469,28 @@ function TargetsRow(props: { row: TargetsRowVm; matrix: TargetsMatrixVm; missing
             {r().label}
           </span>{' '}
           <span class="ar-tag">{tag()}</span>
+          <Show when={r().signal}>
+            {(signal) => (
+              <div class="tm-signal" data-testid="targets-signal">
+                {signal()}
+              </div>
+            )}
+          </Show>
         </div>
         <TargetCell cell={r().claim} missingHalf={props.missingHalf} />
         <TargetCell cell={r().strong} missingHalf={props.missingHalf} />
         <TargetCell cell={r().cheap} missingHalf={props.missingHalf} />
-        <DetectedCell row={r()} />
       </div>
       <Show when={hasNotes()}>
         <div class="tm-notes">
-          {/* The cascade checks read the GENERIC bands only, so they sit on this row. */}
-          <Show when={isAny() && props.matrix.cascadeNeedsBoth}>
-            <div style={TARGET_WARN_FONT} data-testid="targets-cascade-needs-both">
-              Cascade needs both bands usable — ambiguous requests stay on the default tier until
-              then.
-            </div>
+          {/* The cascade checks read the GENERIC bands only, so they sit on this row — and
+              the note is scoped per leg: a class's own target fills a missing band. */}
+          <Show when={isAny() && props.matrix.cascadeNote}>
+            {(note) => (
+              <div style={TARGET_WARN_FONT} data-testid="targets-cascade-needs-both">
+                {note()}
+              </div>
+            )}
           </Show>
           <Show when={isAny() && props.matrix.sameDestination}>
             <div style={TARGET_WARN_FONT} data-testid="targets-same-destination">
@@ -463,25 +504,18 @@ function TargetsRow(props: { row: TargetsRowVm; matrix: TargetsMatrixVm; missing
               </div>
             )}
           </Show>
-          {/* An inert reserved row says it is inert — a normal configuration, so neutral. */}
-          <Show when={r().inertNote}>
-            {(text) => (
-              <div style={TARGET_SUB_FONT} data-testid="targets-inert-note">
-                {text()}
-              </div>
-            )}
-          </Show>
         </div>
       </Show>
     </div>
   );
 }
 
-/** One target cell: the target the cell's own rules resolve to, its picker and Clear, its
- * cell-scoped error, and every disclosure (empty tier, unresolved, batch-only, shadowed
- * duplicates). `claimed` is an ADDED annotation: a claimed band cell still presents all
- * of that, so a broken scoped rule never hides under a claim and goes live, unwarned,
- * the moment the claim is cleared. */
+/** One target cell (D9), three rows on the row's subgrid so every picker in a row shares
+ * one top line: the VALUE (the cell's own target, or its short value when it has none),
+ * the picker and Clear, and the NOTES (the claimed annotation, the cell-scoped error, and
+ * every disclosure — empty tier, unresolved, batch-only, shadowed duplicates). `claimed`
+ * is an ADDED annotation beside the value, never instead of it, so a broken scoped rule
+ * never hides under a claim and goes live, unwarned, the moment the claim is cleared. */
 function TargetCell(props: { cell: TargetCellVm; missingHalf: string }) {
   const app = useApp();
   const { state } = app;
@@ -490,6 +524,13 @@ function TargetCell(props: { cell: TargetCellVm; missingHalf: string }) {
   /** Whom the cell is for, as its controls' accessible names say it. */
   const forWhom = (): string => c().scope ?? 'any request';
   const name = (): string => `${col().label} target for ${forWhom()}`;
+  /** The Any request Strong and Cheap cells are where the Pipeline's Targets controls land. */
+  const anchor = (): string | undefined => {
+    const cell = c();
+    if (cell.scope !== null || cell.column === 'claim') return undefined;
+    return TARGET_ANCHORS[cell.column];
+  };
+  const inert = (): boolean => c().kind === 'readonly';
   const busy = (): boolean => {
     const cell = c();
     if (cell.band !== 'auto_workload') return state.bt.busy[cell.band] || state.bt.unverified;
@@ -536,51 +577,34 @@ function TargetCell(props: { cell: TargetCellVm; missingHalf: string }) {
     if (cell.scope === null) return 'Target unresolved — requests fall through to default.';
     return `Target unresolved — the ${cell.scope} ${band} band is unroutable for the class.`;
   };
-  const unroutable = () => {
-    const u = c().unroutable;
-    return u.kind === 'value' ? u.value : null;
-  };
 
   return (
     <div
-      class="tm-cell"
+      class={anchor() === undefined ? 'tm-cell' : 'tm-cell tm-anchor'}
       data-testid="targets-cell"
       data-column={c().column}
       data-kind={c().kind}
       data-claimed={c().claimed ? 'true' : undefined}
+      id={anchor()}
+      tabindex={anchor() === undefined ? undefined : -1}
+      role={anchor() !== undefined || inert() ? 'group' : undefined}
+      aria-label={
+        anchor() !== undefined
+          ? `${col().label} column, Any request row`
+          : inert()
+            ? name()
+            : undefined
+      }
+      aria-describedby={inert() ? RESERVED_NOTE_ID : undefined}
     >
-      <span class="tm-label">
-        {col().label} <span class="mono">{col().rule}</span>
-      </span>
+      <span class="tm-label">{col().label}</span>
+      {/* `display: contents` at desktop, so the three rows below sit on the row's subgrid;
+          a flex column in the stacked record. */}
       <div class="tm-body">
-        <Show when={c().claimed}>
-          <div
-            data-testid="cell-claimed"
-            style="font:500 11px 'Geist',sans-serif;color:var(--text2)"
-          >
-            Claimed — the {c().scope ?? ''} claim takes these requests first; not consulted while it
-            stands.
-          </div>
-        </Show>
-        <div>
+        <div class="tm-value">
           {/* A model target's unlisted note is TargetSummary's own (`data-unlisted-target`),
               so the cell does not print it twice. */}
-          <TargetSummary target={c().target} unset={c().unsetText} />
-          <Switch>
-            <Match when={c().unroutable.kind === 'placeholder'}>
-              {' '}
-              <span class="ar-skel ar-skel-note" aria-hidden="true" />
-              <span class="sr-only">Loading its unroutable count</span>
-            </Match>
-            <Match when={unroutable()}>
-              {(u) => (
-                <span style={TARGET_SUB_FONT} data-testid="cell-unroutable">
-                  {' '}
-                  ({u().count} unroutable in the selected {u().range} range)
-                </span>
-              )}
-            </Match>
-          </Switch>
+          <TargetSummary target={c().target} unset={c().valueText} />
         </div>
         <Show when={c().editable}>
           <div class="tm-actions">
@@ -603,119 +627,147 @@ function TargetCell(props: { cell: TargetCellVm; missingHalf: string }) {
             </Show>
           </div>
         </Show>
-        {/* A reserved class's API-created rule: disclosed, never actionable from here. */}
-        <Show when={c().kind === 'readonly' && c().effective !== null}>
-          <div style={TARGET_SUB_FONT} data-testid="cell-reserved-note">
-            Reserved class — this rule was created through the API and stays inert until the
-            semantic workload source emits {c().scope ?? ''} ({props.missingHalf}).
-          </div>
-        </Show>
-        <Show when={error()}>
-          {(msg) => (
-            <div
-              data-testid="cell-error"
-              style="font:400 11px 'Geist',sans-serif;color:var(--red-text)"
-            >
-              {msg()}
-            </div>
-          )}
-        </Show>
-        <Show when={c().notes.emptyTier}>
-          <div style={TARGET_WARN_FONT}>{emptyText()}</div>
-        </Show>
-        <Show when={c().notes.unresolvedHint}>
-          {(hint) => (
-            <div style={TARGET_WARN_FONT}>
-              {unresolvedText()} {hint()}
-            </div>
-          )}
-        </Show>
-        <Show when={nonRoutableNote(c().notes.nonRoutable)}>
-          {(note) => (
-            <div style={TARGET_WARN_FONT} data-testid="cell-nonroutable">
-              {note()}
-            </div>
-          )}
-        </Show>
-        <Show when={c().shadowed.length > 0}>
-          <div style={TARGET_WARN_FONT} data-testid="cell-shadowed">
-            {c().shadowed.length} shadowed duplicate rule{c().shadowed.length === 1 ? '' : 's'}
-            {/* Read-only cells stay read-only (clink r5 M3): the duplicate is disclosed,
-                never actionable from here — the API owns those rules. */}
-            <Show
-              when={c().editable}
-              fallback={<span> (API-created — manage through the rules API)</span>}
-            >
-              {' '}
-              —{' '}
-              <button
-                type="button"
-                disabled={busy()}
-                aria-label={`Clean up shadowed ${col().label} rules for ${forWhom()}`}
-                style={TEXT_ACTION}
-                onClick={cleanUp}
+        <div class="tm-cell-notes">
+          <Show when={c().claimedNote}>
+            {(note) => (
+              <div
+                data-testid="cell-claimed"
+                style="font:500 11px 'Geist',sans-serif;color:var(--text2)"
               >
-                clean up
-              </button>
-            </Show>
-          </div>
-        </Show>
+                {note()}
+              </div>
+            )}
+          </Show>
+          {/* A reserved class's API-created rule: disclosed, never actionable from here. */}
+          <Show when={c().kind === 'readonly' && c().effective !== null}>
+            <div style={TARGET_SUB_FONT} data-testid="cell-reserved-note">
+              Reserved class — this rule was created through the API and stays inert until the
+              semantic workload source emits {c().scope ?? ''} ({props.missingHalf}).
+            </div>
+          </Show>
+          <Show when={error()}>
+            {(msg) => (
+              <div
+                data-testid="cell-error"
+                style="font:400 11px 'Geist',sans-serif;color:var(--red-text)"
+              >
+                {msg()}
+              </div>
+            )}
+          </Show>
+          <Show when={c().notes.emptyTier}>
+            <div style={TARGET_WARN_FONT}>{emptyText()}</div>
+          </Show>
+          <Show when={c().notes.unresolvedHint}>
+            {(hint) => (
+              <div style={TARGET_WARN_FONT}>
+                {unresolvedText()} {hint()}
+              </div>
+            )}
+          </Show>
+          <Show when={nonRoutableNote(c().notes.nonRoutable)}>
+            {(note) => (
+              <div style={TARGET_WARN_FONT} data-testid="cell-nonroutable">
+                {note()}
+              </div>
+            )}
+          </Show>
+          <Show when={c().shadowed.length > 0}>
+            <div style={TARGET_WARN_FONT} data-testid="cell-shadowed">
+              {c().shadowed.length} shadowed duplicate rule{c().shadowed.length === 1 ? '' : 's'}
+              {/* Read-only cells stay read-only (clink r5 M3): the duplicate is disclosed,
+                  never actionable from here — the API owns those rules. */}
+              <Show
+                when={c().editable}
+                fallback={<span> (API-created — manage through the rules API)</span>}
+              >
+                {' '}
+                —{' '}
+                <button
+                  type="button"
+                  disabled={busy()}
+                  aria-label={`Clean up shadowed ${col().label} rules for ${forWhom()}`}
+                  style={TEXT_ACTION}
+                  onClick={cleanUp}
+                >
+                  clean up
+                </button>
+              </Show>
+            </div>
+          </Show>
+        </div>
       </div>
     </div>
   );
 }
 
-/** The Detected cell: what the range's workload mix saw for the row, framed to the tab's
- * selected range — the evaluated count on the Any request row, and per class its
- * workload-classified requests and (while the claim is live) how many it routed. Under
- * the tab's designed states: a placeholder while loading, no figure after a failure. */
-function DetectedCell(props: { row: TargetsRowVm }) {
-  const { state } = useApp();
-  const d = () => props.row.detected;
-  const value = () => {
-    const x = d();
-    return x.kind === 'value' ? x.value : null;
-  };
+/** The two tuning drawers (split-auto-routing-readout-setup D8). */
+export type TuningName = 'calibration' | 'learning';
+
+/** After an in-drawer action whose control may have unmounted (Revert to defaults, an
+ * agent's Revert, Confirm revert), put focus back inside the open tuning drawer — the
+ * dashboard-core content-replaced rule. A no-op while focus is anywhere real. */
+function keepFocusInDrawer(): void {
+  queueMicrotask(() => {
+    const active = document.activeElement;
+    if (active !== null && active !== document.body) return;
+    document.querySelector<HTMLElement>('[data-testid="tuning-drawer"]')?.focus();
+  });
+}
+
+/** A tuning drawer: the dashboard's existing drawer (the Inspector's `.drawer` through
+ * `useModalSurface`) — a labelled dialog that traps focus, closes on Escape or its
+ * backdrop, returns focus to its invoker, and is a bottom sheet at or below `narrow`.
+ * Mounted only while open, and only by `AutoRouting`, beside the panels — never inside
+ * a query container, which would become the fixed drawer's containing block. */
+function TuningDrawer(props: {
+  name: TuningName;
+  title: string;
+  closeLabel: string;
+  onClose: () => void;
+  children: JSX.Element;
+}) {
+  const app = useApp();
+  const { state } = app;
+  const titleId = `tuning-title-${props.name}`;
+  const surface = useModalSurface(app, {
+    when: () => true, // mounted only while open
+    labelledBy: titleId,
+    onDismiss: props.onClose,
+  });
   return (
-    <div class="tm-cell tm-detected" data-testid="targets-detected" data-kind={d().kind}>
-      <span class="tm-label">Detected · {state.autoPerf.range}</span>
-      <div class="tm-body">
-        <Switch>
-          <Match when={value()}>
-            {(v) => (
-              <span style="font:400 11.5px 'Geist',sans-serif;color:var(--text3)">
-                <span class="mono" style="font:500 12px 'Geist Mono',monospace;color:var(--text)">
-                  {v().requests.toLocaleString()}
-                </span>{' '}
-                {v().routed === null ? 'evaluated' : 'detected'}
-                <Show when={v().routed !== null && props.row.live}>
-                  {' · '}
-                  <span data-testid="wt-routed">
-                    <span
-                      class="mono"
-                      style="font:500 12px 'Geist Mono',monospace;color:var(--text)"
-                    >
-                      {(v().routed ?? 0).toLocaleString()}
-                    </span>{' '}
-                    routed
-                  </span>
-                </Show>
-              </span>
-            )}
-          </Match>
-          <Match when={d().kind === 'placeholder'}>
-            <span class="ar-skel ar-skel-note" aria-hidden="true" />
-            <span class="sr-only">Loading</span>
-          </Match>
-          <Match when={d().kind === 'none'}>
-            <span aria-hidden="true" style="color:var(--text3)">
-              —
-            </span>
-            <span class="sr-only">unavailable</span>
-          </Match>
-        </Switch>
+    <>
+      {/* eslint-disable-next-line a11y-guard/no-noninteractive-click -- pointer-only backdrop redundancy; Escape is the keyboard path */}
+      <div
+        class="overlay"
+        style={{ 'z-index': String(surface.z().backdrop) }}
+        onClick={props.onClose}
+      />
+      <div
+        class="drawer"
+        data-testid="tuning-drawer"
+        data-tuning={props.name}
+        style={{ 'z-index': String(surface.z().surface) }}
+        inert={state.navExpanded ? true : undefined}
+        {...surface.props}
+        ref={surface.props['ref'] as (n: HTMLElement) => void}
+      >
+        <div class="drawer-head">
+          <div id={titleId} style="font:600 14px 'Geist',sans-serif;color:var(--text)">
+            {props.title}
+          </div>
+          <button
+            type="button"
+            class="drawer-close"
+            aria-label={props.closeLabel}
+            onClick={props.onClose}
+          >
+            <Icon name="close" size={13} />
+          </button>
+        </div>
+        <div class="drawer-body">{props.children}</div>
       </div>
-    </div>
+    </>
   );
 }
 
@@ -731,16 +783,19 @@ function SelfCalibration() {
   const vm = () => toCalibrationVm(state.autoLayers);
   const rows = () => toHistoryRows(state.calHistory.rows);
   return (
-    <Show when={vm()} keyed>
+    // NOT keyed: the view-model is rebuilt on every auto-layers change, and a keyed Show
+    // would remount the whole card on each one — replacing the switch the user just
+    // pressed and dropping focus to <body> (D8 "Stable cards").
+    <Show when={vm()}>
       {(v) => (
         <div class="ar-card" data-testid="self-calibration">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
             <div class="section-title">Self-calibration</div>
             <Toggle
-              on={v.enabled}
+              on={v().enabled}
               size="sm"
               label="Self-calibration"
-              onToggle={() => void app.setCalibration(!v.enabled)}
+              onToggle={() => void app.setCalibration(!v().enabled)}
             />
           </div>
           <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3);line-height:1.5;margin-bottom:8px">
@@ -752,21 +807,27 @@ function SelfCalibration() {
               class="mono"
               style="font:500 12px 'Geist Mono',monospace;color:var(--text);white-space:nowrap"
             >
-              {v.thresholdsLine}
+              {v().thresholdsLine}
             </span>
             <span
               style={{
                 font: "400 10.5px 'Geist',sans-serif",
-                color: v.tag === 'calibrated' ? 'var(--accent-deep)' : 'var(--text3)',
-                background: v.tag === 'calibrated' ? 'var(--accent-bg)' : 'var(--chip)',
+                // Neutral either way (D11): the tag's TEXT says which pair it is, and the
+                // Pipeline's bars are the tab's one accent element.
+                color: 'var(--text2)',
+                background: 'var(--chip)',
                 padding: '2px 7px',
                 'border-radius': '5px',
               }}
             >
-              {v.tag}
+              {v().tag}
             </span>
-            <Show when={v.showRevert}>
-              <button type="button" class="btn-ghost" onClick={() => void app.revertCalibration()}>
+            <Show when={v().showRevert}>
+              <button
+                type="button"
+                class="btn-ghost"
+                onClick={() => void app.revertCalibration().finally(keepFocusInDrawer)}
+              >
                 Revert to defaults
               </button>
             </Show>
@@ -775,7 +836,7 @@ function SelfCalibration() {
               every inheriting agent while no longer being informed by the
               traffic it governs, so it is disclosed rather than presented as
               current. The revert beside it is the existing one. */}
-          <Show when={v.tenantStarved}>
+          <Show when={v().tenantStarved}>
             <div
               data-testid="tenant-pair-starved"
               style="font:400 11.5px 'Geist',sans-serif;color:var(--text2);background:var(--chip);border-radius:6px;padding:6px 8px;margin-bottom:10px;line-height:1.5"
@@ -793,7 +854,7 @@ function SelfCalibration() {
               Per-agent thresholds
             </div>
             <Show
-              when={!v.noAgents}
+              when={!v().noAgents}
               fallback={
                 <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3)">
                   No agents yet.
@@ -802,11 +863,11 @@ function SelfCalibration() {
             >
               <div style="font:400 11px 'Geist',sans-serif;color:var(--text3);margin-bottom:8px">
                 An agent earns its own pair on the same evidence floor the tenant does.{' '}
-                {v.inheritingCount > 0
-                  ? `${String(v.inheritingCount)} inheriting this tenant's pair.`
+                {v().inheritingCount > 0
+                  ? `${String(v().inheritingCount)} inheriting this tenant's pair.`
                   : 'All agents carry their own.'}
               </div>
-              <For each={v.agents}>
+              <For each={v().agents}>
                 {(a) => (
                   <div
                     data-testid="agent-calibration-row"
@@ -846,7 +907,9 @@ function SelfCalibration() {
                         data-testid="agent-revert"
                         aria-label={`Revert ${a.name} to inherited thresholds`}
                         style="margin-left:auto"
-                        onClick={() => void app.revertAgentCalibration(a.id)}
+                        onClick={() =>
+                          void app.revertAgentCalibration(a.id).finally(keepFocusInDrawer)
+                        }
                       >
                         Revert
                       </button>
@@ -927,6 +990,28 @@ function SemanticLearning() {
   const app = useApp();
   const { state } = app;
   const [confirming, setConfirming] = createSignal(false);
+  // The confirmation swaps one button for three. Focus follows the swap both ways (D8):
+  // opening it lands on Cancel, Cancel or Escape lands back on Revert to bundled — never
+  // on <body>, which is where removing the focused button would leave it.
+  let revertButton: HTMLButtonElement | undefined;
+  let cancelButton: HTMLButtonElement | undefined;
+  const openConfirm = (): void => {
+    setConfirming(true);
+    queueMicrotask(() => cancelButton?.focus());
+  };
+  const cancelConfirm = (): void => {
+    setConfirming(false);
+    queueMicrotask(() => revertButton?.focus());
+  };
+  /** The confirmation owns Escape: it cancels HERE and marks the event handled, so the
+   * layer arbiter does not also dismiss the drawer — the picker's two-stage Escape. Focus
+   * is always on one of the confirmation's buttons while it shows, so they carry it. A
+   * second Escape (now on Revert to bundled) closes the drawer. */
+  const confirmKeyDown = (e: KeyboardEvent): void => {
+    if (e.key !== 'Escape') return;
+    e.preventDefault();
+    cancelConfirm();
+  };
   createEffect(() => {
     // Fetch once the card goes live (semantic effective); cheap + always honest.
     if (state.autoLayers?.semantic === true && !state.semLearn.loaded) {
@@ -968,12 +1053,13 @@ function SemanticLearning() {
             </button>
           </div>
         </Show>
-        <Show when={vm()} keyed>
+        {/* NOT keyed — see SelfCalibration: a status refresh must update this in place. */}
+        <Show when={vm()}>
           {(v) => (
             <>
               <div style="display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:8px">
                 <span class="mono" style="font:500 12px 'Geist Mono',monospace;color:var(--text)">
-                  {v.samplesLine}
+                  {v().samplesLine}
                 </span>
                 <span
                   style={{
@@ -984,16 +1070,23 @@ function SemanticLearning() {
                     'border-radius': '5px',
                   }}
                 >
-                  {v.sourceLine}
+                  {v().sourceLine}
                 </span>
                 <span style="font:400 10.5px 'Geist',sans-serif;color:var(--text3)">
-                  {v.lastAppliedLine}
+                  {v().lastAppliedLine}
                 </span>
-                <Show when={v.showRevert}>
+                <Show when={v().showRevert}>
                   <Show
                     when={confirming()}
                     fallback={
-                      <button type="button" class="btn-ghost" onClick={() => setConfirming(true)}>
+                      <button
+                        type="button"
+                        class="btn-ghost"
+                        ref={(el) => {
+                          revertButton = el;
+                        }}
+                        onClick={openConfirm}
+                      >
                         Revert to bundled
                       </button>
                     }
@@ -1005,9 +1098,12 @@ function SemanticLearning() {
                       type="button"
                       class="btn-ghost btn-ghost--amber"
                       style="font:400 11px 'Geist',sans-serif;cursor:pointer"
+                      onKeyDown={confirmKeyDown}
                       onClick={() => {
                         setConfirming(false);
-                        void app.revertSemanticLearning();
+                        // Confirm revert removes itself: keep focus inside the drawer.
+                        keepFocusInDrawer();
+                        void app.revertSemanticLearning().finally(keepFocusInDrawer);
                       }}
                     >
                       Confirm revert
@@ -1016,14 +1112,18 @@ function SemanticLearning() {
                       type="button"
                       class="btn-cancel"
                       style="font:400 11px 'Geist',sans-serif;cursor:pointer"
-                      onClick={() => setConfirming(false)}
+                      ref={(el) => {
+                        cancelButton = el;
+                      }}
+                      onKeyDown={confirmKeyDown}
+                      onClick={cancelConfirm}
                     >
                       Cancel
                     </button>
                   </Show>
                 </Show>
               </div>
-              <Show when={v.staleReason} keyed>
+              <Show when={v().staleReason} keyed>
                 {(reason) => (
                   <div
                     class="mono"
@@ -1086,8 +1186,10 @@ function SemanticLearning() {
   );
 }
 
-/** The AUTO ROUTING tab (redesign-auto-routing-pipeline): the focal summary, the
- * six stages in the order the proxy runs them, and the targets. Every measured
+/** The AUTO ROUTING tab (redesign-auto-routing-pipeline; split-auto-routing-readout-setup
+ * D1): two panels — the PIPELINE, which reads out where automatic routing sent traffic
+ * (every range-scoped figure), and SETUP, which holds every control (the layer switches,
+ * the Targets matrix, and the two tuning drawers beside the panels). Every measured
  * figure comes through `toPipelineVm`, which gates them on the designed states —
  * so nothing renders as current while the aggregation is loading, after it failed
  * (the store keeps the last data on a failure), or with the capability absent.
@@ -1115,8 +1217,35 @@ function AutoRouting(props: { structural: boolean; onStranded: () => void }) {
         models: state.allModels,
         providers: state.providers,
       },
+      unverified: { bands: state.bt.unverified, claims: state.wt.unverified },
     }),
   );
+  // Which tuning drawer is open — component-local, like the open stages. A drawer whose
+  // card loses its precondition while open closes for good (it never reopens by itself
+  // when the precondition returns).
+  const [tuning, setTuning] = createSignal<TuningName | null>(null);
+  const calibrationGate = (): boolean =>
+    props.structural && toCalibrationVm(state.autoLayers) !== null;
+  const learningGate = (): boolean => props.structural && state.autoLayers?.semantic === true;
+  createEffect(() => {
+    const t = tuning();
+    if ((t === 'calibration' && !calibrationGate()) || (t === 'learning' && !learningGate())) {
+      setTuning(null);
+      // The drawer and its invoker can leave in the same update, and the drawer returns
+      // focus to the invoker BEFORE the invoker's node is removed — so neither region's
+      // guard sees focus leave. Once the DOM has settled, focus that fell to <body> goes
+      // to the tab control (`onStranded` acts only then).
+      queueMicrotask(props.onStranded);
+    }
+  });
+  const closeTuning = (): void => {
+    setTuning(null);
+  };
+  let pipelineSection: HTMLElement | undefined;
+  const retry = (): void => {
+    void app.retryAutoPerf();
+    queueMicrotask(() => pipelineSection?.focus());
+  };
   // Which stages are open. Component-local, so it resets whenever the tab changes
   // (the tab unmounts) — stages start collapsed, and opening one writes nothing.
   const [open, setOpen] = createSignal<ReadonlySet<StageId>>(new Set());
@@ -1129,46 +1258,51 @@ function AutoRouting(props: { structural: boolean; onStranded: () => void }) {
 
   return (
     <>
-      <div class="ar-head">
-        <div style="font:400 12.5px 'Geist',sans-serif;color:var(--text3);line-height:1.5;max-width:720px">
-          Runs only when an agent sends model{' '}
-          <span
-            class="mono"
-            style="font-size:11px;background:var(--chip);padding:1px 5px;border-radius:4px"
-          >
-            auto
-          </span>
-          . If a smart layer is down or a stage’s target is unusable, the request lands on the
-          default tier — requests never fail because routing got clever.
-        </div>
-        {/* The range frames every figure on the tab, so it sits at the tab's level; with
-            the capability absent there is no figure to frame. */}
-        <Show when={props.structural}>
-          <FocusGuard onStranded={props.onStranded} style="display:contents">
-            <div role="group" aria-label="Figures range" data-testid="auto-range">
-              <RangeSelector
-                value={state.autoPerf.range}
-                onChange={(r: Range) => app.setAutoPerfRange(r)}
-              />
-            </div>
-          </FocusGuard>
-        </Show>
+      <div style="font:400 12.5px 'Geist',sans-serif;color:var(--text3);line-height:1.5;max-width:720px">
+        Runs only when an agent sends model{' '}
+        <span
+          class="mono"
+          style="font-size:11px;background:var(--chip);padding:1px 5px;border-radius:4px"
+        >
+          auto
+        </span>
+        . If a smart layer is down or a stage’s target is unusable, the request lands on the default
+        tier — requests never fail because routing got clever.
       </div>
 
-      <Show when={props.structural}>
-        <FocusGuard onStranded={props.onStranded} style="display:contents">
-          <FocalSummary vm={vm()} />
-        </FocusGuard>
-      </Show>
-
-      <section class="panel" data-testid="auto-pipeline" aria-labelledby="ar-pipeline-title">
-        <div style="padding:16px 18px 12px">
-          <div class="section-title" id="ar-pipeline-title" style="margin-bottom:2px">
-            Pipeline
+      {/* The Pipeline is the Retry's landing spot: Retry swaps the failure notice for the
+          rows' placeholders, unmounting the button just pressed, and without a stable
+          landing spot focus would fall to <body>. */}
+      <section
+        ref={(el) => {
+          pipelineSection = el;
+        }}
+        tabindex={-1}
+        class="panel"
+        data-testid="auto-pipeline"
+        aria-labelledby="ar-pipeline-title"
+      >
+        <div class="ar-head" style="padding:16px 18px 12px">
+          <div>
+            <div class="section-title" id="ar-pipeline-title" style="margin-bottom:2px">
+              Pipeline
+            </div>
+            <div style="font:400 12px 'Geist',sans-serif;color:var(--text3);line-height:1.5">
+              In the order the proxy runs them. A request leaves at the first stage that routes it.
+            </div>
           </div>
-          <div style="font:400 12px 'Geist',sans-serif;color:var(--text3);line-height:1.5">
-            In the order the proxy runs them. A request leaves at the first stage that routes it.
-          </div>
+          {/* The range frames every count on the rows; with the capability absent there is
+              no figure to frame. */}
+          <Show when={props.structural}>
+            <FocusGuard onStranded={props.onStranded} style="display:contents">
+              <div role="group" aria-label="Figures range" data-testid="auto-range">
+                <RangeSelector
+                  value={state.autoPerf.range}
+                  onChange={(r: Range) => app.setAutoPerfRange(r)}
+                />
+              </div>
+            </FocusGuard>
+          </Show>
         </div>
         <div class="ar-note" data-testid="layer0-note">
           Before stage 1, an explicit model, an explicit tier, or an{' '}
@@ -1189,20 +1323,38 @@ function AutoRouting(props: { structural: boolean; onStranded: () => void }) {
           </button>
           .
         </div>
-        <ol class="ar-stages">
-          <Index each={vm().stages}>
-            {(stage) => (
-              <StageRow
-                stage={stage()}
-                vm={vm()}
-                structural={props.structural}
-                open={open().has(stage().id)}
-                onToggle={toggleStage}
-                onStranded={props.onStranded}
-              />
-            )}
-          </Index>
-        </ol>
+        {/* ONE slot above the column header for the figures' designed states that are
+            about the whole range (D1): a failure, a zero range, or no stage breakdown. */}
+        <Show when={props.structural}>
+          <PipelineNotice vm={vm()} onRetry={retry} />
+        </Show>
+        {/* The rows' query container is THIS wrapper, never the grid it holds: a container
+            query styles only descendants, so the grid's own tracks must sit one level down
+            to be restated per mode (D2). */}
+        <div class="ar-pipeline">
+          {/* An explicit list role: WebKit drops list semantics from a marker-less list. */}
+          <ol class="ar-stages" role="list">
+            <li class="ar-colhead" aria-hidden="true">
+              <span class="ar-ch-name">Stage</span>
+              <span class="ar-ch-status">Status now</span>
+              <Show when={props.structural}>
+                <span class="ar-ch-fig">Requests · {vm().range}</span>
+              </Show>
+            </li>
+            <Index each={vm().stages}>
+              {(stage) => (
+                <StageRow
+                  stage={stage()}
+                  vm={vm()}
+                  structural={props.structural}
+                  open={open().has(stage().id)}
+                  onToggle={toggleStage}
+                  onStranded={props.onStranded}
+                />
+              )}
+            </Index>
+          </ol>
+        </div>
         <div class="ar-foot" data-testid="pipeline-unevaluated">
           {/* Only where counts and a range control are on screen. */}
           <Show when={props.structural}>
@@ -1216,21 +1368,250 @@ function AutoRouting(props: { structural: boolean; onStranded: () => void }) {
         </div>
       </section>
 
-      {/* The Targets matrix: where the Confident band row points. It renders from routing
-          state alone, so it never waits on the aggregation — only on the capability. The
-          guard returns focus to the tab control when the capability goes away under a
-          user standing inside it. */}
-      <Show when={props.structural}>
-        <FocusGuard onStranded={props.onStranded}>
-          <TargetsMatrix />
+      <SetupPanel
+        structural={props.structural}
+        tuning={tuning()}
+        onTuning={setTuning}
+        onStranded={props.onStranded}
+      />
+
+      {/* The tuning drawers, beside the panels and outside every query container. A guard
+          hands focus to the tab control when a lost precondition unmounts a drawer whose
+          invoker went with it. */}
+      <Show when={tuning() === 'calibration' && calibrationGate()}>
+        <FocusGuard onStranded={props.onStranded} style="display:contents">
+          <TuningDrawer
+            name="calibration"
+            title="Classify · self-calibration"
+            closeLabel="Close self-calibration"
+            onClose={closeTuning}
+          >
+            <SelfCalibration />
+            <div data-testid="calibration-evidence-pointer" style={NOTE_FONT}>
+              The evidence behind these thresholds is in the Classify stage’s details in the
+              Pipeline.
+            </div>
+          </TuningDrawer>
+        </FocusGuard>
+      </Show>
+      <Show when={tuning() === 'learning' && learningGate()}>
+        <FocusGuard onStranded={props.onStranded} style="display:contents">
+          <TuningDrawer
+            name="learning"
+            title="Semantic · learning"
+            closeLabel="Close semantic learning"
+            onClose={closeTuning}
+          >
+            <SemanticLearning />
+          </TuningDrawer>
         </FocusGuard>
       </Show>
     </>
   );
 }
 
-/** The Targets matrix's id: where the Confident band row's Targets control lands. */
+/** Each layer's stage name in the Pipeline — what its Layers cell is titled. */
+const LAYER_STAGE: Record<LayerRow['id'], string> = {
+  structural: 'Classify',
+  semantic: 'Semantic',
+  cascade: 'Cascade',
+};
+
+/**
+ * The SETUP panel (split-auto-routing-readout-setup D1, D7): every automatic-routing
+ * control, rendered from routing state alone — it never waits on the aggregation and shows
+ * no range-scoped figure. Its Layers cells hold the tab's only three switches; the Pipeline
+ * reads out what they did.
+ */
+function SetupPanel(props: {
+  structural: boolean;
+  tuning: TuningName | null;
+  onTuning: (name: TuningName) => void;
+  onStranded: () => void;
+}) {
+  const { state } = useApp();
+  const layers = (): LayerRow[] => structuralLayers(state.autoLayers);
+  /** Each entry renders only under its card's own precondition (dashboard-config "a moved
+   * card keeps its own gate"): self-calibration needs the structural capability and its
+   * view-model; semantic learning needs the semantic layer EFFECTIVE. */
+  const entry = (id: LayerRow['id']): LayerEntry | null => {
+    const al = state.autoLayers;
+    if (id === 'structural') {
+      const cal = toCalibrationVm(al);
+      return props.structural && cal !== null
+        ? {
+            name: 'calibration',
+            label: `Self-calibration · ${cal.enabled ? 'on' : 'off'}`,
+            open: props.tuning === 'calibration',
+            onOpen: () => props.onTuning('calibration'),
+          }
+        : null;
+    }
+    if (id === 'semantic' && props.structural && al?.semantic === true)
+      return {
+        name: 'learning',
+        label: `Semantic learning · ${al.semanticLearning ? 'on' : 'off'}`,
+        open: props.tuning === 'learning',
+        onOpen: () => props.onTuning('learning'),
+      };
+    return null;
+  };
+  return (
+    <section class="panel" data-testid="auto-setup" aria-labelledby="ar-setup-title">
+      <div style="padding:16px 18px 12px">
+        <div class="section-title" id="ar-setup-title" style="margin-bottom:2px">
+          Setup
+        </div>
+        <div style="font:400 12px 'Geist',sans-serif;color:var(--text3);line-height:1.5">
+          Every automatic-routing control. Changes apply to new requests; the Pipeline reads out
+          where traffic went.
+        </div>
+      </div>
+      <div class="ar-sub-title" id="ar-layers-title">
+        Layers
+      </div>
+      <div class="ar-layers-wrap">
+        {/* Rows never reorder, so `<Index>` keeps each cell — and its focused switch — in
+            place while the auto-layers view recomputes. */}
+        <div
+          class="ar-layers"
+          role="group"
+          aria-labelledby="ar-layers-title"
+          data-testid="auto-layers"
+        >
+          <Index each={layers()}>
+            {(row) => (
+              <LayerCell row={row()} entry={entry(row().id)} onStranded={props.onStranded} />
+            )}
+          </Index>
+        </div>
+      </div>
+      {/* The Targets matrix: where the Confident band row points. It renders from routing
+          state alone, so it never waits on the aggregation — only on the capability. The
+          guard returns focus to the tab control when the capability goes away under a user
+          standing inside it. */}
+      <Show when={props.structural}>
+        <FocusGuard onStranded={props.onStranded}>
+          <TargetsMatrix />
+        </FocusGuard>
+      </Show>
+    </section>
+  );
+}
+
+/** One Layers cell (D7): the layer's switch with its unchanged accessible name, its stage
+ * name and layer label, its state in text, its description, and the missing-half hint
+ * when the instance cannot enable it. An unavailable switch is drawn as unavailable —
+ * distinct from off and from busy — AND says "Unavailable", so the drawing is never the
+ * only signal. */
+interface LayerEntry {
+  name: TuningName;
+  label: string;
+  open: boolean;
+  onOpen: () => void;
+}
+
+function LayerCell(props: { row: LayerRow; entry: LayerEntry | null; onStranded: () => void }) {
+  const app = useApp();
+  const r = () => props.row;
+  const sw = () => layerSwitchState(r());
+  const stateText = (): string | null => {
+    const k = sw().kind;
+    return k === 'loading' ? null : k === 'unavailable' ? 'Unavailable' : k === 'on' ? 'On' : 'Off';
+  };
+  const hint = (): string | null => {
+    const v = sw();
+    return v.kind === 'unavailable' ? v.hint : null;
+  };
+  return (
+    <div class="ar-layer" data-testid="layer-cell" data-layer={r().id}>
+      <div class="ar-layer-head">
+        <div class="ar-layer-name">
+          <div style="display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 8px">
+            <span style="font:500 13px 'Geist',sans-serif;color:var(--text)">
+              {LAYER_STAGE[r().id]}
+            </span>{' '}
+            <Show when={stateText()}>
+              {(t) => (
+                <span
+                  data-testid="layer-state"
+                  style="font:400 11.5px 'Geist',sans-serif;color:var(--text2)"
+                >
+                  {t()}
+                </span>
+              )}
+            </Show>
+          </div>
+          <div class="mono" style="font:400 10.5px 'Geist Mono',monospace;color:var(--text3)">
+            {r().name} · {r().tag}
+          </div>
+        </div>
+        <Show
+          when={sw().kind !== 'loading'}
+          fallback={
+            <span data-testid="switch-loading">
+              <span class="ar-skel ar-skel-switch" aria-hidden="true" />
+              <span class="sr-only">{r().name} loading</span>
+            </span>
+          }
+        >
+          <Toggle
+            on={r().on}
+            unavailable={!r().available}
+            label={`Toggle ${r().name}`}
+            onToggle={() => void app.toggleAutoLayer(r().id)}
+          />
+        </Show>
+      </div>
+      <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3);line-height:1.5">
+        {r().desc}
+      </div>
+      <Show when={hint()}>
+        {(h) => (
+          // A caution only where Layer 1 is the one missing (it pauses every dependant).
+          // An opt-in L2/L3 the instance does not offer is a normal configuration.
+          <div
+            class="mono"
+            data-testid="layer-hint"
+            style={{
+              font: "400 10px 'Geist Mono',monospace",
+              color: r().id === 'structural' ? 'var(--amber-text)' : 'var(--text3)',
+              'line-height': '1.5',
+            }}
+          >
+            {h()}
+          </div>
+        )}
+      </Show>
+      {/* The tuning entry sits on the cell's bottom edge, so entries line up across cells.
+          It leaves with its card's precondition, so a guard hands focus on if it held it. */}
+      <Show when={props.entry}>
+        {(e) => (
+          <FocusGuard onStranded={props.onStranded} style="display:contents">
+            <button
+              type="button"
+              class="btn-ghost ar-layer-entry"
+              data-testid="tuning-entry"
+              data-tuning={e().name}
+              aria-haspopup="dialog"
+              aria-expanded={e().open}
+              onClick={() => e().onOpen()}
+            >
+              {e().label}
+            </button>
+          </FocusGuard>
+        )}
+      </Show>
+    </div>
+  );
+}
+
+/** The Targets matrix's id: where a Targets control lands when the band columns are
+ * unverified and no notice is showing. */
 const TARGETS_ID = 'auto-targets';
+/** The matrix's unverified notice — where a Targets control lands while a band write is
+ * unverified, so it never lands on a disabled picker. */
+const TARGETS_UNVERIFIED_ID = 'auto-targets-unverified';
 
 const STAT_FONT = "font:400 11.5px 'Geist',sans-serif;color:var(--text3)";
 const VAL_FONT = "font:500 12px 'Geist',sans-serif;color:var(--text)";
@@ -1244,201 +1625,210 @@ function zeroText(p: AutoPerfVm): string {
     : 'No auto telemetry yet — route a request with model "auto" to start measuring.';
 }
 
-/** The focal summary: the estimated cascade savings — the screen's one focal figure —
- * beside the bar of disjoint per-stage exits. Owns the tab's designed loading and
- * failure states: a failure offers the Retry and shows no figure from any earlier
- * load (the view-model withholds them). */
-function FocalSummary(props: { vm: PipelineVm }) {
-  const app = useApp();
-  const { state } = app;
-  let summary: HTMLElement | undefined;
-  /** Retry swaps the failure notice for the loading state, unmounting the button the
-   * user just pressed; without a stable landing spot focus falls to <body> and the next
-   * Tab restarts at the top of the page. The summary itself survives the swap. */
-  const retry = (): void => {
-    void app.retryAutoPerf();
-    queueMicrotask(() => summary?.focus());
-  };
+/** The Pipeline's notice slot, above the column header: the figures' range-wide designed
+ * states. A failure offers the Retry and shows no figure from any earlier load (the
+ * view-model withholds them); a zero range says which zero it is; an older server with no
+ * stage breakdown says per-stage counts are unavailable. Loading needs no notice — every
+ * row shows its own placeholder. */
+function PipelineNotice(props: { vm: PipelineVm; onRetry: () => void }) {
+  const { state } = useApp();
   return (
-    <section
-      ref={(el) => {
-        summary = el;
-      }}
-      tabindex={-1}
-      class="panel card"
-      data-testid="auto-summary"
-      aria-labelledby="ar-summary-title"
-      style="display:flex;flex-direction:column;gap:12px"
-    >
-      <div class="section-title" id="ar-summary-title">
-        Auto performance
-      </div>
-      <Switch>
-        <Match when={props.vm.measured === 'error'}>
-          <div
-            data-testid="auto-load-error"
-            style="display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;padding:10px 14px;background:var(--red-bg);border:1px solid var(--red);border-radius:8px;font:400 12px 'Geist',sans-serif;color:var(--text);line-height:1.5"
-          >
-            <span style="flex:1 1 240px;min-width:0">
-              Couldn’t load auto performance — {state.autoPerf.error}. Routing is unaffected;
-              requests keep flowing.
+    <Switch>
+      <Match when={props.vm.measured === 'error'}>
+        <div class="ar-notice ar-notice--failed" data-testid="auto-load-error">
+          <span style="flex:1 1 240px;min-width:0">
+            Couldn’t load the Pipeline’s figures — {state.autoPerf.error}. Routing is unaffected;
+            requests keep flowing.
+          </span>
+          <button type="button" class="btn-ghost" onClick={() => props.onRetry()}>
+            Retry
+          </button>
+        </div>
+      </Match>
+      <Match when={props.vm.measured === 'zero' && props.vm.perf}>
+        {(p) => (
+          <div class="ar-notice" data-testid="auto-zero">
+            <span>
+              <span style="font-weight:600;color:var(--text)">0</span> auto requests evaluated in
+              the selected {props.vm.range} range. {zeroText(p())}
             </span>
-            <button type="button" class="btn-ghost" onClick={retry}>
-              Retry
-            </button>
           </div>
-        </Match>
-        <Match when={props.vm.measured === 'loading'}>
-          <div class="ar-summary" data-testid="auto-loading">
-            <div class="ar-focal" aria-hidden="true">
-              <span class="ar-skel ar-skel-figure" />
-              <span class="ar-skel ar-skel-short" />
-            </div>
-            <div class="ar-exits">
-              <div style="font:400 12px 'Geist',sans-serif;color:var(--text3)">
-                Loading auto performance…
-              </div>
-              <span class="ar-skel ar-skel-line" aria-hidden="true" />
-            </div>
-          </div>
-        </Match>
-        <Match when={props.vm.perf}>
-          {(p) => (
-            <div class="ar-summary">
-              <Show when={p().savings}>{(sv) => <Savings sv={sv()} range={props.vm.range} />}</Show>
-              <div class="ar-exits">
-                <Show
-                  when={p().zeroState === 'none'}
-                  fallback={
-                    <div data-testid="auto-zero" style="display:flex;flex-direction:column;gap:4px">
-                      <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3)">
-                        <span style="font:600 22px 'Geist',sans-serif;letter-spacing:-0.02em;color:var(--text)">
-                          0
-                        </span>{' '}
-                        auto requests evaluated in the selected {props.vm.range} range
-                      </div>
-                      <div style="font:400 12px 'Geist',sans-serif;color:var(--text2);line-height:1.5">
-                        {zeroText(p())}
-                      </div>
-                    </div>
-                  }
-                >
-                  <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3)">
-                    <span style="font:600 22px 'Geist',sans-serif;letter-spacing:-0.02em;color:var(--text)">
-                      {p().evaluated.toLocaleString()}
-                    </span>{' '}
-                    auto requests evaluated in the selected {props.vm.range} range, by the stage
-                    that routed them
-                  </div>
-                  <Show
-                    when={props.vm.exitBar}
-                    fallback={
-                      <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3)">
-                        Per-stage counts are unavailable — this server sends no stage breakdown.
-                      </div>
-                    }
-                  >
-                    {(bar) => <ExitBar bar={bar()} />}
-                  </Show>
-                </Show>
-              </div>
-            </div>
-          )}
-        </Match>
-      </Switch>
-    </section>
+        )}
+      </Match>
+      <Match when={props.vm.measured === 'unavailable'}>
+        <div class="ar-notice" data-testid="auto-unavailable">
+          Per-stage counts are unavailable — this server sends no stage breakdown. Classify’s counts
+          and the stage details still read the range.
+        </div>
+      </Match>
+    </Switch>
   );
 }
 
-/** The focal figure. Every honesty rule of the savings line holds: signed (a negative
- * net is a caution naming the excess, never clamped away), `· est.`, today's-rate
- * framing, the visible coverage, no money when nothing was costable — and the label
- * says it covers only the residual cascade's quality-passed requests. A null
- * aggregation never reaches here (the caller renders no savings content at all). */
-function Savings(props: { sv: NonNullable<AutoPerfVm['savings']>; range: Range }) {
+/** The Cascade row's savings line (D6). Every honesty rule holds: signed (a negative net
+ * is a caution naming the excess, never clamped away), `· est.`, today's-rate framing,
+ * the visible coverage, no money when nothing was costable — and it says it covers only
+ * the residual cascade's quality-passed requests. While the cascade is not running now,
+ * it says its figure comes from cascades earlier in the range. A null aggregation never
+ * reaches here (the row renders no savings content at all). */
+function Savings(props: {
+  sv: NonNullable<AutoPerfVm['savings']>;
+  range: Range;
+  history: boolean;
+}) {
   const sv = () => props.sv;
   return (
-    <div class="ar-focal" data-testid="auto-savings">
-      <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3)">
-        Est. net cascade savings · {props.range}
-      </div>
-      <Show
-        when={!sv().moneyless}
-        fallback={
-          <div style="font:400 12px 'Geist',sans-serif;color:var(--text2);line-height:1.5">
-            savings unavailable — {sv().coverage} were costable
-          </div>
-        }
-      >
+    <div class="ar-savings" data-testid="auto-savings">
+      <div style="font:400 11.5px/1.5 'Geist',sans-serif;color:var(--text3)">
+        Est. net savings · {props.range}{' '}
         <Show
-          when={!sv().negative}
+          when={!sv().moneyless}
           fallback={
-            <div style="font:400 12px 'Geist',sans-serif;color:var(--amber-text);line-height:1.5">
-              cheap routing cost {sv().excess} MORE than {sv().basisLabel} would have — review the
-              auto_low tier · est.
-            </div>
+            <span style="color:var(--text2)">
+              savings unavailable — {sv().coverage} were costable
+            </span>
           }
         >
-          <div style="display:flex;align-items:baseline;flex-wrap:wrap;gap:2px 6px">
-            <span class="ar-focal-figure">{sv().net}</span>
-            <span style="font:400 12px 'Geist',sans-serif;color:var(--text3)">· est.</span>
-          </div>
-          <div style={NOTE_FONT}>
-            at today’s {sv().basisLabel} rate
+          <Show
+            when={!sv().negative}
+            fallback={
+              <span style="color:var(--amber-text)">
+                cheap routing cost {sv().excess} MORE than {sv().basisLabel} would have — review the
+                auto_low tier · est.
+              </span>
+            }
+          >
+            <span class="ar-savings-amount">{sv().net}</span> · est. at today’s {sv().basisLabel}{' '}
+            rate
             <Show when={sv().basisScoped}>
               <span data-testid="ap-basis-scoped">
                 {' '}
                 · basis = the generic strong target; class-scoped traffic is not separated
               </span>
             </Show>
-          </div>
+          </Show>
         </Show>
-      </Show>
-      <div style={NOTE_FONT}>
-        Covers only the residual cascade’s quality-passed requests — never all auto traffic.
       </div>
       <div style={NOTE_FONT}>
+        Covers only the residual cascade’s quality-passed requests — never all auto traffic ·{' '}
         {sv().coverage}
         {sv().incomplete ? ' (some rows uncostable)' : ''}
+        <Show when={props.history}>
+          <span data-testid="savings-history"> · from cascades earlier in this range</span>
+        </Show>
       </div>
     </div>
   );
 }
 
-/** The bar of disjoint exits, and its legend in text — every stage named with its
- * count and share, so no exit is told apart by shade alone. A zero exit draws no
- * segment but keeps its legend entry. */
-function ExitBar(props: { bar: ExitBarVm }) {
+/** One control per affected band (D5), Strong first, each moving focus to the top of
+ * that band's column in the Targets matrix. Named for the COLUMN, never a target: the
+ * unroutable count is not scope-aware, so it cannot know which row's target is at fault. */
+function GoToColumns(props: { columns: readonly ('strong' | 'cheap')[] }) {
+  const { state } = useApp();
   return (
-    <>
-      <div class="ar-bar" data-testid="exit-bar" aria-hidden="true">
-        <For each={props.bar.segments}>
-          {(s) => <span class="ar-seg" data-exit={s.exit} style={`flex:${String(s.count)} 1 0`} />}
-        </For>
-      </div>
-      <ul class="ar-legend" data-testid="exit-legend" aria-label="Where evaluated requests went">
-        <For each={props.bar.legend}>
-          {(e) => (
-            <li data-exit={e.exit}>
-              <span class="ar-key" data-exit={e.exit} aria-hidden="true" />
-              <span>{e.label}</span>{' '}
-              <span class="mono" style="font:400 11.5px 'Geist Mono',monospace;color:var(--text)">
-                {e.count.toLocaleString()}
-              </span>{' '}
-              <span class="mono" style="font:400 11.5px 'Geist Mono',monospace;color:var(--text3)">
-                {e.share}
-              </span>
-            </li>
-          )}
-        </For>
-      </ul>
-    </>
+    <For each={props.columns}>
+      {(column) => (
+        <>
+          {' '}
+          <button
+            type="button"
+            style={TEXT_ACTION}
+            data-testid="go-to-column"
+            data-column={column}
+            onClick={() => goToTargets(state, column)}
+          >
+            Go to {column === 'strong' ? 'Strong' : 'Cheap'} column
+          </button>
+        </>
+      )}
+    </For>
   );
 }
 
-/** One stage row. Rendered through `<Index>`, so the row — and its switch — keeps its
- * identity while the view-model recomputes: a layer flip or a re-poll updates the
- * row in place instead of rebuilding it, and focus stays on the switch. */
+/**
+ * Move focus to the Targets matrix for one band's column (D12). Lands on the column's Any
+ * request cell WRAPPER, never its picker — the picker is the next Tab stop, so a stray
+ * Arrow key on arrival cannot retarget live routing. While the band columns are
+ * unverified or a band write is in flight the pickers are disabled, so it lands on the
+ * matrix's unverified notice, or on the matrix itself. Focus never stays on the invoker.
+ */
+function goToTargets(
+  state: { bt: { unverified: boolean; busy: Record<'auto_high' | 'auto_low', boolean> } },
+  column: 'strong' | 'cheap',
+): void {
+  const paused = state.bt.unverified || state.bt.busy.auto_high || state.bt.busy.auto_low;
+  const el =
+    (paused ? null : document.getElementById(TARGET_ANCHORS[column])) ??
+    document.getElementById(TARGETS_UNVERIFIED_ID) ??
+    document.getElementById(TARGETS_ID);
+  el?.scrollIntoView({ block: 'start' });
+  el?.focus({ preventScroll: true });
+}
+
+/** A stage's status-now phrase: one line in words — with any "X to Y" pairs drawn with an
+ * arrow icon, since no bundled font carries the arrow — then its later lines, each in its
+ * own tone. A loading state before the auto-layers view arrives. */
+function StatusNow(props: { status: StatusNowVm }) {
+  const st = () => props.status;
+  const tone = (t: StatusTone): string => (t === 'caution' ? 'var(--amber-text)' : 'var(--text2)');
+  return (
+    <Show
+      when={!st().loading}
+      fallback={
+        <span data-testid="status-loading">
+          <span class="ar-skel ar-skel-short" aria-hidden="true" />
+          <span class="sr-only">Loading</span>
+        </span>
+      }
+    >
+      <div class="ar-status-line" style={{ color: tone(st().tone) }}>
+        <Show when={st().routes} fallback={st().text}>
+          {(routes) => (
+            <For each={routes()}>
+              {(r, i) => (
+                <>
+                  {i() > 0 ? ' · ' : ''}
+                  {r.from} <Icon name="arrowRight" size={11} />
+                  <span class="sr-only"> to</span>{' '}
+                  {/* Neutral, not accent: the bars are the tab's one accent figure. */}
+                  <span class="mono" style="font:500 11.5px 'Geist Mono',monospace">
+                    {r.to}
+                  </span>
+                </>
+              )}
+            </For>
+          )}
+        </Show>
+      </div>
+      <For each={st().lines}>
+        {(line) => (
+          <>
+            {' '}
+            <div
+              class="ar-status-sub"
+              style={{ color: line.tone === 'caution' ? 'var(--amber-text)' : 'var(--text3)' }}
+            >
+              {line.text}
+            </div>
+          </>
+        )}
+      </For>
+    </Show>
+  );
+}
+
+/**
+ * One stage row (split-auto-routing-readout-setup D2). Its cells sit on the Pipeline
+ * list's shared column tracks (the `li` and the row are subgrids of the `ol`), so every
+ * row's number, name, status, count, share, bar and action box line up by construction
+ * rather than by fitting. DOM order — number, name, action, status, figure — is the
+ * phone layout's visual order, so no `order` rewrites it; at wider modes the action is
+ * PLACED in the last track.
+ *
+ * Rendered through `<Index>`: the stages never reorder, so the row keeps its identity —
+ * and a focused Details button keeps focus — while the view-model recomputes.
+ */
 function StageRow(props: {
   stage: StageRowVm;
   vm: PipelineVm;
@@ -1447,33 +1837,26 @@ function StageRow(props: {
   onToggle: (id: StageId) => void;
   onStranded: () => void;
 }) {
-  const app = useApp();
+  const { state } = useApp();
   // Fixed per row: the stages never reorder.
   const id = props.stage.id;
   const detailId = `ar-detail-${id}`;
   const s = () => props.stage;
-  const hint = (): string | null => {
-    const sw = s().switchState;
-    return sw?.kind === 'unavailable' ? sw.hint : null;
-  };
   const paused = (): string | null => {
     const st = s().status;
     return st?.kind === 'paused' ? st.label : null;
-  };
-  // Only Layer 1 being off is a caution (it pauses its dependants); an opt-in L2/L3
-  // being off is a normal configuration and reads neutral.
-  const caution = (): boolean => {
-    const st = s().status;
-    return st?.kind === 'off' && st.tone === 'caution';
   };
   const count = () => {
     const f = s().figure;
     return f.kind === 'count' ? f : null;
   };
-  const goToTargets = (): void => {
-    const el = document.getElementById(TARGETS_ID);
-    el?.scrollIntoView({ block: 'start' });
-    el?.focus({ preventScroll: true });
+  const verdicts = () => {
+    const v = s().verdicts;
+    return v?.kind === 'value' ? v : null;
+  };
+  const track = () => {
+    const b = s().bar;
+    return b?.kind === 'track' ? b : null;
   };
 
   return (
@@ -1481,7 +1864,7 @@ function StageRow(props: {
       <div class="ar-row">
         <span class="ar-num">{s().number}</span>
         <div class="ar-name">
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
             <span style="font:500 13px 'Geist',sans-serif;color:var(--text)">{s().name}</span>
             {/* Paused is stated in text at full contrast — never as dimming. */}
             <Show when={paused()}>
@@ -1496,140 +1879,160 @@ function StageRow(props: {
             {s().layer === null ? s().tag : `${s().layer ?? ''} · ${s().tag}`}
           </div>
         </div>
-        <div class="ar-switch">
-          <Show when={s().layerRow}>
-            {(row) => (
-              <Show
-                when={s().switchState?.kind !== 'loading'}
-                fallback={
-                  <span data-testid="switch-loading">
-                    <span class="ar-skel ar-skel-switch" aria-hidden="true" />
-                    <span class="sr-only">{row().name} loading</span>
-                  </span>
-                }
-              >
-                <Toggle
-                  on={row().on}
-                  locked={!row().available}
-                  label={`Toggle ${row().name}`}
-                  onToggle={() => void app.toggleAutoLayer(row().id)}
-                />
-              </Show>
-            )}
-          </Show>
-        </div>
-        <Show when={s().figure.kind !== 'none'}>
-          <div class="ar-count" data-testid="stage-figure" data-kind={s().figure.kind}>
-            <Switch>
-              <Match when={count()}>
-                {(c) => (
-                  <>
-                    <span style="font:600 20px 'Geist',sans-serif;letter-spacing:-0.02em;color:var(--text)">
-                      {c().count.toLocaleString()}
-                    </span>{' '}
-                    <span style="font:400 11px 'Geist',sans-serif;color:var(--text3)">
-                      {c().share === null ? 'evaluated' : `${c().share ?? ''} · routed here`}
-                    </span>
-                  </>
-                )}
-              </Match>
-              <Match when={s().figure.kind === 'placeholder'}>
-                <span class="ar-skel ar-skel-count" aria-hidden="true" />
-                <span class="sr-only">Loading</span>
-              </Match>
-              <Match when={s().figure.kind === 'unavailable'}>
-                <span style="font:600 20px 'Geist',sans-serif;color:var(--text3)">—</span>{' '}
-                <span style="font:400 11px 'Geist',sans-serif;color:var(--text3)">unavailable</span>
-              </Match>
-            </Switch>
-          </div>
-        </Show>
-        <div class="ar-setup">
-          <div
-            data-testid="stage-setup"
-            style={{
-              font: "400 12.5px 'Geist',sans-serif",
-              color: caution() ? 'var(--amber-text)' : 'var(--text2)',
-              'line-height': '1.45',
-            }}
-          >
-            <Show when={s().setupRoutes} fallback={s().setup}>
-              {(routes) => (
-                <For each={routes()}>
-                  {(r, i) => (
-                    <>
-                      {i() > 0 ? ' · ' : ''}
-                      {r.from} <Icon name="arrowRight" size={11} />
-                      <span class="sr-only"> to</span>{' '}
-                      {/* Neutral, not accent: the savings figure is the tab's one focal
-                          point, and an `unset` target must not read like a set one. */}
-                      <span
-                        class="mono"
-                        style="font:500 11.5px 'Geist Mono',monospace;color:var(--text)"
-                      >
-                        {r.to}
-                      </span>
-                    </>
-                  )}
-                </For>
-              )}
-            </Show>
-          </div>
-          <Show when={s().setupSub}>
-            <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3);margin-top:2px;line-height:1.45">
-              {s().setupSub}
-            </div>
-          </Show>
-          <Show when={hint()}>
-            {(h) => (
-              // The hint takes the stage's tone: a caution only where Layer 1 is the one
-              // missing (it pauses every dependant). An opt-in L2/L3 the instance does
-              // not offer is a normal configuration, and reads neutral like its status.
-              <div
-                class="mono"
-                data-testid="stage-hint"
-                style={{
-                  font: "400 10px 'Geist Mono',monospace",
-                  color: caution() ? 'var(--amber-text)' : 'var(--text3)',
-                  'margin-top': '2px',
-                }}
-              >
-                {h()}
-              </div>
-            )}
-          </Show>
-        </div>
+        {/* The action: one box in one track whatever its label (D2). On a capable
+            instance, Details on five stages and Targets on Confident band; without the
+            structural capability, none — the track stays empty. */}
         <div class="ar-action">
-          <Show when={s().expandable}>
+          <Show when={props.structural && s().expandable}>
             <button
               type="button"
-              class="btn-ghost ar-expander"
+              class="btn-ghost ar-act ar-expander"
               aria-expanded={props.open}
               aria-controls={props.open ? detailId : undefined}
               aria-label={`${s().name} details`}
               onClick={() => props.onToggle(id)}
             >
-              Details <Icon name="chevronDown" size={12} />
+              <span class="ar-act-label">Details</span>
+              <Icon name="chevronDown" size={12} />
             </button>
           </Show>
-          {/* Confident band has no detail of its own: its configuration IS the Strong
-              and Cheap columns of the Targets area, which only exists on a capable
-              instance. */}
-          <Show when={s().targetsLink && props.structural}>
+          <Show when={props.structural && s().targetsLink}>
             <FocusGuard onStranded={props.onStranded} style="display:contents">
               <button
                 type="button"
-                class="btn-ghost"
-                aria-label="Targets: the Strong and Cheap columns"
-                onClick={goToTargets}
+                class="btn-ghost ar-act"
+                aria-label="Go to Targets, Strong column"
+                onClick={() => goToTargets(state, 'strong')}
               >
-                Targets
+                <span class="ar-act-label">Targets</span>
+                <Icon name="jump" size={12} />
               </button>
             </FocusGuard>
           </Show>
         </div>
+        <div class="ar-status" data-testid="stage-status-now">
+          <span class="ar-fieldlabel">Status now</span>
+          <StatusNow status={s().statusNow} />
+        </div>
+        <Show when={s().figure.kind !== 'none'}>
+          <div class="ar-fig" data-testid="stage-figure" data-kind={s().figure.kind}>
+            <span class="ar-fieldlabel">Requests, {props.vm.range}</span>
+            <Switch>
+              <Match when={count()}>
+                {(c) => (
+                  <>
+                    <span class="ar-figcount">{c().count.toLocaleString()}</span>{' '}
+                    <span class="ar-figshare">{c().share ?? ''}</span>{' '}
+                  </>
+                )}
+              </Match>
+              <Match when={s().figure.kind === 'placeholder'}>
+                <span class="ar-figcount">
+                  <span class="ar-skel ar-skel-count" aria-hidden="true" />
+                  <span class="sr-only">Loading</span>
+                </span>
+              </Match>
+              <Match when={s().figure.kind === 'unavailable'}>
+                <span class="ar-figcount" style="color:var(--text3)">
+                  <span aria-hidden="true">—</span>
+                  <span class="sr-only">unavailable</span>
+                </span>
+              </Match>
+            </Switch>
+            {/* The bar: decorative — the count and share beside it carry the figure in
+                text, so no stage is told apart by a bar alone. A zero exit keeps an empty
+                track; the zero range, a failure and a missing breakdown draw none. */}
+            <span class="ar-figbar" aria-hidden="true">
+              <Switch>
+                <Match when={track()}>
+                  {(t) => (
+                    <span class="ar-bar-track" data-testid="stage-bar">
+                      <span
+                        class="ar-bar-fill"
+                        style={{ width: `${String(Math.round(t().ratio * 1000) / 10)}%` }}
+                      />
+                    </span>
+                  )}
+                </Match>
+                <Match when={s().bar?.kind === 'placeholder'}>
+                  <span class="ar-skel ar-skel-line" />
+                </Match>
+              </Switch>
+            </span>
+            <Show when={count() !== null && s().caption}>
+              {(caption) => (
+                <>
+                  {' '}
+                  <span class="ar-figline" data-testid="stage-caption">
+                    {caption()}
+                  </span>
+                </>
+              )}
+            </Show>
+            {/* Classify only: the verdict counts, worded as verdicts so they cannot be
+                read as thresholds, and how many a Workload claim served instead. */}
+            <Show when={s().verdicts?.kind === 'placeholder'}>
+              <span class="ar-figline">
+                <span class="ar-skel ar-skel-note" aria-hidden="true" />
+                <span class="sr-only">Loading its verdict counts</span>
+              </span>
+            </Show>
+            <Show when={verdicts()}>
+              {(v) => (
+                <>
+                  {' '}
+                  <span class="ar-figline" data-testid="stage-verdicts">
+                    {v().text}
+                  </span>
+                  <Show when={v().claimed}>
+                    {(claimed) => (
+                      <>
+                        {' '}
+                        <span class="ar-figline" data-testid="stage-verdicts-claimed">
+                          {claimed()}
+                        </span>
+                      </>
+                    )}
+                  </Show>
+                </>
+              )}
+            </Show>
+          </div>
+        </Show>
+        {/* The Confident band alert (D5): confident verdicts that went to Default for want of
+            a usable target, separate from the status line. Absent while loading, after a
+            failure and at zero — never a placeholder. */}
+        <Show when={id === 'band' && props.structural && props.vm.bandAlert}>
+          {(alert) => (
+            <FocusGuard onStranded={props.onStranded} style="display:contents">
+              <div class="ar-later ar-alert" data-testid="band-alert" role="note">
+                {alert().text}
+                <GoToColumns columns={alert().columns} />
+              </div>
+            </FocusGuard>
+          )}
+        </Show>
+        {/* The Cascade row's savings line: a figure under the figures' designed states — a
+            placeholder while loading, nothing after a failure or with no savings data. */}
+        <Show when={id === 'cascade' && props.structural}>
+          <Switch>
+            <Match when={props.vm.measured === 'loading'}>
+              <div class="ar-later" data-testid="savings-loading">
+                <span class="ar-skel ar-skel-short" aria-hidden="true" />
+                <span class="sr-only">Loading its savings</span>
+              </div>
+            </Match>
+            <Match when={props.vm.perf?.savings}>
+              {(sv) => (
+                <div class="ar-later">
+                  <Savings sv={sv()} range={props.vm.range} history={props.vm.cascadeHistory} />
+                </div>
+              )}
+            </Match>
+          </Switch>
+        </Show>
       </div>
-      <Show when={props.open}>
+      <Show when={props.open && props.structural}>
         <div
           class="ar-detail"
           id={detailId}
@@ -1677,11 +2080,12 @@ function Measured(props: {
   );
 }
 
-/** What a stage's detail holds (D8): the existing card bodies, verbatim, moved to the
- * stage they describe. Configuration (self-calibration, semantic learning) never
- * waits on the aggregation; each block keeps its own gate, and everything that needs
- * the structural capability sits behind it, with focus handed to the tab control if
- * the capability goes away under a user inside it. */
+/** What a stage's detail holds (split-auto-routing-readout-setup D4): MEASURED figures
+ * only, framed to the range. Configuration lives in the Setup panel — the layer
+ * descriptions in its Layers cells, self-calibration and semantic learning in its
+ * drawers — and the routed-here totals and the unevaluated disclosure are the rows' and
+ * the Pipeline foot's, so no detail repeats them. Everything here needs the structural
+ * capability, with focus handed to the tab control if it goes away under a user inside. */
 function StageDetail(props: {
   id: StageId;
   stage: StageRowVm;
@@ -1689,15 +2093,8 @@ function StageDetail(props: {
   structural: boolean;
   onStranded: () => void;
 }) {
-  const { state } = useApp();
-  const desc = () => props.stage.layerRow?.desc ?? null;
   return (
     <>
-      <Show when={desc()}>
-        <div style="flex:1 1 100%;font:400 11.5px 'Geist',sans-serif;color:var(--text3);line-height:1.5">
-          {desc()}
-        </div>
-      </Show>
       <Show when={props.structural}>
         <FocusGuard onStranded={props.onStranded} style="display:contents">
           <Switch>
@@ -1711,7 +2108,6 @@ function StageDetail(props: {
               <Measured vm={props.vm}>
                 {(p) => <SemanticSlice p={p()} range={props.vm.range} />}
               </Measured>
-              <SemanticLearning />
             </Match>
             <Match when={props.id === 'cascade'}>
               <Measured vm={props.vm}>
@@ -1723,20 +2119,6 @@ function StageDetail(props: {
             </Match>
           </Switch>
         </FocusGuard>
-      </Show>
-      <Show when={props.id === 'default'}>
-        <div data-testid="default-unevaluated" style={`flex:1 1 100%;${NOTE_FONT}`}>
-          Not counted here or in any stage:{' '}
-          <span class="mono" style="font-size:10px">
-            auto
-          </span>{' '}
-          requests Layer 1 never evaluated — the layer off, or a classification fault. They go
-          straight to the default tier
-          {state.autoLayers?.structural === false
-            ? ', as every new one does while Layer 1 is off'
-            : ''}
-          .
-        </div>
       </Show>
     </>
   );
@@ -1791,9 +2173,12 @@ function ClassifyDetail(props: { vm: PipelineVm }) {
                 </div>
               </Show>
               <Show when={chartData()[0].length > 0}>
+                {/* Neutral (D11): series 0 is a solid --text line with no fill, so the chart
+                    never competes with the Pipeline's bars for the tab's one accent. */}
                 <Chart
                   data={chartData()}
                   height={110}
+                  accentFirst={false}
                   series={[
                     { label: 'high' },
                     { label: 'low', dash: [6, 3] },
@@ -1801,7 +2186,7 @@ function ClassifyDetail(props: { vm: PipelineVm }) {
                   ]}
                 />
                 <div style="display:flex;gap:12px;font:400 10.5px 'Geist',sans-serif;color:var(--text3);margin-top:4px">
-                  <span style="color:var(--accent-deep)">— high</span>
+                  <span style="color:var(--text)">— high</span>
                   <span>
                     <span
                       aria-hidden="true"
@@ -1816,7 +2201,6 @@ function ClassifyDetail(props: { vm: PipelineVm }) {
           </div>
         )}
       </Measured>
-      <SelfCalibration />
       <Measured vm={props.vm} quiet>
         {(p) => (
           <>
@@ -1864,15 +2248,17 @@ function CalibrationEvidence(props: { cal: CalibrationEvidenceVm }) {
   const cal = () => props.cal;
   return (
     <div class="ar-card" data-testid="calibration-evidence">
-      <div style="font:500 11px 'Geist',sans-serif;color:var(--text2);margin-bottom:4px">
-        Calibration evidence
+      {/* Headed with its OWN window (read from the response, never a literal): the
+          calibrator's window, not the Pipeline's range — so the two never read as one
+          measurement. `actingFloor` is runtime-configurable for the same reason. */}
+      <div
+        data-testid="calibration-window"
+        style="font:500 11px 'Geist',sans-serif;color:var(--text2);margin-bottom:4px"
+      >
+        Calibration evidence · last {cal().windowDays} days — its own window, not the Pipeline range
       </div>
-      {/* The window and the rails, read from the response — never literals.
-          `actingFloor` is runtime-configurable and SQ-2 is scheduled to change it, so a
-          hardcoded 50 here would go wrong silently the day that lands. */}
       <div data-testid="calibration-geometry" style={NOTE_FONT}>
-        Last {cal().windowDays} days — its own window, not the tab’s range. Edges are{' '}
-        {cal().edgeWidth} wide either side of <span class="mono">{cal().low}</span> /{' '}
+        Edges are {cal().edgeWidth} wide either side of <span class="mono">{cal().low}</span> /{' '}
         <span class="mono">{cal().high}</span>; {cal().actingFloor} samples needed before an edge
         can move.
       </div>
@@ -2004,7 +2390,7 @@ function WorkloadMix(props: { p: AutoPerfVm }) {
                 </span>
                 <span
                   aria-hidden="true"
-                  style={`display:inline-block;height:6px;border-radius:3px;background:var(--accent);opacity:.75;max-width:160px;width:${
+                  style={`display:inline-block;height:6px;border-radius:3px;background:var(--text3);max-width:160px;width:${
                     r.sharePct === '0%' ? '2px' : `${r.sharePct.replace('%', '')}%`
                   }`}
                 />
@@ -2020,6 +2406,21 @@ function WorkloadMix(props: { p: AutoPerfVm }) {
               </div>
             )}
           </For>
+          {/* An absent class reads as "no detections", never as missing (D10). */}
+          <Show
+            when={undetectedClasses(w().rows, state.autoLayers?.semanticWorkload === true).join(
+              ', ',
+            )}
+          >
+            {(names) => (
+              <div
+                data-testid="workload-mix-undetected"
+                style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);margin-top:4px"
+              >
+                No detections in this range: {names()}
+              </div>
+            )}
+          </Show>
           <Show when={w().coverage}>
             <div
               data-testid="workload-mix-coverage"
@@ -2133,8 +2534,8 @@ function CascadeSplit(props: { p: AutoPerfVm; range: Range }) {
             : props.p.residualCauses.workload
               ? 'Workload-routed requests'
               : 'Semantically-routed requests'}{' '}
-          never enter the cascade — the residual-cascade rates and the focal savings figure cover
-          only the traffic those layers left behind, so pre-/post-enable comparisons aren’t
+          never enter the cascade — the residual-cascade rates and the Cascade row’s savings line
+          cover only the traffic those layers left behind, so pre-/post-enable comparisons aren’t
           like-for-like. No figure here measures whether learning improves routing.
         </div>
       </Show>
@@ -2162,13 +2563,6 @@ function DefaultFigures(props: { vm: PipelineVm }) {
             <Show when={zero()}>{(z) => <div style={STAT_FONT}>{z()}</div>}</Show>
             <Show when={zero() === null}>
               <div style="display:flex;flex-direction:column;gap:2px">
-                {/* `!== null`, not truthiness: a loaded total of 0 is a figure to show. */}
-                <Show when={d().total !== null}>
-                  <span style={STAT_FONT}>
-                    routed to the default tier{' '}
-                    <span style={VAL_FONT}>{(d().total ?? 0).toLocaleString()}</span>
-                  </span>
-                </Show>
                 <span style={STAT_FONT}>
                   confident high, no usable Strong target{' '}
                   <span style={VAL_FONT}>{d().unroutable.high.toLocaleString()}</span>
@@ -2206,6 +2600,12 @@ function DefaultFigures(props: { vm: PipelineVm }) {
                       ? 'Strong column'
                       : 'Cheap column'}
                   .
+                  <GoToColumns
+                    columns={[
+                      ...(d().unroutable.high > 0 ? (['strong'] as const) : []),
+                      ...(d().unroutable.low > 0 ? (['cheap'] as const) : []),
+                    ]}
+                  />
                 </div>
               </Show>
             </Show>
@@ -2924,7 +3324,7 @@ export function Routing() {
         <div style="display:flex;align-items:center;gap:10px;padding:9px 14px;background:var(--red-bg);border:1px solid var(--red);border-radius:8px;font:500 12px 'Geist',sans-serif;color:var(--red-text)">
           <span style="flex:1">Couldn’t load routing — {state.routingError}</span>
           {/* The same standalone Retry as the auto-performance failure notice: a bordered
-              ghost button, never an accent link — the accent is the tab's focal figure. */}
+              ghost button, never an accent link — the accent is the Pipeline's bars. */}
           <button type="button" class="btn-ghost" onClick={() => void app.loadRouting()}>
             Retry
           </button>

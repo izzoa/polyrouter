@@ -13,7 +13,7 @@ import { ApiError, type AutoPerformance } from './data/api';
 import { createAppStore, type AppStore } from './state/appState';
 import { AppProvider } from './state/context';
 import { DEFAULT_AUTO_PERF, FakeApiClient } from './test/fakeClient';
-import { expandStage, openAutoTab } from './test/routingTabs';
+import { cellText, expandStage, openAutoTab } from './test/routingTabs';
 
 const flush = async (): Promise<void> => {
   for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 0));
@@ -82,19 +82,18 @@ const targets = (h: Harness): HTMLElement => {
   if (!el) throw new Error('the Targets area is not rendered');
   return el;
 };
-/** The matrix's Detected cells, row by row, as their designed state. */
-const detectedKinds = (h: Harness): string[] =>
-  [...targets(h).querySelectorAll<HTMLElement>('[data-testid="targets-detected"]')].map(
-    (e) => e.dataset['kind'] ?? '',
-  );
-const detectedText = (h: Harness, row: string): string =>
-  squash(
-    targets(h).querySelector(`[data-row="${row}"] [data-testid="targets-detected"] .tm-body`)
-      ?.textContent,
-  );
-/** Loading placeholders inside the target cells (the generic cells' unroutable notes). */
-const cellPlaceholders = (h: Harness): number =>
-  targets(h).querySelectorAll('[data-testid="targets-cell"] .ar-skel').length;
+/** The matrix holds no range-scoped figure in ANY state (split-auto-routing-readout-setup
+ * D9): no Detected column, no unroutable note, no routed count, and so no placeholder for
+ * one — the counts are the Pipeline's. Asserted against a store that may hold real data. */
+const expectMatrixFigureFree = (h: Harness): void => {
+  const m = targets(h);
+  expect(m.querySelector('[data-testid="targets-detected"]')).toBeNull();
+  expect(m.querySelector('[data-testid="wt-routed"]')).toBeNull();
+  expect(m.querySelector('[data-testid="cell-unroutable"]')).toBeNull();
+  expect(m.querySelectorAll('.ar-skel')).toHaveLength(0);
+  expect(m.textContent).not.toContain('unroutable in the selected');
+  expect(m.textContent).not.toContain('Detected');
+};
 /** A configuration write must still go through in this state. */
 const flipCascade = async (h: Harness): Promise<void> => {
   h.host.querySelector<HTMLButtonElement>('[aria-label="Toggle L3 · Cascade"]')!.click();
@@ -115,41 +114,51 @@ describe('loading: placeholders while the range has no data, configuration opera
     await openAutoTab(h.host);
 
     expect(pending).toHaveLength(1);
-    expect(q(h.host, 'auto-loading')?.textContent).toContain('Loading auto performance…');
     expect(figureKinds(h)).toEqual(Array<string>(6).fill('placeholder'));
-    expect(q(h.host, 'exit-bar')).toBeNull();
+    // The Cascade row's savings line waits as a placeholder — never a figure.
     expect(q(h.host, 'auto-savings')).toBeNull();
+    expect(q(h.host, 'savings-loading')).not.toBeNull();
+    // No range-wide notice while loading: every row shows its own placeholder.
+    for (const id of ['auto-load-error', 'auto-zero', 'auto-unavailable'])
+      expect(q(h.host, id)).toBeNull();
+    // The unroutable alert may not appear, so it reserves no space: absent, no placeholder.
+    expect(q(h.host, 'band-alert')).toBeNull();
+    expect(h.host.querySelector('[data-stage="band"] .ar-later')).toBeNull();
     // A detail's figures wait too — once, as a placeholder…
     const classify = await expandStage(h.host, 'Classify');
     expect(q(classify, 'detail-loading')).not.toBeNull();
     expect(q(classify, 'ap-band-verdicts')).toBeNull();
-    // …while its configuration is already there.
-    expect(classify.querySelector('[aria-label="Self-calibration"]')).not.toBeNull();
-    // The targets' measured notes wait; the targets themselves do not.
-    expect(targets(h).textContent).not.toContain('unroutable in the selected');
+    // …while the configuration is already there: its tuning entry, in Setup.
+    expect(q(h.host, 'tuning-entry')?.dataset['tuning']).toBe('calibration');
+    // The targets never wait, and carry no figure that could.
     expect(targets(h).querySelector<HTMLSelectElement>('select')?.disabled).toBe(false);
-    // Every Detected cell is a placeholder, and so are the two unset generic cells'
-    // unroutable notes — never a zero standing in for "not loaded".
-    expect(detectedKinds(h)).toEqual(Array<string>(6).fill('placeholder'));
-    expect(cellPlaceholders(h)).toBe(2);
-    // Setup summaries render from routing state alone.
+    expectMatrixFigureFree(h);
+    // Status-now phrases render from routing state alone.
     expect(
-      squash(h.host.querySelector('[data-stage="band"] [data-testid="stage-setup"]')?.textContent),
-    ).toBe('Strong to unset · Cheap to unset');
+      cellText(h.host.querySelector('[data-stage="band"] [data-testid="stage-status-now"]')),
+    ).toBe('Strong to not set · Cheap to not set For requests no claim took');
+    // The row bars and Classify's verdicts wait as placeholders too — never a zero.
+    expect(h.host.querySelectorAll('[data-testid="stage-bar"]')).toHaveLength(0);
+    expect(h.host.querySelectorAll('.ar-figbar .ar-skel')).toHaveLength(5);
+    expect(
+      h.host.querySelector('[data-stage="classify"] [data-testid="stage-verdicts"]'),
+    ).toBeNull();
+    expect(h.host.querySelector('[data-stage="classify"] .ar-figline .ar-skel')).not.toBeNull();
     await flipCascade(h);
     expect(fake.calls).toContain('setAutoLayers');
 
     pending[0]!.resolve(DEFAULT_AUTO_PERF);
     await flush();
-    expect(q(h.host, 'auto-loading')).toBeNull();
+    expect(q(h.host, 'savings-loading')).toBeNull();
     expect(figureKinds(h)).toEqual(Array<string>(6).fill('count'));
-    expect(squash(q(h.host, 'stage-figure')?.textContent)).toBe('40 evaluated');
-    expect(q(h.host, 'exit-bar')).not.toBeNull();
+    expect(cellText(q(h.host, 'stage-figure'))).toMatch(/^40 evaluated/);
+    expect(h.host.querySelectorAll('[data-testid="stage-bar"]')).toHaveLength(5);
     expect(q(classify, 'ap-band-verdicts')).not.toBeNull();
-    expect(targets(h).textContent).toContain('(1 unroutable in the selected 7d range)');
-    expect(detectedKinds(h)).toEqual(Array<string>(6).fill('value'));
-    expect(detectedText(h, 'any')).toBe('40 evaluated');
-    expect(cellPlaceholders(h)).toBe(0);
+    // Loaded, the matrix still shows no count — the unroutable one is the Pipeline's.
+    expectMatrixFigureFree(h);
+    expect(q(h.host, 'band-alert')?.textContent).toContain(
+      '1 confident high verdict had no usable Strong target',
+    );
   });
 
   it('a same-range refetch keeps the figures it replaces; a range change shows placeholders', async () => {
@@ -159,16 +168,16 @@ describe('loading: placeholders while the range has no data, configuration opera
     await openAutoTab(h.host);
     pending[0]!.resolve(DEFAULT_AUTO_PERF);
     await flush();
-    expect(squash(q(h.host, 'stage-figure')?.textContent)).toBe('40 evaluated');
+    expect(cellText(q(h.host, 'stage-figure'))).toMatch(/^40 evaluated/);
 
     // Same range, still in flight: the prior figures stay until the new ones commit.
     void h.store.loadAutoPerf();
     await flush();
     expect(pending).toHaveLength(2);
-    expect(squash(q(h.host, 'stage-figure')?.textContent)).toBe('40 evaluated');
+    expect(cellText(q(h.host, 'stage-figure'))).toMatch(/^40 evaluated/);
     pending[1]!.resolve({ ...DEFAULT_AUTO_PERF, evaluated: 41 });
     await flush();
-    expect(squash(q(h.host, 'stage-figure')?.textContent)).toBe('41 evaluated');
+    expect(cellText(q(h.host, 'stage-figure'))).toMatch(/^41 evaluated/);
 
     // A new range never shows the old range's figures under its label.
     [...h.host.querySelectorAll<HTMLButtonElement>('[data-testid="auto-range"] button')]
@@ -177,7 +186,7 @@ describe('loading: placeholders while the range has no data, configuration opera
     await flush();
     expect(h.store.state.autoPerf.range).toBe('30d');
     expect(figureKinds(h)).toEqual(Array<string>(6).fill('placeholder'));
-    expect(q(h.host, 'auto-loading')).not.toBeNull();
+    expect(q(h.host, 'savings-loading')).not.toBeNull();
   });
 });
 
@@ -192,7 +201,7 @@ describe('failure: a notice and a Retry, and no figure from an earlier load', ()
     const fake = new FakeApiClient();
     h = await mount(fake);
     await openAutoTab(h.host);
-    expect(squash(q(h.host, 'stage-figure')?.textContent)).toBe('40 evaluated');
+    expect(cellText(q(h.host, 'stage-figure'))).toMatch(/^40 evaluated/);
 
     // A later refetch fails. The store keeps the earlier data — the trap.
     fake.analyticsFailure = new ApiError(504, 'Gateway Timeout', 'the analytics query timed out');
@@ -202,14 +211,14 @@ describe('failure: a notice and a Retry, and no figure from an earlier load', ()
     expect(h.store.state.autoPerf.error).not.toBeNull();
 
     const notice = q(h.host, 'auto-load-error')!;
-    expect(notice.textContent).toContain('Couldn’t load auto performance');
+    expect(notice.textContent).toContain('Couldn’t load the Pipeline’s figures');
     expect(notice.textContent).toContain('the analytics query timed out');
     expect(notice.textContent).toContain('Routing is unaffected');
     // Nothing from the earlier load is presented as current — anywhere on the tab.
     expect(figureKinds(h)).toEqual(Array<string>(6).fill('unavailable'));
-    expect(q(h.host, 'exit-bar')).toBeNull();
+    expect(h.host.querySelectorAll('[data-testid="stage-bar"]')).toHaveLength(0);
     expect(q(h.host, 'auto-savings')).toBeNull();
-    expect(h.host.textContent).not.toContain('$1.6200');
+    expect(h.host.textContent).not.toContain('$1.62');
     for (const stage of ['Classify', 'Workload claim', 'Default'] as const) {
       const detail = await expandStage(h.host, stage);
       expect(q(detail, 'detail-failed'), `${stage} says its figures failed`).not.toBeNull();
@@ -217,15 +226,12 @@ describe('failure: a notice and a Retry, and no figure from an earlier load', ()
     for (const id of ['ap-band-verdicts', 'calibration-evidence', 'workload-mix', 'ap-default']) {
       expect(q(h.host, id), `${id} rendered a stale figure`).toBeNull();
     }
-    expect(targets(h).textContent).not.toContain('unroutable in the selected');
-    expect(q(targets(h), 'wt-routed')).toBeNull();
-    // No Detected figure either — and no placeholder pretending one is on its way.
-    expect(detectedKinds(h)).toEqual(Array<string>(6).fill('none'));
-    expect(detectedText(h, 'any')).toContain('unavailable');
-    expect(detectedText(h, 'any')).not.toMatch(/\d/); // the store still holds 40
-    expect(cellPlaceholders(h)).toBe(0);
+    // No matrix figure either — and no placeholder pretending one is on its way.
+    expectMatrixFigureFree(h);
+    // The alert is a figure too: absent, never stale.
+    expect(q(h.host, 'band-alert')).toBeNull();
     // Configuration never waited on the aggregation, and does not now.
-    expect(h.host.querySelector('[aria-label="Self-calibration"]')).not.toBeNull();
+    expect(q(h.host, 'tuning-entry')?.dataset['tuning']).toBe('calibration');
     await flipCascade(h);
     expect(fake.calls).toContain('setAutoLayers');
 
@@ -240,16 +246,15 @@ describe('failure: a notice and a Retry, and no figure from an earlier load', ()
     await flush();
     expect(fake.calls.filter((c) => c === 'autoPerformance').length).toBe(fetches + 1);
     expect(q(h.host, 'auto-load-error')).toBeNull();
-    // The pressed button unmounted with the notice; focus lands on the summary it
+    // The pressed button unmounted with the notice; focus lands on the Pipeline panel it
     // belonged to, never on <body> (where the next Tab would restart the page).
     expect(document.activeElement).not.toBe(document.body);
-    expect(document.activeElement).toBe(q(h.host, 'auto-summary'));
+    expect(document.activeElement).toBe(q(h.host, 'auto-pipeline'));
     expect(figureKinds(h)).toEqual(Array<string>(6).fill('count'));
-    expect(q(h.host, 'exit-bar')).not.toBeNull();
+    expect(h.host.querySelectorAll('[data-testid="stage-bar"]')).toHaveLength(5);
     expect(q(h.host, 'ap-band-verdicts')).not.toBeNull();
-    expect(targets(h).textContent).toContain('(1 unroutable in the selected 7d range)');
-    expect(detectedKinds(h)).toEqual(Array<string>(6).fill('value'));
-    expect(q(targets(h), 'wt-routed')).not.toBeNull();
+    expectMatrixFigureFree(h);
+    expect(q(h.host, 'band-alert')).not.toBeNull();
   });
 });
 
@@ -310,25 +315,27 @@ describe('zero: stated, not drawn as zeros', () => {
     expect(q(h.host, 'auto-zero')?.textContent).toContain(
       'No evaluated telemetry in this range — telemetry begins',
     );
-    expect(q(h.host, 'exit-bar')).toBeNull();
     expect(
       [...h.host.querySelectorAll<HTMLElement>('[data-testid="stage-figure"]')].map((e) =>
-        squash(e.textContent),
+        cellText(e),
       ),
     ).toEqual([
-      '0 evaluated',
-      '0 — · routed here',
-      '0 — · routed here',
-      '0 — · routed here',
-      '0 — · routed here',
-      '0 — · routed here',
+      '0 evaluated verdicts: 0 high · 0 low · 0 ambiguous',
+      '0 — routed here',
+      // The default fake sets no band target and has L2 unavailable: history captions.
+      '0 — routed under earlier targets',
+      '0 — routed while on',
+      '0 — routed while it could run',
+      '0 — routed here',
     ]);
+    // No bar track renders in a zero range.
+    expect(h.host.querySelectorAll('[data-testid="stage-bar"]')).toHaveLength(0);
     // A null savings aggregation renders no savings content — never a fabricated $0.
     expect(q(h.host, 'auto-savings')).toBeNull();
-    // Once loaded, the matrix's Detected cells read zero — for an absent class too.
-    expect(detectedText(h, 'any')).toBe('0 evaluated');
-    expect(detectedText(h, 'code')).toBe('0 detected · 0 routed');
-    expect(detectedText(h, 'vision')).toBe('0 detected · 0 routed');
+    // The matrix carries no count at zero either; the Workload claim detail does.
+    expectMatrixFigureFree(h);
+    // Nothing fell through, so there is no alert to raise.
+    expect(q(h.host, 'band-alert')).toBeNull();
     expect(h.host.textContent).not.toContain('NaN');
     // The Workload claim stage still renders attempt-only classes, with their zero
     // share and their spend.
@@ -356,7 +363,7 @@ describe('zero: stated, not drawn as zeros', () => {
     expect(q(h.host, 'auto-zero')?.textContent).toContain('No auto telemetry yet');
   });
 
-  it('a loaded range where nothing fell to default still shows its total of 0', async () => {
+  it('a loaded range where nothing fell to default still shows its zeros', async () => {
     const clean: AutoPerformance = {
       ...DEFAULT_AUTO_PERF,
       bands: {
@@ -376,14 +383,17 @@ describe('zero: stated, not drawn as zeros', () => {
     h = await mount(new FakeApiClient({ autoPerf: clean }));
     await openAutoTab(h.host);
     const fallback = await expandStage(h.host, 'Default');
-    // A total of 0 is a figure, not an absence: it must not vanish on a falsy check.
-    expect(squash(q(fallback, 'ap-default')?.textContent)).toContain(
-      'routed to the default tier 0',
-    );
+    // A 0 is a figure, not an absence: it must not vanish on a falsy check.
+    const text = squash(q(fallback, 'ap-default')?.textContent);
+    expect(text).toContain('confident high, no usable Strong target 0');
+    expect(text).toContain('ambiguous, no later stage took it 0');
+    expect(
+      cellText(h.host.querySelector('[data-stage="default"] [data-testid="stage-figure"]')),
+    ).toMatch(/^0 /);
   });
 });
 
-describe('the focal savings figure follows its honesty rules', () => {
+describe('the Cascade row’s savings line follows its honesty rules', () => {
   let h: Harness | null = null;
   afterEach(() => {
     h?.dispose();
@@ -399,9 +409,34 @@ describe('the focal savings figure follows its honesty rules', () => {
     h = await mount(new FakeApiClient({ autoPerf: savings({ netUsd: -0.5, excessUsd: 0.5 }) }));
     await openAutoTab(h.host);
     const sv = q(h.host, 'auto-savings')!;
-    expect(sv.textContent).toContain('cheap routing cost $0.5000 MORE than premium would have');
-    expect(sv.querySelector('.ar-focal-figure')).toBeNull(); // never the accent figure
+    expect(sv.textContent).toContain('cheap routing cost $0.50 MORE than premium would have');
+    expect(sv.querySelector('.ar-savings-amount')).toBeNull(); // the caution replaces it
     expect(sv.textContent).toContain('residual cascade');
+  });
+
+  it('shows cents from $0.01, four decimals below, and never a non-zero amount as zero', async () => {
+    for (const [netUsd, shown] of [
+      [1.62, '$1.62'],
+      [0.004, '$0.0040'],
+      [0.00004, '< $0.0001'],
+    ] as const) {
+      h = await mount(new FakeApiClient({ autoPerf: savings({ netUsd }) }));
+      await openAutoTab(h.host);
+      expect(q(h.host, 'auto-savings')!.querySelector('.ar-savings-amount')?.textContent).toBe(
+        shown,
+      );
+      expect(q(h.host, 'auto-savings')!.textContent).not.toContain('$0.00 ');
+      h.dispose();
+      h = null;
+    }
+  });
+
+  it('a small negative net keeps its sign as a caution, at the same precision', async () => {
+    h = await mount(new FakeApiClient({ autoPerf: savings({ netUsd: -0.003, excessUsd: 0.003 }) }));
+    await openAutoTab(h.host);
+    expect(q(h.host, 'auto-savings')!.textContent).toContain(
+      'cheap routing cost $0.0030 MORE than premium would have',
+    );
   });
 
   it('an all-uncostable population keeps the coverage and shows no money', async () => {
@@ -421,9 +456,61 @@ describe('the focal savings figure follows its honesty rules', () => {
     h = await mount(new FakeApiClient({ autoPerf: legacy }));
     await openAutoTab(h.host);
     expect(figureKinds(h)).toEqual(['count', ...Array<string>(5).fill('unavailable')]);
-    expect(q(h.host, 'exit-bar')).toBeNull();
-    expect(q(h.host, 'auto-summary')?.textContent).toContain('Per-stage counts are unavailable');
+    expect(h.host.querySelectorAll('[data-testid="stage-bar"]')).toHaveLength(0);
+    expect(q(h.host, 'auto-unavailable')?.textContent).toContain(
+      'Per-stage counts are unavailable',
+    );
+    // It sits above the column header, inside the Pipeline.
+    const pipe = q(h.host, 'auto-pipeline')!;
+    const notice = q(h.host, 'auto-unavailable')!;
+    expect(pipe.contains(notice)).toBe(true);
+    expect(
+      notice.compareDocumentPosition(pipe.querySelector('.ar-colhead')!) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
     // Every other figure still renders.
     expect(q(h.host, 'auto-savings')).not.toBeNull();
+  });
+});
+
+describe('Setup never waits on figures (split-auto-routing-readout-setup 3.1)', () => {
+  let h: Harness | null = null;
+  afterEach(() => {
+    h?.dispose();
+    h = null;
+  });
+
+  const layerSwitches = (root: HTMLElement): HTMLButtonElement[] => [
+    ...root.querySelectorAll<HTMLButtonElement>('[data-testid="auto-layers"] [role="switch"]'),
+  ];
+
+  it('the three layer switches are operable while the aggregation is loading', async () => {
+    const fake = new FakeApiClient();
+    deferAggregation(fake);
+    h = await mount(fake);
+    await openAutoTab(h.host);
+    expect(figureKinds(h)).toEqual(Array<string>(6).fill('placeholder'));
+    expect(layerSwitches(h.host)).toHaveLength(3);
+    expect(q(h.host, 'auto-setup')?.querySelector('.ar-skel')).toBeNull();
+    await flipCascade(h);
+    expect(fake.calls).toContain('setAutoLayers');
+  });
+
+  it('the three layer switches are operable after the aggregation failed', async () => {
+    const fake = new FakeApiClient();
+    const pending = deferAggregation(fake);
+    h = await mount(fake);
+    await openAutoTab(h.host);
+    pending[0]!.reject(new ApiError(503, 'unavailable', 'boom'));
+    await flush();
+    expect(q(h.host, 'auto-load-error')).not.toBeNull();
+    expect(layerSwitches(h.host)).toHaveLength(3);
+    // The available layers stay live (the default fake's L2 is unavailable instance-wide).
+    for (const label of ['Toggle L1 · Structural', 'Toggle L3 · Cascade'])
+      expect(
+        h.host.querySelector(`[aria-label="${label}"]`)?.getAttribute('aria-disabled'),
+      ).toBeNull();
+    await flipCascade(h);
+    expect(fake.calls).toContain('setAutoLayers');
   });
 });

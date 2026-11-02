@@ -1,8 +1,8 @@
 import { render } from 'solid-js/web';
 import { afterEach, describe, expect, it } from 'vitest';
 import { App } from './App';
-import type { AutoPerformance } from './data/api';
-import { DEFAULT_AUTO_PERF, FakeApiClient } from './test/fakeClient';
+import type { AutoLayers, AutoPerformance } from './data/api';
+import { DEFAULT_AUTO_PERF, DEFAULT_CALIBRATION, FakeApiClient } from './test/fakeClient';
 import { createAppStore, type AppStore } from './state/appState';
 import { AppProvider } from './state/context';
 import { expandStage, openAutoTab } from './test/routingTabs';
@@ -49,8 +49,12 @@ interface Harness {
 async function mount(
   autoPerf: Partial<AutoPerformance>,
   page: 'Routing' | 'Requests' = 'Routing',
+  autoLayers?: AutoLayers,
 ): Promise<Harness> {
-  const fake = new FakeApiClient({ autoPerf: { ...DEFAULT_AUTO_PERF, ...autoPerf } });
+  const fake = new FakeApiClient({
+    autoPerf: { ...DEFAULT_AUTO_PERF, ...autoPerf },
+    ...(autoLayers ? { autoLayers } : {}),
+  });
   const store = createAppStore(fake);
   const host = document.createElement('div');
   document.body.appendChild(host);
@@ -244,5 +248,84 @@ describe('Inspector workload chip (add-workload-telemetry 5.1)', () => {
     const after = await open();
     expect(after.router).toBe('router · workload');
     expect(after.chip).toBe('workload · code (structural) · routed');
+  });
+});
+
+describe('classes with no detections are named, not omitted (split-auto-routing-readout-setup D10)', () => {
+  let h: Harness | null = null;
+  afterEach(() => {
+    h?.dispose();
+    h = null;
+  });
+
+  const semanticEffective: AutoLayers = {
+    structural: true,
+    cascade: true,
+    structuralAvailable: true,
+    cascadeAvailable: true,
+    semantic: true,
+    semanticAvailable: true,
+    semanticWorkload: true,
+    semanticWorkloadAvailable: true,
+    semanticLearning: false,
+    semanticLearningAvailable: true,
+    calibration: DEFAULT_CALIBRATION,
+  };
+
+  it('names the structural classes with no row, and not the semantic ones while that source is off', async () => {
+    h = await mount({
+      workloadMix: mix({ evaluated: 8, classes: [cls('code', 5, 1), cls('none', 3, 0)] }),
+    });
+    expect(q(h, 'workload-mix-undetected')!.textContent).toBe(
+      'No detections in this range: vision, structured',
+    );
+  });
+
+  it('names research and writing too while the semantic workload source is effective', async () => {
+    h = await mount(
+      {
+        workloadMix: mix({
+          evaluated: 9,
+          classes: [cls('code', 5, 1), cls('research', 2, 0.5), cls('none', 2, 0)],
+        }),
+      },
+      'Routing',
+      semanticEffective,
+    );
+    expect(q(h, 'workload-mix-undetected')!.textContent).toBe(
+      'No detections in this range: vision, structured, writing',
+    );
+  });
+
+  it('an attempt-only class has a row and is not named', async () => {
+    h = await mount({
+      workloadMix: mix({
+        evaluated: 5,
+        classes: [cls('code', 5, 1), cls('structured', 0, 0.2)],
+      }),
+    });
+    expect(
+      rows(h)
+        .map((r) => r.textContent ?? '')
+        .some((t) => t.includes('structured')),
+    ).toBe(true);
+    expect(q(h, 'workload-mix-undetected')!.textContent).toBe(
+      'No detections in this range: vision',
+    );
+  });
+
+  it('is omitted in the empty state, and when every detectable class has a row', async () => {
+    h = await mount({ workloadMix: mix() });
+    expect(q(h, 'workload-mix')).toBeNull();
+    expect(q(h, 'workload-mix-undetected')).toBeNull();
+    h.dispose();
+    h = await mount({
+      workloadMix: mix({
+        evaluated: 3,
+        classes: [cls('code', 1, 1), cls('vision', 1, 1), cls('structured', 1, 1)],
+      }),
+    });
+    expect(q(h, 'workload-mix')).not.toBeNull();
+    expect(q(h, 'workload-mix-undetected')).toBeNull();
   });
 });

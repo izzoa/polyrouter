@@ -6,19 +6,26 @@ import {
   type LayerSwitchState,
 } from './autoLayerHints';
 import { toAutoPerfVm, type AutoPerfVm } from './autoPerf';
-import { bandVms, scopedBandVms, type BandTargetState, type TargetCatalog } from './bandTargets';
+import {
+  bandVms,
+  scopedBandVms,
+  type ScopedBandVm,
+  type ScopedBandsVm,
+  type TargetCatalog,
+} from './bandTargets';
 import { toCalibrationVm } from './calibration';
-import { WORKLOAD_ROW_ORDER, workloadVms } from './workloadTargets';
+import { targetLabel } from './targetsMatrix';
+import { workloadVms } from './workloadTargets';
 import type { Range } from '../types';
 
 /** View-model for the Auto routing tab's PIPELINE (redesign-auto-routing-pipeline
- * D7): the six stages in the order the proxy runs them, each one's routed-here
- * figure, and the summary bar of disjoint exits. Pure — the arithmetic (shares,
+ * D7; split-auto-routing-readout-setup D1): the six stages in the order the proxy runs
+ * them, each one's status now, routed-here figure and proportional bar. Pure — the arithmetic (shares,
  * the zero and absent-`exits` cases, the Default reconciliation) is owned by the
  * unit tests, not the view.
  *
  * Two rules shape every output:
- * - configuration (switches, setup summaries) renders from routing state alone and
+ * - configuration (status-now phrases, switch states) renders from routing state alone and
  *   never waits on the aggregation;
  * - no measured figure is fabricated, stale-as-current, or `NaN`: a set `error`
  *   emits none at all, even though the store keeps the last data on a failure. */
@@ -78,17 +85,104 @@ export interface StageRowVm {
   /** The exit this row counts; null on Classify (it shows `evaluated`). */
   exit: ExitKey | null;
   figure: StageFigure;
-  /** The Setup column: a configuration summary while the stage runs, or the
-   * statement of where its traffic goes while its own layer is off. Never a
-   * measured figure. */
-  setup: string;
-  /** A setup line that is a list of "X routes to Y" pairs (Workload claim,
-   * Confident band). The view draws each arrow as artwork — the bundled fonts
-   * carry no arrow character — so the pairs travel as data, and `setup` holds the
-   * same line in words for anything that reads it as text. Null for prose. */
-  setupRoutes: SetupRoute[] | null;
-  setupSub: string | null;
   status: StageStatus | null;
+  /** STATUS NOW (split-auto-routing-readout-setup D3): what the stage does under the
+   * CURRENT configuration, from routing state alone — never a measured figure, and
+   * identical whether the aggregation is loading, failed or ready. */
+  statusNow: StatusNowVm;
+  /** The words beside the row's count — `evaluated` / `routed here`, or a HISTORY
+   * caption when the stage is not running now, so a count from when it ran never
+   * contradicts its status. Null while the auto-layers view loads (stages 1–5). */
+  caption: string | null;
+  /** Classify only: the band verdict counts and the workload-claim line, under the
+   * figures' designed states. Null on every other stage. */
+  verdicts: VerdictsVm | null;
+  /** The row's proportional bar (stages 2–6): a placeholder while loading, a track
+   * whose fill is the exit's share of evaluated — an EMPTY track for a zero exit —
+   * and null where no bar is drawn (Classify, the zero range, no `exits`, a failure,
+   * the capability absent). */
+  bar: StageBarVm | null;
+}
+
+export type StageBarVm = { kind: 'placeholder' } | { kind: 'track'; ratio: number };
+
+/** The Confident band row's unroutable alert (D5): confident verdicts that went to
+ * Default for want of a usable target. The count is not scope-aware, so the copy and
+ * the controls name the COLUMN, never the Any request target, as the cause. */
+export interface BandAlertVm {
+  text: string;
+  /** One control per affected band, Strong first. */
+  columns: ('strong' | 'cheap')[];
+}
+
+export type StatusTone = 'neutral' | 'caution';
+
+export interface StatusLine {
+  text: string;
+  tone: StatusTone;
+}
+
+export interface StatusNowVm {
+  /** The auto-layers view has not loaded: the phrase shows a loading state, never
+   * "unavailable" or "off". Default (stage 6) never loads. */
+  loading: boolean;
+  /** The first line in words — also what a text-only reader gets. */
+  text: string;
+  tone: StatusTone;
+  /** "X to Y" pairs the view draws with an arrow icon (no bundled font carries the
+   * arrow); `text` holds the same line in words. Null for prose. */
+  routes: SetupRoute[] | null;
+  /** Later lines, each with its own tone (the unverified notice is one). */
+  lines: StatusLine[];
+}
+
+export type VerdictsVm =
+  | { kind: 'placeholder' }
+  | { kind: 'none' }
+  | {
+      kind: 'value';
+      /** `verdicts: 3 high · 1 low · 2 ambiguous` — worded as verdicts so they cannot
+       * be read as thresholds. */
+      text: string;
+      /** How many of the evaluated requests a Workload claim served instead of a band
+       * target; null when none did. */
+      claimed: string | null;
+    };
+
+/** Which requests can cascade under the current targets (D3 "Cascade pair
+ * resolution", after the proxy's cascade-within-a-class contract): each leg resolves
+ * on its own — an unclaimed class's own rule for a band when one is set, even if it
+ * is unusable (no fall-back), else the generic rule. */
+export interface CascadePairs {
+  /** Requests with no class of their own — and classes without scoped rules — have a
+   * usable generic pair. */
+  generic: boolean;
+  /** Live, unclaimed classes carrying scoped rules whose resolved pair is usable. */
+  classes: string[];
+}
+
+export interface CascadeClassInput {
+  cls: string;
+  /** The class is detected now (a reserved class only with the semantic source). */
+  live: boolean;
+  /** A usable, live claim takes the class first — it never reaches the cascade. */
+  claimed: boolean;
+  scoped: ScopedBandsVm;
+}
+
+export function cascadePairs(
+  generic: { high: { usable: boolean }; low: { usable: boolean } },
+  classes: CascadeClassInput[],
+): CascadePairs {
+  const leg = (own: ScopedBandVm, fallback: { usable: boolean }): boolean =>
+    own.effective !== null ? own.usable : fallback.usable;
+  return {
+    generic: generic.high.usable && generic.low.usable,
+    classes: classes
+      .filter((c) => c.live && !c.claimed && c.scoped.anyScoped)
+      .filter((c) => leg(c.scoped.high, generic.high) && leg(c.scoped.low, generic.low))
+      .map((c) => c.cls),
+  };
 }
 
 export interface SetupRoute {
@@ -96,37 +190,18 @@ export interface SetupRoute {
   to: string;
 }
 
-export interface ExitEntryVm {
-  exit: ExitKey;
-  stage: StageId;
-  number: 2 | 3 | 4 | 5 | 6;
-  /** The stage's name — the legend states it in text, so no exit is told apart
-   * by color alone. */
-  label: string;
-  count: number;
-  share: string;
-}
-
-export interface ExitBarVm {
-  /** = evaluated — the five exits partition it. */
-  total: number;
-  /** Non-zero exits only: a zero exit draws no segment. */
-  segments: ExitEntryVm[];
-  /** All five in stage order, zeros included. */
-  legend: ExitEntryVm[];
-}
-
-/** The Default detail's figures. On proxy-written rows `total = unroutable.high +
- * unroutable.low + fallthrough`; `other` holds any remainder. */
+/** The Default detail's figures (split-auto-routing-readout-setup D4). The routed-here
+ * total is the Default ROW's count, so the detail does not repeat it; on proxy-written
+ * rows that count = `unroutable.high + unroutable.low + fallthrough`, and `other` holds
+ * any remainder. */
 export interface DefaultDetailVm {
-  /** `exits.default`; null when the server sent no `exits` block. */
-  total: number | null;
   /** Confident bands retained on default for want of a usable target. */
   unroutable: { high: number; low: number };
   /** Ambiguous requests no later stage took (`fallthrough` ⊆ `exits.default`). */
   fallthrough: number;
-  /** Banded rows recorded at a layer the proxy never writes on the auto path
-   * (`total` minus the three above) — 0 on proxy-written rows; null with `total`. */
+  /** Banded rows recorded at a layer the proxy never writes on the auto path (the
+   * Default count minus the three above) — 0 on proxy-written rows; null when the server
+   * sent no `exits` block, so the count is unknown. */
   other: number | null;
 }
 
@@ -134,6 +209,10 @@ export interface PipelineInput {
   autoLayers: AutoLayers | null;
   autoPerf: { data: AutoPerformance | null; error: string | null; range: Range };
   catalog: TargetCatalog & { rules: RuleDto[] };
+  /** A Targets column a write may have changed but whose re-list failed (the store's
+   * `bt.unverified` / `wt.unverified`). While either is raised the rules snapshot may
+   * be stale, so the stages reading it say so and draw no conclusion from it. */
+  unverified?: { bands: boolean; claims: boolean };
 }
 
 export interface PipelineVm {
@@ -141,20 +220,52 @@ export interface PipelineVm {
   /** The range every figure is framed to. */
   range: Range;
   stages: StageRowVm[];
-  /** Only in `ready`: a zero range has no bar, and a failed or unexported load
-   * has no figures to draw. */
-  exitBar: ExitBarVm | null;
   /** Null while loading, after a failure, and when the capability is absent. */
   defaultDetail: DefaultDetailVm | null;
   /** The auto-performance view-model behind the stage details and the focal
    * savings — gated exactly like the figures (null unless `zero`, `unavailable`
    * or `ready`), so a detail can never render a stale figure as current. */
   perf: AutoPerfVm | null;
+  /** The cascade is not running now (Layer 1 or Layer 3 off, or no usable pair under
+   * verified targets), so the savings line covers cascades EARLIER in the range. */
+  cascadeHistory: boolean;
+  /** Absent while loading, after a failure, and at zero — never a placeholder: an
+   * alert that may not appear reserves no space. */
+  bandAlert: BandAlertVm | null;
 }
 
 const PAUSED: StageStatus = { kind: 'paused', label: 'paused · needs L1' };
-const OFF_HISTORY = 'Any count shown is history from when it was on';
-const LOADING_SETUP = 'Loading…';
+
+const NEEDS_L1 = 'Needs L1 — unavailable on this instance';
+const UNAVAILABLE = 'Unavailable on this instance';
+const UNVERIFIED_LINE: StatusLine = {
+  text: 'Last loaded targets — routing may have changed; see Targets',
+  tone: 'caution',
+};
+const STATUS_LOADING: StatusNowVm = {
+  loading: true,
+  text: 'Loading…',
+  tone: 'neutral',
+  routes: null,
+  lines: [],
+};
+
+function statusNow(
+  text: string,
+  tone: StatusTone = 'neutral',
+  lines: StatusLine[] = [],
+  routes: SetupRoute[] | null = null,
+): StatusNowVm {
+  return { loading: false, text, tone, routes, lines };
+}
+
+const neutral = (text: string): StatusLine => ({ text, tone: 'neutral' });
+
+/** `code`, `code and vision`, `code, vision and structured`. */
+function listOf(items: string[]): string {
+  if (items.length <= 1) return items.join('');
+  return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1] ?? ''}`;
+}
 
 /** The words form of a routes setup line: `code: tier:premium · …`. */
 function routesLine(routes: SetupRoute[]): string {
@@ -164,20 +275,6 @@ function routesLine(routes: SetupRoute[]): string {
 /** Share of evaluated, whole percent — "—" when nothing was evaluated. */
 function shareOf(n: number, evaluated: number): string {
   return evaluated === 0 ? '—' : `${((n / evaluated) * 100).toFixed(0)}%`;
-}
-
-/** A band or claim target in one short phrase, for a setup line. */
-export function targetLabel(t: BandTargetState): string {
-  switch (t.kind) {
-    case 'unset':
-      return 'unset';
-    case 'tier':
-      return t.empty ? `tier:${t.key} (empty)` : `tier:${t.key}`;
-    case 'model':
-      return t.label;
-    case 'unresolved':
-      return `${t.literal} (unresolved)`;
-  }
 }
 
 function measuredState(input: PipelineInput): MeasuredState {
@@ -218,28 +315,34 @@ function figureFor(
   }
 }
 
-const EXIT_STAGES: readonly {
-  exit: ExitKey;
-  stage: StageId;
-  number: ExitEntryVm['number'];
-  label: string;
-}[] = [
-  { exit: 'workload', stage: 'workload', number: 2, label: 'Workload claim' },
-  { exit: 'structural', stage: 'band', number: 3, label: 'Confident band' },
-  { exit: 'semantic', stage: 'semantic', number: 4, label: 'Semantic' },
-  { exit: 'cascade', stage: 'cascade', number: 5, label: 'Cascade' },
-  { exit: 'default', stage: 'default', number: 6, label: 'Default' },
-];
+/** One stage's bar. Only a loaded range with evaluated traffic and an `exits` block
+ * draws tracks; a zero range draws none, and a failure or no `exits` none either. */
+function barFor(
+  measured: MeasuredState,
+  data: AutoPerformance | null,
+  exit: ExitKey | null,
+): StageBarVm | null {
+  if (exit === null) return null;
+  if (measured === 'loading') return { kind: 'placeholder' };
+  if (measured !== 'ready' || data === null || data.exits === undefined) return null;
+  return { kind: 'track', ratio: data.evaluated === 0 ? 0 : data.exits[exit] / data.evaluated };
+}
 
-function exitBarVm(data: AutoPerformance): ExitBarVm | null {
-  const exits = data.exits;
-  if (exits === undefined) return null;
-  const legend = EXIT_STAGES.map((s) => ({
-    ...s,
-    count: exits[s.exit],
-    share: shareOf(exits[s.exit], data.evaluated),
-  }));
-  return { total: data.evaluated, segments: legend.filter((e) => e.count > 0), legend };
+function bandAlertVm(data: AutoPerformance): BandAlertVm | null {
+  const high = data.bands.high.unroutable;
+  const low = data.bands.low.unroutable;
+  if (high === 0 && low === 0) return null;
+  const where = 'on the Any request and class rows';
+  if (high > 0 && low > 0)
+    return {
+      text: `${high.toLocaleString()} confident high and ${low.toLocaleString()} confident low verdicts had no usable target and went to Default — check the missing-or-unusable targets in the Targets matrix’s Strong and Cheap columns, ${where}`,
+      columns: ['strong', 'cheap'],
+    };
+  const [n, verdict, column] = high > 0 ? [high, 'high', 'Strong'] : [low, 'low', 'Cheap'];
+  return {
+    text: `${n.toLocaleString()} confident ${verdict} verdict${n === 1 ? '' : 's'} had no usable ${column} target and went to Default — check the missing-or-unusable target in the Targets matrix’s ${column} column, ${where}`,
+    columns: [high > 0 ? 'strong' : 'cheap'],
+  };
 }
 
 function defaultDetailVm(data: AutoPerformance): DefaultDetailVm {
@@ -248,7 +351,6 @@ function defaultDetailVm(data: AutoPerformance): DefaultDetailVm {
   // With nothing evaluated every exit is 0, so an absent block still totals 0.
   const total = data.exits?.default ?? (data.evaluated === 0 ? 0 : null);
   return {
-    total,
     unroutable: { high, low },
     fallthrough: data.fallthrough,
     other: total === null ? null : total - (high + low + data.fallthrough),
@@ -265,9 +367,11 @@ export function toPipelineVm(input: PipelineInput): PipelineVm {
   // Layer 1's EFFECTIVE flag; unknown (null) while the view loads, and then no
   // stage claims to be paused or off.
   const l1On = al === null ? null : al.structural;
-  const paused = l1On === false;
+  // Paused means "Layer 1 is OFF here": an instance that cannot run Layer 1 at all is
+  // not paused — its stages need L1, which is unavailable (split-auto-routing D3).
+  const paused = l1On === false && al?.structuralAvailable === true;
 
-  // Configuration only — the measured slice is withheld here so no setup line
+  // Configuration only — the measured slice is withheld here so no status phrase
   // can carry a figure (the matrix and the details read it themselves).
   const bands = bandVms({
     ...catalog,
@@ -280,8 +384,49 @@ export function toPipelineVm(input: PipelineInput): PipelineVm {
     semanticWorkload: al?.semanticWorkload ?? false,
   });
 
+  /* Status now and history captions (split-auto-routing-readout-setup D3). Status reads
+   * routing state alone; a caption reads the status AND the row's own exit, so a count
+   * from when a stage ran is never presented as what it does now. */
+  const capable = al !== null && al.structuralAvailable;
+  const l1Off = al !== null && al.structuralAvailable && !al.structural;
+  const unverified = (input.unverified?.bands ?? false) || (input.unverified?.claims ?? false);
+  const unverifiedLines: StatusLine[] = unverified ? [UNVERIFIED_LINE] : [];
+  const classes: CascadeClassInput[] = workload.rows.map((r) => ({
+    cls: r.cls,
+    live: r.live,
+    claimed: r.live && r.usable,
+    scoped: scopedBandVms(catalog, r.cls),
+  }));
+  const pairs = cascadePairs(bands, classes);
+  const cascadeCanRun = pairs.generic || pairs.classes.length > 0;
+  /** Live, unclaimed classes with a band target of their own — a claimed class's
+   * scoped targets are never named: its claim wins. */
+  const ownBands = classes.filter((c) => c.live && !c.claimed && c.scoped.anyScoped);
+  const bandCanRoute =
+    bands.high.usable ||
+    bands.low.usable ||
+    ownBands.some((c) => c.scoped.high.usable || c.scoped.low.usable);
+  const exitOf = (k: ExitKey): number => data?.exits?.[k] ?? 0;
+  /** A stage whose own state is not running: L1 off pauses 2–5; then its own layer. */
+  const routedCaption = (own: string | null): string | null =>
+    al === null ? null : l1Off ? 'routed while L1 was on' : (own ?? 'routed here');
+  const perfVm = showFigures ? toAutoPerfVm(data) : null;
+
   /* 1 · Classify */
   const cal = toCalibrationVm(al);
+  const verdicts: VerdictsVm =
+    measured === 'absent' || measured === 'error'
+      ? { kind: 'none' }
+      : measured === 'loading' || data === null
+        ? { kind: 'placeholder' }
+        : {
+            kind: 'value',
+            text: `${l1Off ? 'verdicts while L1 was on' : 'verdicts'}: ${data.bands.high.requests.toLocaleString()} high · ${data.bands.low.requests.toLocaleString()} low · ${data.bands.ambiguous.requests.toLocaleString()} ambiguous`,
+            claimed:
+              (perfVm?.workloadRouted ?? 0) > 0
+                ? `${(perfVm?.workloadRouted ?? 0).toLocaleString()} of these were served by a Workload claim, not a band target`
+                : null,
+          };
   const classify: StageRowVm = {
     id: 'classify',
     number: 1,
@@ -294,34 +439,28 @@ export function toPipelineVm(input: PipelineInput): PipelineVm {
     targetsLink: false,
     exit: null,
     figure: figureFor(measured, data, null),
-    setupRoutes: null,
-    ...(cal === null
-      ? { setup: LOADING_SETUP, setupSub: null, status: null }
-      : l1On === true
-        ? {
-            setup: `Thresholds ${cal.thresholdsLine}`,
-            setupSub: `${cal.tag} · self-calibration ${cal.enabled ? 'on' : 'off'}`,
-            status: null,
-          }
-        : {
-            setup: 'Off — new auto requests go straight to the default tier',
-            setupSub: 'Stages 2–5 pause without Layer 1’s verdicts',
-            status: { kind: 'off', tone: 'caution' },
-          }),
+    verdicts,
+    bar: null,
+    caption: al === null ? null : l1Off ? 'evaluated while L1 was on' : 'evaluated',
+    statusNow:
+      al === null || cal === null
+        ? STATUS_LOADING
+        : !al.structuralAvailable
+          ? statusNow(UNAVAILABLE, 'caution', [
+              { text: 'New auto requests go straight to the default tier', tone: 'caution' },
+            ])
+          : al.structural
+            ? statusNow(`On · thresholds ${cal.thresholdsLine} · ${cal.tag}`)
+            : statusNow('Off — new auto requests go straight to the default tier', 'caution', [
+                neutral('Stages 2–5 pause without Layer 1’s verdicts'),
+              ]),
+    status: cal === null || l1On === true ? null : { kind: 'off', tone: 'caution' },
   };
 
   /* 2 · Workload claim — a class claims only with a usable target on a live row
    * (a reserved class is inert until the semantic workload source is effective). */
   const claims = workload.rows.filter((r) => r.live && r.usable);
   const dead = workload.rows.filter((r) => r.live && r.effective !== null && !r.usable).length;
-  const claimSub = [
-    claims.length > 0
-      ? `${String(claims.length)} of ${String(workload.rows.length)} classes claim${claims.length === 1 ? 's' : ''} — the rest pass to stage 3`
-      : null,
-    dead > 0
-      ? `${String(dead)} configured claim${dead === 1 ? ' steers' : 's steer'} nothing`
-      : null,
-  ].filter((p): p is string => p !== null);
   const claimRoutes =
     claims.length === 0 ? null : claims.map((r) => ({ from: r.cls, to: targetLabel(r.target) }));
   const workloadStage: StageRowVm = {
@@ -336,25 +475,45 @@ export function toPipelineVm(input: PipelineInput): PipelineVm {
     targetsLink: false,
     exit: 'workload',
     figure: figureFor(measured, data, 'workload'),
-    setup:
-      claimRoutes === null
-        ? 'No class claims — every request passes to stage 3'
-        : routesLine(claimRoutes),
-    setupRoutes: claimRoutes,
-    setupSub: claimSub.length === 0 ? null : claimSub.join(' · '),
+    verdicts: null,
+    bar: barFor(measured, data, 'workload'),
+    caption: routedCaption(
+      !unverified && claims.length === 0 && exitOf('workload') > 0
+        ? 'routed under earlier claims'
+        : null,
+    ),
+    statusNow:
+      al === null
+        ? STATUS_LOADING
+        : !capable
+          ? statusNow(NEEDS_L1)
+          : statusNow(
+              claimRoutes === null ? 'No class claims now' : routesLine(claimRoutes),
+              'neutral',
+              [
+                ...(claims.length > 0
+                  ? [
+                      neutral(
+                        `${String(claims.length)} of ${String(workload.rows.length)} classes claim${claims.length === 1 ? 's' : ''} — the rest pass to stage 3`,
+                      ),
+                    ]
+                  : []),
+                ...(dead > 0
+                  ? [
+                      {
+                        text: `${String(dead)} configured claim${dead === 1 ? ' steers' : 's steer'} nothing`,
+                        tone: 'caution' as const,
+                      },
+                    ]
+                  : []),
+                ...unverifiedLines,
+              ],
+              claimRoutes,
+            ),
     status: paused ? PAUSED : null,
   };
 
-  /* 3 · Confident band — the generic pair, plus which classes carry their own. */
-  const scoped = WORKLOAD_ROW_ORDER.map((cls) => scopedBandVms(catalog, cls))
-    .filter((s) => s.anyScoped)
-    .map((s) => {
-      const own = [
-        s.high.effective !== null ? 'Strong' : null,
-        s.low.effective !== null ? 'Cheap' : null,
-      ].filter((b): b is string => b !== null);
-      return `${s.cls} has its own ${own.join(' and ')} target${own.length === 1 ? '' : 's'}`;
-    });
+  /* 3 · Confident band — the generic pair, plus which unclaimed classes carry their own. */
   const bandRoutes: SetupRoute[] = [
     { from: 'Strong', to: targetLabel(bands.high.target) },
     { from: 'Cheap', to: targetLabel(bands.low.target) },
@@ -371,9 +530,38 @@ export function toPipelineVm(input: PipelineInput): PipelineVm {
     targetsLink: true,
     exit: 'structural',
     figure: figureFor(measured, data, 'structural'),
-    setup: routesLine(bandRoutes),
-    setupRoutes: bandRoutes,
-    setupSub: scoped.length === 0 ? null : scoped.join(' · '),
+    verdicts: null,
+    bar: barFor(measured, data, 'structural'),
+    caption: routedCaption(!unverified && !bandCanRoute ? 'routed under earlier targets' : null),
+    statusNow:
+      al === null
+        ? STATUS_LOADING
+        : !capable
+          ? statusNow(NEEDS_L1)
+          : statusNow(
+              routesLine(bandRoutes),
+              // A target that is set but unusable is a caution; unset is a choice.
+              (bands.high.effective !== null && !bands.high.usable) ||
+                (bands.low.effective !== null && !bands.low.usable)
+                ? 'caution'
+                : 'neutral',
+              [
+                neutral(
+                  [
+                    'For requests no claim took',
+                    ...ownBands.map((c) => {
+                      const own = [
+                        c.scoped.high.effective !== null ? 'Strong' : null,
+                        c.scoped.low.effective !== null ? 'Cheap' : null,
+                      ].filter((b): b is string => b !== null);
+                      return `${c.cls} uses its own ${own.join(' and ')}`;
+                    }),
+                  ].join(' · '),
+                ),
+                ...unverifiedLines,
+              ],
+              bandRoutes,
+            ),
     status: paused ? PAUSED : null,
   };
 
@@ -390,26 +578,34 @@ export function toPipelineVm(input: PipelineInput): PipelineVm {
     targetsLink: false,
     exit: 'semantic',
     figure: figureFor(measured, data, 'semantic'),
-    setupRoutes: null,
-    // Copy follows the stage's OWN layer; Layer 1 being off adds the paused status on
-    // top. Branching on `paused` first would describe a switched-off layer as routing.
-    ...(al === null
-      ? { setup: LOADING_SETUP, setupSub: null, status: null }
-      : al.semantic
-        ? {
-            setup: 'Routes the ambiguous slice Layer 1 can’t read',
-            setupSub: `learning ${al.semanticLearning ? 'on' : 'off'}`,
-            status: paused ? PAUSED : null,
-          }
-        : {
-            setup: paused
-              ? 'Off'
-              : al.cascade
-                ? 'Off — the ambiguous slice goes straight to the cascade'
-                : 'Off — the ambiguous slice goes straight to the default tier',
-            setupSub: OFF_HISTORY,
-            status: paused ? PAUSED : { kind: 'off', tone: 'neutral' },
-          }),
+    verdicts: null,
+    bar: barFor(measured, data, 'semantic'),
+    caption: routedCaption(al !== null && !al.semantic ? 'routed while on' : null),
+    statusNow:
+      al === null
+        ? STATUS_LOADING
+        : !capable
+          ? statusNow(NEEDS_L1)
+          : !al.semanticAvailable
+            ? statusNow(UNAVAILABLE, 'neutral', [
+                neutral(
+                  al.cascade
+                    ? 'The ambiguous slice goes straight to the cascade'
+                    : 'The ambiguous slice goes straight to the default tier',
+                ),
+              ])
+            : al.semantic
+              ? statusNow(`On · learning ${al.semanticLearning ? 'on' : 'off'}`)
+              : statusNow(
+                  l1Off
+                    ? 'Off'
+                    : al.cascade
+                      ? 'Off — the ambiguous slice goes straight to the cascade'
+                      : 'Off — the ambiguous slice goes straight to the default tier',
+                ),
+    // Its status follows the stage's OWN layer; Layer 1 being off adds the paused badge.
+    status:
+      al === null ? null : paused ? PAUSED : al.semantic ? null : { kind: 'off', tone: 'neutral' },
   };
 
   /* 5 · Cascade — its two legs are the generic band targets. */
@@ -425,22 +621,47 @@ export function toPipelineVm(input: PipelineInput): PipelineVm {
     targetsLink: false,
     exit: 'cascade',
     figure: figureFor(measured, data, 'cascade'),
-    setupRoutes: null,
-    ...(al === null
-      ? { setup: LOADING_SETUP, setupSub: null, status: null }
-      : al.cascade
-        ? {
-            setup: 'Tries cheap first, escalates on a failed quality check',
-            setupSub: bands.cascadeNeedsBoth
-              ? 'Needs usable Strong and Cheap targets — ambiguous requests stay on the default tier until both are'
-              : `${targetLabel(bands.low.target)} first, then ${targetLabel(bands.high.target)}`,
-            status: paused ? PAUSED : null,
-          }
-        : {
-            setup: paused ? 'Off' : 'Off — still-ambiguous requests use the default tier',
-            setupSub: OFF_HISTORY,
-            status: paused ? PAUSED : { kind: 'off', tone: 'neutral' },
-          }),
+    verdicts: null,
+    bar: barFor(measured, data, 'cascade'),
+    caption: routedCaption(
+      al !== null && !al.cascade
+        ? 'routed while on'
+        : !unverified && !cascadeCanRun
+          ? 'routed while it could run'
+          : null,
+    ),
+    statusNow:
+      al === null
+        ? STATUS_LOADING
+        : !capable
+          ? statusNow(NEEDS_L1)
+          : !al.cascadeAvailable
+            ? statusNow(UNAVAILABLE, 'neutral', [
+                neutral('Still-ambiguous requests use the default tier'),
+              ])
+            : !al.cascade
+              ? statusNow(l1Off ? 'Off' : 'Off — still-ambiguous requests use the default tier')
+              : cascadeCanRun
+                ? statusNow(
+                    `On · Cheap first (${targetLabel(bands.low.target)}), escalates to Strong (${targetLabel(bands.high.target)})`,
+                    'neutral',
+                    [
+                      neutral(
+                        pairs.generic
+                          ? 'A class’s own Strong or Cheap target replaces that leg for the class'
+                          : `Only ${listOf(pairs.classes)} can cascade — other ambiguous requests go to Default`,
+                      ),
+                      ...unverifiedLines,
+                    ],
+                  )
+                : statusNow('On, but needs usable Strong and Cheap targets', 'caution', [
+                    neutral(
+                      `Cheap: ${targetLabel(bands.low.target)} · Strong: ${targetLabel(bands.high.target)}`,
+                    ),
+                    ...unverifiedLines,
+                  ]),
+    status:
+      al === null ? null : paused ? PAUSED : al.cascade ? null : { kind: 'off', tone: 'neutral' },
   };
 
   /* 6 · Default */
@@ -456,9 +677,12 @@ export function toPipelineVm(input: PipelineInput): PipelineVm {
     targetsLink: false,
     exit: 'default',
     figure: figureFor(measured, data, 'default'),
-    setup: 'Where auto lands when a stage is off or a target is unusable',
-    setupRoutes: null,
-    setupSub: null,
+    verdicts: null,
+    bar: barFor(measured, data, 'default'),
+    caption: 'routed here',
+    statusNow: statusNow('Always on', 'neutral', [
+      neutral('Where auto lands when a stage is off or a target is unusable'),
+    ]),
     status: null,
   };
 
@@ -466,8 +690,10 @@ export function toPipelineVm(input: PipelineInput): PipelineVm {
     measured,
     range: autoPerf.range,
     stages: [classify, workloadStage, band, semantic, cascade, fallback],
-    exitBar: measured === 'ready' && data !== null ? exitBarVm(data) : null,
     defaultDetail: showFigures && data !== null ? defaultDetailVm(data) : null,
-    perf: showFigures ? toAutoPerfVm(data) : null,
+    perf: perfVm,
+    cascadeHistory:
+      al !== null && capable && (l1Off || !al.cascade || (!unverified && !cascadeCanRun)),
+    bandAlert: showFigures && data !== null ? bandAlertVm(data) : null,
   };
 }

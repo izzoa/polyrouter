@@ -1,5 +1,5 @@
 import { isNonRoutableVariant, type WorkloadClass } from '@polyrouter/shared';
-import type { AutoPerformance, RuleDto } from './api';
+import type { RuleDto } from './api';
 import {
   bandVms,
   scopedBandVms,
@@ -9,8 +9,8 @@ import {
   type ScopedBandVm,
   type TargetCatalog,
 } from './bandTargets';
-import { unsetCopy, workloadVms, type WorkloadVm } from './workloadTargets';
-import type { Model, Range } from '../types';
+import { WORKLOAD_LABELS, workloadVms, type WorkloadVm } from './workloadTargets';
+import type { Model } from '../types';
 
 /** View-model for the Auto routing tab's TARGETS MATRIX
  * (redesign-auto-routing-pipeline D7). Pure — composes `bandVms`,
@@ -20,8 +20,10 @@ import type { Model, Range } from '../types';
  * precedence: a usable, live claim first, else the class-scoped band target,
  * else the generic one. Every target guarantee stays with the composed
  * view-models; this file only adds what the matrix needs on top — the
- * `inherit` and `claimed` states, the claim's `live` check, and the
- * loading / failure discipline of the measured figures. */
+ * `inherit` and `claimed` states, the claim's `live` check, and the short
+ * value copy. It reads NO aggregation (split-auto-routing-readout-setup D9):
+ * the per-class counts live in the Workload claim detail and the unroutable
+ * counts in the Pipeline, so the matrix never waits on a figure. */
 
 /** What a target cell presents — exactly one per cell.
  * - `set`: an effective rule resolving to something routable.
@@ -39,20 +41,6 @@ export type TargetCellKind =
   'set' | 'inherit' | 'unset' | 'unresolved' | 'empty' | 'readonly' | 'na';
 
 export type TargetColumn = 'claim' | 'strong' | 'cheap';
-
-/** A measured figure under the tab's designed states: a neutral placeholder
- * while the aggregation has no data for the range, nothing while it has
- * failed (no figure from an earlier load is shown as current), else the
- * value. `none` is also what a cell renders when the figure does not apply. */
-export type Measured<T> = { kind: 'placeholder' } | { kind: 'none' } | { kind: 'value'; value: T };
-
-/** The Detected column: requests seen, and how many the class's claim routed
- * (null on the Any request row, which has no claim) — framed to `range`. */
-export interface DetectedFigure {
-  requests: number;
-  routed: number | null;
-  range: Range;
-}
 
 export interface TargetCellNotes {
   /* No `unlisted` note here: an unlisted model target is worded by TargetSummary
@@ -94,13 +82,14 @@ export interface TargetCellVm {
   /** The cell carries live controls (picker, Clear, cleanup). Busy and
    * unverified stay the store's runtime state, applied at render. */
   editable: boolean;
-  /** The copy a cell with no rule of its own shows (TargetSummary's `unset`). */
-  unsetText: string;
   notes: TargetCellNotes;
-  /** The band's range-scoped unroutable count — only on an Any request band
-   * cell whose target is not usable (the aggregation is not scope-aware);
-   * `none` when it does not apply or the loaded count is zero. */
-  unroutable: Measured<{ count: number; range: Range }>;
+  /** What the cell's value row says when it has no target of its own
+   * (split-auto-routing-readout-setup D9): a short value, never a sentence — the
+   * Any request target an inherit cell uses, flagged when it is not usable. */
+  valueText: string;
+  /** Beside — never instead of — the cell's own target state: this band cell is not
+   * consulted while the row's claim stands. Null unless `claimed`. */
+  claimedNote: string | null;
 }
 
 export interface TargetsRowVm {
@@ -117,18 +106,16 @@ export interface TargetsRowVm {
    * (it does not claim; the bands apply). A usable claim is annotated on its band
    * cells instead (`claimed`), and an inert reserved row never says the bands apply. */
   claimNote: { kind: 'unusable'; text: string } | null;
-  /** A reserved row whose source is not effective: its claim and bands are
-   * inert — never "the bands apply". */
-  inertNote: string | null;
   claim: TargetCellVm;
   strong: TargetCellVm;
   cheap: TargetCellVm;
-  detected: Measured<DetectedFigure>;
+  /** The row label's sub-line: the signal that detects the class. Null on the Any
+   * request row. */
+  signal: string | null;
 }
 
 export interface TargetsMatrixInput {
   catalog: TargetCatalog & { rules: RuleDto[] };
-  autoPerf: { data: AutoPerformance | null; error: string | null; range: Range };
   /** The EFFECTIVE semantic workload source (auto-layers `semanticWorkload`). */
   semanticWorkload: boolean;
   /** Which half of the semantic workload source is missing — precomputed
@@ -144,7 +131,25 @@ export interface TargetsMatrixVm {
   cascadeNeedsBoth: boolean;
   /** Both GENERIC bands usable and resolving to one destination. */
   sameDestination: boolean;
+  /** The Any request row's cascade note while `cascadeNeedsBoth` — scoped per leg:
+   * a class whose own target fills the unusable band still cascades. */
+  cascadeNote: string | null;
+  /** ONE note the reserved rows share while their source is not effective; each inert
+   * Claim cell points at it. Null when every reserved row is live. */
+  reservedNote: string | null;
 }
+
+/** Each class's detection signal, short enough for a row label's sub-line. */
+const ROW_SIGNALS: Record<WorkloadClass, string> = {
+  code: 'fenced code above the code thresholds',
+  vision: 'an image in the request',
+  structured: 'a declared JSON format',
+  research: 'the semantic workload source',
+  writing: 'the semantic workload source',
+};
+
+const CASCADE_NOTE =
+  'Cascade needs both Any request bands usable — ambiguous requests stay on the default tier unless their class sets its own target for the missing band';
 
 /** Target-unresolved guidance (moved from the Routing page; text unchanged).
  * Null for a target that is not unresolved. */
@@ -157,18 +162,9 @@ export function unresolvedHint(t: BandTargetState): string | null {
       : 'The stored target is malformed — pick a new target.';
 }
 
-const PLACEHOLDER = { kind: 'placeholder' } as const;
-const NONE = { kind: 'none' } as const;
-
-type MatrixPerf = TargetsMatrixInput['autoPerf'];
-
-/** Failure first: the store keeps the previous data on error, and a stale
- * figure must never read as current. */
-function measured<T>(perf: MatrixPerf, pick: (data: AutoPerformance) => T): Measured<T> {
-  if (perf.error !== null) return NONE;
-  if (perf.data === null) return PLACEHOLDER;
-  return { kind: 'value', value: pick(perf.data) };
-}
+/** The composed view-models also carry range-scoped figures; the matrix reads none of
+ * them, so they are handed no aggregation at all (and their range is never shown). */
+const NO_FIGURES = { data: null, range: '7d' } as const;
 
 function kindOf(target: BandTargetState, whenUnset: 'unset' | 'inherit'): TargetCellKind {
   switch (target.kind) {
@@ -192,42 +188,28 @@ function notesFor(target: BandTargetState): TargetCellNotes {
   };
 }
 
-/** The short name an inherit cell gives the generic target it falls back to. */
-function targetLabel(t: BandTargetState): string {
+/** A band or claim target in one short phrase — the ONE label grammar the Targets
+ * matrix and the Pipeline's status-now phrases share (split-auto-routing-readout-setup
+ * D3), so a target reads the same wherever it is named. A degraded target keeps its
+ * mark — `(empty)` for a tier with no models, `(unresolved)` for a literal that no
+ * longer resolves — so no line presents an unusable target as healthy. */
+export function targetLabel(t: BandTargetState): string {
   switch (t.kind) {
     case 'unset':
       return 'not set';
     case 'tier':
-      return `tier: ${t.key}`;
+      return t.empty ? `tier:${t.key} (empty)` : `tier:${t.key}`;
     case 'model':
       return t.label;
     case 'unresolved':
-      return t.literal;
+      return `${t.literal} (unresolved)`;
   }
 }
 
 const columnOf = (band: BandKey): 'strong' | 'cheap' => (band === 'auto_high' ? 'strong' : 'cheap');
 const verdictOf = (band: BandKey): string => (band === 'auto_high' ? 'high' : 'low');
 
-function inheritText(cls: WorkloadClass, generic: BandVm): string {
-  const base = `= any — ${cls} requests use the Any request ${columnOf(generic.band)} target`;
-  const fallsThrough = `confident ${verdictOf(generic.band)} verdicts fall through to default`;
-  if (generic.target.kind === 'unset') return `${base}, which is not set: ${fallsThrough}`;
-  const label = targetLabel(generic.target);
-  return generic.usable
-    ? `${base}: ${label}`
-    : `${base} (${label}), which is unusable: ${fallsThrough}`;
-}
-
-/** Generic cells only, and only while their target is not usable; a loaded
- * zero shows nothing (there is nothing to diagnose). */
-function unroutableOf(b: BandVm, perf: MatrixPerf): Measured<{ count: number; range: Range }> {
-  if (b.usable || perf.error !== null) return NONE;
-  if (b.unroutable === null) return PLACEHOLDER;
-  return b.unroutable.count === 0 ? NONE : { kind: 'value', value: b.unroutable };
-}
-
-function genericCell(b: BandVm, perf: MatrixPerf): TargetCellVm {
+function genericCell(b: BandVm): TargetCellVm {
   return {
     column: columnOf(b.band),
     kind: kindOf(b.target, 'unset'),
@@ -240,9 +222,9 @@ function genericCell(b: BandVm, perf: MatrixPerf): TargetCellVm {
     usable: b.usable,
     inherits: null,
     editable: true,
-    unsetText: `Not set — confident ${verdictOf(b.band)} verdicts fall through to default`,
+    valueText: `Not set — confident ${verdictOf(b.band)} verdicts fall through to default`,
+    claimedNote: null,
     notes: notesFor(b.target),
-    unroutable: unroutableOf(b, perf),
   };
 }
 
@@ -270,9 +252,11 @@ function scopedCell(
         ? { target: generic.target, label: targetLabel(generic.target), usable: generic.usable }
         : null,
     editable: true,
-    unsetText: inheritText(cls, generic),
+    valueText: `= Any request · ${targetLabel(generic.target)}${
+      generic.usable ? '' : ` — confident ${verdictOf(generic.band)} verdicts go to Default`
+    }`,
+    claimedNote: claimed ? `Not consulted — the ${WORKLOAD_LABELS[cls]} claim wins` : null,
     notes: notesFor(s.target),
-    unroutable: NONE,
   };
 }
 
@@ -289,9 +273,11 @@ function claimCell(w: WorkloadVm): TargetCellVm {
     usable: w.usable,
     inherits: null,
     editable: w.live,
-    unsetText: unsetCopy(w.cls, w.live),
+    valueText: w.live
+      ? 'No claim — takes the complexity path (bands, then L2 and the cascade, then default)'
+      : 'inert (read-only)',
+    claimedNote: null,
     notes: notesFor(w.target),
-    unroutable: NONE,
   };
 }
 
@@ -309,9 +295,9 @@ function naClaimCell(): TargetCellVm {
     usable: false,
     inherits: null,
     editable: false,
-    unsetText: 'No claim — a claim needs a workload class.',
+    valueText: 'n/a — a claim needs a class',
+    claimedNote: null,
     notes: notesFor(target),
-    unroutable: NONE,
   };
 }
 
@@ -326,12 +312,6 @@ function claimNoteOf(w: WorkloadVm): TargetsRowVm['claimNote'] {
   };
 }
 
-function inertNoteOf(w: WorkloadVm, missingHalf: string): string | null {
-  if (!w.reserved || w.live) return null;
-  const half = missingHalf === '' ? '' : ` (${missingHalf})`;
-  return `This row's claim and bands are inert until the semantic workload source is effective${half}: ${w.cls} requests are not detected yet.`;
-}
-
 function classRow(
   w: WorkloadVm,
   input: TargetsMatrixInput,
@@ -339,8 +319,6 @@ function classRow(
 ): TargetsRowVm {
   const scoped = scopedBandVms(input.catalog, w.cls);
   const claimed = w.live && w.usable;
-  const perf = input.autoPerf;
-  const routed = w.routed;
   return {
     id: w.cls,
     label: w.label,
@@ -348,35 +326,23 @@ function classRow(
     live: w.live,
     claimed,
     claimNote: claimNoteOf(w),
-    inertNote: inertNoteOf(w, input.missingHalf),
+    signal: ROW_SIGNALS[w.cls],
     claim: claimCell(w),
     strong: scopedCell(scoped.high, w.cls, generic.high, claimed),
     cheap: scopedCell(scoped.low, w.cls, generic.low, claimed),
-    // `routed` is null exactly until the aggregation has loaded; once loaded
-    // a class absent from the mix reads zero (workloadVms).
-    detected:
-      perf.error !== null
-        ? NONE
-        : routed === null
-          ? PLACEHOLDER
-          : {
-              kind: 'value',
-              value: { requests: routed.requests, routed: routed.count, range: routed.range },
-            },
   };
 }
 
 export function toTargetsMatrixVm(input: TargetsMatrixInput): TargetsMatrixVm {
-  const { catalog, autoPerf } = input;
-  const perfSlice = { data: autoPerf.data, range: autoPerf.range };
+  const { catalog } = input;
   const generic = bandVms({
     ...catalog,
     cascadeEffective: input.cascadeEffective,
-    autoPerf: perfSlice,
+    autoPerf: NO_FIGURES,
   });
   const workloads = workloadVms({
     ...catalog,
-    autoPerf: perfSlice,
+    autoPerf: NO_FIGURES,
     semanticWorkload: input.semanticWorkload,
   });
   const any: TargetsRowVm = {
@@ -386,19 +352,21 @@ export function toTargetsMatrixVm(input: TargetsMatrixInput): TargetsMatrixVm {
     live: true,
     claimed: false,
     claimNote: null,
-    inertNote: null,
+    signal: null,
     claim: naClaimCell(),
-    strong: genericCell(generic.high, autoPerf),
-    cheap: genericCell(generic.low, autoPerf),
-    detected: measured(autoPerf, (d) => ({
-      requests: d.evaluated,
-      routed: null,
-      range: autoPerf.range,
-    })),
+    strong: genericCell(generic.high),
+    cheap: genericCell(generic.low),
   };
+  const inert = workloads.rows.filter((w) => w.reserved && !w.live);
+  const half = input.missingHalf === '' ? '' : ` (${input.missingHalf})`;
   return {
     rows: [any, ...workloads.rows.map((w) => classRow(w, input, generic))],
     cascadeNeedsBoth: generic.cascadeNeedsBoth,
     sameDestination: generic.sameDestination,
+    cascadeNote: generic.cascadeNeedsBoth ? CASCADE_NOTE : null,
+    reservedNote:
+      inert.length === 0
+        ? null
+        : `${inert.map((w) => w.label).join(' and ')}: their claims and bands are inert until the semantic workload source is effective${half}.`,
   };
 }

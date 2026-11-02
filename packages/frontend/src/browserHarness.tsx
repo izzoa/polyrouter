@@ -20,7 +20,12 @@ import { render } from 'solid-js/web';
 import { App } from './App';
 import { createAppStore } from './state/appState';
 import { AppProvider } from './state/context';
-import { DEFAULT_AUTO_PERF, FakeApiClient, UNRECORDED_HEALTH } from './test/fakeClient';
+import {
+  DEFAULT_AUTO_PERF,
+  DEFAULT_CALIBRATION,
+  FakeApiClient,
+  UNRECORDED_HEALTH,
+} from './test/fakeClient';
 import { fakeBudgetProgress } from './test/budgetProgressFixture';
 import type {
   AdminInviteDto,
@@ -396,8 +401,42 @@ const bodyCaptureStatus =
       }
     : undefined;
 
+// Semantic-layer fixture (split-auto-routing-readout-setup, task 3.3), opt-in via
+// `?semantic=1` so the default harness stays byte-identical for every other suite. The
+// default fake has Layer 2 unavailable, so the Semantic learning drawer — gated on the
+// semantic layer being EFFECTIVE — could never open; this makes it effective, with a
+// learned state that offers the revert confirmation.
+const semanticFixture =
+  params.get('semantic') === '1'
+    ? {
+        autoLayers: {
+          structural: true,
+          cascade: true,
+          structuralAvailable: true,
+          cascadeAvailable: true,
+          semantic: true,
+          semanticAvailable: true,
+          semanticLearning: true,
+          semanticLearningAvailable: true,
+          calibration: DEFAULT_CALIBRATION,
+        },
+        semanticLearningStatus: {
+          enabled: true,
+          available: true,
+          epoch: 1,
+          generation: 2,
+          source: 'learned' as const,
+          freshHigh: 5,
+          freshLow: 12,
+          lastAppliedAt: '2026-07-03T00:00:00.000Z',
+          history: [],
+        },
+      }
+    : {};
+
 const autoPerf = workloadAutoPerf();
 const client = new FakeApiClient({
+  ...semanticFixture,
   agents: AGENTS,
   adminUsers: ADMIN_USERS,
   adminInvites: INVITES,

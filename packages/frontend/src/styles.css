@@ -449,6 +449,23 @@ select:focus {
   box-shadow: var(--shadow-knob);
   transition: left 0.15s;
 }
+.toggle--on {
+  background: var(--accent);
+}
+.toggle--off {
+  background: var(--text3);
+}
+/* The instance cannot enable this switch (split-auto-routing-readout-setup D7): distinct
+   from off (a filled grey track) and from busy (`locked`, which keeps the on/off look).
+   --text3 meets 3:1 on bg and panel in both themes (styles.contrast.test.ts). */
+.toggle--unavailable {
+  background: transparent;
+  border: 1px dashed var(--text3);
+}
+.toggle--unavailable .toggle-knob {
+  top: 1px;
+  background: var(--text3);
+}
 
 .input,
 .select {
@@ -1997,93 +2014,38 @@ select:focus {
   justify-content: space-between;
   gap: 12px;
 }
-.ar-summary {
+.ar-notice {
   display: flex;
   flex-wrap: wrap;
-  align-items: stretch;
-  gap: 16px 32px;
-}
-.ar-focal {
-  flex: 0 1 260px;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-/* The screen's one focal point: the only accent-coloured figure on the tab. */
-.ar-focal-figure {
-  font:
-    600 34px/1.1 'Geist',
-    sans-serif;
-  letter-spacing: -0.03em;
-  color: var(--accent);
-}
-.ar-exits {
-  flex: 999 1 380px;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 10px;
-}
-.ar-bar {
-  display: flex;
-  gap: 2px;
-  height: 12px;
-  border-radius: 4px;
-  overflow: hidden;
-}
-.ar-seg {
-  display: block;
-  height: 100%;
-  min-width: 2px;
-}
-.ar-legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 16px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-.ar-legend > li {
-  display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 8px 12px;
+  margin: 0 18px 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
   font:
-    400 11.5px 'Geist',
+    400 12px/1.5 'Geist',
     sans-serif;
   color: var(--text2);
 }
-.ar-key {
-  display: inline-block;
-  flex: none;
-  width: 8px;
-  height: 8px;
-  border-radius: 2px;
+.ar-notice--failed {
+  background: var(--red-bg);
+  border-color: var(--red);
+  color: var(--text);
 }
-/* Five neutral shades in stage order, darkest first — never the accent, and never told
-   apart by shade alone: the legend states every stage's name, count and share as text. */
-.ar-seg[data-exit='workload'],
-.ar-key[data-exit='workload'] {
-  background: var(--text);
+/* The Cascade row's savings line (D6): a plain figure at the row's text weight — the
+   bars, not the money, are the tab's focal element. */
+.ar-savings {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
-.ar-seg[data-exit='structural'],
-.ar-key[data-exit='structural'] {
-  background: var(--text2);
-}
-.ar-seg[data-exit='semantic'],
-.ar-key[data-exit='semantic'] {
-  background: var(--text3);
-}
-.ar-seg[data-exit='cascade'],
-.ar-key[data-exit='cascade'] {
-  background: var(--faint);
-}
-.ar-seg[data-exit='default'],
-.ar-key[data-exit='default'] {
-  background: var(--chip);
-  border: 1px solid var(--text3);
+.ar-savings-amount {
+  font:
+    600 13px 'Geist',
+    sans-serif;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
 }
 .ar-note {
   margin: 0 18px 12px;
@@ -2110,55 +2072,166 @@ select:focus {
     margin-block: calc((1lh - 44px) / 2);
   }
 }
+/* ---- Pipeline rows (split-auto-routing-readout-setup D2) ----
+   The rows line up BY CONSTRUCTION: the list is one grid, and each row is a subgrid of
+   its columns, so a long status or a wrapped name can never move another row's count,
+   bar or action. The query container is the wrapper, never the grid — a container query
+   styles only descendants — so each mode below restates the grid's own tracks.
+
+   DOM order (number, name, action, status, figure) is the phone layout's visual order;
+   the wider modes PLACE the action in the last track, so no `order` is ever used. */
+.ar-pipeline {
+  container-type: inline-size;
+  container-name: rs-pipeline;
+}
 .ar-stages {
+  --ar-gutter: 18px;
+  display: grid;
+  grid-template-columns:
+    20px minmax(0, 176px) minmax(0, 1fr) 56px 40px minmax(0, 150px)
+    96px;
+  column-gap: 16px;
   margin: 0;
-  padding: 0;
+  padding: 0 var(--ar-gutter);
   list-style: none;
 }
+.ar-colhead,
 .ar-stage {
+  position: relative;
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: subgrid;
+}
+/* Each row's hairline runs the panel's full width without moving the tracks. */
+.ar-colhead::before,
+.ar-stage::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: calc(-1 * var(--ar-gutter));
+  right: calc(-1 * var(--ar-gutter));
   border-top: 1px solid var(--border2);
 }
+.ar-colhead {
+  padding: 8px 0;
+  font:
+    500 10.5px 'Geist',
+    sans-serif;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text3);
+}
+.ar-ch-name {
+  grid-column: 2;
+}
+.ar-ch-status {
+  grid-column: 3;
+}
+.ar-ch-fig {
+  grid-column: 4 / 7;
+}
 .ar-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 16px;
-  padding: 12px 18px;
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: subgrid;
+  align-items: baseline;
+  row-gap: 4px;
+  padding-block: 10px;
 }
 .ar-num {
-  flex: 0 0 16px;
+  grid-column: 1;
+  grid-row: 1;
   font:
     400 11.5px 'Geist Mono',
     monospace;
   color: var(--text3);
 }
 .ar-name {
-  flex: 0 1 200px;
+  grid-column: 2;
+  grid-row: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ar-status {
+  grid-column: 3;
+  grid-row: 1;
   min-width: 0;
 }
-.ar-switch {
-  flex: 0 0 44px;
-  display: flex;
-  justify-content: center;
+.ar-status-line {
+  font:
+    400 12.5px/1.45 'Geist',
+    sans-serif;
 }
-.ar-count {
-  flex: 0 0 104px;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
+.ar-status-sub {
+  margin-top: 2px;
+  font:
+    400 11.5px/1.45 'Geist',
+    sans-serif;
 }
-.ar-setup {
-  flex: 1 1 160px;
+/* The figure: count, share and bar on the row's own count/share/bar tracks (a nested
+   subgrid), then its captions on full lines beneath. */
+.ar-fig {
+  grid-column: 4 / 7;
+  grid-row: 1;
+  display: grid;
+  grid-template-columns: subgrid;
+  align-items: baseline;
+  row-gap: 2px;
   min-width: 0;
 }
+.ar-figcount {
+  font:
+    600 15px 'Geist',
+    sans-serif;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.ar-figshare {
+  font:
+    400 11.5px 'Geist Mono',
+    monospace;
+  color: var(--text2);
+}
+.ar-figbar {
+  align-self: center;
+  min-width: 0;
+}
+.ar-figline {
+  grid-column: 1 / -1;
+  font:
+    400 11px/1.45 'Geist',
+    sans-serif;
+  color: var(--text3);
+}
+/* The tab's ONE accent element for figures (D11): each stage's share of evaluated. The
+   count and share beside it state the figure in text, so the bar is never the only signal. */
+.ar-bar-track {
+  display: block;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--border2);
+  overflow: hidden;
+}
+.ar-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+  background: var(--accent);
+}
+/* One box at one position whatever its label (D2): the track's full 96px, label left and
+   icon right. Its height is the shared target floor — 24px, the comfort size under the
+   lock's comfort conditions — so every row's box shares its edges. */
 .ar-action {
-  flex: 0 0 88px;
-  display: flex;
-  justify-content: flex-end;
+  grid-column: -2 / -1;
+  grid-row: 1;
+  min-width: 0;
 }
-.ar-expander {
+.ar-act {
+  width: 100%;
   display: inline-flex;
   align-items: center;
+  justify-content: space-between;
   gap: 4px;
 }
 .ar-expander svg {
@@ -2167,12 +2240,132 @@ select:focus {
 .ar-expander[aria-expanded='true'] svg {
   transform: rotate(180deg);
 }
+/* A row's field labels: real text for assistive tech at every width — the column header
+   is aria-hidden — and shown inline in the phone layout, which has no header. */
+.ar-fieldlabel {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+/* Later lines (the Confident band alert, the Cascade savings block) span the status and
+   figure tracks. */
+.ar-later {
+  grid-column: 3 / 7;
+  min-width: 0;
+}
+
+/* The Confident band alert: a caution in text, its controls neutral text actions. */
+.ar-alert {
+  font:
+    400 11.5px/1.5 'Geist',
+    sans-serif;
+  color: var(--amber-text);
+}
+
+/* `pipeline-fit` two-line mode (STYLESEED.md § Responsive): 840px of the Pipeline wrapper's
+   content box. Measured with this query disabled, viewport swept 1600 → 500px in 4px steps
+   on the default harness: at 826px the Classify status line runs past two lines in the
+   one-line layout's status track. Below it the status leaves line one for line two, so the
+   number, name, figure and action keep line one. */
+@container rs-pipeline (max-width: 840px) {
+  .ar-stages {
+    grid-template-columns: 20px minmax(0, 1fr) 56px 40px minmax(0, 110px) 96px;
+  }
+  .ar-ch-status {
+    display: none;
+  }
+  .ar-ch-fig,
+  .ar-fig {
+    grid-column: 3 / 6;
+  }
+  .ar-status {
+    grid-column: 2 / -2;
+    grid-row: 2;
+  }
+  .ar-later {
+    grid-column: 2 / -2;
+  }
+}
+/* `pipeline-fit` phone mode: 540px of content box. Measured the same way with the two-line
+   layout forced: at 530px "Workload claim" wraps in the name track. Below it, number, name
+   and a 44x44 icon-only action on line one; the status, then the figure, each on a line of
+   their own, every field under its label. */
+@container rs-pipeline (max-width: 540px) {
+  .ar-stages {
+    --ar-gutter: 14px;
+    grid-template-columns: 18px minmax(0, 1fr) 44px;
+    column-gap: 12px;
+  }
+  .ar-colhead {
+    display: none;
+  }
+  .ar-status {
+    grid-column: 2 / -1;
+    grid-row: 2;
+  }
+  .ar-fig {
+    grid-column: 2 / -1;
+    grid-row: 3;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 2px 10px;
+  }
+  .ar-figbar {
+    flex: 1 1 80px;
+  }
+  .ar-figline {
+    flex: 1 1 100%;
+  }
+  .ar-later {
+    grid-column: 2 / -1;
+  }
+  .ar-fieldlabel {
+    position: static;
+    width: auto;
+    height: auto;
+    margin: 0;
+    overflow: visible;
+    clip: auto;
+    white-space: normal;
+    display: block;
+    flex: 1 1 100%;
+    font:
+      500 10px 'Geist',
+      sans-serif;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--text3);
+  }
+  .ar-act {
+    width: 44px;
+    min-height: 44px;
+    justify-content: center;
+  }
+  .ar-act-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+}
 .ar-detail {
+  grid-column: 2 / -1;
   display: flex;
   flex-wrap: wrap;
   align-items: flex-start;
   gap: 12px;
-  padding: 0 18px 16px 50px;
+  padding: 0 0 16px;
+  min-width: 0;
 }
 /* A block inside a stage detail. Nested in a panel, so a hairline and the nested radius
    (outer 10px panel, less its inset) — no second shadow. */
@@ -2182,6 +2375,11 @@ select:focus {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 12px 14px;
+}
+/* In a tuning drawer the body is a COLUMN, so the detail row's `flex: 1 1 280px` would grow
+   the card to the drawer's full height around a few lines of content. */
+.drawer-body > .ar-card {
+  flex: none;
 }
 .ar-card-title {
   font:
@@ -2214,11 +2412,6 @@ select:focus {
   height: 17px;
   border-radius: 9px;
 }
-.ar-skel-figure {
-  width: 150px;
-  max-width: 100%;
-  height: 38px;
-}
 .ar-skel-line {
   display: block;
   width: 100%;
@@ -2230,40 +2423,6 @@ select:focus {
   height: 12px;
 }
 @media (max-width: 768px) {
-  /* Line one keeps the number, the name and the switch together; the figure and the
-     expander share the next, and the setup takes a line of its own.
-
-     Line one is CLAIMED, not left to fit: the name's basis is the whole line less the
-     16px number, the 44px switch column and the two 12px gaps (+1px against subpixel
-     rounding), so nothing else can join it. A `flex: 1 1 0` name gave the figure and the
-     expander the first claim on the line wherever they fit — at 390px the Classify name
-     kept 23px, its tag broke one word per line and "Structural" ran under the switch, and
-     the figure joined line one on some rows and not others. Every stage row, switch or
-     not, keeps the 44px switch column, so the rows still line up with each other. */
-  .ar-row {
-    padding: 12px 14px;
-    column-gap: 12px;
-  }
-  .ar-name {
-    flex: 1 1 calc(100% - 85px);
-    /* Only a string with no break opportunity at all can still be wider than the line;
-       it breaks rather than painting under the switch. */
-    overflow-wrap: anywhere;
-  }
-  .ar-count {
-    flex: 0 1 auto;
-  }
-  .ar-setup {
-    flex: 1 1 100%;
-    order: 5;
-  }
-  .ar-action {
-    flex: 0 0 auto;
-    margin-left: auto;
-  }
-  .ar-detail {
-    padding: 0 14px 14px;
-  }
   .ar-note {
     margin: 0 14px 12px;
   }
@@ -2284,6 +2443,62 @@ select:focus {
   width: 72px;
   height: 10px;
   vertical-align: middle;
+}
+
+/* ---- The Setup panel's Layers cells (split-auto-routing-readout-setup D7) ----
+   Three cells in a row, one per layer, stacking to one column below their own container's
+   measured threshold (`rs-layers` in STYLESEED.md). The container is the cells' wrapper
+   inside the panel, never a page wrapper. A cell's tuning entry sits on its bottom edge
+   (`margin-top: auto`), so the entries line up across cells whatever the copy above. */
+.ar-sub-title {
+  padding: 0 18px 8px;
+  font:
+    500 10.5px 'Geist',
+    sans-serif;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text3);
+}
+.ar-layers-wrap {
+  container-type: inline-size;
+  container-name: rs-layers;
+  padding: 0 18px 16px;
+}
+.ar-layers {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.ar-layer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.ar-layer-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.ar-layer-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ar-layer-entry {
+  margin-top: auto;
+  align-self: flex-start;
+}
+/* `layers-fit` (STYLESEED.md § Responsive): 500px of content box. Measured with this query
+   disabled on the `?semantic=1` harness (every cell carrying its tuning entry): at 482px the
+   Semantic cell's name line wraps beside its switch. */
+@container rs-layers (max-width: 500px) {
+  .ar-layers {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 /* ---- The Targets matrix (redesign-auto-routing-pipeline D9) ----
@@ -2308,9 +2523,11 @@ select:focus {
    and shift every other column. */
 .rs-grid-targets {
   display: grid;
-  grid-template-columns:
-    minmax(0, 0.6fr) minmax(0, 1.2fr) minmax(0, 1.2fr) minmax(0, 1.2fr)
-    minmax(0, 0.55fr);
+  grid-template-columns: minmax(0, 184px) repeat(3, minmax(0, 1fr));
+  /* The three rows every target cell lays itself on (split-auto-routing-readout-setup D9):
+     value, picker + Clear, notes. A cell is a subgrid of them, so every picker in a row
+     shares one top line whatever the length of the value above it. */
+  grid-template-rows: auto auto auto;
   gap: 0 14px;
   align-items: start;
 }
@@ -2337,15 +2554,21 @@ select:focus {
   letter-spacing: 0;
   text-transform: none;
 }
-.tm-head-detected {
-  text-align: right;
-}
 .tm-row {
   padding: 10px 0;
   border-top: 1px solid var(--border2);
 }
 .tm-name {
+  grid-row: span 3;
   min-width: 0;
+}
+/* The row label's sub-line: the signal that detects the class. */
+.tm-signal {
+  margin-top: 2px;
+  font:
+    400 11px/1.4 'Geist',
+    sans-serif;
+  color: var(--text3);
 }
 /* The tab's one tag: a matrix row's detection source and a stage row's paused status
    render as the same chip, so a tag means one thing however it is filled. */
@@ -2360,19 +2583,42 @@ select:focus {
   border-radius: 4px;
 }
 .tm-cell {
+  grid-row: span 3;
+  display: grid;
+  grid-template-rows: subgrid;
+  row-gap: 4px;
   min-width: 0;
 }
+/* A Targets control lands on these two cells (D12); the margin keeps the focus ring clear
+   of the pane's top edge. */
+.tm-anchor {
+  scroll-margin-top: 12px;
+}
+/* Its rows sit on the cell's subgrid at desktop; the stacked record restates it. */
 .tm-body {
+  display: contents;
+}
+.tm-value {
+  grid-row: 1;
+  min-width: 0;
+}
+.tm-cell-notes {
+  grid-row: 3;
   display: flex;
   flex-direction: column;
   gap: 4px;
   min-width: 0;
 }
-.tm-detected .tm-body {
-  align-items: flex-end;
-  text-align: right;
+.tm-reserved-note {
+  padding: 8px 0 12px;
+  border-top: 1px solid var(--border2);
+  font:
+    400 11px/1.5 'Geist',
+    sans-serif;
+  color: var(--text3);
 }
 .tm-actions {
+  grid-row: 2;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -2404,16 +2650,16 @@ select:focus {
   border: 0;
 }
 
-/* `table-fit-targets` (STYLESEED.md § Responsive): 940px of container content box, measured
+/* `table-fit-targets` (STYLESEED.md § Responsive): 900px of container content box, measured
    the way `table-fit-requests` was — headless Chromium, real stylesheet and fonts, the
-   harness's `?targets=1` worst case, the content box swept 1300 → 560px in 2px steps with
-   this query disabled. Every column holds its content down to 926px; at 924px the pickers
-   (their 220px `.tm-picker` cap) overflow their 219px tracks in all three target columns at
-   once. Text never sets the limit — model ids and provider labels break at their hyphens.
-   Rounded up as the other table-fit values were (946 → 960), so the matrix reflows before
-   it fails, never after. Below it each row becomes a stacked record, every field under its
-   own real label. */
-@container rs-targets (max-width: 940px) {
+   harness's `?targets=1` worst case, the viewport swept 1600 → 700px in 4px steps with this
+   query disabled. Re-measured for split-auto-routing-readout-setup, when the Detected column
+   left the grid: at 882px of content the pickers (their 220px `.tm-picker` cap) overflow
+   their 219px tracks in all three target columns at once. Text never sets the limit — model
+   ids and provider labels break at their hyphens. Rounded up as the other table-fit values
+   were, so the matrix reflows before it fails, never after. Below it each row becomes a
+   stacked record, every field under its own real label. */
+@container rs-targets (max-width: 900px) {
   .rs-grid-targets {
     display: block;
   }
@@ -2425,6 +2671,7 @@ select:focus {
   .tm-name {
     padding-bottom: 4px;
   }
+  /* The stacked record: no subgrid — the label beside a flex column of the cell's rows. */
   .tm-cell {
     display: flex;
     flex-wrap: wrap;
@@ -2454,12 +2701,12 @@ select:focus {
   }
   /* Beside its label while there is room; on a line of its own when there is not. */
   .tm-body {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
     flex: 1 1 200px;
+    min-width: 0;
     overflow-wrap: break-word;
-  }
-  .tm-detected .tm-body {
-    align-items: flex-start;
-    text-align: left;
   }
   /* The cap holds where there is room and gives way where there is not — a phone column
      is narrower than 220px. */

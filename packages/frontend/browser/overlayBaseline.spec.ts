@@ -38,7 +38,7 @@
  * design gate's job, not this one's.
  */
 import { expect, test, type Page } from '@playwright/test';
-import { SURFACES, boxOf } from './overlays';
+import { SURFACES, boxOf, harnessUrl, type Surface } from './overlays';
 
 type Axis = 'x' | 'y' | 'w' | 'h';
 const AXES: readonly Axis[] = ['x', 'y', 'w', 'h'];
@@ -48,6 +48,10 @@ const AXES: readonly Axis[] = ['x', 'y', 'w', 'h'];
  * the boxes diffed. Anything absent here is CSS-pinned and stays an exact assertion. */
 const TEXT_SIZED: Record<string, readonly Axis[]> = {
   drawer: [], // fixed width, full viewport height
+  // split-auto-routing-readout-setup D8: the tuning drawers ARE the Inspector's `.drawer`
+  // (same class, same `useModalSurface` wiring), so the same box: fixed width, full height.
+  'drawer:selfCalibration': [],
+  'drawer:semanticLearning': [],
   'nav:expanded': [], // fixed width, full viewport height
   // Fixed width, content-driven height — and vertically centred, so `y` follows `h`.
   'modal:newAgent': ['y', 'h'],
@@ -133,6 +137,12 @@ const MEASURED_SLACK: Record<string, Partial<Record<Axis, number>>> = {
  * below the threshold and is therefore pinned at 390x844. */
 const BASELINE: Record<string, [number, number, number, number]> = {
   drawer: [1000, 0, 440, 900],
+  // ADDED 2026-11-01 (split-auto-routing-readout-setup task 3.3). Not a pre-change capture:
+  // these surfaces did not exist before the change. They reuse the `.drawer` box above, and
+  // the pin is that box — fixed width, right-anchored, full viewport height, every axis
+  // CSS-pinned — so a tuning drawer that drifts from the Inspector's geometry fails here.
+  'drawer:selfCalibration': [1000, 0, 440, 900],
+  'drawer:semanticLearning': [1000, 0, 440, 900],
   'modal:newAgent': [480, 324, 480, 252],
   // RE-PINNED 2026-09-18 (was [480, 98, 480, 705]). `e8f0c66`, the batch epic, added fields to
   // the provider form — a deliberate feature change, not rendering drift. The new value is
@@ -158,8 +168,9 @@ const BASELINE: Record<string, [number, number, number, number]> = {
   toast: [454, 843, 533, 35],
 };
 
-async function open(page: Page): Promise<void> {
-  await page.goto('/browser-harness.html');
+/** Opens the harness — on the query a surface needs, when it needs one. */
+async function open(page: Page, surface: Pick<Surface, 'query'> = {}): Promise<void> {
+  await page.goto(harnessUrl(surface));
   await page.waitForSelector('html[data-harness-ready="true"]');
   await page.waitForSelector('[data-pane="sidebar"]');
 }
@@ -170,7 +181,7 @@ for (const s of SURFACES) {
     test.use({ viewport: vp });
 
     test('unchanged', async ({ page }) => {
-      await open(page);
+      await open(page, s);
       await s.open(page);
       // Entrance animations are transforms; measuring mid-flight reports a shifted box.
       await page.waitForTimeout(400);

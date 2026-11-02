@@ -1,18 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import type { Model } from '../types';
-import type { AutoPerformance, RuleDto } from './api';
+import type { RuleDto } from './api';
 import { WORKLOAD_ROW_ORDER } from './workloadTargets';
 import {
+  targetLabel,
   toTargetsMatrixVm,
   unresolvedHint,
   type TargetsMatrixInput,
   type TargetsRowVm,
 } from './targetsMatrix';
-import { DEFAULT_AUTO_PERF } from '../test/fakeClient';
 
 const T0 = '2026-07-01T00:00:00.000Z';
 const T1 = '2026-07-02T00:00:00.000Z';
-const RANGE = '7d' as const;
 const HALF = 'add semantic to ROUTING_AUTO_LAYERS';
 
 function rule(over: Partial<RuleDto>): RuleDto {
@@ -95,24 +94,11 @@ function input(
       ],
       providers: [{ id: 'p1', name: 'Stub' } as TargetsMatrixInput['catalog']['providers'][number]],
     },
-    autoPerf: { data: null, error: null, range: RANGE },
     semanticWorkload: false,
     missingHalf: HALF,
     cascadeEffective: true,
     ...rest,
   };
-}
-
-function perf(over: Partial<AutoPerformance> = {}): AutoPerformance {
-  return { ...DEFAULT_AUTO_PERF, ...over };
-}
-
-function withClasses(classes: AutoPerformance['workloadMix']['classes']): AutoPerformance {
-  return perf({ workloadMix: { ...DEFAULT_AUTO_PERF.workloadMix, classes } });
-}
-
-function mixRow(cls: string, requests: number, routed: number) {
-  return { class: cls, requests, unpricedRequests: 0, unpricedAttempts: 0, spendUsd: null, routed };
 }
 
 const GENERIC_HIGH = rule({ id: 'g-high', matchType: 'auto_high', target: 'tier:premium' });
@@ -123,6 +109,30 @@ function row(vm: ReturnType<typeof toTargetsMatrixVm>, id: TargetsRowVm['id']): 
   if (r === undefined) throw new Error(`no row ${id}`);
   return r;
 }
+
+describe('targetLabel — the one grammar the matrix and the Pipeline share', () => {
+  it('names each target state, keeping the degraded marks', () => {
+    expect(targetLabel({ kind: 'unset' })).toBe('not set');
+    const tier = {
+      kind: 'tier',
+      key: 'heavy',
+      isDefault: false,
+      primary: 'm',
+      fallbacks: 0,
+    } as const;
+    expect(targetLabel({ ...tier, empty: false })).toBe('tier:heavy');
+    expect(targetLabel({ ...tier, primary: null, empty: true })).toBe('tier:heavy (empty)');
+    expect(
+      targetLabel({ kind: 'model', label: 'ext-m1', provider: 'acme', model: model('m1') }),
+    ).toBe('ext-m1');
+    expect(targetLabel({ kind: 'unresolved', literal: 'tier:gone', parsed: 'tier' })).toBe(
+      'tier:gone (unresolved)',
+    );
+    expect(targetLabel({ kind: 'unresolved', literal: 'garbage', parsed: 'malformed' })).toBe(
+      'garbage (unresolved)',
+    );
+  });
+});
 
 describe('toTargetsMatrixVm — rows and wiring', () => {
   it('orders Any request first, then the workload classes live-before-reserved', () => {
@@ -189,7 +199,7 @@ describe('toTargetsMatrixVm — the Any request row', () => {
     expect(claim.editable).toBe(false);
     expect(claim.claimed).toBe(false);
     expect(claim.effective).toBeNull();
-    expect(claim.unsetText).toMatch(/a claim needs a workload class/);
+    expect(claim.valueText).toBe('n/a — a claim needs a class');
   });
 
   it('presents the generic bands: unset copy names the fall-through, a set band resolves', () => {
@@ -199,20 +209,9 @@ describe('toTargetsMatrixVm — the Any request row', () => {
     expect(any.strong.editable).toBe(true);
     expect(any.cheap.kind).toBe('unset');
     expect(any.cheap.inherits).toBeNull();
-    expect(any.cheap.unsetText).toBe('Not set — confident low verdicts fall through to default');
+    expect(any.cheap.valueText).toBe('Not set — confident low verdicts fall through to default');
     expect(any.claimed).toBe(false);
     expect(any.claimNote).toBeNull();
-    expect(any.inertNote).toBeNull();
-  });
-
-  it('its Detected cell is the evaluated count once loaded', () => {
-    const vm = toTargetsMatrixVm(
-      input({ autoPerf: { data: perf({ evaluated: 41 }), error: null, range: '30d' } }),
-    );
-    expect(row(vm, 'any').detected).toEqual({
-      kind: 'value',
-      value: { requests: 41, routed: null, range: '30d' },
-    });
   });
 });
 
@@ -221,31 +220,28 @@ describe('toTargetsMatrixVm — inheritance', () => {
     const vm = toTargetsMatrixVm(input({ rules: [GENERIC_HIGH, GENERIC_LOW] }));
     const structured = row(vm, 'structured');
     expect(structured.strong.kind).toBe('inherit');
-    expect(structured.strong.inherits).toMatchObject({ label: 'tier: premium', usable: true });
-    expect(structured.strong.unsetText).toBe(
-      '= any — structured requests use the Any request strong target: tier: premium',
-    );
+    expect(structured.strong.inherits).toMatchObject({ label: 'tier:premium', usable: true });
+    expect(structured.strong.valueText).toBe('= Any request · tier:premium');
     expect(structured.cheap.kind).toBe('inherit');
-    expect(structured.cheap.inherits?.label).toBe('tier: cheap');
+    expect(structured.cheap.inherits?.label).toBe('tier:cheap');
     // Inheriting is configuration, not a measured figure — and still editable.
     expect(structured.strong.editable).toBe(true);
-    expect(structured.strong.unroutable).toEqual({ kind: 'none' });
   });
 
   it('an inherit cell over an unset or unusable generic says where verdicts go', () => {
     const unset = row(toTargetsMatrixVm(input()), 'vision').strong;
     expect(unset.kind).toBe('inherit');
     expect(unset.inherits).toMatchObject({ label: 'not set', usable: false });
-    expect(unset.unsetText).toMatch(
-      /which is not set: confident high verdicts fall through to default$/,
-    );
+    expect(unset.valueText).toBe('= Any request · not set — confident high verdicts go to Default');
     const empty = row(
       toTargetsMatrixVm(input({ rules: [rule({ matchType: 'auto_low', target: 'tier:empty' })] })),
       'vision',
     ).cheap;
     expect(empty.kind).toBe('inherit');
-    expect(empty.inherits).toMatchObject({ label: 'tier: empty', usable: false });
-    expect(empty.unsetText).toMatch(/\(tier: empty\), which is unusable: confident low verdicts/);
+    expect(empty.inherits).toMatchObject({ label: 'tier:empty (empty)', usable: false });
+    expect(empty.valueText).toBe(
+      '= Any request · tier:empty (empty) — confident low verdicts go to Default',
+    );
   });
 
   it('a set-but-unusable scoped cell is unroutable for the class, not inherited', () => {
@@ -359,7 +355,7 @@ describe('toTargetsMatrixVm — the claimed flag', () => {
     const code = row(toTargetsMatrixVm(input()), 'code');
     expect(code.claim.kind).toBe('unset');
     expect(code.claim.editable).toBe(true);
-    expect(code.claim.unsetText).toMatch(/follow the complexity path/);
+    expect(code.claim.valueText).toMatch(/takes the complexity path/);
     expect(code.claimNote).toBeNull();
   });
 
@@ -382,7 +378,7 @@ describe('toTargetsMatrixVm — the claimed flag', () => {
 });
 
 describe('toTargetsMatrixVm — reserved rows', () => {
-  it('with an inert source: band cells stay editable and the row says it is inert', () => {
+  it('with an inert source: band cells stay editable and ONE shared note says the rows are inert', () => {
     const vm = toTargetsMatrixVm(
       input({
         rules: [
@@ -399,25 +395,24 @@ describe('toTargetsMatrixVm — reserved rows', () => {
     for (const id of ['research', 'writing'] as const) {
       const r = row(vm, id);
       expect(r.claim.kind).toBe('readonly');
-      expect(r.claim.unsetText).toMatch(/stays inert until it is/);
+      expect(r.claim.valueText).toBe('inert (read-only)');
       expect(r.strong.editable).toBe(true);
       expect(r.cheap.editable).toBe(true);
-      expect(r.inertNote).toContain('inert until the semantic workload source is effective');
-      expect(r.inertNote).toContain(`(${HALF})`);
       // Never "the bands apply" — not even for an unusable API-created claim.
       expect(r.claimNote).toBeNull();
-      expect(r.inertNote).not.toMatch(/bands apply/);
     }
+    expect(vm.reservedNote).toContain('inert until the semantic workload source is effective');
+    expect(vm.reservedNote).toContain(`(${HALF})`);
+    expect(vm.reservedNote).not.toMatch(/bands apply/);
     expect(row(vm, 'writing').strong.kind).toBe('set');
     expect(row(vm, 'writing').claim.notes.emptyTier).toBe(true);
     // Structural rows are never inert.
-    expect(row(vm, 'code').inertNote).toBeNull();
+    expect(row(vm, 'code').claim.kind).not.toBe('readonly');
   });
 
   it('omits the missing-half parenthetical when the page has none to name', () => {
-    const r = row(toTargetsMatrixVm(input({ missingHalf: '' })), 'research');
-    expect(r.inertNote).toBe(
-      "This row's claim and bands are inert until the semantic workload source is effective: research requests are not detected yet.",
+    expect(toTargetsMatrixVm(input({ missingHalf: '' })).reservedNote).toBe(
+      'Research and Writing: their claims and bands are inert until the semantic workload source is effective.',
     );
   });
 
@@ -431,7 +426,7 @@ describe('toTargetsMatrixVm — reserved rows', () => {
     );
     const research = row(vm, 'research');
     expect(research.live).toBe(true);
-    expect(research.inertNote).toBeNull();
+    expect(vm.reservedNote).toBeNull();
     expect(research.claim.kind).toBe('set');
     expect(research.claim.editable).toBe(true);
     expect(research.claimed).toBe(true);
@@ -439,96 +434,6 @@ describe('toTargetsMatrixVm — reserved rows', () => {
     const writing = row(vm, 'writing');
     expect(writing.claim.kind).toBe('unset');
     expect(writing.claim.editable).toBe(true);
-  });
-});
-
-describe('toTargetsMatrixVm — Detected cells', () => {
-  it('read requests and routed from the workload mix, zero for an absent class once loaded', () => {
-    const vm = toTargetsMatrixVm(
-      input({
-        autoPerf: {
-          data: withClasses([mixRow('none', 20, 0), mixRow('code', 9, 4), mixRow('vision', 0, 0)]),
-          error: null,
-          range: '24h',
-        },
-      }),
-    );
-    expect(row(vm, 'code').detected).toEqual({
-      kind: 'value',
-      value: { requests: 9, routed: 4, range: '24h' },
-    });
-    expect(row(vm, 'vision').detected).toEqual({
-      kind: 'value',
-      value: { requests: 0, routed: 0, range: '24h' },
-    });
-    for (const id of ['structured', 'research', 'writing'] as const) {
-      expect(row(vm, id).detected).toEqual({
-        kind: 'value',
-        value: { requests: 0, routed: 0, range: '24h' },
-      });
-    }
-  });
-
-  it('show a placeholder on every row while the aggregation has no data', () => {
-    const vm = toTargetsMatrixVm(input());
-    for (const r of vm.rows) expect(r.detected).toEqual({ kind: 'placeholder' });
-  });
-
-  it('show nothing on every row while the load has failed — even with earlier data kept', () => {
-    const vm = toTargetsMatrixVm(
-      input({ autoPerf: { data: DEFAULT_AUTO_PERF, error: 'boom', range: RANGE } }),
-    );
-    for (const r of vm.rows) expect(r.detected).toEqual({ kind: 'none' });
-  });
-});
-
-describe('toTargetsMatrixVm — unroutable notes', () => {
-  const loaded = (high: number, low: number): TargetsMatrixInput['autoPerf'] => ({
-    data: perf({
-      bands: {
-        ...DEFAULT_AUTO_PERF.bands,
-        high: { ...DEFAULT_AUTO_PERF.bands.high, unroutable: high },
-        low: { ...DEFAULT_AUTO_PERF.bands.low, unroutable: low },
-      },
-    }),
-    error: null,
-    range: '30d',
-  });
-
-  it('carry the range-framed count on an unset or degraded generic cell once loaded', () => {
-    const vm = toTargetsMatrixVm(
-      input({
-        rules: [rule({ matchType: 'auto_low', target: 'tier:empty' })],
-        autoPerf: loaded(3, 2),
-      }),
-    );
-    const any = row(vm, 'any');
-    expect(any.strong.unroutable).toEqual({ kind: 'value', value: { count: 3, range: '30d' } });
-    expect(any.cheap.kind).toBe('empty');
-    expect(any.cheap.unroutable).toEqual({ kind: 'value', value: { count: 2, range: '30d' } });
-  });
-
-  it('follow the same loading and failure rules as Detected', () => {
-    const loading = row(toTargetsMatrixVm(input()), 'any');
-    expect(loading.strong.unroutable).toEqual({ kind: 'placeholder' });
-    expect(loading.cheap.unroutable).toEqual({ kind: 'placeholder' });
-    const failed = row(
-      toTargetsMatrixVm(input({ autoPerf: { ...loaded(3, 2), error: 'boom' } })),
-      'any',
-    );
-    expect(failed.strong.unroutable).toEqual({ kind: 'none' });
-    expect(failed.cheap.unroutable).toEqual({ kind: 'none' });
-  });
-
-  it('are absent on a usable generic cell, a zero count, and every class or claim cell', () => {
-    const vm = toTargetsMatrixVm(input({ rules: [GENERIC_HIGH], autoPerf: loaded(5, 0) }));
-    const any = row(vm, 'any');
-    expect(any.strong.unroutable).toEqual({ kind: 'none' }); // usable
-    expect(any.cheap.unroutable).toEqual({ kind: 'none' }); // unset, but nothing fell through
-    expect(any.claim.unroutable).toEqual({ kind: 'none' });
-    for (const r of vm.rows.slice(1)) {
-      for (const c of [r.claim, r.strong, r.cheap]) expect(c.unroutable).toEqual({ kind: 'none' });
-    }
   });
 });
 
@@ -663,5 +568,102 @@ describe('toTargetsMatrixVm — matrix notes consider generic rules only', () =>
       }),
     );
     expect(scoped.sameDestination).toBe(false);
+  });
+});
+
+/* ── split-auto-routing-readout-setup D9: the structured copy fields ── */
+
+describe('toTargetsMatrixVm — short values (D9)', () => {
+  it('an inherit cell names the Any request target, and flags it when it is not usable', () => {
+    const vm = toTargetsMatrixVm(input({ rules: [GENERIC_HIGH] }));
+    expect(row(vm, 'vision').strong.valueText).toBe('= Any request · tier:premium');
+    expect(row(vm, 'vision').cheap.valueText).toBe(
+      '= Any request · not set — confident low verdicts go to Default',
+    );
+    const empty = toTargetsMatrixVm(
+      input({ rules: [rule({ matchType: 'auto_low', target: 'tier:empty' })] }),
+    );
+    expect(row(empty, 'code').cheap.valueText).toBe(
+      '= Any request · tier:empty (empty) — confident low verdicts go to Default',
+    );
+  });
+
+  it('claim cells: the complexity path when unset, n/a on Any request, inert when reserved', () => {
+    const vm = toTargetsMatrixVm(input());
+    expect(row(vm, 'code').claim.valueText).toBe(
+      'No claim — takes the complexity path (bands, then L2 and the cascade, then default)',
+    );
+    expect(row(vm, 'any').claim.valueText).toBe('n/a — a claim needs a class');
+    expect(row(vm, 'research').claim.valueText).toBe('inert (read-only)');
+    expect(
+      row(toTargetsMatrixVm(input({ semanticWorkload: true })), 'research').claim.valueText,
+    ).toBe('No claim — takes the complexity path (bands, then L2 and the cascade, then default)');
+  });
+
+  it('a claimed class keeps its own scoped target state beside the claimed note', () => {
+    const vm = toTargetsMatrixVm(
+      input({
+        rules: [
+          GENERIC_HIGH,
+          GENERIC_LOW,
+          rule({
+            id: 'w',
+            matchType: 'auto_workload',
+            workloadClass: 'code',
+            target: 'tier:premium',
+          }),
+          rule({ id: 's', matchType: 'auto_high', workloadClass: 'code', target: 'tier:empty' }),
+        ],
+      }),
+    );
+    const code = row(vm, 'code');
+    expect(code.strong.claimedNote).toBe('Not consulted — the Code claim wins');
+    // The note never replaces the cell's own state: the empty scoped tier still shows.
+    expect(code.strong.kind).toBe('empty');
+    expect(code.strong.notes.emptyTier).toBe(true);
+    expect(code.cheap.claimedNote).toBe('Not consulted — the Code claim wins');
+    expect(code.cheap.kind).toBe('inherit');
+    expect(code.claim.claimedNote).toBeNull();
+    expect(row(vm, 'vision').strong.claimedNote).toBeNull();
+  });
+
+  it('each class row names its detection signal; the Any request row has none', () => {
+    const vm = toTargetsMatrixVm(input());
+    expect(vm.rows.map((r) => [r.id, r.signal])).toEqual([
+      ['any', null],
+      ['code', 'fenced code above the code thresholds'],
+      ['vision', 'an image in the request'],
+      ['structured', 'a declared JSON format'],
+      ['research', 'the semantic workload source'],
+      ['writing', 'the semantic workload source'],
+    ]);
+  });
+
+  it('one shared reserved note while the semantic source is not effective', () => {
+    expect(toTargetsMatrixVm(input()).reservedNote).toBe(
+      `Research and Writing: their claims and bands are inert until the semantic workload source is effective (${HALF}).`,
+    );
+    expect(toTargetsMatrixVm(input({ semanticWorkload: true })).reservedNote).toBeNull();
+  });
+
+  it('the cascade note is scoped per leg, and absent once both generic bands are usable', () => {
+    const half = toTargetsMatrixVm(input({ rules: [GENERIC_HIGH] }));
+    expect(half.cascadeNote).toBe(
+      'Cascade needs both Any request bands usable — ambiguous requests stay on the default tier unless their class sets its own target for the missing band',
+    );
+    expect(half.cascadeNote).not.toMatch(/until then/);
+    expect(toTargetsMatrixVm(input({ rules: [GENERIC_HIGH, GENERIC_LOW] })).cascadeNote).toBeNull();
+    expect(
+      toTargetsMatrixVm(input({ rules: [GENERIC_HIGH], cascadeEffective: false })).cascadeNote,
+    ).toBeNull();
+  });
+
+  it('takes no aggregation at all — no cell carries a measured figure', () => {
+    const vm = toTargetsMatrixVm(input({ rules: [GENERIC_HIGH] }));
+    const text = JSON.stringify(vm);
+    expect(text).not.toMatch(/unroutable in the selected|detected|"routed"/);
+    for (const r of vm.rows)
+      for (const c of [r.claim, r.strong, r.cheap])
+        expect(Object.keys(c)).not.toContain('unroutable');
   });
 });

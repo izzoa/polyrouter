@@ -15,6 +15,10 @@ heading is started.
 
 ## [Unreleased]
 
+### Changed
+
+- **The Auto routing tab separates what auto did from what you set.** A Pipeline panel reads out each stage's status now, its count, share and bar for the range, and its history when a stage was not running; a Setup panel holds the three layer switches, the Targets matrix (now Claim, Strong and Cheap, with no Detected column) and two drawers for self-calibration and semantic learning. Estimated net savings moved to the Cascade row and is shown to the cent, and every row's action lines up. No routing behavior or API changed.
+
 ## [0.26.0] — 2026-10-31
 
 [Release](https://github.com/izzoa/polyrouter/releases/tag/v0.26.0) ·

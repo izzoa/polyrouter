@@ -10,10 +10,11 @@
  * silently dropping focus and re-entering the layer order mid-interaction.
  */
 import { expect, test, type Page } from '@playwright/test';
-import { SURFACES } from './overlays';
+import { SURFACES, harnessUrl, type Surface } from './overlays';
 
-async function open(page: Page): Promise<void> {
-  await page.goto('/browser-harness.html');
+/** Opens the harness — on the query a surface needs, when it needs one. */
+async function open(page: Page, surface: Pick<Surface, 'query'> = {}): Promise<void> {
+  await page.goto(harnessUrl(surface));
   await page.waitForSelector('html[data-harness-ready="true"]');
   await page.waitForSelector('[data-pane="sidebar"]');
 }
@@ -100,9 +101,12 @@ for (const vp of [
     });
 
     test('no surface claims modal semantics without registering', async ({ page }) => {
+      // One test opens EVERY surface in turn, so its budget grows with the matrix: the two
+      // tuning drawers (split-auto-routing-readout-setup) took it past the 30s default.
+      test.setTimeout(60_000);
       await open(page);
       for (const s of SURFACES) {
-        await open(page);
+        await open(page, s);
         await s.open(page);
         await page.waitForTimeout(150);
         const rogue = await page.evaluate(() => {

@@ -34,7 +34,7 @@
  * from the numbers. This file deliberately does not decide for you.
  */
 import { expect, test, type Page } from '@playwright/test';
-import { SURFACES, boxOf } from './overlays';
+import { SURFACES, boxOf, harnessUrl, type Surface } from './overlays';
 
 /** Controls the responsive suite pins by height. Captured beside the surfaces
  * so one run answers every open question about platform spread, rather than
@@ -49,8 +49,9 @@ function line(name: string, value: string): void {
   process.stdout.write(`CAPTURE  ${name.padEnd(28)} ${value}\n`);
 }
 
-async function open(page: Page): Promise<void> {
-  await page.goto('/browser-harness.html');
+/** Opens the harness — on the query a surface needs, when it needs one. */
+async function open(page: Page, surface: Pick<Surface, 'query'> = {}): Promise<void> {
+  await page.goto(harnessUrl(surface));
   await page.waitForSelector('html[data-harness-ready="true"]');
   await page.waitForSelector('[data-pane="sidebar"]');
 }
@@ -64,7 +65,7 @@ test.describe('@capture geometry', () => {
     for (const s of SURFACES) {
       const vp = s.narrowOnly ? { width: 390, height: 844 } : { width: 1440, height: 900 };
       await page.setViewportSize(vp);
-      await open(page);
+      await open(page, s);
       try {
         await s.open(page);
         // Entrance animations are transforms; measuring mid-flight reports a

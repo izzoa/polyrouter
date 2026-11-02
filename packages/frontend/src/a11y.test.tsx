@@ -70,6 +70,66 @@ describe('Toggle switch semantics', () => {
   });
 });
 
+describe('Toggle presentations (split-auto-routing-readout-setup D7)', () => {
+  it('on, off, locked and unavailable are distinct classes; unavailable is disabled and inert', () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const [on, setOn] = createSignal(false);
+    const [locked, setLocked] = createSignal(false);
+    const [unavailable, setUnavailable] = createSignal(false);
+    let flips = 0;
+    const dispose = render(
+      () => (
+        <Toggle
+          on={on()}
+          locked={locked()}
+          unavailable={unavailable()}
+          label="Toggle demo"
+          onToggle={() => {
+            flips += 1;
+          }}
+        />
+      ),
+      host,
+    );
+    try {
+      const sw = host.querySelector<HTMLButtonElement>('[role="switch"]');
+      if (!sw) throw new Error('no switch');
+      // The track colour is a class, never an inline style the unavailable rule could lose to.
+      expect(sw.style.background).toBe('');
+      expect(sw.classList.contains('toggle--off')).toBe(true);
+      setOn(true);
+      expect(sw.classList.contains('toggle--on')).toBe(true);
+      expect(sw.classList.contains('toggle--off')).toBe(false);
+
+      // Locked (busy) keeps its on/off look and meaning — Settings channels depend on it.
+      setLocked(true);
+      expect(sw.classList.contains('toggle--on')).toBe(true);
+      expect(sw.classList.contains('toggle--unavailable')).toBe(false);
+      expect(sw.getAttribute('aria-disabled')).toBe('true');
+      sw.click();
+      expect(flips).toBe(0);
+      setLocked(false);
+      expect(sw.getAttribute('aria-disabled')).toBeNull();
+
+      setUnavailable(true);
+      expect(sw.classList.contains('toggle--unavailable')).toBe(true);
+      expect(sw.classList.contains('toggle--on')).toBe(false);
+      expect(sw.classList.contains('toggle--off')).toBe(false);
+      expect(sw.getAttribute('aria-disabled')).toBe('true');
+      sw.click();
+      expect(flips).toBe(0);
+
+      setUnavailable(false);
+      sw.click();
+      expect(flips).toBe(1);
+    } finally {
+      dispose();
+      host.remove();
+    }
+  });
+});
+
 describe('Dashboard a11y semantics', () => {
   afterEach(() => {
     localStorage.clear();

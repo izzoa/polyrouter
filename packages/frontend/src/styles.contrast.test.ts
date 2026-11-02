@@ -161,6 +161,42 @@ describe('theme token contrast floors', () => {
   }
 });
 
+describe('the unavailable switch is drawn in a 3:1 token', () => {
+  // split-auto-routing-readout-setup D7: the dashed border and the knob of an unavailable
+  // switch carry its shape, so they take --text3, which the floors above hold at >= 3:1
+  // on bg and panel in both themes. A cheaper token here would fail silently.
+  const rule = (selector: string): string => {
+    const start = css.indexOf(`${selector} {`);
+    expect(start, `${selector} present in styles.css`).toBeGreaterThanOrEqual(0);
+    return css.slice(css.indexOf('{', start) + 1, css.indexOf('}', start));
+  };
+  it('the track is transparent with a dashed --text3 border', () => {
+    const body = rule('.toggle--unavailable');
+    expect(body).toMatch(/background:\s*transparent/);
+    expect(body).toMatch(/border:\s*1px dashed var\(--text3\)/);
+  });
+  it('the knob is --text3', () => {
+    expect(rule('.toggle--unavailable .toggle-knob')).toMatch(/background:\s*var\(--text3\)/);
+  });
+});
+
+describe('the Auto routing tab spends its accent on one element (split-auto-routing-readout-setup D11)', () => {
+  it('only the stage bars take the accent among the tab’s own classes', () => {
+    const accented = new Set<string>();
+    for (const m of css.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
+      const selectors = (m[1] ?? '').split(',').map((x) => x.trim());
+      if (!/var\(--accent\b/.test(m[2] ?? '')) continue;
+      for (const sel of selectors) if (/\.(ar|tm)-/.test(sel)) accented.add(sel);
+    }
+    expect([...accented]).toEqual(['.ar-bar-fill']);
+  });
+  it('the band-mix chart is drawn neutral', () => {
+    const routing = readFileSync(join(SRC, 'pages/Routing.tsx'), 'utf8');
+    const chart = /<Chart[\s\S]*?\/>/.exec(routing)?.[0] ?? '';
+    expect(chart).toContain('accentFirst={false}');
+  });
+});
+
 describe('--faint stays decorative-only in TSX', () => {
   // Pinned allowlist of decorative color:var(--faint) usages (glyphs & legend keys).
   // A new `color: var(--faint)` site fails here until consciously allowlisted —

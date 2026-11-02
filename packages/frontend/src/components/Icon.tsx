@@ -89,6 +89,17 @@ const Layers = (): JSX.Element => (
   </>
 );
 
+/** Moves focus to another part of the page (split-auto-routing-readout-setup: the
+ * Confident band row's Targets control). A corner arrow, deliberately unlike
+ * `externalLink` (leaves the page), `escalated` (a routing outcome) and `arrowRight`
+ * (a flow between chips). */
+const Jump = (): JSX.Element => (
+  <>
+    <path d="m15 10 5 5-5 5" />
+    <path d="M4 4v7a4 4 0 0 0 4 4h12" />
+  </>
+);
+
 export const ICONS = {
   copy: Copy,
   close: Close,
@@ -101,6 +112,7 @@ export const ICONS = {
   arrowRight: ArrowRight,
   check: Check,
   layers: Layers,
+  jump: Jump,
 } satisfies Record<string, () => JSX.Element>;
 
 export type IconName = keyof typeof ICONS;

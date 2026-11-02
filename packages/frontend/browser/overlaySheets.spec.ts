@@ -8,15 +8,16 @@
  * was unreachable. These assert the surfaces themselves.
  */
 import { expect, test, type Page } from '@playwright/test';
-import { SURFACES, boxOf } from './overlays';
+import { SURFACES, boxOf, harnessUrl, type Surface } from './overlays';
 
 const NARROW = [
   { width: 320, height: 568 },
   { width: 390, height: 844 },
 ] as const;
 
-async function open(page: Page): Promise<void> {
-  await page.goto('/browser-harness.html');
+/** Opens the harness — on the query a surface needs, when it needs one. */
+async function open(page: Page, surface: Pick<Surface, 'query'> = {}): Promise<void> {
+  await page.goto(harnessUrl(surface));
   await page.waitForSelector('html[data-harness-ready="true"]');
   await page.waitForSelector('[data-pane="sidebar"]');
 }
@@ -28,7 +29,7 @@ for (const vp of NARROW) {
     for (const s of SURFACES) {
       test(`${s.name} is inside the viewport`, async ({ page }) => {
         test.setTimeout(25_000);
-        await open(page);
+        await open(page, s);
         await s.open(page);
         await page.waitForTimeout(400);
         // Computed from the UNROUNDED rect: rounding x and width separately turns a
@@ -114,7 +115,7 @@ test.describe('overlay controls meet the comfort floor', () => {
   for (const s of SURFACES) {
     test(`${s.name}`, async ({ page }) => {
       test.setTimeout(25_000);
-      await open(page);
+      await open(page, s);
       await s.open(page);
       await page.waitForTimeout(300);
       const small = await page.evaluate((sel) => {

@@ -266,7 +266,15 @@ describe('interactive target floors', () => {
 describe('table query containers', () => {
   it('declares inline-size containers with distinct names', () => {
     expect(css).toContain('container-type: inline-size');
-    for (const name of ['rs-requests', 'rs-batches', 'rs-agents', 'rs-users', 'rs-targets']) {
+    for (const name of [
+      'rs-requests',
+      'rs-batches',
+      'rs-agents',
+      'rs-users',
+      'rs-targets',
+      'rs-pipeline',
+      'rs-layers',
+    ]) {
       expect(css).toContain(`container-name: ${name}`);
     }
   });
@@ -288,6 +296,39 @@ describe('table query containers', () => {
     expect(body).toMatch(/\.tm-label\s*\{[^}]*position:\s*static/);
     // The picker's cap gives way, so a 220px select cannot push a phone column wider.
     expect(body).toMatch(/\.tm-picker\s*\{[^}]*max-width:\s*min\(220px,\s*100%\)/);
+  });
+
+  it('takes the Pipeline and Layers thresholds from the lock, the same values here (split-auto-routing-readout-setup)', () => {
+    // Literals, changed together with STYLESEED.md — never one alone.
+    const lock = readFileSync(join(SRC, '..', '..', '..', 'STYLESEED.md'), 'utf8');
+    const twoLine = /\|\s*`pipeline-fit` \(two-line\)\s*\|\s*\*\*(\d+)px\*\*/.exec(lock)?.[1];
+    const phone = /\|\s*`pipeline-fit` \(phone\)\s*\|\s*\*\*(\d+)px\*\*/.exec(lock)?.[1];
+    const layers = /\|\s*`layers-fit`\s*\|\s*\*\*(\d+)px\*\*/.exec(lock)?.[1];
+    for (const [name, v] of [
+      ['pipeline-fit (two-line)', twoLine],
+      ['pipeline-fit (phone)', phone],
+      ['layers-fit', layers],
+    ] as const)
+      expect(v, `${name} is missing from the STYLESEED.md lock`).toBeDefined();
+    // Two-line: the status leaves line one for line two.
+    expect(atRuleBody(`@container rs-pipeline (max-width: ${twoLine ?? '?'}px)`)).toMatch(
+      /\.ar-status\s*\{[^}]*grid-row:\s*2/,
+    );
+    // Phone: three tracks, the column header gone, the field labels shown.
+    const phoneBody = atRuleBody(`@container rs-pipeline (max-width: ${phone ?? '?'}px)`);
+    expect(phoneBody).toMatch(
+      /\.ar-stages\s*\{[^}]*grid-template-columns:\s*18px minmax\(0, 1fr\) 44px/,
+    );
+    expect(phoneBody).toMatch(/\.ar-colhead\s*\{[^}]*display:\s*none/);
+    expect(phoneBody).toMatch(/\.ar-fieldlabel\s*\{[^}]*position:\s*static/);
+    expect(atRuleBody(`@container rs-layers (max-width: ${layers ?? '?'}px)`)).toMatch(
+      /\.ar-layers\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/,
+    );
+    // The container is the WRAPPER, never the grid it holds: a query styles only
+    // descendants, so a container on `.ar-stages` could never restate its own tracks.
+    expect(css).toMatch(/\.ar-pipeline\s*\{[^}]*container-name:\s*rs-pipeline/);
+    expect(css).not.toMatch(/\.ar-stages\s*\{[^}]*container-(type|name)/);
+    expect(css).toMatch(/\.ar-layers-wrap\s*\{[^}]*container-name:\s*rs-layers/);
   });
 
   it('holds the Targets grid, its display and the picker cap in classes a query can reach', () => {

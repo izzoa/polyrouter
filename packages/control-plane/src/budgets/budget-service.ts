@@ -199,10 +199,19 @@ export class BudgetService {
    * over-count, never an over-admission. Under fail-open a fault admits without
    * a Redis record (the job row's ceiling is reconciled from the rows); under
    * fail-closed it throws `BudgetEnforcementUnavailableError`.
+   *
+   * `submittedAt` is the job row's RECORDED submission instant, and it alone picks
+   * the period (fix-batch-reservation-period). The release and the scheduler's
+   * reconciliation key on that same instant, so a reservation is always removed
+   * from the key it was added to. A separately read clock could fall on the other
+   * side of a period boundary, which would strand the reservation in one period
+   * and let the floor-at-zero release eat another job's pending in the other.
+   * The TTL and the staleness check still measure elapsed time on this clock.
    */
   async reserveForBatch(
     principal: Principal,
     agentId: string | null,
+    submittedAt: Date,
     ceilingMicros: number,
   ): Promise<BatchReservation> {
     const owner = ownerOf(principal);
@@ -217,8 +226,7 @@ export class BudgetService {
       const age = await this.counter.heartbeatAgeMs(now);
       if (age > this.staleMs) throw new BudgetEnforcementUnavailableError();
 
-      const at = new Date(now);
-      const infos = matched.map((b) => ({ b, ...this.keyFor(owner, b, at) }));
+      const infos = matched.map((b) => ({ b, ...this.keyFor(owner, b, submittedAt) }));
       const groups = new Map<string, typeof infos>();
       for (const info of infos) {
         const g = groups.get(info.key);

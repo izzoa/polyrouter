@@ -219,7 +219,8 @@ describe('batch reservations — real infra (add-batch-inference D8)', () => {
     const results = await Promise.all(
       Array.from(
         { length: 6 },
-        (_, i) => (i % 2 === 0 ? a : b).svc.reserveForBatch(principal, null, toMicros(6)), // $6 each; $10 fits one
+        (_, i) =>
+          (i % 2 === 0 ? a : b).svc.reserveForBatch(principal, null, new Date(), toMicros(6)), // $6 each; $10 fits one
       ),
     );
     const outcomes = results.map((r) => r.outcome);
@@ -255,7 +256,9 @@ describe('batch reservations — real infra (add-batch-inference D8)', () => {
     let [v] = await counter.readWithPending([monthKey(owner, counter)]);
     expect(v!.pending).toBe(toMicros(4)); // the submitting row is already counted
     // (3) the Redis add lands: a brief over-count — the reservation was never lost
-    expect((await svc.reserveForBatch(principal, 'ag', toMicros(4))).outcome).toBe('reserved');
+    expect((await svc.reserveForBatch(principal, 'ag', row.submittedAt, toMicros(4))).outcome).toBe(
+      'reserved',
+    );
     [v] = await counter.readWithPending([monthKey(owner, counter)]);
     expect(v!.pending).toBe(toMicros(8));
     // (4) the next reconcile settles on the rows' truth
@@ -295,7 +298,9 @@ describe('batch reservations — real infra (add-batch-inference D8)', () => {
     const principal = userPrincipal(owner);
     const { svc, counter } = instance();
     await ready(counter);
-    expect((await svc.reserveForBatch(principal, null, toMicros(7))).outcome).toBe('reserved'); // the poller then "crashes" before releasing
+    expect((await svc.reserveForBatch(principal, null, new Date(), toMicros(7))).outcome).toBe(
+      'reserved',
+    ); // the poller then "crashes" before releasing
     await port.batchJobs.insert(principal, jobValues('ag', null)); // an unbounded job admitted without a block budget elsewhere: contributes 0
     await runBudgetOccurrence(
       reader,
@@ -315,14 +320,14 @@ describe('batch reservations — real infra (add-batch-inference D8)', () => {
     await redis.set(HEARTBEAT, String(Date.now() - 10 * STALE_MS));
     const open = instance(true);
     await ready(open.counter);
-    expect((await open.svc.reserveForBatch(principal, null, toMicros(1))).outcome).toBe(
+    expect((await open.svc.reserveForBatch(principal, null, new Date(), toMicros(1))).outcome).toBe(
       'unenforced',
     );
     const closed = instance(false);
     await ready(closed.counter);
-    await expect(closed.svc.reserveForBatch(principal, null, toMicros(1))).rejects.toBeInstanceOf(
-      BudgetEnforcementUnavailableError,
-    );
+    await expect(
+      closed.svc.reserveForBatch(principal, null, new Date(), toMicros(1)),
+    ).rejects.toBeInstanceOf(BudgetEnforcementUnavailableError);
     // Nothing was recorded either way (the row's ceiling is what the reconcile reads).
     const [v] = await open.counter.readWithPending([monthKey(owner, open.counter)]);
     expect(v!.pending).toBe(0);

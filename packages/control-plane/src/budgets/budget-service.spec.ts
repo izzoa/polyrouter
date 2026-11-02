@@ -334,6 +334,8 @@ describe('BudgetService.emitBlock — provenance (add-native-price-fallback)', (
 describe('BudgetService — spend + pending admission and batch reservations (add-batch-inference D8)', () => {
   beforeAll(() => jest.useFakeTimers({ now: NOW }));
   afterAll(() => jest.useRealTimers());
+  /** The job row's recorded submission instant — the same instant as the clock here. */
+  const AT = new Date(NOW);
 
   const pendingOf = (conn: FakeConn, counter: SpendCounter, b: BudgetRow): number => {
     const { periodId } = periodInfo(b.window as 'day', new Date(NOW));
@@ -346,7 +348,7 @@ describe('BudgetService — spend + pending admission and batch reservations (ad
     const { svc, conn, counter } = make([b]);
     seed(conn, counter, b, toMicros(4)); // $4 spent
     expect(await svc.checkBlocked(PRINCIPAL, null)).toBeNull();
-    const r = await svc.reserveForBatch(PRINCIPAL, null, toMicros(6)); // + $6 reserved = $10
+    const r = await svc.reserveForBatch(PRINCIPAL, null, AT, toMicros(6)); // + $6 reserved = $10
     expect(r.outcome).toBe('reserved');
     const hit = await svc.checkBlocked(PRINCIPAL, null);
     expect(hit).not.toBeNull();
@@ -359,10 +361,10 @@ describe('BudgetService — spend + pending admission and batch reservations (ad
     const tight = row({ id: 'tight', amount: 10 });
     const { svc, conn, counter } = make([loose, tight]);
     seed(conn, counter, tight, toMicros(3));
-    const ok = await svc.reserveForBatch(PRINCIPAL, null, toMicros(7));
+    const ok = await svc.reserveForBatch(PRINCIPAL, null, AT, toMicros(7));
     expect(ok.outcome).toBe('reserved');
     expect(pendingOf(conn, counter, tight)).toBe(toMicros(7));
-    const no = await svc.reserveForBatch(PRINCIPAL, null, toMicros(1));
+    const no = await svc.reserveForBatch(PRINCIPAL, null, AT, toMicros(1));
     expect(no.outcome).toBe('rejected');
     if (no.outcome === 'rejected') {
       expect(no.hit.budget.id).toBe('tight');
@@ -378,7 +380,7 @@ describe('BudgetService — spend + pending admission and batch reservations (ad
     const agent = row({ id: 'a', scope: 'agent', agentId: 'a1', amount: 5 });
     const { svc, conn, counter } = make([global, agent]);
     seed(conn, counter, global, 0);
-    const r = await svc.reserveForBatch(PRINCIPAL, 'a1', toMicros(6)); // fits global, not agent
+    const r = await svc.reserveForBatch(PRINCIPAL, 'a1', AT, toMicros(6)); // fits global, not agent
     expect(r.outcome).toBe('rejected');
     expect(pendingOf(conn, counter, global)).toBe(0);
   });
@@ -387,7 +389,7 @@ describe('BudgetService — spend + pending admission and batch reservations (ad
     const b = row({ amount: 10 });
     const { svc, conn, counter } = make([b]);
     seed(conn, counter, b, 0);
-    await svc.reserveForBatch(PRINCIPAL, null, toMicros(4));
+    await svc.reserveForBatch(PRINCIPAL, null, AT, toMicros(4));
     await svc.releaseForBatch(PRINCIPAL, null, new Date(NOW), toMicros(4));
     expect(pendingOf(conn, counter, b)).toBe(0);
     await svc.releaseForBatch(PRINCIPAL, null, new Date(NOW), toMicros(4)); // a repeated release is harmless
@@ -396,7 +398,7 @@ describe('BudgetService — spend + pending admission and batch reservations (ad
 
   it('has nothing to reserve against without a block budget', async () => {
     const { svc } = make([row({ action: 'alert' })]);
-    expect(await svc.reserveForBatch(PRINCIPAL, null, toMicros(1))).toEqual({
+    expect(await svc.reserveForBatch(PRINCIPAL, null, AT, toMicros(1))).toEqual({
       outcome: 'no_block_budget',
     });
   });
@@ -404,24 +406,105 @@ describe('BudgetService — spend + pending admission and batch reservations (ad
   it('follows the named fail mode on a stale heartbeat or a Redis fault, exactly like checkBlocked', async () => {
     const b = row({ amount: 10 });
     const open = make([b]); // no seed → heartbeat absent
-    expect(await open.svc.reserveForBatch(PRINCIPAL, null, toMicros(1))).toEqual({
+    expect(await open.svc.reserveForBatch(PRINCIPAL, null, AT, toMicros(1))).toEqual({
       outcome: 'unenforced',
     });
     const closed = make([b], false);
-    await expect(closed.svc.reserveForBatch(PRINCIPAL, null, toMicros(1))).rejects.toBeInstanceOf(
-      BudgetEnforcementUnavailableError,
-    );
+    await expect(
+      closed.svc.reserveForBatch(PRINCIPAL, null, AT, toMicros(1)),
+    ).rejects.toBeInstanceOf(BudgetEnforcementUnavailableError);
     const faultOpen = make([b]);
     seed(faultOpen.conn, faultOpen.counter, b, 0);
     faultOpen.conn.failEval = true;
-    expect(await faultOpen.svc.reserveForBatch(PRINCIPAL, null, toMicros(1))).toEqual({
+    expect(await faultOpen.svc.reserveForBatch(PRINCIPAL, null, AT, toMicros(1))).toEqual({
       outcome: 'unenforced',
     });
     const faultClosed = make([b], false);
     seed(faultClosed.conn, faultClosed.counter, b, 0);
     faultClosed.conn.failEval = true;
     await expect(
-      faultClosed.svc.reserveForBatch(PRINCIPAL, null, toMicros(1)),
+      faultClosed.svc.reserveForBatch(PRINCIPAL, null, AT, toMicros(1)),
     ).rejects.toBeInstanceOf(BudgetEnforcementUnavailableError);
+  });
+});
+
+describe('BudgetService — a batch reservation keys on its recorded submission instant (fix-batch-reservation-period)', () => {
+  // A UTC day boundary with 5 ms either side: the app clock and the database stamp
+  // of `submitted_at` can land on opposite sides of it, in either order.
+  const BEFORE = Date.UTC(2026, 2, 15, 23, 59, 59, 995);
+  const AFTER = Date.UTC(2026, 2, 16, 0, 0, 0, 5);
+
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+
+  const keyAt = (counter: SpendCounter, b: BudgetRow, at: number): string =>
+    counter.key(
+      b.ownerUserId,
+      'global',
+      'global',
+      'day',
+      periodInfo('day', new Date(at)).periodId,
+      'notional',
+    );
+  const pendingAt = (conn: FakeConn, counter: SpendCounter, b: BudgetRow, at: number): number =>
+    Number(conn.store.get(counter.pendingKeyFor(keyAt(counter, b, at))) ?? '0');
+  /** A fresh reconciliation heartbeat for whatever the clock reads now. */
+  const beat = (conn: FakeConn): void => {
+    conn.store.set('budget:reconcile:heartbeat', String(Date.now()));
+  };
+
+  it('a row stamped before the boundary and reserved after it is held, and released, in the stamped period', async () => {
+    jest.setSystemTime(AFTER); // the app clock has already crossed into the 16th
+    const b = row({ amount: 10 });
+    const { svc, conn, counter } = make([b]);
+    beat(conn);
+    const r = await svc.reserveForBatch(PRINCIPAL, null, new Date(BEFORE), toMicros(4));
+    expect(r.outcome).toBe('reserved');
+    expect(pendingAt(conn, counter, b, BEFORE)).toBe(toMicros(4));
+    expect(pendingAt(conn, counter, b, AFTER)).toBe(0); // nothing stranded in the new day
+
+    await svc.releaseForBatch(PRINCIPAL, null, new Date(BEFORE), toMicros(4));
+    expect(pendingAt(conn, counter, b, BEFORE)).toBe(0);
+    expect(pendingAt(conn, counter, b, AFTER)).toBe(0);
+  });
+
+  it("a release never consumes another live job's reservation in the current period", async () => {
+    const b = row({ amount: 10 });
+    const { svc, conn, counter } = make([b]);
+    // Job 1: the database clock runs ahead, so its row is stamped on the 16th while
+    // the app clock still reads the 15th when it reserves.
+    jest.setSystemTime(BEFORE);
+    beat(conn);
+    await svc.reserveForBatch(PRINCIPAL, null, new Date(AFTER), toMicros(4));
+    // Job 2, on the 16th by both clocks.
+    jest.setSystemTime(AFTER + 10);
+    beat(conn);
+    await svc.reserveForBatch(PRINCIPAL, null, new Date(AFTER + 10), toMicros(3));
+    // Job 1 settles: its release targets the 16th, where its reservation was added.
+    jest.setSystemTime(AFTER + 20);
+    await svc.releaseForBatch(PRINCIPAL, null, new Date(AFTER), toMicros(4));
+
+    expect(pendingAt(conn, counter, b, AFTER)).toBe(toMicros(3)); // job 2 is still held
+    expect(pendingAt(conn, counter, b, BEFORE)).toBe(0);
+    // Admission still sees job 2: $3 pending + $8 more cannot fit $10.
+    beat(conn);
+    expect((await svc.reserveForBatch(PRINCIPAL, null, new Date(), toMicros(8))).outcome).toBe(
+      'rejected',
+    );
+  });
+
+  it('admission is evaluated against the period the reservation is added to', async () => {
+    jest.setSystemTime(AFTER);
+    const b = row({ amount: 10 });
+    const { svc, conn, counter } = make([b]);
+    beat(conn);
+    conn.store.set(keyAt(counter, b, BEFORE), String(toMicros(9))); // the 15th is nearly spent
+    const r = await svc.reserveForBatch(PRINCIPAL, null, new Date(BEFORE), toMicros(2));
+    expect(r.outcome).toBe('rejected');
+    if (r.outcome === 'rejected') {
+      expect(r.hit.periodId).toBe(periodInfo('day', new Date(BEFORE)).periodId);
+      expect(r.hit.spentMicros).toBe(toMicros(9));
+    }
+    expect(pendingAt(conn, counter, b, AFTER)).toBe(0);
   });
 });

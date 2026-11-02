@@ -710,7 +710,45 @@ describe('batch submission — Phase B §3 (add-batch-inference)', () => {
   });
 
   it('a provider-rejected create fails the row with the taxonomy kind and releases the reservation', async () => {
-    const res = await submit(capped.key, doc('batch-srvfail', [item('s1', { max_tokens: 10 })]));
+    // The reserve and its release must key on ONE instant, the row's recorded
+    // `submitted_at` (fix-batch-reservation-period). Off a period boundary any clock
+    // read passes the pending assertions below, so the wiring is asserted directly.
+    const budgets = app.get(BudgetService);
+    const reserve = jest.spyOn(budgets, 'reserveForBatch');
+    const release = jest.spyOn(budgets, 'releaseForBatch');
+    let res: Awaited<ReturnType<typeof submit>>;
+    // Copied before the restore: `mockRestore()` also clears `mock.calls`.
+    let reserveCalls: Parameters<BudgetService['reserveForBatch']>[];
+    let releaseCalls: Parameters<BudgetService['releaseForBatch']>[];
+    // Only `Date` is faked, running 1.5 s ahead of the database: any instant the
+    // submission reads from the app clock then differs from the row's DB-stamped
+    // `submitted_at` by a deterministic margin, not by luck. That margin stays
+    // well inside the heartbeat staleness bound and keeps the price lookup current.
+    jest.useFakeTimers({
+      now: Date.now() + 1_500,
+      advanceTimers: true,
+      doNotFake: [
+        'hrtime',
+        'nextTick',
+        'performance',
+        'queueMicrotask',
+        'setImmediate',
+        'clearImmediate',
+        'setInterval',
+        'clearInterval',
+        'setTimeout',
+        'clearTimeout',
+      ],
+    });
+    try {
+      res = await submit(capped.key, doc('batch-srvfail', [item('s1', { max_tokens: 10 })]));
+    } finally {
+      jest.useRealTimers();
+      reserveCalls = [...reserve.mock.calls];
+      releaseCalls = [...release.mock.calls];
+      reserve.mockRestore();
+      release.mockRestore();
+    }
     expect(res.status).toBe(503);
     expect(res.body.error.code).toBe('upstream_unavailable');
     const rows = (await jobsOf(capped)).filter((j) => j.modelId === capped.models['batch-srvfail']);
@@ -722,6 +760,11 @@ describe('batch submission — Phase B §3 (add-batch-inference)', () => {
     });
     expect(rows[0]!.terminalAt).not.toBeNull();
     expect(await pendingOf(capped)).toBe(0);
+    const stamped = rows[0]!.submittedAt.getTime();
+    expect(reserveCalls).toHaveLength(1);
+    expect(releaseCalls).toHaveLength(1);
+    expect(reserveCalls[0]![2].getTime()).toBe(stamped);
+    expect(releaseCalls[0]![2].getTime()).toBe(stamped);
     const refused = await submit(free.key, doc('batch-batchreject', [item('r1')]));
     expect(refused.status).toBe(400);
     expect(refused.body.error.code).toBe('bad_request');

@@ -15,6 +15,10 @@ heading is started.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A batch's budget reservation is released from the same period it was added to.** A batch submitted at a UTC day, week or month boundary, or while the app and database clocks disagreed, could reserve in one period and release from the other. Until the next reconcile, that blocked synchronous traffic in one period and under-counted another batch's reservation in the other.
+
 ## [0.27.0] — 2026-11-01
 
 [Release](https://github.com/izzoa/polyrouter/releases/tag/v0.27.0) ·

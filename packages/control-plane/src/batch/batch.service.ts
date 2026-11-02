@@ -207,7 +207,14 @@ export class BatchService {
     let reserved = false;
     try {
       if (ceiling.kind === 'bounded') {
-        const r = await this.budgets.reserveForBatch(principal, agentId, ceiling.micros);
+        // Keyed on the row's recorded instant — the one its release and the
+        // reconciliation use — never on a second clock read (fix-batch-reservation-period).
+        const r = await this.budgets.reserveForBatch(
+          principal,
+          agentId,
+          row.submittedAt,
+          ceiling.micros,
+        );
         if (r.outcome === 'rejected') {
           await this.db.batchJobs.discard(principal, jobId);
           throw batchBudgetBlocked(r.hit, ceiling.micros);

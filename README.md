@@ -70,7 +70,7 @@ Needs Docker with Compose v2. About 5 minutes (first build is the slow part).
 
    services:
      app:
-       image: ghcr.io/izzoa/polyrouter:0.27.0 # or :latest
+       image: ghcr.io/izzoa/polyrouter:0.27.1 # or :latest
        restart: unless-stopped
        ports:
          - '127.0.0.1:3001:3001' # loopback only until you claim the instance

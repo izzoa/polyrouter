@@ -15,6 +15,10 @@ heading is started.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Tool schemas with `null` keywords no longer make strict OpenAI-compatible providers reject the request.** A client that sends a null-valued standard keyword in a tool schema (Warp sends `"required": null` on its `finish` and `transfer_control_to_user` tools) got HTTP 400 from backends such as XiaomiMiMo, then fell back. The router now removes those nulls before forwarding, in every protocol and the batch path. Your request body is not modified, and if every tool's schema held only such nulls, the structural router no longer counts them as schema demand.
+
 ## [0.28.0] — 2026-11-07
 
 [Release](https://github.com/izzoa/polyrouter/releases/tag/v0.28.0) ·

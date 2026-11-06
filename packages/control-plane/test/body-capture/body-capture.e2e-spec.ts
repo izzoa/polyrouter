@@ -32,6 +32,7 @@ import type { AuthedRequest } from '../../src/auth/principal.decorator';
 import { AgentApiKeyGuard } from '../../src/auth/agent-key.guard';
 import { mintAgentKey } from '../../src/agents/agent-keys';
 import { ChatCompletionsController } from '../../src/proxy/chat-completions.controller';
+import { MessagesController } from '../../src/proxy/messages.controller';
 import { ProxyExceptionFilter } from '../../src/proxy/proxy-exception.filter';
 import {
   PROXY_ADAPTER_FACTORY,
@@ -144,7 +145,7 @@ describe('body-capture e2e', () => {
         AnalyticsModule,
         BodyCaptureModule,
       ],
-      controllers: [ChatCompletionsController],
+      controllers: [ChatCompletionsController, MessagesController],
       providers: [
         AgentApiKeyGuard,
         ProxyService,
@@ -474,6 +475,74 @@ describe('body-capture e2e', () => {
       },
     ]);
     expect(lateDraft).toEqual({ inserted: 0, discarded: 1 });
+    await api(userId).patch('/api/body-capture', { mode: 'off' }).expect(200);
+  });
+
+  // fix-tool-schema-null-keywords: Warp sends `required: null` in tool schemas.
+  // The proxy repairs it on the way in, so the UPSTREAM never sees it, while the
+  // captured client request (the client's own bytes) keeps it.
+  it('a null `required` in a client tool schema is removed upstream but kept in the captured request (fix-tool-schema-null-keywords)', async () => {
+    await api(userId).patch('/api/body-capture', { mode: 'all' }).expect(200);
+    const noArgs = { type: 'object', properties: {}, required: null };
+    const clean = {
+      name: 'search',
+      description: 'search',
+      input_schema: {
+        type: 'object',
+        properties: { q: { type: 'string' } },
+        required: ['q'],
+      },
+    };
+    const finish = { name: 'finish', description: 'finish', input_schema: noArgs };
+    const transfer = {
+      name: 'transfer_control_to_user',
+      description: 'transfer',
+      input_schema: { ...noArgs },
+    };
+    const res = await request(server)
+      .post('/v1/messages')
+      .set('x-api-key', key)
+      .send({
+        model: 'gpt-4o',
+        max_tokens: 16,
+        messages: [{ role: 'user', content: 'hi' }],
+        tools: [clean, finish, transfer],
+      });
+    expect(res.status).toBe(200);
+
+    // (c) what the stub upstream received.
+    const upstream = [...stub.requests]
+      .reverse()
+      .find((r) => r.path.split('?')[0]!.endsWith('/chat/completions'));
+    expect(upstream).toBeDefined();
+    const sent = upstream!.body as {
+      tools: { function: { name: string; parameters: Record<string, unknown> } }[];
+    };
+    const byName = (n: string) => sent.tools.find((t) => t.function.name === n)!.function;
+    expect(sent.tools).toHaveLength(3);
+    expect(Object.hasOwn(byName('finish').parameters, 'required')).toBe(false);
+    expect(Object.hasOwn(byName('transfer_control_to_user').parameters, 'required')).toBe(false);
+    expect(byName('search').parameters['required']).toEqual(['q']);
+
+    // (d) the stored request body is the client's own bytes: the null survives.
+    await writer.flush();
+    const id = await newestLogId();
+    const got = await api(userId).get(`/api/analytics/requests/${id}/bodies`).expect(200);
+    const stored = (got.body as { direction: string; content: string }[]).find(
+      (b) => b.direction === 'request',
+    )!;
+    const storedTools = (
+      JSON.parse(stored.content) as {
+        tools: { name: string; input_schema: Record<string, unknown> }[];
+      }
+    ).tools;
+    for (const n of ['finish', 'transfer_control_to_user']) {
+      const schema = storedTools.find((t) => t.name === n)!.input_schema;
+      expect(Object.hasOwn(schema, 'required')).toBe(true);
+      expect(schema['required']).toBeNull();
+    }
+
+    // (e) reset.
     await api(userId).patch('/api/body-capture', { mode: 'off' }).expect(200);
   });
 

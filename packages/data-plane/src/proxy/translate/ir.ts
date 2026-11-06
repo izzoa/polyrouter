@@ -91,7 +91,7 @@ export interface NormalizedMessage {
   readonly content: readonly ContentBlock[];
 }
 
-/** JSON-Schema-ish tool parameter object; kept opaque to the translator. */
+/** JSON-Schema-ish tool parameter object; opaque except for ingress null-keyword normalization (fix-tool-schema-null-keywords). */
 export type ToolParameters = Record<string, unknown>;
 
 export interface NormalizedTool {

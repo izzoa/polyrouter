@@ -6,6 +6,8 @@ import {
   extractStructuralFeatures,
 } from './features';
 import type { NormalizedMessage, NormalizedRequest } from '../../proxy/translate';
+import { anthropicAdapter } from '../../proxy/translate/anthropic';
+import { openaiAdapter } from '../../proxy/translate/openai';
 
 function req(partial: Partial<NormalizedRequest>): NormalizedRequest {
   return { model: 'auto', messages: [], params: {}, ...partial };
@@ -222,5 +224,53 @@ describe('canonicalizeSystem', () => {
   it('caps the canonical length', () => {
     const c = canonicalizeSystem(req({ system: [{ type: 'text', text: 'Z'.repeat(200_000) }] }));
     expect(c.length).toBeLessThanOrEqual(MAX_FINGERPRINT_CHARS);
+  });
+});
+
+// fix-tool-schema-null-keywords: ingress normalization removes null keywords, so a tool
+// whose only top-level keys were strippable nulls now declares no schema. IRs are built by
+// the real client requestIn functions.
+describe('toolSchemaDemand after tool-schema null normalization (fix-tool-schema-null-keywords)', () => {
+  const parse = (json: string): Record<string, unknown> =>
+    JSON.parse(json) as Record<string, unknown>;
+
+  const fromAnthropic = (schemas: string[]): NormalizedRequest =>
+    anthropicAdapter.requestIn({
+      model: 'claude',
+      max_tokens: 8,
+      messages: [{ role: 'user', content: 'go' }],
+      tools: schemas.map((s, i) => ({ name: `t${i}`, input_schema: parse(s) })),
+    });
+  const fromOpenai = (schemas: string[]): NormalizedRequest =>
+    openaiAdapter.requestIn({
+      model: 'gpt',
+      messages: [{ role: 'user', content: 'go' }],
+      tools: schemas.map((s, i) => ({
+        type: 'function',
+        function: { name: `t${i}`, parameters: parse(s) },
+      })),
+    });
+
+  const builders = [
+    ['anthropic', fromAnthropic],
+    ['openai', fromOpenai],
+  ] as const;
+
+  it.each(builders)('%s: every tool schema is only a null keyword -> false', (_n, build) => {
+    const f = extractStructuralFeatures(build(['{"required":null}', '{"required":null}']));
+    expect(f.toolCount).toBe(2);
+    expect(f.toolSchemaDemand).toBe(false);
+  });
+
+  it.each(builders)('%s: one tool keeps a type beside the null -> true', (_n, build) => {
+    const f = extractStructuralFeatures(build(['{"type":"object","required":null}']));
+    expect(f.toolSchemaDemand).toBe(true);
+  });
+
+  it.each(builders)('%s: a null-only tool plus a non-empty tool -> true', (_n, build) => {
+    const f = extractStructuralFeatures(
+      build(['{"required":null}', '{"type":"object","properties":{"a":{"type":"string"}}}']),
+    );
+    expect(f.toolSchemaDemand).toBe(true);
   });
 });

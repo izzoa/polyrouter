@@ -76,6 +76,45 @@ describe('parseBatchSubmission', () => {
     expect(err.proxyError.code).toBe('batch_item_invalid');
   });
 
+  // fix-tool-schema-null-keywords: a batch item goes through the same client requestIn as
+  // a synchronous request, so a null tool-schema keyword is gone from the parsed IR. The
+  // batch adapters serialize that IR through the requestOut the data-plane tests cover.
+  it('drops a null required from an item tool schema on both endpoints (fix-tool-schema-null-keywords)', async () => {
+    const schema = (): Record<string, unknown> =>
+      JSON.parse(
+        '{"type":"object","properties":{"a":{"type":"string"}},"required":null}',
+      ) as Record<string, unknown>;
+    const openai = JSON.stringify({
+      endpoint: '/v1/chat/completions',
+      model: 'gpt-4o',
+      requests: [
+        item('o1', {
+          tools: [{ type: 'function', function: { name: 'finish', parameters: schema() } }],
+        }),
+      ],
+    });
+    const anthropic = JSON.stringify({
+      endpoint: '/v1/messages',
+      model: 'claude-x',
+      requests: [
+        {
+          custom_id: 'm1',
+          body: {
+            max_tokens: 5,
+            messages: [{ role: 'user', content: 'hey' }],
+            tools: [{ name: 'finish', input_schema: schema() }],
+          },
+        },
+      ],
+    });
+    for (const text of [openai, anthropic]) {
+      const parsed = await parseBatchSubmission(chunks(text), BOUNDS);
+      const params = parsed.items[0]!.request.tools![0]!.parameters;
+      expect(Object.hasOwn(params, 'required')).toBe(false);
+      expect(params).toStrictEqual({ type: 'object', properties: { a: { type: 'string' } } });
+    }
+  });
+
   it('refuses requests before endpoint/model without reading an item, in the OpenAI envelope', async () => {
     const err = await failure(
       JSON.stringify({ requests: [item('a')], endpoint: '/v1/chat/completions', model: 'm' }),

@@ -40,6 +40,7 @@ import {
   usageToAnthropic,
 } from './usage';
 import { formatSseEvent, sseFrames } from './stream';
+import { normalizeToolSchema } from './tool-schema';
 
 export interface AnthropicAdapterOptions {
   /** Fallback for the required Anthropic `max_tokens` when the IR omits it. */
@@ -235,7 +236,7 @@ function requestIn(wireInput: unknown): NormalizedRequest {
   const tools = wire.tools?.map((t) => ({
     name: t.name,
     ...(t.description !== undefined ? { description: t.description } : {}),
-    parameters: t.input_schema,
+    parameters: normalizeToolSchema(t.input_schema),
     ...ccIn(t.cache_control),
   }));
 

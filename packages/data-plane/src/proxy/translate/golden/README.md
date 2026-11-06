@@ -27,6 +27,12 @@ own normalized form, not against a provider's live output.
   fetched; `detail` on the OpenAI side).
 - `malformed-tool` — an assistant tool call whose `arguments` are invalid JSON;
   represented as an `inputParseError` block, never thrown.
+- `tool-schema-nulls` (OpenAI and Anthropic) — a request whose tool schema carries
+  null-valued standard keywords at the top level and inside `properties`, `items`,
+  `anyOf` and `$defs`, each after a clean sibling, plus the values that must survive.
+  Unlike every other fixture it is committed as `{ request, normalized }`, because the
+  translator deliberately changes it on the way in (see "Tool-schema null keywords are
+  normalized on the way into the IR" below).
 - `streamed` — a text stream and a tool-call stream, exercising the usage
   lifecycle (Anthropic start/delta; OpenAI empty-`choices` terminal chunk),
   per-block tool-JSON assembly, and split-frame tolerance.
@@ -68,6 +74,31 @@ emit invalid consecutive user turns (and an `assistant → user → tool` OpenAI
 sequence) when serialized back out, so this reorder-to-conformant is intentional, not
 an "order inversion" bug. Each `tool_result` is one `role:"tool"` message (1:1 with
 an OpenAI tool message).
+
+### Tool-schema null keywords are normalized on the way into the IR
+
+A tool parameter schema that sets a standard keyword to `null` (the field case is
+`"required": null`, sent by the Warp agent) is invalid in every supported JSON Schema
+dialect, and a strict OpenAI-compatible provider rejects the whole request with HTTP 400.
+Both client `requestIn` functions therefore **remove** such a keyword (the key becomes
+absent, it is never rewritten to `[]` or `undefined`) before the schema enters the IR, so
+every outbound protocol and the batch path carry the cleaned schema. Only keywords on a
+fixed list are removed, only when the value is `null`, and only inside subschema
+positions: `const`, `default`, `example`, `enum` members, `x-*` extensions, unknown or
+vendor keys, property names and non-null values are left exactly as sent. The walk is
+copy-on-write (the client's wire body is never mutated, and a clean schema is carried
+without copying) and stops at 64 subschema levels, below which a schema is carried as
+sent. The authoritative keyword and position lists are in the protocol-translation spec
+(`openspec/specs/protocol-translation`, requirement "The stripped keywords and walked
+positions are fixed lists"), not restated here.
+
+This is intentional, so a same-protocol passthrough now differs from the client's bytes
+wherever a null keyword was present. It is why the `tool-schema-nulls` fixtures hold a
+`normalized` expectation instead of round-tripping to themselves: the suite asserts
+`canon(Out(In(request)))` equals `canon(normalized)`, `In(request)` equals
+`In(normalized)`, and the ordinary round-trip on `normalized`. `canon` is deliberately not
+taught to drop nulls, so a regression that leaked one back out fails the suite. The
+fixture checks live in `tool-schema-golden.spec.ts`.
 
 ### Streamed usage on a cross-protocol `message_start` (A-9)
 

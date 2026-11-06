@@ -18,6 +18,10 @@ export interface StubRequestRecord {
    * duplicates of this header away in `req.headers`, so only `rawHeaders` can
    * prove "exactly one". */
   userAgentCount: number;
+  /** The parsed JSON body of a chat request (path ending in `/chat/completions`
+   * or `/messages`); absent for every other path and for an unparseable body
+   * (fix-tool-schema-null-keywords: proves what the proxy sent upstream). */
+  body?: unknown;
   /** Settles when this request/response pair is torn down — the response ended
    * normally OR the proxy aborted the upstream call (stream-lifecycle e2e). */
   closed: Promise<void>;
@@ -567,13 +571,17 @@ export async function startStubUpstream(): Promise<StubUpstream> {
       // Tolerant: the OpenAI file plane uploads a MULTIPART body, which is not
       // JSON. Throwing here would leave the request hanging with no response.
       let body: { model?: string; stream?: boolean } = {};
+      let parsedBody: unknown;
       if (raw) {
         try {
-          body = JSON.parse(raw) as { model?: string; stream?: boolean };
+          parsedBody = JSON.parse(raw);
+          body = parsedBody as { model?: string; stream?: boolean };
         } catch {
           body = {};
+          parsedBody = undefined;
         }
       }
+      const isChatPath = /\/(?:chat\/completions|messages)$/.test(pathOnlyOf(path));
       const model = body.model ?? '';
       const stream = body.stream === true;
       requests.push({
@@ -586,6 +594,7 @@ export async function startStubUpstream(): Promise<StubUpstream> {
         userAgentCount: req.rawHeaders.filter(
           (v, i) => i % 2 === 0 && v.toLowerCase() === 'user-agent',
         ).length,
+        ...(isChatPath && parsedBody !== undefined ? { body: parsedBody } : {}),
         closed: new Promise<void>((resolve) => res.once('close', resolve)),
       });
       // --- OpenAI's FILE plane (add-batch-inference Phase C) -----------------

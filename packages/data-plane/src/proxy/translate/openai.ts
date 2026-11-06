@@ -28,6 +28,7 @@ import type {
 import { stopReasonFromOpenai, stopReasonToOpenai } from './stop-reason';
 import { mergePartialUsage, partialUsageFromOpenai, usageFromOpenai, usageToOpenai } from './usage';
 import { formatSseData, sseFrames } from './stream';
+import { normalizeToolSchema } from './tool-schema';
 
 // --- shared block <-> part helpers ---
 
@@ -200,7 +201,7 @@ function requestIn(wireInput: unknown, quirks: AdapterQuirks): NormalizedRequest
   const tools: NormalizedTool[] | undefined = wire.tools?.map((t) => ({
     name: t.function.name,
     ...(t.function.description !== undefined ? { description: t.function.description } : {}),
-    parameters: t.function.parameters ?? {},
+    parameters: normalizeToolSchema(t.function.parameters ?? {}),
   }));
 
   const maxOut = wire.max_completion_tokens ?? wire.max_tokens;

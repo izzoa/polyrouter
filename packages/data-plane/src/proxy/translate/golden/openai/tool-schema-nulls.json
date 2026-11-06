@@ -1,0 +1,268 @@
+{
+  "request": {
+    "model": "gpt-4o",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Book me a flight to SFO."
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "ping",
+          "description": "Liveness probe",
+          "parameters": {
+            "type": "object",
+            "properties": {}
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "book_flight",
+          "description": "Book a flight",
+          "parameters": {
+            "type": "object",
+            "description": "Flight booking arguments",
+            "properties": {
+              "from": {
+                "type": "string",
+                "description": "IATA code"
+              },
+              "to": {
+                "type": "string",
+                "maxLength": 3,
+                "description": null,
+                "pattern": null
+              },
+              "legs": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "seat": {
+                      "$ref": "#/$defs/Seat"
+                    }
+                  },
+                  "required": null,
+                  "description": null
+                },
+                "maxItems": 4
+              },
+              "tags": {
+                "type": "array",
+                "description": "free-form labels",
+                "items": null,
+                "minItems": null
+              },
+              "mode": {
+                "type": ["string", "null"],
+                "enum": ["economy", "business", null],
+                "default": null
+              },
+              "fixed": {
+                "const": null,
+                "description": "always null"
+              },
+              "payload": {
+                "type": "object",
+                "default": {
+                  "required": null,
+                  "description": null
+                },
+                "examples": [
+                  {
+                    "required": null
+                  }
+                ],
+                "x-vendor": {
+                  "description": null,
+                  "required": null
+                },
+                "propertyOrdering": null
+              },
+              "required": {
+                "type": "string",
+                "description": "a property that happens to be named required"
+              },
+              "items": null,
+              "contact": {
+                "type": "object",
+                "properties": {
+                  "email": {
+                    "type": "string"
+                  }
+                },
+                "required": null,
+                "additionalProperties": null
+              }
+            },
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "promo": {
+                    "type": "string"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "title": null,
+                "required": null
+              }
+            ],
+            "$defs": {
+              "Seat": {
+                "type": "string",
+                "enum": ["window", "aisle"],
+                "description": null,
+                "format": null
+              },
+              "Cabin": {
+                "type": "string",
+                "nullable": null
+              }
+            },
+            "additionalProperties": false,
+            "required": null
+          }
+        }
+      }
+    ],
+    "tool_choice": "auto",
+    "max_completion_tokens": 256
+  },
+  "normalized": {
+    "model": "gpt-4o",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Book me a flight to SFO."
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "ping",
+          "description": "Liveness probe",
+          "parameters": {
+            "type": "object",
+            "properties": {}
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "book_flight",
+          "description": "Book a flight",
+          "parameters": {
+            "type": "object",
+            "description": "Flight booking arguments",
+            "properties": {
+              "from": {
+                "type": "string",
+                "description": "IATA code"
+              },
+              "to": {
+                "type": "string",
+                "maxLength": 3
+              },
+              "legs": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "seat": {
+                      "$ref": "#/$defs/Seat"
+                    }
+                  }
+                },
+                "maxItems": 4
+              },
+              "tags": {
+                "type": "array",
+                "description": "free-form labels"
+              },
+              "mode": {
+                "type": ["string", "null"],
+                "enum": ["economy", "business", null],
+                "default": null
+              },
+              "fixed": {
+                "const": null,
+                "description": "always null"
+              },
+              "payload": {
+                "type": "object",
+                "default": {
+                  "required": null,
+                  "description": null
+                },
+                "examples": [
+                  {
+                    "required": null
+                  }
+                ],
+                "x-vendor": {
+                  "description": null,
+                  "required": null
+                },
+                "propertyOrdering": null
+              },
+              "required": {
+                "type": "string",
+                "description": "a property that happens to be named required"
+              },
+              "items": null,
+              "contact": {
+                "type": "object",
+                "properties": {
+                  "email": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "promo": {
+                    "type": "string"
+                  }
+                }
+              },
+              {
+                "type": "object"
+              }
+            ],
+            "$defs": {
+              "Seat": {
+                "type": "string",
+                "enum": ["window", "aisle"]
+              },
+              "Cabin": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      }
+    ],
+    "tool_choice": "auto",
+    "max_completion_tokens": 256
+  }
+}

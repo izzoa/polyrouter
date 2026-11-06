@@ -312,17 +312,29 @@ const openModal = async (h: Harness, kind: Parameters<AppStore['openModal']>[0])
   await flush();
 };
 
+/** The open dialog whose accessible name is exactly `name`, or an empty fragment once it is
+ * gone (a commit that succeeded closed it). */
+const dialogNamed = (name: string): ParentNode =>
+  [...document.querySelectorAll<HTMLElement>('[role="dialog"]')].find(
+    (d) => d.getAttribute('aria-label') === name,
+  ) ?? document.createDocumentFragment();
+
 const SCENARIOS: Record<string, Scenario> = {
   // ── busy ──
-  'components/Inspector.tsx app.deleteSelectedBodies': {
-    page: 'requests',
+  // The shared destructive confirmation's commit (adopt-red-destructive-actions D6), opened
+  // from an agent's Delete: the trigger only opens it, and the commit carries the busy state.
+  'components/ConfirmDialog.tsx settle': {
+    page: 'agents',
     prepare: async (h) => {
-      h.store.select(ROWS[0]!.id);
-      await flush();
-      byLabel(h.host, 'Show bodies')?.click();
+      const trigger = [
+        ...h.host.querySelectorAll<HTMLButtonElement>('main button.btn-ghost--destructive'),
+      ].find((b) => shownLabel(b) === 'Delete');
+      expect(trigger, 'the agent row’s Delete').toBeDefined();
+      trigger!.focus();
+      trigger!.click();
       await flush();
     },
-    find: (h) => byLabel(within(h, '#inspector-drawer'), 'Delete'),
+    find: () => byLabel(dialogNamed('Delete agent "claude-code"?'), 'Delete agent'),
     settled: 'gone',
   },
   'components/Modals.tsx app.completeOauthConnect': {
@@ -641,7 +653,7 @@ const SCENARIOS: Record<string, Scenario> = {
     find: (h) => byLabel(h.host, 'Make admin'),
     settled: 'gone',
   },
-  'pages/Users.tsx app.uaSetDisabled#2': {
+  'pages/Users.tsx app.uaSetDisabled': {
     page: 'users',
     find: (h) => byLabel(h.host, 'Enable'),
     settled: 'gone',
@@ -665,51 +677,6 @@ const SCENARIOS: Record<string, Scenario> = {
         document.querySelector('[aria-label="Confirm body capture"]') ?? document,
         'Capture bodies',
       ),
-  },
-  'components/BodyCaptureCard.tsx app.setBodyCaptureMode#3': {
-    page: 'settings',
-    opts: {
-      bodyCaptureStatus: {
-        mode: 'all',
-        retentionDays: 30,
-        droppedCount: 0,
-        lastPurgeAt: null,
-        lastPurgeCount: 0,
-        available: true,
-        agents: [],
-      },
-    },
-    prepare: async (h) => {
-      h.host.querySelectorAll<HTMLInputElement>('input[name="bc-mode"]')[0]?.click();
-      await flush();
-    },
-    find: () =>
-      byLabel(
-        document.querySelector('[aria-label="Disable body capture"]') ?? document,
-        'Keep until retention',
-      ),
-  },
-  'components/BodyCaptureCard.tsx (async () => …)()': {
-    page: 'settings',
-    opts: {
-      bodyCaptureStatus: {
-        mode: 'all',
-        retentionDays: 30,
-        droppedCount: 0,
-        lastPurgeAt: null,
-        lastPurgeCount: 0,
-        available: true,
-        agents: [],
-      },
-    },
-    prepare: async (h) => {
-      h.host.querySelectorAll<HTMLInputElement>('input[name="bc-mode"]')[0]?.click();
-      await flush();
-    },
-    find: () => {
-      const dialog = document.querySelector('[aria-label="Disable body capture"]');
-      return dialog?.querySelector<HTMLButtonElement>('button.btn-primary') ?? null;
-    },
   },
   'components/Inspector.tsx app.loadSelectedBodies': {
     page: 'requests',

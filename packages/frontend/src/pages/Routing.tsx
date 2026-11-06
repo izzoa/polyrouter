@@ -1112,7 +1112,7 @@ function SemanticLearning() {
                     </span>
                     <button
                       type="button"
-                      class="btn-ghost btn-ghost--amber"
+                      class="btn-ghost"
                       style="font:400 0.6875rem/1rem 'Geist',sans-serif;cursor:pointer"
                       onKeyDown={confirmKeyDown}
                       onClick={() => {

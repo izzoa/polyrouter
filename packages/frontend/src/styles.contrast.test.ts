@@ -426,22 +426,282 @@ describe('the primary button draws its fills from the derivations, darkening in 
   }
 });
 
-describe('the amber ghost’s hover text clears the text floor (interim, adopt-design-tokens-v2 D18)', () => {
-  // The --amber FILL read 2.81:1 as hover text on white. Until adopt-red-destructive-actions
-  // deletes the class, its hover text takes --amber-text; the rule is read, so pointing it
-  // back at the fill fails here.
+/* ── The destructive treatment (adopt-red-destructive-actions) ─────────────────────────
+ * The destructive ghost (the trigger) and the destructive commit (the red fill inside a
+ * destructive confirm dialog). The amber ghost they replace is gone: amber is status only.
+ */
+
+/** Top-level leaf rules in sheet order. A brace-depth scan, so a rule inside an at-rule (a
+ * comfort block, a container query, a keyframe) is not read as part of the desktop cascade. */
+function topLevelRules(): { selectors: string[]; body: string; order: number }[] {
+  const out: { selectors: string[]; body: string; order: number }[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < cssCode.length; i += 1) {
+    const ch = cssCode[i];
+    if (ch === '{') {
+      const close = cssCode.indexOf('}', i);
+      const nextOpen = cssCode.indexOf('{', i + 1);
+      const prelude = cssCode.slice(start, i).trim();
+      if (depth === 0 && !prelude.startsWith('@') && (nextOpen === -1 || nextOpen > close)) {
+        out.push({
+          selectors: prelude.split(',').map((s) => s.trim().replace(/\s+/g, ' ')),
+          body: cssCode.slice(i + 1, close),
+          order: out.length,
+        });
+        i = close;
+        start = close + 1;
+        continue;
+      }
+      depth += 1;
+      start = i + 1;
+    } else if (ch === '}') {
+      depth -= 1;
+      start = i + 1;
+    }
+  }
+  return out;
+}
+
+type GhostPseudo = ':hover' | ':active';
+type GhostStyle = Record<'background' | 'color' | 'border-color' | 'border-width', string> &
+  Record<'padding-block' | 'padding-inline', number>;
+
+/** The destructive ghost's computed style in one state, decided the way the browser decides
+ * it: every top-level rule on `.btn-ghost` or `.btn-ghost--destructive` whose pseudo-classes
+ * the state carries, ordered by specificity and then by source order, with the `border` and
+ * `padding` shorthands expanded. A pressed button is also hovered, so pressed carries both. */
+function destructiveGhost(pseudos: readonly GhostPseudo[]): GhostStyle {
+  const applies = (selector: string): number | null => {
+    const m = /^\.btn-ghost(?:--destructive)?((?::hover|:active)*)$/.exec(selector);
+    if (!m) return null;
+    const need = (m[1] ?? '').match(/:[\w-]+/g) ?? [];
+    return need.every((p) => (pseudos as readonly string[]).includes(p)) ? 1 + need.length : null;
+  };
+  const hits = topLevelRules()
+    .flatMap((r) => r.selectors.map((s) => ({ spec: applies(s), body: r.body, order: r.order })))
+    .filter((h): h is { spec: number; body: string; order: number } => h.spec !== null)
+    .sort((a, b) => a.spec - b.spec || a.order - b.order);
+  const style: Record<string, string> = { background: 'none' };
+  for (const { body } of hits) {
+    for (const m of body.matchAll(/(?:^|[;\s])([\w-]+):\s*([^;]+);/g)) {
+      const [prop, value] = [m[1] as string, (m[2] as string).trim()];
+      if (prop === 'border') {
+        // Split on the spaces outside parentheses: `2px solid var(--red-text)`.
+        for (const part of value.split(/\s+(?![^(]*\))/)) {
+          if (/^\d/.test(part)) style['border-width'] = part;
+          else if (!/^(?:solid|dashed|dotted|none)$/.test(part)) style['border-color'] = part;
+        }
+      } else if (prop === 'padding') {
+        const [block, inline] = value.split(/\s+/);
+        style['padding-block'] = block as string;
+        style['padding-inline'] = inline ?? (block as string);
+      } else style[prop] = value;
+    }
+  }
+  const px = (v: string | undefined, what: string): number => {
+    expect(v, `the destructive ghost declares its ${what}`).toMatch(/^\d+px$/);
+    return parseFloat(v as string);
+  };
+  return {
+    background: style['background'] as string,
+    color: style['color'] as string,
+    'border-color': style['border-color'] as string,
+    'border-width': style['border-width'] as string,
+    'padding-block': px(style['padding-block'], 'block padding'),
+    'padding-inline': px(style['padding-inline'], 'inline padding'),
+  };
+}
+
+const GHOST_STATES: Record<'rest' | 'hover' | 'pressed', readonly GhostPseudo[]> = {
+  rest: [],
+  hover: [':hover'],
+  pressed: [':hover', ':active'],
+};
+/** Every indigo token (the accent and each derivation `:root` builds from it), so "no indigo"
+ * is checked on the evaluated colour too, not only on the declaration's text. */
+const INDIGO_TOKENS = Object.keys(LIGHT).filter((n) => n === 'accent' || n.startsWith('accent-'));
+
+describe('the destructive ghost stays red when hovered or pressed, in both themes (task 2.2, D10)', () => {
+  it('hovered it takes the Red Wash; pressed, the wash with a 2px Red Text border', () => {
+    expect(destructiveGhost(GHOST_STATES.rest)).toMatchObject({
+      'border-color': 'var(--red)',
+      'border-width': '1px',
+      color: 'var(--red-text)',
+    });
+    expect(destructiveGhost(GHOST_STATES.hover)).toMatchObject({
+      background: 'var(--red-bg)',
+      'border-color': 'var(--red)',
+      'border-width': '1px',
+      color: 'var(--red-text)',
+    });
+    expect(destructiveGhost(GHOST_STATES.pressed)).toMatchObject({
+      background: 'var(--red-bg)',
+      'border-color': 'var(--red-text)',
+      'border-width': '2px',
+      color: 'var(--red-text)',
+    });
+  });
+
   for (const [themeName, vars] of Object.entries(THEMES)) {
-    it(`${themeName}: .btn-ghost--amber:hover text ≥ 4.5:1 on bg / panel / chip`, () => {
-      const text = declaration('.btn-ghost--amber:hover', 'color');
-      for (const s of SURFACE_TOKENS) {
-        const label = `${themeName} ${text}/--${s}`;
-        const r = ratio(evalColor(text, vars, label), color(vars, s, label), label);
-        expect(r, `${label} = ${r.toFixed(2)}:1, under the 4.5:1 floor`).toBeGreaterThanOrEqual(
-          4.5,
-        );
+    /** What a state paints, its colours evaluated in this theme. Padding is left out: it only
+     * keeps the box still (the box test below), and is not a visible difference. */
+    const resolved = (state: keyof typeof GHOST_STATES): Record<string, string> => {
+      const s = destructiveGhost(GHOST_STATES[state]);
+      const c = (expr: string, what: string): string =>
+        expr === 'none' ? 'none' : evalColor(expr, vars, `${themeName} ${state} ${what}`);
+      return {
+        background: c(s.background, 'background'),
+        color: c(s.color, 'label'),
+        'border-color': c(s['border-color'], 'border'),
+        'border-width': s['border-width'],
+      };
+    };
+
+    it(`${themeName}: hovered and pressed differ from each other`, () => {
+      const hover = resolved('hover');
+      const pressed = resolved('pressed');
+      // In dark, --red-text equals --red (#f2555a), so the colours alone cannot tell the two
+      // apart: the 2px border is the cue that must survive.
+      expect(
+        JSON.stringify(pressed),
+        `${themeName}: pressed paints exactly as hovered (${JSON.stringify(hover)})`,
+      ).not.toBe(JSON.stringify(hover));
+    });
+
+    it(`${themeName}: no state names or evaluates to an indigo token`, () => {
+      const indigo = new Map(INDIGO_TOKENS.map((t) => [color(vars, t, `${themeName} --${t}`), t]));
+      for (const state of Object.keys(GHOST_STATES) as (keyof typeof GHOST_STATES)[]) {
+        const declared = destructiveGhost(GHOST_STATES[state]);
+        for (const [prop, value] of Object.entries(declared)) {
+          expect(String(value), `${themeName} ${state} ${prop} names an indigo token`).not.toMatch(
+            /var\(\s*--accent/,
+          );
+        }
+        const evaluated = resolved(state);
+        for (const prop of ['background', 'color', 'border-color'] as const) {
+          const hex = String(evaluated[prop]);
+          expect(
+            indigo.get(hex),
+            `${themeName} ${state} ${prop} is ${hex}, the --${indigo.get(hex) ?? ''} indigo`,
+          ).toBeUndefined();
+        }
       }
     });
   }
+
+  it('its box is the same at rest, hovered and pressed: border plus padding per side', () => {
+    // The rendered half — getBoundingClientRect at rest, hovered and pressed — is
+    // browser/destructiveButtons.spec.ts; this holds the declarations that produce it.
+    const box = (state: keyof typeof GHOST_STATES): [number, number] => {
+      const s = destructiveGhost(GHOST_STATES[state]);
+      const edge = parseFloat(s['border-width']);
+      return [edge + s['padding-block'], edge + s['padding-inline']];
+    };
+    expect(box('hover'), 'hovered vs rest').toEqual(box('rest'));
+    expect(box('pressed'), 'pressed vs rest').toEqual(box('rest'));
+  });
+
+  it('pressed applies at once: no transition', () => {
+    expect(declaration('.btn-ghost--destructive:active', 'transition')).toBe('none');
+  });
+});
+
+describe('the destructive treatment meets its contrast floors', () => {
+  // adopt-red-destructive-actions task 2.4 (dashboard-core "The destructive treatment meets its
+  // contrast floors in both themes"; design.md D1 / D5). The shipped tokens and the commit's
+  // color-mix fills are evaluated in both themes; every message names the token and the
+  // surface (`dark --red-fill/--panel = 2.72:1, under the 3:1 floor`).
+  const commitFills = (): Record<'rest' | 'hover' | 'pressed', string> => ({
+    rest: declaration('.btn-destructive', 'background'),
+    hover: declaration('.btn-destructive:hover', 'background'),
+    pressed: declaration('.btn-destructive:active', 'background'),
+  });
+
+  it('the commit fills are --red-fill and its color-mix derivations toward literal Ink', () => {
+    // Derived, never written as literal hexes, and mixed toward #17181a rather than
+    // var(--text), which would lighten the dark fill and drop white under 4.5:1.
+    expect(commitFills()).toEqual({
+      rest: 'var(--red-fill)',
+      hover: 'color-mix(in oklab, var(--red-fill) 85%, #17181a)',
+      pressed: 'color-mix(in oklab, var(--red-fill) 70%, #17181a)',
+    });
+    expect(declaration('.btn-destructive', 'color')).toBe('#fff');
+  });
+
+  describe('white on the destructive fill at rest, hovered and pressed (≥ 4.5:1)', () => {
+    for (const [themeName, vars] of Object.entries(THEMES)) {
+      it(`${themeName}: #fff on --red-fill at rest, hovered and pressed ≥ 4.5:1`, () => {
+        const label = declaration('.btn-destructive', 'color');
+        const text = evalColor(label, vars, `${themeName} label`);
+        const lum = (expr: string, state: string): number =>
+          hexLuminance(evalColor(expr, vars, `${themeName} ${state}`), `${themeName} ${state}`);
+        const fills = commitFills();
+        for (const [state, fill] of Object.entries(fills)) {
+          const pair = `${themeName} #fff/--red-fill ${state} (${fill})`;
+          const r = ratio(text, evalColor(fill, vars, pair), pair);
+          expect(r, `${pair} = ${r.toFixed(2)}:1, under the 4.5:1 floor`).toBeGreaterThanOrEqual(
+            4.5,
+          );
+        }
+        // Hover and pressed darken toward Ink in both themes, never lighten.
+        expect(lum(fills.hover, 'hover'), `${themeName} --red-fill hover is darker`).toBeLessThan(
+          lum(fills.rest, 'rest'),
+        );
+        expect(
+          lum(fills.pressed, 'pressed'),
+          `${themeName} --red-fill pressed is darker than hover`,
+        ).toBeLessThan(lum(fills.hover, 'hover'));
+      });
+    }
+  });
+
+  describe('the rest fill against the panel and the canvas (≥ 3:1)', () => {
+    // Only the rest fill holds the 3:1 boundary: the dark hover and pressed fills sit at 2.71
+    // and 2.21:1 on the panel, a transient state identified by its white label (D1).
+    floors(pairs(['red-fill'], ['panel', 'bg'], 3));
+  });
+
+  const GHOST_SURFACES = ['panel', 'bg', 'chip', 'hover', 'red-bg'] as const;
+
+  describe("the destructive ghost's Red Text label on every surface it sits on (≥ 4.5:1)", () => {
+    floors(pairs(['red-text'], GHOST_SURFACES, 4.5));
+  });
+
+  describe("the destructive ghost's Signal Red border on the same surfaces (≥ 3:1)", () => {
+    floors(pairs(['red'], GHOST_SURFACES, 3));
+  });
+});
+
+describe('the lock admits red for destructive intent, as styles.css spends it (STYLESEED.md L8)', () => {
+  // adopt-red-destructive-actions task 2.5 / design.md D9: STYLESEED.md and styles.css change
+  // together. The palette stays single-accent with no new hue; red gains one role, the
+  // destructive ghost and commit, which the stylesheet defines, filling only the commit.
+  const lock = readFileSync(join(SRC, '..', '..', '..', 'STYLESEED.md'), 'utf8').split('\n');
+  const palette = lock.find((line) => line.startsWith('- Palette mode:')) ?? '';
+  const focal = lock.find((line) => line.startsWith('- **One focal point per screen')) ?? '';
+
+  it('the palette line stays single-accent and names red for destructive intent', () => {
+    expect(palette, 'STYLESEED.md lost its "- Palette mode:" line').not.toBe('');
+    expect(palette).toMatch(/single-accent/);
+    expect(palette).toMatch(/green\/amber\/red are semantic STATUS;/);
+    expect(palette).toContain(
+      'red also marks destructive intent (destructive ghost + commit only)',
+    );
+    expect(palette, 'red is no longer status-only').not.toMatch(/semantic STATUS only/);
+  });
+  it('the focal-point rule admits red for destructive intent beside status', () => {
+    expect(focal).toContain(
+      'greyscale plus green/amber/red for semantic status, and red for destructive intent.',
+    );
+  });
+  it('styles.css defines the two destructive buttons, the commit filled with --red-fill', () => {
+    // Where --red-fill may appear at all is task 5.2's placement guard.
+    expect(ruleBodies('.btn-ghost--destructive'), 'the destructive ghost').toHaveLength(1);
+    expect(declaration('.btn-destructive', 'background')).toBe('var(--red-fill)');
+    expect(LIGHT['red-fill'], 'the light theme declares --red-fill').toBeDefined();
+    expect(themeBlock("[data-theme='dark']")['red-fill'], 'dark declares --red-fill').toBeDefined();
+  });
 });
 
 describe('the lock names every accent derivation styles.css defines (STYLESEED.md L9)', () => {

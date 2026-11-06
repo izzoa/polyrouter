@@ -62,6 +62,7 @@ const FAMILY = [24, 32] as const;
 const ROLE_HEIGHTS: readonly (readonly [string, 24 | 32])[] = [
   ['.select--sm', 24],
   ['.btn-primary', 32],
+  ['.btn-destructive', 32],
   ['.btn-cancel', 32],
   ['.input', 32],
   ['.select', 32],
@@ -77,15 +78,7 @@ const ROLE_HEIGHTS: readonly (readonly [string, 24 | 32])[] = [
 /** Controls held to family membership only, not to their role's own height, each with the
  * change that owns the fix. Bounded like `NOT_SINGLE_LINE`: each entry must still match a
  * rendered control (a stale entry fails the overlay sweep). */
-const ROLE_EXCEPTIONS: readonly { sel: string; why: string }[] = [
-  {
-    sel: '[aria-label="Disable body capture"] button.btn-ghost',
-    why:
-      'the keep-or-purge dialog\'s "Keep until retention" ghost is stretched to its row\'s 32px ' +
-      'beside Cancel and Purge now; adopt-red-destructive-actions task 4.4 rebuilds the ' +
-      'dialog with it as the 32px secondary action',
-  },
-];
+const ROLE_EXCEPTIONS: readonly { sel: string; why: string }[] = [];
 const SWITCH_TRACK = { 'toggle--md': { w: 36, h: 20 }, 'toggle--sm': { w: 32, h: 18 } } as const;
 /** EXACT: whole pixels, with only float noise allowed (see the header). */
 const EXACT = 0.05;

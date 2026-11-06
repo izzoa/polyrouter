@@ -1,6 +1,4 @@
 import { createMemo, createSignal, For, onMount, Show } from 'solid-js';
-import { Icon } from '../components/Icon';
-import { useModalSurface } from '../a11y';
 import type { BatchJobDto } from '../data/api';
 import { BATCH_POLL_MS, fmtElapsed } from '../data/batchBand';
 import { createPoller } from '../data/poller';
@@ -109,7 +107,9 @@ export function Batches(props: { live: boolean }) {
   const [rows, setRows] = createSignal<BatchJobDto[]>([]);
   const [loading, setLoading] = createSignal(true);
   const [error, setError] = createSignal<string | null>(null);
-  const [confirming, setConfirming] = createSignal<BatchJobDto | null>(null);
+  /** The table: where focus lands when a cancel's reload took the row whose Cancel opened
+   * the confirmation (D8). */
+  let table: HTMLDivElement | undefined;
 
   const load = async (): Promise<void> => {
     try {
@@ -129,6 +129,35 @@ export function Batches(props: { live: boolean }) {
   createPoller({ fn: () => load(), intervalMs: () => BATCH_POLL_MS, enabled: () => props.live });
 
   const active = createMemo(() => rows().filter((r) => !TERMINAL.has(r.status)).length);
+
+  /** Cancelling is destructive — the items still running are abandoned — so it asks first,
+   * in the shared destructive confirmation (adopt-red-destructive-actions D6), which holds
+   * its focus trap, Escape, busy and failure. It keeps its own name, `Cancel batch`, which
+   * selectors and pins key on, and its title, body and dismiss label are unchanged. The
+   * commit stays busy through the reload, so the list it closes onto already shows the job
+   * cancelling. The reload is a read, not part of what the dialog asked: once the cancel is
+   * accepted, the dialog closes even if the reload fails, because an alert saying the cancel
+   * failed would be untrue. That failure is the page's, reported as every failed refresh is,
+   * by the banner saying the list may be stale. */
+  const cancel = (job: BatchJobDto): void => {
+    const remaining = Math.max(0, job.counts.total - job.counts.completed - job.counts.failed);
+    app.confirmDestructive({
+      title: 'Cancel this batch?',
+      body:
+        `${String(remaining)} of ${String(job.counts.total)} requests have not run yet. ` +
+        'Cancelling asks the provider to stop; anything it already completed is still recorded ' +
+        'and still charged. The reserved budget is released once that settles.',
+      label: 'Cancel batch',
+      dismissLabel: 'Keep running',
+      commitLabel: 'Cancel batch',
+      busyLabel: 'Cancelling…',
+      run: async () => {
+        await app.cancelBatch(job.id);
+        await load();
+      },
+      fallbackFocus: () => table ?? null,
+    });
+  };
 
   return (
     <div class="rs-page" style="display:flex;flex-direction:column;gap:24px;max-width:1200px">
@@ -158,7 +187,17 @@ export function Batches(props: { live: boolean }) {
         )}
       </Show>
 
-      <div class="panel rs-table-panel rs-table-batches" style="overflow:hidden;border-radius:10px">
+      {/* A named group, focusable from script only: a cancelled row's landing spot (D8). */}
+      <div
+        ref={(el) => {
+          table = el;
+        }}
+        class="panel rs-table-panel rs-table-batches"
+        role="group"
+        aria-label="Batches"
+        tabindex="-1"
+        style="overflow:hidden;border-radius:10px"
+      >
         <div class="table-head">
           <For each={COLUMNS}>
             {(c) => (
@@ -181,15 +220,9 @@ export function Batches(props: { live: boolean }) {
             </div>
           }
         >
-          <For each={rows()}>{(job) => <Row job={job} onCancel={() => setConfirming(job)} />}</For>
+          <For each={rows()}>{(job) => <Row job={job} onCancel={() => cancel(job)} />}</For>
         </Show>
       </div>
-
-      <Show when={confirming()} keyed>
-        {(job) => (
-          <CancelDialog job={job} onClose={() => setConfirming(null)} onDone={() => void load()} />
-        )}
-      </Show>
     </div>
   );
 }
@@ -333,7 +366,7 @@ function Row(props: { job: BatchJobDto; onCancel: () => void }) {
               The visible word stays short; the accessible name carries the job. */}
           <button
             type="button"
-            class="btn-ghost"
+            class="btn-ghost btn-ghost--destructive"
             style="font:500 0.75rem/1rem 'Geist',sans-serif"
             aria-label={`Cancel batch on ${job().modelLabel ?? job().modelId}`}
             onClick={props.onCancel}
@@ -342,61 +375,6 @@ function Row(props: { job: BatchJobDto; onCancel: () => void }) {
           </button>
         </Show>
       </Cell>
-    </div>
-  );
-}
-
-/** Cancelling is destructive — the items still running are abandoned — so it goes
- * through the same modal-surface contract every other destructive action uses:
- * a real focus trap, Escape, focus restore and layer registration. */
-function CancelDialog(props: { job: BatchJobDto; onClose: () => void; onDone: () => void }) {
-  const app = useApp();
-  const [busy, setBusy] = createSignal(false);
-  const surface = useModalSurface(app, {
-    when: () => true,
-    label: 'Cancel batch',
-    onDismiss: () => props.onClose(),
-  });
-  const remaining = (): number =>
-    Math.max(0, props.job.counts.total - props.job.counts.completed - props.job.counts.failed);
-  return (
-    <div class="overlay" style={{ 'z-index': String(surface.z().backdrop) }}>
-      <div
-        class="panel card confirm-card"
-        {...surface.props}
-        style={{ 'z-index': String(surface.z().surface) }}
-      >
-        <div class="section-title" style="margin-bottom:8px">
-          Cancel this batch?
-        </div>
-        <div class="t-dense" style="color:var(--text2);margin-bottom:12px">
-          {remaining()} of {props.job.counts.total} requests have not run yet. Cancelling asks the
-          provider to stop; anything it already completed is still recorded and still charged. The
-          reserved budget is released once that settles.
-        </div>
-        <div style="display:flex;gap:8px;justify-content:flex-end">
-          <button type="button" class="btn-cancel" onClick={() => props.onClose()}>
-            Keep running
-          </button>
-          <button
-            type="button"
-            class="btn-primary"
-            disabled={busy()}
-            onClick={() => {
-              setBusy(true);
-              void app
-                .cancelBatch(props.job.id)
-                .then(() => {
-                  props.onClose();
-                  props.onDone();
-                })
-                .catch(() => setBusy(false));
-            }}
-          >
-            <Icon name="close" size={12} /> Cancel batch
-          </button>
-        </div>
-      </div>
     </div>
   );
 }

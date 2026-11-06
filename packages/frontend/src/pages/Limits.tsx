@@ -1,7 +1,9 @@
 import { createSignal, For, onCleanup, onMount, Show } from 'solid-js';
 import { createPoller } from '../data/poller';
 import { BudgetProgress, budgetBasis } from '../components/BudgetProgress';
+import { pageTitle } from '../components/Topbar';
 import type { BudgetDto } from '../data/api';
+import { FROM_DIALOG } from '../state/appState';
 import { useApp } from '../state/context';
 
 export function Limits(props: { live?: boolean }) {
@@ -28,14 +30,18 @@ export function Limits(props: { live?: boolean }) {
     void app.requestAggregateRefresh(() => app.loadBudgetProgress(true), true);
   };
 
+  /** Delete asks first, in the shared destructive confirmation (adopt-red-destructive-actions
+   * D6 / D7). The card, and with it this trigger, goes on success: focus lands on the page
+   * title (D8). */
   const removeBudget = (b: BudgetDto): void => {
-    if (
-      globalThis.confirm(
-        `Delete budget "${b.name}"? New requests will no longer be enforced by it.`,
-      )
-    ) {
-      void app.deleteBudget(b.id);
-    }
+    app.confirmDestructive({
+      title: `Delete budget "${b.name}"?`,
+      body: 'New requests will no longer be enforced by it.',
+      commitLabel: 'Delete budget',
+      busyLabel: 'Deleting…',
+      run: () => app.deleteBudget(b.id, FROM_DIALOG),
+      fallbackFocus: pageTitle,
+    });
   };
 
   const agentName = (agentId: string | null): string => {
@@ -121,7 +127,7 @@ export function Limits(props: { live?: boolean }) {
                   </button>
                   <button
                     type="button"
-                    class="btn-ghost btn-ghost--amber"
+                    class="btn-ghost btn-ghost--destructive"
                     onClick={() => removeBudget(b)}
                   >
                     Delete

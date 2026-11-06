@@ -17,6 +17,7 @@ heading is started.
 
 ### Changed
 
+- **Destructive actions are red: a red-outlined trigger and a red commit in a dashboard dialog, replacing the amber button and the browser's native prompts.** Delete, Remove, Purge, Disable and Cancel batch now ask in one dashboard dialog that names what is lost, puts Cancel first, stays busy while the request runs and reports a failure inside itself. The inspector's payload Delete asks first too. No API, routing behavior or stored data changed.
 - **The dashboard adopts one set of design tokens, and a first visit follows the OS theme (visual change).** Every page renders differently at desktop width: contrast-safe indigo text and visible field edges, one 24 / 32px control-height family, five rem-based type sizes, a 4px spacing scale and four radii, one selected look, pressed and busy states on every button, a sidebar grouped under Observe, Configure and Admin, a readout strip on Overview and Costs, and a Live lamp that blinks per event. A first-time visitor whose OS is dark now gets the dark theme, resolved before the first paint; a theme you chose is still remembered. No API, routing behavior or stored data changed.
 
 ### Fixed

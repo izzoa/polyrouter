@@ -15,6 +15,13 @@ export const ENDPOINT_COPIED = 'Endpoint copied';
 export const LAMP_BLINK_MS = 600;
 export const LAMP_MIN_INTERVAL_MS = 1000;
 
+/** The page title's id. It is a list page's stable focus point (adopt-red-destructive-actions
+ * D8): when a destructive commit removes the row whose Delete opened its confirmation, focus
+ * lands here, never on the document body. */
+export const PAGE_TITLE_ID = 'page-title';
+/** The page title, as a confirmation's `fallbackFocus`. */
+export const pageTitle = (): HTMLElement | null => document.getElementById(PAGE_TITLE_ID);
+
 const TITLES: Record<Page, [string, string]> = {
   overview: ['Overview', 'last 24 hours'],
   requests: ['Requests', 'every routed call, with its why'],
@@ -97,8 +104,10 @@ export function Topbar() {
         <span style="display:flex;align-self:center;color:var(--text3)" aria-hidden="true">
           <PageIcon page={state.page} size={17} />
         </span>
-        {/* The page title is the Title role (15px, D5): a page title is not a headline. */}
-        <div class="t-title" data-testid="page-title">
+        {/* The page title is the Title role (15px, D5): a page title is not a headline.
+            Focusable from script only (`tabindex="-1"`): it is where focus lands when a
+            destructive commit removed the control that opened its confirmation (D8). */}
+        <div class="t-title" id={PAGE_TITLE_ID} tabindex="-1" data-testid="page-title">
           {TITLES[state.page][0]}
         </div>
         <div class="t-dense" style="color:var(--text3)">

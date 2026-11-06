@@ -45,6 +45,12 @@
   --red: #e5484d;
   --red-bg: #fdecec;
   --red-text: #b42318;
+  /* Red Fill (adopt-red-destructive-actions D1; DESIGN.md Colors › Red Fill): the commit of a
+     destructive confirm dialog, and nothing else (`.btn-destructive`). Its own role token, as
+     the accent has four: the light value equals --red-text, but white on the dark
+     --red-text fails 4.5:1, and #b42318 sinks to 2.72:1 on the dark panel. White on it is
+     6.57:1 (light) and 5.42:1 (dark). Read only by CSS, with no fallback literal anywhere. */
+  --red-fill: #b42318;
   --accent-bg: color-mix(in oklab, var(--accent) 9%, var(--panel));
   --accent-deep: color-mix(in oklab, var(--accent) 78%, var(--text) 22%);
   /* The primary fill's hover and pressed tones (adopt-design-tokens-v2 D1). They mix
@@ -101,6 +107,9 @@
   --red: #f2555a;
   --red-bg: #391a1c;
   --red-text: #f2555a;
+  /* Lighter than the light value, so the rest fill clears 3:1 on the dark panel (3.30:1)
+     while white on it keeps 5.42:1. */
+  --red-fill: #c4342b;
   --shadow: none;
   --shadow-pop: none;
   --shadow-drawer: none;
@@ -496,17 +505,58 @@ textarea[aria-invalid='true']:focus {
   background: var(--accent-bg);
   border-color: var(--accent-deep);
 }
-/* Interim (adopt-design-tokens-v2 D18): the hover TEXT takes --amber-text, because the
-   --amber fill reads 2.81:1 on white, under the 4.5:1 text floor. The border keeps the
-   fill. adopt-red-destructive-actions deletes this class. */
-.btn-ghost--amber:hover {
-  border-color: var(--amber);
-  color: var(--amber-text);
+/* The destructive ghost (adopt-red-destructive-actions D10; DESIGN.md Buttons, "Destructive
+   ghost"): the trigger that starts a destructive action — Delete, Remove, Purge, Disable,
+   Cancel batch — on the ghost's own 24px box. A Red Text label on a 1px Signal Red border;
+   hovered, the Red Wash; pressed, the wash with a 2px Red Text border drawn INSIDE the same
+   box (the padding gives up 1px per side), so pressed differs from hovered in the dark theme
+   too, where Red Text equals Signal Red. These red tones are the one exception to the
+   ghost's deep-indigo hover and indigo-wash press: no state of it names an indigo token.
+   Every state restates the border and label colour, because `.btn-ghost:hover` (the same
+   specificity, earlier in the sheet) would otherwise turn them deep indigo. Focus and busy
+   are the shared rules. Amber is never a button colour (amber is status). */
+.btn-ghost--destructive {
+  border-color: var(--red);
+  color: var(--red-text);
 }
-/* Its pressed tone is its own wash, as a destructive ghost's is (DESIGN.md Buttons), so the
-   interim variant never borrows the indigo wash. */
-.btn-ghost--amber:active {
-  background: var(--amber-bg);
+.btn-ghost--destructive:hover {
+  background: var(--red-bg);
+  border-color: var(--red);
+  color: var(--red-text);
+}
+/* Pressed applies at once: no transition, and no shadow (the cue is the border's width). */
+.btn-ghost--destructive:active {
+  padding: 2px 9px;
+  background: var(--red-bg);
+  border: 2px solid var(--red-text);
+  transition: none;
+}
+
+/* The destructive commit (adopt-red-destructive-actions D1; DESIGN.md Buttons, "Destructive
+   commit"): the commit of a destructive confirm dialog, and nothing else — the primary's
+   32px box in the Red Fill, with a white label naming the verb. Hover and pressed darken
+   toward the LITERAL Ink #17181a in both themes, as the primary's do: mixing toward
+   var(--text) would lighten the dark fill (Ink is near-white there) and drop white under
+   4.5:1. The fills are derived here, never written as hexes, and var(--red-fill) carries
+   no fallback argument (the guard in task 5.2 keeps it that way). */
+.btn-destructive {
+  padding: 7px 13px;
+  background: var(--red-fill);
+  color: #fff;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font:
+    500 0.8125rem/1rem 'Geist',
+    sans-serif;
+  cursor: pointer;
+  user-select: none;
+}
+.btn-destructive:hover {
+  background: color-mix(in oklab, var(--red-fill) 85%, #17181a);
+}
+/* Pressed applies instantly: no transition, so the darker fill lands on press. */
+.btn-destructive:active {
+  background: color-mix(in oklab, var(--red-fill) 70%, #17181a);
   transition: none;
 }
 
@@ -940,8 +990,8 @@ button:disabled[aria-busy='true'] {
 /* The focus ring's geometry, stated per kind of control (adopt-design-tokens-v2 task 6.3;
    design.md D8; DESIGN.md Focus ring). There is one ring — 2px of the accent, from the global
    `:focus-visible` rule, never drawn with box-shadow — and three places to put it:
-   - a FILLED control (the indigo primary, a switch track, a selected wash) takes it 2px
-     outside its box, so the ring only ever touches surface colours and never merges with the
+   - a FILLED control (the indigo primary, the red destructive commit, a switch track, a
+     selected wash) takes it 2px outside its box, so the ring only ever touches surface colours and never merges with the
      fill (at 0 or below it would sit on the fill at 1.00–1.42:1);
    - a FLUSH row or list item (a request row, a nav item, a menu item) sits against its
      container's edge, so it draws the ring inset, on its own fill. On the open request row the
@@ -952,6 +1002,7 @@ button:disabled[aria-busy='true'] {
    This block sits after the selected row's rule on purpose: its row selectors match that
    rule's specificity, and the later rule wins the tie. */
 .btn-primary:focus-visible,
+.btn-destructive:focus-visible,
 .toggle:focus-visible,
 .rs-seg:focus-visible,
 .filter-chip:focus-visible,
@@ -1932,6 +1983,7 @@ button:disabled[aria-busy='true'] {
    accessibility minimum is not a density preference (STYLESEED.md). */
 .nav-item,
 .btn-primary,
+.btn-destructive,
 .btn-ghost,
 .btn-cancel,
 .icon-x,
@@ -1980,6 +2032,7 @@ button:disabled[aria-busy='true'] {
    label wrapped to a 48px button; nowrap keeps it one line and lets its row's field give
    the width instead). A row that cannot fit wraps its controls, never a label. */
 .btn-primary,
+.btn-destructive,
 .btn-cancel,
 .btn-ghost {
   white-space: nowrap;
@@ -1997,6 +2050,7 @@ button:disabled[aria-busy='true'] {
    same specificity: the later rule is the one that holds. And BEFORE the comfort blocks
    below, which raise the same classes to 44px. */
 .btn-primary,
+.btn-destructive,
 .btn-cancel,
 .input,
 .select,
@@ -2182,6 +2236,7 @@ button:disabled[aria-busy='true'] {
      would move the type scale and every contrast assertion with it. */
   .nav-item,
   .btn-primary,
+  .btn-destructive,
   .btn-ghost,
   .btn-cancel,
   .icon-x,
@@ -2568,6 +2623,7 @@ button:disabled[aria-busy='true'] {
   }
   .nav-item,
   .btn-primary,
+  .btn-destructive,
   .btn-ghost,
   .btn-cancel,
   .icon-x,

@@ -1,5 +1,6 @@
 import { render } from 'solid-js/web';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ApiError } from './data/api';
 import type { AdminInviteDto, AdminUserDto, RegistrationSettingsDto } from './data/api';
 import { App } from './App';
 import { createAppStore, type AppStore } from './state/appState';
@@ -306,6 +307,188 @@ describe('Users page (admin)', () => {
       expect(host.querySelector('[role="alert"]')?.textContent).toContain(
         'without an enabled admin',
       );
+    } finally {
+      dispose();
+    }
+  });
+});
+
+// adopt-red-destructive-actions task 4.1 (D6 / D7 / D8): Delete and Disable ask in the shared
+// dashboard dialog, never the browser's prompt, with copy that states what will happen rather
+// than promising it "immediately" or "now". Invitation Revoke and Enable are recoverable, so
+// they stay neutral ghosts.
+describe('Users page: Delete and Disable ask in the shared destructive dialog', () => {
+  const users = [
+    mkUser({ id: 'u1', email: 'admin@localhost', name: 'Admin', role: 'admin' }),
+    mkUser({ id: 'u2', email: 'bob@example.com', name: 'Bob' }),
+    mkUser({ id: 'u3', email: 'carol@example.com', name: 'Carol', disabled: true }),
+  ];
+  const OVERPROMISE = /\b(immediately|now)\b/i;
+
+  let nativeConfirm: ReturnType<typeof vi.fn<(message?: string) => boolean>>;
+  afterEach(() => {
+    expect(nativeConfirm, 'the native confirm prompt was shown').not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  async function openUsers(client: FakeApiClient) {
+    nativeConfirm = vi.fn<(message?: string) => boolean>(() => true);
+    vi.stubGlobal('confirm', nativeConfirm);
+    const m = mount(client);
+    await flush();
+    clickByText(m.host, '.nav-item span', 'Users');
+    await flush();
+    return m;
+  }
+
+  const rowOf = (host: HTMLElement, email: string): HTMLElement =>
+    [...host.querySelectorAll<HTMLElement>('main tbody tr')].find((r) =>
+      r.textContent?.includes(email),
+    )!;
+  const buttonIn = (scope: ParentNode, label: string): HTMLButtonElement =>
+    [...scope.querySelectorAll<HTMLButtonElement>('button')].find((b) => labelText(b) === label)!;
+  const dialogOf = (host: HTMLElement): HTMLElement | null =>
+    host.querySelector<HTMLElement>('[role="dialog"].confirm-card');
+  /** Activate a row's trigger as a keyboard user would (focused, then pressed). */
+  async function open(host: HTMLElement, email: string, label: string): Promise<HTMLElement> {
+    const trigger = buttonIn(rowOf(host, email), label);
+    trigger.focus();
+    trigger.click();
+    await flush();
+    const dialog = dialogOf(host);
+    expect(dialog, `${label} opened no dashboard dialog`).not.toBeNull();
+    return dialog!;
+  }
+  const bodyOf = (dialog: HTMLElement): string =>
+    dialog.querySelector('.t-dense')?.textContent ?? '';
+  const commitOf = (dialog: HTMLElement): HTMLButtonElement =>
+    dialog.querySelector<HTMLButtonElement>('button.btn-destructive')!;
+
+  it('marks Delete and Disable destructive, and leaves Enable and Revoke neutral', async () => {
+    const { host, dispose } = await openUsers(
+      new FakeApiClient({
+        adminUsers: users,
+        adminInvites: [mkInvite({ id: 'i1', email: 'new@example.com' })],
+      }),
+    );
+    try {
+      const bob = rowOf(host, 'bob@example.com');
+      for (const label of ['Delete', 'Disable']) {
+        expect(buttonIn(bob, label).className, label).toBe('btn-ghost btn-ghost--destructive');
+      }
+      expect(buttonIn(rowOf(host, 'carol@example.com'), 'Enable').className).toBe('btn-ghost');
+      expect(buttonIn(host, 'Revoke').className).toBe('btn-ghost');
+      expect(host.querySelector('.btn-ghost--amber'), 'a button still carries amber').toBeNull();
+    } finally {
+      dispose();
+    }
+  });
+
+  it('Delete names the user and the loss; declining sends nothing, accepting deletes once', async () => {
+    const { host, client, dispose } = await openUsers(new FakeApiClient({ adminUsers: users }));
+    try {
+      let dialog = await open(host, 'bob@example.com', 'Delete');
+      expect(dialog.getAttribute('aria-label')).toBe('Delete bob@example.com?');
+      expect(bodyOf(dialog)).toBe(
+        'Their agents, providers and request history go with them. This cannot be undone.',
+      );
+      expect(labelText(commitOf(dialog))).toBe('Delete user');
+      expect(labelText(dialog.querySelector('button')!)).toBe('Cancel');
+      expect(document.activeElement).toBe(dialog.querySelector('button'));
+
+      buttonIn(dialog, 'Cancel').click();
+      await flush();
+      expect(dialogOf(host)).toBeNull();
+      expect(client.countOf('adminDeleteUser')).toBe(0);
+
+      dialog = await open(host, 'bob@example.com', 'Delete');
+      commitOf(dialog).click();
+      commitOf(dialog).click();
+      await flush();
+      expect(client.countOf('adminDeleteUser')).toBe(1);
+      expect(dialogOf(host)).toBeNull();
+      expect(host.querySelector('main')?.textContent).not.toContain('bob@example.com');
+      // The row went with its trigger: focus lands on the page title, never the body (D8).
+      expect(document.activeElement?.id).toBe('page-title');
+    } finally {
+      dispose();
+    }
+  });
+
+  it('Disable on another user states the forward-looking guarantee, and a failure stays in the dialog', async () => {
+    const client = new FakeApiClient({ adminUsers: users });
+    const { host, store, dispose } = await openUsers(client);
+    const disable = vi
+      .spyOn(client, 'adminSetDisabled')
+      .mockRejectedValueOnce(new ApiError(409, 'Conflict', 'bob owns the last admin key'));
+    try {
+      const dialog = await open(host, 'bob@example.com', 'Disable');
+      expect(dialog.getAttribute('aria-label')).toBe('Disable bob@example.com?');
+      expect(bodyOf(dialog)).toBe(
+        'They will be signed out, and new requests with their agent keys will be refused.',
+      );
+      expect(dialog.textContent).not.toMatch(OVERPROMISE);
+      expect(labelText(commitOf(dialog))).toBe('Disable user');
+
+      commitOf(dialog).click();
+      await flush();
+      // Failed: reported inside the dialog, not on the page's alert line and not as a toast.
+      expect(dialogOf(host)).toBe(dialog);
+      expect(dialog.querySelector('[role="alert"]')?.textContent).toContain(
+        'bob owns the last admin key',
+      );
+      expect(store.state.ua.error).toBeNull();
+      expect(store.state.toast).toBeNull();
+
+      commitOf(dialog).click(); // retry: the fake now answers
+      await flush();
+      expect(disable).toHaveBeenCalledTimes(2);
+      expect(disable).toHaveBeenLastCalledWith('u2', true);
+      expect(dialogOf(host)).toBeNull();
+      // Disabled now: the same button reads Enable, which is recoverable and neutral.
+      expect(buttonIn(rowOf(host, 'bob@example.com'), 'Enable').className).toBe('btn-ghost');
+    } finally {
+      dispose();
+    }
+  });
+
+  it('Disable on your own account says you will be signed out, and hands focus to the sign-in gate', async () => {
+    const client = new FakeApiClient({ adminUsers: users });
+    const { host, store, dispose } = await openUsers(client);
+    // The reboot to the sign-in gate is a navigation: observe the state at that moment.
+    const atReboot: { dialogOpen: boolean; focusId: string }[] = [];
+    const assign = vi.spyOn(globalThis.location, 'assign').mockImplementation(() => {
+      atReboot.push({
+        dialogOpen: store.state.destructive !== null || dialogOf(host) !== null,
+        focusId: document.activeElement?.id ?? '',
+      });
+    });
+    try {
+      const dialog = await open(host, 'admin@localhost', 'Disable');
+      expect(dialog.getAttribute('aria-label')).toBe('Disable your own account?');
+      expect(bodyOf(dialog)).toBe('You will be signed out.');
+      expect(dialog.textContent).not.toMatch(OVERPROMISE);
+      expect(labelText(commitOf(dialog))).toBe('Disable my account');
+
+      commitOf(dialog).click();
+      await flush();
+      expect(client.countOf('adminSetDisabled')).toBe(1);
+      expect(assign).toHaveBeenCalledTimes(1);
+      expect(assign).toHaveBeenCalledWith('/');
+      // The dialog closed BEFORE the session ended, and no Users-page fallback took focus.
+      expect(atReboot).toHaveLength(1);
+      expect(atReboot[0]!.dialogOpen, 'the dialog outlived the session').toBe(false);
+      expect(atReboot[0]!.focusId, 'a Users-page fallback took focus').not.toBe('page-title');
+
+      // What the navigation does: the session is gone, and the gate takes over.
+      client.session = null;
+      await store.bootstrap();
+      await flush();
+      expect(host.textContent).toContain('Sign in');
+      expect(host.querySelector('#page-title'), 'the Users page outlived the session').toBeNull();
+      expect(dialogOf(host)).toBeNull();
+      expect(document.activeElement?.id ?? '').not.toBe('page-title');
     } finally {
       dispose();
     }

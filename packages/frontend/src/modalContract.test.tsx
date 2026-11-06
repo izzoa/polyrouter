@@ -200,6 +200,31 @@ describe('every surface claiming aria-modal is a registered layer', () => {
     }
   });
 
+  it('holds for the shared destructive confirmation — opened through the store', async () => {
+    // adopt-red-destructive-actions D6: one dialog, mounted at the shell, that every
+    // destructive action opens. Like the body-capture dialogs it renders only mid-flow, so a
+    // page walk would never see it.
+    const h = await mount();
+    try {
+      h.store.confirmDestructive({
+        title: 'Delete agent "ci-bot"?',
+        body: 'New requests with its key will be refused.',
+        commitLabel: 'Delete agent',
+        busyLabel: 'Deleting…',
+        run: () => Promise.resolve(),
+        fallbackFocus: () => null,
+      });
+      await flush();
+      expect(
+        h.host.querySelector('[role="dialog"][aria-label^="Delete agent "]'),
+        'the destructive confirmation did not open',
+      ).not.toBeNull();
+      expectEveryModalRegistered(h.host, h.store, 'destructive confirmation');
+    } finally {
+      h.dispose();
+    }
+  });
+
   it('holds with two layers stacked', async () => {
     const h = await mount();
     try {

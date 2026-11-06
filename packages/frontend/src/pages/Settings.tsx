@@ -2,9 +2,11 @@ import { For, onMount, Show } from 'solid-js';
 import { Toggle } from '../components/Toggle';
 import type { ChannelDto } from '../data/api';
 import { BASE_URL } from '../data/catalog';
+import { FROM_DIALOG } from '../state/appState';
 import { useApp } from '../state/context';
 import { BodyCaptureCard } from '../components/BodyCaptureCard';
 import { StackedLabel } from '../components/StackedLabel';
+import { pageTitle } from '../components/Topbar';
 import { createBusy } from '../components/busy';
 
 interface TestLine {
@@ -28,14 +30,18 @@ export function Settings() {
 
   const fmtDate = (iso: string): string => new Date(iso).toLocaleDateString();
 
+  /** Delete asks first, in the shared destructive confirmation (adopt-red-destructive-actions
+   * D6 / D7). The channel's row, and with it this trigger, goes on success: focus lands on
+   * the page title (D8). */
   const removeChannel = (c: ChannelDto): void => {
-    if (
-      globalThis.confirm(
-        `Delete channel "${c.name}"? Future alerts will no longer be delivered to it.`,
-      )
-    ) {
-      void app.deleteChannel(c.id);
-    }
+    app.confirmDestructive({
+      title: `Delete channel "${c.name}"?`,
+      body: 'Future alerts will no longer be delivered to it.',
+      commitLabel: 'Delete channel',
+      busyLabel: 'Deleting…',
+      run: () => app.deleteChannel(c.id, FROM_DIALOG),
+      fallbackFocus: pageTitle,
+    });
   };
 
   // Inline test-send result takes precedence; otherwise fall back to the stored
@@ -226,7 +232,7 @@ export function Settings() {
                       </button>
                       <button
                         type="button"
-                        class="btn-ghost btn-ghost--amber"
+                        class="btn-ghost btn-ghost--destructive"
                         onClick={() => removeChannel(c)}
                       >
                         Delete

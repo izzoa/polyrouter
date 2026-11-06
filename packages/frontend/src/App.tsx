@@ -1,5 +1,6 @@
 import { Match, onMount, Show, Switch, type ParentProps, createEffect, onCleanup } from 'solid-js';
 import { installLayerArbiter } from './a11y';
+import { ConfirmDialog } from './components/ConfirmDialog';
 import { Inspector } from './components/Inspector';
 import { Modals } from './components/Modals';
 import { createVisibility } from './data/poller';
@@ -130,6 +131,10 @@ function Shell(props: { live: boolean }) {
       </div>
       <Inspector />
       <Modals />
+      {/* The one shared destructive confirmation (adopt-red-destructive-actions D6), opened
+          through the store from any page. Inside the shell, so a session teardown takes it
+          down with the pages it confirms for. */}
+      <ConfirmDialog />
       <Toast />
     </div>
   );

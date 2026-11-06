@@ -1,7 +1,9 @@
 import { For, onMount, Show } from 'solid-js';
 import type { AdminInviteDto, AdminUserDto } from '../data/api';
+import { FROM_DIALOG } from '../state/appState';
 import { useApp } from '../state/context';
 import { StackedLabel } from '../components/StackedLabel';
+import { pageTitle } from '../components/Topbar';
 import { createBusyMap } from '../components/busy';
 import { FieldNote, useFields } from '../components/Field';
 
@@ -33,26 +35,40 @@ export function Users() {
     return 'pending';
   };
 
+  /** Where focus lands when a commit removed the row whose trigger opened it (D8): the page
+   * title. Deleting or disabling one's OWN account ends the session instead; the store
+   * closes the dialog before the reboot, focus follows the sign-in gate, and no Users-page
+   * fallback is offered. */
+  const fallbackFor = (u: AdminUserDto): (() => HTMLElement | null) =>
+    u.id === state.session?.userId ? () => null : pageTitle;
+
+  /** Delete and Disable ask first, in the shared destructive confirmation
+   * (adopt-red-destructive-actions D6 / D7). */
   const removeUser = (u: AdminUserDto): void => {
-    if (
-      globalThis.confirm(
-        `Delete ${u.email}? Their agents, providers and request history go with them. This cannot be undone.`,
-      )
-    ) {
-      void app.uaDeleteUser(u.id);
-    }
+    app.confirmDestructive({
+      title: `Delete ${u.email}?`,
+      body: 'Their agents, providers and request history go with them. This cannot be undone.',
+      commitLabel: 'Delete user',
+      busyLabel: 'Deleting…',
+      run: () => app.uaDeleteUser(u.id, FROM_DIALOG),
+      fallbackFocus: fallbackFor(u),
+    });
   };
+  /** The disable sentences state the forward-looking guarantee: sessions and agent keys are
+   * cached across instances and in-flight requests finish, so "immediately" and "now" would
+   * overpromise (D7). */
   const disableUser = (u: AdminUserDto): void => {
     const self = u.id === state.session?.userId;
-    if (
-      globalThis.confirm(
-        self
-          ? 'Disable your own account? You will be signed out immediately.'
-          : `Disable ${u.email}? Their sessions end now and their agent keys stop working.`,
-      )
-    ) {
-      void app.uaSetDisabled(u.id, true);
-    }
+    app.confirmDestructive({
+      title: self ? 'Disable your own account?' : `Disable ${u.email}?`,
+      body: self
+        ? 'You will be signed out.'
+        : 'They will be signed out, and new requests with their agent keys will be refused.',
+      commitLabel: self ? 'Disable my account' : 'Disable user',
+      busyLabel: 'Disabling…',
+      run: () => app.uaSetDisabled(u.id, true, FROM_DIALOG),
+      fallbackFocus: fallbackFor(u),
+    });
   };
 
   /** One neutral static chip for both roles: the word carries the role. Admin used to take
@@ -286,7 +302,7 @@ export function Users() {
                       <Show when={inviteStatus(i) === 'pending'}>
                         <button
                           type="button"
-                          class="btn-ghost btn-ghost--amber"
+                          class="btn-ghost"
                           disabled={revoking.busy(i.id)}
                           aria-busy={revoking.busy(i.id) ? true : undefined}
                           onClick={() => void revoking.run(i.id, () => app.uaRevokeInvite(i.id))}
@@ -409,11 +425,12 @@ export function Users() {
                             altLabel="Saving…"
                           />
                         </button>
-                        {/* Enable starts its request at once (busy); Disable first asks, so
-                            it is a destructive trigger and its confirmation owns the wait. */}
+                        {/* Enable starts its request at once (busy) and is recoverable, so it
+                            is a neutral ghost; Disable first asks, so it is a destructive
+                            trigger and its confirmation's commit owns the wait. */}
                         <button
                           type="button"
-                          class="btn-ghost"
+                          class={u.disabled ? 'btn-ghost' : 'btn-ghost btn-ghost--destructive'}
                           disabled={enabling.busy(u.id)}
                           aria-busy={enabling.busy(u.id) ? true : undefined}
                           onClick={() =>
@@ -430,7 +447,7 @@ export function Users() {
                         </button>
                         <button
                           type="button"
-                          class="btn-ghost btn-ghost--amber"
+                          class="btn-ghost btn-ghost--destructive"
                           onClick={() => removeUser(u)}
                         >
                           Delete

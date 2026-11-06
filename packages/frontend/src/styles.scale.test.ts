@@ -53,8 +53,11 @@ export const DERIVED_PADDING: readonly number[] = [2, 3, 7, 9, 10, 11, 13];
 /** Controls whose padding is derived from their height-family row (D4), by selector. */
 export const CONTROL_PADDING: Readonly<Record<string, string>> = {
   '.btn-primary': '32px button, 7 × 13',
+  '.btn-destructive': '32px button, 7 × 13',
   '.btn-cancel': '32px button, 7 × 13',
   '.btn-ghost': '24px ghost button, 3 × 10',
+  '.btn-ghost--destructive:active':
+    "24px destructive ghost, pressed: its 2px border gives up 1px of the ghost's 3 × 10 per side, 2 × 9",
   '.input': '32px input, 7 × 11',
   '.select': '32px select, 7 × 11',
   '.mp-input': 'the add-model combobox input, an input',

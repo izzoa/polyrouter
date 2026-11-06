@@ -1,10 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ApiError,
+  type AdminUserDto,
   type AgentDto,
+  type BatchJobDto,
+  type BudgetDto,
   type CalibrationEvent,
   type ChannelDto,
   type ModelDto,
+  type ProviderDto,
   type SemanticLearningStatus,
   type TierDto,
   type TierEntryDto,
@@ -14,9 +18,11 @@ import {
   DEFAULT_SEMANTIC_LEARNING_STATUS,
   DEFAULT_SESSION,
   FakeApiClient,
+  UNRECORDED_HEALTH,
+  type FakeOptions,
 } from '../test/fakeClient';
 import type { ProviderForm } from '../types';
-import { PROVIDER_KINDS, createAppStore } from './appState';
+import { FROM_DIALOG, PROVIDER_KINDS, createAppStore, type AppStore } from './appState';
 
 describe('setup-guide dismissal', () => {
   it('dismisses, persists per browser, and honors the stored flag on the next boot', () => {
@@ -2302,5 +2308,558 @@ describe('card loaders survive section churn (section-routing-rail D8)', () => {
     expect(s.state.semLearn.status?.source).toBe('bundled');
     expect(s.state.semLearn.status?.freshHigh).toBe(0);
     expect(s.state.semLearn.status?.epoch).toBe(1);
+  });
+});
+
+// ── adopt-red-destructive-actions task 3.2 ──────────────────────────────────────────────────
+
+describe('destructive methods report to the shared dialog (adopt-red-destructive-actions 3.2, D6)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const D_AGENT: AgentDto = {
+    id: 'a1',
+    name: 'ci-bot',
+    harness: 'curl',
+    prefix: 'poly_abcd',
+    lastUsedAt: null,
+    createdAt: NOW,
+  };
+  const D_PROVIDER: ProviderDto = {
+    id: 'p1',
+    name: 'homelab-vllm',
+    kind: 'custom',
+    protocol: 'openai_compatible',
+    baseUrl: 'https://1.1.1.1/v1',
+    status: 'ok',
+    maxTokensSpelling: 'auto',
+    hasCredential: true,
+    oauthPreset: null,
+    credentialExpiresAt: null,
+    credentialError: null,
+    firstByteTimeoutMs: null,
+    idleTimeoutMs: null,
+    createdAt: NOW,
+    ...UNRECORDED_HEALTH,
+  };
+  const D_BUDGET: BudgetDto = {
+    id: 'b1',
+    name: 'Monthly cap',
+    scope: 'global',
+    agentId: null,
+    amount: 25,
+    window: 'month',
+    action: 'alert',
+    enabled: true,
+    notifyChannelIds: [],
+    meteringBasis: 'cash',
+    createdAt: NOW,
+  };
+  const D_USERS: AdminUserDto[] = [
+    {
+      id: 'u1',
+      email: 'admin@localhost',
+      name: 'Admin',
+      role: 'admin',
+      disabled: false,
+      createdAt: NOW,
+    },
+    {
+      id: 'u2',
+      email: 'bob@example.com',
+      name: 'Bob',
+      role: null,
+      disabled: false,
+      createdAt: NOW,
+    },
+  ];
+  const D_JOB: BatchJobDto = {
+    id: 'j1',
+    upstreamBatchId: 'up-j1',
+    status: 'in_progress',
+    terminal: false,
+    endpoint: '/v1/chat/completions',
+    agentId: 'a1',
+    providerId: 'p1',
+    providerLabel: 'homelab-vllm',
+    modelId: 'm1',
+    modelLabel: 'qwen3-coder',
+    tierAssigned: 'nightly',
+    counts: { total: 50, completed: 12, failed: 0 },
+    submittedAt: NOW,
+    updatedAt: NOW,
+    terminalAt: null,
+    reservedCeilingMicros: 25_000,
+    settledCostMicros: null,
+    resultsExpireAt: null,
+    errorKind: null,
+  };
+  const UNLISTED: ModelDto = { ...mkModel('m9'), displayName: 'Old Model', unlistedSince: NOW };
+
+  async function store(
+    opts: Partial<FakeOptions> = {},
+  ): Promise<{ s: AppStore; fake: FakeApiClient }> {
+    const fake = new FakeApiClient({
+      session: DEFAULT_SESSION,
+      agents: [D_AGENT],
+      providers: [D_PROVIDER],
+      models: { p1: [mkModel('m1'), UNLISTED] },
+      budgets: [D_BUDGET],
+      channels: [mkChannel('c1', 'smtp')],
+      adminUsers: D_USERS,
+      batchJobs: [D_JOB],
+      bodyCaptureStatus: {
+        mode: 'all',
+        retentionDays: 30,
+        droppedCount: 0,
+        lastPurgeAt: null,
+        lastPurgeCount: 0,
+        available: true,
+        agents: [],
+      },
+      ...opts,
+    });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    return { s, fake };
+  }
+
+  /** The three page and card error channels a dialog failure must leave alone, set to values
+   * nothing else writes, so "unwritten" is observable rather than "happens to be null". */
+  function markErrors(s: AppStore): void {
+    s.setState('ua', 'error', 'ua-untouched');
+    s.setState('bc', 'error', 'bc-untouched');
+    s.setState('selBodies', 'error', 'sel-untouched');
+  }
+  function expectReportedNowhereElse(s: AppStore): void {
+    expect(s.state.toast, 'a dialog failure was toasted').toBeNull();
+    expect(s.state.ua.error, 'ua.error was written').toBe('ua-untouched');
+    expect(s.state.bc.error, 'bc.error was written').toBe('bc-untouched');
+    expect(s.state.selBodies.error, 'selBodies.error was written').toBe('sel-untouched');
+  }
+  const boom = (reason: string): ApiError => new ApiError(409, 'Conflict', reason);
+
+  describe('deleteAgent', () => {
+    it('rejects on failure, toasts nothing, and keeps the agent', async () => {
+      const { s, fake } = await store();
+      await s.loadAgents();
+      vi.spyOn(fake, 'deleteAgent').mockRejectedValueOnce(boom('agent is in use'));
+      markErrors(s);
+      await expect(s.deleteAgent(s.state.agents[0]!, FROM_DIALOG)).rejects.toThrow(
+        'agent is in use',
+      );
+      expectReportedNowhereElse(s);
+      expect(s.state.agents.map((a) => a.id)).toEqual(['a1']);
+    });
+
+    it('keeps its success toast and its list update', async () => {
+      const { s } = await store();
+      await s.loadAgents();
+      await s.deleteAgent(s.state.agents[0]!, FROM_DIALOG);
+      expect(s.state.toast).toEqual({ kind: 'confirm', text: 'Agent ci-bot deleted' });
+      expect(s.state.agents).toEqual([]);
+    });
+
+    it('still toasts a failure and resolves when called from elsewhere', async () => {
+      const { s, fake } = await store();
+      await s.loadAgents();
+      vi.spyOn(fake, 'deleteAgent').mockRejectedValueOnce(boom('agent is in use'));
+      await s.deleteAgent(s.state.agents[0]!);
+      expect(s.state.toast).toEqual({ kind: 'failure', text: 'agent is in use' });
+    });
+  });
+
+  describe('deleteProvider', () => {
+    it('rejects on failure, toasts nothing, and keeps the provider', async () => {
+      const { s, fake } = await store();
+      await s.loadProviders();
+      vi.spyOn(fake, 'deleteProvider').mockRejectedValueOnce(boom('provider has traffic'));
+      markErrors(s);
+      await expect(s.deleteProvider('p1', FROM_DIALOG)).rejects.toThrow('provider has traffic');
+      expectReportedNowhereElse(s);
+      expect(s.state.providers.map((p) => p.id)).toEqual(['p1']);
+    });
+
+    it('keeps its success toast and its list update', async () => {
+      const { s } = await store();
+      await s.loadProviders();
+      await s.deleteProvider('p1', FROM_DIALOG);
+      expect(s.state.toast).toEqual({ kind: 'confirm', text: 'Provider deleted' });
+      expect(s.state.providers).toEqual([]);
+    });
+  });
+
+  describe('deleteBudget', () => {
+    it('rejects on failure once the list is restored, toasting nothing', async () => {
+      const { s, fake } = await store();
+      await s.loadLimits();
+      vi.spyOn(fake, 'deleteBudget').mockRejectedValueOnce(boom('budget is locked'));
+      markErrors(s);
+      await expect(s.deleteBudget('b1', FROM_DIALOG)).rejects.toThrow('budget is locked');
+      expectReportedNowhereElse(s);
+      expect(s.state.budgets.map((b) => b.id)).toEqual(['b1']);
+    });
+
+    it('keeps its success toast and its list update', async () => {
+      const { s } = await store();
+      await s.loadLimits();
+      await s.deleteBudget('b1', FROM_DIALOG);
+      expect(s.state.toast).toEqual({ kind: 'confirm', text: 'Budget deleted' });
+      expect(s.state.budgets).toEqual([]);
+    });
+  });
+
+  describe('deleteChannel', () => {
+    it('rejects on failure, toasts nothing, and keeps the channel', async () => {
+      const { s, fake } = await store();
+      await s.loadChannels();
+      vi.spyOn(fake, 'deleteChannel').mockRejectedValueOnce(boom('channel is in use'));
+      markErrors(s);
+      await expect(s.deleteChannel('c1', FROM_DIALOG)).rejects.toThrow('channel is in use');
+      expectReportedNowhereElse(s);
+      expect(s.state.channels.map((c) => c.id)).toEqual(['c1']);
+    });
+
+    it('keeps its success toast and its list update', async () => {
+      const { s } = await store();
+      await s.loadChannels();
+      await s.deleteChannel('c1', FROM_DIALOG);
+      expect(s.state.toast).toEqual({ kind: 'confirm', text: 'Channel deleted' });
+      expect(s.state.channels).toEqual([]);
+    });
+  });
+
+  describe('uaDeleteUser', () => {
+    it('rejects on failure, writes no ua.error, and keeps the user', async () => {
+      const { s, fake } = await store();
+      await s.loadUserAdmin();
+      vi.spyOn(fake, 'adminDeleteUser').mockRejectedValueOnce(boom('user owns the last admin'));
+      markErrors(s);
+      await expect(s.uaDeleteUser('u2', FROM_DIALOG)).rejects.toThrow('user owns the last admin');
+      expectReportedNowhereElse(s);
+      expect(s.state.ua.users.map((u) => u.id)).toEqual(['u1', 'u2']);
+    });
+
+    // The Users page reports its outcomes inline and never toasted one, so "keeps its success
+    // toast" is keeping none; the list update is the reload.
+    it('keeps its list update on success, and adds no toast', async () => {
+      const { s } = await store();
+      await s.loadUserAdmin();
+      await s.uaDeleteUser('u2', FROM_DIALOG);
+      expect(s.state.ua.users.map((u) => u.id)).toEqual(['u1']);
+      expect(s.state.toast).toBeNull();
+    });
+
+    it('still writes ua.error and resolves when called from elsewhere', async () => {
+      const { s, fake } = await store();
+      await s.loadUserAdmin();
+      vi.spyOn(fake, 'adminDeleteUser').mockRejectedValueOnce(boom('user owns the last admin'));
+      await s.uaDeleteUser('u2');
+      expect(s.state.ua.error).toBe('user owns the last admin');
+    });
+  });
+
+  describe('uaSetDisabled(…, true)', () => {
+    it('rejects on failure, writes no ua.error, and leaves the user enabled', async () => {
+      const { s, fake } = await store();
+      await s.loadUserAdmin();
+      vi.spyOn(fake, 'adminSetDisabled').mockRejectedValueOnce(boom('cannot disable an owner'));
+      markErrors(s);
+      await expect(s.uaSetDisabled('u2', true, FROM_DIALOG)).rejects.toThrow(
+        'cannot disable an owner',
+      );
+      expectReportedNowhereElse(s);
+      expect(s.state.ua.users.find((u) => u.id === 'u2')?.disabled).toBe(false);
+    });
+
+    it('keeps its list update on success, and adds no toast', async () => {
+      const { s } = await store();
+      await s.loadUserAdmin();
+      await s.uaSetDisabled('u2', true, FROM_DIALOG);
+      expect(s.state.ua.users.find((u) => u.id === 'u2')?.disabled).toBe(true);
+      expect(s.state.toast).toBeNull();
+    });
+
+    it('disabling your own account closes the dialog before the session is torn down (D8)', async () => {
+      const { s } = await store();
+      s.confirmDestructive({
+        title: 'Disable your own account?',
+        body: 'You will be signed out.',
+        commitLabel: 'Disable my account',
+        busyLabel: 'Disabling…',
+        run: () => Promise.resolve(),
+        fallbackFocus: () => null,
+      });
+      expect(s.state.destructive).not.toBeNull();
+      const openWhenTornDown: (boolean | null)[] = [];
+      const assign = vi
+        .spyOn(globalThis.location, 'assign')
+        .mockImplementation(() => openWhenTornDown.push(s.state.destructive !== null));
+      await s.uaSetDisabled('u1', true, FROM_DIALOG);
+      expect(assign).toHaveBeenCalledWith('/');
+      expect(openWhenTornDown, 'the dialog was still open at the teardown').toEqual([false]);
+    });
+
+    it('disabling your own account, on failure, rejects and leaves the dialog to report it', async () => {
+      const { s, fake } = await store();
+      vi.spyOn(fake, 'adminSetDisabled').mockRejectedValueOnce(boom('you are the last admin'));
+      const assign = vi.spyOn(globalThis.location, 'assign').mockImplementation(() => undefined);
+      s.confirmDestructive({
+        title: 'Disable your own account?',
+        body: 'You will be signed out.',
+        commitLabel: 'Disable my account',
+        busyLabel: 'Disabling…',
+        run: () => Promise.resolve(),
+        fallbackFocus: () => null,
+      });
+      markErrors(s);
+      await expect(s.uaSetDisabled('u1', true, FROM_DIALOG)).rejects.toThrow(
+        'you are the last admin',
+      );
+      expectReportedNowhereElse(s);
+      expect(assign).not.toHaveBeenCalled();
+      expect(s.state.destructive, 'a failed self-disable closed the dialog').not.toBeNull();
+    });
+  });
+
+  describe('setBodyCaptureMode("off") and purgeBodies, the capture pair', () => {
+    it('setBodyCaptureMode: an API rejection rejects with its reason, no bc.error, no toast', async () => {
+      const { s, fake } = await store();
+      await s.loadBodyCapture();
+      vi.spyOn(fake, 'bodyCaptureUpdate').mockRejectedValueOnce(
+        boom('capture settings are locked'),
+      );
+      markErrors(s);
+      await expect(s.setBodyCaptureMode('off', FROM_DIALOG)).rejects.toThrow(
+        'capture settings are locked',
+      );
+      expectReportedNowhereElse(s);
+      expect(s.state.bc.status?.mode).toBe('all');
+      expect(s.state.bc.busy, 'the busy flag was left set').toBe(false);
+    });
+
+    it('setBodyCaptureMode: keeps its success toast and the status reload', async () => {
+      const { s } = await store();
+      await s.loadBodyCapture();
+      await s.setBodyCaptureMode('off', FROM_DIALOG);
+      expect(s.state.toast).toEqual({ kind: 'confirm', text: 'Body capture off' });
+      expect(s.state.bc.status?.mode).toBe('off');
+      expect(s.state.bc.busy).toBe(false);
+    });
+
+    it('purgeBodies: an API rejection rejects with its reason, no bc.error, no toast', async () => {
+      const { s, fake } = await store();
+      await s.loadBodyCapture();
+      vi.spyOn(fake, 'bodyCapturePurge').mockRejectedValueOnce(boom('purge already running'));
+      markErrors(s);
+      await expect(s.purgeBodies(FROM_DIALOG)).rejects.toThrow('purge already running');
+      expectReportedNowhereElse(s);
+      expect(s.state.bc.status?.lastPurgeAt).toBeNull();
+      expect(s.state.bc.busy).toBe(false);
+    });
+
+    it('purgeBodies: keeps its success toast and the status reload', async () => {
+      const { s, fake } = await store();
+      await s.loadBodyCapture();
+      const stored = fake.storedBodies.size;
+      await s.purgeBodies(FROM_DIALOG);
+      expect(s.state.toast).toEqual({
+        kind: 'confirm',
+        text: `Purged ${String(stored)} stored bod${stored === 1 ? 'y' : 'ies'}`,
+      });
+      expect(s.state.bc.status?.lastPurgeAt).not.toBeNull();
+    });
+
+    it('while another capture change is in flight, each rejects and sends nothing', async () => {
+      const { s, fake } = await store();
+      await s.loadBodyCapture();
+      // The card's retention change, held in flight: `bc.busy` is set by the card's runner.
+      let release: () => void = () => undefined;
+      const update = fake.bodyCaptureUpdate.bind(fake);
+      vi.spyOn(fake, 'bodyCaptureUpdate').mockImplementationOnce(
+        (patch) =>
+          new Promise((resolve) => {
+            release = () => resolve(update(patch));
+          }),
+      );
+      const held = s.setBodyCaptureRetention(7);
+      expect(s.state.bc.busy).toBe(true);
+      const updates = fake.countOf('bodyCaptureUpdate');
+      const purges = fake.countOf('bodyCapturePurge');
+      markErrors(s);
+
+      await expect(s.setBodyCaptureMode('off', FROM_DIALOG)).rejects.toThrow(
+        'Another body-capture change is still saving',
+      );
+      await expect(s.purgeBodies(FROM_DIALOG)).rejects.toThrow(
+        'Another body-capture change is still saving',
+      );
+      expect(fake.countOf('bodyCaptureUpdate'), 'a mode change was sent while busy').toBe(updates);
+      expect(fake.countOf('bodyCapturePurge'), 'a purge was sent while busy').toBe(purges);
+      expectReportedNowhereElse(s);
+      expect(s.state.bc.busy, 'the dialog path released the card’s busy flag').toBe(true);
+
+      release();
+      await held;
+      expect(s.state.bc.busy).toBe(false);
+    });
+
+    it('the card’s own setBodyCaptureMode still writes bc.error on a failure, and resolves', async () => {
+      const { s, fake } = await store();
+      await s.loadBodyCapture();
+      vi.spyOn(fake, 'bodyCaptureUpdate').mockRejectedValueOnce(
+        boom('capture settings are locked'),
+      );
+      await expect(s.setBodyCaptureMode('errors_only')).resolves.toBeUndefined();
+      expect(s.state.bc.error).toBe('capture settings are locked');
+      expect(s.state.toast).toBeNull();
+    });
+  });
+
+  describe('deleteSelectedBodies', () => {
+    async function withPayload(): Promise<{ s: AppStore; fake: FakeApiClient; id: string }> {
+      const { s, fake } = await store();
+      await s.loadRequests(true);
+      const id = s.state.requestList.find((r) => r.hasBodies)?.id;
+      expect(id, 'the fixture has no row with stored bodies').toBeDefined();
+      s.select(id!);
+      await s.loadSelectedBodies(id!);
+      expect(s.state.selBodies.rows).not.toBeNull();
+      return { s, fake, id: id! };
+    }
+
+    it('rejects on failure, writes no selBodies.error, and keeps the payload', async () => {
+      const { s, fake, id } = await withPayload();
+      vi.spyOn(fake, 'deleteRequestBodies').mockRejectedValueOnce(boom('payload is being read'));
+      markErrors(s);
+      await expect(s.deleteSelectedBodies(id, FROM_DIALOG)).rejects.toThrow(
+        'payload is being read',
+      );
+      expectReportedNowhereElse(s);
+      expect(s.state.selBodies.rows).not.toBeNull();
+      expect(s.state.requestList.find((r) => r.id === id)?.hasBodies).toBe(true);
+    });
+
+    it('keeps its success toast and its state update', async () => {
+      const { s, id } = await withPayload();
+      await s.deleteSelectedBodies(id, FROM_DIALOG);
+      expect(s.state.toast).toEqual({ kind: 'confirm', text: 'Payloads deleted' });
+      expect(s.state.selBodies.rows).toBeNull();
+      expect(s.state.requestList.find((r) => r.id === id)?.hasBodies).toBe(false);
+    });
+  });
+
+  describe('cancelBatch', () => {
+    it('rejects on failure and reports it nowhere else', async () => {
+      const { s, fake } = await store();
+      vi.spyOn(fake, 'cancelBatch').mockRejectedValueOnce(boom('the provider refused'));
+      markErrors(s);
+      await expect(s.cancelBatch('j1')).rejects.toThrow('the provider refused');
+      expectReportedNowhereElse(s);
+      expect(fake.batchJobs[0]?.status).toBe('in_progress');
+    });
+
+    // Batches never toasted a cancel; the state update is the refreshed batch partition.
+    it('keeps its state update on success: the batch read is refreshed', async () => {
+      const { s, fake } = await store();
+      const reads = fake.countOf('batches');
+      await s.cancelBatch('j1');
+      expect(fake.batchJobs[0]?.status).toBe('cancelling');
+      expect(fake.countOf('batches')).toBe(reads + 1);
+      expect(s.state.toast).toBeNull();
+    });
+  });
+
+  describe('removeUnlistedModel, its removal step', () => {
+    it('from the dialog, rejects on failure, toasts nothing, and keeps the model', async () => {
+      const { s, fake } = await store();
+      await s.loadModels('p1');
+      const confirm = vi.fn(() => true);
+      vi.stubGlobal('confirm', confirm);
+      fake.removeModelRejects = boom('the model is still routed');
+      markErrors(s);
+      try {
+        await expect(s.removeUnlistedModel('p1', UNLISTED, FROM_DIALOG)).rejects.toThrow(
+          'the model is still routed',
+        );
+      } finally {
+        vi.unstubAllGlobals();
+      }
+      expectReportedNowhereElse(s);
+      expect(s.state.models['p1']?.map((m) => m.id)).toEqual(['m1', 'm9']);
+      // Only the removal step: the impact count and the prompt belong to the trigger's call.
+      expect(confirm).not.toHaveBeenCalled();
+      expect(fake.countOf('listTiers')).toBe(0);
+    });
+
+    it('from the dialog, keeps its success toast and its list update', async () => {
+      const { s } = await store();
+      await s.loadModels('p1');
+      await s.removeUnlistedModel('p1', UNLISTED, FROM_DIALOG);
+      expect(s.state.toast).toEqual({ kind: 'confirm', text: 'Old Model removed' });
+      expect(s.state.models['p1']?.map((m) => m.id)).toEqual(['m1']);
+    });
+
+    // adopt-red-destructive-actions task 4.2: the trigger's call no longer prompts natively.
+    it('from the trigger, counts the impact and opens the shared confirmation, removing nothing', async () => {
+      const { s, fake } = await store();
+      await s.loadModels('p1');
+      const confirm = vi.fn(() => true);
+      vi.stubGlobal('confirm', confirm);
+      const fallbackFocus = (): HTMLElement | null => null;
+      try {
+        await s.removeUnlistedModel('p1', UNLISTED, { fallbackFocus });
+      } finally {
+        vi.unstubAllGlobals();
+      }
+      expect(confirm, 'the native prompt is gone').not.toHaveBeenCalled();
+      expect(fake.countOf('listTiers')).toBe(1);
+      expect(fake.countOf('removeModel'), 'opening the dialog removed it').toBe(0);
+      const request = s.state.destructive;
+      expect(request?.title).toBe('Remove Old Model?');
+      expect(request?.body).toBe(
+        'The provider no longer lists it. 0 tier entries will be dropped and 0 rules will lose its target.',
+      );
+      expect(request?.commitLabel).toBe('Remove model');
+      expect(request?.busyLabel).toBe('Removing…');
+      expect(request?.fallbackFocus).toBe(fallbackFocus);
+      // Its commit is the removal step: it rejects with the reason, and toasts nothing.
+      fake.removeModelRejects = boom('the model is still routed');
+      await expect(request!.run()).rejects.toThrow('the model is still routed');
+      expect(s.state.toast).toBeNull();
+      expect(s.state.models['p1']?.map((m) => m.id)).toEqual(['m1', 'm9']);
+    });
+
+    it('from the trigger, holds the one slot through its count: a second press opens nothing', async () => {
+      const { s, fake } = await store();
+      await s.loadModels('p1');
+      const first = s.removeUnlistedModel('p1', UNLISTED);
+      // Pressed again while the impact count is still in flight.
+      const second = s.removeUnlistedModel('p1', UNLISTED);
+      // And another destructive site opened meanwhile.
+      s.confirmDestructive({
+        title: 'Delete agent "ci-bot"?',
+        body: 'New requests with its key will be refused.',
+        commitLabel: 'Delete agent',
+        busyLabel: 'Deleting…',
+        run: () => Promise.resolve(),
+        fallbackFocus: () => null,
+      });
+      expect(s.state.destructive, 'a request opened while the count held the slot').toBeNull();
+      await Promise.all([first, second]);
+      expect(fake.countOf('listTiers'), 'the second press counted again').toBe(1);
+      expect(s.state.destructive?.title).toBe('Remove Old Model?');
+    });
+
+    it('from the trigger, still names the consequence when the count cannot be read', async () => {
+      const { s, fake } = await store();
+      await s.loadModels('p1');
+      vi.spyOn(fake, 'listTiers').mockRejectedValueOnce(boom('tiers unavailable'));
+      await s.removeUnlistedModel('p1', UNLISTED);
+      expect(s.state.destructive?.body).toBe(
+        'The provider no longer lists it. Any tier entries using it are dropped, and rules targeting it lose their target.',
+      );
+    });
   });
 });

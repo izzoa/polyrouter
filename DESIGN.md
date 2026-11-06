@@ -285,8 +285,7 @@ Controls are crisp and tactile. They are small and exact, and they share one hei
 | First-token commit marker on the served node | Not recorded by the proxy, so the marker is never drawn | Follow-up: commit-timing telemetry (request logging) |
 | Per-request deep link (`#/requests/<id>`) | Not supported: no owner-scoped read-by-id, and the fragment grammar is page-only | Follow-up: request detail read + deep link |
 | One rendering per figure state: `· est.` replaces `~`; `unpriced` with no dash; `<$0.0001` with no space | `~` / `~est` / `~estimated` markers; `— unpriced` in the workload mix; `< $0.0001` in the savings line; `$0.0000` for unpriced and sub-precision table costs; free as a bare `$0`; `up to $x` for the reserved ceiling; lone dashes for loading Agents figures and not-applicable Pipeline shares | `adopt-figure-states` |
-| One confirm-dialog structure: title, consequence, Cancel first, busy, failure in place | Per-surface confirmations, 440px wide | `adopt-red-destructive-actions` |
-| Destructive: a red ghost trigger, then a red commit in the confirm dialog | An amber ghost (hover text 2.81:1) and an indigo commit | `adopt-red-destructive-actions` |
+| Consent confirmations share the dialog's busy and in-dialog failure | The body-capture consent dialog closes before it saves, with no busy state, and reports a failure on the card | Follow-up: consent dialog on the shared confirm structure |
 | Table column priorities (P1–P3); stacked records only below 640px of container | Requests and Batches become cards below a 980 / 1000px container, about a 1240 / 1260px viewport | `add-docked-inspector` |
 | Failures appear inline, with `role="alert"` | Several failures surface as toasts | Follow-up: inline failure homes |
 | The focal readout figure compares spend against a budget (`of $25.00`) | Spend for the range only | Follow-up: budget comparison on Overview and Costs |

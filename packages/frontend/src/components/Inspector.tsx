@@ -4,10 +4,9 @@ import { useModalSurface } from '../a11y';
 import { toInspectorView } from '../data/analytics';
 import type { RequestRow, RequestStatus } from '../data/api';
 import { fmtDateTime } from '../data/catalog';
+import { FROM_DIALOG } from '../state/appState';
 import { useApp } from '../state/context';
 import { Icon } from './Icon';
-import { StackedLabel } from './StackedLabel';
-import { createBusy } from './busy';
 
 /** label / bg / fg per served status. */
 const STATUS_BADGE: Record<RequestStatus, [string, string, string]> = {
@@ -33,9 +32,21 @@ function badgeFor(status: string): [string, string, string] {
 export function Inspector() {
   const app = useApp();
   const { state } = app;
-  // The payload Delete stays on screen while it runs (D14). adopt-red-destructive-actions
-  // later puts it behind a confirmation, whose commit then carries this state.
-  const deletingBodies = createBusy();
+  /** The payload Delete asks first, in the shared destructive confirmation
+   * (adopt-red-destructive-actions D6 / D7), whose commit carries the busy state: the trigger
+   * only opens it (dashboard-core "A card action shows that it is working"). The payload
+   * section, and with it the trigger, goes on success, so focus lands on the inspector root
+   * (D8), which stays open beneath the dialog. */
+  const deletePayload = (id: string): void => {
+    app.confirmDestructive({
+      title: 'Delete this request’s payload?',
+      body: 'Its stored request and response bodies are deleted. The request stays in the log.',
+      commitLabel: 'Delete payload',
+      busyLabel: 'Deleting…',
+      run: () => app.deleteSelectedBodies(id, FROM_DIALOG),
+      fallbackFocus: () => document.getElementById('inspector-drawer'),
+    });
+  };
   const selected = (): RequestRow | undefined =>
     state.requestList.find((r) => r.id === state.selId) ??
     state.recentRequests.find((r) => r.id === state.selId);
@@ -463,19 +474,10 @@ export function Inspector() {
                       >
                         <button
                           type="button"
-                          class="link-accent"
-                          style="font-size:0.6875rem;color:var(--red-text)"
-                          disabled={deletingBodies.busy()}
-                          aria-busy={deletingBodies.busy() ? true : undefined}
-                          onClick={() =>
-                            void deletingBodies.run(() => app.deleteSelectedBodies(row().id))
-                          }
+                          class="btn-ghost btn-ghost--destructive"
+                          onClick={() => deletePayload(row().id)}
                         >
-                          <StackedLabel
-                            alt={deletingBodies.busy()}
-                            rest="Delete"
-                            altLabel="Deleting…"
-                          />
+                          Delete
                         </button>
                       </Show>
                     </div>

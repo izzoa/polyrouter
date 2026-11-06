@@ -2,13 +2,14 @@ import { createSignal, createUniqueId, For, onCleanup, onMount, Show } from 'sol
 import type { ModelPricingInput } from '../data/api';
 import { fmtUsd } from '../data/format';
 import { unlistedText } from '../data/unlisted';
-import { isPriceEditableKind, providerKindLabel } from '../state/appState';
+import { FROM_DIALOG, isPriceEditableKind, providerKindLabel } from '../state/appState';
 import { isNonRoutableVariant } from '@polyrouter/shared';
 import { useApp } from '../state/context';
 import type { Model, Provider } from '../types';
 import { providerHealthView, type HealthTone } from '../data/providerHealth';
 import { StackedLabel } from '../components/StackedLabel';
 import { Notice } from '../components/Notice';
+import { pageTitle } from '../components/Topbar';
 import { createBusy } from '../components/busy';
 import { createLocalFields, FieldNote } from '../components/Field';
 
@@ -249,15 +250,25 @@ function ProviderCard(props: { p: Provider }) {
     providerHealthView(props.p, Date.now(), state.reconnectChecking.includes(props.p.id));
   const reconnect = (): void => void app.startOauthReauthorize(props.p);
 
+  /** Delete asks first, in the shared destructive confirmation (adopt-red-destructive-actions
+   * D6 / D7). The card, and with it this trigger, goes on success (and the card list with
+   * the last one), so focus lands on the page title (D8). */
   const remove = (): void => {
-    if (
-      globalThis.confirm(
-        `Delete provider "${props.p.name}"? Its models and routing entries go too.`,
-      )
-    ) {
-      void app.deleteProvider(props.p.id);
-    }
+    app.confirmDestructive({
+      title: `Delete provider "${props.p.name}"?`,
+      body: 'Its models and routing entries go too.',
+      commitLabel: 'Delete provider',
+      busyLabel: 'Deleting…',
+      run: () => app.deleteProvider(props.p.id, FROM_DIALOG),
+      fallbackFocus: pageTitle,
+    });
   };
+
+  /** The open model list: where focus lands when a model's Remove took its own row (D8).
+   * It stays while the card does, whichever model went. A model's Remove (both sites below)
+   * counts what it affects, then asks in the shared confirmation, which the store opens. */
+  let modelList: HTMLDivElement | undefined;
+  const removed = { fallbackFocus: (): HTMLElement | null => modelList ?? null };
 
   return (
     <div class="panel card" style="display:flex;flex-direction:column;gap:8px">
@@ -366,13 +377,22 @@ function ProviderCard(props: { p: Provider }) {
         <button type="button" class="btn-ghost" onClick={() => app.openEditProvider(props.p)}>
           Edit
         </button>
-        <button type="button" class="btn-ghost btn-ghost--amber" onClick={remove}>
+        <button type="button" class="btn-ghost btn-ghost--destructive" onClick={remove}>
           Delete
         </button>
       </div>
 
       <Show when={open()}>
-        <div style="display:flex;flex-direction:column;gap:8px;border-top:1px solid var(--border2);padding-top:8px">
+        {/* A named group, focusable from script only: a removed model's landing spot (D8). */}
+        <div
+          ref={(el) => {
+            modelList = el;
+          }}
+          role="group"
+          aria-label={`${props.p.name} models`}
+          tabindex="-1"
+          style="display:flex;flex-direction:column;gap:8px;border-top:1px solid var(--border2);padding-top:8px"
+        >
           <Show
             when={models().length > 0}
             fallback={
@@ -425,10 +445,10 @@ function ProviderCard(props: { p: Provider }) {
                         </span>
                         <button
                           type="button"
-                          class="btn-ghost btn-ghost--amber"
+                          class="btn-ghost btn-ghost--destructive"
                           style="flex:none"
                           aria-label={`Remove ${m.displayName ?? m.externalModelId}`}
-                          onClick={() => void app.removeUnlistedModel(props.p.id, m)}
+                          onClick={() => void app.removeUnlistedModel(props.p.id, m, removed)}
                         >
                           Remove
                         </button>
@@ -508,10 +528,10 @@ function ProviderCard(props: { p: Provider }) {
                   <Show when={m.unlistedSince !== null}>
                     <button
                       type="button"
-                      class="btn-ghost btn-ghost--amber"
+                      class="btn-ghost btn-ghost--destructive"
                       style="flex:none"
                       aria-label={`Remove ${m.displayName ?? m.externalModelId}`}
-                      onClick={() => void app.removeUnlistedModel(props.p.id, m)}
+                      onClick={() => void app.removeUnlistedModel(props.p.id, m, removed)}
                     >
                       Remove
                     </button>

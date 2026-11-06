@@ -74,6 +74,12 @@ const TEXT_SIZED: Record<string, readonly Axis[]> = {
   'confirm:bodyCapture': ['h'],
   'confirm:disableCapture': ['h'],
   'confirm:cancelBatch': ['h'],
+  // The shared destructive confirmation (adopt-red-destructive-actions task 6.1) sits on the
+  // same `.confirm-card`, which shrinks to its content up to 440px. Its one-line title and
+  // one-line body never reach 440 at desktop, so the WIDTH is text-sized and `x` follows it
+  // (the card is centred): Geist 327, Verdana 346, Georgia 308, Courier New 385. `y` and `h`
+  // did not move under any forced face (270 and 122: nothing wraps), so both stay exact.
+  'confirm:destructive': ['x', 'w'],
   accountMenu: ['y', 'h'], // bottom-anchored, so `y` follows `h`
   // Anchored to a control, so `y` tracks the text layout of the page above it, not just
   // the picker's own content.
@@ -191,6 +197,16 @@ const BASELINE: Record<string, [number, number, number, number]> = {
   // confirms above (x, y and the width CSS-pinned); its height is its copy's, so it takes the
   // unmeasured default until the runner's capture on the first push.
   'confirm:cancelBatch': [500, 270, 440, 154],
+  // ADDED 2026-11-03 (adopt-red-destructive-actions task 6.1): the shared destructive
+  // confirmation, opened from the harness's first agent's Delete (`Delete agent
+  // "claude-code-production-worker"?`). Not a pre-change capture: the surface is new. The macOS
+  // `@capture` value on this change's tree (HeadlessChrome 151), classified under forced faces
+  // (Verdana, Georgia, Courier New; the change's `notes/lane-d-faces/`): `y` 270 and `h` 122
+  // are identical under every face and stay exact; `x` and the width are the shrink-wrapped
+  // title's. Those two take the default allowance for a surface added after 2026-09-18 until
+  // the runner's capture on the first push (`geometryCapture.spec.ts` prints it); then size
+  // them in MEASURED_SLACK from both platforms' values. The centre stays exact either way.
+  'confirm:destructive': [557, 270, 327, 122],
   'nav:expanded': [0, 0, 208, 844],
   // RE-PINNED 2026-11-02 (was [18, 661, 171, 139]): the menu spans the sidebar footer's
   // content box (`left: 0; right: 0`), which the spacing sweep moved to x 16 and 175px wide.

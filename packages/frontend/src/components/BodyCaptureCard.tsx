@@ -1,5 +1,6 @@
 import { createSignal, For, Show } from 'solid-js';
 import { useModalSurface } from '../a11y';
+import { FROM_DIALOG } from '../state/appState';
 import { useApp } from '../state/context';
 
 type Mode = 'off' | 'errors_only' | 'all';
@@ -29,13 +30,58 @@ export function BodyCaptureCard() {
   const loading = () => bc() === null && !state.bc.loaded;
   /** Pending mode awaiting the consent confirm (enable transitions only). */
   const [confirmMode, setConfirmMode] = createSignal<Mode | null>(null);
-  const [disableChoice, setDisableChoice] = createSignal(false);
+  /** The card's heading: where focus lands when a confirmation's commit took the control that
+   * opened it (adopt-red-destructive-actions D8). A purge or a mode change reloads the status,
+   * which re-creates the controls below; the heading stays. */
+  let heading: HTMLDivElement | undefined;
+  const fallbackFocus = (): HTMLElement | null => heading ?? null;
+
+  /** Turning capture off asks keep-or-purge, in the shared destructive confirmation
+   * (adopt-red-destructive-actions D6 / D7). Purge now is the destructive commit, busy until
+   * capture is off AND the stored bodies are purged; Keep until retention is its secondary
+   * action, which turns capture off and nothing else, so stored bodies stay until the
+   * retention sweep expires them. Both are awaited inside the dialog, which reports a failure
+   * in place. It keeps its own name, `Disable body capture`, which selectors and pins key on.
+   * The radio that opened it keeps its presentation: no destructive treatment. */
+  const askKeepOrPurge = (): void => {
+    app.confirmDestructive({
+      title: 'Turn body capture off?',
+      body:
+        'New requests will no longer be captured. Purge now deletes every stored body; ' +
+        'Keep until retention leaves them until they expire.',
+      label: 'Disable body capture',
+      commitLabel: 'Purge now',
+      busyLabel: 'Purging…',
+      secondary: {
+        label: 'Keep until retention',
+        busyLabel: 'Turning off…',
+        run: () => app.setBodyCaptureMode('off', FROM_DIALOG),
+      },
+      run: async () => {
+        await app.setBodyCaptureMode('off', FROM_DIALOG);
+        await app.purgeBodies(FROM_DIALOG);
+      },
+      fallbackFocus,
+    });
+  };
+
+  /** Purge all bodies asks first, in the shared destructive confirmation (D6 / D7). */
+  const askPurgeAll = (): void => {
+    app.confirmDestructive({
+      title: 'Delete all stored bodies?',
+      body: 'Every stored request and response body is deleted. The request log keeps its metadata.',
+      commitLabel: 'Purge all bodies',
+      busyLabel: 'Purging…',
+      run: () => app.purgeBodies(FROM_DIALOG),
+      fallbackFocus,
+    });
+  };
 
   const pickMode = (mode: Mode): void => {
     const cur = bc()?.mode ?? 'off';
     if (mode === cur) return;
     if (mode === 'off') {
-      setDisableChoice(true); // keep-or-purge
+      askKeepOrPurge();
     } else if (cur === 'off') {
       setConfirmMode(mode); // enabling needs the explicit consent
     } else {
@@ -55,7 +101,15 @@ export function BodyCaptureCard() {
         style="display:flex;justify-content:space-between;align-items:flex-start;gap:20px"
       >
         <div>
-          <div class="section-title" style="margin-bottom:4px">
+          {/* Focusable from script only: the card's stable focus point (D8). */}
+          <div
+            ref={(el) => {
+              heading = el;
+            }}
+            class="section-title"
+            tabindex="-1"
+            style="margin-bottom:4px"
+          >
             Prompt &amp; response bodies
           </div>
           <div class="t-caption" style="color:var(--text3)">
@@ -238,13 +292,9 @@ export function BodyCaptureCard() {
             <div style="display:flex;align-items:center;gap:8px">
               <button
                 type="button"
-                class="btn-ghost btn-ghost--amber"
+                class="btn-ghost btn-ghost--destructive"
                 disabled={state.bc.busy}
-                onClick={() => {
-                  if (globalThis.confirm('Delete ALL stored request/response bodies now?')) {
-                    void app.purgeBodies();
-                  }
-                }}
+                onClick={askPurgeAll}
               >
                 Purge all bodies
               </button>
@@ -263,13 +313,15 @@ export function BodyCaptureCard() {
       {/* Consent confirm (enable transitions only) */}
       <Show when={confirmMode()} keyed>
         {(mode) => {
-          // These two dialogs claimed `role="dialog" aria-modal="true"` while implementing
-          // NONE of it — no focus trap, no Escape, no restore. A keyboard user could Tab
-          // straight out into the page behind while `aria-modal` told assistive tech the
-          // rest of the page was hidden. The contract forbidding that was a comment.
-          // Attributes and registration in one call — the shape that makes claiming
-          // `aria-modal` without a focus trap difficult to write rather than merely
-          // detectable. Both of these dialogs shipped doing exactly that.
+          // This dialog and the keep-or-purge one claimed `role="dialog" aria-modal="true"`
+          // while implementing NONE of it — no focus trap, no Escape, no restore. A keyboard
+          // user could Tab straight out into the page behind while `aria-modal` told
+          // assistive tech the rest of the page was hidden. The contract forbidding that was
+          // a comment. Attributes and registration in one call — the shape that makes
+          // claiming `aria-modal` without a focus trap difficult to write rather than merely
+          // detectable. Consent is not loss, so this one keeps its own markup and commits
+          // with the primary button (adopt-red-destructive-actions D3); keep-or-purge is the
+          // shared destructive confirmation now.
           const surface = useModalSurface(app, {
             when: () => true, // this branch only renders while the dialog is open
             label: 'Confirm body capture',
@@ -313,65 +365,6 @@ export function BodyCaptureCard() {
             </div>
           );
         }}
-      </Show>
-
-      {/* Disable: keep-or-purge */}
-      <Show when={disableChoice()}>
-        {(() => {
-          // Attributes and registration in one call — the shape that makes claiming
-          // `aria-modal` without a focus trap difficult to write rather than merely
-          // detectable. Both of these dialogs shipped doing exactly that.
-          const surface = useModalSurface(app, {
-            when: () => true, // this branch only renders while the dialog is open
-            label: 'Disable body capture',
-            onDismiss: () => setDisableChoice(false),
-          });
-          return (
-            <div class="overlay" style={{ 'z-index': String(surface.z().backdrop) }}>
-              <div
-                class="panel card confirm-card"
-                {...surface.props}
-                style={{ 'z-index': String(surface.z().surface) }}
-              >
-                <div class="section-title" style="margin-bottom:8px">
-                  Turn capture off
-                </div>
-                <div class="t-dense" style="color:var(--text2);margin-bottom:12px">
-                  New requests stop being captured immediately. What should happen to the bodies
-                  already stored?
-                </div>
-                <div style="display:flex;gap:8px;justify-content:flex-end">
-                  <button type="button" class="btn-cancel" onClick={() => setDisableChoice(false)}>
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    class="btn-ghost"
-                    onClick={() => {
-                      setDisableChoice(false);
-                      void app.setBodyCaptureMode('off');
-                    }}
-                  >
-                    Keep until retention
-                  </button>
-                  <button
-                    type="button"
-                    class="btn-primary"
-                    onClick={() => {
-                      setDisableChoice(false);
-                      void (async () => {
-                        await app.setBodyCaptureMode('off');
-                        await app.purgeBodies();
-                      })();
-                    }}
-                  >
-                    Purge now
-                  </button>
-                </div>
-              </div>
-            </div>
-          );
-        })()}
       </Show>
     </div>
   );

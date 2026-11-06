@@ -301,7 +301,7 @@ test.describe('safe-area insets', () => {
       });
       await page.waitForTimeout(200);
     };
-    for (const name of ['modal:newAgent', 'confirm:bodyCapture'] as const) {
+    for (const name of ['modal:newAgent', 'confirm:bodyCapture', 'confirm:destructive'] as const) {
       await open(page);
       const s = SURFACES.find((x) => x.name === name);
       await s?.open(page);

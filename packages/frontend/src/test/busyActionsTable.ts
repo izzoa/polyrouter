@@ -14,9 +14,11 @@
  *   `disabled`.
  * - `drawer`: a control inside a tuning drawer. Native `disabled` drops focus, and the
  *   drawer's controls must keep it (dashboard-config), so none takes the busy state.
- * - `destructive`: a destructive trigger that opens a confirmation, or that confirmation's
- *   commit. adopt-red-destructive-actions builds the shared ConfirmDialog whose commit is
- *   busy; until then these keep today's behaviour.
+ * - `destructive`: a destructive trigger whose call only opens its confirmation, the shared
+ *   ConfirmDialog (adopt-red-destructive-actions D6). The trigger is not busy, because the
+ *   confirmation's commit is: that commit's launch is the `busy` row
+ *   `components/ConfirmDialog.tsx settle` (dashboard-core "A card action shows that it is
+ *   working").
  * - `leaves-page`: sign-in, sign-up, sign-out and OAuth navigate away.
  * - `unmounts`: the click removes the button itself (a failure notice's Retry clears the
  *   failure as its load restarts; a confirmation's commit closes the dialog first).
@@ -87,24 +89,21 @@ export const BUSY_ACTIONS: readonly BusyRow[] = [
     why: 'a per-agent override select change',
   },
   {
-    key: 'components/BodyCaptureCard.tsx app.purgeBodies',
-    cls: 'destructive',
-    why: 'Purge all bodies: a destructive trigger behind its confirmation',
-  },
-  {
     key: 'components/BodyCaptureCard.tsx app.setBodyCaptureMode#2',
     cls: 'unmounts',
     why: 'the consent dialog’s Capture bodies: it closes the dialog, then saves',
   },
+
+  // The shared destructive confirmation (adopt-red-destructive-actions D6)
   {
-    key: 'components/BodyCaptureCard.tsx app.setBodyCaptureMode#3',
-    cls: 'unmounts',
-    why: 'the disable dialog’s Keep until retention: it closes the dialog, then saves',
-  },
-  {
-    key: 'components/BodyCaptureCard.tsx (async () => …)()',
-    cls: 'unmounts',
-    why: 'the disable dialog’s Purge now: it closes the dialog, then saves and purges',
+    // One launch for the commit and the secondary action, both busy on the dialog's one busy
+    // flag. The dialog renders each request's own progressive label, so the label is checked
+    // at a call site that opens it: an agent's Delete (`Delete agent`, then `Deleting…`).
+    key: 'components/ConfirmDialog.tsx settle',
+    cls: 'busy',
+    busyLabel: 'Deleting…',
+    labelIn: 'pages/Agents.tsx',
+    why: 'the shared destructive confirmation’s commit (and its secondary action), one launch',
   },
 
   // Request inspector
@@ -112,12 +111,6 @@ export const BUSY_ACTIONS: readonly BusyRow[] = [
     key: 'components/Inspector.tsx app.loadSelectedBodies',
     cls: 'unmounts',
     why: 'Show bodies: the payload section swaps it for its Loading line at once',
-  },
-  {
-    key: 'components/Inspector.tsx app.deleteSelectedBodies',
-    cls: 'busy',
-    busyLabel: 'Deleting…',
-    why: 'the payload Delete; it asks first once adopt-red-destructive-actions lands',
   },
 
   // Modals
@@ -181,11 +174,6 @@ export const BUSY_ACTIONS: readonly BusyRow[] = [
   // Agents
   { key: 'pages/Agents.tsx app.loadAgentStats', cls: 'not-a-button', why: 'the mount load' },
   {
-    key: 'pages/Agents.tsx app.deleteAgent',
-    cls: 'destructive',
-    why: 'Delete: a destructive trigger behind its confirmation',
-  },
-  {
     key: 'pages/Agents.tsx app.rotateKey',
     cls: 'busy',
     busyLabel: 'Rotating…',
@@ -193,17 +181,7 @@ export const BUSY_ACTIONS: readonly BusyRow[] = [
   },
 
   // Batches
-  { key: 'pages/Batches.tsx load#1', cls: 'not-a-button', why: 'the page’s mount load' },
-  {
-    key: 'pages/Batches.tsx load#2',
-    cls: 'not-a-button',
-    why: 'the reload a finished cancel requests (a callback, not a click)',
-  },
-  {
-    key: 'pages/Batches.tsx app.cancelBatch',
-    cls: 'destructive',
-    why: 'the cancel-batch confirmation’s commit (natively disabled while it runs today)',
-  },
+  { key: 'pages/Batches.tsx load', cls: 'not-a-button', why: 'the page’s mount load' },
 
   // Costs, Overview, Limits
   { key: 'pages/Costs.tsx app.loadCosts#1', cls: 'not-a-button', why: 'the range effect' },
@@ -226,11 +204,6 @@ export const BUSY_ACTIONS: readonly BusyRow[] = [
     busyLabel: 'Retrying…',
     labelIn: 'components/BudgetProgress.tsx',
     why: 'a budget card’s Retry progress (BudgetProgress): over stale progress it stays while the progress reloads, so it is busy; with no progress it hides while loading',
-  },
-  {
-    key: 'pages/Limits.tsx app.deleteBudget',
-    cls: 'destructive',
-    why: 'Delete: a destructive trigger behind its confirmation',
   },
 
   // Providers
@@ -257,11 +230,6 @@ export const BUSY_ACTIONS: readonly BusyRow[] = [
     why: 'a card’s Reconnect opens the reconnect dialog, which shows the wait. See F3',
   },
   {
-    key: 'pages/Providers.tsx app.deleteProvider',
-    cls: 'destructive',
-    why: 'Delete: a destructive trigger behind its confirmation',
-  },
-  {
     key: 'pages/Providers.tsx app.testProviderById',
     cls: 'busy',
     busyLabel: 'Testing…',
@@ -276,12 +244,12 @@ export const BUSY_ACTIONS: readonly BusyRow[] = [
   {
     key: 'pages/Providers.tsx app.removeUnlistedModel#1',
     cls: 'destructive',
-    why: 'Remove on an unlisted model: the store asks first',
+    why: 'Remove on an unlisted model: the store counts its impact, then opens the shared confirmation, whose commit is busy',
   },
   {
     key: 'pages/Providers.tsx app.removeUnlistedModel#2',
     cls: 'destructive',
-    why: 'Remove on an unlisted batch twin: the store asks first',
+    why: 'Remove on an unlisted batch twin: the store counts its impact, then opens the shared confirmation, whose commit is busy',
   },
   { key: 'pages/Providers.tsx app.loadProviders#1', cls: 'not-a-button', why: 'the mount load' },
   {
@@ -439,11 +407,6 @@ export const BUSY_ACTIONS: readonly BusyRow[] = [
     why: 'the mount load',
   },
   {
-    key: 'pages/Settings.tsx app.deleteChannel',
-    cls: 'destructive',
-    why: 'Delete: a destructive trigger behind its confirmation',
-  },
-  {
     key: 'pages/Settings.tsx app.toggleChannelEnabled',
     cls: 'switch',
     why: 'a channel’s enabled switch',
@@ -490,16 +453,6 @@ export const BUSY_ACTIONS: readonly BusyRow[] = [
   // Users
   { key: 'pages/Users.tsx app.loadUserAdmin', cls: 'not-a-button', why: 'the mount load' },
   {
-    key: 'pages/Users.tsx app.uaDeleteUser',
-    cls: 'destructive',
-    why: 'Delete: a destructive trigger behind its confirmation',
-  },
-  {
-    key: 'pages/Users.tsx app.uaSetDisabled#1',
-    cls: 'destructive',
-    why: 'Disable: a destructive trigger behind its confirmation',
-  },
-  {
     key: 'pages/Users.tsx app.uaSetRegistration',
     cls: 'busy',
     busyLabel: 'Saving…',
@@ -524,9 +477,9 @@ export const BUSY_ACTIONS: readonly BusyRow[] = [
     why: 'Make admin / Demote',
   },
   {
-    key: 'pages/Users.tsx app.uaSetDisabled#2',
+    key: 'pages/Users.tsx app.uaSetDisabled',
     cls: 'busy',
     busyLabel: 'Enabling…',
-    why: 'Enable (Disable, the same button’s other state, is #1’s trigger)',
+    why: 'Enable (Disable, the same button’s other state, opens the shared confirmation)',
   },
 ];

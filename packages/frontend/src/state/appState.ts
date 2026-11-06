@@ -184,6 +184,59 @@ export interface ToastMessage {
  * gives its reader time"). */
 export const TOAST_MS: Readonly<Record<ToastKind, number>> = { confirm: 4000, failure: 8000 };
 
+/** A second action in the shared destructive confirmation, such as Keep until retention
+ * (adopt-red-destructive-actions D6). It takes the commit's busy and failure path: awaited,
+ * with its own progressive label, never fired after the dialog closes. */
+export interface DestructiveSecondary {
+  label: string;
+  busyLabel: string;
+  run: () => Promise<void>;
+}
+
+/** One request to the shared destructive confirmation (`components/ConfirmDialog.tsx`,
+ * adopt-red-destructive-actions D6), opened with `app.confirmDestructive`. */
+export interface DestructiveRequest {
+  /** The action and the resource, e.g. `Delete agent "ci-bot"?`. It is also the dialog's
+   * accessible name, unless `label` is given. */
+  title: string;
+  /** The consequence, as a forward-looking guarantee (D7): never "immediately" or "now". */
+  body: string;
+  /** The commit's verb, e.g. `Delete agent`, never `OK`. */
+  commitLabel: string;
+  /** The commit's progressive label while `run` is in flight, e.g. `Deleting…`. */
+  busyLabel: string;
+  /** The accessible name, when it must differ from the title. Only the two dialogs that moved
+   * onto the shared one pass it (`Cancel batch`, `Disable body capture`), so they keep the
+   * names that selectors, pins and fixtures key on. */
+  label?: string;
+  /** The dismissing action's label. `Cancel` when omitted. */
+  dismissLabel?: string;
+  secondary?: DestructiveSecondary;
+  /** The commit's request. It rejects on failure, with the reason the dialog's alert names,
+   * and reports that failure nowhere else (no toast, no page or card error). */
+  run: () => Promise<void>;
+  /** Where focus goes when a commit removed the control that opened the dialog: a stable
+   * `tabindex="-1"` element on the same surface (D8). */
+  fallbackFocus: () => HTMLElement | null;
+}
+
+/** How a destructive store method reports its outcome (adopt-red-destructive-actions D6).
+ * Passed by the shared dialog's `run`, it makes the method reject on failure with the reason
+ * the dialog's alert names, and report that failure nowhere else: no toast, and no
+ * `ua.error`, `bc.error` or `selBodies.error` behind the dialog. On success the method keeps
+ * its success toast and its list or state update. Without it, a method keeps its own channel. */
+export interface DestructiveCall {
+  readonly from: 'dialog';
+}
+export const FROM_DIALOG: DestructiveCall = { from: 'dialog' };
+
+/** What a model's Remove trigger hands `removeUnlistedModel` (adopt-red-destructive-actions
+ * task 4.2): the store opens the confirmation, but it cannot reach the page's DOM, so the
+ * trigger says where focus lands when the removal took its row (D8). */
+export interface RemoveTrigger {
+  readonly fallbackFocus: () => HTMLElement | null;
+}
+
 export interface AppState {
   // chrome / navigation
   page: Page;
@@ -230,6 +283,9 @@ export interface AppState {
    * other short. */
   toast: ToastMessage | null;
   modal: ModalKind | null;
+  /** The shared destructive confirmation's one request, while it is open
+   * (adopt-red-destructive-actions D6). One slot: a second request is ignored. */
+  destructive: DestructiveRequest | null;
 
   /** Narrow-width navigation (phase1-responsive-dashboard-layout). Below the locked
    * `narrow` threshold the sidebar collapses to an icon rail; this is the user-driven
@@ -853,6 +909,7 @@ function initialState(): AppState {
     selId: null,
     toast: null,
     modal: null,
+    destructive: null,
     layers: [],
     navExpanded: false,
     accountMenuOpen: false,
@@ -1036,12 +1093,19 @@ export interface AppStore {
   runPricingRefresh: () => Promise<void>;
   /** Body capture (add-body-capture). */
   loadBodyCapture: () => Promise<void>;
-  setBodyCaptureMode: (mode: 'off' | 'errors_only' | 'all') => Promise<void>;
+  /** With {@link FROM_DIALOG} (the keep-or-purge dialog), a dialog-scoped sibling of the card's
+   * single-flight runner: it rejects instead of returning when another capture change is in
+   * flight or the request fails, and leaves `bc.error` unwritten. */
+  setBodyCaptureMode: (
+    mode: 'off' | 'errors_only' | 'all',
+    call?: DestructiveCall,
+  ) => Promise<void>;
   setBodyCaptureRetention: (retentionDays: number | null) => Promise<void>;
-  purgeBodies: () => Promise<void>;
+  /** With {@link FROM_DIALOG}, the same dialog-scoped runner as `setBodyCaptureMode`'s. */
+  purgeBodies: (call?: DestructiveCall) => Promise<void>;
   setAgentBodyOverride: (agentId: string, override: 'always' | 'never' | null) => Promise<void>;
   loadSelectedBodies: (id: string) => Promise<void>;
-  deleteSelectedBodies: (id: string) => Promise<void>;
+  deleteSelectedBodies: (id: string, call?: DestructiveCall) => Promise<void>;
   setCalibration: (on: boolean) => Promise<void>;
   revertCalibration: () => Promise<void>;
   /** Revert ONE agent to inheriting; leaves the tenant pair and every sibling
@@ -1117,8 +1181,10 @@ export interface AppStore {
   uaCreateInvite: () => Promise<void>;
   uaRevokeInvite: (inviteId: string) => Promise<void>;
   uaSetRole: (userId: string, role: 'admin' | null) => Promise<void>;
-  uaSetDisabled: (userId: string, disabled: boolean) => Promise<void>;
-  uaDeleteUser: (userId: string) => Promise<void>;
+  /** From the dialog ({@link FROM_DIALOG}), disabling the viewer's own account closes the
+   * dialog before the session is torn down (D8). */
+  uaSetDisabled: (userId: string, disabled: boolean, call?: DestructiveCall) => Promise<void>;
+  uaDeleteUser: (userId: string, call?: DestructiveCall) => Promise<void>;
   uaSetRegistration: (mode: 'open' | 'invite_only') => Promise<void>;
   acceptInvite: () => Promise<void>;
   // agents (realized)
@@ -1126,7 +1192,7 @@ export interface AppStore {
   loadAgentStats: () => Promise<void>;
   createAgent: () => Promise<void>;
   rotateKey: (agent: Agent) => Promise<void>;
-  deleteAgent: (agent: Agent) => Promise<void>;
+  deleteAgent: (agent: Agent, call?: DestructiveCall) => Promise<void>;
   // providers (realized)
   loadProviders: () => Promise<void>;
   /** Instance timeout defaults for the provider form (fix-long-call-timeouts). */
@@ -1142,15 +1208,31 @@ export interface AppStore {
   cancelOauthConnect: () => void;
   testProviderById: (id: string) => Promise<void>;
   syncProvider: (id: string) => Promise<void>;
-  deleteProvider: (id: string) => Promise<void>;
+  deleteProvider: (id: string, call?: DestructiveCall) => Promise<void>;
   loadModels: (providerId: string) => Promise<void>;
   setModelPrice: (providerId: string, modelId: string, body: ModelPricingInput) => Promise<void>;
   /** Remove a model the provider no longer lists (add-live-subscription-models), after
-   * a confirmation that states how many tier entries and rules the removal affects. */
-  removeUnlistedModel: (providerId: string, model: Model) => Promise<void>;
+   * a confirmation that states how many tier entries and rules the removal affects.
+   *
+   * From the trigger ({@link RemoveTrigger}, or nothing) it counts the impact and then opens
+   * the shared destructive confirmation, holding its one slot from before the count, so a
+   * Remove activated again meanwhile cannot stack a second dialog. With {@link FROM_DIALOG}
+   * it is only the removal step, run from that confirmation's commit. */
+  removeUnlistedModel: (
+    providerId: string,
+    model: Model,
+    from?: DestructiveCall | RemoveTrigger,
+  ) => Promise<void>;
   // modals
   openModal: (modal: ModalKind) => void;
   closeModal: () => void;
+  /** Open the shared destructive confirmation (adopt-red-destructive-actions D6). Ignored
+   * while one is open or still being prepared, so a trigger activated twice cannot stack two
+   * dialogs. Every destructive action goes through it. */
+  confirmDestructive: (request: DestructiveRequest) => void;
+  /** Close the shared destructive confirmation. The dialog calls it; whether a dismissal is
+   * allowed (never while busy) is the dialog's decision, not this one's. */
+  closeDestructive: () => void;
   // routing config (#20)
   loadRouting: () => Promise<void>;
   moveTierEntry: (tierId: string, from: number, to: number) => void;
@@ -1199,12 +1281,12 @@ export interface AppStore {
   stopLimitsProgress: () => void;
   openBudget: (budget?: BudgetDto) => void;
   saveBudget: () => Promise<void>;
-  deleteBudget: (id: string) => Promise<void>;
+  deleteBudget: (id: string, call?: DestructiveCall) => Promise<void>;
   // notifications (#20)
   loadChannels: () => Promise<void>;
   openChannel: (channel?: ChannelDto) => void;
   saveChannel: () => Promise<void>;
-  deleteChannel: (id: string) => Promise<void>;
+  deleteChannel: (id: string, call?: DestructiveCall) => Promise<void>;
   toggleChannelEnabled: (channel: ChannelDto) => Promise<void>;
   testChannelById: (id: string) => Promise<void>;
   // onboarding (realized)
@@ -1338,6 +1420,13 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
   const err = (e: unknown): string => {
     if (isApiError(e) && e.status === 401 && state.authView === 'ready') void bootstrap();
     return errMessage(e);
+  };
+  /** A failure for the shared destructive dialog to name (adopt-red-destructive-actions D6):
+   * read through `err`, so a 401 still re-gates, and thrown as an Error whose message is the
+   * reason. The method reports it nowhere else. */
+  const dialogFailure = (e: unknown): Error => {
+    const reason = err(e);
+    return e instanceof Error && e.message === reason ? e : new Error(reason);
   };
 
   // Keeps the `=> void` signature (onClick handlers stay void), but the clipboard
@@ -1485,6 +1574,28 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
   // caches can neither survive an account change nor be repopulated by an
   // in-flight response captured under the previous principal.
   let identityGen = 0;
+  // The shared destructive confirmation's one slot (adopt-red-destructive-actions D6). A
+  // request occupies it from `reserveDestructive` until the dialog closes, including while a
+  // site is still preparing its request (`removeUnlistedModel` counts the impact first), so a
+  // trigger activated twice can never stack two dialogs. `destructiveHold` is the token of
+  // the reservation being prepared, 0 when none is.
+  let destructiveHold = 0;
+  let destructiveHolds = 0;
+  /** Take the slot, or null when a request is already open or being prepared. The returned
+   * opener opens the request it is given, or with null gives the slot back; either way it
+   * acts once, and not at all after an identity change. */
+  const reserveDestructive = (): ((request: DestructiveRequest | null) => void) | null => {
+    if (state.destructive !== null || destructiveHold !== 0) return null;
+    destructiveHolds += 1;
+    const mine = destructiveHolds;
+    destructiveHold = mine;
+    const gen = identityGen;
+    return (request) => {
+      if (destructiveHold !== mine) return; // already used, or dropped at an identity change
+      destructiveHold = 0;
+      if (request !== null && gen === identityGen) setState('destructive', { ...request });
+    };
+  };
   const bumpRouting = (): void => {
     routingSeq += 1;
   };
@@ -1544,6 +1655,10 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     // sign-out would greet the next session with a scrim over `inert` content.
     setState('navExpanded', false);
     setState('accountMenuOpen', false);
+    // So is the destructive confirmation: a request names the previous account's resource,
+    // and one being prepared must not open under the next session.
+    destructiveHold = 0;
+    setState('destructive', null);
     bumpRouting(); // discard in-flight routing loads captured under the old principal
     // The tier writer's bookkeeping is identity-scoped too: a queued order, a tombstone
     // or a deferred drag snapshot from the previous principal must never be sent or
@@ -2001,8 +2116,38 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     }
   };
 
-  const setBodyCaptureMode = (mode: 'off' | 'errors_only' | 'all'): Promise<void> =>
-    bcMutate(
+  /** `bcMutate`'s sibling for the shared destructive dialog (adopt-red-destructive-actions
+   * D6). `bcMutate` returns at once, sending nothing, while `bc.busy` is set, and catches a
+   * failure into `bc.error` and resolves: a dialog step built on it would close the dialog as
+   * a success after a failure, or with nothing sent. This one shares the busy flag but
+   * rejects instead, with a reason the dialog's alert names, and leaves `bc.error` unwritten,
+   * so the card behind the dialog does not repeat the failure. On success it keeps the toast
+   * and the status reload. The card's own calls keep `bcMutate` as it is. */
+  const bcMutateInDialog = async (fn: () => Promise<unknown>, okMsg?: string): Promise<void> => {
+    if (state.bc.busy) {
+      throw new Error('Another body-capture change is still saving. Try again once it finishes.');
+    }
+    const gen = identityGen;
+    setState('bc', 'busy', true);
+    try {
+      await fn();
+    } catch (e) {
+      if (gen !== identityGen) return;
+      setState('bc', 'busy', false);
+      throw dialogFailure(e);
+    }
+    if (gen !== identityGen) return;
+    if (okMsg !== undefined) say(okMsg);
+    await loadBodyCapture();
+  };
+  const bcRunner = (call?: DestructiveCall): typeof bcMutate =>
+    call?.from === 'dialog' ? bcMutateInDialog : bcMutate;
+
+  const setBodyCaptureMode = (
+    mode: 'off' | 'errors_only' | 'all',
+    call?: DestructiveCall,
+  ): Promise<void> =>
+    bcRunner(call)(
       () => client.bodyCaptureUpdate({ mode }),
       mode === 'off' ? 'Body capture off' : 'Body capture on',
     );
@@ -2014,8 +2159,8 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       ),
     );
 
-  const purgeBodies = (): Promise<void> =>
-    bcMutate(async () => {
+  const purgeBodies = (call?: DestructiveCall): Promise<void> =>
+    bcRunner(call)(async () => {
       const { purged } = await client.bodyCapturePurge();
       say(`Purged ${String(purged)} stored bod${purged === 1 ? 'y' : 'ies'}`);
     });
@@ -2038,24 +2183,26 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     }
   };
 
-  const deleteSelectedBodies = async (id: string): Promise<void> => {
+  const deleteSelectedBodies = async (id: string, call?: DestructiveCall): Promise<void> => {
     const gen = identityGen;
     try {
       await client.deleteRequestBodies(id);
-      if (gen !== identityGen) return;
-      say('Payloads deleted');
-      setState('selBodies', { rows: null, loading: false, error: null });
-      // The row's flag clears so the section disappears (data-driven gate).
-      setState('requestList', (rows) =>
-        rows.map((r) => (r.id === id ? { ...r, hasBodies: false } : r)),
-      );
-      setState('recentRequests', (rows) =>
-        rows.map((r) => (r.id === id ? { ...r, hasBodies: false } : r)),
-      );
     } catch (e) {
       if (gen !== identityGen) return;
+      if (call?.from === 'dialog') throw dialogFailure(e);
       setState('selBodies', (c) => ({ ...c, error: err(e) }));
+      return;
     }
+    if (gen !== identityGen) return;
+    say('Payloads deleted');
+    setState('selBodies', { rows: null, loading: false, error: null });
+    // The row's flag clears so the section disappears (data-driven gate).
+    setState('requestList', (rows) =>
+      rows.map((r) => (r.id === id ? { ...r, hasBodies: false } : r)),
+    );
+    setState('recentRequests', (rows) =>
+      rows.map((r) => (r.id === id ? { ...r, hasBodies: false } : r)),
+    );
   };
 
   const loadLimits = async (): Promise<void> => {
@@ -3014,6 +3161,25 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       setState('ua', 'error', err(e));
     }
   };
+  /** `uaMutate` for the shared destructive dialog (adopt-red-destructive-actions D6): it
+   * rejects with the reason and leaves `ua.error` unwritten, because the dialog names the
+   * failure and the Users page behind it must not repeat it. */
+  const uaMutateInDialog = async (fn: () => Promise<void>): Promise<void> => {
+    try {
+      await fn();
+    } catch (e) {
+      throw dialogFailure(e);
+    }
+    await loadUserAdmin();
+  };
+  /** The viewer's own account just went (disabled or deleted from the dialog): the dialog
+   * closes BEFORE the session is torn down, so focus follows the sign-in gate's own rules
+   * and no fallback on a page that is about to go takes it (D8). */
+  const leaveOwnAccount = (): void => {
+    destructiveHold = 0;
+    setState('destructive', null);
+    globalThis.location.assign('/');
+  };
 
   const uaCreateInvite = async (): Promise<void> => {
     if (state.ua.inviteBusy) return;
@@ -3064,6 +3230,39 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     } catch (e) {
       setState('ai', { busy: false, error: err(e) });
     }
+  };
+
+  /** `removeUnlistedModel`'s removal step. From the shared destructive dialog it rejects on
+   * failure, with the reason the dialog names, and toasts nothing; otherwise it toasts the
+   * failure. On success both keep the list update and the toast. */
+  const removeUnlisted = async (
+    providerId: string,
+    model: Model,
+    call?: DestructiveCall,
+  ): Promise<void> => {
+    const name = model.displayName ?? model.externalModelId;
+    try {
+      await client.removeModel(model.id);
+    } catch (e) {
+      if (call?.from === 'dialog') throw dialogFailure(e);
+      sayFailure(`Couldn’t remove ${name}: ${err(e)}`);
+      return;
+    }
+    setState(
+      produce((s) => {
+        s.models[providerId] = (s.models[providerId] ?? []).filter((m) => m.id !== model.id);
+        s.allModels = s.allModels.filter((m) => m.id !== model.id);
+        for (const tierId of Object.keys(s.tierEntries)) {
+          s.tierEntries[tierId] = s.tierEntries[tierId]!.filter((e) => e.modelId !== model.id);
+        }
+        for (const tierId of Object.keys(s.confirmedEntries)) {
+          s.confirmedEntries[tierId] = s.confirmedEntries[tierId]!.filter(
+            (e) => e.modelId !== model.id,
+          );
+        }
+      }),
+    );
+    say(`${name} removed`);
   };
 
   // --- store shape ---
@@ -3205,10 +3404,20 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     uaCreateInvite,
     uaRevokeInvite: (inviteId) => uaMutate(() => client.adminRevokeInvite(inviteId)),
     uaSetRole: (userId, role) => uaMutate(() => client.adminSetRole(userId, role)),
-    uaSetDisabled: async (userId, disabled) => {
+    uaSetDisabled: async (userId, disabled, call) => {
+      const inDialog = call?.from === 'dialog';
       // Self-disable revokes THIS session server-side: don't reload the admin
       // data (it would just 401) — reboot to the login gate.
       if (disabled && userId === state.session?.userId) {
+        if (inDialog) {
+          try {
+            await client.adminSetDisabled(userId, disabled);
+          } catch (e) {
+            throw dialogFailure(e);
+          }
+          leaveOwnAccount();
+          return;
+        }
         setState('ua', 'error', null);
         try {
           await client.adminSetDisabled(userId, disabled);
@@ -3218,11 +3427,23 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         }
         return;
       }
-      await uaMutate(() => client.adminSetDisabled(userId, disabled));
+      await (inDialog ? uaMutateInDialog : uaMutate)(() =>
+        client.adminSetDisabled(userId, disabled),
+      );
     },
-    uaDeleteUser: async (userId) => {
+    uaDeleteUser: async (userId, call) => {
+      const inDialog = call?.from === 'dialog';
       // Deleting yourself removes the account under this session — reboot.
       if (userId === state.session?.userId) {
+        if (inDialog) {
+          try {
+            await client.adminDeleteUser(userId);
+          } catch (e) {
+            throw dialogFailure(e);
+          }
+          leaveOwnAccount();
+          return;
+        }
         setState('ua', 'error', null);
         try {
           await client.adminDeleteUser(userId);
@@ -3232,7 +3453,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         }
         return;
       }
-      await uaMutate(() => client.adminDeleteUser(userId));
+      await (inDialog ? uaMutateInDialog : uaMutate)(() => client.adminDeleteUser(userId));
     },
     uaSetRegistration: (mode) => uaMutate(() => client.adminSetRegistration(mode)),
     acceptInvite,
@@ -3339,14 +3560,16 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         sayFailure(err(e));
       }
     },
-    deleteAgent: async (agent) => {
+    deleteAgent: async (agent, call) => {
       try {
         await client.deleteAgent(agent.id);
-        setState('agents', (list) => list.filter((a) => a.id !== agent.id));
-        say(`Agent ${agent.name} deleted`);
       } catch (e) {
+        if (call?.from === 'dialog') throw dialogFailure(e);
         sayFailure(err(e));
+        return;
       }
+      setState('agents', (list) => list.filter((a) => a.id !== agent.id));
+      say(`Agent ${agent.name} deleted`);
     },
 
     loadProviders,
@@ -3587,19 +3810,21 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         sayFailure(err(e));
       }
     },
-    deleteProvider: async (id) => {
+    deleteProvider: async (id, call) => {
       try {
         await client.deleteProvider(id);
-        setState(
-          produce((s) => {
-            s.providers = s.providers.filter((p) => p.id !== id);
-            delete s.models[id];
-          }),
-        );
-        say('Provider deleted');
       } catch (e) {
+        if (call?.from === 'dialog') throw dialogFailure(e);
         sayFailure(err(e));
+        return;
       }
+      setState(
+        produce((s) => {
+          s.providers = s.providers.filter((p) => p.id !== id);
+          delete s.models[id];
+        }),
+      );
+      say('Provider deleted');
     },
     loadModels,
     setModelPrice: async (providerId, modelId, body) => {
@@ -3614,44 +3839,47 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       }
     },
 
-    removeUnlistedModel: async (providerId, model) => {
-      // Count what the removal touches from a FRESH read — the Routing page may never
-      // have been opened, and a stale count would understate the consequence.
-      let impact: string;
-      try {
-        const [tiers, rules] = await Promise.all([client.listTiers(), client.listRules()]);
-        const chains = await Promise.all(tiers.map((t) => client.listTierEntries(t.id)));
-        const entries = chains.flat().filter((e) => e.modelId === model.id).length;
-        const targeted = rules.filter((r) => r.target === `model:${model.id}`).length;
-        impact =
-          `${String(entries)} tier ${entries === 1 ? 'entry' : 'entries'} will be dropped and ` +
-          `${String(targeted)} ${targeted === 1 ? 'rule' : 'rules'} will lose its target.`;
-      } catch {
-        impact = 'Any tier entries using it are dropped, and rules targeting it lose their target.';
-      }
-      const name = model.displayName ?? model.externalModelId;
-      if (!globalThis.confirm(`Remove ${name}? The provider no longer lists it. ${impact}`)) return;
-      try {
-        await client.removeModel(model.id);
-      } catch (e) {
-        sayFailure(`Couldn’t remove ${name}: ${err(e)}`);
+    removeUnlistedModel: async (providerId, model, from) => {
+      // From the confirmation's commit: only the removal step, reported to the dialog.
+      if (from !== undefined && 'from' in from) {
+        await removeUnlisted(providerId, model, from);
         return;
       }
-      setState(
-        produce((s) => {
-          s.models[providerId] = (s.models[providerId] ?? []).filter((m) => m.id !== model.id);
-          s.allModels = s.allModels.filter((m) => m.id !== model.id);
-          for (const tierId of Object.keys(s.tierEntries)) {
-            s.tierEntries[tierId] = s.tierEntries[tierId]!.filter((e) => e.modelId !== model.id);
-          }
-          for (const tierId of Object.keys(s.confirmedEntries)) {
-            s.confirmedEntries[tierId] = s.confirmedEntries[tierId]!.filter(
-              (e) => e.modelId !== model.id,
-            );
-          }
-        }),
-      );
-      say(`${name} removed`);
+      // The trigger: take the confirmation's one slot BEFORE the count, so a Remove
+      // activated again while the count is in flight opens nothing (D6, "never opens twice").
+      const open = reserveDestructive();
+      if (open === null) return;
+      let request: DestructiveRequest | null = null;
+      try {
+        // Count what the removal touches from a FRESH read — the Routing page may never
+        // have been opened, and a stale count would understate the consequence.
+        let impact: string;
+        try {
+          const [tiers, rules] = await Promise.all([client.listTiers(), client.listRules()]);
+          const chains = await Promise.all(tiers.map((t) => client.listTierEntries(t.id)));
+          const entries = chains.flat().filter((e) => e.modelId === model.id).length;
+          const targeted = rules.filter((r) => r.target === `model:${model.id}`).length;
+          impact =
+            `${String(entries)} tier ${entries === 1 ? 'entry' : 'entries'} will be dropped and ` +
+            `${String(targeted)} ${targeted === 1 ? 'rule' : 'rules'} will lose its target.`;
+        } catch {
+          impact =
+            'Any tier entries using it are dropped, and rules targeting it lose their target.';
+        }
+        const name = model.displayName ?? model.externalModelId;
+        request = {
+          title: `Remove ${name}?`,
+          body: `The provider no longer lists it. ${impact}`,
+          commitLabel: 'Remove model',
+          busyLabel: 'Removing…',
+          run: () => removeUnlisted(providerId, model, FROM_DIALOG),
+          fallbackFocus: from?.fallbackFocus ?? (() => null),
+        };
+      } finally {
+        // Opens the request, or gives the slot back if building it failed; a no-op after an
+        // identity change, so a count that outlived its session opens nothing.
+        open(request);
+      }
     },
 
     openModal: (modal) => {
@@ -3705,6 +3933,12 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           s.modal = null;
         }),
       );
+    },
+    confirmDestructive: (request) => {
+      reserveDestructive()?.(request);
+    },
+    closeDestructive: () => {
+      setState('destructive', null);
     },
 
     loadRouting,
@@ -4304,7 +4538,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         }
       }
     },
-    deleteBudget: async (id) => {
+    deleteBudget: async (id, call) => {
       const gen = identityGen;
       bumpBudgets();
       deletedBudgets.add(id);
@@ -4318,6 +4552,8 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         say('Budget deleted');
       } catch (e) {
         if (gen !== identityGen) return;
+        // From the dialog: rejected once the reload below has restored the list.
+        if (call?.from === 'dialog') throw dialogFailure(e);
         sayFailure(err(e));
       } finally {
         if (gen === identityGen) {
@@ -4395,15 +4631,17 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         setState('cf', { busy: false, error: err(e) });
       }
     },
-    deleteChannel: async (id) => {
+    deleteChannel: async (id, call) => {
       try {
         await client.deleteChannel(id);
-        bumpChannels();
-        setState('channels', (list) => list.filter((c) => c.id !== id));
-        say('Channel deleted');
       } catch (e) {
+        if (call?.from === 'dialog') throw dialogFailure(e);
         sayFailure(err(e));
+        return;
       }
+      bumpChannels();
+      setState('channels', (list) => list.filter((c) => c.id !== id));
+      say('Channel deleted');
     },
     toggleChannelEnabled: async (channel) => {
       if (state.channelToggling[channel.id]) return; // coalesce rapid clicks (#5)

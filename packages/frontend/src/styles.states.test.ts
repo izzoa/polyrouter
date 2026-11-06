@@ -129,7 +129,11 @@ describe('every button variant has a pressed tone that applies at once (task 4.3
     '.btn-primary': 'var(--accent-fill-pressed)',
     '.btn-cancel': 'var(--chip)',
     '.btn-ghost': 'var(--accent-bg)',
-    '.btn-ghost--amber': 'var(--amber-bg)',
+    // adopt-red-destructive-actions D10: the destructive ghost's pressed tone is the Red Wash
+    // (with a 2px Red Text border inside the same box), never the indigo wash.
+    '.btn-ghost--destructive': 'var(--red-bg)',
+    // D1: the destructive commit's pressed fill darkens the Red Fill toward literal Ink.
+    '.btn-destructive': 'color-mix(in oklab, var(--red-fill) 70%, #17181a)',
   };
   for (const [variant, fill] of Object.entries(PRESSED)) {
     it(`${variant}:active takes ${fill} with no transition`, () => {
@@ -154,11 +158,12 @@ describe('every button variant has a pressed tone that applies at once (task 4.3
   });
 
   it('no button state lifts, glows or scales: no transform, filter or box-shadow', () => {
-    const offenders = RULES.filter((r) => /\.btn-(primary|cancel|ghost)/.test(r.selector)).flatMap(
-      (r) =>
-        ['transform', 'filter', 'box-shadow']
-          .filter((p) => decl(r.body, p) !== null)
-          .map((p) => `${r.selector} { ${p}: ${decl(r.body, p) ?? ''} }`),
+    const offenders = RULES.filter((r) =>
+      /\.btn-(primary|cancel|ghost|destructive)/.test(r.selector),
+    ).flatMap((r) =>
+      ['transform', 'filter', 'box-shadow']
+        .filter((p) => decl(r.body, p) !== null)
+        .map((p) => `${r.selector} { ${p}: ${decl(r.body, p) ?? ''} }`),
     );
     expect(offenders).toEqual([]);
   });

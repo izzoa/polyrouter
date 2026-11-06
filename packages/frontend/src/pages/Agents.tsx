@@ -1,9 +1,11 @@
 import { For, Show, onMount } from 'solid-js';
 import { BASE_URL } from '../data/catalog';
 import { fmtWhen } from '../data/format';
+import { FROM_DIALOG } from '../state/appState';
 import { useApp } from '../state/context';
 import type { Agent } from '../types';
 import { StackedLabel } from '../components/StackedLabel';
+import { pageTitle } from '../components/Topbar';
 import { createBusyMap } from '../components/busy';
 
 /** Compact USD for the per-agent 24h spend cell (sub-cent shown to 4dp). */
@@ -35,10 +37,19 @@ export function Agents() {
 
   onMount(() => void app.loadAgentStats());
 
+  /** Delete asks first, in the shared destructive confirmation (adopt-red-destructive-actions
+   * D6 / D7). Its body is the forward-looking guarantee: an agent key is cached across
+   * instances and in-flight requests finish, so "immediately" would overpromise. The row,
+   * and with it this trigger, goes on success, so focus lands on the page title (D8). */
   const remove = (a: Agent): void => {
-    if (globalThis.confirm(`Delete agent "${a.name}"? Its key stops working immediately.`)) {
-      void app.deleteAgent(a);
-    }
+    app.confirmDestructive({
+      title: `Delete agent "${a.name}"?`,
+      body: 'New requests with its key will be refused.',
+      commitLabel: 'Delete agent',
+      busyLabel: 'Deleting…',
+      run: () => app.deleteAgent(a, FROM_DIALOG),
+      fallbackFocus: pageTitle,
+    });
   };
 
   return (
@@ -142,7 +153,7 @@ export function Agents() {
                   </button>
                   <button
                     type="button"
-                    class="btn-ghost btn-ghost--amber"
+                    class="btn-ghost btn-ghost--destructive"
                     onClick={() => remove(a)}
                   >
                     Delete

@@ -16,9 +16,9 @@
  * part that matters is that it cost nothing.
  */
 import { render } from 'solid-js/web';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
-import type { BatchJobDto } from './data/api';
+import { ApiError, type BatchJobDto } from './data/api';
 import { PAGE_ICONS } from './components/PageIcon';
 import { PAGES } from './state/route';
 import { createAppStore, type AppStore } from './state/appState';
@@ -92,6 +92,7 @@ const rowFor = (host: HTMLElement, id: string): HTMLElement =>
 
 afterEach(() => {
   document.body.innerHTML = '';
+  vi.restoreAllMocks();
 });
 
 describe('the page is a first-class destination (7.1)', () => {
@@ -353,6 +354,141 @@ describe('cancelling is destructive, and behaves like it (7.2)', () => {
         'c1',
       ]);
       expect(h.host.querySelector('.confirm-card')).toBeNull();
+    } finally {
+      h.dispose();
+    }
+  });
+
+  // adopt-red-destructive-actions task 4.3: the dialog moved onto the shared destructive
+  // confirmation, keeping its name, title, body and dismiss label.
+  const openCancel = async (h: { host: HTMLElement }, id: string): Promise<HTMLElement> => {
+    const trigger = [...rowFor(h.host, id).querySelectorAll<HTMLButtonElement>('button')].find(
+      (b) => b.textContent?.trim() === 'Cancel',
+    )!;
+    trigger.focus();
+    trigger.click();
+    await flush();
+    const dialog = h.host.querySelector<HTMLElement>('.confirm-card');
+    expect(dialog, 'Cancel opened no dialog').not.toBeNull();
+    return dialog!;
+  };
+  const commitOf = (dialog: HTMLElement): HTMLButtonElement =>
+    dialog.querySelector<HTMLButtonElement>('button.btn-destructive')!;
+
+  it('keeps its name, puts Keep running first, and commits with the red destructive fill', async () => {
+    const fake = new FakeApiClient({ batchJobs: [job('c3')] });
+    const h = await mount(fake);
+    try {
+      const trigger = [...rowFor(h.host, 'c3').querySelectorAll('button')].find(
+        (b) => b.textContent?.trim() === 'Cancel',
+      )!;
+      // The row's trigger is the destructive ghost, and keeps the name that says which batch.
+      expect(trigger.className).toBe('btn-ghost btn-ghost--destructive');
+      expect(trigger.getAttribute('aria-label')).toBe('Cancel batch on model-c3');
+      const dialog = await openCancel(h, 'c3');
+      expect(dialog.getAttribute('aria-label')).toBe('Cancel batch');
+      expect(dialog.querySelector('.section-title')?.textContent).toBe('Cancel this batch?');
+      const buttons = [...dialog.querySelectorAll<HTMLButtonElement>('button')];
+      expect(buttons.map((b) => b.className)).toEqual(['btn-cancel', 'btn-destructive']);
+      expect(buttons[0]!.textContent?.trim()).toBe('Keep running');
+      expect(document.activeElement, 'Keep running holds the initial focus').toBe(buttons[0]);
+      expect(dialog.querySelector('.btn-primary'), 'an indigo primary in the dialog').toBeNull();
+      expect(commitOf(dialog).textContent).toContain('Cancel batch');
+    } finally {
+      h.dispose();
+    }
+  });
+
+  it('sends one cancel per double activation, reading Cancelling… while it runs', async () => {
+    const fake = new FakeApiClient({ batchJobs: [job('c4')] });
+    const h = await mount(fake);
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    const real = fake.cancelBatch.bind(fake);
+    const cancel = vi
+      .spyOn(fake, 'cancelBatch')
+      .mockImplementation((id: string) => held.then(() => real(id)));
+    try {
+      const dialog = await openCancel(h, 'c4');
+      const commit = commitOf(dialog);
+      commit.click();
+      commit.click();
+      await flush();
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(commit.disabled).toBe(true);
+      expect(commit.getAttribute('aria-busy')).toBe('true');
+      expect(commit.querySelector('[data-shown="true"]')?.textContent).toBe('Cancelling…');
+      release();
+      await flush();
+      await flush();
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(h.host.querySelector('.confirm-card')).toBeNull();
+      // The commit held through the reload, so the list it closed onto shows the job cancelling.
+      expect(rowFor(h.host, 'c4').textContent).toContain('Cancelling');
+      // The reload re-created the rows, and with them the trigger: focus lands on the table
+      // (D8), a stable point on the page, never the body.
+      expect(document.activeElement?.getAttribute('aria-label')).toBe('Batches');
+      expect(document.activeElement?.getAttribute('tabindex')).toBe('-1');
+    } finally {
+      h.dispose();
+    }
+  });
+
+  it('a failed cancel keeps the dialog open, says why, and leaves the job running', async () => {
+    const fake = new FakeApiClient({ batchJobs: [job('c5')] });
+    const h = await mount(fake);
+    vi.spyOn(fake, 'cancelBatch').mockRejectedValueOnce(
+      new ApiError(409, 'Conflict', 'the provider already finalized it'),
+    );
+    try {
+      const dialog = await openCancel(h, 'c5');
+      commitOf(dialog).click();
+      await flush();
+      expect(h.store.state.destructive, 'the failure closed the dialog').not.toBeNull();
+      expect(h.host.querySelector('.confirm-card')).toBe(dialog);
+      expect(dialog.querySelector('[role="alert"]')?.textContent).toContain(
+        'the provider already finalized it',
+      );
+      expect(commitOf(dialog).disabled).toBe(false);
+      expect(rowFor(h.host, 'c5').textContent).toContain('In progress');
+      expect(h.store.state.toast).toBeNull();
+    } finally {
+      h.dispose();
+    }
+  });
+
+  // A review asked for the dialog to stay open when the reload after an accepted cancel fails.
+  // It closes: the destructive request succeeded (ADDED "the dialog closes once the request
+  // succeeds"), so an alert reading "Cancel batch failed" would report a failure that did not
+  // happen, and a retry would send a second cancel. The failed read is the page's, reported by
+  // the same stale-list banner as any failed refresh, as it was before the dialog moved.
+  it('a cancel the provider accepted closes the dialog even when the reload after it fails', async () => {
+    const fake = new FakeApiClient({ batchJobs: [job('c6')] });
+    const h = await mount(fake);
+    const real = fake.cancelBatch.bind(fake);
+    const cancel = vi.spyOn(fake, 'cancelBatch').mockImplementation(async (id: string) => {
+      const accepted = await real(id);
+      fake.batchesFailure = new ApiError(503, 'Unavailable', 'the batch list is unavailable');
+      return accepted;
+    });
+    try {
+      const dialog = await openCancel(h, 'c6');
+      commitOf(dialog).click();
+      await flush();
+      await flush();
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(
+        h.host.querySelector('.confirm-card'),
+        'an accepted cancel kept the dialog open',
+      ).toBeNull();
+      expect(h.store.state.destructive).toBeNull();
+      expect(h.host.textContent).toContain(
+        'Could not refresh batches — showing the last known list.',
+      );
+      expect(h.store.state.toast?.kind, 'the refresh failure was toasted').not.toBe('failure');
+      expect(document.activeElement, 'focus fell to the document body').not.toBe(document.body);
     } finally {
       h.dispose();
     }

@@ -1531,9 +1531,15 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       expect(drawer().textContent).toContain('prompt for req-000');
       expect(drawer().textContent).toContain('answer for req-000');
-      // Delete removes the payloads and the section (hasBodies flips).
+      // Delete asks first (adopt-red-destructive-actions task 4.5); its commit removes the
+      // payloads and the section (hasBodies flips).
       [...drawer().querySelectorAll<HTMLElement>('button')]
         .find((b) => labelText(b) === 'Delete')!
+        .click();
+      await flush();
+      expect(drawer().textContent).toContain('Payload');
+      host
+        .querySelector<HTMLElement>('[role="dialog"].confirm-card button.btn-destructive')!
         .click();
       await flush();
       expect(drawer().textContent).not.toContain('Payload');

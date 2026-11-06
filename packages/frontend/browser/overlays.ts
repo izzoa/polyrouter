@@ -118,7 +118,7 @@ export const SURFACES: readonly Surface[] = [
     },
   },
   {
-    // The Batches page's cancel confirmation, its own modal surface (`CancelDialog`). Opened
+    // The Batches page's cancel confirmation, on the shared destructive `ConfirmDialog`. Opened
     // from the harness fixture's in-progress job, through its row's real Cancel trigger, so
     // the dialog returns focus where a user's would.
     name: 'confirm:cancelBatch',
@@ -127,6 +127,22 @@ export const SURFACES: readonly Surface[] = [
       await store(page, 'go', 'batches');
       await page.locator('button[aria-label^="Cancel batch on "]').first().click();
       await page.waitForSelector('[aria-label="Cancel batch"]');
+    },
+  },
+  {
+    // The shared destructive confirmation (adopt-red-destructive-actions task 6.1), opened from
+    // the harness fixture's first agent through its row's real Delete trigger, so the dialog
+    // returns focus where a user's would. Selected by its title-derived name,
+    // `Delete agent "<name>"?`: a new dialog is named by its title (design.md D6).
+    name: 'confirm:destructive',
+    sel: '[role="dialog"][aria-label^="Delete agent "]',
+    open: async (page) => {
+      await store(page, 'go', 'agents');
+      await page
+        .locator('main button.btn-ghost--destructive', { hasText: 'Delete' })
+        .first()
+        .click();
+      await page.waitForSelector('[role="dialog"][aria-label^="Delete agent "]');
     },
   },
   {

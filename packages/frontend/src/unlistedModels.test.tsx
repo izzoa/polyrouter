@@ -96,7 +96,7 @@ async function mount(
     tiers: [TIER],
     tierEntries: {
       t1: (opts.tierModels ?? []).map((modelId, position) => ({
-        id: `e-${modelId}`,
+        id: `e-${modelId}-${String(position)}`,
         tierId: 't1',
         modelId,
         position,
@@ -148,6 +148,35 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+/** The browser's prompt, stubbed only to prove it is never shown: Remove confirms in the
+ * shared dashboard dialog (adopt-red-destructive-actions task 4.2). */
+function watchNativeConfirm(): ReturnType<typeof vi.fn<(message?: string) => boolean>> {
+  const confirm = vi.fn<(message?: string) => boolean>(() => true);
+  vi.stubGlobal('confirm', confirm);
+  return confirm;
+}
+
+const removeButton = (h: Harness, name: string): HTMLButtonElement =>
+  [...h.host.querySelectorAll<HTMLButtonElement>('button')].find(
+    (b) => b.getAttribute('aria-label') === `Remove ${name}`,
+  )!;
+const dialogOf = (h: Harness): HTMLElement | null =>
+  h.host.querySelector<HTMLElement>('[role="dialog"].confirm-card');
+/** Press a model's Remove as a keyboard user would, and wait for its impact count. */
+async function pressRemove(h: Harness, name: string): Promise<HTMLElement> {
+  const trigger = removeButton(h, name);
+  trigger.focus();
+  trigger.click();
+  await flush();
+  const dialog = dialogOf(h);
+  expect(dialog, 'Remove opened no dashboard dialog').not.toBeNull();
+  return dialog!;
+}
+const commitOf = (dialog: HTMLElement): HTMLButtonElement =>
+  dialog.querySelector<HTMLButtonElement>('button.btn-destructive')!;
+const removals = (h: Harness): number =>
+  h.fake.callLog.filter((c) => c.method === 'removeModel').length;
+
 describe('Providers page — a model the provider stopped listing', () => {
   it('reads "no longer offered" in words, sorts after offered models, and alone offers Remove', async () => {
     const h = await mount([RETIRED, OFFERED_A, OFFERED_B]);
@@ -169,49 +198,98 @@ describe('Providers page — a model the provider stopped listing', () => {
     expect(removes[0]!.getAttribute('aria-label')).toBe('Remove gpt-5.4-mini');
   });
 
-  it('Remove states how many tier entries and rules it affects, and only then deletes', async () => {
+  it('Remove states how many tier entries and rules it affects, and only the commit deletes', async () => {
+    const confirm = watchNativeConfirm();
     const h = await mount([RETIRED, OFFERED_A], {
-      tierModels: ['gpt-6-luna', 'gpt-5.4-mini'],
+      tierModels: ['gpt-6-luna', 'gpt-5.4-mini', 'gpt-5.4-mini'],
       ruleTargets: ['model:gpt-5.4-mini', 'tier:default'],
     });
-    const confirm = vi.fn<(message: string) => boolean>().mockReturnValueOnce(false);
-    vi.stubGlobal('confirm', confirm);
-    const remove = (): void =>
-      [...h.host.querySelectorAll('button')]
-        .find((b) => b.getAttribute('aria-label') === 'Remove gpt-5.4-mini')!
-        .click();
-    remove();
-    await flush();
-    expect(confirm).toHaveBeenCalledTimes(1);
-    expect(confirm.mock.calls[0]![0]).toMatch(
-      /1 tier entry will be dropped and 1 rule will lose its target/,
+    let dialog = await pressRemove(h, 'gpt-5.4-mini');
+    expect(dialog.getAttribute('aria-label')).toBe('Remove gpt-5.4-mini?');
+    expect(dialog.textContent).toContain('The provider no longer lists it.');
+    expect(dialog.textContent).toContain(
+      '2 tier entries will be dropped and 1 rule will lose its target',
     );
+    expect(commitOf(dialog).textContent).toContain('Remove model');
+    // Opening it sent nothing.
+    expect(removals(h)).toBe(0);
+
     // Declined: nothing sent, the row stays.
-    expect(h.fake.callLog.some((c) => c.method === 'removeModel')).toBe(false);
+    dialog.querySelector<HTMLButtonElement>('button.btn-cancel')!.click();
+    await flush();
+    expect(dialogOf(h)).toBeNull();
+    expect(removals(h)).toBe(0);
     expect(h.host.querySelector('[data-unlisted="gpt-5.4-mini"]')).not.toBeNull();
 
-    confirm.mockReturnValueOnce(true);
-    remove();
+    // Accepted: exactly one delete, however often the commit is pressed.
+    dialog = await pressRemove(h, 'gpt-5.4-mini');
+    commitOf(dialog).click();
+    commitOf(dialog).click();
     await flush();
-    expect(h.fake.callLog.filter((c) => c.method === 'removeModel')).toHaveLength(1);
+    expect(removals(h)).toBe(1);
+    expect(dialogOf(h)).toBeNull();
     expect(h.host.querySelector('[data-unlisted="gpt-5.4-mini"]')).toBeNull();
     expect(h.host.textContent).toContain('gpt-6-luna');
+    // The row went with its Remove: focus lands on the card's model list, never the body (D8).
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('OpenAI models');
+    expect(document.activeElement?.getAttribute('tabindex')).toBe('-1');
+    expect(confirm, 'the native confirm prompt was shown').not.toHaveBeenCalled();
   });
 
-  it('a refused removal says why and leaves the list unchanged', async () => {
+  it('a refused removal says why in the dialog and leaves the list unchanged', async () => {
+    const confirm = watchNativeConfirm();
     const h = await mount([RETIRED, OFFERED_A]);
     h.fake.removeModelRejects = new ApiError(
       409,
       'conflict',
       'the provider still lists this model',
     );
-    vi.stubGlobal('confirm', vi.fn().mockReturnValue(true));
-    [...h.host.querySelectorAll('button')]
-      .find((b) => b.getAttribute('aria-label') === 'Remove gpt-5.4-mini')!
-      .click();
+    const dialog = await pressRemove(h, 'gpt-5.4-mini');
+    commitOf(dialog).click();
     await flush();
+    expect(removals(h)).toBe(1);
+    expect(dialogOf(h), 'the failure closed the dialog').toBe(dialog);
+    expect(dialog.querySelector('[role="alert"]')?.textContent).toContain(
+      'the provider still lists this model',
+    );
     expect(h.host.querySelector('[data-unlisted="gpt-5.4-mini"]')).not.toBeNull();
-    expect(h.host.textContent).toMatch(/Couldn’t remove gpt-5\.4-mini/);
+    // Reported in the dialog, nowhere else.
+    expect(h.store.state.toast).toBeNull();
+    expect(commitOf(dialog).disabled).toBe(false);
+    expect(confirm, 'the native confirm prompt was shown').not.toHaveBeenCalled();
+  });
+
+  it('a Remove pressed again while its count is in flight opens one dialog', async () => {
+    const confirm = watchNativeConfirm();
+    const h = await mount([RETIRED, OFFERED_A]);
+    const trigger = removeButton(h, 'gpt-5.4-mini');
+    trigger.click();
+    trigger.click(); // before the impact count settles
+    await flush();
+    expect(h.host.querySelectorAll('[role="dialog"].confirm-card')).toHaveLength(1);
+    expect(h.fake.countOf('listTiers'), 'the second press counted again').toBe(1);
+    expect(confirm, 'the native confirm prompt was shown').not.toHaveBeenCalled();
+  });
+
+  it('both Remove sites, the base row and an orphan batch twin, take the destructive ghost and ask first', async () => {
+    const confirm = watchNativeConfirm();
+    // An orphan twin has no base model on this provider, so it is its own row.
+    const orphan = mkModel('vendor/gone:batch', {
+      variant: 'batch',
+      baseExternalModelId: null,
+      unlistedSince: RETIRED_AT,
+    });
+    const h = await mount([RETIRED, OFFERED_A, orphan]);
+    expect(h.host.querySelector('[data-orphan-batch="vendor/gone:batch"]')).not.toBeNull();
+    for (const name of ['gpt-5.4-mini', 'vendor/gone:batch']) {
+      expect(removeButton(h, name).className, name).toBe('btn-ghost btn-ghost--destructive');
+      const dialog = await pressRemove(h, name);
+      expect(dialog.getAttribute('aria-label')).toBe(`Remove ${name}?`);
+      dialog.querySelector<HTMLButtonElement>('button.btn-cancel')!.click();
+      await flush();
+    }
+    expect(removals(h)).toBe(0);
+    expect(confirm, 'the native confirm prompt was shown').not.toHaveBeenCalled();
   });
 });
 

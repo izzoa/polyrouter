@@ -57,6 +57,13 @@ function Shell(props: { live: boolean }) {
     onCleanup(installViewportPublisher().dispose);
   });
 
+  // The dock threshold (add-docked-inspector D4): whether the Requests inspector presents as
+  // the docked panel or a modal. Followed here for the same reason again — one shell, one
+  // listener — and the geometry stays declarative in the stylesheet's media block.
+  onMount(() => {
+    onCleanup(app.followDockViewport());
+  });
+
   // Shell sizing and containment (fix-shell-scroll-containment):
   //
   // `100dvh` with a `100vh` fallback — the static `vh` unit resolves against the viewport
@@ -81,9 +88,14 @@ function Shell(props: { live: boolean }) {
     >
       <Sidebar />
       {/* `inert` while the narrow-width nav overlay is open: `aria-modal` + the focus
-          trap cover keyboard and assistive tech, but pointer input needs this too. */}
+          trap cover keyboard and assistive tech, but pointer input needs this too.
+          `rs-docked` gives up the docked inspector's width (add-docked-inspector D3), top
+          bar included, so the out-of-flow panel covers no control. The rule sits inside
+          the dock threshold's media query, so a stale class can never narrow the pane
+          below it. */}
       <div
         data-pane="content"
+        class={app.inspectorDocked() ? 'rs-docked' : undefined}
         inert={state.navExpanded ? true : undefined}
         style="flex:1;min-width:0;display:flex;flex-direction:column"
       >

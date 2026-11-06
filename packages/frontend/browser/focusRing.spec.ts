@@ -205,10 +205,11 @@ for (const theme of ['light', 'dark'] as const) {
       await setTheme(page, theme);
       const row = page.locator('.rs-table-requests button.req-row').first();
       expectInset(await ringOf(page, row), 'a request row');
-      // The selected row: opening the inspector makes the page inert, so the row cannot hold
-      // focus while its drawer is up (until a docked inspector). The cascade is what is under
-      // test here — the focus ring replaces the 1px selected outline — so the row is given its
-      // selected state directly.
+      // The selected row, its state set by hand: the cascade is what is under test here — the
+      // focus ring replaces the 1px selected outline — on a row nothing else has touched. The
+      // case below opens the inspector for real, which at 1440×900 docks it beside the list
+      // (add-docked-inspector) and leaves the row focused; below the dock threshold the
+      // modal drawer would make the page inert, so a selected row could not hold focus there.
       const second = page.locator('.rs-table-requests button.req-row').nth(1);
       await second.evaluate((el) => el.setAttribute('aria-expanded', 'true'));
       await page.mouse.move(0, 0);
@@ -219,6 +220,31 @@ for (const theme of ['light', 'dark'] as const) {
       });
       expect(resting, 'the selected row rests on its 1px inset edge').toBe('1px solid -1px');
       expectInset(await ringOf(page, second), 'a selected request row');
+    });
+
+    test('docked: clicking a row opens the inspector beside it and leaves the row focused, its ring inset (add-docked-inspector 2.4)', async ({
+      page,
+    }) => {
+      await open(page, '/browser-harness.html#/requests');
+      await setTheme(page, theme);
+      const row = page.locator('.rs-table-requests button.req-row').nth(1);
+      await row.click();
+      // Docked, not modal: the same element as a named complementary landmark, no scrim.
+      const panel = page.locator('#inspector-drawer.rs-inspector-docked');
+      await expect(panel).toHaveAttribute('role', 'complementary');
+      expect(await panel.getAttribute('aria-modal'), 'a docked panel claims aria-modal').toBeNull();
+      expect(await page.locator('.overlay').count(), 'a scrim over the list').toBe(0);
+      expect(
+        await row.evaluate((el) => el === document.activeElement),
+        'opening the docked panel moved focus off the row',
+      ).toBe(true);
+      await expect(row).toHaveAttribute('aria-expanded', 'true');
+      expectInset(await ringOf(page, row), 'a selected request row beside the docked inspector');
+      expect(
+        await row.evaluate((el) => el === document.activeElement),
+        'the row still holds focus after the keyboard round trip',
+      ).toBe(true);
+      await expect(row).toHaveAttribute('aria-expanded', 'true');
     });
 
     test('every control in a tier card keeps its ring inside the clipped panel', async ({

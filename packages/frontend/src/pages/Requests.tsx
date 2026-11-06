@@ -1,9 +1,10 @@
-import { createMemo, For, onMount, Show } from 'solid-js';
+import { createEffect, createMemo, For, on, onMount, Show } from 'solid-js';
 import {
   BatchJobRows,
   InflightRows,
   RequestRows,
   RequestTableHead,
+  renderedRequestRow,
 } from '../components/RequestTable';
 import { createPoller } from '../data/poller';
 import { StackedLabel } from '../components/StackedLabel';
@@ -103,8 +104,59 @@ export function Requests(props: { live: boolean }) {
     () => state.requestListLoading,
   );
   /** Retry's landing spot: the requests table panel stays through the failure and the retry
-   * (adopt-figure-states D5, "Where Retry leaves focus"). */
+   * (adopt-figure-states D5, "Where Retry leaves focus"). It is also where the inspector's
+   * close lands when the row it showed is not rendered (add-docked-inspector D6), so it is a
+   * named region — ARIA names no generic `div` — and a landmark beside the docked inspector's
+   * complementary one. */
   let tablePanel: HTMLDivElement | undefined;
+
+  /** Focus survives a list commit by request id, not by keyed DOM (add-docked-inspector D9;
+   * dashboard-analytics "A list refresh does not take focus off the row").
+   *
+   * A commit replaces `requestList` wholesale, so `<For>` recreates every row node and a
+   * focused row takes focus down with it to `<body>` — which nobody saw while the modal
+   * inspector held focus, and which the docked list, live beside the panel, would show on every
+   * refresh, filter change and arrival of newer rows. So the panel remembers the row that holds
+   * focus, and after a commit that removed it while focus fell to `<body>`, focus goes to the
+   * row of the same request when it is rendered, and to this panel otherwise.
+   *
+   * The remembered row is forgotten when focus leaves for anything outside the panel, lands on
+   * something in it that is not a row, or falls to `<body>` while that row is still on screen —
+   * a deliberate blur (a click on blank space), which a later commit must not undo. */
+  let focusedRow: HTMLElement | null = null;
+  const onPanelFocusIn = (e: FocusEvent): void => {
+    const t = e.target;
+    focusedRow = t instanceof HTMLElement && t.matches('button.req-row') ? t : null;
+  };
+  const focusFellToBody = (): boolean =>
+    document.activeElement === null || document.activeElement === document.body;
+  const onPanelFocusOut = (e: FocusEvent): void => {
+    const to = e.relatedTarget;
+    if (to instanceof Node) {
+      if (!(tablePanel?.contains(to) ?? false)) focusedRow = null;
+      return;
+    }
+    // Focus went nowhere. A commit removing the row does this too, so decide once the current
+    // task has settled: still on screen means the user blurred it.
+    const row = focusedRow;
+    queueMicrotask(() => {
+      if (focusedRow === row && row?.isConnected === true && focusFellToBody()) focusedRow = null;
+    });
+  };
+  createEffect(
+    on(
+      () => state.requestList,
+      () => {
+        const lost = focusedRow;
+        if (lost === null || lost.isConnected || !focusFellToBody()) return;
+        const id = lost.dataset['requestId'];
+        const again = id === undefined ? null : renderedRequestRow(id);
+        if (again !== null) again.focus({ preventScroll: true });
+        else tablePanel?.focus({ preventScroll: true });
+      },
+      { defer: true },
+    ),
+  );
 
   /** True only when the filter is HIDING live work. A permanent banner would train
    * people to ignore it; this appears exactly when there is something to disclose. */
@@ -261,8 +313,16 @@ export function Requests(props: { live: boolean }) {
           tablePanel = el;
         }}
         tabindex={-1}
+        role="region"
+        aria-label="Requests"
         class="panel rs-table-panel rs-table-requests"
+        // The docked compact list (add-docked-inspector D11): while the inspector is docked
+        // beside it, the table lays out only its priority-one columns — a look that lives only
+        // inside the dock threshold's media query.
+        classList={{ 'rs-docked-list': app.inspectorDocked() }}
         style="overflow:hidden;border-radius:10px"
+        onFocusIn={onPanelFocusIn}
+        onFocusOut={onPanelFocusOut}
       >
         <RequestTableHead />
         {/* Live rows above the completed ones, as the Overview card does. Outside the

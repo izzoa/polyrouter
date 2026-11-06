@@ -319,6 +319,11 @@ describe('the lock states the switch and height-family sizes styles.css uses (ST
       ).not.toBeNull();
       return 16 + Number(m![1]);
     };
+    // The inspector's Previous / Next (add-docked-inspector task 4.3) are a named member of the
+    // 24px row too, drawn 24 × 24: the lock, DESIGN.md's row and the stylesheet agree.
+    expect(r).toContain("inspector's Previous / Next");
+    expect(px('.rs-inspector-step', 'width')).toBe(figure('small'));
+    expect(px('.rs-inspector-step', 'height')).toBe(figure('small'));
     expect(rem('.select--sm', 'height')).toBe(figure('small'));
     expect(rem('.select--sm', 'min-height')).toBe(figure('small'));
     expect(rem('.select', 'height')).toBe(figure('default'));

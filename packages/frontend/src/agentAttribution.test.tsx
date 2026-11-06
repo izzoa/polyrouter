@@ -172,6 +172,26 @@ describe('the boundary costs the table no grid track', () => {
     expect(tracks).toBe(9);
   });
 
+  it('gives the agent no track in ANY form: each declares a fixed time track and minmax(0, …) for the rest (add-docked-inspector 6.1)', () => {
+    // dashboard-analytics "Request rows are attributed to their agent without a new column":
+    // the one-line form keeps today's nine tracks; each narrower form declares tracks only for
+    // the fields it keeps on line one — form one six (P1 + P2), form two and the docked compact
+    // list four (P1). An agent column would add one to every count.
+    const templates = [
+      ...css.matchAll(
+        /\.rs-table-requests(?:\.rs-docked-list)? \.table-head,\s*\.rs-table-requests(?:\.rs-docked-list)? \.req-row \{\s*grid-template-columns:([^;]*);/g,
+      ),
+    ].map((m) => (m[1] ?? '').replace(/\s+/g, ' ').trim());
+    // Sorted: the docked list's rule lives in the dock threshold's block, earlier in the sheet.
+    const counts = templates.map((t) => (t.match(/minmax\(/g) ?? []).length + 1);
+    expect(counts.sort((a, b) => b - a)).toEqual([9, 6, 4, 4]);
+    for (const t of templates) {
+      expect(t, 'a track that is neither the fixed time track nor minmax(0, …)').toMatch(
+        /^66px(?: minmax\(0, \d+(?:\.\d+)?fr\))+$/,
+      );
+    }
+  });
+
   it('styles the boundary in greyscale only — the palette is single-accent', () => {
     const rule = /\.rs-agent-boundary \{([^}]*)\}/.exec(css);
     expect(rule, '.rs-agent-boundary is not styled').not.toBeNull();

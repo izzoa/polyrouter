@@ -48,7 +48,15 @@
  * design gate's job, not this one's.
  */
 import { expect, test, type Page } from '@playwright/test';
-import { SURFACES, boxOf, harnessUrl, type Surface } from './overlays';
+import {
+  INSPECTOR_SURFACES,
+  SURFACES,
+  boxOf,
+  harnessUrl,
+  presentsAt,
+  viewportOf,
+  type Surface,
+} from './overlays';
 
 type Axis = 'x' | 'y' | 'w' | 'h';
 const AXES: readonly Axis[] = ['x', 'y', 'w', 'h'];
@@ -57,8 +65,11 @@ const AXES: readonly Axis[] = ['x', 'y', 'w', 'h'];
  * re-run with a different face forced on every element from page load, under two faces, and
  * the boxes diffed. Anything absent here is CSS-pinned and stays an exact assertion. */
 const TEXT_SIZED: Record<string, readonly Axis[]> = {
-  drawer: [], // fixed width, full viewport height
-  // split-auto-routing-readout-setup D8: the tuning drawers ARE the Inspector's `.drawer`
+  // add-docked-inspector D13: the docked panel and the modal drawer are each a fixed width at
+  // the right edge, full viewport height — every axis CSS-pinned, under every face.
+  'inspector:docked': [],
+  'inspector:drawer': [],
+  // split-auto-routing-readout-setup D8: the tuning drawers ARE the shared modal `.drawer`
   // (same class, same `useModalSurface` wiring), so the same box: fixed width, full height.
   'drawer:selfCalibration': [],
   'drawer:semanticLearning': [],
@@ -155,18 +166,36 @@ const MEASURED_SLACK: Record<string, Partial<Record<Axis, number>>> = {
 };
 
 /** [x, y, width, height] at 1440x900, except the nav which exists as an overlay only
- * below the threshold and is therefore pinned at 390x844.
+ * below the threshold and is therefore pinned at 390x844, and the modal inspector drawer,
+ * which exists only below the dock threshold and is therefore pinned at 1025x768
+ * (`viewportOf`, add-docked-inspector D13).
  *
  * RE-PINNED 2026-11-02 (adopt-design-tokens-v2 task 14.3) wherever the recorded change moved
  * a box; the drawers and the nav did not move. Each re-pinned entry keeps its earlier value
  * beside it, so the move is reviewable. macOS capture: `notes/lane-g9-capture-macos-*.txt`
  * in that change. */
 const BASELINE: Record<string, [number, number, number, number]> = {
-  drawer: [1000, 0, 440, 900],
+  // SPLIT 2026-11-03 (add-docked-inspector task 7.2, design D13), a RECORDED desktop change
+  // (STYLESEED.md `inspector-dock` / `inspector-dock-width`): the one `drawer` pin, the
+  // inspector as the 440px modal drawer at 1440x900 ([1000, 0, 440, 900]), splits by
+  // presentation, because at 1440px the inspector now docks.
+  // - `inspector:docked`, at 1440x900: the 480px non-modal panel at the right edge, full
+  //   height (1440 − 480 = 960). Not a pre-change capture: the presentation is new. Every axis
+  //   is CSS-pinned (`.rs-inspector-docked { width: 480px }`, `.drawer`'s right: 0 / top: 0 /
+  //   bottom: 0), so each is exact per ci-pipeline "Browser geometry assertions are typed";
+  //   macOS `@capture` on this change's tree, HeadlessChrome; the runner's capture is pending
+  //   (it needs a push).
+  // - `inspector:drawer`, at 1025x768: the unchanged 440px modal drawer at the widest
+  //   verification-matrix viewport below the dock (1025 − 440 = 585). The same box the old
+  //   `drawer` pin recorded, moved to a viewport that still presents it; exact on every axis.
+  'inspector:docked': [960, 0, 480, 900],
+  'inspector:drawer': [585, 0, 440, 768],
   // ADDED 2026-11-01 (split-auto-routing-readout-setup task 3.3). Not a pre-change capture:
-  // these surfaces did not exist before the change. They reuse the `.drawer` box above, and
-  // the pin is that box — fixed width, right-anchored, full viewport height, every axis
-  // CSS-pinned — so a tuning drawer that drifts from the Inspector's geometry fails here.
+  // these surfaces did not exist before the change. They reuse the shared modal drawer's box
+  // (the inspector's own until add-docked-inspector docked it at 1440), and the pin is that
+  // box — fixed width, right-anchored, full viewport height, every axis CSS-pinned — so a
+  // tuning drawer that drifts from the shared modal drawer's geometry fails here. They never
+  // dock (add-docked-inspector D13), so the box is unchanged at 1440x900.
   'drawer:selfCalibration': [1000, 0, 440, 900],
   'drawer:semanticLearning': [1000, 0, 440, 900],
   // RE-PINNED 2026-11-02 (was [480, 324, 480, 252]), and every modal below it: the recorded
@@ -235,7 +264,7 @@ async function open(page: Page, surface: Pick<Surface, 'query'> = {}): Promise<v
 }
 
 for (const s of SURFACES) {
-  const vp = s.narrowOnly ? { width: 390, height: 844 } : { width: 1440, height: 900 };
+  const vp = viewportOf(s);
   test.describe(`${s.name} keeps its recorded geometry @${vp.width}x${vp.height}`, () => {
     test.use({ viewport: vp });
 
@@ -284,6 +313,23 @@ test('every surface in the matrix has a pinned baseline', () => {
   // Guards the enumeration itself: adding a surface without pinning it would otherwise
   // leave it silently unverified, which is exactly how the overlays escaped phase 1.
   expect(SURFACES.map((s) => s.name).filter((n) => !(n in BASELINE))).toEqual([]);
+});
+
+test('every surface is pinned at a viewport that presents it, and both inspector presentations are pinned', () => {
+  // add-docked-inspector D13: the inspector is two surfaces, each pinned where it exists. A
+  // surface whose own viewport cannot present it would only ever time out; a matrix that lost
+  // either inspector name (or kept the old shared `drawer`) would leave it unpinned.
+  expect(SURFACES.filter((s) => !presentsAt(s, viewportOf(s).width)).map((s) => s.name)).toEqual(
+    [],
+  );
+  expect(SURFACES.map((s) => s.name).filter((n) => n.startsWith('inspector:'))).toEqual([
+    ...INSPECTOR_SURFACES,
+  ]);
+  expect(SURFACES.map((s) => s.name)).not.toContain('drawer');
+  expect(viewportOf(SURFACES.find((s) => s.name === 'inspector:drawer')!)).toEqual({
+    width: 1025,
+    height: 768,
+  });
 });
 
 test('every surface declares which of its axes are text-sized', () => {

@@ -255,6 +255,21 @@ describe('replacing a glyph with artwork did not strip any accessible name', () 
       if (page === 'requests') {
         host.querySelector<HTMLElement>('button.req-row')?.click();
         for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 0));
+        // The inspector's Previous / Next (add-docked-inspector task 4.3) are icon-only too, so
+        // the sweep must reach them, and each must be named for itself, not by its chevron.
+        const drawer = host.querySelector<HTMLElement>('#inspector-drawer');
+        expect(drawer, 'the request row opened no inspector').not.toBeNull();
+        for (const [label, icon] of [
+          ['Previous request', 'chevronUp'],
+          ['Next request', 'chevronDown'],
+        ] as const) {
+          const control = drawer!.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
+          expect(control, `the inspector has no "${label}" control`).not.toBeNull();
+          expect(control!.querySelector(`[data-icon="${icon}"]`)?.getAttribute('aria-hidden')).toBe(
+            'true',
+          );
+          expect(accessibleText(control!), 'the chevron must not be the name').toBe('');
+        }
       }
 
       // The Routing page has two tabs (redesign-auto-routing-pipeline), and only the

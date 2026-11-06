@@ -8,7 +8,7 @@
  * was unreachable. These assert the surfaces themselves.
  */
 import { expect, test, type Page } from '@playwright/test';
-import { SURFACES, boxOf, harnessUrl, type Surface } from './overlays';
+import { SURFACES, boxOf, harnessUrl, presentsAt, type Surface } from './overlays';
 
 const NARROW = [
   { width: 320, height: 568 },
@@ -22,11 +22,30 @@ async function open(page: Page, surface: Pick<Surface, 'query'> = {}): Promise<v
   await page.waitForSelector('[data-pane="sidebar"]');
 }
 
+/** The surfaces a viewport this wide presents. Below narrow the inspector is the sheet — the
+ * `inspector:drawer` surface — and cannot dock, so `inspector:docked` is not a surface here
+ * (add-docked-inspector D13). */
+function presentedAt(width: number): readonly Surface[] {
+  return SURFACES.filter((s) => presentsAt(s, width));
+}
+
+test('below narrow the inspector is checked as the sheet, under its new name (add-docked-inspector 7.2)', () => {
+  // The loops below enumerate `presentedAt`: a renamed inspector surface, or one the narrow
+  // viewports skipped, would otherwise silently stop being checked as a sheet.
+  for (const vp of NARROW) {
+    expect(
+      presentedAt(vp.width)
+        .map((s) => s.name)
+        .filter((n) => n.startsWith('inspector:')),
+    ).toEqual(['inspector:drawer']);
+  }
+});
+
 for (const vp of NARROW) {
   test.describe(`overlays fit ${vp.width}x${vp.height}`, () => {
     test.use({ viewport: vp });
 
-    for (const s of SURFACES) {
+    for (const s of presentedAt(vp.width)) {
       test(`${s.name} is inside the viewport`, async ({ page }) => {
         test.setTimeout(25_000);
         await open(page, s);
@@ -112,7 +131,7 @@ test.describe('overlay controls meet the comfort floor', () => {
   // Phase 1's sweep walks PAGES, so it never rendered an overlay — the same blind spot
   // that let two unregistered dialogs ship. Its floor is applied by element rather than by
   // class, which should already reach inside a sheet; "should" is why this measures.
-  for (const s of SURFACES) {
+  for (const s of presentedAt(390)) {
     test(`${s.name}`, async ({ page }) => {
       test.setTimeout(25_000);
       await open(page, s);
@@ -310,8 +329,12 @@ test.describe('safe-area insets', () => {
       // calc(20px + 34px) on the bottom; 16px inline; 20px on top.
       expect(await pads(s!.sel), `${name} sheet padding`).toEqual(['20px', '16px', '54px', '16px']);
     }
+    // The inspector's sheet is the `inspector:drawer` surface (add-docked-inspector 7.2): found
+    // without `?.`, so a renamed surface fails here instead of skipping the drawer case.
+    const inspector = SURFACES.find((x) => x.name === 'inspector:drawer');
+    expect(inspector, 'the inspector sheet surface').toBeDefined();
     await open(page);
-    await SURFACES.find((x) => x.name === 'drawer')?.open(page);
+    await inspector!.open(page);
     await page.waitForTimeout(300);
     await inset();
     expect(await pads('.drawer-body'), 'the drawer body').toEqual(['20px', '20px', '54px', '20px']);

@@ -19,10 +19,13 @@
  * style can read, so a chart is counted by its `data-series` root, which `Chart.series.test.tsx`
  * holds to what the chart is told to draw.
  *
- * Every page and Routing section, and every overlay surface, in both themes, at 1440x900.
+ * Every page and Routing section, and every overlay surface, in both themes, at 1440x900 —
+ * except the modal inspector drawer, which docks at 1440 and is counted at 1025x768. The docked
+ * inspector is part of the board, not a layer above it, so it and the Requests page beside it
+ * are counted as ONE view (add-docked-inspector design D16).
  */
 import { expect, test, type Page } from '@playwright/test';
-import { SURFACES, harnessUrl } from './overlays';
+import { INSPECTOR_SURFACES, SURFACES, harnessUrl, viewportOf } from './overlays';
 
 async function open(page: Page, url: string): Promise<void> {
   await page.goto(url);
@@ -226,21 +229,36 @@ for (const theme of ['light', 'dark'] as const) {
 
     test('every overlay surface, counted in its own box', async ({ page }) => {
       test.setTimeout(120_000);
+      const inspectors: string[] = [];
       for (const s of SURFACES) {
         if (s.narrowOnly === true) continue;
+        // At the viewport that presents it (add-docked-inspector D13): 1440x900, or the modal
+        // inspector drawer's 1025x768.
+        await page.setViewportSize(viewportOf(s));
         await open(page, harnessUrl(s));
         await setTheme(page, theme);
         await s.open(page);
         await page.waitForTimeout(250);
-        const a = await audit(page, s.sel);
-        expectWithinBudget(a, s.name);
+        // D16: the docked panel and the Requests page are ONE view, so it is audited with the
+        // page (the list beside it, its filters and the selected row's Selected state, which is
+        // a state mark and never counted); every other surface in its own box.
+        const docked = s.name === 'inspector:docked';
+        const view = docked ? 'inspector:docked, one view with the Requests page' : s.name;
+        const a = await audit(page, docked ? null : s.sel);
+        expectWithinBudget(a, view);
         // The request inspector opens on fixture row 0, a served row: its one focal measure is
         // the route trace's lit branch, and nothing else in it is indigo (add-route-trace-
         // inspector design D5, task 4.6). Counted, not only bounded, so a lit node that lost
         // its focal root (and was audited as stray instead) or a trace with no lit node fails.
-        if (s.name === 'drawer')
-          expect.soft(a.measures, 'drawer: the focal measure').toEqual(['route-trace']);
+        // Docked, the page beside it draws no other series, so the view still holds exactly one.
+        if (s.name.startsWith('inspector:')) {
+          expect.soft(a.measures, `${view}: the focal measure`).toEqual(['route-trace']);
+          inspectors.push(s.name);
+        }
       }
+      // Both presentations were counted, under their new names: a renamed surface would
+      // otherwise silently stop being checked.
+      expect(inspectors).toEqual([...INSPECTOR_SURFACES]);
     });
   });
 }

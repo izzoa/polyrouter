@@ -9,6 +9,8 @@
  * adversarial content — a 26-character model id, a 50-character email — because short
  * placeholder data would make every overflow assertion pass for the wrong reason.
  */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { assertBetween, assertWithin } from './geometry-contract';
 import { expect, test, type Page } from '@playwright/test';
 
@@ -43,6 +45,29 @@ async function open(page: Page, hash = '', query = ''): Promise<void> {
   await page.goto(`/browser-harness.html${query}${hash}`);
   await page.waitForSelector('html[data-harness-ready="true"]');
   await page.waitForSelector('[data-pane="sidebar"]');
+}
+
+/** Open the inspector on the first request row and read its Previous / Next boxes
+ * (add-docked-inspector task 4.3), once the presentation's entrance has finished. */
+async function inspectorStepBoxes(
+  page: Page,
+): Promise<{ label: string | null; width: number; height: number }[]> {
+  await open(page, '#/requests');
+  await page.locator('button.req-row').first().click();
+  await page.locator('#inspector-drawer .rs-inspector-step').first().waitFor({ state: 'visible' });
+  await page.evaluate(() =>
+    Promise.all(
+      (document.getElementById('inspector-drawer')?.getAnimations() ?? []).map((a) => a.finished),
+    ),
+  );
+  return page.evaluate(() =>
+    [...document.querySelectorAll<HTMLElement>('#inspector-drawer .rs-inspector-step')].map(
+      (el) => {
+        const r = el.getBoundingClientRect();
+        return { label: el.getAttribute('aria-label'), width: r.width, height: r.height };
+      },
+    ),
+  );
 }
 
 /** The Routing page's two tabs (redesign-auto-routing-pipeline D1–D3), in the order the
@@ -384,9 +409,12 @@ test.describe('phone width', () => {
       const row = document.querySelector('.rs-batch-row');
       const head = document.querySelector('.rs-table-batches .table-head');
       const label = document.querySelector('.rs-batch-row .rs-cell-label');
+      // The row's own last cell: the priority wrappers (add-docked-inspector D11) hold cells
+      // that are the last child of their wrapper, so a bare `.rs-cell:last-child` would match
+      // one of those first.
       const terminalAction = document
         .querySelector('[data-batch-job="bj-done"]')
-        ?.querySelector('.rs-cell:last-child');
+        ?.querySelector(':scope > .rs-cell:last-child');
       return {
         row: row ? getComputedStyle(row).display : null,
         head: head ? getComputedStyle(head).display : null,
@@ -452,6 +480,15 @@ test.describe('phone width', () => {
       return out;
     });
     expect(narrow, 'icon-only controls under the inline-axis floor').toEqual([]);
+
+    // The inspector's Previous / Next (add-docked-inspector task 4.3), in the sheet: icon-only
+    // too, so 44px in BOTH axes. They are absent until a row opens the inspector.
+    const steps = await inspectorStepBoxes(page);
+    expect(steps.map((b) => b.label)).toEqual(['Previous request', 'Next request']);
+    for (const b of steps) {
+      expect(Math.round(b.width), `${b.label ?? '?'} width in the sheet`).toBe(44);
+      expect(Math.round(b.height), `${b.label ?? '?'} height in the sheet`).toBe(44);
+    }
   });
 
   test('the switch meets the floor by hit area, not by its box', async ({ page }) => {
@@ -518,6 +555,63 @@ test.describe('coarse pointer above the narrow threshold', () => {
     );
     expect(heights.length).toBeGreaterThan(0);
     for (const h of heights) expect(h).toBeGreaterThanOrEqual(44);
+  });
+
+  test('the inspector’s Previous / Next are 44px in both axes in the modal drawer (add-docked-inspector 4.3)', async ({
+    page,
+  }) => {
+    // Above `narrow` and below the dock threshold the inspector is the modal drawer; a coarse
+    // pointer still gets the comfort target, in the inline axis too, because they are icon-only.
+    const steps = await inspectorStepBoxes(page);
+    await expect(page.locator('#inspector-drawer')).toHaveAttribute('aria-modal', 'true');
+    expect(steps.map((b) => b.label)).toEqual(['Previous request', 'Next request']);
+    for (const b of steps) {
+      expect(Math.round(b.width), `${b.label ?? '?'} width`).toBe(44);
+      expect(Math.round(b.height), `${b.label ?? '?'} height`).toBe(44);
+    }
+  });
+
+  test('icon-only controls meet the floor in BOTH axes under a coarse pointer (add-docked-inspector flag F1)', async ({
+    page,
+  }) => {
+    // `target-comfort` asks 44px in the inline axis for icon-only controls under `pointer:
+    // coarse` at ANY width. The inspector's Close sits beside the 44 x 44 Previous / Next in
+    // the modal drawer, so a 29px-wide Close would be the one small target in that head.
+    // `?chain=1` mounts the fixture's tier chains, which carry the drag handles and the
+    // tier delete buttons; the default Routing landing renders neither.
+    await open(page, '#/routing', '?chain=1');
+    await page.waitForSelector('.chain-row');
+    const measured = await page.evaluate(() => {
+      const out: { sel: string; width: number }[] = [];
+      for (const sel of ['.icon-x', '.drag-handle']) {
+        for (const el of document.querySelectorAll<HTMLElement>(sel)) {
+          const w = el.getBoundingClientRect().width;
+          if (w > 0) out.push({ sel, width: w });
+        }
+      }
+      return out;
+    });
+    expect(
+      new Set(measured.map((m) => m.sel)),
+      'the Routing page renders both icon-only controls',
+    ).toEqual(new Set(['.icon-x', '.drag-handle']));
+    expect(
+      measured.filter((m) => m.width < 44).map((m) => `${m.sel} w=${String(Math.round(m.width))}`),
+      'icon-only controls under the inline-axis floor on a coarse pointer',
+    ).toEqual([]);
+
+    // The inspector's Close, in the modal drawer, beside Previous / Next.
+    await inspectorStepBoxes(page);
+    await expect(page.locator('#inspector-drawer')).toHaveAttribute('aria-modal', 'true');
+    const close = await page.locator('#inspector-drawer .drawer-close').boundingBox();
+    expect(close, 'the inspector renders its Close control').not.toBeNull();
+    expect(Math.round(close?.width ?? 0), 'Close width on a coarse pointer').toBeGreaterThanOrEqual(
+      44,
+    );
+    expect(
+      Math.round(close?.height ?? 0),
+      'Close height on a coarse pointer',
+    ).toBeGreaterThanOrEqual(44);
   });
 });
 
@@ -745,6 +839,20 @@ test.describe('the switch reaches its floor by hit area (task 5.2, design.md D3)
 test.describe('desktop width, fine pointer', () => {
   test.use({ viewport: { width: 1440, height: 900 } });
 
+  test('the docked inspector’s Previous / Next are 24px in both axes (add-docked-inspector 4.3)', async ({
+    page,
+  }) => {
+    // The height family's small member with a fine pointer above `narrow` — at 1440×900 the
+    // Requests inspector is the docked panel.
+    const steps = await inspectorStepBoxes(page);
+    await expect(page.locator('#inspector-drawer')).toHaveClass(/rs-inspector-docked/);
+    expect(steps.map((b) => b.label)).toEqual(['Previous request', 'Next request']);
+    for (const b of steps) {
+      expect(Math.round(b.width), `${b.label ?? '?'} width`).toBe(24);
+      expect(Math.round(b.height), `${b.label ?? '?'} height`).toBe(24);
+    }
+  });
+
   test('every control meets the 24px floor at desktop width', async ({ page }) => {
     // Added with narrow-geometry-tolerances, and it closes a PRE-EXISTING gap rather than
     // only replacing what left the parity set.
@@ -861,11 +969,15 @@ test.describe('desktop width, fine pointer', () => {
       const table = document.querySelector('.rs-table-batches');
       if (!table) return ['no batches table'];
       // `.rs-cell` is `display: contents` at desktop — it carries no box, so the real grid
-      // items are its children, and measuring the wrapper reads 0 for every column.
+      // items are its children, and measuring the wrapper reads 0 for every column. The
+      // priority wrappers (add-docked-inspector D11) are `display: contents` too, so the walk
+      // goes through every level of them. The DOM order is priority-one first while each cell
+      // takes its track by explicit placement, so the items are compared left to right.
       const items = (el: Element): Element[] =>
         [...el.children]
-          .flatMap((c) => (getComputedStyle(c).display === 'contents' ? [...c.children] : [c]))
-          .filter((c) => getComputedStyle(c).display !== 'none');
+          .flatMap((c): Element[] => (getComputedStyle(c).display === 'contents' ? items(c) : [c]))
+          .filter((c) => getComputedStyle(c).display !== 'none')
+          .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
       const head = table.querySelector('.table-head');
       const rows = [...table.querySelectorAll('.rs-batch-row')];
       if (!head || rows.length === 0) return ['no head or no rows'];
@@ -903,7 +1015,9 @@ test.describe('desktop width, fine pointer', () => {
     await open(page, '#/batches');
     const bad = await page.evaluate(() => {
       const out: string[] = [];
-      for (const cell of document.querySelectorAll<HTMLElement>('.rs-batch-row > .rs-cell > *')) {
+      // Every cell of the row, the ones inside the priority wrappers too (add-docked-inspector
+      // D11): a direct-child selector would skip them and pass on the cells it never read.
+      for (const cell of document.querySelectorAll<HTMLElement>('.rs-batch-row .rs-cell > *')) {
         const s = getComputedStyle(cell);
         if (s.display === 'none') continue;
         if (s.minWidth !== '0px') {
@@ -1542,8 +1656,11 @@ for (const vp of [MATRIX[0], MATRIX[3], MATRIX[4]]) {
         expect(r.problems, `${id} @ ${vp.name}`).toEqual([]);
         if (r.marker) expect(r.markerLines, `${id}: · est. usage split across lines`).toBe(1);
       }
-      // The table is a grid only where its container is above `table-fit-requests`.
-      expect(rows.every((r) => r.grid)).toBe(vp.width === 1440);
+      // The table is a grid wherever its container is at least the stack width, 640px: the
+      // one-line form at 1440, a priority-narrowed form at 1025 (add-docked-inspector 6.2), and
+      // stacked records only at 320×568. Both figures stay on line one in both grid forms, so
+      // the column-bleed checks above apply to each.
+      expect(rows.every((r) => r.grid)).toBe(vp.width !== 320);
     });
   });
 }
@@ -2673,8 +2790,11 @@ test.describe('Settings layout: at the threshold and below', () => {
  * walk with a failed cheap-leg member and its markers, a skipped member, the superseded call, a
  * failed escalation member and the served outcome, on long Mono ids and on agent and provider
  * names at their 80-character limit with no break opportunity. At 320×568 the sheet leaves a
- * label 248px (320 − 2 × 20px body padding − the 32px gutter), and the 440px drawer 368px, so
- * the labels wrap and the ids and names break; nothing may leave the sheet or the drawer.
+ * label 248px (320 − 2 × 20px body padding − the 32px gutter), the 440px drawer 368px and the
+ * 480px docked panel 408px, so the labels wrap and the ids and names break; nothing may leave
+ * the sheet, the drawer or the panel. Since add-docked-inspector (task 7.2, design D13) the
+ * inspector docks at 1440x900, so each check runs in all three presentations: the 480px docked
+ * panel at 1440x900, the 440px modal drawer at 1025x768 and the 320px sheet at 320x568.
  *
  * EXACT: the 32px gutter is the node row's own `padding-left`, and a row's 32px floor its
  * `min-height` — the stylesheet decides both. SOFT: how many lines a label wraps to is text
@@ -2714,7 +2834,8 @@ async function traceRows(page: Page): Promise<TraceRow[]> {
 
 test.describe('the route trace in the inspector (add-route-trace-inspector 4.6)', () => {
   for (const vp of [
-    { name: 'the 440px drawer at 1440x900', width: 1440, height: 900, drawer: 440 },
+    { name: 'the 480px docked panel at 1440x900', width: 1440, height: 900, drawer: 480 },
+    { name: 'the 440px drawer at 1025x768', width: 1025, height: 768, drawer: 440 },
     { name: 'the sheet at 320x568', width: 320, height: 568, drawer: 320 },
   ] as const) {
     test(`every node's text starts 32px from its row's left edge, in ${vp.name}`, async ({
@@ -2722,6 +2843,11 @@ test.describe('the route trace in the inspector (add-route-trace-inspector 4.6)'
     }) => {
       await page.setViewportSize({ width: vp.width, height: vp.height });
       await openTraceInspector(page);
+      // The presentation under test: docked only at 1440 (add-docked-inspector D13).
+      await expect(page.locator('#inspector-drawer')).toHaveAttribute(
+        'role',
+        vp.width >= 1440 ? 'complementary' : 'dialog',
+      );
       const drawer = await page.locator('.drawer').boundingBox();
       expect(drawer?.width, 'the inspector box is unchanged').toBe(vp.drawer);
       const rows = await traceRows(page);
@@ -2749,11 +2875,20 @@ test.describe('the route trace in the inspector (add-route-trace-inspector 4.6)'
   // they wrap with `overflow-wrap: anywhere` in the inspector), and the labels really wrapped.
   for (const vp of [
     { name: 'the open inspector sheet does not overflow at 320x568', width: 320, height: 568 },
-    { name: 'the open 440px drawer does not overflow at 1440x900', width: 1440, height: 900 },
+    { name: 'the open 440px drawer does not overflow at 1025x768', width: 1025, height: 768 },
+    {
+      name: 'the open 480px docked panel does not overflow at 1440x900',
+      width: 1440,
+      height: 900,
+    },
   ] as const) {
     test(`${vp.name}, with the cascade labels wrapped`, async ({ page }) => {
       await page.setViewportSize({ width: vp.width, height: vp.height });
       await openTraceInspector(page);
+      await expect(page.locator('#inspector-drawer')).toHaveAttribute(
+        'role',
+        vp.width >= 1440 ? 'complementary' : 'dialog',
+      );
       const result = await page.evaluate(() => {
         const drawer = document.querySelector<HTMLElement>('.drawer');
         const body = document.querySelector<HTMLElement>('.drawer-body');
@@ -2795,4 +2930,504 @@ test.describe('the route trace in the inspector (add-route-trace-inspector 4.6)'
       expect(wrapped).toContain('outcome');
     });
   }
+});
+
+/* ---- column priorities (add-docked-inspector tasks 6.2, 6.3; design D11, D12) ----
+ *
+ * The Requests and Batches tables shed columns by priority before they stack: below the
+ * one-line fit the P3 fields move to a second line under the model (form one), below the
+ * two-line fit the P2 fields join them (form two), and only below the 640px stack width do the
+ * rows become stacked records. The thresholds are read from `styles.css`, never restated, and
+ * every case reaches its container width by deriving the viewport from the measured container
+ * (design D12): the estimate is container = viewport − 258 above `narrow` and viewport − 90 at
+ * it, corrected by whatever a scrollbar takes, and the container is asserted before the form
+ * is. Overriding an element's width would not relayout its container query.
+ *
+ * Line one is read from the layout: a cell is on line one when its value is a grid item of the
+ * row (every element between them is `display: contents`) on grid row 1. Its label is the
+ * cell's `rs-cell-label` text (`aria-hidden`, shown only on line two and in stacked records),
+ * so a template that swapped two columns — Status and Cost included — fails the order. */
+const CSS_SRC = readFileSync(join(import.meta.dirname, '../src/styles.css'), 'utf8');
+/** A table's thresholds, from its `@container` preludes, in source order: the one-line fit, the
+ * two-line fit, and the stack width. */
+function tableFits(query: 'rs-requests' | 'rs-batches'): {
+  one: number;
+  two: number;
+  stack: number;
+} {
+  const fits = [
+    ...CSS_SRC.matchAll(new RegExp(`@container ${query} \\(max-width: (\\d+)px\\)`, 'g')),
+  ].map((m) => Number(m[1]));
+  const stack = Number(new RegExp(`@container ${query} \\(width < (\\d+)px\\)`).exec(CSS_SRC)?.[1]);
+  expect(fits, `${query}: the two narrowed forms`).toHaveLength(2);
+  return { one: fits[0]!, two: fits[1]!, stack };
+}
+
+interface PriorityTable {
+  name: 'requests' | 'batches';
+  hash: string;
+  container: string;
+  query: 'rs-requests' | 'rs-batches';
+  /** The completed rows (Requests) or the job rows (Batches). */
+  rows: string;
+  /** Design D11's line one, left to right, per form; '' is the Batches row action. */
+  forms: { one: string[]; formOne: string[]; formTwo: string[] };
+}
+const PRIORITY_TABLES: readonly PriorityTable[] = [
+  {
+    name: 'requests',
+    hash: '#/requests',
+    container: '.rs-table-requests',
+    query: 'rs-requests',
+    rows: '.rs-table-requests button.req-row',
+    forms: {
+      one: [
+        'Time',
+        'Model',
+        'Provider',
+        'Tier',
+        'Decided by',
+        'Tokens',
+        'Cost',
+        'Latency',
+        'Status',
+      ],
+      formOne: ['Time', 'Model', 'Tokens', 'Cost', 'Latency', 'Status'],
+      formTwo: ['Time', 'Model', 'Cost', 'Status'],
+    },
+  },
+  {
+    name: 'batches',
+    hash: '#/batches',
+    container: '.rs-table-batches',
+    query: 'rs-batches',
+    // An active job: its row action (Cancel) is rendered, so line one ends with it.
+    rows: '.rs-table-batches .rs-batch-row:has(button)',
+    forms: {
+      one: [
+        'Status',
+        'Model',
+        'Provider',
+        'Tier',
+        'Submitted',
+        'Progress',
+        'Wall time',
+        'Cost',
+        'Results until',
+        '',
+      ],
+      formOne: ['Status', 'Model', 'Submitted', 'Progress', 'Wall time', 'Cost', ''],
+      formTwo: ['Status', 'Model', 'Submitted', 'Cost', ''],
+    },
+  },
+];
+
+/** The container's content box, as `@container` compares it (`clientWidth` less padding). */
+async function priorityContainer(page: Page, sel: string): Promise<number> {
+  return page
+    .locator(sel)
+    .first()
+    .evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    });
+}
+
+/** Set the viewport so the table's container is exactly `target` px (design D12): start from
+ * the scrollbar-free estimate, read the container, correct by the difference, and read it
+ * again. `narrow` picks the side of the 768px threshold. */
+async function containerAt(
+  page: Page,
+  sel: string,
+  target: number,
+  narrow: boolean,
+): Promise<number> {
+  const estimate = target + (narrow ? 90 : 258);
+  await page.setViewportSize({ width: estimate, height: 900 });
+  await page.waitForTimeout(50);
+  const first = await priorityContainer(page, sel);
+  const viewport = estimate + (target - first);
+  await page.setViewportSize({ width: viewport, height: 900 });
+  await page.waitForTimeout(50);
+  expect(await priorityContainer(page, sel), `container at viewport ${String(viewport)}`).toBe(
+    target,
+  );
+  if (narrow) expect(viewport, 'left the narrow side').toBeLessThanOrEqual(768);
+  else expect(viewport, 'left the wide side').toBeGreaterThanOrEqual(769);
+  return viewport;
+}
+
+interface LineOneRead {
+  /** The visible head labels, left to right, with their boxes. */
+  head: { text: string; left: number; right: number }[];
+  rows: {
+    display: string;
+    tracks: number;
+    /** Line one's cells, left to right. */
+    cells: {
+      label: string;
+      left: number;
+      right: number;
+      centre: number;
+      painted: [number, number];
+      figureCut: boolean;
+    }[];
+    /** The fields on a second line, in DOM order. */
+    line2: string[];
+  }[];
+  overflow: number;
+}
+
+async function readLineOne(page: Page, t: PriorityTable): Promise<LineOneRead> {
+  return page.evaluate(
+    ({ container, rowSel }) => {
+      const panel = document.querySelector<HTMLElement>(container)!;
+      const head = [...panel.querySelectorAll<HTMLElement>('.table-head > *')]
+        .filter((h) => getComputedStyle(h).display !== 'none')
+        .map((h) => {
+          const r = h.getBoundingClientRect();
+          return { text: (h.textContent ?? '').trim(), left: r.left, right: r.right };
+        })
+        .sort((a, b) => a.left - b.left);
+      /** The value's painted horizontal extent: its text, clipped by any element between it and
+       * the value that hides overflow (a cut identifier paints only its own box). */
+      const painted = (value: HTMLElement): [number, number] => {
+        let lo = Infinity;
+        let hi = -Infinity;
+        const walker = document.createTreeWalker(value, NodeFilter.SHOW_TEXT);
+        for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+          if (!(n.textContent ?? '').trim()) continue;
+          const host = n.parentElement;
+          if (host === null || host.closest('.sr-only, .rs-cell-label')) continue;
+          if (getComputedStyle(host).display === 'none') continue;
+          const range = document.createRange();
+          range.selectNodeContents(n);
+          for (const rr of range.getClientRects()) {
+            if (rr.width === 0) continue;
+            let l = rr.left;
+            let r = rr.right;
+            for (
+              let a: HTMLElement | null = host;
+              a && a !== value.parentElement;
+              a = a.parentElement
+            ) {
+              const ox = getComputedStyle(a).overflowX;
+              if (ox === 'hidden' || ox === 'clip') {
+                const b = a.getBoundingClientRect();
+                l = Math.max(l, b.left);
+                r = Math.min(r, b.right);
+              }
+            }
+            lo = Math.min(lo, l);
+            hi = Math.max(hi, r);
+          }
+        }
+        for (const svg of value.querySelectorAll('svg')) {
+          const b = svg.getBoundingClientRect();
+          if (b.width === 0) continue;
+          lo = Math.min(lo, b.left);
+          hi = Math.max(hi, b.right);
+        }
+        // The progress bar: a box with no text.
+        for (const bar of value.querySelectorAll<HTMLElement>('.rs-batch-bar')) {
+          const b = bar.getBoundingClientRect();
+          lo = Math.min(lo, b.left);
+          hi = Math.max(hi, b.right);
+        }
+        return [lo, hi];
+      };
+      // The first ten rows: every fixture shape (each layer, status and cost state of the
+      // default rows) is among them, and a full page of style reads is slow under load.
+      const rows = [...document.querySelectorAll<HTMLElement>(rowSel)]
+        .filter((r) => r.getBoundingClientRect().height > 0)
+        .slice(0, 10)
+        .map((row) => {
+          const rcs = getComputedStyle(row);
+          const cells: LineOneRead['rows'][number]['cells'] = [];
+          const line2: string[] = [];
+          for (const cell of row.querySelectorAll<HTMLElement>('.rs-cell')) {
+            const label = cell.querySelector(':scope > .rs-cell-label')?.textContent?.trim() ?? '';
+            const value = cell.querySelector<HTMLElement>(':scope > :not(.rs-cell-label)');
+            if (value === null || getComputedStyle(value).display === 'none') continue;
+            let gridItem = rcs.display === 'grid';
+            for (let a = value.parentElement; a && a !== row; a = a.parentElement) {
+              if (getComputedStyle(a).display !== 'contents') gridItem = false;
+            }
+            const hidden = (() => {
+              for (let a: HTMLElement | null = value; a && a !== row; a = a.parentElement) {
+                if (getComputedStyle(a).display === 'none') return true;
+              }
+              return false;
+            })();
+            if (hidden) continue;
+            if (!gridItem || getComputedStyle(value).gridRowStart !== '1') {
+              line2.push(label);
+              continue;
+            }
+            const b = value.getBoundingClientRect();
+            const range = document.createRange();
+            range.selectNodeContents(value);
+            const c = range.getBoundingClientRect();
+            const p = painted(value);
+            const figure = value.classList.contains('cell-figure');
+            cells.push({
+              label,
+              left: b.left,
+              right: b.right,
+              centre: (Math.max(c.left, b.left) + Math.min(c.right, b.right)) / 2,
+              painted: p,
+              figureCut: figure && value.scrollWidth > value.clientWidth + 1,
+            });
+          }
+          cells.sort((a, b) => a.left - b.left);
+          return {
+            display: rcs.display,
+            tracks: rcs.gridTemplateColumns.split(' ').filter((x) => x.trim() !== '').length,
+            cells,
+            line2,
+          };
+        });
+      return {
+        head,
+        rows,
+        overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      };
+    },
+    { container: t.container, rowSel: t.rows },
+  );
+}
+
+/** A narrowed or one-line form, held to design D11: the head and line one name the same
+ * columns in the same order, each line-one cell's content centred inside its head cell, and no
+ * line-one cell painting into its neighbour or cutting a figure. */
+function expectLineOne(read: LineOneRead, want: readonly string[], why: string): void {
+  expect(read.overflow, `${why}: the document overflows`).toBeLessThanOrEqual(1);
+  expect(
+    read.head.map((h) => h.text),
+    `${why}: the visible head`,
+  ).toEqual(want);
+  expect(read.rows.length, `${why}: no rows`).toBeGreaterThan(0);
+  for (const [i, r] of read.rows.entries()) {
+    const at = `${why} row ${String(i + 1)}`;
+    expect(r.display, `${at} is not a grid`).toBe('grid');
+    expect(r.tracks, `${at}: tracks`).toBe(want.length);
+    // A terminal batch job renders no action, so only an active one is read (its selector).
+    expect(
+      r.cells.map((c) => c.label),
+      `${at}: line one`,
+    ).toEqual(want);
+    for (const [j, c] of r.cells.entries()) {
+      const h = read.head[j]!;
+      expect(
+        c.centre >= h.left - 0.5 && c.centre <= h.right + 0.5,
+        `${at}: "${c.label}" is not under its head label`,
+      ).toBe(true);
+      expect(c.figureCut, `${at}: "${c.label}" is cut`).toBe(false);
+      expect(c.painted[0], `${at}: "${c.label}" paints left of its column`).toBeGreaterThanOrEqual(
+        c.left - 1,
+      );
+      expect(c.painted[1], `${at}: "${c.label}" paints into its neighbour`).toBeLessThanOrEqual(
+        c.right + 1,
+      );
+      const next = r.cells[j + 1];
+      if (next)
+        expect(c.right, `${at}: "${c.label}" overlaps "${next.label}"`).toBeLessThanOrEqual(
+          next.left + 0.5,
+        );
+    }
+  }
+}
+
+/** The request table's agent group boundaries are laid out and labelled in this form
+ * (dashboard-analytics "Request rows are attributed to their agent without a new column": the
+ * boundary survives every form). Each sits before a row and has text and a height. */
+async function expectBoundaries(page: Page, why: string): Promise<void> {
+  const b = await page.locator('.rs-table-requests .rs-agent-boundary').evaluateAll((els) =>
+    els.map((el) => ({
+      h: el.getBoundingClientRect().height,
+      text: (el.textContent ?? '').trim(),
+      beforeRow: el.nextElementSibling?.classList.contains('req-row') ?? false,
+    })),
+  );
+  expect(b.length, `${why}: no agent boundary`).toBeGreaterThan(0);
+  for (const x of b) {
+    expect(x.h, `${why}: a boundary collapsed`).toBeGreaterThan(0);
+    expect(x.text.length, `${why}: an unlabelled boundary`).toBeGreaterThan(0);
+    expect(x.beforeRow, `${why}: a boundary not before its row`).toBe(true);
+  }
+}
+
+async function expectStacked(page: Page, t: PriorityTable, why: string): Promise<void> {
+  const shape = await page.evaluate(
+    ({ container, rowSel }) => {
+      const head = document.querySelector(`${container} .table-head`);
+      const row = document.querySelector(rowSel);
+      return {
+        head: head ? getComputedStyle(head).display : null,
+        row: row ? getComputedStyle(row).display : null,
+      };
+    },
+    { container: t.container, rowSel: t.rows },
+  );
+  expect(shape, `${why}: not stacked records`).toEqual({ head: 'none', row: 'block' });
+}
+
+test.describe('column priorities: each table sheds columns before it stacks (add-docked-inspector 6.2, 6.3)', () => {
+  // Each case resizes the viewport several times and reads the layout of ten rows per form.
+  test.describe.configure({ timeout: 120_000 });
+  for (const t of PRIORITY_TABLES) {
+    test(`${t.name}: the one-line form at 1440, form one at 1025×768, and the form its fits select at 768×1024 — head and line one agree`, async ({
+      page,
+    }) => {
+      const fits = tableFits(t.query);
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await open(page, t.hash);
+      await page.waitForSelector(t.rows);
+      expectLineOne(await readLineOne(page, t), t.forms.one, `${t.name} @ 1440×900`);
+      if (t.name === 'requests') await expectBoundaries(page, 'one-line');
+
+      await page.setViewportSize({ width: 1025, height: 768 });
+      await page.waitForTimeout(50);
+      const c1025 = await priorityContainer(page, t.container);
+      expect(c1025, '1025: the container is no longer above the one-line fit').toBeLessThanOrEqual(
+        fits.one,
+      );
+      expect(c1025 > fits.two, '1025 is form one').toBe(true);
+      expectLineOne(await readLineOne(page, t), t.forms.formOne, `${t.name} @ 1025×768`);
+      if (t.name === 'requests') await expectBoundaries(page, 'form one');
+
+      // 768×1024 is a 678px container (design D12). Which narrowed form it shows is the
+      // measured two-line fit's call: Batches' (700px) puts it in form two; Requests' (640px,
+      // the stack width) leaves it in form one (notes/flags.md F4).
+      await page.setViewportSize({ width: 768, height: 1024 });
+      await page.waitForTimeout(50);
+      const c768 = await priorityContainer(page, t.container);
+      expect(c768, '768×1024: the container').toBe(678);
+      expectLineOne(
+        await readLineOne(page, t),
+        c768 <= fits.two ? t.forms.formTwo : t.forms.formOne,
+        `${t.name} @ 768×1024`,
+      );
+      expect(t.name === 'batches' ? c768 <= fits.two : c768 > fits.two).toBe(true);
+
+      for (const vp of [
+        { width: 390, height: 844 },
+        { width: 320, height: 568 },
+      ]) {
+        await page.setViewportSize(vp);
+        await page.waitForTimeout(50);
+        await expectStacked(page, t, `${t.name} @ ${String(vp.width)}×${String(vp.height)}`);
+        if (t.name === 'requests') await expectBoundaries(page, `stacked @ ${String(vp.width)}`);
+        const overflow = await page.evaluate(
+          () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        );
+        expect(overflow, `${t.name} @ ${String(vp.width)}: overflows`).toBeLessThanOrEqual(1);
+      }
+    });
+
+    test(`${t.name}: form two's line one in D11's order, at a container its two-line fit selects`, async ({
+      page,
+    }) => {
+      const fits = tableFits(t.query);
+      await open(page, t.hash);
+      await page.waitForSelector(t.rows);
+      // The widest container form two takes (the two-line fit itself), above narrow.
+      await containerAt(page, t.container, fits.two, false);
+      expectLineOne(await readLineOne(page, t), t.forms.formTwo, `${t.name} @ ${String(fits.two)}`);
+      if (t.name === 'requests') await expectBoundaries(page, 'form two');
+    });
+
+    test(`${t.name}: at each recorded fit and one pixel below it, no line-one cell overlaps or clips its neighbour (6.3)`, async ({
+      page,
+    }) => {
+      const fits = tableFits(t.query);
+      await open(page, t.hash);
+      await page.waitForSelector(t.rows);
+      const cases: { width: number; form: string[] | 'stacked' }[] = [
+        { width: fits.one + 1, form: t.forms.one },
+        { width: fits.one, form: t.forms.formOne },
+        { width: fits.one - 1, form: t.forms.formOne },
+        { width: fits.two + 1, form: t.forms.formOne },
+        { width: fits.two, form: t.forms.formTwo },
+        // One pixel below the two-line fit is form two — or, where the two-line fit IS the
+        // stack width (Requests), the stacked records.
+        { width: fits.two - 1, form: fits.two - 1 < fits.stack ? 'stacked' : t.forms.formTwo },
+      ];
+      for (const c of cases) {
+        await containerAt(page, t.container, c.width, false);
+        if (c.form === 'stacked') await expectStacked(page, t, `${t.name} @ ${String(c.width)}`);
+        else expectLineOne(await readLineOne(page, t), c.form, `${t.name} @ ${String(c.width)}`);
+      }
+    });
+
+    for (const narrow of [true, false]) {
+      test(`${t.name}: the stack edge ${narrow ? 'at' : 'above'} narrow — 640 keeps line one, 639 stacks (6.3)`, async ({
+        page,
+      }) => {
+        const fits = tableFits(t.query);
+        expect(fits.stack, 'the stack width').toBe(640);
+        await open(page, t.hash);
+        await page.waitForSelector(t.rows);
+        await containerAt(page, t.container, fits.stack, narrow);
+        expectLineOne(
+          await readLineOne(page, t),
+          fits.stack <= fits.two ? t.forms.formTwo : t.forms.formOne,
+          `${t.name} @ 640 (${narrow ? 'narrow' : 'wide'})`,
+        );
+        await containerAt(page, t.container, fits.stack - 1, narrow);
+        await expectStacked(page, t, `${t.name} @ 639 (${narrow ? 'narrow' : 'wide'})`);
+      });
+    }
+  }
+
+  test('requests at 1440×900 docked: the list keeps a container of at least 640px, every completed row is one line of four P1 cells, and a live row keeps its other fields on line two', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await open(page, '#/requests');
+    await page.waitForSelector('.rs-table-requests button.req-row');
+    // A running request in the band: a row that cannot open.
+    await page.evaluate(() => {
+      const g = globalThis as unknown as {
+        __harnessStore: { setState: (k: string, v: unknown) => void };
+      };
+      g.__harnessStore.setState('inflightRows', [
+        {
+          phase: 'live',
+          id: 'live-dock',
+          startedAt: Date.now(),
+          decisionLayer: 'explicit',
+          tierAssigned: 'default',
+          modelLabel: 'model-live-dock',
+          providerLabel: 'ProvLive',
+          protocol: 'openai',
+          status: 'running',
+        },
+      ]);
+    });
+    await page.locator('.rs-table-requests button.req-row').first().click();
+    await page.waitForSelector('#inspector-drawer.rs-inspector-docked');
+    await expect(page.locator('.rs-table-requests')).toHaveClass(/(?:^|\s)rs-docked-list(?:\s|$)/);
+    const t = PRIORITY_TABLES[0]!;
+    expect(
+      await priorityContainer(page, t.container),
+      'the docked list container',
+    ).toBeGreaterThanOrEqual(tableFits(t.query).stack);
+    const read = await readLineOne(page, t);
+    expectLineOne(read, t.forms.formTwo, 'requests docked @ 1440×900');
+    for (const r of read.rows) expect(r.line2, 'a completed row has a second line').toEqual([]);
+    await expectBoundaries(page, 'docked list');
+    const live = await readLineOne(page, {
+      ...t,
+      rows: '.rs-table-requests div.req-row:not([data-batch-row])',
+    });
+    expect(live.rows, 'the live row').toHaveLength(1);
+    expect(live.rows[0]!.cells.map((c) => c.label)).toEqual(t.forms.formTwo);
+    expect(live.rows[0]!.line2).toEqual(['Provider', 'Tier', 'Decided by', 'Tokens', 'Latency']);
+    // Completed rows are one line: as tall as a one-line row (32px floor, 8px padding).
+    const heights = await page
+      .locator('.rs-table-requests button.req-row')
+      .evaluateAll((els) => els.map((e) => e.getBoundingClientRect().height));
+    for (const h of heights) expect(h, 'a completed row grew a second line').toBeLessThan(40);
+  });
 });

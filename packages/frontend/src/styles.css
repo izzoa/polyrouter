@@ -1348,6 +1348,30 @@ button:disabled[aria-busy='true'] {
 .drawer-close:hover {
   color: var(--text);
 }
+/* The inspector head's Previous / Next (add-docked-inspector task 4.3; DESIGN.md Height family,
+   "inspector Prev / Next"): icon-only, 24px in both axes — the small member of the height
+   family — and the 44px comfort target in BOTH axes under a coarse pointer and below `narrow`
+   (the floor lists below). Unavailable at a bound is `aria-disabled`, never native `disabled`,
+   so the control keeps focus; it takes the 60% look of an unavailable button. */
+.rs-inspector-step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  color: var(--text3);
+  cursor: pointer;
+}
+.rs-inspector-step:hover {
+  color: var(--text);
+}
+.rs-inspector-step[aria-disabled='true'] {
+  opacity: 0.6;
+  cursor: default;
+}
+.rs-inspector-step[aria-disabled='true']:hover {
+  color: var(--text3);
+}
 
 .kv-box {
   background: var(--bg);
@@ -1521,6 +1545,26 @@ button:disabled[aria-busy='true'] {
   padding: 16px 20px;
   border-bottom: 1px solid var(--border2);
 }
+/* The inspector's head (add-docked-inspector task 4.3). Previous and Next add up to 104px to the
+   right-hand cluster under a coarse pointer or below narrow, so the head WRAPS when its title
+   block and that cluster no longer fit one line: the title keeps line one, and the badge, the
+   two steps and Close take line two, pushed to the inline end. A head that fits stays one
+   line, exactly as before. */
+.rs-inspector-head {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.rs-inspector-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-inline-start: auto;
+  /* A verbatim status word can be wider than the three controls leave: the cluster wraps too,
+     the badge on its own line, rather than carrying Close past the sheet's edge. */
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: 100%;
+}
 .drawer-body {
   flex: 1;
   overflow-y: auto;
@@ -1528,6 +1572,120 @@ button:disabled[aria-busy='true'] {
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+/* The docked Request Inspector (add-docked-inspector D1, D3, D14; STYLESEED.md
+ * `inspector-dock` / `inspector-dock-width`; DESIGN.md Elevation › Docked inspector).
+ *
+ * On the Requests page at a viewport of 1440px or more the inspector is a non-modal panel
+ * BESIDE the page: the same `.drawer#inspector-drawer` element, still `position: fixed` at the
+ * right edge and full height, restyled by one extra class. It is part of the board, not a
+ * layer above it, so it drops the drawer's whisper shadow (a removed shadow, not a hardcoded
+ * one) and its entrance — it appears in place and never animates a step. Its Hairline leading
+ * edge is `.drawer`'s own `border-left`. Its body scrolls within the panel without chaining to
+ * the page; `.drawer-body` itself stays as it is, for the tuning drawers that share it.
+ *
+ * `rs-docked` on the shell's content pane gives up the same 480px, top bar included, so the
+ * panel covers no control: the table container is then 1440 − 208 sidebar − 480 − 2 × 24px
+ * gutter − 2px border = 702px (D1). Both classes are applied by script (the modality has to
+ * be — role, `aria-modal`, the layer kind), but the LOOK lives only inside this prelude, so a
+ * stale class can never dock below the threshold. Literals, like every breakpoint: a prelude
+ * cannot read a custom property, and `responsive.test.ts` holds the 1440 and both 480s equal
+ * to `DOCK_MIN_WIDTH` / `DOCK_WIDTH` and the lock rows. Only the inspector applies them; the
+ * tuning drawers keep the shared modal drawer at every width. */
+@media (min-width: 1440px) {
+  .rs-docked {
+    margin-inline-end: 480px;
+  }
+  .rs-inspector-docked {
+    width: 480px;
+    box-shadow: none;
+    animation: none;
+  }
+  .rs-inspector-docked .drawer-body {
+    overscroll-behavior-y: contain;
+  }
+
+  /* The docked compact list (add-docked-inspector D11; dashboard-analytics "While docked, the
+     request list shows only its priority-one columns"). The Requests page applies
+     `rs-docked-list` to its table panel while the inspector is docked beside it, and the look
+     lives here, inside the dock threshold, so a stale class can never compact the list below
+     it. Every row lays out the priority-one template — Time, Model, Cost, Status — whatever
+     form the container would otherwise select (one-line at a wide viewport, a narrowed form at
+     1440). These rules out-rank the container forms by one class (`.rs-docked-list`), because
+     this block sits before the table rules and a query adds no specificity. The container is
+     at least 702px here (D1), so the stacked form never meets them.
+     - A completed row (`button.req-row`) shows those four and nothing more: its other fields
+       are in the inspector beside it, its detail surface. Its escalated mark and `batch` chip
+       move to the status cell, the Decided-by copy going with the second line, so each is
+       rendered exactly once.
+     - A row that cannot open (`div.req-row`: running, finishing, a batch job) has no detail
+       surface, so it keeps every field, field-labelled, on a second line under the model —
+       form two's line two. */
+  .rs-table-requests.rs-docked-list .table-head,
+  .rs-table-requests.rs-docked-list .req-row {
+    grid-template-columns: 66px minmax(0, 1.5fr) minmax(0, 0.7fr) minmax(0, 0.8fr);
+  }
+  .rs-table-requests.rs-docked-list .req-row {
+    row-gap: 4px;
+  }
+  .rs-table-requests.rs-docked-list .table-head > .rs-col-provider,
+  .rs-table-requests.rs-docked-list .table-head > .rs-col-tier,
+  .rs-table-requests.rs-docked-list .table-head > .rs-col-decided,
+  .rs-table-requests.rs-docked-list .table-head > .rs-col-tokens,
+  .rs-table-requests.rs-docked-list .table-head > .rs-col-latency {
+    display: none;
+  }
+  .rs-table-requests.rs-docked-list .req-row .rs-col-cost > * {
+    grid-column: 3;
+  }
+  .rs-table-requests.rs-docked-list .req-row .rs-col-status > * {
+    grid-column: 4;
+  }
+  .rs-table-requests.rs-docked-list button.req-row .rs-subline {
+    display: none;
+  }
+  .rs-table-requests.rs-docked-list button.req-row .rs-docked-marks {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .rs-table-requests.rs-docked-list div.req-row .rs-sub-p3 {
+    display: contents;
+  }
+  .rs-table-requests.rs-docked-list div.req-row .rs-subline {
+    grid-row: 2;
+    grid-column: 2 / -1;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 16px;
+    min-width: 0;
+  }
+  .rs-table-requests.rs-docked-list div.req-row .rs-subline .rs-cell {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 4px;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .rs-table-requests.rs-docked-list div.req-row .rs-subline .rs-cell > * {
+    min-width: 0;
+  }
+  .rs-table-requests.rs-docked-list div.req-row .rs-subline .rs-cell > .rs-cell-label {
+    display: block;
+    flex: none;
+    font:
+      500 0.6875rem/1rem 'Geist',
+      sans-serif;
+    color: var(--text3);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .rs-table-requests.rs-docked-list div.req-row .rs-subline .rs-col-decided > .rs-cell-label,
+  .rs-table-requests.rs-docked-list div.req-row .rs-subline .rs-col-latency > .rs-cell-label {
+    display: none;
+  }
 }
 
 /* Confirmation dialog geometry (phase2-responsive-overlays, task 2.1).
@@ -1659,6 +1817,13 @@ button:disabled[aria-busy='true'] {
   clip: rect(0 0 0 0);
   white-space: nowrap;
   border: 0;
+}
+/* The inspector's step announcement region (add-docked-inspector D10) is a direct child of the
+   inspector root, which has no inline padding at narrow width, so `.sr-only`'s -1px margin
+   would put its clipped 1px box outside the sheet's edge. It is absolutely positioned, so the
+   margin moves nothing else. */
+.rs-step-region {
+  margin: 0;
 }
 
 /* ModelPicker — the tier editor's add-model combobox. Its fill, Control Edge and radius are
@@ -2043,9 +2208,12 @@ button:disabled[aria-busy='true'] {
  * change the lock and this file together, never one alone.
  *
  * Locked values (STYLESEED.md § Responsive):
- *   narrow 768px viewport · table-fit requests/batches/agents/users 980/1000/740/660px
- *   container · table-fit-targets 900px · pipeline-fit 820/540px · layers-fit 480px
- *   rail-collapsed 56px · gutter-narrow 16px · target-base 24px · target-comfort 44px
+ *   narrow 768px viewport · table-fit requests/batches 980/1000px container (the one-line
+ *   fits) · table-fit-requests-2/batches-2 640/700px (the two-line fits) · table-stack 640px
+ *   (stacked records only below it) · table-fit agents/users 740/660px · table-fit-targets
+ *   900px · pipeline-fit 820/540px · layers-fit 480px · inspector-dock 1440px viewport ·
+ *   inspector-dock-width 480px · rail-collapsed 56px · gutter-narrow 16px · target-base 24px
+ *   · target-comfort 44px
  *
  * WHY CLASSES, NOT ELEMENT SELECTORS: layout lives in 783 inline style attributes, and an
  * inline style beats any class — but ONLY on the properties it actually declares. No
@@ -2204,6 +2372,7 @@ button:disabled[aria-busy='true'] {
 .setup-card,
 .link-accent,
 .drawer-close,
+.rs-inspector-step,
 .mp-option,
 .rs-seg,
 .input,
@@ -2457,6 +2626,7 @@ button:disabled[aria-busy='true'] {
   .setup-card,
   .link-accent,
   .drawer-close,
+  .rs-inspector-step,
   .rs-seg,
   .rs-nav-toggle {
     min-height: 44px;
@@ -2509,7 +2679,8 @@ button:disabled[aria-busy='true'] {
   .rs-nav-toggle,
   .icon-x,
   .drag-handle,
-  .drawer-close {
+  .drawer-close,
+  .rs-inspector-step {
     min-width: 44px;
     justify-content: center;
   }
@@ -2844,11 +3015,24 @@ button:disabled[aria-busy='true'] {
   .setup-card,
   .link-accent,
   .drawer-close,
+  .rs-inspector-step,
   .rs-seg,
   .rs-nav-toggle,
   .input,
   .select {
     min-height: 44px;
+  }
+  /* Icon-only controls need their inline axis floored too under a coarse pointer, at any
+     width: Previous / Next are 44 × 44 (add-docked-inspector task 4.3), and the Close control
+     beside them, `.icon-x` and the drag handle take the same inline floor the
+     `max-width: 768px` block gives them (`target-comfort`: 44px in the inline axis for
+     icon-only controls; add-docked-inspector flag F1). */
+  .rs-inspector-step,
+  .drawer-close,
+  .icon-x,
+  .drag-handle {
+    min-width: 44px;
+    justify-content: center;
   }
   /* Input text is 16px under a coarse pointer at any width, as below narrow (task 8.1). */
   .input,
@@ -2931,9 +3115,10 @@ button:disabled[aria-busy='true'] {
    and the real grid items are the cells' children. `> *` therefore set `min-width: 0` on
    nothing: the items kept `min-width: auto` and painted over their neighbours instead of
    shrinking. `minmax(0, …)` already pins the TRACK, which is why the columns still lined
-   up; this is what makes the content inside one actually fit. */
+   up; this is what makes the content inside one actually fit. Any `.rs-cell` of the row, not
+   only a direct child: the priority wrappers (add-docked-inspector D11) hold most of them. */
 .rs-table-batches .table-head > *,
-.rs-table-batches .rs-batch-row > .rs-cell > * {
+.rs-table-batches .rs-batch-row .rs-cell > * {
   min-width: 0;
 }
 .rs-batch-row {
@@ -3002,6 +3187,380 @@ button:disabled[aria-busy='true'] {
   display: none;
 }
 
+/* ---- column priorities (add-docked-inspector design D11) ----
+ *
+ * One DOM serves every form of the Requests and Batches tables. A row holds its priority-one
+ * cells, then one outer wrapper (`.rs-subline`) holding the priority-three cells
+ * (`.rs-sub-p3`) and the priority-two cells (`.rs-sub-p2`); on Batches the row action follows,
+ * last. The DOM order never changes between forms, so a row's accessible name is the same in
+ * all of them. Here, in the one-line form, every wrapper is `display: contents`, so each cell's
+ * content is a grid item of the row as it was before the wrappers existed, and the row is
+ * exactly as tall.
+ *
+ * Because the DOM order (priority one first) differs from today's column order, every line-one
+ * cell takes its track by explicit placement — row 1, column N — in every form, so line one
+ * always keeps today's relative column order and the flat head (one element per column, in
+ * `COLUMNS` order) names the cells under it. Explicit `grid-row: 1`, not only a column: an
+ * auto row would send a cell whose column lies left of the one before it onto a new row. The
+ * placement sits on the cell's children, because the cell itself is `display: contents`. */
+.rs-subline,
+.rs-sub-p3,
+.rs-sub-p2 {
+  display: contents;
+}
+/* The status cell's copy of a completed row's state marks (the escalated mark, the `batch`
+   chip): shown only by the docked compact list, which hides the Decided-by cell that carries
+   them everywhere else, so exactly one copy is ever rendered (dashboard-analytics "A completed
+   row's state marks move to its status cell while docked"). */
+.rs-docked-marks {
+  display: none;
+}
+.rs-table-requests .req-row .rs-col-time > * {
+  grid-row: 1;
+  grid-column: 1;
+}
+.rs-table-requests .req-row .rs-col-model > * {
+  grid-row: 1;
+  grid-column: 2;
+}
+.rs-table-requests .req-row .rs-col-provider > * {
+  grid-row: 1;
+  grid-column: 3;
+}
+.rs-table-requests .req-row .rs-col-tier > * {
+  grid-row: 1;
+  grid-column: 4;
+}
+.rs-table-requests .req-row .rs-col-decided > * {
+  grid-row: 1;
+  grid-column: 5;
+}
+.rs-table-requests .req-row .rs-col-tokens > * {
+  grid-row: 1;
+  grid-column: 6;
+}
+.rs-table-requests .req-row .rs-col-cost > * {
+  grid-row: 1;
+  grid-column: 7;
+}
+.rs-table-requests .req-row .rs-col-latency > * {
+  grid-row: 1;
+  grid-column: 8;
+}
+.rs-table-requests .req-row .rs-col-status > * {
+  grid-row: 1;
+  grid-column: 9;
+}
+.rs-table-batches .rs-batch-row .rs-col-status > * {
+  grid-row: 1;
+  grid-column: 1;
+}
+.rs-table-batches .rs-batch-row .rs-col-model > * {
+  grid-row: 1;
+  grid-column: 2;
+}
+.rs-table-batches .rs-batch-row .rs-col-provider > * {
+  grid-row: 1;
+  grid-column: 3;
+}
+.rs-table-batches .rs-batch-row .rs-col-tier > * {
+  grid-row: 1;
+  grid-column: 4;
+}
+.rs-table-batches .rs-batch-row .rs-col-submitted > * {
+  grid-row: 1;
+  grid-column: 5;
+}
+.rs-table-batches .rs-batch-row .rs-col-progress > * {
+  grid-row: 1;
+  grid-column: 6;
+}
+.rs-table-batches .rs-batch-row .rs-col-wall > * {
+  grid-row: 1;
+  grid-column: 7;
+}
+.rs-table-batches .rs-batch-row .rs-col-cost > * {
+  grid-row: 1;
+  grid-column: 8;
+}
+.rs-table-batches .rs-batch-row .rs-col-until > * {
+  grid-row: 1;
+  grid-column: 9;
+}
+.rs-table-batches .rs-batch-row .rs-col-action > * {
+  grid-row: 1;
+  grid-column: 10;
+}
+
+/* ---- the priority-narrowed forms ----
+ *
+ * Below the one-line fit (`table-fit-requests` / `table-fit-batches`) a table sheds its
+ * priority-three fields to a second line under the model (form one); below the two-line fit
+ * (`table-fit-requests-2` / `table-fit-batches-2`) the priority-two fields join them (form
+ * two); only below the shared stack width (`table-stack`, 640px) does it become stacked records
+ * (dashboard-core "Wide record tables shed columns by priority before they stack"). Line one
+ * keeps every priority-one cell (and on Batches the row action) under its head label, and the
+ * head hides the labels of the columns it moved. Each narrowed form is guarded by
+ * `(min-width: 640px)` — the stack width, the same literal as the stacked query below — so the
+ * narrowed and the stacked rules never apply together and never have to out-rank each other.
+ *
+ * Line two is a flex line from the model's column to the row's end. A moved field keeps its
+ * `rs-cell-label` (real, `aria-hidden` text, never generated content, so the row's name is
+ * unchanged) unless its chip (Decided by) or its unit (a latency, a wall time) already says what
+ * it is. Each field is one unit, label then value, and wraps whole. Templates sit at the
+ * two-class specificity the one-line templates use: a container query adds none. */
+/* Requests, form one: Time, Model, Tokens, Cost, Latency, Status on line one; Provider, Tier,
+   Decided by on line two. `table-fit-requests` (STYLESEED.md § Responsive): 980px, the one-line fit.
+   Re-measured for add-docked-inspector (task 6.3) on the priority DOM, with tokens-v2's rig and
+   criterion (the query disabled, the viewport swept 1600 → 320px in 4px steps then 1px across
+   the last passing step; a form fails when a track drops under 60px; the content box at the
+   first failure, rounded up to the next 20px): the one-line template's 0.6fr Latency track
+   fails at 975px of content (4px sweep: 974), as before, so 980 stands. Notes:
+   openspec/changes/add-docked-inspector/notes/lane-g56-sweep/. */
+@container rs-requests (max-width: 980px) and (min-width: 640px) {
+  .rs-table-requests .table-head,
+  .rs-table-requests .req-row {
+    grid-template-columns:
+      66px minmax(0, 1.5fr) minmax(0, 0.9fr) minmax(0, 0.7fr) minmax(0, 0.6fr)
+      minmax(0, 0.8fr);
+  }
+  .rs-table-requests .req-row {
+    row-gap: 4px;
+  }
+  .rs-table-requests .table-head > .rs-col-provider,
+  .rs-table-requests .table-head > .rs-col-tier,
+  .rs-table-requests .table-head > .rs-col-decided {
+    display: none;
+  }
+  .rs-table-requests .req-row .rs-col-tokens > * {
+    grid-column: 3;
+  }
+  .rs-table-requests .req-row .rs-col-cost > * {
+    grid-column: 4;
+  }
+  .rs-table-requests .req-row .rs-col-latency > * {
+    grid-column: 5;
+  }
+  .rs-table-requests .req-row .rs-col-status > * {
+    grid-column: 6;
+  }
+  .rs-table-requests .req-row .rs-sub-p3 {
+    grid-row: 2;
+    grid-column: 2 / -1;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 16px;
+    min-width: 0;
+  }
+  .rs-table-requests .req-row .rs-sub-p3 > .rs-cell {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 4px;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .rs-table-requests .req-row .rs-sub-p3 > .rs-cell > * {
+    min-width: 0;
+  }
+  .rs-table-requests .req-row .rs-sub-p3 > .rs-cell > .rs-cell-label {
+    display: block;
+    flex: none;
+    font:
+      500 0.6875rem/1rem 'Geist',
+      sans-serif;
+    color: var(--text3);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .rs-table-requests .req-row .rs-sub-p3 > .rs-col-decided > .rs-cell-label {
+    display: none;
+  }
+}
+
+/* Requests, form two: Time, Model, Cost, Status on line one; Provider, Tier, Decided by, Tokens,
+   Latency on line two. `table-fit-requests-2` (STYLESEED.md § Responsive): 640px, the two-line fit. Same
+   rig, form one forced: its 0.6fr Latency track drops under 60px at 627px of content (4px
+   sweep: 626), rounded up. That is the stack width, so by width the request table takes form
+   two only at a 640px container; the docked compact list applies the same priority-one
+   template at the dock threshold. */
+@container rs-requests (max-width: 640px) and (min-width: 640px) {
+  .rs-table-requests .table-head,
+  .rs-table-requests .req-row {
+    grid-template-columns: 66px minmax(0, 1.5fr) minmax(0, 0.7fr) minmax(0, 0.8fr);
+  }
+  .rs-table-requests .table-head > .rs-col-tokens,
+  .rs-table-requests .table-head > .rs-col-latency {
+    display: none;
+  }
+  .rs-table-requests .req-row .rs-col-cost > * {
+    grid-column: 3;
+  }
+  .rs-table-requests .req-row .rs-col-status > * {
+    grid-column: 4;
+  }
+  .rs-table-requests .req-row .rs-sub-p3 {
+    display: contents;
+  }
+  .rs-table-requests .req-row .rs-subline {
+    grid-row: 2;
+    grid-column: 2 / -1;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 16px;
+    min-width: 0;
+  }
+  .rs-table-requests .req-row .rs-subline .rs-cell {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 4px;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .rs-table-requests .req-row .rs-subline .rs-cell > * {
+    min-width: 0;
+  }
+  .rs-table-requests .req-row .rs-subline .rs-cell > .rs-cell-label {
+    display: block;
+    flex: none;
+    font:
+      500 0.6875rem/1rem 'Geist',
+      sans-serif;
+    color: var(--text3);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .rs-table-requests .req-row .rs-subline .rs-col-decided > .rs-cell-label,
+  .rs-table-requests .req-row .rs-subline .rs-col-latency > .rs-cell-label {
+    display: none;
+  }
+}
+
+/* Batches, form one: Status, Model, Submitted, Progress, Wall time, Cost and the action on line
+   one; Provider, Tier, Results until on line two. `table-fit-batches` (STYLESEED.md §
+   Responsive): 1000px, the one-line fit.
+   Re-measured for add-docked-inspector (task 6.3) with the same rig and criterion as requests:
+   the one-line template's 0.7fr tracks drop under 60px at 981px of content (4px sweep: 978;
+   59.94px at 981, so 980 would leave one failing pixel a grid), as before, so 1000 stands. */
+@container rs-batches (max-width: 1000px) and (min-width: 640px) {
+  .rs-table-batches .table-head,
+  .rs-table-batches .rs-batch-row {
+    grid-template-columns:
+      minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 0.8fr) minmax(0, 1.2fr) minmax(0, 0.7fr)
+      minmax(0, 1fr) minmax(0, 0.7fr);
+  }
+  .rs-table-batches .rs-batch-row {
+    row-gap: 4px;
+  }
+  .rs-table-batches .table-head > .rs-col-provider,
+  .rs-table-batches .table-head > .rs-col-tier,
+  .rs-table-batches .table-head > .rs-col-until {
+    display: none;
+  }
+  .rs-table-batches .rs-batch-row .rs-col-submitted > * {
+    grid-column: 3;
+  }
+  .rs-table-batches .rs-batch-row .rs-col-progress > * {
+    grid-column: 4;
+  }
+  .rs-table-batches .rs-batch-row .rs-col-wall > * {
+    grid-column: 5;
+  }
+  .rs-table-batches .rs-batch-row .rs-col-cost > * {
+    grid-column: 6;
+  }
+  .rs-table-batches .rs-batch-row .rs-col-action > * {
+    grid-column: 7;
+  }
+  .rs-table-batches .rs-batch-row .rs-sub-p3 {
+    grid-row: 2;
+    grid-column: 2 / -1;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 16px;
+    min-width: 0;
+  }
+  .rs-table-batches .rs-batch-row .rs-sub-p3 > .rs-cell {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 4px;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .rs-table-batches .rs-batch-row .rs-sub-p3 > .rs-cell > .rs-cell-label {
+    display: block;
+    flex: none;
+    font:
+      500 0.6875rem/1rem 'Geist',
+      sans-serif;
+    color: var(--text3);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+}
+
+/* Batches, form two: Status, Model, Submitted, Cost and the action on line one; Provider, Tier,
+   Results until, Progress, Wall time on line two. `table-fit-batches-2` (STYLESEED.md §
+   Responsive): 700px, the two-line fit. Same rig,
+   form one forced: its 0.7fr Wall time and action tracks drop under 60px at 693px of content
+   (4px sweep: 690), rounded up. */
+@container rs-batches (max-width: 700px) and (min-width: 640px) {
+  .rs-table-batches .table-head,
+  .rs-table-batches .rs-batch-row {
+    grid-template-columns:
+      minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 0.8fr)
+      minmax(0, 1fr) minmax(0, 0.7fr);
+  }
+  .rs-table-batches .table-head > .rs-col-progress,
+  .rs-table-batches .table-head > .rs-col-wall {
+    display: none;
+  }
+  .rs-table-batches .rs-batch-row .rs-col-cost > * {
+    grid-column: 4;
+  }
+  .rs-table-batches .rs-batch-row .rs-col-action > * {
+    grid-column: 5;
+  }
+  .rs-table-batches .rs-batch-row .rs-sub-p3 {
+    display: contents;
+  }
+  .rs-table-batches .rs-batch-row .rs-subline {
+    grid-row: 2;
+    grid-column: 2 / -1;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 16px;
+    min-width: 0;
+  }
+  .rs-table-batches .rs-batch-row .rs-subline .rs-cell {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 4px;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .rs-table-batches .rs-batch-row .rs-subline .rs-cell > .rs-cell-label {
+    display: block;
+    flex: none;
+    font:
+      500 0.6875rem/1rem 'Geist',
+      sans-serif;
+    color: var(--text3);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .rs-table-batches .rs-batch-row .rs-subline .rs-col-wall > .rs-cell-label {
+    display: none;
+  }
+  /* The progress bar has no width of its own: on line two it takes a share of the line. */
+  .rs-table-batches .rs-batch-row .rs-subline .rs-col-progress {
+    flex: 1 1 96px;
+  }
+}
+
 /* ---- stacked records ----
  *
  * Same DOM, restyled. Not a second component behind a viewport signal: one DOM means a
@@ -3018,11 +3577,16 @@ button:disabled[aria-busy='true'] {
  * then 1px steps across the last passing step. Each threshold is the content box at the first
  * failure rounded up to the next 20px, so the table reflows before it fails, never after. */
 
-/* Shared stacked-row shape for the two grid tables.
-   `table-fit-requests` (STYLESEED.md § Responsive): 980px. A grid of `fr` tracks fails when a
-   track drops under 60px (an unreadable column, the original criterion): the 0.6fr track does
-   at 975px of content (4px sweep: 974). */
-@container rs-requests (max-width: 980px) {
+/* Shared stacked-row shape for the two grid tables, below the shared stack width.
+   `table-stack` (STYLESEED.md § Responsive): 640px, fixed by DESIGN.md (Layout › Tables): a
+   table becomes stacked records only below 640px of container. The range form stacks exactly
+   the containers narrower than 640 — a 640px container keeps line one, and a fractional one
+   (zoom, display scaling) between 639 and 640 still stacks, so there is no gap.
+   Its line one is proven against
+   it, not measured into it: with form two forced, the requests table's priority-one line (Time,
+   Model, Cost, Status) keeps every track at 60px or more down to 404px of content, failing at
+   403 (4px sweep: 402) — at most 640, as the lock requires (add-docked-inspector task 6.3). */
+@container rs-requests (width < 640px) {
   /* Stacked, an identifier has a line of its own: it wraps again instead of being cut. */
   .cell-id {
     overflow: visible;
@@ -3083,11 +3647,12 @@ button:disabled[aria-busy='true'] {
   }
 }
 
-/* Same stacked-record reflow as the requests table (task 7.3), at its own measured width.
-   `table-fit-batches` (STYLESEED.md § Responsive): 1000px. Measured as requests is: the 0.7fr
-   track drops under 60px at 981px of content (4px sweep: 978; 59.94px at 981, so 980 would
-   leave one failing pixel a grid). */
-@container rs-batches (max-width: 1000px) {
+/* Same stacked-record reflow as the requests table (task 7.3), below the same shared stack
+   width (`table-stack`, 640px). Batches' priority-one line
+   (Status, Model, Submitted, Cost and the action), form two forced, fails the 60px criterion at
+   498px of content (4px sweep: 498) — at most 640, as the lock requires (add-docked-inspector
+   task 6.3). */
+@container rs-batches (width < 640px) {
   /* Stacked, an identifier has a line of its own: it wraps again instead of being cut. */
   .cell-id {
     overflow: visible;

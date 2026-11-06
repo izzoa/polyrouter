@@ -29,7 +29,7 @@
  * busy button keeps its width — compares the same button with itself in one run.
  */
 import { expect, test, type Page } from '@playwright/test';
-import { SURFACES, harnessUrl } from './overlays';
+import { INSPECTOR_SURFACES, SURFACES, harnessUrl, viewportOf } from './overlays';
 
 /** D4's semantic enumeration. `a.btn-*` reads as any anchor styled as a button. */
 const CONTROLS =
@@ -293,8 +293,12 @@ test.describe('every single-line control is a height-family member (1440x900)', 
   test('in every overlay surface', async ({ page }) => {
     test.setTimeout(120_000);
     const seen = new Set<string>();
+    const visited: string[] = [];
     for (const s of SURFACES) {
       if (s.narrowOnly === true) continue;
+      // Each surface at the viewport that presents it (add-docked-inspector D13): 1440x900,
+      // except the modal inspector drawer, which docks at 1440 and is measured at 1025x768.
+      await page.setViewportSize(viewportOf(s));
       await open(page, harnessUrl(s));
       await s.open(page);
       await page.waitForTimeout(250);
@@ -304,7 +308,10 @@ test.describe('every single-line control is a height-family member (1440x900)', 
         if (r.roleExemptBy !== undefined) seen.add(r.roleExemptBy);
       }
       expect(offFamily(rows), `controls outside the height family in ${s.name}`).toEqual([]);
+      visited.push(s.name);
     }
+    // Both inspector presentations were measured, not skipped or renamed away.
+    expect(visited.filter((n) => n.startsWith('inspector:'))).toEqual([...INSPECTOR_SURFACES]);
     for (const { sel } of ROLE_EXCEPTIONS)
       expect(seen.has(sel), `${sel} is a role exception but never rendered`).toBe(true);
     // The textarea renders only for an Apprise channel, so it is not required here.
@@ -338,7 +345,8 @@ test.describe('every single-line control is a height-family member (1440x900)', 
     // geometry"): its static chips — the status badge, the route trace's decision chip, the
     // workload chip — are the 20px chip, and every trace node is a row of the one trace
     // geometry, at least 32px, never an inline-padded tag. The default fixture's first row and
-    // the longest route (`?trace=cascade`) are both read.
+    // the longest route (`?trace=cascade`) are both read. At 1440x900 this is the DOCKED panel
+    // (add-docked-inspector task 7.2): it keeps the `drawer` class, so these selectors hold.
     for (const url of [
       '/browser-harness.html#/requests',
       '/browser-harness.html?trace=cascade#/requests',
@@ -347,6 +355,9 @@ test.describe('every single-line control is a height-family member (1440x900)', 
       await page.locator('button.req-row').first().click();
       await page.waitForSelector('.drawer ol.rt > li[data-kind="decision"] .chip');
       await page.waitForTimeout(250);
+      await expect(page.locator('#inspector-drawer'), 'the docked panel is measured').toHaveClass(
+        /rs-inspector-docked/,
+      );
       const inspector = await page.evaluate(() => {
         const h = (sel: string): number[] =>
           [...document.querySelectorAll(sel)].map((e) => e.getBoundingClientRect().height);

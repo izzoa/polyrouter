@@ -1,17 +1,34 @@
-import { createMemo, For, Show, type JSX } from 'solid-js';
-import { useModalSurface } from '../a11y';
+import {
+  createComputed,
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  on,
+  onCleanup,
+  Show,
+  type JSX,
+} from 'solid-js';
+import { useInspectorSurface } from '../a11y';
 import {
   SUPERSEDED_LABEL,
   toInspectorView,
   type ReceiptTokenRow,
   type RouteTraceNode,
 } from '../data/analytics';
-import { isKnownRequestStatus, type KnownRequestStatus, type RequestRow } from '../data/api';
+import { isKnownRequestStatus, type KnownRequestStatus } from '../data/api';
 import { fmtDateTime } from '../data/catalog';
+import { STEP_ANNOUNCE_SETTLE_MS, stepKey, type StepDirection } from '../data/step';
 import { FROM_DIALOG } from '../state/appState';
 import { useApp } from '../state/context';
 import { FigureText } from './FigureText';
-import { Icon } from './Icon';
+import { Icon, type IconName } from './Icon';
+import {
+  inspectorIsTopmost,
+  renderedRequestRow,
+  requestStepLine,
+  requestTablePanel,
+} from './RequestTable';
 
 /** label / bg / fg per served status. */
 const STATUS_BADGE: Record<KnownRequestStatus, [string, string, string]> = {
@@ -117,6 +134,57 @@ function countTestId(label: ReceiptTokenRow['label']): string | undefined {
       : undefined;
 }
 
+/** Previous / Next: name, glyph and arrow-key shortcut (add-docked-inspector task 4.3). */
+const STEP_CONTROLS: Record<
+  StepDirection,
+  { label: string; icon: IconName; key: 'ArrowUp' | 'ArrowDown' }
+> = {
+  previous: { label: 'Previous request', icon: 'chevronUp', key: 'ArrowUp' },
+  next: { label: 'Next request', icon: 'chevronDown', key: 'ArrowDown' },
+};
+
+/** One of the inspector head's Previous / Next controls (design D8; dashboard-analytics "The
+ * inspector offers Previous and Next at every presentation"). Activating it steps the selection
+ * from the request shown; ArrowUp / ArrowDown on either control step too, the key deciding the
+ * direction, under the same guards as a row's arrow keys (no composition, no modifier, the
+ * control itself the target, the inspector the topmost layer).
+ *
+ * At a bound — or when the request shown has left the loaded rows — it is `aria-disabled` and
+ * does nothing: never natively `disabled`, so reaching a bound keeps focus on it (and keeps it
+ * in the modal's Tab loop) instead of dropping focus to the document. Its 24px box, and the
+ * 44px comfort size under a coarse pointer or at narrow width, come from `.rs-inspector-step`. */
+function StepControl(props: {
+  dir: StepDirection;
+  onStep: (dir: StepDirection) => void;
+}): JSX.Element {
+  const app = useApp();
+  const meta = STEP_CONTROLS[props.dir];
+  const available = (): boolean => app.canStep(props.dir);
+  const onKeyDown = (e: KeyboardEvent & { currentTarget: HTMLButtonElement }): void => {
+    const dir = stepKey(e);
+    if (dir === null || e.target !== e.currentTarget) return;
+    if (!inspectorIsTopmost(app.state.layers)) return;
+    // Handled even at a bound, so the key never also scrolls the panel or the page.
+    e.preventDefault();
+    if (app.canStep(dir)) props.onStep(dir);
+  };
+  return (
+    <button
+      type="button"
+      class="rs-inspector-step"
+      aria-label={meta.label}
+      aria-keyshortcuts={meta.key}
+      aria-disabled={available() ? undefined : 'true'}
+      onClick={() => {
+        if (available()) props.onStep(props.dir);
+      }}
+      onKeyDown={onKeyDown}
+    >
+      <Icon name={meta.icon} size={13} />
+    </button>
+  );
+}
+
 /** Routing-decision inspector over a real RequestLog row (add-route-trace-inspector design
  * D7): the ERROR card when there is one, the route trace (the recorded walk, its latency on
  * the outcome node), the verbatim decision layer + routing reason (transparency payload,
@@ -140,53 +208,135 @@ export function Inspector() {
       fallbackFocus: () => document.getElementById('inspector-drawer'),
     });
   };
-  /** The selected row: the live one from the loaded lists when it is there, so an update to
-   * it (a deleted payload) shows; otherwise the row as it was when last found, for the same
-   * selection. A list read that failed removes its rows (adopt-figure-states D5), and a
-   * background refresh that does so must neither close the inspector the user is reading nor,
-   * once a later read brings the row back, reopen it by itself and take focus. Keeping the row
-   * open is not "stale as current": a recorded request is immutable (invariant 4). Clearing
-   * the selection (`select(null)`, a page change, the identity reset) still closes it. */
-  const selected = createMemo<RequestRow | undefined>((prev) => {
-    const id = state.selId;
-    if (id === null) return undefined;
-    const live =
-      state.requestList.find((r) => r.id === id) ?? state.recentRequests.find((r) => r.id === id);
-    if (live !== undefined) return live;
-    return prev?.id === id ? prev : undefined;
-  });
+  /** Step the selection from the request shown (add-docked-inspector D8), then bring its row
+   * into view inside the page's pane. Focus stays on the control that stepped. */
+  const step = (dir: StepDirection): void => {
+    const id = app.stepSelection(dir);
+    if (id !== null) renderedRequestRow(id)?.scrollIntoView({ block: 'nearest' });
+  };
 
+  // The retained record (add-docked-inspector D7), not a lookup in the loaded lists: a refresh,
+  // a filter, the "N new" offer or a failed read that drops the row neither closes the
+  // inspector the user is reading nor, once a later read brings the row back, reopens it by
+  // itself and takes focus; and a newer same-id row, or a deleted payload, re-renders in place.
+  // Keeping the record open is not "stale as current": a recorded request is immutable
+  // (invariant 4). Clearing the selection (`select(null)`, a page change, the identity reset)
+  // clears the record and closes it.
+  //
+  // NON-KEYED on purpose: a replaced record or a step re-renders this one branch in place. A
+  // keyed `Show`, or any remount, would re-run the surface's open focus and the drawer's
+  // entrance — the failed-refresh case and design D14 forbid both.
   return (
-    <Show when={selected()}>
+    <Show when={state.selRecord}>
       {(row) => {
         const view = createMemo(() => toInspectorView(row()));
+        /** The id of the record this inspector showed last (add-docked-inspector D6): written
+         * on open and whenever the shown record's id changes, and never cleared by the close.
+         * A plain variable on purpose. Every close path calls `select(null)` first, which
+         * clears the selection and the record before this branch is torn down, so a lookup by
+         * `selId` in the layer's cleanup would always miss; and this branch's own accessor
+         * throws a stale read once its condition is false. Read through `state.selRecord`,
+         * never `row()`, for the same reason. */
+        let shownId = row().id;
+        createComputed(() => {
+          const shown = state.selRecord;
+          if (shown !== null) shownId = shown.id;
+        });
         // No `suspended` predicate any more. Which layer owns the keyboard is the
         // arbiter's single derivation, so the drawer no longer has to enumerate every
         // surface that might stack above it — the enumeration that grew a term per phase.
-        const surface = useModalSurface(app, {
-          when: () => true, // this branch only renders while a row is selected
-          label: 'Request inspector',
+        //
+        // One element, one registration, in every presentation (add-docked-inspector D2 /
+        // D5): the kind — and with it the role, `aria-modal`, the scrim and the registry's
+        // kind — follows `docked`. Registered for as long as this branch renders, i.e. while
+        // a row is shown, so the page + viewport term is the whole dock signal here: inside
+        // this branch it equals `inspectorDocked()` (D4).
+        //
+        // Focus returns, in every presentation and after any crossing, to the row of the
+        // request shown last, or to the request table panel when that row is not rendered
+        // (D6); `layerFocus` restores only when focus was inside or orphaned on <body>.
+        const surface = useInspectorSurface(app, {
+          docked: () => app.inspectorDockable(),
           onDismiss: () => app.select(null),
+          restoreTo: () => renderedRequestRow(shownId) ?? requestTablePanel(),
         });
+        /** The step announcement (add-docked-inspector design D10). One polite region, mounted
+         * empty with the inspector and written only by a STEP (`stepSeq`), never by opening,
+         * closing, a load or a live-band change. Each step restarts the settle timer; once the
+         * selection has stayed on one request for `STEP_ANNOUNCE_SETTLE_MS`, the region is
+         * cleared and the line written on the next frame, so a held arrow key is announced once
+         * where it stops, and two separate steps with identical lines are each announced. The
+         * timer and the frame die with this branch, so a close, and the identity reset (which
+         * clears the record), cancel a pending write. */
+        const [stepLine, setStepLine] = createSignal('');
+        let settle: ReturnType<typeof setTimeout> | undefined;
+        let frame: number | undefined;
+        const cancelAnnouncement = (): void => {
+          if (settle !== undefined) clearTimeout(settle);
+          if (frame !== undefined) cancelAnimationFrame(frame);
+          settle = undefined;
+          frame = undefined;
+        };
+        createEffect(
+          on(
+            () => state.stepSeq,
+            () => {
+              cancelAnnouncement();
+              settle = setTimeout(() => {
+                settle = undefined;
+                const shown = state.selRecord;
+                if (shown === null) return;
+                const line = requestStepLine(shown);
+                setStepLine('');
+                frame = requestAnimationFrame(() => {
+                  frame = undefined;
+                  setStepLine(line);
+                });
+              }, STEP_ANNOUNCE_SETTLE_MS);
+            },
+            { defer: true },
+          ),
+        );
+        // Only a STEP is announced: any change of the selected id cancels a pending write,
+        // and the step that made the change (`stepSelection` writes the selection, then
+        // `stepSeq`) schedules its own afterwards. So a step followed inside the settle
+        // interval by an activation (or any other `select`) writes nothing for the request
+        // the user did not step to.
+        createEffect(on(() => state.selId, cancelAnnouncement, { defer: true }));
+        onCleanup(cancelAnnouncement);
         return (
           <>
-            {/* eslint-disable-next-line a11y-guard/no-noninteractive-click -- pointer-only backdrop redundancy; Escape is the keyboard path */}
+            {/* The scrim is part of the modal presentation only: docked, the page beside the
+                panel stays live (D3). */}
+            <Show when={surface.modal()}>
+              {/* eslint-disable-next-line a11y-guard/no-noninteractive-click -- pointer-only backdrop redundancy; Escape is the keyboard path */}
+              <div
+                class="overlay"
+                style={{ 'z-index': String(surface.z().backdrop) }}
+                onClick={() => app.select(null)}
+              />
+            </Show>
+            {/* `rs-inspector-docked` restyles the SAME element (D3): no shadow, no entrance,
+                the docked width — inside the dock threshold's media query only. It keeps the
+                `drawer` class and the id the rows' `aria-controls` names. */}
             <div
-              class="overlay"
-              style={{ 'z-index': String(surface.z().backdrop) }}
-              onClick={() => app.select(null)}
-            />
-            <div
-              class="drawer"
+              class={surface.modal() ? 'drawer' : 'drawer rs-inspector-docked'}
               style={{ 'z-index': String(surface.z().surface) }}
               inert={state.navExpanded ? true : undefined}
               id="inspector-drawer"
               {...surface.props}
               ref={surface.props['ref'] as (n: HTMLElement) => void}
             >
+              {/* The step region: a direct child of the inspector's own element, so it is inside
+                  the dialog when the inspector is modal (a screen reader confined to a modal
+                  still hears it) and inside the landmark when docked; outside the head and the
+                  body, so a step never remounts it (D10). */}
+              <div role="status" aria-live="polite" class="sr-only rs-step-region">
+                {stepLine()}
+              </div>
               {/* Layout in classes, not inline: the sheet presentation has to restate this
                   padding at narrow width, and an inline style would outrank the rule. */}
-              <div class="drawer-head">
+              <div class="drawer-head rs-inspector-head">
                 <div>
                   <div
                     class="mono"
@@ -206,7 +356,7 @@ export function Inspector() {
                     </span>
                   </div>
                 </div>
-                <div style="display:flex;align-items:center;gap:8px">
+                <div class="rs-inspector-actions">
                   <span
                     class="chip"
                     style={{
@@ -217,6 +367,11 @@ export function Inspector() {
                   >
                     {badgeFor(view().status)[0]}
                   </span>
+                  {/* Previous / Next, in every presentation (add-docked-inspector task 4.3): the
+                      inspector's contents and actions are the same at every width. Never a
+                      `.chip` — the badge beside them is read as `.drawer-head .chip`. */}
+                  <StepControl dir="previous" onStep={step} />
+                  <StepControl dir="next" onStep={step} />
                   <button
                     type="button"
                     class="drawer-close"
@@ -358,6 +513,24 @@ export function Inspector() {
                             data-testid="inspector-tier"
                           >
                             {tier}
+                          </span>
+                        </div>
+                      )}
+                    </Show>
+                    {/* The provider the table's Provider column shows, when the trace's
+                        outcome does not name it (an unlit outcome whose provider cannot be
+                        confirmed as the one that failed, flag RF-1). Labelled as recorded: it
+                        makes no claim about who failed. The docked list hides that column's
+                        cell, so without this row the field would be lost to it (flag F3). */}
+                    <Show when={view().recordedProvider} keyed>
+                      {(provider) => (
+                        <div style="display:flex;justify-content:space-between;gap:16px">
+                          <span style="color:var(--text3);flex:none">recorded provider</span>
+                          <span
+                            style="color:var(--text);text-align:right;overflow-wrap:anywhere;font-family:'Geist',sans-serif"
+                            data-testid="inspector-provider"
+                          >
+                            {provider}
                           </span>
                         </div>
                       )}

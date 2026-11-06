@@ -161,8 +161,13 @@ describe('a live job row reads as a job, not as a request (5.2)', () => {
       const rows = batchRows(h.host);
       const counted = rows.find((r) => r.textContent?.includes('model-counted'))!;
       expect(counted.textContent).toContain('12 of 50');
-      // Its own element, in its own line — never appended to the status text.
-      const statusCell = [...counted.querySelectorAll('.rs-cell')].at(-1)!;
+      // Its own element, in its own line — never appended to the status text. The cell
+      // labelled "Status", by its label: the priority DOM (add-docked-inspector D11) puts the
+      // status cell fourth, before the second line's wrapper, so it is no longer the last.
+      const statusCell = [...counted.querySelectorAll('.rs-cell')].find(
+        (c) => c.querySelector('.rs-cell-label')?.textContent === 'Status',
+      )!;
+      expect(statusCell, 'no Status cell').toBeDefined();
       const lines = [...statusCell.querySelectorAll('span')].map((e) => e.textContent?.trim());
       expect(lines).toContain('12 of 50');
       expect(lines).not.toContain('In progress 12 of 50');

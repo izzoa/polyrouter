@@ -213,6 +213,13 @@ export interface InspectorView {
    * provider, so the view carries no agent or provider chip label (the old chip row's
    * `labelOf(agentLabel, agentId)` fell back to the raw agent id). */
   tier: string | null;
+  /** The provider the request table's Provider column shows (`providerLabel ?? providerId`),
+   * but only when the row records one AND the trace's outcome node names none (an unlit
+   * outcome whose provider `unlitProvider` cannot confirm, flag RF-1). The Decision section's
+   * `recorded provider` row: what was recorded, with no claim about which provider failed.
+   * Null otherwise, hiding the row, so a lit or confirmed outcome never says it twice
+   * (add-docked-inspector flag F3: the docked list hides the Provider cell). */
+  recordedProvider: string | null;
   decisionLayer: string;
   routingReason: string;
   /** The matched routing header rendered as `name: value` (built-in) or the bare
@@ -723,6 +730,7 @@ export function toInspectorView(r: RequestRow): InspectorView {
     createdAtMs: new Date(r.createdAt).getTime(),
     status: r.status,
     tier: r.tierAssigned,
+    recordedProvider: outcomeNode(r).provider === null ? (r.providerLabel ?? r.providerId) : null,
     decisionLayer: r.decisionLayer,
     routingReason: r.routingReason,
     matchedHeader:

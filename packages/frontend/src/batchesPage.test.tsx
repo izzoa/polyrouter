@@ -182,11 +182,18 @@ describe('the page is a first-class destination (7.1)', () => {
     expect(css).toMatch(/\.rs-batch-row \{\s*display: grid;/);
     // `.rs-cell` is `display: contents`, so a row's direct children carry no box: the rule
     // has to reach the cells' children or it sets min-width on nothing.
-    expect(css).toMatch(/\.rs-table-batches \.rs-batch-row > \.rs-cell > \*\s*\{\s*min-width: 0;/);
+    // Any `.rs-cell` of the row: the priority wrappers (add-docked-inspector D11) hold most.
+    expect(css).toMatch(/\.rs-table-batches \.rs-batch-row \.rs-cell > \*\s*\{\s*min-width: 0;/);
     expect(css).toContain('container-name: rs-batches');
-    // The same stacked-record reflow the requests table gets, at its own measured width
-    // (adopt-design-tokens-v2 task 14.1: 1000px; requests is 980px).
-    expect(css).toMatch(/@container rs-batches \(max-width: 1000px\)/);
+    // Its one-line fit, at its own measured width (adopt-design-tokens-v2 task 14.1: 1000px;
+    // requests is 980px): below it the table sheds columns by priority, and only below the
+    // shared stack width does it become stacked records — the same stacked-record reflow the
+    // requests table gets (add-docked-inspector task 6.2). responsive.test.ts holds every
+    // literal equal to its lock row.
+    expect(css).toMatch(/@container rs-batches \(max-width: 1000px\) and \(min-width: 640px\)/);
+    expect(css).toMatch(
+      /@container rs-batches \(width < 640px\)\s*\{[\s\S]*?\.rs-batch-row \{\s*display: block;/,
+    );
     const lock = readFileSync(
       join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'STYLESEED.md'),
       'utf8',

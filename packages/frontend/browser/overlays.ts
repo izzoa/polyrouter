@@ -8,6 +8,11 @@
  */
 import type { Page } from '@playwright/test';
 
+export interface Viewport {
+  readonly width: number;
+  readonly height: number;
+}
+
 export interface Surface {
   readonly name: string;
   /** Selector for the surface's own box — what must fit the viewport. */
@@ -16,10 +21,44 @@ export interface Surface {
   readonly open: (page: Page) => Promise<void>;
   /** True when the surface only exists below the narrow threshold. */
   readonly narrowOnly?: boolean;
+  /** The viewport widths that present this surface, inclusive, when that is not every width.
+   * add-docked-inspector D13: the Request Inspector is a docked panel at the dock threshold
+   * (1440px) and wider, and the modal drawer below it (the sheet at or below `narrow`), so
+   * each presentation is its own surface. A suite at a width that cannot present a surface
+   * honours its `viewport` or skips it (`presentsAt`, `viewportOf`). */
+  readonly widths?: { readonly min?: number; readonly max?: number };
+  /** The desktop viewport a suite presents the surface at, when 1440x900 cannot present it. */
+  readonly viewport?: Viewport;
   /** Harness query a surface needs (`?semantic=1`), appended by every suite's `open`.
    * Opt-in per surface, so the default harness stays byte-identical for the others. */
   readonly query?: string;
 }
+
+/** The desktop viewport every surface is pinned at unless it names its own. */
+export const DESKTOP: Viewport = { width: 1440, height: 900 };
+/** The phone viewport a narrow-only surface is pinned at. */
+export const PHONE: Viewport = { width: 390, height: 844 };
+/** `narrow` (STYLESEED.md § Responsive), the shipped `max-width: 768px` query. */
+const NARROW_MAX = 768;
+
+/** Whether a viewport this wide presents the surface. */
+export function presentsAt(s: Surface, width: number): boolean {
+  if (s.narrowOnly === true && width > NARROW_MAX) return false;
+  if (s.widths?.min !== undefined && width < s.widths.min) return false;
+  if (s.widths?.max !== undefined && width > s.widths.max) return false;
+  return true;
+}
+
+/** The viewport a suite presents (and pins) the surface at: its own, else the phone for a
+ * narrow-only surface, else 1440x900. */
+export function viewportOf(s: Surface): Viewport {
+  return s.viewport ?? (s.narrowOnly === true ? PHONE : DESKTOP);
+}
+
+/** The Request Inspector's two surfaces (add-docked-inspector D13), in matrix order. A suite
+ * that loops the matrix asserts it visited the ones its viewport can present: a renamed or
+ * skipped inspector surface would otherwise silently stop being checked. */
+export const INSPECTOR_SURFACES = ['inspector:docked', 'inspector:drawer'] as const;
 
 /** The harness URL a surface is opened on. */
 export function harnessUrl(s: Pick<Surface, 'query'>): string {
@@ -52,6 +91,22 @@ async function openTuningDrawer(page: Page, name: 'calibration' | 'learning'): P
   await page.waitForSelector(`[data-testid="tuning-drawer"][data-tuning="${name}"]`);
 }
 
+/** The docked panel and the modal drawer (the sheet at or below `narrow`) are the same
+ * `#inspector-drawer` element; only the docked one carries `rs-inspector-docked`. Each surface's
+ * selector names its presentation, so a suite that opens one where the viewport presents the
+ * other finds nothing rather than measuring the wrong box under that name. */
+const INSPECTOR_DOCKED = '#inspector-drawer.rs-inspector-docked';
+const INSPECTOR_MODAL = '#inspector-drawer:not(.rs-inspector-docked)';
+
+/** Opens the Request Inspector on the Requests page from fixture row 0, a served `success`
+ * row. Clicked rather than driven by id: the fixture's row ids are not part of the contract,
+ * and a wrong id would silently leave the inspector closed. */
+async function openInspector(page: Page, sel: string): Promise<void> {
+  await store(page, 'go', 'requests');
+  await page.locator('button.req-row').first().click();
+  await page.waitForSelector(sel);
+}
+
 export const MODAL_KINDS = [
   'newAgent',
   'newProvider',
@@ -63,15 +118,21 @@ export const MODAL_KINDS = [
 
 export const SURFACES: readonly Surface[] = [
   {
-    name: 'drawer',
-    sel: '.drawer',
-    open: async (page) => {
-      await store(page, 'go', 'requests');
-      // Clicked rather than driven by id: the fixture's row ids are not part of the
-      // contract, and a wrong id would silently leave the drawer closed.
-      await page.locator('button.req-row').first().click();
-      await page.waitForSelector('.drawer');
-    },
+    // add-docked-inspector D13: the docked, non-modal panel, at the dock threshold and wider.
+    name: 'inspector:docked',
+    sel: INSPECTOR_DOCKED,
+    widths: { min: 1440 },
+    open: (page) => openInspector(page, INSPECTOR_DOCKED),
+  },
+  {
+    // The modal drawer, below the dock threshold: presented at 1025x768 at desktop (the
+    // verification matrix's widest viewport below 1440), and as the bottom sheet at or below
+    // `narrow`.
+    name: 'inspector:drawer',
+    sel: INSPECTOR_MODAL,
+    widths: { max: 1439 },
+    viewport: { width: 1025, height: 768 },
+    open: (page) => openInspector(page, INSPECTOR_MODAL),
   },
   {
     name: 'drawer:selfCalibration',

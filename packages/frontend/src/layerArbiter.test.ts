@@ -4,14 +4,22 @@
  * pinned independently of any surface that uses it. The component-level behaviour lives in
  * `a11y.test.tsx` and `navRail.test.tsx`.
  */
+import { createRoot, createSignal } from 'solid-js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   installLayerArbiter,
+  layerEntry,
+  layerFocus,
   supersededByDialog,
   topLayer,
+  useLayer,
   type LayerEntry,
   type LayerKind,
+  type LayerKindSource,
+  type LayerToken,
 } from './a11y';
+import { createAppStore, type AppStore } from './state/appState';
+import { FakeApiClient } from './test/fakeClient';
 
 let disposes: (() => void)[] = [];
 afterEach(() => {
@@ -28,7 +36,7 @@ function registry() {
     const root = document.createElement('div');
     root.tabIndex = -1;
     document.body.appendChild(root);
-    const entry: LayerEntry = { token: next++, kind, root: () => root, onDismiss };
+    const entry: LayerEntry = layerEntry(next++, kind, () => root, onDismiss);
     if (kind === 'dialog') {
       for (const s of supersededByDialog(layers)) s.onDismiss();
     }
@@ -147,7 +155,7 @@ describe('two-phase dispatch', () => {
     const inner = document.createElement('input');
     (top.root() as HTMLElement).appendChild(inner);
     inner.addEventListener('keydown', (e) => {
-      if ((e).key === 'Escape') r.remove(top.token);
+      if (e.key === 'Escape') r.remove(top.token);
     });
 
     press(inner, 'Escape');
@@ -260,5 +268,350 @@ describe('a layer may refuse dismissal and stay in the ordering', () => {
     press(document.body, 'Escape');
     expect(r.layers).toHaveLength(1);
     expect(lower).not.toHaveBeenCalled();
+  });
+});
+
+describe('the docked kind (add-docked-inspector D2)', () => {
+  it('Tab on a topmost docked layer is neither prevented nor a dismissal', () => {
+    // The panel sits beside a live page: Tab travels on in document order. Preventing it
+    // would trap focus like the dialog the panel is not; dismissing would close the panel
+    // the user is tabbing through — what every other non-dialog kind does on Tab.
+    const r = registry();
+    const dismiss = vi.fn();
+    const docked = r.add('docked', dismiss);
+    const last = document.createElement('button');
+    (docked.root() as HTMLElement).appendChild(last);
+    r.install();
+    last.focus();
+    for (const shiftKey of [false, true]) {
+      const e = press(last, 'Tab', { shiftKey });
+      expect(e.defaultPrevented, 'Tab was trapped inside the docked panel').toBe(false);
+    }
+    const fromPage = press(document.body, 'Tab');
+    expect(fromPage.defaultPrevented).toBe(false);
+    expect(dismiss, 'Tab closed the docked panel').not.toHaveBeenCalled();
+  });
+
+  it('Escape dismisses a topmost docked layer', () => {
+    const r = registry();
+    const dismiss = vi.fn();
+    r.add('docked', dismiss);
+    r.install();
+    const e = press(document.body, 'Escape');
+    expect(dismiss).toHaveBeenCalledTimes(1);
+    expect(e.defaultPrevented).toBe(true);
+  });
+
+  it('registering a dialog leaves a docked layer registered beneath it', () => {
+    // Not superseded the way an unrelated menu or popup is: the panel stays open beneath the
+    // dialog and resumes when it closes. First Escape the modal, second the panel.
+    const r = registry();
+    const panelDismiss = vi.fn();
+    const panel = r.add('docked', panelDismiss);
+    const menu: LayerEntry = r.add(
+      'menu',
+      vi.fn(() => r.remove(menu.token)),
+    );
+    expect(supersededByDialog(r.layers).map((l) => l.kind)).toEqual(['menu']);
+    const dialog: LayerEntry = r.add(
+      'dialog',
+      vi.fn(() => r.remove(dialog.token)),
+    );
+    expect(panelDismiss, 'opening a dialog superseded the docked panel').not.toHaveBeenCalled();
+    expect(menu.onDismiss).toHaveBeenCalledTimes(1);
+    expect(r.layers.map((l) => l.token)).toEqual([panel.token, dialog.token]);
+
+    r.install();
+    press(document.body, 'Escape');
+    expect(dialog.onDismiss).toHaveBeenCalledTimes(1);
+    expect(panelDismiss, 'one Escape reached two layers').not.toHaveBeenCalled();
+    press(document.body, 'Escape');
+    expect(panelDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it('a popover registered above a docked layer takes Escape first', () => {
+    const r = registry();
+    const panelDismiss = vi.fn();
+    r.add('docked', panelDismiss);
+    const popDismiss = vi.fn();
+    r.add('popover', popDismiss);
+    r.install();
+    press(document.body, 'Escape');
+    expect(popDismiss).toHaveBeenCalledTimes(1);
+    expect(panelDismiss).not.toHaveBeenCalled();
+  });
+
+  it('a docked layer moves no focus when it opens', () => {
+    const row = document.createElement('button');
+    const root = document.createElement('div');
+    root.tabIndex = -1;
+    document.body.append(row, root);
+    row.focus();
+    layerFocus('docked', () => root);
+    expect(document.activeElement, 'opening the docked panel took focus').toBe(row);
+    // The dialog kind, for contrast: the same call moves focus into the root.
+    layerFocus('dialog', () => root);
+    expect(document.activeElement).toBe(root);
+  });
+
+  it("an entry's kind is a getter over its accessor, read as a value", () => {
+    // `state.layers.map((l) => l.kind)` (bodyCaptureDialogs, navRail) and the browser's
+    // `page.evaluate` read `kind` as a VALUE; a kind changed in place must reach them.
+    const [kind, setKind] = createSignal<LayerKind>('docked');
+    const entry = layerEntry(
+      7,
+      kind,
+      () => undefined,
+      () => {},
+    );
+    expect(entry.kind).toBe('docked');
+    setKind('dialog');
+    expect(entry.kind).toBe('dialog');
+    expect(typeof entry.kind).toBe('string');
+
+    const store = createAppStore(new FakeApiClient());
+    const token = store.registerLayer({ kind, root: () => undefined, onDismiss: () => {} });
+    expect(store.state.layers.map((l) => l.kind)).toEqual(['dialog']);
+    setKind('docked');
+    expect(store.state.layers.map((l) => l.kind)).toEqual(['docked']);
+    expect(store.state.layers.map((l) => l.token)).toEqual([token]);
+    expect(JSON.parse(JSON.stringify(store.state.layers.map((l) => ({ kind: l.kind }))))).toEqual([
+      { kind: 'docked' },
+    ]);
+  });
+});
+
+/** A layer mounted through the real `useLayer` and the real store registry, opened and
+ * closed by a signal — the inspector's crossing is driven by flipping its kind accessor. */
+interface Mounted {
+  root: HTMLElement;
+  open: () => void;
+  close: () => void;
+  isOpen: () => boolean;
+  token: () => LayerToken | undefined;
+  index: () => number;
+  dismiss: ReturnType<typeof vi.fn>;
+}
+
+function mounted(
+  store: AppStore,
+  kind: LayerKindSource,
+  opts: { restoreTo?: () => HTMLElement | null; root?: HTMLElement } = {},
+): Mounted {
+  const root = opts.root ?? document.createElement('div');
+  root.tabIndex = -1;
+  if (!root.isConnected) document.body.appendChild(root);
+  const [isOpen, setOpen] = createSignal(false);
+  const dismiss = vi.fn(() => setOpen(false));
+  createRoot((dispose) => {
+    disposes.push(dispose);
+    useLayer(store, {
+      when: isOpen,
+      kind,
+      root: () => root,
+      onDismiss: dismiss,
+      ...(opts.restoreTo ? { restoreTo: opts.restoreTo } : {}),
+    });
+  });
+  const token = (): LayerToken | undefined =>
+    store.state.layers.find((l) => l.root() === root)?.token;
+  return {
+    root,
+    open: () => setOpen(true),
+    close: () => setOpen(false),
+    isOpen,
+    token,
+    index: () => store.state.layers.findIndex((l) => l.root() === root),
+    dismiss,
+  };
+}
+
+function button(parent: HTMLElement = document.body, label = 'b'): HTMLButtonElement {
+  const b = document.createElement('button');
+  b.textContent = label;
+  parent.appendChild(b);
+  return b;
+}
+
+describe('a kind change in place (add-docked-inspector D2)', () => {
+  const setup = () => {
+    const store = createAppStore(new FakeApiClient());
+    disposes.push(installLayerArbiter({ layers: () => store.state.layers }));
+    const [docked, setDocked] = createSignal(true);
+    const inspector = mounted(store, () => (docked() ? 'docked' : 'dialog'));
+    const inside = button(inspector.root, 'inside the inspector');
+    const page = button(document.body, 'page control');
+    return { store, setDocked, inspector, inside, page };
+  };
+
+  it('a popover above the docked layer is dismissed on the change to dialog', () => {
+    const { store, setDocked, inspector, page } = setup();
+    page.focus();
+    inspector.open();
+    expect(document.activeElement, 'the docked panel took focus on open').toBe(page);
+    const popRoot = document.createElement('div');
+    const popInput = document.createElement('input');
+    popRoot.appendChild(popInput);
+    const popover = mounted(store, 'popover', { root: popRoot });
+    popover.open();
+    popInput.focus();
+    const before = { token: inspector.token(), index: inspector.index() };
+
+    setDocked(false);
+
+    expect(popover.dismiss, 'the transient above was not superseded').toHaveBeenCalledTimes(1);
+    expect(popover.isOpen()).toBe(false);
+    expect(store.state.layers.map((l) => l.kind)).toEqual(['dialog']);
+    expect(topLayer(store.state.layers)?.token).toBe(before.token);
+    expect(document.activeElement, 'focus outside the now-modal inspector was not moved in').toBe(
+      inspector.root,
+    );
+    expect({ token: inspector.token(), index: inspector.index() }).toEqual(before);
+
+    // It is now the topmost layer for the keyboard: Escape closes it.
+    press(document.activeElement ?? document.body, 'Escape');
+    expect(inspector.dismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it('focus already inside the inspector stays where it is on the change to dialog', () => {
+    const { setDocked, inspector, inside } = setup();
+    inspector.open();
+    inside.focus();
+    setDocked(false);
+    expect(document.activeElement).toBe(inside);
+  });
+
+  it('a dialog above the docked layer keeps focus and topmost status across the change, and its own popover survives it', () => {
+    const { store, setDocked, inspector, inside } = setup();
+    inspector.open();
+    inside.focus();
+    const dialog = mounted(store, 'dialog');
+    const confirm = button(dialog.root, 'confirm');
+    dialog.open();
+    expect(document.activeElement).toBe(dialog.root);
+    const popRoot = document.createElement('div');
+    dialog.root.appendChild(popRoot);
+    const popInput = document.createElement('input');
+    popRoot.appendChild(popInput);
+    const popover = mounted(store, 'popover', { root: popRoot });
+    popover.open();
+    popInput.focus();
+    const tokens = store.state.layers.map((l) => l.token);
+    const before = { token: inspector.token(), index: inspector.index() };
+
+    setDocked(false);
+
+    expect(store.state.layers.map((l) => l.kind)).toEqual(['dialog', 'dialog', 'popover']);
+    expect(
+      store.state.layers.map((l) => l.token),
+      'something above was superseded',
+    ).toEqual(tokens);
+    expect(popover.dismiss).not.toHaveBeenCalled();
+    expect(dialog.dismiss).not.toHaveBeenCalled();
+    expect(document.activeElement, 'focus moved out of the topmost dialog').toBe(popInput);
+    expect({ token: inspector.token(), index: inspector.index() }).toEqual(before);
+
+    // The layers above keep Escape: first the popover, then the dialog — never the inspector.
+    press(popInput, 'Escape');
+    expect(popover.dismiss).toHaveBeenCalledTimes(1);
+    confirm.focus();
+    press(confirm, 'Escape');
+    expect(dialog.dismiss).toHaveBeenCalledTimes(1);
+    expect(inspector.dismiss).not.toHaveBeenCalled();
+  });
+
+  it('closing that dialog restores to its opener when the opener is inside the inspector', () => {
+    const { store, setDocked, inspector, inside } = setup();
+    inspector.open();
+    inside.focus(); // the Delete control, say
+    const dialog = mounted(store, 'dialog');
+    dialog.open();
+    setDocked(false);
+    expect(document.activeElement).toBe(dialog.root);
+    dialog.close();
+    expect(document.activeElement).toBe(inside);
+  });
+
+  it('closing that dialog focuses the inspector root when the opener is outside it', () => {
+    // The opener is on the page, now inert behind the modal inspector: focus must not go
+    // back there.
+    const { store, setDocked, inspector, page } = setup();
+    inspector.open();
+    page.focus();
+    const dialog = mounted(store, 'dialog');
+    dialog.open();
+    setDocked(false);
+    dialog.close();
+    expect(document.activeElement, 'focus was returned into inert content').toBe(inspector.root);
+  });
+
+  it('without the crossing, the same close restores to the page opener', () => {
+    // A docked panel makes nothing inert, so the rule changes nothing while it stays docked.
+    const { store, inspector, page } = setup();
+    inspector.open();
+    page.focus();
+    const dialog = mounted(store, 'dialog');
+    dialog.open();
+    dialog.close();
+    expect(document.activeElement).toBe(page);
+  });
+
+  it('dialog → docked moves nothing and supersedes nothing', () => {
+    const store = createAppStore(new FakeApiClient());
+    const [docked, setDocked] = createSignal(false);
+    const page = button(document.body, 'page control');
+    page.focus();
+    const inspector = mounted(store, () => (docked() ? 'docked' : 'dialog'));
+    const inside = button(inspector.root, 'inside');
+    inspector.open();
+    expect(document.activeElement, 'the modal inspector did not take focus on open').toBe(
+      inspector.root,
+    );
+    inside.focus();
+    const popRoot = document.createElement('div');
+    inspector.root.appendChild(popRoot);
+    const popover = mounted(store, 'popover', { root: popRoot });
+    popover.open();
+    const before = store.state.layers.map((l) => l.token);
+    const index = inspector.index();
+
+    setDocked(true);
+
+    expect(store.state.layers.map((l) => l.kind)).toEqual(['docked', 'popover']);
+    expect(store.state.layers.map((l) => l.token)).toEqual(before);
+    expect(inspector.index()).toBe(index);
+    expect(popover.dismiss).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(inside);
+  });
+
+  it("the restore target stays the layer's own across a crossing, never the control that held focus before it", () => {
+    const store = createAppStore(new FakeApiClient());
+    const [docked, setDocked] = createSignal(true);
+    const row = button(document.body, 'row of the shown request');
+    const other = button(document.body, 'another page control');
+    const inspector = mounted(store, () => (docked() ? 'docked' : 'dialog'), {
+      restoreTo: () => row,
+    });
+    other.focus();
+    inspector.open();
+    expect(document.activeElement).toBe(other);
+    setDocked(false);
+    expect(document.activeElement).toBe(inspector.root);
+    inspector.close();
+    expect(document.activeElement, 'restored to the control focused before the crossing').toBe(row);
+  });
+
+  it('without restoreTo, the element captured on open stays the target across a crossing', () => {
+    const store = createAppStore(new FakeApiClient());
+    const [docked, setDocked] = createSignal(true);
+    const opener = button(document.body, 'opener');
+    const other = button(document.body, 'another page control');
+    const inspector = mounted(store, () => (docked() ? 'docked' : 'dialog'));
+    opener.focus();
+    inspector.open();
+    other.focus();
+    setDocked(false);
+    inspector.close();
+    expect(document.activeElement).toBe(opener);
   });
 });

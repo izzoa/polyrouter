@@ -24,9 +24,26 @@ const COLUMNS = [
 /** The figure columns: right-aligned in the head as in every row (task 9.2). */
 const FIGURE_COLUMNS: ReadonlySet<string> = new Set(['Wall time', 'Cost']);
 
-function Cell(props: { label: string; children: unknown }) {
+type Column = (typeof COLUMNS)[number];
+
+/** Each column's class (add-docked-inspector design D11), on the head cell and on every row's
+ * cell, so the priority forms place cells and hide moved head labels by column. */
+const COLUMN_CLASS: Record<Column, string> = {
+  Status: 'rs-col-status',
+  Model: 'rs-col-model',
+  Provider: 'rs-col-provider',
+  Tier: 'rs-col-tier',
+  Submitted: 'rs-col-submitted',
+  Progress: 'rs-col-progress',
+  'Wall time': 'rs-col-wall',
+  Cost: 'rs-col-cost',
+  'Results until': 'rs-col-until',
+  '': 'rs-col-action',
+};
+
+function Cell(props: { label: Column; children: unknown }) {
   return (
-    <span class="rs-cell">
+    <span class={`rs-cell ${COLUMN_CLASS[props.label]}`}>
       <span class="rs-cell-label" aria-hidden="true">
         {props.label}
       </span>
@@ -201,11 +218,13 @@ export function Batches(props: { live: boolean }) {
         tabindex="-1"
         style="overflow:hidden;border-radius:10px"
       >
+        {/* Flat, one element per column in `COLUMNS` order: a narrowed form hides the head
+            labels of the columns it moves to line two (design D11). */}
         <div class="table-head">
           <For each={COLUMNS}>
             {(c) => (
               <div
-                class={FIGURE_COLUMNS.has(c) ? 'cell-figure' : undefined}
+                class={FIGURE_COLUMNS.has(c) ? `${COLUMN_CLASS[c]} cell-figure` : COLUMN_CLASS[c]}
                 title={c === '' ? undefined : c}
               >
                 {c}
@@ -243,6 +262,9 @@ function Row(props: { job: BatchJobDto; onCancel: () => void }) {
 
   return (
     <div class="rs-batch-row" data-batch-job={job().id}>
+      {/* Priority one first — status, model, submitted, cost — then the second line's wrapper,
+          then the row action, which stays on line one in every form. Explicit placement keeps
+          today's column order on line one (design D11). */}
       <Cell label="Status">
         <span style="display:flex;align-items:center;gap:8px;min-width:0">
           <span
@@ -270,49 +292,9 @@ function Row(props: { job: BatchJobDto; onCancel: () => void }) {
           {job().modelLabel ?? job().modelId}
         </span>
       </Cell>
-      <Cell label="Provider">
-        <span class="cell-id" title={job().providerLabel ?? job().providerId}>
-          {job().providerLabel ?? job().providerId}
-        </span>
-      </Cell>
-      <Cell label="Tier">
-        <span class="cell-id" title={job().tierAssigned ?? undefined}>
-          {job().tierAssigned ?? '—'}
-        </span>
-      </Cell>
       <Cell label="Submitted">
         <span class="figure" style="font-size:0.6875rem;color:var(--text3)">
           {fmtDateTime(job().submittedAt)}
-        </span>
-      </Cell>
-      <Cell label="Progress">
-        <span style="display:flex;flex-direction:column;gap:4px;min-width:0;width:100%">
-          <span
-            class="rs-batch-bar"
-            aria-hidden="true"
-            data-series="focal"
-            data-measure="batch-progress"
-          >
-            <span style={{ width: `${String(pct())}%` }} />
-          </span>
-          <span class="figure" style="font-size:0.6875rem;color:var(--text3)">
-            {done()} / {job().counts.total}
-          </span>
-          {/* Two states where the raw count would mislead. A lost submission reads
-              `0 / N` — and the thing the user needs to know is that it cost nothing. */}
-          <Show when={job().errorKind === 'submit_lost' || job().errorKind === 'submit_unresolved'}>
-            <span style="font-size:0.6875rem;color:var(--text3)">
-              submission lost — nothing charged
-            </span>
-          </Show>
-          <Show when={job().status === 'submission_unknown'}>
-            <span style="font-size:0.6875rem;color:var(--text3)">reconciling with provider</span>
-          </Show>
-        </span>
-      </Cell>
-      <Cell label="Wall time">
-        <span class="figure cell-figure" style="font-size:0.6875rem">
-          {fmtElapsed(wall())}
         </span>
       </Cell>
       <Cell label="Cost">
@@ -353,22 +335,72 @@ function Row(props: { job: BatchJobDto; onCancel: () => void }) {
           </Show>
         </span>
       </Cell>
-      <Cell label="Results until">
-        <Show
-          when={job().resultsExpireAt}
-          fallback={
-            <span style="font-size:0.6875rem;color:var(--text3)">
-              retention unknown — check provider
+      <span class="rs-subline">
+        <span class="rs-sub-p3">
+          <Cell label="Provider">
+            <span class="cell-id" title={job().providerLabel ?? job().providerId}>
+              {job().providerLabel ?? job().providerId}
             </span>
-          }
-        >
-          {(iso) => (
-            <span class="figure" style="font-size:0.6875rem;color:var(--text2)">
-              {fmtDate(iso())} · {job().providerLabel ?? job().providerId}
+          </Cell>
+          <Cell label="Tier">
+            <span class="cell-id" title={job().tierAssigned ?? undefined}>
+              {job().tierAssigned ?? '—'}
             </span>
-          )}
-        </Show>
-      </Cell>
+          </Cell>
+          <Cell label="Results until">
+            <Show
+              when={job().resultsExpireAt}
+              fallback={
+                <span style="font-size:0.6875rem;color:var(--text3)">
+                  retention unknown — check provider
+                </span>
+              }
+            >
+              {(iso) => (
+                <span class="figure" style="font-size:0.6875rem;color:var(--text2)">
+                  {fmtDate(iso())} · {job().providerLabel ?? job().providerId}
+                </span>
+              )}
+            </Show>
+          </Cell>
+        </span>
+        <span class="rs-sub-p2">
+          <Cell label="Progress">
+            <span style="display:flex;flex-direction:column;gap:4px;min-width:0;width:100%">
+              <span
+                class="rs-batch-bar"
+                aria-hidden="true"
+                data-series="focal"
+                data-measure="batch-progress"
+              >
+                <span style={{ width: `${String(pct())}%` }} />
+              </span>
+              <span class="figure" style="font-size:0.6875rem;color:var(--text3)">
+                {done()} / {job().counts.total}
+              </span>
+              {/* Two states where the raw count would mislead. A lost submission reads
+                  `0 / N` — and the thing the user needs to know is that it cost nothing. */}
+              <Show
+                when={job().errorKind === 'submit_lost' || job().errorKind === 'submit_unresolved'}
+              >
+                <span style="font-size:0.6875rem;color:var(--text3)">
+                  submission lost — nothing charged
+                </span>
+              </Show>
+              <Show when={job().status === 'submission_unknown'}>
+                <span style="font-size:0.6875rem;color:var(--text3)">
+                  reconciling with provider
+                </span>
+              </Show>
+            </span>
+          </Cell>
+          <Cell label="Wall time">
+            <span class="figure cell-figure" style="font-size:0.6875rem">
+              {fmtElapsed(wall())}
+            </span>
+          </Cell>
+        </span>
+      </span>
       <Cell label="">
         <Show when={!terminal()}>
           {/* Every active row's button reads "Cancel", so on its own the name tells a

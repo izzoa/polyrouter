@@ -58,7 +58,13 @@ const PAGE = (ids: string[]): RequestsPage => ({
 });
 
 const SECRET: RequestBodyContent[] = [
-  { direction: 'request', content: 'ACCOUNT-A PROMPT TEXT', bytes: 21, truncated: false, partial: false },
+  {
+    direction: 'request',
+    content: 'ACCOUNT-A PROMPT TEXT',
+    bytes: 21,
+    truncated: false,
+    partial: false,
+  },
 ];
 
 /** Switch the signed-in principal, which is what triggers the identity reset. */
@@ -199,6 +205,48 @@ describe("the inspector's cached payloads — the severe half", () => {
     ).not.toContain('ACCOUNT-A PROMPT TEXT');
   });
 
+  // add-docked-inspector task 3.1 (design D7): the inspector renders a RETAINED record now, which
+  // outlives the list it came from by design — so it has to stop at the identity boundary like
+  // the selection and the payload text beside it.
+  it('clears the retained record at the boundary, and a list load begun as A cannot restore it', async () => {
+    const client = new HeldClient({});
+    const store = createAppStore(client);
+    await store.bootstrap();
+
+    void store.loadRequests(true);
+    await flush();
+    client.pages[0]?.(PAGE(['A-ROW-1', 'A-ROW-2']));
+    await flush();
+    store.select('A-ROW-1');
+    void store.loadSelectedBodies('A-ROW-1');
+    await flush();
+    client.bodies[0]?.(SECRET);
+    await flush();
+    expect(store.state.selRecord?.id, 'the record was not captured').toBe('A-ROW-1');
+
+    // A refresh begun as A, still in flight at the switch.
+    void store.loadRequests(true);
+    await flush();
+    expect(client.pages).toHaveLength(2);
+
+    client.hold = false;
+    await switchAccount(store, client);
+    expect(store.state.selRecord, "the previous account's record survived").toBeNull();
+    expect(store.state.selId).toBeNull();
+
+    // A's refresh lands only now, carrying the record's row.
+    client.pages[1]?.(PAGE(['A-ROW-1']));
+    await flush();
+    expect(store.state.selRecord, "A's late list restored A's record").toBeNull();
+    const everything = JSON.stringify(store.state);
+    expect(everything, "a previous account's PROMPT TEXT is still in the store").not.toContain(
+      'ACCOUNT-A PROMPT TEXT',
+    );
+    expect(everything, "a previous account's request is still in the store").not.toContain(
+      'A-ROW-1',
+    );
+  });
+
   it('discards a payload response that lands after the account changed', async () => {
     const client = new HeldClient({});
     const store = createAppStore(client);
@@ -214,8 +262,6 @@ describe("the inspector's cached payloads — the severe half", () => {
 
     client.bodies[0]?.(SECRET);
     await flush();
-    expect(JSON.stringify(store.state.selBodies.rows ?? [])).not.toContain(
-      'ACCOUNT-A PROMPT TEXT',
-    );
+    expect(JSON.stringify(store.state.selBodies.rows ?? [])).not.toContain('ACCOUNT-A PROMPT TEXT');
   });
 });

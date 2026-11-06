@@ -12,9 +12,17 @@ import {
   fmtElapsed,
   type BatchDisplayRow,
 } from '../data/batchBand';
-import { agentRunLabel, isBatchItem, rowCostParts, startsAgentRun } from '../data/analytics';
+import { topLayer, type LayerEntry } from '../a11y';
+import {
+  agentRunLabel,
+  isBatchItem,
+  rowCostLabel,
+  rowCostParts,
+  startsAgentRun,
+} from '../data/analytics';
 import { fmtTime } from '../data/catalog';
 import { EST_USAGE_PARTS, fmtLatency, fmtTokensCompact } from '../data/figures';
+import { stepKey } from '../data/step';
 import { useApp } from '../state/context';
 import { FigureText } from './FigureText';
 import { Icon } from './Icon';
@@ -35,16 +43,33 @@ const COLUMNS = [
   'Status',
 ] as const;
 
-/** One cell, carrying its field name for the stacked presentation.
+type Column = (typeof COLUMNS)[number];
+
+/** Each column's class (add-docked-inspector design D11): the head cell and every row's cell
+ * carry it, so the priority forms can place a cell on its track, hide a moved column's head
+ * label, and lay out a moved field on line two — by column, never by position. */
+const COLUMN_CLASS: Record<Column, string> = {
+  Time: 'rs-col-time',
+  Model: 'rs-col-model',
+  Provider: 'rs-col-provider',
+  Tier: 'rs-col-tier',
+  'Decided by': 'rs-col-decided',
+  Tokens: 'rs-col-tokens',
+  Cost: 'rs-col-cost',
+  Latency: 'rs-col-latency',
+  Status: 'rs-col-status',
+};
+
+/** One cell, carrying its field name for the stacked presentation and for line two.
  *
  * The label is `aria-hidden` deliberately. A completed request row is a single
  * `<button>` whose accessible name is its flattened text content — visible label text
  * would prepend "Time"/"Model"/… to that name and break the parity the spec requires.
  * Sighted users get the names; assistive technology gets the same name it got at desktop
  * width, where the head is a separate element with no association to the cells anyway. */
-function Cell(props: { label: string; children: JSX.Element }): JSX.Element {
+function Cell(props: { label: Column; children: JSX.Element }): JSX.Element {
   return (
-    <span class="rs-cell">
+    <span class={`rs-cell ${COLUMN_CLASS[props.label]}`}>
       <span class="rs-cell-label" aria-hidden="true">
         {props.label}
       </span>
@@ -78,6 +103,21 @@ const STATUS_TEXT: Record<KnownRequestStatus, string> = {
 const dotFor = (s: string): string => (isKnownRequestStatus(s) ? STATUS_DOT[s] : 'var(--text3)');
 const textFor = (s: string): string => (isKnownRequestStatus(s) ? STATUS_TEXT[s] : s || 'unknown');
 
+/** The one line a step of the inspector announces (add-docked-inspector design D10;
+ * dashboard-analytics "Each step of the inspector is announced in one line"): the request's
+ * absolute time, its model, its status in words and its cost, `·`-separated — each through the
+ * formatter its row's cell renders with (`fmtTime`, the model label, the status word,
+ * `rowCostLabel`), so the line reads as the row just reached, figure-state words included, and
+ * its cost is the inspector's receipt total too (both are `rowCostParts`). */
+export function requestStepLine(r: RequestRow): string {
+  return [
+    fmtTime(new Date(r.createdAt).getTime()),
+    labelOf(r.modelLabel, r.modelId),
+    textFor(r.status),
+    rowCostLabel(r),
+  ].join(' · ');
+}
+
 /** The neutral `batch` chip (add-batch-inference D11a/D12). Neutral on purpose, like
  * the decision-layer chip beside it: the lock reserves amber for status, and a batch
  * is an execution MODE, not a routing decision — the decision layer beside it stays
@@ -100,15 +140,50 @@ function BatchChip() {
   );
 }
 
+/** The escalated mark: a decorative glyph and the word that carries the state. Before this the
+ * arrow was the ONLY difference between an escalated request and a normal one, and it was
+ * unlabelled — so escalation was invisible to assistive technology entirely. */
+function EscalatedMark() {
+  return (
+    <>
+      <Icon name="escalated" size={11} />
+      <span class="sr-only">escalated</span>
+    </>
+  );
+}
+
+/** One DOM for every form of the table (add-docked-inspector design D11). After the
+ * priority-one cells, ONE outer wrapper holds two inner ones: the priority-three cells, then
+ * the priority-two cells. Each is `display: contents` in the one-line form, so every cell is a
+ * grid item there; a narrowed form makes the priority-three wrapper (form one) or the outer one
+ * (form two, and a row that cannot open in the docked list) the flex line on row two. One
+ * wrapper could not do both: once it is a flex line its cells are flex items, and grid
+ * placement cannot move one back to line one. Phrasing content only — a completed row is a
+ * `<button>`. */
+function SubLine(props: { p3: JSX.Element; p2: JSX.Element }): JSX.Element {
+  return (
+    <span class="rs-subline">
+      <span class="rs-sub-p3">{props.p3}</span>
+      <span class="rs-sub-p2">{props.p2}</span>
+    </span>
+  );
+}
+
 /** The figure columns: right-aligned in the head as in every row (task 9.2). */
 const FIGURE_COLUMNS: ReadonlySet<string> = new Set(['Tokens', 'Cost', 'Latency']);
 
 export function RequestTableHead() {
   return (
     <div class="table-head">
+      {/* Flat, one element per column in `COLUMNS` order, in every form: a narrowed form
+          hides the head labels of the columns it moves to line two, so the labels left name
+          line one's cells in the same order (design D11). */}
       <For each={COLUMNS}>
         {(c) => (
-          <div class={FIGURE_COLUMNS.has(c) ? 'cell-figure' : undefined} title={c}>
+          <div
+            class={FIGURE_COLUMNS.has(c) ? `${COLUMN_CLASS[c]} cell-figure` : COLUMN_CLASS[c]}
+            title={c}
+          >
             {c}
           </div>
         )}
@@ -117,21 +192,90 @@ export function RequestTableHead() {
   );
 }
 
+/** The rendered row of request `id`, found by its `data-request-id` — the inspector's restore
+ * target on close (add-docked-inspector D6), compared on the id itself, never a selector built
+ * from it. `null` when that request has no row on screen. */
+export function renderedRequestRow(id: string): HTMLElement | null {
+  for (const el of document.querySelectorAll<HTMLElement>('button.req-row[data-request-id]')) {
+    if (el.dataset['requestId'] === id) return el;
+  }
+  return null;
+}
+
+/** The request table panel on screen — the Requests page's ("Requests") or the Overview card's
+ * ("Recent requests"): a named region with `tabindex="-1"`, so focus can land on the list when
+ * the row it was meant for is not rendered (D6). */
+export function requestTablePanel(): HTMLElement | null {
+  return document.querySelector<HTMLElement>('.rs-table-requests[role="region"]');
+}
+
+/** The inspector is the topmost layer — the arbiter's own ordering, so a menu, popup or dialog
+ * open above it owns the arrow keys and stepping stands down (add-docked-inspector D8). */
+export function inspectorIsTopmost(layers: readonly LayerEntry[]): boolean {
+  const root = topLayer(layers)?.root();
+  return root !== undefined && root.id === 'inspector-drawer';
+}
+
 export function RequestRow(props: { r: RequestRow }) {
   const app = useApp();
   const { state } = app;
   const selected = () => state.selId === props.r.id;
+  /** Docked stepping (add-docked-inspector D8; dashboard-analytics "Docked stepping moves the
+   * selection without leaving the list"). Only while the inspector is docked — the modal
+   * presentations step through Previous / Next — and relative to THIS row, the focused one,
+   * not the selection. Each guard is checked, not inferred from where focus is: a composing
+   * input method, a modifier, a target other than the row itself, and any layer above the
+   * inspector all leave the key exactly as it would be with no inspector open. A handled key
+   * prevents its default, even at a bound, so the page never also scrolls. Focus moves to the
+   * row stepped to without a scroll jump, and the row is then brought into view inside the
+   * page's pane. */
+  const onKeyDown = (e: KeyboardEvent & { currentTarget: HTMLButtonElement }): void => {
+    if (!app.inspectorDocked()) return;
+    const dir = stepKey(e);
+    if (dir === null || e.target !== e.currentTarget) return;
+    if (!inspectorIsTopmost(state.layers)) return;
+    e.preventDefault();
+    const id = app.stepSelection(dir, props.r.id);
+    if (id === null) return;
+    const next = renderedRequestRow(id);
+    next?.focus({ preventScroll: true });
+    next?.scrollIntoView({ block: 'nearest' });
+  };
+  /** Activation (add-docked-inspector D6). Another row selects; the selected row never closes
+   * the inspector — closing is Escape or its Close control in every presentation. Docked, the
+   * panel takes no focus on open, so re-activating the open row is the one-key route into it,
+   * and the row keeps `aria-expanded="true"` because the panel is still open. In a modal
+   * presentation the selected row sits behind the scrim, so this branch is not reachable
+   * there; it would only focus the modal that already holds focus. */
+  const activate = (row: HTMLButtonElement): void => {
+    if (!selected()) {
+      app.select(props.r.id);
+      // Docked, the row keeps focus by an explicit call, never by the browser's click
+      // default: Safari and Firefox on macOS do not focus a <button> on a mouse click, so
+      // focus would land on the table panel and the arrow keys would scroll the page instead
+      // of stepping. Modal, the dialog takes focus on registration.
+      if (app.inspectorDocked()) row.focus({ preventScroll: true });
+      return;
+    }
+    document.getElementById('inspector-drawer')?.focus();
+  };
   return (
     <button
       type="button"
       class="req-row row-hover"
+      data-request-id={props.r.id}
       // The open row's Selected state, the wash and an inset deep-indigo edge, is the
       // `.req-row[aria-expanded='true']` rule in styles.css (adopt-design-tokens-v2 D8).
       // Nothing inline: an inline fill outranks the row's hover tone.
       aria-expanded={selected()}
       aria-controls="inspector-drawer"
-      onClick={() => app.select(selected() ? null : props.r.id)}
+      onClick={(e) => activate(e.currentTarget)}
+      onKeyDown={onKeyDown}
     >
+      {/* Priority one first — time, model, cost, status — then the second line's wrapper. The
+          DOM order is the same in every form, so the row's accessible name is too; each cell
+          takes its track by explicit placement, so line one keeps today's column order
+          (design D11). */}
       <Cell label="Time">
         <span class="figure" style="font-size:0.6875rem;color:var(--text3)">
           {fmtTime(new Date(props.r.createdAt).getTime())}
@@ -148,68 +292,6 @@ export function RequestRow(props: { r: RequestRow }) {
           {labelOf(props.r.modelLabel, props.r.modelId)}
         </span>
       </Cell>
-      <Cell label="Provider">
-        <span class="cell-id" title={labelOf(props.r.providerLabel, props.r.providerId)}>
-          {labelOf(props.r.providerLabel, props.r.providerId)}
-        </span>
-      </Cell>
-      <Cell label="Tier">
-        <span class="cell-id" title={props.r.tierAssigned ?? undefined}>
-          {props.r.tierAssigned ?? '—'}
-        </span>
-      </Cell>
-      <Cell label="Decided by">
-        <span>
-          <span class="chip" style={LAYER_CHIP_STYLE}>
-            {props.r.decisionLayer}
-            <Show when={props.r.escalated}>
-              {/* The mark is decorative; the word carries the state. Before this the arrow was
-                  the ONLY difference between an escalated request and a normal one, and it was
-                  unlabelled — so escalation was invisible to assistive technology entirely. */}{' '}
-              <Icon name="escalated" size={11} />
-              <span class="sr-only">escalated</span>
-            </Show>
-          </span>
-          {/* A settled batch item (add-batch-inference task 5.4): the SAME neutral
-              chip and glyph the live job row uses, beside the decision layer rather
-              than instead of it — the decision really was explicit, and the mode is
-              a separate fact. The chip is never the sole carrier: the row's latency
-              reads in hours and the inspector names the job. */}
-          <Show when={isBatchItem(props.r)}>
-            {' '}
-            <BatchChip />
-          </Show>
-        </span>
-      </Cell>
-      <Cell label="Tokens">
-        {/* `↑`/`↓` rather than the words: at real magnitudes "87.2k in / 1.5k out" is 125px
-            against a 112px column and wraps to two lines. A figure, so Geist with tabular
-            numerals (adopt-design-tokens-v2 task 9.1). Both arrows are present in Geist
-            (`geist-latin.woff2`) as in Geist Mono — checked against the cmaps, not the
-            `unicode-range` — and the coverage guard fails if a future subset drops them, which
-            is the protection `→` never had.
-            The words move to screen-reader text: an arrow announces as "up arrow", so the
-            compact form would otherwise trade a layout bug for an accessibility one.
-            Counts are compact through the one shared formatter (adopt-figure-states D8). A
-            count the provider did not report carries `· est. usage` (D3): one Ink 3 unit that
-            wraps whole, inside the visible half so the dual pair stays one aria-hidden node
-            beside its screen-reader text, which says ", estimated usage" in words. Usage
-            estimates are marked here and never on the cost cell. */}
-        <span class="figure cell-figure" style="font-size:0.6875rem">
-          <span aria-hidden="true">
-            {fmtTokensCompact(props.r.inputTokens)}↑ {fmtTokensCompact(props.r.outputTokens)}↓
-            <Show when={props.r.usageEstimated}>
-              {' '}
-              <FigureText parts={EST_USAGE_PARTS} />
-            </Show>
-          </span>
-          <span class="sr-only">
-            {fmtTokensCompact(props.r.inputTokens)} tokens in,{' '}
-            {fmtTokensCompact(props.r.outputTokens)} out
-            {props.r.usageEstimated ? ', estimated usage' : ''}
-          </span>
-        </span>
-      </Cell>
       <Cell label="Cost">
         {/* The request's cost state (adopt-figure-states D1, D4), the one the inspector's
             total renders: each part is a no-wrap unit in its own tone. An amount and the `$0`
@@ -218,14 +300,6 @@ export function RequestRow(props: { r: RequestRow }) {
             only at its dot. */}
         <span class="figure cell-figure" style="font-size:0.6875rem;color:var(--text)">
           <FigureText parts={rowCostParts(props.r)} />
-        </span>
-      </Cell>
-      <Cell label="Latency">
-        {/* A batch item's `duration_ms` is the JOB's wall time — the time the caller
-            actually waited — which runs to hours. `7412.3s` is not a reading, so it
-            is formatted as a job. Latency aggregates exclude these rows entirely. */}
-        <span class="figure cell-figure" style="font-size:0.6875rem">
-          {isBatchItem(props.r) ? fmtElapsed(props.r.durationMs) : fmtLatency(props.r.durationMs)}
         </span>
       </Cell>
       <Cell label="Status">
@@ -240,8 +314,104 @@ export function RequestRow(props: { r: RequestRow }) {
             }}
           />
           {textFor(props.r.status)}
+          {/* The docked compact list hides the Decided-by cell, which carries these two marks,
+              so the status cell carries them there, after the status word (dashboard-analytics
+              "A completed row's state marks move to its status cell while docked"). The same
+              components as the Decided-by cell; displayed ONLY under `.rs-docked-list` at the
+              dock threshold, where the Decided-by copy is not, so exactly one copy is ever in
+              the accessibility tree. */}
+          <Show when={props.r.escalated || isBatchItem(props.r)}>
+            <span class="rs-docked-marks">
+              <Show when={props.r.escalated}>
+                <EscalatedMark />
+              </Show>
+              <Show when={isBatchItem(props.r)}>
+                <BatchChip />
+              </Show>
+            </span>
+          </Show>
         </span>
       </Cell>
+      <SubLine
+        p3={
+          <>
+            <Cell label="Provider">
+              <span class="cell-id" title={labelOf(props.r.providerLabel, props.r.providerId)}>
+                {labelOf(props.r.providerLabel, props.r.providerId)}
+              </span>
+            </Cell>
+            <Cell label="Tier">
+              <span class="cell-id" title={props.r.tierAssigned ?? undefined}>
+                {props.r.tierAssigned ?? '—'}
+              </span>
+            </Cell>
+            <Cell label="Decided by">
+              <span>
+                <span class="chip" style={LAYER_CHIP_STYLE}>
+                  {props.r.decisionLayer}
+                  <Show when={props.r.escalated}>
+                    {' '}
+                    <EscalatedMark />
+                  </Show>
+                </span>
+                {/* A settled batch item (add-batch-inference task 5.4): the SAME neutral
+                    chip and glyph the live job row uses, beside the decision layer rather
+                    than instead of it — the decision really was explicit, and the mode is
+                    a separate fact. The chip is never the sole carrier: the row's latency
+                    reads in hours and the inspector names the job. */}
+                <Show when={isBatchItem(props.r)}>
+                  {' '}
+                  <BatchChip />
+                </Show>
+              </span>
+            </Cell>
+          </>
+        }
+        p2={
+          <>
+            <Cell label="Tokens">
+              {/* `↑`/`↓` rather than the words: at real magnitudes "87.2k in / 1.5k out" is
+                  125px against a 112px column and wraps to two lines. A figure, so Geist with
+                  tabular numerals (adopt-design-tokens-v2 task 9.1). Both arrows are present
+                  in Geist (`geist-latin.woff2`) as in Geist Mono — checked against the cmaps,
+                  not the `unicode-range` — and the coverage guard fails if a future subset
+                  drops them, which is the protection `→` never had.
+                  The words move to screen-reader text: an arrow announces as "up arrow", so
+                  the compact form would otherwise trade a layout bug for an accessibility one.
+                  Counts are compact through the one shared formatter (adopt-figure-states D8).
+                  A count the provider did not report carries `· est. usage` (D3): one Ink 3
+                  unit that wraps whole, inside the visible half so the dual pair stays one
+                  aria-hidden node beside its screen-reader text, which says ", estimated
+                  usage" in words. Usage estimates are marked here and never on the cost
+                  cell. */}
+              <span class="figure cell-figure" style="font-size:0.6875rem">
+                <span aria-hidden="true">
+                  {fmtTokensCompact(props.r.inputTokens)}↑ {fmtTokensCompact(props.r.outputTokens)}↓
+                  <Show when={props.r.usageEstimated}>
+                    {' '}
+                    <FigureText parts={EST_USAGE_PARTS} />
+                  </Show>
+                </span>
+                <span class="sr-only">
+                  {fmtTokensCompact(props.r.inputTokens)} tokens in,{' '}
+                  {fmtTokensCompact(props.r.outputTokens)} out
+                  {props.r.usageEstimated ? ', estimated usage' : ''}
+                </span>
+              </span>
+            </Cell>
+            <Cell label="Latency">
+              {/* A batch item's `duration_ms` is the JOB's wall time — the time the caller
+                  actually waited — which runs to hours. `7412.3s` is not a reading, so it
+                  is formatted as a job. Latency aggregates exclude these rows entirely. */}
+              <span class="figure cell-figure" style="font-size:0.6875rem">
+                {isBatchItem(props.r)
+                  ? fmtElapsed(props.r.durationMs)
+                  : fmtLatency(props.r.durationMs)}
+              </span>
+            </Cell>
+          </>
+        }
+      />
     </button>
   );
 }
@@ -331,36 +501,11 @@ function BatchJobRow(props: { r: BatchDisplayRow; now: number }) {
           {props.r.modelLabel ?? props.r.modelId}
         </span>
       </Cell>
-      <Cell label="Provider">
-        <span class="cell-id" title={props.r.providerLabel ?? props.r.providerId}>
-          {props.r.providerLabel ?? props.r.providerId}
-        </span>
-      </Cell>
-      <Cell label="Tier">
-        <span class="cell-id" title={props.r.tierAssigned ?? undefined}>
-          {props.r.tierAssigned ?? '—'}
-        </span>
-      </Cell>
-      <Cell label="Decided by">
-        <span>
-          <BatchChip />
-        </span>
-      </Cell>
-      <Cell label="Tokens">
-        <span class="figure cell-figure" style="font-size:0.6875rem;color:var(--text3)">
-          —
-        </span>
-      </Cell>
       <Cell label="Cost">
         {/* A reservation is money PROMISED, not spent — it is never shown here (D13);
             the Batches page labels it as reserved where there is room to say so. */}
         <span class="figure cell-figure" style="font-size:0.6875rem;color:var(--text3)">
           —
-        </span>
-      </Cell>
-      <Cell label="Latency">
-        <span class="figure cell-figure" style="font-size:0.6875rem;color:var(--text2)">
-          {fmtElapsed(props.now - Date.parse(props.r.submittedAt))}
         </span>
       </Cell>
       <Cell label="Status">
@@ -391,6 +536,44 @@ function BatchJobRow(props: { r: BatchDisplayRow; now: number }) {
           </Show>
         </span>
       </Cell>
+      {/* A job cannot open — it has no detail surface — so in the docked list it keeps every
+          field on this second line (dashboard-analytics "Rows that cannot open keep every
+          field in the docked list"). */}
+      <SubLine
+        p3={
+          <>
+            <Cell label="Provider">
+              <span class="cell-id" title={props.r.providerLabel ?? props.r.providerId}>
+                {props.r.providerLabel ?? props.r.providerId}
+              </span>
+            </Cell>
+            <Cell label="Tier">
+              <span class="cell-id" title={props.r.tierAssigned ?? undefined}>
+                {props.r.tierAssigned ?? '—'}
+              </span>
+            </Cell>
+            <Cell label="Decided by">
+              <span>
+                <BatchChip />
+              </span>
+            </Cell>
+          </>
+        }
+        p2={
+          <>
+            <Cell label="Tokens">
+              <span class="figure cell-figure" style="font-size:0.6875rem;color:var(--text3)">
+                —
+              </span>
+            </Cell>
+            <Cell label="Latency">
+              <span class="figure cell-figure" style="font-size:0.6875rem;color:var(--text2)">
+                {fmtElapsed(props.now - Date.parse(props.r.submittedAt))}
+              </span>
+            </Cell>
+          </>
+        }
+      />
     </div>
   );
 }
@@ -419,7 +602,7 @@ function InflightRunningRow(props: { r: InflightDisplayRow; now: number }) {
   return (
     // Non-interactive by design (no terminal detail to inspect yet). No aria-label:
     // a bare div has no role to hang one on, and the row's own text already reads
-    // out completely — time, model, provider, tier, layer, and "Running".
+    // out completely — time, model, "Running", then provider, tier and layer.
     <div class="req-row row-hover" style={{ cursor: 'default' }}>
       <Cell label="Time">
         <span class="figure" style="font-size:0.6875rem;color:var(--text3)">
@@ -435,36 +618,9 @@ function InflightRunningRow(props: { r: InflightDisplayRow; now: number }) {
           {props.r.modelLabel ?? '—'}
         </span>
       </Cell>
-      <Cell label="Provider">
-        <span class="cell-id" title={props.r.providerLabel ?? undefined}>
-          {props.r.providerLabel ?? '—'}
-        </span>
-      </Cell>
-      <Cell label="Tier">
-        <span class="cell-id" title={props.r.tierAssigned ?? undefined}>
-          {props.r.tierAssigned ?? '—'}
-        </span>
-      </Cell>
-      <Cell label="Decided by">
-        <span>
-          <span class="chip" style={LAYER_CHIP_STYLE}>
-            {props.r.decisionLayer}
-          </span>
-        </span>
-      </Cell>
-      <Cell label="Tokens">
-        <span class="figure cell-figure" style="font-size:0.6875rem;color:var(--text3)">
-          —
-        </span>
-      </Cell>
       <Cell label="Cost">
         <span class="figure cell-figure" style="font-size:0.6875rem;color:var(--text3)">
           —
-        </span>
-      </Cell>
-      <Cell label="Latency">
-        <span class="figure cell-figure" style="font-size:0.6875rem;color:var(--text2)">
-          {fmtLatency(elapsed())}
         </span>
       </Cell>
       <Cell label="Status">
@@ -493,6 +649,45 @@ function InflightRunningRow(props: { r: InflightDisplayRow; now: number }) {
           {props.r.phase === 'settling' ? 'Finishing' : 'Running'}
         </span>
       </Cell>
+      {/* A live row cannot open — it has no detail surface yet — so in the docked list it keeps
+          every field on this second line, its latency still ticking. */}
+      <SubLine
+        p3={
+          <>
+            <Cell label="Provider">
+              <span class="cell-id" title={props.r.providerLabel ?? undefined}>
+                {props.r.providerLabel ?? '—'}
+              </span>
+            </Cell>
+            <Cell label="Tier">
+              <span class="cell-id" title={props.r.tierAssigned ?? undefined}>
+                {props.r.tierAssigned ?? '—'}
+              </span>
+            </Cell>
+            <Cell label="Decided by">
+              <span>
+                <span class="chip" style={LAYER_CHIP_STYLE}>
+                  {props.r.decisionLayer}
+                </span>
+              </span>
+            </Cell>
+          </>
+        }
+        p2={
+          <>
+            <Cell label="Tokens">
+              <span class="figure cell-figure" style="font-size:0.6875rem;color:var(--text3)">
+                —
+              </span>
+            </Cell>
+            <Cell label="Latency">
+              <span class="figure cell-figure" style="font-size:0.6875rem;color:var(--text2)">
+                {fmtLatency(elapsed())}
+              </span>
+            </Cell>
+          </>
+        }
+      />
     </div>
   );
 }

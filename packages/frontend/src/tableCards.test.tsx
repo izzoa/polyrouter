@@ -297,16 +297,26 @@ describe('table stylesheet contract', () => {
 
   it('drives every stacked reflow from a container query at its measured threshold', () => {
     // Re-measured for adopt-design-tokens-v2 (task 14.1); responsive.test.ts holds every
-    // threshold equal to its STYLESEED.md row.
-    for (const [name, px] of [
-      ['rs-requests', 980],
-      ['rs-agents', 740],
-      ['rs-users', 660],
-    ] as const) {
-      expect(css, `${name} has no container query`).toContain(
-        `@container ${name} (max-width: ${String(px)}px)`,
-      );
+    // threshold equal to its STYLESEED.md row. The requests table stacks only below the shared
+    // stack width (add-docked-inspector task 6.2), its one-line fit asserted separately below.
+    for (const prelude of [
+      '@container rs-requests (width < 640px)',
+      '@container rs-agents (max-width: 740px)',
+      '@container rs-users (max-width: 660px)',
+    ]) {
+      expect(css, `no container query ${prelude}`).toContain(prelude);
     }
+    const stacked = css.slice(css.indexOf('@container rs-requests (width < 640px)'));
+    expect(stacked, 'the stack query no longer stacks a request row').toMatch(
+      /^[^}]*\{[\s\S]*?\.req-row \{\s*display: block;/,
+    );
+  });
+
+  it('sheds the requests table’s columns by priority below its one-line fit, before it stacks (add-docked-inspector 6.2)', () => {
+    // The one-line fit is the measured 980px, the two-line fit 640px; each narrowed form is
+    // guarded by the stack width so it never meets the stacked records.
+    expect(css).toContain('@container rs-requests (max-width: 980px) and (min-width: 640px)');
+    expect(css).toContain('@container rs-requests (max-width: 640px) and (min-width: 640px)');
   });
 
   it('hides the semantic head only where replacement labels are shown', () => {

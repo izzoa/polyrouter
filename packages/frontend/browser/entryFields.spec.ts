@@ -12,7 +12,7 @@
  * EXACT: a computed `font-size` is a declared value, not text layout, so no face moves it.
  */
 import { expect, test, type Page } from '@playwright/test';
-import { SURFACES, harnessUrl } from './overlays';
+import { SURFACES, harnessUrl, presentsAt, viewportOf } from './overlays';
 
 const FIELDS =
   'input:not([type="checkbox"]):not([type="radio"]), select, textarea, [role="combobox"]';
@@ -78,10 +78,18 @@ test.describe('input text is 13px at desktop (1440x900)', () => {
 });
 
 for (const ctx of [
-  { name: 'below narrow (390x844)', use: { viewport: { width: 390, height: 844 } } },
+  {
+    name: 'below narrow (390x844)',
+    use: { viewport: { width: 390, height: 844 } },
+    // Below narrow the inspector is the sheet, the `inspector:drawer` surface; it cannot dock.
+    inspectors: ['inspector:drawer'],
+  },
   {
     name: 'under a coarse pointer (1440x900)',
     use: { viewport: { width: 1440, height: 900 }, hasTouch: true },
+    // A coarse pointer is the comfort context at any width, so the modal drawer is read at
+    // its own 1025x768 (add-docked-inspector D13) and the docked panel at 1440x900.
+    inspectors: ['inspector:docked', 'inspector:drawer'],
   },
 ] as const) {
   test.describe(`input text is 16px in the comfort context: ${ctx.name}`, () => {
@@ -102,14 +110,26 @@ for (const ctx of [
         seen += count;
         expect(await offSize(page, null, '16px'), `fields under 16px on ${p.label}`).toEqual([]);
       }
+      const visited: string[] = [];
       for (const s of SURFACES) {
-        if (s.narrowOnly === true && ctx.name.startsWith('under')) continue;
+        // A surface this context's viewport cannot present: below narrow the viewport IS the
+        // context, so it is skipped; under a coarse pointer it is presented at its own
+        // viewport, unless it exists only below narrow.
+        let vp: { width: number; height: number } = ctx.use.viewport;
+        if (!presentsAt(s, vp.width)) {
+          if (ctx.name.startsWith('below') || s.narrowOnly === true) continue;
+          vp = viewportOf(s);
+        }
+        await page.setViewportSize(vp);
         await open(page, harnessUrl(s));
         await s.open(page);
         await page.waitForTimeout(250);
         seen += await page.locator(`${s.sel} :is(${FIELDS})`).count();
         expect(await offSize(page, s.sel, '16px'), `fields under 16px in ${s.name}`).toEqual([]);
+        visited.push(s.name);
       }
+      // Every inspector presentation this context can show was opened, under its new name.
+      expect(visited.filter((n) => n.startsWith('inspector:'))).toEqual([...ctx.inspectors]);
       // Not vacuous: the modals alone render well over a dozen fields.
       expect(seen, 'fields swept').toBeGreaterThan(20);
     });

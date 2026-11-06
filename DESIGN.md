@@ -280,11 +280,9 @@ Controls are crisp and tactile. They are small and exact, and they share one hei
 
 | Target (this file) | As built today | Closed by |
 |---|---|---|
-| Inspector docks as a 480px non-modal panel at ≥ 1440px; the list shows compact columns while docked | 440px modal drawer at every desktop width | `add-docked-inspector` |
 | First-token commit marker on the served node | Not recorded by the proxy, so the marker is never drawn | Follow-up: commit-timing telemetry (request logging) |
 | Per-request deep link (`#/requests/<id>`) | Not supported: no owner-scoped read-by-id, and the fragment grammar is page-only | Follow-up: request detail read + deep link |
 | Consent confirmations share the dialog's busy and in-dialog failure | The body-capture consent dialog closes before it saves, with no busy state, and reports a failure on the card | Follow-up: consent dialog on the shared confirm structure |
-| Table column priorities (P1–P3); stacked records only below 640px of container | Requests and Batches become cards below a 980 / 1000px container, about a 1240 / 1260px viewport | `add-docked-inspector` |
 | Failures appear inline, with `role="alert"` | Several failures surface as toasts | Follow-up: inline failure homes |
 | The focal readout figure compares spend against a budget (`of $25.00`) | Spend for the range only | Follow-up: budget comparison on Overview and Costs |
 | A permanently unavailable action is not rendered | Some show as disabled | Follow-up: permission-aware actions |
@@ -461,13 +459,13 @@ The Setup card sits below the groups until setup is complete. Overline labels na
 - **Narrowing:** below the table's fit width, P3 moves to a second line under the model, then P2 joins it. The table becomes stacked records only below 640px of container width. While the inspector is docked, the list shows P1 only, and a row that can't open (running, finishing, a live batch job) keeps every field on a second line.
 
 Below the locked `narrow` threshold (768px viewport), the nav collapses to a 56px icon rail with each label available as the control's name and tooltip. Page grids drop to one column, the gutter becomes 16px, and card padding becomes 12px. That is the only spacing change; controls also grow to 44px and input text to 16px. Wide tables and composite surfaces reflow by **container** width, not viewport width. Container thresholds, re-measured whenever text or control sizes change:
-- Requests reflows at 980px and Batches at 1000px.
+- Requests moves its P3 fields to a second line at 980px and its P2 fields at 640px (its one-line and two-line fits); Batches does so at 1000px and 700px. Both become stacked records only below 640px.
 - Agents reflows at 740px and Users at 660px.
 - The Targets matrix reflows at 900px.
 - The Pipeline reflows at 820px (two-line rows) and again at 540px (phone records).
 - Layers cells stack at 480px.
 
-**Docked inspector.** At viewports of 1440px and wider, the inspector docks as a 480px panel at the right edge (see Request Inspector), and the page grid gives up that width. A request list shows its P1 columns while docked, so the table never falls into stacked records just because the inspector is open. The page and the docked panel count as one view for The Indigo Budget Rule.
+**Docked inspector.** On the Requests page, at viewports of 1440px and wider, the inspector docks as a 480px panel at the right edge (see Request Inspector), and the page grid gives up that width. The Overview card's inspector stays modal at every width. A request list shows its P1 columns while docked, so the table never falls into stacked records just because the inspector is open. The page and the docked panel count as one view for The Indigo Budget Rule.
 
 **The Literal Breakpoint Rule.** Breakpoints are literal numbers inside media and container queries, mirrored in `STYLESEED.md`, because `@media (max-width: var(--x))` is invalid and fails silently. Change the stylesheet and the lock together, never one alone.
 
@@ -559,7 +557,7 @@ This is where the Route Trace and Price Receipt live, opened from a request row.
 |---|---|---|
 | ≤ 768px (`narrow`) | Bottom sheet (see Overlays) | Modal |
 | 769–1439px | 440px drawer anchored right, on the 28% scrim | Modal: traps focus, Escape closes, focus returns to the row |
-| **≥ 1440px** | **480px panel docked at the right edge, with no scrim and no shadow, and a Hairline on its leading edge** | **Non-modal:** the list stays live and switches to its compact columns (time, model, status, cost). ArrowUp / ArrowDown step between rows while focus is in the list or on the panel's Prev / Next buttons (24px; 44px coarse). Escape closes the panel. Each step announces a one-line summary through a polite `role="status"` region. |
+| **≥ 1440px** (Requests page; the Overview card stays the drawer) | **480px panel docked at the right edge, with no scrim and no shadow, and a Hairline on its leading edge** | **Non-modal:** the list stays live and switches to its compact columns (time, model, status, cost). ArrowUp / ArrowDown step between rows while focus is in the list or on the panel's Prev / Next buttons (24px; 44px coarse). Escape closes the panel. Each step announces a one-line summary through a polite `role="status"` region. |
 
 - **Keyboard:** stepping skips rows that can't open (running, finishing, group boundaries). It never steps past the last loaded row into a paging reset, and never into the "N new" offer.
 - **Stability:** the panel keeps a snapshot of the selected row, so a list refresh that drops the row from page 1 never unmounts it. Changing account clears the selection, the snapshot and any cached payload text.

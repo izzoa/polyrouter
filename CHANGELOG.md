@@ -15,6 +15,10 @@ heading is started.
 
 ## [Unreleased]
 
+### Added
+
+- **On a wide screen the request inspector docks beside the Requests list and steps from request to request, and the Requests and Batches tables drop columns by priority before they stack.** At 1440px and wider, a request opened on the Requests page shows as a 480px panel at the right edge instead of a drawer over the list: the list stays usable beside it and shows time, model, status and cost, and Escape or Close closes the panel. New Previous and Next controls (and ArrowUp / ArrowDown on a request row while docked) move to the neighbouring request, and screen readers hear each step once, where it stops. Below 1440px the inspector stays the modal drawer, or the sheet on a phone. As space narrows, both tables move their lowest-priority columns (provider, tier, and decided-by or results-until) to a second line, then the next ones, and become stacked records only below 640px of table width. No API, routing behavior or stored data changed.
+
 ### Changed
 
 - **The request inspector draws each request's recorded route as a trace, and its price snapshot states when it was taken.** The trace runs from the agent (or `(no agent)`, never a raw id) through the router's decision to each attempt the request made, in order: a failed attempt names its failure and HTTP status, a provider that was never contacted reads `skipped — circuit open (provider not contacted)`, a cascade shows its superseded cheap call with its quality score and cost, and one outcome ends the route with its latency; only a served request lights its branch. `Price snapshot` replaces Usage & cost: each token class reads count × unit price, a source row says where the price came from, and the total reads exactly as the request table's cost cell does; its caption says the price was recorded with the request (or at batch submission), replacing a footnote that said it was snapshotted at request time. The error card moves to the top, the served tier gets its own row under Decision, and the separate Fallback trail and Timing boxes are gone. No API, routing behavior or stored data changed.
@@ -24,6 +28,7 @@ heading is started.
 
 ### Fixed
 
+- **On a touch screen wider than a phone, the inspector's Close button and the other icon-only controls are now 44px wide.** Under a coarse pointer above 768px the drawer's Close button, the Routing page's delete `×` and the tier chain's drag handle kept their narrow width (about 29, 15 and 14px) and only gained their 44px height; they now get the same 44px width the phone layout gives them, so Close no longer sits beside the 44px Previous / Next as the one small target.
 - **The Settings body-capture card no longer claims "metadata only" before it knows.** While its status was loading, or when the read failed, the card said bodies are never persisted and showed a green Metadata-only badge, even on an instance that captures them; it now claims nothing until the status loads.
 
 ## [0.27.1] — 2026-11-01

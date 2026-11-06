@@ -17,7 +17,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type uPlot from 'uplot';
 import { App } from './App';
 import type { BatchJobDto, BudgetDto } from './data/api';
-import { createAppStore, type AppStore } from './state/appState';
+import { createAppStore, DOCK_QUERY, type AppStore } from './state/appState';
 import { AppProvider } from './state/context';
 import { FakeApiClient } from './test/fakeClient';
 import type { Page } from './types';
@@ -304,6 +304,64 @@ describe('every data series declares its role (task 7.3)', () => {
       }
     } finally {
       h.dispose();
+    }
+  });
+
+  it('Requests, docked: the page and the docked panel are ONE view — one focal series (the lit branch) and at most one primary across both (add-docked-inspector 6.4, D16)', async () => {
+    // At the dock threshold the inspector is part of the board, not a layer above it, so the
+    // budget counts the list and the panel together. The matchMedia stand-in matches only the
+    // dock query, so the inspector docks; every other query keeps happy-dom's answer.
+    const real = globalThis.matchMedia.bind(globalThis);
+    vi.stubGlobal('matchMedia', (q: string) =>
+      q === DOCK_QUERY
+        ? {
+            matches: true,
+            media: q,
+            addEventListener: () => undefined,
+            removeEventListener: () => undefined,
+          }
+        : real(q),
+    );
+    const h = await mount(busyClient());
+    try {
+      h.store.go('requests');
+      await flush();
+      // The live job band too, so the busiest Requests view is counted.
+      await h.store.loadBatchBand();
+      await flush();
+      const served = h.store.state.requestList.find((r) => r.status === 'success')!;
+      const row = [...h.host.querySelectorAll<HTMLElement>('button.req-row')].find(
+        (r) => r.dataset['requestId'] === served.id,
+      )!;
+      row.focus();
+      row.click();
+      await flush();
+      const drawer = h.host.querySelector<HTMLElement>('#inspector-drawer')!;
+      expect(drawer.getAttribute('role'), 'the inspector docked').toBe('complementary');
+      expect(h.host.querySelector('[data-pane="content"]')?.classList.contains('rs-docked')).toBe(
+        true,
+      );
+      expect(
+        h.host.querySelector('.overlay'),
+        'no scrim: the page beside it is in view',
+      ).toBeNull();
+      // One view: the page and the panel counted together.
+      atMostOnePrimary(h.host, 'Requests + docked inspector');
+      expect(focalMeasures(h.host), 'one indigo series across the page and the panel').toEqual([
+        'route-trace',
+      ]);
+      const focal = [...h.host.querySelectorAll<HTMLElement>('[data-series="focal"]')];
+      expect(focal, 'the lit branch is the only focal root').toHaveLength(1);
+      expect(drawer.contains(focal[0]!)).toBe(true);
+      // The state marks are present and are not counted: the open row's Selected state, and
+      // the focus that stays on it (docked, opening moves no focus).
+      expect(row.getAttribute('aria-expanded'), 'the open row has its Selected state').toBe('true');
+      expect(document.activeElement, 'the focus ring is on the row').toBe(row);
+      expect(row.classList.contains('btn-primary')).toBe(false);
+      expect(row.hasAttribute('data-series')).toBe(false);
+    } finally {
+      h.dispose();
+      vi.unstubAllGlobals();
     }
   });
 

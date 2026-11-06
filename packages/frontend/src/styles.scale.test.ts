@@ -94,6 +94,8 @@ export const NOT_A_SPACE: Readonly<Record<string, string>> = {
   '.tm-label': 'visually hidden: the clip idiom',
   '.ar-note-link':
     "a negative block margin handing the target floor's surplus back to its line (a target, not a space)",
+  '.rs-docked':
+    "the content pane gives up the docked inspector's width (a lock value, `inspector-dock-width` 480px; add-docked-inspector D3): a reservation for an out-of-flow panel, not a space",
 };
 
 /** Rules whose gap still differs below narrow, recorded rather than silently allowed: each is

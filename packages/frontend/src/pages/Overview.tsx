@@ -495,7 +495,13 @@ export function Overview(props: { live: boolean }) {
         </div>
       </div>
 
+      {/* A named region with `tabindex="-1"`: where the inspector's close lands when the row
+          it showed is no longer rendered (add-docked-inspector D6) — this card reloads on
+          every settle, so that is the common case here. */}
       <div
+        tabindex={-1}
+        role="region"
+        aria-label="Recent requests"
         class="panel rs-table-panel rs-table-requests"
         style="overflow:hidden;border-radius:10px"
       >

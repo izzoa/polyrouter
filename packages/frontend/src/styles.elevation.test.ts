@@ -79,6 +79,15 @@ function isSelected(selector: string): boolean {
   );
 }
 
+/** Every `box-shadow` value that is neither a theme token nor `none`. A token passes through
+ * the whisper cap and the dark theme's `none`; `none` draws nothing, so removing a surface's
+ * shadow (the docked inspector, add-docked-inspector 2.2) is not hardcoding one. */
+function hardcodedShadows(source: string): string[] {
+  return [...source.matchAll(/box-shadow:\s*([^;]+);/g)]
+    .map((m) => (m[1] as string).trim())
+    .filter((v) => !/^(?:var\(--shadow[\w-]*\)|none)$/.test(v));
+}
+
 /** Each selected-state declaration of `box-shadow`, named as `<context> <selector> { … }`. */
 function selectedShadows(source: string): string[] {
   return leafRules(source)
@@ -115,9 +124,23 @@ describe('elevation lock (flat-borders)', () => {
   });
 
   it('class rules never hardcode box-shadow outside the tokens', () => {
-    for (const m of css.matchAll(/box-shadow:\s*([^;]+);/g)) {
-      expect(m[1]?.trim(), `box-shadow "${m[1] ?? ''}"`).toMatch(/^var\(--shadow[\w-]*\)$/);
-    }
+    expect(hardcodedShadows(css)).toEqual([]);
+  });
+
+  it('self-check: `none` removes a shadow and passes; a literal shadow still fails (add-docked-inspector 2.2)', () => {
+    // The docked inspector drops the drawer's whisper shadow with `box-shadow: none`: a removed
+    // shadow is not a hardcoded one. Any drawn shadow outside the tokens still fails.
+    const probe = `.a { box-shadow: var(--shadow-drawer); }
+      .b { box-shadow: none; }
+      @media (min-width: 1440px) { .c { box-shadow: none; } }
+      .d { box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12); }
+      .e { box-shadow: inset 0 0 0 1px var(--accent-deep); }
+      .f { box-shadow: none, 0 0 4px red; }`;
+    expect(hardcodedShadows(probe)).toEqual([
+      '0 1px 2px rgba(0, 0, 0, 0.12)',
+      'inset 0 0 0 1px var(--accent-deep)',
+      'none, 0 0 4px red',
+    ]);
   });
 
   describe('a selected state draws its edge with a border or an outline, never box-shadow (adopt-design-tokens-v2 D8)', () => {

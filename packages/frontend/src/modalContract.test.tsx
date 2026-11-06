@@ -9,9 +9,10 @@
  * OPENED, because walking the pages never renders a conditional dialog — which is precisely
  * how the two body-capture dialogs stayed invisible.
  */
+import { createSignal } from 'solid-js';
 import { render } from 'solid-js/web';
 import { afterEach, describe, expect, it } from 'vitest';
-import { unregisteredModalSurfaces } from './a11y';
+import { layerEntry, unregisteredModalSurfaces, type LayerKind } from './a11y';
 import { App } from './App';
 import { createAppStore, type AppStore } from './state/appState';
 import { AppProvider } from './state/context';
@@ -263,5 +264,50 @@ describe('the check itself', () => {
       { token: 1, kind: 'dialog', root: () => other ?? undefined, onDismiss: () => {} },
     ]);
     expect(rogue, 'a registration for a different element satisfied the check').toHaveLength(1);
+  });
+
+  // add-docked-inspector D2: registered is not enough. Only a root whose CURRENT kind is
+  // `dialog` owes — and so may claim — the trapping contract.
+  it('FAILS a root registered as a docked panel that claims aria-modal', () => {
+    const host = document.createElement('div');
+    host.innerHTML =
+      '<div role="complementary" aria-modal="true" aria-label="Request inspector"></div>';
+    document.body.appendChild(host);
+    const root = host.firstElementChild as HTMLElement;
+    const rogue = unregisteredModalSurfaces(host, [
+      { token: 1, kind: 'docked', root: () => root, onDismiss: () => {} },
+    ]);
+    expect(rogue, 'a docked registration satisfied the modal check').toEqual([root]);
+  });
+
+  it('passes a docked root that does not claim aria-modal', () => {
+    const host = document.createElement('div');
+    host.innerHTML = '<div role="complementary" aria-label="Request inspector"></div>';
+    document.body.appendChild(host);
+    const root = host.firstElementChild as HTMLElement;
+    expect(
+      unregisteredModalSurfaces(host, [
+        { token: 1, kind: 'docked', root: () => root, onDismiss: () => {} },
+      ]),
+    ).toEqual([]);
+  });
+
+  it('reads the kind as it is NOW: a root that changed to docked in place but kept aria-modal fails', () => {
+    const host = document.createElement('div');
+    host.innerHTML = '<div role="dialog" aria-modal="true" aria-label="Request inspector"></div>';
+    document.body.appendChild(host);
+    const root = host.firstElementChild as HTMLElement;
+    const [kind, setKind] = createSignal<LayerKind>('dialog');
+    const layers = [
+      layerEntry(
+        1,
+        kind,
+        () => root,
+        () => {},
+      ),
+    ];
+    expect(unregisteredModalSurfaces(host, layers), 'a registered dialog failed').toEqual([]);
+    setKind('docked');
+    expect(unregisteredModalSurfaces(host, layers)).toEqual([root]);
   });
 });

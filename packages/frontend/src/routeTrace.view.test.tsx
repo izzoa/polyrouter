@@ -638,6 +638,62 @@ describe("the inspector's Decision section (task 4.1)", () => {
     }
   });
 
+  it('states the recorded provider only when the trace outcome names none (add-docked-inspector flag F3)', async () => {
+    // The docked list hides the table's Provider cell, so the inspector must hold that value.
+    // Where the outcome names the provider (lit, confirmed unlit, cancelled) the row is absent:
+    // nothing is said twice.
+    const cancelled: RequestRow = { ...ROWS.success, id: 'rt-cancelled-f3', status: 'cancelled' };
+    // An exhausted chain whose terminal member is on another provider: the row records the
+    // first member's provider (`Provider A`), the outcome names none (flag RF-1).
+    const elsewhere: RequestRow = {
+      ...ROWS.error,
+      id: 'rt-elsewhere-f3',
+      attemptFailures: [
+        { index: 0, providerId: 'p1', model: 'gpt-a', kind: 'rate_limit', dispatched: true },
+        {
+          index: 1,
+          providerId: 'p2',
+          model: 'gpt-b',
+          kind: 'unavailable',
+          status: 503,
+          dispatched: true,
+          terminal: true,
+        },
+      ],
+    };
+    // A failed row recording no provider at all: nothing to state.
+    const nameless: RequestRow = {
+      ...elsewhere,
+      id: 'rt-nameless-f3',
+      providerId: null,
+      providerLabel: null,
+    };
+    h = await mount([...Object.values(ROWS), cancelled, elsewhere, nameless]);
+
+    const hidden = await openRow(elsewhere.id);
+    expect(texts(hidden).at(-1)).toBe('failed · 2.10s');
+    const recorded = decisionRow(hidden, 'recorded provider');
+    expect(recorded?.textContent).toBe('Provider A');
+    expect(recorded?.dataset['testid']).toBe('inspector-provider');
+    // A provider label is a name, not a machine string: Geist, where the kv-box's other values
+    // (tier, decision layer) are Mono; it wraps only where it must.
+    expect(family(recorded!)).toMatch(/^Geist,/);
+    expect(recorded!.style.overflowWrap).toBe('anywhere');
+    // It states what was recorded and claims nothing about who failed: the trace never names
+    // the provider, and no row is labelled `provider`.
+    expect(trace(hidden).textContent).not.toContain('Provider A');
+    expect(decisionRow(hidden, 'provider')).toBeNull();
+
+    for (const id of [ROWS.success.id, ROWS.fallback.id, ROWS.error.id, cancelled.id]) {
+      const drawer = await openRow(id);
+      expect(decisionRow(drawer, 'recorded provider'), `${id}: the outcome names it`).toBeNull();
+      expect(drawer.querySelector('[data-testid="inspector-provider"]')).toBeNull();
+    }
+    const none = await openRow(nameless.id);
+    expect(decisionRow(none, 'recorded provider')).toBeNull();
+    expect(decisionRow(none, 'decision layer')).not.toBeNull();
+  });
+
   it('keeps the decision layer row beside the header row, and beside the batch mode and job', async () => {
     const header = await open('fallback');
     expect(decisionRow(header, 'decision layer')?.textContent).toBe('header');

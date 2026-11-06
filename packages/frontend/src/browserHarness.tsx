@@ -671,6 +671,45 @@ if (params.get('requests') === 'states') {
   ];
 }
 
+// State-marks fixture (add-docked-inspector task 6.1), opt-in via `?marks=1` so the default
+// harness stays byte-identical for every other suite. The default rows have escalated cascade
+// requests but no settled batch item (`batchId` and `priceMode` are null on every one), so the
+// newest row here carries BOTH marks — the escalated mark and the `batch` chip — the widest
+// status cell the docked compact list can show, where both move from the Decided-by cell. A
+// synthetic worst case (a batch item's decision is explicit in practice): it proves each mark
+// is named exactly once in every form. A served row, so the inspector lights its trace.
+if (params.get('marks') === '1') {
+  const head = client.requestRows[0]!;
+  client.requestRows = [
+    {
+      ...head,
+      id: 'marks-batch-escalated',
+      createdAt: new Date(Date.parse(head.createdAt) + 8000).toISOString(),
+      status: 'success',
+      decisionLayer: 'cascade',
+      escalated: true,
+      escalationSource: 'quality_gate',
+      batchId: 'bj-marks',
+      priceMode: 'batch',
+      // Priced at the batch rate, so the inspector's receipt carries its provenance (the
+      // "recorded at submission" caption and the `batch · bundled` source row).
+      cost: 0.0042,
+      inputPriceSnapshot: 0.75,
+      outputPriceSnapshot: 3,
+      priceSource: 'bundled',
+      priceEstimated: false,
+      durationMs: 2 * 3_600_000 + 7 * 60_000,
+      errorKind: null,
+      errorStatus: null,
+      errorMessage: null,
+      errorRequestId: null,
+      errorMarkers: null,
+      attemptFailures: null,
+    },
+    ...client.requestRows,
+  ];
+}
+
 // Route-trace fixture (add-route-trace-inspector task 4.6), opt-in via `?trace=cascade` so the
 // default harness stays byte-identical for every other suite. The longest route the trace can
 // draw, as the newest row (so the first `button.req-row` opens it): an escalated cascade walk

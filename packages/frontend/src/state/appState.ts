@@ -14,10 +14,14 @@ import {
 } from '../data/eventStream';
 import { untrack } from 'solid-js';
 import {
+  kindAccessor,
+  layerEntry,
   layerZ as zForIndex,
+  promotedToDialog,
   supersededByDialog,
+  topDialogRoot,
   type LayerEntry,
-  type LayerKind,
+  type LayerKindSource,
   type LayerToken,
 } from '../a11y';
 import { createStore, produce, reconcile, type SetStoreFunction } from 'solid-js/store';
@@ -37,6 +41,7 @@ import {
   filterToRequestParams,
   modeToRequestParams,
 } from '../data/analytics';
+import { stepTarget, type StepDirection } from '../data/step';
 import {
   EVENT_TYPES,
   type AdminInviteDto,
@@ -278,6 +283,21 @@ export interface AppState {
    * to `reqFilter` — one asks "how was it routed", the other "how was it run". */
   reqMode: RequestMode;
   selId: string | null;
+  /** The inspector's retained copy of the selected request (add-docked-inspector design D7):
+   * captured from the loaded row on select and on every step, replaced by the newer same-id
+   * row of a later load, and NEVER cleared by that row's absence — a refresh, a filter, the
+   * "N new" offer or a failed read that drops it leaves the inspector open on it. The inspector
+   * renders this, so it is the open-inspector signal; the row's Selected state still compares
+   * `selId`. Identity-scoped with `selId` and `selBodies`: `select(null)`, `setPage` and the
+   * identity reset clear all three in one write. A recorded request is immutable (invariant 4),
+   * so keeping it is never "stale as current"; the one in-place row write, a payload delete,
+   * patches it too. */
+  selRecord: RequestRow | null;
+  /** How many steps of the selection have happened (add-docked-inspector design D10): bumped by
+   * `stepSelection` alone — a row's arrow key, or Previous / Next — and never by opening a row,
+   * closing, a load or a live-band change. The inspector's step announcement watches it, so only
+   * a step is announced. A count, not a record: it names no request and no owner. */
+  stepSeq: number;
   /** The one toast showing, if any. Its `kind` picks the region it lands in (D13). A toast of
    * the other kind raised meanwhile waits for this one's time (`showToast`), so neither cuts the
    * other short. */
@@ -297,6 +317,12 @@ export interface AppState {
   layers: LayerEntry[];
 
   navExpanded: boolean;
+  /** The viewport is at or above the locked dock threshold ({@link DOCK_QUERY}), as the
+   * shell's `matchMedia` listener last read it (add-docked-inspector D4). A viewport fact, not
+   * identity-scoped; `false` until {@link AppStore.followDockViewport} runs, so a store built
+   * without the shell (and every happy-dom suite, whose viewport is 1024px) sees the modal
+   * inspector. */
+  dockViewport: boolean;
   /** The account menu's open state, lifted out of `UserMenu` so overlay layering can be
    * decided by STATE rather than by document-listener registration order (the contract
    * `dialogKeyboard` states). The account menu lives inside the expanded nav, so the nav's
@@ -885,6 +911,19 @@ export const THEME_KEY = 'polyrouter-theme';
 /** The system preference the theme follows until the user chooses (D9). */
 export const DARK_SCHEME_QUERY = '(prefers-color-scheme: dark)';
 
+/** The Request Inspector's dock threshold and docked width (add-docked-inspector D1, D4;
+ * STYLESEED.md `inspector-dock` / `inspector-dock-width`). On the Requests page, at a viewport
+ * at or above `DOCK_MIN_WIDTH`, the open inspector is a `DOCK_WIDTH`-wide non-modal panel.
+ *
+ * Script copies of stylesheet literals, as the sidebar's `narrow` query is: a media prelude
+ * cannot read a custom property, so the number lives in `styles.css` (the
+ * `@media (min-width: 1440px)` prelude and its two 480px declarations), in the lock, and here,
+ * and `responsive.test.ts` fails when any two copies disagree. */
+export const DOCK_MIN_WIDTH = 1440;
+export const DOCK_WIDTH = 480;
+/** The query the inspector's modality follows — the same prelude the docked rules sit in. */
+export const DOCK_QUERY = `(min-width: ${String(DOCK_MIN_WIDTH)}px)`;
+
 /** The theme `index.html`'s pre-paint script already resolved before first paint
  * (adopt-design-tokens-v2 D9): the store starts from it rather than assuming light, so the
  * first render agrees with the first frame. Light when no script ran (the test harness). */
@@ -920,11 +959,14 @@ function initialState(): AppState {
     reqAgentId: null,
     reqMode: 'all',
     selId: null,
+    selRecord: null,
+    stepSeq: 0,
     toast: null,
     modal: null,
     destructive: null,
     layers: [],
     navExpanded: false,
+    dockViewport: false,
     accountMenuOpen: false,
 
     authView: 'loading',
@@ -1076,17 +1118,40 @@ export interface AppStore {
    * toggles. With a stored choice nothing is followed. Owned by `App`'s lifecycle like
    * {@link startRouting}; returns the function that stops listening. */
   followSystemTheme: () => () => void;
+  /** Reads {@link DOCK_QUERY} into `state.dockViewport` and keeps following its changes
+   * (add-docked-inspector D4). Owned by the mounted shell, like the layer arbiter, so the
+   * suites that build many stores accumulate no listeners; returns the function that stops
+   * listening. Without `matchMedia` the viewport simply stays below the threshold. */
+  followDockViewport: () => () => void;
+  /** The open inspector presents as the docked panel rather than a modal: the Requests page,
+   * at a viewport at or above the dock threshold. The Overview card's inspector is modal at
+   * every width (D4; dashboard-analytics "The Overview card never docks"). This is the
+   * inspector's own modality signal — it only renders while a record is open. */
+  inspectorDockable: () => boolean;
+  /** The inspector IS docked: {@link inspectorDockable} and a record is open (design D4). The
+   * one source for every consumer outside the inspector — the content pane's width
+   * reservation, the request list's compact form and the rows' activation. */
+  inspectorDocked: () => boolean;
   dismissSetupGuide: () => void;
   /** Narrow-width nav overlay. Collapsing also closes the account menu inside it. */
   /** Register an overlay layer; returns its token. Opening a `dialog` supersedes every
-   * transient not opened from it. */
+   * transient not opened from it. `kind` may be an accessor: the entry's `kind` is then a
+   * getter over it, so the registry always reads the current kind (add-docked-inspector D2). */
   registerLayer: (opts: {
-    kind: LayerKind;
+    kind: LayerKindSource;
     root: () => HTMLElement | undefined;
     onDismiss: () => void;
   }) => LayerToken;
   /** Remove by TOKEN, from anywhere in the registry. Idempotent. */
   removeLayer: (token: LayerToken) => void;
+  /** A registered layer's kind changed in place (add-docked-inspector D2). Runs what a
+   * dialog opening at that position would — superseding the transients above it — unless a
+   * dialog is already above it; returns whether the layer should now take focus. Changing
+   * to a non-dialog kind does nothing. The token, position and z-slot never change. */
+  layerKindChanged: (token: LayerToken) => boolean;
+  /** The root of the topmost layer that is currently a dialog — what `layerFocus` reads at
+   * restore time so focus never returns into content that modal makes inert. */
+  topDialogRoot: () => HTMLElement | undefined;
   /** Paint order for a registered layer, derived from the SAME ordering the keyboard uses.
    * Returns the base band for an unregistered token so a surface rendering before its
    * effect runs is never invisible. */
@@ -1137,7 +1202,14 @@ export interface AppStore {
   /** Select one agent for the requests listing, or null for all. Re-freezes the
    * window exactly as `setFilter`/`setMode` do (add-agent-request-attribution). */
   setAgentFilter: (agentId: string | null) => void;
+  /** Select a request — capturing its retained record (`selRecord`) — or close the inspector
+   * with `null` (add-docked-inspector D7). */
   select: (id: string | null) => void;
+  /** Step the selection to the openable row beside `fromId` (the selection by default), or do
+   * nothing at a bound; returns the id stepped to, or `null` (add-docked-inspector D8). */
+  stepSelection: (dir: StepDirection, fromId?: string | null) => string | null;
+  /** Whether Previous (or Next) has a row to step to from the selection (D8). */
+  canStep: (dir: StepDirection) => boolean;
   /** Confirm a completed action: the polite status region, cleared after 4s (D13). */
   say: (msg: string) => void;
   /** Report a failure that is still a toast — it has no inline home yet — in the alert
@@ -1793,7 +1865,12 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         // Freshness state belongs to one owner and one frozen window.
         s.requestsPaged = false;
         s.requestsNew = null;
+        // The inspector's retained record is one owner's request, like the selection and the
+        // payload text beside it (add-docked-inspector D7). Cleared in this same write, and
+        // `newerRecord` only ever REPLACES a record, so a list begun as the previous owner —
+        // already inert through the `requests` / `recent` bumps above — has none to restore.
         s.selId = null;
+        s.selRecord = null;
         s.selBodies = { rows: null, loading: false, error: null };
         s.streamHealth = 'polling';
         s.lastDataEventAt = null;
@@ -2210,6 +2287,45 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     override: 'always' | 'never' | null,
   ): Promise<void> => bcMutate(() => client.bodyCaptureSetOverride(agentId, override));
 
+  // --- the inspector's retained record (add-docked-inspector design D7) ---
+
+  /** The loaded row for `id`: the request list first, then the Overview card's recent
+   * requests, as the inspector's old live lookup searched. `null` when neither holds it. */
+  const loadedRow = (id: string): RequestRow | null =>
+    state.requestList.find((r) => r.id === id) ??
+    state.recentRequests.find((r) => r.id === id) ??
+    null;
+
+  /** The record `select(id)` captures: the loaded row, or — for the SAME id only — the record
+   * already retained, so re-selecting a request that has left the lists keeps it open. Any
+   * other id found in neither list captures `null`, never the previous record, so
+   * `select('no-such-request')` closes the inspector. */
+  const captureRecord = (id: string | null): RequestRow | null => {
+    if (id === null) return null;
+    const loaded = loadedRow(id);
+    if (loaded !== null) return loaded;
+    return state.selRecord?.id === id ? state.selRecord : null;
+  };
+
+  /** The newer same-id row a load brings for the retained record, written in that load's own
+   * `setState`. `undefined` when there is no record or the load does not carry it: absence
+   * never clears the record, and a load never opens one. */
+  const newerRecord = (rows: readonly RequestRow[]): RequestRow | undefined => {
+    const id = state.selRecord?.id;
+    return id === undefined ? undefined : rows.find((r) => r.id === id);
+  };
+
+  /** Select a request, or close the inspector with `null`: the selection, its retained record
+   * and the cached payload text in ONE write, so the identity boundary that clears one clears
+   * all three, and the Payload section starts collapsed on every selection (D7, D8). */
+  const select = (id: string | null): void => {
+    setState({
+      selId: id,
+      selRecord: captureRecord(id),
+      selBodies: { rows: null, loading: false, error: null },
+    });
+  };
+
   const loadSelectedBodies = async (id: string): Promise<void> => {
     const gen = identityGen;
     setState('selBodies', { rows: null, loading: true, error: null });
@@ -2236,12 +2352,19 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     if (gen !== identityGen) return;
     say('Payloads deleted');
     setState('selBodies', { rows: null, loading: false, error: null });
-    // The row's flag clears so the section disappears (data-driven gate).
-    setState('requestList', (rows) =>
-      rows.map((r) => (r.id === id ? { ...r, hasBodies: false } : r)),
-    );
-    setState('recentRequests', (rows) =>
-      rows.map((r) => (r.id === id ? { ...r, hasBodies: false } : r)),
+    // The row's flag clears so the section disappears (data-driven gate). This is the store's
+    // one in-place write to a loaded row — no load follows it — so the inspector's retained
+    // record is patched in the SAME write (add-docked-inspector D7): the inspector renders the
+    // record, not the list, and a record left alone would keep a Payload section whose bodies
+    // are gone. Patched whether or not the row is still in either list, and only after the
+    // identity guard above, so a delete resolving after an account change patches nothing.
+    const flagged = (r: RequestRow): RequestRow => (r.id === id ? { ...r, hasBodies: false } : r);
+    setState(
+      produce((s) => {
+        s.requestList = s.requestList.map(flagged);
+        s.recentRequests = s.recentRequests.map(flagged);
+        if (s.selRecord?.id === id) s.selRecord = { ...s.selRecord, hasBodies: false };
+      }),
     );
   };
 
@@ -2491,7 +2614,14 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       (v) => setState('recentRequestsError', v),
       () => client.requests({ from, to, limit: 6 }),
       (page) => {
-        setState({ recentRequests: page.rows, recentRequestsLoaded: true });
+        // The Overview card's six-row window moves on every settle; an inspector opened from
+        // it keeps its record, and follows a newer copy when the window still holds it (D7).
+        const newer = newerRecord(page.rows);
+        setState({
+          recentRequests: page.rows,
+          recentRequestsLoaded: true,
+          ...(newer === undefined ? {} : { selRecord: newer }),
+        });
         reconcileInflightDisplay(); // durable rows arrived → drop covered live rows
       },
     );
@@ -2917,11 +3047,15 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           ...agentToRequestParams(window.agentId),
         });
         if (!current()) return;
+        const newer = newerRecord(page.rows);
         setState(
           produce((s) => {
             s.requestWindow = window;
             s.requestList = page.rows;
             s.requestCursor = page.nextCursor;
+            // The inspector's record follows its newer same-id row; a page that no longer
+            // holds it leaves the record as it was (add-docked-inspector D7).
+            if (newer !== undefined) s.selRecord = newer;
           }),
         );
       } else {
@@ -2941,10 +3075,12 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           ...agentToRequestParams(window.agentId),
         });
         if (!current()) return;
+        const newer = newerRecord(page.rows);
         setState(
           produce((s) => {
             s.requestList = [...s.requestList, ...page.rows];
             s.requestCursor = page.nextCursor;
+            if (newer !== undefined) s.selRecord = newer;
           }),
         );
       }
@@ -3006,7 +3142,17 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
    * another however the change arrived. */
   const setPage = (page: Page): void => {
     if (state.page !== page) progressLoader.cancel();
-    if (state.page !== page || state.selId !== null) setState({ page, selId: null });
+    // The inspector's retained record and its cached payload text go with the selection, in
+    // the same write (add-docked-inspector D7; dashboard-analytics "Closing, navigating and an
+    // account change clear the record").
+    if (state.page !== page || state.selId !== null || state.selRecord !== null) {
+      setState({
+        page,
+        selId: null,
+        selRecord: null,
+        selBodies: { rows: null, loading: false, error: null },
+      });
+    }
   };
 
   /** APP-originated transition (nav click, onboarding reset). May write
@@ -3104,6 +3250,64 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     stopFollowingTheme = stop;
     return stop;
   }
+
+  function followDockViewport(): () => void {
+    let mq: MediaQueryList;
+    try {
+      mq = globalThis.matchMedia(DOCK_QUERY);
+    } catch {
+      return () => undefined; // no media queries: the inspector stays modal
+    }
+    setState('dockViewport', mq.matches);
+    // A viewport LISTENER, not viewport-driven layout: the docked geometry itself is the
+    // `@media (min-width: 1440px)` block in styles.css. What script needs is the modality —
+    // the layer kind, the role and `aria-modal` cannot come from CSS (D2, D5).
+    const onChange = (e: MediaQueryListEvent): void => {
+      setState('dockViewport', e.matches);
+    };
+    mq.addEventListener('change', onChange);
+    return () => {
+      mq.removeEventListener('change', onChange);
+    };
+  }
+
+  const inspectorDockable = (): boolean => state.page === 'requests' && state.dockViewport;
+  /** A record is open in the inspector: the retained record the inspector renders (design D4,
+   * D7) — never a lookup in the loaded lists, which a refresh can empty under an open panel. */
+  const inspectorOpen = (): boolean => state.selRecord !== null;
+  const inspectorDocked = (): boolean => inspectorDockable() && inspectorOpen();
+
+  /** The completed-row order a step moves through (design D8): the loaded request list on
+   * Requests, the Overview card's recent requests there. No other page shows the inspector. */
+  const stepOrder = (): string[] => {
+    const rows =
+      state.page === 'requests'
+        ? state.requestList
+        : state.page === 'overview'
+          ? state.recentRequests
+          : [];
+    return rows.map((r) => r.id);
+  };
+  /** Whether a step from the selection has somewhere to go — Previous / Next are unavailable
+   * at a bound and when the request shown has left the loaded rows (D8). */
+  const canStep = (dir: StepDirection): boolean =>
+    stepTarget(stepOrder(), state.selId, dir) !== null;
+  /** Step the selection (design D8): to the openable row beside `fromId` — the focused row for
+   * a row's arrow key, the selection itself for Previous / Next. Selecting it captures its
+   * record and collapses the Payload section exactly as `select` does, so a step changes only
+   * the selection: it never fetches bodies, never loads a page and never takes the "N new"
+   * offer. Returns the id stepped to, or `null` when there is none (nothing changes). */
+  const stepSelection = (
+    dir: StepDirection,
+    fromId: string | null = state.selId,
+  ): string | null => {
+    const target = stepTarget(stepOrder(), fromId, dir);
+    if (target === null) return null;
+    select(target);
+    // After the selection, so whatever watches the step reads the record stepped to (D10).
+    setState('stepSeq', (n) => n + 1);
+    return target;
+  };
 
   function startRouting(): () => void {
     // The accept-invite fragment carries a SECRET that `bootstrap` scrubs. The
@@ -3339,6 +3543,9 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       applyTheme(theme);
     },
     followSystemTheme,
+    followDockViewport,
+    inspectorDockable,
+    inspectorDocked,
     dismissSetupGuide: () => {
       try {
         localStorage.setItem('polyrouter-setup-dismissed', '1');
@@ -3352,18 +3559,29 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       // UNTRACKED read. `useLayer` calls this from a `createEffect`; reading `state.layers`
       // tracked would make that effect depend on the very array it is about to write,
       // re-running it forever. The registry is a side-effect target here, never an input.
-      const current = untrack(() => state.layers);
+      //
       // A dialog asserts isolation, so any transient not opened FROM it is superseded —
-      // otherwise a page-level menu stays above a modal opened after it.
-      if (kind === 'dialog') {
-        for (const t of supersededByDialog(current)) t.onDismiss();
-      }
+      // otherwise a page-level menu stays above a modal opened after it. The kinds are read
+      // untracked too: an entry's `kind` is a getter over its accessor (add-docked-inspector
+      // D2), and a tracked read would subscribe the registering effect to ANOTHER layer's
+      // kind, re-registering this one when that layer crosses the dock threshold.
+      const superseded = untrack(() =>
+        kindAccessor(kind)() === 'dialog' ? supersededByDialog(state.layers) : [],
+      );
+      for (const t of superseded) t.onDismiss();
       setState('layers', (ls) => [
         ...ls.filter((l) => l.token !== token),
-        { token, kind, root, onDismiss },
+        layerEntry(token, kind, root, onDismiss),
       ]);
       return token;
     },
+    layerKindChanged: (token) =>
+      untrack(() => {
+        const { supersede, takeFocus } = promotedToDialog(state.layers, token);
+        for (const t of supersede) t.onDismiss();
+        return takeFocus;
+      }),
+    topDialogRoot: () => untrack(() => topDialogRoot(state.layers)),
     layerZ: (token) => {
       const i = state.layers.findIndex((l) => l.token === token);
       return zForIndex(i < 0 ? 0 : i);
@@ -3413,7 +3631,9 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       setState('reqAgentId', reqAgentId);
       void loadRequests(true);
     },
-    select: (id) => setState({ selId: id, selBodies: { rows: null, loading: false, error: null } }),
+    select,
+    stepSelection,
+    canStep,
     say,
     sayFailure,
     holdToast,

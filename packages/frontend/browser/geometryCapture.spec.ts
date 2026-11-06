@@ -34,7 +34,7 @@
  * from the numbers. This file deliberately does not decide for you.
  */
 import { expect, test, type Page } from '@playwright/test';
-import { SURFACES, boxOf, harnessUrl, type Surface } from './overlays';
+import { SURFACES, boxOf, harnessUrl, viewportOf, type Surface } from './overlays';
 
 /** Controls the responsive suite pins by height. Captured beside the surfaces
  * so one run answers every open question about platform spread, rather than
@@ -60,10 +60,16 @@ test.describe('@capture geometry', () => {
   test('@capture every overlay surface', async ({ page }) => {
     const platform = await page.evaluate(() => navigator.userAgent);
     line('platform', platform);
-    line('viewport-note', 'surfaces at 1440x900 unless marked narrow (390x844)');
+    line(
+      'viewport-note',
+      'surfaces at 1440x900 unless they name their own viewport (each line prints it)',
+    );
 
     for (const s of SURFACES) {
-      const vp = s.narrowOnly ? { width: 390, height: 844 } : { width: 1440, height: 900 };
+      // The viewport the baseline pins it at (`viewportOf`): 390x844 for a narrow-only
+      // surface, 1025x768 for the modal inspector drawer, which docks at 1440
+      // (add-docked-inspector D13).
+      const vp = viewportOf(s);
       await page.setViewportSize(vp);
       await open(page, s);
       try {

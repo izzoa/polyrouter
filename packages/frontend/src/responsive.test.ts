@@ -14,6 +14,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { DOCK_MIN_WIDTH, DOCK_QUERY, DOCK_WIDTH } from './state/appState';
 
 const SRC = dirname(fileURLToPath(import.meta.url));
 const raw = readFileSync(join(SRC, 'styles.css'), 'utf8');
@@ -100,6 +101,81 @@ describe('responsive query layer', () => {
     // together.
     const lock = readFileSync(join(SRC, '../../../STYLESEED.md'), 'utf8');
     expect(lock).toMatch(/\| `input-text-comfort` \| \*\*16px\*\* \(`1rem`\) \|/);
+  });
+});
+
+describe('the docked inspector reads one dock threshold and one docked width (add-docked-inspector D4)', () => {
+  // dashboard-core "The dock threshold leaves the docked list room for its columns": the dock
+  // threshold and the docked width are each ONE value, read identically by the stylesheet and
+  // by the script that decides the inspector's modality, with a check that fails when any two
+  // copies disagree. Four copies of each: the script constant, the media prelude (or the two
+  // 480px declarations), and the lock row.
+  const lock = readFileSync(join(SRC, '..', '..', '..', 'STYLESEED.md'), 'utf8');
+  const lockPx = (token: string): number => {
+    const m = new RegExp(`\\|\\s*\`${token}\`\\s*\\|\\s*\\*\\*(\\d+)px\\*\\*`).exec(lock);
+    expect(m?.[1], `${token} is missing from the STYLESEED.md lock`).toBeDefined();
+    return Number(m?.[1]);
+  };
+
+  it('the script reads the same query the stylesheet docks in, at the locked threshold', () => {
+    expect(DOCK_QUERY).toBe(`(min-width: ${String(DOCK_MIN_WIDTH)}px)`);
+    expect(lockPx('inspector-dock')).toBe(DOCK_MIN_WIDTH);
+    // Every min-width media query in the sheet is the dock's, at the constant's value: a second
+    // copy of the threshold, or a prelude moved without the constant, fails here.
+    const preludes = [...css.matchAll(/@media \(min-width: (\d+)px\)/g)].map((m) => Number(m[1]));
+    expect(preludes, 'the dock media prelude').toEqual([DOCK_MIN_WIDTH]);
+    // Literal, never a custom property — a var() prelude never matches.
+    expect(css).not.toMatch(/@media\s*\([^)]*min-width:\s*var\(/);
+  });
+
+  it('both 480px declarations equal the docked width and its lock row, inside the dock prelude only', () => {
+    expect(lockPx('inspector-dock-width')).toBe(DOCK_WIDTH);
+    const body = atRuleBody(`@media ${DOCK_QUERY}`);
+    const pane = /\.rs-docked\s*\{([^}]*)\}/.exec(body)?.[1] ?? '';
+    expect(pane, 'the content pane gives up the docked width').toMatch(
+      new RegExp(`margin-inline-end:\\s*${String(DOCK_WIDTH)}px;`),
+    );
+    const panel = /\.rs-inspector-docked\s*\{([^}]*)\}/.exec(body)?.[1] ?? '';
+    expect(panel, 'the panel is the docked width').toMatch(
+      new RegExp(`(?:^|[;\\s])width:\\s*${String(DOCK_WIDTH)}px;`),
+    );
+    // No shadow, no entrance, its body contained (design D3, D14), and nothing else that
+    // would change the shared drawer's geometry.
+    expect(panel).toMatch(/box-shadow:\s*none;/);
+    expect(panel).toMatch(/animation:\s*none;/);
+    expect(body).toMatch(
+      /\.rs-inspector-docked \.drawer-body\s*\{\s*overscroll-behavior-y:\s*contain;/,
+    );
+    // The look exists ONLY under the prelude, so a stale class can never dock below 1440 — and
+    // `.drawer` itself is untouched there, so the tuning drawers stay modal drawers.
+    const outside = css.replace(body, '');
+    expect(outside, 'a docked rule outside the dock prelude').not.toMatch(
+      /\.rs-docked(?![\w-])|\.rs-inspector-docked(?![\w-])/,
+    );
+    expect(body, 'the dock prelude restyles .drawer itself').not.toMatch(
+      /(?:^|[}\s,])\.drawer\s*[{,]/,
+    );
+  });
+
+  it('the docked compact list’s look lives only inside the dock prelude (D4)', () => {
+    // `.rs-docked-list` is the table panel's class while the inspector is docked beside it. The
+    // `(?![\w-])` lookahead above deliberately lets `.rs-docked-list` through, so it needs its own
+    // guard: every selector that names it is inside the prelude, so a stale class can never
+    // compact the list below 1440px.
+    const stripComments = (t: string): string => t.replace(/\/\*[\s\S]*?\*\//g, '');
+    const body = stripComments(atRuleBody(`@media ${DOCK_QUERY}`));
+    const outside = stripComments(css.replace(atRuleBody(`@media ${DOCK_QUERY}`), ''));
+    expect(body, 'the dock prelude styles the docked list').toMatch(/\.rs-docked-list/);
+    expect(outside, 'a docked-list rule outside the dock prelude').not.toMatch(/\.rs-docked-list/);
+    // The status cell's copy of the state marks is inert everywhere else: its one rule outside
+    // the prelude is `display: none`, and nothing outside the prelude shows it.
+    const marks = [...outside.matchAll(/([^{}]*\.rs-docked-marks[^{}]*)\{([^}]*)\}/g)];
+    expect(marks.length, 'the base rule hiding the docked marks').toBeGreaterThan(0);
+    for (const m of marks) {
+      expect(m[2]!.replace(/\s+/g, ' ').trim(), `${m[1]!.trim()} outside the prelude`).toBe(
+        'display: none;',
+      );
+    }
   });
 });
 
@@ -296,6 +372,41 @@ describe('interactive target floors', () => {
     }
   });
 
+  it('gives the inspector’s Previous / Next the comfort target in BOTH axes below narrow and on coarse pointers (add-docked-inspector 4.3)', () => {
+    // Icon-only, so the inline axis needs its own floor in each comfort context; the base floor
+    // (24px) is covered by the cursor:pointer sweep above. The browser suite measures the boxes.
+    const flooredIn = (block: string, prop: 'min-height' | 'min-width'): boolean =>
+      [...block.matchAll(/([^{}]+)\{([^}]*)\}/g)].some(
+        (m) =>
+          (m[1] ?? '').split(',').some((sel) => sel.trim() === '.rs-inspector-step') &&
+          new RegExp(`${prop}:\\s*44px`).test(m[2] ?? ''),
+      );
+    for (const query of ['@media (max-width: 768px)', '@media (pointer: coarse)']) {
+      const block = atRuleBody(query);
+      expect(flooredIn(block, 'min-height'), `${query}: no 44px height`).toBe(true);
+      expect(flooredIn(block, 'min-width'), `${query}: no 44px width`).toBe(true);
+    }
+    // The fine-pointer desktop box is the height family's small member, in both axes.
+    expect(css).toMatch(/\.rs-inspector-step\s*\{[^}]*width:\s*24px;[^}]*height:\s*24px/);
+  });
+
+  it('gives the icon-only controls the inline comfort floor on coarse pointers at any width (add-docked-inspector flag F1)', () => {
+    // `target-comfort`: 44px in the inline axis for icon-only controls under `pointer: coarse`,
+    // not only below `narrow`. The inspector's Close sits beside the 44 x 44 Previous / Next.
+    const coarse = atRuleBody('@media (pointer: coarse)');
+    const rule = [...coarse.matchAll(/([^{}]+)\{([^}]*)\}/g)].find(
+      (m) =>
+        /min-width:\s*44px/.test(m[2] ?? '') &&
+        (m[1] ?? '').split(',').some((sel) => sel.trim() === '.drawer-close'),
+    );
+    expect(rule, 'no coarse rule gives .drawer-close a 44px inline floor').toBeDefined();
+    const selectors = (rule?.[1] ?? '').split(',').map((sel) => sel.trim());
+    for (const cls of ['.drawer-close', '.icon-x', '.drag-handle', '.rs-inspector-step']) {
+      expect(selectors, `${cls} missing from the coarse inline floor`).toContain(cls);
+    }
+    expect(rule?.[2]).toContain('justify-content: center');
+  });
+
   it('grows the switch hit target without resizing the switch', () => {
     // The 36x20 / 32x18 switch is locked design (D3). The floor is met by an invisible centred
     // ::before, so the target grows and not one drawn pixel moves.
@@ -327,10 +438,18 @@ describe('table query containers', () => {
     // in its `@container` prelude, both ways: a lock row whose query carries another number,
     // and a query whose number no lock row states, each fail here. The four table rows had no
     // such check before (only Targets, Pipeline and Layers did).
+    //
+    // add-docked-inspector task 6.2: the Requests and Batches tables have three thresholds each
+    // — the one-line fit, the two-line fit, and the shared stack width, written in the range
+    // form `(width < 640px)` so a 640px container keeps line one — and all three are read here.
     const lock = readFileSync(join(SRC, '..', '..', '..', 'STYLESEED.md'), 'utf8');
     const ROWS = [
       ['table-fit-requests', 'rs-requests'],
+      ['table-fit-requests-2', 'rs-requests'],
+      ['table-stack', 'rs-requests'],
       ['table-fit-batches', 'rs-batches'],
+      ['table-fit-batches-2', 'rs-batches'],
+      ['table-stack', 'rs-batches'],
       ['table-fit-agents', 'rs-agents'],
       ['table-fit-users', 'rs-users'],
       ['table-fit-targets', 'rs-targets'],
@@ -344,12 +463,119 @@ describe('table query containers', () => {
       expect(m?.[1], `${token} is missing from the STYLESEED.md lock`).toBeDefined();
       return `${container} ${m?.[1] ?? '?'}`;
     });
-    const queried = [...css.matchAll(/@container (rs-[a-z]+) \(max-width: (\d+)px\)/g)].map(
-      (m) => `${m[1] ?? ''} ${m[2] ?? ''}`,
-    );
+    const queried = [
+      ...css.matchAll(/@container (rs-[a-z]+) \((?:max-width: |width < )(\d+)px\)/g),
+    ].map((m) => `${m[1] ?? ''} ${m[2] ?? ''}`);
     expect([...queried].sort(), 'the @container literals and the lock rows differ').toEqual(
       [...locked].sort(),
     );
+  });
+
+  it('stacks the Requests and Batches tables only below the locked stack width, and guards every narrowed form with it (add-docked-inspector 6.2)', () => {
+    const lock = readFileSync(join(SRC, '..', '..', '..', 'STYLESEED.md'), 'utf8');
+    const stack = Number(/\|\s*`table-stack`\s*\|\s*\*\*(\d+)px\*\*/.exec(lock)?.[1]);
+    expect(stack, 'table-stack is missing from the lock').toBe(640);
+    for (const name of ['rs-requests', 'rs-batches']) {
+      const preludes = [...css.matchAll(new RegExp(`@container ${name} ([^{]+)\\{`, 'g'))].map(
+        (m) => (m[1] ?? '').trim(),
+      );
+      // One-line fit, two-line fit, stack: in that source order (`recordTables.spec.ts` reads
+      // the first `max-width` literal as the one-line fit).
+      expect(preludes, `${name}: the forms`).toHaveLength(3);
+      const [one, two, stacked] = preludes;
+      expect(stacked, `${name}: the stacked query`).toBe(`(width < ${String(stack)}px)`);
+      for (const narrowed of [one, two]) {
+        expect(narrowed, `${name}: a narrowed form is not guarded by the stack width`).toMatch(
+          new RegExp(`^\\(max-width: \\d+px\\) and \\(min-width: ${String(stack)}px\\)$`),
+        );
+      }
+      const fit = (p: string | undefined): number =>
+        Number(/max-width: (\d+)px/.exec(p ?? '')?.[1]);
+      expect(fit(one), `${name}: the one-line fit is not the wider`).toBeGreaterThan(fit(two));
+      expect(fit(two), `${name}: the two-line fit is below the stack width`).toBeGreaterThanOrEqual(
+        stack,
+      );
+      // Only the stacked query restyles a row as a block.
+      const rowBlock = /\.(?:req-row|rs-batch-row)\s*\{\s*display:\s*block;/;
+      const body = (prelude: string): string => atRuleBody(`@container ${name} ${prelude}`);
+      expect(body(stacked!), `${name}: the stacked query no longer stacks`).toMatch(rowBlock);
+      for (const narrowed of [one, two]) {
+        expect(body(narrowed!), `${name}: a narrowed form stacks`).not.toMatch(rowBlock);
+      }
+    }
+  });
+
+  it('describes the one-line fits as fits and only table-stack as the stacking width, in every lock line (add-docked-inspector 7.1)', () => {
+    // add-docked-inspector task 7.1 / design D12: `table-fit-requests` and `table-fit-batches`
+    // changed meaning, from the width below which the table stacks to its one-line fit. The
+    // parity test above holds the numbers; this holds the words, so no lock line — the
+    // "Known and intended consequence" paragraph included — still calls 980 or 1000 a
+    // stacking width, and that paragraph states the stack bands the locked values produce.
+    const lock = readFileSync(join(SRC, '..', '..', '..', 'STYLESEED.md'), 'utf8');
+    const row = (token: string): string =>
+      new RegExp(`^\\|\\s*\`${token}\`\\s*\\|.*$`, 'm').exec(lock)?.[0] ?? '';
+    const px = (token: string): number => Number(/\*\*(\d+)px\*\*/.exec(row(token))?.[1]);
+    const fits: number[] = [];
+    for (const token of ['table-fit-requests', 'table-fit-batches']) {
+      expect(row(token), `${token} is missing from the lock`).not.toBe('');
+      expect(row(token), `${token} no longer names the one-line fit`).toMatch(/one-line fit/);
+      expect(row(token), `${token} still describes a stacking width`).not.toMatch(/stack|card/i);
+      fits.push(px(token));
+    }
+    expect(fits).toEqual([980, 1000]);
+    expect(row('table-stack'), 'table-stack no longer names the stacking width').toMatch(
+      /stacked records only below this width/,
+    );
+    // Sentence by sentence: none about the request or batch table pairs a one-line fit value
+    // with stacking. (The Targets and Pipeline paragraphs name a 1000px *viewport* they were
+    // read at; they are about neither table.)
+    const stale = lock
+      .split(/(?<=[.;])\s+|\n/)
+      .filter(
+        (s) =>
+          /request|batch/i.test(s) &&
+          /stack|card/i.test(s) &&
+          fits.some((v) => new RegExp(`(?<![\\d.])${String(v)}(?!\\d)`).test(s)),
+      );
+    expect(stale, 'a lock sentence still calls a one-line fit a stacking width').toEqual([]);
+
+    // The consequence paragraph, written from the measured forms (design D12, flag F4): a
+    // container is `viewport − 258` above `narrow` (208px sidebar + 2 × 24px gutter + 2px
+    // border) and `viewport − 90` at or below it (56px rail + 2 × 16px gutter + 2px border).
+    const consequence = /^\*\*Known and intended consequence:\*\*.*$/m.exec(lock)?.[0] ?? '';
+    expect(consequence, 'the consequence paragraph is missing').not.toBe('');
+    const stack = px('table-stack');
+    expect(consequence).toContain('`table-stack`');
+    expect(consequence, 'the viewports above narrow that still stack').toContain(
+      `769–${String(stack + 258 - 1)}px`,
+    );
+    expect(consequence, 'the viewports at narrow that do not').toContain(
+      `${String(stack + 90)}–768px`,
+    );
+    expect(consequence, 'the dock threshold').toContain(`**${String(px('inspector-dock'))}px**`);
+    // Each one-line fit as a viewport, "roughly" (the old paragraph's word, kept), with its
+    // arithmetic: the fit + 258, rounded up to the next 20px.
+    for (const [token, fit] of [
+      ['table-fit-requests', fits[0] ?? 0],
+      ['table-fit-batches', fits[1] ?? 0],
+    ] as const) {
+      const vw = fit + 258;
+      expect(consequence, `${token} as a viewport`).toContain(
+        `roughly a **${String(Math.ceil(vw / 20) * 20)}px viewport** (\`${token}\` ${String(fit)} + 258 = ${String(vw)})`,
+      );
+    }
+    expect(consequence, 'the scrollbar caveat').toMatch(
+      /leave out scrollbar width[^.]*each bound moves up by that scrollbar's width/,
+    );
+
+    // The Overlays paragraph says which surface docks, and that the tuning drawers do not.
+    const overlays = /\*\*Overlays are not exempt from `narrow`\.\*\*[\s\S]*?(?=\n\n)/.exec(
+      lock,
+    )?.[0];
+    expect(overlays, 'the Overlays paragraph is missing').toBeDefined();
+    const flat = (overlays ?? '').replace(/\s+/g, ' ');
+    expect(flat).toMatch(/\*\*Only the Request Inspector docks\*\*/);
+    expect(flat).toMatch(/tuning drawers \(self-calibration, semantic learning\) never dock/);
   });
 
   it('reflows the Targets matrix at its locked table-fit, the same value in the lock and here', () => {

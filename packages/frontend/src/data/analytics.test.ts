@@ -436,6 +436,57 @@ describe('toInspectorView', () => {
     expect(v.totalCost).toBe('$0.0020');
   });
 
+  it('carries the recorded provider only when the trace outcome names none (add-docked-inspector flag F3)', () => {
+    const outcomeProvider = (r: RequestRow): string | null => {
+      const o = toInspectorView(r).trace.find((n) => n.kind === 'outcome');
+      return o?.kind === 'outcome' ? o.provider : 'no outcome';
+    };
+    const base: RequestRow = { ...ROW, providerId: 'p1', providerLabel: 'Provider A' };
+    // Lit: the outcome names the provider, so the Decision row stays hidden.
+    expect(outcomeProvider({ ...base, status: 'success' })).toBe('Provider A');
+    expect(toInspectorView({ ...base, status: 'success' }).recordedProvider).toBeNull();
+    // Unlit and unconfirmed: the terminal attempt is on another provider.
+    const unconfirmed: RequestRow = {
+      ...base,
+      status: 'error',
+      attemptFailures: [
+        { index: 0, providerId: 'p1', model: 'a', kind: 'rate_limit', dispatched: true },
+        {
+          index: 1,
+          providerId: 'p2',
+          model: 'b',
+          kind: 'unavailable',
+          dispatched: true,
+          terminal: true,
+        },
+      ],
+    };
+    expect(outcomeProvider(unconfirmed)).toBeNull();
+    expect(toInspectorView(unconfirmed).recordedProvider).toBe('Provider A');
+    // The label falls back to the id, as the table's Provider column does.
+    expect(toInspectorView({ ...unconfirmed, providerLabel: null }).recordedProvider).toBe('p1');
+    // Unlit and confirmed (the terminal attempt is on the recorded provider): named by the trace.
+    const confirmed: RequestRow = {
+      ...unconfirmed,
+      attemptFailures: [
+        {
+          index: 0,
+          providerId: 'p1',
+          model: 'a',
+          kind: 'rate_limit',
+          dispatched: true,
+          terminal: true,
+        },
+      ],
+    };
+    expect(outcomeProvider(confirmed)).toBe('Provider A');
+    expect(toInspectorView(confirmed).recordedProvider).toBeNull();
+    // Nothing recorded, nothing to state.
+    expect(
+      toInspectorView({ ...unconfirmed, providerId: null, providerLabel: null }).recordedProvider,
+    ).toBeNull();
+  });
+
   it('passes the semantic provenance through only when L2 evaluated the row (add-semantic-dashboard 3.2)', () => {
     // Legacy / non-semantic rows carry null → the inspector chip stays hidden.
     expect(toInspectorView(ROW).semanticSource).toBeNull();

@@ -33,7 +33,9 @@ import { expect, test, type Page } from '@playwright/test';
 
 const css = readFileSync(join(import.meta.dirname, '../src/styles.css'), 'utf8');
 
-/** A table's `table-fit-*` threshold: the literal in its `@container` prelude. */
+/** A table's `table-fit-*` threshold: the literal in its first `@container` prelude — for
+ * Requests and Batches, the one-line fit, which is first in source order
+ * (`responsive.test.ts` holds that order). */
 function threshold(query: string): number {
   const m = new RegExp(`@container ${query} \\(max-width: (\\d+)px\\)`).exec(css);
   if (!m?.[1]) throw new Error(`no @container ${query} threshold in styles.css`);
@@ -62,7 +64,9 @@ const TABLES: readonly Table[] = [
     container: '.rs-table-requests',
     query: 'rs-requests',
     rows: '.rs-table-requests .req-row',
-    cells: ':scope > .rs-cell',
+    // Every cell of the row, not only a direct child: the priority wrappers
+    // (add-docked-inspector D11) hold the P2 and P3 cells, `display: contents` in this form.
+    cells: '.rs-cell',
     head: '.rs-table-requests .table-head',
     figures: ['Tokens', 'Cost', 'Latency'],
     identifiers: ['Model', 'Provider', 'Tier'],
@@ -73,7 +77,7 @@ const TABLES: readonly Table[] = [
     container: '.rs-table-batches',
     query: 'rs-batches',
     rows: '.rs-table-batches .rs-batch-row',
-    cells: ':scope > .rs-cell',
+    cells: '.rs-cell',
     head: '.rs-table-batches .table-head',
     figures: ['Wall time', 'Cost'],
     identifiers: ['Model', 'Provider', 'Tier'],

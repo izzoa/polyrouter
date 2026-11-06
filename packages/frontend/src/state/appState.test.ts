@@ -14,6 +14,7 @@ import {
   type TierEntryDto,
 } from '../data/api';
 import {
+  buildRequestRows,
   DEFAULT_CALIBRATION,
   DEFAULT_SEMANTIC_LEARNING_STATUS,
   DEFAULT_SESSION,
@@ -2313,6 +2314,150 @@ describe('card loaders survive section churn (section-routing-rail D8)', () => {
 
 // ── adopt-red-destructive-actions task 3.2 ──────────────────────────────────────────────────
 
+describe("the inspector's retained record (add-docked-inspector task 3.1, design D7)", () => {
+  const settle = async (): Promise<void> => {
+    for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 0));
+  };
+  /** A signed-in store on Requests, page 1 loaded (25 of the fake's 30 rows). */
+  async function onRequests(): Promise<{ s: AppStore; fake: FakeApiClient }> {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    s.go('requests');
+    await s.loadRequests(true);
+    expect(s.state.requestList).toHaveLength(25);
+    return { s, fake };
+  }
+  /** The fake's copy of `id` rewritten with a new routing reason — what a later read returns. */
+  function reword(fake: FakeApiClient, id: string, reason: string): void {
+    fake.requestRows = fake.requestRows.map((r) =>
+      r.id === id ? { ...r, routingReason: reason } : r,
+    );
+  }
+
+  it('captures the loaded row on select: the request list first, then the Overview card', async () => {
+    const { s } = await onRequests();
+    s.select('req-003');
+    expect(s.state.selId).toBe('req-003');
+    expect(s.state.selRecord).toEqual(s.state.requestList[3]);
+
+    await s.loadRecentRequests();
+    s.setState('requestList', []);
+    s.select('req-002'); // only the Overview card's six rows hold it now
+    expect(s.state.selRecord?.id).toBe('req-002');
+    expect(s.state.selRecord).toEqual(s.state.recentRequests[2]);
+  });
+
+  it('an id found in neither list captures no record, never the previous one', async () => {
+    const { s } = await onRequests();
+    s.select('req-003');
+    s.select('no-such-request');
+    expect(s.state.selId).toBe('no-such-request');
+    expect(s.state.selRecord, 'the previous record was kept for another id').toBeNull();
+    // The SAME id, no longer loaded, keeps its record: re-selecting does not close it.
+    s.select('req-004');
+    s.setState({ requestList: [], recentRequests: [] });
+    s.select('req-004');
+    expect(s.state.selRecord?.id).toBe('req-004');
+  });
+
+  it('captures on every step, from the selection or from a given row, and nothing at a bound', async () => {
+    const { s } = await onRequests();
+    s.select('req-003');
+    expect(s.stepSelection('next')).toBe('req-004');
+    expect(s.state.selId).toBe('req-004');
+    expect(s.state.selRecord).toEqual(s.state.requestList[4]);
+    expect(s.stepSelection('previous', 'req-010'), 'from the focused row, not the selection').toBe(
+      'req-009',
+    );
+    expect(s.state.selRecord?.id).toBe('req-009');
+    s.select('req-024'); // the last loaded row
+    expect(s.stepSelection('next')).toBeNull();
+    expect(s.state.selRecord?.id, 'a bound changed the selection').toBe('req-024');
+  });
+
+  it('a later load replaces it with the newer same-id row: the refresh, a filter reset, load-more and the Overview reload', async () => {
+    const { s, fake } = await onRequests();
+    s.select('req-003');
+    reword(fake, 'req-003', 'refreshed');
+    await s.refreshRequestsPage();
+    expect(s.state.selRecord?.routingReason, 'the background refresh').toBe('refreshed');
+
+    reword(fake, 'req-003', 'refiltered');
+    s.setFilter('auto'); // `structural`: still listed under Auto
+    await settle();
+    expect(s.state.selRecord?.routingReason, 'the reset after a filter change').toBe('refiltered');
+    s.setFilter('all');
+    await settle();
+
+    // Load more: the record is on page 2 only.
+    await s.loadRequests(false);
+    s.select('req-027');
+    await s.loadRequests(true); // back to page 1, which does not hold it
+    expect(s.state.selRecord?.id).toBe('req-027');
+    reword(fake, 'req-027', 'appended');
+    await s.loadRequests(false);
+    expect(s.state.selRecord?.routingReason, 'load-more').toBe('appended');
+
+    await s.loadRecentRequests();
+    s.select('req-001');
+    reword(fake, 'req-001', 'recent');
+    await s.loadRecentRequests();
+    expect(s.state.selRecord?.routingReason, 'the Overview reload').toBe('recent');
+  });
+
+  it('absence never clears it: a refresh that drops the row, a filter that excludes it, a failed read', async () => {
+    const { s, fake } = await onRequests();
+    s.select('req-020');
+    const kept = { ...s.state.selRecord };
+    // Ten newer requests push it off page 1.
+    fake.requestRows = [
+      ...buildRequestRows(10).map((r) => ({ ...r, id: `new-${r.id}` })),
+      ...fake.requestRows,
+    ];
+    await s.refreshRequestsPage();
+    expect(s.state.requestList.some((r) => r.id === 'req-020')).toBe(false);
+    expect(s.state.selRecord, 'newer rows closed the record').toEqual(kept);
+
+    s.select('req-003'); // `structural`
+    s.setFilter('explicit');
+    await settle();
+    expect(s.state.requestList.some((r) => r.id === 'req-003')).toBe(false);
+    expect(s.state.selRecord?.id, 'a filter closed the record').toBe('req-003');
+
+    fake.analyticsFailure = new ApiError(500, 'Internal', 'requests down');
+    await s.refreshRequestsPage();
+    expect(s.state.requestList).toEqual([]);
+    expect(s.state.selRecord?.id, 'a failed read closed the record').toBe('req-003');
+
+    // And a load never OPENS one.
+    fake.analyticsFailure = null;
+    s.select(null);
+    await s.refreshRequestsPage();
+    expect(s.state.selRecord).toBeNull();
+  });
+
+  for (const how of ['select(null)', 'a page change', 'an identity change'] as const) {
+    it(`is cleared with the selection and the payload text by ${how}`, async () => {
+      const { s } = await onRequests();
+      s.select('req-005');
+      await s.loadSelectedBodies('req-005');
+      expect(s.state.selBodies.rows, 'the payload did not load').not.toBeNull();
+      expect(s.state.selRecord?.id).toBe('req-005');
+      if (how === 'select(null)') s.select(null);
+      else if (how === 'a page change') s.go('overview');
+      else await s.signOut();
+      expect(s.state.selId).toBeNull();
+      expect(s.state.selRecord).toBeNull();
+      expect(s.state.selBodies, 'the cached payload text survived').toEqual({
+        rows: null,
+        loading: false,
+        error: null,
+      });
+    });
+  }
+});
+
 describe('destructive methods report to the shared dialog (adopt-red-destructive-actions 3.2, D6)', () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -2747,6 +2892,47 @@ describe('destructive methods report to the shared dialog (adopt-red-destructive
       expect(s.state.toast).toEqual({ kind: 'confirm', text: 'Payloads deleted' });
       expect(s.state.selBodies.rows).toBeNull();
       expect(s.state.requestList.find((r) => r.id === id)?.hasBodies).toBe(false);
+    });
+
+    // add-docked-inspector task 3.1 (design D7): a payload delete is the store's one in-place
+    // row write, and no load follows it. The inspector renders its retained record, so the
+    // record is patched in the same write, or the Payload section would outlive its bodies.
+    it('on success the retained record no longer has bodies either', async () => {
+      const { s, id } = await withPayload();
+      expect(s.state.selRecord?.id).toBe(id);
+      expect(s.state.selRecord?.hasBodies).toBe(true);
+      await s.deleteSelectedBodies(id, FROM_DIALOG);
+      expect(s.state.selRecord?.id, 'the record stays open').toBe(id);
+      expect(s.state.selRecord?.hasBodies, 'the record kept its deleted bodies').toBe(false);
+    });
+
+    it('on failure the retained record keeps its bodies', async () => {
+      const { s, fake, id } = await withPayload();
+      vi.spyOn(fake, 'deleteRequestBodies').mockRejectedValueOnce(boom('payload is being read'));
+      await expect(s.deleteSelectedBodies(id, FROM_DIALOG)).rejects.toThrow();
+      expect(s.state.selRecord?.hasBodies).toBe(true);
+    });
+
+    it('with the row filtered out of both lists first, the success still patches the record', async () => {
+      const { s, id } = await withPayload();
+      // The list and the Overview card no longer hold the row — the record alone does.
+      s.setState({ requestList: [], recentRequests: [] });
+      expect(s.state.selRecord?.id).toBe(id);
+      await s.deleteSelectedBodies(id, FROM_DIALOG);
+      expect(s.state.selRecord?.hasBodies, 'only a listed row was patched').toBe(false);
+    });
+
+    it('a delete resolving after an account change patches no record', async () => {
+      const { s, fake, id } = await withPayload();
+      let release: () => void = () => {};
+      vi.spyOn(fake, 'deleteRequestBodies').mockImplementationOnce(
+        () => new Promise<void>((resolve) => (release = resolve)),
+      );
+      const pending = s.deleteSelectedBodies(id, FROM_DIALOG);
+      await s.signOut();
+      release();
+      await pending;
+      expect(s.state.selRecord, 'the previous account’s record came back').toBeNull();
     });
   });
 

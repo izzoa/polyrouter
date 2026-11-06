@@ -199,7 +199,13 @@ describe('rows, gutters and fixed widths', () => {
   it('leaves no fixed width or min-width at or above 100px that a phone cannot honour', () => {
     // 100px is the threshold the inventory used; anything at or above it forces overflow
     // on a 390px viewport once the gutter and rail are accounted for.
-    for (const f of ['pages/Routing.tsx', 'components/BodyCaptureCard.tsx']) {
+    // The request inspector joined in add-route-trace-inspector (task 4.3): its route trace
+    // has to fit a 320px sheet, which leaves its labels 248px (design Risks, "Narrow sheet").
+    for (const f of [
+      'pages/Routing.tsx',
+      'components/BodyCaptureCard.tsx',
+      'components/Inspector.tsx',
+    ]) {
       const src = read(f);
       const offenders = (src.match(/(?<!max-)(?:min-)?width:\s*(\d{3,})px/g) ?? []).filter((m) => {
         const px = Number(/(\d+)px/.exec(m)?.[1] ?? 0);
@@ -207,6 +213,16 @@ describe('rows, gutters and fixed widths', () => {
       });
       expect(offenders, `${f} still pins a width a phone cannot honour`).toEqual([]);
     }
+  });
+
+  it('the request inspector declares no inline grid template (add-route-trace-inspector 4.3)', () => {
+    // An inline template would outrank the narrow sheet's layout, the trap the page grids had.
+    // A component holds no stylesheet, so any occurrence is inline: a style string, either
+    // quote, or a style-object key.
+    const src = read('components/Inspector.tsx');
+    expect(src, 'Inspector.tsx declares grid-template-columns inline').not.toMatch(
+      /grid-template-columns/,
+    );
   });
 
   it('leaves the already-fluid widths alone (5.4 — verify, do not change)', () => {

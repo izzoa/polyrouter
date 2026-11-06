@@ -334,6 +334,13 @@ export function buildRequestRows(n: number): RequestRow[] {
       batchId: null,
       priceMode: null,
       qualitySignal: i % 3 === 0 ? null : 0.7,
+      // Why the cascade escalated (add-route-trace-inspector task 2.4). Only escalated
+      // rows carry a source, as the recorded column's CHECK requires: the cascade rows
+      // alternate the two sources by i mod 10 (4 → quality_gate, 9 → cheap_error), so
+      // req-004 / req-014 / req-024 are quality-gate escalations and req-014 also has a
+      // superseded attempt cost (i % 7 === 0). Every other row is null.
+      escalationSource:
+        layer === 'cascade' ? (i % 10 === 4 ? 'quality_gate' : 'cheap_error') : null,
       modelLabel: `Model ${String(i % 4)}`,
       providerLabel: `Provider ${String(i % 2)}`,
       agentLabel: `agent-${String(i % 3)}`,

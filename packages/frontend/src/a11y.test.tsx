@@ -6,7 +6,7 @@ import { FigureSkeleton } from './components/FigureSkeleton';
 import { Toggle } from './components/Toggle';
 import { createAppStore, type AppStore } from './state/appState';
 import { AppProvider } from './state/context';
-import { FakeApiClient } from './test/fakeClient';
+import { buildRequestRows, FakeApiClient } from './test/fakeClient';
 
 const flush = async (): Promise<void> => {
   for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 0));
@@ -258,6 +258,88 @@ describe('Dashboard a11y semantics', () => {
       pressEscape();
       await flush();
       expect(host.querySelector('#inspector-drawer')).toBeNull();
+    } finally {
+      dispose();
+    }
+  });
+
+  it("the inspector's route trace is one ordered list of text, its decoration hidden (add-route-trace-inspector 4.5)", async () => {
+    // A recovered request with one failed and one skipped member (dashboard-analytics "The
+    // trace reads as an ordered list"). The project has no axe dependency, so the checks are
+    // the suite's own: one list, text in walk order, decoration hidden, no control added.
+    const base = buildRequestRows(1)[0]!;
+    const row = {
+      ...base,
+      status: 'fallback' as const,
+      agentLabel: 'billing-bot',
+      decisionLayer: 'explicit',
+      providerLabel: 'Provider C',
+      modelLabel: 'model-c',
+      durationMs: 1_240,
+      errorKind: null,
+      errorStatus: null,
+      errorMessage: null,
+      errorRequestId: null,
+      errorMarkers: null,
+      attemptFailures: [
+        {
+          index: 0,
+          providerId: 'p1',
+          model: 'gpt-a',
+          kind: 'rate_limit',
+          status: 429,
+          dispatched: true,
+        },
+        { index: 1, providerId: 'p2', model: 'gpt-b', kind: 'unavailable', dispatched: false },
+      ],
+    };
+    const store = createAppStore(new FakeApiClient({ requestRows: [row] }));
+    const { host, dispose } = mountApp(store);
+    try {
+      await flush();
+      store.go('requests');
+      await flush();
+      store.select(row.id);
+      await flush();
+      const drawer = host.querySelector<HTMLElement>('#inspector-drawer');
+      expect(drawer).not.toBeNull();
+      // The dialog keeps its accessible name.
+      expect(drawer!.getAttribute('role')).toBe('dialog');
+      expect(drawer!.getAttribute('aria-label')).toBe('Request inspector');
+      // One ordered list, whose items read in walk order.
+      const lists = drawer!.querySelectorAll('ol');
+      expect(lists).toHaveLength(1);
+      const ol = lists[0]!;
+      // Its markers are removed, and WebKit drops list semantics from a marker-less list, so
+      // the role is explicit (the `pages/Routing.tsx` `ar-stages` precedent).
+      expect(ol.getAttribute('role')).toBe('list');
+      expect(ol.getAttribute('aria-label')).toBe('Route trace');
+      const lis = [...ol.querySelectorAll<HTMLElement>(':scope > li')];
+      expect(lis.map((li) => li.textContent)).toEqual([
+        'billing-bot',
+        'router · explicit',
+        'gpt-a · rate_limit · HTTP 429',
+        'gpt-b · skipped — circuit open (provider not contacted)',
+        'Provider C · model-c · served · 1.24s',
+      ]);
+      // Every stroke, branch and node mark is hidden; no item is, so each outcome is announced.
+      for (const li of lis) {
+        expect(li.getAttribute('aria-hidden')).toBeNull();
+        expect(li.closest('[aria-hidden="true"]')).toBeNull();
+        const marks = li.querySelectorAll<HTMLElement>('.rt-spine, .rt-branch, .rt-dot');
+        expect(marks.length).toBeGreaterThan(1);
+        for (const m of marks) expect(m.getAttribute('aria-hidden')).toBe('true');
+        // What is announced is exactly the item's text: the hidden marks hold none.
+        const shown = [...li.childNodes]
+          .filter((n) => !(n instanceof HTMLElement && n.getAttribute('aria-hidden') === 'true'))
+          .map((n) => n.textContent ?? '')
+          .join('');
+        expect(shown).toBe(li.textContent);
+      }
+      // The trace adds no control: nothing in it is focusable or operable.
+      expect(
+        ol.querySelectorAll('button, a, input, select, textarea, [tabindex], [role="button"]'),
+      ).toHaveLength(0);
     } finally {
       dispose();
     }

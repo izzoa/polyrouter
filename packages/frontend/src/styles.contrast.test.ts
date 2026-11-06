@@ -881,6 +881,21 @@ const ACCENT_RULES: readonly AccentRule[] = [
     selector: '.rs-batch-bar > span',
     props: ['background'],
   },
+  // add-route-trace-inspector design D5 / D6: the Route Trace's served branch is the open
+  // inspector's one focal series (DS-1 design D11). Its `li` is the `data-series="focal"` root
+  // the rendered audit counts (`data-measure="route-trace"`).
+  {
+    kind: 'focal series',
+    why: "the Route Trace's served branch, its 2px stroke: the inspector's one indigo series",
+    selector: '.rt-node--lit .rt-branch',
+    props: ['border-top'],
+  },
+  {
+    kind: 'focal series',
+    why: "the Route Trace's served node, filled: the inspector's one indigo series",
+    selector: '.rt-node--lit .rt-dot',
+    props: ['background', 'border-color'],
+  },
 ];
 /** The derivations `:root` may build from the raw accent. A custom property anywhere else that
  * carries it would launder the accent past the selector check. */
@@ -1207,7 +1222,9 @@ describe('--faint stays decorative-only in TSX', () => {
   const ALLOWED: Record<string, number> = {
     // The copy glyph left this list in adopt-design-tokens-v2: it carries meaning, so it
     // takes --text3 like the chevrons and close glyphs (dashboard-core contrast floors).
-    'components/Inspector.tsx': 2, // flow arrows between chips
+    // The inspector's two flow arrows between its route chips left with the chip row in
+    // add-route-trace-inspector: the Route Trace draws its route with styled, aria-hidden
+    // spans in styles.css, never with a glyph.
     // The ⋮⋮ drag glyph left this list in fix-tier-chain-drag-reorder: it became a real
     // reorder BUTTON, so it is an interactive control and takes --text3 (≥ 3:1), styled
     // in styles.css. Only the flow arrow remains decorative here.

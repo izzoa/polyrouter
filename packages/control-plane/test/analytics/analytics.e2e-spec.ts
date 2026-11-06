@@ -14,7 +14,13 @@ import { APP_GUARD } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { loadConfig } from '@polyrouter/shared';
-import { PERSISTENCE_PORT, userPrincipal, type PersistencePort } from '@polyrouter/shared/server';
+import {
+  PERSISTENCE_PORT,
+  canonicalModelKey,
+  deriveModelKey,
+  userPrincipal,
+  type PersistencePort,
+} from '@polyrouter/shared/server';
 import request from 'supertest';
 import type { App } from 'supertest/types';
 import { Pool } from 'pg';
@@ -93,6 +99,11 @@ interface LogSeed {
   /** The not-billed marker (zero-cost-unbilled-errors). Omitted = NULL, a row that
    * predates the column: every older seed in this file stays a legacy row. */
   billed?: boolean | null;
+  /** The catalog `model_price.id` the snapshot was taken from, and which scope's pair
+   * decided the row (`tenant` | `agent`). Omitted = NULL, so every older seed in this
+   * file stays a legacy row (add-route-trace-inspector task 2.1). */
+  priceVersionId?: string | null;
+  structuralScope?: string | null;
 }
 
 describe('analytics API (#17)', () => {
@@ -136,8 +147,9 @@ describe('analytics API (#17)', () => {
          routing_header_name, routing_header_value,
          semantic_band, semantic_score, semantic_source, semantic_revision, provider_kind,
          attempt_failures, workload_class, workload_score, workload_source, workload_revision,
-         batch_id, price_mode, escalation_source, structural_epoch, billed)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,'test',$8,$9,$10,$11,1,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40)`,
+         batch_id, price_mode, escalation_source, structural_epoch, billed,
+         price_version_id, structural_scope)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'test',$8,$9,$10,$11,1,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42)`,
       [
         id,
         owner,
@@ -179,6 +191,8 @@ describe('analytics API (#17)', () => {
         s.escalationSource ?? null,
         s.structuralEpoch ?? null,
         s.billed ?? null,
+        s.priceVersionId ?? null,
+        s.structuralScope ?? null,
       ],
     );
     return id;
@@ -2977,6 +2991,259 @@ describe('analytics API (#17)', () => {
         errorCount: 1,
       });
       expect(theirs.body.spend).toBeCloseTo(0, 9);
+    });
+  });
+
+  describe('route-trace fields on the listing (add-route-trace-inspector)', () => {
+    /** The eight fields the listing is contracted to expose (analytics-api "The request
+     * listing exposes the route-trace fields"). Each is already spread from the row; these
+     * cases pin them so a projection that narrows the safe view fails here. */
+    const ROUTE_TRACE_FIELDS = [
+      'tierAssigned',
+      'usageEstimated',
+      'qualitySignal',
+      'escalationSource',
+      'providerKind',
+      'priceVersionId',
+      'structuralScope',
+      'structuralEpoch',
+    ] as const;
+    const NULLABLE_FIELDS = ROUTE_TRACE_FIELDS.filter((f) => f !== 'usageEstimated');
+    const traceFields = (r: Record<string, unknown>): Record<string, unknown> =>
+      Object.fromEntries(ROUTE_TRACE_FIELDS.map((f) => [f, r[f]]));
+
+    // The served model's catalog key, as the recorder resolves it: a known-family host
+    // (`api.openai.com` → `openai`) plus the model's external id (`deriveModelKey`). The
+    // catalog is GLOBAL (not owner-scoped): the id is unique to this run, and the key's rows
+    // are deleted afterwards so a rerun never resolves against them.
+    const SERVED_BASE_URL = 'https://api.openai.com/v1';
+    const SERVED_MODEL = `rt-e2e-${randomUUID()}`;
+    const PRICE_KEY = canonicalModelKey('openai', SERVED_MODEL);
+    let T: string;
+    let keptProvider: string;
+    let deletedProvider: string;
+    /** The kept provider's model, whose catalog key is PRICE_KEY: every row that provider
+     * served names it, so a newer catalog price for PRICE_KEY is a newer price for the
+     * request's own model ("its model's catalog price has since changed"). */
+    let servedModel: string;
+    /** The `model_price.id` the seeded rows record, as the recorder writes it. */
+    let recordedVersion: string;
+    /** Seeded ids by role, so an assertion names the row it is about. */
+    const id: Record<string, string> = {};
+
+    const mkProvider = async (
+      owner: string,
+      name: string,
+      baseUrl: string | null = null,
+    ): Promise<string> => {
+      const providerId = randomUUID();
+      await pool.query(
+        `INSERT INTO provider (id, owner_user_id, name, kind, protocol, base_url)
+         VALUES ($1, $2, $3, 'api_key', 'openai_compatible', $4)`,
+        [providerId, owner, name, baseUrl],
+      );
+      return providerId;
+    };
+    const mkModel = async (providerId: string, externalModelId: string): Promise<string> =>
+      (
+        await pool.query<{ id: string }>(
+          `INSERT INTO model (id, provider_id, external_model_id)
+           VALUES (gen_random_uuid(), $1, $2) RETURNING id`,
+          [providerId, externalModelId],
+        )
+      ).rows[0]!.id;
+    const mkPrice = async (inputPer1m: number, validFrom: string): Promise<string> =>
+      (
+        await pool.query<{ id: string }>(
+          `INSERT INTO model_price (id, model_key, input_price_per_1m, output_price_per_1m, source, valid_from)
+           VALUES (gen_random_uuid(), $1, $2, $3, 'bundled', $4) RETURNING id`,
+          [PRICE_KEY, inputPer1m, inputPer1m * 4, validFrom],
+        )
+      ).rows[0]!.id;
+
+    beforeAll(async () => {
+      T = await mkUser();
+      keptProvider = await mkProvider(T, 'RT kept', SERVED_BASE_URL);
+      deletedProvider = await mkProvider(T, 'RT deleted');
+      servedModel = await mkModel(keptProvider, SERVED_MODEL);
+      recordedVersion = await mkPrice(3, '2025-01-01T00:00:00.000Z');
+      // An escalated cascade row with every route-trace field recorded. Its usage was
+      // estimated, so `usageEstimated: true` can only come from the row itself.
+      id['escalated'] = await seedLog(T, {
+        providerId: keptProvider,
+        modelId: servedModel,
+        tier: 'heavy',
+        layer: 'cascade',
+        cost: 0.012346,
+        tin: 1200,
+        tout: 300,
+        escalated: true,
+        estimated: true,
+        qualitySignal: 0.42,
+        escalationSource: 'quality_gate',
+        providerKind: 'api_key',
+        priceSource: 'bundled',
+        priceVersionId: recordedVersion,
+        structuralScope: 'tenant',
+        structuralEpoch: 3,
+        structuralBand: 'ambiguous',
+        structuralScore: 0.4,
+        structuralBandSource: 'threshold',
+        at: DAY1,
+      });
+      // A legacy, explicitly routed, unpriced row: every nullable route-trace column is
+      // null. It names the kept provider (kind `api_key`) and the served model (whose key
+      // has a catalog price), so a null kind and a null version here prove the listing
+      // backfills neither from the providers table or the current catalog.
+      id['legacy'] = await seedLog(T, {
+        providerId: keptProvider,
+        modelId: servedModel,
+        layer: 'explicit',
+        cost: null,
+        tin: 40,
+        tout: 0,
+        at: DAY1B,
+      });
+      // A row served by a provider that is deleted later (task 2.2).
+      id['deletedProvider'] = await seedLog(T, {
+        providerId: deletedProvider,
+        tier: 'default',
+        layer: 'default',
+        cost: 0.0031,
+        tin: 100,
+        tout: 20,
+        providerKind: 'api_key',
+        priceSource: 'bundled',
+        priceVersionId: recordedVersion,
+        at: DAY2,
+      });
+      // A cascade whose cheap answer passed the gate, and a non-cascade row (task 2.3).
+      id['passingCascade'] = await seedLog(T, {
+        providerId: keptProvider,
+        modelId: servedModel,
+        tier: 'light',
+        layer: 'cascade',
+        cost: 0.0004,
+        tin: 80,
+        tout: 20,
+        escalated: false,
+        qualitySignal: 0.81,
+        providerKind: 'api_key',
+        priceSource: 'bundled',
+        priceVersionId: recordedVersion,
+        structuralScope: 'agent',
+        structuralEpoch: 1,
+        structuralBand: 'ambiguous',
+        structuralScore: 0.4,
+        structuralBandSource: 'threshold',
+        at: DAY2,
+      });
+      id['nonCascade'] = await seedLog(T, {
+        providerId: keptProvider,
+        modelId: servedModel,
+        tier: 'default',
+        layer: 'default',
+        cost: 0.0002,
+        tin: 50,
+        tout: 10,
+        providerKind: 'api_key',
+        priceSource: 'bundled',
+        priceVersionId: recordedVersion,
+        at: DAY2,
+      });
+    }, 30_000);
+
+    afterAll(async () => {
+      await pool.query('DELETE FROM "user" WHERE id = $1', [T]);
+      await pool.query('DELETE FROM model_price WHERE model_key = $1', [PRICE_KEY]);
+    });
+
+    const rowsById = async (user: string): Promise<Map<string, Record<string, unknown>>> => {
+      const res = await q('requests', user, { ...RANGE, limit: 50 }).expect(200);
+      return new Map(
+        (res.body.rows as Record<string, unknown>[]).map((r) => [r['id'] as string, r]),
+      );
+    };
+
+    it('the listing carries the eight route-trace fields verbatim, nulls included, and no ownership columns', async () => {
+      const rows = await rowsById(T);
+      expect(rows.size).toBe(5);
+      const escalated = rows.get(id['escalated']!)!;
+      for (const f of ROUTE_TRACE_FIELDS) expect(escalated).toHaveProperty(f);
+      expect(traceFields(escalated)).toEqual({
+        tierAssigned: 'heavy',
+        usageEstimated: true,
+        qualitySignal: 0.42,
+        escalationSource: 'quality_gate',
+        providerKind: 'api_key',
+        priceVersionId: recordedVersion,
+        structuralScope: 'tenant',
+        structuralEpoch: 3,
+      });
+      // The null-column row: every nullable field is present AND null, never omitted.
+      const legacy = rows.get(id['legacy']!)!;
+      expect(legacy).toMatchObject({ decisionLayer: 'explicit', cost: null, escalated: false });
+      for (const f of NULLABLE_FIELDS) expect(legacy).toHaveProperty(f, null);
+      expect(legacy).toHaveProperty('usageEstimated', false);
+      for (const r of [escalated, legacy]) {
+        expect(r).not.toHaveProperty('ownerUserId');
+        expect(r).not.toHaveProperty('orgId');
+      }
+    });
+
+    it('a non-escalated row carries no escalation source, and only the cascade row a quality signal', async () => {
+      const rows = await rowsById(T);
+      const passing = rows.get(id['passingCascade']!)!;
+      const plain = rows.get(id['nonCascade']!)!;
+      expect(passing).toMatchObject({ decisionLayer: 'cascade', escalated: false });
+      expect(plain).toMatchObject({ decisionLayer: 'default', escalated: false });
+      expect(passing).toHaveProperty('escalationSource', null);
+      expect(plain).toHaveProperty('escalationSource', null);
+      expect(passing).toHaveProperty('qualitySignal', 0.81);
+      expect(plain).toHaveProperty('qualitySignal', null);
+    });
+
+    // Last in this block: it changes the configuration the other cases were seeded under.
+    it('recorded snapshots are never re-derived from current configuration', async () => {
+      const before = await rowsById(T);
+      // The precondition is real: every row the kept provider served names the served
+      // model, and that model's catalog key, resolved as the recorder resolves it, is the
+      // key whose price is about to change.
+      const servedRoles = ['escalated', 'legacy', 'passingCascade', 'nonCascade'];
+      for (const role of servedRoles) {
+        expect(before.get(id[role]!)).toMatchObject({
+          providerId: keptProvider,
+          modelId: servedModel,
+          modelLabel: SERVED_MODEL,
+        });
+      }
+      expect(deriveModelKey(SERVED_BASE_URL, SERVED_MODEL)).toBe(PRICE_KEY);
+      // Today's configuration moves on: the kept provider changes kind, the other is
+      // deleted, and the served model's catalog price is superseded by a newer version.
+      await pool.query("UPDATE provider SET kind = 'subscription' WHERE id = $1", [keptProvider]);
+      await pool.query('DELETE FROM provider WHERE id = $1', [deletedProvider]);
+      const newerVersion = await mkPrice(9, '2025-06-01T00:00:00.000Z');
+      expect(newerVersion).not.toBe(recordedVersion);
+
+      const after = await rowsById(T);
+      expect(after.size).toBe(before.size);
+      for (const role of ['escalated', 'deletedProvider', 'passingCascade', 'nonCascade']) {
+        expect(after.get(id[role]!)).toMatchObject({
+          providerKind: 'api_key',
+          priceVersionId: recordedVersion,
+        });
+      }
+      // The legacy row's nulls stay null: nothing is backfilled from the provider it
+      // names or from its model's current catalog price.
+      expect(after.get(id['legacy']!)).toMatchObject({
+        modelId: servedModel,
+        providerKind: null,
+        priceVersionId: null,
+      });
+      // Every route-trace field on every row reads exactly as it did before the change.
+      for (const [rowId, r] of before) {
+        expect(traceFields(after.get(rowId)!)).toEqual(traceFields(r));
+      }
     });
   });
 });

@@ -275,6 +275,38 @@ describe('every data series declares its role (task 7.3)', () => {
     }
   });
 
+  it("Inspector: the route trace's lit branch is the one focal measure, on a served row only (add-route-trace-inspector 4.2)", async () => {
+    const h = await mount();
+    try {
+      h.store.go('requests');
+      await flush();
+      const rows = h.store.state.requestList;
+      const served = rows.find((r) => r.status === 'success');
+      const failed = rows.find((r) => r.status === 'error');
+      expect(served, 'the fixture has a served row').toBeDefined();
+      expect(failed, 'the fixture has an error row').toBeDefined();
+      for (const [row, want] of [
+        [served!, ['route-trace']],
+        [failed!, []],
+      ] as const) {
+        h.store.select(row.id);
+        await flush();
+        const drawer = h.host.querySelector('#inspector-drawer');
+        expect(drawer, `the inspector opened on ${row.id}`).not.toBeNull();
+        expect(focalMeasures(drawer!), `${row.status}: focal measures`).toEqual(want);
+        // The root is the served outcome node itself, so nothing else in the drawer is focal.
+        for (const f of drawer!.querySelectorAll<HTMLElement>('[data-series="focal"]')) {
+          expect(f.tagName).toBe('LI');
+          expect(f.classList.contains('rt-node--lit')).toBe(true);
+        }
+        h.store.select(null);
+        await flush();
+      }
+    } finally {
+      h.dispose();
+    }
+  });
+
   it('Limits: the budget card keeps the accent spend line and the neutral dashed ceiling', async () => {
     const h = await mount(busyClient());
     try {

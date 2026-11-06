@@ -314,23 +314,30 @@ describe('not-billed requests on screen (zero-cost-unbilled-errors)', () => {
       partsOf(drawer.querySelector<HTMLElement>('[data-testid="inspector-total-cost"]')!),
     ).toEqual(freeEst);
     const prices = [...drawer.querySelectorAll<HTMLElement>('[data-testid="inspector-price"]')];
-    // input and output at zero (`$0 free · est.`), the two cache classes unpriced.
-    expect(prices.map((p) => p.textContent)).toEqual([
-      '$0 free · est.',
-      '$0 free · est.',
-      'unpriced',
-      'unpriced',
-    ]);
+    // input and output at zero (`$0 free · est.`). The row records neither a count nor a
+    // snapshot for either cache class, so the receipt draws no cache row at all
+    // (add-route-trace-inspector, "Each token class reads as count × unit price": "no
+    // cache-write row is drawn"), where the old block listed both as `unpriced`.
+    expect(prices.map((p) => p.textContent)).toEqual(['$0 free · est.', '$0 free · est.']);
     expect(partsOf(prices[0]!)).toEqual(freeEst);
     expect(partsOf(prices[1]!)).toEqual(freeEst);
-    expect(partsOf(prices[2]!)).toEqual([['unpriced', 'var(--text3)']]);
+    expect(drawer.querySelectorAll('[data-testid="receipt-token-row"]')).toHaveLength(2);
+    expect(drawer.textContent).not.toContain('cache read');
+    expect(drawer.textContent).not.toContain('cache write');
     // The price row's own ink is Ink; the `$0` inherits it rather than going green.
     expect(prices[0]!.style.color).toBe('var(--text)');
-    // Usage was reported, so the counts carry no marker and the caption names the source.
+    // Usage was reported, so the counts carry no marker and no usage note is shown. The
+    // receipt's caption says when the snapshot was taken, and nothing claims it was fixed when
+    // the request was issued (add-route-trace-inspector, "A synchronous receipt makes no
+    // issue-time claim"; the old default footnote is gone).
     expect(
       usageMarker(drawer.querySelector<HTMLElement>('[data-testid="inspector-input-tokens"]')!),
     ).toBeNull();
-    expect(drawer.textContent).toContain('Token counts from provider usage');
+    expect(drawer.textContent).toContain(
+      'Recorded with the request — later price changes never apply.',
+    );
+    expect(drawer.textContent).not.toContain('Provider omitted usage');
+    expect(drawer.textContent).not.toMatch(/snapshotted\s+at\s+request\s+time/);
   });
 
   it('a usage-estimated row says so in words, never with the retired marker (2.3)', async () => {
@@ -342,10 +349,13 @@ describe('not-billed requests on screen (zero-cost-unbilled-errors)', () => {
     expect(drawer.textContent).toContain('Provider omitted usage — token counts are estimated.');
     expect(drawer.textContent).not.toContain('~');
     expect(drawer.textContent).not.toContain('flagged');
-    // Estimated usage never marks the money figures.
-    for (const id of ['inspector-served-cost', 'inspector-attempt-cost', 'inspector-total-cost']) {
+    // Estimated usage never marks the money figures. The row has no attempt cost, so the
+    // receipt draws no attempts row (add-route-trace-inspector, "No attempts row without
+    // attempt cost").
+    for (const id of ['inspector-served-cost', 'inspector-total-cost']) {
       expect(drawer.querySelector(`[data-testid="${id}"]`)!.textContent).not.toContain('est.');
     }
+    expect(drawer.querySelector('[data-testid="inspector-attempt-cost"]')).toBeNull();
   });
 
   it('a not-billed parent keeps its attempt line and total, and the note stays; a billed row has no note', async () => {
@@ -361,8 +371,9 @@ describe('not-billed requests on screen (zero-cost-unbilled-errors)', () => {
     const rowsText = [...parent.querySelectorAll<HTMLElement>('.kv-box > div')].map(
       (d) => d.textContent ?? '',
     );
-    expect(rowsText).toContain('served cost$0 · not billed');
-    expect(rowsText).toContain('attempt cost$0.0015');
+    // The price receipt's `served` and `attempts` rows (add-route-trace-inspector design D8).
+    expect(rowsText).toContain('served$0 · not billed');
+    expect(rowsText).toContain('attempts$0.0015');
     // The total shows the real attempt cost, never `$0 · not billed`, and it reads exactly
     // what the table's cost cell reads for the same row.
     expect(rowsText).toContain('total$0.0015');
@@ -503,11 +514,15 @@ describe('latency and token counts render at one precision in the table and the 
       { ...BASE, ...ok, id: 't-m', createdAt: at(2), durationMs: 125_000, inputTokens: 1_240 },
     ];
   };
-  /** The inspector's duration value. */
+  /** The inspector's latency: the route trace's outcome node carries it, since the Timing box
+   * folded into the trace (add-route-trace-inspector, "A served request lights only its served
+   * branch": `served · 1.24s`). */
   const inspectorDuration = (host: HTMLElement): string =>
-    [...host.querySelectorAll<HTMLElement>('#inspector-drawer span')]
-      .find((s) => s.textContent === 'duration')
-      ?.nextElementSibling?.textContent?.trim() ?? '';
+    host
+      .querySelector<HTMLElement>(
+        '#inspector-drawer ol.rt > li[data-kind="outcome"] [data-testid="rt-latency"]',
+      )
+      ?.textContent?.trim() ?? '';
 
   it('formats latency by magnitude, and counts compact in the table but exact in the inspector', async () => {
     h = await mountRequests(timed());

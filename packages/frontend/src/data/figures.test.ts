@@ -6,7 +6,6 @@
  * tones. The view tests (`notBilled.view.test.tsx`) assert that the parts reach the
  * screen in those tones. */
 import { describe, expect, it } from 'vitest';
-import { NOT_BILLED_LABEL as ANALYTICS_NOT_BILLED_LABEL } from './analytics';
 import type { RequestRow } from './api';
 import {
   ceilingMoney,
@@ -53,9 +52,8 @@ describe('the contract strings', () => {
     expect(EXPIRED).toBe('expired · awaiting refresh');
   });
 
-  it('keeps NOT_BILLED_LABEL under its old name, re-exported from data/analytics.ts', () => {
+  it('keeps NOT_BILLED_LABEL as an alias of NOT_BILLED (its data/analytics.ts re-export is gone)', () => {
     expect(NOT_BILLED_LABEL).toBe(NOT_BILLED);
-    expect(ANALYTICS_NOT_BILLED_LABEL).toBe(NOT_BILLED);
   });
 });
 

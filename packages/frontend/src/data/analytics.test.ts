@@ -1,26 +1,41 @@
 import { describe, expect, it } from 'vitest';
 import {
+  AGENT_UNATTRIBUTED,
   breakdownToSpend,
   escalationRate,
   fallbackRate,
   filterToRequestParams,
-  NOT_BILLED_LABEL,
+  NOT_BILLED_NOTE,
   rowCostLabel,
   rowCostParts,
   isTerminalSkip,
+  routeTraceCaption,
+  SKIP_LABEL,
+  SNAPSHOT_CAPTION_BATCH,
+  SNAPSHOT_CAPTION_SYNC,
   successRate,
   timeseriesToChart,
-  toAttemptTrail,
   toErrorView,
   toInspectorView,
+  toRouteTrace,
+  TRACE_NOT_RECORDED,
+  USAGE_ESTIMATED_NOTE,
+  type RouteTraceAttemptNode,
+  type RouteTraceNode,
+  type RouteTraceOutcomeNode,
+  type RouteTraceSupersededNode,
 } from './analytics';
 import {
   labelOf,
   totalCostMicros,
   type AnalyticsSummary,
+  type AttemptFailureEntry,
   type RequestRow,
+  type RequestStatus,
   type TimeseriesPoint,
 } from './api';
+import { fmtElapsed } from './batchBand';
+import { fmtLatency, NOT_BILLED } from './figures';
 
 const SUMMARY: AnalyticsSummary = {
   spend: 12.5,
@@ -78,6 +93,7 @@ const ROW: RequestRow = {
   priceMode: null,
   priceEstimated: false,
   qualitySignal: 0.8,
+  escalationSource: null,
   modelLabel: 'GPT',
   providerLabel: 'OpenAI',
   agentLabel: 'openclaw',
@@ -100,6 +116,32 @@ const ROW: RequestRow = {
   attemptFailures: null,
   hasBodies: false,
 };
+
+/** The trace's attempt nodes, in drawn order. */
+const attemptsOf = (nodes: readonly RouteTraceNode[]): RouteTraceAttemptNode[] =>
+  nodes.filter((n): n is RouteTraceAttemptNode => n.kind === 'attempt');
+/** The trace's one outcome node (it is always the last). */
+const outcomeOf = (nodes: readonly RouteTraceNode[]): RouteTraceOutcomeNode => {
+  const last = nodes[nodes.length - 1];
+  if (last?.kind !== 'outcome') throw new Error('the trace must end in its outcome node');
+  return last;
+};
+const supersededOf = (nodes: readonly RouteTraceNode[]): RouteTraceSupersededNode | undefined =>
+  nodes.find((n): n is RouteTraceSupersededNode => n.kind === 'superseded');
+/** The trace as the plain text of each node, in drawn order. */
+const traceTexts = (r: RequestRow): string[] => toRouteTrace(r).map((n) => n.text);
+/** A figure's parts as their joined text (null stays null). */
+const partsTextOf = (parts: readonly { text: string }[] | null): string | null =>
+  parts === null ? null : parts.map((p) => p.text).join(' ');
+
+/** One recorded attempt entry: a dispatched `rate_limit` failure unless overridden. */
+const entry = (over: Partial<AttemptFailureEntry> & { model: string }): AttemptFailureEntry => ({
+  index: 0,
+  providerId: 'p',
+  kind: 'rate_limit',
+  dispatched: true,
+  ...over,
+});
 
 describe('summary-derived rates', () => {
   it('computes success/fallback/escalation rates', () => {
@@ -504,7 +546,7 @@ describe('toErrorView — the ERROR card gate + headline rules (add-request-erro
   });
 });
 
-describe('toAttemptTrail / isTerminalSkip — the structural fallback trail (add-fallback-attempt-detail)', () => {
+describe('toRouteTrace / isTerminalSkip — the structural fallback trail (add-fallback-attempt-detail, folded into the route trace)', () => {
   const entries = [
     {
       index: 0,
@@ -533,35 +575,46 @@ describe('toAttemptTrail / isTerminalSkip — the structural fallback trail (add
   ];
 
   it('renders dispatched failures with kind (+ HTTP status when recorded) and labels skips explicitly', () => {
-    const trail = toAttemptTrail({ ...ROW, status: 'error', attemptFailures: entries });
+    const trail = attemptsOf(toRouteTrace({ ...ROW, status: 'error', attemptFailures: entries }));
     expect(trail).toEqual([
       {
+        kind: 'attempt',
+        emphasis: 'failed',
         model: 'gpt-x',
         label: 'unavailable · HTTP 529',
-        legLabel: null,
-        skipped: false,
         markers: null,
+        leg: null,
+        text: 'gpt-x · unavailable · HTTP 529',
       },
       {
+        kind: 'attempt',
+        emphasis: 'failed',
         model: 'strong-y',
         label: 'rate_limit',
-        legLabel: 'escalation',
-        skipped: false,
         markers: null,
+        leg: 'escalation',
+        text: 'strong-y · rate_limit · escalation',
       },
       {
+        kind: 'attempt',
+        emphasis: 'skipped',
         model: 'grok-z',
         label: 'skipped — circuit open (provider not contacted)',
-        legLabel: null,
-        skipped: true,
         markers: null,
+        leg: null,
+        text: 'grok-z · skipped — circuit open (provider not contacted)',
       },
     ]);
+    expect(SKIP_LABEL).toBe('skipped — circuit open (provider not contacted)');
   });
 
-  it('a null column (all history) yields an empty trail — the drawer renders as before', () => {
-    expect(toAttemptTrail(ROW)).toEqual([]);
-    expect(toInspectorView(ROW).attemptTrail).toEqual([]);
+  it('a null column (all history) draws no attempt node — source, decision and outcome only', () => {
+    expect(attemptsOf(toRouteTrace(ROW))).toEqual([]);
+    expect(toInspectorView(ROW).trace.map((n) => n.kind)).toEqual([
+      'source',
+      'decision',
+      'outcome',
+    ]);
     expect(toInspectorView(ROW).terminalSkipped).toBe(false);
   });
 
@@ -591,7 +644,7 @@ describe('toAttemptTrail / isTerminalSkip — the structural fallback trail (add
 
   it('rides toInspectorView', () => {
     const v = toInspectorView({ ...ROW, status: 'error', attemptFailures: entries });
-    expect(v.attemptTrail).toHaveLength(3);
+    expect(attemptsOf(v.trace)).toHaveLength(3);
     expect(v.terminalSkipped).toBe(true);
   });
 });
@@ -690,7 +743,7 @@ const FIELD_REPORT: RequestRow = {
 
 describe('not-billed rows (zero-cost-unbilled-errors)', () => {
   it('the table cell reads `$0 · not billed`, never a ~ estimate', () => {
-    expect(rowCostLabel(FIELD_REPORT)).toBe(NOT_BILLED_LABEL);
+    expect(rowCostLabel(FIELD_REPORT)).toBe(NOT_BILLED);
     expect(rowCostLabel(FIELD_REPORT)).toBe('$0 · not billed');
     expect(rowCostLabel(FIELD_REPORT)).not.toContain('~');
   });
@@ -835,8 +888,8 @@ describe('inspector unit prices render at display precision (zero-cost-unbilled-
 // fix-bad-request-dead-end: the operator-facing half of the reported incident. A
 // RECOVERED request has no terminal error but very much has a trail, and a WITHHELD
 // message is only diagnosable through the retained classification.
-describe('toErrorView / toAttemptTrail — recovered rows and withheld messages', () => {
-  it('a fallback row renders NO error card but DOES render its trail', () => {
+describe('toErrorView / toRouteTrace — recovered rows and withheld messages', () => {
+  it('a fallback row renders NO error card but DOES draw its trail', () => {
     const row = {
       ...ROW,
       status: 'fallback',
@@ -858,11 +911,12 @@ describe('toErrorView / toAttemptTrail — recovered rows and withheld messages'
       ],
     } as unknown as RequestRow;
     expect(toErrorView(row)).toBeNull(); // no terminal error → no card
-    const trail = toAttemptTrail(row);
+    const trail = attemptsOf(toRouteTrace(row));
     expect(trail).toHaveLength(1);
     expect(trail[0]!.model).toBe('mimo-v2.5-pro');
     expect(trail[0]!.label).toBe('bad_request · HTTP 400');
     expect(trail[0]!.markers).toEqual(['context_length_exceeded']);
+    expect(trail[0]!.text).toBe('mimo-v2.5-pro · bad_request · HTTP 400 · context_length_exceeded');
   });
 
   it('a withheld message still shows its classification on the card', () => {
@@ -904,5 +958,825 @@ describe('toErrorView / toAttemptTrail — recovered rows and withheld messages'
       errorMarkers: ['upstream_oversized'],
     } as unknown as RequestRow;
     expect(toErrorView(row)?.markers).toEqual(['upstream_oversized']);
+  });
+});
+
+/* ---- add-route-trace-inspector: the route trace (tasks 3.1–3.4) -------------------- */
+
+/** dashboard-analytics "The inspector draws the recorded route as a trace" (task 3.1). */
+describe('toRouteTrace — the recorded route as a trace (add-route-trace-inspector 3.1)', () => {
+  it('a fallback request draws its walk, not its tier: no node for the unwalked member C', () => {
+    // Tier `heavy` is [A, B, C]: A was rejected (rate_limit, HTTP 429) and B served.
+    const r: RequestRow = {
+      ...ROW,
+      status: 'fallback',
+      tierAssigned: 'heavy',
+      decisionLayer: 'explicit',
+      routingReason: 'tier heavy: model-a → model-b → model-c; model-a rate_limit (429)',
+      modelId: 'model-b',
+      modelLabel: 'Model B',
+      providerLabel: 'Provider B',
+      attemptFailures: [entry({ model: 'model-a', status: 429 })],
+    };
+    expect(traceTexts(r)).toEqual([
+      'openclaw',
+      'router · explicit',
+      'model-a · rate_limit · HTTP 429',
+      'Provider B · Model B · served · 1.20s',
+    ]);
+    // C is named only by the verbatim reason (which still renders), never by the trace, and
+    // the tier itself is the Decision section's `tier` row, not a trace node.
+    expect(traceTexts(r).join(' ')).not.toContain('model-c');
+    expect(traceTexts(r).join(' ')).not.toContain('heavy');
+    // The inspector's trace is this function's output for the row. "Editing the tier afterwards
+    // leaves the trace unchanged" is rendered in `routeTrace.view.test.tsx`, which edits the
+    // tier (removing B, adding D) while the inspector is open.
+    expect(toInspectorView(r).trace).toEqual(toRouteTrace(r));
+  });
+
+  it('the source node reads the agent label, or `(no agent)`, never the raw agent id', () => {
+    const keyless: RequestRow = { ...ROW, agentId: null, agentLabel: null };
+    const deleted: RequestRow = { ...ROW, agentId: 'agent-raw-7f3a', agentLabel: null };
+    for (const r of [keyless, deleted]) {
+      const [source] = toRouteTrace(r);
+      expect(source).toEqual({ kind: 'source', emphasis: 'neutral', text: '(no agent)' });
+      expect(source!.text).toBe(AGENT_UNATTRIBUTED);
+      expect(traceTexts(r).join(' ')).not.toContain('agent-raw-7f3a');
+    }
+    expect(toRouteTrace(ROW)[0]!.text).toBe('openclaw');
+  });
+
+  it('the decision chip names any layer verbatim and neutrally, never blank', () => {
+    for (const layer of ['workload', 'explicit', 'cascade', 'l9_quantum_vibes']) {
+      const decision = toRouteTrace({ ...ROW, decisionLayer: layer })[1];
+      expect(decision).toEqual({
+        kind: 'decision',
+        emphasis: 'neutral',
+        layer,
+        text: `router · ${layer}`,
+      });
+    }
+  });
+
+  it('a cascade walk keeps its stored leg order, even though leg-relative indexes collide', () => {
+    // Stored walk order, cheap leg first: indexes 0, 1, then 0 again on the escalation
+    // leg. Sorting by index would interleave the legs (cheap 0, escalation 0, cheap 1).
+    const r: RequestRow = {
+      ...ROW,
+      decisionLayer: 'cascade',
+      status: 'fallback',
+      escalated: true,
+      escalationSource: 'cheap_error',
+      attemptFailures: [
+        entry({ index: 0, model: 'cheap-1', kind: 'unavailable', leg: 'cheap' }),
+        entry({ index: 1, model: 'cheap-2', kind: 'timeout', leg: 'cheap' }),
+        entry({ index: 0, model: 'strong-1', status: 429, leg: 'escalation' }),
+      ],
+    };
+    const attempts = attemptsOf(toRouteTrace(r));
+    expect(attempts.map((a) => a.model)).toEqual(['cheap-1', 'cheap-2', 'strong-1']);
+    expect(attempts.map((a) => a.leg)).toEqual(['cheap leg', 'cheap leg', 'escalation']);
+    expect(attempts.map((a) => a.text)).toEqual([
+      'cheap-1 · unavailable · cheap leg',
+      'cheap-2 · timeout · cheap leg',
+      'strong-1 · rate_limit · HTTP 429 · escalation',
+    ]);
+    // A primary (non-cascade) chain records no leg, so it carries no tag.
+    expect(
+      attemptsOf(toRouteTrace({ ...ROW, attemptFailures: [entry({ model: 'a' })] }))[0]!.leg,
+    ).toBe(null);
+  });
+
+  it('an error row with detail keeps its ERROR card AND its trace, which still ends in its outcome', () => {
+    const r: RequestRow = {
+      ...ROW,
+      status: 'error',
+      errorKind: 'rate_limit',
+      errorStatus: 429,
+      attemptFailures: [entry({ model: 'a', status: 429, terminal: true })],
+    };
+    const v = toInspectorView(r);
+    expect(v.errorView?.headline).toBe('rate_limit · HTTP 429');
+    expect(v.trace.map((n) => n.kind)).toEqual(['source', 'decision', 'attempt', 'outcome']);
+    expect(v.routingReason).toBe(ROW.routingReason);
+  });
+});
+
+/** dashboard-analytics "The route trace lights only a served outcome" (task 3.1). */
+describe('the route trace lights only a served outcome (add-route-trace-inspector 3.1)', () => {
+  it('a served request lights only its outcome, which names the provider and the model', () => {
+    for (const status of ['success', 'fallback'] as const) {
+      const r: RequestRow = {
+        ...ROW,
+        status,
+        providerLabel: 'P',
+        modelLabel: 'M',
+        durationMs: 1_240,
+        attemptFailures: status === 'fallback' ? [entry({ model: 'a', status: 429 })] : null,
+      };
+      const trace = toRouteTrace(r);
+      expect(outcomeOf(trace)).toEqual({
+        kind: 'outcome',
+        emphasis: 'lit',
+        provider: 'P',
+        model: 'M',
+        result: 'served',
+        latency: '1.24s',
+        text: 'P · M · served · 1.24s',
+      });
+      // Exactly one outcome node, and it is the only lit node.
+      expect(trace.filter((n) => n.kind === 'outcome')).toHaveLength(1);
+      expect(trace.filter((n) => n.emphasis === 'lit')).toEqual([outcomeOf(trace)]);
+    }
+    // With no labels the outcome falls back to the recorded ids, never to `unknown`.
+    const ids = outcomeOf(toRouteTrace({ ...ROW, providerLabel: null, modelLabel: null }));
+    expect([ids.provider, ids.model]).toEqual(['p1', 'm1']);
+  });
+
+  it('an exhausted chain ends unlit in `failed · <latency>`, without naming a model again', () => {
+    // Both members are on the recorded provider, so it is the last one tried (flag RF-1).
+    const r: RequestRow = {
+      ...ROW,
+      status: 'error',
+      durationMs: 2_100,
+      attemptFailures: [
+        entry({ index: 0, providerId: 'p1', model: 'a', status: 429 }),
+        entry({
+          index: 1,
+          providerId: 'p1',
+          model: 'b',
+          kind: 'unavailable',
+          status: 503,
+          terminal: true,
+        }),
+      ],
+    };
+    const trace = toRouteTrace(r);
+    expect(trace.map((n) => n.text).slice(2)).toEqual([
+      'a · rate_limit · HTTP 429',
+      'b · unavailable · HTTP 503',
+      'OpenAI · failed · 2.10s',
+    ]);
+    expect(outcomeOf(trace)).toMatchObject({
+      emphasis: 'neutral',
+      provider: 'OpenAI',
+      model: null,
+      result: 'failed',
+    });
+    expect(trace.some((n) => n.emphasis === 'lit')).toBe(false);
+  });
+
+  it('an error with no terminal-marked entry names the recorded model, when one is recorded', () => {
+    const legacy: RequestRow = { ...ROW, status: 'error', attemptFailures: null };
+    expect(outcomeOf(toRouteTrace(legacy)).text).toBe('OpenAI · GPT · failed · 1.20s');
+    // A post-commit stream failure after an earlier failed member: no entry carries the
+    // terminal marker, and the row records the committed member, which the trail never holds.
+    const committed: RequestRow = {
+      ...legacy,
+      attemptFailures: [entry({ model: 'a', status: 429 })],
+    };
+    expect(outcomeOf(toRouteTrace(committed)).text).toBe('OpenAI · GPT · failed · 1.20s');
+    expect(outcomeOf(toRouteTrace({ ...legacy, modelLabel: null })).model).toBe('m1');
+    // No model recorded at all: the outcome still reads, with no blank slot.
+    expect(outcomeOf(toRouteTrace({ ...legacy, modelLabel: null, modelId: null })).text).toBe(
+      'OpenAI · failed · 1.20s',
+    );
+    for (const r of [legacy, committed]) {
+      expect(toRouteTrace(r).some((n) => n.emphasis === 'lit')).toBe(false);
+    }
+  });
+
+  it('a cancelled request is unlit, names the recorded provider and model, and reads `cancelled by client`', () => {
+    const r: RequestRow = { ...ROW, status: 'cancelled', durationMs: 800 };
+    expect(outcomeOf(toRouteTrace(r))).toEqual({
+      kind: 'outcome',
+      emphasis: 'neutral',
+      provider: 'OpenAI',
+      model: 'GPT',
+      result: 'cancelled by client',
+      latency: '800ms',
+      text: 'OpenAI · GPT · cancelled by client · 800ms',
+    });
+  });
+
+  it('an unrecognised status renders unlit and verbatim, and never blank', () => {
+    // `RequestStatus` admits any recorded string, so an unrecognised value needs no cast.
+    const odd: RequestRow = { ...ROW, status: 'throttled' };
+    expect(outcomeOf(toRouteTrace(odd))).toMatchObject({
+      emphasis: 'neutral',
+      provider: 'OpenAI',
+      model: null,
+      result: 'throttled',
+      text: 'OpenAI · throttled · 1.20s',
+    });
+    const blank: RequestRow = { ...ROW, status: '' };
+    expect(outcomeOf(toRouteTrace(blank)).text).toBe('OpenAI · unknown · 1.20s');
+  });
+
+  it('an unlit outcome names the recorded provider only when it was the last one tried (flag RF-1)', () => {
+    // The recorder records a failed walk against its final leg's FIRST member. An exhausted
+    // chain whose terminal entry is on another provider therefore keeps today's text.
+    const exhausted: RequestRow = {
+      ...ROW,
+      status: 'error',
+      durationMs: 2_100,
+      attemptFailures: [
+        entry({ index: 0, providerId: 'p1', model: 'a', status: 429 }),
+        entry({ index: 1, providerId: 'p2', model: 'b', status: 503, terminal: true }),
+      ],
+    };
+    expect(outcomeOf(toRouteTrace(exhausted))).toMatchObject({
+      provider: null,
+      text: 'failed · 2.10s',
+    });
+    // A terminal entry that recorded no provider id cannot confirm it either.
+    const unknownTerminal: RequestRow = {
+      ...exhausted,
+      attemptFailures: [entry({ providerId: null, model: 'b', status: 503, terminal: true })],
+    };
+    expect(outcomeOf(toRouteTrace(unknownTerminal)).text).toBe('failed · 2.10s');
+    // A non-retryable stop after a failed member is recorded against that first member, which
+    // the trail holds; the member that stopped the walk is not in it.
+    const stopped: RequestRow = {
+      ...ROW,
+      status: 'error',
+      attemptFailures: [entry({ providerId: 'p1', model: 'a', status: 429 })],
+    };
+    expect(outcomeOf(toRouteTrace(stopped))).toMatchObject({
+      provider: null,
+      text: 'GPT · failed · 1.20s',
+    });
+    // With no provider label, the recorded id; with no provider recorded, today's text.
+    const cancelled: RequestRow = { ...ROW, status: 'cancelled', durationMs: 800 };
+    expect(outcomeOf(toRouteTrace({ ...cancelled, providerLabel: null })).text).toBe(
+      'p1 · GPT · cancelled by client · 800ms',
+    );
+    for (const [r, today] of [
+      [cancelled, 'GPT · cancelled by client · 800ms'],
+      [{ ...ROW, status: 'error' }, 'GPT · failed · 1.20s'],
+      [{ ...ROW, status: 'throttled' }, 'throttled · 1.20s'],
+    ] as const) {
+      const none: RequestRow = { ...r, providerLabel: null, providerId: null };
+      expect(outcomeOf(toRouteTrace(none))).toMatchObject({ provider: null, text: today });
+    }
+  });
+
+  it("a batch item's outcome reads the job's wall time, in the table's latency format", () => {
+    const wall = 3 * 3_600_000 + 60_000;
+    const item: RequestRow = {
+      ...ROW,
+      decisionLayer: 'explicit',
+      batchId: 'batch_01',
+      priceMode: 'batch',
+      durationMs: wall,
+    };
+    const trace = toRouteTrace(item);
+    expect(trace[1]!.text).toBe('router · explicit');
+    expect(outcomeOf(trace)).toMatchObject({ result: 'served', latency: '3h 1m' });
+    expect(outcomeOf(trace).latency).toBe(fmtElapsed(wall));
+    // The table's predicate: either column alone makes a batch item.
+    expect(outcomeOf(toRouteTrace({ ...item, batchId: null })).latency).toBe('3h 1m');
+    expect(outcomeOf(toRouteTrace({ ...item, priceMode: null })).latency).toBe('3h 1m');
+    // A synchronous row keeps `fmtLatency`.
+    expect(outcomeOf(toRouteTrace({ ...ROW, durationMs: 125_000 })).latency).toBe(
+      fmtLatency(125_000),
+    );
+    // The Decision section still states the explicit layer beside the batch mode and job.
+    const v = toInspectorView(item);
+    expect([v.decisionLayer, v.batchId, v.routingReason]).toEqual([
+      'explicit',
+      'batch_01',
+      ROW.routingReason,
+    ]);
+  });
+});
+
+/** dashboard-analytics "The route trace shows a superseded cascade call only from what was
+ * recorded" (task 3.2). */
+describe('the superseded cascade call, drawn only from what was recorded (add-route-trace-inspector 3.2)', () => {
+  /** A quality-gate escalation the strong model served, exactly priced, with a superseded
+   * cheap call that cost 3,100 µ$ and no cheap-leg failures. */
+  const GATED: RequestRow = {
+    ...ROW,
+    decisionLayer: 'cascade',
+    escalated: true,
+    escalationSource: 'quality_gate',
+    qualitySignal: 0.42,
+    attemptCostMicros: 3_100,
+    priceSource: 'bundled',
+    priceEstimated: false,
+    modelId: 'strong-model',
+    modelLabel: 'Strong',
+    providerLabel: 'Anthropic',
+  };
+
+  it('a quality-gate escalation shows the superseded call between the decision and the outcome', () => {
+    const trace = toRouteTrace(GATED);
+    expect(trace.map((n) => n.text)).toEqual([
+      'openclaw',
+      'router · cascade',
+      'cheap attempt superseded · q=0.42 · $0.0031',
+      'Anthropic · Strong · served · 1.20s',
+    ]);
+    const node = supersededOf(trace)!;
+    expect(node).toMatchObject({ emphasis: 'neutral', quality: 'q=0.42' });
+    // It names no model: the listing carries none for the superseded call.
+    expect(Object.keys(node)).not.toContain('model');
+    expect(node.text).not.toContain('Strong');
+    expect(node.text).not.toContain('strong-model');
+  });
+
+  it('an attempt cost is marked as an estimate only when the listing can tell', () => {
+    // Exact served price, flag set: the flag can only have come from an attempt.
+    const flagged: RequestRow = { ...GATED, priceEstimated: true };
+    expect(supersededOf(toRouteTrace(flagged))!.text).toBe(
+      'cheap attempt superseded · q=0.42 · $0.0031 · est.',
+    );
+    const fv = toInspectorView(flagged);
+    expect(partsTextOf(fv.attemptsRowParts)).toBe('$0.0031 · est.');
+    // Flag unset: neither attempt figure is marked.
+    const exact = toInspectorView(GATED);
+    expect(supersededOf(exact.trace)!.text).toBe('cheap attempt superseded · q=0.42 · $0.0031');
+    expect(partsTextOf(exact.attemptsRowParts)).toBe('$0.0031');
+    // The served price is itself an estimate: the listing cannot say whether the attempt was
+    // too, so neither attempt figure is marked, and the total is.
+    for (const priceSource of ['native_family', 'listed']) {
+      const v = toInspectorView({ ...GATED, priceSource, priceEstimated: true });
+      expect(supersededOf(v.trace)!.text).toBe('cheap attempt superseded · q=0.42 · $0.0031');
+      expect(partsTextOf(v.attemptsRowParts)).toBe('$0.0031');
+      expect(v.totalCost.endsWith(' · est.')).toBe(true);
+    }
+  });
+
+  it('a superseded call sits between its legs: after the last cheap entry, before the escalation', () => {
+    const r: RequestRow = {
+      ...GATED,
+      status: 'fallback',
+      attemptFailures: [
+        entry({ index: 0, model: 'cheap-1', kind: 'unavailable', leg: 'cheap' }),
+        entry({ index: 1, model: 'cheap-2', kind: 'unavailable', leg: 'cheap' }),
+        entry({ index: 0, model: 'strong-1', status: 429, leg: 'escalation' }),
+      ],
+    };
+    expect(toRouteTrace(r).map((n) => n.kind)).toEqual([
+      'source',
+      'decision',
+      'attempt',
+      'attempt',
+      'superseded',
+      'attempt',
+      'outcome',
+    ]);
+    expect(traceTexts(r).slice(3, 6)).toEqual([
+      'cheap-2 · unavailable · cheap leg',
+      'cheap attempt superseded · q=0.42 · $0.0031',
+      'strong-1 · rate_limit · HTTP 429 · escalation',
+    ]);
+  });
+
+  it('a failed cheap leg is not a superseded answer: no node, no `q=`, a `cheap leg` attempt', () => {
+    const r: RequestRow = {
+      ...GATED,
+      escalationSource: 'cheap_error',
+      qualitySignal: 0, // the legacy score a cheap_error row may carry
+      attemptCostMicros: 0,
+      attemptFailures: [entry({ model: 'cheap-1', kind: 'unavailable', leg: 'cheap' })],
+    };
+    const trace = toRouteTrace(r);
+    expect(supersededOf(trace)).toBeUndefined();
+    expect(attemptsOf(trace).map((a) => a.leg)).toEqual(['cheap leg']);
+    expect(trace.some((n) => /q=/.test(n.text))).toBe(false);
+    // A cheap_error escalation whose superseded call did cost money (a passing verdict whose
+    // replay failed) draws the node from that cost, still with no `q=`.
+    const replayed = supersededOf(toRouteTrace({ ...r, attemptCostMicros: 3_100 }))!;
+    expect(replayed.text).toBe('cheap attempt superseded · $0.0031');
+  });
+
+  it('a legacy escalation draws only what it recorded', () => {
+    const legacy: RequestRow = { ...GATED, escalationSource: null };
+    expect(supersededOf(toRouteTrace(legacy))!.text).toBe('cheap attempt superseded · $0.0031');
+    expect(supersededOf(toRouteTrace({ ...legacy, attemptCostMicros: 0 }))).toBeUndefined();
+    // A quality-gate row with no recorded score and no attempt cost: the label alone.
+    const bare = supersededOf(
+      toRouteTrace({ ...GATED, qualitySignal: null, attemptCostMicros: 0 }),
+    )!;
+    expect(bare).toMatchObject({
+      quality: null,
+      costParts: null,
+      text: 'cheap attempt superseded',
+    });
+    // A row that did not escalate never draws one (a passing cascade with a signal).
+    expect(supersededOf(toRouteTrace({ ...GATED, escalated: false, escalationSource: null }))).toBe(
+      undefined,
+    );
+  });
+
+  it("over a fixture matrix, the superseded node's cost is the receipt's attempt parts, never re-derived", () => {
+    const sources: ('quality_gate' | 'cheap_error' | null)[] = [
+      'quality_gate',
+      'cheap_error',
+      null,
+    ];
+    const prices: [string | null, boolean][] = [
+      [null, false],
+      ['bundled', false],
+      ['bundled', true],
+      ['native_family', true],
+      ['listed', true],
+    ];
+    const trails: (AttemptFailureEntry[] | null)[] = [
+      null,
+      [entry({ model: 'c', leg: 'cheap' })],
+      [entry({ model: 'c', leg: 'cheap' }), entry({ model: 's', leg: 'escalation' })],
+      [entry({ model: 's', leg: 'escalation' })],
+    ];
+    let drawn = 0;
+    let checked = 0;
+    for (const escalated of [true, false])
+      for (const escalationSource of escalated ? sources : [null])
+        for (const attemptCostMicros of [0, 40, 3_100])
+          for (const qualitySignal of [null, 0, 0.42])
+            for (const [priceSource, priceEstimated] of prices)
+              for (const attemptFailures of trails) {
+                const r: RequestRow = {
+                  ...ROW,
+                  decisionLayer: 'cascade',
+                  status: attemptFailures === null ? 'success' : 'fallback',
+                  escalated,
+                  escalationSource,
+                  attemptCostMicros,
+                  qualitySignal,
+                  priceSource,
+                  priceEstimated,
+                  attemptFailures,
+                };
+                const v = toInspectorView(r);
+                expect(v.trace).toEqual(toRouteTrace(r));
+                const node = supersededOf(v.trace);
+                const expected =
+                  escalated && (escalationSource === 'quality_gate' || attemptCostMicros > 0);
+                expect(node !== undefined, JSON.stringify(r.attemptFailures)).toBe(expected);
+                checked += 1;
+                if (node === undefined) continue;
+                drawn += 1;
+                if (attemptCostMicros > 0) {
+                  // The same parts, as data and as the very array the receipt row renders.
+                  expect(node.costParts).toEqual(v.attemptParts);
+                  expect(node.costParts).toBe(v.attemptsRowParts);
+                  expect(supersededOf(toRouteTrace(r))!.costParts).toEqual(v.attemptParts);
+                } else {
+                  expect(node.costParts).toBeNull();
+                  expect(v.attemptsRowParts).toBeNull();
+                }
+                expect(node.quality !== null).toBe(
+                  escalationSource === 'quality_gate' && qualitySignal !== null,
+                );
+                // Never after an escalation-leg entry, never before a cheap-leg one.
+                const at = v.trace.indexOf(node);
+                const legs = attemptsOf(v.trace).map((a) => [v.trace.indexOf(a), a.leg] as const);
+                for (const [i, leg] of legs)
+                  expect(leg === 'cheap leg' ? i < at : i > at).toBe(true);
+              }
+    expect(checked).toBe((3 + 1) * 3 * 3 * 5 * 4);
+    expect(drawn).toBeGreaterThan(0);
+  });
+});
+
+/** dashboard-analytics "The inspector draws the recorded route as a trace", scenario "A
+ * recovered request without recorded attempts says so" (task 3.3). */
+describe('the trace caption (add-route-trace-inspector 3.3)', () => {
+  it('only a recovered (`fallback`) row with null attempts says its history was not recorded', () => {
+    const recovered: RequestRow = { ...ROW, status: 'fallback', attemptFailures: null };
+    expect(TRACE_NOT_RECORDED).toBe('attempt history was not recorded for this request');
+    expect(routeTraceCaption(recovered)).toBe(TRACE_NOT_RECORDED);
+    const v = toInspectorView(recovered);
+    expect(v.traceCaption).toBe(TRACE_NOT_RECORDED);
+    expect(v.trace.map((n) => n.kind)).toEqual(['source', 'decision', 'outcome']);
+    expect(outcomeOf(v.trace).emphasis).toBe('lit');
+  });
+
+  it('an error, success or cancelled row with null attempts, and a recorded fallback, show none', () => {
+    for (const status of ['error', 'success', 'cancelled'] as const) {
+      expect(toInspectorView({ ...ROW, status, attemptFailures: null }).traceCaption).toBeNull();
+    }
+    const recorded: RequestRow = {
+      ...ROW,
+      status: 'fallback',
+      attemptFailures: [entry({ model: 'a', status: 429 })],
+    };
+    expect(toInspectorView(recorded).traceCaption).toBeNull();
+  });
+});
+
+/** dashboard-analytics "The route trace draws no commit marker until commit time is
+ * recorded" (task 3.4). */
+describe('no commit marker (add-route-trace-inspector 3.4)', () => {
+  /** A time figure in either latency format: `412ms`, `1.24s`, `2m 05s`, `45s`, `12m`,
+   * `3h 1m`. */
+  const TIME = /\d+h \d+m|\d+m \d{2}s|\d+(?:\.\d+)?(?:ms|s|m)\b/g;
+
+  it('over every status, no node mentions a first token or a commit, and only the outcome carries a time', () => {
+    const statuses: RequestStatus[] = ['success', 'fallback', 'error', 'cancelled', 'throttled'];
+    const shapes: Partial<RequestRow>[] = [
+      {},
+      {
+        attemptFailures: [
+          entry({ model: 'a', status: 429 }),
+          entry({ model: 'b', dispatched: false, terminal: true }),
+        ],
+      },
+      {
+        decisionLayer: 'cascade',
+        escalated: true,
+        escalationSource: 'quality_gate',
+        qualitySignal: 0.42,
+        attemptCostMicros: 3_100,
+        attemptFailures: [entry({ model: 'c', leg: 'cheap' })],
+      },
+      { batchId: 'batch_01', priceMode: 'batch', durationMs: 7_412_300 },
+      { durationMs: 412 },
+      { durationMs: 125_000 },
+    ];
+    let checked = 0;
+    for (const status of statuses)
+      for (const shape of shapes) {
+        const r: RequestRow = { ...ROW, ...shape, status };
+        const trace = toRouteTrace(r);
+        for (const n of trace) expect(n.text).not.toMatch(/first token|commit/i);
+        const outcome = outcomeOf(trace);
+        expect(outcome.text.match(TIME)).toEqual([outcome.latency]);
+        for (const n of trace.slice(0, -1)) expect(n.text.match(TIME)).toBeNull();
+        checked += 1;
+      }
+    expect(checked).toBe(statuses.length * shapes.length);
+  });
+});
+
+/* ---- add-route-trace-inspector: the price receipt (task 3.5) ----------------------- */
+
+/** dashboard-analytics "The inspector's price receipt states its provenance". */
+describe('the price receipt states its provenance (add-route-trace-inspector 3.5)', () => {
+  it('a synchronous receipt names its completion snapshot, and nothing claims an issue-time one', () => {
+    expect(SNAPSHOT_CAPTION_SYNC).toBe(
+      'Recorded with the request — later price changes never apply.',
+    );
+    for (const priceMode of [null, 'sync'] as const) {
+      const v = toInspectorView({ ...ROW, priceMode });
+      expect(v.receiptCaption).toBe(SNAPSHOT_CAPTION_SYNC);
+      // No view string, anywhere, says the price was fixed when the request was issued.
+      expect(JSON.stringify(v)).not.toMatch(/snapshotted\s+at\s+request\s+time/i);
+    }
+    // The default footnote is gone: an ordinary row has no note at all.
+    expect(toInspectorView(ROW).receiptNote).toBeNull();
+  });
+
+  it('a batch receipt names submission pricing, and its source row keeps the provenance', () => {
+    expect(SNAPSHOT_CAPTION_BATCH).toBe('Batch rate, recorded at submission.');
+    const batch: RequestRow = { ...ROW, batchId: 'b1', priceMode: 'batch', priceSource: 'bundled' };
+    const v = toInspectorView(batch);
+    expect(v.receiptCaption).toBe(SNAPSHOT_CAPTION_BATCH);
+    expect(v.receiptSource).toBe('batch · bundled');
+    expect(
+      toInspectorView({ ...batch, priceSource: 'native_family', priceEstimated: true })
+        .receiptSource,
+    ).toBe('batch · native family · estimate');
+    expect(toInspectorView({ ...ROW, priceSource: 'bundled' }).receiptSource).toBe('bundled');
+    expect(toInspectorView({ ...ROW, priceSource: null }).receiptSource).toBeNull();
+  });
+
+  it('an unpriced request makes no snapshot claim: no caption, an `unpriced` total, no `$0.00`', () => {
+    const v = toInspectorView({
+      ...ROW,
+      cost: null,
+      inputPriceSnapshot: null,
+      outputPriceSnapshot: null,
+      cacheReadPriceSnapshot: null,
+      cacheWritePriceSnapshot: null,
+    });
+    expect(v.receiptCaption).toBeNull();
+    expect(v.totalCost).toBe('unpriced');
+    expect(v.tokenRows.map((t) => t.text)).toEqual([
+      '1,000 × unpriced',
+      '500 × unpriced',
+      '10 × unpriced',
+      '20 × unpriced',
+    ]);
+    // What the receipt draws: the token rows, the served and total rows, and no attempts row
+    // (the attempt cost is zero). DS-3's always-computed `attemptCost` is not drawn.
+    const drawn = [
+      ...v.tokenRows.map((t) => t.text),
+      v.servedCost,
+      v.totalCost,
+      partsTextOf(v.attemptsRowParts),
+    ];
+    expect(drawn).toEqual([...drawn.slice(0, 4), 'unpriced', 'unpriced', null]);
+    expect(drawn.join(' ')).not.toContain('$0.00');
+  });
+
+  it('a provider-listed estimate names its source and marks every priced figure and the total', () => {
+    const v = toInspectorView({
+      ...ROW,
+      cost: 0.02,
+      inputPriceSnapshot: 4,
+      outputPriceSnapshot: 16,
+      cacheReadPriceSnapshot: 0.4,
+      priceSource: 'listed',
+      priceEstimated: true,
+    });
+    expect(v.receiptSource).toBe('provider-listed · estimate');
+    const priced = v.tokenRows.filter((t) => partsTextOf(t.priceParts) !== 'unpriced');
+    expect(priced.map((t) => partsTextOf(t.priceParts))).toEqual([
+      '$4 / 1M · est.',
+      '$16 / 1M · est.',
+      '$0.4 / 1M · est.',
+    ]);
+    expect(v.totalCost).toBe('$0.0200 · est.');
+  });
+});
+
+/** dashboard-analytics "The price receipt itemises the snapshot and totals it exactly". */
+describe('the price receipt itemises the snapshot and totals it exactly (add-route-trace-inspector 3.5)', () => {
+  it('each token class reads count × unit price; a null cache count shows the price alone', () => {
+    const v = toInspectorView({
+      ...ROW,
+      inputTokens: 1_204,
+      outputTokens: 310,
+      inputPriceSnapshot: 3,
+      outputPriceSnapshot: 15,
+      cacheReadTokens: null,
+      cacheReadPriceSnapshot: 0.3,
+      cacheWriteTokens: null,
+      cacheWritePriceSnapshot: null,
+    });
+    expect(v.tokenRows.map((t) => [t.label, t.text])).toEqual([
+      ['input', '1,204 × $3 / 1M'],
+      ['output', '310 × $15 / 1M'],
+      ['cache read', '$0.3 / 1M'],
+    ]);
+    expect(v.tokenRows[2]!.countParts).toBeNull();
+    // Input and output always render, a recorded zero count included; a cache count with no
+    // snapshot still renders, priced `unpriced`.
+    const zero = toInspectorView({
+      ...ROW,
+      outputTokens: 0,
+      cacheReadTokens: null,
+      cacheReadPriceSnapshot: null,
+      cacheWriteTokens: 12,
+      cacheWritePriceSnapshot: null,
+    });
+    expect(zero.tokenRows.map((t) => t.text)).toEqual([
+      '1,000 × $1.5 / 1M',
+      '0 × $6 / 1M',
+      '12 × unpriced',
+    ]);
+  });
+
+  it('the total is the integer micro-dollar sum, never a sum of the rounded rows', () => {
+    const v = toInspectorView({ ...ROW, cost: 0.012346, attemptCostMicros: 3_100 });
+    expect(v.servedCost).toBe('$0.0123');
+    expect(partsTextOf(v.attemptsRowParts)).toBe('$0.0031');
+    expect(v.totalMicros).toBe(12_346 + 3_100);
+    expect(v.totalCost).toBe('$0.0154');
+    // Here the rounded rows would sum to $0.0156 (0.0124 + 0.0032); the exact total is
+    // 15,500 µ$, which reads $0.0155.
+    const halves = toInspectorView({ ...ROW, cost: 0.01235, attemptCostMicros: 3_150 });
+    expect([halves.servedCost, partsTextOf(halves.attemptsRowParts)]).toEqual([
+      '$0.0124',
+      '$0.0032',
+    ]);
+    expect(halves.totalMicros).toBe(15_500);
+    expect(halves.totalCost).toBe('$0.0155');
+  });
+
+  it('no attempts row without attempt cost, and the total equals the served cost', () => {
+    const v = toInspectorView({ ...ROW, cost: 0.012346, attemptCostMicros: 0 });
+    expect(v.attemptsRowParts).toBeNull();
+    expect(v.totalCost).toBe(v.servedCost);
+    expect(v.totalMicros).toBe(12_346);
+  });
+
+  it('a token row estimated on both axes keeps each marker on its own figure, in two groups', () => {
+    const v = toInspectorView({
+      ...ROW,
+      outputTokens: 310,
+      outputPriceSnapshot: 15,
+      usageEstimated: true,
+      priceSource: 'native_family',
+      priceEstimated: true,
+    });
+    const output = v.tokenRows[1]!;
+    expect(output.text).toBe('310 · est. usage × $15 / 1M · est.');
+    expect(output.countParts).toEqual([
+      { text: '310', tone: 'slot' },
+      { text: '· est. usage', tone: 'ink3' },
+    ]);
+    expect(output.priceParts).toEqual([
+      { text: '$15 / 1M', tone: 'slot' },
+      { text: '· est.', tone: 'ink3' },
+    ]);
+    // Every count on a usage-estimated row is an estimate, and no price carries the usage
+    // marker.
+    for (const t of v.tokenRows) {
+      expect(partsTextOf(t.countParts)).toMatch(/· est\. usage$/);
+      expect(partsTextOf(t.priceParts)).not.toContain('usage');
+    }
+  });
+});
+
+/** dashboard-analytics "The receipt total reads the request's cost state". */
+describe("the receipt total reads the request's cost state (add-route-trace-inspector 3.5)", () => {
+  it('a not-billed total never reads as an estimate, and the receipt keeps its estimate rows', () => {
+    // FIELD_REPORT: billed = false, zero attempt cost, estimated usage, priced native_family.
+    const v = toInspectorView(FIELD_REPORT);
+    expect(v.servedCost).toBe('$0 · not billed');
+    expect(v.totalCost).toBe('$0 · not billed');
+    expect(v.totalCost).not.toContain('est.');
+    expect(v.tokenRows.map((t) => t.text)).toEqual([
+      '54,040 · est. usage × $2 / 1M · est.',
+      '0 · est. usage × $8 / 1M · est.',
+    ]);
+    expect(v.receiptNote).toBe(NOT_BILLED_NOTE);
+    expect(v.attemptsRowParts).toBeNull();
+  });
+
+  it('usage and price estimates stay apart: estimated usage never marks the money', () => {
+    const r: RequestRow = {
+      ...ROW,
+      usageEstimated: true,
+      priceSource: 'bundled',
+      priceEstimated: false,
+    };
+    const v = toInspectorView(r);
+    expect(v.tokenRows.every((t) => partsTextOf(t.countParts)?.endsWith('· est. usage'))).toBe(
+      true,
+    );
+    expect(v.receiptNote).toBe(USAGE_ESTIMATED_NOTE);
+    expect(USAGE_ESTIMATED_NOTE).toBe('Provider omitted usage — token counts are estimated.');
+    expect(v.tokenRows.some((t) => partsTextOf(t.priceParts)?.includes('est.'))).toBe(false);
+    expect(v.receiptSource).toBe('bundled');
+    expect(v.totalCost).toBe('$0.0020');
+    expect(v.totalCost).toBe(rowCostLabel(r));
+  });
+
+  it('the total matches the table cell: `$0 free`, `$0 free · est.` and `<$0.0001`, never `$0.0000`', () => {
+    const free: RequestRow = {
+      ...ROW,
+      cost: 0,
+      billed: true,
+      inputPriceSnapshot: 0,
+      outputPriceSnapshot: 0,
+      attemptCostMicros: 0,
+    };
+    const listedFree: RequestRow = { ...free, priceSource: 'listed', priceEstimated: true };
+    const tiny: RequestRow = { ...ROW, cost: 0.00004, attemptCostMicros: 0 };
+    expect([free, listedFree, tiny].map((r) => toInspectorView(r).totalCost)).toEqual([
+      '$0 free',
+      '$0 free · est.',
+      '<$0.0001',
+    ]);
+    for (const r of [free, listedFree, tiny]) {
+      expect(toInspectorView(r).totalCost).toBe(rowCostLabel(r));
+      expect(toInspectorView(r).totalParts).toEqual(rowCostParts(r));
+    }
+  });
+
+  it('over a fixture matrix, the receipt fields follow their rules and the total is the table cell', () => {
+    let checked = 0;
+    for (const billed of [true, false, null])
+      for (const cost of [null, 0, 0.00004, 0.012346])
+        for (const attemptCostMicros of [0, 3_100])
+          for (const priceMode of [null, 'sync', 'batch'] as const)
+            for (const usageEstimated of [false, true])
+              for (const [cacheReadTokens, cacheReadPriceSnapshot] of [
+                [null, null],
+                [null, 0.3],
+                [7, null],
+              ] as const) {
+                // A not-billed row records `cost = 0` (database CHECK), never a null cost.
+                if (billed === false && cost !== 0) continue;
+                const r: RequestRow = {
+                  ...ROW,
+                  billed,
+                  cost,
+                  attemptCostMicros,
+                  priceMode,
+                  batchId: priceMode === 'batch' ? 'b1' : null,
+                  usageEstimated,
+                  cacheReadTokens,
+                  cacheReadPriceSnapshot,
+                };
+                const v = toInspectorView(r);
+                expect(v.totalCost).toBe(rowCostLabel(r));
+                expect(v.receiptCaption === null).toBe(cost === null);
+                expect(v.attemptsRowParts === null).toBe(attemptCostMicros === 0);
+                expect(v.tokenRows.some((t) => t.label === 'cache read')).toBe(
+                  cacheReadTokens !== null || cacheReadPriceSnapshot !== null,
+                );
+                expect(v.receiptNote).toBe(
+                  billed === false ? NOT_BILLED_NOTE : usageEstimated ? USAGE_ESTIMATED_NOTE : null,
+                );
+                checked += 1;
+              }
+    expect(checked).toBeGreaterThan(100);
   });
 });

@@ -2665,3 +2665,134 @@ test.describe('Settings layout: at the threshold and below', () => {
     }
   });
 });
+
+/** The request inspector's Route Trace, laid out (add-route-trace-inspector task 4.6; design
+ * D6 "Layout" and Risks "Narrow sheet"; DESIGN.md Route Trace › Anatomy).
+ *
+ * `?trace=cascade` puts the longest route the trace can draw at the head of the list: a cascade
+ * walk with a failed cheap-leg member and its markers, a skipped member, the superseded call, a
+ * failed escalation member and the served outcome, on long Mono ids and on agent and provider
+ * names at their 80-character limit with no break opportunity. At 320×568 the sheet leaves a
+ * label 248px (320 − 2 × 20px body padding − the 32px gutter), and the 440px drawer 368px, so
+ * the labels wrap and the ids and names break; nothing may leave the sheet or the drawer.
+ *
+ * EXACT: the 32px gutter is the node row's own `padding-left`, and a row's 32px floor its
+ * `min-height` — the stylesheet decides both. SOFT: how many lines a label wraps to is text
+ * layout, so the wrap is held as a relationship (at least one label takes two lines), never a
+ * pixel height. */
+async function openTraceInspector(page: Page): Promise<void> {
+  await open(page, '#/requests', '?trace=cascade');
+  await page.locator('button.req-row').first().click();
+  await page.waitForSelector('.drawer ol.rt > li[data-kind="outcome"]');
+  // Past the drawer's 0.18s entrance (or the sheet's), so every box is at rest.
+  await page.waitForTimeout(250);
+}
+
+interface TraceRow {
+  kind: string;
+  li: { left: number; right: number; height: number };
+  textLeft: number;
+  textHeight: number;
+}
+
+async function traceRows(page: Page): Promise<TraceRow[]> {
+  return page.evaluate(() =>
+    [...document.querySelectorAll<HTMLElement>('.drawer ol.rt > li.rt-node')].map((li) => {
+      const text = [...li.children].find((c) => c.getAttribute('aria-hidden') !== 'true');
+      if (!text) throw new Error('a trace node has no text block');
+      const l = li.getBoundingClientRect();
+      const t = text.getBoundingClientRect();
+      return {
+        kind: li.dataset['kind'] ?? '',
+        li: { left: l.left, right: l.right, height: l.height },
+        textLeft: t.left,
+        textHeight: t.height,
+      };
+    }),
+  );
+}
+
+test.describe('the route trace in the inspector (add-route-trace-inspector 4.6)', () => {
+  for (const vp of [
+    { name: 'the 440px drawer at 1440x900', width: 1440, height: 900, drawer: 440 },
+    { name: 'the sheet at 320x568', width: 320, height: 568, drawer: 320 },
+  ] as const) {
+    test(`every node's text starts 32px from its row's left edge, in ${vp.name}`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width: vp.width, height: vp.height });
+      await openTraceInspector(page);
+      const drawer = await page.locator('.drawer').boundingBox();
+      expect(drawer?.width, 'the inspector box is unchanged').toBe(vp.drawer);
+      const rows = await traceRows(page);
+      // Not vacuous: every node kind the fixture records is drawn.
+      expect(rows.map((r) => r.kind)).toEqual([
+        'source',
+        'decision',
+        'attempt',
+        'attempt',
+        'superseded',
+        'attempt',
+        'outcome',
+      ]);
+      for (const [i, r] of rows.entries()) {
+        // EXACT: the gutter is the row's own padding (design D6).
+        expect(r.textLeft - r.li.left, `node ${String(i)} (${r.kind}): text offset`).toBe(32);
+        // EXACT floor: a row is at least 32px tall, whatever its label wraps to.
+        expect(r.li.height, `node ${String(i)} (${r.kind}): row height`).toBeGreaterThanOrEqual(32);
+      }
+    });
+  }
+
+  // Nothing in the open inspector leaves its box, on the `?trace=cascade` fixture whose agent
+  // and provider names are 80-character runs with no break opportunity (DESIGN.md Long content:
+  // they wrap with `overflow-wrap: anywhere` in the inspector), and the labels really wrapped.
+  for (const vp of [
+    { name: 'the open inspector sheet does not overflow at 320x568', width: 320, height: 568 },
+    { name: 'the open 440px drawer does not overflow at 1440x900', width: 1440, height: 900 },
+  ] as const) {
+    test(`${vp.name}, with the cascade labels wrapped`, async ({ page }) => {
+      await page.setViewportSize({ width: vp.width, height: vp.height });
+      await openTraceInspector(page);
+      const result = await page.evaluate(() => {
+        const drawer = document.querySelector<HTMLElement>('.drawer');
+        const body = document.querySelector<HTMLElement>('.drawer-body');
+        if (!drawer || !body) return null;
+        const box = drawer.getBoundingClientRect();
+        const escapes: string[] = [];
+        for (const el of drawer.querySelectorAll<HTMLElement>('*')) {
+          const r = el.getBoundingClientRect();
+          if (r.width === 0 && r.height === 0) continue;
+          if (r.left < box.left - 0.5 || r.right > box.right + 0.5) {
+            const cls = (el.getAttribute('class') ?? '').trim().split(/\s+/).join('.');
+            const text = (el.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 30);
+            escapes.push(`${el.tagName.toLowerCase()}${cls ? '.' + cls : ''} "${text}"`);
+          }
+        }
+        return {
+          scroll: body.scrollWidth,
+          client: body.clientWidth,
+          escapes: escapes.slice(0, 6),
+          docScroll: document.documentElement.scrollWidth,
+          docClient: document.documentElement.clientWidth,
+        };
+      });
+      expect(result, 'the sheet is open').not.toBeNull();
+      expect(result!.escapes, 'content escaping the inspector sheet').toEqual([]);
+      expect(result!.scroll, 'the sheet body scrolls sideways').toBeLessThanOrEqual(
+        result!.client + 1,
+      );
+      expect(result!.docScroll, 'the document overflows').toBeLessThanOrEqual(
+        result!.docClient + 1,
+      );
+      // SOFT, as a relationship: the labels did wrap (a 16px line is one line), so the
+      // containment above was measured on wrapped labels, not on a fixture that happened to fit:
+      // the source (the agent name) and the outcome (the provider name) both break.
+      const rows = await traceRows(page);
+      const wrapped = rows.filter((r) => r.textHeight > 16 + 1).map((r) => r.kind);
+      expect(wrapped.length, `no trace label wrapped at ${String(vp.width)}px`).toBeGreaterThan(0);
+      expect(wrapped).toContain('source');
+      expect(wrapped).toContain('outcome');
+    });
+  }
+});

@@ -599,8 +599,25 @@ export interface AnalyticsRangeParams {
 
 export type TimeseriesBucket = 'hour' | 'day' | 'week' | 'month';
 export type BreakdownDimension = 'model' | 'provider' | 'agent' | 'tier';
-/** Served-request status as recorded in the log (fallback/error included). */
-export type RequestStatus = 'success' | 'fallback' | 'error' | 'cancelled';
+/** The served-request statuses the dashboard has a treatment for (fallback/error included). */
+export type KnownRequestStatus = 'success' | 'fallback' | 'error' | 'cancelled';
+/** A request's status as recorded in the log. `request_log.status` is unconstrained text, so
+ * the wire value is a known status or any other string, and every surface that maps it to a
+ * treatment handles the unknown case (dashboard-analytics "An unrecognised status renders
+ * neutrally"). `string & {}` keeps the known literals as completions. */
+export type RequestStatus = KnownRequestStatus | (string & {});
+
+const KNOWN_REQUEST_STATUSES: ReadonlySet<string> = new Set<KnownRequestStatus>([
+  'success',
+  'fallback',
+  'error',
+  'cancelled',
+]);
+
+/** Narrows a recorded status to one the dashboard has a treatment for. */
+export function isKnownRequestStatus(status: string): status is KnownRequestStatus {
+  return KNOWN_REQUEST_STATUSES.has(status);
+}
 
 /** `GET /summary` — owner-scoped aggregates over the range. `spend` is USD (both
  * ledgers, µ$-rounded so it reconciles with budgets); free/paid/unpriced classify
@@ -743,6 +760,11 @@ export interface RequestRow {
   /** True when the served row OR any attempt was priced `native_family`. */
   priceEstimated: boolean;
   qualitySignal: number | null;
+  /** Why the cascade escalated (analytics-api "The request listing exposes the
+   * route-trace fields"): `quality_gate` = the gate scored the cheap answer below its
+   * threshold; `cheap_error` = any other pre-commit escalation. Null when the row did
+   * not escalate or predates the column. Verbatim from the listing. */
+  escalationSource: 'quality_gate' | 'cheap_error' | null;
   modelLabel: string | null;
   providerLabel: string | null;
   agentLabel: string | null;

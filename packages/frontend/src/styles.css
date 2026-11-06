@@ -1361,11 +1361,143 @@ button:disabled[aria-busy='true'] {
     400 0.75rem/1rem 'Geist Mono',
     monospace;
 }
-/* A key–value box whose values are figures (the inspector's Usage & cost): Geist with tabular
+/* A key–value box whose values are figures (the inspector's price receipt): Geist with tabular
    numerals, its identifiers marked `.mono` one by one (task 9.1). */
 .kv-box--figures {
   font-family: 'Geist', sans-serif;
   font-variant-numeric: tabular-nums;
+}
+
+/* ---- the Route Trace (add-route-trace-inspector design D6; DESIGN.md Route Trace) ----
+ *
+ * The inspector's recorded walk, an `<ol class="rt">`: one `li.rt-node` per node, each a row of
+ * one geometry (at least 32px, 0.75rem labels that may wrap) whose text block starts 32px from
+ * the row's left edge. The 32px graph gutter holds the decoration, three `aria-hidden` spans
+ * drawn here and never as glyphs: the spine at 4px (`.rt-spine`, the walk, always neutral), the
+ * branch out to an attempt, the superseded call or the outcome (`.rt-branch`), and the 8px node
+ * mark (`.rt-dot`) — on the spine for the source and the decision, at 16px at a branch's end.
+ * Marks are centred on the first text line (16px down), so a two-line label keeps its node on
+ * its first line. Every node states its outcome in its text; strokes and marks only repeat it.
+ *
+ * The served branch is the inspector's one focal series under the Indigo Budget: its 2px
+ * stroke and filled node are the only raw accent here (`styles.contrast.test.ts` ACCENT_RULES),
+ * and its `li` is the `data-series="focal"` root the rendered audit counts. Failed and neutral
+ * strokes are the Control Edge; a skipped member's are dashed Ink 3 (the Dashed-Means-Absent
+ * Rule). The one red is `.rt-failure`, the failure label's text. Positions are offsets, not
+ * spaces; every margin and padding is on the 4px scale. Nothing here moves: the trace never
+ * animates, including when the selection changes. */
+.rt {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.rt-node {
+  position: relative;
+  min-height: 32px;
+  padding: 8px 0 8px 32px;
+  font-size: 0.75rem;
+  line-height: 1rem;
+  color: var(--text2);
+}
+/* The decision chip is the 20px static chip (`.chip`, which this rule does not restate): its
+   row centres it in 24px, so it sits on the same 16px centre line as every node mark. */
+.rt-node[data-kind='decision'] {
+  padding-block: 4px;
+}
+.rt-node[data-kind='decision'] .rt-text {
+  display: flex;
+  align-items: center;
+  min-height: 24px;
+}
+.rt-spine {
+  position: absolute;
+  left: 3.5px;
+  top: 0;
+  bottom: 0;
+  border-left: 1px solid var(--border-control);
+}
+/* The spine starts at the source node and ends at the outcome's branch. */
+.rt-node[data-kind='source'] .rt-spine {
+  top: 16px;
+}
+.rt-node[data-kind='outcome'] .rt-spine {
+  bottom: auto;
+  height: 16px;
+}
+.rt-branch {
+  position: absolute;
+  left: 4px;
+  top: 15.5px;
+  width: 8px;
+  border-top: 1px solid var(--border-control);
+}
+.rt-dot {
+  position: absolute;
+  left: 0;
+  top: 12px;
+  width: 8px;
+  height: 8px;
+  border: 1px solid var(--border-control);
+  border-radius: 50%;
+  background: var(--panel);
+}
+.rt-node[data-kind='attempt'] .rt-dot,
+.rt-node[data-kind='superseded'] .rt-dot,
+.rt-node[data-kind='outcome'] .rt-dot {
+  left: 12px;
+}
+/* Never dispatched: absent, so dashed (DESIGN.md The Dashed-Means-Absent Rule). */
+.rt-node--skipped {
+  color: var(--text3);
+}
+.rt-node--skipped .rt-branch {
+  border-top-style: dashed;
+  border-top-color: var(--text3);
+}
+.rt-node--skipped .rt-dot {
+  border-style: dashed;
+  border-color: var(--text3);
+}
+/* The lit route: the served branch's 2px stroke and filled node, the trace's one indigo. */
+.rt-node--lit {
+  color: var(--text);
+}
+.rt-node--lit .rt-branch {
+  top: 15px;
+  border-top: 2px solid var(--accent);
+}
+.rt-node--lit .rt-dot {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+/* Every label in a node's text block may be longer than the 248px a narrow sheet leaves it,
+   with no break opportunity: a Mono model id, a marker, and the free-text agent and provider
+   names (up to 80 characters, often one camel-case run). Each may break anywhere rather than
+   overflow, but only where it must: a word that fits the next line moves there whole (DESIGN.md
+   Long content: identifiers, agent names included, wrap with `overflow-wrap: anywhere` in the
+   inspector). */
+.rt-text {
+  overflow-wrap: anywhere;
+}
+/* A dispatched failure's label, `<kind> · HTTP <status>`: Red Text, the contrast-passing red;
+   its Mono face is the shared `.mono` on the same span. The only red in the trace. */
+.rt-failure {
+  color: var(--red-text);
+}
+/* Markers and the cascade leg tag: Caption size, Ink 3. */
+.rt-meta {
+  font-size: 0.6875rem;
+  color: var(--text3);
+}
+/* A figure whose estimate marker must stay on it when its line wraps (an attempt cost; a
+   receipt row's count group and price group, design D8 item 2). */
+.rt-nowrap {
+  white-space: nowrap;
+}
+/* `attempt history was not recorded for this request`, under the list, on the text column. */
+.rt-caption {
+  margin: 4px 0 0 32px;
+  color: var(--text3);
 }
 
 .modal-backdrop {

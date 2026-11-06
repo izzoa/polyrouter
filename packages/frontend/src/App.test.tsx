@@ -190,8 +190,14 @@ describe('dashboard shell (auth-gated)', () => {
       const drawer = host.querySelector('.drawer');
       expect(drawer).not.toBeNull();
       expect(drawer?.textContent).toContain('Decision');
-      expect(drawer?.textContent).toContain('Usage & cost');
-      expect(drawer?.textContent).toContain('Timing');
+      // add-route-trace-inspector: the price receipt replaced "Usage & cost", and the Timing
+      // box folded into the route trace, whose outcome node carries the latency
+      // (dashboard-analytics "A request shows its decision layer and reason").
+      expect(drawer?.textContent).toContain('Price snapshot');
+      expect(drawer?.textContent).not.toContain('Usage & cost');
+      expect(drawer?.textContent).not.toContain('Timing');
+      const outcome = drawer?.querySelector('ol.rt > li[data-kind="outcome"]');
+      expect(outcome?.querySelector('[data-testid="rt-latency"]')?.textContent).toMatch(/\d/);
       if (first) expect(drawer?.textContent).toContain(first.routingReason);
       host.querySelector<HTMLElement>('.overlay')?.click();
       expect(store.state.selId).toBeNull();

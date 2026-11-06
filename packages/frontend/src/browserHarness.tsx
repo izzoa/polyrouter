@@ -671,6 +671,85 @@ if (params.get('requests') === 'states') {
   ];
 }
 
+// Route-trace fixture (add-route-trace-inspector task 4.6), opt-in via `?trace=cascade` so the
+// default harness stays byte-identical for every other suite. The longest route the trace can
+// draw, as the newest row (so the first `button.req-row` opens it): an escalated cascade walk
+// with a failed cheap-leg member carrying its markers, a skipped one, the superseded call with
+// its score and an estimated attempt cost, a failed escalation member, and the served outcome
+// on the long model id. Every label is wider than a 320px sheet's 248px text column, so the
+// narrow sheet is measured with wrapped labels and Mono ids that must break rather than
+// overflow. The agent and provider names are free text of up to 80 characters (the agent and
+// provider DTOs' limit), here at that limit as one camel-case run with no break opportunity,
+// wider than the 440px drawer's 368px text column too.
+const TRACE_AGENT =
+  'NightlySummariserBatchRunnerForTheEuropeanCustomerSupportTriageQueueProduction01';
+const TRACE_PROVIDER =
+  'AnthropicProductionEuWest1PrimaryAccountReservedCapacityForBatchSummariesTeam001';
+if (params.get('trace') === 'cascade') {
+  const head = client.requestRows[0]!;
+  client.requestRows = [
+    {
+      ...head,
+      id: 'trace-cascade',
+      createdAt: new Date(Date.parse(head.createdAt) + 7000).toISOString(),
+      agentLabel: TRACE_AGENT,
+      providerLabel: TRACE_PROVIDER,
+      status: 'fallback',
+      decisionLayer: 'cascade',
+      routingReason: `cascade cheap → quality_gate q=0.42 → strong ${LONG_MODEL}`,
+      tierAssigned: 'default',
+      escalated: true,
+      escalationSource: 'quality_gate',
+      qualitySignal: 0.42,
+      attemptCostMicros: 3_100,
+      cost: 0.012346,
+      billed: true,
+      priceSource: 'bundled',
+      priceEstimated: true,
+      usageEstimated: false,
+      inputPriceSnapshot: 3,
+      outputPriceSnapshot: 15,
+      errorKind: null,
+      errorStatus: null,
+      errorMessage: null,
+      errorRequestId: null,
+      errorMarkers: null,
+      attemptFailures: [
+        {
+          index: 0,
+          providerId: 'prov-0',
+          model: 'meta-llama/llama-3.3-70b-instruct-turbo-free',
+          kind: 'rate_limit',
+          status: 429,
+          dispatched: true,
+          markers: ['rate_limit_exceeded', 'tokens_per_minute'],
+          leg: 'cheap',
+        },
+        {
+          // An Azure-style deployment name: user-chosen, often one camel-case run with no
+          // break opportunity, wider than the sheet's 248px text column in Mono.
+          index: 1,
+          providerId: 'prov-1',
+          model: 'azureGpt4oMiniEuWestProductionDeployment01',
+          kind: 'unavailable',
+          dispatched: false,
+          leg: 'cheap',
+        },
+        {
+          index: 0,
+          providerId: 'prov-0',
+          model: 'anthropic/claude-opus-4-1-20250805-thinking',
+          kind: 'server_error',
+          status: 503,
+          dispatched: true,
+          leg: 'escalation',
+        },
+      ],
+    },
+    ...client.requestRows,
+  ];
+}
+
 // Costs-split fixture (adopt-design-tokens-v2 task 12.2), opt-in via `?costs=split` so the
 // default harness stays byte-identical for every other suite. The range holds every figure the
 // Costs readout strip can state at once — subscription value, an estimate-priced portion and

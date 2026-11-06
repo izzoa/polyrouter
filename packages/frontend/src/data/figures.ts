@@ -18,8 +18,8 @@ export const EST = '· est.';
 export const EST_USAGE = '· est. usage';
 /** A request no provider billed: a known zero, never an estimate. */
 export const NOT_BILLED = '$0 · not billed';
-/** Kept under its old name for one release: `data/analytics.ts` re-exports it so an
- * in-flight sibling branch still compiles (design Migration Plan). */
+/** `NOT_BILLED` under its old name. The one-release re-export from `data/analytics.ts`
+ * was removed by add-route-trace-inspector (task 3.6); import from here. */
 export const NOT_BILLED_LABEL = NOT_BILLED;
 /** A zero-priced figure. `free` is its green word; the `$0` keeps the slot's ink. */
 export const FREE = '$0 free';

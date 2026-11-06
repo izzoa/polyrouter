@@ -1,17 +1,20 @@
-import { createMemo, For, Show } from 'solid-js';
-import { fmtElapsed } from '../data/batchBand';
+import { createMemo, For, Show, type JSX } from 'solid-js';
 import { useModalSurface } from '../a11y';
-import { toInspectorView } from '../data/analytics';
-import type { RequestRow, RequestStatus } from '../data/api';
+import {
+  SUPERSEDED_LABEL,
+  toInspectorView,
+  type ReceiptTokenRow,
+  type RouteTraceNode,
+} from '../data/analytics';
+import { isKnownRequestStatus, type KnownRequestStatus, type RequestRow } from '../data/api';
 import { fmtDateTime } from '../data/catalog';
-import { EST_USAGE_PARTS, fmtLatency } from '../data/figures';
 import { FROM_DIALOG } from '../state/appState';
 import { useApp } from '../state/context';
 import { FigureText } from './FigureText';
 import { Icon } from './Icon';
 
 /** label / bg / fg per served status. */
-const STATUS_BADGE: Record<RequestStatus, [string, string, string]> = {
+const STATUS_BADGE: Record<KnownRequestStatus, [string, string, string]> = {
   success: ['OK · served', 'var(--green-bg)', 'var(--green-text)'],
   fallback: ['Fallback · served', 'var(--amber-bg)', 'var(--amber-text)'],
   error: ['Error', 'var(--red-bg)', 'var(--red-text)'],
@@ -19,18 +22,106 @@ const STATUS_BADGE: Record<RequestStatus, [string, string, string]> = {
   cancelled: ['Cancelled · client', 'var(--chip)', 'var(--text3)'],
 };
 
-/** `request_log.status` is free-form text at the DB, so a legacy/unknown value must
- * render a neutral badge rather than crash on a missing map entry. */
+/** `request_log.status` is free-form text at the DB, so a legacy/unknown value renders a
+ * neutral badge, verbatim (`unknown` when blank), rather than crash on a missing map entry. */
 function badgeFor(status: string): [string, string, string] {
-  return (
-    STATUS_BADGE[status as RequestStatus] ?? [status || 'unknown', 'var(--chip)', 'var(--text3)']
-  );
+  return isKnownRequestStatus(status)
+    ? STATUS_BADGE[status]
+    : [status || 'unknown', 'var(--chip)', 'var(--text3)'];
 }
 
-/** Routing-decision inspector over a real RequestLog row — header, route, the
- * verbatim decision layer + routing reason (transparency payload, invariant 1),
- * the immutable usage/price snapshots (rendered, never recomputed — invariant 4),
- * and timing. */
+/** The separator between a route-trace node's parts, so a node reads as its view-model
+ * `text` (add-route-trace-inspector design D1). */
+const SEP = ' · ';
+
+/** A node's parts in order, `SEP` between each part that is present. */
+function joined(parts: readonly (JSX.Element | null)[]): JSX.Element[] {
+  const out: JSX.Element[] = [];
+  for (const p of parts) {
+    if (p === null) continue;
+    if (out.length > 0) out.push(SEP);
+    out.push(p);
+  }
+  return out;
+}
+
+/** A node branches off the spine (an attempt, the superseded call, the outcome); the source
+ * and the decision sit on it (DESIGN.md Route Trace › Anatomy). */
+const BRANCHES: ReadonlySet<RouteTraceNode['kind']> = new Set(['attempt', 'superseded', 'outcome']);
+
+/** One node's text block (design D6, the Text column): it states the node's outcome in words,
+ * so the decoration beside it only repeats them. Identifiers (model ids, the failure label,
+ * markers) are Mono; figures (the latency, `q=`, the attempt cost) are tabular Geist. */
+function TraceNodeText(props: { node: RouteTraceNode }): JSX.Element {
+  const n = props.node;
+  switch (n.kind) {
+    case 'source':
+      return <>{n.text}</>;
+    case 'decision':
+      // The static chip (DESIGN.md Chips), in Ink 2 on the Chip Tone like the semantic and
+      // workload chips: neutral for any layer, never an indigo tone (design D5).
+      return (
+        <span class="chip" style="font:500 0.6875rem/1rem 'Geist',sans-serif;color:var(--text2)">
+          {n.text}
+        </span>
+      );
+    case 'attempt':
+      return (
+        <>
+          {joined([
+            <span class="mono rt-model">{n.model}</span>,
+            // A dispatched failure's label is the one red text in the trace (design D6,
+            // Failure text); the skip label is not a failure and keeps the row's Ink 3.
+            n.emphasis === 'failed' ? <span class="mono rt-failure">{n.label}</span> : n.label,
+            ...(n.markers ?? []).map((m) => <span class="mono rt-meta">{m}</span>),
+            n.leg === null ? null : <span class="rt-meta">{n.leg}</span>,
+          ])}
+        </>
+      );
+    case 'superseded':
+      return (
+        <>
+          {joined([
+            SUPERSEDED_LABEL,
+            n.quality === null ? null : <span class="figure">{n.quality}</span>,
+            n.costParts === null ? null : (
+              <span class="figure rt-nowrap">
+                <FigureText parts={n.costParts} />
+              </span>
+            ),
+          ])}
+        </>
+      );
+    case 'outcome':
+      return (
+        <>
+          {joined([
+            n.provider,
+            n.model === null ? null : <span class="mono rt-model">{n.model}</span>,
+            n.result,
+            <span class="figure" data-testid="rt-latency">
+              {n.latency}
+            </span>,
+          ])}
+        </>
+      );
+  }
+}
+
+/** The count group's test id: the input and output counts keep the ids their tests read. */
+function countTestId(label: ReceiptTokenRow['label']): string | undefined {
+  return label === 'input'
+    ? 'inspector-input-tokens'
+    : label === 'output'
+      ? 'inspector-output-tokens'
+      : undefined;
+}
+
+/** Routing-decision inspector over a real RequestLog row (add-route-trace-inspector design
+ * D7): the ERROR card when there is one, the route trace (the recorded walk, its latency on
+ * the outcome node), the verbatim decision layer + routing reason (transparency payload,
+ * invariant 1), the price receipt (the immutable snapshots, rendered and never recomputed —
+ * invariant 4), and the payload when one is stored. */
 export function Inspector() {
   const app = useApp();
   const { state } = app;
@@ -137,35 +228,115 @@ export function Inspector() {
                 </div>
               </div>
               <div class="drawer-body">
-                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-                  <span
-                    class="t-label"
-                    style="padding:4px 8px;background:var(--chip);border-radius:6px;color:var(--text2)"
-                  >
-                    {view().agentLabel}
-                  </span>
-                  <Icon name="arrowRight" size={12} style="color:var(--faint)" />
-                  <span
-                    class="t-label"
-                    style="padding:4px 8px;background:var(--accent-bg);border-radius:6px;color:var(--accent-deep)"
-                  >
-                    router · {view().decisionLayer}
-                  </span>
-                  <Icon name="arrowRight" size={12} style="color:var(--faint)" />
-                  <span
-                    class="t-label"
-                    style="padding:4px 8px;background:var(--chip);border-radius:6px;color:var(--text2)"
-                  >
-                    {view().providerLabel}
-                    {view().tier !== null ? ` · ${String(view().tier)}` : ''}
-                  </span>
+                {/* The ERROR card leads (design D7): a failed request opens on what the provider
+                    said. Its rules are add-request-error-detail's, unchanged; its label and
+                    headline are the contrast-passing red TEXT token. */}
+                <Show when={view().errorView} keyed>
+                  {(ev) => (
+                    <div data-testid="inspector-error">
+                      <div class="upper-label" style="margin-bottom:8px;color:var(--red-text)">
+                        Error
+                      </div>
+                      <div class="kv-box" style="border-color:var(--red-bg)">
+                        <Show when={ev.headline !== ''}>
+                          <div style="display:flex;justify-content:space-between;gap:16px">
+                            <span style="color:var(--text3)">kind</span>
+                            <span class="mono t-label" style="color:var(--red-text)">
+                              {ev.headline}
+                            </span>
+                          </div>
+                        </Show>
+                        <Show when={ev.message !== null}>
+                          <div style="display:flex;flex-direction:column;gap:4px">
+                            <span style="color:var(--text3)">provider said</span>
+                            <span
+                              class="mono t-dense"
+                              style="color:var(--text2);white-space:pre-wrap;word-break:break-word"
+                            >
+                              {ev.message}
+                            </span>
+                          </div>
+                        </Show>
+                        {/* fix-bad-request-dead-end: where `provider said` is a
+                            fixed withheld marker, THIS is the only row that says why
+                            the provider refused. Absent markers drop the row — an
+                            empty diagnosis is worse than none. */}
+                        <Show when={ev.markers} keyed>
+                          {(ms) => (
+                            <div style="display:flex;justify-content:space-between;gap:16px">
+                              <span style="color:var(--text3)">classification</span>
+                              <span
+                                class="mono t-label"
+                                style="color:var(--text2);text-align:right;word-break:break-all"
+                              >
+                                {ms.join(' · ')}
+                              </span>
+                            </div>
+                          )}
+                        </Show>
+                        <Show when={ev.requestId !== null}>
+                          <div style="display:flex;justify-content:space-between;gap:16px">
+                            <span style="color:var(--text3)">provider request id</span>
+                            <span class="mono t-caption" style="color:var(--text)">
+                              {ev.requestId}
+                            </span>
+                          </div>
+                        </Show>
+                        {/* add-fallback-attempt-detail: the terminal member was a
+                            breaker skip — read from the recorded marker, never
+                            inferred — so a bare kind must not present as an
+                            upstream failure. */}
+                        <Show when={view().terminalSkipped}>
+                          <div class="t-caption" style="color:var(--text3)">
+                            The last chain member was never contacted — its provider's circuit was
+                            open when this request walked the chain.
+                          </div>
+                        </Show>
+                      </div>
+                    </div>
+                  )}
+                </Show>
+
+                {/* The route trace (add-route-trace-inspector design D1–D6; DESIGN.md Route
+                    Trace): the recorded walk as an ordered list, read from this row alone —
+                    never a member it did not walk, never today's routing config, and no commit
+                    marker (commit time is not recorded). Each node states its outcome in text;
+                    its spine, branch and node mark are `aria-hidden` decoration, drawn by the
+                    `rt-*` rules and never animated. The served branch is the inspector's one
+                    focal series (the Indigo Budget), so only its node is a focal root. */}
+                <div data-testid="route-trace">
+                  {/* An explicit list role: WebKit drops list semantics from a marker-less list. */}
+                  <ol class="rt" role="list" aria-label="Route trace">
+                    <For each={view().trace}>
+                      {(n) => (
+                        <li
+                          class={`rt-node rt-node--${n.emphasis}`}
+                          data-kind={n.kind}
+                          data-series={n.emphasis === 'lit' ? 'focal' : undefined}
+                          data-measure={n.emphasis === 'lit' ? 'route-trace' : undefined}
+                        >
+                          <span class="rt-spine" aria-hidden="true" />
+                          <Show when={BRANCHES.has(n.kind)}>
+                            <span class="rt-branch" aria-hidden="true" />
+                          </Show>
+                          <span class="rt-dot" aria-hidden="true" />
+                          <div class="rt-text">
+                            <TraceNodeText node={n} />
+                          </div>
+                        </li>
+                      )}
+                    </For>
+                  </ol>
+                  <Show when={view().traceCaption} keyed>
+                    {(caption) => <p class="t-caption rt-caption">{caption}</p>}
+                  </Show>
                 </div>
 
                 <div>
                   <div class="upper-label" style="margin-bottom:8px">
                     Decision
                   </div>
-                  <div class="kv-box">
+                  <div class="kv-box" data-testid="inspector-decision">
                     <div style="display:flex;justify-content:space-between;gap:16px">
                       <span style="color:var(--text3)">decision layer</span>
                       <span style="color:var(--text)">{view().decisionLayer}</span>
@@ -174,6 +345,23 @@ export function Inspector() {
                       <span style="color:var(--text3);flex:none">routing reason</span>
                       <span style="color:var(--text);text-align:right">{view().routingReason}</span>
                     </div>
+                    {/* The served tier (design D7): it rode the old provider chip, which the
+                        trace replaced. It follows `tier_assigned` alone, never the header gate
+                        below; a tier name is an identifier, and the kv-box sets Mono. It wraps
+                        only where it must (DESIGN.md Long content: `overflow-wrap: anywhere`). */}
+                    <Show when={view().tier} keyed>
+                      {(tier) => (
+                        <div style="display:flex;justify-content:space-between;gap:16px">
+                          <span style="color:var(--text3);flex:none">tier</span>
+                          <span
+                            style="color:var(--text);text-align:right;overflow-wrap:anywhere"
+                            data-testid="inspector-tier"
+                          >
+                            {tier}
+                          </span>
+                        </div>
+                      )}
+                    </Show>
                     <Show when={view().matchedHeader !== null}>
                       <div style="display:flex;justify-content:space-between;gap:16px">
                         <span style="color:var(--text3);flex:none">header</span>
@@ -241,7 +429,7 @@ export function Inspector() {
                         `none` reads as plain language; hidden (never a placeholder) when null.
                         The classifier itself does not route: a row reads `routed` only when
                         the workload stage claimed it (decision_layer `workload`,
-                        add-workload-routing) — the `router ·` line above says the same. */}
+                        add-workload-routing) — the trace's `router ·` chip says the same. */}
                     <Show when={view().workloadClass !== null}>
                       <div style="display:flex;justify-content:space-between;align-items:center;gap:16px">
                         <span style="color:var(--text3)">workload</span>
@@ -263,224 +451,126 @@ export function Inspector() {
                   </div>
                 </div>
 
-                {/* Structural fallback trail (add-fallback-attempt-detail): one
-                    line per recorded attempt — a never-dispatched breaker skip
-                    is labeled, not disguised as an upstream failure. Data-driven:
-                    rows without the column render exactly as before. */}
-                <Show when={view().attemptTrail.length > 0}>
-                  <div>
-                    <div class="upper-label" style="margin-bottom:8px">
-                      Fallback trail
-                    </div>
-                    <div class="kv-box">
-                      <For each={view().attemptTrail}>
-                        {(a) => (
-                          <div style="display:flex;justify-content:space-between;gap:16px">
-                            <span
-                              class="mono t-label"
-                              style="color:var(--text2);word-break:break-all"
-                            >
-                              {a.model}
-                              {a.legLabel !== null ? ` · ${a.legLabel}` : ''}
-                            </span>
-                            <span
-                              style={{
-                                color: a.skipped ? 'var(--text3)' : 'var(--text)',
-                                'text-align': 'right',
-                              }}
-                            >
-                              {a.label}
-                              {a.markers !== null ? ` · ${a.markers.join(' · ')}` : ''}
-                            </span>
-                          </div>
-                        )}
-                      </For>
-                    </div>
+                {/* The price receipt (add-route-trace-inspector design D8; DESIGN.md Price
+                    Receipt): what the request cost and on what terms. The caption says when the
+                    snapshot was taken — at completion, or at a batch's submission — and an
+                    unpriced request makes no snapshot claim. Token counts, prices and costs are
+                    figures (tabular Geist, `.kv-box--figures`); the one identifier, the price
+                    source, keeps Mono. Each token row is count × unit price, its count group
+                    and its price group each one no-wrap unit, so the row wraps only at the ` × `
+                    and an estimate marker never leaves its own figure. Every money figure and
+                    price renders its parts through `FigureText` (adopt-figure-states D1); the
+                    total is the table cost cell's own state (`requestCostState`). */}
+                <div data-testid="inspector-receipt">
+                  <div class="t-section" style="color:var(--text)">
+                    Price snapshot
                   </div>
-                </Show>
-
-                <Show when={view().errorView} keyed>
-                  {(ev) => (
-                    <div>
-                      <div class="upper-label" style="margin-bottom:8px;color:var(--red-text)">
-                        Error
+                  <Show when={view().receiptCaption} keyed>
+                    {(caption) => (
+                      <div
+                        class="t-caption"
+                        style="color:var(--text3);margin-top:4px"
+                        data-testid="receipt-caption"
+                      >
+                        {caption}
                       </div>
-                      <div class="kv-box" style="border-color:var(--red-bg)">
-                        <Show when={ev.headline !== ''}>
-                          <div style="display:flex;justify-content:space-between;gap:16px">
-                            <span style="color:var(--text3)">kind</span>
-                            <span class="mono t-label" style="color:var(--red-text)">
-                              {ev.headline}
-                            </span>
-                          </div>
-                        </Show>
-                        <Show when={ev.message !== null}>
-                          <div style="display:flex;flex-direction:column;gap:4px">
-                            <span style="color:var(--text3)">provider said</span>
+                    )}
+                  </Show>
+                  <div class="kv-box kv-box--figures" style="margin-top:8px">
+                    <For each={view().tokenRows}>
+                      {(t) => (
+                        <div
+                          style="display:flex;justify-content:space-between;gap:16px"
+                          data-testid="receipt-token-row"
+                        >
+                          <span style="color:var(--text3);flex:none">{t.label}</span>
+                          <span style="color:var(--text);text-align:right">
+                            <Show when={t.countParts} keyed>
+                              {(count) => (
+                                <>
+                                  <span class="rt-nowrap" data-testid={countTestId(t.label)}>
+                                    <FigureText parts={count} />
+                                  </span>
+                                  {' × '}
+                                </>
+                              )}
+                            </Show>
                             <span
-                              class="mono t-dense"
-                              style="color:var(--text2);white-space:pre-wrap;word-break:break-word"
+                              class="rt-nowrap"
+                              style="color:var(--text)"
+                              data-testid="inspector-price"
                             >
-                              {ev.message}
+                              <FigureText parts={t.priceParts} />
                             </span>
-                          </div>
-                        </Show>
-                        {/* fix-bad-request-dead-end: where `provider said` is a
-                            fixed withheld marker, THIS is the only row that says why
-                            the provider refused. Absent markers drop the row — an
-                            empty diagnosis is worse than none. */}
-                        <Show when={ev.markers} keyed>
-                          {(ms) => (
-                            <div style="display:flex;justify-content:space-between;gap:16px">
-                              <span style="color:var(--text3)">classification</span>
-                              <span
-                                class="mono t-label"
-                                style="color:var(--text2);text-align:right;word-break:break-all"
-                              >
-                                {ms.join(' · ')}
-                              </span>
-                            </div>
-                          )}
-                        </Show>
-                        <Show when={ev.requestId !== null}>
-                          <div style="display:flex;justify-content:space-between;gap:16px">
-                            <span style="color:var(--text3)">provider request id</span>
-                            <span class="mono t-caption" style="color:var(--text)">
-                              {ev.requestId}
-                            </span>
-                          </div>
-                        </Show>
-                        {/* add-fallback-attempt-detail: the terminal member was a
-                            breaker skip — read from the recorded marker, never
-                            inferred — so a bare kind must not present as an
-                            upstream failure. */}
-                        <Show when={view().terminalSkipped}>
-                          <div class="t-caption" style="color:var(--text3)">
-                            The last chain member was never contacted — its provider's circuit was
-                            open when this request walked the chain.
-                          </div>
-                        </Show>
-                      </div>
-                    </div>
-                  )}
-                </Show>
-
-                <div>
-                  <div class="upper-label" style="margin-bottom:8px">
-                    Usage & cost
-                  </div>
-                  {/* Token counts, prices and costs are figures: Geist with tabular numerals
-                      (adopt-design-tokens-v2 task 9.1). The one identifier, the price source,
-                      keeps Mono. Counts are exact here, with digit grouping; a count the
-                      provider did not report carries `· est. usage` in Ink 3 on both the
-                      input and the output count (adopt-figure-states D3). Every money figure
-                      and price renders its parts through `FigureText` (D1): an amount and the
-                      `$0` before `free` keep the row's Ink, `free` is green, `· est.` and
-                      `unpriced` are Ink 3, and `$0 · not billed` is Ink 2. */}
-                  <div class="kv-box kv-box--figures">
-                    <div style="display:flex;justify-content:space-between">
-                      <span style="color:var(--text3)">input tokens</span>
-                      <span
-                        style="color:var(--text);text-align:right"
-                        data-testid="inspector-input-tokens"
-                      >
-                        {view().inputTokens.toLocaleString()}
-                        <Show when={view().usageEstimated}>
-                          {' '}
-                          <FigureText parts={EST_USAGE_PARTS} />
-                        </Show>
-                      </span>
-                    </div>
-                    <div style="display:flex;justify-content:space-between">
-                      <span style="color:var(--text3)">output tokens</span>
-                      <span
-                        style="color:var(--text);text-align:right"
-                        data-testid="inspector-output-tokens"
-                      >
-                        {view().outputTokens.toLocaleString()}
-                        <Show when={view().usageEstimated}>
-                          {' '}
-                          <FigureText parts={EST_USAGE_PARTS} />
-                        </Show>
-                      </span>
-                    </div>
-                    <Show when={view().cacheReadTokens !== null}>
-                      <div style="display:flex;justify-content:space-between">
-                        <span style="color:var(--text3)">cache read tokens</span>
-                        <span style="color:var(--text)">
-                          {(view().cacheReadTokens ?? 0).toLocaleString()}
-                        </span>
-                      </div>
-                    </Show>
-                    <Show when={view().cacheWriteTokens !== null}>
-                      <div style="display:flex;justify-content:space-between">
-                        <span style="color:var(--text3)">cache write tokens</span>
-                        <span style="color:var(--text)">
-                          {(view().cacheWriteTokens ?? 0).toLocaleString()}
-                        </span>
-                      </div>
-                    </Show>
-                    <For each={view().prices}>
-                      {(p) => (
-                        <div style="display:flex;justify-content:space-between">
-                          <span style="color:var(--text3)">{p.label} price</span>
-                          <span style="color:var(--text)" data-testid="inspector-price">
-                            <FigureText parts={p.parts} />
                           </span>
                         </div>
                       )}
                     </For>
-                    <Show when={view().priceSourceLabel !== null}>
-                      <div style="display:flex;justify-content:space-between">
-                        <span style="color:var(--text3)">price source</span>
-                        {/* Which RULE priced it, beside where the rate came from: a
-                            batch item is charged the provider's batch tier, and a
-                            `listed`/`native_family` batch rate is an estimate exactly
-                            as it is for a synchronous request. */}
-                        <span class="mono" style="color:var(--text)">
-                          {view().batchPriced
-                            ? `batch · ${String(view().priceSourceLabel)}`
-                            : view().priceSourceLabel}
-                        </span>
-                      </div>
+                    <Show when={view().receiptSource} keyed>
+                      {(source) => (
+                        <div style="display:flex;justify-content:space-between;gap:16px">
+                          <span style="color:var(--text3)">source</span>
+                          {/* Which RULE priced it, beside where the rate came from: a
+                              batch item is charged the provider's batch tier, and a
+                              `listed`/`native_family` batch rate is an estimate exactly
+                              as it is for a synchronous request. */}
+                          <span
+                            class="mono"
+                            style="color:var(--text);text-align:right"
+                            data-testid="receipt-source"
+                          >
+                            {source}
+                          </span>
+                        </div>
+                      )}
                     </Show>
-                    <div style="display:flex;justify-content:space-between;border-top:1px solid var(--border2);padding-top:8px">
-                      <span style="color:var(--text3)">served cost</span>
-                      <span style="color:var(--text)" data-testid="inspector-served-cost">
+                    <div style="display:flex;justify-content:space-between;gap:16px;border-top:1px solid var(--border2);padding-top:8px">
+                      <span style="color:var(--text3)">served</span>
+                      <span
+                        style="color:var(--text);text-align:right"
+                        data-testid="inspector-served-cost"
+                      >
                         <FigureText parts={view().servedParts} />
                       </span>
                     </div>
-                    <div style="display:flex;justify-content:space-between">
-                      <span style="color:var(--text3)">attempt cost</span>
-                      <span style="color:var(--text)" data-testid="inspector-attempt-cost">
-                        <FigureText parts={view().attemptParts} />
-                      </span>
-                    </div>
-                    <div style="display:flex;justify-content:space-between">
+                    {/* Only when superseded calls cost money; the same parts the trace's
+                        superseded node renders (design D4). */}
+                    <Show when={view().attemptsRowParts} keyed>
+                      {(parts) => (
+                        <div style="display:flex;justify-content:space-between;gap:16px">
+                          <span style="color:var(--text3)">attempts</span>
+                          <span
+                            style="color:var(--text);text-align:right"
+                            data-testid="inspector-attempt-cost"
+                          >
+                            <FigureText parts={parts} />
+                          </span>
+                        </div>
+                      )}
+                    </Show>
+                    <div style="display:flex;justify-content:space-between;gap:16px;border-top:1px solid var(--border);padding-top:8px;font-size:0.8125rem;line-height:1.25rem;font-weight:600">
                       <span style="color:var(--text3)">total</span>
                       <span
-                        style="color:var(--text);font-weight:500"
+                        style="color:var(--text);text-align:right"
                         data-testid="inspector-total-cost"
                       >
                         <FigureText parts={view().totalParts} />
                       </span>
                     </div>
                   </div>
-                  {/* zero-cost-unbilled-errors: one muted note in place of the usage
-                      caption — "provider omitted usage" would be untrue of a call no
-                      provider ran. About the SERVED call only, so it stays true when
-                      the attempt line above carries a superseded call's real cost. */}
-                  <div
-                    data-testid={view().notBilled ? 'not-billed-note' : undefined}
-                    class="t-caption"
-                    style="color:var(--text3);margin-top:8px"
-                  >
-                    {view().notBilled
-                      ? 'Not billed — the served call was never sent or was rejected by the provider, so nothing was charged for it.'
-                      : view().usageEstimated
-                        ? 'Provider omitted usage — token counts are estimated.'
-                        : 'Token counts from provider usage; unit prices snapshotted at request time.'}
-                  </div>
+                  {/* The one note under the receipt: not billed (about the SERVED call only, so
+                      it stays true beside a real attempt cost), or estimated usage. */}
+                  <Show when={view().receiptNote} keyed>
+                    {(note) => (
+                      <div
+                        data-testid={view().notBilled ? 'not-billed-note' : undefined}
+                        class="t-caption"
+                        style="color:var(--text3);margin-top:8px"
+                      >
+                        {note}
+                      </div>
+                    )}
+                  </Show>
                 </div>
 
                 {/* Payload (add-body-capture): rendered ONLY when bodies are
@@ -565,28 +655,6 @@ export function Inspector() {
                     </Show>
                   </div>
                 </Show>
-
-                <div>
-                  <div class="upper-label" style="margin-bottom:8px">
-                    Timing
-                  </div>
-                  <div class="kv-box">
-                    <div style="display:flex;justify-content:space-between">
-                      <span style="color:var(--text3)">duration</span>
-                      <span class="figure" style="color:var(--text)">
-                        {/* A batch item's latency is the JOB's wall time — the time
-                            the caller actually waited — so it reads in hours. */}
-                        {view().batchId !== null
-                          ? fmtElapsed(view().durationMs)
-                          : fmtLatency(view().durationMs)}
-                      </span>
-                    </div>
-                    <div style="display:flex;justify-content:space-between">
-                      <span style="color:var(--text3)">status</span>
-                      <span style="color:var(--text)">{view().status}</span>
-                    </div>
-                  </div>
-                </div>
               </div>
             </div>
           </>

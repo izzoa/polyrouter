@@ -109,6 +109,7 @@ export const NARROW_GAP_EXCEPTIONS: Readonly<Record<string, string>> = {
 export const CIRCLE_SELECTORS: Readonly<Record<string, string>> = {
   '.toggle-knob': 'the switch knob',
   '.step-marker': "the Setup guide's step node (adopt-design-tokens-v2 D8 moved it out of TSX)",
+  '.rt-dot': "the Route Trace's 8px node mark (add-route-trace-inspector design D6; DS-1 D7)",
 };
 /** TSX files that draw a dot or node inline, each with what it draws. The element must
  * also declare equal width and height in its own style. */

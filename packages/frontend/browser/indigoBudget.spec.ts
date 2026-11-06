@@ -232,7 +232,14 @@ for (const theme of ['light', 'dark'] as const) {
         await setTheme(page, theme);
         await s.open(page);
         await page.waitForTimeout(250);
-        expectWithinBudget(await audit(page, s.sel), s.name);
+        const a = await audit(page, s.sel);
+        expectWithinBudget(a, s.name);
+        // The request inspector opens on fixture row 0, a served row: its one focal measure is
+        // the route trace's lit branch, and nothing else in it is indigo (add-route-trace-
+        // inspector design D5, task 4.6). Counted, not only bounded, so a lit node that lost
+        // its focal root (and was audited as stray instead) or a trace with no lit node fails.
+        if (s.name === 'drawer')
+          expect.soft(a.measures, 'drawer: the focal measure').toEqual(['route-trace']);
       }
     });
   });

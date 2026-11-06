@@ -313,7 +313,7 @@ test.describe('every single-line control is a height-family member (1440x900)', 
     );
   });
 
-  test('the segmented track is 32px, static chips 20px and the Live pill 24px', async ({
+  test('the segmented track is 32px, static chips 20px (in the open inspector too) and the Live pill 24px', async ({
     page,
   }) => {
     for (const url of [
@@ -332,6 +332,39 @@ test.describe('every single-line control is a height-family member (1440x900)', 
       expect(sizes.pill, `the Live pill on ${url}`).toEqual([24]);
       for (const t of sizes.track) expect(t, `a segmented track on ${url}`).toBe(32);
       for (const c of sizes.chip) expect(c, `a static chip on ${url}`).toBe(20);
+    }
+
+    // The open inspector (add-route-trace-inspector task 4.6, design D6 "One trace-node
+    // geometry"): its static chips — the status badge, the route trace's decision chip, the
+    // workload chip — are the 20px chip, and every trace node is a row of the one trace
+    // geometry, at least 32px, never an inline-padded tag. The default fixture's first row and
+    // the longest route (`?trace=cascade`) are both read.
+    for (const url of [
+      '/browser-harness.html#/requests',
+      '/browser-harness.html?trace=cascade#/requests',
+    ]) {
+      await open(page, url);
+      await page.locator('button.req-row').first().click();
+      await page.waitForSelector('.drawer ol.rt > li[data-kind="decision"] .chip');
+      await page.waitForTimeout(250);
+      const inspector = await page.evaluate(() => {
+        const h = (sel: string): number[] =>
+          [...document.querySelectorAll(sel)].map((e) => e.getBoundingClientRect().height);
+        return {
+          chip: h('.drawer .chip'),
+          decision: h('.drawer ol.rt > li[data-kind="decision"] .chip'),
+          node: h('.drawer li.rt-node'),
+        };
+      });
+      expect(inspector.decision, `the decision chip on ${url}`).toEqual([20]);
+      expect(inspector.chip.length, `the status badge and decision chip on ${url}`).toBeGreaterThan(
+        1,
+      );
+      for (const c of inspector.chip)
+        expect(c, `a static chip in the inspector on ${url}`).toBe(20);
+      expect(inspector.node.length, `trace nodes on ${url}`).toBeGreaterThanOrEqual(3);
+      for (const n of inspector.node)
+        expect(n, `a trace node on ${url}`).toBeGreaterThanOrEqual(32);
     }
   });
 });

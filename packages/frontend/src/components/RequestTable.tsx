@@ -1,5 +1,10 @@
 import { createSignal, For, onCleanup, onMount, Show, type JSX } from 'solid-js';
-import { labelOf, type RequestRow, type RequestStatus } from '../data/api';
+import {
+  isKnownRequestStatus,
+  labelOf,
+  type KnownRequestStatus,
+  type RequestRow,
+} from '../data/api';
 import type { InflightDisplayRow } from '../data/inflight';
 import {
   batchProgressLabel,
@@ -7,7 +12,7 @@ import {
   fmtElapsed,
   type BatchDisplayRow,
 } from '../data/batchBand';
-import { agentRunLabel, rowCostParts, startsAgentRun } from '../data/analytics';
+import { agentRunLabel, isBatchItem, rowCostParts, startsAgentRun } from '../data/analytics';
 import { fmtTime } from '../data/catalog';
 import { EST_USAGE_PARTS, fmtLatency, fmtTokensCompact } from '../data/figures';
 import { useApp } from '../state/context';
@@ -56,13 +61,13 @@ function Cell(props: { label: string; children: JSX.Element }): JSX.Element {
  * An unknown layer renders the same chip (invariant 1: the table is layer-agnostic). */
 const LAYER_CHIP_STYLE: JSX.CSSProperties = { color: 'var(--text2)', 'font-weight': '500' };
 
-const STATUS_DOT: Record<RequestStatus, string> = {
+const STATUS_DOT: Record<KnownRequestStatus, string> = {
   success: 'var(--green)',
   fallback: 'var(--amber)',
   error: 'var(--red)',
   cancelled: 'var(--text3)',
 };
-const STATUS_TEXT: Record<RequestStatus, string> = {
+const STATUS_TEXT: Record<KnownRequestStatus, string> = {
   success: 'OK',
   fallback: 'Fallback',
   error: 'Error',
@@ -70,12 +75,8 @@ const STATUS_TEXT: Record<RequestStatus, string> = {
 };
 // `status` is free-form text at the DB — an unknown/legacy value renders neutrally
 // instead of crashing on a missing map entry.
-const dotFor = (s: string): string => STATUS_DOT[s as RequestStatus] ?? 'var(--text3)';
-/** A settled batch item. `batchId` is the fact; `priceMode` is how it was priced —
- * either alone identifies one, and a row predating the columns is neither. */
-export const isBatchItem = (r: Pick<RequestRow, 'batchId' | 'priceMode'>): boolean =>
-  r.batchId !== null || r.priceMode === 'batch';
-const textFor = (s: string): string => STATUS_TEXT[s as RequestStatus] ?? (s || 'unknown');
+const dotFor = (s: string): string => (isKnownRequestStatus(s) ? STATUS_DOT[s] : 'var(--text3)');
+const textFor = (s: string): string => (isKnownRequestStatus(s) ? STATUS_TEXT[s] : s || 'unknown');
 
 /** The neutral `batch` chip (add-batch-inference D11a/D12). Neutral on purpose, like
  * the decision-layer chip beside it: the lock reserves amber for status, and a batch

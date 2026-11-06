@@ -243,10 +243,10 @@ describe('Inspector workload chip (add-workload-telemetry 5.1)', () => {
       buttons[idx]!.click();
       await flush();
       const drawer = h!.host.querySelector('#inspector-drawer')!;
+      // add-route-trace-inspector: the `router · <layer>` tag is now the route trace's
+      // decision chip (dashboard-analytics "The decision chip names any layer, neutrally").
       const router =
-        [...drawer.querySelectorAll<HTMLElement>('*')]
-          .map((e) => e.textContent ?? '')
-          .find((t) => /^router · \w+$/.test(t.trim())) ?? '';
+        drawer.querySelector('ol.rt > li[data-kind="decision"] .chip')?.textContent ?? '';
       const chip = drawer.querySelector('[data-testid="workload-chip"]')?.textContent ?? null;
       drawer.querySelector<HTMLButtonElement>('button')?.click();
       await flush();

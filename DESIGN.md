@@ -280,7 +280,6 @@ Controls are crisp and tactile. They are small and exact, and they share one hei
 
 | Target (this file) | As built today | Closed by |
 |---|---|---|
-| Route Trace and Price Receipt in the inspector | A text trail of attempts and a key–value price block | `add-route-trace-inspector` |
 | Inspector docks as a 480px non-modal panel at ≥ 1440px; the list shows compact columns while docked | 440px modal drawer at every desktop width | `add-docked-inspector` |
 | First-token commit marker on the served node | Not recorded by the proxy, so the marker is never drawn | Follow-up: commit-timing telemetry (request logging) |
 | Per-request deep link (`#/requests/<id>`) | Not supported: no owner-scoped read-by-id, and the fragment grammar is page-only | Follow-up: request detail read + deep link |
@@ -526,7 +525,7 @@ The board's signature: a request's recorded route, drawn in the brand mark's gra
   - Then one **branch per recorded attempt**, in attempt order, ending with the **served branch**.
   - Labels sit to the right of the gutter. Each row is at least 32px tall, and labels may wrap to two lines.
 - **The lit route:** the served branch is a 2px Ink Indigo stroke ending in an 8px filled indigo node. Its label is the provider name, then the model id (Mono), then `served · 1.24s`. That is the only indigo in the trace.
-- **Unlit outcomes:** a failed, cancelled or unrecognised final outcome ends in an unlit node stated in words (`failed · 2.1s`, `cancelled by client · 0.8s`, or the recorded value verbatim). Only a served request lights its branch.
+- **Unlit outcomes:** a failed, cancelled or unrecognised final outcome ends in an unlit node stated in words. It names the recorded provider first when that provider was the last one tried: `OpenAI · gpt-4o · failed · 1.20s`; `OpenAI · failed · 2.10s` for an exhausted chain, whose last attempt already names the model; `OpenAI · gpt-4o · cancelled by client · 800ms`; or the provider, then the recorded value verbatim. Without such a provider it reads `failed · 2.10s` or `gpt-4o · cancelled by client · 800ms`. Only a served request lights its branch.
 - **Failed attempts:** a 1px `border-control` stroke ends in an 8px hollow node with a `border-control` ring. The label is the model id, then the failure in Red Text, with the kind in Mono: `rate_limit · HTTP 429`, or the kind alone when no status was recorded. Recorded markers follow. In a cascade, the leg tag (`cheap leg` / `escalation`) is appended.
 - **Skipped attempts (never dispatched):** a 1px dashed Ink 3 stroke ends in a hollow dashed node. The label is the full contract string, **`skipped — circuit open (provider not contacted)`**, never a shortened form.
 - **Superseded cheap call (cascade):** shown only from what was recorded, e.g. `cheap attempt superseded · q=0.42 · $0.0031`, with no model name until the API exposes one.

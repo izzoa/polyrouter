@@ -8,6 +8,7 @@
  */
 import { fetch as undiciFetch } from 'undici';
 import {
+  POLYROUTER_USER_AGENT,
   SsrfError,
   assertUrlSafe,
   createGuardedDispatcher,
@@ -69,6 +70,7 @@ export async function fetchLiteLlmCatalog(
       res = await undiciFetch(url, {
         method: 'GET',
         redirect: 'manual',
+        headers: { 'User-Agent': POLYROUTER_USER_AGENT },
         dispatcher,
         signal: controller.signal,
       });

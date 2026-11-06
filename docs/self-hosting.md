@@ -219,6 +219,11 @@ healthcheck:
 | `SEMANTIC_WORKLOAD_MARGIN` / `SEMANTIC_WORKLOAD_MIN_SIM`                                                  | `0.05` / `0.20`                       | Semantic **workload** rails (need the semantic module): a structural-`none` `auto` request records `research` / `writing` only when the winning class leads the runner-up by ≥ `MARGIN` (the discriminating rail) and its cosine is ≥ `MIN_SIM` (a near-orthogonal guard; the spike showed 0.30 cost recall for no precision). Both ≤ 4 decimals, both part of the `semantic/…` workload revision, so a change never silently mixes two populations                                                                                                                                                                    |
 | `POLYROUTER_SUBNET` / `POLYROUTER_IMAGE`                                                                  | `172.28.5.0/24` / built               | Compose network CIDR (change on a collision) / prebuilt image override                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 
+> **Outbound identity.** polyrouter identifies itself to every upstream it contacts (your
+> providers, their OAuth token endpoints, the pricing source and the Apprise sidecar) as
+> `User-Agent: polyrouter/<version>`, where `<version>` is the release version the dashboard
+> shows. It never forwards a calling agent's `User-Agent`, and the value is not configurable.
+
 > The optional tunables above are compose pass-through: set one in `.env` and it reaches
 > the container (the compose file sets the deploy-invariant ones — bind address, mode,
 > `NODE_ENV`, DB/Redis URLs — itself). In the repo's `docker-compose.yml` (checkout and
@@ -481,6 +486,10 @@ Honest caveats:
   failures surface as a clear provider error, and polyrouter **never impersonates the
   first-party client** beyond the documented headers — no client-fingerprint headers and no
   imitation system prompts, even if that means a preset stays disabled.
+- **Upgrading existing Claude and ChatGPT connections.** From this release their traffic
+  announces `User-Agent: polyrouter/<version>` instead of the HTTP library's name. An
+  upstream could single that out; if one rejects it, the rejection shows as the provider
+  error on the connection's card.
 - **ChatGPT specifics:** the ChatGPT preset speaks the backend's **Responses API** with
   `store: false` on every call (nothing is retained server-side by request), and any
   reasoning items the backend emits are **dropped, never persisted or replayed** — a

@@ -16,6 +16,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import { loadConfig } from '@polyrouter/shared';
 import {
   PERSISTENCE_PORT,
+  POLYROUTER_USER_AGENT,
   encryptSecret,
   userPrincipal,
   type PersistencePort,
@@ -83,6 +84,9 @@ describe('provider management', () => {
   let bob: string;
   let stub: http.Server;
   let stubPort: number;
+  /** One entry per `/models` request the stub served: the raw `user-agent` header
+   * values it received, in any case (add-honest-user-agent). */
+  let stubUserAgents: string[][] = [];
 
   const mkUser = async (): Promise<string> =>
     (
@@ -104,6 +108,11 @@ describe('provider management', () => {
     }
     stub = http.createServer((req, res) => {
       if (req.url?.endsWith('/models')) {
+        stubUserAgents.push(
+          req.rawHeaders.filter(
+            (_v, i) => i % 2 === 1 && /^user-agent$/i.test(req.rawHeaders[i - 1]!),
+          ),
+        );
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ data: [{ id: 'stub-a' }, { id: 'stub-b' }] }));
       } else {
@@ -150,6 +159,7 @@ describe('provider management', () => {
     await pool.query('DELETE FROM model_price WHERE model_key = ANY($1)', [TEST_CATALOG_KEYS]);
     nextTest = () => ({ ok: true, models: 0 });
     nextModels = () => [];
+    stubUserAgents = [];
   });
 
   /** Direct-construction helper for the in-process service tests: passthrough lock
@@ -425,7 +435,7 @@ describe('provider management', () => {
   it('captures a provider-listed price as a display estimate, never as catalog/billing data', async () => {
     const created = await asAlice().send({ ...OR, credential: 'k' });
     nextModels = () => [
-      { id: 'moonshotai/kimi-k3', pricing: { inputPricePer1m: 3, outputPricePer1m: 15 } },
+      { id: 'moonshotai/kimi-listed-probe', pricing: { inputPricePer1m: 3, outputPricePer1m: 15 } },
     ];
     const sync = await request(server)
       .post(`/api/providers/${created.body.id}/sync-models`)
@@ -435,7 +445,7 @@ describe('provider management', () => {
 
     const list = await listModelsFor(alice);
     const model = list.body.find(
-      (m: { externalModelId: string }) => m.externalModelId === 'moonshotai/kimi-k3',
+      (m: { externalModelId: string }) => m.externalModelId === 'moonshotai/kimi-listed-probe',
     );
     // Effective price is the LISTED estimate, flagged; billing columns stay null.
     expect(model.effectivePrice).toMatchObject({
@@ -450,7 +460,7 @@ describe('provider management', () => {
     // derived key has no catalog row (a shared test DB may hold unrelated openrouter rows,
     // so assert the specific key, not a prefix count).
     const cat = await pool.query<{ n: string }>(
-      "SELECT count(*)::text n FROM model_price WHERE model_key = 'openrouter:moonshotai/kimi-k3'",
+      "SELECT count(*)::text n FROM model_price WHERE model_key = 'openrouter:moonshotai/kimi-listed-probe'",
     );
     expect(cat.rows[0]!.n).toBe('0');
 
@@ -789,6 +799,47 @@ describe('provider management', () => {
       (m) => m.externalModelId === 'shared',
     );
     expect(shared).toHaveLength(1);
+  });
+
+  // add-honest-user-agent: provider management announces polyrouter on the wire,
+  // and the User-Agent is not a user-configurable field.
+  it('test-connection and sync-models each send exactly one polyrouter User-Agent', async () => {
+    const port = app.get<PersistencePort>(PERSISTENCE_PORT);
+    const principal: Principal = userPrincipal(alice);
+    const svc = mkSvc(port, createProviderAdapter, { key: 'a'.repeat(64), mode: 'selfhosted' });
+    const provider = await port.providers.insert(principal, {
+      name: 'ua-stub',
+      kind: 'local',
+      protocol: 'openai_compatible',
+      baseUrl: `http://127.0.0.1:${stubPort}/v1`,
+    });
+    expect((await svc.testConnection(principal, provider.id)).ok).toBe(true);
+    const afterTest = stubUserAgents.length;
+    expect(afterTest).toBeGreaterThan(0);
+    expect((await svc.syncModels(principal, provider.id)).synced).toBe(2);
+    expect(stubUserAgents.length).toBeGreaterThan(afterTest);
+    for (const seen of stubUserAgents) expect(seen).toEqual([POLYROUTER_USER_AGENT]);
+  });
+
+  it('refuses a userAgent field on create and update with a 400 and stores nothing', async () => {
+    const created = await asAlice().send({ ...CUSTOM, userAgent: 'evil/1.0' });
+    expect(created.status).toBe(400);
+    expect(JSON.stringify(created.body)).toContain('userAgent');
+    const none = await pool.query('SELECT 1 FROM provider WHERE owner_user_id = $1', [alice]);
+    expect(none.rowCount).toBe(0);
+
+    const ok = await asAlice().send(CUSTOM);
+    expect(ok.status).toBe(201);
+    const id = ok.body.id as string;
+    const before = await pool.query('SELECT * FROM provider WHERE id = $1', [id]);
+    const patched = await request(server)
+      .patch(`/api/providers/${id}`)
+      .set('x-test-user', alice)
+      .send({ userAgent: 'evil/1.0' });
+    expect(patched.status).toBe(400);
+    const after = await pool.query('SELECT * FROM provider WHERE id = $1', [id]);
+    expect(after.rows[0]).toEqual(before.rows[0]);
+    expect(JSON.stringify(after.rows[0])).not.toContain('evil/1.0');
   });
 
   // ---- add-live-subscription-models: unlisted models (task 6.1) ----

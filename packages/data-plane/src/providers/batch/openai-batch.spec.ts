@@ -4,6 +4,7 @@
 // temp file, and how it reads a partially-failed batch back from two files.
 import { canonRequest, canonResponse, openaiAdapter } from '../../proxy/translate';
 import { BatchUpstreamNotFoundError } from '../batch';
+import { POLYROUTER_USER_AGENT } from '@polyrouter/shared/server';
 import { ProviderError } from '../errors';
 import type { HttpInit, HttpResponse } from '../http';
 import { createOpenaiProviderAdapter } from '../openai-adapter';
@@ -308,5 +309,34 @@ describe('OpenAI batch adapter — status, results, list, cancel (task 6.2)', ()
         for await (const _ of batch.results('gone')) void _;
       })(),
     ).rejects.toBeInstanceOf(BatchUpstreamNotFoundError);
+  });
+});
+
+/** Every `user-agent` key (any case) on a recorded call's headers. */
+const uaOf = (h: Record<string, string>): [string, string][] =>
+  Object.entries(h).filter(([k]) => k.toLowerCase() === 'user-agent');
+
+describe('OpenAI batch adapter — User-Agent (outbound-user-agent)', () => {
+  it('upload, create, status, results and cancel each carry exactly one polyrouter User-Agent', async () => {
+    const { batch, calls } = build((url) => {
+      if (url === FILES) return jsonResponse(submit.file);
+      if (url === BATCHES) return jsonResponse(submit.response);
+      if (url.endsWith('/cancel')) return jsonResponse({ ...completed, status: 'cancelling' });
+      if (url === `${FILES}/file-out123/content`) return jsonl(results.output);
+      if (url === `${FILES}/file-err123/content`) return jsonl(results.errors);
+      return jsonResponse(completed);
+    });
+    await batch.submit({ items, model: 'gpt-4o', jobId: 'job-1' });
+    await batch.status('batch_abc123');
+    for await (const o of batch.results('batch_abc123')) void o;
+    await batch.cancel('batch_abc123');
+    expect(calls.length).toBeGreaterThanOrEqual(6);
+    for (const call of calls) {
+      expect(uaOf(call.init.headers)).toEqual([['User-Agent', POLYROUTER_USER_AGENT]]);
+    }
+    // The batch's own headers are unchanged.
+    expect(calls[0]!.init.headers['Content-Type']).toMatch(/^multipart\/form-data; boundary=/);
+    expect(calls[1]!.init.headers['Content-Type']).toBe('application/json');
+    expect(calls[1]!.init.headers['Idempotency-Key']).toBe('job-1');
   });
 });

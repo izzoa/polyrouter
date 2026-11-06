@@ -208,6 +208,7 @@ export type {
   SsrfCode,
   UrlGuardOptions,
 } from './security/ssrf';
+export { POLYROUTER_USER_AGENT, findUserAgent, withUserAgent } from './outbound-user-agent';
 export { assertNetworkHostSafe } from './security/network-host';
 export type { NetworkHostOptions } from './security/network-host';
 export {

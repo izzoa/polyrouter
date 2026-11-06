@@ -70,7 +70,7 @@ export interface ProviderConfig {
   readonly maxResponseBytes?: number;
   /** Forwarded to #5's translate adapter (genuine provider deviations). */
   readonly quirks?: AdapterQuirks;
-  /** Merged into outbound requests (subscription/custom header seam). */
+  /** Merged into outbound requests (a seam reserved for a preset-declared client identity; never user input or inbound headers). */
   readonly extraHeaders?: Readonly<Record<string, string>>;
 }
 

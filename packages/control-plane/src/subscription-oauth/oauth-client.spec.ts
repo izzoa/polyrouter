@@ -1,6 +1,7 @@
 // add-chatgpt-responses — token-client extensions: preset-declared body encoding,
 // exchange-only id_token surfacing, refresh-omission tolerance, fixed-message
 // failures (hostile bodies never leak — invariant 8).
+import { POLYROUTER_USER_AGENT } from '@polyrouter/shared/server';
 import { TokenEndpointError, buildTokenRequest, parseTokenSet } from './oauth-client';
 import { extractChatgptAccountId, AccountClaimError } from './account-claim';
 
@@ -44,6 +45,26 @@ describe('buildTokenRequest — the preset-declared encoding contract', () => {
       'identity',
     );
   });
+});
+
+describe('buildTokenRequest — the outbound User-Agent (add-honest-user-agent)', () => {
+  const countUa = (headers: Readonly<Record<string, string>>): number =>
+    Object.keys(headers).filter((k) => k.toLowerCase() === 'user-agent').length;
+
+  for (const encoding of ['json', 'form'] as const) {
+    for (const grant of ['exchange', 'refresh'] as const) {
+      it(`${encoding} / ${grant}: exactly one polyrouter User-Agent beside Content-Type and Accept-Encoding`, () => {
+        const { headers } = buildTokenRequest({ ...base, encoding, grant });
+        expect(countUa(headers)).toBe(1);
+        expect(headers['User-Agent']).toBe(POLYROUTER_USER_AGENT);
+        expect(headers['User-Agent']).toMatch(/^polyrouter\/\d+\.\d+\.\d+/);
+        expect(headers['Accept-Encoding']).toBe('identity');
+        expect(headers['Content-Type']).toBe(
+          encoding === 'form' ? 'application/x-www-form-urlencoded' : 'application/json',
+        );
+      });
+    }
+  }
 });
 
 describe('parseTokenSet — grant-aware requirements', () => {

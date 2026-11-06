@@ -10,6 +10,7 @@ import {
   parseChatgptCatalog,
 } from './responses-adapter';
 import { createProviderAdapter } from './factory';
+import { POLYROUTER_USER_AGENT } from '@polyrouter/shared/server';
 import { ProviderError } from './errors';
 import type { ProviderConfig } from './adapter';
 import type { NormalizedRequest } from '../proxy/translate';
@@ -88,13 +89,19 @@ describe('Responses provider adapter (add-chatgpt-responses)', () => {
     // Full-set equality IS the absence assertion: nothing else identity-bearing —
     // no x-api-key, no originator, no session ids, no anthropic-* — can be present.
     // (Accept is the SSE content negotiation of the streaming-only wire.)
+    // `User-Agent` is polyrouter's own transport default (add-honest-user-agent): it names
+    // no other client, so it is not an identity header and never a first-party UA
+    // (no `codex_cli_rs/…`).
     expect(Object.keys(h).sort()).toEqual([
       'Accept',
       'Authorization',
       'Content-Type',
       'OpenAI-Beta',
+      'User-Agent',
       'chatgpt-account-id',
     ]);
+    expect(h['User-Agent']).toBe(POLYROUTER_USER_AGENT);
+    expect(h['User-Agent']).not.toMatch(/codex|chatgpt|openai/i);
     expect(h['Authorization']).toBe('Bearer oat-access-token');
     expect(h['chatgpt-account-id']).toBe('acct-123');
     expect(h['OpenAI-Beta']).toBe('responses=experimental');
@@ -164,10 +171,14 @@ describe('Responses provider adapter (add-chatgpt-responses)', () => {
     expect(call.url).toBe(
       `https://chatgpt.example/backend-api/codex/models?client_version=${CHATGPT_CATALOG_CLIENT_VERSION}`,
     );
-    // Same identity set as chat (verified live): no originator, no UA, no session ids.
+    // Same identity set as chat (verified live): no originator, no first-party UA, no
+    // session ids. polyrouter's own User-Agent is a transport default, not identity.
     const h = call.init.headers;
-    const identity = Object.keys(h).filter((k) => !['Accept', 'Content-Type'].includes(k));
+    const identity = Object.keys(h).filter(
+      (k) => !['Accept', 'Content-Type', 'User-Agent'].includes(k),
+    );
     expect(identity.sort()).toEqual(['Authorization', 'OpenAI-Beta', 'chatgpt-account-id']);
+    expect(h['User-Agent']).toBe(POLYROUTER_USER_AGENT);
     expect(h['Authorization']).toBe('Bearer oat-access-token');
     expect(h['chatgpt-account-id']).toBe('acct-123');
     expect(models.map((m) => m.id)).toEqual(['gpt-6-luna', 'gpt-5.5', 'gpt-legacy-shape']);

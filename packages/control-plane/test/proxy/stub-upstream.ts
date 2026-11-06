@@ -12,6 +12,12 @@ export interface StubRequestRecord {
   path: string;
   auth: string | undefined;
   xApiKey: string | undefined;
+  /** The `User-Agent` header the upstream received (add-honest-user-agent). */
+  userAgent: string | undefined;
+  /** How many raw `user-agent` header lines arrived, in any case. Node folds
+   * duplicates of this header away in `req.headers`, so only `rawHeaders` can
+   * prove "exactly one". */
+  userAgentCount: number;
   /** Settles when this request/response pair is torn down — the response ended
    * normally OR the proxy aborted the upstream call (stream-lifecycle e2e). */
   closed: Promise<void>;
@@ -575,6 +581,11 @@ export async function startStubUpstream(): Promise<StubUpstream> {
         auth: req.headers.authorization,
         xApiKey:
           typeof req.headers['x-api-key'] === 'string' ? req.headers['x-api-key'] : undefined,
+        userAgent:
+          typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : undefined,
+        userAgentCount: req.rawHeaders.filter(
+          (v, i) => i % 2 === 0 && v.toLowerCase() === 'user-agent',
+        ).length,
         closed: new Promise<void>((resolve) => res.once('close', resolve)),
       });
       // --- OpenAI's FILE plane (add-batch-inference Phase C) -----------------

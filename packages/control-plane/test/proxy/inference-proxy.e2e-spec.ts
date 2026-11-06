@@ -8,6 +8,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import { loadConfig } from '@polyrouter/shared';
 import {
   PERSISTENCE_PORT,
+  POLYROUTER_USER_AGENT,
   userPrincipal,
   type PersistencePort,
   type Principal,
@@ -256,6 +257,15 @@ async function seedTenant(
     models['oai-nofunds1']!,
   ]);
   await port.tiers.insert(principal, { key: 'empty' }); // no entries
+  // add-honest-user-agent: a chain whose first member fails before its first token,
+  // so both upstream attempts of one request are recorded by the stub.
+  {
+    const t = await port.tiers.insert(principal, { key: 'uafallback' });
+    await port.routingEntries.replaceForTier(principal, t.id, [
+      models['anthro-firsterror']!,
+      models['gpt-4o']!,
+    ]);
+  }
 
   const minted = mintAgentKey(HMAC);
   await pool.query(
@@ -454,6 +464,70 @@ describe('inference proxy e2e', () => {
     expect(res.status).toBe(200);
     expect(res.text).toContain('"upstream_error"'); // terminal error, not a second model
     expect(res.text).not.toContain('Hello from stub'); // gpt-4o (the fallback) never served
+  });
+
+  // --- add-honest-user-agent: the upstream always sees polyrouter's own UA ---
+
+  describe('outbound User-Agent', () => {
+    const AGENT_UA = 'claude-cli/2.0.0 (external, cli)';
+    const expectOnlyPolyrouterUa = (from: number): void => {
+      const seen = stub.requests.slice(from);
+      expect(seen.length).toBeGreaterThan(0);
+      for (const r of seen) {
+        expect(r.userAgentCount).toBe(1);
+        expect(r.userAgent).toBe(POLYROUTER_USER_AGENT);
+        expect(r.userAgent).not.toContain('claude-cli');
+      }
+    };
+    const chatAs = (body: object) =>
+      request(server)
+        .post('/v1/chat/completions')
+        .set('Authorization', `Bearer ${A.key}`)
+        .set('User-Agent', AGENT_UA)
+        .send(body);
+    const messagesAs = (body: object) =>
+      request(server)
+        .post('/v1/messages')
+        .set('x-api-key', A.key)
+        .set('User-Agent', AGENT_UA)
+        .send(body);
+
+    it.each([
+      ['chat, non-streaming', false],
+      ['chat, streaming', true],
+    ])('does not forward the agent UA on /v1/chat/completions (%s)', async (_n, stream) => {
+      const from = stub.requests.length;
+      const res = await chatAs({ model: 'gpt-4o', stream, messages: [] });
+      expect(res.status).toBe(200);
+      expect(stub.requests.length - from).toBe(1);
+      expectOnlyPolyrouterUa(from);
+    });
+
+    it.each([
+      ['messages, non-streaming', false],
+      ['messages, streaming', true],
+    ])('does not forward the agent UA on /v1/messages (%s)', async (_n, stream) => {
+      const from = stub.requests.length;
+      const res = await messagesAs({
+        model: 'claude-x',
+        max_tokens: 16,
+        stream,
+        messages: [{ role: 'user', content: 'hi' }],
+      });
+      expect(res.status).toBe(200);
+      expect(stub.requests.length - from).toBe(1);
+      expectOnlyPolyrouterUa(from);
+    });
+
+    it('sends polyrouter on both attempts of a pre-first-token fallback', async () => {
+      const from = stub.requests.length;
+      const res = await chatAs({ model: 'uafallback', stream: true, messages: [] });
+      expect(res.status).toBe(200);
+      expect(res.text).toContain('data: [DONE]');
+      // The first member (`anthro-firsterror`) failed, the second served.
+      expect(stub.requests.length - from).toBe(2);
+      expectOnlyPolyrouterUa(from);
+    });
   });
 
   // --- fix-4xx-error-taxonomy: the reported incident, end to end ---

@@ -10,6 +10,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import { loadConfig } from '@polyrouter/shared';
 import {
   PERSISTENCE_PORT,
+  POLYROUTER_USER_AGENT,
   REDIS_CLIENT,
   userPrincipal,
   type PersistencePort,
@@ -1199,6 +1200,33 @@ describe('cascade routing e2e', () => {
           expect(row.escalated).toBe(true);
           expect(row.escalationSource).toBe('cheap_error');
           expect(await port.requestAttempts.listForRequest(principal, row.id)).toHaveLength(0);
+        });
+      },
+    );
+
+    // add-honest-user-agent: every leg of a cascade — the cheap attempt and each
+    // escalated attempt — announces polyrouter, never the calling agent.
+    it.each([[false], [true]])(
+      'every cascade leg sends polyrouter/<version> and never the agent UA (stream=%s)',
+      async (stream) => {
+        await bindBand('auto_low', ['oai-ratelimit']);
+        await withDeadEscalation(async () => {
+          const before = stub.requests.length;
+          const res = await request(server)
+            .post('/v1/chat/completions')
+            .set('Authorization', `Bearer ${key}`)
+            .set('User-Agent', 'claude-cli/2.0.0 (external, cli)')
+            .send(body(`sysCascadeUa${String(stream)}`, stream));
+          if (stream) await new Promise((r) => setTimeout(r, 40));
+          await writer.flush();
+          expect(res.status).toBeGreaterThanOrEqual(500);
+          const legs = stub.requests.slice(before);
+          expect(legs).toHaveLength(3); // cheap + both escalation members
+          for (const leg of legs) {
+            expect(leg.userAgentCount).toBe(1);
+            expect(leg.userAgent).toBe(POLYROUTER_USER_AGENT);
+            expect(leg.userAgent).not.toContain('claude-cli');
+          }
         });
       },
     );

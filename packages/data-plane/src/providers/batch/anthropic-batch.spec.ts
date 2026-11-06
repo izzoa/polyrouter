@@ -5,6 +5,7 @@
 import { anthropicAdapter, canonRequest, canonResponse } from '../../proxy/translate';
 import { createAnthropicProviderAdapter } from '../anthropic-adapter';
 import { BatchUpstreamNotFoundError } from '../batch';
+import { POLYROUTER_USER_AGENT } from '@polyrouter/shared/server';
 import { ProviderError } from '../errors';
 import type { HttpInit, HttpResponse } from '../http';
 import { errorResponse, jsonResponse, recordingClient } from '../testkit.testkit';
@@ -286,5 +287,31 @@ describe('Anthropic batch adapter — status, results, list, cancel', () => {
       ),
     );
     await expect(b2.status('msgbatch_1')).rejects.toMatchObject({ kind: 'unavailable' });
+  });
+});
+
+/** Every `user-agent` key (any case) on a recorded call's headers. */
+const uaOf = (h: Record<string, string>): [string, string][] =>
+  Object.entries(h).filter(([k]) => k.toLowerCase() === 'user-agent');
+
+describe('Anthropic batch adapter — User-Agent (outbound-user-agent)', () => {
+  it('create, status, results and cancel each carry exactly one polyrouter User-Agent', async () => {
+    const { batch, calls } = build((url) => {
+      if (url === BATCHES) return jsonResponse(create.response);
+      if (url.endsWith('/results')) return jsonl(results.lines);
+      if (url.endsWith('/cancel'))
+        return jsonResponse({ ...ended, processing_status: 'canceling' });
+      return jsonResponse(ended);
+    });
+    await batch.submit({ items, model: 'claude-sonnet-4-5', jobId: 'job-1' });
+    await batch.status('msgbatch_x');
+    for await (const o of batch.results('msgbatch_x')) void o;
+    await batch.cancel('msgbatch_x');
+    expect(calls).toHaveLength(4);
+    for (const call of calls) {
+      expect(uaOf(call.init.headers)).toEqual([['User-Agent', POLYROUTER_USER_AGENT]]);
+    }
+    expect(calls[0]!.init.headers['Content-Type']).toBe('application/json');
+    expect(calls[0]!.init.headers['Idempotency-Key']).toBe('job-1');
   });
 });

@@ -1,6 +1,7 @@
 // add-subscription-oauth — the Anthropic authScheme switch: oauth_bearer sends
 // Authorization: Bearer + the preset's anthropic-beta value and NO x-api-key;
 // the default api_key scheme is byte-identical to the pre-existing headers.
+import { POLYROUTER_USER_AGENT } from '@polyrouter/shared/server';
 import { createAnthropicProviderAdapter } from './anthropic-adapter';
 import { createOpenaiProviderAdapter } from './openai-adapter';
 import { recordingClient, jsonResponse } from './testkit.testkit';
@@ -44,6 +45,8 @@ describe('Anthropic authScheme switch (add-subscription-oauth)', () => {
     expect(h['anthropic-beta']).toBe(BETA);
     expect(h['anthropic-version']).toBe('2023-06-01');
     expect(h['x-api-key']).toBeUndefined();
+    // polyrouter's own transport User-Agent rides along (add-honest-user-agent).
+    expect(h['User-Agent']).toBe(POLYROUTER_USER_AGENT);
   });
 
   it('the default api_key scheme is byte-identical to today (x-api-key, no Bearer)', async () => {
@@ -58,6 +61,7 @@ describe('Anthropic authScheme switch (add-subscription-oauth)', () => {
     expect(h['anthropic-version']).toBe('2023-06-01');
     expect(h['Authorization']).toBeUndefined();
     expect(h['anthropic-beta']).toBeUndefined();
+    expect(h['User-Agent']).toBe(POLYROUTER_USER_AGENT);
   });
 
   it('oauth_bearer without the preset beta value is a typed configuration error', () => {

@@ -21,10 +21,11 @@ import {
   OAUTH_PRESET_LOOKUP,
   OAUTH_TOKEN_FETCH,
   REFRESH_MARGIN_MS,
+  defaultTokenFetch,
   SUBSCRIPTION_OAUTH_RUNTIME,
   SubscriptionOauthService,
 } from './subscription-oauth.service';
-import { TokenEndpointError, type TokenSet } from './oauth-client';
+import { TokenEndpointError, fetchTokenSet, type TokenSet } from './oauth-client';
 import type { OauthPreset } from './presets';
 
 const KEY = 'b'.repeat(64);
@@ -883,5 +884,11 @@ describe('forceRefresh / requestForcedRefresh / claimTestRepair (add-provider-he
     await expect(h.svc.claimTestRepair('prov-2')).resolves.toBe(true);
     jest.spyOn(h.redis, 'set').mockRejectedValue(new Error('ECONNREFUSED'));
     await expect(h.svc.claimTestRepair('prov-3')).resolves.toBe(false);
+  });
+});
+
+describe('production token-fetch binding (add-honest-user-agent)', () => {
+  it('defaultTokenFetch IS fetchTokenSet, so every grant path (exchange, refresh, forced refresh, sweep) sends buildTokenRequest headers', () => {
+    expect(defaultTokenFetch).toBe(fetchTokenSet);
   });
 });

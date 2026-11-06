@@ -5,7 +5,12 @@
  * lives here. Consumes #5's IR; defines no response shape (invariant 2).
  */
 import { APP_NAME, OPENROUTER_HOST, PROJECT_URL } from '@polyrouter/shared';
-import { SsrfError } from '@polyrouter/shared/server';
+import {
+  POLYROUTER_USER_AGENT,
+  SsrfError,
+  findUserAgent,
+  withUserAgent,
+} from '@polyrouter/shared/server';
 import type { UpstreamProtocolAdapter } from '../proxy/translate';
 import type {
   NormalizedRequest,
@@ -270,13 +275,22 @@ export function createHttpProviderAdapter(
   // Computed once — base_url is fixed per adapter (add-openrouter-attribution).
   const attribution = openRouterAttributionHeaders(config.baseUrl);
 
-  const headers = (json: boolean, sse: boolean): Record<string, string> => ({
-    ...attribution, // spread first (lowest); safety is by distinct names, not precedence
-    ...(config.extraHeaders ?? {}),
-    ...spec.authHeaders(config.credential),
-    ...(json ? { 'Content-Type': 'application/json' } : {}),
-    ...(sse ? { Accept: 'text/event-stream' } : {}),
-  });
+  // The User-Agent is decided HERE, once, after every layer is merged (add-honest-user-agent,
+  // design D3/D6): polyrouter's own is the default, a UA on the `extraHeaders` identity seam
+  // replaces it, and a UA from any other layer (attribution, authentication) is dropped. The
+  // inbound caller's UA never reaches this builder at all. Exactly one `User-Agent` is sent.
+  const userAgent = findUserAgent(config.extraHeaders) ?? POLYROUTER_USER_AGENT;
+  const headers = (json: boolean, sse: boolean): Record<string, string> =>
+    withUserAgent(
+      {
+        ...attribution, // spread first (lowest); safety is by distinct names, not precedence
+        ...(config.extraHeaders ?? {}),
+        ...spec.authHeaders(config.credential),
+        ...(json ? { 'Content-Type': 'application/json' } : {}),
+        ...(sse ? { Accept: 'text/event-stream' } : {}),
+      },
+      userAgent,
+    );
 
   async function chat(request: NormalizedRequest, ctx?: CallContext): Promise<NormalizedResponse> {
     try {

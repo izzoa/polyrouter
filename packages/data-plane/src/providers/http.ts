@@ -11,9 +11,12 @@
  */
 import { fetch as undiciFetch, type Dispatcher } from 'undici';
 import {
+  POLYROUTER_USER_AGENT,
   SsrfError,
   assertUrlSafe,
   createGuardedDispatcher,
+  findUserAgent,
+  withUserAgent,
   type UrlGuardOptions,
 } from '@polyrouter/shared/server';
 import { DEFAULT_MAX_RESPONSE_BYTES } from './adapter';
@@ -179,7 +182,13 @@ export function createGuardedHttpClient(options: GuardedClientOptions): HttpClie
     try {
       res = await undiciFetch(url, {
         method: init.method,
-        headers: init.headers,
+        // Backstop: the header builders are authoritative, so a UA that is present (in any
+        // case) is never replaced; only a request that carries none gets polyrouter's, so the
+        // HTTP library's default can never leak (add-honest-user-agent, design D3).
+        headers:
+          findUserAgent(init.headers) === undefined
+            ? withUserAgent(init.headers, POLYROUTER_USER_AGENT)
+            : init.headers,
         ...(init.body !== undefined ? { body: init.body } : {}),
         // A streamed body is half-duplex by the fetch spec: bytes are pulled from
         // the stream as the socket drains them, never materialized first.

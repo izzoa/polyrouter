@@ -6,7 +6,12 @@ import { join } from 'node:path';
 import { HttpException, Logger, type INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { loadConfig } from '@polyrouter/shared';
-import { decryptSecret, userPrincipal, type Principal } from '@polyrouter/shared/server';
+import {
+  POLYROUTER_USER_AGENT,
+  decryptSecret,
+  userPrincipal,
+  type Principal,
+} from '@polyrouter/shared/server';
 import { Pool } from 'pg';
 import { Redis } from 'ioredis';
 import { Queue } from 'bullmq';
@@ -218,6 +223,8 @@ describe('notification channels — delivery core (#15a)', () => {
     expect(appriseRes.ok).toBe(true);
     expect(await lastTestStatusOf(appriseCh.id)).toBe('success');
     expect(apprise.requests.length).toBe(beforeA + 1);
+    // add-honest-user-agent: the sidecar sees polyrouter, exactly once (never undici).
+    expect(apprise.userAgents[beforeA]).toEqual([POLYROUTER_USER_AGENT]);
 
     // A-34: changing the config invalidates the prior test result — a stale
     // "success" for the OLD config must not linger in the UI.
@@ -371,6 +378,8 @@ describe('notification channels — delivery core (#15a)', () => {
     await notifications.emit(event); // duplicate within window → dropped
     const delivered = await waitFor(() => apprise.requests.length === before + 1);
     expect(delivered).toBe(true);
+    // add-honest-user-agent: the queued delivery identifies polyrouter too.
+    expect(apprise.userAgents[before]).toEqual([POLYROUTER_USER_AGENT]);
     // Give a spurious second delivery a chance to (not) arrive.
     await new Promise((r) => setTimeout(r, 500));
     expect(apprise.requests.length).toBe(before + 1);

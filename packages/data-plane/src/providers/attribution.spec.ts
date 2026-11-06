@@ -1,6 +1,7 @@
 // add-openrouter-attribution — polyrouter identifies itself to OpenRouter via
 // HTTP-Referer + X-OpenRouter-Title on requests to openrouter.ai-host providers.
 // The identity is disclosed ONLY to OpenRouter; auth is never affected.
+import { POLYROUTER_USER_AGENT } from '@polyrouter/shared/server';
 import { createOpenaiProviderAdapter } from './openai-adapter';
 import { openRouterAttributionHeaders } from './http-adapter';
 import { recordingClient, jsonResponse, sseResponse, oaiSse } from './testkit.testkit';
@@ -96,5 +97,30 @@ describe('adapter attribution — requests to OpenRouter carry it; others do not
     expect(h['HTTP-Referer']).toBeUndefined();
     expect(h['X-OpenRouter-Title']).toBeUndefined();
     expect(h['Authorization']).toBe('Bearer sk-secret-123');
+  });
+
+  it('a non-OpenRouter host gets the polyrouter User-Agent, no attribution, and no polyrouter.app anywhere (add-honest-user-agent)', async () => {
+    const { client, calls } = recordingClient(() => jsonResponse(OAI_RESPONSE));
+    const adapter = createOpenaiProviderAdapter(configFor('https://api.openai.example/v1'), {
+      httpClient: client,
+    });
+    await adapter.chat(request);
+    const h = calls[0]!.init.headers;
+    expect(h['User-Agent']).toBe(POLYROUTER_USER_AGENT);
+    expect(h['HTTP-Referer']).toBeUndefined();
+    expect(h['X-OpenRouter-Title']).toBeUndefined();
+    expect(Object.values(h).join('|')).not.toContain('polyrouter.app');
+  });
+
+  it('an OpenRouter host gets both attribution headers and the polyrouter User-Agent', async () => {
+    const { client, calls } = recordingClient(() => jsonResponse(OAI_RESPONSE));
+    const adapter = createOpenaiProviderAdapter(configFor('https://openrouter.ai/api/v1'), {
+      httpClient: client,
+    });
+    await adapter.chat(request);
+    const h = calls[0]!.init.headers;
+    expect(h['User-Agent']).toBe(POLYROUTER_USER_AGENT);
+    expect(h['HTTP-Referer']).toBe(REFERER);
+    expect(h['X-OpenRouter-Title']).toBe(TITLE);
   });
 });

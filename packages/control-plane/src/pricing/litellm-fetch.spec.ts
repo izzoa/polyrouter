@@ -1,4 +1,11 @@
-import { SsrfError } from '@polyrouter/shared/server';
+import { POLYROUTER_USER_AGENT, SsrfError } from '@polyrouter/shared/server';
+
+const fetchMock = jest.fn();
+jest.mock('undici', () => ({
+  ...jest.requireActual<Record<string, unknown>>('undici'),
+  fetch: (...args: unknown[]): unknown => fetchMock(...args),
+}));
+
 import { fetchLiteLlmCatalog, readCapped } from './litellm-fetch';
 
 const opts = { mode: 'cloud' as const, timeoutMs: 5000, maxBytes: 1_000_000 };
@@ -18,6 +25,45 @@ describe('fetchLiteLlmCatalog — SSRF guard (no loopback exception)', () => {
     await expect(fetchLiteLlmCatalog('http://127.0.0.1:9/x', opts)).rejects.toBeInstanceOf(
       SsrfError,
     );
+  });
+});
+
+describe('fetchLiteLlmCatalog — outbound User-Agent (add-honest-user-agent)', () => {
+  const publicResolve = (): Promise<string[]> => Promise.resolve(['93.184.216.34']);
+
+  beforeEach(() => fetchMock.mockReset());
+
+  it('sends exactly one polyrouter/<version> User-Agent and keeps redirect: manual', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('{"ok":true}', { status: 200 }));
+    await expect(
+      fetchLiteLlmCatalog('https://pricing.example/litellm.json', {
+        ...opts,
+        resolve: publicResolve,
+      }),
+    ).resolves.toEqual({ ok: true });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const init = fetchMock.mock.calls[0]![1] as {
+      headers: Record<string, string>;
+      redirect: string;
+    };
+    expect(init.redirect).toBe('manual');
+    const uas = Object.keys(init.headers).filter((k) => k.toLowerCase() === 'user-agent');
+    expect(uas).toEqual(['User-Agent']);
+    expect(init.headers['User-Agent']).toBe(POLYROUTER_USER_AGENT);
+    expect(init.headers['User-Agent']).toMatch(/^polyrouter\/\d+\.\d+\.\d+/);
+  });
+
+  it('still rejects a 302 with no second fetch', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(null, { status: 302, headers: { location: 'https://elsewhere.example/x' } }),
+    );
+    await expect(
+      fetchLiteLlmCatalog('https://pricing.example/litellm.json', {
+        ...opts,
+        resolve: publicResolve,
+      }),
+    ).rejects.toThrow(/unexpected status 302/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 

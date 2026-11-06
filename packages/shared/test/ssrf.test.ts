@@ -6,6 +6,7 @@ import {
   classifyIp,
   guardedFetch,
   isBlockedIp,
+  POLYROUTER_USER_AGENT,
   SsrfError,
   type UrlGuardOptions,
 } from '../src/server';
@@ -255,5 +256,66 @@ describe('guardedFetch (ssrf-url-guard)', () => {
     const srv = await startServer(() => ({ status: 200 }));
     const res = await guardedFetch(`http://127.0.0.1:${String(srv.port)}/`, {}, LOCAL);
     expect(res.status).toBe(200);
+  });
+
+  describe('User-Agent (outbound-user-agent)', () => {
+    /** Starts a server that records the RAW header list of every request. */
+    function startRecorder(redirectFirstTo?: string): Promise<{ port: number; raw: string[][] }> {
+      return new Promise((resolve) => {
+        const raw: string[][] = [];
+        const server = createServer((req, res) => {
+          raw.push([...req.rawHeaders]);
+          if (redirectFirstTo && raw.length === 1) {
+            res.statusCode = 302;
+            res.setHeader('location', redirectFirstTo);
+          }
+          res.end('ok');
+        });
+        servers.push(server);
+        server.listen(0, '127.0.0.1', () => {
+          const addr = server.address();
+          if (addr && typeof addr !== 'string') resolve({ port: addr.port, raw });
+        });
+      });
+    }
+
+    /** Every User-Agent value in a raw header list (`[name, value, name, value, ...]`). */
+    const uaValues = (rawHeaders: string[]): string[] => {
+      const out: string[] = [];
+      for (let i = 0; i < rawHeaders.length; i += 2) {
+        if (rawHeaders[i]?.toLowerCase() === 'user-agent') out.push(rawHeaders[i + 1] ?? '');
+      }
+      return out;
+    };
+
+    it('sends exactly one polyrouter/<version> on the initial request and the redirect hop', async () => {
+      const rec = await startRecorder('/final');
+      await guardedFetch(`http://127.0.0.1:${String(rec.port)}/start`, {}, LOCAL);
+      expect(rec.raw).toHaveLength(2);
+      for (const hop of rec.raw) expect(uaValues(hop)).toEqual([POLYROUTER_USER_AGENT]);
+    });
+
+    it('replaces a caller User-Agent given as a record or as a Headers, on every hop', async () => {
+      for (const headers of [
+        { 'user-agent': 'x', 'x-keep': '1' },
+        { 'USER-AGENT': 'x', 'x-keep': '1' },
+        new Headers({ 'user-agent': 'x', 'x-keep': '1' }),
+      ]) {
+        const rec = await startRecorder('/final');
+        await guardedFetch(`http://127.0.0.1:${String(rec.port)}/start`, { headers }, LOCAL);
+        expect(rec.raw).toHaveLength(2);
+        for (const hop of rec.raw) {
+          expect(uaValues(hop)).toEqual([POLYROUTER_USER_AGENT]);
+          expect(hop.map((h) => h.toLowerCase())).toContain('x-keep');
+        }
+      }
+    });
+
+    it('never sends the HTTP library default', async () => {
+      const rec = await startRecorder();
+      await guardedFetch(`http://127.0.0.1:${String(rec.port)}/`, {}, LOCAL);
+      const [value] = uaValues(rec.raw[0] ?? []);
+      expect(value).not.toMatch(/undici|node/i);
+    });
   });
 });

@@ -12,6 +12,7 @@ import { loadConfig } from '@polyrouter/shared';
 import {
   PERSISTENCE_MAINTENANCE,
   PERSISTENCE_PORT,
+  POLYROUTER_USER_AGENT,
   REDIS_CLIENT,
   userPrincipal,
   type PersistenceMaintenance,
@@ -644,6 +645,41 @@ describe('batch submission — Phase B §3 (add-batch-inference)', () => {
     expect(row?.modelId).toBe(free.models['gpt-4o']);
     expect(row?.upstreamBatchId).toMatch(/^batch_/);
     expect(row?.status).toBe('validating');
+  });
+
+  // add-honest-user-agent: a submission never forwards the caller's User-Agent; the
+  // upstream create (and anything else the submission sends) announces polyrouter.
+  it.each([
+    ['an OpenRouter-shaped batch', doc('gpt-4o', [item('ua1')]), /^batch_/],
+    [
+      'an Anthropic-shaped batch',
+      JSON.stringify({
+        endpoint: '/v1/messages',
+        model: 'claude-x',
+        requests: [
+          {
+            custom_id: 'ua2',
+            body: { max_tokens: 5, messages: [{ role: 'user', content: 'hey' }] },
+          },
+        ],
+      }),
+      /^msgbatch_/,
+    ],
+  ])('does not forward the caller UA on %s', async (_name, payload, upstreamId) => {
+    const from = stub.requests.length;
+    const res = await submit(free.key, payload, {
+      'User-Agent': 'claude-cli/2.0.0 (external, cli)',
+    });
+    expect(res.status).toBe(202);
+    const row = await port.batchJobs.findById(free.principal, res.body.id as string);
+    expect(row?.upstreamBatchId).toMatch(upstreamId);
+    const made = stub.requests.slice(from);
+    expect(made.length).toBeGreaterThan(0);
+    for (const r of made) {
+      expect(r.userAgentCount).toBe(1);
+      expect(r.userAgent).toBe(POLYROUTER_USER_AGENT);
+      expect(r.userAgent).not.toContain('claude-cli');
+    }
   });
 
   // --- 3.4 + 3.5 the ceiling, the reservation, the D6 order ----------------

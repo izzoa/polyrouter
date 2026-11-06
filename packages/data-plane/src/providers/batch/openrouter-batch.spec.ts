@@ -5,6 +5,7 @@
 import { canonRequest, canonResponse, openaiAdapter } from '../../proxy/translate';
 import type { NormalizedRequest } from '../../proxy/translate';
 import { BatchUpstreamNotFoundError } from '../batch';
+import { POLYROUTER_USER_AGENT } from '@polyrouter/shared/server';
 import { ProviderError } from '../errors';
 import type { HttpInit, HttpResponse } from '../http';
 import { createOpenaiProviderAdapter } from '../openai-adapter';
@@ -243,4 +244,29 @@ describe('golden request bodies are valid OpenAI wire', () => {
       expect(ir.messages.length).toBeGreaterThan(0);
     },
   );
+});
+
+/** Every `user-agent` key (any case) on a recorded call's headers. */
+const uaOf = (h: Record<string, string>): [string, string][] =>
+  Object.entries(h).filter(([k]) => k.toLowerCase() === 'user-agent');
+
+describe('OpenRouter batch adapter — User-Agent (outbound-user-agent)', () => {
+  it('create, status, results and cancel each carry the polyrouter User-Agent beside the attribution headers', async () => {
+    const { batch, calls } = build((url) => {
+      if (url === BATCHES) return jsonResponse(submit.response, 202);
+      if (url.endsWith('/cancel')) return jsonResponse({ ...inProgress, status: 'cancelling' });
+      return jsonResponse(completed);
+    });
+    await batch.submit({ items, model: 'openai/gpt-4o', jobId: 'job-1' });
+    await batch.status('batch_123');
+    for await (const o of batch.results('batch_123')) void o;
+    await batch.cancel('batch_123');
+    expect(calls.length).toBeGreaterThanOrEqual(4);
+    for (const call of calls) {
+      expect(uaOf(call.init.headers)).toEqual([['User-Agent', POLYROUTER_USER_AGENT]]);
+      expect(call.init.headers['X-OpenRouter-Title']).toBe('polyrouter');
+    }
+    expect(calls[0]!.init.headers['Content-Type']).toBe('application/json');
+    expect(calls[0]!.init.headers['Idempotency-Key']).toBe('job-1');
+  });
 });

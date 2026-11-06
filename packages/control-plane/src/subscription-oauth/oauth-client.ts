@@ -8,6 +8,7 @@
  */
 import { fetch as undiciFetch } from 'undici';
 import {
+  POLYROUTER_USER_AGENT,
   SsrfError,
   assertUrlSafe,
   createGuardedDispatcher,
@@ -77,6 +78,10 @@ export function buildTokenRequest(input: ExchangeInput): {
     headers: {
       'Content-Type': form ? 'application/x-www-form-urlencoded' : 'application/json',
       'Accept-Encoding': 'identity',
+      // add-honest-user-agent: replacement point 2 of the outbound User-Agent
+      // (the token endpoint). A preset-declared identity input arrives later
+      // (allow-preset-client-identity); until then it is always polyrouter's own.
+      'User-Agent': POLYROUTER_USER_AGENT,
     },
     body: form ? new URLSearchParams(params).toString() : JSON.stringify(params),
   };

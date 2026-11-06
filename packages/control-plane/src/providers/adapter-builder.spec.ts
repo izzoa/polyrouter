@@ -219,4 +219,43 @@ describe('ProviderAdapterBuilder', () => {
       expect(JSON.stringify(plain.config)).not.toContain(plain.usedEnvelope!);
     });
   });
+
+  // add-honest-user-agent task 5.4: nothing fills the client-identity seam today, so the
+  // wire User-Agent is always polyrouter's own. allow-preset-client-identity later narrows
+  // this to "switch off gives no extraHeaders".
+  describe('client identity seam', () => {
+    /** Every key anywhere in the config, however deeply nested. */
+    const allKeys = (value: unknown): string[] =>
+      typeof value === 'object' && value !== null
+        ? Object.entries(value).flatMap(([k, v]) => [k, ...allKeys(v)])
+        : [];
+
+    it.each([
+      [
+        'a plain api_key provider',
+        row(),
+        undefined as SubscriptionOauthService['resolveCredential'] | undefined,
+      ],
+      [
+        'an OAuth subscription provider',
+        row({
+          kind: 'subscription',
+          protocol: 'anthropic_compatible',
+          baseUrl: 'https://api.anthropic.com',
+        }),
+        () =>
+          Promise.resolve({
+            credential: 'oauth-ACCESS',
+            authScheme: 'oauth_bearer' as const,
+            envelope: 'stored-cipher',
+            oauthBeta: 'oauth-2025-04-20',
+          }),
+      ],
+    ])('carries no extraHeaders and no User-Agent for %s', async (_name, provider, resolve) => {
+      const cfg = await builder(resolve).buildConfig(principal, provider, opts);
+      expect('extraHeaders' in cfg).toBe(false);
+      expect(cfg.extraHeaders).toBeUndefined();
+      expect(allKeys(cfg).filter((k) => /user[-_]?agent/i.test(k))).toEqual([]);
+    });
+  });
 });

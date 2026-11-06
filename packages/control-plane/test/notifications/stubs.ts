@@ -107,18 +107,27 @@ export interface AppriseStub {
   readonly port: number;
   readonly url: string;
   readonly requests: Array<Record<string, unknown>>;
+  /** One entry per recorded request, index-aligned with `requests`: the value of
+   * each raw `user-agent` header the request carried (add-honest-user-agent). */
+  readonly userAgents: string[][];
   fail: boolean;
   close(): Promise<void>;
 }
 
 export async function startAppriseStub(): Promise<AppriseStub> {
   const requests: AppriseStub['requests'] = [];
+  const userAgents: AppriseStub['userAgents'] = [];
   const state = { fail: false };
   const server = createHttpServer((req: IncomingMessage, res: ServerResponse) => {
     let body = '';
     req.on('data', (c) => (body += c));
     req.on('end', () => {
       if (req.method === 'POST' && (req.url ?? '').startsWith('/notify')) {
+        const uas: string[] = [];
+        for (let i = 0; i < req.rawHeaders.length; i += 2) {
+          if (req.rawHeaders[i]!.toLowerCase() === 'user-agent') uas.push(req.rawHeaders[i + 1]!);
+        }
+        userAgents.push(uas);
         try {
           requests.push(JSON.parse(body || '{}'));
         } catch {
@@ -138,6 +147,7 @@ export async function startAppriseStub(): Promise<AppriseStub> {
     port,
     url: `http://127.0.0.1:${port}`,
     requests,
+    userAgents,
     get fail() {
       return state.fail;
     },

@@ -1,6 +1,7 @@
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { BlockList, isIP } from 'node:net';
 import { Agent, buildConnector, fetch as undiciFetch, type Dispatcher } from 'undici';
+import { POLYROUTER_USER_AGENT, withUserAgent } from '../outbound-user-agent';
 
 /** Outbound-URL SSRF guard (spec §11.2, invariant 6). Config-free — callers
  * pass a `context`, like the encryption util takes keys. Validates HTTP(S)
@@ -432,6 +433,9 @@ export async function guardedFetch(
       try {
         const undiciInit = {
           ...(init as unknown as Parameters<typeof undiciFetch>[1]),
+          // polyrouter's honest identity on EVERY hop; a caller User-Agent is replaced
+          // (add-honest-user-agent, design D3 / D4).
+          headers: withUserAgent(init.headers, POLYROUTER_USER_AGENT),
           redirect: 'manual' as const,
           dispatcher,
         };

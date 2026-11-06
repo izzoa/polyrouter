@@ -33,6 +33,7 @@ import type {
   AutoPerformance,
   BatchJobDto,
   BudgetDto,
+  RequestRow,
   WorkloadMix,
 } from './data/api';
 import './styles.css';
@@ -47,7 +48,8 @@ const role = params.get('role') === 'member' ? 'member' : 'admin';
 // carries, so the narrow-width geometry checks cover the whole contract.
 //
 // `boundary` covers, in one range: a positive routed count, a null-spend row
-// (`— unpriced`), a free row (`$0` with no qualifier), an ordinary priced row,
+// (the bare word `unpriced`, no dash), a free row (`$0.0000` with no qualifier), an
+// ordinary priced row,
 // a partial-pricing row (`N unpriced`), and a request-zero attempt-only class
 // (`0%`). Requests sum to `evaluated` so the shares read 100%.
 const BOUNDARY_WORKLOAD_MIX: WorkloadMix = {
@@ -65,11 +67,11 @@ const BOUNDARY_WORKLOAD_MIX: WorkloadMix = {
       spendUsd: 12.34,
       routed: 7,
     },
-    // null spend → a dash + "unpriced". Producer-reachable: the aggregation only
-    // reports `spendUsd: null` when NOTHING is costable, i.e. every request is
-    // unpriced (workload-mix.ts: costable = requests - unpricedRequests > 0 || …),
-    // so all 5 requests must be unpriced. The numeric qualifier is suppressed when
-    // spend is null, so this still renders exactly "— unpriced".
+    // null spend → the bare word "unpriced", with no dash (adopt-figure-states 4.2).
+    // Producer-reachable: the aggregation only reports `spendUsd: null` when NOTHING is
+    // costable, i.e. every request is unpriced (workload-mix.ts: costable = requests -
+    // unpricedRequests > 0 || …), so all 5 requests must be unpriced. The numeric
+    // qualifier is suppressed when spend is null, so this renders exactly "unpriced".
     {
       class: 'vision',
       requests: 5,
@@ -87,7 +89,7 @@ const BOUNDARY_WORKLOAD_MIX: WorkloadMix = {
       spendUsd: 9.99,
       routed: 2,
     },
-    // free (subscription/no-charge) → "$0" with NO qualifier, never "unpriced"
+    // free (subscription/no-charge) → "$0.0000" with NO qualifier, never "unpriced"
     {
       class: 'none',
       requests: 2,
@@ -141,6 +143,51 @@ function workloadAutoPerf(): AutoPerformance | undefined {
   // Every class routes 0, so the default fixture's exits already hold.
   if (which === 'attempt-only')
     return { ...DEFAULT_AUTO_PERF, workloadMix: ATTEMPT_ONLY_WORKLOAD_MIX };
+  return undefined;
+}
+
+// Pipeline-state fixtures (adopt-figure-states task 4.3, design Risk "Wider strings in fixed
+// tracks"), opt-in via `?auto=…` so the default harness stays byte-identical for every other
+// suite. `zero` is a range with no evaluated requests: the `No requests` notice, and every
+// stage share reading the words `not applicable`, which are wider than the share track.
+// `legacy` is an older server that sends no stage breakdown: the `Unavailable` notice, and no
+// per-stage figure on stages 2–6.
+function pipelineAutoPerf(): AutoPerformance | undefined {
+  const which = params.get('auto');
+  if (which === 'zero')
+    return {
+      ...DEFAULT_AUTO_PERF,
+      evaluated: 0,
+      bands: {
+        high: { requests: 0, declared: 0, unroutable: 0 },
+        low: { requests: 0, declared: 0, unroutable: 0 },
+        ambiguous: { requests: 0 },
+      },
+      cascade: {
+        requests: 0,
+        qualityPassed: 0,
+        qualityUnknown: 0,
+        failedOrCancelled: 0,
+        escalated: 0,
+      },
+      semantic: {
+        evaluated: 0,
+        routed: { high: 0, low: 0 },
+        outcomes: { success: 0, fallback: 0, error: 0, cancelled: 0 },
+        source: { bundled: 0, learned: 0 },
+      },
+      fallthrough: 0,
+      exits: { workload: 0, structural: 0, semantic: 0, cascade: 0, default: 0 },
+      series: [],
+      savings: null,
+      signalQuality: [],
+      workloadMix: { evaluated: 0, unclassified: 0, since: null, revisions: [], classes: [] },
+    };
+  if (which === 'legacy') {
+    const legacy: AutoPerformance = { ...DEFAULT_AUTO_PERF };
+    delete legacy.exits;
+    return legacy;
+  }
   return undefined;
 }
 
@@ -336,6 +383,26 @@ const BATCH_JOBS: BatchJobDto[] = [
   },
 ];
 
+// Batch figure-state fixture (adopt-figure-states task 5.3, design Risk "Wider strings in
+// fixed tracks"), opt-in via `?batches=states` so the default harness stays byte-identical for
+// every other suite. It heads the list with the two Cost-cell states the vocabulary adds: an
+// active job's `≤ $3.00` ceiling above `reserved, not spent`, and a terminal job whose settled
+// cost is null, which reads `unpriced`. Both carry the long model id and provider label.
+const BATCH_STATE_JOBS: BatchJobDto[] = [
+  {
+    ...BATCH_JOBS[0]!,
+    id: 'bj-ceiling',
+    upstreamBatchId: 'batch_01HZX9K2QRSTUVWXYZ0CEILING',
+    reservedCeilingMicros: 3_000_000,
+  },
+  {
+    ...BATCH_JOBS[2]!,
+    id: 'bj-unpriced',
+    upstreamBatchId: 'msgbatch_01HZX9K2QRSTUVWXYZ0UNPRICED',
+    settledCostMicros: null,
+  },
+];
+
 /** The chain fixture's models, so the reservation control has a capability to read
  * (add-batch-mode-routing task 5.5). Without these the entries reference ids absent
  * from the catalog and the control renders only where a reservation is already
@@ -434,13 +501,13 @@ const semanticFixture =
       }
     : {};
 
-const autoPerf = workloadAutoPerf();
+const autoPerf = workloadAutoPerf() ?? pipelineAutoPerf();
 const client = new FakeApiClient({
   ...semanticFixture,
   agents: AGENTS,
   adminUsers: ADMIN_USERS,
   adminInvites: INVITES,
-  batchJobs: BATCH_JOBS,
+  batchJobs: params.get('batches') === 'states' ? [...BATCH_STATE_JOBS, ...BATCH_JOBS] : BATCH_JOBS,
   ...(params.get('chain') === '1'
     ? { tierEntries: { 'tier-default': TIER_ENTRIES }, models: { p1: CHAIN_MODELS } }
     : {}),
@@ -549,6 +616,59 @@ if (params.get('unbilled') === '1') {
       : r,
   );
   client.summaryResult = { ...client.summaryResult, notBilledRequests: 6 };
+}
+
+// Figure-state fixture (adopt-figure-states task 2.2, design Risks 1 and 2), opt-in via
+// `?requests=states` so the default harness stays byte-identical for every other suite. One
+// row per cost-cell state the vocabulary adds, each wider than the old `$0.0000` in the
+// 0.7fr cost track, plus the usage-estimated row whose `· est. usage` marker may wrap the
+// tokens cell onto a second line (at adversarial counts, `912.3k↑ 45.7k↓ · est. usage`). They
+// are the newest rows, so they head the list, and carry the long model id and provider label.
+if (params.get('requests') === 'states') {
+  const head = client.requestRows[0]!;
+  const at = (n: number): string => new Date(Date.parse(head.createdAt) + n * 1000).toISOString();
+  const row = (id: string, n: number, over: Partial<RequestRow>): RequestRow => ({
+    ...head,
+    id,
+    createdAt: at(n),
+    status: 'success',
+    billed: true,
+    attemptCostMicros: 0,
+    usageEstimated: false,
+    priceEstimated: false,
+    priceSource: 'bundled',
+    inputPriceSnapshot: 3,
+    outputPriceSnapshot: 15,
+    cost: 0.0123,
+    ...over,
+  });
+  const free = { cost: 0, inputPriceSnapshot: 0, outputPriceSnapshot: 0 };
+  client.requestRows = [
+    // `· est. usage` on the tokens cell, at counts that fill the track.
+    row('state-usage', 6, { usageEstimated: true, inputTokens: 912_345, outputTokens: 45_678 }),
+    row('state-free', 5, free), // `$0 free`
+    // `$0 free · est.`, the widest priced state; usage estimated too, so both axes at once.
+    row('state-free-est', 4, {
+      ...free,
+      priceSource: 'listed',
+      priceEstimated: true,
+      usageEstimated: true,
+      inputTokens: 912_345,
+      outputTokens: 45_678,
+    }),
+    row('state-unpriced', 3, { cost: null, priceSource: null }), // `unpriced`
+    row('state-speck', 2, { cost: 0.00004 }), // `<$0.0001`
+    // `$0 · not billed`, the widest cost string of all.
+    row('state-not-billed', 1, {
+      status: 'error',
+      cost: 0,
+      billed: false,
+      usageEstimated: true,
+      priceSource: 'native_family',
+      priceEstimated: true,
+    }),
+    ...client.requestRows,
+  ];
 }
 
 // Costs-split fixture (adopt-design-tokens-v2 task 12.2), opt-in via `?costs=split` so the

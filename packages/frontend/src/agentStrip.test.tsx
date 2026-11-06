@@ -136,8 +136,13 @@ describe('the strip renders honestly', () => {
     return host;
   };
 
-  const stripPanel = (host: HTMLElement): Element | null =>
-    [...host.querySelectorAll('.panel')].find((p) => p.textContent?.includes('Agents')) ?? null;
+  const stripPanel = (host: HTMLElement): HTMLElement | null =>
+    [...host.querySelectorAll<HTMLElement>('.panel')].find((p) =>
+      p.textContent?.includes('Agents'),
+    ) ?? null;
+  /** The strip's own failure notice, inside its panel (not the page's analytics notice). */
+  const stripNotice = (host: HTMLElement): HTMLElement | null =>
+    stripPanel(host)?.querySelector<HTMLElement>('.notice') ?? null;
 
   it('shows a zero-spend high-volume agent — the row a spend ranking would hide', async () => {
     const fake = withAgents(AGENTS);
@@ -163,6 +168,12 @@ describe('the strip renders honestly', () => {
     const text = stripPanel(host)?.textContent ?? '';
     expect(text).toContain('Loading');
     expect(text).not.toMatch(/\b0\b/);
+    // The shared skeleton with its hidden text, never a bare visible `Loading…`
+    // (adopt-figure-states D5).
+    const panel = stripPanel(host)!;
+    expect(panel.querySelector('.fig-skel')?.getAttribute('aria-hidden')).toBe('true');
+    expect(panel.querySelector('.sr-only')?.textContent).toBe('Loading agent activity');
+    expect(text).not.toContain('Loading…');
   });
 
   it('makes keyless volume visible but not clickable', async () => {
@@ -209,7 +220,69 @@ describe('the strip renders honestly', () => {
     const text = stripPanel(host)?.textContent ?? '';
     // A failure must not keep reading as "still working".
     expect(text).not.toContain('Loading');
-    expect(text).toMatch(/load/i);
+    expect(stripPanel(host)!.querySelector('.fig-skel')).toBeNull();
+    // It is the shared Info notice, in the figure states' words, with the rendered U+2019
+    // (adopt-figure-states 3.2, D5, flag F9): the strip's counts are an analytics read, so
+    // the body says routing is unaffected. No raw error, and one ghost Retry.
+    const n = stripNotice(host);
+    expect(n, 'the strip failure is not a notice').not.toBeNull();
+    expect(n!.classList.contains('notice--info')).toBe(true);
+    expect(n!.getAttribute('role')).toBe('status');
+    expect(n!.querySelector('.notice-title')?.textContent).toBe('Couldn’t load');
+    expect(n!.querySelector('.notice-body')?.textContent).toBe(
+      'Agent activity couldn’t be loaded. Routing is unaffected.',
+    );
+    expect(n!.textContent).not.toContain('boom');
+    const buttons = [...n!.querySelectorAll('button')];
+    expect(buttons.map((b) => b.textContent)).toEqual(['Retry']);
+    expect(buttons[0]!.classList.contains('btn-ghost')).toBe(true);
+    expect(text).not.toContain('Couldn’t load agent activity');
+  });
+
+  it('Retry reloads the strip and leaves focus on its panel, never on <body>', async () => {
+    const fake = withAgents(AGENTS);
+    fake.analyticsFailure = new ApiError(500, 'Server Error', 'boom');
+    const store = createAppStore(fake);
+    const host = mount(store);
+    await store.loadAgentStrip();
+    await flush();
+    const panel = stripPanel(host)!;
+    // A script-only focus target: out of the tab order, focusable by Retry's hand-off.
+    expect(panel.getAttribute('tabindex')).toBe('-1');
+
+    // The retry is held in flight, so the in-between state can be read.
+    fake.analyticsFailure = null;
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    const breakdown = fake.breakdown.bind(fake);
+    const asked: unknown[][] = [];
+    fake.breakdown = (...args) => {
+      if (args[0] === 'agent') asked.push(args);
+      return held.then(() => breakdown(...args));
+    };
+
+    const retry = stripNotice(host)!.querySelector<HTMLButtonElement>('button')!;
+    retry.focus();
+    expect(document.activeElement).toBe(retry);
+    retry.click();
+    await Promise.resolve();
+    // Its load started: the agent dimension was asked for again, ranked by requests.
+    expect(asked.map((a) => a[3])).toEqual(['requests']);
+    // The notice (and the Retry in it) is gone, the strip loads as its skeleton, and focus is
+    // on the strip's panel, not <body>.
+    expect(stripNotice(host)).toBeNull();
+    expect(retry.isConnected).toBe(false);
+    expect(panel.querySelector('.sr-only')?.textContent).toBe('Loading agent activity');
+    expect(document.activeElement).toBe(panel);
+
+    release();
+    await flush();
+    // The figures commit, and focus stays where Retry left it.
+    expect(panel.textContent).toContain('busy-local');
+    expect(panel.textContent).toContain('900');
+    expect(document.activeElement).toBe(panel);
   });
 
   it('says so when no agent was active, rather than rendering an empty strip', async () => {

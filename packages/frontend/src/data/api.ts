@@ -1016,11 +1016,6 @@ export function totalCostMicros(row: { cost: number | null; attemptCostMicros: n
   return Math.round((row.cost ?? 0) * 1_000_000) + row.attemptCostMicros;
 }
 
-/** Format a µ$ integer as a dollar string (per-request precision). */
-export function fmtMicros(micros: number): string {
-  return `$${(micros / 1_000_000).toFixed(4)}`;
-}
-
 /** Owner-scoped label with the documented fallback: label → id → 'unknown'. */
 export function labelOf(label: string | null, id: string | null): string {
   return label ?? id ?? 'unknown';

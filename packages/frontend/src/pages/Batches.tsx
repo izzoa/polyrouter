@@ -1,7 +1,9 @@
 import { createMemo, createSignal, For, onMount, Show } from 'solid-js';
 import type { BatchJobDto } from '../data/api';
 import { BATCH_POLL_MS, fmtElapsed } from '../data/batchBand';
+import { ceilingMoney, costParts, money, RESERVED_LABEL } from '../data/figures';
 import { createPoller } from '../data/poller';
+import { FigureText } from '../components/FigureText';
 import { useApp } from '../state/context';
 
 /** One list, consumed by the head and by every row's stacked presentation, so the
@@ -80,7 +82,8 @@ const pulses = (job: BatchJobDto): boolean =>
   job.status === 'cancelling' ||
   job.status === 'submission_unknown';
 
-const fmtMoney = (micros: number): string => `$${(micros / 1_000_000).toFixed(4)}`;
+/** A terminal job's null settled cost: the bare word `unpriced` in Ink 3, never a dash. */
+const UNPRICED_PARTS = costParts({ kind: 'unpriced' });
 const fmtDate = (iso: string): string =>
   new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 const fmtDateTime = (iso: string): string =>
@@ -322,22 +325,29 @@ function Row(props: { job: BatchJobDto; onCancel: () => void }) {
             fallback={
               <>
                 {/* A ceiling, not a charge. The caption is not decoration: without it
-                    the number reads as money already spent (D13). Written out rather
-                    than as `≤` — the bundled fonts have no U+2264, so that glyph
-                    would come from the viewer's operating system. */}
+                    the number reads as money already spent (D13). A bound, so it reads
+                    `≤ $x` at cents rounded UP, never down (adopt-figure-states D2), in
+                    Ink 2; the bundled fonts carry U+2264 (D7). */}
                 <span class="figure" style="font-size:0.6875rem;color:var(--text2)">
                   {job().reservedCeilingMicros === null
                     ? 'unbounded'
-                    : `up to ${fmtMoney(job().reservedCeilingMicros!)}`}
+                    : `≤ ${ceilingMoney(job().reservedCeilingMicros!)}`}
                 </span>
-                <span style="font-size:0.6875rem;color:var(--text3)">reserved, not spent</span>
+                <span style="font-size:0.6875rem;color:var(--text3)">{RESERVED_LABEL}</span>
               </>
             }
           >
+            {/* The settled cost at four decimals, so it reconciles with its items in the
+                Requests table (adopt-figure-states D2); a null one is `unpriced`. */}
             <span class="figure" style="font-size:0.6875rem;color:var(--text)">
               {(() => {
+                // A measured zero settles as `$0.0000`; only null is unpriced.
                 const micros = job().settledCostMicros;
-                return micros === null ? '—' : fmtMoney(micros);
+                return micros === null ? (
+                  <FigureText parts={UNPRICED_PARTS} />
+                ) : (
+                  money(micros, 'four')
+                );
               })()}
             </span>
           </Show>

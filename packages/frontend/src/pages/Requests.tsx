@@ -102,6 +102,9 @@ export function Requests(props: { live: boolean }) {
     () => state.requestListError,
     () => state.requestListLoading,
   );
+  /** Retry's landing spot: the requests table panel stays through the failure and the retry
+   * (adopt-figure-states D5, "Where Retry leaves focus"). */
+  let tablePanel: HTMLDivElement | undefined;
 
   /** True only when the filter is HIDING live work. A permanent banner would train
    * people to ignore it; this appears exactly when there is something to disclose. */
@@ -214,24 +217,25 @@ export function Requests(props: { live: boolean }) {
         </div>
       </div>
 
-      {/* Info, not Failure (D15): adopt-figure-states requires a failed load to show a neutral
-          notice, and rewrites only its body. */}
-      <Show when={failure.message()}>
-        {(msg) => (
-          <Notice
-            tone="info"
-            title="Couldn’t load"
-            action={{
-              label: 'Retry',
-              onClick: () => {
-                failure.release();
-                void app.loadRequests(true);
-              },
-            }}
-          >
-            Couldn’t load requests — {msg()}
-          </Notice>
-        )}
+      {/* Info, not Failure (D15): a failed load is a neutral notice that names what failed,
+          without the raw error (adopt-figure-states D5). A failed page-1 load has removed the
+          rows it would have replaced; Retry reloads page 1 and leaves focus on the table
+          panel, which stays mounted, once its load has started. */}
+      <Show when={failure.message() !== null}>
+        <Notice
+          tone="info"
+          title="Couldn’t load"
+          action={{
+            label: 'Retry',
+            onClick: () => {
+              failure.release();
+              void app.loadRequests(true);
+              queueMicrotask(() => tablePanel?.focus());
+            },
+          }}
+        >
+          Requests couldn’t be loaded. Routing is unaffected.
+        </Notice>
       </Show>
 
       {/* Shown only while the user is PAGING: an unpaged list refreshes itself, so there is
@@ -253,6 +257,10 @@ export function Requests(props: { live: boolean }) {
       </Show>
 
       <div
+        ref={(el) => {
+          tablePanel = el;
+        }}
+        tabindex={-1}
         class="panel rs-table-panel rs-table-requests"
         style="overflow:hidden;border-radius:10px"
       >
@@ -284,13 +292,17 @@ export function Requests(props: { live: boolean }) {
         <Show
           when={state.requestList.length > 0}
           fallback={
-            <div class="t-dense" style="padding:16px;color:var(--text3)">
-              {state.requestListLoading || state.requestWindow === null
-                ? 'Loading…'
-                : bandRows().length > 0 || batchBandRows().length > 0
-                  ? 'No completed requests match this filter yet.'
-                  : 'No requests match this filter.'}
-            </div>
+            // While the failure notice stands the list claims nothing: no "Loading…" under a
+            // held notice, and never "No requests" for rows that failed to load.
+            <Show when={failure.message() === null}>
+              <div class="t-dense" style="padding:16px;color:var(--text3)">
+                {state.requestListLoading || state.requestWindow === null
+                  ? 'Loading…'
+                  : bandRows().length > 0 || batchBandRows().length > 0
+                    ? 'No completed requests match this filter yet.'
+                    : 'No requests match this filter.'}
+              </div>
+            </Show>
           }
         >
           <RequestRows rows={state.requestList} />

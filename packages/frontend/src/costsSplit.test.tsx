@@ -58,7 +58,11 @@ describe('Costs — subscription value sits beside spend, never inside it', () =
       // Case-insensitive since the readout strip (adopt-design-tokens-v2 task 12.2): the value
       // is now its own cell, labelled "Served on subscription" (notes/flags.md F9).
       expect(h.host.textContent).toMatch(/served on subscription/i);
-      expect(h.host.textContent).toContain('5.0000');
+      // At cents, like every Costs aggregate (adopt-figure-states 3.3, D2): `$5.00`, where
+      // DS-1 pinned `$5.0000`.
+      const cell = h.host.querySelector('[data-readout="subscription"] .readout-figure');
+      expect(cell?.textContent).toBe('$5.00');
+      expect(h.host.textContent).not.toContain('5.0000');
       // The headline must not silently present a combined total.
       expect(h.host.textContent).toContain('excludes subscription');
       expect(h.host.textContent).not.toContain('$7.00');
@@ -82,6 +86,24 @@ describe('Costs — subscription value sits beside spend, never inside it', () =
     const h = await mountCosts({ spend: 3, cashSpend: 1, unknownSpend: 2 });
     try {
       expect(h.host.textContent).toContain('before subscription tracking');
+    } finally {
+      h.dispose();
+    }
+  });
+
+  // adopt-figure-states 3.3 (D2): the subscription cell and the unclassified line are cents
+  // slots, so a positive amount below a cent reads `<$0.01`, never `$0.00` or four decimals.
+  it('reads a sub-cent subscription value and unclassified amount below precision', async () => {
+    const h = await mountCosts({ spend: 3, subscriptionSpend: 0.004, unknownSpend: 0.003 });
+    try {
+      expect(
+        h.host.querySelector('[data-readout="subscription"] .readout-figure')?.textContent,
+      ).toBe('<$0.01');
+      const sub = h.host.querySelector('[data-readout="spend"] .readout-sub div')?.textContent;
+      expect(sub?.replace(/\s+/g, ' ').trim()).toBe(
+        'includes <$0.01 recorded before subscription tracking — cannot be classified',
+      );
+      expect(h.host.textContent).not.toMatch(/\$0\.00[0-9]/);
     } finally {
       h.dispose();
     }
@@ -155,6 +177,54 @@ describe('Costs — the four-way request mix', () => {
       expect(parseFloat(segs[1]?.style.width ?? '0')).toBeGreaterThan(0);
       // A genuinely empty category stays empty.
       expect(parseFloat(segs[3]?.style.width ?? '0')).toBe(0);
+    } finally {
+      h.dispose();
+    }
+  });
+});
+
+describe('Costs — the request mix states a share of nothing as not applicable (adopt-figure-states D5)', () => {
+  it('reads every share of an empty range as not applicable, keeping the measured counts', async () => {
+    const h = await mountCosts({
+      requests: 0,
+      freeRequests: 0,
+      subscriptionPricedRequests: 0,
+      cashPricedRequests: 0,
+      unpricedRequests: 0,
+      notBilledRequests: 0,
+      estimatedCount: 0,
+    });
+    try {
+      const legend = h.host.querySelector<HTMLElement>('.t-caption[data-measure="request-mix"]');
+      expect(legend?.textContent?.replace(/\s+/g, ' ').trim()).toBe(
+        'free not applicable (0) subscription not applicable (0) ' +
+          'other priced not applicable (0) unpriced not applicable (0)',
+      );
+      // In Ink 3, the legend's own ink.
+      expect(legend?.style.color).toBe('var(--text3)');
+      expect(h.host.textContent).not.toMatch(/\b0%|NaN/);
+      // An empty bar draws no segment.
+      const segs = [...(h.host.querySelector('[data-testid="mix-bar"]')?.children ?? [])];
+      expect(segs.map((e) => (e as HTMLElement).style.width)).toEqual(['0%', '0%', '0%', '0%']);
+    } finally {
+      h.dispose();
+    }
+  });
+
+  it('a range where nothing ran but some were not billed still has no share, and says why', async () => {
+    const h = await mountCosts({
+      requests: 3,
+      freeRequests: 0,
+      subscriptionPricedRequests: 0,
+      cashPricedRequests: 0,
+      unpricedRequests: 0,
+      notBilledRequests: 3,
+    });
+    try {
+      expect(h.host.textContent).toContain('free not applicable (0)');
+      expect(h.host.querySelector('[data-testid="not-billed-caption"]')?.textContent).toContain(
+        '3 not billed',
+      );
     } finally {
       h.dispose();
     }

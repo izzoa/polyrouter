@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AutoLayers, AutoPerformance } from './api';
 import {
-  fmtNetSavings,
   undetectedClasses,
   autoSeriesToChart,
   signalQualityGuidance,
@@ -192,7 +191,7 @@ describe('toAutoPerfVm', () => {
     ]);
   });
 
-  it('rates are 0% (not NaN) when no cascade traffic exists', () => {
+  it('evaluated traffic but no cascade requests: all four outcome rates read not applicable (adopt-figure-states D5)', () => {
     const vm = toAutoPerfVm(
       fixture({
         cascade: {
@@ -204,8 +203,42 @@ describe('toAutoPerfVm', () => {
         },
       }),
     )!;
-    expect(vm.passedPct).toBe('0%');
-    expect(vm.escalatedPct).toBe('0%');
+    expect(vm.evaluated).toBe(40);
+    expect(vm.cascadeRequests).toBe(0);
+    expect([vm.passedPct, vm.escalatedPct, vm.unknownPct, vm.failedPct]).toEqual(
+      Array<string>(4).fill('not applicable'),
+    );
+    // The band shares still read: their denominator is the evaluated total.
+    expect(vm.ambiguousPct).toBe('30%');
+    expect(JSON.stringify(vm)).not.toMatch(/NaN|"—"/);
+  });
+
+  it('a share of nothing is not applicable, never 0%: bands with nothing evaluated, outcomes with nothing routed', () => {
+    const vm = toAutoPerfVm(
+      fixture({
+        evaluated: 0,
+        bands: {
+          high: { requests: 0, declared: 0, unroutable: 0 },
+          low: { requests: 0, declared: 0, unroutable: 0 },
+          ambiguous: { requests: 0 },
+        },
+        semantic: {
+          evaluated: 4,
+          routed: { high: 0, low: 0 },
+          outcomes: { success: 0, fallback: 0, error: 0, cancelled: 0 },
+          source: { bundled: 4, learned: 0 },
+        },
+      }),
+    )!;
+    expect(vm.ambiguousPct).toBe('not applicable');
+    expect(vm.declaredPct).toBe('not applicable');
+    const sem = vm.semantic!;
+    expect([sem.successPct, sem.fallbackPct, sem.errorPct, sem.cancelledPct]).toEqual(
+      Array<string>(4).fill('not applicable'),
+    );
+    // A measured zero share of a non-zero whole stays a zero.
+    expect(sem.learnedPct).toBe('0%');
+    expect(sem.bundledPct).toBe('100%');
   });
 
   describe('savings', () => {
@@ -360,12 +393,26 @@ describe('signal quality (add-auto-signal-honesty)', () => {
     expect(toSignalQualityVm([]).show).toBe(false);
   });
 
-  it('null label renders the keyless fallback; null modal fields render em-dashes', () => {
+  it('null label renders the keyless fallback; null modal fields read unknown, never a dash', () => {
     const vm = toSignalQualityVm([
       entry({ agentId: null, label: null, modalScore: null, modalShare: null }),
     ]);
     expect(vm.flagged[0]!.label).toBe('(no agent)');
-    expect(vm.flagged[0]!.detail).toContain('score —');
+    expect(vm.flagged[0]!.detail).toBe('score unknown · unknown of 272 ambiguous requests');
+    // The parts spell the same line, with only `unknown` in Ink 3.
+    expect(vm.flagged[0]!.detailParts.map((p) => p.text).join(' ')).toBe(vm.flagged[0]!.detail);
+    expect(vm.flagged[0]!.detailParts.filter((p) => p.tone === 'ink3').map((p) => p.text)).toEqual([
+      'unknown',
+      'unknown',
+    ]);
+    expect(vm.flagged[0]!.detail).not.toContain('—');
+    // Each null reads unknown on its own.
+    expect(toSignalQualityVm([entry({ modalScore: null })]).flagged[0]!.detail).toBe(
+      'score unknown · 85% of 272 ambiguous requests',
+    );
+    expect(toSignalQualityVm([entry({ modalShare: null })]).flagged[0]!.detail).toBe(
+      'score 0.45 · unknown of 272 ambiguous requests',
+    );
   });
 
   it('guidance is availability-aware and never claims L2 success', () => {
@@ -496,7 +543,7 @@ describe('toWorkloadVm (add-workload-telemetry D7)', () => {
     expect(w.revisionNote).toBeNull();
   });
 
-  it('spend honesty: null → no figure (dash + unpriced), 0 → a $0 figure with no qualifier, attempt-side unpriced qualifies', () => {
+  it('spend honesty: null → no figure (the bare word unpriced), 0 → a $0 figure with no qualifier, attempt-side unpriced qualifies', () => {
     const w = toWorkloadVm(
       mix({
         evaluated: 3,
@@ -510,9 +557,13 @@ describe('toWorkloadVm (add-workload-telemetry D7)', () => {
     const by = new Map(w.rows.map((r) => [r.class, r]));
     expect(by.get('vision')!.spend).toBeNull();
     expect(by.get('vision')!.unpricedNote).toBe('1 unpriced');
-    expect(by.get('code')!.spend).toMatch(/\$0/);
+    // Spend is at four decimals (adopt-figure-states D2): a measured zero, then the priced sum.
+    expect(by.get('code')!.spend).toBe('$0.0000');
     expect(by.get('code')!.unpricedNote).toBeNull();
-    expect(by.get('structured')!.spend).toMatch(/\$1/);
+    expect(by.get('structured')!.spend).toBe('$1.0000');
+    // A positive spend below four decimals never prints as zero.
+    const speck = toWorkloadVm(mix({ evaluated: 1, classes: [cls('code', 1, 0.00004)] }))!;
+    expect(speck.rows[0]!.spend).toBe('<$0.0001');
     expect(by.get('structured')!.unpricedNote).toBe('1 unpriced');
   });
 
@@ -546,26 +597,47 @@ describe('toWorkloadVm (add-workload-telemetry D7)', () => {
   });
 });
 
-describe('fmtNetSavings (split-auto-routing-readout-setup D6)', () => {
-  const usd = (d: number): number => Math.round(d * 1_000_000);
+describe('savings precision (split-auto-routing-readout-setup D6; adopt-figure-states D2)', () => {
+  /** The savings view of one net/excess pair, through the real view-model. */
+  const sv = (netUsd: number, excessUsd: number) =>
+    toAutoPerfVm(
+      fixture({
+        savings: {
+          netUsd,
+          grossUsd: Math.abs(netUsd),
+          excessUsd,
+          rows: 2,
+          uncostedRows: 0,
+          basis: { kind: 'tier', label: 'premium', model: 'gpt-x' },
+        },
+      }),
+    )!.savings!;
   it('shows cents from $0.01 up', () => {
-    expect(fmtNetSavings(usd(0.01))).toBe('$0.01');
-    expect(fmtNetSavings(usd(1.62))).toBe('$1.62');
-    expect(fmtNetSavings(usd(12.5))).toBe('$12.50');
+    expect(sv(0.01, 0).net).toBe('$0.01');
+    expect(sv(1.62, 0).net).toBe('$1.62');
+    expect(sv(12.5, 0).net).toBe('$12.50');
   });
   it('shows four decimals between $0.0001 and $0.01', () => {
-    expect(fmtNetSavings(usd(0.0001))).toBe('$0.0001');
-    expect(fmtNetSavings(usd(0.004))).toBe('$0.0040');
-    expect(fmtNetSavings(usd(0.0099))).toBe('$0.0099');
+    expect(sv(0.0001, 0).net).toBe('$0.0001');
+    expect(sv(0.004, 0).net).toBe('$0.0040');
+    expect(sv(0.0099, 0).net).toBe('$0.0099');
   });
-  it('never prints a non-zero amount as zero', () => {
-    expect(fmtNetSavings(usd(0.00004))).toBe('< $0.0001');
-    expect(fmtNetSavings(1)).toBe('< $0.0001');
-    expect(fmtNetSavings(0)).toBe('$0.00');
+  it('never prints a non-zero amount as zero: a 40 µ$ net and a 40 µ$ excess read <$0.0001, with no space', () => {
+    const speck = sv(0.00004, 0.00004);
+    expect(speck.net).toBe('<$0.0001');
+    expect(speck.excess).toBe('<$0.0001');
+    const negative = sv(-0.00004, 0.00004);
+    expect(negative.negative).toBe(true);
+    expect(negative.net).toBe('<$0.0001');
+    expect(negative.excess).toBe('<$0.0001');
+    expect(sv(0.000001, 0).net).toBe('<$0.0001');
+    expect(sv(0, 0).net).toBe('$0.00');
+    for (const v of [speck, negative]) expect(JSON.stringify(v)).not.toContain('< $');
   });
   it('formats a magnitude — a signed input is never clamped to zero', () => {
-    expect(fmtNetSavings(-usd(1.62))).toBe('$1.62');
-    expect(fmtNetSavings(-usd(0.003))).toBe('$0.0030');
+    expect(sv(-1.62, 1.62).net).toBe('$1.62');
+    expect(sv(-0.003, 0.003).net).toBe('$0.0030');
+    expect(sv(-0.003, 0.003).excess).toBe('$0.0030');
   });
 });
 

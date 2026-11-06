@@ -2,6 +2,7 @@ import { createSignal } from 'solid-js';
 import { render } from 'solid-js/web';
 import { afterEach, describe, expect, it } from 'vitest';
 import { App } from './App';
+import { FigureSkeleton } from './components/FigureSkeleton';
 import { Toggle } from './components/Toggle';
 import { createAppStore, type AppStore } from './state/appState';
 import { AppProvider } from './state/context';
@@ -123,6 +124,43 @@ describe('Toggle presentations (split-auto-routing-readout-setup D7)', () => {
       setUnavailable(false);
       sw.click();
       expect(flips).toBe(1);
+    } finally {
+      dispose();
+      host.remove();
+    }
+  });
+});
+
+/** DESIGN.md Figures and their states → Loading (adopt-figure-states 3.1, D5): a loading
+ * figure is a decorative block plus visually hidden `Loading <what>`, so a screen reader hears
+ * what is loading, and never a dash, a zero or nothing. */
+describe('FigureSkeleton names what it loads', () => {
+  it('pairs one decorative block with visually hidden "Loading <what>" text', () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const dispose = render(
+      () => (
+        <span data-testid="slot">
+          <FigureSkeleton what="requests" size="count" />
+        </span>
+      ),
+      host,
+    );
+    try {
+      const slot = host.querySelector<HTMLElement>('[data-testid="slot"]')!;
+      const block = slot.querySelector<HTMLElement>('.fig-skel');
+      expect(block?.getAttribute('aria-hidden')).toBe('true');
+      expect(block?.classList.contains('fig-skel-count')).toBe(true);
+      expect(block?.textContent).toBe('');
+      const hidden = [...slot.querySelectorAll<HTMLElement>('.sr-only')];
+      expect(hidden.map((e) => e.textContent)).toEqual(['Loading requests']);
+      // What an assistive technology reads: the hidden words, and nothing from the block.
+      const spoken = [...slot.childNodes]
+        .filter((n) => !(n instanceof HTMLElement && n.getAttribute('aria-hidden') === 'true'))
+        .map((n) => n.textContent)
+        .join('');
+      expect(spoken).toBe('Loading requests');
+      expect(slot.textContent).not.toMatch(/—|\b0\b/);
     } finally {
       dispose();
       host.remove();

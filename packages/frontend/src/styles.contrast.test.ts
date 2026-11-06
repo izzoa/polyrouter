@@ -310,6 +310,14 @@ describe('theme token contrast floors', () => {
     floors(pairs(TEXT_TOKENS, ['accent-bg'], 4.5));
   });
 
+  describe('the green `free` word on the selected wash (≥ 4.5:1)', () => {
+    // adopt-figure-states (design Risk "Green on the selected wash"): `free` is now set in
+    // --green-text inside the request table's cost cell and the model picker's price, and
+    // both can sit on the wash: the expanded request row (`.req-row[aria-expanded='true']`)
+    // and the picker's active option (`.mp-option.active`). Green on --hover is held below.
+    floors([{ fg: 'green-text', bg: 'accent-bg', floor: 4.5 }]);
+  });
+
   describe('white on the primary fill at rest, hovered and pressed (≥ 4.5:1)', () => {
     floors(pairs(['#fff'], ['accent', 'accent-fill-hover', 'accent-fill-pressed'], 4.5));
   });

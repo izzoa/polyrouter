@@ -7,9 +7,11 @@ import {
   fmtElapsed,
   type BatchDisplayRow,
 } from '../data/batchBand';
-import { agentRunLabel, NOT_BILLED_LABEL, rowCostLabel, startsAgentRun } from '../data/analytics';
-import { fmtTime, fmtTokens } from '../data/catalog';
+import { agentRunLabel, rowCostParts, startsAgentRun } from '../data/analytics';
+import { fmtTime } from '../data/catalog';
+import { EST_USAGE_PARTS, fmtLatency, fmtTokensCompact } from '../data/figures';
 import { useApp } from '../state/context';
+import { FigureText } from './FigureText';
 import { Icon } from './Icon';
 
 /** The single column definition for this table. The head and the row cells used to be
@@ -186,26 +188,35 @@ export function RequestRow(props: { r: RequestRow }) {
             `unicode-range` — and the coverage guard fails if a future subset drops them, which
             is the protection `→` never had.
             The words move to screen-reader text: an arrow announces as "up arrow", so the
-            compact form would otherwise trade a layout bug for an accessibility one. */}
+            compact form would otherwise trade a layout bug for an accessibility one.
+            Counts are compact through the one shared formatter (adopt-figure-states D8). A
+            count the provider did not report carries `· est. usage` (D3): one Ink 3 unit that
+            wraps whole, inside the visible half so the dual pair stays one aria-hidden node
+            beside its screen-reader text, which says ", estimated usage" in words. Usage
+            estimates are marked here and never on the cost cell. */}
         <span class="figure cell-figure" style="font-size:0.6875rem">
           <span aria-hidden="true">
-            {fmtTokens(props.r.inputTokens)}↑ {fmtTokens(props.r.outputTokens)}↓
+            {fmtTokensCompact(props.r.inputTokens)}↑ {fmtTokensCompact(props.r.outputTokens)}↓
+            <Show when={props.r.usageEstimated}>
+              {' '}
+              <FigureText parts={EST_USAGE_PARTS} />
+            </Show>
           </span>
           <span class="sr-only">
-            {fmtTokens(props.r.inputTokens)} tokens in, {fmtTokens(props.r.outputTokens)} out
+            {fmtTokensCompact(props.r.inputTokens)} tokens in,{' '}
+            {fmtTokensCompact(props.r.outputTokens)} out
+            {props.r.usageEstimated ? ', estimated usage' : ''}
           </span>
         </span>
       </Cell>
       <Cell label="Cost">
+        {/* The request's cost state (adopt-figure-states D1, D4), the one the inspector's
+            total renders: each part is a no-wrap unit in its own tone. An amount and the `$0`
+            before `free` keep this cell's Ink, `free` is green, `· est.` and `unpriced` are
+            Ink 3, and both halves of `$0 · not billed` are Ink 2, so that label still wraps
+            only at its dot. */}
         <span class="figure cell-figure" style="font-size:0.6875rem;color:var(--text)">
-          {/* zero-cost-unbilled-errors: the not-billed label is wider than the 0.6fr cost
-              track, and a plain string would wrap mid-phrase ("$0 · not" / "billed"). Two
-              no-wrap halves wrap only at the dot; the words go muted, no new colour. The
-              text content is still exactly `$0 · not billed`. */}
-          <Show when={rowCostLabel(props.r) === NOT_BILLED_LABEL} fallback={rowCostLabel(props.r)}>
-            <span style="white-space:nowrap">$0 ·</span>{' '}
-            <span style="white-space:nowrap;color:var(--text3)">not billed</span>
-          </Show>
+          <FigureText parts={rowCostParts(props.r)} />
         </span>
       </Cell>
       <Cell label="Latency">
@@ -213,9 +224,7 @@ export function RequestRow(props: { r: RequestRow }) {
             actually waited — which runs to hours. `7412.3s` is not a reading, so it
             is formatted as a job. Latency aggregates exclude these rows entirely. */}
         <span class="figure cell-figure" style="font-size:0.6875rem">
-          {isBatchItem(props.r)
-            ? fmtElapsed(props.r.durationMs)
-            : `${(props.r.durationMs / 1000).toFixed(1)}s`}
+          {isBatchItem(props.r) ? fmtElapsed(props.r.durationMs) : fmtLatency(props.r.durationMs)}
         </span>
       </Cell>
       <Cell label="Status">
@@ -404,7 +413,8 @@ export function InflightRows(props: { rows: InflightDisplayRow[] }) {
 }
 
 function InflightRunningRow(props: { r: InflightDisplayRow; now: number }) {
-  const elapsed = (): number => Math.max(0, (props.now - props.r.startedAt) / 1000);
+  /** Milliseconds since admission, ticking with the shared clock (`fmtLatency` clamps). */
+  const elapsed = (): number => props.now - props.r.startedAt;
   return (
     // Non-interactive by design (no terminal detail to inspect yet). No aria-label:
     // a bare div has no role to hang one on, and the row's own text already reads
@@ -453,7 +463,7 @@ function InflightRunningRow(props: { r: InflightDisplayRow; now: number }) {
       </Cell>
       <Cell label="Latency">
         <span class="figure cell-figure" style="font-size:0.6875rem;color:var(--text2)">
-          {elapsed().toFixed(1)}s
+          {fmtLatency(elapsed())}
         </span>
       </Cell>
       <Cell label="Status">

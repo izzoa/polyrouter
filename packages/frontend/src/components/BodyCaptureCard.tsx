@@ -2,6 +2,7 @@ import { createSignal, For, Show } from 'solid-js';
 import { useModalSurface } from '../a11y';
 import { FROM_DIALOG } from '../state/appState';
 import { useApp } from '../state/context';
+import { FigureSkeleton } from './FigureSkeleton';
 
 type Mode = 'off' | 'errors_only' | 'all';
 
@@ -95,7 +96,10 @@ export function BodyCaptureCard() {
   };
 
   return (
-    <div class="panel card" aria-busy={loading() ? true : undefined}>
+    // No `aria-busy` while loading: the hidden `Loading body capture settings` names the state,
+    // and some assistive technology withholds a busy region's content, that text included
+    // (adopt-figure-states D5, "Two configuration cards use the same words").
+    <div class="panel card">
       <div
         data-testid="capture-header"
         style="display:flex;justify-content:space-between;align-items:flex-start;gap:20px"
@@ -117,13 +121,19 @@ export function BodyCaptureCard() {
               when={bc()}
               keyed
               fallback={
-                // Loading: a neutral placeholder. Failed: the read's own error line, the same
-                // inline failure text the controls below use (design.md D15).
+                // Loading: a neutral placeholder. Failed: an inline card error in the same
+                // `--red-text` line the controls below use (DS-1 design D15), led by what
+                // failed, in the figure states' words, before the server's message
+                // (adopt-figure-states D5). Configuration, not a figure: no Retry, no notice.
                 <Show
                   when={loading()}
-                  fallback={<span style="color:var(--red-text)">{state.bc.error}</span>}
+                  fallback={
+                    <span style="color:var(--red-text)">
+                      Body capture settings couldn’t be loaded. {state.bc.error}
+                    </span>
+                  }
                 >
-                  <span class="ar-skel ar-skel-short" aria-hidden="true" />
+                  <FigureSkeleton what="body capture settings" size="short" />
                 </Show>
               }
             >
@@ -148,7 +158,9 @@ export function BodyCaptureCard() {
           when={bc() !== null}
           fallback={
             <Show when={loading()}>
-              <span class="ar-skel ar-skel-count" style="align-self:center" aria-hidden="true" />
+              {/* Bare and hidden: the sentence's placeholder already names the card's state,
+                  so the card says it once. */}
+              <span class="fig-skel fig-skel-count" style="align-self:center" aria-hidden="true" />
             </Show>
           }
         >

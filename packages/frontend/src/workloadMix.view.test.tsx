@@ -133,7 +133,7 @@ describe('Workload mix block (add-workload-telemetry)', () => {
     expect(q(h, 'workload-mix-attempt-only')).toBeNull();
   });
 
-  it('spend honesty: unpriced → dash + "unpriced"; free → $0 without a qualifier; attempt-side unpriced qualifies', async () => {
+  it('spend honesty: unpriced → the bare word, no dash; free → $0 without a qualifier; attempt-side unpriced qualifies', async () => {
     h = await mount({
       workloadMix: mix({
         evaluated: 3,
@@ -146,9 +146,20 @@ describe('Workload mix block (add-workload-telemetry)', () => {
     });
     const byLabel = (label: string): HTMLElement =>
       rows(h!).find((e) => e.textContent?.includes(label))!;
-    expect(byLabel('vision').textContent).toContain('—');
-    expect(byLabel('vision').textContent).toContain('unpriced');
-    expect(byLabel('code').textContent).toMatch(/\$0/);
+    // Null spend reads the bare word `unpriced` in Ink 3, with no dash and no dollar figure
+    // (adopt-figure-states D5; dashboard-analytics "renders the workload mix honestly").
+    const vision = byLabel('vision');
+    expect(vision.textContent).not.toContain('—');
+    expect(vision.textContent).not.toMatch(/\$/);
+    // The innermost span holding the word: the part, not the spend slot around it.
+    const word = [...vision.querySelectorAll<HTMLElement>('span')]
+      .filter((e) => e.textContent === 'unpriced')
+      .at(-1);
+    expect(word, 'the bare word unpriced').toBeDefined();
+    expect(word!.style.color).toBe('var(--text3)');
+    // Spend is at four decimals: the free class is a measured `$0.0000`, the priced one `$1.0000`.
+    expect(byLabel('code').textContent).toContain('$0.0000');
+    expect(byLabel('structured').textContent).toContain('$1.0000');
     expect(byLabel('code').textContent).not.toContain('unpriced');
     expect(byLabel('structured').textContent).toContain('1 unpriced');
   });

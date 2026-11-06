@@ -90,8 +90,9 @@ describe('Observe pages render real analytics', () => {
     const { host, dispose } = mount(createAppStore(fake));
     try {
       await flush();
-      expect(host.textContent).toContain('load analytics');
-      expect(host.textContent).toContain('boom');
+      // The notice names what failed; the raw error leaves it (adopt-figure-states 3.2).
+      expect(host.textContent).toContain('Analytics couldn’t be loaded. Routing is unaffected.');
+      expect(host.textContent).not.toContain('boom');
       fake.analyticsFailure = null;
       clickText(host, 'button', 'Retry');
       await flush();
@@ -184,7 +185,7 @@ async function openPage(
   page: 'Overview' | 'Costs',
   summary?: Partial<AnalyticsSummary>,
   client?: FakeApiClient,
-): Promise<{ host: HTMLElement; dispose: () => void }> {
+): Promise<{ host: HTMLElement; store: AppStore; dispose: () => void }> {
   const fake =
     client ??
     new FakeApiClient(summary === undefined ? {} : { summary: { ...DEFAULT_SUMMARY, ...summary } });
@@ -224,16 +225,18 @@ describe('Overview states its headline figures in one readout strip (task 12.1)'
         ['success', 'Success rate', '15px'],
       ]);
       // DEFAULT_SUMMARY: $12.50, 30 requests, 120k + 45k + 4.5k cached tokens, 24 of 30 ok.
-      expect(cells.map((c) => c.figure)).toEqual(['$12.50', '30', '0.17M', '80.0%']);
-      expect(cells[0]!.sub).toBe('3 flagged ~estimated');
+      // Tokens are compact through the one formatter (adopt-figure-states 3.2), not `0.17M`.
+      expect(cells.map((c) => c.figure)).toEqual(['$12.50', '30', '169.5k', '80.0%']);
+      // `3 flagged ~estimated` became words (adopt-figure-states 3.2).
+      expect(cells[0]!.sub).toBe('3 requests with estimated usage');
       expect(cells[1]!.sub, 'no placeholder once the summary has loaded').toBe('');
       // The arrows are for the eye and the words for a screen reader; `cached` keeps its word.
-      // (45k out is 0.045M, which `toFixed(2)` renders 0.04M, as the tile did.)
-      expect(cells[2]!.sub).toBe('0.12M↑ 0.04M↓0.12M tokens in, 0.04M out · 0.00M cached');
+      expect(cells[2]!.sub).toBe('120k↑ 45k↓120k tokens in, 45k out · 4.5k cached');
       const tokens = panels[0]!.querySelector('[data-readout="tokens"] .readout-sub')!;
-      expect(tokens.querySelector('[aria-hidden="true"]')?.textContent).toBe('0.12M↑ 0.04M↓');
-      expect(tokens.querySelector('.sr-only')?.textContent).toBe('0.12M tokens in, 0.04M out');
+      expect(tokens.querySelector('[aria-hidden="true"]')?.textContent).toBe('120k↑ 45k↓');
+      expect(tokens.querySelector('.sr-only')?.textContent).toBe('120k tokens in, 45k out');
       expect(cells[3]!.sub).toBe('fallback 13.3% · escalated 20.0%');
+      expect(panels[0]!.textContent).not.toMatch(/~|—/);
       // The view's ONE Display figure, counted over the whole page, is the spend.
       const display = sizedRoots(host, '26px');
       expect(display.map((e) => e.textContent?.trim())).toEqual(['$12.50']);
@@ -245,21 +248,29 @@ describe('Overview states its headline figures in one readout strip (task 12.1)'
     }
   });
 
-  it('an empty range renders the zero-state copy, never NaN, and still one Display figure', async () => {
+  it('an empty range states measured zeros and a rate that does not apply, never NaN, and still one Display figure', async () => {
     const { host, dispose } = await openPage('Overview', EMPTY_RANGE);
     try {
       const { cells, panels } = strip(host);
-      expect(cells.map((c) => c.figure)).toEqual(['$0.00', '0', '0.00M', '—']);
-      expect(cells[0]!.sub).toBe('0 flagged ~estimated');
-      expect(cells[3]!.sub).toBe('no requests yet');
-      expect(panels[0]!.textContent).not.toMatch(/NaN|undefined|Infinity/);
+      // Measured zeros stay zeros; the rate of nothing is `not applicable`, in Ink 3, with a
+      // sentence that says why (adopt-figure-states 3.2, D5).
+      expect(cells.map((c) => c.figure)).toEqual(['$0.00', '0', '0', 'not applicable']);
+      expect(
+        panels[0]!.querySelector<HTMLElement>('[data-readout="success"] .readout-figure span')
+          ?.style.color,
+      ).toBe('var(--text3)');
+      expect(cells[3]!.sub).toBe('No requests in this range');
+      // No estimated-usage caption at zero, where DS-1 pinned `0 flagged ~estimated`.
+      expect(cells[0]!.sub).toBe('');
+      expect(panels[0]!.querySelector('.readout-qualifier')).toBeNull();
+      expect(panels[0]!.textContent).not.toMatch(/NaN|undefined|Infinity|~|—|no requests yet/);
       expect(sizedRoots(host, '26px')).toHaveLength(1);
     } finally {
       dispose();
     }
   });
 
-  it('the requests cell reads `loading…` until the first summary arrives', async () => {
+  it('first load: a skeleton named for each figure, empty sub-lines, and still one Display and three Title figures', async () => {
     class HeldSummary extends FakeApiClient {
       override summary(): Promise<AnalyticsSummary> {
         return new Promise<AnalyticsSummary>(() => undefined);
@@ -267,13 +278,291 @@ describe('Overview states its headline figures in one readout strip (task 12.1)'
     }
     const { host, dispose } = await openPage('Overview', undefined, new HeldSummary());
     try {
-      expect(strip(host).cells.find((c) => c.id === 'requests')?.sub).toBe('loading…');
+      const { cells, panels } = strip(host);
+      const hidden = (id: string): string[] =>
+        [...panels[0]!.querySelectorAll(`[data-readout="${id}"] .readout-figure .sr-only`)].map(
+          (e) => e.textContent ?? '',
+        );
+      expect(['spend', 'requests', 'tokens', 'success'].map(hidden)).toEqual([
+        ['Loading spend'],
+        ['Loading requests'],
+        ['Loading tokens'],
+        ['Loading success rate'],
+      ]);
+      for (const block of panels[0]!.querySelectorAll('.readout-figure .fig-skel'))
+        expect(block.getAttribute('aria-hidden')).toBe('true');
+      expect(panels[0]!.querySelectorAll('.readout-figure .fig-skel')).toHaveLength(4);
+      // Every sub-line says nothing yet: no `0.00M↑`, `no requests yet` or `loading…`.
+      expect(cells.map((c) => c.sub)).toEqual(['', '', '', '']);
+      const shown = panels[0]!.textContent.replace(/Loading [a-z ]+/g, '');
+      expect(shown).not.toMatch(/\$0\.00|0\.00M|\b0\b|loading…|—|no requests yet/);
+      expect(panels[0]!.querySelector('.readout-qualifier')).toBeNull();
       expect(sizedRoots(host, '26px')).toHaveLength(1);
+      expect(sizedRoots(panels[0]!, '15px')).toHaveLength(3);
     } finally {
       dispose();
     }
   });
+
+  it('a sub-cent spend reads below precision, never $0.00', async () => {
+    const { host, dispose } = await openPage('Overview', { spend: 0.004 });
+    try {
+      expect(strip(host).cells[0]!.figure).toBe('<$0.01');
+      expect(sizedRoots(host, '26px').map((e) => e.textContent?.trim())).toEqual(['<$0.01']);
+    } finally {
+      dispose();
+    }
+  });
+
+  it('a partly priced spend is followed by its unpriced count in Ink 3, outside the Display figure', async () => {
+    const { host, dispose } = await openPage('Overview', { spend: 12.5, unpricedRequests: 4 });
+    try {
+      const cell = strip(host).panels[0]!.querySelector<HTMLElement>('[data-readout="spend"]')!;
+      // The 26px figure is the amount alone…
+      expect(sizedRoots(host, '26px').map((e) => e.textContent?.trim())).toEqual(['$12.50']);
+      // …and the qualifier follows it in the same cell, in Ink 3, at caption size.
+      const q = cell.querySelector<HTMLElement>('.readout-qualifier');
+      expect(q?.textContent).toBe('· 4 unpriced');
+      expect(q?.querySelector<HTMLElement>('span')?.style.color).toBe('var(--text3)');
+      expect(size(q!)).toBe('11px');
+      expect(cell.querySelector('.readout-figure')?.contains(q)).toBe(false);
+    } finally {
+      dispose();
+    }
+    const fully = await openPage('Overview', { unpricedRequests: 0 });
+    try {
+      expect(fully.host.querySelector('.readout-qualifier')).toBeNull();
+      expect(fully.host.querySelector('[data-readout-strip]')?.textContent).not.toContain(
+        'unpriced',
+      );
+    } finally {
+      fully.dispose();
+    }
+  });
+
+  it('the spend sub-line names estimate-priced spend and estimated usage in words, each absent at zero', async () => {
+    const both = await openPage('Overview', { nativeFamilySpend: 0.0042, estimatedCount: 12 });
+    try {
+      expect(strip(both.host).cells[0]!.sub).toBe(
+        'includes $0.0042 estimate-priced · 12 requests with estimated usage',
+      );
+      expect(both.host.querySelector('[data-readout-strip]')?.textContent).not.toMatch(/~|—/);
+    } finally {
+      both.dispose();
+    }
+    const priced = await openPage('Overview', { nativeFamilySpend: 0.0042, estimatedCount: 0 });
+    try {
+      expect(strip(priced.host).cells[0]!.sub).toBe('includes $0.0042 estimate-priced');
+    } finally {
+      priced.dispose();
+    }
+    const usage = await openPage('Overview', { nativeFamilySpend: 0, estimatedCount: 1 });
+    try {
+      expect(strip(usage.host).cells[0]!.sub).toBe('1 request with estimated usage');
+    } finally {
+      usage.dispose();
+    }
+  });
+
+  it('a refetch keeps the figures it replaces, with no skeleton in their place', async () => {
+    const fake = new HeldAfterFirst();
+    const { host, store, dispose } = await openPage('Overview', undefined, fake);
+    try {
+      expect(strip(host).cells[0]!.figure).toBe('$12.50');
+      fake.hold = true;
+      // The next poll's summary is still in flight.
+      void store.loadOverview();
+      await flush();
+      const { cells, panels } = strip(host);
+      expect(cells.map((c) => c.figure)).toEqual(['$12.50', '30', '169.5k', '80.0%']);
+      expect(panels[0]!.querySelector('.fig-skel')).toBeNull();
+    } finally {
+      dispose();
+    }
+  });
+
+  it('a failed read removes the figures under a neutral notice; Retry refetches and leaves focus on the strip', async () => {
+    const fake = new HeldAfterFirst();
+    const m = await openPage('Overview', undefined, fake);
+    try {
+      expect(strip(m.host).cells[0]!.figure).toBe('$12.50');
+      // A later read fails: the store keeps the old summary, the page must not.
+      fake.analyticsFailure = new ApiError(500, 'Internal', 'boom');
+      await m.store.loadOverview();
+      await flush();
+      const notice = m.host.querySelector<HTMLElement>('.notice')!;
+      expect(notice.querySelector('.notice-title')?.textContent).toBe('Couldn’t load');
+      expect(notice.querySelector('.notice-body')?.textContent).toBe(
+        'Analytics couldn’t be loaded. Routing is unaffected.',
+      );
+      expect(notice.textContent).not.toContain('boom');
+      const failed = strip(m.host);
+      expect(failed.panels).toHaveLength(1);
+      expect(failed.cells.map((c) => c.figure)).toEqual(['', '', '', '']);
+      expect(failed.cells.map((c) => c.sub)).toEqual(['', '', '', '']);
+      expect(failed.panels[0]!.querySelector('.fig-skel, .readout-qualifier')).toBeNull();
+      expect(failed.panels[0]!.textContent).not.toContain('$');
+
+      // Retry, focused before the click: its load starts, the notice goes, and focus lands on
+      // the strip's panel, never <body>.
+      fake.analyticsFailure = null;
+      fake.hold = true;
+      const retry = [...notice.querySelectorAll<HTMLButtonElement>('button')].find(
+        (b) => labelText(b) === 'Retry',
+      )!;
+      retry.focus();
+      retry.click();
+      await Promise.resolve();
+      const panel = m.host.querySelector<HTMLElement>('[data-readout-strip]')!;
+      expect(m.host.querySelector('.notice')).toBeNull();
+      expect(panel.getAttribute('tabindex')).toBe('-1');
+      expect(document.activeElement).toBe(panel);
+      // While the retry is in flight its figures load as skeletons, never the old summary.
+      expect(strip(m.host).cells[0]!.figure).not.toContain('$');
+      expect(panel.querySelectorAll('.readout-figure .fig-skel')).toHaveLength(4);
+      fake.release();
+      await flush();
+      expect(strip(m.host).cells[0]!.figure).toBe('$12.50');
+      expect(document.activeElement).toBe(panel);
+    } finally {
+      m.dispose();
+    }
+  });
 });
+
+/** Overview's chart and recent rows are figures from their own reads (adopt-figure-states D5,
+ * dashboard-core "Failed, unavailable and absent figures are distinct states"): a failed read
+ * removes them and never reads as a measured empty range, and a first load is a skeleton or a
+ * loading line, never `No requests in this range`. */
+describe('Overview removes a failed read’s chart and recent rows, and never shows it as an empty range', () => {
+  afterEach(() => {
+    localStorage.clear();
+  });
+  const chartPanel = (host: HTMLElement): HTMLElement =>
+    [...host.querySelectorAll<HTMLElement>('.panel.card')].find((p) =>
+      (p.querySelector('.section-title')?.textContent ?? '').startsWith('Requests ·'),
+    )!;
+  const recentPanel = (host: HTMLElement): HTMLElement =>
+    host.querySelector<HTMLElement>('.rs-table-requests')!;
+  const rowCount = (host: HTMLElement): number =>
+    recentPanel(host).querySelectorAll('.req-row').length;
+  const chartShown = (host: HTMLElement): boolean =>
+    chartPanel(host).querySelector('[data-measure="requests"]') !== null;
+
+  it('a failed first load shows neither the empty-range sentences nor a skeleton, and Retry loads them', async () => {
+    const fake = new FakeApiClient({ analyticsFailure: new ApiError(500, 'Internal', 'boom') });
+    const m = mount(createAppStore(fake));
+    try {
+      await flush();
+      expect(m.host.querySelector('.notice-body')?.textContent).toBe(
+        'Analytics couldn’t be loaded. Routing is unaffected.',
+      );
+      expect(chartShown(m.host)).toBe(false);
+      expect(chartPanel(m.host).textContent).not.toMatch(/No requests|Loading/);
+      expect(chartPanel(m.host).querySelector('.fig-skel')).toBeNull();
+      expect(rowCount(m.host)).toBe(0);
+      expect(recentPanel(m.host).textContent).not.toMatch(/No requests in this range yet|Loading/);
+      fake.analyticsFailure = null;
+      [...m.host.querySelectorAll<HTMLButtonElement>('.notice button')]
+        .find((b) => labelText(b) === 'Retry')!
+        .click();
+      // The retry loads (its slices are marked loading as the click runs): the chart as a
+      // skeleton named for what loads, the rows as the list's loading line, never the
+      // empty-range sentences.
+      expect(chartPanel(m.host).querySelector('.sr-only')?.textContent).toBe(
+        'Loading requests over time',
+      );
+      expect(recentPanel(m.host).textContent).toContain('Loading…');
+      await flush();
+      expect(chartShown(m.host)).toBe(true);
+      expect(rowCount(m.host)).toBeGreaterThan(0);
+    } finally {
+      m.dispose();
+    }
+  });
+
+  it('a failed refetch removes the chart and the rows it would have replaced', async () => {
+    const fake = new FakeApiClient();
+    const m = mount(createAppStore(fake));
+    try {
+      await flush();
+      expect(chartShown(m.host)).toBe(true);
+      const before = rowCount(m.host);
+      expect(before).toBeGreaterThan(0);
+      fake.analyticsFailure = new ApiError(500, 'Internal', 'boom');
+      await m.store.loadOverview();
+      await flush();
+      // The store keeps its last series and rows; the page must not show them as current.
+      expect(m.store.state.analyticsSeries.length).toBeGreaterThan(0);
+      expect(m.store.state.recentRequests.length).toBe(before);
+      expect(chartShown(m.host)).toBe(false);
+      expect(chartPanel(m.host).textContent).not.toMatch(/No requests|Loading/);
+      expect(rowCount(m.host)).toBe(0);
+      expect(recentPanel(m.host).textContent).not.toMatch(/No requests in this range yet|Loading/);
+    } finally {
+      m.dispose();
+    }
+  });
+
+  it('a first load is a skeleton, and a measured empty range says so once its read commits', async () => {
+    class HeldSeries extends FakeApiClient {
+      hold = true;
+      private parked: (() => void)[] = [];
+      override timeseries(
+        ...args: Parameters<FakeApiClient['timeseries']>
+      ): ReturnType<FakeApiClient['timeseries']> {
+        if (!this.hold) return super.timeseries(...args);
+        return new Promise((resolve, reject) => {
+          this.parked.push(() => {
+            super.timeseries(...args).then(resolve, reject);
+          });
+        });
+      }
+      release(): void {
+        this.hold = false;
+        for (const go of this.parked.splice(0)) go();
+      }
+    }
+    const fake = new HeldSeries({ timeseries: [], requestRows: [] });
+    const m = mount(createAppStore(fake));
+    try {
+      await flush();
+      expect(chartPanel(m.host).textContent).not.toContain('No requests in this range');
+      expect(chartPanel(m.host).querySelector('.fig-skel')?.getAttribute('aria-hidden')).toBe(
+        'true',
+      );
+      expect(chartPanel(m.host).querySelector('.sr-only')?.textContent).toBe(
+        'Loading requests over time',
+      );
+      fake.release();
+      await flush();
+      expect(chartPanel(m.host).querySelector('.fig-skel')).toBeNull();
+      expect(chartPanel(m.host).textContent).toContain('No requests in this range');
+      expect(recentPanel(m.host).textContent).toContain('No requests in this range yet.');
+    } finally {
+      m.dispose();
+    }
+  });
+});
+
+/** A fake whose summary reads can be held in flight and released later, so a test can see a
+ * refetch or a retry mid-load. */
+class HeldAfterFirst extends FakeApiClient {
+  hold = false;
+  private parked: (() => void)[] = [];
+  override summary(range: Parameters<FakeApiClient['summary']>[0]): Promise<AnalyticsSummary> {
+    if (!this.hold) return super.summary(range);
+    return new Promise<AnalyticsSummary>((resolve, reject) => {
+      this.parked.push(() => {
+        super.summary(range).then(resolve, reject);
+      });
+    });
+  }
+  release(): void {
+    this.hold = false;
+    for (const go of this.parked.splice(0)) go();
+  }
+}
 
 describe('Costs states its spend in the readout strip, keeping every qualification (task 12.2)', () => {
   let sheet: HTMLStyleElement;
@@ -299,19 +588,23 @@ describe('Costs states its spend in the readout strip, keeping every qualificati
     try {
       const { panels, cells } = strip(host);
       expect(panels).toHaveLength(1);
+      // Subscription at cents (`$5.00`, where DS-1 pinned `$5.0000`); the estimate-priced
+      // portion keeps four decimals (adopt-figure-states 3.3, D2).
       expect(cells.map((c) => [c.id, c.label, c.figure, c.figureSize])).toEqual([
         ['spend', 'Spend · 24h', '$2.00', '26px'],
-        ['subscription', 'Served on subscription', '$5.0000', '15px'],
+        ['subscription', 'Served on subscription', '$5.00', '15px'],
         ['estimate-priced', 'Estimate-priced', '$0.7500', '15px'],
       ]);
       const spend = cells[0]!.sub;
       expect(spend).toContain('both ledgers');
       expect(spend).toContain('excludes subscription');
-      expect(spend).toContain('4 requests ~estimated');
+      expect(spend).toContain('4 requests with estimated usage');
+      // The unclassified line at cents: `$1.25`, where DS-1 pinned `$1.2500`.
       expect(spend).toBe(
-        'both ledgers, excludes subscription · 4 requests ~estimated' +
-          'includes $1.2500 recorded before subscription tracking — cannot be classified',
+        'both ledgers, excludes subscription · 4 requests with estimated usage' +
+          'includes $1.25 recorded before subscription tracking — cannot be classified',
       );
+      expect(panels[0]!.textContent).not.toMatch(/~|—\s*unpriced/);
       // The two figures left the spend sub-line: their own cells state them now.
       expect(spend).not.toMatch(/served on subscription|estimate-priced|^\+/i);
       expect(cells[1]!.sub).toBe('excluded from spend');
@@ -319,7 +612,7 @@ describe('Costs states its spend in the readout strip, keeping every qualificati
       // The pre-snapshot sentence is its own line under the qualification.
       const pre = panels[0]!.querySelector('[data-readout="spend"] .readout-sub div');
       expect(pre?.textContent?.replace(/\s+/g, ' ').trim()).toBe(
-        'includes $1.2500 recorded before subscription tracking — cannot be classified',
+        'includes $1.25 recorded before subscription tracking — cannot be classified',
       );
       // The subscription value lost its indigo text: its own labelled cell distinguishes it.
       expect(panels[0]!.outerHTML).not.toMatch(/--accent/);
@@ -344,7 +637,8 @@ describe('Costs states its spend in the readout strip, keeping every qualificati
     try {
       const { cells, panels } = strip(host);
       expect(cells.map((c) => c.id)).toEqual(['spend']);
-      expect(cells[0]!.sub).toBe('both ledgers, excludes subscription · 0 requests ~estimated');
+      // No estimated-usage words at zero, where DS-1 pinned `0 requests ~estimated`.
+      expect(cells[0]!.sub).toBe('both ledgers, excludes subscription');
       // Absent, not a zero or a placeholder.
       expect(panels[0]!.textContent).not.toMatch(/\$0\.0000|subscription value|estimate-priced/i);
       expect(panels[0]!.textContent).not.toMatch(/served on subscription|included in spend/i);
@@ -363,6 +657,139 @@ describe('Costs states its spend in the readout strip, keeping every qualificati
       expect(sizedRoots(host, '26px')).toHaveLength(1);
     } finally {
       dispose();
+    }
+  });
+
+  it('a partly priced spend is followed by its unpriced count in Ink 3, and the spend sub-line names estimated usage', async () => {
+    const { host, dispose } = await openPage('Costs', {
+      spend: 0.004,
+      unpricedRequests: 4,
+      estimatedCount: 12,
+      nativeFamilySpend: 0,
+      subscriptionSpend: 0,
+      unknownSpend: 0,
+    });
+    try {
+      const { cells, panels } = strip(host);
+      // A sub-cent spend reads below precision, and the 26px figure is the amount alone.
+      expect(sizedRoots(host, '26px').map((e) => e.textContent?.trim())).toEqual(['<$0.01']);
+      const q = panels[0]!.querySelector<HTMLElement>('[data-readout="spend"] .readout-qualifier');
+      expect(q?.textContent).toBe('· 4 unpriced');
+      expect(q?.querySelector<HTMLElement>('span')?.style.color).toBe('var(--text3)');
+      expect(cells[0]!.sub).toBe(
+        'both ledgers, excludes subscription · 12 requests with estimated usage',
+      );
+      // The estimate-priced words stay in their own cell, never on this sub-line.
+      expect(cells[0]!.sub).not.toContain('estimate-priced');
+      // The cost-integrity line names the same count in words.
+      expect(host.textContent).toContain('12 requests with estimated usage.');
+      expect(host.textContent).not.toMatch(/~/);
+    } finally {
+      dispose();
+    }
+  });
+
+  it('first load: a Spend skeleton with an empty sub-line, and no Title cell', async () => {
+    class HeldSummary extends FakeApiClient {
+      override summary(): Promise<AnalyticsSummary> {
+        return new Promise<AnalyticsSummary>(() => undefined);
+      }
+    }
+    const { host, dispose } = await openPage('Costs', undefined, new HeldSummary());
+    try {
+      const { cells, panels } = strip(host);
+      expect(cells.map((c) => c.id)).toEqual(['spend']);
+      expect(
+        [...panels[0]!.querySelectorAll('[data-readout="spend"] .readout-figure .sr-only')].map(
+          (e) => e.textContent,
+        ),
+      ).toEqual(['Loading spend']);
+      expect(
+        panels[0]!.querySelector('.readout-figure .fig-skel')?.getAttribute('aria-hidden'),
+      ).toBe('true');
+      expect(cells[0]!.sub).toBe('');
+      expect(panels[0]!.textContent).not.toMatch(/\$|subscription|estimate-priced/i);
+      expect(sizedRoots(host, '26px')).toHaveLength(1);
+      // The request mix and the cost-integrity count come from the same summary read, so
+      // they load with the strip: a skeleton named for the mix, never zeros standing in
+      // (dashboard-core "A zero is a measurement, never a placeholder").
+      expect(host.textContent).not.toMatch(/\d+% \(\d+\)|not applicable \(/);
+      expect(host.querySelector('[data-testid="mix-bar"]')).toBeNull();
+      const mixLoading = host.querySelector<HTMLElement>('[data-testid="mix-loading"]');
+      expect(mixLoading?.querySelector('.fig-skel')?.getAttribute('aria-hidden')).toBe('true');
+      expect(mixLoading?.querySelector('.sr-only')?.textContent).toBe('Loading request mix');
+      expect(host.textContent).not.toContain('with estimated usage');
+    } finally {
+      dispose();
+    }
+  });
+
+  it('a failed read removes the figures under a neutral notice; Retry refetches and leaves focus on the strip', async () => {
+    const fake = new HeldAfterFirst({
+      summary: {
+        ...DEFAULT_SUMMARY,
+        spend: 2,
+        subscriptionSpend: 5,
+        nativeFamilySpend: 0.75,
+        notBilledRequests: 2,
+      },
+    });
+    const m = await openPage('Costs', undefined, fake);
+    try {
+      expect(strip(m.host).cells.map((c) => c.id)).toEqual([
+        'spend',
+        'subscription',
+        'estimate-priced',
+      ]);
+      expect(m.host.querySelector('[data-testid="mix-bar"]')).not.toBeNull();
+      expect(m.host.textContent).toContain('free 80% (8)');
+      expect(m.host.textContent).toContain('3 requests with estimated usage.');
+      expect(m.host.querySelector('[data-testid="not-billed-caption"]')).not.toBeNull();
+      fake.analyticsFailure = new ApiError(500, 'Internal', 'boom');
+      await m.store.loadCosts();
+      await flush();
+      // The request mix and the integrity count were the same read's figures: removed with
+      // the strip's, never left on screen as current under the notice.
+      expect(m.host.querySelector('[data-testid="mix-bar"]')).toBeNull();
+      expect(m.host.querySelector('[data-testid="mix-loading"]')).toBeNull();
+      expect(m.host.textContent).not.toMatch(/\d+% \(\d+\)/);
+      expect(m.host.textContent).not.toContain('with estimated usage');
+      expect(m.host.querySelector('[data-testid="not-billed-caption"]')).toBeNull();
+      const notice = m.host.querySelector<HTMLElement>('.notice')!;
+      expect(notice.querySelector('.notice-title')?.textContent).toBe('Couldn’t load');
+      expect(notice.querySelector('.notice-body')?.textContent).toBe(
+        'Cost analytics couldn’t be loaded. Routing is unaffected.',
+      );
+      expect(notice.textContent).not.toContain('boom');
+      const failed = strip(m.host);
+      expect(failed.panels).toHaveLength(1);
+      // Every stat figure is removed: the spend, its sub-line, and both Title cells.
+      expect(failed.cells.map((c) => [c.id, c.figure, c.sub])).toEqual([['spend', '', '']]);
+      expect(failed.panels[0]!.querySelector('.fig-skel, .readout-qualifier')).toBeNull();
+      expect(failed.panels[0]!.textContent).not.toContain('$');
+
+      fake.analyticsFailure = null;
+      fake.hold = true;
+      const retry = [...notice.querySelectorAll<HTMLButtonElement>('button')].find(
+        (b) => labelText(b) === 'Retry',
+      )!;
+      retry.focus();
+      retry.click();
+      await Promise.resolve();
+      const panel = m.host.querySelector<HTMLElement>('[data-readout-strip]')!;
+      expect(m.host.querySelector('.notice')).toBeNull();
+      expect(document.activeElement).toBe(panel);
+      expect(panel.querySelectorAll('.readout-figure .fig-skel')).toHaveLength(1);
+      // The retry loads the mix as a skeleton too, never the old summary's shares.
+      expect(m.host.querySelector('[data-testid="mix-loading"] .fig-skel')).not.toBeNull();
+      expect(m.host.textContent).not.toMatch(/\d+% \(\d+\)/);
+      fake.release();
+      await flush();
+      expect(strip(m.host).cells.map((c) => c.figure)).toEqual(['$2.00', '$5.00', '$0.7500']);
+      expect(m.host.textContent).toContain('free 80% (8)');
+      expect(document.activeElement).toBe(panel);
+    } finally {
+      m.dispose();
     }
   });
 });

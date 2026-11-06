@@ -434,6 +434,85 @@ textarea[aria-invalid='true']:focus {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+/* The focal figure's line: the Display figure, then any qualifier that follows it on its
+   baseline (`· 4 unpriced`, adopt-figure-states D11), outside the Display role. The qualifier
+   wraps below the figure, whole, when the cell is too narrow for both. */
+.readout-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 8px;
+  min-width: 0;
+}
+.readout-qualifier {
+  color: var(--text3);
+  white-space: nowrap;
+}
+
+/* The shared figure skeleton (adopt-figure-states D5; DESIGN.md Figures and their states →
+   Loading): ONE treatment for every loading slot — Chip Tone, the 4px mark radius and the
+   stylesheet's 1.6s `pulse`, which the reduced-motion guard stills. The block is decorative
+   (`aria-hidden`); `FigureSkeleton` pairs it with hidden `Loading <what>` text. Each width is
+   set in `ch` to the expected string, so it follows the slot's own type size, and never
+   exceeds its slot. Two shapes are not text and keep their own widths: the switch capsule,
+   which is a control's outline, and a stage bar's track, which the bar fills. */
+.fig-skel {
+  display: inline-block;
+  max-width: 100%;
+  border-radius: 4px;
+  background: var(--chip);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+/* A readout's Display figure (`$12.34`) and a Title figure (`1,234`). */
+.fig-skel-display {
+  width: 6ch;
+  height: 24px;
+}
+.fig-skel-title {
+  width: 5ch;
+  height: 16px;
+}
+/* A table cell's figure (`1,234`, `$12.34`) at row size. */
+.fig-skel-cell {
+  width: 5ch;
+  height: 12px;
+  vertical-align: middle;
+}
+/* A Pipeline stage count (`1,234`). */
+.fig-skel-count {
+  width: 5ch;
+  height: 20px;
+}
+/* A caption-sized figure line, such as Classify's verdict counts. */
+.fig-skel-note {
+  width: 10ch;
+  height: 10px;
+  vertical-align: middle;
+}
+/* A sentence: a status-now phrase, a configuration card's sentence. */
+.fig-skel-short {
+  display: block;
+  width: 36ch;
+  height: 12px;
+}
+/* A stage detail's figures: one line about a row of figures wide. */
+.fig-skel-line {
+  display: block;
+  width: 40ch;
+  height: 12px;
+}
+/* The small switch's placeholder: the same 32 × 18 capsule the loaded switch draws. */
+.fig-skel-switch {
+  width: 32px;
+  height: 18px;
+  border-radius: 10px;
+}
+/* A stage bar's placeholder fills its track, as the bar does. */
+.fig-skel-bar {
+  display: block;
+  width: 100%;
+  height: 12px;
+}
 
 .section-title {
   font:
@@ -3099,20 +3178,6 @@ button:disabled[aria-busy='true'] {
   justify-content: space-between;
   gap: 12px;
 }
-.ar-notice {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 12px;
-  margin: 0 16px 12px;
-  padding: 8px 12px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  font:
-    400 0.75rem/1rem 'Geist',
-    sans-serif;
-  color: var(--text2);
-}
 /* The Cascade row's savings line (D6): a plain figure at the row's text weight — the
    bars, not the money, are the tab's focal element. */
 .ar-savings {
@@ -3274,6 +3339,15 @@ button:disabled[aria-busy='true'] {
     sans-serif;
   font-variant-numeric: tabular-nums;
   color: var(--text2);
+}
+/* A share of nothing reads `not applicable` in Ink 3 (adopt-figure-states D5). The words are
+   wider than the share track, so they take the share and bar tracks, which a zero range
+   leaves empty (it draws no bar), and stay on one line. In the phone layout the figure is a
+   flex line, where the span has no effect. */
+.ar-figshare-word {
+  grid-column: span 2;
+  white-space: nowrap;
+  color: var(--text3);
 }
 .ar-figbar {
   align-self: center;
@@ -3480,33 +3554,6 @@ button:disabled[aria-busy='true'] {
     sans-serif;
   color: var(--text3);
 }
-/* Loading placeholders. Neutral and decorative — the text beside each says "Loading". */
-.ar-skel {
-  display: inline-block;
-  border-radius: 4px;
-  background: var(--chip);
-  animation: pulse 1.6s ease-in-out infinite;
-}
-.ar-skel-count {
-  width: 48px;
-  height: 20px;
-}
-/* The small switch's placeholder: the same 32 × 18 capsule the loaded switch draws. */
-.ar-skel-switch {
-  width: 32px;
-  height: 18px;
-  border-radius: 10px;
-}
-.ar-skel-line {
-  display: block;
-  width: 100%;
-  height: 12px;
-}
-.ar-skel-short {
-  display: block;
-  width: 60%;
-  height: 12px;
-}
 @media (max-width: 768px) {
   .ar-note {
     margin: 0 12px 12px;
@@ -3524,12 +3571,6 @@ button:disabled[aria-busy='true'] {
     border-top: 1px solid var(--border2);
   }
 }
-.ar-skel-note {
-  width: 72px;
-  height: 10px;
-  vertical-align: middle;
-}
-
 /* ---- The Setup panel's Layers cells (split-auto-routing-readout-setup D7) ----
    Three cells in a row, one per layer, stacking to one column below their own container's
    measured threshold (`rs-layers` in STYLESEED.md). The container is the cells' wrapper

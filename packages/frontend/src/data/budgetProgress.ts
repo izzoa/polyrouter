@@ -1,6 +1,10 @@
 import type { AvailableBudgetProgress, BudgetProgressConfig } from '@polyrouter/shared';
 import type { ApiClient, BudgetDto } from './api';
 
+/** A card whose progress answered for a budget configuration it no longer shows: it waits
+ * for the current configuration, which is neither a failed read nor stale data. */
+export const AWAITING_CONFIGURATION = 'Awaiting current budget configuration';
+
 export interface BudgetProgressEntry {
   snapshot?: AvailableBudgetProgress;
   asOf?: string;
@@ -113,7 +117,7 @@ export function createBudgetProgressLoader(options: {
               ) {
                 options.set(b.id, {
                   loading: false,
-                  error: 'Awaiting current budget configuration',
+                  error: AWAITING_CONFIGURATION,
                 });
                 mismatch = true;
               } else {

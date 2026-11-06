@@ -9,9 +9,12 @@
  * Props are Solid getters, so the panel re-renders as the breakdown slice loads and as the
  * range or metric changes.
  */
-import { Show, type JSX } from 'solid-js';
+import { Match, Show, Switch, type JSX } from 'solid-js';
 import { BarRows } from './BarRows';
-import { breakdownToSpend, breakdownToTokens, fmtTokens } from '../data/analytics';
+import { FigureSkeleton } from './FigureSkeleton';
+import { breakdownToSpend, breakdownToTokens } from '../data/analytics';
+import type { FigureLoad } from '../data/figureLoad';
+import { fmtTokensCompact } from '../data/figures';
 import type { BreakdownMetric, BreakdownRow } from '../data/api';
 
 /** The metric selector's options. Shared so Overview and Costs cannot drift apart on the
@@ -24,12 +27,17 @@ export const METRIC_OPTIONS = [
 export function BreakdownPanel(props: {
   title: string;
   rows: BreakdownRow[];
-  loading: boolean;
   metric: BreakdownMetric;
-  /** True while the rows on screen belong to a DIFFERENT metric or range than the one
-   * selected. They are not merely old — they are labelled wrongly, and blanking them is what
-   * stops dollar values appearing under a "tokens" heading until the refetch lands. */
-  stale: boolean;
+  /** The bars' figure load (adopt-figure-states D5), from `createFigureLoad` over the
+   * breakdown slice, with `loaded` false while the rows on screen belong to a DIFFERENT metric
+   * or range than the one selected. Such rows are not merely old, they are labelled wrongly, so
+   * they are never shown: dollar values never appear under a "tokens" heading. `loading`
+   * renders the shared skeleton, `failed` renders no figure under the page's notice (never the
+   * previous bars as current, and never a skeleton that pulses on), and `ready` the bars. */
+  load: FigureLoad;
+  /** What the bars are, as the skeleton's hidden text finishes it: `spend by model` reads
+   * `Loading spend by model`. */
+  what: string;
   /** Rendered beside the title. The metric selector goes here on surfaces that offer one. */
   action?: JSX.Element;
 }) {
@@ -43,20 +51,23 @@ export function BreakdownPanel(props: {
         </div>
         {props.action}
       </div>
-      <Show
-        when={props.rows.length > 0 && !props.stale}
-        fallback={
-          <div class="t-dense" style="color:var(--text3)">
-            {props.loading || props.stale
-              ? 'Loading…'
-              : tokens()
-                ? 'No usage in this range'
-                : 'No spend in this range'}
-          </div>
-        }
-      >
-        <BarRows data={data()} {...(tokens() ? { format: fmtTokens } : {})} />
-      </Show>
+      <Switch>
+        <Match when={props.load === 'loading'}>
+          <FigureSkeleton what={props.what} size="line" />
+        </Match>
+        <Match when={props.load === 'ready'}>
+          <Show
+            when={props.rows.length > 0}
+            fallback={
+              <div class="t-dense" style="color:var(--text3)">
+                {tokens() ? 'No usage in this range' : 'No spend in this range'}
+              </div>
+            }
+          >
+            <BarRows data={data()} {...(tokens() ? { format: fmtTokensCompact } : {})} />
+          </Show>
+        </Match>
+      </Switch>
     </div>
   );
 }

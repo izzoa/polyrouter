@@ -63,6 +63,19 @@ import { Icon } from '../components/Icon';
 import { StackedLabel } from '../components/StackedLabel';
 import { createBusy, createBusyMap } from '../components/busy';
 import { FieldNote, useFields } from '../components/Field';
+import { FigureSkeleton } from '../components/FigureSkeleton';
+import { FigureText } from '../components/FigureText';
+import {
+  costParts,
+  EST_PARTS,
+  NOT_APPLICABLE,
+  partsText,
+  priceLabelParts,
+  type FigurePart,
+} from '../data/figures';
+
+/** An unknown spend: the bare word `unpriced` in Ink 3 — never a dash, never `$0.00`. */
+const UNPRICED_PARTS = costParts({ kind: 'unpriced' });
 
 /** In-progress drag, keyed by MODEL IDENTITY rather than list index.
  *
@@ -83,12 +96,19 @@ export function posStyle(i: number): [string, string, string] {
     : [`Fallback ${String(i)}`, 'var(--chip)', 'var(--text3)'];
 }
 
-function modelPriceLabel(m: Model | undefined): string {
+/** A model's price label as figure parts (adopt-figure-states D1, D4): `unpriced`, `$0 free`
+ * (only `free` green) or the unit prices, each followed by an Ink 3 `· est.` when the price
+ * was estimated. Rendered through `FigureText`, so the rest keeps the slot's own ink; a
+ * native `<option>` takes the joined string (`partsText`). */
+function modelPriceLabel(m: Model | undefined): readonly FigurePart[] {
   const ep = m?.effectivePrice;
-  if (!ep) return 'unpriced';
-  const tag = ep.estimated ? ' · est.' : '';
-  if (ep.isFree) return `free${tag}`;
-  return `${fmtUsd(ep.inputPricePer1m)} / ${fmtUsd(ep.outputPricePer1m)} per 1M${tag}`;
+  if (!ep) return priceLabelParts({ kind: 'unpriced' });
+  if (ep.isFree) return priceLabelParts({ kind: 'free', estimated: ep.estimated });
+  return priceLabelParts({
+    kind: 'priced',
+    text: `${fmtUsd(ep.inputPricePer1m)} / ${fmtUsd(ep.outputPricePer1m)} per 1M`,
+    estimated: ep.estimated,
+  });
 }
 
 /** The add-model dropdown's `<optgroup>` sections: one per provider (labelled by
@@ -192,7 +212,8 @@ function TargetSummary(props: { target: BandTargetState; unset: string }) {
               {tt.label}
               <span style={TARGET_SUB_FONT}>
                 {' '}
-                {tt.provider ?? 'unknown provider'} · {modelPriceLabel(tt.model)}
+                {tt.provider ?? 'unknown provider'} ·{' '}
+                <FigureText parts={modelPriceLabel(tt.model)} />
               </span>
               <Show when={unlistedNote(tt.model, tt.provider ?? undefined)}>
                 {(note) => (
@@ -268,7 +289,7 @@ function TargetPicker(props: {
             <For each={g.models}>
               {(m) => (
                 <option value={`model:${m.id}`}>
-                  {m.displayName ?? m.externalModelId} · {modelPriceLabel(m)}
+                  {m.displayName ?? m.externalModelId} · {partsText(modelPriceLabel(m))}
                 </option>
               )}
             </For>
@@ -1551,7 +1572,7 @@ function LayerCell(props: { row: LayerRow; entry: LayerEntry | null; onStranded:
           when={sw().kind !== 'loading'}
           fallback={
             <span data-testid="switch-loading">
-              <span class="ar-skel ar-skel-switch" aria-hidden="true" />
+              <span class="fig-skel fig-skel-switch" aria-hidden="true" />
               <span class="sr-only">{r().name} loading</span>
             </span>
           }
@@ -1626,20 +1647,19 @@ function zeroText(p: AutoPerfVm): string {
 }
 
 /** The Pipeline's notice slot, above the column header: the figures' range-wide designed
- * states. A failure offers the Retry and shows no figure from any earlier load (the
- * view-model withholds them); a zero range says which zero it is; an older server with no
- * stage breakdown says per-stage counts are unavailable. Loading needs no notice — every
- * row shows its own placeholder.
+ * states, one anatomy for all three (adopt-figure-states D5, "The Pipeline's notice slot").
+ * Each is the shared notice in the Info tone with a status-word title:
+ * - **Failed** (`Couldn’t load`, with a ghost Retry): no figure from any earlier load shows
+ *   (the view-model withholds them), and the raw error stays out of the sentence. A
+ *   background refetch keeps the store's error while it runs, so the notice is not
+ *   re-inserted (or re-announced) by a poll; the Retry clears it, so it leaves as its load
+ *   starts;
+ * - **The zero range** (`No requests`, no action): the measured `0`, and which zero it is;
+ * - **No stage breakdown** (`Unavailable`, no action): the reason. Nothing was attempted, so
+ *   there is nothing to retry.
  *
- * The failure is a load failure on Routing, so it is the shared notice in the Info tone with
- * the `Couldn’t load` title and a ghost Retry (adopt-design-tokens-v2 D15, "Load failures take
- * Info", as `adopt-figure-states` expects to find it). Its sentence is kept as the body. A
- * background refetch keeps the store's error while it runs, so the notice is not re-inserted
- * (or re-announced) by a poll; the Retry clears it, so it leaves as its load starts. The zero
- * and unavailable states keep their own lines: their status-word titles are copy this change
- * does not add, and `adopt-figure-states` owns their wording (notes/flags.md F15). */
+ * Loading needs no notice — every row shows its own placeholder. */
 function PipelineNotice(props: { vm: PipelineVm; onRetry: () => void }) {
-  const { state } = useApp();
   return (
     <Switch>
       <Match when={props.vm.measured === 'error'}>
@@ -1650,25 +1670,32 @@ function PipelineNotice(props: { vm: PipelineVm; onRetry: () => void }) {
           style="margin:0 16px 12px"
           action={{ label: 'Retry', onClick: () => props.onRetry() }}
         >
-          Couldn’t load the Pipeline’s figures — {state.autoPerf.error}. Routing is unaffected;
-          requests keep flowing.
+          The Pipeline’s figures couldn’t be loaded. Routing is unaffected.
         </Notice>
       </Match>
       <Match when={props.vm.measured === 'zero' && props.vm.perf}>
         {(p) => (
-          <div class="ar-notice" data-testid="auto-zero">
-            <span>
-              <span style="font-weight:600;color:var(--text)">0</span> auto requests evaluated in
-              the selected {props.vm.range} range. {zeroText(p())}
-            </span>
-          </div>
+          <Notice
+            tone="info"
+            title="No requests"
+            data-testid="auto-zero"
+            style="margin:0 16px 12px"
+          >
+            <span style="font-weight:600;color:var(--text)">0</span> auto requests evaluated in the
+            selected {props.vm.range} range. {zeroText(p())}
+          </Notice>
         )}
       </Match>
       <Match when={props.vm.measured === 'unavailable'}>
-        <div class="ar-notice" data-testid="auto-unavailable">
+        <Notice
+          tone="info"
+          title="Unavailable"
+          data-testid="auto-unavailable"
+          style="margin:0 16px 12px"
+        >
           Per-stage counts are unavailable — this server sends no stage breakdown. Classify’s counts
           and the stage details still read the range.
-        </div>
+        </Notice>
       </Match>
     </Switch>
   );
@@ -1701,10 +1728,15 @@ function Savings(props: {
           <Show
             when={!sv().negative}
             fallback={
-              <span style="color:var(--amber-text)">
-                cheap routing cost {sv().excess} MORE than {sv().basisLabel} would have — review the
-                auto_low tier · est.
-              </span>
+              <>
+                <span style="color:var(--amber-text)">
+                  cheap routing cost {sv().excess} MORE than {sv().basisLabel} would have — review
+                  the auto_low tier
+                </span>{' '}
+                {/* The estimate marker keeps its own Ink 3, outside the amber caution: no
+                    estimate is styled amber (dashboard-core). */}
+                <FigureText parts={EST_PARTS} />
+              </>
             }
           >
             <span class="ar-savings-amount">{sv().net}</span> · est. at today’s {sv().basisLabel}{' '}
@@ -1778,7 +1810,7 @@ function goToTargets(
 /** A stage's status-now phrase: one line in words — with any "X to Y" pairs drawn with an
  * arrow icon, since no bundled font carries the arrow — then its later lines, each in its
  * own tone. A loading state before the auto-layers view arrives. */
-function StatusNow(props: { status: StatusNowVm }) {
+function StatusNow(props: { status: StatusNowVm; stage: string }) {
   const st = () => props.status;
   const tone = (t: StatusTone): string => (t === 'caution' ? 'var(--amber-text)' : 'var(--text2)');
   return (
@@ -1786,8 +1818,8 @@ function StatusNow(props: { status: StatusNowVm }) {
       when={!st().loading}
       fallback={
         <span data-testid="status-loading">
-          <span class="ar-skel ar-skel-short" aria-hidden="true" />
-          <span class="sr-only">Loading</span>
+          {/* Configuration, not a figure, but the same words (adopt-figure-states D5). */}
+          <FigureSkeleton what={`${props.stage} status`} size="short" />
         </span>
       }
     >
@@ -1921,7 +1953,7 @@ function StageRow(props: {
         </div>
         <div class="ar-status" data-testid="stage-status-now">
           <span class="ar-fieldlabel">Status now</span>
-          <StatusNow status={s().statusNow} />
+          <StatusNow status={s().statusNow} stage={s().name} />
         </div>
         <Show when={s().figure.kind !== 'none'}>
           <div class="ar-fig" data-testid="stage-figure" data-kind={s().figure.kind}>
@@ -1931,48 +1963,53 @@ function StageRow(props: {
                 {(c) => (
                   <>
                     <span class="ar-figcount">{c().count.toLocaleString()}</span>{' '}
-                    <span class="ar-figshare">{c().share ?? ''}</span>{' '}
+                    {/* A share of nothing is the words `not applicable`, in Ink 3: wider than
+                        any percent, so it takes the share and bar tracks (no bar is drawn in a
+                        zero range) and never wraps (adopt-figure-states D5). */}
+                    <span
+                      class="ar-figshare"
+                      classList={{ 'ar-figshare-word': c().share === NOT_APPLICABLE }}
+                    >
+                      {c().share ?? ''}
+                    </span>{' '}
                   </>
                 )}
               </Match>
               <Match when={s().figure.kind === 'placeholder'}>
                 <span class="ar-figcount">
-                  <span class="ar-skel ar-skel-count" aria-hidden="true" />
-                  <span class="sr-only">Loading</span>
-                </span>
-              </Match>
-              <Match when={s().figure.kind === 'unavailable'}>
-                <span class="ar-figcount" style="color:var(--text3)">
-                  <span aria-hidden="true">—</span>
-                  <span class="sr-only">unavailable</span>
+                  {/* Named for its slot, "Requests, <range>" (adopt-figure-states D5). */}
+                  <FigureSkeleton what="requests" size="count" />
                 </span>
               </Match>
             </Switch>
             {/* The bar: decorative — the count and share beside it carry the figure in
                 text, so no stage is told apart by a bar alone. A zero exit keeps an empty
-                track; the zero range, a failure and a missing breakdown draw none. */}
-            <span class="ar-figbar" aria-hidden="true">
-              <Switch>
-                <Match when={track()}>
-                  {(t) => (
-                    <span
-                      class="ar-bar-track"
-                      data-testid="stage-bar"
-                      data-series="focal"
-                      data-measure="pipeline"
-                    >
+                track; the zero range draws none, and a failure and a missing breakdown draw
+                no figure at all. A worded share holds the bar's track itself. */}
+            <Show when={count()?.share !== NOT_APPLICABLE}>
+              <span class="ar-figbar" aria-hidden="true">
+                <Switch>
+                  <Match when={track()}>
+                    {(t) => (
                       <span
-                        class="ar-bar-fill"
-                        style={{ width: `${String(Math.round(t().ratio * 1000) / 10)}%` }}
-                      />
-                    </span>
-                  )}
-                </Match>
-                <Match when={s().bar?.kind === 'placeholder'}>
-                  <span class="ar-skel ar-skel-line" />
-                </Match>
-              </Switch>
-            </span>
+                        class="ar-bar-track"
+                        data-testid="stage-bar"
+                        data-series="focal"
+                        data-measure="pipeline"
+                      >
+                        <span
+                          class="ar-bar-fill"
+                          style={{ width: `${String(Math.round(t().ratio * 1000) / 10)}%` }}
+                        />
+                      </span>
+                    )}
+                  </Match>
+                  <Match when={s().bar?.kind === 'placeholder'}>
+                    <span class="fig-skel fig-skel-bar" />
+                  </Match>
+                </Switch>
+              </span>
+            </Show>
             <Show when={count() !== null && s().caption}>
               {(caption) => (
                 <>
@@ -1987,8 +2024,7 @@ function StageRow(props: {
                 read as thresholds, and how many a Workload claim served instead. */}
             <Show when={s().verdicts?.kind === 'placeholder'}>
               <span class="ar-figline">
-                <span class="ar-skel ar-skel-note" aria-hidden="true" />
-                <span class="sr-only">Loading its verdict counts</span>
+                <FigureSkeleton what="its verdict counts" size="note" />
               </span>
             </Show>
             <Show when={verdicts()}>
@@ -2032,8 +2068,7 @@ function StageRow(props: {
           <Switch>
             <Match when={props.vm.measured === 'loading'}>
               <div class="ar-later" data-testid="savings-loading">
-                <span class="ar-skel ar-skel-short" aria-hidden="true" />
-                <span class="sr-only">Loading its savings</span>
+                <FigureSkeleton what="its savings" size="short" />
               </div>
             </Match>
             <Match when={props.vm.perf?.savings}>
@@ -2070,9 +2105,12 @@ function StageRow(props: {
 /** The measured part of a stage detail under the tab's designed states: one neutral
  * placeholder while loading, one plain statement after a failure, and the figures
  * otherwise. `quiet` blocks render nothing in those two states, so a detail with two
- * measured blocks says "loading" once. */
+ * measured blocks says "loading" once. The placeholder names its stage, `Loading Cascade
+ * figures`, never the bare word (adopt-figure-states D5). */
 function Measured(props: {
   vm: PipelineVm;
+  /** The stage's name, as its row shows it. */
+  stage: string;
   quiet?: boolean;
   children: (p: () => AutoPerfVm) => JSX.Element;
 }) {
@@ -2080,8 +2118,7 @@ function Measured(props: {
     <Switch>
       <Match when={props.vm.measured === 'loading' && props.quiet !== true}>
         <div class="ar-card" data-testid="detail-loading">
-          <span class="ar-skel ar-skel-line" aria-hidden="true" />
-          <span class="sr-only">Loading</span>
+          <FigureSkeleton what={`${props.stage} figures`} size="line" />
         </div>
       </Match>
       <Match when={props.vm.measured === 'error' && props.quiet !== true}>
@@ -2113,23 +2150,27 @@ function StageDetail(props: {
         <FocusGuard onStranded={props.onStranded} style="display:contents">
           <Switch>
             <Match when={props.id === 'classify'}>
-              <ClassifyDetail vm={props.vm} />
+              <ClassifyDetail vm={props.vm} stage={props.stage.name} />
             </Match>
             <Match when={props.id === 'workload'}>
-              <Measured vm={props.vm}>{(p) => <WorkloadMix p={p()} />}</Measured>
+              <Measured vm={props.vm} stage={props.stage.name}>
+                {(p) => <WorkloadMix p={p()} />}
+              </Measured>
             </Match>
             <Match when={props.id === 'semantic'}>
-              <Measured vm={props.vm}>
+              <Measured vm={props.vm} stage={props.stage.name}>
                 {(p) => <SemanticSlice p={p()} range={props.vm.range} />}
               </Measured>
             </Match>
             <Match when={props.id === 'cascade'}>
-              <Measured vm={props.vm}>
+              <Measured vm={props.vm} stage={props.stage.name}>
                 {(p) => <CascadeSplit p={p()} range={props.vm.range} />}
               </Measured>
             </Match>
             <Match when={props.id === 'default'}>
-              <Measured vm={props.vm}>{() => <DefaultFigures vm={props.vm} />}</Measured>
+              <Measured vm={props.vm} stage={props.stage.name}>
+                {() => <DefaultFigures vm={props.vm} />}
+              </Measured>
             </Match>
           </Switch>
         </FocusGuard>
@@ -2141,7 +2182,7 @@ function StageDetail(props: {
 /** Classify: the band verdicts with the declared share and the band-mix chart (and the
  * workload-routed disclosure beside them), self-calibration, calibration evidence in
  * its own labelled window, and signal quality. */
-function ClassifyDetail(props: { vm: PipelineVm }) {
+function ClassifyDetail(props: { vm: PipelineVm; stage: string }) {
   const { state } = useApp();
   const bucketSecs = () => (state.autoPerf.range === '24h' ? 3600 : 86_400);
   /** Calibration evidence (add-per-agent-calibration-evidence) is CALIBRATION-window
@@ -2159,7 +2200,7 @@ function ClassifyDetail(props: { vm: PipelineVm }) {
     );
   return (
     <>
-      <Measured vm={props.vm}>
+      <Measured vm={props.vm} stage={props.stage}>
         {(p) => (
           <div class="ar-card" data-testid="ap-band-verdicts">
             <div class="ar-card-title">Band verdicts · {props.vm.range}</div>
@@ -2218,7 +2259,7 @@ function ClassifyDetail(props: { vm: PipelineVm }) {
           </div>
         )}
       </Measured>
-      <Measured vm={props.vm} quiet>
+      <Measured vm={props.vm} stage={props.stage} quiet>
         {(p) => (
           <>
             <Show when={calVm()}>{(cal) => <CalibrationEvidence cal={cal()} />}</Show>
@@ -2231,7 +2272,8 @@ function ClassifyDetail(props: { vm: PipelineVm }) {
                   <For each={p().signalQuality.flagged}>
                     {(f) => (
                       <div class="t-caption" style="color:var(--amber-text)">
-                        <span style="font-weight:500">{f.label}</span> — {f.detail}{' '}
+                        <span style="font-weight:500">{f.label}</span> —{' '}
+                        <FigureText parts={f.detailParts} />{' '}
                         <span class="figure t-caption" style="color:var(--text3)">
                           ({f.distinctScores} distinct score{f.distinctScores === 1 ? '' : 's'})
                         </span>
@@ -2401,9 +2443,9 @@ function WorkloadMix(props: { p: AutoPerfVm }) {
                   }`}
                 />
                 <span class="figure t-caption" style="color:var(--text)">
-                  {r.spend === null ? '—' : r.spend}
-                  <Show when={r.spend === null}>
-                    <span style="color:var(--text3)"> unpriced</span>
+                  {/* Null spend is the bare word, in Ink 3 — never a dash, never $0.00. */}
+                  <Show when={r.spend} fallback={<FigureText parts={UNPRICED_PARTS} />}>
+                    {(spend) => spend()}
                   </Show>
                   <Show when={r.spend !== null && r.unpricedNote !== null}>
                     <span style="color:var(--text3)"> · {r.unpricedNote}</span>
@@ -2965,7 +3007,7 @@ function TierChains() {
                           {entryLabel(entry)}
                         </span>
                         <span class="figure chain-price t-caption" style="color:var(--text3)">
-                          {modelPriceLabel(modelById(entry.modelId))}
+                          <FigureText parts={modelPriceLabel(modelById(entry.modelId))} />
                         </span>
                         {/* The batch reservation (add-batch-mode-routing). Shown where
                           the provider can run a batch — and ALWAYS where the entry is
@@ -3151,7 +3193,7 @@ function TierChains() {
                     reserveTargetFor(t.id, twin),
                   )}
                   labelledBy={`tier-h-${t.id}`}
-                  priceLabel={(m) => modelPriceLabel(m)}
+                  priceLabel={(m) => <FigureText parts={modelPriceLabel(m)} />}
                   onCommit={(id, mode) => app.addTierModel(t.id, id, mode)}
                 />
               </div>

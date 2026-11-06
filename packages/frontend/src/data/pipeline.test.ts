@@ -231,7 +231,10 @@ describe('toPipelineVm — figures', () => {
     const vm = toPipelineVm(input({ data }));
     expect(vm.measured).toBe('unavailable');
     expect(stage(vm, 'classify').figure).toEqual({ kind: 'count', count: 40, share: null });
-    for (const s of vm.stages.slice(1)) expect(s.figure).toEqual({ kind: 'unavailable' });
+    // Stages 2–6 carry no per-stage figure at all, visible or hidden: the panel's
+    // `Unavailable` notice names the state (adopt-figure-states D5), never a lone dash.
+    for (const s of vm.stages.slice(1)) expect(s.figure).toEqual({ kind: 'none' });
+    for (const s of vm.stages.slice(1)) expect(s.bar).toBeNull();
     expect(vm.defaultDetail).toEqual({
       unroutable: { high: 1, low: 0 },
       fallthrough: 2,
@@ -251,13 +254,14 @@ describe('toPipelineVm — figures', () => {
   it('a set error shows no figure at all — even with the earlier load still in the store', () => {
     const vm = toPipelineVm(input({ data: perf(), error: 'timeout' }));
     expect(vm.measured).toBe('error');
-    for (const s of vm.stages) expect(s.figure.kind).not.toBe('count');
+    // No figure slot on any stage: the failure notice names the state (adopt-figure-states D5).
+    for (const s of vm.stages) expect(s.figure).toEqual({ kind: 'none' });
     expect(vm.defaultDetail).toBeNull();
     expect(vm.perf).toBeNull();
     expect(JSON.stringify(vm)).not.toContain('"count":');
   });
 
-  it('zero evaluated gives zero counts and "—" shares, never NaN%, and no bar', () => {
+  it('zero evaluated gives zero counts and not-applicable shares, never NaN%, 0% or a dash, and no bar', () => {
     const zero = perf({
       evaluated: 0,
       bands: {
@@ -272,8 +276,9 @@ describe('toPipelineVm — figures', () => {
     expect(vm.measured).toBe('zero');
     expect(stage(vm, 'classify').figure).toEqual({ kind: 'count', count: 0, share: null });
     for (const s of vm.stages.slice(1))
-      expect(s.figure).toEqual({ kind: 'count', count: 0, share: '—' });
+      expect(s.figure).toEqual({ kind: 'count', count: 0, share: 'not applicable' });
     expect(JSON.stringify(vm)).not.toContain('NaN');
+    expect(JSON.stringify(vm.stages.map((s) => s.figure))).not.toMatch(/"—"|"0%"/);
     expect(vm.defaultDetail).toEqual({
       unroutable: { high: 0, low: 0 },
       fallthrough: 0,
@@ -292,7 +297,7 @@ describe('toPipelineVm — figures', () => {
     const vm = toPipelineVm(input({ data: zero }));
     expect(vm.measured).toBe('zero');
     for (const s of vm.stages.slice(1))
-      expect(s.figure).toEqual({ kind: 'count', count: 0, share: '—' });
+      expect(s.figure).toEqual({ kind: 'count', count: 0, share: 'not applicable' });
   });
 
   it('frames the figures to the selected range', () => {

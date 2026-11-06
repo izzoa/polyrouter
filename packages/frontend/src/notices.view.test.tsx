@@ -101,10 +101,18 @@ async function mount(page: Page, opts: Partial<FakeOptions> = {}): Promise<Harne
 
 const DOWN = new ApiError(503, 'unavailable', 'analytics down');
 
-/** Every notice on screen whose title reads `title`. */
+/** The Overview agent strip, which reports its own read's failure in its own notice
+ * (adopt-figure-states D5, flag F9). */
+const AGENT_STRIP = '[data-testid="agent-strip"]';
+
+/** Every page-level notice on screen whose title reads `title`. The Overview agent strip's
+ * notice is left out: it reports a different read (the strip rides the range, not the
+ * page's poll), so the page's Retry and recovery neither raise nor clear it. Its own anatomy
+ * is checked below. */
 function noticesTitled(h: Harness, title: string): HTMLElement[] {
   return [...h.host.querySelectorAll<HTMLElement>('.notice')].filter(
-    (n) => n.querySelector('.notice-title')?.textContent === title,
+    (n) =>
+      n.closest(AGENT_STRIP) === null && n.querySelector('.notice-title')?.textContent === title,
   );
 }
 function only(h: Harness, title: string): HTMLElement {
@@ -244,17 +252,18 @@ describe('the migrated banners are notices, each with its role and its sentence 
       {
         page: 'overview',
         opts: { analyticsFailure: DOWN },
-        body: 'Couldn’t load analytics — analytics down',
+        // adopt-figure-states 3.2: the body names what failed, without the raw error.
+        body: 'Analytics couldn’t be loaded. Routing is unaffected.',
       },
       {
         page: 'costs',
         opts: { analyticsFailure: DOWN },
-        body: 'Couldn’t load cost analytics — analytics down',
+        body: 'Cost analytics couldn’t be loaded. Routing is unaffected.',
       },
       {
         page: 'requests',
         opts: { analyticsFailure: DOWN },
-        body: 'Couldn’t load requests — analytics down',
+        body: 'Requests couldn’t be loaded. Routing is unaffected.',
       },
       {
         page: 'routing',
@@ -280,6 +289,24 @@ describe('the migrated banners are notices, each with its role and its sentence 
       dispose = undefined;
       document.body.innerHTML = '';
     }
+  });
+
+  it('the Overview agent strip reports its own failed read in the same Info notice, with its own Retry', async () => {
+    const h = await mount('overview', { analyticsFailure: DOWN });
+    const strip = h.host.querySelector<HTMLElement>(AGENT_STRIP)!;
+    const inStrip = [...strip.querySelectorAll<HTMLElement>('.notice')];
+    expect(inStrip, 'exactly one notice in the agent strip').toHaveLength(1);
+    expect(anatomy(inStrip[0]!)).toEqual({
+      tone: 'info',
+      role: 'status',
+      title: 'Couldn’t load',
+      titleRole: true,
+      body: 'Agent activity couldn’t be loaded. Routing is unaffected.',
+      actions: ['Retry'],
+    });
+    expectGhostAction(inStrip[0]!);
+    // The page's own notice is a separate one, for the polled analytics read.
+    expect(only(h, 'Couldn’t load')).not.toBe(inStrip[0]);
   });
 
   it('the Targets matrix unverified notice: Caution, Unverified, a busy-capable Retry, and a focus target', async () => {

@@ -6,6 +6,7 @@ import { StackedLabel } from '../components/StackedLabel';
 import { pageTitle } from '../components/Topbar';
 import { createBusyMap } from '../components/busy';
 import { FieldNote, useFields } from '../components/Field';
+import { FigureSkeleton } from '../components/FigureSkeleton';
 
 /** Admin-only user administration (user-administration): registration mode,
  * invite issuing (link shown once + optional email), pending invites, and the
@@ -93,7 +94,9 @@ export function Users() {
 
       <div class="rs-grid-2" style="display:grid;gap:16px;align-items:start">
         {/* Registration mode */}
-        <div class="panel card" aria-busy={regLoading() ? true : undefined}>
+        {/* No `aria-busy` while loading: the hidden `Loading registration settings` names the
+            state, which a busy region could withhold (adopt-figure-states D5). */}
+        <div class="panel card">
           <div class="section-title" style="color:var(--text);margin-bottom:8px">
             Registration
           </div>
@@ -143,7 +146,7 @@ export function Users() {
               keyed
               fallback={
                 <Show when={regLoading()}>
-                  <span class="ar-skel ar-skel-short" aria-hidden="true" />
+                  <FigureSkeleton what="registration settings" size="short" />
                 </Show>
               }
             >

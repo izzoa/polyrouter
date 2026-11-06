@@ -12,6 +12,10 @@
  * project that deliberately bundles its own fonts and refuses an icon library. The risk of a
  * hand-rolled parser is that it silently returns nonsense — which is why `glyphCoverage.test`
  * asserts a positive control ("A" must read as PRESENT) before it trusts any absence.
+ *
+ * The file list is read from `fonts.css` itself — every `src: url(...)` of every `@font-face`
+ * (adopt-figure-states D7) — so no bundled face can be declared there and left out of the
+ * check, and a face removed there stops counting as coverage.
  */
 import { brotliDecompressSync } from 'node:zlib';
 import { existsSync, readFileSync } from 'node:fs';
@@ -36,12 +40,33 @@ function findFontDir(): string {
 
 const FONT_DIR = findFontDir();
 
-const FILES = [
-  'geist-latin.woff2',
-  'geist-latin-ext.woff2',
-  'geist-mono-latin.woff2',
-  'geist-mono-latin-ext.woff2',
-] as const;
+/** One `@font-face` of `fonts.css`: its family and the bundled files its `src` names. */
+export interface BundledFace {
+  family: string;
+  files: string[];
+}
+
+/** Every `@font-face` declared in `fonts.css`, in order, with comments stripped first so a
+ * commented-out face (or a command in the header) never counts. Only `/fonts/` URLs are
+ * read: the packaged SPA bundles its fonts and fetches none from a third party. */
+export function bundledFaces(): BundledFace[] {
+  const css = readFileSync(join(FONT_DIR, 'fonts.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const faces: BundledFace[] = [];
+  for (const block of css.matchAll(/@font-face\s*\{([^}]*)\}/g)) {
+    const body = block[1] ?? '';
+    const family = /font-family:\s*['"]?([^'";]+?)['"]?\s*;/.exec(body)?.[1];
+    if (family === undefined) throw new Error(`an @font-face in fonts.css has no font-family`);
+    const files = [...body.matchAll(/url\(\s*['"]?([^'")\s]+)['"]?\s*\)/g)].map((m) => {
+      const url = m[1] ?? '';
+      if (!url.startsWith('/fonts/')) throw new Error(`fonts.css loads ${url}, not a bundled font`);
+      return url.slice('/fonts/'.length);
+    });
+    if (files.length === 0) throw new Error(`the ${family} @font-face in fonts.css has no src url`);
+    faces.push({ family, files });
+  }
+  if (faces.length === 0) throw new Error('fonts.css declares no @font-face');
+  return faces;
+}
 
 /** Variable-length integer used by the woff2 table directory (7 bits per byte, high bit
  * continues). Returns the value and how many bytes it consumed. */
@@ -152,17 +177,31 @@ function codepointsFromCmap(cmap: Buffer): Set<number> {
   return out;
 }
 
+/** Every codepoint one bundled file maps. */
+function fileCoverage(file: string): Set<number> {
+  const cmap = cmapTableOf(readFileSync(join(FONT_DIR, file)));
+  if (!cmap) throw new Error(`no cmap table found in ${file}`);
+  return codepointsFromCmap(cmap);
+}
+
 let cache: Set<number> | null = null;
 
 /** Every codepoint present in at least one bundled font file. */
 export function bundledFontCoverage(): Set<number> {
   if (cache) return cache;
   const all = new Set<number>();
-  for (const f of FILES) {
-    const cmap = cmapTableOf(readFileSync(join(FONT_DIR, f)));
-    if (!cmap) throw new Error(`no cmap table found in ${f}`);
-    for (const cp of codepointsFromCmap(cmap)) all.add(cp);
-  }
+  for (const face of bundledFaces())
+    for (const f of face.files) for (const cp of fileCoverage(f)) all.add(cp);
   cache = all;
   return all;
+}
+
+/** Every codepoint one family's bundled faces map together. A glyph present in Geist Mono
+ * alone still falls back wherever the text is set in Geist, so a glyph that must render in
+ * either face is checked per family. */
+export function bundledFamilyCoverage(family: string): Set<number> {
+  const out = new Set<number>();
+  for (const face of bundledFaces().filter((f) => f.family === family))
+    for (const f of face.files) for (const cp of fileCoverage(f)) out.add(cp);
+  return out;
 }

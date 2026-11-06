@@ -314,6 +314,100 @@ describe('dashboard shell (auth-gated)', () => {
     }
   });
 
+  it('names a free price in words, with only `free` green and `· est.` in Ink 3, across the chain, the picker and the Targets select (adopt-figure-states 4.4)', async () => {
+    const free = (id: string, estimated: boolean): ModelDto => ({
+      ...mkModel(id),
+      displayName: `${id}-model`,
+      isFree: true,
+      effectivePrice: {
+        inputPricePer1m: 0,
+        outputPricePer1m: 0,
+        isFree: true,
+        source: estimated ? 'listed' : 'local',
+        estimated,
+      },
+    });
+    const fake = new FakeApiClient({
+      // In the chain: a free model and an estimated free model. Addable (so in the picker):
+      // the same two states again.
+      models: {
+        p1: [
+          free('chainfree', false),
+          free('chainest', true),
+          free('pick', false),
+          free('pickest', true),
+        ],
+      },
+      tiers: [DEFAULT_TIER],
+      tierEntries: { t1: [mkEntry('chainfree', 0), mkEntry('chainest', 1)] },
+      rules: [
+        {
+          id: 'r-free',
+          matchType: 'auto_high',
+          workloadClass: null,
+          headerName: 'x-polyrouter-tier',
+          headerValue: null,
+          target: 'model:pick',
+          priority: 0,
+          createdAt: NOW,
+        },
+      ],
+    });
+    const { host, dispose } = mount(createAppStore(fake));
+    /** A label's parts: each no-wrap span's text and its own colour ('' = the slot's ink). */
+    const parts = (label: Element | null | undefined): [string, string][] =>
+      [...(label?.querySelectorAll<HTMLElement>('span') ?? [])]
+        .filter((sp) => sp.children.length === 0)
+        .map((sp) => [sp.textContent ?? '', sp.style.color]);
+    const FREE: [string, string][] = [
+      ['$0', ''],
+      ['free', 'var(--green-text)'],
+    ];
+    const FREE_EST: [string, string][] = [...FREE, ['· est.', 'var(--text3)']];
+    try {
+      await flush();
+      clickByText(host, '.nav-item span', 'Routing');
+      await flush();
+      const card = host.querySelector<HTMLElement>('.panel')!;
+      // The chain rows' price column: the words, with only `free` green, and `$0` in the
+      // column's own Ink 3 (no colour of its own).
+      const prices = [...card.querySelectorAll('.chain-row .chain-price')];
+      expect(prices.map((p) => labelText(p))).toEqual(['$0 free', '$0 free · est.']);
+      expect(parts(prices[0])).toEqual(FREE);
+      expect(parts(prices[1])).toEqual(FREE_EST);
+      expect((prices[0] as HTMLElement).style.color).toBe('var(--text3)');
+      // The add-model combobox's options: the same parts, the rest in the option's own ink
+      // (Ink 3 at rest, Deep Ink on the active option, from `.mp-price` in styles.css).
+      const input = card.querySelector<HTMLInputElement>('input[role="combobox"]')!;
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+      await flush();
+      const options = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
+      const byName = (name: string): HTMLElement =>
+        // The picker names a model by its external id.
+        options.find((o) => o.querySelector('span')?.textContent?.trim() === `ext-${name}`)!;
+      expect(labelText(byName('pick').querySelector('.mp-price')!)).toBe('$0 free');
+      expect(parts(byName('pick').querySelector('.mp-price'))).toEqual(FREE);
+      expect(labelText(byName('pickest').querySelector('.mp-price')!)).toBe('$0 free · est.');
+      expect(parts(byName('pickest').querySelector('.mp-price'))).toEqual(FREE_EST);
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await flush();
+      // The Targets matrix: a model target's line renders the parts; the native select's
+      // options, which cannot colour part of their text, render the joined words.
+      await openAutoTab(host);
+      const strong = targetsCell(host, 'any', 'strong');
+      expect(labelText(strong)).toContain('$0 free');
+      expect(parts(strong).filter(([t]) => t === 'free' || t === '$0')).toEqual(FREE);
+      const optionTexts = [...targetsMatrix(host).querySelectorAll('select option')].map(
+        (o) => o.textContent ?? '',
+      );
+      expect(optionTexts).toContain('pick-model · $0 free');
+      expect(optionTexts).toContain('pickest-model · $0 free · est.');
+      expect(optionTexts.join('\n')).not.toMatch(/· free/);
+    } finally {
+      dispose();
+    }
+  });
+
   it('greys an instance-disabled auto layer with the ROUTING_AUTO_LAYERS hint', async () => {
     const fake = new FakeApiClient({
       tiers: [DEFAULT_TIER],
@@ -2911,12 +3005,23 @@ describe('Routing tabs (redesign-auto-routing-pipeline)', () => {
       expect(host.querySelector('[data-testid="auto-pipeline"] [role="switch"]')).toBeNull();
       expect(host.textContent).not.toContain('off instance-wide');
       expect(host.querySelectorAll('[data-testid="layer-hint"]')).toHaveLength(0);
-      for (const id of ['classify', 'workload', 'band', 'semantic', 'cascade']) {
-        expect(
-          stageRow(host, id).querySelector(
-            '[data-testid="stage-status-now"] [data-testid="status-loading"]',
-          ),
-        ).not.toBeNull();
+      // Each names its stage's status, never the bare word (adopt-figure-states 3.1, D5).
+      const names: Record<string, string> = {
+        classify: 'Classify',
+        workload: 'Workload claim',
+        band: 'Confident band',
+        semantic: 'Semantic',
+        cascade: 'Cascade',
+      };
+      for (const [id, name] of Object.entries(names)) {
+        const loading = stageRow(host, id).querySelector(
+          '[data-testid="stage-status-now"] [data-testid="status-loading"]',
+        );
+        expect(loading).not.toBeNull();
+        expect([...loading!.querySelectorAll('.sr-only')].map((e) => e.textContent)).toEqual([
+          `Loading ${name} status`,
+        ]);
+        expect(loading!.querySelector('[aria-hidden="true"].fig-skel')).not.toBeNull();
       }
       expect(stageRow(host, 'default').querySelector('[data-testid="status-loading"]')).toBeNull();
       // Nothing claims to be paused or off while the view is unknown.

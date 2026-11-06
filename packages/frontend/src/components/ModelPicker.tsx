@@ -6,6 +6,7 @@ import {
   For,
   onCleanup,
   Show,
+  type JSX,
 } from 'solid-js';
 import { useLayer } from '../a11y';
 import { useAppOptional } from '../state/context';
@@ -70,7 +71,9 @@ interface ModelPickerProps {
   groups: ModelGroup[];
   /** id of the tier card's visible header — the accessible-name base. */
   labelledBy: string;
-  priceLabel: (m: Model) => string;
+  /** The option's price label. An element, so a free model's `free` can carry its own tone
+   * (adopt-figure-states D4); a plain string is still a valid element. */
+  priceLabel: (m: Model) => JSX.Element;
   /** `mode` reserves the committed entry (add-batch-mode-routing). A shortcut row
    * commits the BASE model id with `'batch'` — the twin id is never a target. */
   onCommit: (modelId: string, mode?: 'any' | 'batch') => void;

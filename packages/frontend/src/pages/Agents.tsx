@@ -1,5 +1,7 @@
-import { For, Show, onMount } from 'solid-js';
+import { For, Show, onMount, type JSX } from 'solid-js';
 import { BASE_URL } from '../data/catalog';
+import { createFigureLoad } from '../data/figureLoad';
+import { microsOfUsd, money } from '../data/figures';
 import { fmtWhen } from '../data/format';
 import { FROM_DIALOG } from '../state/appState';
 import { useApp } from '../state/context';
@@ -7,12 +9,8 @@ import type { Agent } from '../types';
 import { StackedLabel } from '../components/StackedLabel';
 import { pageTitle } from '../components/Topbar';
 import { createBusyMap } from '../components/busy';
-
-/** Compact USD for the per-agent 24h spend cell (sub-cent shown to 4dp). */
-function fmtSpend(v: number): string {
-  if (v === 0) return '$0';
-  return v < 0.01 ? `$${v.toFixed(4)}` : `$${v.toFixed(2)}`;
-}
+import { FigureSkeleton } from '../components/FigureSkeleton';
+import { Notice } from '../components/Notice';
 
 /** One column definition, consumed by the head and by each stacked record's field
  * labels — the two used to be independent literals with nothing keeping them aligned. */
@@ -36,6 +34,31 @@ export function Agents() {
   const rotating = createBusyMap();
 
   onMount(() => void app.loadAgentStats());
+
+  /** The per-agent figures' state (adopt-figure-states D5): skeletons until they first load
+   * (and while a Retry reloads figures a failure removed), removed under the notice after a
+   * failed read, and kept through a refetch until the new ones commit. The page loads them
+   * once on mount; no poll or stream event reloads them. */
+  const statsLoad = createFigureLoad({
+    error: () => state.agentStatsError,
+    loading: () => state.agentStatsLoading,
+    loaded: () => state.agentStatsLoaded,
+    failureShown: () => state.agentStatsError !== null,
+  });
+  /** One agent's figure in its state: a measured value (an idle agent reads `0` and
+   * `$0.00`), a skeleton named for it, or nothing when its read failed. */
+  const figure = (what: string, value: () => string): JSX.Element => {
+    const st = statsLoad();
+    if (st === 'ready') return value();
+    return st === 'loading' ? <FigureSkeleton what={what} size="cell" /> : '';
+  };
+  /** Retry's landing spot: the agents table panel, which holds the figures and stays
+   * mounted through the failure and the retry (D5, "Where Retry leaves focus"). */
+  let tablePanel: HTMLDivElement | undefined;
+  const retryStats = (): void => {
+    void app.loadAgentStats();
+    queueMicrotask(() => tablePanel?.focus());
+  };
 
   /** Delete asks first, in the shared destructive confirmation (adopt-red-destructive-actions
    * D6 / D7). Its body is the forward-looking guarantee: an agent key is cached across
@@ -75,7 +98,23 @@ export function Agents() {
           Couldn’t load agents: {state.agentsError}
         </div>
       </Show>
-      <div class="panel rs-table-panel rs-table-agents" style="overflow:hidden;border-radius:10px">
+      {/* The activity figures' failure, apart from the configuration list's line above: the
+          agents still render, without the figures this read would have supplied. The figures
+          are an analytics read, so the body says routing is unaffected, as on every other
+          analytics failure (adopt-figure-states D5, flag F9). */}
+      <Show when={statsLoad() === 'failed'}>
+        <Notice tone="info" title="Couldn’t load" action={{ label: 'Retry', onClick: retryStats }}>
+          Agent activity couldn’t be loaded. Routing is unaffected.
+        </Notice>
+      </Show>
+      <div
+        ref={(el) => {
+          tablePanel = el;
+        }}
+        tabindex={-1}
+        class="panel rs-table-panel rs-table-agents"
+        style="overflow:hidden;border-radius:10px"
+      >
         <div class="table-head">
           <For each={COLUMNS}>
             {(c, i) => (
@@ -126,11 +165,13 @@ export function Agents() {
                 </div>
                 <div class="figure cell-figure" style="font-size:0.75rem;color:var(--text2)">
                   <span class="rs-cell-label">Requests · 24h</span>
-                  {state.agentStatsLoaded ? (state.agentStats[a.id]?.requests ?? 0) : '—'}
+                  {figure('requests', () => String(state.agentStats[a.id]?.requests ?? 0))}
                 </div>
                 <div class="figure cell-figure" style="font-size:0.75rem;color:var(--text2)">
                   <span class="rs-cell-label">Spend · 24h</span>
-                  {state.agentStatsLoaded ? fmtSpend(state.agentStats[a.id]?.spend ?? 0) : '—'}
+                  {figure('spend', () =>
+                    money(microsOfUsd(state.agentStats[a.id]?.spend ?? 0), 'cents'),
+                  )}
                 </div>
                 <div style="font-size:0.6875rem;color:var(--text3)">
                   <span class="rs-cell-label">Last used</span>

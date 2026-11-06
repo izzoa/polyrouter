@@ -172,7 +172,12 @@ export const BUSY_ACTIONS: readonly BusyRow[] = [
   { key: 'pages/Login.tsx app.oauth', cls: 'leaves-page', why: 'Continue with <provider>' },
 
   // Agents
-  { key: 'pages/Agents.tsx app.loadAgentStats', cls: 'not-a-button', why: 'the mount load' },
+  { key: 'pages/Agents.tsx app.loadAgentStats#1', cls: 'not-a-button', why: 'the mount load' },
+  {
+    key: 'pages/Agents.tsx app.loadAgentStats#2',
+    cls: 'unmounts',
+    why: 'the activity failure notice’s Retry: the load clears the failure it sits in',
+  },
   {
     key: 'pages/Agents.tsx app.rotateKey',
     cls: 'busy',
@@ -191,7 +196,12 @@ export const BUSY_ACTIONS: readonly BusyRow[] = [
     why: 'the failure notice’s Retry: the load clears the failure it sits in',
   },
   { key: 'pages/Overview.tsx app.loadOverview#1', cls: 'not-a-button', why: 'the range effect' },
-  { key: 'pages/Overview.tsx app.loadAgentStrip', cls: 'not-a-button', why: 'the range effect' },
+  { key: 'pages/Overview.tsx app.loadAgentStrip#1', cls: 'not-a-button', why: 'the range effect' },
+  {
+    key: 'pages/Overview.tsx app.loadAgentStrip#2',
+    cls: 'unmounts',
+    why: 'the agent strip’s failure notice’s Retry: the load clears the failure it sits in',
+  },
   {
     key: 'pages/Overview.tsx app.loadOverview#2',
     cls: 'unmounts',

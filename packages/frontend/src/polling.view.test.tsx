@@ -1,11 +1,18 @@
 import { render } from 'solid-js/web';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
-import type { InflightRow, InflightSnapshot, RequestsPage, RequestsQuery } from './data/api';
+import type {
+  AnalyticsSummary,
+  InflightRow,
+  InflightSnapshot,
+  RequestsPage,
+  RequestsQuery,
+} from './data/api';
 import { createAppStore, type AppStore } from './state/appState';
 import { AppProvider } from './state/context';
 import { ApiError } from './data/api';
 import { DEFAULT_SESSION, FakeApiClient } from './test/fakeClient';
+import { expectBackgroundQuiet, overviewShown } from './test/backgroundQuiet';
 
 /**
  * phase1-tune-dashboard-polling: visibility gating, mount non-duplication, the
@@ -64,8 +71,24 @@ const AUTHORITATIVE_EMPTY: InflightSnapshot = { items: [], available: true, trun
 class DeferrableClient extends FakeApiClient {
   holdInflight = false;
   holdRequests = false;
+  holdSummary = false;
   private inflightReleases: (() => void)[] = [];
   private requestsReleases: (() => void)[] = [];
+  private summaryReleases: (() => void)[] = [];
+
+  override summary(range: Parameters<FakeApiClient['summary']>[0]): Promise<AnalyticsSummary> {
+    const base = super.summary(range);
+    if (!this.holdSummary) return base;
+    return new Promise<AnalyticsSummary>((resolve) => {
+      this.summaryReleases.push(() => void base.then(resolve));
+    });
+  }
+
+  releaseSummary(): void {
+    const q = this.summaryReleases;
+    this.summaryReleases = [];
+    for (const r of q) r();
+  }
 
   override inflight(): Promise<InflightSnapshot> {
     const base = super.inflight();
@@ -136,7 +159,7 @@ describe('dashboard pollers are visibility-gated', () => {
 
   it('issues NO polls while hidden and exactly one catch-up per poller on return', async () => {
     const client = new FakeApiClient();
-    const { dispose } = mount(createAppStore(client));
+    const { host, dispose } = mount(createAppStore(client));
     try {
       await vi.advanceTimersByTimeAsync(0);
       await flush();
@@ -144,6 +167,9 @@ describe('dashboard pollers are visibility-gated', () => {
         summary: client.countOf('summary'),
         inflight: client.countOf('inflight'),
       };
+      // Background quiet is not a failure (adopt-figure-states 3.7): the Overview strip and
+      // its request rows stay through the hidden interval and the return.
+      const shown = overviewShown(host);
 
       setVisible(false);
       await flush();
@@ -151,12 +177,37 @@ describe('dashboard pollers are visibility-gated', () => {
       await flush();
       expect(client.countOf('summary')).toBe(base.summary);
       expect(client.countOf('inflight')).toBe(base.inflight); // zero polls while hidden
+      expectBackgroundQuiet(host, shown, 'while hidden');
 
       setVisible(true);
       await flush();
       // Exactly ONE immediate catch-up each — not one plus a stale elapsed interval.
       expect(client.countOf('summary')).toBe(base.summary + 1);
       expect(client.countOf('inflight')).toBe(base.inflight + 1);
+      expectBackgroundQuiet(host, shown, 'on return');
+    } finally {
+      dispose();
+    }
+  });
+
+  it('an idle poll, one that returns nothing new, keeps the figures and rows already shown (adopt-figure-states 3.7)', async () => {
+    const client = new DeferrableClient();
+    const { host, dispose } = mount(createAppStore(client));
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      await flush();
+      const shown = overviewShown(host);
+      const summaries = client.countOf('summary');
+      // A poll is in flight: the figures stay, with no skeleton in their place.
+      client.holdSummary = true;
+      await vi.advanceTimersByTimeAsync(15_000);
+      await flush();
+      expect(client.countOf('summary'), 'the poll ran').toBe(summaries + 1);
+      expectBackgroundQuiet(host, shown, 'while the poll is in flight');
+      client.holdSummary = false;
+      client.releaseSummary();
+      await flush();
+      expectBackgroundQuiet(host, shown, 'after the idle poll');
     } finally {
       dispose();
     }

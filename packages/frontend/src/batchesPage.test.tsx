@@ -89,6 +89,14 @@ const rowsOf = (host: HTMLElement): HTMLElement[] => [
 ];
 const rowFor = (host: HTMLElement, id: string): HTMLElement =>
   rowsOf(host).find((r) => r.dataset['batchJob'] === id)!;
+/** A row's Cost cell: its value, without the stacked layout's label. */
+const costCell = (row: HTMLElement): HTMLElement => {
+  const cell = [...row.querySelectorAll<HTMLElement>('.rs-cell')].find(
+    (c) => c.querySelector('.rs-cell-label')?.textContent === 'Cost',
+  );
+  if (!cell) throw new Error('no Cost cell');
+  return cell.querySelector<HTMLElement>('.cell-figure')!;
+};
 
 afterEach(() => {
   document.body.innerHTML = '';
@@ -195,8 +203,10 @@ describe('every row states what it actually knows (7.1)', () => {
       const row = rowFor(h.host, 'active');
       expect(row.textContent).toContain('In progress');
       expect(row.textContent).toContain('12 / 50');
-      expect(row.textContent).toContain('up to $0.0250');
+      // A bound at cents, rounded UP: $0.025 reads `≤ $0.03`, never `up to` (adopt-figure-states 5.3).
+      expect(row.textContent).toContain('≤ $0.03');
       expect(row.textContent).toContain('reserved, not spent');
+      expect(row.textContent).not.toContain('up to');
       expect(row.textContent).toMatch(/3h 5m/);
       // The bar reflects the count and is decorative — the numbers carry it.
       const fill = row.querySelector<HTMLElement>('.rs-batch-bar > span')!;
@@ -238,6 +248,66 @@ describe('every row states what it actually knows (7.1)', () => {
       expect(row.textContent).not.toContain('retention unknown');
       // No cancel on a job that has already ended.
       expect([...row.querySelectorAll('button')].map((b) => b.textContent?.trim())).toEqual([]);
+    } finally {
+      h.dispose();
+    }
+  });
+
+  it('reads a reserved ceiling as `≤ $x` at cents, rounded up, in Ink 2 above `reserved, not spent` (adopt-figure-states 5.3)', async () => {
+    const h = await mount(
+      new FakeApiClient({
+        batchJobs: [
+          job('three', { reservedCeilingMicros: 3_000_000 }),
+          job('three-up', { reservedCeilingMicros: 3_004_000 }),
+          job('speck', { reservedCeilingMicros: 40 }),
+        ],
+      }),
+    );
+    try {
+      for (const [id, shown] of [
+        ['three', '≤ $3.00'],
+        ['three-up', '≤ $3.01'],
+        ['speck', '≤ $0.01'],
+      ] as const) {
+        const cost = costCell(rowFor(h.host, id));
+        const [ceiling, label] = [...cost.children] as HTMLElement[];
+        expect(ceiling!.textContent, id).toBe(shown);
+        expect(ceiling!.style.color, `${id}: the ceiling is Ink 2, never a cost`).toBe(
+          'var(--text2)',
+        );
+        expect(label!.textContent).toBe('reserved, not spent');
+        // The retired spellings, and a pending dash, are absent from the Cost cell.
+        expect(cost.textContent).not.toContain('up to');
+        expect(cost.textContent).not.toContain('—');
+        expect(cost.textContent).not.toContain('<$');
+      }
+    } finally {
+      h.dispose();
+    }
+  });
+
+  it('a terminal job with a null settled cost reads `unpriced`, never a dash; a zero is measured', async () => {
+    const terminal = { status: 'completed', terminal: true, reservedCeilingMicros: null } as const;
+    const h = await mount(
+      new FakeApiClient({
+        batchJobs: [
+          job('null', { ...terminal, settledCostMicros: null }),
+          job('zero', { ...terminal, settledCostMicros: 0 }),
+          job('speck', { ...terminal, settledCostMicros: 40 }),
+        ],
+      }),
+    );
+    try {
+      const unpriced = costCell(rowFor(h.host, 'null'));
+      expect(unpriced.textContent).toBe('unpriced');
+      expect(unpriced.textContent).not.toContain('—');
+      const word = [...unpriced.querySelectorAll<HTMLElement>('span')].find(
+        (e) => e.textContent === 'unpriced' && e.children.length === 0,
+      );
+      expect(word?.style.color, 'unpriced is Ink 3').toBe('var(--text3)');
+      // Four decimals, so the job reconciles with its items in the Requests table.
+      expect(costCell(rowFor(h.host, 'zero')).textContent).toBe('$0.0000');
+      expect(costCell(rowFor(h.host, 'speck')).textContent).toBe('<$0.0001');
     } finally {
       h.dispose();
     }

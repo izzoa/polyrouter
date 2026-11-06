@@ -85,6 +85,15 @@ async function mount(
 const batchRows = (host: HTMLElement): HTMLElement[] => [
   ...host.querySelectorAll<HTMLElement>('.rs-table-requests [data-batch-row]'),
 ];
+/** A row's value for one field, without its (stacked-view) label. */
+function cellText(rowEl: HTMLElement, label: string): string {
+  const cell = [...rowEl.querySelectorAll<HTMLElement>('.rs-cell')].find(
+    (c) => c.querySelector('.rs-cell-label')?.textContent === label,
+  );
+  const value = cell?.querySelector<HTMLElement>(':scope > :not(.rs-cell-label)');
+  if (!value) throw new Error(`no ${label} cell`);
+  return (value.textContent ?? '').trim();
+}
 const allRows = (host: HTMLElement): HTMLElement[] => [
   ...host.querySelectorAll<HTMLElement>('.rs-table-requests .req-row'),
 ];
@@ -108,6 +117,10 @@ describe('a live job row reads as a job, not as a request (5.2)', () => {
       }
       // Tokens and cost are neutral — a reservation is never rendered as spend.
       expect(text).not.toMatch(/\$/);
+      // Pending: each reads a lone `—`, the only meaning of a lone dash in a figure slot
+      // (adopt-figure-states 2.2).
+      expect(cellText(rows[0]!, 'Tokens')).toBe('—');
+      expect(cellText(rows[0]!, 'Cost')).toBe('—');
       expect(text).toContain('model-j1');
       expect(text).toContain('prov-j1');
       expect(text).toContain('nightly');
@@ -331,6 +344,8 @@ describe('settled batch items and the Mode filter (5.4)', () => {
       expect(row.textContent).toContain('batch');
       expect(row.querySelector('svg[data-icon="layers"]')).not.toBeNull();
       expect(row.textContent).toContain('3h 1m');
+      // A settled batch item keeps its wall time; it is not a request latency.
+      expect(cellText(row, 'Latency')).toBe('3h 1m');
       // Never the sole carrier: the decision layer is still stated beside it.
       expect(row.textContent).toContain('explicit');
     } finally {

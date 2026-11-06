@@ -315,9 +315,17 @@ export interface AppState {
   agentsError: string | null;
   /** Per-agent recent (24h) request count + spend, keyed by agent id — the `agent`
    * analytics breakdown, loaded on the Agents page. `agentStatsLoaded` distinguishes a
-   * genuine zero (loaded, no activity) from unavailable (not loaded / load failed). */
+   * genuine zero (loaded, no activity) from figures not loaded yet; once set it stays set
+   * through a reload (a refetch keeps the previous figures until the new ones commit), and
+   * only the identity-scope reset clears it (adopt-figure-states D5). */
   agentStats: Record<string, { requests: number; spend: number }>;
   agentStatsLoaded: boolean;
+  /** A per-agent figures read is in flight. */
+  agentStatsLoading: boolean;
+  /** The last per-agent figures read failed: set on a failed load, cleared when the next
+   * load starts and on success. The page then removes the figures that read would have
+   * replaced and shows a failure notice with Retry. */
+  agentStatsError: string | null;
   providers: Provider[];
   providersError: string | null;
   /** add-provider-health-signals: providers whose post-reconnect Test is in flight
@@ -399,6 +407,9 @@ export interface AppState {
   analyticsSeries: TimeseriesPoint[];
   analyticsSeriesLoading: boolean;
   analyticsSeriesError: string | null;
+  /** A read has committed `analyticsSeries` (adopt-figure-states D5): an empty series is a
+   * measured empty range only once it has; before that it is loading, never "no requests". */
+  analyticsSeriesLoaded: boolean;
   analyticsBreakdown: { model: BreakdownRow[]; provider: BreakdownRow[]; agent: BreakdownRow[] };
   analyticsBreakdownLoading: boolean;
   analyticsBreakdownError: string | null;
@@ -416,6 +427,8 @@ export interface AppState {
   recentRequests: RequestRow[];
   recentRequestsLoading: boolean;
   recentRequestsError: string | null;
+  /** A read has committed `recentRequests`, so an empty list is a measured one (D5). */
+  recentRequestsLoaded: boolean;
   /** add-inflight-requests: live in-flight rows merged above the recent list. */
   inflightRows: InflightDisplayRow[];
   /** add-batch-inference: live batch JOB rows — a SECOND live partition, combined
@@ -924,6 +937,8 @@ function initialState(): AppState {
     agentsError: null,
     agentStats: {},
     agentStatsLoaded: false,
+    agentStatsLoading: false,
+    agentStatsError: null,
     providers: [],
     providersError: null,
     reconnectChecking: [],
@@ -961,6 +976,7 @@ function initialState(): AppState {
     analyticsSeries: [],
     analyticsSeriesLoading: false,
     analyticsSeriesError: null,
+    analyticsSeriesLoaded: false,
     analyticsBreakdown: { model: [], provider: [], agent: [] },
     analyticsBreakdownLoading: false,
     analyticsBreakdownError: null,
@@ -969,6 +985,7 @@ function initialState(): AppState {
     recentRequests: [],
     recentRequestsLoading: false,
     recentRequestsError: null,
+    recentRequestsLoaded: false,
     inflightRows: [],
     batchRows: [],
     streamHealth: 'polling',
@@ -1461,12 +1478,22 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     }
   };
 
+  /** Orders per-agent figure reads: the mount load and a Retry can overlap, and only the
+   * latest may commit. */
+  let agentStatsGen = 0;
   /** Per-agent recent (24h) requests + spend from the `agent` analytics breakdown (A-29).
    * Requests the API cap (100 rows) so it isn't limited to the default top-10-by-spend.
-   * Best-effort: a failure leaves `agentStatsLoaded` false so the UI shows `—` (unknown)
-   * rather than presenting missing data as a measured zero — the agent list still renders. */
+   *
+   * Figure states (adopt-figure-states D5): `agentStatsLoaded` is NOT cleared as a reload
+   * starts, so a refetch keeps the previous figures until the new ones commit, and a first
+   * load shows skeletons, never `—` or a false zero. A failure sets `agentStatsError`; the
+   * page then removes the figures the read would have replaced, rather than keeping them as
+   * current, and offers Retry. The agent list still renders either way. */
   const loadAgentStats = async (): Promise<void> => {
-    setState('agentStatsLoaded', false); // a failed (re)load shows `—`, never stale figures
+    const idGen = identityGen;
+    const token = (agentStatsGen += 1);
+    const current = (): boolean => token === agentStatsGen && idGen === identityGen;
+    setState({ agentStatsLoading: true, agentStatsError: null });
     try {
       const now = Date.now();
       const range = {
@@ -1474,16 +1501,20 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         to: new Date(now).toISOString(),
       };
       const rows = await client.breakdown('agent', range, 100);
+      if (!current()) return;
       setState(
         produce((s) => {
           const next: Record<string, { requests: number; spend: number }> = {};
           for (const r of rows) next[r.key] = { requests: r.requests, spend: r.spend };
           s.agentStats = next;
           s.agentStatsLoaded = true;
+          s.agentStatsLoading = false;
+          s.agentStatsError = null;
         }),
       );
-    } catch {
-      /* non-fatal — the agent list still renders; rows show `—` (not a false zero) */
+    } catch (e) {
+      if (!current()) return;
+      setState({ agentStatsLoading: false, agentStatsError: err(e) });
     }
   };
 
@@ -1722,6 +1753,13 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         s.budgetsError = null;
         s.agents = [];
         s.agentsError = null;
+        // The per-agent figures are one account's data: the ONLY place `agentStatsLoaded` is
+        // cleared (adopt-figure-states D5). `loadAgentStats` checks `identityGen`, so a read
+        // begun as the previous account cannot commit under the next.
+        s.agentStats = {};
+        s.agentStatsLoaded = false;
+        s.agentStatsLoading = false;
+        s.agentStatsError = null;
         s.channels = [];
         s.channelsLoading = false;
         s.channelsError = null;
@@ -1741,10 +1779,12 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         s.analyticsSeries = [];
         s.analyticsSeriesLoading = false;
         s.analyticsSeriesError = null;
+        s.analyticsSeriesLoaded = false;
         s.analyticsBreakdown = { model: [], provider: [], agent: [] };
         s.analyticsBreakdownLoading = false;
         s.analyticsBreakdownError = null;
         s.recentRequestsLoading = false;
+        s.recentRequestsLoaded = false;
         s.requestList = [];
         s.requestCursor = null;
         s.requestWindow = null;
@@ -2451,7 +2491,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       (v) => setState('recentRequestsError', v),
       () => client.requests({ from, to, limit: 6 }),
       (page) => {
-        setState('recentRequests', page.rows);
+        setState({ recentRequests: page.rows, recentRequestsLoaded: true });
         reconcileInflightDisplay(); // durable rows arrived → drop covered live rows
       },
     );
@@ -2815,7 +2855,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         (v) => setState('analyticsSeriesLoading', v),
         (v) => setState('analyticsSeriesError', v),
         () => client.timeseries(range, bucket),
-        (data) => setState('analyticsSeries', data),
+        (data) => setState({ analyticsSeries: data, analyticsSeriesLoaded: true }),
       ),
       // Follows the shared metric rather than hardcoding spend: the Overview's panel now
       // offers the selector too, and requesting a metric the panel is not showing is what
@@ -2843,8 +2883,8 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
 
   // On `reset` FREEZE {from,to}+filter into `requestWindow` and fetch page 1; on
   // append reuse the frozen window + cursor (never re-derive the range from the
-  // clock). Window/list/cursor update atomically on success, so a failed reset
-  // keeps the last-good page consistent with its cursor.
+  // clock). Window/list/cursor update atomically on success. A failed reset removes the
+  // list and its cursor together (adopt-figure-states D5); a failed append keeps both.
   const loadRequests = async (reset: boolean): Promise<void> => {
     if (!reset && (state.requestWindow === null || state.requestCursor === null)) return;
     // The slice token orders requests WITHIN one identity — it stops an older page-1 load
@@ -2911,7 +2951,19 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     } catch (e) {
       if (!isCurrent('requests', token)) return;
       if (!current()) return;
-      setState('requestListError', err(e));
+      setState(
+        produce((s) => {
+          s.requestListError = err(e);
+          // A failed page-1 load removes the rows it would have replaced: they are never
+          // shown stale as current (adopt-figure-states D5). The list and its cursor go
+          // together, so no Load more can append to rows that are gone. A failed load-more
+          // keeps the pages already loaded, which were not part of the failed read.
+          if (reset) {
+            s.requestList = [];
+            s.requestCursor = null;
+          }
+        }),
+      );
     } finally {
       if (current()) setState('requestListLoading', false);
     }

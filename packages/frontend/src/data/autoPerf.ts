@@ -1,16 +1,18 @@
 import { STRUCTURAL_WORKLOAD_CLASSES, WORKLOAD_CLASSES } from '@polyrouter/shared';
 import type { AutoLayers, AutoPerformance } from './api';
-import { fmtMicros } from './api';
+import { microsOfUsd, money, share, UNKNOWN, wordParts, type FigurePart } from './figures';
 import { WORKLOAD_ROW_ORDER } from './workloadTargets';
 
 /** View-model for the Routing page's AUTO PERFORMANCE section
  * (add-auto-performance-view). Pure — every display rule unit-testable. */
 export interface AutoPerfVm {
   evaluated: number;
-  /** Shares of evaluated requests (0–100, one decimal). */
+  /** Shares of evaluated requests (whole percent), or `not applicable` when nothing was
+   * evaluated (adopt-figure-states D5): a share of nothing is never `0%`. */
   ambiguousPct: string;
   declaredPct: string;
-  /** The DISJOINT cascade outcome rates — shares of cascade.requests. */
+  /** The DISJOINT cascade outcome rates — shares of cascade.requests, `not applicable`
+   * when the range holds no cascade requests. */
   passedPct: string;
   escalatedPct: string;
   unknownPct: string;
@@ -34,7 +36,8 @@ export interface AutoPerfVm {
     routedHigh: number;
     routedLow: number;
     routed: number;
-    /** DISJOINT + EXHAUSTIVE outcome shares of the routed total (sum to 100%). */
+    /** DISJOINT + EXHAUSTIVE outcome shares of the routed total (sum to 100%);
+     * `not applicable` when nothing was routed. */
     successPct: string;
     fallbackPct: string;
     errorPct: string;
@@ -77,9 +80,11 @@ export interface AutoPerfVm {
       /** `none` reads as plain language. */
       label: string;
       requests: number;
-      /** Share of evaluated (0% when attempt-only). */
+      /** Share of evaluated (a zero share when attempt-only: the workload-mix contract pins
+       * it, so it is not `not applicable`; adopt-figure-states notes/flags.md F3). */
       sharePct: string;
-      /** Formatted dollars; null = no costable component → a dash + "unpriced". */
+      /** Formatted dollars at four decimals; null = no costable component → the bare word
+       * `unpriced`, with no dash. */
       spend: string | null;
       /** "n unpriced" (parent + attempt components), or null when fully priced. */
       unpricedNote: string | null;
@@ -108,6 +113,9 @@ export interface AutoPerfVm {
       label: string;
       /** "score 0.45 · 85% of 272 ambiguous requests" */
       detail: string;
+      /** `detail` as figure parts: an `unknown` score or share is Ink 3, never the amber of
+       * the flagged line it sits in (adopt-figure-states D1). */
+      detailParts: readonly FigurePart[];
       distinctScores: number;
     }[];
     /** "3 of 5 agents have enough evaluated traffic to assess", or null
@@ -116,21 +124,12 @@ export interface AutoPerfVm {
   };
 }
 
-/** The net-savings amount (split-auto-routing-readout-setup D6), from a MAGNITUDE in
- * micro-dollars — the sign travels separately, so a negative net is never clamped.
- * Cents from $0.01 up, four decimals from $0.0001, and `< $0.0001` below that: a
- * non-zero amount is never printed as zero. `fmtMicros` stays the four-decimal
- * formatter every other figure uses. */
-export function fmtNetSavings(micros: number): string {
-  const m = Math.abs(micros);
-  if (m === 0) return '$0.00';
-  if (m >= 10_000) return `$${(m / 1_000_000).toFixed(2)}`;
-  if (m >= 100) return `$${(m / 1_000_000).toFixed(4)}`;
-  return '< $0.0001';
-}
-
-const pct = (part: number, whole: number): string =>
-  whole === 0 ? '0%' : `${((part / whole) * 100).toFixed(0)}%`;
+/** A savings amount (split-auto-routing-readout-setup D6) at the savings line's adaptive
+ * precision, from an API dollar figure's MAGNITUDE — the sign travels separately, so a
+ * negative net is never clamped. Cents from $0.01 up, four decimals from $0.0001, and
+ * `<$0.0001` below that, with no space (adopt-figure-states D2): a non-zero amount is
+ * never printed as zero. */
+const savingsMoney = (usd: number): string => money(Math.abs(microsOfUsd(usd)), 'adaptive');
 
 export function toAutoPerfVm(data: AutoPerformance | null): AutoPerfVm | null {
   if (data === null) return null;
@@ -146,12 +145,12 @@ export function toAutoPerfVm(data: AutoPerformance | null): AutoPerfVm | null {
   );
   return {
     evaluated: data.evaluated,
-    ambiguousPct: pct(data.bands.ambiguous.requests, data.evaluated),
-    declaredPct: pct(declared, data.evaluated),
-    passedPct: pct(c.qualityPassed, c.requests),
-    escalatedPct: pct(c.escalated, c.requests),
-    unknownPct: pct(c.qualityUnknown, c.requests),
-    failedPct: pct(c.failedOrCancelled, c.requests),
+    ambiguousPct: share(data.bands.ambiguous.requests, data.evaluated),
+    declaredPct: share(declared, data.evaluated),
+    passedPct: share(c.qualityPassed, c.requests),
+    escalatedPct: share(c.escalated, c.requests),
+    unknownPct: share(c.qualityUnknown, c.requests),
+    failedPct: share(c.failedOrCancelled, c.requests),
     cascadeRequests: c.requests,
     cascadeIsResidual: semRouted > 0 || wlRouted > 0,
     residualCauses: { semantic: semRouted > 0, workload: wlRouted > 0 },
@@ -164,28 +163,25 @@ export function toAutoPerfVm(data: AutoPerformance | null): AutoPerfVm | null {
             routedHigh: sem.routed.high,
             routedLow: sem.routed.low,
             routed: semRouted,
-            successPct: pct(sem.outcomes.success, semRouted),
-            fallbackPct: pct(sem.outcomes.fallback, semRouted),
-            errorPct: pct(sem.outcomes.error, semRouted),
-            cancelledPct: pct(sem.outcomes.cancelled, semRouted),
+            successPct: share(sem.outcomes.success, semRouted),
+            fallbackPct: share(sem.outcomes.fallback, semRouted),
+            errorPct: share(sem.outcomes.error, semRouted),
+            cancelledPct: share(sem.outcomes.cancelled, semRouted),
             bundled: sem.source.bundled,
             learned: sem.source.learned,
-            bundledPct: pct(sem.source.bundled, sem.evaluated),
-            learnedPct: pct(sem.source.learned, sem.evaluated),
+            bundledPct: share(sem.source.bundled, sem.evaluated),
+            learnedPct: share(sem.source.learned, sem.evaluated),
           },
     unroutable: data.bands.high.unroutable + data.bands.low.unroutable,
     savings:
       s === null
         ? null
         : {
-            // Cents from $0.01, four decimals below, `< $0.0001` for a non-zero speck
-            // (split-auto-routing-readout-setup D6) — a magnitude, the sign rides
-            // `negative`, so a negative net is never clamped away.
-            net:
-              s.netUsd === null ? null : fmtNetSavings(Math.round(Math.abs(s.netUsd) * 1_000_000)),
+            // Cents from $0.01, four decimals below, `<$0.0001` for a non-zero speck — a
+            // magnitude, the sign rides `negative`, so a negative net is never clamped away.
+            net: s.netUsd === null ? null : savingsMoney(s.netUsd),
             negative: s.netUsd !== null && s.netUsd < 0,
-            excess:
-              s.excessUsd === null ? null : fmtNetSavings(Math.round(s.excessUsd * 1_000_000)),
+            excess: s.excessUsd === null ? null : savingsMoney(s.excessUsd),
             basisLabel: s.basis.label,
             basisScoped: s.basis.scoped === true,
             coverage: `based on ${String(s.rows)} of ${String(eligible)} quality-passed requests`,
@@ -211,11 +207,12 @@ const EMPTY_WORKLOAD_MIX: AutoPerformance['workloadMix'] = {
 
 /** Pure workload-mix view derivation (add-workload-telemetry D7). Exported for
  * tests. EMPTY (null) ONLY when there are no classified parents AND no classes
- * — attempt-only classes render. Spend honesty: null → dash + "unpriced", a
- * numeric 0 → "$0" with no qualifier, any unpriced parent OR attempt component
- * → "n unpriced". Coverage names STRUCTURALLY evaluated requests (legacy rows
- * were never workload-evaluated); the revision note scopes itself to request
- * figures (attempt spend may come from out-of-range parents). */
+ * — attempt-only classes render. Spend honesty: null → the bare word `unpriced`
+ * (no dash), a numeric 0 → a `$0.0000` figure with no qualifier, any unpriced parent
+ * OR attempt component → "n unpriced". Spend is at four decimals (adopt-figure-states
+ * D2). Coverage names STRUCTURALLY evaluated requests (legacy rows were never
+ * workload-evaluated); the revision note scopes itself to request figures (attempt
+ * spend may come from out-of-range parents). */
 export function toWorkloadVm(wm: AutoPerformance['workloadMix']): AutoPerfVm['workload'] {
   if (wm.evaluated === 0 && wm.classes.length === 0) return null;
   return {
@@ -226,8 +223,10 @@ export function toWorkloadVm(wm: AutoPerformance['workloadMix']): AutoPerfVm['wo
         class: c.class,
         label: c.class === 'none' ? 'no specialist workload' : c.class,
         requests: c.requests,
-        sharePct: pct(c.requests, wm.evaluated),
-        spend: c.spendUsd === null ? null : fmtMicros(Math.round(c.spendUsd * 1_000_000)),
+        // An attempt-only block (nothing evaluated) keeps the zero share its contract pins
+        // ("Attempt-only classes are not an empty state"); see notes/flags.md F3.
+        sharePct: wm.evaluated === 0 ? '0%' : share(c.requests, wm.evaluated),
+        spend: c.spendUsd === null ? null : money(microsOfUsd(c.spendUsd), 'four'),
         unpricedNote: unpriced > 0 ? `${String(unpriced)} unpriced` : null,
         routed: c.routed ?? 0,
       };
@@ -266,19 +265,24 @@ const SEMANTIC_ONLY: ReadonlySet<string> = new Set(
 
 /** Pure signal-quality view derivation (add-auto-signal-honesty): flagged
  * rows + the below-floor coverage line are INDEPENDENT (a flag never hides
- * unassessed agents); both empty → section hidden. Exported for tests. */
+ * unassessed agents); both empty → section hidden. A null modal score or share
+ * reads `unknown`, never a dash (adopt-figure-states D5). Exported for tests. */
 export function toSignalQualityVm(
   list: AutoPerformance['signalQuality'],
 ): AutoPerfVm['signalQuality'] {
   const flagged = list
     .filter((a) => a.collapsed === true)
-    .map((a) => ({
-      label: a.label ?? '(no agent)',
-      detail: `score ${a.modalScore === null ? '—' : a.modalScore.toFixed(2)} · ${
-        a.modalShare === null ? '—' : `${(a.modalShare * 100).toFixed(0)}%`
-      } of ${String(a.ambiguousRows)} ambiguous requests`,
-      distinctScores: a.distinctScores,
-    }));
+    .map((a) => {
+      const detail = `score ${a.modalScore === null ? UNKNOWN : a.modalScore.toFixed(2)} · ${
+        a.modalShare === null ? UNKNOWN : `${(a.modalShare * 100).toFixed(0)}%`
+      } of ${String(a.ambiguousRows)} ambiguous requests`;
+      return {
+        label: a.label ?? '(no agent)',
+        detail,
+        detailParts: wordParts(detail),
+        distinctScores: a.distinctScores,
+      };
+    });
   const assessed = list.filter((a) => a.collapsed !== null).length;
   const coverage =
     list.length > 0 && assessed < list.length

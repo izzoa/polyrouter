@@ -1,6 +1,6 @@
 import { createSignal, For, onCleanup, onMount, Show } from 'solid-js';
 import { createPoller } from '../data/poller';
-import { BudgetProgress, budgetBasis } from '../components/BudgetProgress';
+import { BudgetProgress, budgetBasis, budgetMoney } from '../components/BudgetProgress';
 import { pageTitle } from '../components/Topbar';
 import type { BudgetDto } from '../data/api';
 import { FROM_DIALOG } from '../state/appState';
@@ -99,10 +99,11 @@ export function Limits(props: { live?: boolean }) {
                 <div class="budget-scope">
                   {scopeLabel(b)} · {budgetBasis(b)}
                 </div>
-                <div class="budget-config">
-                  Budget $
-                  {b.amount > 0 && b.amount < 0.01 ? b.amount.toString() : b.amount.toFixed(2)} /{' '}
-                  {b.window}
+                {/* The configured amount at cents (adopt-figure-states D2). It is entered in
+                    dollars and can sit below one micro-dollar, so it reaches the formatter
+                    unrounded: a sub-cent amount reads `<$0.01`, never `$0.00` or `$1e-7`. */}
+                <div class="budget-config" data-testid="budget-config">
+                  Budget {budgetMoney(b.amount * 1_000_000)} / {b.window}
                 </div>
                 <BudgetProgress
                   budget={b}

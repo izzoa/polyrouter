@@ -27,7 +27,3 @@ export function fmtDate(ts: number): string {
 export function fmtDateTime(ts: number): string {
   return `${fmtDate(ts)} ${fmtTime(ts)}`;
 }
-
-export function fmtTokens(n: number): string {
-  return n >= 1000 ? `${(n / 1000).toFixed(1).replace(/\.0$/, '')}k` : String(n);
-}

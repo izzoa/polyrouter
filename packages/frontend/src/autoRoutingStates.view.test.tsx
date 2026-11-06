@@ -14,6 +14,7 @@ import { createAppStore, type AppStore } from './state/appState';
 import { AppProvider } from './state/context';
 import { DEFAULT_AUTO_PERF, FakeApiClient } from './test/fakeClient';
 import { cellText, expandStage, openAutoTab } from './test/routingTabs';
+import { labelText } from './test/labelText';
 
 const flush = async (): Promise<void> => {
   for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 0));
@@ -90,9 +91,29 @@ const expectMatrixFigureFree = (h: Harness): void => {
   expect(m.querySelector('[data-testid="targets-detected"]')).toBeNull();
   expect(m.querySelector('[data-testid="wt-routed"]')).toBeNull();
   expect(m.querySelector('[data-testid="cell-unroutable"]')).toBeNull();
-  expect(m.querySelectorAll('.ar-skel')).toHaveLength(0);
+  expect(m.querySelectorAll('.fig-skel')).toHaveLength(0);
   expect(m.textContent).not.toContain('unroutable in the selected');
   expect(m.textContent).not.toContain('Detected');
+};
+/** A Pipeline notice, read the way `notices.view.test.tsx` reads the page notices: its tone,
+ * role, status-word title (in the Section role), body and actions. */
+const anatomy = (n: HTMLElement) => ({
+  tone: [...n.classList].find((c) => c.startsWith('notice--'))?.slice('notice--'.length) ?? '',
+  role: n.getAttribute('role'),
+  title: n.querySelector('.notice-title')?.textContent ?? '',
+  titleRole: n.querySelector('.notice-title')?.classList.contains('t-section') ?? false,
+  body: squash(n.querySelector('.notice-body')?.textContent),
+  actions: [...n.querySelectorAll('button')].map((b) => labelText(b)),
+});
+/** No stage draws a lone dash for a state the panel's notice names, and none carries the
+ * retired `unavailable` figure kind (adopt-figure-states D5). */
+const expectNoDashFigure = (h: Harness): void => {
+  for (const fig of h.host.querySelectorAll<HTMLElement>('[data-testid="stage-figure"]')) {
+    expect(fig.dataset['kind']).not.toBe('unavailable');
+    for (const el of fig.querySelectorAll('*'))
+      expect(el.textContent?.trim(), 'a stage figure renders a lone dash').not.toBe('—');
+  }
+  expect(h.host.querySelector('[data-testid="stage-figure"][data-kind="unavailable"]')).toBeNull();
 };
 /** A configuration write must still go through in this state. */
 const flipCascade = async (h: Harness): Promise<void> => {
@@ -115,6 +136,13 @@ describe('loading: placeholders while the range has no data, configuration opera
 
     expect(pending).toHaveLength(1);
     expect(figureKinds(h)).toEqual(Array<string>(6).fill('placeholder'));
+    // Each stage count's placeholder names its slot, "Requests, <range>"
+    // (adopt-figure-states 3.1, D5): `Loading requests`, never the bare word.
+    for (const fig of h.host.querySelectorAll<HTMLElement>('[data-testid="stage-figure"]')) {
+      const hidden = [...fig.querySelectorAll('.ar-figcount .sr-only')].map((e) => e.textContent);
+      expect(hidden).toEqual(['Loading requests']);
+      expect(fig.querySelector('.ar-figcount [aria-hidden="true"].fig-skel')).not.toBeNull();
+    }
     // The Cascade row's savings line waits as a placeholder — never a figure.
     expect(q(h.host, 'auto-savings')).toBeNull();
     expect(q(h.host, 'savings-loading')).not.toBeNull();
@@ -128,6 +156,20 @@ describe('loading: placeholders while the range has no data, configuration opera
     const classify = await expandStage(h.host, 'Classify');
     expect(q(classify, 'detail-loading')).not.toBeNull();
     expect(q(classify, 'ap-band-verdicts')).toBeNull();
+    // …naming its stage (adopt-figure-states 3.1): `Loading Classify figures`, said once.
+    expect(
+      [...classify.querySelectorAll('.sr-only')]
+        .map((e) => e.textContent)
+        .filter((t) => t?.startsWith('Loading')),
+    ).toEqual(['Loading Classify figures']);
+    // No placeholder anywhere on the Auto routing tab is named by the bare word.
+    const tab = [q(h.host, 'auto-pipeline'), q(h.host, 'auto-setup')];
+    expect(tab).not.toContain(null);
+    const bare = tab.flatMap((el) =>
+      [...el!.querySelectorAll('.sr-only')].filter((e) => e.textContent?.trim() === 'Loading'),
+    );
+    expect(bare).toHaveLength(0);
+    expect(tab[0]!.querySelectorAll('.sr-only').length).toBeGreaterThan(0);
     // …while the configuration is already there: its tuning entry, in Setup.
     expect(q(h.host, 'tuning-entry')?.dataset['tuning']).toBe('calibration');
     // The targets never wait, and carry no figure that could.
@@ -139,11 +181,11 @@ describe('loading: placeholders while the range has no data, configuration opera
     ).toBe('Strong to not set · Cheap to not set For requests no claim took');
     // The row bars and Classify's verdicts wait as placeholders too — never a zero.
     expect(h.host.querySelectorAll('[data-testid="stage-bar"]')).toHaveLength(0);
-    expect(h.host.querySelectorAll('.ar-figbar .ar-skel')).toHaveLength(5);
+    expect(h.host.querySelectorAll('.ar-figbar .fig-skel')).toHaveLength(5);
     expect(
       h.host.querySelector('[data-stage="classify"] [data-testid="stage-verdicts"]'),
     ).toBeNull();
-    expect(h.host.querySelector('[data-stage="classify"] .ar-figline .ar-skel')).not.toBeNull();
+    expect(h.host.querySelector('[data-stage="classify"] .ar-figline .fig-skel')).not.toBeNull();
     await flipCascade(h);
     expect(fake.calls).toContain('setAutoLayers');
 
@@ -213,21 +255,25 @@ describe('failure: a notice and a Retry, and no figure from an earlier load', ()
     const notice = q(h.host, 'auto-load-error')!;
     // The shared notice anatomy (adopt-design-tokens-v2 D15; dashboard-core "Notices share one
     // anatomy and four tones"): a load failure is the Info tone, a polite status region, with
-    // the `Couldn’t load` title over its kept sentence and one ghost Retry.
+    // the `Couldn’t load` title over its worded body (adopt-figure-states D5, U+2019 in both)
+    // and one ghost Retry. The raw error stays out of the notice.
     expect(notice.classList.contains('notice'), 'the shared notice').toBe(true);
-    expect(notice.classList.contains('notice--info'), 'the Info tone').toBe(true);
-    expect(notice.getAttribute('role')).toBe('status');
-    expect(notice.querySelector('.notice-title')?.textContent).toBe('Couldn’t load');
-    expect(notice.querySelectorAll('button')).toHaveLength(1);
+    expect(anatomy(notice)).toEqual({
+      tone: 'info',
+      role: 'status',
+      title: 'Couldn’t load',
+      titleRole: true,
+      body: 'The Pipeline’s figures couldn’t be loaded. Routing is unaffected.',
+      actions: ['Retry'],
+    });
     expect(notice.querySelector('button')?.classList.contains('btn-ghost')).toBe(true);
-    expect(notice.querySelector('.notice-body')?.textContent).toContain(
-      'Couldn’t load the Pipeline’s figures',
-    );
-    expect(notice.textContent).toContain('Couldn’t load the Pipeline’s figures');
-    expect(notice.textContent).toContain('the analytics query timed out');
-    expect(notice.textContent).toContain('Routing is unaffected');
-    // Nothing from the earlier load is presented as current — anywhere on the tab.
-    expect(figureKinds(h)).toEqual(Array<string>(6).fill('unavailable'));
+    expect(notice.textContent).not.toContain('the analytics query timed out');
+    expect(notice.textContent).not.toContain('requests keep flowing');
+    // Nothing from the earlier load is presented as current — anywhere on the tab. Stages carry
+    // no figure slot at all: no count, no share, no lone dash, no hidden `unavailable`.
+    expect(figureKinds(h)).toEqual([]);
+    expectNoDashFigure(h);
+    expect(q(h.host, 'auto-pipeline')!.textContent).not.toMatch(/\bunavailable\b/);
     expect(h.host.querySelectorAll('[data-testid="stage-bar"]')).toHaveLength(0);
     expect(q(h.host, 'auto-savings')).toBeNull();
     expect(h.host.textContent).not.toContain('$1.62');
@@ -321,11 +367,22 @@ describe('zero: stated, not drawn as zeros', () => {
     },
   };
 
-  it('distinguishes an empty range from no telemetry, draws no bar, and reads shares as "—"', async () => {
+  it('distinguishes an empty range from no telemetry, draws no bar, and reads shares as not applicable', async () => {
     h = await mount(new FakeApiClient({ autoPerf: ZERO }));
     await openAutoTab(h.host);
-    expect(q(h.host, 'auto-zero')?.textContent).toContain(
-      'No evaluated telemetry in this range — telemetry begins',
+    // The zero range is the shared Info notice titled `No requests`, with its body kept and no
+    // action (adopt-figure-states D5; the DS-1 handoff, item 4).
+    const zero = anatomy(q(h.host, 'auto-zero')!);
+    expect({ ...zero, body: null }).toEqual({
+      tone: 'info',
+      role: 'status',
+      title: 'No requests',
+      titleRole: true,
+      body: null,
+      actions: [],
+    });
+    expect(zero.body).toContain(
+      '0 auto requests evaluated in the selected 7d range. No evaluated telemetry in this range — telemetry begins',
     );
     expect(
       [...h.host.querySelectorAll<HTMLElement>('[data-testid="stage-figure"]')].map((e) =>
@@ -333,13 +390,17 @@ describe('zero: stated, not drawn as zeros', () => {
       ),
     ).toEqual([
       '0 evaluated verdicts: 0 high · 0 low · 0 ambiguous',
-      '0 — routed here',
+      '0 not applicable routed here',
       // The default fake sets no band target and has L2 unavailable: history captions.
-      '0 — routed under earlier targets',
-      '0 — routed while on',
-      '0 — routed while it could run',
-      '0 — routed here',
+      '0 not applicable routed under earlier targets',
+      '0 not applicable routed while on',
+      '0 not applicable routed while it could run',
+      '0 not applicable routed here',
     ]);
+    // A share of nothing is words in Ink 3 (via its class), never `0%` or a dash.
+    const shares = [...h.host.querySelectorAll<HTMLElement>('.ar-figshare-word')];
+    expect(shares.map((e) => e.textContent)).toEqual(Array<string>(5).fill('not applicable'));
+    expectNoDashFigure(h);
     // No bar track renders in a zero range.
     expect(h.host.querySelectorAll('[data-testid="stage-bar"]')).toHaveLength(0);
     // A null savings aggregation renders no savings content — never a fabricated $0.
@@ -430,7 +491,7 @@ describe('the Cascade row’s savings line follows its honesty rules', () => {
     for (const [netUsd, shown] of [
       [1.62, '$1.62'],
       [0.004, '$0.0040'],
-      [0.00004, '< $0.0001'],
+      [0.00004, '<$0.0001'],
     ] as const) {
       h = await mount(new FakeApiClient({ autoPerf: savings({ netUsd }) }));
       await openAutoTab(h.host);
@@ -438,9 +499,35 @@ describe('the Cascade row’s savings line follows its honesty rules', () => {
         shown,
       );
       expect(q(h.host, 'auto-savings')!.textContent).not.toContain('$0.00 ');
+      // The shared below-precision form has no space between `<` and `$`.
+      expect(q(h.host, 'auto-savings')!.textContent).not.toContain('< $');
       h.dispose();
       h = null;
     }
+  });
+
+  it('a negative net whose excess is 40 µ$ names it below precision, never as zero', async () => {
+    h = await mount(
+      new FakeApiClient({ autoPerf: savings({ netUsd: -0.00004, excessUsd: 0.00004 }) }),
+    );
+    await openAutoTab(h.host);
+    const sv = q(h.host, 'auto-savings')!;
+    expect(sv.textContent).toContain('cheap routing cost <$0.0001 MORE than premium would have');
+    expect(sv.textContent).not.toContain('< $');
+    expect(sv.textContent).not.toMatch(/\$0\.0000|\$0\.00 /);
+    // The caution is amber, but its estimate marker is not: `· est.` keeps its own Ink 3,
+    // outside the amber text (dashboard-core "No estimate SHALL be styled amber").
+    expect(sv.textContent?.replace(/\s+/g, ' ')).toContain('review the auto_low tier · est.');
+    const amber = [...sv.querySelectorAll<HTMLElement>('span')].filter(
+      (e) => e.style.color === 'var(--amber-text)',
+    );
+    expect(amber).toHaveLength(1);
+    expect(amber[0]!.textContent).not.toContain('est.');
+    const marker = [...sv.querySelectorAll<HTMLElement>('span')].find(
+      (e) => e.children.length === 0 && e.textContent === '· est.',
+    );
+    expect(marker?.style.color).toBe('var(--text3)');
+    expect(marker?.closest('[style*="amber"]')).toBeNull();
   });
 
   it('a small negative net keeps its sign as a caution, at the same precision', async () => {
@@ -467,11 +554,21 @@ describe('the Cascade row’s savings line follows its honesty rules', () => {
     delete legacy.exits;
     h = await mount(new FakeApiClient({ autoPerf: legacy }));
     await openAutoTab(h.host);
-    expect(figureKinds(h)).toEqual(['count', ...Array<string>(5).fill('unavailable')]);
+    // Classify still counts the range; stages 2–6 carry no figure at all, visible or hidden —
+    // the panel's notice names the state, never a lone dash (adopt-figure-states D5).
+    expect(figureKinds(h)).toEqual(['count']);
+    expectNoDashFigure(h);
     expect(h.host.querySelectorAll('[data-testid="stage-bar"]')).toHaveLength(0);
-    expect(q(h.host, 'auto-unavailable')?.textContent).toContain(
-      'Per-stage counts are unavailable',
-    );
+    // The shared Info notice titled `Unavailable`, its reason as the body, and no Retry:
+    // nothing was attempted, so there is nothing to retry.
+    expect(anatomy(q(h.host, 'auto-unavailable')!)).toEqual({
+      tone: 'info',
+      role: 'status',
+      title: 'Unavailable',
+      titleRole: true,
+      body: 'Per-stage counts are unavailable — this server sends no stage breakdown. Classify’s counts and the stage details still read the range.',
+      actions: [],
+    });
     // It sits above the column header, inside the Pipeline.
     const pipe = q(h.host, 'auto-pipeline')!;
     const notice = q(h.host, 'auto-unavailable')!;
@@ -503,7 +600,7 @@ describe('Setup never waits on figures (split-auto-routing-readout-setup 3.1)', 
     await openAutoTab(h.host);
     expect(figureKinds(h)).toEqual(Array<string>(6).fill('placeholder'));
     expect(layerSwitches(h.host)).toHaveLength(3);
-    expect(q(h.host, 'auto-setup')?.querySelector('.ar-skel')).toBeNull();
+    expect(q(h.host, 'auto-setup')?.querySelector('.fig-skel')).toBeNull();
     await flipCascade(h);
     expect(fake.calls).toContain('setAutoLayers');
   });

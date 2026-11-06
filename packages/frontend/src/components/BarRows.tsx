@@ -1,5 +1,10 @@
 import { For } from 'solid-js';
+import { microsOfUsd, money, priceLabelParts } from '../data/figures';
 import type { SpendDatum } from '../types';
+import { FigureText } from './FigureText';
+
+/** A free bar's label: `$0 free`, with only `free` green (adopt-figure-states D1, D4). */
+const FREE_PARTS = priceLabelParts({ kind: 'free', estimated: false });
 
 /** Horizontal bars used on Overview and Costs, ported from the prototype.
  *
@@ -9,7 +14,9 @@ import type { SpendDatum } from '../types';
  *
  * `free` stays CURRENCY-only and is simply absent for a token metric. Free means a *price*
  * of zero, not an absence of work: a free provider still burns tokens, so a token bar
- * rendered grey and labelled "free" would state something untrue.
+ * rendered grey and labelled "free" would state something untrue. A free bar reads `$0 free`:
+ * the `$0` keeps the row's Ink and only `free` is green, so the word, not the colour, names it.
+ * Money defaults to cents (adopt-figure-states D2), so a sub-cent bar reads `<$0.01`.
  *
  * The bars are NEUTRAL — Ink 3, a free bar Faint — and never indigo: on Overview and Costs
  * they sit beside the view's focal series (the requests chart, the request mix), and the
@@ -20,7 +27,7 @@ export function BarRows(props: { data: SpendDatum[]; format?: (v: number) => str
   const pct = (d: SpendDatum) =>
     `${String(Math.round((((d.free ?? false) ? (d.fv ?? 0) : d.v) / max()) * 100))}%`;
   const label = (d: SpendDatum): string =>
-    props.format ? props.format(d.v) : `$${d.v.toFixed(2)}`;
+    props.format ? props.format(d.v) : money(microsOfUsd(d.v), 'cents');
   return (
     <div data-series="neutral" style="display:flex;flex-direction:column;gap:12px">
       <For each={props.data}>
@@ -33,11 +40,8 @@ export function BarRows(props: { data: SpendDatum[]; format?: (v: number) => str
               style="display:flex;justify-content:space-between;color:var(--text2);margin-bottom:4px"
             >
               <span class="mono">{d.n}</span>
-              <span
-                class="figure"
-                style={{ color: (d.free ?? false) ? 'var(--green-text)' : 'var(--text)' }}
-              >
-                {(d.free ?? false) ? 'free' : label(d)}
+              <span class="figure" style="color:var(--text)">
+                {(d.free ?? false) ? <FigureText parts={FREE_PARTS} /> : label(d)}
               </span>
             </div>
             <div class="bar-track">

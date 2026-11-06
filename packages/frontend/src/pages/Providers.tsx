@@ -1,5 +1,5 @@
 import { createSignal, createUniqueId, For, onCleanup, onMount, Show } from 'solid-js';
-import type { ModelPricingInput } from '../data/api';
+import type { EffectivePrice, ModelPricingInput } from '../data/api';
 import { fmtUsd } from '../data/format';
 import { unlistedText } from '../data/unlisted';
 import { FROM_DIALOG, isPriceEditableKind, providerKindLabel } from '../state/appState';
@@ -11,6 +11,8 @@ import { StackedLabel } from '../components/StackedLabel';
 import { Notice } from '../components/Notice';
 import { pageTitle } from '../components/Topbar';
 import { createBusy } from '../components/busy';
+import { FigureText } from '../components/FigureText';
+import { priceLabelParts, type FigurePart, type PriceLabel } from '../data/figures';
 import { createLocalFields, FieldNote } from '../components/Field';
 
 /** The status DOT's fill, by the health line's tone (add-provider-health-signals). */
@@ -29,12 +31,12 @@ function toneTextColor(tone: HealthTone): string {
 }
 
 /** The effective display price — resolved server-side (billing resolver, then the
- * provider-listed estimate). `null` means genuinely unpriced. */
-function priceText(m: Model): string {
-  const ep = m.effectivePrice;
-  if (ep === null) return 'unpriced';
-  if (ep.isFree) return 'free';
-  return `${fmtUsd(ep.inputPricePer1m)} / ${fmtUsd(ep.outputPricePer1m)} per 1M`;
+ * provider-listed estimate) — as figure parts (adopt-figure-states D1, D4): `unpriced` in
+ * Ink 3, `$0 free` with only `free` green and `$0` in the price line's own Ink 3, or the unit
+ * prices, each followed by an Ink 3 `· est.` when the price was estimated. `null` means
+ * genuinely unpriced. */
+function priceText(m: Model): readonly FigurePart[] {
+  return priceLabelParts(priceLabelOf(m.effectivePrice));
 }
 
 /** "· expires in Nh" from the non-secret credential expiry (blank when unknown/past —
@@ -72,14 +74,31 @@ function priceProvenance(m: Model): string {
   }
 }
 
-/** The batch-tier rate a twin carries, as a line for its base model's row
- * (add-model-variant-detection). The twin is the record of the aggregator's batch
- * price; it is shown, but never as something selectable. */
-function batchRateText(twin: Model): string {
-  const ep = twin.effectivePrice;
-  if (ep === null) return 'batch rate — unpriced';
-  if (ep.isFree) return 'batch rate — free';
-  return `batch ${fmtUsd(ep.inputPricePer1m)} / ${fmtUsd(ep.outputPricePer1m)} per 1M · estimate`;
+/** The batch-rate line on a base model's row (add-model-variant-detection): shown when the
+ * model has a batch twin on this provider, which is the signal that a batch tier exists. The
+ * twin is never selectable. The rate itself is the base model's `batchEffectivePrice`, the
+ * price resolved in batch mode (catalog batch pair, then native family, then the twin's
+ * captured rate as the last resort; provider-management), so a known catalog batch rate is
+ * never shown as `unpriced` because the twin row carries no synchronous price, and this line
+ * agrees with the batch help on the Routing page.
+ *
+ * Every state is a price label (adopt-figure-states D4): `batch rate · unpriced`,
+ * `batch rate · $0 free` (only `free` green), or `batch rate · $x / $y per 1M`, each followed
+ * by an Ink 3 `· est.` exactly when the batch price was estimated. */
+function batchRateText(bp: EffectivePrice | null): readonly FigurePart[] {
+  const lead: FigurePart = { text: 'batch rate ·', tone: 'slot' };
+  return [lead, ...priceLabelParts(priceLabelOf(bp))];
+}
+
+/** A resolved price as a price label: null is `unpriced`, never `$0.00`. */
+function priceLabelOf(ep: EffectivePrice | null): PriceLabel {
+  if (ep === null) return { kind: 'unpriced' };
+  if (ep.isFree) return { kind: 'free', estimated: ep.estimated };
+  return {
+    kind: 'priced',
+    text: `${fmtUsd(ep.inputPricePer1m)} / ${fmtUsd(ep.outputPricePer1m)} per 1M`,
+    estimated: ep.estimated,
+  };
 }
 
 /** Split a provider's models into the ROUTABLE rows to render and the batch twins
@@ -422,10 +441,12 @@ function ProviderCard(props: { p: Provider }) {
                       style={{
                         font: "400 0.6875rem/1rem 'Geist',sans-serif",
                         'font-variant-numeric': 'tabular-nums',
-                        color: m.effectivePrice?.isFree ? 'var(--green-text)' : 'var(--text3)',
+                        // The line's ink is Ink 3; only a free price's `free` is green.
+                        color: 'var(--text3)',
                       }}
+                      data-price-line={m.externalModelId}
                     >
-                      {priceText(m)}
+                      <FigureText parts={priceText(m)} />
                     </span>
                   </div>
                   {/* add-live-subscription-models: the provider's latest listing no longer
@@ -479,7 +500,7 @@ function ProviderCard(props: { p: Provider }) {
                         class="t-caption"
                         style="color:var(--text3)"
                       >
-                        {batchRateText(twin())} · not routable
+                        <FigureText parts={batchRateText(m.batchEffectivePrice)} /> · not routable
                         {/* add-live-subscription-models: a batch twin the provider stopped
                             listing says so on the rate line it is shown as. */}
                         <Show when={twin().unlistedSince}>

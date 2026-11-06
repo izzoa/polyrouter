@@ -11,13 +11,25 @@ export interface ReadoutCell {
   sub?: JSX.Element;
 }
 
+/** The focal cell: a cell whose figure may be followed by a qualifier. */
+export interface ReadoutFocalCell extends ReadoutCell {
+  /** Words that qualify the figure itself, such as a partly priced sum's `· 4 unpriced`
+   * (adopt-figure-states D11). They follow the figure on its line, OUTSIDE the Display role,
+   * so the Display figure's text is the amount alone. Absent renders nothing. */
+  qualifier?: JSX.Element;
+}
+
 export interface ReadoutStripProps {
   /** The view's ONE focal figure, set at Display size. A single cell, not a list, so a second
    * Display figure cannot be expressed (dashboard-analytics "Overview and Costs state their
    * headline figures in one readout strip"; design.md D5). */
-  focal: ReadoutCell;
+  focal: ReadoutFocalCell;
   /** Every other figure, at Title size, each with its label on the same line. */
   cells: readonly ReadoutCell[];
+  /** Makes the panel a script-only focus target (`tabindex="-1"`) and hands it back: where a
+   * load failure's Retry leaves focus, since the Retry unmounts as its load starts and the
+   * panel stays through the failure and the retry (adopt-figure-states D5). */
+  focusTarget?: (panel: HTMLDivElement) => void;
 }
 
 /**
@@ -32,10 +44,20 @@ export interface ReadoutStripProps {
  */
 export function ReadoutStrip(props: ReadoutStripProps): JSX.Element {
   return (
-    <div class="panel rs-readout" data-readout-strip>
+    <div
+      ref={(el) => props.focusTarget?.(el)}
+      class="panel rs-readout"
+      tabindex={props.focusTarget === undefined ? undefined : -1}
+      data-readout-strip
+    >
       <div class="readout-cell readout-cell--focal card" data-readout={props.focal.id}>
         <div class="readout-label t-dense">{props.focal.label}</div>
-        <div class="readout-figure t-display">{props.focal.figure}</div>
+        <div class="readout-line">
+          <div class="readout-figure t-display">{props.focal.figure}</div>
+          <Show when={props.focal.qualifier !== undefined}>
+            <div class="readout-qualifier t-caption">{props.focal.qualifier}</div>
+          </Show>
+        </div>
         <div class="readout-sub t-caption">{props.focal.sub}</div>
       </div>
       {/* By position, not by object: the page rebuilds the cell list on every poll, and a

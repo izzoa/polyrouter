@@ -1,6 +1,5 @@
 import type { RequestFilter, RequestMode, SpendDatum } from '../types';
 import {
-  fmtMicros,
   labelOf,
   totalCostMicros,
   type AnalyticsSummary,
@@ -10,6 +9,15 @@ import {
   type RequestStatus,
   type TimeseriesPoint,
 } from './api';
+import {
+  costParts,
+  isEstimateSource,
+  money,
+  partsText,
+  priceLabelParts,
+  requestCostState,
+  type FigurePart,
+} from './figures';
 import { fmtUsd } from './format';
 
 /** Pure view-model transforms over the #17 analytics shapes — unit-tested, and
@@ -26,11 +34,6 @@ export function fallbackRate(s: AnalyticsSummary): number {
 }
 export function escalationRate(s: AnalyticsSummary): number {
   return rate(s.escalatedCount, s.requests);
-}
-
-/** A percentage string (guards an empty range → `0.0%`, never NaN). */
-export function pct(num: number, denom: number): string {
-  return `${(rate(num, denom) * 100).toFixed(1)}%`;
 }
 
 /** Timeseries → uPlot single-series data `[secs[], counts[]]` (x = epoch SECONDS,
@@ -92,13 +95,6 @@ export function breakdownToTokens(rows: BreakdownRow[]): SpendDatum[] {
   return rows.map((r) => ({ n: labelOf(r.label, r.key === '' ? null : r.key), v: totalTokens(r) }));
 }
 
-/** Compact token counts — a bar label has no room for `1,234,567`. */
-export function fmtTokens(v: number): string {
-  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(2)}M`;
-  if (v >= 1_000) return `${(v / 1_000).toFixed(1)}K`;
-  return String(Math.round(v));
-}
-
 export type RequestFilterParams = Pick<RequestsQuery, 'status' | 'escalated' | 'decisionLayers'>;
 
 /** The dashboard's filter chip → server-side query params (Decision 1). All chips
@@ -140,32 +136,35 @@ export function filterToRequestParams(filter: RequestFilter): RequestFilterParam
   }
 }
 
-/** What a request no provider ran reads as (zero-cost-unbilled-errors): a KNOWN
- * $0, never the `~` estimate marker — the row keeps its estimated tokens, but
- * nothing was billed for them. */
-export const NOT_BILLED_LABEL = '$0 · not billed';
+/** What a request no provider ran reads as (zero-cost-unbilled-errors): a KNOWN $0,
+ * never an estimate. The constant lives in `./figures` (adopt-figure-states design D1) and
+ * is re-exported here under its old name for one release, so an in-flight sibling branch
+ * still compiles. */
+export { NOT_BILLED_LABEL } from './figures';
 
-/** `billed === false` (a legacy `null` reads as billed as recorded) AND no attempt
- * ledger cost. The table and inspector totals deliberately include
- * `request_attempt` cost, so a cascade whose superseded cheap call has real spend
- * must keep its normal total — `$0 · not billed` there would hide real cost. */
-function totalIsNotBilled(row: Pick<RequestRow, 'billed' | 'attemptCostMicros'>): boolean {
-  return row.billed === false && row.attemptCostMicros === 0;
+/** The table's cost cell as parts (adopt-figure-states design D1, D3, D4): the request's
+ * cost state from `requestCostState`, the function the inspector's total renders too, so the
+ * two cannot drift. `· est.` follows the amount exactly when `priceEstimated` is set (the
+ * served row or any attempt was priced `native_family` or `listed`); estimated usage never
+ * marks money, it is marked on the tokens cell instead. */
+export function rowCostParts(row: RequestRow): readonly FigurePart[] {
+  return costParts(requestCostState(row));
 }
 
-/** The table's total-cost cell: micros-exact total, `~` when the cost is an
- * estimate — usage estimated OR the price is estimated (native-family/listed),
- * matching the inspector's `· est.` marking. A not-billed request with no attempt
- * cost reads `$0 · not billed` instead (zero-cost-unbilled-errors). */
+/** The table's cost cell as text (`partsText` of `rowCostParts`): `$0 · not billed`,
+ * `unpriced`, `$0 free`, `$0 free · est.`, `<$0.0001`, or the micros-exact total at four
+ * decimals with `· est.` when its price was estimated. */
 export function rowCostLabel(row: RequestRow): string {
-  if (totalIsNotBilled(row)) return NOT_BILLED_LABEL;
-  return `${fmtMicros(totalCostMicros(row))}${row.usageEstimated || row.priceEstimated ? '~' : ''}`;
+  return partsText(rowCostParts(row));
 }
 
 export interface PriceSnapshotView {
   label: string;
   /** `$0 free` (snapshot 0) vs `unpriced` (snapshot null) — kept distinct. */
   value: string;
+  /** `value` as parts: `$0` in the row's ink, `free` green, `· est.` and `unpriced` in
+   * Ink 3 (adopt-figure-states design D1). `value` is their joined text. */
+  parts: readonly FigurePart[];
   free: boolean;
   unpriced: boolean;
 }
@@ -175,14 +174,19 @@ function priceView(
   v: number | null,
   source: string | null = null,
 ): PriceSnapshotView {
-  if (v === null) return { label, value: 'unpriced', free: false, unpriced: true };
   // native-family (adjacent channel) and listed (provider's own) snapshots are
   // estimates — marked on EVERY priced row, the zero-priced (free) case included.
-  const est = source === 'native_family' || source === 'listed' ? ' · est.' : '';
-  if (v === 0) return { label, value: `$0 free${est}`, free: true, unpriced: false };
-  // Display precision (zero-cost-unbilled-errors): raw `String(v)` printed float
-  // artifacts such as `$0.09999999999999999 / 1M`. The stored snapshot is untouched.
-  return { label, value: `${fmtUsd(v)} / 1M${est}`, free: false, unpriced: false };
+  const estimated = isEstimateSource(source);
+  const parts = priceLabelParts(
+    v === null
+      ? { kind: 'unpriced' }
+      : v === 0
+        ? { kind: 'free', estimated }
+        : // Display precision (zero-cost-unbilled-errors): raw `String(v)` printed float
+          // artifacts such as `$0.09999999999999999 / 1M`. The stored snapshot is untouched.
+          { kind: 'priced', text: `${fmtUsd(v)} / 1M`, estimated },
+  );
+  return { label, value: partsText(parts), parts, free: v === 0, unpriced: v === null };
 }
 
 export interface InspectorView {
@@ -217,13 +221,22 @@ export interface InspectorView {
   cacheReadTokens: number | null;
   cacheWriteTokens: number | null;
   prices: PriceSnapshotView[];
-  /** `unpriced` when served `cost` is null — distinct from `$0.0000`. `$0 · not
-   * billed` for a `billed = false` row, whatever its attempt cost. */
+  /** The served call's cost state (`requestCostState` over the served call alone):
+   * `$0 · not billed` for a `billed = false` row, whatever its attempt cost; `unpriced`
+   * when served `cost` is null; `$0 free` for a zero cost at zero prices; otherwise the
+   * four-decimal amount, `<$0.0001` below it. `· est.` follows exactly when the SERVED price
+   * was estimated (`native_family` or `listed`). */
   servedCost: string;
+  servedParts: readonly FigurePart[];
+  /** The attempt ledger at four decimals. `· est.` follows when the rolled-up flag can only
+   * have come from an attempt (served price exact); the listing carries no per-attempt
+   * source, so an attempt that shares an estimated served row's flag cannot be told apart. */
   attemptCost: string;
-  /** `unpriced` when served `cost` is null (invariant 4 — no recompute). `$0 · not
-   * billed` only for a not-billed row whose attempt cost is also zero. */
+  attemptParts: readonly FigurePart[];
+  /** `requestCostState(row)` — the same state, in the same words, as the table's cost cell
+   * (invariant 4 — no recompute). `· est.` exactly when `priceEstimated` is set. */
   totalCost: string;
+  totalParts: readonly FigurePart[];
   totalMicros: number;
   /** zero-cost-unbilled-errors: the served call was never sent or was rejected, so
    * nothing was billed for it (`billed === false`). Drives the one inspector note;
@@ -353,6 +366,20 @@ function normalizeMarkers(v: readonly string[] | null): readonly string[] | null
 /** RequestRow → the inspector view-model. Reads snapshots only; a null served
  * `cost` surfaces as "unpriced" (never $0.00). */
 export function toInspectorView(r: RequestRow): InspectorView {
+  const servedParts = costParts(
+    requestCostState({
+      ...r,
+      attemptCostMicros: 0,
+      priceEstimated: isEstimateSource(r.priceSource),
+    }),
+  );
+  const attemptParts = costParts({
+    kind: 'amount',
+    micros: r.attemptCostMicros,
+    text: money(r.attemptCostMicros, 'four'),
+    priceEstimated: r.attemptCostMicros > 0 && r.priceEstimated && !isEstimateSource(r.priceSource),
+  });
+  const totalParts = rowCostParts(r);
   return {
     title: labelOf(r.modelLabel, r.modelId),
     id: r.id,
@@ -385,18 +412,12 @@ export function toInspectorView(r: RequestRow): InspectorView {
       priceView('cache read', r.cacheReadPriceSnapshot, r.priceSource),
       priceView('cache write', r.cacheWritePriceSnapshot, r.priceSource),
     ],
-    servedCost:
-      r.billed === false
-        ? NOT_BILLED_LABEL
-        : r.cost === null
-          ? 'unpriced'
-          : fmtMicros(Math.round(r.cost * 1_000_000)),
-    attemptCost: fmtMicros(r.attemptCostMicros),
-    totalCost: totalIsNotBilled(r)
-      ? NOT_BILLED_LABEL
-      : r.cost === null
-        ? 'unpriced'
-        : `${fmtMicros(totalCostMicros(r))}${r.priceEstimated ? ' · est.' : ''}`,
+    servedCost: partsText(servedParts),
+    servedParts,
+    attemptCost: partsText(attemptParts),
+    attemptParts,
+    totalCost: partsText(totalParts),
+    totalParts,
     totalMicros: totalCostMicros(r),
     notBilled: r.billed === false,
     usageEstimated: r.usageEstimated,

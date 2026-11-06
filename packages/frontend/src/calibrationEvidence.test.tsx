@@ -13,6 +13,7 @@ import { Routing } from './pages/Routing';
 import {
   EVIDENCE_UNLABELLED,
   edgeSummary,
+  failureRateText,
   toCalibrationEvidenceVm,
 } from './data/calibrationEvidence';
 import { createAppStore, type AppStore } from './state/appState';
@@ -97,6 +98,9 @@ describe('per-edge state (pure)', () => {
   it('never yields NaN, and never a raw id as a label', () => {
     const a = vm().agents.find((x) => x.agentId === 'agent-dead-middle')!;
     expect(a.high.rate).toBeNull(); // 0 samples — null, not 0/0
+    // Its rate text is a share of nothing: `not applicable`, never a dash, `0%` or `NaN%`
+    // (adopt-figure-states D5).
+    expect(failureRateText(a.high)).toBe('not applicable');
     expect(a.label).toBe(EVIDENCE_UNLABELLED);
     expect(a.label).not.toBe(a.agentId);
     expect(a.deadMiddle).toBe(true);
@@ -374,5 +378,9 @@ describe('honesty fixes (fix-calibration-evidence-honesty)', () => {
     expect(line).toMatch(/no move/i);
     expect(line).toContain('64.6%');
     expect(line).not.toContain('65%');
+    // The rate goes through the shared share formatter, at one decimal.
+    expect(failureRateText(e)).toBe('64.6%');
+    // The low edge has no samples: its rate is not applicable, never a dash.
+    expect(failureRateText(v.agents[0]!.low)).toBe('not applicable');
   });
 });

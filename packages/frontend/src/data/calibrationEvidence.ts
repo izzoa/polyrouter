@@ -14,6 +14,7 @@
  *    never move. Saying so is what keeps the display from being a false promise.
  */
 import type { CalibrationEdgeViews, CalibrationEvidence } from './api';
+import { share } from './figures';
 
 /** Where an edge sits in its evidence lifecycle. */
 export type EdgeState =
@@ -158,16 +159,21 @@ export function toCalibrationEvidenceVm(d: CalibrationEvidence): CalibrationEvid
   };
 }
 
+/** An edge's current-epoch failure rate, to ONE DECIMAL, deliberately: an integer percent
+ * renders 64.6% as "65%", which beside "inside the dead zone" contradicts a 65% bound and
+ * reads as a bug in the check rather than a rate below it (fix-calibration-evidence-honesty).
+ * A rate of no samples reads `not applicable`, never a dash or `0%` (adopt-figure-states
+ * D5). */
+export function failureRateText(e: EdgeVm): string {
+  return share(e.failures, e.samples, 1);
+}
+
 /** One edge's summary line. Every state says something different; none of them
  * promises a move, and `sufficient` explicitly does not. The floor is passed in
  * rather than carried on the edge — it is a property of the instance config, and
  * duplicating it per edge is how a stale copy gets rendered. */
 export function edgeSummary(e: EdgeVm, actingFloor: number): string {
-  // ONE DECIMAL, deliberately. An integer percent renders 64.6% as "65%", which
-  // beside "inside the dead zone" contradicts a 65% bound and reads as a bug in
-  // the check rather than a rate below it (fix-calibration-evidence-honesty).
-  const pct = (n: number): string => `${(n * 100).toFixed(1)}%`;
-  const rate = e.rate === null ? '—' : pct(e.rate);
+  const rate = failureRateText(e);
   switch (e.state) {
     case 'absent':
       return 'no decided rows in this window';

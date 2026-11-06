@@ -1332,8 +1332,8 @@ test.describe('overlay paint order follows the layer registry', () => {
  * element-box page sweep cannot: they assert the actual text GLYPHS (via Range rects,
  * not only element boxes) stay inside the pane, that no required figure is clipped or
  * ellipsised to fit, and that every honesty state the view-model can emit — routed
- * counts, `— unpriced`, free `$0`, priced, `N unpriced`, and attempt-only `0%` — is
- * present at phone width. The default fixture carries only some of those states, so the
+ * counts, the bare `unpriced` (no dash; adopt-figure-states 4.2), free `$0`, priced,
+ * `N unpriced`, and attempt-only `0%` — is present at phone width. The default fixture carries only some of those states, so the
  * `?workload=boundary` / `?workload=attempt-only` variants supply the rest. A companion
  * block pins that desktop rendering does NOT reflow. */
 
@@ -1415,6 +1415,259 @@ async function paneOverflow(
   }, selector);
 }
 
+/* ---- request figure states (adopt-figure-states task 2.2; design Risks 1 and 2) ----
+ *
+ * `?requests=states` (browserHarness.tsx) heads the list with one row per cost-cell state the
+ * vocabulary adds and a usage-estimated row at adversarial counts. Each state is wider than the
+ * `$0.0000` it replaces, and `· est. usage` can push the tokens cell onto a second line, so
+ * each row is measured: inside the pane, its tokens and cost figures inside their own cells
+ * (and, while the table is a grid, inside their own columns), `· est. usage` on one line, and
+ * no cost string clipped, ellipsized or hidden.
+ *
+ * The recorded desktop delta (design Risk 1, measured 2026-11-03 at 1440×900): each
+ * usage-estimated row here (`912.3k↑ 45.7k↓ · est. usage`, `state-usage` and `state-free-est`)
+ * wraps its tokens cell to two lines and stands 49px tall, against the 37px default-row pin
+ * (`requests:.req-row` and `overview:.req-row` in the geometry capture), which does not move;
+ * every other state row stays 37px. The marker wraps whole, so the row grows by one line and
+ * the marker never splits. */
+const STATE_ROWS = [
+  { id: 'state-usage', cost: '$0.0123', usage: true },
+  { id: 'state-free', cost: '$0 free', usage: false },
+  { id: 'state-free-est', cost: '$0 free · est.', usage: true },
+  { id: 'state-unpriced', cost: 'unpriced', usage: false },
+  { id: 'state-speck', cost: '<$0.0001', usage: false },
+  { id: 'state-not-billed', cost: '$0 · not billed', usage: true },
+] as const;
+
+interface StateRowGeometry {
+  cost: string;
+  marker: boolean;
+  markerLines: number;
+  tokensLines: number;
+  grid: boolean;
+  problems: string[];
+}
+
+async function figureStateRows(page: Page): Promise<StateRowGeometry[]> {
+  return page.evaluate((n) => {
+    const pane = document.querySelector('[data-pane="content"]')!.getBoundingClientRect();
+    const rows = [
+      ...document.querySelectorAll<HTMLElement>('.rs-table-requests button.req-row'),
+    ].slice(0, n);
+    const value = (row: Element, label: string): HTMLElement => {
+      const cell = [...row.querySelectorAll('.rs-cell')].find(
+        (c) => c.querySelector('.rs-cell-label')?.textContent === label,
+      );
+      const v = cell?.querySelector<HTMLElement>(':scope > :not(.rs-cell-label)');
+      if (!v) throw new Error(`no ${label} cell`);
+      return v;
+    };
+    const r1 = (v: number): number => Math.round(v * 10) / 10;
+    return rows.map((row) => {
+      const problems: string[] = [];
+      const inside = (what: string, r: DOMRect, b: DOMRect): void => {
+        if (r.left < b.left - 1 || r.right > b.right + 1) {
+          problems.push(
+            `${what} [${String(r1(r.left))}, ${String(r1(r.right))}] outside [${String(r1(b.left))}, ${String(r1(b.right))}]`,
+          );
+        }
+      };
+      const grid = getComputedStyle(row).display === 'grid';
+      inside('row', row.getBoundingClientRect(), pane);
+      const tokens = value(row, 'Tokens');
+      const cost = value(row, 'Cost');
+      for (const [name, el] of [
+        ['tokens', tokens],
+        ['cost', cost],
+      ] as const) {
+        const box = el.getBoundingClientRect();
+        inside(name, box, pane);
+        const s = getComputedStyle(el);
+        if (s.display === 'none' || s.visibility !== 'visible') problems.push(`${name} hidden`);
+        if (s.textOverflow === 'ellipsis') problems.push(`${name} ellipsized`);
+        if (s.overflowX === 'hidden' || s.overflowX === 'clip') problems.push(`${name} clips`);
+        if (el.scrollWidth > el.clientWidth + 1) {
+          problems.push(
+            `${name} content ${String(el.scrollWidth)} > box ${String(el.clientWidth)}`,
+          );
+        }
+        for (const part of el.querySelectorAll<HTMLElement>('span:not(.sr-only)')) {
+          if (part.closest('.sr-only')) continue;
+          inside(`${name} part "${part.textContent ?? ''}"`, part.getBoundingClientRect(), box);
+        }
+      }
+      if (grid) {
+        // A figure wider than its 0.9fr / 0.7fr track would paint into the next column.
+        const latency = value(row, 'Latency').getBoundingClientRect();
+        const c = cost.getBoundingClientRect();
+        const t = tokens.getBoundingClientRect();
+        if (t.right > c.left + 1) problems.push('tokens bleeds into the cost column');
+        if (c.right > latency.left + 1) problems.push('cost bleeds into the latency column');
+      }
+      const marker =
+        [...tokens.querySelectorAll<HTMLElement>('span')].find(
+          (sp) => sp.textContent === '· est. usage' && sp.children.length === 0,
+        ) ?? null;
+      const visible = tokens.querySelector<HTMLElement>('[aria-hidden="true"]');
+      const lineHeight = visible ? parseFloat(getComputedStyle(visible).lineHeight) : 0;
+      return {
+        cost: (cost.textContent ?? '').replace(/\s+/g, ' ').trim(),
+        marker: marker !== null,
+        markerLines: marker ? marker.getClientRects().length : 0,
+        tokensLines:
+          visible && lineHeight > 0
+            ? Math.round(visible.getBoundingClientRect().height / lineHeight)
+            : 0,
+        grid,
+        problems,
+      };
+    });
+  }, STATE_ROWS.length);
+}
+
+for (const vp of [MATRIX[0], MATRIX[3], MATRIX[4]]) {
+  test.describe(`request figure states stay whole inside the pane @ ${vp.name}`, () => {
+    test.use({ viewport: { width: vp.width, height: vp.height } });
+
+    test('each state row keeps its words whole: no escape, no clip, `· est. usage` on one line', async ({
+      page,
+    }) => {
+      await open(page, '#/requests', '?requests=states');
+      await page.waitForSelector('.rs-table-requests button.req-row');
+      const rows = await figureStateRows(page);
+      expect(rows.map((r) => r.cost)).toEqual(STATE_ROWS.map((r) => r.cost));
+      expect(rows.map((r) => r.marker)).toEqual(STATE_ROWS.map((r) => r.usage));
+      for (const [i, r] of rows.entries()) {
+        const id = STATE_ROWS[i]!.id;
+        expect(r.problems, `${id} @ ${vp.name}`).toEqual([]);
+        if (r.marker) expect(r.markerLines, `${id}: · est. usage split across lines`).toBe(1);
+      }
+      // The table is a grid only where its container is above `table-fit-requests`.
+      expect(rows.every((r) => r.grid)).toBe(vp.width === 1440);
+    });
+  });
+}
+
+/* ---- batch figure states (adopt-figure-states task 5.3; design Risk "Wider strings in fixed
+ * tracks") ----
+ *
+ * `?batches=states` (browserHarness.tsx) heads the list with an active job's `≤ $3.00` ceiling
+ * above `reserved, not spent`, and a terminal job whose null settled cost reads `unpriced`.
+ * Each Cost cell is measured: inside the pane, every line inside its cell (and, while the table
+ * is a grid, inside its own column), and nothing clipped, ellipsized or hidden. */
+for (const vp of [MATRIX[0], MATRIX[3], MATRIX[4]]) {
+  test.describe(`batch figure states stay whole inside the pane @ ${vp.name}`, () => {
+    test.use({ viewport: { width: vp.width, height: vp.height } });
+
+    test('the `≤ $3.00` ceiling and the `unpriced` settled cost keep their words whole', async ({
+      page,
+    }) => {
+      await open(page, '#/batches', '?batches=states');
+      await page.waitForSelector('[data-batch-job="bj-unpriced"]');
+      const cells = await page.evaluate(() => {
+        const pane = document.querySelector('[data-pane="content"]')!.getBoundingClientRect();
+        return ['bj-ceiling', 'bj-unpriced'].map((id) => {
+          const row = document.querySelector<HTMLElement>(`[data-batch-job="${id}"]`)!;
+          const cell = [...row.querySelectorAll<HTMLElement>('.rs-cell')].find(
+            (c) => c.querySelector('.rs-cell-label')?.textContent === 'Cost',
+          )!;
+          const value = cell.querySelector<HTMLElement>('.cell-figure')!;
+          const problems: string[] = [];
+          // In the grid the cell wrapper is `display: contents`, so the value is the grid item
+          // and its box is the column's.
+          const box = value.getBoundingClientRect();
+          const grid = getComputedStyle(row).display === 'grid';
+          const lines = [...value.querySelectorAll<HTMLElement>('span')].filter(
+            (sp) => sp.children.length === 0,
+          );
+          for (const el of [value, ...lines]) {
+            const r = el.getBoundingClientRect();
+            const what = `"${el.textContent ?? ''}"`;
+            if (r.left < pane.left - 1 || r.right > pane.right + 1)
+              problems.push(`${what} escapes the pane`);
+            if (grid && el !== value && (r.left < box.left - 1 || r.right > box.right + 1))
+              problems.push(`${what} leaves its column`);
+            const s = getComputedStyle(el);
+            if (s.display === 'none' || s.visibility !== 'visible') problems.push(`${what} hidden`);
+            if (s.textOverflow === 'ellipsis') problems.push(`${what} ellipsized`);
+            if (s.overflowX === 'hidden' || s.overflowX === 'clip') problems.push(`${what} clips`);
+            if (el.scrollWidth > el.clientWidth + 1) problems.push(`${what} overflows its box`);
+          }
+          return { id, texts: lines.map((l) => l.textContent ?? ''), problems };
+        });
+      });
+      expect(cells[0]!.texts).toEqual(['≤ $3.00', 'reserved, not spent']);
+      expect(cells[1]!.texts).toEqual(['unpriced']);
+      for (const c of cells) expect(c.problems, `${c.id} @ ${vp.name}`).toEqual([]);
+      const overflow = await page.evaluate(
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      );
+      expect(overflow, 'the document overflows').toBeLessThanOrEqual(1);
+    });
+  });
+}
+
+/* ---- the agent strip's failure notice (adopt-figure-states task 3.2, flag F9) ----
+ *
+ * A failed agent-strip read is the shared Info notice with its own Retry, in the strip's
+ * Agents row beside the overline. No default fixture fails that read, so the pinned geometry
+ * cannot see it: the failure is set on the harness store, and the strip is measured where the
+ * notice is widest against its row (a phone, the coarse-pointer laptop, the desktop pin). The
+ * notice stays inside the pane and the strip's panel, nothing in it is clipped or hidden, its
+ * Retry meets its floor, and at desktop it shares the overline's line. */
+for (const vp of [MATRIX[0], MATRIX[3], MATRIX[4]]) {
+  test.describe(`the agent strip's failure notice fits the strip @ ${vp.name}`, () => {
+    test.use({ viewport: { width: vp.width, height: vp.height } });
+
+    test('the notice and its Retry stay inside the strip, whole, at their floor', async ({
+      page,
+    }) => {
+      await open(page, '#/overview');
+      await page.waitForSelector('[data-testid="agent-strip"]');
+      await page.evaluate(() => {
+        const s = (
+          globalThis as unknown as {
+            __harnessStore: { setState: (v: Record<string, unknown>) => void };
+          }
+        ).__harnessStore;
+        s.setState({ agentStripLoaded: false, agentStripError: 'agent activity down' });
+      });
+      await page.waitForSelector('[data-testid="agent-strip"] .notice');
+      const overflow = await paneOverflow(page, '[data-testid="agent-strip"]');
+      expect(overflow.count).toBe(1);
+      expect(overflow.escapes, `escapes @ ${vp.name}`).toEqual([]);
+      expect(overflow.clipped, `clipped @ ${vp.name}`).toEqual([]);
+      expect(overflow.hidden, `hidden @ ${vp.name}`).toEqual([]);
+      const g = await page.evaluate(() => {
+        const box = (el: Element) => el.getBoundingClientRect();
+        const panel = document.querySelector('[data-testid="agent-strip"]')!;
+        const notice = panel.querySelector('.notice')!;
+        const label = panel.querySelector('.upper-label')!;
+        const retry = notice.querySelector('button')!;
+        const p = box(panel);
+        const pad = parseFloat(getComputedStyle(panel).paddingRight);
+        const n = box(notice);
+        const l = box(label);
+        const r = box(retry);
+        return {
+          body: notice.querySelector('.notice-body')?.textContent ?? '',
+          inside: n.left >= p.left + pad - 1 && n.right <= p.right - pad + 1,
+          sameLine: l.top + l.height / 2 > n.top && l.top + l.height / 2 < n.bottom,
+          retry: { width: r.width, height: r.height, inside: r.right <= n.right + 1 },
+          docOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        };
+      });
+      expect(g.body).toBe('Agent activity couldn’t be loaded. Routing is unaffected.');
+      expect(g.inside, 'the notice leaves the strip panel').toBe(true);
+      expect(g.retry.inside, 'Retry leaves the notice').toBe(true);
+      expect(g.retry.height).toBeGreaterThanOrEqual(vp.width <= 768 ? 44 : 24);
+      expect(g.retry.width).toBeGreaterThanOrEqual(24);
+      if (vp.width === 1440) expect(g.sameLine, 'the notice wrapped under the overline').toBe(true);
+      expect(g.docOverflow, 'the document overflows').toBeLessThanOrEqual(1);
+    });
+  });
+}
+
 /** The normalized text of every workload-mix row, in DOM order, for row-specific
  * assertions (a state must be present ON ITS OWN row, not merely somewhere on the page). */
 async function workloadRowTexts(page: Page): Promise<string[]> {
@@ -1472,8 +1725,11 @@ test.describe('Workload-mix rows at phone width', () => {
     // Each honesty state is present ON ITS OWN row — not merely somewhere on the page.
     expect(codeRow, 'routed count on the code row').toContain('7 routed');
     expect(codeRow, 'ordinary priced spend on the code row').toContain('$12.3400');
-    expect(visionRow, 'null spend renders a dash on the vision row').toContain('—');
+    // Null spend is the bare word `unpriced`: no dash and no dollar figure (adopt-figure-states
+    // 4.2; dashboard-analytics "Workload-mix analytics remain complete at narrow width").
     expect(visionRow, 'null spend renders "unpriced" on the vision row').toContain('unpriced');
+    expect(visionRow, 'null spend takes no dash on the vision row').not.toContain('—');
+    expect(visionRow, 'null spend shows no dollar figure').not.toContain('$');
     expect(structuredRow, 'partial-pricing qualifier on the structured row').toContain(
       '1 unpriced',
     );
@@ -1566,6 +1822,37 @@ for (const vp of [
         // task 9.1, a recorded type change: this span was `.mono`).
         expect(r.secondIsFigure, 'the figure stat span follows the label').toBe(true);
       }
+    });
+
+    test('null spend reads the bare word `unpriced`, with no dash, on its one line', async ({
+      page,
+    }) => {
+      // adopt-figure-states 4.2: the desktop half of the narrow-width honesty check, on the
+      // fixture that carries the null-spend row.
+      await open(page, '#/routing', '?workload=boundary');
+      await openWorkloadMix(page);
+      await page.waitForSelector(ROW);
+      const texts = await workloadRowTexts(page);
+      const visionRow = texts.find((t) => t.startsWith('vision')) ?? '';
+      expect(visionRow, 'null spend renders "unpriced" on the vision row').toContain('unpriced');
+      expect(visionRow, 'null spend takes no dash on the vision row').not.toContain('—');
+      expect(visionRow, 'null spend shows no dollar figure').not.toContain('$');
+      const vision = await page.evaluate(() => {
+        const row = [...document.querySelectorAll('[data-testid="workload-row"]')].find((r) =>
+          (r.textContent ?? '').trim().startsWith('vision'),
+        )!;
+        const kids = [...row.children];
+        return {
+          flexWrap: getComputedStyle(row).flexWrap,
+          oneFlexLine:
+            row.getBoundingClientRect().height <=
+            Math.max(...kids.map((k) => k.getBoundingClientRect().height)) + 1,
+        };
+      });
+      expect(vision.flexWrap).toBe('nowrap');
+      expect(vision.oneFlexLine, 'the unpriced row stays a single flex line').toBe(true);
+      const geom = await paneOverflow(page, ROW);
+      expect(geom.hidden.concat(geom.clipped, geom.escapes)).toEqual([]);
     });
   });
 }
@@ -2029,6 +2316,123 @@ for (const vp of [
       expect(m!.btn, 'the link lost its comfort target').toBeGreaterThanOrEqual(44);
       const spread = Math.max(...m!.gaps) - Math.min(...m!.gaps);
       expect(spread, `uneven note lines: ${m!.gaps.join(', ')}`).toBeLessThanOrEqual(1);
+    });
+  });
+}
+
+/* ---- the Pipeline's designed states (adopt-figure-states task 4.3; design Risk "Wider
+ * strings in fixed tracks") ----
+ *
+ * `?auto=zero` (browserHarness.tsx) is a range with nothing evaluated: the `No requests`
+ * notice, and every stage share reading the words `not applicable` — wider than the 40px
+ * share track, so they take the share and bar tracks (a zero range draws no bar). `?auto=legacy`
+ * is an older server with no stage breakdown: the `Unavailable` notice, and no per-stage figure
+ * on stages 2–6. Each is measured at the phone, two-line and one-line widths: the notice and the
+ * words inside the pane, the words on one line beside their count, and nothing clipped. */
+async function openPipelineState(page: Page, query: string, notice: string): Promise<void> {
+  await open(page, '#/routing', query);
+  await openRoutingSection(page, 'Auto routing');
+  await page.waitForSelector(`[data-testid="${notice}"]`);
+}
+
+for (const vp of [MATRIX[0], MATRIX[3], MATRIX[4]]) {
+  test.describe(`the Pipeline's zero and unavailable states stay whole @ ${vp.name}`, () => {
+    test.use({ viewport: { width: vp.width, height: vp.height } });
+
+    test('a zero range: the `No requests` notice, and `not applicable` on one line beside each count', async ({
+      page,
+    }) => {
+      await openPipelineState(page, '?auto=zero', 'auto-zero');
+      const notice = page.locator('[data-testid="auto-zero"]');
+      await expect(notice.locator('.notice-title')).toHaveText('No requests');
+      const geom = await paneOverflow(page, '[data-testid="auto-zero"]');
+      expect(geom.hidden.concat(geom.clipped, geom.escapes), 'the notice escapes').toEqual([]);
+      const rows = await page.evaluate(() =>
+        [...document.querySelectorAll<HTMLElement>('[data-testid="pipeline-stage"]')].map((li) => {
+          const share = li.querySelector<HTMLElement>('.ar-figshare');
+          const count = li.querySelector<HTMLElement>('.ar-figcount');
+          const action = li.querySelector<HTMLElement>('.ar-action');
+          const pane = document.querySelector('[data-pane="content"]')!.getBoundingClientRect();
+          const lines = (el: HTMLElement | null): number => {
+            if (!el) return 0;
+            const range = document.createRange();
+            range.selectNodeContents(el);
+            const tops = [...range.getClientRects()].filter((r) => r.width > 0).map((r) => r.top);
+            return new Set(tops.map((t) => Math.round(t))).size;
+          };
+          const s = share?.getBoundingClientRect();
+          const c = count?.getBoundingClientRect();
+          const a = action?.getBoundingClientRect();
+          return {
+            stage: li.dataset['stage'] ?? '?',
+            share: share?.textContent ?? null,
+            shareLines: lines(share),
+            shareInk: share ? getComputedStyle(share).color : null,
+            inPane: s ? s.left >= pane.left - 1 && s.right <= pane.right + 1 : true,
+            clips: share ? share.scrollWidth > share.clientWidth + 1 : false,
+            besideCount: s && c ? s.top < c.bottom && c.top < s.bottom : true,
+            // In the grid layouts the action keeps its own track to the right of the figure.
+            clearOfAction:
+              s && a && getComputedStyle(li.querySelector('.ar-fig')!).display !== 'flex'
+                ? s.right <= a.left + 1
+                : true,
+          };
+        }),
+      );
+      expect(rows).toHaveLength(6);
+      const later = rows.slice(1);
+      expect(later.map((r) => r.share)).toEqual(Array<string>(5).fill('not applicable'));
+      for (const r of later) {
+        const at = `stage ${r.stage} @ ${vp.name}`;
+        expect(r.shareLines, `${at}: not applicable wraps`).toBe(1);
+        expect(r.inPane, `${at}: the share escapes the pane`).toBe(true);
+        expect(r.clips, `${at}: the share is clipped`).toBe(false);
+        expect(r.besideCount, `${at}: the share left its count's line`).toBe(true);
+        expect(r.clearOfAction, `${at}: the share runs into the action track`).toBe(true);
+      }
+      // The words are Ink 3, not the share's Ink 2: compared as resolved colours.
+      const ink = await page.evaluate(() => {
+        const resolve = (v: string): string => {
+          const probe = document.createElement('span');
+          probe.style.color = `var(${v})`;
+          document.body.append(probe);
+          const c = getComputedStyle(probe).color;
+          probe.remove();
+          return c;
+        };
+        return { ink2: resolve('--text2'), ink3: resolve('--text3') };
+      });
+      expect(ink.ink3).not.toBe(ink.ink2);
+      for (const r of later) expect(r.shareInk, `stage ${r.stage}: share ink`).toBe(ink.ink3);
+      const overflow = await page.evaluate(
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      );
+      expect(overflow, 'the document overflows').toBeLessThanOrEqual(1);
+    });
+
+    test('no stage breakdown: the `Unavailable` notice, and no figure on stages 2–6', async ({
+      page,
+    }) => {
+      await openPipelineState(page, '?auto=legacy', 'auto-unavailable');
+      const notice = page.locator('[data-testid="auto-unavailable"]');
+      await expect(notice.locator('.notice-title')).toHaveText('Unavailable');
+      await expect(notice.locator('button')).toHaveCount(0);
+      const geom = await paneOverflow(page, '[data-testid="auto-unavailable"]');
+      expect(geom.hidden.concat(geom.clipped, geom.escapes), 'the notice escapes').toEqual([]);
+      const figures = await page.evaluate(() =>
+        [...document.querySelectorAll<HTMLElement>('[data-testid="pipeline-stage"]')].map(
+          (li) =>
+            li.querySelector('[data-testid="stage-figure"] .ar-figcount')?.textContent?.trim() ??
+            null,
+        ),
+      );
+      expect(figures).toHaveLength(6);
+      expect(figures[0], 'Classify still counts the range').toBe('40');
+      expect(figures.slice(1), 'stages 2–6 carry no figure').toEqual(Array<null>(5).fill(null));
+      const overflow = await page.evaluate(
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      );
+      expect(overflow, 'the document overflows').toBeLessThanOrEqual(1);
     });
   });
 }

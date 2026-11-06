@@ -117,6 +117,28 @@ describe('Signal quality section (add-auto-signal-honesty)', () => {
     expect(coverage(h)).toBeNull(); // every agent assessed → no coverage line
   });
 
+  it('a null modal score and share read unknown, never a dash (adopt-figure-states D5)', async () => {
+    h = await mountRouting([sq({ modalScore: null, modalShare: null })]);
+    const el = section(h);
+    expect(el!.textContent?.replace(/\s+/g, ' ')).toContain(
+      'score unknown · unknown of 272 ambiguous requests',
+    );
+    expect(el!.textContent).not.toContain('score —');
+    expect(el!.textContent).not.toContain('· —');
+    // `unknown` is Ink 3 (design D1), never the amber of the flagged line it sits in; the
+    // line's other words keep its amber.
+    const words = [...el!.querySelectorAll<HTMLElement>('span')].filter(
+      (e) => e.children.length === 0 && e.textContent === 'unknown',
+    );
+    expect(words).toHaveLength(2);
+    for (const w of words) expect(w.style.color).toBe('var(--text3)');
+    const score = [...el!.querySelectorAll<HTMLElement>('span')].find(
+      (e) => e.children.length === 0 && e.textContent === 'score',
+    );
+    expect(score?.style.color).toBe('');
+    expect(score?.closest<HTMLElement>('[style*="amber-text"]')).not.toBeNull();
+  });
+
   it('MIXED state: flagged list AND coverage line render together', async () => {
     h = await mountRouting([sq(), sq({ agentId: 'a2', label: 'small', collapsed: null })]);
     expect(section(h)!.textContent).toContain('markus');

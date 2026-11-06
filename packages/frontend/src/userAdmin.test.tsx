@@ -233,9 +233,16 @@ describe('Users page (admin)', () => {
     const { host, dispose } = await openUsers(client);
     try {
       const card = registrationCard(host);
-      expect(card.getAttribute('aria-busy')).toBe('true');
+      // The hidden text names the state once, so the card drops `aria-busy`, which could
+      // withhold it (adopt-figure-states 3.1, D5).
+      expect(card.getAttribute('aria-busy')).toBeNull();
+      const hidden = [...card.querySelectorAll('.sr-only')].map((e) => e.textContent);
+      expect(hidden.filter((t) => t === 'Loading registration settings')).toHaveLength(1);
+      expect(hidden.filter((t) => t?.startsWith('Loading'))).toHaveLength(1);
       expect(card.textContent).not.toContain('SMTP');
-      expect(card.querySelector('[aria-hidden="true"].ar-skel')).not.toBeNull();
+      const blocks = card.querySelectorAll('.fig-skel');
+      expect(blocks).toHaveLength(1);
+      for (const b of blocks) expect(b.getAttribute('aria-hidden')).toBe('true');
       const buttons = modeButtons(host);
       expect(buttons).toHaveLength(2);
       for (const b of buttons) {
@@ -257,7 +264,8 @@ describe('Users page (admin)', () => {
       const card = registrationCard(host);
       expect(card.getAttribute('aria-busy')).toBeNull();
       expect(card.textContent).not.toContain('SMTP');
-      expect(card.querySelector('.ar-skel')).toBeNull();
+      expect(card.querySelector('.fig-skel')).toBeNull();
+      expect(card.textContent).not.toContain('Loading');
       const alert = host.querySelector<HTMLElement>('[role="alert"]');
       expect(alert?.textContent).toContain('registration unavailable');
       // The --red fill reads 3.75:1 as small text; status text takes the text variant.

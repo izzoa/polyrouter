@@ -4,8 +4,10 @@ import { useModalSurface } from '../a11y';
 import { toInspectorView } from '../data/analytics';
 import type { RequestRow, RequestStatus } from '../data/api';
 import { fmtDateTime } from '../data/catalog';
+import { EST_USAGE_PARTS, fmtLatency } from '../data/figures';
 import { FROM_DIALOG } from '../state/appState';
 import { useApp } from '../state/context';
+import { FigureText } from './FigureText';
 import { Icon } from './Icon';
 
 /** label / bg / fg per served status. */
@@ -47,9 +49,21 @@ export function Inspector() {
       fallbackFocus: () => document.getElementById('inspector-drawer'),
     });
   };
-  const selected = (): RequestRow | undefined =>
-    state.requestList.find((r) => r.id === state.selId) ??
-    state.recentRequests.find((r) => r.id === state.selId);
+  /** The selected row: the live one from the loaded lists when it is there, so an update to
+   * it (a deleted payload) shows; otherwise the row as it was when last found, for the same
+   * selection. A list read that failed removes its rows (adopt-figure-states D5), and a
+   * background refresh that does so must neither close the inspector the user is reading nor,
+   * once a later read brings the row back, reopen it by itself and take focus. Keeping the row
+   * open is not "stale as current": a recorded request is immutable (invariant 4). Clearing
+   * the selection (`select(null)`, a page change, the identity reset) still closes it. */
+  const selected = createMemo<RequestRow | undefined>((prev) => {
+    const id = state.selId;
+    if (id === null) return undefined;
+    const live =
+      state.requestList.find((r) => r.id === id) ?? state.recentRequests.find((r) => r.id === id);
+    if (live !== undefined) return live;
+    return prev?.id === id ? prev : undefined;
+  });
 
   return (
     <Show when={selected()}>
@@ -357,17 +371,37 @@ export function Inspector() {
                   </div>
                   {/* Token counts, prices and costs are figures: Geist with tabular numerals
                       (adopt-design-tokens-v2 task 9.1). The one identifier, the price source,
-                      keeps Mono. */}
+                      keeps Mono. Counts are exact here, with digit grouping; a count the
+                      provider did not report carries `· est. usage` in Ink 3 on both the
+                      input and the output count (adopt-figure-states D3). Every money figure
+                      and price renders its parts through `FigureText` (D1): an amount and the
+                      `$0` before `free` keep the row's Ink, `free` is green, `· est.` and
+                      `unpriced` are Ink 3, and `$0 · not billed` is Ink 2. */}
                   <div class="kv-box kv-box--figures">
                     <div style="display:flex;justify-content:space-between">
                       <span style="color:var(--text3)">input tokens</span>
-                      <span style="color:var(--text)">{view().inputTokens.toLocaleString()}</span>
+                      <span
+                        style="color:var(--text);text-align:right"
+                        data-testid="inspector-input-tokens"
+                      >
+                        {view().inputTokens.toLocaleString()}
+                        <Show when={view().usageEstimated}>
+                          {' '}
+                          <FigureText parts={EST_USAGE_PARTS} />
+                        </Show>
+                      </span>
                     </div>
                     <div style="display:flex;justify-content:space-between">
                       <span style="color:var(--text3)">output tokens</span>
-                      <span style="color:var(--text)">
+                      <span
+                        style="color:var(--text);text-align:right"
+                        data-testid="inspector-output-tokens"
+                      >
                         {view().outputTokens.toLocaleString()}
-                        {view().usageEstimated ? ' ~est' : ''}
+                        <Show when={view().usageEstimated}>
+                          {' '}
+                          <FigureText parts={EST_USAGE_PARTS} />
+                        </Show>
                       </span>
                     </div>
                     <Show when={view().cacheReadTokens !== null}>
@@ -390,16 +424,8 @@ export function Inspector() {
                       {(p) => (
                         <div style="display:flex;justify-content:space-between">
                           <span style="color:var(--text3)">{p.label} price</span>
-                          <span
-                            style={{
-                              color: p.unpriced
-                                ? 'var(--text3)'
-                                : p.free
-                                  ? 'var(--green-text)'
-                                  : 'var(--text)',
-                            }}
-                          >
-                            {p.value}
+                          <span style="color:var(--text)" data-testid="inspector-price">
+                            <FigureText parts={p.parts} />
                           </span>
                         </div>
                       )}
@@ -420,15 +446,24 @@ export function Inspector() {
                     </Show>
                     <div style="display:flex;justify-content:space-between;border-top:1px solid var(--border2);padding-top:8px">
                       <span style="color:var(--text3)">served cost</span>
-                      <span style="color:var(--text)">{view().servedCost}</span>
+                      <span style="color:var(--text)" data-testid="inspector-served-cost">
+                        <FigureText parts={view().servedParts} />
+                      </span>
                     </div>
                     <div style="display:flex;justify-content:space-between">
                       <span style="color:var(--text3)">attempt cost</span>
-                      <span style="color:var(--text)">{view().attemptCost}</span>
+                      <span style="color:var(--text)" data-testid="inspector-attempt-cost">
+                        <FigureText parts={view().attemptParts} />
+                      </span>
                     </div>
                     <div style="display:flex;justify-content:space-between">
                       <span style="color:var(--text3)">total</span>
-                      <span style="color:var(--text);font-weight:500">{view().totalCost}</span>
+                      <span
+                        style="color:var(--text);font-weight:500"
+                        data-testid="inspector-total-cost"
+                      >
+                        <FigureText parts={view().totalParts} />
+                      </span>
                     </div>
                   </div>
                   {/* zero-cost-unbilled-errors: one muted note in place of the usage
@@ -443,7 +478,7 @@ export function Inspector() {
                     {view().notBilled
                       ? 'Not billed — the served call was never sent or was rejected by the provider, so nothing was charged for it.'
                       : view().usageEstimated
-                        ? 'Provider omitted usage — output estimated from stream, flagged ~.'
+                        ? 'Provider omitted usage — token counts are estimated.'
                         : 'Token counts from provider usage; unit prices snapshotted at request time.'}
                   </div>
                 </div>
@@ -543,7 +578,7 @@ export function Inspector() {
                             the caller actually waited — so it reads in hours. */}
                         {view().batchId !== null
                           ? fmtElapsed(view().durationMs)
-                          : `${(view().durationMs / 1000).toFixed(2)}s`}
+                          : fmtLatency(view().durationMs)}
                       </span>
                     </div>
                     <div style="display:flex;justify-content:space-between">

@@ -67,6 +67,32 @@ for (const theme of ['light', 'dark'])
         await expect(page.locator('.budget-card').first()).toContainText('49.6%');
         await expect(page.locator('.budget-card').first()).toContainText('$9.60');
         await expect(page.locator('.budget-card').nth(3)).toContainText('unpriced');
+        // adopt-figure-states 5.4: a disabled budget over its amount reads `$1.50 over budget` in
+        // red status text beside `106%`, and names its disabled state on the same line, never
+        // `blocked`; a sub-cent amount reads `<$0.01`, on the card's configured line too.
+        const disabled = page.locator('.budget-card').nth(2);
+        await expect(disabled).toContainText('106%');
+        await expect(disabled.locator('.budget-allowance')).toHaveText(
+          '$1.50 over budget · Budget disabled',
+        );
+        await expect(disabled).not.toContainText('blocked');
+        const red = await disabled.locator('[data-testid="budget-over"]').evaluate((el) => {
+          const probe = document.createElement('span');
+          probe.style.color = 'var(--red-text)';
+          document.body.append(probe);
+          const want = getComputedStyle(probe).color;
+          probe.remove();
+          return { got: getComputedStyle(el).color, want };
+        });
+        expect(red.got).toBe(red.want);
+        const tiny = page.locator('.budget-card').nth(3);
+        await expect(tiny.locator('[data-testid="budget-config"]')).toHaveText(
+          'Budget <$0.01 / day',
+        );
+        await expect(tiny.locator('.budget-progress-headline')).toContainText('<$0.01');
+        // One stale state with one caption: the retired suffixes never render.
+        for (const retired of ['Refresh failed', 'Stale recorded progress', 'Period ended'])
+          await expect(page.locator('.budget-card', { hasText: retired })).toHaveCount(0);
         await expect(page.locator('.budget-card').nth(4)).toContainText('No metered activity');
         expect(await page.locator('.budget-figure[aria-live]').count()).toBe(0);
         await page.screenshot({
@@ -88,6 +114,10 @@ test('keyboard editing and failure leave management usable, then request charts 
   await page.goto('/browser-harness.html?budget=unavailable#/limits');
   await page.waitForSelector('html[data-harness-ready="true"]');
   await expect(page.getByRole('button', { name: 'Retry progress' })).toHaveCount(5);
+  // A failed read with no retained snapshot names the failure (adopt-figure-states 5.4; U+2019).
+  await expect(page.getByText('Budget progress couldn’t be loaded.', { exact: true })).toHaveCount(
+    5,
+  );
   const edit = page.getByRole('button', { name: 'Edit', exact: true }).first();
   await edit.focus();
   await page.keyboard.press('Enter');

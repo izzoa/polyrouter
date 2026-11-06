@@ -712,6 +712,11 @@ const SCENARIOS: Record<string, Scenario> = {
     },
     find: (h) => byLabel(within(h, '.modal-card'), 'Reconnect'),
   },
+  'pages/Agents.tsx app.loadAgentStats#2': {
+    page: 'agents',
+    opts: { agents: [AGENT], analyticsFailure: new ApiError(500, 'internal', 'analytics down') },
+    find: (h) => byLabel(h.host, 'Retry'),
+  },
   'pages/Costs.tsx app.loadCosts#2': {
     page: 'costs',
     opts: { analyticsFailure: new ApiError(500, 'internal', 'analytics down') },
@@ -720,7 +725,13 @@ const SCENARIOS: Record<string, Scenario> = {
   'pages/Overview.tsx app.loadOverview#2': {
     page: 'overview',
     opts: { analyticsFailure: new ApiError(500, 'internal', 'analytics down') },
+    // The page's notice comes first; the agent strip's own Retry sits in the strip below it.
     find: (h) => byLabel(h.host, 'Retry'),
+  },
+  'pages/Overview.tsx app.loadAgentStrip#2': {
+    page: 'overview',
+    opts: { analyticsFailure: new ApiError(500, 'internal', 'analytics down') },
+    find: (h) => byLabel(within(h, '[data-testid="agent-strip"]'), 'Retry'),
   },
   'pages/Requests.tsx app.loadRequests#2': {
     page: 'requests',

@@ -83,6 +83,15 @@ async function mountRequests(fake = new FakeApiClient({})): Promise<{
 const rowsOf = (host: HTMLElement): HTMLElement[] => [
   ...host.querySelectorAll<HTMLElement>('.rs-table-requests .req-row'),
 ];
+/** A row's value for one field, without its (stacked-view) label. */
+function cellText(rowEl: HTMLElement, label: string): string {
+  const cell = [...rowEl.querySelectorAll<HTMLElement>('.rs-cell')].find(
+    (c) => c.querySelector('.rs-cell-label')?.textContent === label,
+  );
+  const value = cell?.querySelector<HTMLElement>(':scope > :not(.rs-cell-label)');
+  if (!value) throw new Error(`no ${label} cell`);
+  return (value.textContent ?? '').trim();
+}
 /** Whether a live row with this id is on screen, found by its unique model label. */
 const showsLive = (host: HTMLElement, id: string): boolean =>
   rowsOf(host).some((r) => r.textContent?.includes(`model-${id}`) ?? false);
@@ -176,6 +185,30 @@ describe('the settling/durable collision', () => {
 // The band, on the page.
 // ---------------------------------------------------------------------------
 describe('the band on the Requests page', () => {
+  it('keeps a running row pending: a lone `—` in its token and cost cells, and a ticking latency (adopt-figure-states 2.2)', async () => {
+    const h = await mountRequests();
+    try {
+      h.store.setState('inflightRows', [row('live-dash')]);
+      await flush();
+      const live = rowsOf(h.host).find((r) => r.textContent?.includes('model-live-dash'))!;
+      expect(live, 'the running row is on screen').toBeDefined();
+      // A lone dash in a figure slot means pending, and nothing else (dashboard-core).
+      expect(cellText(live, 'Tokens')).toBe('—');
+      expect(cellText(live, 'Cost')).toBe('—');
+      // The live tick reads in the request-latency format, never `0.0s`.
+      expect(cellText(live, 'Latency')).toMatch(/^(\d+ms|\d+\.\d{2}s|\d+m \d{2}s)$/);
+      // The settled rows beside it never read a lone dash in those slots.
+      const settled = rowsOf(h.host).filter((r) => r.tagName === 'BUTTON');
+      expect(settled.length).toBeGreaterThan(0);
+      for (const r of settled) {
+        expect(cellText(r, 'Tokens')).not.toBe('—');
+        expect(cellText(r, 'Cost')).not.toBe('—');
+      }
+    } finally {
+      h.dispose();
+    }
+  });
+
   it('renders running rows above the completed list', async () => {
     const h = await mountRequests();
     try {

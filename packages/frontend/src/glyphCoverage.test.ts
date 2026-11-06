@@ -23,92 +23,14 @@
  * emails and upstream error strings arrive at runtime and may contain anything — no static
  * check can see them, and constraining them would mean shipping fonts for every script.
  */
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { bundledFontCoverage } from './test/fontCoverage';
-
-/** Walks up to find the package's `src`. Not `new URL('.', import.meta.url)`: Vite rewrites
- * module URLs to its `/@fs/` scheme, which is not a real path on disk. */
-function findSrc(): string {
-  let dir = resolve(process.cwd());
-  for (let i = 0; i < 6; i++) {
-    if (existsSync(join(dir, 'src', 'index.tsx'))) return join(dir, 'src') + '/';
-    const parent = dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  throw new Error('could not locate packages/frontend/src from ' + process.cwd());
-}
+import { bundledFaces, bundledFamilyCoverage, bundledFontCoverage } from './test/fontCoverage';
+// The extraction lives in `test/renderedText.ts`, shared with `figureStrings.test.ts`, so both
+// guards read the same painted text (adopt-figure-states task 6.1).
+import { findSrc, renderedText, shippedSources } from './test/renderedText';
 
 const SRC = findSrc();
-
-/** Files whose text reaches a user. Excludes tests and the browser harness, both of which the
- * production build already excludes (`vite.config.ts` pins `input: 'index.html'`). */
-function shippedSources(dir: string, out: string[] = []): string[] {
-  for (const name of readdirSync(dir)) {
-    const p = join(dir, name);
-    if (statSync(p).isDirectory()) {
-      if (name !== 'test') shippedSources(p, out);
-    } else if (
-      (name.endsWith('.tsx') || name.endsWith('.ts')) &&
-      !name.includes('.test.') &&
-      !name.startsWith('browserHarness')
-    ) {
-      out.push(p);
-    }
-  }
-  return out;
-}
-
-/** Blanks out an attribute's value wherever it appears, preserving line numbers.
- *
- * Brace-matching rather than `\{[^}]*\}`, because a JSX attribute is routinely a template
- * literal with interpolations — `aria-label={`Delete rule ${a} → ${b}`}` — and a naive
- * character class stops at the first `}` of `${a}`, leaving the rest of the value in scope. */
-function blankAttribute(src: string, name: string): string {
-  let out = src;
-  for (const open of [`${name}={`, `${name}="`]) {
-    let i = out.indexOf(open);
-    while (i !== -1) {
-      const start = i + open.length;
-      let end = start;
-      if (open.endsWith('{')) {
-        let depth = 1;
-        while (end < out.length && depth > 0) {
-          if (out[end] === '{') depth++;
-          else if (out[end] === '}') depth--;
-          if (depth > 0) end++;
-        }
-      } else {
-        while (end < out.length && out[end] !== '"') end++;
-      }
-      const value = out.slice(start, end);
-      out = out.slice(0, start) + value.replace(/[^\n]/g, ' ') + out.slice(end);
-      i = out.indexOf(open, end);
-    }
-  }
-  return out;
-}
-
-/** Text the dashboard actually PAINTS.
- *
- * Two exclusions, each for a reason:
- * - Comments and JSDoc are never rendered. Counting them is what inflated the original
- *   inventory to 14 codepoints and invented `⇄`/`≠`, which the app never draws.
- * - Accessible names (`aria-label`, `title`) are spoken, not painted, so no font can affect
- *   them. A `→` announced as "rightwards arrow" is a screen-reader wording question and
- *   belongs to the accessibility requirement, not to font coverage.
- *
- * Both preserve line numbers so offences point at the right place. */
-function renderedText(src: string): string {
-  const noBlock = src.replace(/\/\*[\s\S]*?\*\//g, (m) => '\n'.repeat((m.match(/\n/g) ?? []).length));
-  const noLine = noBlock
-    .split('\n')
-    .map((line) => line.replace(/(^|[^:])\/\/.*$/, '$1'))
-    .join('\n');
-  return blankAttribute(blankAttribute(noLine, 'aria-label'), 'title');
-}
 
 /** Characters allowed to fall back despite the rule, each with an argued reason.
  *
@@ -147,6 +69,30 @@ describe('authored UI text renders from the bundled fonts', () => {
       `these characters are not in any bundled font, so the viewer's operating system ` +
         `supplies them and the dashboard looks different per platform:\n${offences.join('\n')}`,
     ).toEqual([]);
+  });
+
+  it('reads every bundled face from fonts.css, the math faces included (adopt-figure-states D7)', () => {
+    // The list is derived, not hard-coded: a face declared in fonts.css is checked, and one
+    // removed there stops counting as coverage.
+    const files = bundledFaces().flatMap((f) => f.files);
+    expect(files).toEqual([
+      'geist-latin-ext.woff2',
+      'geist-latin.woff2',
+      'geist-mono-latin-ext.woff2',
+      'geist-mono-latin.woff2',
+      'geist-math.woff2',
+      'geist-mono-math.woff2',
+    ]);
+  });
+
+  it('both families carry `≤` (U+2264), so the reserved ceiling never falls back', () => {
+    // A union over every file would pass with the glyph in one family only, while text set in
+    // the other family still fell back to the operating system's font.
+    for (const family of ['Geist', 'Geist Mono']) {
+      const covered = bundledFamilyCoverage(family);
+      expect(covered.has('A'.codePointAt(0)!), `${family}: the reader is broken`).toBe(true);
+      expect(covered.has(0x2264), `${family} has no ≤ (U+2264)`).toBe(true);
+    }
   });
 
   it('does not count comments as rendered text', () => {

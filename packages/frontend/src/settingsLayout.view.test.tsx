@@ -336,12 +336,21 @@ describe('Settings layout: the compact bodies card', () => {
   it('claims nothing while the capture status loads: a placeholder, no sentence, no badge', async () => {
     const { host } = await mount({ bodyRead: () => new Promise<BodyCaptureStatus>(() => {}) });
     const c = card(host);
-    expect(c.getAttribute('aria-busy')).toBe('true');
+    // The hidden text names the state once, so the card drops `aria-busy`, which could
+    // withhold it (adopt-figure-states 3.1, D5).
+    expect(c.getAttribute('aria-busy')).toBeNull();
+    expect(c.querySelector('[aria-busy]')).toBeNull();
+    const hidden = [...c.querySelectorAll('.sr-only')].map((e) => e.textContent);
+    expect(hidden.filter((t) => t === 'Loading body capture settings')).toHaveLength(1);
+    expect(hidden.filter((t) => t?.startsWith('Loading'))).toHaveLength(1);
     expect(c.querySelector('.chip')).toBeNull();
     expect(c.textContent).not.toContain('never persisted');
     expect(c.textContent).not.toContain('Metadata-only');
     expect(c.textContent).not.toContain('Off by default');
-    expect(c.querySelectorAll('[aria-hidden="true"].ar-skel')).toHaveLength(2);
+    // Both blocks (the sentence's and the badge's) stay decorative.
+    const blocks = c.querySelectorAll('.fig-skel');
+    expect(blocks).toHaveLength(2);
+    for (const b of blocks) expect(b.getAttribute('aria-hidden')).toBe('true');
   });
 
   it('claims nothing after a failed status read: the error line, no sentence, no badge', async () => {
@@ -351,15 +360,48 @@ describe('Settings layout: the compact bodies card', () => {
     const c = card(host);
     expect(c.getAttribute('aria-busy')).toBeNull();
     expect(c.querySelector('.chip')).toBeNull();
-    expect(c.querySelector('.ar-skel')).toBeNull();
+    expect(c.querySelector('.fig-skel')).toBeNull();
+    expect(c.textContent).not.toContain('Loading');
     expect(c.textContent).not.toContain('never persisted');
     expect(c.textContent).not.toContain('Metadata-only');
-    const line = [...c.querySelectorAll<HTMLElement>('span')].find(
-      (s) => s.textContent === 'capture status unavailable',
+    expect(c.textContent).not.toContain('Off by default');
+    // The line leads with what failed, then the server's message (adopt-figure-states 3.6,
+    // D5), with the rendered U+2019.
+    const line = [...c.querySelectorAll<HTMLElement>('span')].find((s) =>
+      s.textContent?.includes('capture status unavailable'),
     );
     expect(line, 'the read error is shown').toBeDefined();
+    expect(line!.textContent?.replace(/\s+/g, ' ').trim()).toBe(
+      'Body capture settings couldn’t be loaded. capture status unavailable',
+    );
     // Status text, so the text variant: the --red fill reads 3.75–3.91:1 as small text.
     expect(line!.getAttribute('style')).toContain('var(--red-text)');
+    // Configuration, not a figure: no notice and no Retry.
+    expect(c.querySelector('.notice')).toBeNull();
+    expect([...c.querySelectorAll('button')].map((b) => b.textContent?.trim())).not.toContain(
+      'Retry',
+    );
+  });
+
+  it('a failed mode change after a good read shows its own message, without the lead-in', async () => {
+    const { host, fake } = await mount({ body: { mode: 'all' } });
+    vi.spyOn(fake, 'bodyCaptureUpdate').mockImplementation(() =>
+      Promise.reject(new Error('mode change refused')),
+    );
+    const c = card(host);
+    // `all` to `errors_only` needs no consent, so the write goes straight out.
+    const radios = c.querySelectorAll<HTMLInputElement>('input[name="bc-mode"]');
+    radios[1]!.click();
+    await flush();
+    const line = [...c.querySelectorAll<HTMLElement>('span')].find(
+      (s) => s.textContent === 'mode change refused',
+    );
+    expect(line, 'the mutation error is shown').toBeDefined();
+    expect(line!.getAttribute('style')).toContain('var(--red-text)');
+    expect(c.textContent).not.toContain('couldn’t be loaded');
+    // The good read still stands: its sentence and badge stay.
+    expect(c.textContent).toContain('Off by default');
+    expect(c.querySelector('.chip')?.textContent).toBe('Bodies captured');
   });
 
   it('sets the on badge in the amber text token, never the amber fill', async () => {

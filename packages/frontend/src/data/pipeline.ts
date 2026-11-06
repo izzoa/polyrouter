@@ -14,6 +14,7 @@ import {
   type TargetCatalog,
 } from './bandTargets';
 import { toCalibrationVm } from './calibration';
+import { share } from './figures';
 import { targetLabel } from './targetsMatrix';
 import { workloadVms } from './workloadTargets';
 import type { Range } from '../types';
@@ -37,23 +38,25 @@ export type ExitKey = 'workload' | 'structural' | 'semantic' | 'cascade' | 'defa
 
 /** Which designed state the measured figures are in.
  * - `absent` — the structural capability is off instance-wide: no figure renders;
- * - `error` — the load failed: a notice and Retry, no figure from an earlier load;
+ * - `error` — the load failed: a notice and Retry, and no per-stage figure at all, from
+ *   this load or an earlier one;
  * - `loading` — no data for the selected range yet: placeholders;
- * - `zero` — no evaluated rows in the range: zero counts, "—" shares, no bar;
- * - `unavailable` — loaded, but the server sent no `exits` (an older server): the
- *   per-stage counts are unavailable, never zero, while every other figure renders;
+ * - `zero` — no evaluated rows in the range: zero counts, `not applicable` shares, no bar;
+ * - `unavailable` — loaded, but the server sent no `exits` (an older server): stages 2–6
+ *   render no per-stage figure (never a zero, never a lone dash) and the panel's notice
+ *   says the counts are unavailable, while every other figure renders;
  * - `ready` — every figure renders. */
 export type MeasuredState = 'absent' | 'error' | 'loading' | 'zero' | 'unavailable' | 'ready';
 
 /** A stage row's routed-here figure. */
 export type StageFigure =
-  /** `share` is of evaluated — "—" when nothing was evaluated, never `NaN%`;
-   * null on Classify, whose count IS the evaluated total. */
+  /** `share` is of evaluated — `not applicable` when nothing was evaluated, never `NaN%`
+   * or a dash; null on Classify, whose count IS the evaluated total. */
   | { kind: 'count'; count: number; share: string | null }
   | { kind: 'placeholder' }
-  /** No figure can be shown (a failed load, or no `exits` block). */
-  | { kind: 'unavailable' }
-  /** The capability is absent — the row carries no figure slot at all. */
+  /** The row carries no figure slot at all, visible or hidden: the capability is absent,
+   * the load failed, or the server sent no stage breakdown. The panel-level notice names
+   * the state (adopt-figure-states D5), so no stage draws a lone dash for it. */
   | { kind: 'none' };
 
 /** Why a stage is not running, stated in text — never as a dimming style.
@@ -272,11 +275,6 @@ function routesLine(routes: SetupRoute[]): string {
   return routes.map((r) => `${r.from}: ${r.to}`).join(' · ');
 }
 
-/** Share of evaluated, whole percent — "—" when nothing was evaluated. */
-function shareOf(n: number, evaluated: number): string {
-  return evaluated === 0 ? '—' : `${((n / evaluated) * 100).toFixed(0)}%`;
-}
-
 function measuredState(input: PipelineInput): MeasuredState {
   const { autoLayers, autoPerf } = input;
   if (autoLayers !== null && !autoLayers.structuralAvailable) return 'absent';
@@ -295,22 +293,22 @@ function figureFor(
 ): StageFigure {
   switch (measured) {
     case 'absent':
-      return { kind: 'none' };
     case 'error':
-      return { kind: 'unavailable' };
+      return { kind: 'none' };
     case 'loading':
       return { kind: 'placeholder' };
     case 'zero':
       // The exits partition `evaluated`, so with nothing evaluated every exit
-      // is a true 0 — whether or not the server sent the block.
-      return { kind: 'count', count: 0, share: exit === null ? null : '—' };
+      // is a true 0 — whether or not the server sent the block. Its share of
+      // nothing is `not applicable`.
+      return { kind: 'count', count: 0, share: exit === null ? null : share(0, 0) };
     case 'unavailable':
     case 'ready': {
       if (data === null) return { kind: 'placeholder' };
       if (exit === null) return { kind: 'count', count: data.evaluated, share: null };
-      if (data.exits === undefined) return { kind: 'unavailable' };
+      if (data.exits === undefined) return { kind: 'none' };
       const count = data.exits[exit];
-      return { kind: 'count', count, share: shareOf(count, data.evaluated) };
+      return { kind: 'count', count, share: share(count, data.evaluated) };
     }
   }
 }

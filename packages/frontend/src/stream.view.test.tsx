@@ -6,6 +6,7 @@ import type { EventSourceFactory, EventSourceLike } from './data/eventStream';
 import { createAppStore, type AppStore } from './state/appState';
 import { AppProvider } from './state/context';
 import { DEFAULT_SESSION, FakeApiClient } from './test/fakeClient';
+import { expectBackgroundQuiet, overviewShown } from './test/backgroundQuiet';
 
 /**
  * phase2-add-dashboard-event-stream, end to end in the store + view: the stream
@@ -112,13 +113,13 @@ describe('the event stream drives the live view', () => {
 
   const boot = async (
     client = new FakeApiClient(),
-  ): Promise<{ store: AppStore; dispose: () => void }> => {
+  ): Promise<{ store: AppStore; host: HTMLElement; dispose: () => void }> => {
     const store = createAppStore(client);
     store.setStreamFactory(factory);
-    const { dispose } = mount(store);
+    const { host, dispose } = mount(store);
     await vi.advanceTimersByTimeAsync(0);
     await flush();
-    return { store, dispose };
+    return { store, host, dispose };
   };
 
   it('suspends the fast in-flight poll while the stream is healthy, and resumes it on degradation', async () => {
@@ -310,22 +311,29 @@ describe('the event stream drives the live view', () => {
 
   it('closes the stream when hidden (releasing a SHARED connection slot) and reconnects on return', async () => {
     const client = new FakeApiClient();
-    const { store, dispose } = await boot(client);
+    const { store, host, dispose } = await boot(client);
     try {
       FakeSource.last?.emit('snapshot', SNAPSHOT());
       await flush();
       const first = FakeSource.last;
       expect(store.state.streamHealth).toBe('live');
+      // A closed stream is not a failed read (adopt-figure-states 3.7): the Overview figures
+      // and the request rows already shown stay.
+      const shown = overviewShown(host);
 
       setVisible(false);
       await flush();
       expect(first?.closed).toBe(true); // released, not merely paused
       expect(store.state.streamHealth).toBe('polling');
+      await vi.advanceTimersByTimeAsync(30_000);
+      await flush();
+      expectBackgroundQuiet(host, shown, 'with the stream closed');
 
       const created = FakeSource.created;
       setVisible(true);
       await flush();
       expect(FakeSource.created).toBe(created + 1); // a fresh connection + re-snapshot
+      expectBackgroundQuiet(host, shown, 'on reconnect');
     } finally {
       dispose();
     }
@@ -358,16 +366,25 @@ describe('the event stream drives the live view', () => {
     store.setStreamFactory(() => {
       throw new Error('unavailable');
     });
-    const { dispose } = mount(store);
+    const { host, dispose } = mount(store);
     try {
       await vi.advanceTimersByTimeAsync(0);
       await flush();
       expect(store.state.streamHealth).toBe('polling');
+      // A stream that never connected is not a failed read (adopt-figure-states 3.7).
+      const shown = overviewShown(host);
       const polled = client.countOf('inflight');
       await vi.advanceTimersByTimeAsync(6_000);
       await flush();
       // The fast poll carries the live view exactly as before the stream existed.
       expect(client.countOf('inflight')).toBeGreaterThan(polled);
+      expectBackgroundQuiet(host, shown, 'with no stream');
+      // An idle aggregate poll, one that returns nothing new, keeps them too.
+      const summaries = client.countOf('summary');
+      await vi.advanceTimersByTimeAsync(15_000);
+      await flush();
+      expect(client.countOf('summary'), 'the aggregate poll ran').toBeGreaterThan(summaries);
+      expectBackgroundQuiet(host, shown, 'after an idle poll with no stream');
     } finally {
       dispose();
     }

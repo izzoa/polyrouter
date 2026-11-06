@@ -8,6 +8,8 @@ import { fakeBudgetProgress } from './test/budgetProgressFixture';
 import type { BudgetDto } from './data/api';
 import type { BudgetProgressResponse } from '@polyrouter/shared';
 import type { EventSourceLike } from './data/eventStream';
+import { ApiError } from './data/api';
+import { openAutoTab } from './test/routingTabs';
 
 const budget: BudgetDto = {
   id: 'a-budget',
@@ -285,11 +287,170 @@ describe('Limits progress integrated lifecycle', () => {
       await run;
       await vi.advanceTimersByTimeAsync(1000);
       await flush();
-      expect(v.host.textContent).toContain('Period ended');
+      expect(v.host.textContent).toContain('expired · awaiting refresh');
+      expect(v.host.textContent).not.toContain('Period ended');
       expect(v.host.textContent).not.toContain('$12.60 remaining');
       expect(v.host.querySelector('.budget-figure')).toBeNull();
     } finally {
       v.dispose();
+    }
+  });
+  it('the no-snapshot Retry leaves focus on its card’s progress region while the reload runs and after it commits (adopt-figure-states 5.4)', async () => {
+    const client = new FakeApiClient({ budgets: [budget] });
+    client.progressReply = () => Promise.reject(new Error('progress down'));
+    const v = await boot(client);
+    try {
+      const card = v.host.querySelector<HTMLElement>('article.budget-card')!;
+      const region = card.querySelector<HTMLElement>('[data-testid="budget-progress"]')!;
+      expect(card.querySelector('.budget-progress-status p')?.textContent).toBe(
+        'Budget progress couldn’t be loaded.',
+      );
+      expect(region.getAttribute('tabindex')).toBe('-1');
+      const hold = deferred<BudgetProgressResponse>();
+      client.progressReply = () => hold.promise;
+      const retry = [...card.querySelectorAll<HTMLButtonElement>('button')].find(
+        (b) => b.textContent?.trim() === 'Retry progress',
+      )!;
+      retry.focus();
+      expect(document.activeElement).toBe(retry);
+      retry.click();
+      await flush();
+      // The Retry is hidden while its reload runs; focus is on the region, not <body>.
+      expect(retry.isConnected).toBe(false);
+      expect(card.querySelector('.budget-progress-status .sr-only')?.textContent).toBe(
+        'Loading budget progress',
+      );
+      expect(document.activeElement).not.toBe(document.body);
+      expect(document.activeElement).toBe(region);
+      const asOf = new Date().toISOString();
+      hold.resolve({ asOf, results: [fakeBudgetProgress(budget, asOf, 12400000)] });
+      await flush();
+      await vi.advanceTimersByTimeAsync(0);
+      await flush();
+      expect(card.textContent).toContain('$12.40');
+      expect(document.activeElement).toBe(region);
+    } finally {
+      v.dispose();
+    }
+  });
+
+  // The loader marks a card loading only when that card's 20-budget chunk starts, so the 21st
+  // card's Retry unmounts one chunk later than the click. The hand-off must follow the unmount.
+  it('the no-snapshot Retry on a card in a later chunk still hands focus to its region when the button goes', async () => {
+    const budgets: BudgetDto[] = Array.from({ length: 21 }, (_, i) => ({
+      ...budget,
+      id: `b-${String(i + 1).padStart(2, '0')}`,
+      name: `Budget ${String(i + 1)}`,
+    }));
+    const client = new FakeApiClient({ budgets });
+    client.progressReply = () => Promise.reject(new Error('progress down'));
+    const v = await boot(client);
+    try {
+      const card = [...v.host.querySelectorAll<HTMLElement>('article.budget-card')].find((c) =>
+        c.textContent?.includes('Budget 21'),
+      )!;
+      expect(card.querySelector('.budget-progress-status p')?.textContent).toBe(
+        'Budget progress couldn’t be loaded.',
+      );
+      const region = card.querySelector<HTMLElement>('[data-testid="budget-progress"]')!;
+      const chunks: {
+        ids: readonly string[];
+        d: ReturnType<typeof deferred<BudgetProgressResponse>>;
+      }[] = [];
+      client.progressReply = (ids) => {
+        const d = deferred<BudgetProgressResponse>();
+        chunks.push({ ids, d });
+        return d.promise;
+      };
+      const retry = [...card.querySelectorAll<HTMLButtonElement>('button')].find(
+        (b) => b.textContent?.trim() === 'Retry progress',
+      )!;
+      retry.focus();
+      retry.click();
+      await flush();
+      // The first chunk (20 budgets) is in flight; this card's Retry is still there.
+      expect(chunks.map((c) => c.ids.length)).toEqual([20]);
+      expect(retry.isConnected).toBe(true);
+      expect(document.activeElement).toBe(retry);
+      const asOf = new Date().toISOString();
+      chunks[0]!.d.resolve({
+        asOf,
+        results: budgets.slice(0, 20).map((b) => fakeBudgetProgress(b, asOf, 1_000_000)),
+      });
+      await flush();
+      // The second chunk starts: this card loads, its Retry goes, and focus is on the region.
+      expect(chunks.map((c) => c.ids)).toEqual([budgets.slice(0, 20).map((b) => b.id), ['b-21']]);
+      expect(retry.isConnected).toBe(false);
+      expect(document.activeElement).not.toBe(document.body);
+      expect(document.activeElement).toBe(region);
+      chunks[1]!.d.resolve({ asOf, results: [fakeBudgetProgress(budgets[20]!, asOf, 12400000)] });
+      await flush();
+      await vi.advanceTimersByTimeAsync(0);
+      await flush();
+      expect(card.textContent).toContain('$12.40');
+      expect(document.activeElement).toBe(region);
+    } finally {
+      v.dispose();
+    }
+  });
+
+  it('the card’s configured amount reads at cents, never `$0.00`, `$0.005` or `$1e-7` (adopt-figure-states 5.4)', async () => {
+    const budgets: BudgetDto[] = [
+      { ...budget, id: 'b-25', name: 'Twenty-five', amount: 25 },
+      { ...budget, id: 'b-half-cent', name: 'Half a cent', amount: 0.005 },
+      { ...budget, id: 'b-tiny', name: 'Tiny', amount: 0.0000001 },
+    ];
+    const v = await boot(new FakeApiClient({ budgets }));
+    try {
+      const line = (name: string): string =>
+        [...v.host.querySelectorAll<HTMLElement>('article.budget-card')]
+          .find((a) => a.getAttribute('aria-label') === name)
+          ?.querySelector('[data-testid="budget-config"]')
+          ?.textContent?.replace(/\s+/g, ' ')
+          .trim() ?? '';
+      expect(line('Twenty-five')).toBe('Budget $25.00 / day');
+      expect(line('Half a cent')).toBe('Budget <$0.01 / day');
+      expect(line('Tiny')).toBe('Budget <$0.01 / day');
+      for (const n of ['Half a cent', 'Tiny']) expect(line(n)).not.toMatch(/\$0\.00|\$0\.005|1e-7/);
+    } finally {
+      v.dispose();
+    }
+  });
+});
+
+describe('a surface that does not retain data never shows stale (adopt-figure-states 5.4)', () => {
+  it('the Routing aggregation failure is the failed state, with no stale caption', async () => {
+    const fake = new FakeApiClient();
+    fake.analyticsFailure = new ApiError(504, 'Gateway Timeout', 'the analytics query timed out');
+    const store = createAppStore(fake);
+    store.go('routing');
+    const host = document.createElement('div');
+    document.body.append(host);
+    const dispose = render(
+      () => (
+        <AppProvider store={store}>
+          <App live={false} />
+        </AppProvider>
+      ),
+      host,
+    );
+    const view = {
+      host,
+      dispose: () => {
+        dispose();
+        host.remove();
+      },
+    };
+    try {
+      for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 0));
+      await openAutoTab(view.host);
+      const pipeline = view.host.querySelector<HTMLElement>('[data-testid="auto-pipeline"]')!;
+      expect(pipeline.querySelector('[data-testid="auto-load-error"]')).not.toBeNull();
+      expect(pipeline.textContent).not.toMatch(/stale|as of \d/);
+      expect(view.host.querySelector('[data-testid="budget-stale"]')).toBeNull();
+    } finally {
+      view.dispose();
+      document.body.innerHTML = '';
     }
   });
 });

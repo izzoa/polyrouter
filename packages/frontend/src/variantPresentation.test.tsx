@@ -167,6 +167,163 @@ describe('Providers page — a batch twin is a price, not a model', () => {
   });
 });
 
+describe('Providers page — a free price names itself in words (adopt-figure-states 5.1)', () => {
+  const freePrice = (estimated: boolean): ModelDto['effectivePrice'] => ({
+    inputPricePer1m: 0,
+    outputPricePer1m: 0,
+    isFree: true,
+    source: estimated ? 'listed' : 'local',
+    estimated,
+  });
+  /** A line's parts: each no-wrap span's text and its own colour ('' = the line's ink). */
+  const parts = (el: Element | null): [string, string][] =>
+    [...(el?.querySelectorAll<HTMLElement>('span') ?? [])]
+      .filter((sp) => sp.children.length === 0 && !sp.classList.contains('sr-only'))
+      .map((sp) => [sp.textContent ?? '', sp.style.color]);
+  const openModels = async (models: ModelDto[]): Promise<Harness> => {
+    const harness = await mountProviders(models);
+    [...harness.host.querySelectorAll('button')]
+      .find((b) => /^Models$/.test(b.textContent ?? ''))
+      ?.click();
+    await flush();
+    return harness;
+  };
+
+  it('a free model reads `$0 free`: only `free` is green, `$0` keeps the line’s Ink 3', async () => {
+    const local = mkModel({
+      id: 'm-local',
+      externalModelId: 'llama-3.3-70b',
+      isFree: true,
+      effectivePrice: freePrice(false),
+    });
+    const listed = mkModel({
+      id: 'm-listed',
+      externalModelId: 'meta/llama:free',
+      variant: 'free',
+      effectivePrice: freePrice(true),
+    });
+    h = await openModels([local, listed]);
+    const line = (id: string): HTMLElement =>
+      h!.host.querySelector<HTMLElement>(`[data-price-line="${id}"]`)!;
+    expect(line('llama-3.3-70b').textContent).toBe('$0 free');
+    expect(line('llama-3.3-70b').style.color).toBe('var(--text3)');
+    expect(parts(line('llama-3.3-70b'))).toEqual([
+      ['$0', ''],
+      ['free', 'var(--green-text)'],
+    ]);
+    // An estimated free price is still marked as an estimate, in Ink 3.
+    expect(line('meta/llama:free').textContent).toBe('$0 free · est.');
+    expect(parts(line('meta/llama:free'))).toEqual([
+      ['$0', ''],
+      ['free', 'var(--green-text)'],
+      ['· est.', 'var(--text3)'],
+    ]);
+    // Provenance prose is unchanged.
+    expect(h.host.textContent).toContain('local model — free');
+  });
+
+  it('a free batch rate reads `batch rate · $0 free`, an unknown one `batch rate · unpriced`', async () => {
+    const twin = (id: string, base: string, price: ModelDto['effectivePrice']): ModelDto =>
+      mkModel({
+        id,
+        externalModelId: `${base}:batch`,
+        variant: 'batch',
+        baseExternalModelId: base,
+        effectivePrice: price,
+      });
+    // The line reads the BASE model's batch-mode price; the twin only says a batch tier
+    // exists. Each twin here carries the opposite of its base's batch price, so a line that
+    // read the twin would fail.
+    h = await openModels([
+      mkModel({
+        id: 'b1',
+        externalModelId: 'org/free-base',
+        effectivePrice: freePrice(false),
+        batchEffectivePrice: freePrice(false),
+      }),
+      twin('t1', 'org/free-base', null),
+      mkModel({ id: 'b2', externalModelId: 'org/unpriced-base', batchEffectivePrice: null }),
+      twin('t2', 'org/unpriced-base', freePrice(false)),
+    ]);
+    const free = h.host.querySelector('[data-batch-rate="org/free-base"]')!;
+    expect(free.textContent).toContain('batch rate · $0 free · not routable');
+    expect(parts(free)).toEqual([
+      ['batch rate ·', ''],
+      ['$0', ''],
+      ['free', 'var(--green-text)'],
+    ]);
+    const unpriced = h.host.querySelector('[data-batch-rate="org/unpriced-base"]')!;
+    expect(unpriced.textContent).toContain('batch rate · unpriced · not routable');
+    expect(parts(unpriced)).toEqual([
+      ['batch rate ·', ''],
+      ['unpriced', 'var(--text3)'],
+    ]);
+    // The retired dash forms are gone.
+    expect(h.host.textContent).not.toMatch(/batch rate — /);
+    // Provenance prose for an unpriced model is unchanged.
+    expect(h.host.textContent).toContain('unpriced — cost not tracked');
+  });
+
+  // A priced batch rate is a price label like any other (dashboard-core "An estimate is
+  // marked by its axis"): `· est.` in Ink 3 exactly when the batch price was estimated, never
+  // the worded `· estimate`, and never on an exact catalog batch rate.
+  it('a priced batch rate reads its batch-mode price, with `· est.` only when it was estimated', async () => {
+    const batchPrice = (
+      input: number,
+      output: number,
+      estimated: boolean,
+    ): ModelDto['effectivePrice'] => ({
+      inputPricePer1m: input,
+      outputPricePer1m: output,
+      isFree: false,
+      source: estimated ? 'listed' : 'bundled',
+      estimated,
+    });
+    const twin = (id: string, base: string, price: ModelDto['effectivePrice']): ModelDto =>
+      mkModel({
+        id,
+        externalModelId: `${base}:batch`,
+        variant: 'batch',
+        baseExternalModelId: base,
+        effectivePrice: price,
+      });
+    h = await openModels([
+      // An exact catalog batch pair on the base, and a twin with no synchronous price of its
+      // own: the line shows the exact rate, unmarked, never `unpriced`.
+      mkModel({
+        id: 'b-exact',
+        externalModelId: 'org/exact-base',
+        effectivePrice: batchPrice(10, 50, false),
+        batchEffectivePrice: batchPrice(5, 25, false),
+      }),
+      twin('t-exact', 'org/exact-base', null),
+      // An estimated batch price (the twin's captured rate, resolved as `listed`).
+      mkModel({
+        id: 'b-est',
+        externalModelId: 'org/est-base',
+        effectivePrice: batchPrice(2, 8, false),
+        batchEffectivePrice: batchPrice(1, 4, true),
+      }),
+      twin('t-est', 'org/est-base', batchPrice(1, 4, true)),
+    ]);
+    const exact = h.host.querySelector('[data-batch-rate="org/exact-base"]')!;
+    expect(exact.textContent).toContain('batch rate · $5 / $25 per 1M · not routable');
+    expect(parts(exact)).toEqual([
+      ['batch rate ·', ''],
+      ['$5 / $25 per 1M', ''],
+    ]);
+    expect(exact.textContent).not.toMatch(/est|unpriced/);
+    const est = h.host.querySelector('[data-batch-rate="org/est-base"]')!;
+    expect(est.textContent).toContain('batch rate · $1 / $4 per 1M · est. · not routable');
+    expect(parts(est)).toEqual([
+      ['batch rate ·', ''],
+      ['$1 / $4 per 1M', ''],
+      ['· est.', 'var(--text3)'],
+    ]);
+    expect(h.host.textContent).not.toContain('· estimate ·');
+  });
+});
+
 describe('routing target pickers exclude what cannot serve', () => {
   it('drops batch twins from the picker groups and keeps routable variants', () => {
     const groups = groupModelsByProvider(

@@ -4,9 +4,9 @@ import {
   escalationRate,
   fallbackRate,
   filterToRequestParams,
-  pct,
   NOT_BILLED_LABEL,
   rowCostLabel,
+  rowCostParts,
   isTerminalSkip,
   successRate,
   timeseriesToChart,
@@ -15,7 +15,6 @@ import {
   toInspectorView,
 } from './analytics';
 import {
-  fmtMicros,
   labelOf,
   totalCostMicros,
   type AnalyticsSummary,
@@ -112,8 +111,6 @@ describe('summary-derived rates', () => {
   it('guards an empty range (requests === 0 → 0, never NaN)', () => {
     const empty: AnalyticsSummary = { ...SUMMARY, requests: 0, successCount: 0 };
     expect(successRate(empty)).toBe(0);
-    expect(pct(0, 0)).toBe('0.0%');
-    expect(pct(24, 30)).toBe('80.0%');
   });
 });
 
@@ -203,17 +200,161 @@ describe('cost helpers', () => {
     expect(totalCostMicros({ cost: 0, attemptCostMicros: 0 })).toBe(0);
   });
 
-  it('fmtMicros + labelOf', () => {
-    expect(fmtMicros(1_234_000)).toBe('$1.2340');
-    expect(fmtMicros(0)).toBe('$0.0000');
+  it('labelOf', () => {
     expect(labelOf('GPT', 'm1')).toBe('GPT');
     expect(labelOf(null, 'm1')).toBe('m1');
     expect(labelOf(null, null)).toBe('unknown');
   });
 
-  it('rowCostLabel shows the total and a ~ when usage is estimated', () => {
+  it('rowCostLabel shows the total, with `· est.` only for an estimated price, never for usage (adopt-figure-states 2.1)', () => {
     expect(rowCostLabel(ROW)).toBe('$0.0020');
-    expect(rowCostLabel({ ...ROW, usageEstimated: true })).toBe('$0.0020~');
+    // A usage-only estimate is marked on the tokens cell, never on the money.
+    expect(rowCostLabel({ ...ROW, usageEstimated: true })).toBe('$0.0020');
+    expect(rowCostLabel({ ...ROW, priceEstimated: true })).toBe('$0.0020 · est.');
+    expect(rowCostLabel({ ...ROW, usageEstimated: true, priceEstimated: true })).toBe(
+      '$0.0020 · est.',
+    );
+  });
+});
+
+/** adopt-figure-states task 2.1: the table's cost cell and the inspector's total read one
+ * cost state (`requestCostState`), in the vocabulary's words. */
+describe('the request cost state reaches the table and the inspector (adopt-figure-states 2.1)', () => {
+  const FREE_ROW: RequestRow = {
+    ...ROW,
+    id: 'free',
+    cost: 0,
+    attemptCostMicros: 0,
+    inputPriceSnapshot: 0,
+    outputPriceSnapshot: 0,
+    priceSource: 'bundled',
+  };
+
+  it('a free row reads `$0 free`, and a free row priced `listed` reads `$0 free · est.`', () => {
+    expect(rowCostLabel(FREE_ROW)).toBe('$0 free');
+    expect(toInspectorView(FREE_ROW).totalCost).toBe('$0 free');
+    const listed: RequestRow = { ...FREE_ROW, priceSource: 'listed', priceEstimated: true };
+    expect(rowCostLabel(listed)).toBe('$0 free · est.');
+    expect(toInspectorView(listed).totalCost).toBe('$0 free · est.');
+  });
+
+  it('a null-cost row reads `unpriced`, even with attempt cost, and the attempt line keeps that cost', () => {
+    const r: RequestRow = { ...ROW, cost: null, attemptCostMicros: 250, priceEstimated: true };
+    expect(rowCostLabel(r)).toBe('unpriced');
+    expect(toInspectorView(r).totalCost).toBe('unpriced');
+    expect(toInspectorView(r).servedCost).toBe('unpriced');
+    expect(toInspectorView(r).attemptCost).toBe('$0.0003 · est.');
+  });
+
+  it('a 40 µ$ row reads `<$0.0001`, never `$0.0000`', () => {
+    const r: RequestRow = { ...ROW, cost: 0.00004, attemptCostMicros: 0 };
+    expect(rowCostLabel(r)).toBe('<$0.0001');
+    expect(toInspectorView(r).totalCost).toBe('<$0.0001');
+    expect(toInspectorView(r).servedCost).toBe('<$0.0001');
+  });
+
+  it('a usage-only estimated row has no `· est.` on any money figure', () => {
+    const r: RequestRow = { ...ROW, usageEstimated: true, priceEstimated: false };
+    const v = toInspectorView(r);
+    expect(rowCostLabel(r)).not.toContain('est.');
+    expect(v.totalCost).not.toContain('est.');
+    expect(v.servedCost).not.toContain('est.');
+    expect(v.attemptCost).not.toContain('est.');
+    expect(v.usageEstimated).toBe(true);
+  });
+
+  it('a legacy `billed = null` row with a `native_family` price reads `· est.`', () => {
+    const r: RequestRow = {
+      ...ROW,
+      status: 'error',
+      billed: null,
+      usageEstimated: true,
+      cost: 0.0042,
+      priceSource: 'native_family',
+      priceEstimated: true,
+    };
+    expect(rowCostLabel(r)).toBe('$0.0042 · est.');
+    expect(toInspectorView(r).totalCost).toBe('$0.0042 · est.');
+    expect(rowCostLabel(r)).not.toContain('~');
+  });
+
+  it('marks the served cost when the SERVED price was estimated, and the attempt line when only an attempt could have been', () => {
+    const served: RequestRow = { ...ROW, priceSource: 'native_family', priceEstimated: true };
+    expect(toInspectorView(served).servedCost).toBe('$0.0020 · est.');
+    // An exact served call beside a native-priced superseded attempt: the flag can only
+    // have come from the attempt ledger, so the attempt line carries the marker, not served.
+    const attemptOnly: RequestRow = {
+      ...ROW,
+      priceSource: 'bundled',
+      priceEstimated: true,
+      attemptCostMicros: 1_500,
+    };
+    expect(toInspectorView(attemptOnly).servedCost).toBe('$0.0020');
+    expect(toInspectorView(attemptOnly).attemptCost).toBe('$0.0015 · est.');
+    expect(toInspectorView(attemptOnly).totalCost).toBe('$0.0035 · est.');
+    // No attempt cost: nothing to mark on the attempt line.
+    expect(toInspectorView({ ...attemptOnly, attemptCostMicros: 0 }).attemptCost).toBe('$0.0000');
+  });
+
+  it('the table label equals the inspector total, as text and as parts, for every row in a fixture matrix', () => {
+    const billed: (boolean | null)[] = [true, false, null];
+    const costs: (number | null)[] = [null, 0, 0.00004, 0.0042];
+    const attempts = [0, 250];
+    const snapshots: [number | null, number | null][] = [
+      [0, 0],
+      [1.5, 6],
+      [null, null],
+    ];
+    const sources: [string | null, boolean][] = [
+      [null, false],
+      ['bundled', false],
+      ['bundled', true], // an attempt-only estimate
+      ['native_family', true],
+      ['listed', true],
+    ];
+    let checked = 0;
+    for (const b of billed)
+      for (const cost of costs)
+        for (const attemptCostMicros of attempts)
+          for (const [inputPriceSnapshot, outputPriceSnapshot] of snapshots)
+            for (const [priceSource, priceEstimated] of sources)
+              for (const usageEstimated of [false, true]) {
+                const r: RequestRow = {
+                  ...ROW,
+                  billed: b,
+                  cost,
+                  attemptCostMicros,
+                  inputPriceSnapshot,
+                  outputPriceSnapshot,
+                  priceSource,
+                  priceEstimated,
+                  usageEstimated,
+                };
+                const v = toInspectorView(r);
+                expect(v.totalCost).toBe(rowCostLabel(r));
+                expect(v.totalParts).toEqual(rowCostParts(r));
+                expect(rowCostLabel(r)).not.toContain('~');
+                checked += 1;
+              }
+    expect(checked).toBe(3 * 4 * 2 * 3 * 5 * 2);
+  });
+
+  it('exposes every inspector figure and price row as parts whose joined text is the string', () => {
+    const v = toInspectorView({ ...FREE_ROW, priceSource: 'listed', priceEstimated: true });
+    for (const [text, parts] of [
+      [v.servedCost, v.servedParts],
+      [v.attemptCost, v.attemptParts],
+      [v.totalCost, v.totalParts],
+      ...v.prices.map((p) => [p.value, p.parts] as const),
+    ] as const) {
+      expect(parts.map((p) => p.text).join(' ')).toBe(text);
+    }
+    expect(v.totalParts).toEqual([
+      { text: '$0', tone: 'slot' },
+      { text: 'free', tone: 'green' },
+      { text: '· est.', tone: 'ink3' },
+    ]);
+    expect(v.prices[0]!.parts).toEqual(v.totalParts);
   });
 });
 
@@ -587,7 +728,8 @@ describe('not-billed rows (zero-cost-unbilled-errors)', () => {
     expect(v.totalCost).toBe('$0.0015 · est.');
     expect(v.totalMicros).toBe(1_500);
     expect(rowCostLabel(parent)).not.toContain('not billed');
-    expect(rowCostLabel(parent)).toBe('$0.0015~');
+    // adopt-figure-states: the table reads the same state, in the same words, as the total.
+    expect(rowCostLabel(parent)).toBe('$0.0015 · est.');
     // Without any estimate marker the same total is a plain amount.
     const exact: RequestRow = {
       ...parent,
@@ -600,8 +742,18 @@ describe('not-billed rows (zero-cost-unbilled-errors)', () => {
     expect(toInspectorView(exact).servedCost).toBe('$0 · not billed');
   });
 
-  it('free and legacy rows are unchanged, and only a `billed = false` row reads not billed', () => {
-    const free: RequestRow = { ...ROW, id: 'free', cost: 0, billed: true };
+  it('free and legacy rows read the vocabulary, and only a `billed = false` row reads not billed', () => {
+    // adopt-figure-states (MODIFIED "Free and legacy rows are unchanged"): a free-model row
+    // has both price snapshots at zero, and reads `$0 free`; a legacy estimated row priced
+    // `native_family` reads `· est.` on its money (its usage is marked on the tokens cell).
+    const free: RequestRow = {
+      ...ROW,
+      id: 'free',
+      cost: 0,
+      billed: true,
+      inputPriceSnapshot: 0,
+      outputPriceSnapshot: 0,
+    };
     const legacyEstimated: RequestRow = {
       ...ROW,
       id: 'legacy',
@@ -609,19 +761,23 @@ describe('not-billed rows (zero-cost-unbilled-errors)', () => {
       billed: null,
       usageEstimated: true,
       cost: 0.0042,
+      priceSource: 'native_family',
+      priceEstimated: true,
     };
     const legacyZero: RequestRow = { ...legacyEstimated, id: 'legacy0', cost: 0 };
     const paid: RequestRow = { ...ROW, id: 'paid', billed: true };
     // The not-billed row sits mid-collection: a pass here cannot come from index 0.
     const rows = [free, legacyEstimated, FIELD_REPORT, legacyZero, paid];
     expect(rows.map(rowCostLabel)).toEqual([
-      '$0.0000',
-      '$0.0042~',
+      '$0 free',
+      '$0.0042 · est.',
       '$0 · not billed',
-      // a legacy zero-cost row is NOT retroactively relabelled
-      '$0.0000~',
+      // a legacy zero-cost row at non-zero prices is a measured zero, NOT retroactively
+      // relabelled not billed
+      '$0.0000 · est.',
       '$0.0020',
     ]);
+    expect(rows.map(rowCostLabel).join(' ')).not.toContain('~');
     expect(rows.map((r) => toInspectorView(r).notBilled)).toEqual([
       false,
       false,
@@ -630,19 +786,13 @@ describe('not-billed rows (zero-cost-unbilled-errors)', () => {
       false,
     ]);
     expect(rows.map((r) => toInspectorView(r).servedCost)).toEqual([
-      '$0.0000',
-      '$0.0042',
+      '$0 free',
+      '$0.0042 · est.',
       '$0 · not billed',
-      '$0.0000',
+      '$0.0000 · est.',
       '$0.0020',
     ]);
-    expect(rows.map((r) => toInspectorView(r).totalCost)).toEqual([
-      '$0.0000',
-      '$0.0042',
-      '$0 · not billed',
-      '$0.0000',
-      '$0.0020',
-    ]);
+    expect(rows.map((r) => toInspectorView(r).totalCost)).toEqual(rows.map(rowCostLabel));
   });
 });
 

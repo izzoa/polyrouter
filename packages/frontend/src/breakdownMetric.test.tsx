@@ -11,7 +11,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { App } from './App';
 import { createAppStore, type AppStore } from './state/appState';
 import { AppProvider } from './state/context';
+import { ApiError } from './data/api';
 import { DEFAULT_SUMMARY, FakeApiClient } from './test/fakeClient';
+import { BarRows } from './components/BarRows';
+import { fmtTokensCompact } from './data/figures';
 
 const flush = async (): Promise<void> => {
   for (let i = 0; i < 4; i++) await new Promise((r) => setTimeout(r, 0));
@@ -160,7 +163,9 @@ describe('the panel copy follows the metric', () => {
         values.some((v) => v.includes('$')),
         'a token bar rendered a dollar value',
       ).toBe(false);
-      expect(values.some((v) => /[KM]$/.test(v))).toBe(true);
+      // Compact through the one formatter (adopt-figure-states 3.3, D8): `12.4k`, `1.2M`.
+      expect(values.some((v) => /^\d+(\.\d)?[kMB]$/.test(v))).toBe(true);
+      expect(values.some((v) => /K$|\.\d\dM$/.test(v))).toBe(false);
     } finally {
       h.dispose();
     }
@@ -182,23 +187,22 @@ describe('the Overview headline', () => {
     };
     const h = await mountPage('Overview', cached);
     try {
-      const expected =
-        (cached.inputTokens +
-          cached.outputTokens +
-          cached.cacheReadTokens +
-          cached.cacheWriteTokens) /
-        1e6;
-      const uncachedOnly = (cached.inputTokens + cached.outputTokens) / 1e6;
+      const expected = fmtTokensCompact(
+        cached.inputTokens + cached.outputTokens + cached.cacheReadTokens + cached.cacheWriteTokens,
+      );
+      const uncachedOnly = fmtTokensCompact(cached.inputTokens + cached.outputTokens);
       expect(
-        expected.toFixed(2),
+        expected,
         'the fixture renders identically either way — this test would prove nothing',
-      ).not.toBe(uncachedOnly.toFixed(2));
+      ).not.toBe(uncachedOnly);
 
       const values = [...h.host.querySelectorAll<HTMLElement>('.readout-figure')].map(
         (e) => e.textContent ?? '',
       );
-      expect(values).toContain(`${expected.toFixed(2)}M`);
-      expect(values).not.toContain(`${uncachedOnly.toFixed(2)}M`);
+      // Compact through the one formatter (adopt-figure-states 3.2): `600k`, not `0.60M`.
+      expect(values).toContain('600k');
+      expect(values).toContain(expected);
+      expect(values).not.toContain(uncachedOnly);
     } finally {
       h.dispose();
     }
@@ -271,9 +275,141 @@ describe('the Overview headline', () => {
       expect(panel?.textContent, 'stale rows rendered under the new heading').not.toContain(
         'Model 0',
       );
-      expect(panel?.textContent).toContain('Loading…');
+      // The shared skeleton, named for what loads (adopt-figure-states D5), not a bare
+      // visible `Loading…`.
+      expect(panel?.querySelector('.fig-skel')?.getAttribute('aria-hidden')).toBe('true');
+      expect(panel?.querySelector('.sr-only')?.textContent).toBe('Loading tokens by model');
+      expect(panel?.textContent).not.toContain('Loading…');
     } finally {
       h.dispose();
+    }
+  });
+});
+
+/** The breakdown bars are figures from their own read (adopt-figure-states D5): a failed first
+ * load ends in the failed state, never a `Loading…` that stays forever, and a failed refetch
+ * removes the bars it would have replaced rather than leaving them on screen as current. */
+describe('a failed breakdown read removes its bars, and never loads forever', () => {
+  const panels = (host: HTMLElement): HTMLElement[] =>
+    [...host.querySelectorAll<HTMLElement>('.panel.card')].filter((c) =>
+      /by model|by provider|by agent/i.test(c.querySelector('.section-title')?.textContent ?? ''),
+    );
+  const retryButton = (host: HTMLElement): HTMLButtonElement | undefined =>
+    [...host.querySelectorAll<HTMLButtonElement>('.notice button')].find(
+      (b) => b.textContent?.trim() === 'Retry',
+    );
+
+  it('a failed first load shows no bars, no skeleton and no Loading, and Retry loads them', async () => {
+    const fake = new FakeApiClient({ analyticsFailure: new ApiError(500, 'Internal', 'boom') });
+    const store = createAppStore(fake);
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const dispose = render(
+      () => (
+        <AppProvider store={store}>
+          <App live={false} />
+        </AppProvider>
+      ),
+      host,
+    );
+    try {
+      await flush();
+      [...host.querySelectorAll<HTMLElement>('.nav-item span')]
+        .find((e) => e.textContent?.trim() === 'Costs')
+        ?.click();
+      await flush();
+      expect(store.state.breakdownLoadedFor).toBeNull();
+      const failed = panels(host);
+      expect(failed).toHaveLength(3);
+      for (const p of failed) {
+        expect(p.querySelector('.fig-skel, .bar-track')).toBeNull();
+        expect(p.textContent).not.toMatch(/Loading|No spend|No usage|\$/);
+      }
+      expect(host.querySelector('.notice-body')?.textContent).toBe(
+        'Cost analytics couldn’t be loaded. Routing is unaffected.',
+      );
+      // Retry: the bars load as skeletons named for what loads, then commit.
+      fake.analyticsFailure = null;
+      retryButton(host)!.click();
+      await Promise.resolve();
+      expect(panels(host).map((p) => p.querySelector('.sr-only')?.textContent)).toEqual([
+        'Loading spend by model',
+        'Loading spend by provider',
+        'Loading spend by agent',
+      ]);
+      await flush();
+      expect(panels(host)[0]!.textContent).toContain('Model 0');
+      expect(host.querySelector('.panel.card .fig-skel')).toBeNull();
+    } finally {
+      dispose();
+      host.remove();
+    }
+  });
+
+  it('a failed refetch for the same range removes the bars it would have replaced', async () => {
+    const h = await mountPage('Costs');
+    try {
+      expect(panels(h.host)[0]!.textContent).toContain('Model 0');
+      h.fake.analyticsFailure = new ApiError(500, 'Internal', 'boom');
+      await h.store.loadCosts();
+      await flush();
+      // The store keeps its last rows; the page must not show them as current.
+      expect(h.store.state.analyticsBreakdown.model.length).toBeGreaterThan(0);
+      for (const p of panels(h.host)) {
+        expect(p.querySelector('.fig-skel, .bar-track')).toBeNull();
+        expect(p.textContent).not.toMatch(/Model 0|Provider 0|agent-0|Loading/);
+      }
+      expect(h.host.querySelector('.notice')).not.toBeNull();
+    } finally {
+      h.dispose();
+    }
+  });
+
+  it('a refetch that succeeds keeps the bars on screen while it runs', async () => {
+    const h = await mountPage('Costs');
+    try {
+      const pending = h.store.loadCosts();
+      expect(h.store.state.analyticsBreakdownLoading).toBe(true);
+      expect(panels(h.host)[0]!.textContent).toContain('Model 0');
+      expect(panels(h.host)[0]!.querySelector('.fig-skel')).toBeNull();
+      await pending;
+    } finally {
+      h.dispose();
+    }
+  });
+});
+
+/** A spend bar's label (adopt-figure-states 3.3; D1, D2, D4): money at cents, below precision
+ * as `<$0.01`, and a free bar as `$0 free` with only `free` green, so the word names the state
+ * and `$0` keeps the row's Ink. */
+describe('a spend bar names its state in words', () => {
+  it('reads cents, `<$0.01` below a cent, and `$0 free` with only `free` green', () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const dispose = render(
+      () => (
+        <BarRows
+          data={[
+            { n: 'priced', v: 1.5 },
+            { n: 'speck', v: 0.004 },
+            { n: 'local', v: 0, fv: 0, free: true },
+          ]}
+        />
+      ),
+      host,
+    );
+    try {
+      const figures = [...host.querySelectorAll<HTMLElement>('.figure')];
+      expect(figures.map((f) => f.textContent)).toEqual(['$1.50', '<$0.01', '$0 free']);
+      for (const f of figures) expect(f.style.color).toBe('var(--text)');
+      const parts = [...figures[2]!.querySelectorAll<HTMLElement>('span')];
+      expect(parts.map((p) => [p.textContent, p.style.color])).toEqual([
+        ['$0', ''],
+        ['free', 'var(--green-text)'],
+      ]);
+    } finally {
+      dispose();
+      host.remove();
     }
   });
 });

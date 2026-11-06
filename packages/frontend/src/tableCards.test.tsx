@@ -159,12 +159,34 @@ describe('request row semantics survive the stacked presentation', () => {
     try {
       h.store.go('requests');
       await flush();
+      // A running row, so the assertions below cannot pass vacuously on an empty band.
+      h.store.setState('inflightRows', [
+        {
+          phase: 'live',
+          id: 'live-card',
+          startedAt: Date.now(),
+          decisionLayer: 'explicit',
+          tierAssigned: 'default',
+          modelLabel: 'model-live-card',
+          providerLabel: 'ProvA',
+          protocol: 'openai',
+          status: 'running',
+        },
+      ]);
+      await flush();
       const inflight = h.host.querySelector<HTMLElement>('div.req-row');
-      if (inflight) {
-        expect(inflight.tagName).toBe('DIV');
-        expect(inflight.getAttribute('role')).toBeNull();
-        expect(inflight.getAttribute('tabindex')).toBeNull();
-        expect(inflight.querySelector('button')).toBeNull();
+      expect(inflight, 'the running row is on screen').not.toBeNull();
+      expect(inflight!.tagName).toBe('DIV');
+      expect(inflight!.getAttribute('role')).toBeNull();
+      expect(inflight!.getAttribute('tabindex')).toBeNull();
+      expect(inflight!.querySelector('button')).toBeNull();
+      // Its figures are pending: a lone `—` in each, the stacked field label aside
+      // (adopt-figure-states 2.2; dashboard-core "A lone dash in a figure slot means pending").
+      for (const label of ['Tokens', 'Cost']) {
+        const cell = [...inflight!.querySelectorAll<HTMLElement>('.rs-cell')].find(
+          (c) => c.querySelector('.rs-cell-label')?.textContent === label,
+        );
+        expect(cell?.querySelector(':scope > :not(.rs-cell-label)')?.textContent?.trim()).toBe('—');
       }
     } finally {
       h.dispose();

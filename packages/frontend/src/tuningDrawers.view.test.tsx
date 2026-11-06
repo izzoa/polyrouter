@@ -333,5 +333,29 @@ describe('tuning drawers: focus inside the drawer', () => {
         expect(document.activeElement).toBe(sw);
       });
     }
+
+    // adopt-design-tokens-v2 task 4.4 / design.md D14: no button in a tuning drawer takes the
+    // natively disabled busy state, because native `disabled` drops focus. While the switch's
+    // save is in flight the drawer's buttons stay enabled and the switch keeps focus.
+    it(`while the ${label} switch saves, no drawer button is natively disabled and focus stays`, async () => {
+      h = await mount();
+      h.fake.deferAutoLayers = true;
+      const drawer = await openTuning(h.host, name);
+      const sw = drawer.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!;
+      press(sw);
+      await flush();
+      expect(h.fake.autoLayersQueue.length, 'the save is in flight').toBeGreaterThan(0);
+      const live = document.querySelector('[data-testid="tuning-drawer"]');
+      expect(live, 'the drawer is still open').not.toBeNull();
+      const disabled = [...live!.querySelectorAll<HTMLButtonElement>('button')]
+        .filter((b) => b.disabled)
+        .map((b) => b.getAttribute('aria-label') ?? (b.textContent ?? '').trim());
+      expect(disabled, 'drawer buttons natively disabled while a save is in flight').toEqual([]);
+      expect(sw.disabled, 'the switch itself is never natively disabled').toBe(false);
+      expect(document.activeElement).toBe(sw);
+      for (const call of h.fake.autoLayersQueue.splice(0)) call.settle('resolve');
+      await flush();
+      expect(document.activeElement).toBe(sw);
+    });
   }
 });

@@ -42,7 +42,12 @@ const AGENTS: BodyCaptureStatus['agents'] = [
 ];
 
 async function mount(
-  opts: { session?: SessionInfo; body?: Partial<BodyCaptureStatus> } = {},
+  opts: {
+    session?: SessionInfo;
+    body?: Partial<BodyCaptureStatus>;
+    /** Replace the capture-status read: one that never settles, or one that fails. */
+    bodyRead?: () => Promise<BodyCaptureStatus>;
+  } = {},
 ): Promise<Harness> {
   globalThis.history.replaceState(null, '', '/#/settings');
   const fake = new FakeApiClient({
@@ -58,6 +63,8 @@ async function mount(
       ...opts.body,
     },
   });
+  if (opts.bodyRead !== undefined)
+    vi.spyOn(fake, 'bodyCaptureStatus').mockImplementation(opts.bodyRead);
   const store = createAppStore(fake);
   const host = document.createElement('div');
   document.body.appendChild(host);
@@ -95,7 +102,8 @@ describe('Settings layout: container and panel order', () => {
     const { host } = await mount();
     const style = page(host).getAttribute('style') ?? '';
     expect(style).toContain('max-width:1200px');
-    expect(style).toContain('gap:14px');
+    // Sections 24px apart (adopt-design-tokens-v2 task 3.2), as on every other page.
+    expect(style).toContain('gap:24px');
     expect(style).not.toContain('760px');
   });
 
@@ -320,6 +328,45 @@ describe('Settings layout: the compact bodies card', () => {
     document.body.innerHTML = '';
     const off = await mount({ body: { mode: 'off' } });
     expect(card(off.host).querySelector('.chip')?.textContent).toBe('Metadata-only');
+  });
+
+  // adopt-design-tokens-v2 task 16.6: before the status arrives, or when its first read fails,
+  // the card used to render the cloud sentence and a green Metadata-only badge, telling an
+  // instance that captures bodies that it never stores them.
+  it('claims nothing while the capture status loads: a placeholder, no sentence, no badge', async () => {
+    const { host } = await mount({ bodyRead: () => new Promise<BodyCaptureStatus>(() => {}) });
+    const c = card(host);
+    expect(c.getAttribute('aria-busy')).toBe('true');
+    expect(c.querySelector('.chip')).toBeNull();
+    expect(c.textContent).not.toContain('never persisted');
+    expect(c.textContent).not.toContain('Metadata-only');
+    expect(c.textContent).not.toContain('Off by default');
+    expect(c.querySelectorAll('[aria-hidden="true"].ar-skel')).toHaveLength(2);
+  });
+
+  it('claims nothing after a failed status read: the error line, no sentence, no badge', async () => {
+    const { host } = await mount({
+      bodyRead: () => Promise.reject(new Error('capture status unavailable')),
+    });
+    const c = card(host);
+    expect(c.getAttribute('aria-busy')).toBeNull();
+    expect(c.querySelector('.chip')).toBeNull();
+    expect(c.querySelector('.ar-skel')).toBeNull();
+    expect(c.textContent).not.toContain('never persisted');
+    expect(c.textContent).not.toContain('Metadata-only');
+    const line = [...c.querySelectorAll<HTMLElement>('span')].find(
+      (s) => s.textContent === 'capture status unavailable',
+    );
+    expect(line, 'the read error is shown').toBeDefined();
+    // Status text, so the text variant: the --red fill reads 3.75–3.91:1 as small text.
+    expect(line!.getAttribute('style')).toContain('var(--red-text)');
+  });
+
+  it('sets the on badge in the amber text token, never the amber fill', async () => {
+    const { host } = await mount({ body: { mode: 'all' } });
+    const style = card(host).querySelector('.chip')?.getAttribute('style') ?? '';
+    expect(style).toContain('var(--amber-text)');
+    expect(style).not.toMatch(/var\(--amber\)/);
   });
 
   it('where capture is unavailable the card is read-only text with no controls', async () => {

@@ -6,6 +6,8 @@
  * that is not rendered — and an absence assertion would then pass for the wrong reason.
  */
 
+import { labelText } from './labelText';
+
 /** Long enough for the Auto routing tab's first show to start (and the fake to settle)
  * the aggregation fetch, and for a stage's blocks to fetch on first mount. */
 async function settle(): Promise<void> {
@@ -19,7 +21,7 @@ export type RoutingTab = 'Tiers & headers' | 'Auto routing';
 export async function openTab(host: HTMLElement, label: RoutingTab): Promise<void> {
   const seg = [
     ...host.querySelectorAll<HTMLButtonElement>('[data-testid="routing-sections"] .rs-seg'),
-  ].find((b) => b.textContent?.trim() === label);
+  ].find((b) => labelText(b) === label);
   if (!seg) throw new Error(`Routing tab "${label}" is not offered`);
   seg.click();
   await settle();
@@ -109,9 +111,7 @@ export function targetPicker(host: HTMLElement, label: string): HTMLSelectElemen
 
 /** A button inside `root` by its visible text (Clear, clean up). */
 export function buttonByText(root: HTMLElement, text: string): HTMLButtonElement | undefined {
-  return [...root.querySelectorAll<HTMLButtonElement>('button')].find(
-    (b) => b.textContent?.trim() === text,
-  );
+  return [...root.querySelectorAll<HTMLButtonElement>('button')].find((b) => labelText(b) === text);
 }
 
 /* ── The tuning drawers (split-auto-routing-readout-setup D8) ─────────────────────── */

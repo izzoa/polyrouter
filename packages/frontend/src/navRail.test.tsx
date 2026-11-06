@@ -7,12 +7,18 @@
  * one of the two states, and — the part that actually had two live bugs — that a single
  * Escape resolves to exactly one surface when overlays stack.
  */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { render } from 'solid-js/web';
 import { afterEach, describe, expect, it } from 'vitest';
 import { App } from './App';
+import { entitledGroups, NAV_GROUPS, type NavGroup } from './components/Sidebar';
 import { createAppStore, type AppStore } from './state/appState';
 import { AppProvider } from './state/context';
 import { FakeApiClient } from './test/fakeClient';
+import { labelText } from './test/labelText';
+
+const labelOf = (e: Element): string => labelText(e);
 
 const flush = async (): Promise<void> => {
   for (let i = 0; i < 4; i++) await new Promise((r) => setTimeout(r, 0));
@@ -189,6 +195,129 @@ describe('narrow-width nav rail', () => {
     } finally {
       member.dispose();
     }
+  });
+});
+
+/** The sidebar's three groups (dashboard-core "The sidebar groups its pages under three
+ * labels"; adopt-design-tokens-v2 task 11.1): each group as `[label, item names…]`, read the
+ * way assistive technology reads it — the `role="group"` is named through `aria-labelledby`. */
+function navGroups(host: HTMLElement): { name: string; items: string[] }[] {
+  return [...host.querySelectorAll<HTMLElement>('#sidebar-nav [role="group"]')].map((g) => {
+    const labelId = g.getAttribute('aria-labelledby') ?? '';
+    const label = labelId === '' ? null : g.querySelector<HTMLElement>(`[id="${labelId}"]`);
+    return {
+      name: label?.textContent?.trim() ?? `(unnamed: aria-labelledby="${labelId}")`,
+      items: [...g.querySelectorAll<HTMLElement>('.nav-item .rs-nav-label')].map(
+        (e) => e.textContent?.trim() ?? '',
+      ),
+    };
+  });
+}
+
+describe('the sidebar groups its pages under three labels (task 11.1)', () => {
+  it('an admin sees Observe, Configure and Admin in order, each label over its pages', async () => {
+    const h = await mount('admin');
+    try {
+      expect(navGroups(h.host)).toEqual([
+        { name: 'Observe', items: ['Overview', 'Requests', 'Costs', 'Batches'] },
+        { name: 'Configure', items: ['Routing', 'Providers', 'Agents', 'Limits'] },
+        { name: 'Admin', items: ['Settings', 'Users'] },
+      ]);
+      // The label is an Overline that names its group, and every item sits in a group.
+      for (const label of h.host.querySelectorAll('#sidebar-nav .nav-group-label')) {
+        expect(label.classList.contains('t-overline'), label.textContent ?? '').toBe(true);
+        // …hidden visually only in the collapsed rail, like every item label (never removed).
+        expect(label.classList.contains('rs-nav-label'), label.textContent ?? '').toBe(true);
+        expect(label.closest('[role="group"]')?.getAttribute('aria-labelledby')).toBe(label.id);
+      }
+      const items = h.host.querySelectorAll('#sidebar-nav .nav-item');
+      expect(items).toHaveLength(10);
+      for (const item of items)
+        expect(item.closest('[role="group"]'), labelOf(item)).not.toBeNull();
+      // The setup card sits below the groups until setup is complete.
+      const nav = h.host.querySelector('#sidebar-nav');
+      const card = h.host.querySelector('.setup-card');
+      expect(card).not.toBeNull();
+      expect(
+        nav!.compareDocumentPosition(card!) & Node.DOCUMENT_POSITION_FOLLOWING,
+        'the setup card renders above the groups',
+      ).toBeTruthy();
+    } finally {
+      h.dispose();
+    }
+  });
+
+  it("a non-admin's Admin group holds Settings only, with no empty slot", async () => {
+    const h = await mount('member');
+    try {
+      expect(navGroups(h.host)).toEqual([
+        { name: 'Observe', items: ['Overview', 'Requests', 'Costs', 'Batches'] },
+        { name: 'Configure', items: ['Routing', 'Providers', 'Agents', 'Limits'] },
+        { name: 'Admin', items: ['Settings'] },
+      ]);
+    } finally {
+      h.dispose();
+    }
+  });
+
+  it('a group with no page the session may open renders no label at all', () => {
+    // No shipped group can empty for any session (Admin always holds Settings), so the rule is
+    // held on the function the sidebar renders through, over a table where one can.
+    const table: NavGroup[] = [
+      { id: 'observe', label: 'Observe', pages: [{ page: 'overview', label: 'Overview' }] },
+      { id: 'admin', label: 'Admin', pages: [{ page: 'users', label: 'Users', adminOnly: true }] },
+    ];
+    expect(entitledGroups(table, false).map((g) => g.label)).toEqual(['Observe']);
+    expect(entitledGroups(table, true).map((g) => g.label)).toEqual(['Observe', 'Admin']);
+    // The sidebar renders this table, not a copy of it.
+    expect(entitledGroups(NAV_GROUPS, false).map((g) => g.label)).toEqual([
+      'Observe',
+      'Configure',
+      'Admin',
+    ]);
+  });
+
+  it('grouping changes no navigation semantics: aria-current, icons and names', async () => {
+    const h = await mount('admin');
+    try {
+      for (const page of ['costs', 'routing', 'users'] as const) {
+        h.store.go(page);
+        await flush();
+        const current = [...h.host.querySelectorAll<HTMLElement>('#sidebar-nav .nav-item')].filter(
+          (b) => b.getAttribute('aria-current') !== null,
+        );
+        expect(current, `one current item on ${page}`).toHaveLength(1);
+        expect(current[0]?.getAttribute('aria-current')).toBe('page');
+        expect(current[0]?.querySelector('[data-page-icon]')?.getAttribute('data-page-icon')).toBe(
+          page,
+        );
+      }
+      // Each item's accessible name is its label alone: the group label is outside the
+      // button, and the icon is decorative.
+      for (const b of h.host.querySelectorAll<HTMLElement>('#sidebar-nav .nav-item')) {
+        expect(b.querySelector('.nav-group-label'), labelOf(b)).toBeNull();
+        expect(b.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true');
+      }
+    } finally {
+      h.dispose();
+    }
+  });
+
+  it('the group label is hidden visually only in the collapsed rail, where a Soft Hairline separates the groups', () => {
+    // happy-dom evaluates no media query, so this holds the stylesheet; `responsive.spec.ts`
+    // measures the rail itself. The label is an `.rs-nav-label`, which the collapsed rail
+    // clips (never `display:none`, which would drop the group's name).
+    const css = readFileSync(join(import.meta.dirname, 'styles.css'), 'utf8').replace(
+      /\/\*[\s\S]*?\*\//g,
+      '',
+    );
+    const narrow = css.slice(css.indexOf('@media (max-width: 768px)'));
+    expect(narrow).toMatch(
+      /\.rs-sidebar:not\(\.rs-nav-open\) \.rs-nav-label \{[^}]*clip: rect\(0 0 0 0\)/,
+    );
+    expect(narrow).toMatch(
+      /\.rs-sidebar:not\(\.rs-nav-open\) \.nav-group \+ \.nav-group \{[^}]*border-top: 1px solid var\(--border2\)/,
+    );
   });
 });
 

@@ -177,6 +177,10 @@ describe('a live job row reads as a job, not as a request (5.2)', () => {
           .find((r) => r.dataset['batchRow'] === id)!
           .querySelector<HTMLElement>('[aria-hidden="true"][style*="border-radius"]')!;
       expect(dotOf('run').style.animation).toContain('pulse');
+      // A running job's dot is neutral, never the accent (the Indigo Budget,
+      // adopt-design-tokens-v2 D11); the amber `Cancelling` pulse stays — it is status.
+      expect(dotOf('run').style.background).toBe('var(--text3)');
+      expect(dotOf('fin').style.background).toBe('var(--text3)');
       expect(dotOf('canc').style.animation).toContain('pulse');
       expect(dotOf('canc').style.background).toContain('--amber');
       expect(dotOf('rec').style.animation).toContain('pulse');

@@ -17,6 +17,7 @@ import { createAppStore, type AppStore } from './state/appState';
 import { AppProvider } from './state/context';
 import { FakeApiClient } from './test/fakeClient';
 import type { AgentDto } from './data/api';
+import { labelText } from './test/labelText';
 
 const AGENTS: AgentDto[] = [
   {
@@ -171,6 +172,34 @@ describe('request row semantics survive the stacked presentation', () => {
   });
 });
 
+describe('the decision-layer chip is one neutral chip for every layer', () => {
+  // adopt-design-tokens-v2 task 16.6: `cascade` drew the amber fill on the amber wash
+  // (2.54:1, a status hue as a category) and `explicit` the Selected-state wash and Deep Ink
+  // (a decorative indigo). The word names the layer; no layer takes a hue.
+  it('draws explicit, header, default, structural and cascade alike, in Ink 2 on Chip Tone', async () => {
+    const h = await mount();
+    try {
+      h.store.go('requests');
+      await flush();
+      const chips = [...h.host.querySelectorAll<HTMLElement>('button.req-row .rs-cell')]
+        .filter((c) => c.querySelector('.rs-cell-label')?.textContent === 'Decided by')
+        .map((c) => c.querySelector<HTMLElement>('.chip')!);
+      const layers = new Set(chips.map((c) => (c.firstChild?.textContent ?? '').trim()));
+      for (const l of ['explicit', 'header', 'default', 'structural', 'cascade']) {
+        expect(layers, `a ${l} row is rendered`).toContain(l);
+      }
+      const styles = new Set(chips.map((c) => c.getAttribute('style') ?? ''));
+      expect(styles.size, 'every layer shares one chip style').toBe(1);
+      const [style] = [...styles];
+      expect(style).toContain('color: var(--text2)');
+      expect(style).not.toMatch(/--(amber|accent|red|green)/);
+      expect(style).not.toContain('background');
+    } finally {
+      h.dispose();
+    }
+  });
+});
+
 describe('tables without a detail surface keep every field and action inline', () => {
   it('keeps the Agents row actions operable', async () => {
     // Agents has no row detail surface, so "no field lost" is not enough — the actions
@@ -181,9 +210,7 @@ describe('tables without a detail surface keep every field and action inline', (
       await flush();
       const row = h.host.querySelector<HTMLElement>('.rs-agent-row');
       expect(row, 'no agent row rendered').not.toBeNull();
-      const actions = [...(row?.querySelectorAll('button') ?? [])].map((b) =>
-        b.textContent?.trim(),
-      );
+      const actions = [...(row?.querySelectorAll('button') ?? [])].map((b) => labelText(b));
       expect(actions).toContain('Rotate key');
       expect(actions.some((a) => a?.includes('Delete'))).toBe(true);
     } finally {
@@ -247,9 +274,11 @@ describe('table stylesheet contract', () => {
   });
 
   it('drives every stacked reflow from a container query at its measured threshold', () => {
+    // Re-measured for adopt-design-tokens-v2 (task 14.1); responsive.test.ts holds every
+    // threshold equal to its STYLESEED.md row.
     for (const [name, px] of [
-      ['rs-requests', 960],
-      ['rs-agents', 680],
+      ['rs-requests', 980],
+      ['rs-agents', 740],
       ['rs-users', 660],
     ] as const) {
       expect(css, `${name} has no container query`).toContain(

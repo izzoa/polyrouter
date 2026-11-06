@@ -1,5 +1,7 @@
 import { createSignal, For, Show } from 'solid-js';
 import { APP_NAME } from '@polyrouter/shared';
+import { createLocalFields, FieldNote } from '../components/Field';
+import { EMAIL_FORMAT } from '../state/fieldChecks';
 import { useApp } from '../state/context';
 
 const OAUTH_LABELS: Record<string, string> = {
@@ -18,6 +20,13 @@ export function Login() {
   const [name, setName] = createSignal('');
   const [email, setEmail] = createSignal('');
   const [password, setPassword] = createSignal('');
+  // The browser's email-format check reports on the field (task 8.2, design.md D20): the form
+  // is `novalidate`, so no bubble, and the field reads its own `validity`. A failure only the
+  // server reports (`authError`) names no field and stays the form's message.
+  let emailEl: HTMLInputElement | undefined;
+  const f = createLocalFields({
+    'f-login-email': () => (emailEl?.validity.typeMismatch === true ? EMAIL_FORMAT : null),
+  });
 
   // Under invite_only the sign-up tab disappears (user-administration) — the
   // server refuses ungated sign-ups anyway; this just keeps the gate honest.
@@ -27,6 +36,7 @@ export function Login() {
   const submit = (e: Event): void => {
     e.preventDefault();
     if (state.authBusy) return;
+    if (!f.submit(['f-login-email'])) return;
     if (signingUp()) {
       void app.signUp({ name: name().trim(), email: email().trim(), password: password() });
     } else {
@@ -39,8 +49,17 @@ export function Login() {
   return (
     <div style="display:flex;align-items:center;justify-content:center;height:100vh;background:var(--bg);color:var(--text);font-family:'Geist',sans-serif">
       <div style="width:380px;max-width:92vw;display:flex;flex-direction:column;gap:16px">
-        <div style="display:flex;align-items:center;gap:9px;justify-content:center">
-          <svg width="22" height="22" viewBox="0 0 20 20" style="flex:none" aria-hidden="true">
+        <div style="display:flex;align-items:center;gap:8px;justify-content:center">
+          {/* The brand mark: its lit route is identity, outside the Indigo Budget
+              (adopt-design-tokens-v2 D11), so `data-brand-mark` names it to the guards. */}
+          <svg
+            width="22"
+            height="22"
+            viewBox="0 0 20 20"
+            style="flex:none"
+            aria-hidden="true"
+            data-brand-mark
+          >
             <circle cx="4" cy="10" r="2.4" fill="var(--text)" />
             <circle cx="15" cy="4.5" r="2.4" fill="var(--accent)" />
             <circle cx="15" cy="10" r="2.4" fill="var(--faint)" />
@@ -49,22 +68,26 @@ export function Login() {
             <line x1="6.4" y1="10" x2="12.6" y2="10" stroke="var(--border)" stroke-width="1.4" />
             <line x1="6" y1="10" x2="12.8" y2="14.8" stroke="var(--border)" stroke-width="1.4" />
           </svg>
-          <div style="font:600 18px 'Geist',sans-serif;letter-spacing:-.02em">{APP_NAME}</div>
+          <div class="t-title" style="letter-spacing:-.02em">
+            {APP_NAME}
+          </div>
         </div>
 
-        <div class="panel card" style="display:flex;flex-direction:column;gap:14px">
+        <div class="panel card" style="display:flex;flex-direction:column;gap:16px">
           <Show
             when={!inviteOnly()}
             fallback={
               <div>
-                <div style="font:600 14px 'Geist',sans-serif;letter-spacing:-.01em">Sign in</div>
-                <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3);margin-top:3px;line-height:1.5">
+                <div class="t-title" style="letter-spacing:-.01em">
+                  Sign in
+                </div>
+                <div class="t-caption" style="color:var(--text3);margin-top:4px">
                   New accounts are invite-only — ask an admin for an invite link.
                 </div>
               </div>
             }
           >
-            <div style="display:flex;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:2px">
+            <div class="seg-track" style="background:var(--bg)">
               <For
                 each={
                   [
@@ -76,17 +99,9 @@ export function Login() {
                 {([id, label]) => (
                   <button
                     type="button"
+                    class="rs-seg rs-seg--fill"
+                    data-label={label}
                     aria-pressed={mode() === id}
-                    style={{
-                      flex: '1',
-                      'text-align': 'center',
-                      padding: '6px 0',
-                      'border-radius': '6px',
-                      font: "500 12.5px 'Geist',sans-serif",
-                      cursor: 'pointer',
-                      background: mode() === id ? 'var(--chip)' : 'transparent',
-                      color: mode() === id ? 'var(--text)' : 'var(--text3)',
-                    }}
                     onClick={() => setMode(id)}
                   >
                     {label}
@@ -96,7 +111,7 @@ export function Login() {
             </div>
           </Show>
 
-          <form style="display:flex;flex-direction:column;gap:11px" onSubmit={submit}>
+          <form novalidate style="display:flex;flex-direction:column;gap:12px" onSubmit={submit}>
             <Show when={signingUp()}>
               <div>
                 <label class="field-label" for="f-login-name" style="display:block">
@@ -116,14 +131,24 @@ export function Login() {
                 Email
               </label>
               <input
+                ref={(el) => {
+                  emailEl = el;
+                }}
                 class="input"
                 id="f-login-email"
                 type="email"
                 autocomplete="email"
                 value={email()}
                 placeholder="you@example.com"
-                onInput={(e) => setEmail(e.currentTarget.value)}
+                aria-invalid={f.invalid('f-login-email')}
+                aria-describedby={f.describedBy('f-login-email')}
+                onBlur={() => f.check('f-login-email')}
+                onInput={(e) => {
+                  setEmail(e.currentTarget.value);
+                  f.edit('f-login-email');
+                }}
               />
+              <FieldNote for="f-login-email" error={f.error('f-login-email')} />
             </div>
             <div>
               <label class="field-label" for="f-login-password" style="display:block">
@@ -140,7 +165,7 @@ export function Login() {
               />
             </div>
             <Show when={state.authError}>
-              <div style="font:400 11.5px 'Geist',sans-serif;color:var(--red)">
+              <div class="t-caption" style="color:var(--red-text)">
                 {state.authError}
               </div>
             </Show>
@@ -160,7 +185,10 @@ export function Login() {
           </form>
 
           <Show when={providers().length > 0}>
-            <div style="display:flex;align-items:center;gap:10px;color:var(--text3);font:400 11px 'Geist',sans-serif">
+            <div
+              class="t-caption"
+              style="display:flex;align-items:center;gap:8px;color:var(--text3)"
+            >
               <span style="flex:1;height:1px;background:var(--border)" />
               or
               <span style="flex:1;height:1px;background:var(--border)" />
@@ -170,9 +198,9 @@ export function Login() {
                 {(p) => (
                   <button
                     type="button"
-                    class="btn-ghost"
+                    class="btn-cancel"
                     disabled={state.authBusy}
-                    style="display:flex;justify-content:center;width:100%;background:transparent;padding:9px 0"
+                    style="display:flex;justify-content:center;width:100%"
                     onClick={() => void app.oauth(p)}
                   >
                     {OAUTH_LABELS[p] ?? `Continue with ${p}`}
@@ -183,7 +211,7 @@ export function Login() {
           </Show>
         </div>
 
-        <div style="text-align:center;font:400 11px 'Geist',sans-serif;color:var(--text3)">
+        <div class="t-caption" style="text-align:center;color:var(--text3)">
           Self-hosted · your keys and data stay on this box.
         </div>
       </div>

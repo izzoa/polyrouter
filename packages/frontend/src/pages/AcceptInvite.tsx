@@ -18,8 +18,17 @@ export function AcceptInvite() {
   return (
     <div style="display:flex;align-items:center;justify-content:center;height:100vh;background:var(--bg);color:var(--text);font-family:'Geist',sans-serif">
       <div style="width:380px;max-width:92vw;display:flex;flex-direction:column;gap:16px">
-        <div style="display:flex;align-items:center;gap:9px;justify-content:center">
-          <svg width="22" height="22" viewBox="0 0 20 20" style="flex:none" aria-hidden="true">
+        <div style="display:flex;align-items:center;gap:8px;justify-content:center">
+          {/* The brand mark: its lit route is identity, outside the Indigo Budget
+              (adopt-design-tokens-v2 D11), so `data-brand-mark` names it to the guards. */}
+          <svg
+            width="22"
+            height="22"
+            viewBox="0 0 20 20"
+            style="flex:none"
+            aria-hidden="true"
+            data-brand-mark
+          >
             <circle cx="4" cy="10" r="2.4" fill="var(--text)" />
             <circle cx="15" cy="4.5" r="2.4" fill="var(--accent)" />
             <circle cx="15" cy="10" r="2.4" fill="var(--faint)" />
@@ -28,28 +37,30 @@ export function AcceptInvite() {
             <line x1="6.4" y1="10" x2="12.6" y2="10" stroke="var(--border)" stroke-width="1.4" />
             <line x1="6" y1="10" x2="12.8" y2="14.8" stroke="var(--border)" stroke-width="1.4" />
           </svg>
-          <div style="font:600 18px 'Geist',sans-serif;letter-spacing:-.02em">{APP_NAME}</div>
+          <div class="t-title" style="letter-spacing:-.02em">
+            {APP_NAME}
+          </div>
         </div>
 
-        <div class="panel card" style="display:flex;flex-direction:column;gap:14px">
+        <div class="panel card" style="display:flex;flex-direction:column;gap:16px">
           <div>
-            <div style="font:600 14px 'Geist',sans-serif;letter-spacing:-.01em">
+            <div class="t-title" style="letter-spacing:-.01em">
               You’ve been invited
             </div>
-            <div style="font:400 12px 'Geist',sans-serif;color:var(--text3);margin-top:3px;line-height:1.5">
+            <div class="t-dense" style="color:var(--text3);margin-top:4px">
               Pick a name and password to finish creating your account. The email is the one the
               invite was sent to.
             </div>
           </div>
 
           <Show when={state.inviteToken === null}>
-            <div style="font:400 11.5px 'Geist',sans-serif;color:var(--amber)">
+            <div class="t-caption" style="color:var(--amber-text)">
               This link is missing its invite token — it may have been trimmed by your mail client.
               Ask your admin to copy the full link.
             </div>
           </Show>
 
-          <form style="display:flex;flex-direction:column;gap:11px" onSubmit={submit}>
+          <form style="display:flex;flex-direction:column;gap:12px" onSubmit={submit}>
             <div>
               <label class="field-label" for="f-invite-name" style="display:block">
                 Name
@@ -77,7 +88,7 @@ export function AcceptInvite() {
               />
             </div>
             <Show when={state.ai.error}>
-              <div role="alert" style="font:400 11.5px 'Geist',sans-serif;color:var(--red)">
+              <div role="alert" class="t-caption" style="color:var(--red-text)">
                 {state.ai.error}
               </div>
             </Show>
@@ -106,7 +117,7 @@ export function AcceptInvite() {
           </button>
         </div>
 
-        <div style="text-align:center;font:400 11px 'Geist',sans-serif;color:var(--text3)">
+        <div class="t-caption" style="text-align:center;color:var(--text3)">
           Invite links are single-use and expire after 72 hours.
         </div>
       </div>

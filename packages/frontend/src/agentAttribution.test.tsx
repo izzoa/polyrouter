@@ -184,3 +184,48 @@ describe('the boundary costs the table no grid track', () => {
     expect(body).not.toMatch(/grid-template-columns/);
   });
 });
+
+describe('the group boundary is an overline label above a rule, never a filled band (task 9.3)', () => {
+  // dashboard-core "Record tables share one row, head and group-boundary treatment", scenario
+  // "A group boundary is a label above a rule"; DESIGN.md The Hairline Rule: a tonal fill marks
+  // state, never structure.
+  let dispose: (() => void) | undefined;
+  let sheet: HTMLStyleElement | undefined;
+  afterEach(() => {
+    dispose?.();
+    dispose = undefined;
+    sheet?.remove();
+    document.body.innerHTML = '';
+  });
+
+  it('renders (no agent) as an 11px / 500 uppercase label over a soft hairline, with no fill', () => {
+    sheet = document.createElement('style');
+    sheet.textContent = readFileSync(join(SRC, 'styles.css'), 'utf8');
+    document.head.append(sheet);
+    const host = document.createElement('div');
+    document.body.append(host);
+    const store = createAppStore(new FakeApiClient());
+    dispose = render(
+      () => (
+        <AppProvider store={store}>
+          <RequestRows rows={[row(null, null), row('X', 'Alpha')]} />
+        </AppProvider>
+      ),
+      host,
+    );
+    const boundary = host.querySelector<HTMLElement>('.rs-agent-boundary');
+    expect(boundary?.textContent).toBe(AGENT_UNATTRIBUTED);
+    const cs = getComputedStyle(boundary!);
+    expect(['transparent', 'rgba(0, 0, 0, 0)'], 'the boundary has no fill').toContain(
+      cs.backgroundColor,
+    );
+    expect(cs.fontSize).toBe('11px');
+    expect(cs.fontWeight).toBe('500');
+    expect(cs.textTransform).toBe('uppercase');
+    // The rule under the label: the soft hairline, and nothing tonal in the declaration.
+    const rule = /\.rs-agent-boundary \{([^}]*)\}/.exec(css)![1]!;
+    expect(rule).toMatch(/border-bottom:\s*1px solid var\(--border2\)/);
+    expect(rule).toMatch(/background:\s*transparent/);
+    expect(rule).not.toMatch(/var\(--(chip|hover|bg|panel|accent-bg)\)/);
+  });
+});

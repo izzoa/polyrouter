@@ -1,8 +1,10 @@
-import { Show } from 'solid-js';
+import { createEffect, on, Show } from 'solid-js';
 import type { BudgetProgressEntry } from '../data/budgetProgress';
 import { progressClock } from '../data/budgetProgress';
 import type { BudgetDto } from '../data/api';
 import { BudgetChart } from './BudgetChart';
+import { StackedLabel } from './StackedLabel';
+import { createFocusReturn } from './busy';
 
 export function budgetMoney(micros: number): string {
   return micros > 0 && micros < 10000 ? '<$0.01' : `$${(micros / 1000000).toFixed(2)}`;
@@ -22,6 +24,18 @@ export function BudgetProgress(props: {
 }) {
   const snapshot = () => props.entry?.snapshot;
   const clock = () => progressClock(props.entry ?? { loading: false, error: null }, props.now);
+  // The stale card's Retry is natively disabled while it reloads, which drops its focus to
+  // <body>; when the reload settles and the button is still there (a failed refresh), focus
+  // goes back to it (`createFocusReturn`, D14).
+  const retryFocus = createFocusReturn();
+  createEffect(
+    on(
+      () => props.entry?.loading === true,
+      (loading, was) => {
+        if (was === true && !loading) retryFocus.restore();
+      },
+    ),
+  );
   const usable = () => snapshot() && !clock().expired;
   const fallback = () =>
     clock().expired
@@ -128,9 +142,26 @@ export function BudgetProgress(props: {
             </span>
           </figcaption>
         </figure>
+        {/* Stale progress stays on the card while it reloads, so its Retry stays too: busy
+            while the reload is in flight (adopt-design-tokens-v2 D14). The no-progress Retry
+            above hides instead, its status line saying the progress is loading. */}
         <Show when={clock().stale}>
-          <button type="button" class="btn-ghost" onClick={props.retry}>
-            Retry progress
+          <button
+            type="button"
+            class="btn-ghost"
+            disabled={props.entry?.loading === true}
+            aria-busy={props.entry?.loading === true ? true : undefined}
+            onClick={() => {
+              retryFocus.capture();
+              props.retry();
+              if (props.entry?.loading !== true) retryFocus.drop();
+            }}
+          >
+            <StackedLabel
+              alt={props.entry?.loading === true}
+              rest="Retry progress"
+              altLabel="Retrying…"
+            />
           </button>
         </Show>
       </Show>

@@ -175,8 +175,9 @@ describe('the page is a first-class destination (7.1)', () => {
     // has to reach the cells' children or it sets min-width on nothing.
     expect(css).toMatch(/\.rs-table-batches \.rs-batch-row > \.rs-cell > \*\s*\{\s*min-width: 0;/);
     expect(css).toContain('container-name: rs-batches');
-    // The same stacked-record reflow the requests table gets, at the same width.
-    expect(css).toMatch(/@container rs-batches \(max-width: 960px\)/);
+    // The same stacked-record reflow the requests table gets, at its own measured width
+    // (adopt-design-tokens-v2 task 14.1: 1000px; requests is 980px).
+    expect(css).toMatch(/@container rs-batches \(max-width: 1000px\)/);
     const lock = readFileSync(
       join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'STYLESEED.md'),
       'utf8',

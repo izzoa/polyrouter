@@ -141,10 +141,10 @@ describe('Dashboard a11y semantics', () => {
     const { host, dispose } = mountApp(store);
     try {
       await flush();
-      store.setState('toast', 'Key copied');
+      store.say('Key copied');
       await flush();
-      const status = host.querySelector('[role="status"]');
-      expect(status).not.toBeNull();
+      const status = host.querySelector('[data-toast-region="confirm"]');
+      expect(status?.getAttribute('role')).toBe('status');
       expect(status?.textContent).toContain('Key copied');
     } finally {
       dispose();

@@ -25,6 +25,72 @@ function shadowTokens(body: string): Record<string, string> {
   return out;
 }
 
+interface LeafRule {
+  selector: string;
+  body: string;
+  /** The enclosing at-rule preludes, e.g. `@media (max-width: 768px)`; empty at top level. */
+  context: string;
+}
+
+/** Every leaf rule, one entry per selector in its list, with the at-rules it sits in (a
+ * brace-depth scan, so a rule inside a media or container query is read as itself, not
+ * folded into its prelude). Comments are dropped first. */
+function leafRules(source: string): LeafRule[] {
+  const src = source.replace(/\/\*[\s\S]*?\*\//g, '');
+  const out: LeafRule[] = [];
+  const stack: string[] = [];
+  let start = 0;
+  for (let i = 0; i < src.length; i += 1) {
+    const ch = src[i];
+    if (ch === '{') {
+      const prelude = src.slice(start, i).trim();
+      const close = src.indexOf('}', i);
+      const nextOpen = src.indexOf('{', i + 1);
+      if (prelude.startsWith('@') || (nextOpen !== -1 && nextOpen < close)) {
+        stack.push(prelude);
+        start = i + 1;
+        continue;
+      }
+      for (const sel of prelude.split(',')) {
+        out.push({
+          selector: sel.trim().replace(/\s+/g, ' '),
+          body: src.slice(i + 1, close),
+          context: stack.join(' '),
+        });
+      }
+      i = close;
+      start = i + 1;
+    } else if (ch === '}') {
+      stack.pop();
+      start = i + 1;
+    }
+  }
+  return out;
+}
+
+/** A selector that marks the Selected state (design.md D8): the current / pressed / expanded /
+ * selected ARIA states, or a selected-state class. */
+function isSelected(selector: string): boolean {
+  return (
+    /\[aria-current(?:[=\]])/.test(selector) ||
+    /\[aria-(?:pressed|expanded|selected)=['"]?true['"]?\]/.test(selector) ||
+    /\.(?:active|selected|is-selected|current)\b(?!-)/.test(selector) ||
+    /--(?:selected|active|current)\b/.test(selector)
+  );
+}
+
+/** Each selected-state declaration of `box-shadow`, named as `<context> <selector> { … }`. */
+function selectedShadows(source: string): string[] {
+  return leafRules(source)
+    .filter((r) => isSelected(r.selector))
+    .flatMap((r) =>
+      [...r.body.matchAll(/(?:^|[;\s])box-shadow:\s*([^;]+);/g)].map(
+        (m) =>
+          `${r.context ? `${r.context} ` : ''}${r.selector} { box-shadow: ${(m[1] as string).trim()} }`,
+      ),
+    );
+}
+
 describe('elevation lock (flat-borders)', () => {
   const rootTokens = shadowTokens(block(':root'));
   const darkTokens = shadowTokens(block("[data-theme='dark']"));
@@ -32,9 +98,7 @@ describe('elevation lock (flat-borders)', () => {
   it('light shadow tokens exist and stay under the 8% whisper cap', () => {
     expect(Object.keys(rootTokens).length).toBeGreaterThanOrEqual(5);
     for (const [name, value] of Object.entries(rootTokens)) {
-      const alphas = [...value.matchAll(/rgba?\([^)]*?,\s*([\d.]+)\)/g)].map((m) =>
-        Number(m[1]),
-      );
+      const alphas = [...value.matchAll(/rgba?\([^)]*?,\s*([\d.]+)\)/g)].map((m) => Number(m[1]));
       expect(alphas.length, `--${name} declares an rgba alpha`).toBeGreaterThan(0);
       for (const a of alphas) {
         expect(a, `--${name} alpha ${a} ≤ 0.08`).toBeLessThanOrEqual(0.08);
@@ -54,6 +118,54 @@ describe('elevation lock (flat-borders)', () => {
     for (const m of css.matchAll(/box-shadow:\s*([^;]+);/g)) {
       expect(m[1]?.trim(), `box-shadow "${m[1] ?? ''}"`).toMatch(/^var\(--shadow[\w-]*\)$/);
     }
+  });
+
+  describe('a selected state draws its edge with a border or an outline, never box-shadow (adopt-design-tokens-v2 D8)', () => {
+    // Every shadow token is `none` in dark, so an edge drawn with box-shadow vanishes there and
+    // the selection rests on its wash alone (1.07–1.16:1). The token check above would pass a
+    // selected rule that uses `var(--shadow)`; this one passes no box-shadow at all.
+    const offenders = selectedShadows(css);
+
+    it('no rule matching a selected selector sets box-shadow', () => {
+      expect(offenders, `selected-state box-shadow: ${offenders.join('; ')}`).toEqual([]);
+    });
+
+    it('the selector patterns reach every Selected rule the stylesheet draws (not vacuous)', () => {
+      const seen = new Set(
+        leafRules(css)
+          .filter((r) => isSelected(r.selector))
+          .map((r) => r.selector),
+      );
+      for (const sel of [
+        ".nav-item[aria-current='page']",
+        ".rs-seg[aria-pressed='true']",
+        ".filter-chip[aria-pressed='true']",
+        ".kind-card[aria-pressed='true']",
+        ".btn-ghost[aria-pressed='true']",
+        ".req-row[aria-expanded='true']",
+        "[aria-current='step'] > .step-marker:not(.step-marker--done)",
+        '.mp-option.active',
+      ]) {
+        expect(seen, sel).toContain(sel);
+      }
+    });
+
+    it('self-check: a selected rule with a shadow edge is named, inside an at-rule too', () => {
+      const probe = `.a { color: red; }
+        .seg[aria-pressed="true"] { box-shadow: inset 0 0 0 1px var(--accent-deep); }
+        @media (max-width: 768px) { .row[aria-expanded='true'] { box-shadow: var(--shadow); } }
+        .x.selected:hover, .y { box-shadow: none; }
+        .menu [aria-selected='true'] { outline: 1px solid red; }`;
+      expect(selectedShadows(probe)).toEqual([
+        '.seg[aria-pressed="true"] { box-shadow: inset 0 0 0 1px var(--accent-deep) }',
+        "@media (max-width: 768px) .row[aria-expanded='true'] { box-shadow: var(--shadow) }",
+        '.x.selected:hover { box-shadow: none }',
+      ]);
+      // Not selected: a pressed-false or collapsed state is not the Selected state.
+      expect(isSelected(".seg[aria-pressed='false']")).toBe(false);
+      expect(isSelected(".row[aria-expanded='false']")).toBe(false);
+      expect(isSelected('.nav-item:hover')).toBe(false);
+    });
   });
 
   it('TSX inline styles never introduce shadows (box-shadow / drop-shadow)', () => {

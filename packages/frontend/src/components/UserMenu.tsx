@@ -89,16 +89,8 @@ export function UserMenu() {
     <button
       type="button"
       role="menuitem"
-      style={{
-        display: 'block',
-        width: '100%',
-        'text-align': 'left',
-        padding: '7px 12px',
-        font: "400 12.5px 'Geist', sans-serif",
-        color: opts?.danger === true ? 'var(--red)' : 'var(--text)',
-        'border-radius': '6px',
-      }}
-      class="row-hover"
+      style={{ color: opts?.danger === true ? 'var(--red-text)' : 'var(--text)' }}
+      class="menu-item row-hover"
       onClick={() => {
         close();
         action();
@@ -123,7 +115,7 @@ export function UserMenu() {
           ref={(el) => {
             menuEl = el;
           }}
-          style={`position:absolute;bottom:calc(100% + 6px);left:0;right:0;padding:5px;display:flex;flex-direction:column;gap:1px;z-index:${String(z().surface)}`}
+          style={`position:absolute;bottom:calc(100% + 6px);left:0;right:0;padding:4px;display:flex;flex-direction:column;gap:0;z-index:${String(z().surface)}`}
         >
           {item('Settings', () => app.go('settings'))}
           {item(state.theme === 'light' ? 'Switch to dark' : 'Switch to light', () =>
@@ -141,16 +133,19 @@ export function UserMenu() {
         ref={(el) => {
           triggerEl = el;
         }}
-        style="display:flex;align-items:center;gap:8px;width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);cursor:pointer"
+        class="account-trigger"
         onClick={toggle}
       >
         <span
           aria-hidden="true"
-          style="flex:none;width:20px;height:20px;border-radius:50%;background:var(--accent-bg);color:var(--accent-deep);display:grid;place-items:center;font:600 10px 'Geist',sans-serif"
+          style="flex:none;width:20px;height:20px;border-radius:4px;background:var(--accent-bg);color:var(--accent-deep);display:grid;place-items:center;font:600 0.6875rem/1rem 'Geist',sans-serif"
         >
           {(state.session?.name?.[0] ?? state.session?.email?.[0] ?? '?').toUpperCase()}
         </span>
-        <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:500 11.5px 'Geist',sans-serif;color:var(--text2)">
+        <span
+          class="t-label"
+          style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text2)"
+        >
           {state.session?.email ?? '—'}
         </span>
         <span aria-hidden="true" style="margin-left:auto;color:var(--text3);display:flex">

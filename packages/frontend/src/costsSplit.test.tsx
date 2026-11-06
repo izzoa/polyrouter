@@ -55,7 +55,9 @@ describe('Costs — subscription value sits beside spend, never inside it', () =
     const h = await mountCosts({ spend: 2, subscriptionSpend: 5, cashSpend: 2 });
     try {
       expect(h.host.textContent).toContain('$2.00');
-      expect(h.host.textContent).toContain('served on subscription');
+      // Case-insensitive since the readout strip (adopt-design-tokens-v2 task 12.2): the value
+      // is now its own cell, labelled "Served on subscription" (notes/flags.md F9).
+      expect(h.host.textContent).toMatch(/served on subscription/i);
       expect(h.host.textContent).toContain('5.0000');
       // The headline must not silently present a combined total.
       expect(h.host.textContent).toContain('excludes subscription');
@@ -69,7 +71,8 @@ describe('Costs — subscription value sits beside spend, never inside it', () =
     const h = await mountCosts({ spend: 2, subscriptionSpend: 0, cashSpend: 2 });
     try {
       // Absent, not a "$0.00 on subscription" claim.
-      expect(h.host.textContent).not.toContain('served on subscription');
+      // Case-insensitive, or the capitalised cell label would pass this vacuously (F9).
+      expect(h.host.textContent).not.toMatch(/served on subscription/i);
     } finally {
       h.dispose();
     }

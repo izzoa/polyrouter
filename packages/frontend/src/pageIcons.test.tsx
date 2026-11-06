@@ -7,14 +7,17 @@ import { AppProvider } from './state/context';
 import { FakeApiClient } from './test/fakeClient';
 import type { Page } from './types';
 
+/** Every page, in the sidebar's grouped order (adopt-design-tokens-v2 task 11.1): Observe
+ * (Overview, Requests, Costs, Batches), Configure (Routing, Providers, Agents, Limits), Admin
+ * (Settings, Users); then setup, which has no rail item. */
 const ALL_PAGES: Page[] = [
   'overview',
   'requests',
-  'batches',
   'costs',
-  'agents',
-  'providers',
+  'batches',
   'routing',
+  'providers',
+  'agents',
   'limits',
   'settings',
   'users',
@@ -49,7 +52,7 @@ const topbarIcon = (host: HTMLElement): Element | null =>
 const activeNavIcon = (host: HTMLElement): SVGElement | null =>
   host.querySelector<SVGElement>('button.nav-item[aria-current="page"] [data-page-icon]');
 
-/** The nine primary-nav pages (setup is the header-only exception). */
+/** The ten primary-nav pages (setup is the header-only exception). */
 const PRIMARY: Page[] = ALL_PAGES.filter((p) => p !== 'setup');
 
 describe('per-page icons (add-nav-page-icons)', () => {
@@ -99,9 +102,23 @@ describe('per-page icons (add-nav-page-icons)', () => {
         expect(rail?.innerHTML.length).toBeGreaterThan(0);
         headerGeometry.set(page, header!.innerHTML);
       }
-      // The <Dynamic> switch really swaps the visible glyph: all nine header
+      // The <Dynamic> switch really swaps the visible glyph: all ten header
       // geometries are distinct (a stale/removed switch would collapse them).
       expect(new Set(headerGeometry.values()).size).toBe(PRIMARY.length);
+    } finally {
+      dispose();
+    }
+  });
+
+  it('the rail carries one icon per primary page, in the grouped order', async () => {
+    // The default fake session is an admin, so all ten primary pages are entitled.
+    const { host, dispose } = mountApp(createAppStore(new FakeApiClient()));
+    try {
+      await flush();
+      const rail = [...host.querySelectorAll('nav button.nav-item [data-page-icon]')].map((n) =>
+        n.getAttribute('data-page-icon'),
+      );
+      expect(rail).toEqual(PRIMARY);
     } finally {
       dispose();
     }
@@ -118,9 +135,9 @@ describe('per-page icons (add-nav-page-icons)', () => {
       expect(btn).toBeTruthy();
       // The icon is aria-hidden and contributes no text: the name is "Providers"
       // optionally followed by the count badge digits — never icon artifacts.
-      expect(btn?.querySelector('svg[data-page-icon="providers"]')?.getAttribute('aria-hidden')).toBe(
-        'true',
-      );
+      expect(
+        btn?.querySelector('svg[data-page-icon="providers"]')?.getAttribute('aria-hidden'),
+      ).toBe('true');
       expect(btn?.textContent?.replace(/\s+/g, '')).toMatch(/^Providers\d*$/);
     } finally {
       dispose();

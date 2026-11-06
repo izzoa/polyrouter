@@ -47,9 +47,9 @@ export function Limits(props: { live?: boolean }) {
     b.scope === 'agent' ? `Agent · ${agentName(b.agentId)}` : 'Global';
 
   return (
-    <div class="rs-page" style="display:flex;flex-direction:column;gap:14px;max-width:1200px">
+    <div class="rs-page" style="display:flex;flex-direction:column;gap:24px;max-width:1200px">
       <div class="limits-intro">
-        <div style="font:400 12.5px 'Geist',sans-serif;color:var(--text3)">
+        <div class="t-body" style="color:var(--text3)">
           Progress counts recorded spend from the UTC period start, including earlier spend.
           Postpaid requests and reconciliation can exceed a cap; allowance after pending batches
           does not guarantee admission.
@@ -60,7 +60,7 @@ export function Limits(props: { live?: boolean }) {
       </div>
 
       <Show when={state.budgetsError}>
-        <div style="font:400 11.5px 'Geist',sans-serif;color:var(--red)">
+        <div class="t-caption" style="color:var(--red-text)">
           Couldn’t load budgets: {state.budgetsError}
         </div>
       </Show>
@@ -68,24 +68,23 @@ export function Limits(props: { live?: boolean }) {
       <Show
         when={state.budgets.length > 0}
         fallback={
-          <div class="panel card" style="font:400 12.5px 'Geist',sans-serif;color:var(--text3)">
+          <div class="panel card t-body" style="color:var(--text3)">
             {state.budgetsLoading ? 'Loading budgets…' : 'No budgets yet. Create one to cap spend.'}
           </div>
         }
       >
-        <div class="rs-grid-2" style="display:grid;gap:12px">
+        <div class="rs-grid-2" style="display:grid;gap:16px">
           <For each={state.budgets}>
             {(b) => (
               <article class="panel card budget-card" aria-label={b.name}>
                 <div class="budget-card-header">
                   <h2 class="section-title budget-card-title">{b.name}</h2>
                   <span
+                    class="chip"
                     style={{
-                      padding: '2px 9px',
-                      'border-radius': '10px',
-                      font: "500 10.5px 'Geist',sans-serif",
+                      font: "500 0.6875rem/1rem 'Geist',sans-serif",
                       background: b.action === 'alert' ? 'var(--chip)' : 'var(--red-bg)',
-                      color: b.action === 'alert' ? 'var(--text2)' : 'var(--red)',
+                      color: b.action === 'alert' ? 'var(--text2)' : 'var(--red-text)',
                     }}
                   >
                     {b.action === 'alert' ? 'Alert' : 'Block'}
@@ -106,7 +105,7 @@ export function Limits(props: { live?: boolean }) {
                   now={now()}
                   retry={retry}
                 />
-                <div style="font:400 11px 'Geist',sans-serif;color:var(--text3);line-height:1.5">
+                <div class="t-caption" style="color:var(--text3)">
                   <Show
                     when={b.notifyChannelIds.length > 0}
                     fallback={
@@ -116,7 +115,7 @@ export function Limits(props: { live?: boolean }) {
                     notifies: {b.notifyChannelIds.map(channelName).join(', ')}
                   </Show>
                 </div>
-                <div style="display:flex;gap:6px;margin-top:10px">
+                <div data-testid="budget-actions" style="display:flex;gap:8px;margin-top:8px">
                   <button type="button" class="btn-ghost" onClick={() => app.openBudget(b)}>
                     Edit
                   </button>
@@ -131,7 +130,7 @@ export function Limits(props: { live?: boolean }) {
                     style={{
                       'margin-left': 'auto',
                       'align-self': 'center',
-                      font: "400 11px 'Geist',sans-serif",
+                      font: "400 0.6875rem/1rem 'Geist',sans-serif",
                       color: b.enabled ? 'var(--green-text)' : 'var(--text3)',
                     }}
                   >

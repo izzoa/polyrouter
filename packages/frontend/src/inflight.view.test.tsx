@@ -72,6 +72,29 @@ describe('Overview in-flight rows', () => {
     }
   });
 
+  it('draws the running dot in a neutral tone, never the accent (the Indigo Budget, adopt-design-tokens-v2 D11)', async () => {
+    const client = new FakeApiClient({
+      inflight: { items: [liveRow()], available: true, truncated: false },
+    });
+    const store = createAppStore(client);
+    const { host, dispose } = mount(store);
+    try {
+      await flush();
+      await store.loadInflight();
+      await flush();
+      const row = host.querySelector<HTMLElement>('.req-row');
+      expect(row?.textContent).toContain('Running');
+      const dot = row!.querySelector<HTMLElement>('[aria-hidden="true"][style*="border-radius"]');
+      expect(dot, 'the status dot').not.toBeNull();
+      // The running dot still pulses (the "Running" motion), in Ink 3.
+      expect(dot!.style.background).toBe('var(--text3)');
+      expect(dot!.style.animation).toContain('pulse');
+      expect(dot!.getAttribute('style')).not.toMatch(/--accent/);
+    } finally {
+      dispose();
+    }
+  });
+
   it('places live rows ABOVE the completed rows', async () => {
     const client = new FakeApiClient({
       inflight: { items: [liveRow()], available: true, truncated: false },

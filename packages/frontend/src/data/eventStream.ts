@@ -52,6 +52,11 @@ export interface EventStreamOptions {
   onHealth?: (health: StreamHealth) => void;
   /** The server-advertised reconciliation cadence, once the snapshot announces it. */
   onReconcileMs?: (ms: number) => void;
+  /** A DATA event arrived — every event but `heartbeat` and `resync` — stamped with the same
+   * time `lastDataEventAt` takes (adopt-design-tokens-v2 D12). The Live lamp blinks on it;
+   * liveness alone (a heartbeat) and a directive (a resync) are not news. Never called on
+   * the polling path, which does not run through this client. */
+  onDataEvent?: (at: number) => void;
   factory?: EventSourceFactory;
   now?: () => number;
   /** Test seam: skip the real backoff delays. */
@@ -79,6 +84,9 @@ export function nativeEventSourceFactory(): EventSourceFactory | null {
 
 export interface EventStreamHandle {
   health: Accessor<StreamHealth>;
+  /** When the last data event arrived (every event but `heartbeat` and `resync`), or `null`
+   * before the first. */
+  lastDataEventAt: Accessor<number | null>;
   /** Reconciliation cadence the SERVER advertised (never assume the default). */
   reconcileMs: Accessor<number>;
   close: () => void;
@@ -107,6 +115,14 @@ export function createEventStream(opts: EventStreamOptions): EventStreamHandle {
   const setReconcileMs = (ms: number): void => {
     setReconcileMsSignal(ms);
     opts.onReconcileMs?.(ms);
+  };
+
+  const [lastDataEventAt, setLastDataEventAt] = createSignal<number | null>(null);
+  /** Stamp one data event and report it. */
+  const dataEvent = (): void => {
+    const at = now();
+    setLastDataEventAt(at);
+    opts.onDataEvent?.(at);
   };
 
   let es: EventSourceLike | null = null;
@@ -177,15 +193,21 @@ export function createEventStream(opts: EventStreamOptions): EventStreamHandle {
     lastFrameAt = now();
     setHealth('connecting');
 
-    const on = (type: string, handle: (data: unknown) => void): void => {
+    /** `data`: whether this event type is news the Live lamp should show — every type but
+     * `heartbeat` (liveness only) and `resync` (a directive). A malformed frame is stamped as
+     * nothing: it delivered no data. */
+    const on = (type: string, handle: (data: unknown) => void, data = true): void => {
       source.addEventListener(type, (ev: MessageEvent<string>) => {
         markFrame();
         if (ev.data === undefined || ev.data === '') {
+          if (data) dataEvent();
           handle({});
           return;
         }
         try {
-          handle(JSON.parse(ev.data) as unknown);
+          const parsed = JSON.parse(ev.data) as unknown;
+          if (data) dataEvent();
+          handle(parsed);
         } catch {
           // A malformed frame is a protocol fault: re-establish rather than guess.
           degrade();
@@ -207,8 +229,8 @@ export function createEventStream(opts: EventStreamOptions): EventStreamHandle {
     on('inflight.settled', (data) => opts.onSettled((data as { id: string }).id));
     on('analytics.invalidated', () => opts.onInvalidated());
     on('batch.updated', () => opts.onBatchUpdated?.());
-    on('resync', () => opts.onResync());
-    on('heartbeat', () => undefined); // liveness only — markFrame already ran
+    on('resync', () => opts.onResync(), false); // a directive, not data
+    on('heartbeat', () => undefined, false); // liveness only — markFrame already ran
 
     source.onerror = (): void => degrade();
     startWatchdog();
@@ -218,6 +240,7 @@ export function createEventStream(opts: EventStreamOptions): EventStreamHandle {
 
   return {
     health,
+    lastDataEventAt,
     reconcileMs,
     close: (): void => {
       closedByCaller = true;

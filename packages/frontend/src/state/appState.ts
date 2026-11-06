@@ -20,7 +20,17 @@ import {
   type LayerKind,
   type LayerToken,
 } from '../a11y';
-import { createStore, produce, type SetStoreFunction } from 'solid-js/store';
+import { createStore, produce, reconcile, type SetStoreFunction } from 'solid-js/store';
+import {
+  channelFields,
+  FIELD_CHECKS,
+  FIELD_IDS,
+  focusFirstFailing,
+  MODAL_FIELD_IDS,
+  splitList,
+  timeoutProblem,
+  type FieldId,
+} from './fieldChecks';
 import { DEFAULT_PAGE, hashForPage, pageFromHash } from './route';
 import {
   agentToRequestParams,
@@ -160,6 +170,20 @@ export interface RequestWindow {
   agentId: string | null;
 }
 
+/** A toast's role (adopt-design-tokens-v2 D13). A `confirm` toast confirms a completed action
+ * in the polite `role="status"` region and clears after 4s; a `failure` toast reports a
+ * failure that has no inline home yet in the `role="alert"` region and clears after 8s. */
+export type ToastKind = 'confirm' | 'failure';
+
+export interface ToastMessage {
+  kind: ToastKind;
+  text: string;
+}
+
+/** How long each kind stays, in ms, while neither hovered nor focused (dashboard-core "A toast
+ * gives its reader time"). */
+export const TOAST_MS: Readonly<Record<ToastKind, number>> = { confirm: 4000, failure: 8000 };
+
 export interface AppState {
   // chrome / navigation
   page: Page;
@@ -201,7 +225,10 @@ export interface AppState {
    * to `reqFilter` — one asks "how was it routed", the other "how was it run". */
   reqMode: RequestMode;
   selId: string | null;
-  toast: string | null;
+  /** The one toast showing, if any. Its `kind` picks the region it lands in (D13). A toast of
+   * the other kind raised meanwhile waits for this one's time (`showToast`), so neither cuts the
+   * other short. */
+  toast: ToastMessage | null;
   modal: ModalKind | null;
 
   /** Narrow-width navigation (phase1-responsive-dashboard-layout). Below the locked
@@ -340,6 +367,11 @@ export interface AppState {
   batchRows: BatchDisplayRow[];
   /** Live-view transport health (phase2-add-dashboard-event-stream). */
   streamHealth: StreamHealth;
+  /** When the live stream last delivered a DATA event (every event but `heartbeat` and
+   * `resync`), or `null` — the Live lamp blinks on each new stamp (adopt-design-tokens-v2
+   * D12). Only the current identity's stream writes it, and closing the stream or crossing an
+   * identity clears it, so the next stream never blinks on a stale stamp. */
+  lastDataEventAt: number | null;
   requestList: RequestRow[];
   requestListLoading: boolean;
   requestListError: string | null;
@@ -439,6 +471,12 @@ export interface AppState {
 
   // onboarding (realized, failure-aware)
   ob: OnboardingState;
+
+  /** Entry-field check messages (adopt-design-tokens-v2 task 8.2, design.md D20), keyed by
+   * the field's DOM id (`fieldChecks.ts`). A field's own check fills its slot on blur and on
+   * submit and clears it once the value passes; a failure only the server reports names no
+   * field and stays in its form's `error`. */
+  fieldErrors: Partial<Record<FieldId, string>>;
 }
 
 export interface ProviderKindDef {
@@ -609,13 +647,10 @@ function emptyNp(): AppState['np'] {
 /** Parse a patience field (SECONDS text) → ms; '' = absent; invalid/out-of-range
  * throws the inline-error message (fix-long-call-timeouts). */
 function parseTimeoutS(raw: string, label: string): number | undefined {
+  const problem = timeoutProblem(raw, label);
+  if (problem !== null) throw new Error(problem);
   const t = raw.trim();
-  if (t === '') return undefined;
-  const n = Number(t);
-  if (!Number.isInteger(n) || n < 1 || n > 3600) {
-    throw new Error(`${label} must be a whole number of seconds between 1 and 3600`);
-  }
-  return n * 1000;
+  return t === '' ? undefined : Number(t) * 1000;
 }
 
 function buildProviderInput(form: ProviderForm): CreateProviderInput {
@@ -718,22 +753,14 @@ function channelFormFrom(c: ChannelDto): ChannelForm {
   };
 }
 
-function splitList(v: string): string[] {
-  return v
-    .split(/[\s,]+/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-}
-
 /** Build the write-only channel config from the form. On EDIT of the SAME kind with
- * all config fields blank, returns `config: null` so the stored secret is left
- * untouched (invariant 8). On CREATE — or on an edit that CHANGES the kind — a
- * complete config for the (new) kind is required (the old config belongs to the old
- * kind's schema; the backend re-validates config against `kind`). */
-function buildChannelConfig(f: ChannelForm): {
-  error: string | null;
-  config: ChannelConfigInput | null;
-} {
+ * all config fields blank, returns `null` so the stored secret is left untouched
+ * (invariant 8). On CREATE — or on an edit that CHANGES the kind — a complete config for
+ * the (new) kind is required (the old config belongs to the old kind's schema; the
+ * backend re-validates config against `kind`). Completeness is checked per field before
+ * this runs (`smtpProblems` / `appriseProblem` in `fieldChecks.ts`, adopt-design-tokens-v2
+ * task 8.2), so this only assembles what those checks passed. */
+function buildChannelConfig(f: ChannelForm): ChannelConfigInput | null {
   const kindChanged = f.id !== null && f.originalKind !== null && f.kind !== f.originalKind;
   const blankPreserve = f.id !== null && !kindChanged;
   if (f.kind === 'smtp') {
@@ -743,40 +770,20 @@ function buildChannelConfig(f: ChannelForm): {
     const to = splitList(f.smtpTo);
     const anyProvided =
       host !== '' || from !== '' || user !== '' || f.smtpPass !== '' || to.length > 0;
-    if (blankPreserve && !anyProvided) return { error: null, config: null };
-    const port = Number(f.smtpPort);
-    if (host === '' || from === '' || to.length === 0 || !Number.isFinite(port) || port <= 0) {
-      return {
-        error: kindChanged
-          ? 'Changing the kind to SMTP requires a full host, port, from address, and recipient'
-          : 'SMTP needs a host, port, from address, and at least one recipient',
-        config: null,
-      };
-    }
+    if (blankPreserve && !anyProvided) return null;
     return {
-      error: null,
-      config: {
-        host,
-        port,
-        secure: f.smtpSecure,
-        ...(user !== '' ? { user } : {}),
-        ...(f.smtpPass !== '' ? { pass: f.smtpPass } : {}),
-        from,
-        to,
-      },
+      host,
+      port: Number(f.smtpPort),
+      secure: f.smtpSecure,
+      ...(user !== '' ? { user } : {}),
+      ...(f.smtpPass !== '' ? { pass: f.smtpPass } : {}),
+      from,
+      to,
     };
   }
   const urls = splitList(f.appriseUrls);
-  if (blankPreserve && urls.length === 0) return { error: null, config: null };
-  if (urls.length === 0) {
-    return {
-      error: kindChanged
-        ? 'Changing the kind to Apprise requires at least one URL'
-        : 'Add at least one Apprise URL',
-      config: null,
-    };
-  }
-  return { error: null, config: { urls } };
+  if (blankPreserve && urls.length === 0) return null;
+  return { urls };
 }
 
 function initialOnboarding(): OnboardingState {
@@ -804,10 +811,34 @@ function initialOnboarding(): OnboardingState {
   };
 }
 
+/** The storage key the theme toggle writes and `index.html`'s pre-paint script reads. */
+export const THEME_KEY = 'polyrouter-theme';
+/** The system preference the theme follows until the user chooses (D9). */
+export const DARK_SCHEME_QUERY = '(prefers-color-scheme: dark)';
+
+/** The theme `index.html`'s pre-paint script already resolved before first paint
+ * (adopt-design-tokens-v2 D9): the store starts from it rather than assuming light, so the
+ * first render agrees with the first frame. Light when no script ran (the test harness). */
+function initialTheme(): Theme {
+  return typeof document !== 'undefined' && document.documentElement.dataset['theme'] === 'dark'
+    ? 'dark'
+    : 'light';
+}
+
+/** The stored theme choice, or `null` when there is none or storage throws. */
+function readStoredTheme(): Theme | null {
+  try {
+    const stored = localStorage.getItem(THEME_KEY);
+    return stored === 'dark' || stored === 'light' ? stored : null;
+  } catch {
+    return null;
+  }
+}
+
 function initialState(): AppState {
   return {
     page: 'overview',
-    theme: 'light',
+    theme: initialTheme(),
     setupDismissed: readSetupDismissed(),
     range: '24h',
     routingSection: 'tiers',
@@ -884,6 +915,7 @@ function initialState(): AppState {
     inflightRows: [],
     batchRows: [],
     streamHealth: 'polling',
+    lastDataEventAt: null,
     requestList: [],
     requestListLoading: false,
     requestListError: null,
@@ -941,6 +973,8 @@ function initialState(): AppState {
     cf: emptyChannelForm(),
 
     ob: initialOnboarding(),
+
+    fieldErrors: {},
   };
 }
 
@@ -960,7 +994,14 @@ export interface AppStore {
    * admitting a held page. NEVER pushes; replaces ONLY to canonicalize an
    * unrecognized or unauthorized location. Idempotent. */
   applyLocation: () => void;
+  /** The user's manual theme choice: applied, stored per browser (best effort), and it ends
+   * {@link followSystemTheme}'s listening — from then on the choice wins (D9). */
   toggleTheme: () => void;
+  /** Applies the stored theme choice, or with none — or storage that throws — the system
+   * color-scheme preference, and keeps following that preference's changes until the user
+   * toggles. With a stored choice nothing is followed. Owned by `App`'s lifecycle like
+   * {@link startRouting}; returns the function that stops listening. */
+  followSystemTheme: () => () => void;
   dismissSetupGuide: () => void;
   /** Narrow-width nav overlay. Collapsing also closes the account menu inside it. */
   /** Register an overlay layer; returns its token. Opening a `dialog` supersedes every
@@ -1016,9 +1057,26 @@ export interface AppStore {
    * window exactly as `setFilter`/`setMode` do (add-agent-request-attribution). */
   setAgentFilter: (agentId: string | null) => void;
   select: (id: string | null) => void;
+  /** Confirm a completed action: the polite status region, cleared after 4s (D13). */
   say: (msg: string) => void;
+  /** Report a failure that is still a toast — it has no inline home yet — in the alert
+   * region, cleared after 8s (D13). `toastRoles.test.ts` fails a failure sent through
+   * `say()`. */
+  sayFailure: (msg: string) => void;
+  /** The pointer rests on the toast, or focus is inside it (true), or neither (false). Its
+   * timer pauses while held and resumes with the time it had left (D13). */
+  holdToast: (held: boolean) => void;
+  /** A field lost focus: run its own check and show (or clear) its message (task 8.2,
+   * design.md D20 — "validation runs on blur and on submit"). */
+  checkField: (id: FieldId) => void;
+  /** A field's value changed: clear its shown message once the value passes. It never
+   * sets one, so nothing turns invalid on a keystroke. */
+  editField: (id: FieldId) => void;
   clearToast: () => void;
-  copy: (txt: string, msg?: string) => void;
+  /** Copy to the clipboard and confirm it; a failed write is reported as a failure. `onCopied`
+   * runs only after a successful write, so a control can say it was ITS copy (the endpoint
+   * chip's `Copied`), never inferred from a toast another control raised. */
+  copy: (txt: string, msg?: string, onCopied?: () => void) => void;
   // observe (analytics, realized)
   loadOverview: () => Promise<void>;
   /** Overview's agent strip. Deliberately NOT part of `loadOverview`: that is the
@@ -1163,7 +1221,16 @@ let nextLayerToken = 1;
 
 export function createAppStore(client: ApiClient = realClient): AppStore {
   const [state, setState] = createStore<AppState>(initialState());
+  // The toast's timer (D13): armed for the kind's time when a toast shows, paused while the
+  // toast is held (hovered or focused) with the time it had left, and re-armed on release.
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
+  let toastRemaining = 0;
+  let toastArmedAt = 0;
+  let toastHeld = false;
+  // The toast of the OTHER kind raised while one shows, waiting for that one's time (dashboard-
+  // core "A toast gives its reader time": a confirmation then a clipboard failure each get their
+  // full 4s and 8s). At most one: the latest of its kind wins the wait.
+  let pendingToast: ToastMessage | null = null;
   // Monotonic stamp for auto-performance loads (r3-High-1 race guard).
   let autoPerfSeq = 0;
   // The same guard for the two card-scoped loaders, which became racy once their
@@ -1177,10 +1244,88 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
   // `source: learned`.
   let semLearnGen = 0;
 
-  const say = (msg: string): void => {
+  const stopToastTimer = (): void => {
+    if (toastTimer === undefined) return;
     clearTimeout(toastTimer);
-    setState('toast', msg);
-    toastTimer = setTimeout(() => setState('toast', null), 1800);
+    toastTimer = undefined;
+    toastRemaining = Math.max(0, toastRemaining - (Date.now() - toastArmedAt));
+  };
+  /** Put a toast on screen for its kind's full time. A fresh object, never a merge into the
+   * previous toast: Solid merges an object set into an object, which would keep a stale field
+   * if the shape ever grows. */
+  const putToast = (kind: ToastKind, text: string): void => {
+    stopToastTimer();
+    toastRemaining = TOAST_MS[kind];
+    setState('toast', () => ({ kind, text }));
+    startToastTimer();
+  };
+  const startToastTimer = (): void => {
+    if (toastTimer !== undefined || toastHeld || state.toast === null) return;
+    toastArmedAt = Date.now();
+    toastTimer = setTimeout(() => {
+      toastTimer = undefined;
+      const next = pendingToast;
+      pendingToast = null;
+      // The showing toast's time is up: the waiting one (of the other kind) takes its turn.
+      if (next !== null) putToast(next.kind, next.text);
+      else setState('toast', null);
+    }, toastRemaining);
+  };
+  /** Show a toast without cutting another short (D13; dashboard-core "A toast gives its reader
+   * time"):
+   * - nothing showing: it shows at once;
+   * - the same kind showing: it takes that region's place, as a live region holds its latest
+   *   message (the same text again re-arms its full time). A held bar stays held; the Toast
+   *   component releases the hold when the held bar unmounts;
+   * - the other kind showing: it waits until the showing toast's time is up, pauses included,
+   *   then runs its own full time. */
+  const showToast = (kind: ToastKind, text: string): void => {
+    const current = state.toast;
+    if (current !== null && current.kind !== kind) {
+      pendingToast = { kind, text };
+      return;
+    }
+    putToast(kind, text);
+  };
+  const say = (msg: string): void => {
+    showToast('confirm', msg);
+  };
+  const sayFailure = (msg: string): void => {
+    showToast('failure', msg);
+  };
+  const holdToast = (held: boolean): void => {
+    if (held === toastHeld) return;
+    toastHeld = held;
+    if (held) stopToastTimer();
+    else startToastTimer();
+  };
+
+  // Entry-field checks (adopt-design-tokens-v2 task 8.2, design.md D20). Each check reports
+  // on the field it concerns (`fieldChecks.ts`): a submit runs its form's fields and stops on
+  // any failure, a blur runs the one field, an edit only clears a message the value now
+  // passes. Messages are keyed by the field's DOM id, which its `.field-error` node derives.
+  const setFieldError = (id: FieldId, message: string | null): void => {
+    setState('fieldErrors', id, message ?? undefined);
+  };
+  /** Run each field's check; true when every one passes. */
+  const checkFields = (ids: readonly FieldId[]): boolean => {
+    let ok = true;
+    for (const id of ids) {
+      const message = FIELD_CHECKS[id](state);
+      setFieldError(id, message);
+      if (message !== null) ok = false;
+    }
+    return ok;
+  };
+  /** A form's submit: run its fields' checks, and on a failure move focus to the first failing
+   * field so its message is announced (`focusFirstFailing`). The blur path is `checkFields`. */
+  const submitFields = (ids: readonly FieldId[]): boolean => {
+    const ok = checkFields(ids);
+    if (!ok) focusFirstFailing(ids.filter((id) => state.fieldErrors[id] !== undefined));
+    return ok;
+  };
+  const clearFields = (ids: readonly FieldId[]): void => {
+    for (const id of ids) if (state.fieldErrors[id] !== undefined) setFieldError(id, null);
   };
 
   // Shared error funnel (E12.1). A 401 after we've reached `ready` means the session
@@ -1200,14 +1345,15 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
   // is undefined and on failure the write rejects — either way we toast a distinct
   // failure, never a false "Copied", so a user doesn't dismiss the shown-once key
   // reveal believing a copy that never happened.
-  const copy = (txt: string, msg?: string): void => {
+  const copy = (txt: string, msg?: string, onCopied?: () => void): void => {
     void (async () => {
       try {
         if (!navigator.clipboard) throw new Error('clipboard unavailable');
         await navigator.clipboard.writeText(txt);
         say(msg ?? 'Copied');
+        onCopied?.();
       } catch {
-        say('Copy failed — select the text manually');
+        sayFailure('Copy failed — select the text manually');
       }
     })();
   };
@@ -1255,7 +1401,13 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
   const loadProviders = async (): Promise<void> => {
     try {
       const rows = await client.listProviders();
-      setState({ providers: rows.map(toProvider), providersError: null });
+      // Reconciled by id, not replaced: a reload (every Test and Sync models ends with one)
+      // updates each provider in place, so its card is not re-created mid-action — the card's
+      // busy button stays busy until its whole action settles, and keeps the focus it had
+      // (adopt-design-tokens-v2 D14). A replaced array gave every row a new object, and
+      // `<For>` re-created every card.
+      setState('providers', reconcile(rows.map(toProvider), { key: 'id' }));
+      setState('providersError', null);
     } catch (e) {
       setState('providersError', err(e));
     }
@@ -1275,7 +1427,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       const rows = await client.listModels(providerId);
       setState('models', providerId, rows);
     } catch (e) {
-      say(err(e));
+      sayFailure(err(e));
     }
   };
 
@@ -1379,6 +1531,8 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
 
   const resetIdentityScoped = (): void => {
     identityGen += 1;
+    // A field message is identity-scoped like the form it sits on.
+    clearFields(FIELD_IDS);
     bumpBudgets();
     bumpChannels();
     limitsReadGen += 1;
@@ -1429,6 +1583,11 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     // would issue the next account's very first listing query under the previous
     // account's agent. It is tenant data wearing a preference's clothes.
     setState('reqAgentId', null);
+    // The toast below is cleared with the rest; its timer goes with it, so a toast the next
+    // account raises starts on its own full time (D13). A waiting toast was the previous
+    // account's too.
+    stopToastTimer();
+    pendingToast = null;
     bump('requests');
     bump('newRows');
     // The Observe aggregates cross the boundary too (fix-analytics-identity-scope): spend
@@ -1482,6 +1641,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         s.selId = null;
         s.selBodies = { rows: null, loading: false, error: null };
         s.streamHealth = 'polling';
+        s.lastDataEventAt = null;
         s.autoLayers = null;
         s.calHistory = { rows: [], loaded: false, error: null };
         s.semLearn = { status: null, loaded: false, error: null };
@@ -1675,7 +1835,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
             if (isHeld(tierId)) tierPending.set(tierId, rollback);
             else setState('tierEntries', tierId, rollback);
           }
-          say(err(e));
+          sayFailure(err(e));
         }
       }
     } finally {
@@ -1710,7 +1870,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           if (autoLayersDesired === null && confirmed !== null) {
             setState('autoLayers', confirmed);
           }
-          say(err(e));
+          sayFailure(err(e));
         }
       }
     } finally {
@@ -2406,6 +2566,8 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     stream?.close();
     stream = null;
     setState('streamHealth', 'polling');
+    // A hidden tab or a sign-out leaves no stamp for the next stream to blink on (D12).
+    setState('lastDataEventAt', null);
   };
 
   const connectStream = (): void => {
@@ -2476,6 +2638,11 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       },
       onHealth: (h) => {
         if (fresh()) setState('streamHealth', h);
+      },
+      // The Live lamp's signal (adopt-design-tokens-v2 D12), bound to the identity generation
+      // like every other handler: a frame from a superseded identity never reaches the UI.
+      onDataEvent: (at) => {
+        if (fresh()) setState('lastDataEventAt', at);
       },
       onReconcileMs: (ms) => {
         // While streaming, verify CONTENT (not just liveness) on a bounded low-rate
@@ -2705,6 +2872,40 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     }
   };
 
+  // --- theme (adopt-design-tokens-v2 D9) ---
+  /** Set while the theme follows the system preference; a manual toggle calls it. */
+  let stopFollowingTheme: (() => void) | null = null;
+  const applyTheme = (theme: Theme): void => {
+    document.documentElement.dataset['theme'] = theme;
+    setState('theme', theme);
+  };
+  function followSystemTheme(): () => void {
+    stopFollowingTheme?.();
+    const stored = readStoredTheme();
+    if (stored !== null) {
+      // A stored choice wins on every visit, and a later system change moves nothing.
+      applyTheme(stored);
+      return () => undefined;
+    }
+    let mq: MediaQueryList;
+    try {
+      mq = globalThis.matchMedia(DARK_SCHEME_QUERY);
+    } catch {
+      return () => undefined; // no media queries: the resolved theme simply stays
+    }
+    applyTheme(mq.matches ? 'dark' : 'light');
+    const onChange = (e: MediaQueryListEvent): void => {
+      applyTheme(e.matches ? 'dark' : 'light');
+    };
+    mq.addEventListener('change', onChange);
+    const stop = (): void => {
+      mq.removeEventListener('change', onChange);
+      if (stopFollowingTheme === stop) stopFollowingTheme = null;
+    };
+    stopFollowingTheme = stop;
+    return stop;
+  }
+
   function startRouting(): () => void {
     // The accept-invite fragment carries a SECRET that `bootstrap` scrubs. The
     // router does not start here at all: it never parses that fragment as a
@@ -2816,11 +3017,9 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
 
   const uaCreateInvite = async (): Promise<void> => {
     if (state.ua.inviteBusy) return;
+    // Required, and the browser's email-format check: both report on the field (D20).
+    if (!submitFields(['f-ua-email'])) return;
     const email = state.ua.inviteEmail.trim();
-    if (email === '') {
-      setState('ua', 'error', 'enter an email to invite');
-      return;
-    }
     setState('ua', { inviteBusy: true, error: null });
     try {
       const res = await client.adminCreateInvite(email);
@@ -2839,12 +3038,14 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     try {
       const result = await client.testProvider(id);
       setState('providers', (p) => p.id === id, 'status', result.status);
-      say(result.ok ? 'Connection ok' : `Connection failed — ${result.message}`);
+      // Split out of one ternary (D13): the success confirms, the failure is an alert.
+      if (result.ok) say('Connection ok');
+      else sayFailure(`Connection failed — ${result.message}`);
       // add-provider-health-signals: reload so the card shows the test's RECORDED
       // health (reason, source, time) — not just the status this result carries.
       await loadProviders();
     } catch (e) {
-      say(err(e));
+      sayFailure(err(e));
     }
   };
 
@@ -2875,15 +3076,18 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     startRouting,
     applyLocation,
     toggleTheme: () => {
+      // A manual choice ends the system-following, whether or not it can be stored: with
+      // storage unavailable it still holds for the session.
+      stopFollowingTheme?.();
       const theme: Theme = state.theme === 'light' ? 'dark' : 'light';
-      document.documentElement.dataset['theme'] = theme;
       try {
-        localStorage.setItem('polyrouter-theme', theme);
+        localStorage.setItem(THEME_KEY, theme);
       } catch {
         // storage unavailable — theme just won't persist
       }
-      setState('theme', theme);
+      applyTheme(theme);
     },
+    followSystemTheme,
     dismissSetupGuide: () => {
       try {
         localStorage.setItem('polyrouter-setup-dismissed', '1');
@@ -2960,8 +3164,20 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     },
     select: (id) => setState({ selId: id, selBodies: { rows: null, loading: false, error: null } }),
     say,
+    sayFailure,
+    holdToast,
+    checkField: (id) => {
+      checkFields([id]);
+    },
+    editField: (id) => {
+      if (state.fieldErrors[id] !== undefined && FIELD_CHECKS[id](state) === null) {
+        setFieldError(id, null);
+      }
+    },
     clearToast: () => {
-      clearTimeout(toastTimer);
+      stopToastTimer();
+      toastHeld = false;
+      pendingToast = null;
       setState('toast', null);
     },
     copy,
@@ -3081,11 +3297,8 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     loadAgentStats,
     createAgent: async () => {
       if (state.na.busy) return; // single-flight — no double-submit duplicates (A-27)
+      if (!submitFields(['f-na-name'])) return;
       const name = state.na.name.trim();
-      if (!name) {
-        setState('na', 'error', 'Name is required');
-        return;
-      }
       setState('na', { busy: true, error: null });
       try {
         const reveal = await client.createAgent({ name, harness: state.na.harness });
@@ -3123,7 +3336,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           }),
         );
       } catch (e) {
-        say(err(e));
+        sayFailure(err(e));
       }
     },
     deleteAgent: async (agent) => {
@@ -3132,7 +3345,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         setState('agents', (list) => list.filter((a) => a.id !== agent.id));
         say(`Agent ${agent.name} deleted`);
       } catch (e) {
-        say(err(e));
+        sayFailure(err(e));
       }
     },
 
@@ -3141,14 +3354,9 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     addProvider: async () => {
       if (state.np.busy) return; // single-flight — no double-submit duplicates (A-27)
       const form = state.np;
-      if (!form.name.trim()) {
-        setState('np', 'error', 'Name is required');
-        return;
-      }
-      if (!form.baseUrl.trim()) {
-        setState('np', 'error', 'Base URL is required');
-        return;
-      }
+      // Each check reports on its own field (D20): the name, the base URL, and each
+      // patience field's whole-seconds range.
+      if (!submitFields(['f-np-name', 'f-np-baseurl', 'f-np-firstbyte', 'f-np-idle'])) return;
       setState('np', { busy: true, error: null });
       const editingId = form.editingId;
       try {
@@ -3215,6 +3423,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       }
     },
     openEditProvider: (p) => {
+      clearFields(MODAL_FIELD_IDS);
       setState({
         modal: 'editProvider',
         np: {
@@ -3243,6 +3452,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     loadOauthPresets,
     startOauthConnect: async (preset) => {
       if (state.ow.busy) return;
+      clearFields(['f-ow-paste']);
       setState('ow', { busy: true, error: null });
       try {
         const name = state.np.name.trim();
@@ -3263,6 +3473,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     },
     startOauthReauthorize: async (p) => {
       if (state.ow.busy) return;
+      clearFields(MODAL_FIELD_IDS);
       setState({ modal: 'newProvider', np: { ...emptyNp(), kind: 'sub' } });
       // A dedicated reconnect mode — never the add-provider form: it must not depend
       // on the preset list having loaded, nor on a leftover "advanced" toggle.
@@ -3295,15 +3506,12 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       const ow = state.ow;
       if (ow.busy || ow.active === null) return;
       const pasted = ow.pasted.trim();
-      // Client-side mirror of the backend contract: both accepted forms carry state.
-      // A bare code gets guidance without a round-trip.
-      if (!/^https?:\/\//i.test(pasted) && !pasted.includes('#')) {
+      // Client-side mirror of the backend contract: both accepted forms carry state. A
+      // bare code gets guidance without a round-trip — on the paste field itself (D20).
+      if (!submitFields(['f-ow-paste'])) {
         // Credential material is cleared on EVERY completion attempt, including this
-        // client-side rejection.
-        setState('ow', {
-          pasted: '',
-          error: 'paste the full redirect URL or the code#state string shown after signing in',
-        });
+        // client-side rejection: the field shows its invalid state empty.
+        setState('ow', { pasted: '', error: null });
         return;
       }
       setState('ow', { busy: true, error: null });
@@ -3351,6 +3559,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     },
     cancelOauthConnect: () => {
       if (state.ow.busy) return;
+      clearFields(['f-ow-paste']);
       setState('ow', { active: null, pasted: '', error: null });
     },
     testProviderById,
@@ -3372,10 +3581,10 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
               : `Synced ${String(result.synced ?? 0)} models`,
           );
         } else {
-          say(`Sync failed — ${result.message}`);
+          sayFailure(`Sync failed — ${result.message}`);
         }
       } catch (e) {
-        say(err(e));
+        sayFailure(err(e));
       }
     },
     deleteProvider: async (id) => {
@@ -3389,7 +3598,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         );
         say('Provider deleted');
       } catch (e) {
-        say(err(e));
+        sayFailure(err(e));
       }
     },
     loadModels,
@@ -3401,7 +3610,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         );
         say('Price updated');
       } catch (e) {
-        say(err(e));
+        sayFailure(err(e));
       }
     },
 
@@ -3425,7 +3634,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       try {
         await client.removeModel(model.id);
       } catch (e) {
-        say(`Couldn’t remove ${name}: ${err(e)}`);
+        sayFailure(`Couldn’t remove ${name}: ${err(e)}`);
         return;
       }
       setState(
@@ -3446,6 +3655,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     },
 
     openModal: (modal) => {
+      clearFields(MODAL_FIELD_IDS);
       if (modal === 'newProvider') void loadTimeoutDefaults();
       if (modal === 'newAgent') {
         setState({ modal, na: { name: '', harness: 'openai_sdk', busy: false, error: null } });
@@ -3475,6 +3685,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       ) {
         return;
       }
+      clearFields(MODAL_FIELD_IDS);
       setState(
         produce((s) => {
           s.kr = emptyKeyReveal();
@@ -3582,7 +3793,8 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         return;
       }
       if (entries.length >= MAX_MODELS_PER_TIER) {
-        say(`Max ${String(MAX_MODELS_PER_TIER)} models per tier`);
+        // A refused action: a failure, so the alert region (D13).
+        sayFailure(`Max ${String(MAX_MODELS_PER_TIER)} models per tier`);
         return;
       }
       applyTierEntries(tierId, [...entries, { modelId, mode: mode ?? 'any' }]);
@@ -3608,11 +3820,8 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     },
     createTier: async () => {
       if (state.tf.busy) return; // single-flight — no double-submit duplicates (A-27)
+      if (!submitFields(['f-tf-key'])) return;
       const key = state.tf.key.trim();
-      if (!key) {
-        setState('tf', 'error', 'Key is required');
-        return;
-      }
       setState('tf', { busy: true, error: null });
       try {
         const displayName = state.tf.displayName.trim();
@@ -3655,17 +3864,15 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         say('Tier deleted');
       } catch (e) {
         if (gen !== identityGen) return; // stale: the old session's error is not this one's
-        say(err(e));
+        sayFailure(err(e));
       }
     },
     createRule: async () => {
       if (state.rf.busy) return; // single-flight — no double-submit duplicates (A-27)
+      // One message used to cover both fields; each now reports on its own (D20).
+      if (!submitFields(['f-rf-value', 'f-rf-target'])) return;
       const value = state.rf.value.trim();
       const target = state.rf.target.trim();
-      if (!value || !target) {
-        setState('rf', 'error', 'A header value and target tier are required');
-        return;
-      }
       setState('rf', { busy: true, error: null });
       try {
         const rule = await client.createRule({
@@ -3692,7 +3899,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         setState('rules', (rules) => rules.filter((r) => r.id !== id)); // preview
         void reconcileRules(); // converge (r2-High-1 — one discipline for ALL rule writes)
       } catch (e) {
-        say(err(e));
+        sayFailure(err(e));
       }
     },
     setBandTarget: async (band, target, scope = null) => {
@@ -3957,7 +4164,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         });
         setState('autoLayers', next);
       } catch (e) {
-        say(err(e));
+        sayFailure(err(e));
       }
     },
     revertCalibration: async () => {
@@ -3966,7 +4173,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         setState('autoLayers', next);
         await loadCalHistory(); // the revert appended an event — refresh
       } catch (e) {
-        say(err(e));
+        sayFailure(err(e));
       }
     },
     revertAgentCalibration: async (agentId: string) => {
@@ -3978,7 +4185,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         setState('autoLayers', next);
         await loadCalHistory();
       } catch (e) {
-        say(err(e));
+        sayFailure(err(e));
       }
     },
     loadCalHistory,
@@ -4010,7 +4217,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         semLearnGen += 1;
         setState('semLearn', { status, loaded: true, error: null });
       } catch (e) {
-        say(err(e));
+        sayFailure(err(e));
       }
     },
     loadSemanticLearning,
@@ -4028,21 +4235,15 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     loadBudgetProgress: (force = false) => progressLoader.load(force),
     stopLimitsProgress: () => progressLoader.cancel(),
     openBudget: (budget) => {
+      clearFields(MODAL_FIELD_IDS);
       setState({ modal: 'newLimit', bf: budget ? budgetFormFrom(budget) : emptyBudgetForm() });
     },
     saveBudget: async () => {
       if (state.bf.busy) return; // single-flight — no double-submit duplicates
+      if (!submitFields(['f-bf-name', 'f-bf-amount'])) return;
       const f = { ...state.bf, notifyChannelIds: [...state.bf.notifyChannelIds] };
       const name = f.name.trim();
-      if (!name) {
-        setState('bf', 'error', 'Name is required');
-        return;
-      }
       const amount = Number(f.amount);
-      if (!Number.isFinite(amount) || amount <= 0) {
-        setState('bf', 'error', 'Amount must be a positive number');
-        return;
-      }
       setState('bf', { busy: true, error: null });
       const gen = identityGen;
       bumpBudgets();
@@ -4117,7 +4318,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         say('Budget deleted');
       } catch (e) {
         if (gen !== identityGen) return;
-        say(err(e));
+        sayFailure(err(e));
       } finally {
         if (gen === identityGen) {
           deletedBudgets.delete(id);
@@ -4130,22 +4331,21 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
 
     loadChannels,
     openChannel: (channel) => {
+      clearFields(MODAL_FIELD_IDS);
       setState({ modal: 'channel', cf: channel ? channelFormFrom(channel) : emptyChannelForm() });
     },
     saveChannel: async () => {
       if (state.cf.busy) return; // single-flight — no double-submit duplicates
       const f = state.cf;
+      // The name and the current kind's config fields each report on their own field
+      // (D20); the other kind's fields are not rendered, so their messages go.
+      const fields = channelFields(f);
+      clearFields(fields.hidden);
+      if (!submitFields(fields.checked)) return;
       const name = f.name.trim();
-      if (!name) {
-        setState('cf', 'error', 'Name is required');
-        return;
-      }
-      const built = buildChannelConfig(f);
-      if (built.error !== null) {
-        setState('cf', 'error', built.error);
-        return;
-      }
-      const config = built.config;
+      const config = buildChannelConfig(f);
+      // A defensive fallback that names no one field: on a create the config checks above
+      // always fire first (`buildChannelConfig` keeps a blank config only on an edit).
       if (f.id === null && config === null) {
         setState('cf', 'error', 'Channel config is required');
         return;
@@ -4202,7 +4402,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         setState('channels', (list) => list.filter((c) => c.id !== id));
         say('Channel deleted');
       } catch (e) {
-        say(err(e));
+        sayFailure(err(e));
       }
     },
     toggleChannelEnabled: async (channel) => {
@@ -4213,7 +4413,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         bumpChannels(); // invalidate an in-flight channels loader (stale-overwrite)
         setState('channels', (c) => c.id === channel.id, updated);
       } catch (e) {
-        say(err(e));
+        sayFailure(err(e));
       } finally {
         setState('channelToggling', channel.id, false);
       }
@@ -4236,7 +4436,9 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
             }
           }),
         );
-        say(result.ok ? 'Test sent' : `Test failed — ${result.error ?? 'unknown error'}`);
+        // Split out of one ternary (D13): the success confirms, the failure is an alert.
+        if (result.ok) say('Test sent');
+        else sayFailure(`Test failed — ${result.error ?? 'unknown error'}`);
       } catch (e) {
         setState('channelTests', id, { ok: false, error: err(e) });
       } finally {
@@ -4271,14 +4473,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       // read-then-replace tier append (losing one model). Bail if already running.
       if (state.ob.busy2) return;
       const form = state.ob.prov;
-      if (!form.name.trim()) {
-        setState('ob', 'error2', 'Provider name is required');
-        return;
-      }
-      if (!form.baseUrl.trim()) {
-        setState('ob', 'error2', 'Base URL is required');
-        return;
-      }
+      if (!submitFields(['f-ob-pname', 'f-ob-baseurl'])) return;
       setState('ob', { busy2: true, error2: null, done2: false });
       try {
         // Reuse a provider already created for THIS onboarding attempt (a prior try that

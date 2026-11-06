@@ -211,6 +211,18 @@ describe('failure: a notice and a Retry, and no figure from an earlier load', ()
     expect(h.store.state.autoPerf.error).not.toBeNull();
 
     const notice = q(h.host, 'auto-load-error')!;
+    // The shared notice anatomy (adopt-design-tokens-v2 D15; dashboard-core "Notices share one
+    // anatomy and four tones"): a load failure is the Info tone, a polite status region, with
+    // the `Couldn’t load` title over its kept sentence and one ghost Retry.
+    expect(notice.classList.contains('notice'), 'the shared notice').toBe(true);
+    expect(notice.classList.contains('notice--info'), 'the Info tone').toBe(true);
+    expect(notice.getAttribute('role')).toBe('status');
+    expect(notice.querySelector('.notice-title')?.textContent).toBe('Couldn’t load');
+    expect(notice.querySelectorAll('button')).toHaveLength(1);
+    expect(notice.querySelector('button')?.classList.contains('btn-ghost')).toBe(true);
+    expect(notice.querySelector('.notice-body')?.textContent).toContain(
+      'Couldn’t load the Pipeline’s figures',
+    );
     expect(notice.textContent).toContain('Couldn’t load the Pipeline’s figures');
     expect(notice.textContent).toContain('the analytics query timed out');
     expect(notice.textContent).toContain('Routing is unaffected');

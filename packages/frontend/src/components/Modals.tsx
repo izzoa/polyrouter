@@ -10,9 +10,13 @@ import {
   type SmtpSecure,
 } from '../data/api';
 import { PROVIDER_KINDS } from '../state/appState';
+import { onSubscriptionConnect } from '../state/fieldChecks';
 import { useApp } from '../state/context';
 import type { Harness } from '../types';
 import { Icon } from './Icon';
+import { FieldNote, useFields } from './Field';
+import { StackedLabel } from './StackedLabel';
+import { createBusyMap } from './busy';
 
 /** Friendly labels for the event-subscription checkboxes (#20 channel modal). */
 const EVENT_LABELS: Record<EventType, string> = {
@@ -48,9 +52,10 @@ export function HarnessSelect(props: {
 function OauthSteps(props: { backLabel: string; onBack: () => void }) {
   const app = useApp();
   const { state, setState } = app;
+  const f = useFields();
   return (
-    <div style="display:flex;flex-direction:column;gap:10px">
-      <div style="font:400 12px 'Geist',sans-serif;color:var(--text);line-height:1.5">
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <div class="t-dense" style="color:var(--text)">
         1. Open the sign-in link and approve access.
       </div>
       <a
@@ -63,22 +68,28 @@ function OauthSteps(props: { backLabel: string; onBack: () => void }) {
         Open sign-in link <Icon name="externalLink" size={12} />
         <span class="sr-only"> (opens in a new tab)</span>
       </a>
-      <div style="font:400 12px 'Geist',sans-serif;color:var(--text);line-height:1.5">
+      <div class="t-dense" style="color:var(--text)">
         2. Paste what you land on — the full redirect URL or the code#state string.
       </div>
       <label class="field-label" for="f-ow-paste" style="display:block">
         Redirect URL or code
       </label>
       <input
-        class="input mono"
+        class="input input--mono"
         id="f-ow-paste"
-        style="font:400 12px 'Geist Mono',monospace"
         value={state.ow.pasted}
         placeholder="https://…/callback?code=…&state=… or code#state"
-        onInput={(e) => setState('ow', 'pasted', e.currentTarget.value)}
+        aria-invalid={f.invalid('f-ow-paste')}
+        aria-describedby={f.describedBy('f-ow-paste')}
+        onBlur={() => f.check('f-ow-paste')}
+        onInput={(e) => {
+          setState('ow', 'pasted', e.currentTarget.value);
+          f.edit('f-ow-paste');
+        }}
       />
+      <FieldNote for="f-ow-paste" error={f.error('f-ow-paste')} alert />
       <Show when={state.ow.error}>
-        <div role="alert" style="font:400 11px 'Geist',sans-serif;color:var(--red)">
+        <div role="alert" class="t-caption" style="color:var(--red-text)">
           {state.ow.error}
         </div>
       </Show>
@@ -90,9 +101,10 @@ function OauthSteps(props: { backLabel: string; onBack: () => void }) {
           type="button"
           class="btn-primary"
           disabled={state.ow.busy}
+          aria-busy={state.ow.busy ? true : undefined}
           onClick={() => void app.completeOauthConnect()}
         >
-          {state.ow.busy ? 'Connecting…' : 'Connect'}
+          <StackedLabel alt={state.ow.busy} rest="Connect" altLabel="Connecting…" />
         </button>
       </div>
     </div>
@@ -102,14 +114,28 @@ function OauthSteps(props: { backLabel: string; onBack: () => void }) {
 export function Modals() {
   const app = useApp();
   const { state, setState } = app;
+  // Each of the dashboard's own checks reports on the field it concerns (task 8.2, D20).
+  const f = useFields();
+  /** Any SMTP config edit can settle the other SMTP fields' checks: an edit keeps its stored
+   * config only while every config field is blank. */
+  const editSmtp = (): void => {
+    for (const id of ['f-cf-smtphost', 'f-cf-smtpport', 'f-cf-smtpfrom', 'f-cf-smtpto'] as const)
+      f.edit(id);
+  };
+  // A subscription preset card starts the sign-in request and stays on screen until it
+  // answers (D14): only the pressed card says so, though all of them wait on `ow.busy`.
+  const connecting = createBusyMap();
   const npKind = () => PROVIDER_KINDS.find((k) => k.id === state.np.kind);
   /** The OAuth connect path replaces the classic fields for a NEW subscription
    * provider whenever the server lists an enabled preset (add-subscription-oauth). */
-  const subConnect = () =>
-    state.np.kind === 'sub' &&
-    state.np.editingId === null &&
-    !state.ow.advanced &&
-    state.ow.presets.length > 0;
+  const subConnect = () => onSubscriptionConnect(state);
+  // The name is optional on the connect path (its check does not apply there), so a "Name is
+  // required" shown on the classic path clears when the form moves onto it.
+  createEffect(
+    on(subConnect, (connect) => {
+      if (connect) f.edit('f-np-name');
+    }),
+  );
 
   // Editing an OAuth-connected row (add-chatgpt-responses): endpoint/kind/protocol
   // are preset-pinned — rendered read-only; the submit is name-only.
@@ -179,8 +205,15 @@ export function Modals() {
                     id="f-na-name"
                     value={state.na.name}
                     placeholder="e.g. openclaw"
-                    onInput={(e) => setState('na', 'name', e.currentTarget.value)}
+                    aria-invalid={f.invalid('f-na-name')}
+                    aria-describedby={f.describedBy('f-na-name')}
+                    onBlur={() => f.check('f-na-name')}
+                    onInput={(e) => {
+                      setState('na', 'name', e.currentTarget.value);
+                      f.edit('f-na-name');
+                    }}
                   />
+                  <FieldNote for="f-na-name" error={f.error('f-na-name')} />
                 </div>
                 <div>
                   <label class="field-label" for="f-na-harness" style="display:block">
@@ -193,7 +226,7 @@ export function Modals() {
                   />
                 </div>
                 <Show when={state.na.error}>
-                  <div style="font:400 11px 'Geist',sans-serif;color:var(--red)">
+                  <div class="t-caption" style="color:var(--red-text)">
                     {state.na.error}
                   </div>
                 </Show>
@@ -205,9 +238,14 @@ export function Modals() {
                     type="button"
                     class="btn-primary"
                     disabled={state.na.busy}
+                    aria-busy={state.na.busy ? true : undefined}
                     onClick={() => void app.createAgent()}
                   >
-                    {state.na.busy ? 'Minting…' : 'Create & mint key'}
+                    <StackedLabel
+                      alt={state.na.busy}
+                      rest="Create & mint key"
+                      altLabel="Minting…"
+                    />
                   </button>
                 </div>
               </Show>
@@ -216,23 +254,20 @@ export function Modals() {
                 <div class="modal-title" id="modal-title">
                   {state.kr.title}
                 </div>
-                <div style="display:flex;align-items:center;gap:10px;padding:10px 13px;background:var(--amber-bg);border-radius:8px">
-                  <span
-                    class="mono"
-                    style="font:500 12px 'Geist Mono',monospace;color:var(--text);word-break:break-all"
-                  >
+                <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--amber-bg);border-radius:6px">
+                  <span class="mono t-label" style="color:var(--text);word-break:break-all">
                     {state.kr.key}
                   </span>
                   <button
                     type="button"
-                    class="link-accent"
-                    style="margin-left:auto;flex:none;font:500 11.5px 'Geist',sans-serif"
+                    class="link-accent t-label"
+                    style="margin-left:auto;flex:none"
                     onClick={() => app.copy(state.kr.key, 'Key copied')}
                   >
                     Copy
                   </button>
                 </div>
-                <div style="font:400 11px 'Geist',sans-serif;color:var(--amber)">
+                <div class="t-caption" style="color:var(--amber-text)">
                   Shown once — only an HMAC hash is stored. The old key stops working immediately.
                 </div>
                 <div class="snippet-box">{state.kr.snippet}</div>
@@ -255,7 +290,7 @@ export function Modals() {
                     for the provider being renewed — never the add-provider form. */}
                 <Show when={state.ow.reconnect}>
                   <div data-reconnect-view style="display:flex;flex-direction:column;gap:12px">
-                    <div style="font:400 12px 'Geist',sans-serif;color:var(--text3);line-height:1.5">
+                    <div class="t-dense" style="color:var(--text3)">
                       Sign in again to renew this provider. Its models and routing stay exactly as
                       they are.
                     </div>
@@ -265,18 +300,12 @@ export function Modals() {
                         <Show
                           when={state.ow.error}
                           fallback={
-                            <div
-                              role="status"
-                              style="font:400 12px 'Geist',sans-serif;color:var(--text3)"
-                            >
+                            <div role="status" class="t-dense" style="color:var(--text3)">
                               Starting sign-in…
                             </div>
                           }
                         >
-                          <div
-                            role="alert"
-                            style="font:400 11px 'Geist',sans-serif;color:var(--red)"
-                          >
+                          <div role="alert" class="t-caption" style="color:var(--red-text)">
                             Couldn’t start the sign-in: {state.ow.error}
                           </div>
                           <div style="display:flex;gap:8px;justify-content:flex-end">
@@ -318,19 +347,29 @@ export function Modals() {
                       id="f-np-name"
                       value={state.np.name}
                       placeholder="e.g. OpenAI, mylab-endpoint"
-                      onInput={(e) => setState('np', 'name', e.currentTarget.value)}
+                      aria-invalid={f.invalid('f-np-name')}
+                      aria-describedby={f.describedBy('f-np-name')}
+                      onBlur={() => f.check('f-np-name')}
+                      onInput={(e) => {
+                        setState('np', 'name', e.currentTarget.value);
+                        f.edit('f-np-name');
+                      }}
                     />
+                    <FieldNote for="f-np-name" error={f.error('f-np-name')} />
                   </div>
                   <Show
                     when={!oauthLocked()}
                     fallback={
                       <div>
                         <div class="field-label">Connection</div>
-                        <div style="padding:12px 14px;border:1px solid var(--border);border-radius:10px;background:var(--bg2)">
-                          <span style="display:block;font:500 12.5px 'Geist',sans-serif;color:var(--text)">
+                        <div style="padding:12px;border:1px solid var(--border);border-radius:10px;background:var(--bg2)">
+                          <span class="t-label" style="display:block;color:var(--text)">
                             Subscription — connected via {state.np.oauthPreset}
                           </span>
-                          <span style="display:block;font:400 11px 'Geist',sans-serif;color:var(--text3);line-height:1.45;margin-top:3px">
+                          <span
+                            class="t-caption"
+                            style="display:block;color:var(--text3);margin-top:4px"
+                          >
                             Endpoint, kind, and protocol are pinned by the connection. Reconnect to
                             sign in again — it renews this provider in place, keeping its models and
                             routing
@@ -359,27 +398,20 @@ export function Modals() {
                   >
                     <div>
                       <div class="field-label">Kind</div>
-                      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+                      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
                         <For each={PROVIDER_KINDS}>
                           {(k) => (
                             <button
                               type="button"
                               class="kind-card"
                               aria-pressed={state.np.kind === k.id}
-                              style={{
-                                padding: '12px 14px',
-                                border: `1px solid ${state.np.kind === k.id ? 'var(--accent)' : 'var(--border)'}`,
-                                background:
-                                  state.np.kind === k.id ? 'var(--accent-bg)' : 'var(--bg)',
-                                'border-radius': '10px',
-                                cursor: 'pointer',
-                              }}
                               onClick={() => setState('np', 'kind', k.id)}
                             >
-                              <span style="display:block;font:500 12.5px 'Geist',sans-serif;color:var(--text)">
-                                {k.name}
-                              </span>
-                              <span style="display:block;font:400 11px 'Geist',sans-serif;color:var(--text3);line-height:1.45;margin-top:3px">
+                              <span class="t-label kind-card-name">{k.name}</span>
+                              <span
+                                class="t-caption"
+                                style="display:block;color:var(--text3);margin-top:4px"
+                              >
                                 {k.desc}
                               </span>
                             </button>
@@ -399,14 +431,23 @@ export function Modals() {
                               <button
                                 type="button"
                                 class="kind-card"
-                                style="padding:12px 14px;border:1px solid var(--border);border-radius:10px;cursor:pointer;text-align:left"
                                 disabled={state.ow.busy}
-                                onClick={() => void app.startOauthConnect(pr.id)}
+                                aria-busy={connecting.busy(pr.id) ? true : undefined}
+                                onClick={() =>
+                                  void connecting.run(pr.id, () => app.startOauthConnect(pr.id))
+                                }
                               >
-                                <span style="display:block;font:500 12.5px 'Geist',sans-serif;color:var(--text)">
-                                  {pr.displayName}
+                                <span class="t-label" style="display:block;color:var(--text)">
+                                  <StackedLabel
+                                    alt={connecting.busy(pr.id)}
+                                    rest={pr.displayName}
+                                    altLabel="Connecting…"
+                                  />
                                 </span>
-                                <span style="display:block;font:400 11px 'Geist',sans-serif;color:var(--text3);margin-top:3px">
+                                <span
+                                  class="t-caption"
+                                  style="display:block;color:var(--text3);margin-top:4px"
+                                >
                                   Sign in with your account — tokens are stored encrypted and
                                   auto-refresh.
                                 </span>
@@ -427,17 +468,17 @@ export function Modals() {
                       <OauthSteps backLabel="Back" onBack={() => app.cancelOauthConnect()} />
                     </Show>
                     <Show when={!state.ow.active && state.ow.error}>
-                      <div style="font:400 11px 'Geist',sans-serif;color:var(--red)">
+                      <div class="t-caption" style="color:var(--red-text)">
                         {state.ow.error}
                       </div>
                     </Show>
-                    <div style="font:400 10.5px 'Geist',sans-serif;color:var(--amber);line-height:1.5">
+                    <div class="t-caption" style="color:var(--amber-text)">
                       Reusing a flat-rate subscription programmatically may violate the provider’s
                       ToS — pair it with a pay-per-token fallback.
                     </div>
                   </Show>
                   <Show when={!subConnect()}>
-                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
                       <div>
                         <label class="field-label" for="f-np-protocol" style="display:block">
                           Protocol
@@ -445,11 +486,14 @@ export function Modals() {
                         <Show
                           when={!oauthLocked()}
                           fallback={
+                            // Pinned by the connection, not temporarily unavailable: a
+                            // read-only field, focusable and copyable (task 8.1; DESIGN.md
+                            // Inputs / Fields — disabled is for a passing unavailability).
                             <input
                               class="input"
                               id="f-np-protocol"
                               value={PROTOCOL_LABELS[state.np.protocol] ?? state.np.protocol}
-                              disabled
+                              readOnly
                               aria-label="Protocol (pinned by the connection)"
                             />
                           }
@@ -477,18 +521,24 @@ export function Modals() {
                           Base URL
                         </label>
                         <input
-                          class="input mono"
+                          class="input input--mono"
                           id="f-np-baseurl"
-                          style="font:400 12px 'Geist Mono',monospace"
                           value={state.np.baseUrl}
-                          disabled={oauthLocked()}
+                          readOnly={oauthLocked()}
                           placeholder={
                             npKind()?.id === 'local'
                               ? 'http://127.0.0.1:11434/v1'
                               : 'https://api.provider.com/v1'
                           }
-                          onInput={(e) => setState('np', 'baseUrl', e.currentTarget.value)}
+                          aria-invalid={f.invalid('f-np-baseurl')}
+                          aria-describedby={f.describedBy('f-np-baseurl')}
+                          onBlur={() => f.check('f-np-baseurl')}
+                          onInput={(e) => {
+                            setState('np', 'baseUrl', e.currentTarget.value);
+                            f.edit('f-np-baseurl');
+                          }}
                         />
+                        <FieldNote for="f-np-baseurl" error={f.error('f-np-baseurl')} />
                       </div>
                     </div>
                     {/* A Responses row runs ONLY on its OAuth sign-in — a pasted credential
@@ -500,9 +550,8 @@ export function Modals() {
                           {state.np.kind === 'local' ? ' (optional)' : ''}
                         </label>
                         <input
-                          class="input mono"
+                          class="input input--mono"
                           id="f-np-credential"
-                          style="font:400 12px 'Geist Mono',monospace"
                           type="password"
                           value={state.np.credential}
                           disabled={state.np.clearCredential}
@@ -516,7 +565,10 @@ export function Modals() {
                           onInput={(e) => setState('np', 'credential', e.currentTarget.value)}
                         />
                         <Show when={state.np.editingId !== null && state.np.hadCredential}>
-                          <label style="display:flex;align-items:center;gap:6px;margin-top:6px;font:400 10.5px 'Geist',sans-serif;color:var(--text3)">
+                          <label
+                            class="t-caption"
+                            style="display:flex;align-items:center;gap:8px;margin-top:8px;color:var(--text3)"
+                          >
                             <input
                               type="checkbox"
                               checked={state.np.clearCredential}
@@ -530,7 +582,7 @@ export function Modals() {
                       </div>
                     </Show>
                     <Show when={state.np.kind === 'sub'}>
-                      <div style="font:400 10.5px 'Geist',sans-serif;color:var(--amber);line-height:1.5">
+                      <div class="t-caption" style="color:var(--amber-text)">
                         Reusing a flat-rate subscription programmatically may violate the provider’s
                         ToS — pair it with a pay-per-token fallback.
                       </div>
@@ -542,7 +594,7 @@ export function Modals() {
                         (state.np.origKind === 'custom' || state.np.origKind === 'local')
                       }
                     >
-                      <div style="font:400 10.5px 'Geist',sans-serif;color:var(--amber);line-height:1.5">
+                      <div class="t-caption" style="color:var(--amber-text)">
                         An API-key/subscription provider is priced from the catalog — any per-model
                         prices you set are cleared on save.
                       </div>
@@ -550,8 +602,15 @@ export function Modals() {
                     {/* Advanced patience (fix-long-call-timeouts): blank = inherit the
                     instance defaults — shown honestly as placeholders from the
                     server's timeout-defaults read, never hard-coded. */}
-                    <div>
-                      <div class="upper-label" style="margin-bottom:6px">
+                    {/* The patience note describes BOTH fields, so it is the group's
+                        description, not one field's help (task 8.2; notes/flags.md F5):
+                        each field keeps its own slot for its own message. */}
+                    <div
+                      role="group"
+                      aria-labelledby="f-np-patience-title"
+                      aria-describedby="f-np-patience-note"
+                    >
+                      <div class="upper-label" id="f-np-patience-title" style="margin-bottom:8px">
                         Advanced — patience for slow models
                       </div>
                       <div style="display:flex;gap:8px">
@@ -560,9 +619,8 @@ export function Modals() {
                             First response (s)
                           </label>
                           <input
-                            class="input mono"
+                            class="input input--figure"
                             id="f-np-firstbyte"
-                            style="font:400 12px 'Geist Mono',monospace"
                             inputmode="numeric"
                             value={state.np.firstByteTimeoutS}
                             placeholder={
@@ -570,19 +628,23 @@ export function Modals() {
                                 ? `${String(state.tdefaults.firstByteTimeoutMs / 1000)} · instance default`
                                 : 'instance default'
                             }
-                            onInput={(e) =>
-                              setState('np', 'firstByteTimeoutS', e.currentTarget.value)
-                            }
+                            aria-invalid={f.invalid('f-np-firstbyte')}
+                            aria-describedby={f.describedBy('f-np-firstbyte')}
+                            onBlur={() => f.check('f-np-firstbyte')}
+                            onInput={(e) => {
+                              setState('np', 'firstByteTimeoutS', e.currentTarget.value);
+                              f.edit('f-np-firstbyte');
+                            }}
                           />
+                          <FieldNote for="f-np-firstbyte" error={f.error('f-np-firstbyte')} />
                         </div>
                         <div style="flex:1">
                           <label class="field-label" for="f-np-idle" style="display:block">
                             Between chunks (s)
                           </label>
                           <input
-                            class="input mono"
+                            class="input input--figure"
                             id="f-np-idle"
-                            style="font:400 12px 'Geist Mono',monospace"
                             inputmode="numeric"
                             value={state.np.idleTimeoutS}
                             placeholder={
@@ -590,11 +652,22 @@ export function Modals() {
                                 ? `${String(state.tdefaults.idleTimeoutMs / 1000)} · instance default`
                                 : 'instance default'
                             }
-                            onInput={(e) => setState('np', 'idleTimeoutS', e.currentTarget.value)}
+                            aria-invalid={f.invalid('f-np-idle')}
+                            aria-describedby={f.describedBy('f-np-idle')}
+                            onBlur={() => f.check('f-np-idle')}
+                            onInput={(e) => {
+                              setState('np', 'idleTimeoutS', e.currentTarget.value);
+                              f.edit('f-np-idle');
+                            }}
                           />
+                          <FieldNote for="f-np-idle" error={f.error('f-np-idle')} />
                         </div>
                       </div>
-                      <div style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);line-height:1.5;margin-top:4px">
+                      <div
+                        class="t-caption"
+                        id="f-np-patience-note"
+                        style="color:var(--text3);margin-top:4px"
+                      >
                         For research/long-thinking models: raise patience here (up to 3600s), prefer
                         streaming, and size your client SDK’s own timeout — the one bound the router
                         can’t lift. Blank inherits the instance default. Timeouts count against this
@@ -609,7 +682,8 @@ export function Modals() {
                       <div>
                         <label
                           for="f-np-autoprune"
-                          style="display:flex;align-items:center;gap:6px;min-height:24px;font:500 11.5px 'Geist',sans-serif;color:var(--text2)"
+                          class="t-label"
+                          style="display:flex;align-items:center;gap:8px;min-height:24px;color:var(--text2)"
                         >
                           <input
                             type="checkbox"
@@ -621,18 +695,18 @@ export function Modals() {
                           />
                           Remove retired models automatically
                         </label>
-                        <div style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);line-height:1.5;margin-top:4px">
+                        <div class="t-caption" style="color:var(--text3);margin-top:4px">
                           Models this provider has not listed for 7 days are removed on the next
                           sync, unless a tier or rule uses them.
                         </div>
                       </div>
                     </Show>
-                    <div style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);line-height:1.5">
+                    <div class="t-caption" style="color:var(--text3)">
                       Custom base URLs are SSRF-checked — private and metadata ranges are rejected.
                       Credentials are encrypted at rest.
                     </div>
                     <Show when={state.np.error}>
-                      <div style="font:400 11px 'Geist',sans-serif;color:var(--red)">
+                      <div class="t-caption" style="color:var(--red-text)">
                         {state.np.error}
                       </div>
                     </Show>
@@ -644,15 +718,14 @@ export function Modals() {
                         type="button"
                         class="btn-primary"
                         disabled={state.np.busy}
+                        aria-busy={state.np.busy ? true : undefined}
                         onClick={() => void app.addProvider()}
                       >
-                        {state.np.editingId
-                          ? state.np.busy
-                            ? 'Saving…'
-                            : 'Save changes'
-                          : state.np.busy
-                            ? 'Adding…'
-                            : 'Add provider'}
+                        <StackedLabel
+                          alt={state.np.busy}
+                          rest={state.np.editingId ? 'Save changes' : 'Add provider'}
+                          altLabel={state.np.editingId ? 'Saving…' : 'Adding…'}
+                        />
                       </button>
                     </div>
                   </Show>
@@ -672,8 +745,15 @@ export function Modals() {
                     id="f-bf-name"
                     value={state.bf.name}
                     placeholder="e.g. monthly cap"
-                    onInput={(e) => setState('bf', 'name', e.currentTarget.value)}
+                    aria-invalid={f.invalid('f-bf-name')}
+                    aria-describedby={f.describedBy('f-bf-name')}
+                    onBlur={() => f.check('f-bf-name')}
+                    onInput={(e) => {
+                      setState('bf', 'name', e.currentTarget.value);
+                      f.edit('f-bf-name');
+                    }}
                   />
+                  <FieldNote for="f-bf-name" error={f.error('f-bf-name')} />
                 </div>
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
                   <div>
@@ -697,13 +777,19 @@ export function Modals() {
                       Amount (USD)
                     </label>
                     <input
-                      class="input mono"
+                      class="input input--figure"
                       id="f-bf-amount"
-                      style="font:400 12.5px 'Geist Mono',monospace"
                       value={state.bf.amount}
                       placeholder="10.00"
-                      onInput={(e) => setState('bf', 'amount', e.currentTarget.value)}
+                      aria-invalid={f.invalid('f-bf-amount')}
+                      aria-describedby={f.describedBy('f-bf-amount')}
+                      onBlur={() => f.check('f-bf-amount')}
+                      onInput={(e) => {
+                        setState('bf', 'amount', e.currentTarget.value);
+                        f.edit('f-bf-amount');
+                      }}
                     />
+                    <FieldNote for="f-bf-amount" error={f.error('f-bf-amount')} />
                   </div>
                 </div>
                 <Show when={state.bf.scope === 'agent'}>
@@ -747,38 +833,23 @@ export function Modals() {
                     <div
                       role="group"
                       aria-label="At the threshold"
-                      style="display:flex;background:var(--bg);border:1px solid var(--border);border-radius:7px;padding:2px"
+                      class="seg-track"
+                      style="background:var(--bg)"
                     >
                       <button
                         type="button"
+                        class="rs-seg rs-seg--fill"
+                        data-label="Alert"
                         aria-pressed={state.bf.action === 'alert'}
-                        style={{
-                          flex: '1',
-                          'text-align': 'center',
-                          padding: '5px 0',
-                          'border-radius': '5px',
-                          font: "500 12px 'Geist',sans-serif",
-                          cursor: 'pointer',
-                          background: state.bf.action === 'alert' ? 'var(--chip)' : 'transparent',
-                          color: state.bf.action === 'alert' ? 'var(--text)' : 'var(--text3)',
-                        }}
                         onClick={() => setState('bf', 'action', 'alert')}
                       >
                         Alert
                       </button>
                       <button
                         type="button"
+                        class="rs-seg rs-seg--fill"
+                        data-label="Block"
                         aria-pressed={state.bf.action === 'block'}
-                        style={{
-                          flex: '1',
-                          'text-align': 'center',
-                          padding: '5px 0',
-                          'border-radius': '5px',
-                          font: "500 12px 'Geist',sans-serif",
-                          cursor: 'pointer',
-                          background: state.bf.action === 'block' ? 'var(--red-bg)' : 'transparent',
-                          color: state.bf.action === 'block' ? 'var(--red)' : 'var(--text3)',
-                        }}
                         onClick={() => setState('bf', 'action', 'block')}
                       >
                         Block
@@ -794,47 +865,29 @@ export function Modals() {
                   <div
                     role="group"
                     aria-label="What this budget counts"
-                    style="display:flex;background:var(--bg);border:1px solid var(--border);border-radius:7px;padding:2px"
+                    class="seg-track"
+                    style="background:var(--bg)"
                   >
                     <button
                       type="button"
+                      class="rs-seg rs-seg--fill"
+                      data-label="Money spent"
                       aria-pressed={state.bf.meteringBasis === 'cash'}
-                      style={{
-                        flex: '1',
-                        'text-align': 'center',
-                        padding: '5px 0',
-                        'border-radius': '5px',
-                        font: "500 12px 'Geist',sans-serif",
-                        cursor: 'pointer',
-                        background:
-                          state.bf.meteringBasis === 'cash' ? 'var(--chip)' : 'transparent',
-                        color: state.bf.meteringBasis === 'cash' ? 'var(--text)' : 'var(--text3)',
-                      }}
                       onClick={() => setState('bf', 'meteringBasis', 'cash')}
                     >
                       Money spent
                     </button>
                     <button
                       type="button"
+                      class="rs-seg rs-seg--fill"
+                      data-label="+ subscription usage"
                       aria-pressed={state.bf.meteringBasis === 'notional'}
-                      style={{
-                        flex: '1',
-                        'text-align': 'center',
-                        padding: '5px 0',
-                        'border-radius': '5px',
-                        font: "500 12px 'Geist',sans-serif",
-                        cursor: 'pointer',
-                        background:
-                          state.bf.meteringBasis === 'notional' ? 'var(--chip)' : 'transparent',
-                        color:
-                          state.bf.meteringBasis === 'notional' ? 'var(--text)' : 'var(--text3)',
-                      }}
                       onClick={() => setState('bf', 'meteringBasis', 'notional')}
                     >
                       + subscription usage
                     </button>
                   </div>
-                  <div style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);margin-top:5px;line-height:1.45">
+                  <div class="t-caption" style="color:var(--text3);margin-top:4px">
                     {state.bf.meteringBasis === 'cash'
                       ? 'Counts only what you are billed for. Subscription requests are prepaid, so they never use up this budget.'
                       : 'Also counts subscription requests priced at the provider’s API rate — a rough way to cap usage of a flat-rate plan, not money spent.'}
@@ -845,7 +898,7 @@ export function Modals() {
                   <Show
                     when={state.channels.length > 0}
                     fallback={
-                      <div style="font:400 11px 'Geist',sans-serif;color:var(--text3)">
+                      <div class="t-caption" style="color:var(--text3)">
                         No channels yet — add one under Settings, Notifications.
                       </div>
                     }
@@ -853,7 +906,10 @@ export function Modals() {
                     <div style="display:flex;flex-wrap:wrap;gap:8px">
                       <For each={state.channels}>
                         {(c) => (
-                          <label style="display:flex;align-items:center;gap:6px;font:400 11.5px 'Geist',sans-serif;color:var(--text2)">
+                          <label
+                            class="t-dense"
+                            style="display:flex;align-items:center;gap:8px;color:var(--text2)"
+                          >
                             <input
                               type="checkbox"
                               checked={state.bf.notifyChannelIds.includes(c.id)}
@@ -866,7 +922,10 @@ export function Modals() {
                     </div>
                   </Show>
                 </div>
-                <label style="display:flex;align-items:center;gap:8px;font:400 12px 'Geist',sans-serif;color:var(--text2)">
+                <label
+                  class="t-dense"
+                  style="display:flex;align-items:center;gap:8px;color:var(--text2)"
+                >
                   <input
                     type="checkbox"
                     checked={state.bf.enabled}
@@ -874,12 +933,12 @@ export function Modals() {
                   />
                   Enabled
                 </label>
-                <div style="font:400 11px 'Geist',sans-serif;color:var(--text3);line-height:1.5">
+                <div class="t-caption" style="color:var(--text3)">
                   Alert notifies your channels and keeps serving. Block rejects new requests for
                   this scope until the window resets.
                 </div>
                 <Show when={state.bf.error}>
-                  <div style="font:400 11px 'Geist',sans-serif;color:var(--red)">
+                  <div class="t-caption" style="color:var(--red-text)">
                     {state.bf.error}
                   </div>
                 </Show>
@@ -896,9 +955,14 @@ export function Modals() {
                     type="button"
                     class="btn-primary"
                     disabled={state.bf.busy}
+                    aria-busy={state.bf.busy ? true : undefined}
                     onClick={() => void app.saveBudget()}
                   >
-                    {state.bf.busy ? 'Saving…' : state.bf.id ? 'Save budget' : 'Create budget'}
+                    <StackedLabel
+                      alt={state.bf.busy}
+                      rest={state.bf.id ? 'Save budget' : 'Create budget'}
+                      altLabel="Saving…"
+                    />
                   </button>
                 </div>
               </Show>
@@ -917,8 +981,15 @@ export function Modals() {
                       id="f-cf-name"
                       value={state.cf.name}
                       placeholder="e.g. homelab email"
-                      onInput={(e) => setState('cf', 'name', e.currentTarget.value)}
+                      aria-invalid={f.invalid('f-cf-name')}
+                      aria-describedby={f.describedBy('f-cf-name')}
+                      onBlur={() => f.check('f-cf-name')}
+                      onInput={(e) => {
+                        setState('cf', 'name', e.currentTarget.value);
+                        f.edit('f-cf-name');
+                      }}
                     />
+                    <FieldNote for="f-cf-name" error={f.error('f-cf-name')} />
                   </div>
                   <div>
                     <label class="field-label" for="f-cf-kind" style="display:block">
@@ -941,7 +1012,10 @@ export function Modals() {
                   <div style="display:flex;flex-wrap:wrap;gap:8px">
                     <For each={EVENT_TYPES}>
                       {(ev) => (
-                        <label style="display:flex;align-items:center;gap:6px;font:400 11.5px 'Geist',sans-serif;color:var(--text2)">
+                        <label
+                          class="t-dense"
+                          style="display:flex;align-items:center;gap:8px;color:var(--text2)"
+                        >
                           <input
                             type="checkbox"
                             checked={state.cf.events.includes(ev)}
@@ -955,7 +1029,7 @@ export function Modals() {
                 </div>
 
                 <Show when={state.cf.id !== null}>
-                  <div style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);line-height:1.5">
+                  <div class="t-caption" style="color:var(--text3)">
                     Config is write-only — leave the fields below blank to keep the stored secret
                     unchanged.
                   </div>
@@ -968,26 +1042,38 @@ export function Modals() {
                         Host
                       </label>
                       <input
-                        class="input mono"
+                        class="input input--mono"
                         id="f-cf-smtphost"
-                        style="font:400 12px 'Geist Mono',monospace"
                         value={state.cf.smtpHost}
                         placeholder="smtp.fastmail.com"
-                        onInput={(e) => setState('cf', 'smtpHost', e.currentTarget.value)}
+                        aria-invalid={f.invalid('f-cf-smtphost')}
+                        aria-describedby={f.describedBy('f-cf-smtphost')}
+                        onBlur={() => f.check('f-cf-smtphost')}
+                        onInput={(e) => {
+                          setState('cf', 'smtpHost', e.currentTarget.value);
+                          editSmtp();
+                        }}
                       />
+                      <FieldNote for="f-cf-smtphost" error={f.error('f-cf-smtphost')} />
                     </div>
                     <div>
                       <label class="field-label" for="f-cf-smtpport" style="display:block">
                         Port
                       </label>
                       <input
-                        class="input mono"
+                        class="input input--mono"
                         id="f-cf-smtpport"
-                        style="font:400 12px 'Geist Mono',monospace"
                         value={state.cf.smtpPort}
                         placeholder="587"
-                        onInput={(e) => setState('cf', 'smtpPort', e.currentTarget.value)}
+                        aria-invalid={f.invalid('f-cf-smtpport')}
+                        aria-describedby={f.describedBy('f-cf-smtpport')}
+                        onBlur={() => f.check('f-cf-smtpport')}
+                        onInput={(e) => {
+                          setState('cf', 'smtpPort', e.currentTarget.value);
+                          editSmtp();
+                        }}
                       />
+                      <FieldNote for="f-cf-smtpport" error={f.error('f-cf-smtpport')} />
                     </div>
                   </div>
                   <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
@@ -1013,13 +1099,19 @@ export function Modals() {
                         From
                       </label>
                       <input
-                        class="input mono"
+                        class="input input--mono"
                         id="f-cf-smtpfrom"
-                        style="font:400 12px 'Geist Mono',monospace"
                         value={state.cf.smtpFrom}
                         placeholder="alerts@my.box"
-                        onInput={(e) => setState('cf', 'smtpFrom', e.currentTarget.value)}
+                        aria-invalid={f.invalid('f-cf-smtpfrom')}
+                        aria-describedby={f.describedBy('f-cf-smtpfrom')}
+                        onBlur={() => f.check('f-cf-smtpfrom')}
+                        onInput={(e) => {
+                          setState('cf', 'smtpFrom', e.currentTarget.value);
+                          editSmtp();
+                        }}
                       />
+                      <FieldNote for="f-cf-smtpfrom" error={f.error('f-cf-smtpfrom')} />
                     </div>
                   </div>
                   <div>
@@ -1027,13 +1119,19 @@ export function Modals() {
                       Recipients (comma or space separated)
                     </label>
                     <input
-                      class="input mono"
+                      class="input input--mono"
                       id="f-cf-smtpto"
-                      style="font:400 12px 'Geist Mono',monospace"
                       value={state.cf.smtpTo}
                       placeholder="admin@my.box"
-                      onInput={(e) => setState('cf', 'smtpTo', e.currentTarget.value)}
+                      aria-invalid={f.invalid('f-cf-smtpto')}
+                      aria-describedby={f.describedBy('f-cf-smtpto')}
+                      onBlur={() => f.check('f-cf-smtpto')}
+                      onInput={(e) => {
+                        setState('cf', 'smtpTo', e.currentTarget.value);
+                        editSmtp();
+                      }}
                     />
+                    <FieldNote for="f-cf-smtpto" error={f.error('f-cf-smtpto')} />
                   </div>
                   <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
                     <div>
@@ -1041,11 +1139,13 @@ export function Modals() {
                         User (optional)
                       </label>
                       <input
-                        class="input mono"
+                        class="input input--mono"
                         id="f-cf-smtpuser"
-                        style="font:400 12px 'Geist Mono',monospace"
                         value={state.cf.smtpUser}
-                        onInput={(e) => setState('cf', 'smtpUser', e.currentTarget.value)}
+                        onInput={(e) => {
+                          setState('cf', 'smtpUser', e.currentTarget.value);
+                          editSmtp();
+                        }}
                       />
                     </div>
                     <div>
@@ -1053,12 +1153,14 @@ export function Modals() {
                         Password (optional)
                       </label>
                       <input
-                        class="input mono"
+                        class="input input--mono"
                         id="f-cf-smtppass"
-                        style="font:400 12px 'Geist Mono',monospace"
                         type="password"
                         value={state.cf.smtpPass}
-                        onInput={(e) => setState('cf', 'smtpPass', e.currentTarget.value)}
+                        onInput={(e) => {
+                          setState('cf', 'smtpPass', e.currentTarget.value);
+                          editSmtp();
+                        }}
                       />
                     </div>
                   </div>
@@ -1070,22 +1172,29 @@ export function Modals() {
                       Apprise URLs (one per line)
                     </label>
                     <textarea
-                      class="input mono"
+                      class="input input--mono"
                       id="f-cf-apprise"
-                      style="font:400 12px 'Geist Mono',monospace;min-height:70px;resize:vertical"
+                      style="min-height:70px;resize:vertical"
                       value={state.cf.appriseUrls}
                       placeholder="ntfy://homelab/polyrouter"
-                      onInput={(e) => setState('cf', 'appriseUrls', e.currentTarget.value)}
+                      aria-invalid={f.invalid('f-cf-apprise')}
+                      aria-describedby={f.describedBy('f-cf-apprise')}
+                      onBlur={() => f.check('f-cf-apprise')}
+                      onInput={(e) => {
+                        setState('cf', 'appriseUrls', e.currentTarget.value);
+                        f.edit('f-cf-apprise');
+                      }}
                     />
+                    <FieldNote for="f-cf-apprise" error={f.error('f-cf-apprise')} />
                   </div>
                 </Show>
 
-                <div style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);line-height:1.5">
+                <div class="t-caption" style="color:var(--text3)">
                   Targets are SSRF-checked and the config is encrypted at rest — it’s never shown
                   back.
                 </div>
                 <Show when={state.cf.error}>
-                  <div style="font:400 11px 'Geist',sans-serif;color:var(--red)">
+                  <div class="t-caption" style="color:var(--red-text)">
                     {state.cf.error}
                   </div>
                 </Show>
@@ -1102,9 +1211,14 @@ export function Modals() {
                     type="button"
                     class="btn-primary"
                     disabled={state.cf.busy}
+                    aria-busy={state.cf.busy ? true : undefined}
                     onClick={() => void app.saveChannel()}
                   >
-                    {state.cf.busy ? 'Saving…' : state.cf.id ? 'Save channel' : 'Add channel'}
+                    <StackedLabel
+                      alt={state.cf.busy}
+                      rest={state.cf.id ? 'Save channel' : 'Add channel'}
+                      altLabel="Saving…"
+                    />
                   </button>
                 </div>
               </Show>

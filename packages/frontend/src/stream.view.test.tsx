@@ -398,3 +398,292 @@ describe('the event stream drives the live view', () => {
     store.disconnectStream(); // no mounted root here — release the timers explicitly
   });
 });
+
+/* ── The Live lamp (dashboard-event-stream "The Live lamp blinks only when stream data
+ * arrives"; adopt-design-tokens-v2 tasks 13.2 / 13.3, design.md D12) ───────────────────────────
+ * Driven end to end: frames go into the REAL store through `FakeSource`, and the lamp is read
+ * off the mounted `Topbar`. A blink is the `lamp-blink` class being APPLIED; it is counted from
+ * the dot's class mutations (with their old values), so a blink that comes and goes between
+ * two reads is still counted, and a class that merely stays on is not counted twice. */
+describe('the Live lamp blinks only when stream data arrives', () => {
+  beforeEach(() => {
+    FakeSource.last = null;
+    FakeSource.created = 0;
+    setVisible(true);
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+    localStorage.clear();
+    document.body.innerHTML = '';
+  });
+
+  const boot = async (
+    client = new FakeApiClient(),
+  ): Promise<{ store: AppStore; client: FakeApiClient; dispose: () => void }> => {
+    const store = createAppStore(client);
+    store.setStreamFactory(factory);
+    const { dispose } = mount(store);
+    await vi.advanceTimersByTimeAsync(0);
+    await flush();
+    return { store, client, dispose };
+  };
+
+  const dot = (): HTMLElement => {
+    const el = document.querySelector<HTMLElement>('[data-testid="live-dot"]');
+    if (!el) throw new Error('no live dot');
+    return el;
+  };
+  const blinkingNow = (): boolean => dot().classList.contains('lamp-blink');
+
+  /** Counts blink STARTS on the current dot: every mutation that turns the class on. Each
+   * record's `oldValue` is the class BEFORE it, so the class after record i is record i+1's
+   * `oldValue` — or, for the last, the live value. Records are collected both from the
+   * observer's callback (which consumes them) and from `takeRecords()` (which has the rest). */
+  function blinkCounter(): { count: () => number; stop: () => void } {
+    const el = dot();
+    const has = (cls: string | null): boolean => (cls ?? '').split(/\s+/).includes('lamp-blink');
+    const pending: MutationRecord[] = [];
+    const mo = new MutationObserver((records) => {
+      pending.push(...records);
+    });
+    mo.observe(el, { attributes: true, attributeFilter: ['class'], attributeOldValue: true });
+    let on = has(el.getAttribute('class'));
+    let starts = 0;
+    return {
+      count: () => {
+        pending.push(...mo.takeRecords());
+        const records = pending.splice(0);
+        const after = [...records.slice(1).map((r) => r.oldValue), el.getAttribute('class')];
+        for (let i = 0; i < records.length; i += 1) {
+          const now = has(after[i] ?? null);
+          if (now && !on) starts += 1;
+          on = now;
+        }
+        return starts;
+      },
+      stop: () => mo.disconnect(),
+    };
+  }
+
+  /** Advance the fake clock, letting the store and Solid settle. */
+  const advance = async (ms: number): Promise<void> => {
+    await vi.advanceTimersByTimeAsync(ms);
+    await flush();
+  };
+
+  it('one inflight.started frame stamps the store and blinks the lamp exactly once (13.2)', async () => {
+    const { store, dispose } = await boot();
+    try {
+      expect(store.state.lastDataEventAt).toBeNull();
+      const blinks = blinkCounter();
+      const before = Date.now();
+      FakeSource.last?.emit('inflight.started', { row: row('a') });
+      await flush();
+      expect(store.state.streamHealth).toBe('live');
+      expect(store.state.lastDataEventAt).toBe(before);
+      expect(blinkingNow(), 'the class is on for the blink').toBe(true);
+      expect(blinks.count()).toBe(1);
+      await advance(600);
+      expect(blinkingNow(), 'and off once the 600ms blink is over').toBe(false);
+      expect(blinks.count(), 'one frame, one blink').toBe(1);
+      blinks.stop();
+    } finally {
+      dispose();
+    }
+  });
+
+  it('a heartbeat moves neither the stamp nor the lamp (13.2)', async () => {
+    const { store, dispose } = await boot();
+    try {
+      const blinks = blinkCounter();
+      FakeSource.last?.emit('heartbeat', {});
+      await flush();
+      expect(store.state.streamHealth, 'the heartbeat proved liveness').toBe('live');
+      expect(store.state.lastDataEventAt).toBeNull();
+      expect(blinks.count()).toBe(0);
+
+      FakeSource.last?.emit('inflight.started', { row: row('a') });
+      await flush();
+      const stamp = store.state.lastDataEventAt;
+      await advance(2_000);
+      FakeSource.last?.emit('heartbeat', {});
+      await flush();
+      expect(store.state.lastDataEventAt, 'a later heartbeat leaves the stamp').toBe(stamp);
+      expect(blinks.count(), 'and blinks nothing').toBe(1);
+      blinks.stop();
+    } finally {
+      dispose();
+    }
+  });
+
+  it('hiding the tab clears the stamp (13.2)', async () => {
+    const { store, dispose } = await boot();
+    try {
+      FakeSource.last?.emit('inflight.started', { row: row('a') });
+      await flush();
+      expect(store.state.lastDataEventAt).not.toBeNull();
+      setVisible(false);
+      await flush();
+      expect(store.state.streamHealth).toBe('polling');
+      expect(store.state.lastDataEventAt, 'no stale stamp for the next stream').toBeNull();
+    } finally {
+      dispose();
+    }
+  });
+
+  it("an account switch clears the stamp, and the previous identity's frame cannot set it (13.2)", async () => {
+    const client = new FakeApiClient();
+    const { store, dispose } = await boot(client);
+    try {
+      FakeSource.last?.emit('inflight.started', { row: row('a-row') });
+      await flush();
+      expect(store.state.lastDataEventAt).not.toBeNull();
+      const previous = FakeSource.last;
+
+      // As the "previous account" test above does: the next bootstrap is another principal.
+      client.session = { ...DEFAULT_SESSION, userId: 'user-B', email: 'b@x.test' };
+      await store.bootstrap();
+      await flush();
+      expect(store.state.lastDataEventAt, 'cleared at the identity boundary').toBeNull();
+
+      previous?.emit('inflight.started', { row: row('late-a-row') });
+      previous?.emit('analytics.invalidated', {});
+      await flush();
+      expect(store.state.lastDataEventAt, "a previous identity's frame is discarded").toBeNull();
+    } finally {
+      dispose();
+    }
+  });
+
+  it('the identity reset itself clears the stamp, with no shell remount to do it (13.2)', async () => {
+    // Store-only, as the "previous account" test above is built: no App, so no unmount
+    // disconnects the stream. The stream stays open across the switch, and only
+    // `resetIdentityScoped` can clear the stamp; only the identity guard can keep the
+    // previous identity's frames from setting it again.
+    const client = new FakeApiClient();
+    const store = createAppStore(client);
+    store.setStreamFactory(factory);
+    await store.bootstrap();
+    store.connectStream();
+    await flush();
+    FakeSource.last?.emit('inflight.started', { row: row('a-row') });
+    await flush();
+    expect(store.state.lastDataEventAt).not.toBeNull();
+    const previous = FakeSource.last;
+
+    client.session = { ...DEFAULT_SESSION, userId: 'user-B', email: 'b@x.test' };
+    await store.bootstrap();
+    await flush();
+    expect(previous?.closed, 'precondition: the stream was not closed').toBe(false);
+    expect(store.state.lastDataEventAt, 'cleared by the identity reset').toBeNull();
+    previous?.emit('inflight.started', { row: row('late-a-row') });
+    await flush();
+    expect(store.state.lastDataEventAt).toBeNull();
+    store.disconnectStream(); // no mounted root here — release the timers explicitly
+  });
+
+  it('blinks once per data event, and at most once a second through a 20-event burst (13.3)', async () => {
+    const { dispose } = await boot();
+    try {
+      const blinks = blinkCounter();
+      FakeSource.last?.emit('snapshot', SNAPSHOT());
+      await flush();
+      expect(blinks.count(), 'the snapshot is data: one blink').toBe(1);
+
+      await advance(1_000);
+      // Twenty events inside one second: one blink, not twenty, and not a queue of them.
+      for (let i = 0; i < 20; i += 1) {
+        FakeSource.last?.emit('inflight.started', { row: row(`burst-${String(i)}`) });
+        await advance(45);
+      }
+      expect(blinks.count(), 'a 20-event burst blinks once').toBe(2);
+      await advance(2_000);
+      expect(blinks.count(), 'and no trailing blink is owed for the dropped events').toBe(2);
+
+      FakeSource.last?.emit('analytics.invalidated', {});
+      await flush();
+      expect(blinks.count(), 'the next event after a quiet second blinks again').toBe(3);
+      blinks.stop();
+    } finally {
+      dispose();
+    }
+  });
+
+  it('events 700ms apart blink every other one: the throttle is a second, not one blink long (13.3)', async () => {
+    const { dispose } = await boot();
+    try {
+      const blinks = blinkCounter();
+      for (let i = 0; i < 5; i += 1) {
+        FakeSource.last?.emit('inflight.started', { row: row(`slow-${String(i)}`) });
+        await advance(700);
+      }
+      // At 0, 1400 and 2800ms; the events at 700 and 2100ms fall inside a second.
+      expect(blinks.count()).toBe(3);
+      blinks.stop();
+    } finally {
+      dispose();
+    }
+  });
+
+  it('never blinks for heartbeats, however long they run (13.3)', async () => {
+    const { store, dispose } = await boot();
+    try {
+      FakeSource.last?.emit('snapshot', SNAPSHOT());
+      await advance(1_500);
+      const blinks = blinkCounter();
+      for (let i = 0; i < 20; i += 1) {
+        FakeSource.last?.emit('heartbeat', {});
+        await advance(1_000);
+      }
+      expect(store.state.streamHealth).toBe('live');
+      expect(blinks.count()).toBe(0);
+      expect(blinkingNow()).toBe(false);
+      blinks.stop();
+    } finally {
+      dispose();
+    }
+  });
+
+  it('is a steady Faint dot while polling, which never blinks as polls land (13.3)', async () => {
+    const client = new FakeApiClient();
+    const { store, dispose } = await boot(client);
+    try {
+      FakeSource.last?.fail(); // the stream drops: the fast poll carries the live view
+      await flush();
+      expect(store.state.streamHealth).toBe('polling');
+      const blinks = blinkCounter();
+      const polled = client.countOf('inflight');
+      client.inflightResult = { items: [row('polled')], available: true, truncated: false };
+      await advance(10_000);
+      expect(client.countOf('inflight'), 'polls ran').toBeGreaterThan(polled);
+      expect(store.state.inflightRows.map((r) => r.id)).toContain('polled');
+      expect(blinks.count(), 'a poll is not a stream event').toBe(0);
+      expect(dot().style.background).toBe('var(--faint)');
+      expect(document.querySelector('[data-testid="live-pill"]')?.textContent).toContain('Polling');
+      blinks.stop();
+    } finally {
+      dispose();
+    }
+  });
+
+  it('is green while live, decorative, and not a live region (13.3)', async () => {
+    const { dispose } = await boot();
+    try {
+      FakeSource.last?.emit('snapshot', SNAPSHOT());
+      await flush();
+      expect(dot().style.background).toBe('var(--green)');
+      expect(dot().getAttribute('aria-hidden')).toBe('true');
+      const pill = document.querySelector<HTMLElement>('[data-testid="live-pill"]');
+      expect(pill?.textContent).toContain('Live');
+      expect(
+        pill?.closest('[aria-live], [role="status"], [role="alert"], [role="log"]'),
+        'a blink must announce nothing',
+      ).toBeNull();
+      expect(pill?.querySelector('[aria-live]')).toBeNull();
+    } finally {
+      dispose();
+    }
+  });
+});

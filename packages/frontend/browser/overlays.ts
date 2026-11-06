@@ -84,16 +84,14 @@ export const SURFACES: readonly Surface[] = [
     query: '?semantic=1',
     open: (page) => openTuningDrawer(page, 'learning'),
   },
-  ...MODAL_KINDS.map(
-    (kind): Surface => ({
-      name: `modal:${kind}`,
-      sel: '.modal-card',
-      open: async (page) => {
-        await store(page, 'openModal', kind);
-        await page.waitForSelector('.modal-card');
-      },
-    }),
-  ),
+  ...MODAL_KINDS.map((kind): Surface => ({
+    name: `modal:${kind}`,
+    sel: '.modal-card',
+    open: async (page) => {
+      await store(page, 'openModal', kind);
+      await page.waitForSelector('.modal-card');
+    },
+  })),
   {
     name: 'confirm:bodyCapture',
     sel: '[aria-label="Confirm body capture"]',
@@ -114,12 +112,21 @@ export const SURFACES: readonly Surface[] = [
       const card = page.locator('.panel', { hasText: 'Prompt & response bodies' });
       await card.locator('input[type=radio]').nth(2).click();
       await page.waitForSelector('[aria-label="Confirm body capture"]');
-      await page
-        .locator('[aria-label="Confirm body capture"] button.btn-primary')
-        .first()
-        .click();
+      await page.locator('[aria-label="Confirm body capture"] button.btn-primary').first().click();
       await card.locator('input[type=radio]').nth(0).click();
       await page.waitForSelector('[aria-label="Disable body capture"]');
+    },
+  },
+  {
+    // The Batches page's cancel confirmation, its own modal surface (`CancelDialog`). Opened
+    // from the harness fixture's in-progress job, through its row's real Cancel trigger, so
+    // the dialog returns focus where a user's would.
+    name: 'confirm:cancelBatch',
+    sel: '[aria-label="Cancel batch"]',
+    open: async (page) => {
+      await store(page, 'go', 'batches');
+      await page.locator('button[aria-label^="Cancel batch on "]').first().click();
+      await page.waitForSelector('[aria-label="Cancel batch"]');
     },
   },
   {
@@ -145,7 +152,13 @@ export const SURFACES: readonly Surface[] = [
     sel: '.mp-panel',
     open: async (page) => {
       await store(page, 'go', 'routing');
-      await page.locator('.mp-input').first().click();
+      // Scrolled fully into view BEFORE the click: the picker closes when an ancestor
+      // scrolls, by design, so an input sitting across the fold (at 320x568 the first one
+      // does once the type scale's line heights land, adopt-design-tokens-v2 D5) would be
+      // scrolled into view by its own focus and close the panel it just opened.
+      const input = page.locator('.mp-input').first();
+      await input.scrollIntoViewIfNeeded();
+      await input.click();
       await page.waitForSelector('.mp-panel');
     },
   },

@@ -7,6 +7,31 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <!-- Geist bundled locally (#22): the packaged SPA makes no third-party fetches. -->
     <link rel="stylesheet" href="/fonts/fonts.css" />
+    <!-- Pre-paint theme (adopt-design-tokens-v2 D9). A classic script in <head>, like the
+         boot guard below: it runs before the body is parsed, so the first frame is already in
+         the resolved theme and a dark system never flashes light. A stored choice wins; with
+         none — or with storage that throws — the system preference decides. The app reads
+         the attribute this sets (`appState.theme`) and keeps following the preference until
+         the user picks a theme. The storage key is the one the theme toggle writes. -->
+    <script data-prepaint-theme>
+      (function () {
+        var theme = null;
+        try {
+          var stored = window.localStorage.getItem('polyrouter-theme');
+          if (stored === 'dark' || stored === 'light') theme = stored;
+        } catch (e) {
+          // storage unavailable: follow the system preference
+        }
+        if (theme === null) {
+          try {
+            theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+          } catch (e) {
+            theme = 'light';
+          }
+        }
+        document.documentElement.setAttribute('data-theme', theme);
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
@@ -26,12 +51,17 @@
             // The app mounts synchronously during module evaluation, so an empty #root at
             // this point means it never started — whatever the cause.
             if (!root || root.childElementCount > 0) return;
+            // Theme-aware (adopt-design-tokens-v2 D9): the pre-paint script can put a failed
+            // boot on the dark canvas, so the box draws its own background and reads the
+            // theme's tokens. Each fallback is the light literal, so without the stylesheet
+            // the pair is still one theme's: the light text on the light box.
             var box = document.createElement('div');
             box.setAttribute('role', 'alert');
             box.style.cssText =
-              'font:400 14px/1.5 Geist,sans-serif;max-width:34rem;margin:15vh auto;padding:0 1.5rem;color:#3f3f46';
+              'font:400 0.8125rem/1.25rem Geist,sans-serif;max-width:34rem;margin:15vh auto;padding:0 1.5rem;background:var(--bg, #fafafa);color:var(--text2, #55575e)';
             var h = document.createElement('div');
-            h.style.cssText = 'font-weight:600;font-size:15px;margin-bottom:.5rem;color:#18181b';
+            h.style.cssText =
+              'font-weight:600;font-size:0.9375rem;margin-bottom:.5rem;color:var(--text, #17181a)';
             h.textContent = 'The polyrouter dashboard failed to start.';
             var p = document.createElement('p');
             p.style.cssText = 'margin:0';

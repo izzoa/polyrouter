@@ -7,27 +7,25 @@ import { For } from 'solid-js';
  * inspection — and they sit inches apart on the same screen, so any drift is immediately
  * visible as two controls that do the same job and do not match.
  *
- * `.rs-seg` carries the locked target floors from the responsive work; keep it. */
+ * `.rs-seg` carries the option's whole presentation — the height family's 26px box, the
+ * target floors from the responsive work, and the hover, pressed and selected states — so
+ * nothing is drawn inline, where it would outrank `:hover` (adopt-design-tokens-v2 D19).
+ * `data-label` repeats the label for `.rs-seg::after`, which holds the option at its selected
+ * weight's width, so moving the selection moves nothing (D8). */
 export function Segmented<T extends string>(props: {
   options: readonly { id: T; label: string }[];
   value: T;
   onChange: (v: T) => void;
 }) {
   return (
-    <div style="display:flex;background:var(--panel);border:1px solid var(--border);border-radius:7px;padding:2px">
+    <div class="seg-track" style="background:var(--panel)">
       <For each={props.options}>
         {(o) => (
           <button
             type="button"
             class="rs-seg"
+            data-label={o.label}
             aria-pressed={props.value === o.id}
-            style={{
-              font: `${props.value === o.id ? '500' : '400'} 12px 'Geist',sans-serif`,
-              color: props.value === o.id ? 'var(--text)' : 'var(--text3)',
-              background: props.value === o.id ? 'var(--chip)' : 'transparent',
-              'border-radius': '5px',
-              cursor: 'pointer',
-            }}
             onClick={() => {
               props.onChange(o.id);
             }}

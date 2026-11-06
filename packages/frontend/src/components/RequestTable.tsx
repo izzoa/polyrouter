@@ -46,16 +46,13 @@ function Cell(props: { label: string; children: JSX.Element }): JSX.Element {
   );
 }
 
-/** Decision-layer chip palette. Any unknown layer renders neutral (invariant 1 —
- * the table is layer-agnostic). */
-const CHIP: Record<string, { bg: string; fg: string }> = {
-  explicit: { bg: 'var(--accent-bg)', fg: 'var(--accent-deep)' },
-  header: { bg: 'var(--chip)', fg: 'var(--text2)' },
-  default: { bg: 'var(--chip)', fg: 'var(--text2)' },
-  structural: { bg: 'var(--chip)', fg: 'var(--text2)' },
-  cascade: { bg: 'var(--amber-bg)', fg: 'var(--amber)' },
-};
-const NEUTRAL_CHIP = { bg: 'var(--chip)', fg: 'var(--text2)' };
+/** The decision-layer chip: one static chip for every layer, the Chip Tone fill (`.chip`)
+ * with Ink 2 text (DESIGN.md Chips), so the word alone names the layer. It used to be a
+ * per-layer palette: `cascade` in the amber fill on the amber wash, a status hue as a
+ * category at 2.54:1 under the 4.5:1 text floor, and `explicit` in the Selected-state
+ * wash, a decorative indigo the Indigo Budget forbids (adopt-design-tokens-v2 task 16.6).
+ * An unknown layer renders the same chip (invariant 1: the table is layer-agnostic). */
+const LAYER_CHIP_STYLE: JSX.CSSProperties = { color: 'var(--text2)', 'font-weight': '500' };
 
 const STATUS_DOT: Record<RequestStatus, string> = {
   success: 'var(--green)',
@@ -78,22 +75,19 @@ export const isBatchItem = (r: Pick<RequestRow, 'batchId' | 'priceMode'>): boole
   r.batchId !== null || r.priceMode === 'batch';
 const textFor = (s: string): string => STATUS_TEXT[s as RequestStatus] ?? (s || 'unknown');
 
-/** The neutral `batch` chip (add-batch-inference D11a/D12). Neutral on purpose:
- * the lock reserves the accent tint for `explicit` and amber for status, and a
- * batch is an execution MODE, not a routing decision — the decision layer beside
- * it stays truthful. The glyph is decorative; the word carries the state. */
+/** The neutral `batch` chip (add-batch-inference D11a/D12). Neutral on purpose, like
+ * the decision-layer chip beside it: the lock reserves amber for status, and a batch
+ * is an execution MODE, not a routing decision — the decision layer beside it stays
+ * truthful. The glyph is decorative; the word carries the state. */
 function BatchChip() {
   return (
     <span
+      class="chip"
       style={{
         display: 'inline-flex',
         'align-items': 'center',
         gap: '4px',
-        padding: '2px 8px',
-        background: 'var(--chip)',
         color: 'var(--text2)',
-        'border-radius': '10px',
-        'font-size': '11px',
         'font-weight': '500',
       }}
     >
@@ -103,10 +97,19 @@ function BatchChip() {
   );
 }
 
+/** The figure columns: right-aligned in the head as in every row (task 9.2). */
+const FIGURE_COLUMNS: ReadonlySet<string> = new Set(['Tokens', 'Cost', 'Latency']);
+
 export function RequestTableHead() {
   return (
     <div class="table-head">
-      <For each={COLUMNS}>{(c) => <div>{c}</div>}</For>
+      <For each={COLUMNS}>
+        {(c) => (
+          <div class={FIGURE_COLUMNS.has(c) ? 'cell-figure' : undefined} title={c}>
+            {c}
+          </div>
+        )}
+      </For>
     </div>
   );
 }
@@ -115,46 +118,46 @@ export function RequestRow(props: { r: RequestRow }) {
   const app = useApp();
   const { state } = app;
   const selected = () => state.selId === props.r.id;
-  const chip = () => CHIP[props.r.decisionLayer] ?? NEUTRAL_CHIP;
   return (
     <button
       type="button"
       class="req-row row-hover"
-      style={{ background: selected() ? 'var(--accent-bg)' : 'transparent' }}
+      // The open row's Selected state, the wash and an inset deep-indigo edge, is the
+      // `.req-row[aria-expanded='true']` rule in styles.css (adopt-design-tokens-v2 D8).
+      // Nothing inline: an inline fill outranks the row's hover tone.
       aria-expanded={selected()}
       aria-controls="inspector-drawer"
       onClick={() => app.select(selected() ? null : props.r.id)}
     >
       <Cell label="Time">
-        <span class="mono" style="font-size:11px;color:var(--text3)">
+        <span class="figure" style="font-size:0.6875rem;color:var(--text3)">
           {fmtTime(new Date(props.r.createdAt).getTime())}
         </span>
       </Cell>
+      {/* Identifiers: cut with an end ellipsis on one line, keeping the full text as
+          content and as the hover and focus title (task 9.2). */}
       <Cell label="Model">
-        <span class="mono" style="font-size:11.5px;color:var(--text)">
+        <span
+          class="mono cell-id"
+          style="font-size:0.75rem;color:var(--text)"
+          title={labelOf(props.r.modelLabel, props.r.modelId)}
+        >
           {labelOf(props.r.modelLabel, props.r.modelId)}
         </span>
       </Cell>
       <Cell label="Provider">
-        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+        <span class="cell-id" title={labelOf(props.r.providerLabel, props.r.providerId)}>
           {labelOf(props.r.providerLabel, props.r.providerId)}
         </span>
       </Cell>
       <Cell label="Tier">
-        <span>{props.r.tierAssigned ?? '—'}</span>
+        <span class="cell-id" title={props.r.tierAssigned ?? undefined}>
+          {props.r.tierAssigned ?? '—'}
+        </span>
       </Cell>
       <Cell label="Decided by">
         <span>
-          <span
-            style={{
-              padding: '2px 8px',
-              background: chip().bg,
-              color: chip().fg,
-              'border-radius': '10px',
-              'font-size': '11px',
-              'font-weight': '500',
-            }}
-          >
+          <span class="chip" style={LAYER_CHIP_STYLE}>
             {props.r.decisionLayer}
             <Show when={props.r.escalated}>
               {/* The mark is decorative; the word carries the state. Before this the arrow was
@@ -177,12 +180,14 @@ export function RequestRow(props: { r: RequestRow }) {
       </Cell>
       <Cell label="Tokens">
         {/* `↑`/`↓` rather than the words: at real magnitudes "87.2k in / 1.5k out" is 125px
-            against a 112px column and wraps to two lines. Both arrows are present in Geist
-            Mono — checked against the font's cmap, not its `unicode-range` — and the coverage
-            guard fails if a future subset drops them, which is the protection `→` never had.
+            against a 112px column and wraps to two lines. A figure, so Geist with tabular
+            numerals (adopt-design-tokens-v2 task 9.1). Both arrows are present in Geist
+            (`geist-latin.woff2`) as in Geist Mono — checked against the cmaps, not the
+            `unicode-range` — and the coverage guard fails if a future subset drops them, which
+            is the protection `→` never had.
             The words move to screen-reader text: an arrow announces as "up arrow", so the
             compact form would otherwise trade a layout bug for an accessibility one. */}
-        <span class="mono" style="font-size:11px">
+        <span class="figure cell-figure" style="font-size:0.6875rem">
           <span aria-hidden="true">
             {fmtTokens(props.r.inputTokens)}↑ {fmtTokens(props.r.outputTokens)}↓
           </span>
@@ -192,7 +197,7 @@ export function RequestRow(props: { r: RequestRow }) {
         </span>
       </Cell>
       <Cell label="Cost">
-        <span class="mono" style="font-size:11px;color:var(--text)">
+        <span class="figure cell-figure" style="font-size:0.6875rem;color:var(--text)">
           {/* zero-cost-unbilled-errors: the not-billed label is wider than the 0.6fr cost
               track, and a plain string would wrap mid-phrase ("$0 · not" / "billed"). Two
               no-wrap halves wrap only at the dot; the words go muted, no new colour. The
@@ -207,14 +212,14 @@ export function RequestRow(props: { r: RequestRow }) {
         {/* A batch item's `duration_ms` is the JOB's wall time — the time the caller
             actually waited — which runs to hours. `7412.3s` is not a reading, so it
             is formatted as a job. Latency aggregates exclude these rows entirely. */}
-        <span class="mono" style="font-size:11px">
+        <span class="figure cell-figure" style="font-size:0.6875rem">
           {isBatchItem(props.r)
             ? fmtElapsed(props.r.durationMs)
             : `${(props.r.durationMs / 1000).toFixed(1)}s`}
         </span>
       </Cell>
       <Cell label="Status">
-        <span style="display:flex;align-items:center;gap:5px">
+        <span style="display:flex;align-items:center;gap:4px">
           <span
             style={{
               width: '6px',
@@ -286,12 +291,14 @@ function BatchJobRow(props: { r: BatchDisplayRow; now: number }) {
   // `Cancelling` pulses amber — a state the user asked for and is waiting on;
   // `Reconciling` pulses faint — polyrouter cannot yet confirm the provider took
   // the job. Everything else is a steady dot. The app's reduced-motion query
-  // forces iteration-count 1, so each settles to a static dot.
+  // forces iteration-count 1, so each settles to a static dot. A running or queued
+  // job's dot is neutral (`--text3`), never indigo: the Indigo Budget keeps the accent
+  // for one control and one series per view (adopt-design-tokens-v2 D11).
   const dot = (): string => {
     if (props.r.phase === 'settling') return 'var(--faint)';
     if (props.r.status === 'cancelling') return 'var(--amber)';
     if (props.r.status === 'submission_unknown') return 'var(--faint)';
-    return 'var(--accent)';
+    return 'var(--text3)';
   };
   const pulses = (): boolean =>
     props.r.phase !== 'settling' &&
@@ -299,24 +306,30 @@ function BatchJobRow(props: { r: BatchDisplayRow; now: number }) {
       props.r.status === 'submission_unknown' ||
       props.r.status === 'in_progress');
   return (
-    <div class="req-row" style={{ cursor: 'default' }} data-batch-row={props.r.id}>
+    <div class="req-row row-hover" style={{ cursor: 'default' }} data-batch-row={props.r.id}>
       <Cell label="Time">
-        <span class="mono" style="font-size:11px;color:var(--text3)">
+        <span class="figure" style="font-size:0.6875rem;color:var(--text3)">
           {fmtTime(Date.parse(props.r.submittedAt))}
         </span>
       </Cell>
       <Cell label="Model">
-        <span class="mono" style="font-size:11.5px;color:var(--text)">
+        <span
+          class="mono cell-id"
+          style="font-size:0.75rem;color:var(--text)"
+          title={props.r.modelLabel ?? props.r.modelId}
+        >
           {props.r.modelLabel ?? props.r.modelId}
         </span>
       </Cell>
       <Cell label="Provider">
-        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+        <span class="cell-id" title={props.r.providerLabel ?? props.r.providerId}>
           {props.r.providerLabel ?? props.r.providerId}
         </span>
       </Cell>
       <Cell label="Tier">
-        <span>{props.r.tierAssigned ?? '—'}</span>
+        <span class="cell-id" title={props.r.tierAssigned ?? undefined}>
+          {props.r.tierAssigned ?? '—'}
+        </span>
       </Cell>
       <Cell label="Decided by">
         <span>
@@ -324,25 +337,25 @@ function BatchJobRow(props: { r: BatchDisplayRow; now: number }) {
         </span>
       </Cell>
       <Cell label="Tokens">
-        <span class="mono" style="font-size:11px;color:var(--text3)">
+        <span class="figure cell-figure" style="font-size:0.6875rem;color:var(--text3)">
           —
         </span>
       </Cell>
       <Cell label="Cost">
         {/* A reservation is money PROMISED, not spent — it is never shown here (D13);
             the Batches page labels it as reserved where there is room to say so. */}
-        <span class="mono" style="font-size:11px;color:var(--text3)">
+        <span class="figure cell-figure" style="font-size:0.6875rem;color:var(--text3)">
           —
         </span>
       </Cell>
       <Cell label="Latency">
-        <span class="mono" style="font-size:11px;color:var(--text2)">
+        <span class="figure cell-figure" style="font-size:0.6875rem;color:var(--text2)">
           {fmtElapsed(props.now - Date.parse(props.r.submittedAt))}
         </span>
       </Cell>
       <Cell label="Status">
-        <span style="display:flex;flex-direction:column;gap:2px;color:var(--text2);min-width:0">
-          <span style="display:flex;align-items:center;gap:5px">
+        <span style="display:flex;flex-direction:column;gap:4px;color:var(--text2);min-width:0">
+          <span style="display:flex;align-items:center;gap:4px">
             <span
               aria-hidden="true"
               style={{
@@ -361,7 +374,7 @@ function BatchJobRow(props: { r: BatchDisplayRow; now: number }) {
               other column (D17). */}
           <Show when={progress()}>
             {(p) => (
-              <span class="mono" style="font-size:10.5px;color:var(--text3)">
+              <span class="figure" style="font-size:0.6875rem;color:var(--text3)">
                 {p()}
               </span>
             )}
@@ -391,71 +404,68 @@ export function InflightRows(props: { rows: InflightDisplayRow[] }) {
 }
 
 function InflightRunningRow(props: { r: InflightDisplayRow; now: number }) {
-  const chip = (): { bg: string; fg: string } => CHIP[props.r.decisionLayer] ?? NEUTRAL_CHIP;
   const elapsed = (): number => Math.max(0, (props.now - props.r.startedAt) / 1000);
   return (
     // Non-interactive by design (no terminal detail to inspect yet). No aria-label:
     // a bare div has no role to hang one on, and the row's own text already reads
     // out completely — time, model, provider, tier, layer, and "Running".
-    <div class="req-row" style={{ cursor: 'default' }}>
+    <div class="req-row row-hover" style={{ cursor: 'default' }}>
       <Cell label="Time">
-        <span class="mono" style="font-size:11px;color:var(--text3)">
+        <span class="figure" style="font-size:0.6875rem;color:var(--text3)">
           {fmtTime(props.r.startedAt)}
         </span>
       </Cell>
       <Cell label="Model">
-        <span class="mono" style="font-size:11.5px;color:var(--text)">
+        <span
+          class="mono cell-id"
+          style="font-size:0.75rem;color:var(--text)"
+          title={props.r.modelLabel ?? undefined}
+        >
           {props.r.modelLabel ?? '—'}
         </span>
       </Cell>
       <Cell label="Provider">
-        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+        <span class="cell-id" title={props.r.providerLabel ?? undefined}>
           {props.r.providerLabel ?? '—'}
         </span>
       </Cell>
       <Cell label="Tier">
-        <span>{props.r.tierAssigned ?? '—'}</span>
+        <span class="cell-id" title={props.r.tierAssigned ?? undefined}>
+          {props.r.tierAssigned ?? '—'}
+        </span>
       </Cell>
       <Cell label="Decided by">
         <span>
-          <span
-            style={{
-              padding: '2px 8px',
-              background: chip().bg,
-              color: chip().fg,
-              'border-radius': '10px',
-              'font-size': '11px',
-              'font-weight': '500',
-            }}
-          >
+          <span class="chip" style={LAYER_CHIP_STYLE}>
             {props.r.decisionLayer}
           </span>
         </span>
       </Cell>
       <Cell label="Tokens">
-        <span class="mono" style="font-size:11px;color:var(--text3)">
+        <span class="figure cell-figure" style="font-size:0.6875rem;color:var(--text3)">
           —
         </span>
       </Cell>
       <Cell label="Cost">
-        <span class="mono" style="font-size:11px;color:var(--text3)">
+        <span class="figure cell-figure" style="font-size:0.6875rem;color:var(--text3)">
           —
         </span>
       </Cell>
       <Cell label="Latency">
-        <span class="mono" style="font-size:11px;color:var(--text2)">
+        <span class="figure cell-figure" style="font-size:0.6875rem;color:var(--text2)">
           {elapsed().toFixed(1)}s
         </span>
       </Cell>
       <Cell label="Status">
-        <span style="display:flex;align-items:center;gap:5px;color:var(--text2)">
+        <span style="display:flex;align-items:center;gap:4px;color:var(--text2)">
           <span
             aria-hidden="true"
             style={{
               width: '6px',
               height: '6px',
               'border-radius': '50%',
-              background: props.r.phase === 'settling' ? 'var(--faint)' : 'var(--accent)',
+              // Neutral while running, never indigo (the Indigo Budget, D11).
+              background: props.r.phase === 'settling' ? 'var(--faint)' : 'var(--text3)',
               flex: 'none',
               // Reuses the global `pulse` keyframe; the app's reduced-motion media
               // query forces iteration-count 1, so it settles to a static dot. A settling

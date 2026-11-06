@@ -73,16 +73,33 @@ describe('responsive query layer', () => {
   });
 
   it('shrinks the page gutter below narrow', () => {
-    // 22px 26px spends 52px of a 390px viewport.
-    expect(atRuleBody('@media (max-width: 768px)')).toContain('padding: 18px 16px');
+    // The 24px desktop gutter would spend 48px of a 390px viewport; below narrow it is
+    // 16px (STYLESEED.md `gutter-narrow`, adopt-design-tokens-v2 task 3.3).
+    expect(atRuleBody('@media (max-width: 768px)')).toMatch(/\.rs-page\s*\{\s*padding:\s*16px;/);
   });
 
-  it('reaches the target floors without touching font-size', () => {
+  it('reaches the target floors without touching font-size, except 16px input text', () => {
     // Padding/min-height only — a font-size change would move the type scale and every
-    // assertion in styles.contrast.test.ts with it.
+    // assertion in styles.contrast.test.ts with it. The one exception is the entry fields'
+    // 16px text in the comfort context (adopt-design-tokens-v2 task 8.1; DESIGN.md Inputs /
+    // Fields), so a mobile browser does not zoom the page on focus: one rule per block,
+    // naming only entry fields, at exactly `1rem`.
+    const FIELD =
+      /^(?:\.input|\.select|\.mp-input|select|textarea|input(?::not\(\[type='(?:checkbox|radio)'\]\))*)$/;
     for (const prelude of ['@media (max-width: 768px)', '@media (pointer: coarse)']) {
-      expect(atRuleBody(prelude)).not.toMatch(/font-size/);
+      const body = atRuleBody(prelude);
+      const rules = [...body.matchAll(/([^{}]+)\{([^{}]*font-size[^{}]*)\}/g)];
+      expect(rules, `${prelude}: one font-size rule`).toHaveLength(1);
+      const [, selectors = '', decls = ''] = rules[0] ?? [];
+      for (const s of selectors.split(',').map((x) => x.trim())) {
+        expect(s, `${prelude}: ${s} is an entry field`).toMatch(FIELD);
+      }
+      expect(decls.trim(), prelude).toMatch(/^font-size:\s*1rem;$/);
     }
+    // The lock states the same value (STYLESEED.md `input-text-comfort`), so the two move
+    // together.
+    const lock = readFileSync(join(SRC, '../../../STYLESEED.md'), 'utf8');
+    expect(lock).toMatch(/\| `input-text-comfort` \| \*\*16px\*\* \(`1rem`\) \|/);
   });
 });
 
@@ -158,10 +175,14 @@ describe('rows, gutters and fixed widths', () => {
       'pages/Users.tsx',
     ]) {
       const src = read(f);
-      expect(src, `${f} still sets the page gutter inline`).not.toContain('padding:22px 26px');
+      expect(src, `${f} still sets the page gutter inline`).not.toMatch(
+        /class="rs-page"[^>]*style="[^"]*padding/,
+      );
       expect(src, `${f} is missing the rs-page container`).toContain('rs-page');
     }
-    expect(css).toMatch(/\.rs-page\s*\{[^}]*padding:\s*22px 26px/);
+    // The 24px desktop gutter (adopt-design-tokens-v2 task 3.2), outside any query.
+    const narrow = atRuleBody('@media (max-width: 768px)');
+    expect(css.replace(narrow, '')).toMatch(/\.rs-page\s*\{\s*padding:\s*24px;/);
   });
 
   it('wraps the rows that cannot fit a phone', () => {
@@ -233,9 +254,15 @@ describe('interactive target floors', () => {
     return [...out];
   }
 
+  /** Controls that meet the floor by an expanded hit area instead of their own box. The
+   * switch's drawn track is the height family's 20 / 18px member (adopt-design-tokens-v2
+   * D3), so a `min-height` would restyle it; its `::before` carries the floor, asserted in
+   * "grows the switch hit target without resizing the switch" below. */
+  const HIT_AREA_FLOORED = new Set(['.toggle']);
+
   it('gives every interactive control the baseline floor at all widths', () => {
     const base = flooredAt(24);
-    const missing = interactiveClasses().filter((c) => !base.has(c));
+    const missing = interactiveClasses().filter((c) => !base.has(c) && !HIT_AREA_FLOORED.has(c));
     expect(
       missing,
       `these controls declare cursor:pointer but no 24px target floor: ${missing.join(', ')}`,
@@ -254,7 +281,7 @@ describe('interactive target floors', () => {
   });
 
   it('grows the switch hit target without resizing the switch', () => {
-    // The 30x17 / 34x19 switch is locked design. The floor is met by an invisible centred
+    // The 36x20 / 32x18 switch is locked design (D3). The floor is met by an invisible centred
     // ::before, so the target grows and not one drawn pixel moves.
     expect(css).toMatch(/\.toggle::before\s*\{[^}]*position:\s*absolute/);
     expect(atRuleBody('@media (max-width: 768px)')).toContain('.toggle::before');
@@ -277,6 +304,36 @@ describe('table query containers', () => {
     ]) {
       expect(css).toContain(`container-name: ${name}`);
     }
+  });
+
+  it('states every container threshold once, the same value in the lock as in its query (adopt-design-tokens-v2 task 14.1)', () => {
+    // Every `table-fit-*`, `pipeline-fit` and `layers-fit` row of the lock against the literal
+    // in its `@container` prelude, both ways: a lock row whose query carries another number,
+    // and a query whose number no lock row states, each fail here. The four table rows had no
+    // such check before (only Targets, Pipeline and Layers did).
+    const lock = readFileSync(join(SRC, '..', '..', '..', 'STYLESEED.md'), 'utf8');
+    const ROWS = [
+      ['table-fit-requests', 'rs-requests'],
+      ['table-fit-batches', 'rs-batches'],
+      ['table-fit-agents', 'rs-agents'],
+      ['table-fit-users', 'rs-users'],
+      ['table-fit-targets', 'rs-targets'],
+      ['pipeline-fit` (two-line)', 'rs-pipeline'],
+      ['pipeline-fit` (phone)', 'rs-pipeline'],
+      ['layers-fit', 'rs-layers'],
+    ] as const;
+    const locked = ROWS.map(([token, container]) => {
+      const esc = token.replace(/[()]/g, '\\$&');
+      const m = new RegExp(`\\|\\s*\`${esc}\`?\\s*\\|\\s*\\*\\*(\\d+)px\\*\\*`).exec(lock);
+      expect(m?.[1], `${token} is missing from the STYLESEED.md lock`).toBeDefined();
+      return `${container} ${m?.[1] ?? '?'}`;
+    });
+    const queried = [...css.matchAll(/@container (rs-[a-z]+) \(max-width: (\d+)px\)/g)].map(
+      (m) => `${m[1] ?? ''} ${m[2] ?? ''}`,
+    );
+    expect([...queried].sort(), 'the @container literals and the lock rows differ').toEqual(
+      [...locked].sort(),
+    );
   });
 
   it('reflows the Targets matrix at its locked table-fit, the same value in the lock and here', () => {
@@ -340,7 +397,9 @@ describe('table query containers', () => {
     expect(outside).toMatch(/\.tm-picker\s*\{[^}]*max-width:\s*220px/);
     const routing = readFileSync(join(SRC, 'pages/Routing.tsx'), 'utf8');
     expect(routing).toContain('class="rs-targets"');
-    expect(routing).toContain('class="tm-picker"');
+    // The picker takes the shared select rule (adopt-design-tokens-v2 task 8.1); its cap
+    // stays on `.tm-picker`.
+    expect(routing).toContain('class="select select--sm tm-picker"');
     expect(routing, 'the picker cap moved back inline').not.toContain('max-width:220px');
   });
 

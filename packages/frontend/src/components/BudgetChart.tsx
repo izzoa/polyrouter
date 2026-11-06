@@ -30,6 +30,7 @@ export function BudgetChart(props: { snapshot: AvailableBudgetProgress }) {
     <div class="budget-chart" aria-hidden="true">
       <Chart
         data={budgetChartData(props.snapshot)}
+        measure="budget-spend"
         height={150}
         xExtent={[
           Date.parse(props.snapshot.period.start) / 1000,

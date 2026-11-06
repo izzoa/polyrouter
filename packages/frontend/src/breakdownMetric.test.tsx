@@ -194,7 +194,7 @@ describe('the Overview headline', () => {
         'the fixture renders identically either way — this test would prove nothing',
       ).not.toBe(uncachedOnly.toFixed(2));
 
-      const values = [...h.host.querySelectorAll<HTMLElement>('.stat-value')].map(
+      const values = [...h.host.querySelectorAll<HTMLElement>('.readout-figure')].map(
         (e) => e.textContent ?? '',
       );
       expect(values).toContain(`${expected.toFixed(2)}M`);

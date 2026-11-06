@@ -116,6 +116,10 @@ class FakeSource implements EventSourceLike {
       fn({ data: JSON.stringify(data) } as MessageEvent<string>);
     }
   }
+  /** A frame whose data is exactly `raw`, unencoded — for a malformed payload. */
+  emitRaw(type: string, raw: string): void {
+    for (const fn of this.listeners.get(type) ?? []) fn({ data: raw } as MessageEvent<string>);
+  }
   fail(): void {
     this.onerror?.call(this, new Event('error'));
   }
@@ -266,6 +270,68 @@ describe('createEventStream', () => {
       expect(h.health()).toBe('live');
       vi.advanceTimersByTime(staleAfterMs(1_000) + 1_100);
       expect(h.health()).toBe('polling'); // buffered/blocked shows as polling
+      d();
+    });
+  });
+
+  it('stamps every DATA event, and never a heartbeat or a resync (adopt-design-tokens-v2 task 13.1)', () => {
+    const src = new FakeSource();
+    let t = 1_000;
+    const reported: number[] = [];
+    createRoot((d) => {
+      const h = createEventStream(
+        opts({ factory: () => src, now: () => t, onDataEvent: (at: number) => reported.push(at) }),
+      );
+      expect(h.lastDataEventAt(), 'no data before the first event').toBeNull();
+
+      // Liveness and a directive are not news: neither moves the stamp nor reports.
+      t = 1_100;
+      src.emit('heartbeat', {});
+      src.emit('resync', {});
+      expect(h.lastDataEventAt()).toBeNull();
+      expect(reported).toEqual([]);
+      expect(h.health(), 'the heartbeat still proved liveness').toBe('live');
+
+      const frames: [string, unknown][] = [
+        [
+          'snapshot',
+          { items: [], available: true, truncated: false, heartbeatIntervalMs: 600_000 },
+        ],
+        ['inflight.started', { row: row('a') }],
+        ['inflight.updated', { row: row('a', { modelLabel: 'strong' }) }],
+        ['inflight.settled', { id: 'a' }],
+        ['analytics.invalidated', {}],
+        ['batch.updated', {}],
+      ];
+      for (const [type, data] of frames) {
+        t += 100;
+        src.emit(type, data);
+        expect(h.lastDataEventAt(), `${type} stamps the time it arrived`).toBe(t);
+        expect(reported.at(-1), `${type} reports the same stamp to onDataEvent`).toBe(t);
+      }
+      expect(reported).toHaveLength(frames.length);
+
+      // After data, a heartbeat or a resync still leaves the last data stamp alone.
+      const last = t;
+      t += 5_000;
+      src.emit('heartbeat', {});
+      src.emit('resync', {});
+      expect(h.lastDataEventAt()).toBe(last);
+      expect(reported).toHaveLength(frames.length);
+      d();
+    });
+  });
+
+  it('a malformed frame stamps nothing: it delivered no data', () => {
+    const src = new FakeSource();
+    const reported: number[] = [];
+    createRoot((d) => {
+      const h = createEventStream(
+        opts({ factory: () => src, onDataEvent: (at: number) => reported.push(at) }),
+      );
+      src.emitRaw('inflight.started', '{not json');
+      expect(h.lastDataEventAt()).toBeNull();
+      expect(reported).toEqual([]);
       d();
     });
   });

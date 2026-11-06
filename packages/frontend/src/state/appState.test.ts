@@ -448,7 +448,11 @@ describe('providers (create → test → sync, kind mapping, pricing)', () => {
     // Client-side bare-code guidance — no API call.
     s.setState('ow', 'pasted', 'just-a-bare-code');
     await s.completeOauthConnect();
-    expect(s.state.ow.error).toContain('code#state');
+    // The guidance reports on the paste field (adopt-design-tokens-v2 task 8.2), which the
+    // attempt clears: credential material never survives one.
+    expect(s.state.fieldErrors['f-ow-paste']).toContain('code#state');
+    expect(s.state.ow.error).toBeNull();
+    expect(s.state.ow.pasted).toBe('');
     expect(fake.calls).not.toContain('oauthComplete');
     // The real paste completes, appends the provider, and closes the modal.
     s.setState('ow', 'pasted', 'the-code#st-claude');
@@ -830,7 +834,7 @@ describe('routing config (real CRUD)', () => {
     await tick();
     expect(s.state.tierEntries['t1']).toHaveLength(5);
     s.addTierModel('t1', 'm6');
-    expect(s.state.toast).toBe('Max 5 models per tier');
+    expect(s.state.toast).toEqual({ kind: 'failure', text: 'Max 5 models per tier' });
     expect(s.state.tierEntries['t1']).toHaveLength(5);
     await tick();
   });
@@ -1031,7 +1035,11 @@ describe('notification channels (real CRUD + test-send)', () => {
     // Change kind smtp → apprise with a BLANK config: blocked inline, no PATCH.
     s.setState('cf', 'kind', 'apprise');
     await s.saveChannel();
-    expect(s.state.cf.error).toBeTruthy();
+    // Blocked on the Apprise field itself (adopt-design-tokens-v2 task 8.2).
+    expect(s.state.fieldErrors['f-cf-apprise']).toBe(
+      'Changing the kind to Apprise requires at least one URL',
+    );
+    expect(s.state.cf.error).toBeNull();
     expect(fake.countOf('updateChannel')).toBe(0);
     // Provide the new apprise config: PATCH now carries kind + config.
     s.setState('cf', 'appriseUrls', 'ntfy://homelab/x');
@@ -1258,10 +1266,10 @@ describe('stale-loader-overwrite guards (#20 verify pass)', () => {
     s.addTierModel('t1', 'm4');
     await tick();
     await s.deleteTier('t1');
-    expect(s.state.toast).toBe('Tier deleted');
+    expect(s.state.toast).toEqual({ kind: 'confirm', text: 'Tier deleted' });
     fake.tierWriteQueue[0]?.settle('reject');
     await tick();
-    expect(s.state.toast).toBe('Tier deleted'); // no 404/error toast for the retired write
+    expect(s.state.toast).toEqual({ kind: 'confirm', text: 'Tier deleted' }); // no 404/error toast for the retired write
     expect(s.state.tierEntries['t1']).toBeUndefined();
   });
 
@@ -1329,7 +1337,10 @@ describe('E12.2 — copy() only claims success when the clipboard write succeede
     vi.stubGlobal('navigator', {}); // non-secure origin: navigator.clipboard is undefined
     s.copy('poly_secret', 'Key copied');
     await tick();
-    expect(s.state.toast).toBe('Copy failed — select the text manually');
+    expect(s.state.toast).toEqual({
+      kind: 'failure',
+      text: 'Copy failed — select the text manually',
+    });
   });
 
   it('a rejected writeText toasts a failure', async () => {
@@ -1339,7 +1350,10 @@ describe('E12.2 — copy() only claims success when the clipboard write succeede
     });
     s.copy('poly_secret', 'Key copied');
     await tick();
-    expect(s.state.toast).toBe('Copy failed — select the text manually');
+    expect(s.state.toast).toEqual({
+      kind: 'failure',
+      text: 'Copy failed — select the text manually',
+    });
   });
 
   it('a successful writeText toasts the success message and writes the text', async () => {
@@ -1349,7 +1363,7 @@ describe('E12.2 — copy() only claims success when the clipboard write succeede
     s.copy('poly_secret', 'Key copied');
     await tick();
     expect(writeText).toHaveBeenCalledWith('poly_secret');
-    expect(s.state.toast).toBe('Key copied');
+    expect(s.state.toast).toEqual({ kind: 'confirm', text: 'Key copied' });
   });
 });
 
@@ -2115,7 +2129,7 @@ describe('pricing-catalog slice (add-pricing-refresh-ui)', () => {
     expect(fake.calls.filter((c) => c === 'pricingRefresh')).toHaveLength(1);
     expect(s.state.pc.status?.lastRefresh?.added).toBe(124); // re-fetched truth
     expect(s.state.pc.busy).toBe(false);
-    expect(s.state.toast).toBe('+124 price versions');
+    expect(s.state.toast).toEqual({ kind: 'confirm', text: '+124 price versions' });
   });
 
   it('a failed refresh reports inline and leaves the status untouched', async () => {
@@ -2152,7 +2166,7 @@ describe('pricing-catalog slice (add-pricing-refresh-ui)', () => {
       refreshError: null,
       busy: false,
     });
-    expect(s.state.toast).not.toBe('+124 price versions');
+    expect(s.state.toast?.text).not.toBe('+124 price versions');
   });
 });
 

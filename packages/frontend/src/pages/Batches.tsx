@@ -21,6 +21,9 @@ const COLUMNS = [
   '',
 ] as const;
 
+/** The figure columns: right-aligned in the head as in every row (task 9.2). */
+const FIGURE_COLUMNS: ReadonlySet<string> = new Set(['Wall time', 'Cost']);
+
 function Cell(props: { label: string; children: unknown }) {
   return (
     <span class="rs-cell">
@@ -63,13 +66,15 @@ function statusLabel(job: BatchJobDto): string {
 }
 
 /** The dot's colour. Amber and red are the locked SEMANTIC status hues; the word
- * beside them carries the state, so the colour is never the sole carrier. */
+ * beside them carries the state, so the colour is never the sole carrier. A running or
+ * queued job is neutral (`--text3`), never indigo: the page's one indigo series is its
+ * progress fill (the Indigo Budget, adopt-design-tokens-v2 D11). */
 function statusColor(job: BatchJobDto): string {
   if (job.status === 'failed' || job.status === 'expired') return 'var(--red)';
   if (job.status === 'cancelling' || job.status === 'cancelled') return 'var(--amber)';
   if (job.status === 'completed') return 'var(--green)';
   if (job.status === 'submission_unknown') return 'var(--faint)';
-  return 'var(--accent)';
+  return 'var(--text3)';
 }
 
 const pulses = (job: BatchJobDto): boolean =>
@@ -126,17 +131,17 @@ export function Batches(props: { live: boolean }) {
   const active = createMemo(() => rows().filter((r) => !TERMINAL.has(r.status)).length);
 
   return (
-    <div class="rs-page" style="display:flex;flex-direction:column;gap:14px;max-width:1200px">
-      <div class="rs-wrap" style="display:flex;align-items:baseline;gap:10px">
+    <div class="rs-page" style="display:flex;flex-direction:column;gap:24px;max-width:1200px">
+      <div class="rs-wrap" style="display:flex;align-items:baseline;gap:8px">
         <div>
           <div class="section-title">Batches</div>
           {/* The one disclosure this page exists to make. */}
-          <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3);margin-top:3px">
+          <div class="t-caption" style="color:var(--text3);margin-top:4px">
             polyrouter stores no results — they stay with the provider until its retention window
             ends, and are streamed through on demand.
           </div>
         </div>
-        <div style="margin-left:auto;font:400 11.5px 'Geist',sans-serif;color:var(--text3)">
+        <div class="t-caption" style="margin-left:auto;color:var(--text3)">
           {rows().length} shown · {active()} running
         </div>
       </div>
@@ -145,7 +150,8 @@ export function Batches(props: { live: boolean }) {
         {(msg) => (
           <div
             role="status"
-            style="padding:9px 14px;border:1px solid var(--border);border-radius:10px;background:var(--panel);font:400 12px 'Geist',sans-serif;color:var(--text2)"
+            class="t-dense"
+            style="padding:8px 12px;border:1px solid var(--border);border-radius:10px;background:var(--panel);color:var(--text2)"
           >
             {msg()}
           </div>
@@ -154,12 +160,21 @@ export function Batches(props: { live: boolean }) {
 
       <div class="panel rs-table-panel rs-table-batches" style="overflow:hidden;border-radius:10px">
         <div class="table-head">
-          <For each={COLUMNS}>{(c) => <div>{c}</div>}</For>
+          <For each={COLUMNS}>
+            {(c) => (
+              <div
+                class={FIGURE_COLUMNS.has(c) ? 'cell-figure' : undefined}
+                title={c === '' ? undefined : c}
+              >
+                {c}
+              </div>
+            )}
+          </For>
         </div>
         <Show
           when={rows().length > 0}
           fallback={
-            <div style="padding:16px 18px;font:400 12px 'Geist',sans-serif;color:var(--text3)">
+            <div class="t-dense" style="padding:16px;color:var(--text3)">
               {loading()
                 ? 'Loading…'
                 : 'No batches yet. Submit one to POST /v1/batches with the same agent key your requests use.'}
@@ -193,7 +208,7 @@ function Row(props: { job: BatchJobDto; onCancel: () => void }) {
   return (
     <div class="rs-batch-row" data-batch-job={job().id}>
       <Cell label="Status">
-        <span style="display:flex;align-items:center;gap:6px;min-width:0">
+        <span style="display:flex;align-items:center;gap:8px;min-width:0">
           <span
             aria-hidden="true"
             style={{
@@ -208,51 +223,67 @@ function Row(props: { job: BatchJobDto; onCancel: () => void }) {
           <span style="color:var(--text)">{statusLabel(job())}</span>
         </span>
       </Cell>
+      {/* Identifiers: cut with an end ellipsis on one line, keeping the full text as
+          content and as the title (task 9.2). */}
       <Cell label="Model">
-        <span class="mono" style="font-size:11.5px;color:var(--text)">
+        <span
+          class="mono cell-id"
+          style="font-size:0.75rem;color:var(--text)"
+          title={job().modelLabel ?? job().modelId}
+        >
           {job().modelLabel ?? job().modelId}
         </span>
       </Cell>
       <Cell label="Provider">
-        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+        <span class="cell-id" title={job().providerLabel ?? job().providerId}>
           {job().providerLabel ?? job().providerId}
         </span>
       </Cell>
       <Cell label="Tier">
-        <span>{job().tierAssigned ?? '—'}</span>
+        <span class="cell-id" title={job().tierAssigned ?? undefined}>
+          {job().tierAssigned ?? '—'}
+        </span>
       </Cell>
       <Cell label="Submitted">
-        <span class="mono" style="font-size:11px;color:var(--text3)">
+        <span class="figure" style="font-size:0.6875rem;color:var(--text3)">
           {fmtDateTime(job().submittedAt)}
         </span>
       </Cell>
       <Cell label="Progress">
         <span style="display:flex;flex-direction:column;gap:4px;min-width:0;width:100%">
-          <span class="rs-batch-bar" aria-hidden="true">
+          <span
+            class="rs-batch-bar"
+            aria-hidden="true"
+            data-series="focal"
+            data-measure="batch-progress"
+          >
             <span style={{ width: `${String(pct())}%` }} />
           </span>
-          <span class="mono" style="font-size:10.5px;color:var(--text3)">
+          <span class="figure" style="font-size:0.6875rem;color:var(--text3)">
             {done()} / {job().counts.total}
           </span>
           {/* Two states where the raw count would mislead. A lost submission reads
               `0 / N` — and the thing the user needs to know is that it cost nothing. */}
           <Show when={job().errorKind === 'submit_lost' || job().errorKind === 'submit_unresolved'}>
-            <span style="font-size:10.5px;color:var(--text3)">
+            <span style="font-size:0.6875rem;color:var(--text3)">
               submission lost — nothing charged
             </span>
           </Show>
           <Show when={job().status === 'submission_unknown'}>
-            <span style="font-size:10.5px;color:var(--text3)">reconciling with provider</span>
+            <span style="font-size:0.6875rem;color:var(--text3)">reconciling with provider</span>
           </Show>
         </span>
       </Cell>
       <Cell label="Wall time">
-        <span class="mono" style="font-size:11px">
+        <span class="figure cell-figure" style="font-size:0.6875rem">
           {fmtElapsed(wall())}
         </span>
       </Cell>
       <Cell label="Cost">
-        <span style="display:flex;flex-direction:column;gap:2px;min-width:0">
+        <span
+          class="cell-figure"
+          style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;min-width:0"
+        >
           <Show
             when={terminal()}
             fallback={
@@ -261,16 +292,16 @@ function Row(props: { job: BatchJobDto; onCancel: () => void }) {
                     the number reads as money already spent (D13). Written out rather
                     than as `≤` — the bundled fonts have no U+2264, so that glyph
                     would come from the viewer's operating system. */}
-                <span class="mono" style="font-size:11px;color:var(--text2)">
+                <span class="figure" style="font-size:0.6875rem;color:var(--text2)">
                   {job().reservedCeilingMicros === null
                     ? 'unbounded'
                     : `up to ${fmtMoney(job().reservedCeilingMicros!)}`}
                 </span>
-                <span style="font-size:10.5px;color:var(--text3)">reserved, not spent</span>
+                <span style="font-size:0.6875rem;color:var(--text3)">reserved, not spent</span>
               </>
             }
           >
-            <span class="mono" style="font-size:11px;color:var(--text)">
+            <span class="figure" style="font-size:0.6875rem;color:var(--text)">
               {(() => {
                 const micros = job().settledCostMicros;
                 return micros === null ? '—' : fmtMoney(micros);
@@ -283,13 +314,13 @@ function Row(props: { job: BatchJobDto; onCancel: () => void }) {
         <Show
           when={job().resultsExpireAt}
           fallback={
-            <span style="font-size:11px;color:var(--text3)">
+            <span style="font-size:0.6875rem;color:var(--text3)">
               retention unknown — check provider
             </span>
           }
         >
           {(iso) => (
-            <span class="mono" style="font-size:11px;color:var(--text2)">
+            <span class="figure" style="font-size:0.6875rem;color:var(--text2)">
               {fmtDate(iso())} · {job().providerLabel ?? job().providerId}
             </span>
           )}
@@ -303,7 +334,7 @@ function Row(props: { job: BatchJobDto; onCancel: () => void }) {
           <button
             type="button"
             class="btn-ghost"
-            style="font:500 11.5px 'Geist',sans-serif"
+            style="font:500 0.75rem/1rem 'Geist',sans-serif"
             aria-label={`Cancel batch on ${job().modelLabel ?? job().modelId}`}
             onClick={props.onCancel}
           >
@@ -338,7 +369,7 @@ function CancelDialog(props: { job: BatchJobDto; onClose: () => void; onDone: ()
         <div class="section-title" style="margin-bottom:8px">
           Cancel this batch?
         </div>
-        <div style="font:400 12px 'Geist',sans-serif;color:var(--text2);line-height:1.55;margin-bottom:12px">
+        <div class="t-dense" style="color:var(--text2);margin-bottom:12px">
           {remaining()} of {props.job.counts.total} requests have not run yet. Cancelling asks the
           provider to stop; anything it already completed is still recorded and still charged. The
           reserved budget is released once that settles.

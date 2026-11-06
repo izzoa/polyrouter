@@ -5,6 +5,7 @@ import type { AgentDto, BudgetDto, ChannelDto } from './data/api';
 import { createAppStore, type AppStore } from './state/appState';
 import { AppProvider } from './state/context';
 import { FakeApiClient } from './test/fakeClient';
+import { labelText } from './test/labelText';
 
 const flush = async (): Promise<void> => {
   for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 0));
@@ -72,7 +73,7 @@ function mount(client: FakeApiClient): {
 
 function clickDelete(host: HTMLElement): void {
   const btn = [...host.querySelectorAll<HTMLButtonElement>('button.btn-ghost--amber')].find(
-    (b) => b.textContent?.trim() === 'Delete',
+    (b) => labelText(b) === 'Delete',
   );
   expect(btn).not.toBeUndefined();
   btn?.click();
@@ -145,10 +146,10 @@ describe('destructive actions are confirmed (dashboard-core coherence)', () => {
       store.go('agents');
       await flush();
       const amber = [...host.querySelectorAll<HTMLButtonElement>('button.btn-ghost--amber')];
-      expect(amber.some((b) => b.textContent?.trim() === 'Rotate key')).toBe(false);
-      expect(amber.some((b) => b.textContent?.trim() === 'Delete')).toBe(true);
+      expect(amber.some((b) => labelText(b) === 'Rotate key')).toBe(false);
+      expect(amber.some((b) => labelText(b) === 'Delete')).toBe(true);
       const rotate = [...host.querySelectorAll<HTMLButtonElement>('button.btn-ghost')].find(
-        (b) => b.textContent?.trim() === 'Rotate key',
+        (b) => labelText(b) === 'Rotate key',
       );
       expect(rotate).not.toBeUndefined();
     } finally {

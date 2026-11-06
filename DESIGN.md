@@ -284,39 +284,21 @@ Controls are crisp and tactile. They are small and exact, and they share one hei
 | Inspector docks as a 480px non-modal panel at ≥ 1440px; the list shows compact columns while docked | 440px modal drawer at every desktop width | `add-docked-inspector` |
 | First-token commit marker on the served node | Not recorded by the proxy, so the marker is never drawn | Follow-up: commit-timing telemetry (request logging) |
 | Per-request deep link (`#/requests/<id>`) | Not supported: no owner-scoped read-by-id, and the fragment grammar is page-only | Follow-up: request detail read + deep link |
-| Indigo text uses `accent-deep`; the primary hover darkens in both themes | Raw `--accent` text (3.70:1 in dark); dark hover `#6c83ff` puts white at 3.32:1 | `adopt-design-tokens-v2` |
-| Control Edge (`border-control`) on entry controls | Hairline at 1.13–1.20:1 (dashed on the model-picker combobox) | `adopt-design-tokens-v2` |
-| One Selected state (wash + Deep Ink 500 + 1px Deep Ink edge) | Nav: wash + Deep Ink label; segments: Chip Tone fill at 1.13:1 | `adopt-design-tokens-v2` |
-| Toggle: Ink on, Control Edge off, panel-color knob | Indigo on, Ink 3 off: only 1.08:1 apart | `adopt-design-tokens-v2` |
-| Meaningful glyphs in Ink 3 | The copy glyph is Faint (2.03:1) | `adopt-design-tokens-v2` |
 | One rendering per figure state: `· est.` replaces `~`; `unpriced` with no dash; `<$0.0001` with no space | `~` / `~est` / `~estimated` markers; `— unpriced` in the workload mix; `< $0.0001` in the savings line; `$0.0000` for unpriced and sub-precision table costs; free as a bare `$0`; `up to $x` for the reserved ceiling; lone dashes for loading Agents figures and not-applicable Pipeline shares | `adopt-figure-states` |
-| Input help, invalid and read-only states; 16px input text under a coarse pointer | Help and error copy styled per surface; 12.5px inputs at every width | `adopt-design-tokens-v2` |
-| 4px spacing scale: page 24 / 16px, card 16 / 12px, 16px table cells | 22 × 26px gutter, 16 × 18px cards, 14px narrow, off-grid 9 / 11 / 18 / 22px gaps, margins and offsets | `adopt-design-tokens-v2` |
-| One control-height family: 24 / 32px, 44px coarse; toggle 36 × 20px | 18–34px controls whose tops sit 8.5px apart in one row; toggle 34 × 19px (lock: 30 × 17px small) | `adopt-design-tokens-v2` |
-| Four radii (4 / 6 / 10 / 16px) | Nine (4, 5, 6, 7, 8, 9, 10, 12, 16px) | `adopt-design-tokens-v2` |
-| Sidebar in three Overline groups | 11 flat items | `adopt-design-tokens-v2` |
-| Five type sizes (11 / 12 / 13 / 15 / 26px), an 11px floor, sizes authored in `rem` | 13 roles on nine sizes (10.5–26px), authored in px | `adopt-design-tokens-v2` |
-| Numbers in Geist tabular figures everywhere; Mono for identifiers only | Spend and request counts set in Geist Mono in table rows | `adopt-design-tokens-v2` |
-| Readout strip: one panel, one Display figure | A row of identical KPI tiles, every figure at 26px | `adopt-design-tokens-v2` |
-| The Indigo Budget: one indigo control and one indigo series per view; running dots neutral | Indigo on switches and running-row dots; raw `--accent` on ghost-hover borders, links and setup-card hovers; an amber cancelling dot; Faint reconciling and finishing dots | `adopt-design-tokens-v2` |
-| Pressed and busy states on every button; a state matrix for every control | Hover only; no pressed state | `adopt-design-tokens-v2` |
-| The Live lamp blinks once per event | A 2s opacity pulse, forever | `adopt-design-tokens-v2` |
-| Themed browser surfaces; the theme follows the OS on a first visit | Browser defaults; light theme by default | `adopt-design-tokens-v2` |
-| Group-boundary rows are an Overline label above a Soft Hairline | A filled Chip Tone band | `adopt-design-tokens-v2` |
-| Toasts confirm only (`status`, 4s, paused on hover and focus); a clipboard failure is an 8s `alert` | One `status` toast for successes and failures, 1.8s | `adopt-design-tokens-v2` |
-| One notice anatomy in four tones | Per-surface banners and notes | `adopt-design-tokens-v2` |
-| Container thresholds re-measured for the new type and control sizes | 960 / 900 / 840 / 680 / 660 / 540 / 500px, measured on today's metrics | `adopt-design-tokens-v2` |
 | One confirm-dialog structure: title, consequence, Cancel first, busy, failure in place | Per-surface confirmations, 440px wide | `adopt-red-destructive-actions` |
 | Destructive: a red ghost trigger, then a red commit in the confirm dialog | An amber ghost (hover text 2.81:1) and an indigo commit | `adopt-red-destructive-actions` |
-| Table column priorities (P1–P3); stacked records only below 640px of container | Requests and Batches become cards below a 960px container, about a 1220px viewport | `add-docked-inspector` |
+| Table column priorities (P1–P3); stacked records only below 640px of container | Requests and Batches become cards below a 980 / 1000px container, about a 1240 / 1260px viewport | `add-docked-inspector` |
 | Failures appear inline, with `role="alert"` | Several failures surface as toasts | Follow-up: inline failure homes |
 | The focal readout figure compares spend against a budget (`of $25.00`) | Spend for the range only | Follow-up: budget comparison on Overview and Costs |
 | A permanently unavailable action is not rendered | Some show as disabled | Follow-up: permission-aware actions |
+| Cancelling and Reconciling pulse an Ink 3 dot; Finishing shows a steady Ink 3 dot (Lifecycle states) | Cancelling pulses amber, kept as a status hue by `adopt-design-tokens-v2` (design.md D11, task 7.2); Finishing (settling) and Reconciling show a Faint dot | Follow-up: lifecycle dot tones |
 | Relative time in request lists (`12m ago`; absolute on hover, on focus and in the inspector) | Absolute `HH:MM:SS` in the list and the step announcement | Follow-up: relative time in request lists |
 | Unverified notice copy: `Routing may have changed and the refresh failed.` | `Last loaded targets — routing may have changed; see Targets` | Follow-up: unverified-notice copy |
 | Newer-rows offer reads `12 new` | `N new · load` | Follow-up: newer-rows copy |
 | Aggregate coverage: estimate-priced spend includes `listed` pricing; the unpriced count includes attempts | Omitted from the summary | Follow-up: aggregate coverage (needs an API change) |
 | Money grouping follows the browser locale | Not adopted: pinned contract strings fix today's format | Follow-up: locale formatting (needs a spec change) |
+| The Users Members email takes its own line at table width | Just above `table-fit-users` the Members email is cut to nothing, leaving the name and `(you)` | Follow-up: Members email line |
+| Overview's provider dots state their health in visible words (Status-Speaks Rule) | The state word (`healthy`, `failing`, `not tested`) is only each dot's accessible name and `title` | Follow-up: provider-dot state words |
 
 ## Colors
 
@@ -339,7 +321,7 @@ In CSS, write each derived token as a `color-mix(in oklab, var(--accent) …)` e
 - **Canvas** (`{colors.bg}` / dark `{colors.bg-dark}`): the page behind the panels. Inputs sit on it too, so a field reads as a well cut into the panel.
 - **Panel White** (`{colors.panel}` / dark `{colors.panel-dark}`): every card, drawer, modal and docked panel, and the segmented control's track. It is also the toggle knob.
 - **Hairline** (`{colors.border}`): the 1px line that separates *surfaces*: panels, the top bar, table frames and buttons. It is a separation line, not a control boundary.
-- **Control Edge** (`{colors.border-control}` / dark `{colors.border-control-dark}`): the boundary of every **entry control** whose edge is its affordance. That covers inputs, selects, textareas, comboboxes, checkboxes, radios, filter chips and the off toggle track. It clears 3:1 on every neutral surface: canvas, panel, chip and hover. Entry controls never sit on a status wash, where it drops below 3:1.
+- **Control Edge** (`{colors.border-control}` / dark `{colors.border-control-dark}`): the boundary of every **entry control** whose edge is its affordance and drawn by the stylesheet. That covers inputs, selects, textareas, comboboxes, filter chips and the off toggle track. It clears 3:1 on every neutral surface: canvas, panel, chip and hover. Entry controls never sit on a status wash, where it drops below 3:1. Checkboxes and radios stay native: the browser draws their edge under the theme's `color-scheme`, and it is held to 3:1 by measuring the rendered pixels, not drawn in Control Edge.
 - **Soft Hairline** (`{colors.border2}`): dividers *inside* a panel: table rows, receipt rules, drawer header rules and chart grid lines.
 - **Hover Tone** (`{colors.hover}`) and **Chip Tone** (`{colors.chip}`): one-step tonal lifts. Hover Tone fills hovered rows and nav items. Chip Tone fills static chips, skeletons, pressed states, the Info notice and disabled fields.
 - **Ink** (`{colors.text}`): primary text and figures, and the toggle's on track. It is near-black (#17181a), never pure black.
@@ -374,7 +356,7 @@ Each pairing the system prescribes is measured against its floor: 4.5:1 for text
 
 **The Indigo-Text Rule.** Text is never set in `--accent`. Indigo text, labels and icons use `accent-deep`, which reaches 5.86:1 or better in light mode and 4.72:1 or better in dark on every neutral surface (panel, canvas, chip, hover, wash). It never sits on a status wash, where dark Amber Wash drops it to 4.47:1. Raw accent text fails in dark mode (3.70:1) and on light washes (4.32:1).
 
-**The 3:1 Edge Rule.** Anything whose edge *is* the affordance draws that edge in Control Edge: an empty field, a checkbox, an off switch. A state is shown by a change in shape, border or weight that clears 3:1, never by a tint alone. The selected wash is only 1.07–1.16:1 against its surroundings, so it never carries the state by itself.
+**The 3:1 Edge Rule.** Anything whose edge *is* the affordance has an edge of at least 3:1. An empty field, a filter chip and an off switch draw it in Control Edge; a native checkbox or radio keeps the edge the browser draws, which is measured to clear 3:1. A state is shown by a change in shape, border or weight that clears 3:1, never by a tint alone. The selected wash is only 1.07–1.16:1 against its surroundings, so it never carries the state by itself.
 
 **The Indigo Budget Rule.** Indigo is spent, not sprinkled. Each view gets:
 - **One indigo-filled control:** the primary action. Every other action is a neutral button, and switches are Ink.
@@ -461,7 +443,7 @@ The Setup card sits below the groups until setup is complete. Overline labels na
 | Height | Controls | Padding (block × inline) |
 |---|---|---|
 | **32px** (default) | Primary, cancel and destructive-commit buttons; inputs and selects (selects set `height` explicitly); nav items; the segmented track | 7 × 13px (buttons), 7 × 11px (inputs), 7 × 9px (nav items) |
-| **24px** (small) | Ghost buttons, the endpoint chip, filter chips, the Live pill, inspector Prev / Next | 3 × 10px (ghost buttons) |
+| **24px** (small) | Ghost buttons, the endpoint chip, filter chips, the Live pill, inspector Prev / Next; a small select in a row of 24px controls (the Requests agent filter, a Targets cell's picker) | 3 × 10px (ghost buttons), 3 × 8px (small select) |
 | **26px** | Segmented options, inside the 32px track's 2px padding | 4 × 11px inside a 1px edge |
 | **20px** | Static chips (tags, which are not controls) and the toggle track (36 × 20px; 32 × 18px small) | 2 × 8px (chips) |
 | **44px** | Every control under a coarse pointer or below `narrow`, in the block axis. Icon-only controls are also 44px wide. | 13px block |
@@ -482,11 +464,11 @@ The Setup card sits below the groups until setup is complete. Overline labels na
 - **Narrowing:** below the table's fit width, P3 moves to a second line under the model, then P2 joins it. The table becomes stacked records only below 640px of container width. While the inspector is docked, the list shows P1 only, and a row that can't open (running, finishing, a live batch job) keeps every field on a second line.
 
 Below the locked `narrow` threshold (768px viewport), the nav collapses to a 56px icon rail with each label available as the control's name and tooltip. Page grids drop to one column, the gutter becomes 16px, and card padding becomes 12px. That is the only spacing change; controls also grow to 44px and input text to 16px. Wide tables and composite surfaces reflow by **container** width, not viewport width. Container thresholds, re-measured whenever text or control sizes change:
-- Requests and Batches reflow at 960px.
-- Agents reflows at 680px and Users at 660px.
+- Requests reflows at 980px and Batches at 1000px.
+- Agents reflows at 740px and Users at 660px.
 - The Targets matrix reflows at 900px.
-- The Pipeline reflows at 840px (two-line rows) and again at 540px (phone records).
-- Layers cells stack at 500px.
+- The Pipeline reflows at 820px (two-line rows) and again at 540px (phone records).
+- Layers cells stack at 480px.
 
 **Docked inspector.** At viewports of 1440px and wider, the inspector docks as a 480px panel at the right edge (see Request Inspector), and the page grid gives up that width. A request list shows its P1 columns while docked, so the table never falls into stacked records just because the inspector is open. The page and the docked panel count as one view for The Indigo Budget Rule.
 

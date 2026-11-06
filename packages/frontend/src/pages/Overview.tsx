@@ -17,6 +17,8 @@ import type { BreakdownMetric } from '../data/api';
 import { rangeToParams } from '../data/range';
 import { useApp } from '../state/context';
 import { Icon } from '../components/Icon';
+import { createHeldFailure, Notice } from '../components/Notice';
+import { ReadoutStrip } from '../components/ReadoutStrip';
 
 const POLL_MS = 15_000;
 
@@ -111,73 +113,95 @@ export function Overview(props: { live: boolean }) {
     state.analyticsSeriesError ??
     state.analyticsBreakdownError ??
     state.recentRequestsError;
+  // The load-failure notice is held across the 15-second poll (D15): every slice clears its
+  // error as it starts, which would otherwise re-insert, and re-announce, the notice.
+  const failure = createHeldFailure(
+    errorMsg,
+    () =>
+      state.analyticsSummaryLoading ||
+      state.analyticsSeriesLoading ||
+      state.analyticsBreakdownLoading ||
+      state.recentRequestsLoading,
+  );
 
   return (
-    <div class="rs-page" style="display:flex;flex-direction:column;gap:14px;max-width:1200px">
+    <div class="rs-page" style="display:flex;flex-direction:column;gap:24px;max-width:1200px">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <div class="section-title">Overview · {state.range}</div>
         <RangeSelector />
       </div>
 
-      <Show when={errorMsg()}>
+      {/* Info, not Failure (D15): adopt-figure-states requires a failed figure load to show a
+          neutral notice, and rewrites only its body. */}
+      <Show when={failure.message()}>
         {(msg) => (
-          <div style="display:flex;align-items:center;gap:10px;padding:9px 14px;background:var(--red-bg);border:1px solid var(--red);border-radius:8px;font:500 12px 'Geist',sans-serif;color:var(--red)">
-            <span style="flex:1">Couldn’t load analytics — {msg()}</span>
-            <button
-              type="button"
-              class="link-accent"
-              style="font-weight:600"
-              onClick={() => void app.loadOverview()}
-            >
-              Retry
-            </button>
-          </div>
+          <Notice
+            tone="info"
+            title="Couldn’t load"
+            action={{
+              label: 'Retry',
+              onClick: () => {
+                failure.release();
+                void app.loadOverview();
+              },
+            }}
+          >
+            Couldn’t load analytics — {msg()}
+          </Notice>
         )}
       </Show>
 
-      <div class="rs-grid-4" style="display:grid;gap:12px">
-        <div class="panel card">
-          <div class="stat-label">Spend · {state.range}</div>
-          <div class="stat-value">${spend().toFixed(2)}</div>
-          <div class="stat-sub">
-            {state.analyticsSummary?.estimatedCount ?? 0} flagged ~estimated
-          </div>
-        </div>
-        <div class="panel card">
-          <div class="stat-label">Requests</div>
-          <div class="stat-value">{reqs().toLocaleString()}</div>
-          <div class="stat-sub">
-            {state.analyticsSummaryLoading && state.analyticsSummary === null ? 'loading…' : ' '}
-          </div>
-        </div>
-        <div class="panel card">
-          <div class="stat-label">Tokens</div>
-          <div class="stat-value">{((tin() + tout() + tcache()) / 1e6).toFixed(2)}M</div>
-          <div class="stat-sub">
-            {/* Same reason as the requests table: the worded form wraps to two lines below
-                the narrow threshold. `cached` keeps its word — it is a third quantity, not the
-                other half of a pair, and an arrow would imply a direction it does not have. */}
-            <span aria-hidden="true">
-              {(tin() / 1e6).toFixed(2)}M↑ {(tout() / 1e6).toFixed(2)}M↓
-            </span>
-            <span class="sr-only">
-              {(tin() / 1e6).toFixed(2)}M tokens in, {(tout() / 1e6).toFixed(2)}M out
-            </span>
-            <Show when={tcache() > 0}> · {(tcache() / 1e6).toFixed(2)}M cached</Show>
-          </div>
-        </div>
-        <div class="panel card">
-          <div class="stat-label">Success rate</div>
-          <div class="stat-value">{reqs() === 0 ? '—' : pct(successCount(), reqs())}</div>
-          <div class="stat-sub">
-            {reqs() === 0
-              ? 'no requests yet'
-              : `fallback ${pct(fallbackCount(), reqs())} · escalated ${pct(escalatedCount(), reqs())}`}
-          </div>
-        </div>
-      </div>
+      {/* The headline figures as one readout strip (adopt-design-tokens-v2 task 12.1, D10):
+          spend is the view's one Display figure; requests, tokens and success rate are Title
+          cells. Every sub-line is the one its tile carried. */}
+      <ReadoutStrip
+        focal={{
+          id: 'spend',
+          label: `Spend · ${state.range}`,
+          figure: `$${spend().toFixed(2)}`,
+          sub: `${String(state.analyticsSummary?.estimatedCount ?? 0)} flagged ~estimated`,
+        }}
+        cells={[
+          {
+            id: 'requests',
+            label: 'Requests',
+            figure: reqs().toLocaleString(),
+            sub:
+              state.analyticsSummaryLoading && state.analyticsSummary === null ? 'loading…' : ' ',
+          },
+          {
+            id: 'tokens',
+            label: 'Tokens',
+            figure: `${((tin() + tout() + tcache()) / 1e6).toFixed(2)}M`,
+            sub: (
+              <>
+                {/* Same reason as the requests table: the worded form wraps to two lines below
+                    the narrow threshold. `cached` keeps its word — it is a third quantity, not
+                    the other half of a pair, and an arrow would imply a direction it does not
+                    have. */}
+                <span aria-hidden="true">
+                  {(tin() / 1e6).toFixed(2)}M↑ {(tout() / 1e6).toFixed(2)}M↓
+                </span>
+                <span class="sr-only">
+                  {(tin() / 1e6).toFixed(2)}M tokens in, {(tout() / 1e6).toFixed(2)}M out
+                </span>
+                <Show when={tcache() > 0}> · {(tcache() / 1e6).toFixed(2)}M cached</Show>
+              </>
+            ),
+          },
+          {
+            id: 'success',
+            label: 'Success rate',
+            figure: reqs() === 0 ? '—' : pct(successCount(), reqs()),
+            sub:
+              reqs() === 0
+                ? 'no requests yet'
+                : `fallback ${pct(fallbackCount(), reqs())} · escalated ${pct(escalatedCount(), reqs())}`,
+          },
+        ]}
+      />
 
-      <div class="rs-grid-main-side" style="display:grid;gap:12px">
+      <div class="rs-grid-main-side" style="display:grid;gap:16px">
         <div class="panel card">
           <div class="section-title" style="margin-bottom:12px">
             Requests · {state.range}
@@ -185,12 +209,15 @@ export function Overview(props: { live: boolean }) {
           <Show
             when={state.analyticsSeries.length > 0}
             fallback={
-              <div style="height:150px;display:flex;align-items:center;justify-content:center;font:400 12px 'Geist',sans-serif;color:var(--text3)">
+              <div
+                class="t-dense"
+                style="height:150px;display:flex;align-items:center;justify-content:center;color:var(--text3)"
+              >
                 {state.analyticsSeriesLoading ? 'Loading…' : 'No requests in this range'}
               </div>
             }
           >
-            <Chart data={chartData()} label="requests" height={150} />
+            <Chart data={chartData()} label="requests" measure="requests" height={150} />
           </Show>
         </div>
         {/* The metric selector is shared with Costs — one preference, settable from either
@@ -226,7 +253,7 @@ export function Overview(props: { live: boolean }) {
           strips stacked would read as the same section repeated. */}
       <div
         class="panel"
-        style="display:flex;flex-direction:column;gap:8px;padding:11px 18px;border-radius:10px"
+        style="display:flex;flex-direction:column;gap:8px;padding:12px 16px;border-radius:10px"
       >
         <div class="rs-wrap" style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
           <span class="upper-label" style="letter-spacing:.05em">
@@ -235,7 +262,7 @@ export function Overview(props: { live: boolean }) {
           <Show
             when={state.agentStripLoaded}
             fallback={
-              <span style="font:400 12px 'Geist',sans-serif;color:var(--text3)">
+              <span class="t-dense" style="color:var(--text3)">
                 {/* Never a zero here: an unloaded strip is UNKNOWN, not measured-empty —
                   and a FAILED load must not keep reading as "still working". */}
                 {state.agentStripError === null ? 'Loading…' : 'Couldn’t load agent activity.'}
@@ -245,7 +272,7 @@ export function Overview(props: { live: boolean }) {
             <Show
               when={agentStrip().length > 0}
               fallback={
-                <span style="font:400 12px 'Geist',sans-serif;color:var(--text3)">
+                <span class="t-dense" style="color:var(--text3)">
                   No agent activity in this range.
                 </span>
               }
@@ -258,11 +285,12 @@ export function Overview(props: { live: boolean }) {
                       /* Keyless traffic: shown so the total is honest, but an empty agent
                        id is a rejected filter, so there is no action to offer. */
                       <span
-                        style="display:flex;align-items:center;gap:6px;font:400 12px 'Geist',sans-serif;color:var(--text3)"
+                        class="t-dense"
+                        style="display:flex;align-items:center;gap:8px;color:var(--text3)"
                         title="Requests recorded without an agent key"
                       >
                         {a.label}
-                        <span class="mono" style="font-size:11px">
+                        <span class="figure" style="font-size:0.6875rem">
                           {a.requests.toLocaleString()}
                         </span>
                       </span>
@@ -270,7 +298,8 @@ export function Overview(props: { live: boolean }) {
                   >
                     <button
                       type="button"
-                      style="display:flex;align-items:center;gap:6px;font:400 12px 'Geist',sans-serif;color:var(--text2);cursor:pointer"
+                      class="t-dense"
+                      style="display:flex;align-items:center;gap:8px;color:var(--text2);cursor:pointer"
                       aria-label={`${a.label} — ${String(a.requests)} requests; show them`}
                       onClick={() => {
                         app.setAgentFilter(a.key);
@@ -278,7 +307,7 @@ export function Overview(props: { live: boolean }) {
                       }}
                     >
                       {a.label}
-                      <span class="mono" style="font-size:11px;color:var(--text3)">
+                      <span class="figure" style="font-size:0.6875rem;color:var(--text3)">
                         {a.requests.toLocaleString()}
                       </span>
                     </button>
@@ -286,7 +315,7 @@ export function Overview(props: { live: boolean }) {
                 )}
               </For>
               <Show when={state.agentStripTruncated}>
-                <span style="font:400 11.5px 'Geist',sans-serif;color:var(--text3)">
+                <span class="t-caption" style="color:var(--text3)">
                   top {agentStrip().length} shown
                 </span>
               </Show>
@@ -304,7 +333,7 @@ export function Overview(props: { live: boolean }) {
           <Show
             when={state.providers.length > 0}
             fallback={
-              <span style="font:400 12px 'Geist',sans-serif;color:var(--text3)">
+              <span class="t-dense" style="color:var(--text3)">
                 None yet — add one under Providers.
               </span>
             }
@@ -313,7 +342,8 @@ export function Overview(props: { live: boolean }) {
               {(p) => (
                 <button
                   type="button"
-                  style="display:flex;align-items:center;gap:6px;font:400 12px 'Geist',sans-serif;color:var(--text2);cursor:pointer"
+                  class="t-dense"
+                  style="display:flex;align-items:center;gap:8px;color:var(--text2);cursor:pointer"
                   aria-label={`${p.name} — ${
                     p.status === 'ok' ? 'healthy' : p.status === 'error' ? 'failing' : 'not tested'
                   }`}
@@ -349,12 +379,12 @@ export function Overview(props: { live: boolean }) {
         class="panel rs-table-panel rs-table-requests"
         style="overflow:hidden;border-radius:10px"
       >
-        <div style="display:flex;justify-content:space-between;align-items:center;padding:13px 18px;border-bottom:1px solid var(--border2)">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid var(--border2)">
           <div class="section-title">Recent requests</div>
           <button
             type="button"
-            class="link-accent"
-            style="font:400 12px 'Geist',sans-serif"
+            class="link-accent t-dense"
+
             onClick={() => app.go('requests')}
           >
             View all <Icon name="arrowRight" size={12} />
@@ -379,7 +409,7 @@ export function Overview(props: { live: boolean }) {
             state.batchRows.length === 0
           }
         >
-          <div style="padding:16px 18px;font:400 12px 'Geist',sans-serif;color:var(--text3)">
+          <div class="t-dense" style="padding:16px;color:var(--text3)">
             {state.recentRequestsLoading ? 'Loading…' : 'No requests in this range yet.'}
           </div>
         </Show>

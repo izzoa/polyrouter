@@ -6,12 +6,14 @@ import type { RequestRow, RequestStatus } from '../data/api';
 import { fmtDateTime } from '../data/catalog';
 import { useApp } from '../state/context';
 import { Icon } from './Icon';
+import { StackedLabel } from './StackedLabel';
+import { createBusy } from './busy';
 
 /** label / bg / fg per served status. */
 const STATUS_BADGE: Record<RequestStatus, [string, string, string]> = {
   success: ['OK · served', 'var(--green-bg)', 'var(--green-text)'],
-  fallback: ['Fallback · served', 'var(--amber-bg)', 'var(--amber)'],
-  error: ['Error', 'var(--red-bg)', 'var(--red)'],
+  fallback: ['Fallback · served', 'var(--amber-bg)', 'var(--amber-text)'],
+  error: ['Error', 'var(--red-bg)', 'var(--red-text)'],
   // A client-cancelled request (disconnect) — neutral, not a provider error.
   cancelled: ['Cancelled · client', 'var(--chip)', 'var(--text3)'],
 };
@@ -31,6 +33,9 @@ function badgeFor(status: string): [string, string, string] {
 export function Inspector() {
   const app = useApp();
   const { state } = app;
+  // The payload Delete stays on screen while it runs (D14). adopt-red-destructive-actions
+  // later puts it behind a confirmation, whose commit then carries this state.
+  const deletingBodies = createBusy();
   const selected = (): RequestRow | undefined =>
     state.requestList.find((r) => r.id === state.selId) ??
     state.recentRequests.find((r) => r.id === state.selId);
@@ -69,23 +74,27 @@ export function Inspector() {
                 <div>
                   <div
                     class="mono"
-                    style="font:600 14px 'Geist Mono',monospace;letter-spacing:-.01em;color:var(--text)"
+                    style="font:600 0.9375rem/1.25rem 'Geist Mono',monospace;letter-spacing:-.01em;color:var(--text)"
                   >
                     {view().title}
                   </div>
-                  <div
-                    class="mono"
-                    style="font:400 11px 'Geist Mono',monospace;color:var(--text3);margin-top:2px"
-                  >
-                    {view().id} · {fmtDateTime(view().createdAtMs)}
+                  {/* The id is an identifier (Mono); the time is a figure (tabular Geist):
+                      DESIGN.md The Machine-String Rule. */}
+                  <div class="t-caption" style="color:var(--text3);margin-top:4px">
+                    <span class="mono" data-testid="inspector-id">
+                      {view().id}
+                    </span>{' '}
+                    ·{' '}
+                    <span class="figure" data-testid="inspector-time">
+                      {fmtDateTime(view().createdAtMs)}
+                    </span>
                   </div>
                 </div>
-                <div style="display:flex;align-items:center;gap:10px">
+                <div style="display:flex;align-items:center;gap:8px">
                   <span
+                    class="chip"
                     style={{
-                      padding: '2px 9px',
-                      'border-radius': '10px',
-                      font: "500 11px 'Geist',sans-serif",
+                      font: "500 0.6875rem/1rem 'Geist',sans-serif",
                       background: badgeFor(view().status)[1],
                       color: badgeFor(view().status)[2],
                     }}
@@ -104,22 +113,31 @@ export function Inspector() {
               </div>
               <div class="drawer-body">
                 <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-                  <span style="padding:5px 10px;background:var(--chip);border-radius:7px;font:500 11.5px 'Geist',sans-serif;color:var(--text2)">
+                  <span
+                    class="t-label"
+                    style="padding:4px 8px;background:var(--chip);border-radius:6px;color:var(--text2)"
+                  >
                     {view().agentLabel}
                   </span>
                   <Icon name="arrowRight" size={12} style="color:var(--faint)" />
-                  <span style="padding:5px 10px;background:var(--accent-bg);border-radius:7px;font:500 11.5px 'Geist',sans-serif;color:var(--accent-deep)">
+                  <span
+                    class="t-label"
+                    style="padding:4px 8px;background:var(--accent-bg);border-radius:6px;color:var(--accent-deep)"
+                  >
                     router · {view().decisionLayer}
                   </span>
                   <Icon name="arrowRight" size={12} style="color:var(--faint)" />
-                  <span style="padding:5px 10px;background:var(--chip);border-radius:7px;font:500 11.5px 'Geist',sans-serif;color:var(--text2)">
+                  <span
+                    class="t-label"
+                    style="padding:4px 8px;background:var(--chip);border-radius:6px;color:var(--text2)"
+                  >
                     {view().providerLabel}
                     {view().tier !== null ? ` · ${String(view().tier)}` : ''}
                   </span>
                 </div>
 
                 <div>
-                  <div class="upper-label" style="margin-bottom:9px">
+                  <div class="upper-label" style="margin-bottom:8px">
                     Decision
                   </div>
                   <div class="kv-box">
@@ -135,8 +153,8 @@ export function Inspector() {
                       <div style="display:flex;justify-content:space-between;gap:16px">
                         <span style="color:var(--text3);flex:none">header</span>
                         <span
-                          class="mono"
-                          style="font:500 11.5px 'Geist Mono',monospace;color:var(--text);text-align:right;word-break:break-all"
+                          class="mono t-label"
+                          style="color:var(--text);text-align:right;word-break:break-all"
                         >
                           {view().matchedHeader}
                         </span>
@@ -158,8 +176,8 @@ export function Inspector() {
                             window live — the questions an id alone cannot answer. */}
                         <button
                           type="button"
-                          class="link-accent mono"
-                          style="font:500 11.5px 'Geist Mono',monospace;text-align:right;word-break:break-all"
+                          class="link-accent mono t-label"
+                          style="text-align:right;word-break:break-all"
                           data-batch-id={view().batchId}
                           onClick={() => app.go('batches')}
                         >
@@ -170,7 +188,7 @@ export function Inspector() {
                     <Show when={view().escalated}>
                       <div style="display:flex;justify-content:space-between">
                         <span style="color:var(--text3)">escalated</span>
-                        <span style="color:var(--amber)">
+                        <span style="color:var(--amber-text)">
                           yes <Icon name="escalated" size={11} />
                         </span>
                       </div>
@@ -184,7 +202,10 @@ export function Inspector() {
                     <Show when={view().semanticSource !== null}>
                       <div style="display:flex;justify-content:space-between;align-items:center;gap:16px">
                         <span style="color:var(--text3)">semantic source</span>
-                        <span style="padding:2px 8px;background:var(--chip);border-radius:5px;font:500 10.5px 'Geist',sans-serif;color:var(--text2)">
+                        <span
+                          class="chip"
+                          style="font:500 0.6875rem/1rem 'Geist',sans-serif;color:var(--text2)"
+                        >
                           {view().semanticSource}
                           {view().semanticBand !== null ? ` · ${String(view().semanticBand)}` : ''}
                         </span>
@@ -201,7 +222,8 @@ export function Inspector() {
                         <span style="color:var(--text3)">workload</span>
                         <span
                           data-testid="workload-chip"
-                          style="padding:2px 8px;background:var(--chip);border-radius:5px;font:500 10.5px 'Geist',sans-serif;color:var(--text2)"
+                          class="chip"
+                          style="font:500 0.6875rem/1rem 'Geist',sans-serif;color:var(--text2)"
                         >
                           {view().workloadClass === 'none'
                             ? 'no specialist workload'
@@ -222,7 +244,7 @@ export function Inspector() {
                     rows without the column render exactly as before. */}
                 <Show when={view().attemptTrail.length > 0}>
                   <div>
-                    <div class="upper-label" style="margin-bottom:9px">
+                    <div class="upper-label" style="margin-bottom:8px">
                       Fallback trail
                     </div>
                     <div class="kv-box">
@@ -230,8 +252,8 @@ export function Inspector() {
                         {(a) => (
                           <div style="display:flex;justify-content:space-between;gap:16px">
                             <span
-                              class="mono"
-                              style="font:500 11.5px 'Geist Mono',monospace;color:var(--text2);word-break:break-all"
+                              class="mono t-label"
+                              style="color:var(--text2);word-break:break-all"
                             >
                               {a.model}
                               {a.legLabel !== null ? ` · ${a.legLabel}` : ''}
@@ -255,17 +277,14 @@ export function Inspector() {
                 <Show when={view().errorView} keyed>
                   {(ev) => (
                     <div>
-                      <div class="upper-label" style="margin-bottom:9px;color:var(--red)">
+                      <div class="upper-label" style="margin-bottom:8px;color:var(--red-text)">
                         Error
                       </div>
                       <div class="kv-box" style="border-color:var(--red-bg)">
                         <Show when={ev.headline !== ''}>
                           <div style="display:flex;justify-content:space-between;gap:16px">
                             <span style="color:var(--text3)">kind</span>
-                            <span
-                              class="mono"
-                              style="font:500 11.5px 'Geist Mono',monospace;color:var(--red)"
-                            >
+                            <span class="mono t-label" style="color:var(--red-text)">
                               {ev.headline}
                             </span>
                           </div>
@@ -274,8 +293,8 @@ export function Inspector() {
                           <div style="display:flex;flex-direction:column;gap:4px">
                             <span style="color:var(--text3)">provider said</span>
                             <span
-                              class="mono"
-                              style="font:400 11.5px 'Geist Mono',monospace;color:var(--text2);white-space:pre-wrap;word-break:break-word"
+                              class="mono t-dense"
+                              style="color:var(--text2);white-space:pre-wrap;word-break:break-word"
                             >
                               {ev.message}
                             </span>
@@ -290,8 +309,8 @@ export function Inspector() {
                             <div style="display:flex;justify-content:space-between;gap:16px">
                               <span style="color:var(--text3)">classification</span>
                               <span
-                                class="mono"
-                                style="font:500 11.5px 'Geist Mono',monospace;color:var(--text2);text-align:right;word-break:break-all"
+                                class="mono t-label"
+                                style="color:var(--text2);text-align:right;word-break:break-all"
                               >
                                 {ms.join(' · ')}
                               </span>
@@ -301,10 +320,7 @@ export function Inspector() {
                         <Show when={ev.requestId !== null}>
                           <div style="display:flex;justify-content:space-between;gap:16px">
                             <span style="color:var(--text3)">provider request id</span>
-                            <span
-                              class="mono"
-                              style="font:400 11px 'Geist Mono',monospace;color:var(--text)"
-                            >
+                            <span class="mono t-caption" style="color:var(--text)">
                               {ev.requestId}
                             </span>
                           </div>
@@ -314,7 +330,7 @@ export function Inspector() {
                             inferred — so a bare kind must not present as an
                             upstream failure. */}
                         <Show when={view().terminalSkipped}>
-                          <div style="font:400 11px 'Geist',sans-serif;color:var(--text3)">
+                          <div class="t-caption" style="color:var(--text3)">
                             The last chain member was never contacted — its provider's circuit was
                             open when this request walked the chain.
                           </div>
@@ -325,10 +341,13 @@ export function Inspector() {
                 </Show>
 
                 <div>
-                  <div class="upper-label" style="margin-bottom:9px">
+                  <div class="upper-label" style="margin-bottom:8px">
                     Usage & cost
                   </div>
-                  <div class="kv-box">
+                  {/* Token counts, prices and costs are figures: Geist with tabular numerals
+                      (adopt-design-tokens-v2 task 9.1). The one identifier, the price source,
+                      keeps Mono. */}
+                  <div class="kv-box kv-box--figures">
                     <div style="display:flex;justify-content:space-between">
                       <span style="color:var(--text3)">input tokens</span>
                       <span style="color:var(--text)">{view().inputTokens.toLocaleString()}</span>
@@ -381,14 +400,14 @@ export function Inspector() {
                             batch item is charged the provider's batch tier, and a
                             `listed`/`native_family` batch rate is an estimate exactly
                             as it is for a synchronous request. */}
-                        <span style="color:var(--text)">
+                        <span class="mono" style="color:var(--text)">
                           {view().batchPriced
                             ? `batch · ${String(view().priceSourceLabel)}`
                             : view().priceSourceLabel}
                         </span>
                       </div>
                     </Show>
-                    <div style="display:flex;justify-content:space-between;border-top:1px solid var(--border2);padding-top:7px">
+                    <div style="display:flex;justify-content:space-between;border-top:1px solid var(--border2);padding-top:8px">
                       <span style="color:var(--text3)">served cost</span>
                       <span style="color:var(--text)">{view().servedCost}</span>
                     </div>
@@ -407,7 +426,8 @@ export function Inspector() {
                       the attempt line above carries a superseded call's real cost. */}
                   <div
                     data-testid={view().notBilled ? 'not-billed-note' : undefined}
-                    style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);margin-top:6px"
+                    class="t-caption"
+                    style="color:var(--text3);margin-top:8px"
                   >
                     {view().notBilled
                       ? 'Not billed — the served call was never sent or was rejected by the provider, so nothing was charged for it.'
@@ -422,7 +442,7 @@ export function Inspector() {
                     fetched lazily on expand, never on the listing. */}
                 <Show when={row().hasBodies}>
                   <div>
-                    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:9px">
+                    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
                       <div class="upper-label">Payload</div>
                       <Show
                         when={
@@ -434,7 +454,7 @@ export function Inspector() {
                           <button
                             type="button"
                             class="link-accent"
-                            style="font-size:11.5px"
+                            style="font-size:0.75rem"
                             onClick={() => void app.loadSelectedBodies(row().id)}
                           >
                             Show bodies
@@ -444,21 +464,31 @@ export function Inspector() {
                         <button
                           type="button"
                           class="link-accent"
-                          style="font-size:11.5px;color:var(--red)"
-                          onClick={() => void app.deleteSelectedBodies(row().id)}
+                          style="font-size:0.6875rem;color:var(--red-text)"
+                          disabled={deletingBodies.busy()}
+                          aria-busy={deletingBodies.busy() ? true : undefined}
+                          onClick={() =>
+                            void deletingBodies.run(() => app.deleteSelectedBodies(row().id))
+                          }
                         >
-                          Delete
+                          <StackedLabel
+                            alt={deletingBodies.busy()}
+                            rest="Delete"
+                            altLabel="Deleting…"
+                          />
                         </button>
                       </Show>
                     </div>
                     <Show when={state.selBodies.loading}>
-                      <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3)">
+                      <div class="t-caption" style="color:var(--text3)">
                         Loading…
                       </div>
                     </Show>
                     <Show when={state.selBodies.error} keyed>
                       {(e) => (
-                        <div style="font:400 11.5px 'Geist',sans-serif;color:var(--red)">{e}</div>
+                        <div class="t-caption" style="color:var(--red-text)">
+                          {e}
+                        </div>
                       )}
                     </Show>
                     <Show when={state.selBodies.rows} keyed>
@@ -478,15 +508,15 @@ export function Inspector() {
                                   <button
                                     type="button"
                                     class="link-accent"
-                                    style="font-size:11px"
+                                    style="font-size:0.6875rem"
                                     onClick={() => app.copy(b.content, 'Body copied')}
                                   >
                                     Copy
                                   </button>
                                 </div>
                                 <pre
-                                  class="mono"
-                                  style="font:400 11px 'Geist Mono',monospace;color:var(--text2);white-space:pre-wrap;word-break:break-word;max-height:220px;overflow-y:auto;margin:0"
+                                  class="mono t-caption"
+                                  style="color:var(--text2);white-space:pre-wrap;word-break:break-word;max-height:220px;overflow-y:auto;margin:0"
                                 >
                                   {b.content}
                                 </pre>
@@ -500,13 +530,13 @@ export function Inspector() {
                 </Show>
 
                 <div>
-                  <div class="upper-label" style="margin-bottom:9px">
+                  <div class="upper-label" style="margin-bottom:8px">
                     Timing
                   </div>
                   <div class="kv-box">
                     <div style="display:flex;justify-content:space-between">
                       <span style="color:var(--text3)">duration</span>
-                      <span style="color:var(--text)">
+                      <span class="figure" style="color:var(--text)">
                         {/* A batch item's latency is the JOB's wall time — the time
                             the caller actually waited — so it reads in hours. */}
                         {view().batchId !== null

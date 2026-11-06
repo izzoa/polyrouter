@@ -9,7 +9,12 @@ import type { SpendDatum } from '../types';
  *
  * `free` stays CURRENCY-only and is simply absent for a token metric. Free means a *price*
  * of zero, not an absence of work: a free provider still burns tokens, so a token bar
- * rendered grey and labelled "free" would state something untrue. */
+ * rendered grey and labelled "free" would state something untrue.
+ *
+ * The bars are NEUTRAL — Ink 3, a free bar Faint — and never indigo: on Overview and Costs
+ * they sit beside the view's focal series (the requests chart, the request mix), and the
+ * Indigo Budget allows a view one indigo series (adopt-design-tokens-v2 D11). Ink 3 keeps them
+ * quieter than the focal series while clearing 3:1 on the bar track. */
 export function BarRows(props: { data: SpendDatum[]; format?: (v: number) => string }) {
   const max = () => Math.max(...props.data.map((d) => d.v || 0.0001));
   const pct = (d: SpendDatum) =>
@@ -17,13 +22,21 @@ export function BarRows(props: { data: SpendDatum[]; format?: (v: number) => str
   const label = (d: SpendDatum): string =>
     props.format ? props.format(d.v) : `$${d.v.toFixed(2)}`;
   return (
-    <div style="display:flex;flex-direction:column;gap:11px">
+    <div data-series="neutral" style="display:flex;flex-direction:column;gap:12px">
       <For each={props.data}>
         {(d) => (
           <div>
-            <div style="display:flex;justify-content:space-between;font:400 11.5px 'Geist Mono',monospace;color:var(--text2);margin-bottom:4px">
-              <span>{d.n}</span>
-              <span style={{ color: (d.free ?? false) ? 'var(--green-text)' : 'var(--text)' }}>
+            {/* The name is an identifier (a model, provider or agent): Mono. The value is a
+                figure: Geist with tabular numerals (adopt-design-tokens-v2 task 9.1). */}
+            <div
+              class="t-dense"
+              style="display:flex;justify-content:space-between;color:var(--text2);margin-bottom:4px"
+            >
+              <span class="mono">{d.n}</span>
+              <span
+                class="figure"
+                style={{ color: (d.free ?? false) ? 'var(--green-text)' : 'var(--text)' }}
+              >
                 {(d.free ?? false) ? 'free' : label(d)}
               </span>
             </div>
@@ -32,7 +45,7 @@ export function BarRows(props: { data: SpendDatum[]; format?: (v: number) => str
                 class="bar-fill"
                 style={{
                   width: pct(d),
-                  background: (d.free ?? false) ? 'var(--faint)' : 'var(--accent)',
+                  background: (d.free ?? false) ? 'var(--faint)' : 'var(--text3)',
                 }}
               />
             </div>

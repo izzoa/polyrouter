@@ -149,16 +149,11 @@ export function App(props: AppProps) {
   const live = () => props.live !== false;
 
   onMount(() => {
-    let stored: string | null;
-    try {
-      stored = localStorage.getItem('polyrouter-theme');
-    } catch {
-      stored = null;
-    }
-    if (stored === 'dark' || stored === 'light') {
-      document.documentElement.dataset['theme'] = stored;
-      app.setState('theme', stored);
-    }
+    // The theme was resolved before first paint by `index.html`'s pre-paint script, and the
+    // store started from it. With no stored choice it keeps following the system preference
+    // until the user toggles (adopt-design-tokens-v2 D9). Owned here, not by the store
+    // constructor, for the same reason as routing below.
+    onCleanup(app.followSystemTheme());
     // Routing starts BEFORE the probe so the requested page is captured and
     // held while authorization resolves (add-dashboard-hash-routing). The
     // listener lives on App's lifecycle, not the store constructor: production
@@ -173,7 +168,9 @@ export function App(props: AppProps) {
     <Switch>
       <Match when={state.authView === 'loading'}>
         <CenterFrame>
-          <div style="font:400 13px 'Geist',sans-serif;color:var(--text3)">Loading…</div>
+          <div class="t-body" style="color:var(--text3)">
+            Loading…
+          </div>
         </CenterFrame>
       </Match>
       <Match when={state.authView === 'gate'}>
@@ -185,9 +182,9 @@ export function App(props: AppProps) {
       <Match when={state.authView === 'error'}>
         <CenterFrame>
           <div style="display:flex;flex-direction:column;gap:12px;align-items:center;max-width:360px;text-align:center">
-            <div style="font:600 15px 'Geist',sans-serif">Couldn’t reach the server</div>
+            <div class="t-title">Couldn’t reach the server</div>
             <Show when={state.authError}>
-              <div style="font:400 12px 'Geist',sans-serif;color:var(--text3)">
+              <div class="t-dense" style="color:var(--text3)">
                 {state.authError}
               </div>
             </Show>

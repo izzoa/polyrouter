@@ -1,3 +1,21 @@
 {
-  "buildPath": "comp"
+  "buildPath": "comp",
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "overused-font",
+        "value": "geist",
+        "createdAt": "2026-11-03T06:38:41.700Z",
+        "reason": "STYLESEED.md design lock: Geist is the locked UI face (lock set 2026-07-17), bundled locally"
+      },
+      {
+        "rule": "overused-font",
+        "value": "geist mono",
+        "createdAt": "2026-11-03T06:38:41.752Z",
+        "reason": "STYLESEED.md design lock: Geist Mono is the locked identifier face (lock set 2026-07-17), bundled locally"
+      }
+    ]
+  }
 }

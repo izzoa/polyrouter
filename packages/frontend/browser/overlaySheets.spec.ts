@@ -127,7 +127,7 @@ test.describe('overlay controls meet the comfort floor', () => {
           'button, select, textarea, input, a[href], [role="button"], [tabindex]:not([tabindex="-1"])',
         )) {
           // Exclusions carried over from phase 1's locked design: the switch keeps its
-          // 30x17 visual and meets the floor through an expanded ::before hit area, and
+          // 32x18 drawn track and meets the floor through an expanded ::before hit area, and
           // checkbox/radio would be stretched rather than their tap area.
           if (el.classList.contains('toggle')) continue;
           const type = el.getAttribute('type');
@@ -135,7 +135,12 @@ test.describe('overlay controls meet the comfort floor', () => {
           const r = el.getBoundingClientRect();
           if (r.width === 0 && r.height === 0) continue; // not rendered
           if (r.height < FLOOR - 0.5) {
-            out.push({ tag: el.tagName, cls: el.className, h: Math.round(r.height), w: Math.round(r.width) });
+            out.push({
+              tag: el.tagName,
+              cls: el.className,
+              h: Math.round(r.height),
+              w: Math.round(r.width),
+            });
           }
         }
         return out;
@@ -155,8 +160,12 @@ test.describe('the on-screen keyboard', () => {
     await page.addInitScript((kbd: number) => {
       const listeners = new Set<() => void>();
       const fake = {
-        get width() { return window.innerWidth; },
-        get height() { return window.innerHeight - (window as unknown as { __kbd: number }).__kbd; },
+        get width() {
+          return window.innerWidth;
+        },
+        get height() {
+          return window.innerHeight - (window as unknown as { __kbd: number }).__kbd;
+        },
         offsetLeft: 0,
         offsetTop: 0,
         scale: 1,
@@ -166,7 +175,9 @@ test.describe('the on-screen keyboard', () => {
       (window as unknown as { __kbd: number }).__kbd = 0;
       (window as unknown as { __setKbd: (n: number) => void }).__setKbd = (n) => {
         (window as unknown as { __kbd: number }).__kbd = n;
-        listeners.forEach((f) => { f(); });
+        listeners.forEach((f) => {
+          f();
+        });
       };
       (window as unknown as { __kbdTarget: number }).__kbdTarget = kbd;
       Object.defineProperty(window, 'visualViewport', { value: fake, configurable: true });
@@ -181,7 +192,9 @@ test.describe('the on-screen keyboard', () => {
     await page.waitForTimeout(200);
     const before = await boxOf(page, '.modal-card');
 
-    await page.evaluate(() => { (window as unknown as { __setKbd: (n: number) => void }).__setKbd(300); });
+    await page.evaluate(() => {
+      (window as unknown as { __setKbd: (n: number) => void }).__setKbd(300);
+    });
     await page.waitForTimeout(200);
     const after = await boxOf(page, '.modal-card');
 
@@ -197,7 +210,9 @@ test.describe('the on-screen keyboard', () => {
     const s = SURFACES.find((x) => x.name === 'modal:newAgent');
     await s?.open(page);
     await page.locator('.modal-card input').first().focus();
-    await page.evaluate(() => { (window as unknown as { __setKbd: (n: number) => void }).__setKbd(300); });
+    await page.evaluate(() => {
+      (window as unknown as { __setKbd: (n: number) => void }).__setKbd(300);
+    });
     await page.waitForTimeout(250);
     const visible = await page.evaluate(() => {
       const el = document.activeElement;
@@ -209,7 +224,9 @@ test.describe('the on-screen keyboard', () => {
     expect(visible, 'the focused field was left underneath the keyboard').toBe(true);
   });
 
-  test('the picker panel is not placed in the keyboard region — including when the keyboard arrives AFTER it opens', async ({ page }) => {
+  test('the picker panel is not placed in the keyboard region — including when the keyboard arrives AFTER it opens', async ({
+    page,
+  }) => {
     // `measure()` runs once, on open. A keyboard raised afterwards is the ordinary case,
     // since the panel opens on focus and the keyboard follows it.
     await withKeyboard(page, 320);
@@ -217,7 +234,9 @@ test.describe('the on-screen keyboard', () => {
     const s = SURFACES.find((x) => x.name === 'picker');
     await s?.open(page);
     await page.waitForTimeout(200);
-    await page.evaluate(() => { (window as unknown as { __setKbd: (n: number) => void }).__setKbd(320); });
+    await page.evaluate(() => {
+      (window as unknown as { __setKbd: (n: number) => void }).__setKbd(320);
+    });
     await page.waitForTimeout(250);
     const clear = await page.evaluate(() => {
       const p = document.querySelector('.mp-panel');
@@ -237,10 +256,12 @@ test.describe('safe-area insets', () => {
     const s = SURFACES.find((x) => x.name === 'modal:newAgent');
     await s?.open(page);
     await page.waitForTimeout(200);
-    const pad = await page.evaluate(() =>
-      getComputedStyle(document.querySelector('.modal-card') as Element).paddingBottom,
+    const pad = await page.evaluate(
+      () => getComputedStyle(document.querySelector('.modal-card') as Element).paddingBottom,
     );
-    expect(pad, 'headless reports no inset, so the padding must be the design value alone').toBe('20px');
+    expect(pad, 'headless reports no inset, so the padding must be the design value alone').toBe(
+      '20px',
+    );
   });
 
   test('a POSITIVE inset moves content clear of it', async ({ page }) => {
@@ -254,12 +275,46 @@ test.describe('safe-area insets', () => {
       document.documentElement.style.setProperty('--safe-area-bottom', '34px');
     });
     await page.waitForTimeout(200);
-    const pad = await page.evaluate(() =>
-      getComputedStyle(document.querySelector('.modal-card') as Element).paddingBottom,
+    const pad = await page.evaluate(
+      () => getComputedStyle(document.querySelector('.modal-card') as Element).paddingBottom,
     );
     // calc(20px + 34px) — additive, so the design's breathing room survives the inset
     // rather than being absorbed by it as `max()` would have done.
     expect(pad).toBe('54px');
+  });
+
+  test('sheets pad 20px × 16px and the drawer body 20px, each adding a positive inset', async ({
+    page,
+  }) => {
+    // The `sheet-padding` lock row (adopt-design-tokens-v2 task 3.3): modal and confirmation
+    // sheets take 20px × 16px — on the 4px scale, where the old 18px inline padding was not —
+    // plus the safe area on the bottom; the drawer keeps its own 20px body. The inset is
+    // non-zero here, so a `max()` or a dropped `calc` fails rather than passing on 0.
+    const pads = async (sel: string): Promise<string[]> =>
+      page.evaluate((s) => {
+        const cs = getComputedStyle(document.querySelector(s) as Element);
+        return [cs.paddingTop, cs.paddingRight, cs.paddingBottom, cs.paddingLeft];
+      }, sel);
+    const inset = async (): Promise<void> => {
+      await page.evaluate(() => {
+        document.documentElement.style.setProperty('--safe-area-bottom', '34px');
+      });
+      await page.waitForTimeout(200);
+    };
+    for (const name of ['modal:newAgent', 'confirm:bodyCapture'] as const) {
+      await open(page);
+      const s = SURFACES.find((x) => x.name === name);
+      await s?.open(page);
+      await page.waitForTimeout(300);
+      await inset();
+      // calc(20px + 34px) on the bottom; 16px inline; 20px on top.
+      expect(await pads(s!.sel), `${name} sheet padding`).toEqual(['20px', '16px', '54px', '16px']);
+    }
+    await open(page);
+    await SURFACES.find((x) => x.name === 'drawer')?.open(page);
+    await page.waitForTimeout(300);
+    await inset();
+    expect(await pads('.drawer-body'), 'the drawer body').toEqual(['20px', '20px', '54px', '20px']);
   });
 
   test('the toast clears the inset too', async ({ page }) => {

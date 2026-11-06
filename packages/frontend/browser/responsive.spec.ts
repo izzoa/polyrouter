@@ -254,6 +254,47 @@ test.describe('phone width', () => {
     );
   });
 
+  test('the collapsed rail keeps the group names for assistive technology, and rules the groups apart (task 11.1)', async ({
+    page,
+  }) => {
+    await open(page);
+    // Each group is still named: a clipped label is in the accessibility tree.
+    for (const name of ['Observe', 'Configure', 'Admin'])
+      await expect(page.getByRole('group', { name, exact: true })).toHaveCount(1);
+    const rail = await page.evaluate(() => {
+      const groups = [...document.querySelectorAll<HTMLElement>('#sidebar-nav .nav-group')];
+      return groups.map((g) => {
+        const label = g.querySelector<HTMLElement>('.nav-group-label');
+        const lr = label?.getBoundingClientRect();
+        const cs = getComputedStyle(g);
+        return {
+          label: lr
+            ? { w: lr.width, h: lr.height, display: getComputedStyle(label!).display }
+            : null,
+          ruleTop: `${cs.borderTopWidth} ${cs.borderTopStyle}`,
+          ruleColor: cs.borderTopColor,
+          border2: getComputedStyle(document.documentElement).getPropertyValue('--border2').trim(),
+        };
+      });
+    });
+    expect(rail).toHaveLength(3);
+    for (const g of rail) {
+      // Hidden visually only: clipped to 1px, never `display:none` (which would drop the name).
+      expect(g.label).not.toBeNull();
+      expect(g.label!.display).not.toBe('none');
+      expect(g.label!.w).toBeLessThanOrEqual(1);
+      expect(g.label!.h).toBeLessThanOrEqual(1);
+    }
+    // A Soft Hairline above every group but the first.
+    expect(rail.map((g) => g.ruleTop)).toEqual(['0px none', '1px solid', '1px solid']);
+    const hex = (rgb: string): string =>
+      `#${(rgb.match(/\d+/g) ?? [])
+        .slice(0, 3)
+        .map((n) => Number(n).toString(16).padStart(2, '0'))
+        .join('')}`;
+    expect(hex(rail[1]!.ruleColor)).toBe(rail[1]!.border2.toLowerCase());
+  });
+
   test('the rail reclaims the viewport when collapsed', async ({ page }) => {
     await open(page);
     const width = await page
@@ -303,6 +344,38 @@ test.describe('phone width', () => {
     expect(box.width).toBeLessThanOrEqual(panel + 0.5);
     // It must carry TEXT, not a decorative mark alone.
     expect((await first.textContent())?.trim().length ?? 0).toBeGreaterThan(0);
+
+    // Between stacked records, as an overline label over a rule with no fill
+    // (adopt-design-tokens-v2 task 9.3): each boundary that follows a record sits after a
+    // stacked row and before one, and none paints a band.
+    const placed = await boundaries.evaluateAll((els) =>
+      els.map((el) => {
+        const prev = el.previousElementSibling;
+        const next = el.nextElementSibling;
+        const stacked = (e: Element | null): boolean =>
+          e !== null && e.classList.contains('req-row') && getComputedStyle(e).display === 'block';
+        const cs = getComputedStyle(el);
+        return {
+          text: (el.textContent ?? '').trim(),
+          afterRecord: stacked(prev),
+          beforeRecord: stacked(next),
+          fill: cs.backgroundColor,
+          rule: `${cs.borderBottomStyle} ${cs.borderBottomWidth}`,
+        };
+      }),
+    );
+    expect(
+      placed.every((b) => b.beforeRecord),
+      'a boundary not followed by its record',
+    ).toBe(true);
+    expect(
+      placed.some((b) => b.afterRecord),
+      'no boundary sits between two stacked records',
+    ).toBe(true);
+    for (const b of placed) {
+      expect(b.fill, `"${b.text}" paints a band`).toBe('rgba(0, 0, 0, 0)');
+      expect(b.rule, `"${b.text}" has no rule under it`).toBe('solid 1px');
+    }
   });
 
   test('the batches table renders as stacked records, not a 10-column grid', async ({ page }) => {
@@ -343,7 +416,7 @@ test.describe('phone width', () => {
           )) {
             const r = el.getBoundingClientRect();
             if (r.width === 0 || r.height === 0) continue; // not rendered in this state
-            // Locked exceptions (STYLESEED.md): the switch keeps its 30x17 visual and meets
+            // Locked exceptions (STYLESEED.md): the switch keeps its 32x18 drawn track and meets
             // the floor through an expanded hit area, asserted separately below; checkboxes
             // and radios would be stretched rather than given a bigger tap area.
             if (el.classList.contains('toggle')) continue;
@@ -382,7 +455,7 @@ test.describe('phone width', () => {
   });
 
   test('the switch meets the floor by hit area, not by its box', async ({ page }) => {
-    // Its 30x17 visual is locked design. Conformance therefore has to be established by
+    // Its 32x18 drawn track is locked design. Conformance therefore has to be established by
     // hit-testing — measuring the rectangle would report a false failure.
     //
     // The auto-layer switches live in the Auto routing tab's Setup panel, which a visit
@@ -448,6 +521,115 @@ test.describe('coarse pointer above the narrow threshold', () => {
   });
 });
 
+/** The readout strip's cells as laid out: id, box, and the figure's computed size. */
+async function readoutCells(page: Page): Promise<
+  {
+    id: string | null;
+    left: number;
+    right: number;
+    top: number;
+    bottom: number;
+    figure: string;
+    ruleLeft: string;
+    ruleTop: string;
+  }[]
+> {
+  return page.evaluate(() =>
+    [...document.querySelectorAll<HTMLElement>('[data-readout-strip] [data-readout]')].map((c) => {
+      const r = c.getBoundingClientRect();
+      const fig = c.querySelector('.readout-figure');
+      const cs = getComputedStyle(c);
+      return {
+        id: c.getAttribute('data-readout'),
+        left: r.left,
+        right: r.right,
+        top: r.top,
+        bottom: r.bottom,
+        figure: fig ? getComputedStyle(fig).fontSize : '',
+        ruleLeft: `${cs.borderLeftWidth} ${cs.borderLeftStyle}`,
+        ruleTop: `${cs.borderTopWidth} ${cs.borderTopStyle}`,
+      };
+    }),
+  );
+}
+
+/** The readout strip (dashboard-analytics "Overview and Costs state their headline figures in
+ * one readout strip", scenario "The strip reflows at narrow width"; adopt-design-tokens-v2
+ * tasks 12.1 / 12.2). At 320 × 568 the cells stack, focal first, and nothing overflows; at
+ * desktop they sit side by side in one panel, ruled apart by a Soft Hairline. Box edges are
+ * compared with a 0.5px sub-pixel allowance: a stacking order and a containment, not a size. */
+test.describe('the readout strip', () => {
+  // Costs with `?costs=split`: subscription, estimate-priced and pre-snapshot spend at once, so
+  // the strip holds all three cells and its longest qualification.
+  for (const [route, query, count] of [
+    ['#/overview', '', 4],
+    ['#/costs', '?costs=split', 3],
+  ] as const) {
+    test(`${route}${query} at 320x568: the cells stack focal first, and nothing overflows`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width: 320, height: 568 });
+      await open(page, route, query);
+      await page.waitForSelector('[data-readout-strip] [data-readout]');
+      const cells = await readoutCells(page);
+      expect(cells.length, 'every cell is present').toBe(count);
+      expect(cells[0]!.id, 'the focal cell comes first').toBe('spend');
+      expect(cells[0]!.figure, 'and holds the Display figure').toBe('26px');
+      for (let i = 1; i < cells.length; i++) {
+        expect(
+          cells[i]!.top,
+          `${cells[i]!.id ?? ''} wraps below the cell before it`,
+        ).toBeGreaterThanOrEqual(cells[i - 1]!.bottom - 0.5);
+        expect(cells[i]!.ruleTop, `${cells[i]!.id ?? ''} is ruled from the cell above`).toBe(
+          '1px solid',
+        );
+      }
+      const box = await page.evaluate(() => {
+        const s = document.querySelector('[data-readout-strip]')!.getBoundingClientRect();
+        return {
+          left: s.left,
+          right: s.right,
+          scrollWidth: document.documentElement.scrollWidth,
+          clientWidth: document.documentElement.clientWidth,
+          mainOverflow: (() => {
+            const m = document.querySelector('main')!;
+            return m.scrollWidth - m.clientWidth;
+          })(),
+        };
+      });
+      for (const c of cells) {
+        expect(c.left, `${c.id ?? ''} starts inside the strip`).toBeGreaterThanOrEqual(
+          box.left - 0.5,
+        );
+        expect(c.right, `${c.id ?? ''} ends inside the strip`).toBeLessThanOrEqual(box.right + 0.5);
+      }
+      expect(box.scrollWidth, `${route} overflows at 320x568`).toBeLessThanOrEqual(box.clientWidth);
+      expect(box.mainOverflow, `${route}'s page pane scrolls sideways`).toBeLessThanOrEqual(0);
+    });
+  }
+
+  test('#/overview at 1440x900: one row of cells in one panel, ruled apart', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await open(page, '#/overview');
+    await page.waitForSelector('[data-readout-strip] [data-readout]');
+    const cells = await readoutCells(page);
+    expect(cells.map((c) => [c.id, c.figure])).toEqual([
+      ['spend', '26px'],
+      ['requests', '15px'],
+      ['tokens', '15px'],
+      ['success', '15px'],
+    ]);
+    for (const c of cells)
+      expect(Math.abs(c.top - cells[0]!.top), `${c.id ?? ''} on the row`).toBeLessThan(0.5);
+    expect(cells.map((c) => c.ruleLeft)).toEqual([
+      '0px none',
+      '1px solid',
+      '1px solid',
+      '1px solid',
+    ]);
+  });
+});
+
 test.describe('non-admin at phone width', () => {
   test.use({ viewport: { width: 390, height: 844 } });
 
@@ -456,6 +638,107 @@ test.describe('non-admin at phone width', () => {
     await page.locator('.rs-nav-toggle').click();
     const names = await page.locator('#sidebar-nav .nav-item').allTextContents();
     expect(names.join(' ')).not.toContain('Users');
+  });
+});
+
+/** Hit-tests one switch: which of the given offsets from its track's edges still resolve to
+ * it. `above`/`below` are measured from the drawn track's top and bottom edges, `side` from
+ * its centre. Scrolled into view first: `elementFromPoint` is viewport-relative. */
+async function switchHits(
+  page: Page,
+  sel: string,
+  probes: { name: string; dx: number; dy: number; from: 'top' | 'bottom' | 'centre' }[],
+): Promise<{ track: { w: number; h: number }; hits: Record<string, boolean> }> {
+  return page.evaluate(
+    ({ sel, probes }) => {
+      const t = document.querySelector<HTMLElement>(sel);
+      if (!t) throw new Error(`${sel} not rendered`);
+      t.scrollIntoView({ block: 'center' });
+      const r = t.getBoundingClientRect();
+      const cx = r.left + r.width / 2;
+      const hits: Record<string, boolean> = {};
+      for (const p of probes) {
+        const y =
+          p.from === 'top'
+            ? r.top + p.dy
+            : p.from === 'bottom'
+              ? r.bottom + p.dy
+              : r.top + r.height / 2 + p.dy;
+        const el = document.elementFromPoint(cx + p.dx, y);
+        hits[p.name] = el === t || t.contains(el);
+      }
+      return { track: { w: r.width, h: r.height }, hits };
+    },
+    { sel, probes },
+  );
+}
+
+test.describe('the switch reaches its floor by hit area (task 5.2, design.md D3)', () => {
+  // The Layers cells' switches, on the Auto routing tab.
+  const SWITCH = '[data-testid="auto-layers"] .toggle';
+
+  test.describe('desktop width, fine pointer', () => {
+    test.use({ viewport: { width: 1440, height: 900 } });
+
+    test('a point 2px above or below the drawn track still activates it', async ({ page }) => {
+      await open(page, '#/routing');
+      await openRoutingSection(page, 'Auto routing');
+      await page.locator(SWITCH).first().waitFor({ state: 'visible' });
+      // The app renders the small size; the hit area is 24px tall at both sizes, so the
+      // medium 20px track is measured too, on the same rendered switch.
+      for (const size of ['toggle--sm', 'toggle--md'] as const) {
+        await page.evaluate(
+          ({ sel, size }) => {
+            const t = document.querySelector(sel);
+            t?.classList.remove('toggle--sm', 'toggle--md');
+            t?.classList.add(size);
+          },
+          { sel: SWITCH, size },
+        );
+        const { track, hits } = await switchHits(page, SWITCH, [
+          { name: '2px above', dx: 0, dy: -2, from: 'top' },
+          // A half-open box: the last pixel row 2px below a 20px track is centred 1.5px out.
+          { name: '2px below', dx: 0, dy: 1.5, from: 'bottom' },
+          // Bounded: the desktop hit area is the 24px floor, not the 44px comfort target.
+          { name: '13px above centre', dx: 0, dy: -13, from: 'centre' },
+          { name: '13px below centre', dx: 0, dy: 13, from: 'centre' },
+        ]);
+        // EXACT: a fixed size (geometry-contract.ts).
+        expect(track, `${size} drawn track`).toEqual(
+          size === 'toggle--md' ? { w: 36, h: 20 } : { w: 32, h: 18 },
+        );
+        expect(hits['2px above'], `${size}: 2px above the track`).toBe(true);
+        expect(hits['2px below'], `${size}: 2px below the track`).toBe(true);
+        expect(hits['13px above centre'], `${size}: beyond the 24px hit area`).toBe(false);
+        expect(hits['13px below centre'], `${size}: beyond the 24px hit area`).toBe(false);
+      }
+    });
+  });
+
+  test.describe('coarse pointer above narrow', () => {
+    test.use({ viewport: { width: 1440, height: 900 }, hasTouch: true });
+
+    test('the hit area is 44 x 44 while the drawn track stays 32 x 18', async ({ page }) => {
+      await open(page, '#/routing');
+      await openRoutingSection(page, 'Auto routing');
+      await page.locator(SWITCH).first().waitFor({ state: 'visible' });
+      const corners = [-21.5, 21.5].flatMap((dx) =>
+        [-21.5, 21.5].map((dy) => ({
+          name: `${String(dx)},${String(dy)}`,
+          dx,
+          dy,
+          from: 'centre' as const,
+        })),
+      );
+      const { track, hits } = await switchHits(page, SWITCH, [
+        ...corners,
+        { name: 'outside', dx: 0, dy: 22.5, from: 'centre' },
+      ]);
+      expect(track).toEqual({ w: 32, h: 18 });
+      for (const c of corners)
+        expect(hits[c.name], `corner ${c.name} of the 44x44 area`).toBe(true);
+      expect(hits['outside'], 'the hit area stops at 44px').toBe(false);
+    });
   });
 });
 
@@ -634,7 +917,209 @@ test.describe('desktop width, fine pointer', () => {
   });
 });
 
-test.describe('desktop parity against the released v0.11.0 baseline (task 8.8)', () => {
+/** The desktop shell spaces on the 4px scale (dashboard-core "Spacing comes from the 4px
+ * scale", scenario "The desktop shell spaces on the scale"; adopt-design-tokens-v2 task 3.2,
+ * design.md D6). Each value is read twice: as the computed declaration, and as the distance
+ * between two rendered edges, so a declaration that something else overrides, or a box that
+ * adds its own padding, still fails.
+ *
+ * EXACT, under `geometry-contract.ts`: every distance here is a padding or a gap — the
+ * stylesheet decides it, not text layout — so it is font-invariant. The 0.5px allowance is
+ * sub-pixel layout rounding, not slack. */
+test.describe('the desktop shell spaces on the 4px scale (1440x900)', () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  /** `b` edge minus `a` edge for the first match of each selector. */
+  async function spacing(page: Page): Promise<Record<string, number | string | null>> {
+    return page.evaluate(() => {
+      const q = (s: string): Element | null => document.querySelector(s);
+      const r = (e: Element | null): DOMRect | null => e?.getBoundingClientRect() ?? null;
+      const page = q('.rs-page');
+      const first = page?.firstElementChild ?? null;
+      // The first two in-flow page sections (the page root's children that render a box).
+      const sections = [...(page?.children ?? [])].filter(
+        (c) => (c as HTMLElement).offsetParent !== null && c.getBoundingClientRect().height > 0,
+      );
+      // Overview's main/side row: its chart card and the breakdown panel beside it. (The
+      // four stat tiles this used to read became the readout strip, task 12.1.)
+      const card = q('.rs-grid-main-side > .panel.card');
+      const cardChild = card?.firstElementChild ?? null;
+      const tiles = [...document.querySelectorAll('.rs-grid-main-side > .panel')];
+      const navLabel = q('#sidebar-nav .nav-item-label');
+      const navIcon = navLabel?.firstElementChild ?? null;
+      const navText = navLabel?.querySelector('.rs-nav-label') ?? null;
+      const cs = (e: Element | null, p: string): string | null =>
+        e ? getComputedStyle(e).getPropertyValue(p) : null;
+      const pr = r(page);
+      const fr = r(first);
+      const cr = r(card);
+      const ccr = r(cardChild);
+      return {
+        gutterDecl: cs(page, 'padding'),
+        gutterInline: pr && fr ? fr.left - pr.left : null,
+        gutterBlock: pr && fr ? fr.top - pr.top : null,
+        sectionGapDecl: cs(page, 'row-gap'),
+        sectionGap:
+          sections.length >= 2
+            ? sections[1]!.getBoundingClientRect().top - sections[0]!.getBoundingClientRect().bottom
+            : null,
+        cardDecl: cs(card, 'padding'),
+        // The card's border is 1px; its content starts 1px + padding inside the border box.
+        cardInline: cr && ccr ? ccr.left - cr.left - 1 : null,
+        cardBlock: cr && ccr ? ccr.top - cr.top - 1 : null,
+        panelGapDecl: cs(q('.rs-grid-main-side'), 'column-gap'),
+        panelGap:
+          tiles.length >= 2
+            ? tiles[1]!.getBoundingClientRect().left - tiles[0]!.getBoundingClientRect().right
+            : null,
+        navGapDecl: cs(navLabel, 'column-gap'),
+        navGap: navIcon && navText ? r(navText)!.left - r(navIcon)!.right : null,
+      };
+    });
+  }
+
+  test('a 24px gutter, 16px card padding, panels 16px and sections 24px apart, an 8px nav icon gap', async ({
+    page,
+  }) => {
+    await open(page, '#/overview');
+    const s = await spacing(page);
+    expect(s.gutterDecl, 'the page gutter declaration').toBe('24px');
+    expect(s.cardDecl, 'the card padding declaration').toBe('16px');
+    expect(s.panelGapDecl, 'the gap between panels').toBe('16px');
+    expect(s.sectionGapDecl, 'the gap between page sections').toBe('24px');
+    expect(s.navGapDecl, "a nav item's icon-to-label gap").toBe('8px');
+    for (const [name, want] of [
+      ['gutterInline', 24],
+      ['gutterBlock', 24],
+      ['cardInline', 16],
+      ['cardBlock', 16],
+      ['panelGap', 16],
+      ['sectionGap', 24],
+      ['navGap', 8],
+    ] as const) {
+      const got = s[name];
+      expect(typeof got, `${name} was not measured`).toBe('number');
+      expect(
+        Math.abs((got as number) - want),
+        `${name} is ${String(got)}, not ${String(want)}`,
+      ).toBeLessThan(0.5);
+    }
+  });
+
+  test('every rendered switch track is a 10px capsule (task 3.4)', async ({ page }) => {
+    // The Auto routing tab's Setup panel carries the app's switches. A radius of at least
+    // half the track's rendered height draws semicircular ends; less leaves a flat. EXACT:
+    // the track's size is inline and its radius is the stylesheet's, neither text-driven.
+    // Only the small size renders on any page, so `radii.view.test.tsx` covers both sizes.
+    await open(page, '#/routing');
+    await openRoutingSection(page, 'Auto routing');
+    await page.waitForSelector('[data-testid="auto-setup"] [role="switch"]');
+    const tracks = await page.evaluate(() =>
+      [...document.querySelectorAll('[role="switch"]')]
+        .filter((e) => e.getBoundingClientRect().height > 0)
+        .map((e) => ({
+          radius: getComputedStyle(e).borderTopLeftRadius,
+          height: e.getBoundingClientRect().height,
+        })),
+    );
+    expect(tracks.length, 'switches were measured').toBeGreaterThan(1);
+    for (const t of tracks) {
+      expect(t.radius).toBe('10px');
+      expect(parseFloat(t.radius), `a ${String(t.height)}px track`).toBeGreaterThanOrEqual(
+        t.height / 2,
+      );
+    }
+  });
+
+  test('table cells sit 16px in from the row edge, with 16px between columns', async ({ page }) => {
+    await open(page, '#/requests');
+    const cells = await page.evaluate(() => {
+      const out: Record<string, string> = {};
+      for (const sel of ['.rs-table-requests .table-head', '.rs-table-requests .req-row']) {
+        const e = document.querySelector(sel);
+        if (!e) continue;
+        const cs = getComputedStyle(e);
+        out[sel] = `${cs.paddingLeft} ${cs.paddingRight} gap ${cs.columnGap}`;
+      }
+      return out;
+    });
+    expect(cells).toEqual({
+      '.rs-table-requests .table-head': '16px 16px gap 16px',
+      '.rs-table-requests .req-row': '16px 16px gap 16px',
+    });
+  });
+});
+
+/** Below narrow only the gutter and the card padding change (dashboard-core "Spacing comes
+ * from the 4px scale", scenario "Narrow width changes only the gutter and the card padding";
+ * STYLESEED.md `density-narrow`, "gaps unchanged"). Each page's section gap, Overview's panel
+ * gap and the Limits intro's gap are read as declarations and as rendered distances at
+ * 390 × 844, and must equal the desktop values the test above pins. EXACT, for the reason
+ * given there: these are gaps, which no face moves. */
+test.describe('narrow width keeps every page and section gap (390x844)', () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  test('sections stay 24px apart on every page, panels 16px, and the Limits intro 16px', async ({
+    page,
+  }) => {
+    for (const name of [
+      'overview',
+      'requests',
+      'batches',
+      'costs',
+      'agents',
+      'providers',
+      'routing',
+      'limits',
+      'settings',
+      'users',
+    ]) {
+      // Setup is a centred column, not a `.rs-page`; its gaps are inline, and an inline style
+      // cannot change with the width. Every gap a narrow query re-declares is held statically
+      // by styles.scale.test.ts ("gaps unchanged").
+      await open(page, `#/${name}`);
+      const gap = await page.evaluate(() => {
+        const root = document.querySelector('.rs-page');
+        return root ? getComputedStyle(root).rowGap : null;
+      });
+      expect(gap, `the gap between ${name}'s page sections below narrow`).toBe('24px');
+    }
+
+    await open(page, '#/overview');
+    const panels = await page.evaluate(() => {
+      const grid = document.querySelector('.rs-grid-main-side');
+      const kids = [...(grid?.children ?? [])].filter((c) => c.getBoundingClientRect().height > 0);
+      const [a, b] = kids.map((c) => c.getBoundingClientRect());
+      return {
+        decl: grid ? getComputedStyle(grid).rowGap : null,
+        // Stacked below narrow, so the panels are 16px apart in the block axis.
+        apart: a && b ? b.top - a.bottom : null,
+      };
+    });
+    expect(panels.decl, 'the gap between Overview panels below narrow').toBe('16px');
+    expect(
+      Math.abs((panels.apart ?? 0) - 16),
+      `panels ${String(panels.apart)}px apart`,
+    ).toBeLessThan(0.5);
+
+    await open(page, '#/limits', '?budget=progress');
+    const intro = await page.evaluate(() => {
+      const box = document.querySelector('.limits-intro');
+      const text = box?.querySelector(':scope > div')?.getBoundingClientRect();
+      const action = box?.querySelector(':scope > button')?.getBoundingClientRect();
+      return {
+        decl: box ? getComputedStyle(box).rowGap : null,
+        apart: text && action ? action.top - text.bottom : null,
+      };
+    });
+    expect(intro.decl, 'the Limits intro gap below narrow (16px at desktop)').toBe('16px');
+    expect(Math.abs((intro.apart ?? 0) - 16), `intro ${String(intro.apart)}px apart`).toBeLessThan(
+      0.5,
+    );
+  });
+});
+
+test.describe('desktop parity against the recorded geometry (task 8.8; re-pinned by adopt-design-tokens-v2)', () => {
   test.use({ viewport: { width: 1440, height: 900 } });
 
   /** Measured by building v0.11.0 in a git worktree, serving it beside this build, and
@@ -643,13 +1128,21 @@ test.describe('desktop parity against the released v0.11.0 baseline (task 8.8)',
    *
    * The comparison is pinned as NUMBERS rather than run against the tag on every CI run:
    * a worktree build per run is slow, and the tag is a fixed point — re-deriving it would
-   * produce the same values or mean someone rewrote history. */
+   * produce the same values or mean someone rewrote history.
+   *
+   * RE-PINNED 2026-11-02 against adopt-design-tokens-v2's tree, not v0.27.1 (its design.md
+   * Risks: "Desktop parity is then pinned against this change's tree"). That change is a
+   * RECORDED desktop change (STYLESEED.md "Desktop geometry changes only through a recorded
+   * change"): its height family moved `.nav-item` 31 → 32, and its type, spacing and
+   * record-table treatment moved `.req-row` 35 → 37. Both are identical under forced Verdana, Georgia and Courier New on
+   * macOS; the CI runner's values (`geometryCapture.spec.ts`) are pending the first push. */
   const BASELINE = {
     // Landmark geometry that must NOT move. [x, y, width, height]
     sidebar: [0, 0, 208, 900],
     // Controls already at or above the 24px floor. These values were read from BOTH
     // builds and are identical — measured in the real app, not from a control probe in
     // isolation, since a class renders at a different height depending on its content.
+    // Since 2026-11-02 they are adopt-design-tokens-v2's recorded values (above).
     //
     // `.endpoint-chip` LEFT this set in narrow-geometry-tolerances. It was 28 here and is 27
     // now, because it contained `⧉` — a character no bundled font provides, drawn from a
@@ -662,12 +1155,12 @@ test.describe('desktop parity against the released v0.11.0 baseline (task 8.8)',
     // at desktop width" below, which was added with this removal because nothing else asserted
     // it above the narrow threshold.
     unchangedControls: {
-      '.nav-item': 31,
-      '.req-row': 35,
+      '.nav-item': 32,
+      '.req-row': 37,
     },
   } as const;
 
-  test('the sidebar and the untouched controls are byte-identical to v0.11.0', async ({ page }) => {
+  test('the sidebar and the untouched controls match the recorded geometry', async ({ page }) => {
     await open(page, '#/requests');
     const now = await page.evaluate(() => {
       const box = (sel: string): number[] | null => {
@@ -713,6 +1206,10 @@ test.describe('desktop parity against the released v0.11.0 baseline (task 8.8)',
       // unseen-environment margin, the same convention `overlayBaseline.spec.ts` uses (spread +
       // margin), scaled to a 31px control rather than a 700px dialog — and it has a concrete
       // job, because ubuntu-latest moves to Ubuntu 26 from 2026-10-19.
+      //
+      // The 2026-11-02 re-pin (32 and 37) keeps the ±2. Both values are identical under every
+      // forced face on macOS, so a zero spread is expected, but the runner's capture of the new
+      // values is pending the first push; read its "requests:.nav-item" / ".req-row" lines.
       expect(
         Math.abs(now.controls[sel]! - expected),
         `${sel} changed height at desktop (${expected} → ${now.controls[sel]})`,
@@ -1046,8 +1543,8 @@ for (const vp of [
             // container would stack a second line and exceed it. (align-items:center
             // means child TOPS legitimately differ, so height — not top — is the test.)
             oneFlexLine: rowH <= maxKidH + 1,
-            firstIsLabel: !!first && !first.classList.contains('mono'),
-            secondIsMono: !!second && second.classList.contains('mono'),
+            firstIsLabel: !!first && !first.classList.contains('figure'),
+            secondIsFigure: !!second && second.classList.contains('figure'),
           };
         }),
       );
@@ -1055,13 +1552,19 @@ for (const vp of [
       for (const r of rows) {
         expect(r.display).toBe('flex');
         expect(r.flexWrap, 'desktop workload rows must not reflow').toBe('nowrap');
-        expect(r.gap).toBe('10px');
+        // On the 4px spacing scale (adopt-design-tokens-v2 D6), a recorded spacing-scale
+        // change: it was an off-scale 10px.
+        expect(r.gap).toBe('8px');
         expect(r.fontSize).toBe('11px');
-        expect(r.lineHeight).toBe('18.7px');
+        // The Caption role's 16px line (adopt-design-tokens-v2 D5), a recorded type-scale
+        // change: it was an off-grid unitless 1.7 (18.7px).
+        expect(r.lineHeight).toBe('16px');
         expect(r.childCount).toBe(4);
         expect(r.oneFlexLine, 'the row stays a single flex line at desktop').toBe(true);
         expect(r.firstIsLabel, 'the class label leads the row').toBe(true);
-        expect(r.secondIsMono, 'the mono stat span follows the label').toBe(true);
+        // The share and counts are figures: tabular Geist, never Mono (adopt-design-tokens-v2
+        // task 9.1, a recorded type change: this span was `.mono`).
+        expect(r.secondIsFigure, 'the figure stat span follows the label').toBe(true);
       }
     });
   });

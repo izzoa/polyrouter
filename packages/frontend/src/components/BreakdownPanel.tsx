@@ -37,7 +37,7 @@ export function BreakdownPanel(props: {
   const data = () => (tokens() ? breakdownToTokens(props.rows) : breakdownToSpend(props.rows));
   return (
     <div class="panel card">
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:14px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:16px">
         <div class="section-title" style="margin-bottom:0">
           {props.title}
         </div>
@@ -46,7 +46,7 @@ export function BreakdownPanel(props: {
       <Show
         when={props.rows.length > 0 && !props.stale}
         fallback={
-          <div style="font:400 12px 'Geist',sans-serif;color:var(--text3)">
+          <div class="t-dense" style="color:var(--text3)">
             {props.loading || props.stale
               ? 'Loading…'
               : tokens()

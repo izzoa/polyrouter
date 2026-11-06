@@ -38,6 +38,7 @@ import {
   tuningDrawerOrNull,
   cellText,
 } from './test/routingTabs';
+import { labelText } from './test/labelText';
 
 const flush = async (): Promise<void> => {
   for (let i = 0; i < 4; i++) await new Promise((r) => setTimeout(r, 0));
@@ -110,9 +111,7 @@ function mount(store: AppStore = createAppStore(new FakeApiClient())): {
 }
 
 function clickByText(host: HTMLElement, selector: string, text: string): void {
-  const el = [...host.querySelectorAll<HTMLElement>(selector)].find(
-    (e) => e.textContent?.trim() === text,
-  );
+  const el = [...host.querySelectorAll<HTMLElement>(selector)].find((e) => labelText(e) === text);
   if (!el) throw new Error(`No element ${selector} with text "${text}"`);
   el.click();
 }
@@ -782,7 +781,7 @@ describe('dashboard shell (auth-gated)', () => {
       expect(host.textContent).toContain('Couldn’t load learning status');
       expect(host.textContent).toContain('learning status boom');
       const retry = [...host.querySelectorAll<HTMLElement>('button')].find(
-        (b) => b.textContent?.trim() === 'Retry',
+        (b) => labelText(b) === 'Retry',
       );
       expect(retry).not.toBeUndefined();
     } finally {
@@ -1494,7 +1493,7 @@ describe('dashboard shell (auth-gated)', () => {
       expect(modal!.textContent).toContain('secrets');
       expect(card().textContent).toContain('Metadata-only'); // still off pre-consent
       [...modal!.querySelectorAll<HTMLElement>('button')]
-        .find((b) => b.textContent?.trim() === 'Capture bodies')!
+        .find((b) => labelText(b) === 'Capture bodies')!
         .click();
       await flush();
       expect(card().textContent).toContain('Bodies captured'); // amber, honest
@@ -1504,7 +1503,7 @@ describe('dashboard shell (auth-gated)', () => {
       const off = host.querySelector<HTMLElement>('[aria-label="Disable body capture"]');
       expect(off).not.toBeNull();
       [...off!.querySelectorAll<HTMLElement>('button')]
-        .find((b) => b.textContent?.trim() === 'Keep until retention')!
+        .find((b) => labelText(b) === 'Keep until retention')!
         .click();
       await flush();
       expect(card().textContent).toContain('Metadata-only');
@@ -1527,14 +1526,14 @@ describe('dashboard shell (auth-gated)', () => {
       expect(drawer().textContent).toContain('Payload');
       expect(drawer().textContent).not.toContain('prompt for req-000'); // lazy — not yet fetched
       [...drawer().querySelectorAll<HTMLElement>('button')]
-        .find((b) => b.textContent?.trim() === 'Show bodies')!
+        .find((b) => labelText(b) === 'Show bodies')!
         .click();
       await flush();
       expect(drawer().textContent).toContain('prompt for req-000');
       expect(drawer().textContent).toContain('answer for req-000');
       // Delete removes the payloads and the section (hasBodies flips).
       [...drawer().querySelectorAll<HTMLElement>('button')]
-        .find((b) => b.textContent?.trim() === 'Delete')!
+        .find((b) => labelText(b) === 'Delete')!
         .click();
       await flush();
       expect(drawer().textContent).not.toContain('Payload');
@@ -1567,7 +1566,7 @@ describe('dashboard shell (auth-gated)', () => {
       expect(text()).toContain('scheduled — 30 4 * * * (UTC)'); // cadence-neutral copy (r3-Low-7)
       expect(text()).toContain('recorded costs never change');
       const btn = [...panel()!.querySelectorAll<HTMLElement>('button')].find(
-        (b) => b.textContent?.trim() === 'Refresh now',
+        (b) => labelText(b) === 'Refresh now',
       );
       btn?.click();
       await flush();
@@ -1587,11 +1586,11 @@ describe('dashboard shell (auth-gated)', () => {
       clickByText(a.host, '.nav-item span', 'Settings');
       await flush();
       const btn = [...a.host.querySelectorAll<HTMLElement>('button')].find(
-        (b) => b.textContent?.trim() === 'Refresh now',
+        (b) => labelText(b) === 'Refresh now',
       );
       btn?.click();
       await flush();
-      expect(a.store.state.toast).toBe('+0 — no changes');
+      expect(a.store.state.toast).toEqual({ kind: 'confirm', text: '+0 — no changes' });
       expect(a.host.textContent).not.toContain('Last refreshed: never');
     } finally {
       a.dispose();
@@ -1630,7 +1629,7 @@ describe('dashboard shell (auth-gated)', () => {
       await flush();
       expect(c.host.textContent).toContain('off — PRICING_REFRESH_SCHED_ENABLED=false is set');
       const btn = [...c.host.querySelectorAll<HTMLElement>('button')].find(
-        (x) => x.textContent?.trim() === 'Refresh now',
+        (x) => labelText(x) === 'Refresh now',
       );
       btn?.click();
       await flush();
@@ -1678,7 +1677,7 @@ describe('dashboard shell (auth-gated)', () => {
       expect(panel?.textContent).toContain('unavailable in cloud mode');
       expect(
         [...(panel?.querySelectorAll<HTMLElement>('button') ?? [])].some(
-          (x) => x.textContent?.trim() === 'Refresh now',
+          (x) => labelText(x) === 'Refresh now',
         ),
       ).toBe(false);
     } finally {
@@ -1746,7 +1745,7 @@ describe('dashboard shell (auth-gated)', () => {
       expect(text).toContain('57 samples · 75% failed');
       // Revert: one click clears the pair; the section returns to defaults.
       const btn = [...host.querySelectorAll<HTMLElement>('button')].find(
-        (b) => b.textContent?.trim() === 'Revert to defaults',
+        (b) => labelText(b) === 'Revert to defaults',
       );
       btn?.click();
       await flush();
@@ -1905,7 +1904,7 @@ describe('dashboard shell (auth-gated)', () => {
       if (!range) throw new Error('the tab range control is missing');
       expect(range.getAttribute('role')).toBe('group');
       const btn = [...range.querySelectorAll<HTMLElement>('button')].find(
-        (b) => b.textContent?.trim() === '30d',
+        (b) => labelText(b) === '30d',
       );
       if (!btn) throw new Error('30d range button missing');
       btn.click();
@@ -2086,7 +2085,7 @@ describe('dashboard shell (auth-gated)', () => {
       // Edit the first provider — the modal's advanced section shows the
       // SERVER default as the placeholder (never a hard-coded value).
       const editBtn = [...host.querySelectorAll<HTMLElement>('button')].find(
-        (b) => b.textContent?.trim() === 'Edit',
+        (b) => labelText(b) === 'Edit',
       );
       if (!editBtn) throw new Error('provider Edit button missing');
       editBtn.click();
@@ -2105,7 +2104,7 @@ describe('dashboard shell (auth-gated)', () => {
       expect(edited.idleTimeoutMs).toBeNull();
       // Re-open: the field shows the stored seconds; blanking it clears to inherit.
       [...host.querySelectorAll<HTMLElement>('button')]
-        .find((b) => b.textContent?.trim() === 'Edit')!
+        .find((b) => labelText(b) === 'Edit')!
         .click();
       await flush();
       const fb2 = host.querySelector<HTMLInputElement>('#f-np-firstbyte')!;
@@ -2269,12 +2268,11 @@ describe('Routing tabs (redesign-auto-routing-pipeline)', () => {
   const segments = (host: HTMLElement): HTMLButtonElement[] => [
     ...host.querySelectorAll<HTMLButtonElement>('[data-testid="routing-sections"] .rs-seg'),
   ];
-  const labels = (host: HTMLElement): string[] =>
-    segments(host).map((b) => b.textContent?.trim() ?? '');
+  const labels = (host: HTMLElement): string[] => segments(host).map((b) => labelText(b) ?? '');
   const pressed = (host: HTMLElement): string[] =>
     segments(host)
       .filter((b) => b.getAttribute('aria-pressed') === 'true')
-      .map((b) => b.textContent?.trim() ?? '');
+      .map((b) => labelText(b) ?? '');
   /** The Targets matrix, or null when it is not rendered — for absence assertions
    * (`targetsMatrix` throws instead, for presence). */
   const matrixOrNull = (host: HTMLElement): HTMLElement | null =>
@@ -2283,7 +2281,7 @@ describe('Routing tabs (redesign-auto-routing-pipeline)', () => {
    * stage details alike. */
   const panels = (host: HTMLElement): string[] =>
     [...host.querySelectorAll<HTMLElement>('.rs-page .section-title')].map(
-      (t) => t.textContent?.trim() ?? '',
+      (t) => labelText(t) ?? '',
     );
   /** The first tier card's chain, in DOM order. */
   const chainRows = (host: HTMLElement): HTMLElement[] => [
@@ -2412,7 +2410,7 @@ describe('Routing tabs (redesign-auto-routing-pipeline)', () => {
       expect(picker!.isConnected).toBe(false);
       const focused = document.activeElement as HTMLElement;
       expect(focused).not.toBe(document.body);
-      expect(focused.textContent?.trim()).toBe('Auto routing');
+      expect(labelText(focused)).toBe('Auto routing');
       expect(focused.getAttribute('aria-pressed')).toBe('true');
       expect(focused.closest('[data-testid="routing-sections"]')).not.toBeNull();
     } finally {
@@ -2429,7 +2427,7 @@ describe('Routing tabs (redesign-auto-routing-pipeline)', () => {
       await openTab(host, 'Auto routing');
       // Focus on a control that survives the flip — and is not the segment the guard
       // would pick — must stay exactly where the user put it.
-      const tiers = segments(host).find((b) => b.textContent?.trim() === 'Tiers & headers')!;
+      const tiers = segments(host).find((b) => labelText(b) === 'Tiers & headers')!;
       tiers.focus();
       store.setState('autoLayers', 'structuralAvailable', false);
       await flush();
@@ -3057,7 +3055,7 @@ describe('Routing tabs (redesign-auto-routing-pipeline)', () => {
       const controls = (root: HTMLElement): HTMLButtonElement[] => [
         ...root.querySelectorAll<HTMLButtonElement>('[data-testid="go-to-column"]'),
       ];
-      expect(controls(alert).map((b) => b.textContent?.trim())).toEqual([
+      expect(controls(alert).map((b) => labelText(b))).toEqual([
         'Go to Strong column',
         'Go to Cheap column',
       ]);
@@ -3090,9 +3088,7 @@ describe('Routing tabs (redesign-auto-routing-pipeline)', () => {
       )!;
       expect(alert.textContent).toMatch(/^1 confident high verdict had no usable Strong target/);
       expect(
-        [...alert.querySelectorAll('[data-testid="go-to-column"]')].map((b) =>
-          b.textContent?.trim(),
-        ),
+        [...alert.querySelectorAll('[data-testid="go-to-column"]')].map((b) => labelText(b)),
       ).toEqual(['Go to Strong column']);
     } finally {
       one.dispose();
@@ -3238,7 +3234,7 @@ describe('Routing tabs (redesign-auto-routing-pipeline)', () => {
       // The note's cross-reference is a real control naming its tab — and focus follows.
       const link = [
         ...host.querySelectorAll<HTMLButtonElement>('[data-testid="layer0-note"] button'),
-      ].find((b) => b.textContent?.trim() === 'Tiers & headers')!;
+      ].find((b) => labelText(b) === 'Tiers & headers')!;
       link.focus();
       link.click();
       await flush();
@@ -3267,7 +3263,7 @@ describe('Routing tabs (redesign-auto-routing-pipeline)', () => {
       expect(sw.isConnected).toBe(false);
       expect(tuningDrawerOrNull(host, 'calibration')).toBeNull();
       const focused = document.activeElement as HTMLElement;
-      expect(focused.textContent?.trim()).toBe('Auto routing');
+      expect(labelText(focused)).toBe('Auto routing');
       expect(focused.closest('[data-testid="routing-sections"]')).not.toBeNull();
       // The rows stay as a readout — only what needs the capability went.
       expect(stageRows(host)).toHaveLength(6);
@@ -3371,7 +3367,7 @@ describe('provider card health line and Reconnect (add-provider-health-signals)'
       await flush();
       const card = cardOf(host, 'Claude');
       const reconnect = [...card.querySelectorAll<HTMLElement>('button')].find(
-        (b) => b.textContent?.trim() === 'Reconnect',
+        (b) => labelText(b) === 'Reconnect',
       );
       expect(reconnect).toBeDefined();
       reconnect!.click();
@@ -3395,7 +3391,7 @@ describe('provider card health line and Reconnect (add-provider-health-signals)'
       await flush();
       const card = cardOf(host, 'ChatGPT');
       [...card.querySelectorAll<HTMLElement>('button')]
-        .find((b) => b.textContent?.trim() === 'Edit')!
+        .find((b) => labelText(b) === 'Edit')!
         .click();
       await flush();
       const dialog = host.querySelector<HTMLElement>('[role="dialog"]');
@@ -3404,7 +3400,7 @@ describe('provider card health line and Reconnect (add-provider-health-signals)'
       expect(text).toContain('Reconnect');
       expect(text).not.toContain('Reauthorize'); // never names a control that isn't there
       const reconnect = [...dialog!.querySelectorAll<HTMLElement>('button')].find(
-        (b) => b.textContent?.trim() === 'Reconnect',
+        (b) => labelText(b) === 'Reconnect',
       );
       expect(reconnect).toBeDefined();
       reconnect!.click();
@@ -3462,7 +3458,7 @@ describe('provider card health line and Reconnect (add-provider-health-signals)'
       expect(card.querySelectorAll('[data-health-line]')).toHaveLength(1);
       expect(card.querySelector('[data-health-line]')?.textContent).toMatch(/Sign-in expired/);
       const reconnects = [...card.querySelectorAll('button')].filter(
-        (b) => b.textContent?.trim() === 'Reconnect',
+        (b) => labelText(b) === 'Reconnect',
       );
       expect(reconnects).toHaveLength(1);
       expect(card.querySelector('[data-token-line]')).toBeNull();
@@ -3475,7 +3471,7 @@ describe('provider card health line and Reconnect (add-provider-health-signals)'
   // gated on the preset list, which only `openModal` loads. Reconnect is its own mode.
   const clickReconnect = (card: HTMLElement): void => {
     [...card.querySelectorAll<HTMLElement>('button')]
-      .find((b) => b.textContent?.trim() === 'Reconnect')!
+      .find((b) => labelText(b) === 'Reconnect')!
       .click();
   };
 
@@ -3496,9 +3492,9 @@ describe('provider card health line and Reconnect (add-provider-health-signals)'
       // None of the add-provider form: no name, no kind picker, no Add provider.
       expect(dialog.querySelector('#f-np-name')).toBeNull();
       expect(dialog.textContent).not.toContain('Kind');
-      expect(
-        [...dialog.querySelectorAll('button')].map((b) => b.textContent?.trim()),
-      ).not.toContain('Add provider');
+      expect([...dialog.querySelectorAll('button')].map((b) => labelText(b))).not.toContain(
+        'Add provider',
+      );
     } finally {
       dispose();
     }
@@ -3597,7 +3593,7 @@ describe('provider card health line and Reconnect (add-provider-health-signals)'
       clickByText(host, '.nav-item span', 'Providers');
       await flush();
       const card = cardOf(host, 'OpenRouter');
-      expect([...card.querySelectorAll('button')].map((b) => b.textContent?.trim())).not.toContain(
+      expect([...card.querySelectorAll('button')].map((b) => labelText(b))).not.toContain(
         'Reconnect',
       );
       expect(card.querySelector('[data-token-line]')).toBeNull();

@@ -1,10 +1,11 @@
 import { render } from 'solid-js/web';
-import { afterEach, describe, expect, it } from 'vitest';
-import type { AdminInviteDto, AdminUserDto } from './data/api';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { AdminInviteDto, AdminUserDto, RegistrationSettingsDto } from './data/api';
 import { App } from './App';
 import { createAppStore, type AppStore } from './state/appState';
 import { AppProvider } from './state/context';
 import { DEFAULT_LOGIN_CONFIG, DEFAULT_SESSION, FakeApiClient } from './test/fakeClient';
+import { labelText } from './test/labelText';
 
 const flush = async (): Promise<void> => {
   for (let i = 0; i < 4; i++) await new Promise((r) => setTimeout(r, 0));
@@ -15,7 +16,13 @@ const FUTURE = '2027-01-01T00:00:00.000Z';
 const PAST = '2026-01-01T00:00:00.000Z';
 
 function mkUser(over: Partial<AdminUserDto> & { id: string; email: string }): AdminUserDto {
-  return { name: over.email.split('@')[0] ?? '', role: null, disabled: false, createdAt: NOW, ...over };
+  return {
+    name: over.email.split('@')[0] ?? '',
+    role: null,
+    disabled: false,
+    createdAt: NOW,
+    ...over,
+  };
 }
 function mkInvite(over: Partial<AdminInviteDto> & { id: string; email: string }): AdminInviteDto {
   return {
@@ -56,9 +63,7 @@ function mount(client: FakeApiClient): {
 }
 
 function clickByText(host: HTMLElement, selector: string, text: string): void {
-  const el = [...host.querySelectorAll<HTMLElement>(selector)].find(
-    (e) => e.textContent?.trim() === text,
-  );
+  const el = [...host.querySelectorAll<HTMLElement>(selector)].find((e) => labelText(e) === text);
   if (!el) throw new Error(`No element ${selector} with text "${text}"`);
   el.click();
 }
@@ -85,7 +90,7 @@ describe('current-user menu (sidebar footer)', () => {
       expect(menu).not.toBeNull();
       expect(trigger?.getAttribute('aria-expanded')).toBe('true');
       const items = [...(menu?.querySelectorAll('[role="menuitem"]') ?? [])].map((i) =>
-        i.textContent?.trim(),
+        labelText(i),
       );
       expect(items).toContain('Settings');
       expect(items).toContain('Users'); // admin session
@@ -111,9 +116,7 @@ describe('current-user menu (sidebar footer)', () => {
       // …and no Users menu item.
       host.querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]')?.click();
       await flush();
-      const items = [...host.querySelectorAll('[role="menuitem"]')].map((i) =>
-        i.textContent?.trim(),
-      );
+      const items = [...host.querySelectorAll('[role="menuitem"]')].map((i) => labelText(i));
       expect(items).toContain('Settings');
       expect(items).not.toContain('Users');
 
@@ -150,9 +153,7 @@ describe('Users page (admin)', () => {
       await flush();
       expect(client.calls).toContain('adminSetRole');
       // reloaded list reflects the fake's mutation: both rows are admins now
-      const demotes = [...host.querySelectorAll('button')].filter(
-        (b) => b.textContent?.trim() === 'Demote',
-      );
+      const demotes = [...host.querySelectorAll('button')].filter((b) => labelText(b) === 'Demote');
       expect(demotes.length).toBe(2);
     } finally {
       dispose();
@@ -190,9 +191,7 @@ describe('Users page (admin)', () => {
     );
     try {
       expect(host.textContent).toContain('expired');
-      const revokes = [...host.querySelectorAll('button')].filter(
-        (b) => b.textContent?.trim() === 'Revoke',
-      );
+      const revokes = [...host.querySelectorAll('button')].filter((b) => labelText(b) === 'Revoke');
       expect(revokes.length).toBe(0);
     } finally {
       dispose();
@@ -204,12 +203,92 @@ describe('Users page (admin)', () => {
     try {
       const invite = [
         ...host.querySelectorAll<HTMLButtonElement>('[role="group"] button[aria-pressed]'),
-      ].find((b) => b.textContent?.trim() === 'Invite only');
+      ].find((b) => labelText(b) === 'Invite only');
       expect(invite?.getAttribute('aria-pressed')).toBe('false'); // fake default: open
       invite?.click();
       await flush();
       expect(client.calls).toContain('adminSetRegistration');
       expect(invite?.getAttribute('aria-pressed')).toBe('true');
+    } finally {
+      dispose();
+    }
+  });
+
+  // adopt-design-tokens-v2 task 16.6: until the registration settings arrive, and after a
+  // failed load, the card used to state "SMTP isn't configured" as if it knew.
+  const registrationCard = (host: HTMLElement): HTMLElement =>
+    [...host.querySelectorAll<HTMLElement>('.panel')].find(
+      (p) => p.querySelector('.section-title')?.textContent?.trim() === 'Registration',
+    )!;
+  const modeButtons = (host: HTMLElement): HTMLButtonElement[] => [
+    ...registrationCard(host).querySelectorAll<HTMLButtonElement>('[role="group"] button'),
+  ];
+
+  it('claims nothing about SMTP while registration loads, and no mode can be pressed', async () => {
+    const client = new FakeApiClient({ adminUsers: twoUsers });
+    vi.spyOn(client, 'adminGetRegistration').mockImplementation(
+      () => new Promise<RegistrationSettingsDto>(() => {}),
+    );
+    const { host, dispose } = await openUsers(client);
+    try {
+      const card = registrationCard(host);
+      expect(card.getAttribute('aria-busy')).toBe('true');
+      expect(card.textContent).not.toContain('SMTP');
+      expect(card.querySelector('[aria-hidden="true"].ar-skel')).not.toBeNull();
+      const buttons = modeButtons(host);
+      expect(buttons).toHaveLength(2);
+      for (const b of buttons) {
+        expect(b.disabled).toBe(true);
+        expect(b.getAttribute('aria-pressed')).toBe('false');
+      }
+    } finally {
+      dispose();
+    }
+  });
+
+  it('claims nothing about SMTP after a failed load, and reports it in the text token', async () => {
+    const client = new FakeApiClient({ adminUsers: twoUsers });
+    vi.spyOn(client, 'adminGetRegistration').mockImplementation(() =>
+      Promise.reject(new Error('registration unavailable')),
+    );
+    const { host, dispose } = await openUsers(client);
+    try {
+      const card = registrationCard(host);
+      expect(card.getAttribute('aria-busy')).toBeNull();
+      expect(card.textContent).not.toContain('SMTP');
+      expect(card.querySelector('.ar-skel')).toBeNull();
+      const alert = host.querySelector<HTMLElement>('[role="alert"]');
+      expect(alert?.textContent).toContain('registration unavailable');
+      // The --red fill reads 3.75:1 as small text; status text takes the text variant.
+      expect(alert?.getAttribute('style')).toContain('var(--red-text)');
+    } finally {
+      dispose();
+    }
+  });
+
+  it('names role and status in neutral words: no Selected-state Admin chip, no red disabled', async () => {
+    const { host, dispose } = await openUsers(
+      new FakeApiClient({
+        adminUsers: [
+          ...twoUsers,
+          mkUser({ id: 'u3', email: 'carol@example.com', name: 'Carol', disabled: true }),
+        ],
+      }),
+    );
+    try {
+      const chips = [...host.querySelectorAll<HTMLElement>('td .chip')];
+      expect(chips.map((c) => c.textContent)).toEqual(['Admin', 'Member', 'Member']);
+      for (const c of chips) {
+        const style = c.getAttribute('style') ?? '';
+        expect(style).toContain('var(--text2)');
+        expect(style).not.toMatch(/--accent/);
+      }
+      const status = [...host.querySelectorAll<HTMLElement>('td span')].find(
+        (s) => s.textContent === 'disabled',
+      );
+      expect(status, 'the disabled status word').toBeDefined();
+      expect(status!.getAttribute('style')).toContain('var(--text2)');
+      expect(status!.getAttribute('style')).not.toMatch(/var\(--red\)/);
     } finally {
       dispose();
     }
@@ -245,9 +324,7 @@ describe('login gate under invite_only', () => {
       await flush();
       expect(host.textContent).toContain('Sign in');
       expect(host.textContent).toContain('invite-only');
-      const tabs = [...host.querySelectorAll('button')].filter(
-        (b) => b.textContent?.trim() === 'Sign up',
-      );
+      const tabs = [...host.querySelectorAll('button')].filter((b) => labelText(b) === 'Sign up');
       expect(tabs.length).toBe(0);
     } finally {
       dispose();

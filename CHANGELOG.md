@@ -15,6 +15,14 @@ heading is started.
 
 ## [Unreleased]
 
+### Changed
+
+- **The dashboard adopts one set of design tokens, and a first visit follows the OS theme (visual change).** Every page renders differently at desktop width: contrast-safe indigo text and visible field edges, one 24 / 32px control-height family, five rem-based type sizes, a 4px spacing scale and four radii, one selected look, pressed and busy states on every button, a sidebar grouped under Observe, Configure and Admin, a readout strip on Overview and Costs, and a Live lamp that blinks per event. A first-time visitor whose OS is dark now gets the dark theme, resolved before the first paint; a theme you chose is still remembered. No API, routing behavior or stored data changed.
+
+### Fixed
+
+- **The Settings body-capture card no longer claims "metadata only" before it knows.** While its status was loading, or when the read failed, the card said bodies are never persisted and showed a green Metadata-only badge, even on an instance that captures them; it now claims nothing until the status loads.
+
 ## [0.27.1] — 2026-11-01
 
 [Release](https://github.com/izzoa/polyrouter/releases/tag/v0.27.1) ·

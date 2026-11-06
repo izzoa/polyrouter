@@ -6,6 +6,8 @@ import {
   RequestTableHead,
 } from '../components/RequestTable';
 import { createPoller } from '../data/poller';
+import { StackedLabel } from '../components/StackedLabel';
+import { createHeldFailure, Notice } from '../components/Notice';
 
 import { filterToRequestParams } from '../data/analytics';
 import { BATCH_POLL_MS } from '../data/batchBand';
@@ -94,6 +96,13 @@ export function Requests(props: { live: boolean }) {
    * be attributed. The band empties rather than displaying rows it cannot place. */
   const bandRows = createMemo(() => (state.reqAgentId === null ? attributableInflight() : []));
 
+  // The load-failure notice is held across the freshness refresh (D15): a reset load clears
+  // its error as it starts, which would otherwise re-insert, and re-announce, the notice.
+  const failure = createHeldFailure(
+    () => state.requestListError,
+    () => state.requestListLoading,
+  );
+
   /** True only when the filter is HIDING live work. A permanent banner would train
    * people to ignore it; this appears exactly when there is something to disclose. */
   const inflightHidden = createMemo(
@@ -133,23 +142,19 @@ export function Requests(props: { live: boolean }) {
   });
 
   return (
-    <div class="rs-page" style="display:flex;flex-direction:column;gap:14px;max-width:1200px">
-      <div class="rs-wrap" style="display:flex;align-items:center;gap:10px">
-        <div class="rs-wrap" style="display:flex;gap:6px">
+    <div class="rs-page" style="display:flex;flex-direction:column;gap:24px;max-width:1200px">
+      <div
+        class="rs-wrap"
+        data-testid="requests-filter-row"
+        style="display:flex;align-items:center;gap:8px"
+      >
+        <div class="rs-wrap" style="display:flex;gap:8px">
           <For each={FILTERS}>
             {([id, label]) => (
               <button
                 type="button"
+                class="filter-chip"
                 aria-pressed={state.reqFilter === id}
-                style={{
-                  padding: '5px 12px',
-                  'border-radius': '10px',
-                  font: "500 12px 'Geist',sans-serif",
-                  color: state.reqFilter === id ? 'var(--accent-deep)' : 'var(--text2)',
-                  background: state.reqFilter === id ? 'var(--accent-bg)' : 'var(--panel)',
-                  border: `1px solid ${state.reqFilter === id ? 'transparent' : 'var(--border)'}`,
-                  cursor: 'pointer',
-                }}
                 onClick={() => app.setFilter(id)}
               >
                 {label}
@@ -159,29 +164,18 @@ export function Requests(props: { live: boolean }) {
         </div>
         <div
           class="rs-wrap"
-          style="display:flex;align-items:center;gap:6px;padding-left:10px;margin-left:10px;border-left:1px solid var(--border)"
+          style="display:flex;align-items:center;gap:8px;padding-left:8px;margin-left:8px;border-left:1px solid var(--border)"
         >
-          <span
-            id="req-mode-label"
-            style="font:500 11px 'Geist',sans-serif;color:var(--text3);text-transform:uppercase;letter-spacing:.04em"
-          >
+          <span id="req-mode-label" class="t-overline" style="color:var(--text3)">
             Mode
           </span>
-          <div role="group" aria-labelledby="req-mode-label" style="display:flex;gap:6px">
+          <div role="group" aria-labelledby="req-mode-label" style="display:flex;gap:8px">
             <For each={MODES}>
               {([id, label]) => (
                 <button
                   type="button"
+                  class="filter-chip"
                   aria-pressed={state.reqMode === id}
-                  style={{
-                    padding: '5px 12px',
-                    'border-radius': '10px',
-                    font: "500 12px 'Geist',sans-serif",
-                    color: state.reqMode === id ? 'var(--accent-deep)' : 'var(--text2)',
-                    background: state.reqMode === id ? 'var(--accent-bg)' : 'var(--panel)',
-                    border: `1px solid ${state.reqMode === id ? 'transparent' : 'var(--border)'}`,
-                    cursor: 'pointer',
-                  }}
                   onClick={() => app.setMode(id)}
                 >
                   {label}
@@ -196,18 +190,15 @@ export function Requests(props: { live: boolean }) {
             because the list is unbounded — a tenant may run dozens of agents. */}
         <div
           class="rs-wrap"
-          style="display:flex;align-items:center;gap:6px;padding-left:10px;margin-left:10px;border-left:1px solid var(--border)"
+          style="display:flex;align-items:center;gap:8px;padding-left:8px;margin-left:8px;border-left:1px solid var(--border)"
         >
-          <label
-            for="req-agent"
-            style="font:500 11px 'Geist',sans-serif;color:var(--text3);text-transform:uppercase;letter-spacing:.04em"
-          >
+          <label for="req-agent" class="t-overline" style="color:var(--text3)">
             Agent
           </label>
           <select
-            class="select"
+            class="select select--sm"
             id="req-agent"
-            style="padding:4px 8px;font:500 12px 'Geist',sans-serif;max-width:180px"
+            style="max-width:180px"
             value={state.reqAgentId ?? ''}
             onChange={(e) =>
               app.setAgentFilter(e.currentTarget.value === '' ? null : e.currentTarget.value)
@@ -217,25 +208,29 @@ export function Requests(props: { live: boolean }) {
             <For each={state.agents}>{(a) => <option value={a.id}>{a.name}</option>}</For>
           </select>
         </div>
-        <div style="margin-left:auto;font:400 11.5px 'Geist',sans-serif;color:var(--text3)">
+        <div class="t-caption" style="margin-left:auto;color:var(--text3)">
           {state.requestList.length} shown{state.requestCursor !== null ? '+' : ''} · click a row to
           inspect the decision
         </div>
       </div>
 
-      <Show when={state.requestListError}>
+      {/* Info, not Failure (D15): adopt-figure-states requires a failed load to show a neutral
+          notice, and rewrites only its body. */}
+      <Show when={failure.message()}>
         {(msg) => (
-          <div style="display:flex;align-items:center;gap:10px;padding:9px 14px;background:var(--red-bg);border:1px solid var(--red);border-radius:8px;font:500 12px 'Geist',sans-serif;color:var(--red)">
-            <span style="flex:1">Couldn’t load requests — {msg()}</span>
-            <button
-              type="button"
-              class="link-accent"
-              style="font-weight:600"
-              onClick={() => void app.loadRequests(true)}
-            >
-              Retry
-            </button>
-          </div>
+          <Notice
+            tone="info"
+            title="Couldn’t load"
+            action={{
+              label: 'Retry',
+              onClick: () => {
+                failure.release();
+                void app.loadRequests(true);
+              },
+            }}
+          >
+            Couldn’t load requests — {msg()}
+          </Notice>
         )}
       </Show>
 
@@ -249,7 +244,7 @@ export function Requests(props: { live: boolean }) {
           <button
             type="button"
             class="btn-ghost"
-            style="font:500 12px 'Geist',sans-serif"
+            style="font:500 0.75rem/1rem 'Geist',sans-serif"
             onClick={() => void app.loadRequests(true)}
           >
             {newRowsLabel()}
@@ -278,8 +273,8 @@ export function Requests(props: { live: boolean }) {
         <Show when={inflightHidden()}>
           <div
             role="status"
-            class="rs-inflight-hidden"
-            style="padding:9px 18px;border-bottom:1px solid var(--border2);font:400 11.5px 'Geist',sans-serif;color:var(--text3)"
+            class="rs-inflight-hidden t-caption"
+            style="padding:8px 16px;border-bottom:1px solid var(--border2);color:var(--text3)"
           >
             {attributableInflight().length} live request
             {attributableInflight().length === 1 ? ' is' : 's are'} running but can’t be attributed
@@ -289,7 +284,7 @@ export function Requests(props: { live: boolean }) {
         <Show
           when={state.requestList.length > 0}
           fallback={
-            <div style="padding:16px 18px;font:400 12px 'Geist',sans-serif;color:var(--text3)">
+            <div class="t-dense" style="padding:16px;color:var(--text3)">
               {state.requestListLoading || state.requestWindow === null
                 ? 'Loading…'
                 : bandRows().length > 0 || batchBandRows().length > 0
@@ -304,12 +299,13 @@ export function Requests(props: { live: boolean }) {
           <div style="display:flex;justify-content:center;padding:12px;border-top:1px solid var(--border2)">
             <button
               type="button"
-              class="link-accent"
-              style="font:500 12px 'Geist',sans-serif"
+              class="link-accent t-label"
+
               disabled={state.requestListLoading}
+              aria-busy={state.requestListLoading ? true : undefined}
               onClick={() => void app.loadRequests(false)}
             >
-              {state.requestListLoading ? 'Loading…' : 'Load more'}
+              <StackedLabel alt={state.requestListLoading} rest="Load more" altLabel="Loading…" />
             </button>
           </div>
         </Show>

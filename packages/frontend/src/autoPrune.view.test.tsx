@@ -13,6 +13,7 @@ import { createAppStore, type AppStore } from './state/appState';
 import { AppProvider } from './state/context';
 import { DEFAULT_SESSION, FakeApiClient, UNRECORDED_HEALTH } from './test/fakeClient';
 import type { ActionResult, ProviderDto } from './data/api';
+import { labelText } from './test/labelText';
 
 const NOW = '2026-10-31T12:00:00.000Z';
 
@@ -77,9 +78,7 @@ const openEdit = async (h: Harness): Promise<void> => {
 };
 
 const saveEdit = async (h: Harness): Promise<void> => {
-  [...h.host.querySelectorAll('button')]
-    .find((b) => /^Save changes$/.test(b.textContent ?? ''))
-    ?.click();
+  [...h.host.querySelectorAll('button')].find((b) => /^Save changes$/.test(labelText(b)))?.click();
   await flush();
 };
 
@@ -163,7 +162,7 @@ describe('what a Sync says about pruning', () => {
   const sync = async (h: Harness): Promise<string | null> => {
     await h.store.syncProvider('p1');
     await flush();
-    return h.store.state.toast;
+    return h.store.state.toast?.text ?? null;
   };
 
   it('names how many retired models a Sync removed', async () => {

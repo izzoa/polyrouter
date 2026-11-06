@@ -85,6 +85,70 @@ test.describe('@capture geometry', () => {
     expect(SURFACES.length).toBeGreaterThan(0);
   });
 
+  test('@capture height family (adopt-design-tokens-v2 task 4.1)', async ({ page }) => {
+    // `heightFamily.spec.ts` asserts every single-line control's height EXACTLY, classified
+    // font-invariant by a forced-face sweep on macOS. This prints the same enumeration on
+    // whatever machine runs it, so the runner's numbers confirm (or overturn) that
+    // classification: per page, each distinct height with its count, and the marks that are
+    // not controls (static chips, segmented tracks, the Live pill).
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const sel =
+      'button, [role="button"], input:not([type="checkbox"]):not([type="radio"]), select, ' +
+      'textarea, [role="switch"], [role="combobox"], [aria-pressed], [aria-current], a[class*="btn-"]';
+    for (const name of [...PAGES, 'costs', 'batches', 'limits', 'settings', 'users', 'setup']) {
+      await page.goto(`/browser-harness.html#/${name}`);
+      await page.waitForSelector('html[data-harness-ready="true"]');
+      const tally = await page.evaluate((s) => {
+        const count = (els: Element[]): string => {
+          const m = new Map<number, number>();
+          for (const e of els) {
+            const h = Number(e.getBoundingClientRect().height.toFixed(4));
+            if (h > 0) m.set(h, (m.get(h) ?? 0) + 1);
+          }
+          return [...m.entries()]
+            .sort((a, b) => a[0] - b[0])
+            .map(([h, n]) => `${String(h)}x${String(n)}`)
+            .join(' ');
+        };
+        return {
+          controls: count([...document.querySelectorAll(s)]),
+          marks: count([
+            ...document.querySelectorAll('.chip, .seg-track, [data-testid="live-pill"]'),
+          ]),
+        };
+      }, sel);
+      line(`family:${name}`, `controls ${tally.controls} | marks ${tally.marks}`);
+    }
+    expect(PAGES.length).toBeGreaterThan(0);
+  });
+
+  test('@capture recorded rows and landmarks (adopt-design-tokens-v2 task 14.3)', async ({
+    page,
+  }) => {
+    // The exact pins that 14.3 re-pinned outside the overlay matrix, printed so the runner's
+    // values confirm (or overturn) their exact classification: the chain row
+    // (`chainRow.spec.ts`, exact 41), and the sidebar box (`responsive.spec.ts` desktop
+    // parity, exact [0, 0, 208, 900]).
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto('/browser-harness.html?chain=1#/routing');
+    await page.waitForSelector('html[data-harness-ready="true"]');
+    await page.waitForSelector('.chain-row');
+    const rows = await page.evaluate(() =>
+      [...document.querySelectorAll('.chain-row')].map((e) =>
+        Number(e.getBoundingClientRect().height.toFixed(4)),
+      ),
+    );
+    line('routing:.chain-row', rows.join(', '));
+    await page.goto('/browser-harness.html#/requests');
+    await page.waitForSelector('html[data-harness-ready="true"]');
+    const sidebar = await page.evaluate(() => {
+      const r = document.querySelector('[data-pane="sidebar"]')!.getBoundingClientRect();
+      return [r.x, r.y, r.width, r.height].map((n) => Math.round(n));
+    });
+    line('requests:sidebar', `[${sidebar.join(', ')}]`);
+    expect(rows.length).toBeGreaterThan(0);
+  });
+
   test('@capture pinned controls across pages', async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     for (const name of PAGES) {

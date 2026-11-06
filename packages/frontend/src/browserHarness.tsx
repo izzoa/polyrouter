@@ -551,6 +551,21 @@ if (params.get('unbilled') === '1') {
   client.summaryResult = { ...client.summaryResult, notBilledRequests: 6 };
 }
 
+// Costs-split fixture (adopt-design-tokens-v2 task 12.2), opt-in via `?costs=split` so the
+// default harness stays byte-identical for every other suite. The range holds every figure the
+// Costs readout strip can state at once — subscription value, an estimate-priced portion and
+// spend from before subscription tracking — so the strip's narrow layout is measured with all
+// three cells and the longest spend qualification, not with the spend cell alone.
+if (params.get('costs') === 'split') {
+  client.summaryResult = {
+    ...client.summaryResult,
+    subscriptionSpend: 48.1234,
+    nativeFamilySpend: 3.4567,
+    unknownSpend: 12.3456,
+    estimatedCount: 1234,
+  };
+}
+
 // Targets-matrix fixture (redesign-auto-routing-pipeline, task 7.2), opt-in via
 // `?targets=1` so the default harness stays byte-identical for every other suite. It is
 // the measured worst case for the matrix's `table-fit-targets` threshold: every cell

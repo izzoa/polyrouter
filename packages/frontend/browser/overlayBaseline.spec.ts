@@ -6,6 +6,16 @@
  * equals itself. These numbers were therefore captured BEFORE any sheet CSS existed, from
  * the tree at `4f3d039`; provenance is in the change's `measurements.md`.
  *
+ * RE-PINNED 2026-11-02 by adopt-design-tokens-v2 (task 14.3), a RECORDED desktop change
+ * (STYLESEED.md "Desktop geometry changes only through a recorded change"): the height
+ * family, the type and spacing scales, the 24px gutter and the 32px toast moved every
+ * overlay at once, so the baseline is now this change's tree, captured on macOS with
+ * `npm run test:browser:capture` and classified under forced faces (Verdana, Georgia,
+ * Courier New): every axis that stayed exact here is unchanged under all three, and every
+ * axis that moved is already in TEXT_SIZED. Which axes are soft did not change. The CI
+ * runner's capture of these values is PENDING (it needs a push): until it is read, the
+ * tolerances below carry the cross-platform spreads measured on 2026-09-18.
+ *
  * Pinned as numbers rather than re-derived per run, for the same reason phase 1 pins its
  * baseline: a build-and-diff per run is slow, and the pre-change tree is a fixed point.
  *
@@ -63,13 +73,16 @@ const TEXT_SIZED: Record<string, readonly Axis[]> = {
   // Both confirms pin x/y/width; only the copy's wrap height moves.
   'confirm:bodyCapture': ['h'],
   'confirm:disableCapture': ['h'],
+  'confirm:cancelBatch': ['h'],
   accountMenu: ['y', 'h'], // bottom-anchored, so `y` follows `h`
   // Anchored to a control, so `y` tracks the text layout of the page above it, not just
   // the picker's own content.
   picker: ['y', 'h'],
   // Shrink-wrapped around one sentence, so `x` and `w` move. `y` and `h` do NOT: the runner
-  // printed `[442, 843, 557, 35]` against macOS's `[454, 843, 533, 35]`, so both are
-  // runner-confirmed and identical.
+  // printed `[442, 843, 557, 35]` against macOS's `[454, 843, 533, 35]`, so both were
+  // runner-confirmed and identical. Since adopt-design-tokens-v2 the bar is the height
+  // family's 32px, 24px from the bottom (`toast-offset`): both are declared, and identical
+  // under every forced face (2026-11-02); the runner's re-confirmation is pending.
   toast: ['x', 'w'],
 };
 
@@ -121,7 +134,8 @@ const MEASURED_SLACK: Record<string, Partial<Record<Axis, number>>> = {
   picker: { y: 8, h: 8 },
   toast: {
     // macOS 533, Ubuntu 24.04 and the CI runner both 557 → spread 24px. 32 leaves 8px for an
-    // environment this has not seen.
+    // environment this has not seen. Carried to the 2026-11-02 re-pin (macOS 549): same copy,
+    // so the same spread is expected, pending the runner's capture.
     w: 32,
     // The box recentres as the width changes, so `x` moves by exactly half the width spread:
     // 454 → 442. 16px, same 8px margin. The centre assertion below pins it further.
@@ -129,12 +143,18 @@ const MEASURED_SLACK: Record<string, Partial<Record<Axis, number>>> = {
   },
   'confirm:bodyCapture': {
     // macOS 160, runner 178 → 18px, one wrapped line of copy. 26 leaves the same 8px.
+    // Carried to the 2026-11-02 re-pin (macOS 154; one more line under Verdana is 170).
     h: 26,
   },
 };
 
 /** [x, y, width, height] at 1440x900, except the nav which exists as an overlay only
- * below the threshold and is therefore pinned at 390x844. */
+ * below the threshold and is therefore pinned at 390x844.
+ *
+ * RE-PINNED 2026-11-02 (adopt-design-tokens-v2 task 14.3) wherever the recorded change moved
+ * a box; the drawers and the nav did not move. Each re-pinned entry keeps its earlier value
+ * beside it, so the move is reviewable. macOS capture: `notes/lane-g9-capture-macos-*.txt`
+ * in that change. */
 const BASELINE: Record<string, [number, number, number, number]> = {
   drawer: [1000, 0, 440, 900],
   // ADDED 2026-11-01 (split-auto-routing-readout-setup task 3.3). Not a pre-change capture:
@@ -143,29 +163,52 @@ const BASELINE: Record<string, [number, number, number, number]> = {
   // CSS-pinned — so a tuning drawer that drifts from the Inspector's geometry fails here.
   'drawer:selfCalibration': [1000, 0, 440, 900],
   'drawer:semanticLearning': [1000, 0, 440, 900],
-  'modal:newAgent': [480, 324, 480, 252],
+  // RE-PINNED 2026-11-02 (was [480, 324, 480, 252]), and every modal below it: the recorded
+  // change's height family, type scale, spacing and field help/message slots (tasks 2–4, 8).
+  'modal:newAgent': [480, 323, 480, 254],
   // RE-PINNED 2026-09-18 (was [480, 98, 480, 705]). `e8f0c66`, the batch epic, added fields to
   // the provider form — a deliberate feature change, not rendering drift. The new value is
   // byte-identical on macOS and ubuntu-latest, so re-pinning restores a regression guard; it
   // does not re-create the v0.12.0 failure, which came from pinning a value the two platforms
-  // disagreed on. Everything below keeps its 4f3d039 provenance.
-  'modal:newProvider': [480, 82, 480, 736],
-  'modal:editProvider': [480, 82, 480, 736],
-  'modal:newLimit': [480, 174, 480, 552],
+  // disagreed on.
+  // RE-PINNED 2026-11-02 (was [480, 82, 480, 736]): 10px taller.
+  'modal:newProvider': [480, 77, 480, 746],
+  'modal:editProvider': [480, 77, 480, 746],
+  // RE-PINNED 2026-11-02 (was [480, 174, 480, 552]).
+  'modal:newLimit': [480, 170, 480, 561],
   // RE-PINNED 2026-09-18 (was [480, 166, 480, 568]), same cause and same evidence as above.
-  'modal:channel': [480, 153, 480, 595],
-  'modal:keyReveal': [480, 341, 480, 219],
-  'confirm:bodyCapture': [500, 270, 440, 160],
-  'confirm:disableCapture': [500, 270, 440, 141],
+  // RE-PINNED 2026-11-02 (was [480, 153, 480, 595]): 20px taller.
+  'modal:channel': [480, 143, 480, 615],
+  // RE-PINNED 2026-11-02 (was [480, 341, 480, 219]).
+  'modal:keyReveal': [480, 336, 480, 228],
+  // RE-PINNED 2026-11-02 (was [500, 270, 440, 160] and [500, 270, 440, 141]): x, y and the
+  // width did not move; only the text-sized height did (6px and 3px shorter).
+  'confirm:bodyCapture': [500, 270, 440, 154],
+  'confirm:disableCapture': [500, 270, 440, 138],
+  // ADDED 2026-11-02 (adopt-design-tokens-v2 review fix): the Batches cancel dialog joined the
+  // matrix so the height-family and Indigo Budget sweeps open it. Not a pre-change capture: the
+  // macOS `@capture` value on this change's tree. The same `.confirm-card` box as the two
+  // confirms above (x, y and the width CSS-pinned); its height is its copy's, so it takes the
+  // unmeasured default until the runner's capture on the first push.
+  'confirm:cancelBatch': [500, 270, 440, 154],
   'nav:expanded': [0, 0, 208, 844],
-  accountMenu: [18, 661, 171, 139],
+  // RE-PINNED 2026-11-02 (was [18, 661, 171, 139]): the menu spans the sidebar footer's
+  // content box (`left: 0; right: 0`), which the spacing sweep moved to x 16 and 175px wide.
+  // x and the width stay exact: unchanged under every forced face.
+  accountMenu: [16, 664, 175, 138],
   // RE-PINNED 2026-10-30 (was [253, 266, 320, 76]). redesign-auto-routing-pipeline put the
   // page-level tab control (a 30px `Segmented` plus the page's 14px gap) above the tier
   // chains (D1/D3), so the first chain's input — the picker's anchor — sits exactly 44px
   // lower. A deliberate layout change, not rendering drift: x, width and height are
   // unchanged, and the shift is the control's box, not text.
-  picker: [253, 310, 320, 76],
-  toast: [454, 843, 533, 35],
+  // RE-PINNED 2026-11-02 (was [253, 310, 320, 76]): the recorded change moves its anchor
+  // 4px left and 17px down, and the picker is 7px taller. x and the width stay exact:
+  // unchanged under every forced face.
+  picker: [249, 327, 320, 83],
+  // RE-PINNED 2026-11-02 (was [454, 843, 533, 35]): the 32px bar 24px from the bottom
+  // (`toast-offset`, the height family); the shrink-wrapped width is 16px wider and
+  // re-centred.
+  toast: [446, 844, 549, 32],
 };
 
 /** Opens the harness — on the query a surface needs, when it needs one. */
@@ -177,7 +220,7 @@ async function open(page: Page, surface: Pick<Surface, 'query'> = {}): Promise<v
 
 for (const s of SURFACES) {
   const vp = s.narrowOnly ? { width: 390, height: 844 } : { width: 1440, height: 900 };
-  test.describe(`${s.name} keeps its pre-change geometry @${vp.width}x${vp.height}`, () => {
+  test.describe(`${s.name} keeps its recorded geometry @${vp.width}x${vp.height}`, () => {
     test.use({ viewport: vp });
 
     test('unchanged', async ({ page }) => {

@@ -47,15 +47,37 @@
   --red-text: #b42318;
   --accent-bg: color-mix(in oklab, var(--accent) 9%, var(--panel));
   --accent-deep: color-mix(in oklab, var(--accent) 78%, var(--text) 22%);
+  /* The primary fill's hover and pressed tones (adopt-design-tokens-v2 D1). They mix
+     toward the LITERAL Ink #17181a, not var(--text): --text is near-white in dark, which
+     is why a --text-based hover lightened to #6c83ff and dropped white to 3.32:1. With
+     the literal, both themes get ≈ #414fc7 (white 6.63:1) and ≈ #3947aa (7.91:1).
+     #17181a is a neutral, not an accent hex, so "never hardcode the accent" holds. */
+  --accent-fill-hover: color-mix(in oklab, var(--accent) 78%, #17181a);
+  --accent-fill-pressed: color-mix(in oklab, var(--accent) 66%, #17181a);
+  /* Control Edge (D2): the 3:1 boundary of every entry control whose edge is its
+     affordance (fields, filter chips, the off switch track). The --border hairline is a
+     surface separation at 1.13–1.20:1 and cannot carry it. styles.contrast.test.ts pins
+     it on bg / panel / chip / hover, where the chip margin is thin (3.01 / 3.04:1). */
+  --border-control: #898b92;
   /* Flat-borders lock (STYLESEED.md): shadows are whispers ≤ 8% alpha, themed OFF in dark. */
   --shadow: 0 1px 3px rgba(20, 20, 25, 0.05);
   --shadow-pop: 0 18px 50px rgba(10, 10, 14, 0.08);
   --shadow-drawer: -12px 0 32px rgba(10, 10, 14, 0.08);
   --shadow-toast: 0 8px 24px rgba(10, 10, 14, 0.08);
   --shadow-knob: 0 1px 2px rgba(10, 10, 14, 0.08);
+
+  /* Browser-drawn surfaces follow the RESOLVED theme, not the OS (adopt-design-tokens-v2
+     task 11.3, D9): the scheme is per theme block, never `light dark` here, or a user who
+     chose light on a dark OS would get dark native widgets. A checked native checkbox or
+     radio and the caret are the accent — state marks, outside the Indigo Budget (D11). */
+  color-scheme: light;
+  accent-color: var(--accent);
+  caret-color: var(--accent);
 }
 
 [data-theme='dark'] {
+  /* Native widgets, form controls and scrollbars draw dark with the dark theme (task 11.3). */
+  color-scheme: dark;
   --bg: #0e0f12;
   --panel: #16171b;
   --border: #26272d;
@@ -66,6 +88,7 @@
   --text2: #a6a8b0;
   --text3: #898b93;
   --faint: #4e5058;
+  --border-control: #6b6d76;
   --green: #46c482;
   /* Dark mode already clears 4.5:1 (8.1:1 on --panel), so text matches the fill. */
   --green-text: #46c482;
@@ -85,20 +108,39 @@
   --shadow-knob: none;
 }
 
+/* Body text is the default role (adopt-design-tokens-v2 D5): 13px on a 20px line, in rem
+   so the user's font-size setting scales it. Text that sets only a size inherits this
+   line height, so it stays on the 4px grid too. */
 body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font-family: 'Geist', sans-serif;
+  font:
+    400 0.8125rem/1.25rem 'Geist',
+    sans-serif;
 }
 
+/* Indigo text is the deep derivation, never the raw accent (adopt-design-tokens-v2 D1):
+   the raw accent is 3.70:1 on the dark panel and 4.28–4.39:1 on the light chip, hover
+   tone and wash, all under the 4.5:1 text floor. */
 a {
-  color: var(--accent);
-  text-decoration: none;
-}
-a:hover {
   color: var(--accent-deep);
-  text-decoration: underline;
+  text-decoration: none;
+  text-underline-offset: 2px;
+}
+/* Selected text: the Indigo Wash behind Ink (task 11.3; ≥ 4.5:1, the contrast suite's
+   --text / --accent-bg pair in both themes). */
+::selection {
+  background: var(--accent-bg);
+  color: var(--text);
+}
+
+/* Thin scrollbars, a Control Edge thumb on a transparent track (task 11.3). Set on every
+   element because only a scrolling pane draws one — the content pane, the sidebar, the drawer
+   body, a dialog, a wide table — so no list of panes can fall out of date. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-control) transparent;
 }
 
 input,
@@ -137,15 +179,95 @@ button:disabled {
   outline-offset: 2px;
 }
 
-input:focus,
-select:focus {
-  border-color: var(--accent) !important;
+/* Links underline on hover and on keyboard focus (DESIGN.md Browser surfaces; task 11.3). The
+   text-styled `.link-accent` actions read as links, so they answer the same way. */
+a:hover,
+a:focus-visible,
+.link-accent:hover,
+.link-accent:focus-visible {
+  color: var(--accent-deep);
+  text-decoration: underline;
+}
+/* A link inside a sentence of body text is underlined at rest: Deep Ink alone is not 3:1
+   against the Ink 2 / Ink 3 words around it, so its colour cannot be the only mark. `.prose`
+   marks such a sentence. */
+.prose a,
+.prose .link-accent {
+  text-decoration: underline;
 }
 
-/* The live-stream dot (phase2-add-dashboard-event-stream). A class, not an inline
-   style, so the keyframe reference lives in this guarded stylesheet. */
-.live-dot {
-  animation: pulse 2s infinite;
+/* A field's edge answers the pointer (D19): the tertiary text token on hover, the accent
+   on focus. Focus wins through `!important`, so a focused field that is also hovered keeps
+   the accent edge. */
+.input:hover,
+.select:hover,
+.mp-input:hover,
+textarea:hover {
+  border-color: var(--text3);
+}
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: var(--accent) !important;
+}
+/* The field's other states (task 8.1; DESIGN.md Inputs / Fields and the State matrix's
+   Input / select row). Each names its `:hover` so the pointer never repaints it:
+   - read-only: the Panel fill, a Hairline edge and Ink text. It stays focusable and
+     selectable, so its value can be copied, and focus still draws the accent edge;
+   - disabled: the Chip Tone fill and Ink 3 text, natively `disabled`, and no hover edge —
+     it is temporarily unavailable, not waiting for input;
+   - invalid: a 1px Signal Red edge (3.75:1 on the Canvas fill, pinned by the contrast suite),
+     kept while the field is focused — the edge marks the field the message is about, and
+     the shared focus ring still marks focus around it. */
+.input[readonly],
+.input[readonly]:hover,
+.mp-input[readonly],
+.mp-input[readonly]:hover {
+  background: var(--panel);
+  border-color: var(--border);
+  color: var(--text);
+}
+.input:disabled,
+.input:disabled:hover,
+.select:disabled,
+.select:disabled:hover,
+.mp-input:disabled,
+.mp-input:disabled:hover {
+  background: var(--chip);
+  border-color: var(--border-control);
+  color: var(--text3);
+  cursor: not-allowed;
+}
+.input[aria-invalid='true'],
+.input[aria-invalid='true']:hover,
+.select[aria-invalid='true'],
+.select[aria-invalid='true']:hover,
+.mp-input[aria-invalid='true'],
+.mp-input[aria-invalid='true']:hover {
+  border-color: var(--red);
+}
+input[aria-invalid='true']:focus,
+select[aria-invalid='true']:focus,
+textarea[aria-invalid='true']:focus {
+  border-color: var(--red) !important;
+}
+
+/* The Live lamp's blink (adopt-design-tokens-v2 D12; DESIGN.md Live lamp): once per data
+   event — visible, dimmed, visible again over 600ms — never a loop. Topbar applies the class
+   for one blink and throttles it to one a second. A class, not an inline style, so the keyframe
+   lives in this guarded stylesheet and the reduced-motion block collapses it: one 0.01ms
+   iteration that ends at full opacity, so the dot rests steady. */
+.lamp-blink {
+  animation: lamp-blink 600ms ease-out;
+}
+@keyframes lamp-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
 }
 
 @keyframes pulse {
@@ -180,8 +302,71 @@ select:focus {
 
 /* ---- shared patterns ---- */
 
+/* The type roles (adopt-design-tokens-v2 D5; DESIGN.md Typography). Five sizes — 11 / 12 /
+   13 / 15 / 26px at the default root — authored in rem, each on its 4px-grid line height.
+   Roles that share a size differ by weight or case, never by a half-pixel. Inline `font:`
+   literals that repeat use these instead. `styles.typeScale.test.ts` fails any other size.
+   They come BEFORE `.mono`: same specificity, so `class="t-dense mono"` is the Mono role
+   at the dense size (the later rule wins the family). */
+.t-display {
+  /* The view's one focal figure. Only ReadoutStrip may use this class (the guard). */
+  font:
+    600 1.625rem/2rem 'Geist',
+    sans-serif;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+}
+.t-title {
+  font:
+    600 0.9375rem/1.25rem 'Geist',
+    sans-serif;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+}
+.t-section {
+  font:
+    600 0.8125rem/1.25rem 'Geist',
+    sans-serif;
+  text-wrap: balance;
+}
+.t-body {
+  font:
+    400 0.8125rem/1.25rem 'Geist',
+    sans-serif;
+}
+.t-dense {
+  font:
+    400 0.75rem/1rem 'Geist',
+    sans-serif;
+}
+.t-label {
+  font:
+    500 0.75rem/1rem 'Geist',
+    sans-serif;
+}
+.t-caption {
+  font:
+    400 0.6875rem/1rem 'Geist',
+    sans-serif;
+}
+.t-overline {
+  font:
+    500 0.6875rem/1rem 'Geist',
+    sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
 .mono {
   font-family: 'Geist Mono', monospace;
+}
+/* A figure (adopt-design-tokens-v2 task 9.1; DESIGN.md The Machine-String Rule): money, counts,
+   token counts, durations, times and percentages are Geist with tabular figures — never Mono,
+   which is for the strings a machine emitted or will parse — so a column of figures aligns by
+   digit. After `.mono` and the role classes: same specificity, so it wins the family. */
+.figure {
+  font-family: 'Geist', sans-serif;
+  font-variant-numeric: tabular-nums;
 }
 
 .panel {
@@ -191,38 +376,65 @@ select:focus {
   box-shadow: var(--shadow);
 }
 .card {
-  padding: 16px 18px;
+  padding: 16px;
 }
 
 .stat-label {
   font:
-    400 12px 'Geist',
+    400 0.75rem/1rem 'Geist',
     sans-serif;
   color: var(--text3);
   margin-bottom: 8px;
 }
-.stat-value {
-  font:
-    600 26px 'Geist',
-    sans-serif;
-  letter-spacing: -0.03em;
+
+/* The readout strip (DESIGN.md Readout strip; adopt-design-tokens-v2 task 12.1): ONE panel
+   whose cells sit side by side, ruled apart by the Soft Hairline — never a filled band. Each
+   cell is a `.card`, so it takes the card padding at every width (16px, 12px below narrow)
+   without a density step of its own. The focal cell gets the larger share: its sub-line is
+   the longest qualification (Costs states two ledgers and a count). Below narrow the cells
+   stack, focal first (the narrow block). */
+.rs-readout {
+  display: flex;
 }
-.stat-sub {
-  font:
-    400 11.5px 'Geist',
-    sans-serif;
+.readout-cell {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.readout-cell--focal {
+  flex-grow: 2;
+}
+.readout-cell + .readout-cell {
+  border-left: 1px solid var(--border2);
+}
+/* A Title cell: its label and figure on one line, sharing a baseline. */
+.readout-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 8px;
+}
+.readout-label,
+.readout-sub {
   color: var(--text3);
-  margin-top: 5px;
+}
+/* A figure: tabular Geist, never truncated or broken (figures never truncate). */
+.readout-figure {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .section-title {
   font:
-    500 13px 'Geist',
+    500 0.8125rem/1.25rem 'Geist',
     sans-serif;
+  text-wrap: balance;
 }
 .upper-label {
   font:
-    500 11px 'Geist',
+    500 0.6875rem/1rem 'Geist',
     sans-serif;
   color: var(--text3);
   text-transform: uppercase;
@@ -230,68 +442,126 @@ select:focus {
 }
 
 .btn-primary {
-  padding: 7px 14px;
+  padding: 7px 13px;
   background: var(--accent);
   color: #fff;
-  border-radius: 7px;
+  /* Transparent on the fill, so a filled and a bordered button of one height family are
+     the same box (D4): 7 + 16 + 7 + 2 × 1 = 32px. */
+  border: 1px solid transparent;
+  border-radius: 6px;
   font:
-    500 12.5px 'Geist',
+    500 0.8125rem/1rem 'Geist',
     sans-serif;
   cursor: pointer;
   user-select: none;
 }
 .btn-primary:hover {
-  background: var(--accent-deep);
+  background: var(--accent-fill-hover);
+}
+/* Pressed applies instantly: no transition, so the darker fill lands on press. */
+.btn-primary:active {
+  background: var(--accent-fill-pressed);
+  transition: none;
 }
 
 .btn-ghost {
-  padding: 4px 10px;
+  padding: 3px 10px;
   border: 1px solid var(--border);
   border-radius: 6px;
   font:
-    500 11.5px 'Geist',
+    500 0.75rem/1rem 'Geist',
     sans-serif;
   cursor: pointer;
   color: var(--text2);
   user-select: none;
 }
 .btn-ghost:hover {
-  border-color: var(--accent);
-  color: var(--accent);
+  border-color: var(--accent-deep);
+  color: var(--accent-deep);
 }
+/* Pressed applies instantly (dashboard-core "Each variant has a pressed tone"): the ghost
+   takes the indigo wash, with no transition, and never lifts, glows or scales. */
+.btn-ghost:active {
+  background: var(--accent-bg);
+  transition: none;
+}
+/* A ghost button that is a pressed toggle (Users' registration mode, `aria-pressed`) marks the
+   chosen mode with the Selected state (D8): the wash, a deep-indigo label and its own 1px edge
+   in deep indigo. It names `:hover` and `:active`, so the selection holds through both. */
+.btn-ghost[aria-pressed='true'],
+.btn-ghost[aria-pressed='true']:hover,
+.btn-ghost[aria-pressed='true']:active {
+  font-weight: 500;
+  color: var(--accent-deep);
+  background: var(--accent-bg);
+  border-color: var(--accent-deep);
+}
+/* Interim (adopt-design-tokens-v2 D18): the hover TEXT takes --amber-text, because the
+   --amber fill reads 2.81:1 on white, under the 4.5:1 text floor. The border keeps the
+   fill. adopt-red-destructive-actions deletes this class. */
 .btn-ghost--amber:hover {
   border-color: var(--amber);
-  color: var(--amber);
+  color: var(--amber-text);
+}
+/* Its pressed tone is its own wash, as a destructive ghost's is (DESIGN.md Buttons), so the
+   interim variant never borrows the indigo wash. */
+.btn-ghost--amber:active {
+  background: var(--amber-bg);
+  transition: none;
 }
 
 .btn-cancel {
-  padding: 7px 14px;
+  padding: 7px 13px;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 6px;
   font:
-    500 12.5px 'Geist',
+    500 0.8125rem/1rem 'Geist',
     sans-serif;
   cursor: pointer;
   color: var(--text2);
   user-select: none;
 }
+/* Secondary: the hover tone with Ink text, and the chip tone the moment it is pressed. */
 .btn-cancel:hover {
   background: var(--hover);
+  color: var(--text);
+}
+.btn-cancel:active {
+  background: var(--chip);
+  transition: none;
 }
 
+/* A static chip (a tag, not a control): 20px — 2 + 16 + 2 — in the height family's table
+   (D4). An inline-block, so its box is its 1rem line plus padding on any face; as a plain
+   inline box its height would be the font's own ascent and descent instead. */
 .chip {
+  display: inline-block;
   padding: 2px 8px;
   background: var(--chip);
-  border-radius: 10px;
-  font-size: 11px;
+  border-radius: 6px;
+  font-size: 0.6875rem;
+  line-height: 1rem;
+}
+
+/* A nav item's count. It sits on the item's 16px line, not in a 20px static chip, so the
+   item stays the height family's 32px (D4) whether or not it carries a count. */
+/* A nav item's count (DESIGN.md Navigation: "counts aligned right in Ink 3 tabular figures"):
+   a figure, so Geist with tabular numerals, never Mono (task 9.1). */
+.nav-count {
+  padding: 0 8px;
+  background: var(--chip);
+  border-radius: 6px;
+  font:
+    500 0.6875rem/1rem 'Geist',
+    sans-serif;
+  font-variant-numeric: tabular-nums;
+  color: var(--text3);
 }
 
 .link-accent {
-  color: var(--accent);
-  cursor: pointer;
-}
-.link-accent:hover {
   color: var(--accent-deep);
+  cursor: pointer;
+  text-underline-offset: 2px;
 }
 
 .icon-x {
@@ -299,42 +569,72 @@ select:focus {
   cursor: pointer;
 }
 .icon-x:hover {
-  color: var(--red);
+  color: var(--red-text);
 }
 
 .nav-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 7px 10px;
+  /* 7 × 9 inside a 1px transparent edge (D4), which the Selected state colours without
+     moving anything. */
+  padding: 7px 9px;
+  border: 1px solid transparent;
   border-radius: 6px;
+  font:
+    400 0.8125rem/1rem 'Geist',
+    sans-serif;
+  color: var(--text2);
+  background: transparent;
   cursor: pointer;
 }
+/* States (dashboard-core "Selectable controls, fields and the endpoint chip show their
+   hover and pressed states"; adopt-design-tokens-v2 D19). Idle is Ink 2 on nothing; hover
+   is the hover tone; pressed is the chip tone at once (no transition). The current page
+   keeps its Selected look through hover and press: its `[aria-current]` rules name both
+   pseudo-classes, so they outrank them by specificity, not by source order. */
 .nav-item:hover {
   background: var(--hover);
+}
+.nav-item:active {
+  background: var(--chip);
+  transition: none;
+}
+/* The Selected state (adopt-design-tokens-v2 D8; dashboard-core "Every current-item mark uses
+   one Selected state"): the wash, a deep-indigo label and icon at 500, and the 1px edge the
+   item already carries at rest, turned deep indigo — a border, never a shadow, so it
+   survives the dark theme and moves nothing. The wash alone (1.07–1.16:1) never carries it. */
+.nav-item[aria-current='page'],
+.nav-item[aria-current='page']:hover,
+.nav-item[aria-current='page']:active {
+  font-weight: 500;
+  color: var(--accent-deep);
+  background: var(--accent-bg);
+  border-color: var(--accent-deep);
 }
 /* icon + label as one left group so the count badge stays right-aligned under
    the button's space-between; icon inherits the button currentColor. */
 .nav-item-label {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 8px;
   min-width: 0;
 }
 
 .setup-card {
-  margin: 14px 10px 0;
-  padding: 9px 11px;
+  margin: 16px 8px 0;
+  padding: 8px 12px;
   border: 1px dashed var(--border);
-  border-radius: 8px;
+  border-radius: 6px;
   cursor: pointer;
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 8px;
 }
+/* Hover is the hover tone with the border unchanged (adopt-design-tokens-v2 D11 / D19): a
+   hover fill or border is never indigo, by the Indigo Budget. */
 .setup-card:hover {
-  border-color: var(--accent);
-  background: var(--accent-bg);
+  background: var(--hover);
 }
 
 .theme-toggle {
@@ -343,7 +643,7 @@ select:focus {
   gap: 8px;
   cursor: pointer;
   font:
-    400 12px 'Geist',
+    400 0.75rem/1rem 'Geist',
     sans-serif;
   color: var(--text2);
   padding: 4px 0;
@@ -355,141 +655,535 @@ select:focus {
 .endpoint-chip {
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 5px 11px;
+  gap: 8px;
+  padding: 3px 10px;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 6px;
   font:
-    400 11.5px 'Geist Mono',
+    400 0.75rem/1rem 'Geist Mono',
     monospace;
   color: var(--text2);
   cursor: pointer;
 }
+/* Hover: a deep-indigo edge with Ink text; pressed: the indigo wash at once (D19). After a
+   successful copy it reads `Copied` in the same stacked cell, so its width holds. */
 .endpoint-chip:hover {
-  border-color: var(--accent);
+  border-color: var(--accent-deep);
   color: var(--text);
+}
+.endpoint-chip:active {
+  background: var(--accent-bg);
+  transition: none;
+}
+
+/* Two labels in one grid cell (StackedLabel.tsx; D14 / D19): the cell is the wider label's
+   width, and the inactive one is hidden but still laid out, so swapping them moves nothing. */
+.stacked-label {
+  display: inline-grid;
+}
+.stacked-label > .stacked-label-item {
+  grid-area: 1 / 1;
+}
+.stacked-label > .stacked-label-item[data-shown='false'] {
+  visibility: hidden;
+}
+/* A busy button is natively disabled but not unavailable, so it keeps full opacity
+   (DESIGN.md Buttons, "Busy"); the 60% disabled look is for a temporarily unavailable
+   action only. */
+button:disabled[aria-busy='true'] {
+  opacity: 1;
+  cursor: progress;
 }
 
 .row-hover:hover {
   background: var(--hover);
 }
 
+/* A filter chip (DESIGN.md Chips; adopt-design-tokens-v2 D4 / D19): a 24px control, 3 × 8
+   inside its 1px edge. Its states live here, not inline, because an inline background
+   outranks `:hover`: hover is the hover tone, pressed the chip tone at once, and an active
+   filter keeps its Selected look through both. Its rest edge is the Control Edge (D2): the
+   edge is a filter chip's affordance, so it clears 3:1, and Selected recolours that same 1px
+   edge, so selecting moves nothing (D8). */
+.filter-chip {
+  padding: 3px 8px;
+  border: 1px solid var(--border-control);
+  border-radius: 6px;
+  font:
+    500 0.75rem/1rem 'Geist',
+    sans-serif;
+  color: var(--text2);
+  background: var(--panel);
+  cursor: pointer;
+}
+.filter-chip:hover {
+  background: var(--hover);
+}
+.filter-chip:active {
+  background: var(--chip);
+  transition: none;
+}
+.filter-chip[aria-pressed='true'],
+.filter-chip[aria-pressed='true']:hover,
+.filter-chip[aria-pressed='true']:active {
+  font-weight: 500;
+  color: var(--accent-deep);
+  background: var(--accent-bg);
+  border-color: var(--accent-deep);
+}
+
+/* The top bar's Live pill: a 24px member of the height family (D4), 3 × 10 inside its 1px
+   hairline. Not a control — it states the transport — so it carries no hover or cursor. */
+.live-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font:
+    500 0.75rem/1rem 'Geist',
+    sans-serif;
+}
+
+/* The sidebar's account trigger: a 32px control (D4). Its 20px avatar is the tallest thing
+   in it, so it centres in the family height rather than deriving padding from a 16px line. */
+.account-trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  cursor: pointer;
+}
+
+/* An account-menu item: a 32px row, 7 × 12 inside a 1px transparent edge (D4). */
+.menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 7px 12px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font:
+    400 0.8125rem/1rem 'Geist',
+    sans-serif;
+}
+
 .table-head {
-  padding: 8px 18px;
+  /* A record table's head row (dashboard-core "Record tables share one row, head and
+     group-boundary treatment"; adopt-design-tokens-v2 task 9.2): 32px, in the Overline role,
+     16px in from the row edge with 16px between columns, like every row under it. */
+  min-height: 32px;
+  padding: 0 16px;
+  align-items: center;
   border-bottom: 1px solid var(--border2);
   font:
-    500 10.5px 'Geist',
+    500 0.6875rem/1rem 'Geist',
     sans-serif;
   color: var(--text3);
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.06em;
   display: grid;
-  gap: 0 14px;
+  gap: 0 16px;
+}
+
+/* A head label stays on the head's one 32px line: where a track is narrower than its label
+   (Agents' "Requests · 24h" below a ~1100px viewport), the label is cut with an end ellipsis
+   and keeps its full text as content and `title` (task 9.2; notes/flags.md F6). `min-width: 0`
+   keeps a nowrap label from widening its track, so the head stays aligned with the rows. */
+.table-head > * {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The record-table cells (task 9.2; DESIGN.md Layout "Tables" and Long content):
+   - a FIGURE cell (cost, tokens, latency, counts) is right-aligned in tabular figures and
+     never truncated — a figure that does not fit wraps, it is never cut;
+   - an IDENTIFIER cell (a model id, a provider or agent name, an email, a tier) is cut with an
+     end ellipsis on one line, and keeps its full text as content and as its `title`.
+   Grid-mode only for the cut: each stacked-record query below lets an identifier wrap again,
+   which is where a narrow container has the room for it. */
+.cell-figure {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.cell-id {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* A semantic-table cell that holds an identifier gives up its min-content width
+   (`max-width: 0`), so the identifier is cut inside its column rather than widening the
+   table, and claims a fixed share of the row, so at desktop width the full value still fits
+   (the Users tables; an auto table layout would otherwise hand that column no room). */
+.rs-table-users .rs-id-cell {
+  width: 45%;
+  max-width: 0;
+}
+.rs-user-line {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+}
+.rs-user-line > :not(.cell-id) {
+  flex: none;
+}
+/* The semantic tables' head row: 32px in the Overline role, 16px in from the row edge and 8px
+   either side of an inner cell (16px between columns), as the grid tables' head. */
+.rs-table-users th {
+  height: 32px;
+  padding: 0 8px;
+  text-align: left;
+  vertical-align: middle;
+  font:
+    500 0.6875rem/1rem 'Geist',
+    sans-serif;
+  color: var(--text3);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.rs-table-users th:first-child {
+  padding-left: 16px;
+}
+.rs-table-users th:last-child {
+  padding-right: 16px;
+}
+/* A Users row's actions: one line at table width, so the identifier column gives way first;
+   the stacked record lets them wrap (below). */
+.rs-user-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+/* The semantic tables' cells: 16px in from the row edge, 8px either side of an inner boundary
+   (16px between columns), as the grid tables' rows (task 9.2). In classes, not inline: the
+   stacked records restate the padding. */
+.rs-table-users td {
+  padding: 8px;
+}
+.rs-table-users td:first-child {
+  padding-left: 16px;
+}
+.rs-table-users td:last-child {
+  padding-right: 16px;
+}
+/* Every record row takes the hover tone (DESIGN.md State matrix, Table row). */
+.rs-batch-row:hover,
+.rs-table-users tbody tr:hover {
+  background: var(--hover);
 }
 
 /* Agent run boundary in the request table (add-agent-request-attribution). A
    sibling BLOCK, deliberately not part of `.req-row`'s grid — so it adds no
    track at any width and needs no change to the column template or the
    container-query stack breakpoint. Greyscale only: the palette is
-   single-accent, and identity is carried by the text, never by a hue. */
+   single-accent, and identity is carried by the text, never by a hue.
+
+   An Overline label above a Soft Hairline, never a filled band (dashboard-core "Record tables
+   share one row, head and group-boundary treatment"; DESIGN.md The Hairline Rule;
+   adopt-design-tokens-v2 task 9.3): tonal fills mark state, not structure. */
 .rs-agent-boundary {
   display: flex;
   align-items: center;
-  gap: 7px;
-  /* The table's own rhythm: `.table-head` is 8px 18px and `.req-row` 9px 18px.
-     A group boundary is head-like, so it takes the head's value rather than
-     inventing an off-grid one. */
-  padding: 8px 18px;
-  background: var(--chip);
+  gap: 8px;
+  /* The table's own rhythm: 16px in from the row edge. A group boundary is head-like, so it
+     takes the head's 32px rather than inventing an off-grid height. */
+  min-height: 32px;
+  padding: 8px 16px;
+  background: transparent;
   border-bottom: 1px solid var(--border2);
   font:
-    500 10.5px 'Geist',
+    500 0.6875rem/1rem 'Geist',
     sans-serif;
   color: var(--text3);
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.06em;
 }
 
 .req-row {
   display: grid;
   width: 100%;
-  gap: 0 14px;
-  padding: 9px 18px;
+  min-height: 32px;
+  gap: 0 16px;
+  padding: 8px 16px;
   border-bottom: 1px solid var(--border2);
   font:
-    400 12px 'Geist',
+    400 0.75rem/1rem 'Geist',
     sans-serif;
   color: var(--text2);
   align-items: center;
   cursor: pointer;
 }
+/* The open request row takes the Selected state (D8; DESIGN.md Selected state): the wash, and
+   a 1px deep-indigo edge drawn as an INSET outline, so the row's geometry does not change. Its
+   cells keep their Ink / Ink 2 / Ink 3 text, which the contrast suite holds at 4.5:1 on the
+   wash. It names `:hover` so the selection holds under the pointer (`.row-hover:hover`). */
+.req-row[aria-expanded='true'],
+.req-row[aria-expanded='true']:hover {
+  background: var(--accent-bg);
+  outline: 1px solid var(--accent-deep);
+  outline-offset: -1px;
+}
+
+/* The focus ring's geometry, stated per kind of control (adopt-design-tokens-v2 task 6.3;
+   design.md D8; DESIGN.md Focus ring). There is one ring — 2px of the accent, from the global
+   `:focus-visible` rule, never drawn with box-shadow — and three places to put it:
+   - a FILLED control (the indigo primary, a switch track, a selected wash) takes it 2px
+     outside its box, so the ring only ever touches surface colours and never merges with the
+     fill (at 0 or below it would sit on the fill at 1.00–1.42:1);
+   - a FLUSH row or list item (a request row, a nav item, a menu item) sits against its
+     container's edge, so it draws the ring inset, on its own fill. On the open request row the
+     ring replaces the 1px selected outline while focus is there: the stronger mark wins, and
+     the wash and `aria-expanded` still carry the selection (D8);
+   - inside a CLIPPED panel (a tier card is `overflow: hidden`) a control keeps 4px of
+     clearance from the clip, or draws its ring inset.
+   This block sits after the selected row's rule on purpose: its row selectors match that
+   rule's specificity, and the later rule wins the tie. */
+.btn-primary:focus-visible,
+.toggle:focus-visible,
+.rs-seg:focus-visible,
+.filter-chip:focus-visible,
+.kind-card:focus-visible {
+  outline-offset: 2px;
+}
+.req-row:focus-visible,
+.req-row[aria-expanded='true']:focus-visible,
+.nav-item:focus-visible,
+.menu-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
 
 .bar-track {
   height: 5px;
   background: var(--border2);
-  border-radius: 3px;
+  border-radius: 4px;
 }
 .bar-fill {
   height: 100%;
-  border-radius: 3px;
+  border-radius: 4px;
 }
 
+/* The switch (adopt-design-tokens-v2 D3). One size pair, held here rather than inline so
+   the lock (STYLESEED.md `switch`) and the geometry suite read the same values: the drawn
+   track is 36 × 20 (md) / 32 × 18 (sm) — the height family's 20 / 18px member — and a 10px
+   radius makes it an exact capsule at both sizes. A switch is never indigo (the Indigo
+   Budget): on is Ink, off is Control Edge, and the knob is the panel colour, inset 2px. */
 .toggle {
   flex: none;
-  border-radius: 9px;
+  border-radius: 10px;
   position: relative;
+  cursor: pointer;
   transition: background 0.15s;
+}
+.toggle--md {
+  width: 36px;
+  height: 20px;
+}
+.toggle--sm {
+  width: 32px;
+  height: 18px;
 }
 .toggle-knob {
   position: absolute;
   top: 2px;
+  left: 2px;
   border-radius: 50%;
-  background: #fff;
+  background: var(--panel);
   box-shadow: var(--shadow-knob);
   transition: left 0.15s;
 }
+.toggle--md .toggle-knob {
+  width: 16px;
+  height: 16px;
+}
+.toggle--sm .toggle-knob {
+  width: 14px;
+  height: 14px;
+}
+/* On: the knob sits 2px from the far end (track − 2px inset − knob). */
+.toggle--md.toggle--on .toggle-knob {
+  left: 18px;
+}
+.toggle--sm.toggle--on .toggle-knob {
+  left: 16px;
+}
 .toggle--on {
-  background: var(--accent);
+  background: var(--text);
 }
 .toggle--off {
-  background: var(--text3);
+  background: var(--border-control);
+}
+/* Busy (`locked`) and unavailable are `aria-disabled`, never native `disabled`: the look
+   is kept and so is focus (dashboard-core "A busy switch keeps its look and its focus"). */
+.toggle[aria-disabled='true'] {
+  cursor: not-allowed;
 }
 /* The instance cannot enable this switch (split-auto-routing-readout-setup D7): distinct
-   from off (a filled grey track) and from busy (`locked`, which keeps the on/off look).
-   --text3 meets 3:1 on bg and panel in both themes (styles.contrast.test.ts). */
+   from off (a filled Control Edge track) and from busy (`locked`, which keeps the on/off
+   look). --text3 meets 3:1 on bg and panel in both themes (styles.contrast.test.ts). The
+   knob sits 1px inside the dashed border, so it keeps the 2px inset from the drawn edge. */
 .toggle--unavailable {
   background: transparent;
   border: 1px dashed var(--text3);
 }
 .toggle--unavailable .toggle-knob {
   top: 1px;
+  left: 1px;
   background: var(--text3);
 }
 
+/* Entry fields (DESIGN.md Inputs / Fields; adopt-design-tokens-v2 task 8.1, D2 / D20). Every
+   text input, select, textarea and the add-model combobox input sits INTO the panel on the
+   Canvas fill, inside a 1px Control Edge — its boundary is its affordance, so it clears 3:1
+   on every surface (the --border hairline is 1.13–1.20:1) — with the 6px control radius. The
+   look reaches every field through these three classes, and `entryFields.test.ts` fails a
+   field outside them. */
+.input,
+.select,
+.mp-input {
+  background: var(--bg);
+  border: 1px solid var(--border-control);
+  border-radius: 6px;
+  color: var(--text);
+}
 .input,
 .select {
   width: 100%;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  padding: 8px 11px;
+  padding: 7px 11px;
   font:
-    400 12.5px 'Geist',
+    400 0.8125rem/1rem 'Geist',
     sans-serif;
-  color: var(--text);
+}
+/* A field that takes an identifier (a URL, a key, a header value, a host): Geist Mono at the
+   Mono role's 12px (DESIGN.md The Machine-String Rule). A class rather than an inline `font`,
+   which would outrank the comfort context's 16px input text. */
+.input--mono {
+  font-family: 'Geist Mono', monospace;
+  font-size: 0.75rem;
+}
+/* A field that takes a figure (an amount, a price, a timeout): Geist with tabular figures,
+   never Mono — numbers are not identifiers (task 9.1). */
+.input--figure {
+  font-variant-numeric: tabular-nums;
+}
+
+/* The field help and the invalid message (task 8.2; DESIGN.md Inputs / Fields). Both sit 4px
+   under the field in the Caption role, and the field names whichever one is showing through
+   `aria-describedby`. The message REPLACES the help while the field is invalid, and its red
+   is the text variant (--red-text), never the --red fill, which is under 4.5:1 as text. */
+.field-help,
+.field-error {
+  margin-top: 4px;
+  font:
+    400 0.6875rem/1rem 'Geist',
+    sans-serif;
+}
+.field-help {
+  color: var(--text3);
+}
+.field-error {
+  color: var(--red-text);
+}
+/* The action beside a row of labelled fields (the Routing tier and header-rule forms): its
+   wrapper opens with one empty line in the field label's role, so the button's top meets the
+   fields' tops — one row, one height (D4) — whatever note grows under a field, at any root
+   font size. The row aligns its items to the start. */
+.field-action::before {
+  content: '\00a0' / '';
+  display: block;
+  margin-bottom: 4px;
+  font:
+    500 0.75rem/1rem 'Geist',
+    sans-serif;
 }
 
 .field-label {
   font:
-    500 11.5px 'Geist',
+    500 0.75rem/1rem 'Geist',
     sans-serif;
   color: var(--text2);
-  margin-bottom: 5px;
+  margin-bottom: 4px;
 }
 
+/* A provider-kind option card (Modals, Setup). Its fill and edge live here, not inline,
+   so its hover and pressed tones can reach it (D19): the hover tone, then the chip tone at
+   once; the chosen card keeps its Selected look through both. */
+.kind-card {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  text-align: left;
+  cursor: pointer;
+}
+/* Hover is the hover tone with the border unchanged: a hover border is never indigo (the
+   Indigo Budget, adopt-design-tokens-v2 D11). */
 .kind-card:hover {
-  border-color: var(--accent) !important;
+  background: var(--hover);
+}
+.kind-card:active {
+  background: var(--chip);
+  transition: none;
+}
+/* The chosen kind takes the Selected state (D8): its 1px edge turns deep indigo over the
+   wash, and its name turns deep indigo at 500 — the raw accent edge it had is gone. */
+.kind-card[aria-pressed='true'],
+.kind-card[aria-pressed='true']:hover,
+.kind-card[aria-pressed='true']:active {
+  border-color: var(--accent-deep);
+  background: var(--accent-bg);
+}
+/* The kind's name. Its colour lives here rather than inline, so the Selected rule reaches it. */
+.kind-card-name {
+  display: block;
+  font-weight: 500;
+  color: var(--text);
+}
+.kind-card[aria-pressed='true'] .kind-card-name {
+  color: var(--accent-deep);
+}
+
+/* The Setup guide's step marker: a 22px node. Idle is neutral; a done step is green with a
+   check; the current step (`aria-current="step"` on its button) takes the Selected state on
+   the marker (D8) — the wash, a 1px deep-indigo edge and a deep-indigo numeral, where it was
+   an accent fill with a white numeral. A done step that is also current stays green. */
+.step-marker {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  /* 500, the Selected label weight, on every marker: the current step's numeral is set at the
+     state's weight, and the others match it, so the row of nodes reads as one set. */
+  font:
+    500 0.6875rem/1rem 'Geist',
+    sans-serif;
+  color: var(--text3);
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+.step-marker--done {
+  color: #fff;
+  background: var(--green);
+  border-color: var(--green);
+}
+[aria-current='step'] > .step-marker:not(.step-marker--done) {
+  color: var(--accent-deep);
+  background: var(--accent-bg);
+  border-color: var(--accent-deep);
 }
 
 .overlay {
@@ -517,8 +1211,9 @@ select:focus {
 .drawer-close {
   cursor: pointer;
   color: var(--text3);
-  font-size: 16px;
-  padding: 2px 6px;
+  font-size: 0.9375rem;
+  padding: 2px 8px;
+  line-height: 1.25rem;
 }
 .drawer-close:hover {
   color: var(--text);
@@ -527,14 +1222,20 @@ select:focus {
 .kv-box {
   background: var(--bg);
   border: 1px solid var(--border2);
-  border-radius: 9px;
-  padding: 12px 14px;
+  border-radius: 6px;
+  padding: 12px;
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 8px;
   font:
-    400 11.5px 'Geist Mono',
+    400 0.75rem/1rem 'Geist Mono',
     monospace;
+}
+/* A key–value box whose values are figures (the inspector's Usage & cost): Geist with tabular
+   numerals, its identifiers marked `.mono` one by one (task 9.1). */
+.kv-box--figures {
+  font-family: 'Geist', sans-serif;
+  font-variant-numeric: tabular-nums;
 }
 
 .modal-backdrop {
@@ -561,10 +1262,10 @@ select:focus {
 .drawer-body {
   flex: 1;
   overflow-y: auto;
-  padding: 18px 20px;
+  padding: 20px;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 16px;
 }
 
 /* Confirmation dialog geometry (phase2-responsive-overlays, task 2.1).
@@ -589,34 +1290,100 @@ select:focus {
   max-width: 92vw;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 10px;
   box-shadow: var(--shadow-pop);
-  padding: 22px 24px;
+  padding: 24px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
 }
 .modal-title {
   font:
-    600 15px 'Geist',
+    600 0.9375rem/1.25rem 'Geist',
     sans-serif;
   letter-spacing: -0.01em;
+  text-wrap: balance;
 }
 
+/* The toast bar (adopt-design-tokens-v2 D13; DESIGN.md Overlays › Toast): an inverted bar on
+   the 32px family — a border-box `min-height` with the 8px × 16px padding around its 16px
+   line, so one line is exactly 32px and a long message grows rather than clips — 24px from
+   the bottom (`toast-offset`). It sits inside one of two always-mounted live regions
+   (`components/Toast.tsx`), which carry the role; the bar carries only the look. */
 .toast {
   position: fixed;
-  bottom: 22px;
+  bottom: 24px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 60;
+  box-sizing: border-box;
+  min-height: 32px;
   background: var(--text);
   color: var(--bg);
-  padding: 9px 18px;
-  border-radius: 9px;
+  padding: 8px 16px;
+  border-radius: 10px;
   font:
-    500 12.5px 'Geist',
+    500 0.8125rem/1rem 'Geist',
     sans-serif;
   box-shadow: var(--shadow-toast);
+}
+
+/* Notices (adopt-design-tokens-v2 D15; DESIGN.md Notices; `components/Notice.tsx`). One
+   anatomy in four tones: a status-word title in the Section role and the tone's text colour,
+   one or two sentences of Ink 2 body, and at most one ghost action. The shape is the tone's
+   wash, a 6px radius and 12px padding — no border, no icon, no coloured side stripe. The
+   text block takes the row and the action sits beside it, wrapping under it only when the
+   row cannot hold both. Every pair is pinned in `styles.contrast.test.ts`. */
+.notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 12px;
+  border-radius: 6px;
+}
+.notice-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+.notice-body {
+  color: var(--text2);
+  text-wrap: pretty;
+}
+.notice-action {
+  flex: none;
+}
+/* The action's label never sits on a wash (DESIGN.md): the ghost takes the Panel fill at rest
+   and on hover; pressed keeps the ghost's own pressed tone. */
+.notice .notice-action:not(:active) {
+  background: var(--panel);
+}
+.notice--info {
+  background: var(--chip);
+}
+.notice--info .notice-title {
+  color: var(--text2);
+}
+.notice--success {
+  background: var(--green-bg);
+}
+.notice--success .notice-title {
+  color: var(--green-text);
+}
+.notice--caution {
+  background: var(--amber-bg);
+}
+.notice--caution .notice-title {
+  color: var(--amber-text);
+}
+.notice--failure {
+  background: var(--red-bg);
+}
+.notice--failure .notice-title {
+  color: var(--red-text);
 }
 
 /* Visually hidden but exposed to assistive tech (labels, live regions). */
@@ -632,17 +1399,15 @@ select:focus {
   border: 0;
 }
 
-/* ModelPicker — the tier editor's add-model combobox. */
+/* ModelPicker — the tier editor's add-model combobox. Its fill, Control Edge and radius are
+   the entry-field rule's (task 8.1): it is a text field, so it draws the solid 3:1 edge every
+   field draws rather than the dashed hairline it had. */
 .mp-input {
-  background: var(--bg);
-  border: 1px dashed var(--border);
-  border-radius: 7px;
-  padding: 5px 24px 5px 8px;
+  padding: 7px 24px 7px 8px;
   width: 220px;
   font:
-    400 12px 'Geist',
+    400 0.75rem/1rem 'Geist',
     sans-serif;
-  color: var(--text);
 }
 .mp-input::placeholder {
   color: var(--text3);
@@ -653,8 +1418,9 @@ select:focus {
   top: 50%;
   transform: translateY(-50%);
   pointer-events: none;
-  font-size: 9px;
+  font-size: 0.6875rem;
   color: var(--text3);
+  line-height: 1rem;
 }
 .mp-panel {
   position: fixed;
@@ -675,22 +1441,22 @@ select:focus {
 }
 .mp-group-h {
   font:
-    500 10.5px 'Geist',
+    500 0.6875rem/1rem 'Geist',
     sans-serif;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--text3);
-  padding: 6px 8px 3px;
+  padding: 4px 8px;
 }
 .mp-option {
   display: flex;
   align-items: baseline;
-  gap: 14px;
-  padding: 7px 10px;
+  gap: 16px;
+  padding: 8px 12px;
   border-radius: 6px;
   cursor: pointer;
   font:
-    400 12px 'Geist Mono',
+    400 0.75rem/1rem 'Geist Mono',
     monospace;
   color: var(--text);
 }
@@ -701,7 +1467,7 @@ select:focus {
    in the neutral secondary tone (never colour alone). */
 .mp-unlisted {
   font:
-    400 11px 'Geist',
+    400 0.6875rem/1rem 'Geist',
     sans-serif;
   color: var(--text3);
 }
@@ -709,8 +1475,9 @@ select:focus {
 .mp-price {
   margin-left: auto;
   font:
-    400 11px 'Geist Mono',
-    monospace;
+    400 0.6875rem/1rem 'Geist',
+    sans-serif;
+  font-variant-numeric: tabular-nums;
   color: var(--text3);
 }
 .mp-option.active,
@@ -723,15 +1490,15 @@ select:focus {
 .mp-empty {
   padding: 12px 12px;
   font:
-    400 11.5px 'Geist',
+    400 0.6875rem/1rem 'Geist',
     sans-serif;
   color: var(--text3);
 }
 .mp-footer {
-  padding: 6px 12px;
+  padding: 8px 12px;
   border-top: 1px solid var(--border2);
   font:
-    400 10.5px 'Geist',
+    400 0.6875rem/1rem 'Geist',
     sans-serif;
   color: var(--text3);
 }
@@ -739,13 +1506,12 @@ select:focus {
 .snippet-box {
   background: var(--bg);
   border: 1px solid var(--border2);
-  border-radius: 8px;
-  padding: 13px 15px;
+  border-radius: 6px;
+  padding: 12px 16px;
   font:
-    400 11.5px 'Geist Mono',
+    400 0.75rem/1rem 'Geist Mono',
     monospace;
   color: var(--text2);
-  line-height: 1.75;
   white-space: pre-wrap;
 }
 
@@ -781,7 +1547,7 @@ select:focus {
   /* Between the row's content and its annotation line, NOT between columns — the column
      gutter is the chain's, inherited through the subgrid. */
   row-gap: 4px;
-  padding: 9px 18px;
+  padding: 8px 16px;
   border-bottom: 1px solid var(--border2);
   cursor: grab;
 }
@@ -820,9 +1586,9 @@ select:focus {
   flex-direction: column;
   gap: 4px;
   font:
-    400 10.5px 'Geist',
+    400 0.6875rem/1rem 'Geist',
     sans-serif;
-  color: var(--amber);
+  color: var(--amber-text);
 }
 
 /* The batch reservation control (add-batch-mode-routing). Sits before the action group
@@ -835,7 +1601,7 @@ select:focus {
 .chain-mode {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   min-width: 0;
 }
 
@@ -869,9 +1635,9 @@ select:focus {
   align-items: center;
   justify-content: center;
   border: 1px solid var(--border);
-  border-radius: 50%;
+  border-radius: 6px;
   font:
-    500 10px 'Geist',
+    500 0.6875rem/1rem 'Geist',
     sans-serif;
   color: var(--text3);
   cursor: help;
@@ -879,8 +1645,8 @@ select:focus {
 }
 .chain-help-trigger:hover,
 .chain-help-trigger:focus-visible {
-  border-color: var(--accent);
-  color: var(--accent);
+  border-color: var(--accent-deep);
+  color: var(--accent-deep);
 }
 /* The 24px base floor in both axes (STYLESEED `target-base`) reached by an expanded
    hit area rather than a bigger circle — the same device the switch beside it uses. */
@@ -907,21 +1673,20 @@ select:focus {
   display: block;
   position: fixed;
   width: 300px;
-  padding: 10px 12px;
+  padding: 8px 12px;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 10px;
   box-shadow: var(--shadow-pop);
 }
 .chain-help-line {
   font:
-    400 11.5px 'Geist',
+    400 0.6875rem/1rem 'Geist',
     sans-serif;
   color: var(--text2);
-  line-height: 1.5;
 }
 .chain-help-line + .chain-help-line {
-  margin-top: 6px;
+  margin-top: 8px;
 }
 
 /* The tier card's header. Held here rather than inline so the narrow layer can let it
@@ -931,8 +1696,8 @@ select:focus {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 10px;
-  padding: 13px 18px;
+  gap: 8px;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--border2);
 }
 /* The hint names an affordance, so only the one that exists may show. */
@@ -959,9 +1724,8 @@ select:focus {
   color: var(--text2);
   cursor: pointer;
   font:
-    400 13px 'Geist',
+    400 0.8125rem/1rem 'Geist',
     sans-serif;
-  line-height: 1;
   align-items: center;
   justify-content: center;
 }
@@ -989,9 +1753,9 @@ select:focus {
   /* `--text3`, not the decorative `--faint` the glyph used to carry: the handle is now
      an interactive control, and SS-2 holds those to the ≥ 3:1 non-text floor. */
   color: var(--text3);
-  font-size: 13px;
+  font-size: 0.8125rem;
   letter-spacing: 1px;
-  line-height: 1;
+  line-height: 1rem;
   cursor: grab;
 }
 .drag-handle:hover {
@@ -1003,9 +1767,9 @@ select:focus {
   width: 64px;
   padding: 2px 0;
   text-align: center;
-  border-radius: 9px;
+  border-radius: 6px;
   font:
-    500 10.5px 'Geist',
+    500 0.6875rem/1rem 'Geist',
     sans-serif;
 }
 
@@ -1017,8 +1781,9 @@ select:focus {
  * change the lock and this file together, never one alone.
  *
  * Locked values (STYLESEED.md § Responsive):
- *   narrow 768px viewport · table-fit 960/680/660px container · table-fit-targets 940px
- *   rail-collapsed 56px · gutter-narrow 18px 16px · target-base 24px · target-comfort 44px
+ *   narrow 768px viewport · table-fit requests/batches/agents/users 980/1000/740/660px
+ *   container · table-fit-targets 900px · pipeline-fit 820/540px · layers-fit 480px
+ *   rail-collapsed 56px · gutter-narrow 16px · target-base 24px · target-comfort 44px
  *
  * WHY CLASSES, NOT ELEMENT SELECTORS: layout lives in 783 inline style attributes, and an
  * inline style beats any class — but ONLY on the properties it actually declares. No
@@ -1032,13 +1797,13 @@ select:focus {
    grids below: an inline `padding` would outrank the narrow override and the media query
    would silently do nothing. */
 .rs-page {
-  padding: 22px 26px;
+  padding: 24px;
 }
 
 /* Setup uses a centred column rather than the standard page container, but its gutter
    costs the same 52px on a phone. */
 .rs-setup-page {
-  padding: 34px 26px 60px;
+  padding: 32px 24px;
   display: flex;
   justify-content: center;
 }
@@ -1046,8 +1811,8 @@ select:focus {
 /* The topbar's gutter, held in a class for the same reason as the page container's: an
    inline padding cannot be narrowed by a media query. */
 .rs-topbar {
-  padding: 14px 26px;
-  gap: 10px;
+  padding: 12px 24px;
+  gap: 8px;
 }
 
 /* The nav list. Its gutter is held here, not inline — inline it would defeat the rail's
@@ -1055,8 +1820,22 @@ select:focus {
 .rs-nav-list {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 0 10px;
+  /* Between groups (adopt-design-tokens-v2 task 11.1): 12px above each group's label, 4px
+     below it — more space above a label than below binds it to its own pages. */
+  gap: 12px;
+  padding: 0 8px;
+}
+/* One sidebar group: its Overline label, then its pages, 4px apart as they always were. */
+.nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+/* The group's Overline label (DESIGN.md Navigation groups): Ink 3, inset to sit over the
+   items' icons. It names a group only, never a heading's eyebrow. */
+.nav-group-label {
+  padding: 0 8px;
+  color: var(--text3);
 }
 
 /* The sidebar header (wordmark + rail toggle). Layout held here, not inline, because the
@@ -1065,8 +1844,8 @@ select:focus {
 .rs-nav-header {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 20px 18px 16px;
+  gap: 8px;
+  padding: 20px 16px 16px;
 }
 
 /* The sidebar's setup-guide wrapper and account footer. Their `display` lives here rather
@@ -1101,8 +1880,9 @@ select:focus {
   min-width: 24px;
   color: var(--text3);
   cursor: pointer;
-  font-size: 14px;
+  font-size: 0.8125rem;
   border-radius: 6px;
+  line-height: 1rem;
 }
 .rs-nav-toggle:hover {
   color: var(--text);
@@ -1166,7 +1946,10 @@ select:focus {
 .input,
 .select,
 .req-row,
-.rs-nav-toggle {
+.rs-nav-toggle,
+.account-trigger,
+.filter-chip,
+.kind-card {
   min-height: 24px;
 }
 
@@ -1192,24 +1975,154 @@ select:focus {
   min-height: 24px;
 }
 
-/* The range segmented control. Its padding moved out of the inline object style so a
-   floor can reach it at all — the rendered result is identical. */
-.rs-seg {
-  padding: 4px 12px;
+/* A family control is single-line by definition: its label never wraps, so its height is
+   the family's on any face (measured: under a forced wider face the Routing "Add tier"
+   label wrapped to a 48px button; nowrap keeps it one line and lets its row's field give
+   the width instead). A row that cannot fit wraps its controls, never a label. */
+.btn-primary,
+.btn-cancel,
+.btn-ghost {
+  white-space: nowrap;
 }
 
-/* The switch's VISUAL size is locked design (30×17 sm / 34×19 md); growing it would
-   restyle the control, which this change has no mandate to do. So the hit target is
-   expanded by a centred, invisible ::before instead — the target grows, not one drawn
-   pixel moves. `.toggle` is already position:relative, and the overlay sits inside the
-   button so every click still resolves to it. */
+/* The height family (dashboard-core "Interactive controls share one height family";
+   adopt-design-tokens-v2 D4; STYLESEED.md `height-family`). Every single-line control is
+   one of 32px (default), 24px (small inline), 26px (a segmented option inside its 32px
+   track) or the switch's 20 / 18px drawn track; static chips are 20px and are not controls.
+   Each height is a `min-height` on a border-box with a 1px border (transparent on fills),
+   and the padding is derived from it — (height − 2px border − 16px line) ÷ 2 — so with the
+   rem type a larger root font grows a control instead of clipping its label.
+
+   Declared AFTER the 24px base floor above, which names several of these classes at the
+   same specificity: the later rule is the one that holds. And BEFORE the comfort blocks
+   below, which raise the same classes to 44px. */
+.btn-primary,
+.btn-cancel,
+.input,
+.select,
+.mp-input,
+.nav-item,
+.seg-track,
+.account-trigger,
+.menu-item {
+  min-height: 32px;
+}
+/* A select's own line box is `normal` in Chromium whatever the author sets, so its height
+   follows the font's metrics; an explicit height makes it the family's 32px on any face. The
+   height is the input's own sum, the 1rem line plus 7px padding and a 1px edge each side, so a
+   larger root font grows a select exactly as it grows the input beside it (D4: a larger root
+   grows a control rather than clipping it); at the default 16px root it is 32px. */
+.select {
+  height: calc(1rem + 16px);
+}
+.btn-ghost,
+.endpoint-chip,
+.filter-chip,
+.live-pill {
+  min-height: 24px;
+}
+/* A select in a row of 24px controls (the Requests filter row, a Targets cell): one row, one
+   height. Its 1rem line plus 3px padding and a 1px edge each side: 24px at the default root,
+   growing with the root font as the filter chips beside it do. */
+.select--sm {
+  height: calc(1rem + 8px);
+  min-height: calc(1rem + 8px);
+  padding: 3px 8px;
+  font:
+    500 0.75rem/1rem 'Geist',
+    sans-serif;
+}
+.rs-seg {
+  min-height: 26px;
+}
+
+/* A segmented option (DESIGN.md Segmented control; adopt-design-tokens-v2 D4): 4 × 11
+   inside a 1px transparent edge, so the option is 26px inside the 32px track's 1px edge
+   and 2px inset, and the Selected state colours the edge without moving anything. A column
+   flex at every width, so its label and the zero-height width-holding copy below
+   (`.rs-seg::after`) always stack — the comfort blocks make it a flex container, and in a
+   row the copy would sit BESIDE the label and nearly double the option. */
+.rs-seg {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 11px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font:
+    400 0.75rem/1rem 'Geist',
+    sans-serif;
+  color: var(--text3);
+  background: transparent;
+  cursor: pointer;
+}
+/* Hover, pressed and selected (D19), as on the nav item: the selected option's rules name
+   `:hover` and `:active`, so it keeps its Selected look while pointed at or pressed. */
+.rs-seg:hover {
+  background: var(--hover);
+}
+.rs-seg:active {
+  background: var(--chip);
+  transition: none;
+}
+/* The Selected state (D8): the wash, a deep-indigo label at 500 and the option's own 1px edge
+   turned deep indigo — where the chip-tone fill it replaces sat 1.13:1 from its track. */
+.rs-seg[aria-pressed='true'],
+.rs-seg[aria-pressed='true']:hover,
+.rs-seg[aria-pressed='true']:active {
+  font-weight: 500;
+  color: var(--accent-deep);
+  background: var(--accent-bg);
+  border-color: var(--accent-deep);
+}
+/* Selecting moves nothing (D8): an option is as wide as its label at the selected weight
+   whether or not it is selected. An invisible, zero-height copy of the label at 500 holds that
+   width; `/ ''` gives the generated text an empty alternative, so it never joins the option's
+   accessible name, and it is outside the DOM, so it never joins its text. Each option carries
+   its label in `data-label` for this. */
+.rs-seg::after {
+  content: attr(data-label) / '';
+  display: block;
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  font-weight: 500;
+}
+/* An option that shares its track's width with its siblings (Login, the budget modal). */
+.rs-seg--fill {
+  flex: 1;
+  text-align: center;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+/* The segmented track (DESIGN.md Segmented control): a 6px control that holds its options
+   across a 2px inset — the one 1–2px space the spacing guard admits, inside a control
+   (adopt-design-tokens-v2 D6) — so a 4px option nests in it (6 − 2, the Nested Radius
+   Rule). The fill stays at the call site: the Login and budget tracks sit on the canvas,
+   the shared `Segmented` on the panel. */
+.seg-track {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px;
+}
+
+/* The switch's DRAWN size is locked design (36×20 md / 32×18 sm, adopt-design-tokens-v2
+   D3); growing it would restyle the control. So the hit target is expanded by a centred,
+   invisible ::before instead — the target grows, not one drawn pixel moves. At desktop it
+   spans the track's width and reaches the 24px floor in the block axis (2px past each edge
+   of the 20px track, 3px past the 18px one); below `narrow` and under a coarse pointer it is
+   44 × 44. `.toggle` is already position:relative, and the overlay sits inside the button
+   so every click still resolves to it. */
 .toggle::before {
   content: '';
   position: absolute;
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
-  width: 24px;
+  width: 100%;
   height: 24px;
 }
 
@@ -1231,6 +2144,15 @@ select:focus {
     grid-template-columns: repeat(2, 1fr);
   }
 
+  /* The readout strip's cells stack, focal first, each ruled from the one above (task 12.1). */
+  .rs-readout {
+    flex-direction: column;
+  }
+  .readout-cell + .readout-cell {
+    border-left: none;
+    border-top: 1px solid var(--border2);
+  }
+
   /* A `1fr` track's minimum is its content's min-content width, so a child wider than the
      column forces the TRACK wider than its container — the grid blows out and the panel
      overflows even though the template says 1fr. `min-width: 0` restores the intent. */
@@ -1242,18 +2164,18 @@ select:focus {
     min-width: 0;
   }
 
-  /* Narrow gutters: `22px 26px` spends 52px of a 390px viewport. */
+  /* Narrow gutters: the 24px desktop gutter would spend 48px of a 390px viewport. */
   .rs-page {
-    padding: 18px 16px;
+    padding: 16px;
   }
   .rs-topbar {
     padding: 12px 16px;
   }
   .rs-setup-page {
-    padding: 20px 16px 40px;
+    padding: 20px 16px 32px;
   }
   .card {
-    padding: 14px 14px;
+    padding: 12px;
   }
 
   /* Comfort target — 44px (iOS HIG). Padding and min-height only: touching font-size
@@ -1281,8 +2203,21 @@ select:focus {
   .select {
     min-height: 44px;
   }
+  /* Input text is 16px in the comfort context (DESIGN.md Inputs / Fields; adopt-design-tokens-v2
+     task 8.1): below 16px a mobile browser zooms the page on focus. The ONLY font-size these
+     blocks set, and only on entry fields (`responsive.test.ts`, `styles.typeScale.test.ts`).
+     It names the elements as well as the classes, so a field's own class rule (the Mono and
+     small-select sizes) cannot outrank it. */
+  .input,
+  .select,
+  .mp-input,
+  select,
+  textarea,
+  input:not([type='checkbox']):not([type='radio']) {
+    font-size: 1rem;
+  }
 
-  /* The switch keeps its locked visual size; only its hit target grows. */
+  /* The switch keeps its locked drawn size; only its hit target grows, to 44 × 44. */
   .toggle::before {
     width: 44px;
     height: 44px;
@@ -1293,8 +2228,8 @@ select:focus {
      Routing selects and the Setup stepper all render as bare `<button>`/`<select>` with
      inline padding and were shipping at 22-28px tall.
 
-     `.toggle` is excluded: its 30x17 visual is locked design and its hit target is
-     already expanded by a ::before. Checkboxes and radios are excluded because a floor
+     `.toggle` is excluded: its 36x20 / 32x18 drawn track is locked design and its hit
+     target is already expanded by a ::before. Checkboxes and radios are excluded because a floor
      would stretch the control itself rather than its tap area. */
   button:not(.toggle),
   select,
@@ -1313,10 +2248,17 @@ select:focus {
     justify-content: center;
   }
 
-  /* The rail's nav items were 35px wide inside a 56px rail because the <nav> keeps a
-     10px gutter. Drop it below narrow so each destination is a full-width target. */
+  /* The rail's nav items were 35px wide inside a 56px rail because the <nav> keeps an
+     8px gutter. Shrink it to 4px below narrow so each destination is a 48px-wide target. */
   .rs-sidebar:not(.rs-nav-open) .rs-nav-list {
-    padding: 0 2px;
+    padding: 0 4px;
+  }
+  /* The collapsed rail hides each group's label visually (it is an `.rs-nav-label`, below),
+     so a Soft Hairline separates the groups instead: centred in the 12px group gap and a
+     12px inset above the next group's first item (task 11.1). */
+  .rs-sidebar:not(.rs-nav-open) .nav-group + .nav-group {
+    padding-top: 12px;
+    border-top: 1px solid var(--border2);
   }
 
   /* Fixed widths that cannot survive a phone. `.mp-input`'s 220px is the last one held
@@ -1360,8 +2302,8 @@ select:focus {
      56px rail instead of overflowing it. */
   .rs-sidebar:not(.rs-nav-open) .rs-nav-header {
     flex-direction: column;
-    gap: 6px;
-    padding: 12px 4px 10px;
+    gap: 8px;
+    padding: 12px 4px 8px;
   }
   .rs-sidebar:not(.rs-nav-open) .rs-nav-toggle {
     margin-left: 0;
@@ -1454,7 +2396,7 @@ select:focus {
   /* The drawer's body already scrolls; it only needs the safe-area inset so its last row
      clears the home indicator. */
   .drawer-body {
-    padding-bottom: calc(18px + var(--safe-area-bottom));
+    padding-bottom: calc(20px + var(--safe-area-bottom));
   }
 
   /* Modals and confirmations had NO internal scrolling at all — neither `.modal-card` nor
@@ -1464,7 +2406,7 @@ select:focus {
   .confirm-card {
     overflow-y: auto;
     overscroll-behavior: contain;
-    padding: 20px 18px calc(20px + var(--safe-area-bottom));
+    padding: 20px 16px calc(20px + var(--safe-area-bottom));
   }
 
   /* The backdrop stops centring its card, or the sheet would be pinned mid-screen. */
@@ -1486,7 +2428,7 @@ select:focus {
     transform: none;
     max-width: none;
     text-align: center;
-    bottom: calc(22px + var(--safe-area-bottom) + var(--vv-occluded-bottom, 0px));
+    bottom: calc(24px + var(--safe-area-bottom) + var(--vv-occluded-bottom, 0px));
   }
 }
 
@@ -1614,6 +2556,16 @@ select:focus {
 /* Coarse pointers deserve the comfort target at ANY width — a 1024px tablet is touch-first
    even though it is nowhere near the narrow threshold. */
 @media (pointer: coarse) {
+  /* The same element floor the narrow block carries: a control's own class may set a
+     family height (32 / 24px) at a specificity the class list below would only tie, and
+     a bare control carries no class at all (dashboard-core "The comfort context grows every
+     control"). */
+  button:not(.toggle),
+  select,
+  textarea,
+  input:not([type='checkbox']):not([type='radio']) {
+    min-height: 44px;
+  }
   .nav-item,
   .btn-primary,
   .btn-ghost,
@@ -1630,6 +2582,15 @@ select:focus {
   .input,
   .select {
     min-height: 44px;
+  }
+  /* Input text is 16px under a coarse pointer at any width, as below narrow (task 8.1). */
+  .input,
+  .select,
+  .mp-input,
+  select,
+  textarea,
+  input:not([type='checkbox']):not([type='radio']) {
+    font-size: 1rem;
   }
 
   .toggle::before {
@@ -1711,12 +2672,13 @@ select:focus {
 .rs-batch-row {
   display: grid;
   width: 100%;
-  gap: 0 14px;
+  min-height: 32px;
+  gap: 0 16px;
   align-items: center;
-  padding: 11px 18px;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--border2);
   font:
-    400 12px 'Geist',
+    400 0.75rem/1rem 'Geist',
     sans-serif;
   color: var(--text2);
 }
@@ -1727,14 +2689,14 @@ select:focus {
    language, no shadow, no gradient. */
 .rs-batch-bar {
   height: 4px;
-  border-radius: 2px;
+  border-radius: 4px;
   background: var(--chip);
   overflow: hidden;
 }
 .rs-batch-bar > span {
   display: block;
   height: 100%;
-  border-radius: 2px;
+  border-radius: 4px;
   background: var(--accent);
 }
 .rs-table-agents .table-head,
@@ -1743,15 +2705,16 @@ select:focus {
 }
 .rs-agent-row {
   display: grid;
-  gap: 0 14px;
-  padding: 11px 18px;
+  min-height: 32px;
+  gap: 0 16px;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--border2);
 }
 /* The Actions cell's alignment lives here for the same reason — inline it would defeat
    the stacked card's label/value row. */
 .rs-agent-actions {
   display: flex;
-  gap: 6px;
+  gap: 8px;
   justify-content: flex-end;
 }
 
@@ -1779,11 +2742,27 @@ select:focus {
  * spec's semantics guarantee held by construction rather than by two implementations
  * agreeing to it.
  *
- * The thresholds are the measured per-table container widths (measurements.md), not
- * viewport widths — at a 1025px viewport the requests table receives only ~765px. */
+ * The thresholds are the measured per-table container widths, not viewport widths — at a
+ * 1025px viewport the requests table receives only ~765px. Each was re-measured for
+ * adopt-design-tokens-v2 (task 14.1) on the new geometry (16px row insets and column gaps,
+ * the 32px head, cut identifiers, stacked busy labels), with the rig every table-fit value
+ * has used: headless Chromium on the browser harness with its adversarial fixture, the real
+ * stylesheet and fonts, this query disabled, the viewport swept 1600 → 500px in 4px steps,
+ * then 1px steps across the last passing step. Each threshold is the content box at the first
+ * failure rounded up to the next 20px, so the table reflows before it fails, never after. */
 
-/* Shared stacked-row shape for the two grid tables. */
-@container rs-requests (max-width: 960px) {
+/* Shared stacked-row shape for the two grid tables.
+   `table-fit-requests` (STYLESEED.md § Responsive): 980px. A grid of `fr` tracks fails when a
+   track drops under 60px (an unreadable column, the original criterion): the 0.6fr track does
+   at 975px of content (4px sweep: 974). */
+@container rs-requests (max-width: 980px) {
+  /* Stacked, an identifier has a line of its own: it wraps again instead of being cut. */
+  .cell-id {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+  }
+
   .table-head {
     display: none;
   }
@@ -1794,17 +2773,17 @@ select:focus {
   .rs-cell {
     display: flex;
     flex-wrap: wrap;
-    gap: 2px 12px;
+    gap: 4px 12px;
     justify-content: space-between;
     align-items: baseline;
-    padding: 3px 0;
+    padding: 4px 0;
     text-align: left;
   }
   .rs-cell-label {
     display: block;
     flex: none;
     font:
-      500 10.5px 'Geist',
+      500 0.6875rem/1rem 'Geist',
       sans-serif;
     color: var(--text3);
     text-transform: uppercase;
@@ -1837,9 +2816,18 @@ select:focus {
   }
 }
 
-/* Same stacked-record reflow as the requests table, at the same container width:
-   ten columns is more than nine, not a different problem (task 7.3). */
-@container rs-batches (max-width: 960px) {
+/* Same stacked-record reflow as the requests table (task 7.3), at its own measured width.
+   `table-fit-batches` (STYLESEED.md § Responsive): 1000px. Measured as requests is: the 0.7fr
+   track drops under 60px at 981px of content (4px sweep: 978; 59.94px at 981, so 980 would
+   leave one failing pixel a grid). */
+@container rs-batches (max-width: 1000px) {
+  /* Stacked, an identifier has a line of its own: it wraps again instead of being cut. */
+  .cell-id {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+  }
+
   .table-head {
     display: none;
   }
@@ -1850,17 +2838,17 @@ select:focus {
   .rs-batch-row .rs-cell {
     display: flex;
     flex-wrap: wrap;
-    gap: 2px 12px;
+    gap: 4px 12px;
     justify-content: space-between;
     align-items: baseline;
-    padding: 3px 0;
+    padding: 4px 0;
     text-align: left;
   }
   .rs-batch-row .rs-cell-label {
     display: block;
     flex: none;
     font:
-      500 10.5px 'Geist',
+      500 0.6875rem/1rem 'Geist',
       sans-serif;
     color: var(--text3);
     text-transform: uppercase;
@@ -1884,7 +2872,17 @@ select:focus {
   }
 }
 
-@container rs-agents (max-width: 680px) {
+/* `table-fit-agents` (STYLESEED.md § Responsive): 740px. Measured as requests is: the 0.8fr
+   track drops under 60px at 734px of content. The bare `fr` tracks keep their content minimum,
+   so the one-line Actions cell (its stacked busy labels) holds 149px and the rest shrink. */
+@container rs-agents (max-width: 740px) {
+  /* Stacked, an identifier has a line of its own: it wraps again instead of being cut. */
+  .cell-id {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+  }
+
   .table-head {
     display: none;
   }
@@ -1896,16 +2894,16 @@ select:focus {
   .rs-agent-actions {
     display: flex;
     flex-wrap: wrap;
-    gap: 2px 12px;
+    gap: 4px 12px;
     justify-content: space-between;
     align-items: baseline;
-    padding: 3px 0;
+    padding: 4px 0;
   }
   .rs-cell-label {
     display: block;
     flex: none;
     font:
-      500 10.5px 'Geist',
+      500 0.6875rem/1rem 'Geist',
       sans-serif;
     color: var(--text3);
     text-transform: uppercase;
@@ -1941,8 +2939,39 @@ select:focus {
 /* The semantic tables. `display: block` on table elements drops the table role, so the
    <thead> association goes with it — which is exactly why `.rs-cell-label` is REAL
    content here and not `aria-hidden`. Hiding the head AND the labels would leave every
-   value unnamed, which the spec forbids outright. */
+   value unnamed, which the spec forbids outright.
+   `table-fit-users` (STYLESEED.md § Responsive): 660px, unchanged by the re-measure. A
+   semantic table's tracks are content-driven, so the criterion is a cell failing, not a narrow
+   track: since cut identifiers (task 9.2) no cell wraps, and the Members User cell (name,
+   cut email, "(you)") first paints past its own box onto Role at 643px of content (4px
+   sweep: 642). Invitations only wraps its Expires date, one cell, from 642px. */
 @container rs-users (max-width: 660px) {
+  /* Stacked, an identifier has a line of its own: it wraps again instead of being cut. */
+  .cell-id {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+  }
+  .rs-table-users .rs-id-cell {
+    width: auto;
+    max-width: none;
+  }
+  .rs-user-actions {
+    flex-wrap: wrap;
+  }
+  /* The user's name, email and "(you)" become the record's own flex items again, each
+     wrapping as a stacked value does. */
+  .rs-user-line {
+    display: contents;
+  }
+  .rs-user-line > *,
+  .rs-user-line > :not(.cell-id) {
+    flex: 0 1 auto;
+    min-width: min-content;
+    max-width: 100%;
+    overflow-wrap: break-word;
+  }
+
   .rs-table-users thead {
     display: none;
   }
@@ -1960,17 +2989,17 @@ select:focus {
   .rs-table-users td {
     display: flex;
     flex-wrap: wrap;
-    gap: 2px 12px;
+    gap: 4px 12px;
     justify-content: space-between;
     align-items: baseline;
     border: 0;
-    padding: 3px 16px !important;
+    padding: 4px 16px !important;
   }
   .rs-table-users .rs-cell-label {
     display: block;
     flex: none;
     font:
-      500 10.5px 'Geist',
+      500 0.6875rem/1rem 'Geist',
       sans-serif;
     color: var(--text3);
     text-transform: uppercase;
@@ -2019,41 +3048,36 @@ select:focus {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px 12px;
-  margin: 0 18px 12px;
+  margin: 0 16px 12px;
   padding: 8px 12px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 6px;
   font:
-    400 12px/1.5 'Geist',
+    400 0.75rem/1rem 'Geist',
     sans-serif;
   color: var(--text2);
-}
-.ar-notice--failed {
-  background: var(--red-bg);
-  border-color: var(--red);
-  color: var(--text);
 }
 /* The Cascade row's savings line (D6): a plain figure at the row's text weight — the
    bars, not the money, are the tab's focal element. */
 .ar-savings {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
 }
 .ar-savings-amount {
   font:
-    600 13px 'Geist',
+    600 0.8125rem/1.25rem 'Geist',
     sans-serif;
   color: var(--text);
   font-variant-numeric: tabular-nums;
 }
 .ar-note {
-  margin: 0 18px 12px;
+  margin: 0 16px 12px;
   padding: 8px 12px;
   background: var(--hover);
-  border-radius: 8px;
+  border-radius: 6px;
   font:
-    400 12px/1.5 'Geist',
+    400 0.75rem/1rem 'Geist',
     sans-serif;
   color: var(--text2);
 }
@@ -2085,7 +3109,7 @@ select:focus {
   container-name: rs-pipeline;
 }
 .ar-stages {
-  --ar-gutter: 18px;
+  --ar-gutter: 16px;
   display: grid;
   grid-template-columns:
     20px minmax(0, 176px) minmax(0, 1fr) 56px 40px minmax(0, 150px)
@@ -2115,7 +3139,7 @@ select:focus {
 .ar-colhead {
   padding: 8px 0;
   font:
-    500 10.5px 'Geist',
+    500 0.6875rem/1rem 'Geist',
     sans-serif;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -2136,14 +3160,15 @@ select:focus {
   grid-template-columns: subgrid;
   align-items: baseline;
   row-gap: 4px;
-  padding-block: 10px;
+  padding-block: 8px;
 }
 .ar-num {
   grid-column: 1;
   grid-row: 1;
   font:
-    400 11.5px 'Geist Mono',
-    monospace;
+    400 0.6875rem/1rem 'Geist',
+    sans-serif;
+  font-variant-numeric: tabular-nums;
   color: var(--text3);
 }
 .ar-name {
@@ -2159,13 +3184,13 @@ select:focus {
 }
 .ar-status-line {
   font:
-    400 12.5px/1.45 'Geist',
+    400 0.75rem/1rem 'Geist',
     sans-serif;
 }
 .ar-status-sub {
-  margin-top: 2px;
+  margin-top: 4px;
   font:
-    400 11.5px/1.45 'Geist',
+    400 0.6875rem/1rem 'Geist',
     sans-serif;
 }
 /* The figure: count, share and bar on the row's own count/share/bar tracks (a nested
@@ -2176,12 +3201,12 @@ select:focus {
   display: grid;
   grid-template-columns: subgrid;
   align-items: baseline;
-  row-gap: 2px;
+  row-gap: 4px;
   min-width: 0;
 }
 .ar-figcount {
   font:
-    600 15px 'Geist',
+    600 0.9375rem/1.25rem 'Geist',
     sans-serif;
   letter-spacing: -0.01em;
   color: var(--text);
@@ -2189,8 +3214,9 @@ select:focus {
 }
 .ar-figshare {
   font:
-    400 11.5px 'Geist Mono',
-    monospace;
+    400 0.75rem/1rem 'Geist',
+    sans-serif;
+  font-variant-numeric: tabular-nums;
   color: var(--text2);
 }
 .ar-figbar {
@@ -2200,7 +3226,7 @@ select:focus {
 .ar-figline {
   grid-column: 1 / -1;
   font:
-    400 11px/1.45 'Geist',
+    400 0.6875rem/1rem 'Geist',
     sans-serif;
   color: var(--text3);
 }
@@ -2263,17 +3289,18 @@ select:focus {
 /* The Confident band alert: a caution in text, its controls neutral text actions. */
 .ar-alert {
   font:
-    400 11.5px/1.5 'Geist',
+    400 0.6875rem/1rem 'Geist',
     sans-serif;
   color: var(--amber-text);
 }
 
-/* `pipeline-fit` two-line mode (STYLESEED.md § Responsive): 840px of the Pipeline wrapper's
+/* `pipeline-fit` two-line mode (STYLESEED.md § Responsive): 820px of the Pipeline wrapper's
    content box. Measured with this query disabled, viewport swept 1600 → 500px in 4px steps
-   on the default harness: at 826px the Classify status line runs past two lines in the
-   one-line layout's status track. Below it the status leaves line one for line two, so the
-   number, name, figure and action keep line one. */
-@container rs-pipeline (max-width: 840px) {
+   on the default harness: the Classify status line runs past two lines in the one-line
+   layout's status track at 816px (4px sweep: 814; re-measured for adopt-design-tokens-v2,
+   was 826 → 840). Below it the status leaves line one for line two, so the number, name,
+   figure and action keep line one. */
+@container rs-pipeline (max-width: 820px) {
   .ar-stages {
     grid-template-columns: 20px minmax(0, 1fr) 56px 40px minmax(0, 110px) 96px;
   }
@@ -2293,12 +3320,13 @@ select:focus {
   }
 }
 /* `pipeline-fit` phone mode: 540px of content box. Measured the same way with the two-line
-   layout forced: at 530px "Workload claim" wraps in the name track. Below it, number, name
+   layout forced: "Workload claim" (and "Confident band") wraps in the name track at 528px
+   (4px sweep: 526; re-measured for adopt-design-tokens-v2, was 530). Below it, number, name
    and a 44x44 icon-only action on line one; the status, then the figure, each on a line of
    their own, every field under its label. */
 @container rs-pipeline (max-width: 540px) {
   .ar-stages {
-    --ar-gutter: 14px;
+    --ar-gutter: 12px;
     grid-template-columns: 18px minmax(0, 1fr) 44px;
     column-gap: 12px;
   }
@@ -2315,7 +3343,7 @@ select:focus {
     display: flex;
     flex-wrap: wrap;
     align-items: baseline;
-    gap: 2px 10px;
+    gap: 4px 8px;
   }
   .ar-figbar {
     flex: 1 1 80px;
@@ -2337,7 +3365,7 @@ select:focus {
     display: block;
     flex: 1 1 100%;
     font:
-      500 10px 'Geist',
+      500 0.6875rem/1rem 'Geist',
       sans-serif;
     letter-spacing: 0.05em;
     text-transform: uppercase;
@@ -2373,8 +3401,8 @@ select:focus {
   flex: 1 1 280px;
   min-width: 0;
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 12px 14px;
+  border-radius: 6px;
+  padding: 12px;
 }
 /* In a tuning drawer the body is a COLUMN, so the detail row's `flex: 1 1 280px` would grow
    the card to the drawer's full height around a few lines of content. */
@@ -2383,16 +3411,16 @@ select:focus {
 }
 .ar-card-title {
   font:
-    500 11.5px 'Geist',
+    500 0.75rem/1rem 'Geist',
     sans-serif;
   color: var(--text2);
-  margin-bottom: 6px;
+  margin-bottom: 8px;
 }
 .ar-foot {
-  padding: 10px 18px 14px;
+  padding: 8px 16px 12px;
   border-top: 1px solid var(--border2);
   font:
-    400 11.5px/1.5 'Geist',
+    400 0.6875rem/1rem 'Geist',
     sans-serif;
   color: var(--text3);
 }
@@ -2407,10 +3435,11 @@ select:focus {
   width: 48px;
   height: 20px;
 }
+/* The small switch's placeholder: the same 32 × 18 capsule the loaded switch draws. */
 .ar-skel-switch {
-  width: 30px;
-  height: 17px;
-  border-radius: 9px;
+  width: 32px;
+  height: 18px;
+  border-radius: 10px;
 }
 .ar-skel-line {
   display: block;
@@ -2424,10 +3453,10 @@ select:focus {
 }
 @media (max-width: 768px) {
   .ar-note {
-    margin: 0 14px 12px;
+    margin: 0 12px 12px;
   }
   .ar-foot {
-    padding: 10px 14px 14px;
+    padding: 8px 12px 12px;
   }
   /* A workload-mix row wraps to two lines here (its bar and spend drop under the label),
      so a hairline between rows keeps each bar with its own label rather than reading as
@@ -2451,9 +3480,9 @@ select:focus {
    inside the panel, never a page wrapper. A cell's tuning entry sits on its bottom edge
    (`margin-top: auto`), so the entries line up across cells whatever the copy above. */
 .ar-sub-title {
-  padding: 0 18px 8px;
+  padding: 0 16px 8px;
   font:
-    500 10.5px 'Geist',
+    500 0.6875rem/1rem 'Geist',
     sans-serif;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -2462,7 +3491,7 @@ select:focus {
 .ar-layers-wrap {
   container-type: inline-size;
   container-name: rs-layers;
-  padding: 0 18px 16px;
+  padding: 0 16px 16px;
 }
 .ar-layers {
   display: grid;
@@ -2472,11 +3501,11 @@ select:focus {
 .ar-layer {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
   min-width: 0;
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 12px 14px;
+  border-radius: 6px;
+  padding: 12px;
 }
 .ar-layer-head {
   display: flex;
@@ -2492,10 +3521,11 @@ select:focus {
   margin-top: auto;
   align-self: flex-start;
 }
-/* `layers-fit` (STYLESEED.md § Responsive): 500px of content box. Measured with this query
-   disabled on the `?semantic=1` harness (every cell carrying its tuning entry): at 482px the
-   Semantic cell's name line wraps beside its switch. */
-@container rs-layers (max-width: 500px) {
+/* `layers-fit` (STYLESEED.md § Responsive): 480px of content box. Measured with this query
+   disabled on the `?semantic=1` harness (every cell carrying its tuning entry), viewport swept
+   1600 → 500px in 4px steps: the Semantic cell's name line wraps beside its switch at 478px
+   (1px refinement: 478 too; re-measured for adopt-design-tokens-v2, was 482 → 500). */
+@container rs-layers (max-width: 480px) {
   .ar-layers {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -2514,7 +3544,7 @@ select:focus {
 .rs-targets {
   container-type: inline-size;
   container-name: rs-targets;
-  padding: 0 18px;
+  padding: 0 16px;
 }
 /* `display` lives HERE, on the one class the container query restates: a query adds no
    specificity, so a second, more specific rule declaring `display: grid` would keep the
@@ -2528,14 +3558,14 @@ select:focus {
      value, picker + Clear, notes. A cell is a subgrid of them, so every picker in a row
      shares one top line whatever the length of the value above it. */
   grid-template-rows: auto auto auto;
-  gap: 0 14px;
+  gap: 0 16px;
   align-items: start;
 }
 .tm-head {
   padding: 8px 0;
   border-top: 1px solid var(--border2);
   font:
-    500 10.5px 'Geist',
+    500 0.6875rem/1rem 'Geist',
     sans-serif;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -2543,7 +3573,7 @@ select:focus {
 }
 .tm-head-rule {
   font:
-    400 10px 'Geist Mono',
+    400 0.6875rem/1rem 'Geist Mono',
     monospace;
   letter-spacing: 0;
   text-transform: none;
@@ -2555,7 +3585,7 @@ select:focus {
   text-transform: none;
 }
 .tm-row {
-  padding: 10px 0;
+  padding: 8px 0;
   border-top: 1px solid var(--border2);
 }
 .tm-name {
@@ -2564,9 +3594,9 @@ select:focus {
 }
 /* The row label's sub-line: the signal that detects the class. */
 .tm-signal {
-  margin-top: 2px;
+  margin-top: 4px;
   font:
-    400 11px/1.4 'Geist',
+    400 0.6875rem/1rem 'Geist',
     sans-serif;
   color: var(--text3);
 }
@@ -2575,12 +3605,12 @@ select:focus {
 .ar-tag {
   display: inline-block;
   font:
-    400 10.5px 'Geist',
+    400 0.6875rem/1rem 'Geist',
     sans-serif;
   color: var(--text2);
   background: var(--chip);
   padding: 2px 8px;
-  border-radius: 4px;
+  border-radius: 6px;
 }
 .tm-cell {
   grid-row: span 3;
@@ -2613,7 +3643,7 @@ select:focus {
   padding: 8px 0 12px;
   border-top: 1px solid var(--border2);
   font:
-    400 11px/1.5 'Geist',
+    400 0.6875rem/1rem 'Geist',
     sans-serif;
   color: var(--text3);
 }
@@ -2622,19 +3652,20 @@ select:focus {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px 10px;
+  gap: 4px 8px;
 }
 /* The picker's cap. Here rather than inline so the stacked record can release it — an
    inline `max-width` would outrank the container query and push a 220px select out of a
    200px phone column. */
 .tm-picker {
+  width: auto;
   max-width: 220px;
 }
 .tm-notes {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  margin-top: 6px;
+  gap: 4px;
+  margin-top: 8px;
 }
 /* A cell's field label: read by assistive tech at every width, shown only when stacked.
    The `.sr-only` treatment, restated so the query below can undo it. */
@@ -2654,8 +3685,9 @@ select:focus {
    the way `table-fit-requests` was — headless Chromium, real stylesheet and fonts, the
    harness's `?targets=1` worst case, the viewport swept 1600 → 700px in 4px steps with this
    query disabled. Re-measured for split-auto-routing-readout-setup, when the Detected column
-   left the grid: at 882px of content the pickers (their 220px `.tm-picker` cap) overflow
-   their 219px tracks in all three target columns at once. Text never sets the limit — model
+   left the grid (882px), and again for adopt-design-tokens-v2 on its 16px column gaps and
+   inset: at 891px of content (4px sweep: 890) the pickers (their 220px `.tm-picker` cap)
+   overflow their 219px tracks in all three target columns at once. Text never sets the limit — model
    ids and provider labels break at their hyphens. Rounded up as the other table-fit values
    were, so the matrix reflows before it fails, never after. Below it each row becomes a
    stacked record, every field under its own real label. */
@@ -2675,7 +3707,7 @@ select:focus {
   .tm-cell {
     display: flex;
     flex-wrap: wrap;
-    gap: 2px 12px;
+    gap: 4px 12px;
     align-items: baseline;
     padding: 4px 0;
   }
@@ -2689,7 +3721,7 @@ select:focus {
     clip: auto;
     white-space: normal;
     font:
-      500 10.5px 'Geist',
+      500 0.6875rem/1rem 'Geist',
       sans-serif;
     color: var(--text3);
     text-transform: uppercase;
@@ -2740,7 +3772,7 @@ select:focus {
 }
 .limits-intro > div {
   max-width: 78ch;
-  line-height: 1.6;
+  line-height: 1.25rem;
 }
 .limits-intro > button {
   flex-shrink: 0;
@@ -2755,8 +3787,11 @@ select:focus {
   gap: 12px;
   margin-bottom: 8px;
 }
+/* The Alert / Block chip is a shorter mark in a row whose title may wrap: centred, never
+   top- or baseline-aligned (adopt-design-tokens-v2 D4, "A shorter mark is centred"). */
 .budget-card-header > span {
   flex-shrink: 0;
+  align-self: center;
 }
 .budget-card-title {
   margin: 0;
@@ -2766,7 +3801,7 @@ select:focus {
 .budget-scope,
 .budget-config {
   font:
-    400 12px/1.6 'Geist',
+    400 0.75rem/1rem 'Geist',
     sans-serif;
   color: var(--text3);
   overflow-wrap: anywhere;
@@ -2776,8 +3811,9 @@ select:focus {
 }
 .budget-progress {
   font:
-    400 12px/1.6 'Geist',
+    400 0.75rem/1rem 'Geist',
     sans-serif;
+  font-variant-numeric: tabular-nums;
   color: var(--text2);
 }
 .budget-progress-headline {
@@ -2789,19 +3825,21 @@ select:focus {
 }
 .budget-progress-headline strong {
   font:
-    600 24px/1.25 'Geist',
+    600 0.9375rem/1.25rem 'Geist',
     sans-serif;
   letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
   color: var(--text);
 }
 .budget-percentage {
   font:
-    500 13px 'Geist Mono',
-    monospace;
+    500 0.8125rem/1.25rem 'Geist',
+    sans-serif;
+  font-variant-numeric: tabular-nums;
   color: var(--text);
 }
 .budget-allowance {
-  margin: 6px 0 12px;
+  margin: 8px 0 12px;
 }
 .budget-figure {
   margin: 0 0 12px;
@@ -2816,7 +3854,8 @@ select:focus {
   flex-wrap: wrap;
   justify-content: space-between;
   gap: 4px 12px;
-  font-size: 11px;
+  font-size: 0.6875rem;
+  line-height: 1rem;
 }
 .budget-chart-key > span:first-child {
   color: var(--accent-deep);
@@ -2826,28 +3865,31 @@ select:focus {
   display: inline-block;
   width: 16px;
   border-top: 1px dashed var(--text3);
-  margin-right: 5px;
+  margin-right: 4px;
   vertical-align: middle;
 }
 .budget-figure figcaption {
   font:
-    400 11px/1.6 'Geist',
+    400 0.6875rem/1rem 'Geist',
     sans-serif;
   color: var(--text3);
   overflow-wrap: anywhere;
 }
 .budget-freshness {
   display: block;
-  margin-top: 6px;
+  margin-top: 8px;
 }
 .budget-progress-status {
   min-height: 72px;
   padding: 4px 0 12px;
 }
+/* Below narrow the intro stacks its sentence over the action. The gap keeps its desktop 16px:
+   narrow width changes only the gutter and the card padding (STYLESEED.md `density-narrow`,
+   "gaps unchanged"; dashboard-core "Narrow width changes only the gutter and the card
+   padding"). */
 @media (max-width: 768px) {
   .limits-intro {
     align-items: flex-start;
     flex-direction: column;
-    gap: 12px;
   }
 }

@@ -243,7 +243,7 @@ describe('Limits progress integrated lifecycle', () => {
       await flush();
       expect(v.store.state.bf.name).toBe('B draft');
       expect(v.store.state.modal).toBe('newLimit');
-      expect(v.store.state.toast).not.toBe('Budget updated');
+      expect(v.store.state.toast?.text).not.toBe('Budget updated');
       expect(v.store.state.budgets).toEqual([]);
     } finally {
       v.dispose();
@@ -259,13 +259,13 @@ describe('Limits progress integrated lifecycle', () => {
       const write = v.store.saveBudget();
       await flush();
       await v.store.deleteBudget(budget.id);
-      expect(v.store.state.toast).toBe('Budget deleted');
+      expect(v.store.state.toast).toEqual({ kind: 'confirm', text: 'Budget deleted' });
       hold.resolve({ ...budget, amount: 50 });
       await write;
       await flush();
       expect(v.store.state.budgets).toEqual([]);
       expect(v.store.state.budgetProgress[budget.id]).toBeUndefined();
-      expect(v.store.state.toast).toBe('Budget deleted');
+      expect(v.store.state.toast).toEqual({ kind: 'confirm', text: 'Budget deleted' });
     } finally {
       v.dispose();
     }

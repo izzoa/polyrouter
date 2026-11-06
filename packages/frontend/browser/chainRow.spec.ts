@@ -170,7 +170,14 @@ test.describe('desktop with a fine pointer', () => {
     // A bound would give up 1px sensitivity for no cross-platform benefit. If copy
     // ever grows enough to wrap on one platform first, this fails there — and the
     // row really has become two lines for those users, so that failure is real.
-    expect(h, 'the desktop row changed height').toBe(43);
+    //
+    // RE-PINNED 2026-11-02 (was 43) by adopt-design-tokens-v2, a recorded desktop change
+    // (task 14.3): the row's 8px block padding (the 4px spacing scale) and its 24px controls.
+    // Still exact: 41 under Geist and under forced Verdana, Georgia and Courier New, because
+    // the row's height is set by its fixed-height controls, not its text. The CI runner's
+    // value is printed by `geometryCapture.spec.ts` ("routing:.chain-row"); its read is
+    // pending the first push.
+    expect(h, 'the desktop row changed height').toBe(41);
   });
 
   test('the hint still says drag', async ({ page }) => {
@@ -265,7 +272,7 @@ test.describe('the batch reservation control (add-batch-mode-routing task 5.5)',
           // control below the fold answers null — which is a scroll position, not an
           // obstruction. The property under test is that nothing PAINTS OVER the
           // control, and the row's own 44px hit area is asserted by the responsive
-          // suite (the lock lets `.toggle` keep its 30x17 box and reach the floor
+          // suite (the lock lets `.toggle` keep its 32x18 box and reach the floor
           // through a `::before`).
           hits: switches.map((s) => {
             s.scrollIntoView({ block: 'center' });

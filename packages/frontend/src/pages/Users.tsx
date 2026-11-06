@@ -1,6 +1,9 @@
 import { For, onMount, Show } from 'solid-js';
 import type { AdminInviteDto, AdminUserDto } from '../data/api';
 import { useApp } from '../state/context';
+import { StackedLabel } from '../components/StackedLabel';
+import { createBusyMap } from '../components/busy';
+import { FieldNote, useFields } from '../components/Field';
 
 /** Admin-only user administration (user-administration): registration mode,
  * invite issuing (link shown once + optional email), pending invites, and the
@@ -8,9 +11,21 @@ import { useApp } from '../state/context';
  * leave the instance without an enabled admin; errors surface inline. */
 export function Users() {
   const app = useApp();
+  const f = useFields();
   const { state, setState } = app;
+  // Each of these starts a request and stays on screen while it runs (D14), keyed by the
+  // row (or the registration mode) so only the pressed button goes busy.
+  const registering = createBusyMap();
+  const revoking = createBusyMap();
+  const roling = createBusyMap();
+  const enabling = createBusyMap();
 
   onMount(() => void app.loadUserAdmin());
+
+  /** The registration settings have not arrived yet. Until they do the card claims nothing
+   * about SMTP and neither mode can be pressed; after a failed load the page's alert line
+   * reports the failure and the card still claims nothing. */
+  const regLoading = (): boolean => state.ua.reg === null && state.ua.loading;
 
   const inviteStatus = (i: AdminInviteDto): 'pending' | 'accepted' | 'expired' => {
     if (i.consumedAt !== null) return 'accepted';
@@ -40,41 +55,45 @@ export function Users() {
     }
   };
 
+  /** One neutral static chip for both roles: the word carries the role. Admin used to take
+   * the Selected state's wash and Deep Ink, which reads as "this row is selected" and spends
+   * indigo as decoration (DESIGN.md Indigo Budget; adopt-design-tokens-v2 task 16.6). */
   const roleChip = (u: AdminUserDto) => (
     <span
-      style={{
-        padding: '2px 9px',
-        'border-radius': '10px',
-        font: "500 10.5px 'Geist',sans-serif",
-        background: u.role === 'admin' ? 'var(--accent-bg)' : 'var(--chip)',
-        color: u.role === 'admin' ? 'var(--accent-deep)' : 'var(--text2)',
-      }}
+      class="chip"
+      style={{ font: "500 0.6875rem/1rem 'Geist',sans-serif", color: 'var(--text2)' }}
     >
       {u.role === 'admin' ? 'Admin' : 'Member'}
     </span>
   );
 
   return (
-    <div class="rs-page" style="display:flex;flex-direction:column;gap:14px;max-width:1200px">
+    <div class="rs-page" style="display:flex;flex-direction:column;gap:24px;max-width:1200px">
       <Show when={state.ua.error}>
-        <div role="alert" style="font:400 11.5px 'Geist',sans-serif;color:var(--red)">
+        <div role="alert" class="t-caption" style="color:var(--red-text)">
           {state.ua.error}
         </div>
       </Show>
 
-      <div class="rs-grid-2" style="display:grid;gap:12px;align-items:start">
+      <div class="rs-grid-2" style="display:grid;gap:16px;align-items:start">
         {/* Registration mode */}
-        <div class="panel card">
-          <div class="section-title" style="color:var(--text);margin-bottom:6px">
+        <div class="panel card" aria-busy={regLoading() ? true : undefined}>
+          <div class="section-title" style="color:var(--text);margin-bottom:8px">
             Registration
           </div>
-          <div style="font:400 12px 'Geist',sans-serif;color:var(--text3);line-height:1.5;margin-bottom:10px">
+          <div class="t-dense" style="color:var(--text3);margin-bottom:8px">
             The first account became the admin, then sign-up closed. Reopen it here, or keep it
             invite-only.
           </div>
           {/* Plain toggle buttons (aria-pressed), not a composite radiogroup —
-              no roving-tabindex obligations, Tab reaches each one. */}
-          <div role="group" aria-label="Registration mode" style="display:flex;gap:6px;margin-bottom:8px">
+              no roving-tabindex obligations, Tab reaches each one. The chosen mode takes the
+              Selected state from `.btn-ghost[aria-pressed='true']` (adopt-design-tokens-v2
+              D8), not an inline fill, which would outrank its hover and press. */}
+          <div
+            role="group"
+            aria-label="Registration mode"
+            style="display:flex;gap:8px;margin-bottom:8px"
+          >
             <For
               each={
                 [
@@ -88,75 +107,108 @@ export function Users() {
                   type="button"
                   aria-pressed={state.ua.reg?.mode === mode}
                   class="btn-ghost"
-                  style={{
-                    background: state.ua.reg?.mode === mode ? 'var(--accent-bg)' : undefined,
-                    color: state.ua.reg?.mode === mode ? 'var(--accent-deep)' : undefined,
-                  }}
+                  disabled={registering.busy(mode) || regLoading()}
+                  aria-busy={registering.busy(mode) ? true : undefined}
                   onClick={() => {
-                    if (state.ua.reg?.mode !== mode) void app.uaSetRegistration(mode);
+                    if (state.ua.reg?.mode !== mode)
+                      void registering.run(mode, () => app.uaSetRegistration(mode));
                   }}
                 >
-                  {label}
+                  <StackedLabel alt={registering.busy(mode)} rest={label} altLabel="Saving…" />
                 </button>
               )}
             </For>
           </div>
-          <div style="font:400 11px 'Geist',sans-serif;color:var(--text3);line-height:1.5">
+          <div class="t-caption" style="color:var(--text3)">
+            {/* The SMTP sentence is a claim about loaded settings: while they load it is a
+                neutral placeholder, and after a failed load it is absent. */}
             <Show
-              when={state.ua.reg?.smtpConfigured}
+              when={state.ua.reg}
+              keyed
               fallback={
-                <>
-                  SMTP isn’t configured — invite links must be copied and delivered by hand. Add an
-                  SMTP channel under Settings to email them.
-                </>
+                <Show when={regLoading()}>
+                  <span class="ar-skel ar-skel-short" aria-hidden="true" />
+                </Show>
               }
             >
-              SMTP is configured — new invites are emailed automatically.
+              {(reg) => (
+                <Show
+                  when={reg.smtpConfigured}
+                  fallback={
+                    <>
+                      SMTP isn’t configured — invite links must be copied and delivered by hand. Add
+                      an SMTP channel under Settings to email them.
+                    </>
+                  }
+                >
+                  SMTP is configured — new invites are emailed automatically.
+                </Show>
+              )}
             </Show>
           </div>
         </div>
 
         {/* Invite someone */}
         <div class="panel card">
-          <div class="section-title" style="color:var(--text);margin-bottom:6px">
+          <div class="section-title" style="color:var(--text);margin-bottom:8px">
             Invite someone
           </div>
+          {/* `novalidate`: the browser's own email check reports on the field, through its
+              invalid state, instead of as a bubble (task 8.2, design.md D20). The note on the
+              address is the field's help, and its message replaces it while invalid. */}
           <form
-            style="display:flex;gap:6px"
+            novalidate
+            style="display:flex;align-items:flex-start;gap:8px"
             onSubmit={(e) => {
               e.preventDefault();
               void app.uaCreateInvite();
             }}
           >
-            <input
-              type="email"
-              placeholder="teammate@example.com"
-              aria-label="Email to invite"
-              value={state.ua.inviteEmail}
-              onInput={(e) => setState('ua', 'inviteEmail', e.currentTarget.value)}
-              style="flex:1;min-width:0"
-            />
-            <button type="submit" class="btn-primary" disabled={state.ua.inviteBusy}>
-              {state.ua.inviteBusy ? 'Inviting…' : 'Invite'}
+            <div style="flex:1;min-width:0">
+              <input
+                type="email"
+                class="input"
+                id="f-ua-email"
+                placeholder="teammate@example.com"
+                aria-label="Email to invite"
+                value={state.ua.inviteEmail}
+                aria-invalid={f.invalid('f-ua-email')}
+                aria-describedby={f.describedBy('f-ua-email', true)}
+                onBlur={() => f.check('f-ua-email')}
+                onInput={(e) => {
+                  setState('ua', 'inviteEmail', e.currentTarget.value);
+                  f.edit('f-ua-email');
+                }}
+              />
+              <FieldNote
+                for="f-ua-email"
+                error={f.error('f-ua-email')}
+                help="Links are single-use and expire after 72 hours. The invited address is fixed — the account must sign up with it."
+              />
+            </div>
+            <button
+              type="submit"
+              class="btn-primary"
+              disabled={state.ua.inviteBusy}
+              aria-busy={state.ua.inviteBusy ? true : undefined}
+            >
+              <StackedLabel alt={state.ua.inviteBusy} rest="Invite" altLabel="Inviting…" />
             </button>
           </form>
-          <div style="font:400 11px 'Geist',sans-serif;color:var(--text3);line-height:1.5;margin-top:8px">
-            Links are single-use and expire after 72 hours. The invited address is fixed — the
-            account must sign up with it.
-          </div>
           <Show when={state.ua.issued}>
             {(issued) => (
-              <div style="margin-top:10px;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px">
-                <div style="font:500 11.5px 'Geist',sans-serif;color:var(--text);margin-bottom:4px">
+              <div style="margin-top:8px;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px">
+                <div class="t-label" style="color:var(--text);margin-bottom:4px">
                   Invite for {issued().email}
                   <span style="font-weight:400;color:var(--text3)">
                     {' '}
                     — {issued().emailSent ? 'emailed, and here’s the link:' : 'copy this link:'}
                   </span>
                 </div>
-                <div style="display:flex;gap:6px;align-items:center">
+                <div style="display:flex;gap:8px;align-items:center">
                   <code
-                    style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:400 11px 'Geist Mono',monospace;color:var(--text2)"
+                    class="t-caption mono"
+                    style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text2)"
                     title={issued().link}
                   >
                     {issued().link}
@@ -169,7 +221,7 @@ export function Users() {
                     Copy
                   </button>
                 </div>
-                <div style="font:400 10.5px 'Geist',sans-serif;color:var(--text3);margin-top:4px">
+                <div class="t-caption" style="color:var(--text3);margin-top:4px">
                   Shown once — a new invite is needed if it’s lost.
                 </div>
               </div>
@@ -181,34 +233,43 @@ export function Users() {
       {/* Invites */}
       <Show when={state.ua.invites.length > 0}>
         <div class="panel card rs-table-panel rs-table-users" style="padding:0">
-          <div class="section-title" style="color:var(--text);padding:14px 16px 8px">
+          <div class="section-title" style="color:var(--text);padding:12px 16px 8px">
             Invites
           </div>
           <table style="width:100%;border-collapse:collapse">
             <thead>
-              <tr style="text-align:left;font:500 10.5px 'Geist',sans-serif;color:var(--text3)">
-                <th style="padding:6px 16px;font-weight:500">Email</th>
-                <th style="padding:6px 8px;font-weight:500">Token</th>
-                <th style="padding:6px 8px;font-weight:500">Expires</th>
-                <th style="padding:6px 8px;font-weight:500">Status</th>
-                <th style="padding:6px 16px" aria-label="Actions" />
+              <tr>
+                <th>Email</th>
+                <th>Token</th>
+                <th>Expires</th>
+                <th>Status</th>
+                <th aria-label="Actions" />
               </tr>
             </thead>
             <tbody>
               <For each={state.ua.invites}>
                 {(i) => (
-                  <tr style="border-top:1px solid var(--border2);font:400 12px 'Geist',sans-serif">
-                    <td style="padding:8px 16px;color:var(--text)"><span class="rs-cell-label">Email</span>{i.email}</td>
-                    <td style="padding:8px 8px;font:400 11px 'Geist Mono',monospace;color:var(--text3)"><span class="rs-cell-label">Token</span>
+                  <tr class="t-dense" style="border-top:1px solid var(--border2)">
+                    <td class="rs-id-cell" style="color:var(--text)">
+                      <span class="rs-cell-label">Email</span>
+                      {/* An identifier: cut with an end ellipsis, full text kept (task 9.2). */}
+                      <span class="cell-id" title={i.email}>
+                        {i.email}
+                      </span>
+                    </td>
+                    <td class="t-caption mono" style="color:var(--text3)">
+                      <span class="rs-cell-label">Token</span>
                       {i.tokenPrefix}…
                     </td>
-                    <td style="padding:8px 8px;color:var(--text3)"><span class="rs-cell-label">Expires</span>
+                    <td style="color:var(--text3)">
+                      <span class="rs-cell-label">Expires</span>
                       {new Date(i.expiresAt).toLocaleString()}
                     </td>
-                    <td style="padding:8px 8px"><span class="rs-cell-label">Status</span>
+                    <td>
+                      <span class="rs-cell-label">Status</span>
                       <span
                         style={{
-                          font: "500 10.5px 'Geist',sans-serif",
+                          font: "500 0.6875rem/1rem 'Geist',sans-serif",
                           color:
                             inviteStatus(i) === 'accepted'
                               ? 'var(--green-text)'
@@ -220,14 +281,21 @@ export function Users() {
                         {inviteStatus(i)}
                       </span>
                     </td>
-                    <td style="padding:8px 16px;text-align:right"><span class="rs-cell-label">Actions</span>
+                    <td style="text-align:right">
+                      <span class="rs-cell-label">Actions</span>
                       <Show when={inviteStatus(i) === 'pending'}>
                         <button
                           type="button"
                           class="btn-ghost btn-ghost--amber"
-                          onClick={() => void app.uaRevokeInvite(i.id)}
+                          disabled={revoking.busy(i.id)}
+                          aria-busy={revoking.busy(i.id) ? true : undefined}
+                          onClick={() => void revoking.run(i.id, () => app.uaRevokeInvite(i.id))}
                         >
-                          Revoke
+                          <StackedLabel
+                            alt={revoking.busy(i.id)}
+                            rest="Revoke"
+                            altLabel="Revoking…"
+                          />
                         </button>
                       </Show>
                     </td>
@@ -241,84 +309,124 @@ export function Users() {
 
       {/* Users */}
       <div class="panel card rs-table-panel rs-table-users" style="padding:0">
-        <div class="section-title" style="color:var(--text);padding:14px 16px 8px">
+        <div class="section-title" style="color:var(--text);padding:12px 16px 8px">
           Users
         </div>
         <Show
           when={!state.ua.loading || state.ua.users.length > 0}
           fallback={
-            <div style="padding:0 16px 14px;font:400 12.5px 'Geist',sans-serif;color:var(--text3)">
+            <div class="t-body" style="padding:0 16px 12px;color:var(--text3)">
               Loading users…
             </div>
           }
         >
           <table style="width:100%;border-collapse:collapse">
             <thead>
-              <tr style="text-align:left;font:500 10.5px 'Geist',sans-serif;color:var(--text3)">
-                <th style="padding:6px 16px;font-weight:500">User</th>
-                <th style="padding:6px 8px;font-weight:500">Role</th>
-                <th style="padding:6px 8px;font-weight:500">Joined</th>
-                <th style="padding:6px 8px;font-weight:500">Status</th>
-                <th style="padding:6px 16px" aria-label="Actions" />
+              <tr>
+                <th>User</th>
+                <th>Role</th>
+                <th>Joined</th>
+                <th>Status</th>
+                <th aria-label="Actions" />
               </tr>
             </thead>
             <tbody>
               <For each={state.ua.users}>
                 {(u) => (
-                  <tr style="border-top:1px solid var(--border2);font:400 12px 'Geist',sans-serif">
-                    <td style="padding:8px 16px"><span class="rs-cell-label">User</span>
-                      {/* Disabled rows mute via the AA-safe muted token, never
-                          opacity (which sinks text below 4.5:1). */}
-                      <span
-                        style={{
-                          color: u.disabled ? 'var(--text3)' : 'var(--text)',
-                          'font-weight': '500',
-                        }}
-                      >
-                        {u.name}
-                      </span>{' '}
-                      <span style="color:var(--text3)">
+                  <tr class="t-dense" style="border-top:1px solid var(--border2)">
+                    <td class="rs-id-cell">
+                      <span class="rs-cell-label">User</span>
+                      {/* One line at table width: the name, then the email — an identifier, cut
+                          with an end ellipsis and keeping its full text and title (task 9.2). */}
+                      <span class="rs-user-line">
+                        {/* Disabled rows mute via the AA-safe muted token, never
+                            opacity (which sinks text below 4.5:1). */}
+                        <span
+                          style={{
+                            color: u.disabled ? 'var(--text3)' : 'var(--text)',
+                            'font-weight': '500',
+                          }}
+                        >
+                          {u.name}
+                        </span>
                         {/* The separator only makes sense while name and email share a
                             line. In the stacked record the email wraps onto its own line,
                             where a leading "·" reads as a stray bullet. */}
-                        <span class="rs-inline-sep">· </span>
-                        {u.email}
-                        {u.id === state.session?.userId ? ' (you)' : ''}
+                        <span class="rs-inline-sep" style="color:var(--text3)">
+                          ·
+                        </span>
+                        <span class="cell-id" style="color:var(--text3)" title={u.email}>
+                          {u.email}
+                        </span>
+                        <Show when={u.id === state.session?.userId}>
+                          <span style="color:var(--text3)">(you)</span>
+                        </Show>
                       </span>
                     </td>
-                    <td style="padding:8px 8px"><span class="rs-cell-label">Role</span>{roleChip(u)}</td>
-                    <td style="padding:8px 8px;color:var(--text3)"><span class="rs-cell-label">Joined</span>
+                    <td>
+                      <span class="rs-cell-label">Role</span>
+                      {roleChip(u)}
+                    </td>
+                    <td style="color:var(--text3)">
+                      <span class="rs-cell-label">Joined</span>
                       {new Date(u.createdAt).toLocaleDateString()}
                     </td>
-                    <td style="padding:8px 8px"><span class="rs-cell-label">Status</span>
+                    <td>
+                      <span class="rs-cell-label">Status</span>
+                      {/* Disabled is an off state, normal configuration, so it is Ink 2 rather
+                          than a severity colour (DESIGN.md "Paused / off"); the red fill also
+                          read 3.91:1 as small text. */}
                       <span
                         style={{
-                          font: "500 10.5px 'Geist',sans-serif",
-                          color: u.disabled ? 'var(--red)' : 'var(--green-text)',
+                          font: "500 0.6875rem/1rem 'Geist',sans-serif",
+                          color: u.disabled ? 'var(--text2)' : 'var(--green-text)',
                         }}
                       >
                         {u.disabled ? 'disabled' : 'active'}
                       </span>
                     </td>
-                    <td style="padding:8px 16px"><span class="rs-cell-label">Actions</span>
-                      <div style="display:flex;gap:6px;justify-content:flex-end">
+                    <td>
+                      <span class="rs-cell-label">Actions</span>
+                      {/* One line at table width, so the identifier column, not the actions,
+                          gives way (task 9.2); wraps when a phone's stacked record cannot hold
+                          all three: a button's label never wraps (the height family), the row
+                          does. In a class, so the stacked query can restate it. */}
+                      <div class="rs-user-actions">
                         <button
                           type="button"
                           class="btn-ghost"
+                          disabled={roling.busy(u.id)}
+                          aria-busy={roling.busy(u.id) ? true : undefined}
                           onClick={() =>
-                            void app.uaSetRole(u.id, u.role === 'admin' ? null : 'admin')
+                            void roling.run(u.id, () =>
+                              app.uaSetRole(u.id, u.role === 'admin' ? null : 'admin'),
+                            )
                           }
                         >
-                          {u.role === 'admin' ? 'Demote' : 'Make admin'}
+                          <StackedLabel
+                            alt={roling.busy(u.id)}
+                            rest={u.role === 'admin' ? 'Demote' : 'Make admin'}
+                            altLabel="Saving…"
+                          />
                         </button>
+                        {/* Enable starts its request at once (busy); Disable first asks, so
+                            it is a destructive trigger and its confirmation owns the wait. */}
                         <button
                           type="button"
                           class="btn-ghost"
+                          disabled={enabling.busy(u.id)}
+                          aria-busy={enabling.busy(u.id) ? true : undefined}
                           onClick={() =>
-                            u.disabled ? void app.uaSetDisabled(u.id, false) : disableUser(u)
+                            u.disabled
+                              ? void enabling.run(u.id, () => app.uaSetDisabled(u.id, false))
+                              : disableUser(u)
                           }
                         >
-                          {u.disabled ? 'Enable' : 'Disable'}
+                          <StackedLabel
+                            alt={enabling.busy(u.id)}
+                            rest={u.disabled ? 'Enable' : 'Disable'}
+                            altLabel="Enabling…"
+                          />
                         </button>
                         <button
                           type="button"

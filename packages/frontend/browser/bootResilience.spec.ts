@@ -17,6 +17,8 @@
  * but ACCEPTS `POSIX`, `posix` and `en-US-POSIX` — testing with an accepted tag would pass
  * before the fix and prove nothing.
  */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
 
 /** Tags this runtime actually rejects. Verified rather than guessed; see the file header. */
@@ -75,14 +77,16 @@ test.describe('a locale tag the runtime rejects does not stop the dashboard star
     const lang = await page.evaluate(() => navigator.language);
     // Valid by construction, and the same locale the app's own formatting already uses.
     expect(lang).not.toBe('en-US@posix');
-    expect(await page.evaluate((l: string) => {
-      try {
-        new Intl.NumberFormat(l);
-        return true;
-      } catch {
-        return false;
-      }
-    }, lang)).toBe(true);
+    expect(
+      await page.evaluate((l: string) => {
+        try {
+          new Intl.NumberFormat(l);
+          return true;
+        } catch {
+          return false;
+        }
+      }, lang),
+    ).toBe(true);
   });
 
   test('formatting still works, and formats real values', async ({ page }) => {
@@ -150,9 +154,137 @@ test.describe('a failure to start is surfaced, never a blank page', () => {
     expect(body, 'the raw error text was rendered to the user').not.toContain(
       'SECRET-PAYLOAD-abc123',
     );
-    expect(
-      consoleText.join('\n'),
-      'the guard echoed the raw error to the console',
-    ).not.toContain('SECRET-PAYLOAD-abc123');
+    expect(consoleText.join('\n'), 'the guard echoed the raw error to the console').not.toContain(
+      'SECRET-PAYLOAD-abc123',
+    );
   });
 });
+
+/* ── A failed boot is legible in either theme (adopt-design-tokens-v2 task 11.2, D9) ──────────
+ *
+ * The pre-paint script resolves the theme before first paint, so a failed boot on a dark system
+ * lands on the dark canvas: the production build links its stylesheet in `<head>`, outside the
+ * module graph, and that sheet's `body { background: var(--bg) }` applies whether or not the app
+ * starts. The boot message must then read in the dark theme too — today's hard-coded dark greys
+ * measured 1.08:1 (title) and 1.84:1 (body) there.
+ *
+ * The dev server's `index.html` has no stylesheet link (the CSS arrives only through
+ * `import './styles.css'` in `src/index.tsx`, which these cases abort), so the case REPRODUCES
+ * the production document rather than injecting style after the fact: it routes the document
+ * request, fetches the dev server's own `index.html`, and serves it with
+ * `<link rel="stylesheet" href="/src/styles.css">` before `</head>`, where the built
+ * `dist/index.html` links its hashed asset. The stylesheet therefore loads from `<head>`, before
+ * the boot script runs. Nothing is injected after navigation (no `addStyleTag`): that would only
+ * prove the colours computed at the end, after the message had painted unstyled. */
+
+const STYLES = readFileSync(join(import.meta.dirname, '../src/styles.css'), 'utf8').replace(
+  /\/\*[\s\S]*?\*\//g,
+  '',
+);
+
+/** A token's literal in one theme block of the shipped stylesheet. */
+function token(theme: 'light' | 'dark', name: string): string {
+  const read = (selector: string): string | undefined => {
+    const at = STYLES.indexOf(selector);
+    const body = STYLES.slice(STYLES.indexOf('{', at) + 1, STYLES.indexOf('}', at));
+    return new RegExp(`--${name}:\\s*(#[0-9a-f]{6})\\s*;`, 'i').exec(body)?.[1];
+  };
+  const value = (theme === 'dark' ? read("[data-theme='dark']") : undefined) ?? read(':root');
+  if (value === undefined) throw new Error(`--${name} has no ${theme} literal in styles.css`);
+  return value.toLowerCase();
+}
+
+function rgbOf(color: string): [number, number, number] {
+  if (color.startsWith('#')) {
+    const n = parseInt(color.slice(1), 16);
+    return [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff];
+  }
+  const m = color.match(/\d+(?:\.\d+)?/g);
+  if (!m || m.length < 3) throw new Error(`not a colour: ${color}`);
+  return [Number(m[0]), Number(m[1]), Number(m[2])];
+}
+
+function contrast(a: string, b: string): number {
+  const lum = (c: string): number => {
+    const [r, g, bl] = rgbOf(c).map((v) => {
+      const s = v / 255;
+      return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+    }) as [number, number, number];
+    return 0.2126 * r + 0.7152 * g + 0.0722 * bl;
+  };
+  const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x) as [number, number];
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+/** Serve the production document: the dev server's own `index.html`, stylesheet linked in
+ * `<head>`; and abort the app module, as the failure cases above do. */
+async function productionDocumentThatFailsToBoot(page: Page): Promise<void> {
+  await page.route('**/src/index.tsx*', (r) => r.abort());
+  await page.route('**/index.html', async (route) => {
+    const response = await route.fetch();
+    const html = await response.text();
+    expect(html, 'the dev document already links a stylesheet in <head>').not.toContain(
+      'href="/src/styles.css"',
+    );
+    await route.fulfill({
+      response,
+      body: html.replace('</head>', '<link rel="stylesheet" href="/src/styles.css">\n</head>'),
+    });
+  });
+}
+
+for (const scheme of ['dark', 'light'] as const) {
+  test(`the boot-failure message is legible on the ${scheme} canvas the pre-paint theme picks`, async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: scheme }); // and storage is empty: a fresh context
+    await productionDocumentThatFailsToBoot(page);
+    await page.goto('/index.html');
+    await page.waitForLoadState('load');
+    await page.waitForSelector('#root [role="alert"]');
+
+    const got = await page.evaluate(() => {
+      const box = document.querySelector<HTMLElement>('#root [role="alert"]')!;
+      const title = box.firstElementChild as HTMLElement;
+      const body = box.querySelector('p')!;
+      const cs = (e: Element): CSSStyleDeclaration => getComputedStyle(e);
+      const root = cs(document.documentElement);
+      return {
+        theme: document.documentElement.getAttribute('data-theme'),
+        linked: [...document.head.querySelectorAll('link[rel="stylesheet"]')].map((l) =>
+          l.getAttribute('href'),
+        ),
+        rootBg: root.getPropertyValue('--bg').trim(),
+        canvas: cs(document.body).backgroundColor,
+        box: cs(box).backgroundColor,
+        title: { color: cs(title).color, size: cs(title).fontSize, line: cs(title).lineHeight },
+        body: { color: cs(body).color, size: cs(body).fontSize, line: cs(body).lineHeight },
+        text: box.innerText,
+      };
+    });
+
+    expect(got.theme, 'the pre-paint script resolved the system preference').toBe(scheme);
+    expect(got.linked, 'the stylesheet is linked in <head>').toContain('/src/styles.css');
+    // The resolved token is the stylesheet's literal for this theme, and the box draws it. The
+    // box's fallback is LIGHT, so a link that never applied fails the dark case here.
+    const bg = token(scheme, 'bg');
+    expect(got.rootBg.toLowerCase(), `--bg resolved in ${scheme}`).toBe(bg);
+    expect(rgbOf(got.box), 'the box background is the theme canvas').toEqual(rgbOf(bg));
+    expect(rgbOf(got.canvas), 'the page canvas is the theme canvas').toEqual(rgbOf(bg));
+    for (const [part, color] of [
+      ['title', got.title.color],
+      ['body', got.body.color],
+    ] as const) {
+      const r = contrast(color, got.box);
+      expect(
+        r,
+        `${scheme} ${part} ${color} on ${got.box} is ${r.toFixed(2)}:1`,
+      ).toBeGreaterThanOrEqual(4.5);
+    }
+    // On the type scale at the default root size (D5): Title 15/20px, Body 13/20px.
+    expect(got.title).toMatchObject({ size: '15px', line: '20px' });
+    expect(got.body).toMatchObject({ size: '13px', line: '20px' });
+    // Still the fixed sanitised string.
+    expect(got.text).toContain('The polyrouter dashboard failed to start.');
+  });
+}

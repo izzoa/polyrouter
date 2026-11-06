@@ -1,4 +1,4 @@
-import { createSignal, For, onCleanup, onMount, Show } from 'solid-js';
+import { createSignal, createUniqueId, For, onCleanup, onMount, Show } from 'solid-js';
 import type { ModelPricingInput } from '../data/api';
 import { fmtUsd } from '../data/format';
 import { unlistedText } from '../data/unlisted';
@@ -7,6 +7,10 @@ import { isNonRoutableVariant } from '@polyrouter/shared';
 import { useApp } from '../state/context';
 import type { Model, Provider } from '../types';
 import { providerHealthView, type HealthTone } from '../data/providerHealth';
+import { StackedLabel } from '../components/StackedLabel';
+import { Notice } from '../components/Notice';
+import { createBusy } from '../components/busy';
+import { createLocalFields, FieldNote } from '../components/Field';
 
 /** The status DOT's fill, by the health line's tone (add-provider-health-signals). */
 function toneDotColor(tone: HealthTone): string {
@@ -16,7 +20,11 @@ function toneDotColor(tone: HealthTone): string {
 /** The status LABEL's text colour. Split from the dot because the fill green is only
  * 2.7:1 on white — fine for a 6px dot, a WCAG failure for an 11.5px label. */
 function toneTextColor(tone: HealthTone): string {
-  return tone === 'green' ? 'var(--green-text)' : tone === 'red' ? 'var(--red)' : 'var(--text3)';
+  return tone === 'green'
+    ? 'var(--green-text)'
+    : tone === 'red'
+      ? 'var(--red-text)'
+      : 'var(--text3)';
 }
 
 /** The effective display price — resolved server-side (billing resolver, then the
@@ -109,7 +117,12 @@ function offeredFirst(models: Model[]): Model[] {
 /** Inline price editor for custom/local models only (#18 §7.7). Writes exactly one
  * of { isFree } or { inputPricePer1m, outputPricePer1m } — matching the server's
  * request-shape rule. */
-function ModelPriceEditor(props: { model: Model; onSave: (body: ModelPricingInput) => void }) {
+function ModelPriceEditor(props: {
+  model: Model;
+  onSave: (body: ModelPricingInput) => Promise<void>;
+}) {
+  // Save price starts a request and stays on screen while it is in flight (D14).
+  const saving = createBusy();
   const [free, setFree] = createSignal(props.model.isFree);
   const [inP, setInP] = createSignal(
     props.model.inputPricePer1m === null ? '' : String(props.model.inputPricePer1m),
@@ -117,33 +130,37 @@ function ModelPriceEditor(props: { model: Model; onSave: (body: ModelPricingInpu
   const [outP, setOutP] = createSignal(
     props.model.outputPricePer1m === null ? '' : String(props.model.outputPricePer1m),
   );
-  const [err, setErr] = createSignal<string | null>(null);
+  // Each price reports on its own field (task 8.2, design.md D20). One message, "Enter both
+  // prices as non-negative numbers, or mark free.", used to cover the pair; it is split per
+  // field, and a field holding a valid price stays quiet.
+  const uid = createUniqueId();
+  const inId = `${uid}-price-in`;
+  const outId = `${uid}-price-out`;
+  const priceProblem = (raw: string, which: 'input' | 'output'): string | null => {
+    const n = Number(raw);
+    return raw.trim() === '' || !Number.isFinite(n) || n < 0
+      ? `Enter the ${which} price as a non-negative number, or mark free.`
+      : null;
+  };
+  const f = createLocalFields({
+    [inId]: () => priceProblem(inP(), 'input'),
+    [outId]: () => priceProblem(outP(), 'output'),
+  });
 
   const save = (): void => {
     if (free()) {
-      props.onSave({ isFree: true });
+      void saving.run(() => props.onSave({ isFree: true }));
       return;
     }
-    const i = Number(inP());
-    const o = Number(outP());
-    if (
-      inP().trim() === '' ||
-      outP().trim() === '' ||
-      !Number.isFinite(i) ||
-      !Number.isFinite(o) ||
-      i < 0 ||
-      o < 0
-    ) {
-      setErr('Enter both prices as non-negative numbers, or mark free.');
-      return;
-    }
-    setErr(null);
-    props.onSave({ inputPricePer1m: i, outputPricePer1m: o });
+    if (!f.submit([inId, outId])) return;
+    void saving.run(() =>
+      props.onSave({ inputPricePer1m: Number(inP()), outputPricePer1m: Number(outP()) }),
+    );
   };
 
   return (
-    <div style="display:flex;flex-direction:column;gap:6px;margin-top:6px">
-      <label style="display:flex;align-items:center;gap:6px;font:400 11px 'Geist',sans-serif;color:var(--text3)">
+    <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+      <label class="t-caption" style="display:flex;align-items:center;gap:8px;color:var(--text3)">
         <input
           type="checkbox"
           checked={free()}
@@ -152,30 +169,54 @@ function ModelPriceEditor(props: { model: Model; onSave: (body: ModelPricingInpu
         Free (no per-token cost)
       </label>
       <Show when={!free()}>
-        <div style="display:flex;gap:6px;align-items:center">
-          <input
-            class="input mono"
-            style="font:400 11px 'Geist Mono',monospace;padding:5px 8px"
-            placeholder="in $/1M"
-            aria-label="Input price per 1M tokens (USD)"
-            value={inP()}
-            onInput={(e) => setInP(e.currentTarget.value)}
-          />
-          <input
-            class="input mono"
-            style="font:400 11px 'Geist Mono',monospace;padding:5px 8px"
-            placeholder="out $/1M"
-            aria-label="Output price per 1M tokens (USD)"
-            value={outP()}
-            onInput={(e) => setOutP(e.currentTarget.value)}
-          />
+        <div style="display:flex;gap:8px;align-items:flex-start">
+          <div style="flex:1;min-width:0">
+            <input
+              class="input input--figure"
+              id={inId}
+              style="padding:7px 8px"
+              placeholder="in $/1M"
+              aria-label="Input price per 1M tokens (USD)"
+              value={inP()}
+              aria-invalid={f.invalid(inId)}
+              aria-describedby={f.describedBy(inId)}
+              onBlur={() => f.check(inId)}
+              onInput={(e) => {
+                setInP(e.currentTarget.value);
+                f.edit(inId);
+              }}
+            />
+            <FieldNote for={inId} error={f.error(inId)} />
+          </div>
+          <div style="flex:1;min-width:0">
+            <input
+              class="input input--figure"
+              id={outId}
+              style="padding:7px 8px"
+              placeholder="out $/1M"
+              aria-label="Output price per 1M tokens (USD)"
+              value={outP()}
+              aria-invalid={f.invalid(outId)}
+              aria-describedby={f.describedBy(outId)}
+              onBlur={() => f.check(outId)}
+              onInput={(e) => {
+                setOutP(e.currentTarget.value);
+                f.edit(outId);
+              }}
+            />
+            <FieldNote for={outId} error={f.error(outId)} />
+          </div>
         </div>
       </Show>
-      <Show when={err()}>
-        <div style="font:400 10.5px 'Geist',sans-serif;color:var(--red)">{err()}</div>
-      </Show>
-      <button type="button" class="btn-ghost" style="align-self:flex-start" onClick={save}>
-        Save price
+      <button
+        type="button"
+        class="btn-ghost"
+        style="align-self:flex-start"
+        disabled={saving.busy()}
+        aria-busy={saving.busy() ? true : undefined}
+        onClick={save}
+      >
+        <StackedLabel alt={saving.busy()} rest="Save price" altLabel="Saving…" />
       </button>
     </div>
   );
@@ -190,6 +231,11 @@ function ProviderCard(props: { p: Provider }) {
   // Batch twins are folded into the models they price (add-model-variant-detection).
   // Models the provider no longer lists sort after the offered ones.
   const split = () => splitVariants(offeredFirst(models()));
+
+  // Test and Sync models start requests and stay on screen while they run (D14): each
+  // button is busy on its own, so one can be tested while another syncs.
+  const testing = createBusy();
+  const syncing = createBusy();
 
   const toggleModels = (): void => {
     const next = !open();
@@ -214,7 +260,7 @@ function ProviderCard(props: { p: Provider }) {
   };
 
   return (
-    <div class="panel card" style="display:flex;flex-direction:column;gap:10px">
+    <div class="panel card" style="display:flex;flex-direction:column;gap:8px">
       <div style="display:flex;align-items:center;justify-content:space-between">
         <div style="display:flex;align-items:center;gap:8px">
           <span
@@ -227,9 +273,11 @@ function ProviderCard(props: { p: Provider }) {
               flex: 'none',
             }}
           />
-          <span style="font:500 13.5px 'Geist',sans-serif;color:var(--text)">{props.p.name}</span>
+          <span style="font:500 0.8125rem/1.25rem 'Geist',sans-serif;color:var(--text)">
+            {props.p.name}
+          </span>
         </div>
-        <span class="chip" style="font:500 10.5px 'Geist',sans-serif;color:var(--text3)">
+        <span class="chip" style="font:500 0.6875rem/1rem 'Geist',sans-serif;color:var(--text3)">
           {providerKindLabel(props.p.kind)}
         </span>
       </div>
@@ -239,68 +287,72 @@ function ProviderCard(props: { p: Provider }) {
         fallback={
           <div
             data-health-line
-            style={{ font: "400 11.5px 'Geist',sans-serif", color: toneTextColor(view().tone) }}
+            style={{
+              font: "400 0.75rem/1rem 'Geist',sans-serif",
+              color: toneTextColor(view().tone),
+            }}
           >
             {view().text}
           </div>
         }
       >
-        <div
+        {/* Caution (D15): the reconnect-required condition still holds, so the notice stays
+            until a reconnect clears it, with the one Reconnect the card offers in this state. */}
+        <Notice
           data-health-line
-          style="display:flex;align-items:center;gap:10px;font:400 11px 'Geist',sans-serif;color:var(--amber);background:var(--amber-bg);border-radius:7px;padding:8px 10px"
+          tone="caution"
+          title="Reconnect needed"
+          action={{ label: 'Reconnect', onClick: reconnect }}
         >
-          <span>{view().text}</span>
-          <button
-            type="button"
-            class="btn-ghost"
-            style="margin-left:auto;flex:none"
-            onClick={reconnect}
-          >
-            Reconnect
-          </button>
-        </div>
+          {view().text}
+        </Notice>
       </Show>
-      <div
-        class="mono"
-        style="font:400 11px 'Geist Mono',monospace;color:var(--text3);word-break:break-all"
-      >
+      <div class="mono t-caption" style="color:var(--text3);word-break:break-all">
         {props.p.baseUrl ?? '—'}
       </div>
-      <div style="font:400 11px 'Geist',sans-serif;color:var(--text3)">
+      <div class="t-caption" style="color:var(--text3)">
         {props.p.hasCredential ? 'credential set (encrypted)' : 'no credential'}
       </div>
 
       <Show when={props.p.oauthPreset !== null && !view().banner}>
-        <div data-token-line style="font:400 11px 'Geist',sans-serif;color:var(--text3)">
+        <div data-token-line class="t-caption" style="color:var(--text3)">
           Signed in · renews automatically{expiresLabel(props.p.credentialExpiresAt)}
         </div>
       </Show>
 
       <Show when={props.p.kind === 'subscription'}>
-        <div style="font:400 11px 'Geist',sans-serif;color:var(--amber);background:var(--amber-bg);border-radius:7px;padding:8px 10px;line-height:1.5">
-          Reusing a flat-rate subscription may violate the provider’s ToS.{' '}
-          <button
-            type="button"
-            class="link-accent"
-            style="color:var(--amber)"
-            onClick={() => app.openModal('newProvider')}
-          >
-            Add a pay-per-token fallback
-          </button>
-          .
-        </div>
+        {/* Caution (D15; CLAUDE.md compliance note): the terms risk holds for as long as the
+            provider is a subscription, so the notice has no dismiss. */}
+        <Notice
+          tone="caution"
+          title="Terms risk"
+          action={{
+            label: 'Add a pay-per-token fallback',
+            onClick: () => app.openModal('newProvider'),
+          }}
+        >
+          Reusing a flat-rate subscription may violate the provider’s ToS.
+        </Notice>
       </Show>
 
-      <div style="display:flex;gap:6px;margin-top:2px;flex-wrap:wrap">
+      <div style="display:flex;gap:8px;margin-top:4px;flex-wrap:wrap">
         <button
           type="button"
           class="btn-ghost"
-          onClick={() => void app.testProviderById(props.p.id)}
+          disabled={testing.busy()}
+          aria-busy={testing.busy() ? true : undefined}
+          onClick={() => void testing.run(() => app.testProviderById(props.p.id))}
         >
-          Test
+          <StackedLabel alt={testing.busy()} rest="Test" altLabel="Testing…" />
         </button>
-        <button type="button" class="btn-ghost" onClick={() => void app.syncProvider(props.p.id)}>
-          Sync models
+        <button
+          type="button"
+          class="btn-ghost"
+          disabled={syncing.busy()}
+          aria-busy={syncing.busy() ? true : undefined}
+          onClick={() => void syncing.run(() => app.syncProvider(props.p.id))}
+        >
+          <StackedLabel alt={syncing.busy()} rest="Sync models" altLabel="Syncing…" />
         </button>
         <button type="button" class="btn-ghost" onClick={toggleModels} aria-expanded={open()}>
           {open() ? 'Hide models' : 'Models'}
@@ -320,11 +372,11 @@ function ProviderCard(props: { p: Provider }) {
       </div>
 
       <Show when={open()}>
-        <div style="display:flex;flex-direction:column;gap:8px;border-top:1px solid var(--border2);padding-top:10px">
+        <div style="display:flex;flex-direction:column;gap:8px;border-top:1px solid var(--border2);padding-top:8px">
           <Show
             when={models().length > 0}
             fallback={
-              <div style="font:400 11px 'Geist',sans-serif;color:var(--text3)">
+              <div class="t-caption" style="color:var(--text3)">
                 No models synced yet — run “Sync models”.
               </div>
             }
@@ -332,23 +384,24 @@ function ProviderCard(props: { p: Provider }) {
             <For each={split().rows}>
               {(m) => (
                 <div
-                  style="display:flex;flex-direction:column;gap:2px"
+                  style="display:flex;flex-direction:column;gap:4px"
                   data-unlisted={m.unlistedSince !== null ? m.externalModelId : undefined}
                 >
                   <div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px">
                     <span
                       class="mono"
                       style={{
-                        font: "500 11.5px 'Geist Mono',monospace",
+                        font: "500 0.75rem/1rem 'Geist Mono',monospace",
                         color: m.unlistedSince !== null ? 'var(--text3)' : 'var(--text)',
                       }}
                     >
                       {m.displayName ?? m.externalModelId}
                     </span>
                     <span
-                      class="mono"
+                      class="figure"
                       style={{
-                        font: "400 10.5px 'Geist Mono',monospace",
+                        font: "400 0.6875rem/1rem 'Geist',sans-serif",
+                        'font-variant-numeric': 'tabular-nums',
                         color: m.effectivePrice?.isFree ? 'var(--green-text)' : 'var(--text3)',
                       }}
                     >
@@ -365,7 +418,8 @@ function ProviderCard(props: { p: Provider }) {
                           data-unlisted-line
                           title={unlistedText(since()).label}
                           aria-label={unlistedText(since()).label}
-                          style="font:400 10.5px 'Geist',sans-serif;color:var(--text3)"
+                          class="t-caption"
+                          style="color:var(--text3)"
                         >
                           {unlistedText(since()).line}
                         </span>
@@ -384,14 +438,14 @@ function ProviderCard(props: { p: Provider }) {
                   <Show
                     when={editable()}
                     fallback={
-                      <div style="font:400 10px 'Geist',sans-serif;color:var(--text3)">
+                      <div class="t-caption" style="color:var(--text3)">
                         {priceProvenance(m)}
                       </div>
                     }
                   >
                     <ModelPriceEditor
                       model={m}
-                      onSave={(body) => void app.setModelPrice(props.p.id, m.id, body)}
+                      onSave={(body) => app.setModelPrice(props.p.id, m.id, body)}
                     />
                   </Show>
                   {/* The batch twin's rate rides ON this row (add-model-variant-
@@ -402,7 +456,8 @@ function ProviderCard(props: { p: Provider }) {
                     {(twin) => (
                       <div
                         data-batch-rate={m.externalModelId}
-                        style="font:400 10px 'Geist',sans-serif;color:var(--text3)"
+                        class="t-caption"
+                        style="color:var(--text3)"
                       >
                         {batchRateText(twin())} · not routable
                         {/* add-live-subscription-models: a batch twin the provider stopped
@@ -434,13 +489,10 @@ function ProviderCard(props: { p: Provider }) {
                   data-orphan-batch={m.externalModelId}
                   style="display:flex;align-items:baseline;justify-content:space-between;gap:8px"
                 >
-                  <span
-                    class="mono"
-                    style="font:500 11.5px 'Geist Mono',monospace;color:var(--text3)"
-                  >
+                  <span class="mono t-label" style="color:var(--text3)">
                     {m.displayName ?? m.externalModelId}
                   </span>
-                  <span style="font:400 10px 'Geist',sans-serif;color:var(--text3)">
+                  <span class="t-caption" style="color:var(--text3)">
                     batch-only · not routable
                     <Show when={m.unlistedSince}>
                       {(since) => (
@@ -489,9 +541,9 @@ export function Providers() {
     onCleanup(() => document.removeEventListener('visibilitychange', onVisible));
   });
   return (
-    <div class="rs-page" style="display:flex;flex-direction:column;gap:14px;max-width:1200px">
+    <div class="rs-page" style="display:flex;flex-direction:column;gap:24px;max-width:1200px">
       <div style="display:flex;justify-content:space-between;align-items:center">
-        <div style="font:400 12.5px 'Geist',sans-serif;color:var(--text3)">
+        <div class="t-body" style="color:var(--text3)">
           Your keys, your accounts — requests go straight from this box to the provider.
         </div>
         <button type="button" class="btn-primary" onClick={() => app.openModal('newProvider')}>
@@ -499,23 +551,23 @@ export function Providers() {
         </button>
       </div>
       <Show when={state.providersError}>
-        <div style="font:400 11.5px 'Geist',sans-serif;color:var(--red)">
+        <div class="t-caption" style="color:var(--red-text)">
           Couldn’t load providers: {state.providersError}
         </div>
       </Show>
       <Show
         when={state.providers.length > 0}
         fallback={
-          <div class="panel card" style="font:400 12.5px 'Geist',sans-serif;color:var(--text3)">
+          <div class="panel card t-body" style="color:var(--text3)">
             No providers yet. Add one to sync its models and start routing.
           </div>
         }
       >
-        <div class="rs-grid-3" style="display:grid;gap:12px">
+        <div class="rs-grid-3" style="display:grid;gap:16px">
           <For each={state.providers}>{(p) => <ProviderCard p={p} />}</For>
         </div>
       </Show>
-      <div style="font:400 11.5px 'Geist',sans-serif;color:var(--text3);padding:0 2px">
+      <div class="t-caption" style="color:var(--text3);padding:0 4px">
         Custom base URLs are SSRF-checked — private and metadata ranges are rejected. Credentials
         are encrypted at rest and never shown back.
       </div>

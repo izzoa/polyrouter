@@ -17,44 +17,34 @@ interface ToggleProps {
   describedBy?: string | undefined;
 }
 
-/** The prototype's switch control (small = layers/channels, medium = settings). The
- * track colour lives in classes (`toggle--on` / `toggle--off` / `toggle--unavailable`),
- * not inline, so the unavailable presentation can override it. */
+/** The switch (small = layers/channels, medium = settings).
+ *
+ * Every drawn value lives in `styles.css`, not inline (adopt-design-tokens-v2 D3): the
+ * size pair is `toggle--md` (36 × 20) / `toggle--sm` (32 × 18), and the track colour is
+ * `toggle--on` (Ink) / `toggle--off` (Control Edge) / `toggle--unavailable`, so the lock,
+ * the geometry suite and the contrast suite all read the same rules.
+ *
+ * Busy (`locked`) and unavailable stay `aria-disabled` with activation ignored — never
+ * native `disabled`, which would drop the focus a drawer's own controls must keep. */
 export function Toggle(props: ToggleProps) {
-  const dims = () =>
-    props.size === 'md'
-      ? { w: 34, h: 19, knob: 15, onLeft: 17 }
-      : { w: 30, h: 17, knob: 13, onLeft: 15 };
   const inert = (): boolean => props.locked === true || props.unavailable === true;
   const stateClass = (): string =>
     props.unavailable === true ? 'toggle--unavailable' : props.on ? 'toggle--on' : 'toggle--off';
   return (
     <button
       type="button"
-      class={`toggle ${stateClass()}`}
+      class={`toggle ${props.size === 'md' ? 'toggle--md' : 'toggle--sm'} ${stateClass()}`}
       role="switch"
       aria-checked={props.on}
       aria-disabled={inert() ? true : undefined}
       aria-label={props.label}
       aria-describedby={props.describedBy}
-      style={{
-        width: `${String(dims().w)}px`,
-        height: `${String(dims().h)}px`,
-        cursor: inert() ? 'not-allowed' : 'pointer',
-      }}
       onClick={() => {
         if (inert()) return;
         props.onToggle();
       }}
     >
-      <span
-        class="toggle-knob"
-        style={{
-          width: `${String(dims().knob)}px`,
-          height: `${String(dims().knob)}px`,
-          left: props.on && props.unavailable !== true ? `${String(dims().onLeft)}px` : '2px',
-        }}
-      />
+      <span class="toggle-knob" />
     </button>
   );
 }

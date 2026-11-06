@@ -24,6 +24,11 @@ export interface ChartProps {
    * for a chart that must not compete with a screen's one accent figure
    * (split-auto-routing-readout-setup D11: the band-mix chart). */
   accentFirst?: boolean;
+  /** The focal measure this chart draws in the accent, named on its root as `data-measure`
+   * (the Indigo Budget, adopt-design-tokens-v2 D11: `requests` on Overview, `budget-spend` on
+   * a budget card). A view may show one focal measure; `indigoBudget.spec.ts` counts them. A
+   * neutral chart (`accentFirst={false}`) names none. */
+  measure?: string;
   xExtent?: [number, number];
   yExtent?: [number, number];
   yFormat?: (value: number) => string;
@@ -163,11 +168,16 @@ export function Chart(props: ChartProps) {
     chart?.destroy();
   });
 
+  // uPlot draws on a canvas, which no computed style can read, so the series is declared
+  // on the root instead: `focal` (with its measure) while series 0 takes the accent, and
+  // `neutral` otherwise (the Indigo Budget, D11). Chart.series.test.tsx holds the two together.
   return (
     <div
       ref={(el) => {
         container = el;
       }}
+      data-series={accentFirst() ? 'focal' : 'neutral'}
+      data-measure={accentFirst() ? props.measure : undefined}
       style={{ width: '100%', height: `${String(height())}px` }}
     />
   );

@@ -67,6 +67,76 @@ describe('buildTokenRequest — the outbound User-Agent (add-honest-user-agent)'
   }
 });
 
+describe('buildTokenRequest — preset-declared identity headers (allow-preset-client-identity)', () => {
+  const countUa = (headers: Readonly<Record<string, string>>): number =>
+    Object.keys(headers).filter((k) => k.toLowerCase() === 'user-agent').length;
+  const lower = (headers: Readonly<Record<string, string>>, name: string): string[] =>
+    Object.entries(headers)
+      .filter(([k]) => k.toLowerCase() === name)
+      .map(([, v]) => v);
+
+  it('identity headers appear on the request', () => {
+    const { headers } = buildTokenRequest({
+      ...base,
+      headers: { 'X-Client-Name': 'fixture-cli', 'X-Client-Version': '9.9.9' },
+    });
+    expect(headers['X-Client-Name']).toBe('fixture-cli');
+    expect(headers['X-Client-Version']).toBe('9.9.9');
+    // No declared UA: polyrouter's own, exactly once.
+    expect(countUa(headers)).toBe(1);
+    expect(headers['User-Agent']).toBe(POLYROUTER_USER_AGENT);
+  });
+
+  for (const encoding of ['json', 'form'] as const) {
+    it(`${encoding}: a content-type / ACCEPT-ENCODING identity entry leaves exactly the client's own values`, () => {
+      const { headers } = buildTokenRequest({
+        ...base,
+        encoding,
+        headers: {
+          'content-type': 'text/evil',
+          'ACCEPT-ENCODING': 'gzip',
+          'X-Client-Name': 'fixture-cli',
+        },
+      });
+      expect(lower(headers, 'content-type')).toEqual([
+        encoding === 'form' ? 'application/x-www-form-urlencoded' : 'application/json',
+      ]);
+      expect(lower(headers, 'accept-encoding')).toEqual(['identity']);
+      expect(headers['X-Client-Name']).toBe('fixture-cli');
+    });
+
+    for (const grant of ['exchange', 'refresh'] as const) {
+      for (const spelling of ['User-Agent', 'user-agent']) {
+        it(`${encoding} / ${grant}: a declared '${spelling}' is the only User-Agent on the token request`, () => {
+          const { headers } = buildTokenRequest({
+            ...base,
+            encoding,
+            grant,
+            headers: { [spelling]: 'fixture-cli/1.2.3', 'X-Client-Name': 'fixture-cli' },
+          });
+          expect(countUa(headers)).toBe(1);
+          expect(lower(headers, 'user-agent')).toEqual(['fixture-cli/1.2.3']);
+          expect(headers['X-Client-Name']).toBe('fixture-cli');
+        });
+      }
+    }
+  }
+
+  it('no headers: byte-identical to the pre-change output (one polyrouter UA, same key set)', () => {
+    for (const encoding of ['json', 'form'] as const) {
+      const without = buildTokenRequest({ ...base, encoding });
+      const empty = buildTokenRequest({ ...base, encoding, headers: {} });
+      expect(empty).toEqual(without);
+      expect(Object.keys(without.headers).sort()).toEqual([
+        'Accept-Encoding',
+        'Content-Type',
+        'User-Agent',
+      ]);
+      expect(without.headers['User-Agent']).toBe(POLYROUTER_USER_AGENT);
+    }
+  });
+});
+
 describe('parseTokenSet — grant-aware requirements', () => {
   const ok = { access_token: 'at', refresh_token: 'rt', expires_in: 600 };
 

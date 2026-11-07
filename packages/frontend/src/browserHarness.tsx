@@ -899,6 +899,35 @@ if (params.get('targets') === '1') {
   ];
 }
 
+// Client-identity fixture (allow-preset-client-identity task 8.5), opt-in via `?identity=1` so
+// the default harness stays byte-identical for every other suite. One OAuth-connected
+// subscription provider whose preset declares an identity, so its edit modal carries the
+// imitation switch and the `confirm:clientIdentity` surface can be opened from it.
+if (params.get('identity') === '1') {
+  client.providers = [
+    {
+      id: 'p-identity',
+      name: 'Fixture Plan',
+      kind: 'subscription',
+      protocol: 'openai_compatible',
+      baseUrl: 'https://api.fixture.example/v1',
+      status: 'ok',
+      maxTokensSpelling: 'auto',
+      hasCredential: true,
+      oauthPreset: 'stub-identity',
+      credentialExpiresAt: '2026-11-07T09:00:00.000Z',
+      credentialError: null,
+      firstByteTimeoutMs: null,
+      idleTimeoutMs: null,
+      autoPruneUnlisted: true,
+      imitateClientIdentity: false,
+      clientIdentity: { label: 'Fixture Client' },
+      createdAt: '2026-11-01T09:00:00.000Z',
+      ...UNRECORDED_HEALTH,
+    },
+  ];
+}
+
 const store = createAppStore(client);
 const host = document.getElementById('root');
 if (!host) throw new Error('harness root missing');

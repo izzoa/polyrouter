@@ -984,9 +984,17 @@ export class FakeApiClient implements ApiClient {
 
   /** Subscription-OAuth wizard endpoints (add-subscription-oauth). */
   oauthPresets: import('../data/api').OauthPresetDto[] = [
-    { id: 'claude', displayName: 'Claude Pro / Max' },
-    { id: 'chatgpt', displayName: 'ChatGPT Plus / Pro' },
+    { id: 'claude', displayName: 'Claude Pro / Max', clientIdentity: null },
+    { id: 'chatgpt', displayName: 'ChatGPT Plus / Pro', clientIdentity: null },
+    // A fixture preset that declares a client identity (allow-preset-client-identity): the
+    // only entry that opens the connect wizard's identity step.
+    {
+      id: 'stub-identity',
+      displayName: 'Fixture Plan',
+      clientIdentity: { label: 'Fixture Client' },
+    },
   ];
+
   oauthCompleteRejects: ApiError | null = null;
 
   listOauthPresets(): Promise<import('../data/api').OauthPresetDto[]> {
@@ -994,8 +1002,18 @@ export class FakeApiClient implements ApiClient {
     return Promise.resolve(this.oauthPresets);
   }
 
-  oauthStart(preset: string, name?: string): Promise<import('../data/api').OauthStartResult> {
-    this.record('oauthStart', preset, name);
+  oauthStart(
+    preset: string,
+    name?: string,
+    imitateClientIdentity?: boolean,
+  ): Promise<import('../data/api').OauthStartResult> {
+    // The opt-in is recorded only when given, so a start without it logs exactly as before.
+    this.record(
+      'oauthStart',
+      preset,
+      name,
+      ...(imitateClientIdentity === true ? [imitateClientIdentity] : []),
+    );
     return Promise.resolve({
       sessionId: `sess-${preset}`,
       authorizeUrl: `https://idp.example/authorize?state=st-${preset}`,

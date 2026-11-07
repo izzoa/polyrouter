@@ -124,6 +124,7 @@ describe('request-logging e2e', () => {
           provide: SubscriptionOauthService,
           useValue: {
             resolveCredential: () => Promise.reject(new Error('oauth seam not stubbed')),
+            availableClientIdentity: () => null,
           },
         },
         StreamDrainRegistry,

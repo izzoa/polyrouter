@@ -2,6 +2,7 @@
 // OAuth resolution, SSRF gate, quirks, bounds — with fixed, secret-free failures.
 import { encryptSecret, userPrincipal, type ProviderRow } from '@polyrouter/shared/server';
 import type { SubscriptionOauthService } from '../subscription-oauth/subscription-oauth.service';
+import type { PresetClientIdentity } from './client-identity';
 import { AdapterBuildError, ProviderAdapterBuilder } from './adapter-builder';
 
 const KEY = 'ab'.repeat(32); // 32 bytes of hex — the encryption key format
@@ -33,9 +34,11 @@ function builder(
   resolveCredential: SubscriptionOauthService['resolveCredential'] = () =>
     Promise.reject(new Error('oauth seam not expected')),
   mode: 'selfhosted' | 'cloud' = 'cloud',
+  availableClientIdentity: () => PresetClientIdentity | null = () => null,
 ): ProviderAdapterBuilder {
   return new ProviderAdapterBuilder({ key: KEY, mode }, {
     resolveCredential,
+    availableClientIdentity,
   } as unknown as SubscriptionOauthService);
 }
 
@@ -257,5 +260,81 @@ describe('ProviderAdapterBuilder', () => {
       expect(cfg.extraHeaders).toBeUndefined();
       expect(allKeys(cfg).filter((k) => /user[-_]?agent/i.test(k))).toEqual([]);
     });
+  });
+});
+
+// allow-preset-client-identity (task 5.1): the builder spreads the declared model-API
+// headers as `extraHeaders` only while the row's switch is on. These cases are decided
+// by the stub; the real-service guarantee for Claude and ChatGPT is the e2e pin (5.4).
+describe('ProviderAdapterBuilder client identity', () => {
+  const FIXTURE: PresetClientIdentity = {
+    label: 'Fixture Client',
+    apiHeaders: { 'User-Agent': 'fixture-client/1.0', 'X-Fixture-Client': 'polyrouter-test' },
+    tokenHeaders: { 'User-Agent': 'fixture-auth/1.0' },
+  };
+  const subRow = (imitate: boolean): ProviderRow =>
+    row({
+      kind: 'subscription',
+      protocol: 'openai_compatible',
+      baseUrl: 'https://api.openai.com/v1',
+      imitateClientIdentity: imitate,
+    });
+  const bearer = (): ReturnType<SubscriptionOauthService['resolveCredential']> =>
+    Promise.resolve({
+      credential: 'oauth-ACCESS',
+      authScheme: 'oauth_bearer' as const,
+      envelope: 'stored-cipher',
+    });
+
+  it('omits extraHeaders with the switch off', async () => {
+    const cfg = await builder(bearer, 'cloud', () => FIXTURE).buildConfig(
+      principal,
+      subRow(false),
+      opts,
+    );
+    expect('extraHeaders' in cfg).toBe(false);
+  });
+
+  it("sends the fixture's apiHeaders with the switch on", async () => {
+    const cfg = await builder(bearer, 'cloud', () => FIXTURE).buildConfig(
+      principal,
+      subRow(true),
+      opts,
+    );
+    expect(cfg.extraHeaders).toEqual(FIXTURE.apiHeaders);
+  });
+
+  it('omits extraHeaders when imitation is not available (stub null), whatever the switch', async () => {
+    const built = await builder(bearer, 'cloud', () => null).buildConfigWithCredential(
+      principal,
+      subRow(true),
+      opts,
+    );
+    expect('extraHeaders' in built.config).toBe(false);
+  });
+
+  it('carries the identity on the non-OAuth path too (a resolveCredential that returns api_key)', async () => {
+    const apiKey = (): ReturnType<SubscriptionOauthService['resolveCredential']> =>
+      Promise.resolve({
+        credential: 'sk-plain',
+        authScheme: 'api_key' as const,
+        envelope: 'stored-cipher',
+      });
+    const cfg = await builder(apiKey, 'cloud', () => FIXTURE).buildConfig(
+      principal,
+      subRow(true),
+      opts,
+    );
+    expect(cfg.authScheme).toBe('api_key');
+    expect(cfg.extraHeaders).toEqual(FIXTURE.apiHeaders);
+  });
+
+  it('carries the identity on the plain-credential return as well', async () => {
+    const cfg = await builder(undefined, 'cloud', () => FIXTURE).buildConfig(
+      principal,
+      row({ imitateClientIdentity: true }),
+      opts,
+    );
+    expect(cfg.extraHeaders).toEqual(FIXTURE.apiHeaders);
   });
 });

@@ -60,7 +60,12 @@ class TestPrincipalGuard implements CanActivate {
 // Stub IdP: records exchange bodies AND the full inputs (encoding/grant —
 // add-chatgpt-responses); programmable per test.
 let exchanges: Array<Record<string, string>> = [];
-let exchangeInputs: Array<{ encoding?: string; grant?: string; body: Record<string, string> }> = [];
+let exchangeInputs: Array<{
+  encoding?: string;
+  grant?: string;
+  body: Record<string, string>;
+  headers?: Record<string, string>;
+}> = [];
 let nextTokens: () => Promise<TokenSet> = () =>
   Promise.resolve({
     accessToken: 'at-e2e-1',
@@ -103,6 +108,7 @@ describe('subscription OAuth connect (e2e)', () => {
   let preset: OauthPreset;
   let rootPreset: OauthPreset;
   let chatgptPreset: OauthPreset;
+  let identityPreset: OauthPreset;
 
   const mkUser = async (): Promise<string> =>
     (
@@ -185,6 +191,29 @@ describe('subscription OAuth connect (e2e)', () => {
       enabled: true,
     };
 
+    // allow-preset-client-identity (design D11): the registry fixture that declares a
+    // client identity. Claude and ChatGPT declare none, so every identity case that must
+    // see headers goes through this entry.
+    identityPreset = {
+      id: 'stub-identity',
+      displayName: 'Stub identity',
+      baseUrl: 'https://4.4.4.4/',
+      protocol: 'openai_compatible',
+      authorizeUrl: 'https://idp.example/authorize',
+      tokenEndpoint: 'https://idp.example/token',
+      clientId: 'client-e2e-identity',
+      scopes: 'user:inference',
+      redirectUri: 'https://idp.example/oauth/code/callback',
+      tokenRequestEncoding: 'json',
+      includeStateInExchange: true,
+      clientIdentity: {
+        label: 'Fixture Client',
+        apiHeaders: { 'User-Agent': 'fixture-client/1.0', 'X-Fixture-Client': 'polyrouter-test' },
+        tokenHeaders: { 'User-Agent': 'fixture-auth/1.0' },
+      },
+      enabled: true,
+    };
+
     const moduleRef = await Test.createTestingModule({
       imports: [ProvidersModule],
       providers: [{ provide: APP_GUARD, useClass: TestPrincipalGuard }],
@@ -223,8 +252,10 @@ describe('subscription OAuth connect (e2e)', () => {
               ? rootPreset
               : id === 'stub-chatgpt'
                 ? chatgptPreset
-                : undefined,
-        list: () => [preset, rootPreset, chatgptPreset],
+                : id === 'stub-identity'
+                  ? identityPreset
+                  : undefined,
+        list: () => [preset, rootPreset, chatgptPreset, identityPreset],
       })
       .compile();
     app = moduleRef.createNestApplication<NestExpressApplication>();
@@ -1069,7 +1100,7 @@ describe('subscription OAuth connect (e2e)', () => {
     expect(parsed.kind === 'oauth' && parsed.cred.accountId).toBe('acct-e2e-77');
   });
 
-  it('CHATGPT REAL wire: exactly the three identity headers, no fingerprints, store:false; stream; the catalog listing is Test', async () => {
+  it('CHATGPT REAL wire: exactly the three protocol headers, store:false; stream; the catalog listing is Test', async () => {
     // A local Responses-shaped upstream. VERIFIED LIVE: the wire is STREAMING-ONLY
     // (buffered chat() folds the SSE), and rejects max_output_tokens/sampling.
     const seen: Array<{
@@ -1126,7 +1157,7 @@ describe('subscription OAuth connect (e2e)', () => {
       expect(first.headers['authorization']).toBe('Bearer at-e2e-1');
       expect(first.headers['chatgpt-account-id']).toBe('acct-e2e-77');
       expect(first.headers['openai-beta']).toBe('responses=experimental');
-      // The fingerprint ABSENCES (no-spoofing rule) + no cross-protocol bleed.
+      // No identity configured: protocol headers only, no cross-protocol bleed.
       expect(first.headers['x-api-key']).toBeUndefined();
       expect(first.headers['originator']).toBeUndefined();
       expect(first.headers['session_id']).toBeUndefined();
@@ -1186,5 +1217,256 @@ describe('subscription OAuth connect (e2e)', () => {
     } finally {
       respUpstream.close();
     }
+  });
+
+  // ---- allow-preset-client-identity (tasks 5.2, 5.4) ----
+
+  const IDENTITY_API_HEADERS = {
+    'User-Agent': 'fixture-client/1.0',
+    'X-Fixture-Client': 'polyrouter-test',
+  };
+
+  async function connectIdentity(): Promise<string> {
+    const start = await as(alice, '/api/providers/oauth/start').send({ preset: 'stub-identity' });
+    expect(start.status).toBe(200);
+    const state = new URL(start.body.authorizeUrl).searchParams.get('state')!;
+    const created = await as(alice, '/api/providers/oauth/complete').send({
+      sessionId: start.body.sessionId,
+      pasted: `c#${state}`,
+    });
+    expect(created.status).toBe(200);
+    exchanges = [];
+    exchangeInputs = [];
+    return created.body.id as string;
+  }
+
+  it("a flagged identity row's Test config carries extraHeaders; turning the switch off drops them without a reconnect", async () => {
+    const id = await connectIdentity();
+    // Direct write: connect-start opt-in is covered separately (task 6).
+    await pool.query('UPDATE provider SET imitate_client_identity = true WHERE id = $1', [id]);
+    const on = await request(server)
+      .post(`/api/providers/${id}/test-connection`)
+      .set('x-test-user', alice);
+    expect(on.body.ok).toBe(true);
+    expect(factoryConfigs).toHaveLength(1);
+    expect(factoryConfigs[0]!['extraHeaders']).toEqual(IDENTITY_API_HEADERS);
+    // The owner turns it off: no reconnect, the next Test sends nothing.
+    const off = await request(server)
+      .patch(`/api/providers/${id}`)
+      .set('x-test-user', alice)
+      .send({ imitateClientIdentity: false });
+    expect(off.status).toBe(200);
+    expect(off.body.imitateClientIdentity).toBe(false);
+    const next = await request(server)
+      .post(`/api/providers/${id}/test-connection`)
+      .set('x-test-user', alice);
+    expect(next.body.ok).toBe(true);
+    expect(factoryConfigs).toHaveLength(2);
+    expect('extraHeaders' in factoryConfigs[1]!).toBe(false);
+  });
+
+  it('Claude and ChatGPT never send identity, even with a stored switch on (real service + builder)', async () => {
+    // A short-expiry connect so Test's adapter build also runs a lazy refresh.
+    const claudeId = await connectWith('stub-claude', 60_000);
+    nextTokens = () => Promise.resolve(chatgptTokens({ expiresAt: Date.now() + 60_000 }));
+    const chatgptId = await connectChatgpt();
+    // connectChatgpt's own token set is full-lifetime; re-seat the expiry so a refresh runs.
+    await pool.query(
+      `UPDATE provider SET credential_expires_at = now() + interval '1 minute' WHERE id = ANY($1)`,
+      [[claudeId, chatgptId]],
+    );
+    exchanges = [];
+    exchangeInputs = [];
+    factoryConfigs = [];
+    // PATCH would 422 (imitation is not available for these presets): write the column.
+    await pool.query('UPDATE provider SET imitate_client_identity = true WHERE id = ANY($1)', [
+      [claudeId, chatgptId],
+    ]);
+    nextTokens = () =>
+      Promise.resolve({ accessToken: 'at-e2e-2', expiresAt: Date.now() + 3_600_000 });
+    for (const id of [claudeId, chatgptId]) {
+      const t = await request(server)
+        .post(`/api/providers/${id}/test-connection`)
+        .set('x-test-user', alice);
+      expect(t.body.ok).toBe(true);
+    }
+    // Every Test built a config; the refresh ran for at least the first (stale) build.
+    expect(factoryConfigs.length).toBeGreaterThanOrEqual(2);
+    expect(exchangeInputs.some((i) => i.grant === 'refresh')).toBe(true);
+    for (const cfg of factoryConfigs) expect('extraHeaders' in cfg).toBe(false);
+    for (const input of exchangeInputs) expect('headers' in input).toBe(false);
+    // The safe view reports no available identity, whatever the stored switch says.
+    for (const id of [claudeId, chatgptId]) {
+      const list = await request(server).get('/api/providers').set('x-test-user', alice);
+      const view = (list.body as Array<{ id: string; clientIdentity: unknown }>).find(
+        (p) => p.id === id,
+      );
+      expect(view?.clientIdentity).toBeNull();
+    }
+  });
+
+  // ---- allow-preset-client-identity (tasks 6.1-6.3) ----
+
+  const sessionCount = async (): Promise<number> =>
+    (await app.get<import('ioredis').Redis>(REDIS_CLIENT).keys('oauth:sess:*')).length;
+  const getAlice = (path: string): request.Test =>
+    request(server).get(path).set('x-test-user', alice);
+
+  it('a connect start carrying identity values is a 400 and mints no session', async () => {
+    const before = await sessionCount();
+    for (const field of ['clientIdentity', 'extraHeaders', 'userAgent']) {
+      const res = await as(alice, '/api/providers/oauth/start').send({
+        preset: 'stub-identity',
+        [field]: { 'User-Agent': 'spoofed/9' },
+      });
+      expect(res.status).toBe(400);
+    }
+    const nul = await as(alice, '/api/providers/oauth/start').send({
+      preset: 'stub-identity',
+      imitateClientIdentity: null,
+    });
+    expect(nul.status).toBe(400);
+    expect(await sessionCount()).toBe(before);
+  });
+
+  it('an opt-in the preset cannot honour is a 422 with no session; an honourable one connects with the switch on', async () => {
+    const before = await sessionCount();
+    for (const id of ['stub-claude', 'stub-chatgpt']) {
+      const res = await as(alice, '/api/providers/oauth/start').send({
+        preset: id,
+        imitateClientIdentity: true,
+      });
+      expect(res.status).toBe(422);
+    }
+    expect(await sessionCount()).toBe(before);
+
+    // Opted in: the created provider's switch is on and its first Test carries the headers.
+    const start = await as(alice, '/api/providers/oauth/start').send({
+      preset: 'stub-identity',
+      imitateClientIdentity: true,
+    });
+    expect(start.status).toBe(200);
+    const state = new URL(start.body.authorizeUrl).searchParams.get('state')!;
+    const created = await as(alice, '/api/providers/oauth/complete').send({
+      sessionId: start.body.sessionId,
+      pasted: `c#${state}`,
+    });
+    expect(created.status).toBe(200);
+    expect(created.body.imitateClientIdentity).toBe(true);
+    expect(created.body.clientIdentity).toEqual({ label: 'Fixture Client' });
+    factoryConfigs = [];
+    const test = await request(server)
+      .post(`/api/providers/${created.body.id}/test-connection`)
+      .set('x-test-user', alice);
+    expect(test.body.ok).toBe(true);
+    expect(factoryConfigs.at(-1)!['extraHeaders']).toEqual(IDENTITY_API_HEADERS);
+    // Without the field the switch is off.
+    const plain = await connectIdentity();
+    const view = await getAlice(`/api/providers/${plain}`);
+    expect(view.body.imitateClientIdentity).toBe(false);
+  });
+
+  it('the preset list names the imitated client without any header name or value', async () => {
+    const res = await getAlice('/api/providers/oauth/presets');
+    expect(res.status).toBe(200);
+    const byId = new Map(
+      (res.body as Array<{ id: string; clientIdentity: unknown }>).map((p) => [p.id, p]),
+    );
+    expect(byId.get('stub-identity')!.clientIdentity).toEqual({ label: 'Fixture Client' });
+    expect(byId.get('stub-claude')!.clientIdentity).toBeNull();
+    expect(byId.get('stub-chatgpt')!.clientIdentity).toBeNull();
+    const text = JSON.stringify(res.body);
+    for (const leaked of [
+      'fixture-client',
+      'fixture-auth',
+      'polyrouter-test',
+      'X-Fixture-Client',
+      'User-Agent',
+    ]) {
+      expect(text.toLowerCase()).not.toContain(leaked.toLowerCase());
+    }
+  });
+
+  // ---- allow-preset-client-identity (task 7.3): token-endpoint identity ----
+
+  const IDENTITY_TOKEN_HEADERS = { 'User-Agent': 'fixture-auth/1.0' };
+
+  async function connectIdentityWith(optIn: boolean | undefined): Promise<string> {
+    const start = await as(alice, '/api/providers/oauth/start').send({
+      preset: 'stub-identity',
+      ...(optIn !== undefined ? { imitateClientIdentity: optIn } : {}),
+    });
+    expect(start.status).toBe(200);
+    const state = new URL(start.body.authorizeUrl).searchParams.get('state')!;
+    const created = await as(alice, '/api/providers/oauth/complete').send({
+      sessionId: start.body.sessionId,
+      pasted: `c#${state}`,
+    });
+    expect(created.status).toBe(200);
+    return created.body.id as string;
+  }
+
+  it('the connect exchange carries tokenHeaders only for an opted-in fixture connect', async () => {
+    exchangeInputs = [];
+    await connectIdentityWith(true);
+    expect(exchangeInputs).toHaveLength(1);
+    expect(exchangeInputs[0]!.grant).toBe('exchange');
+    expect(exchangeInputs[0]!.headers).toEqual(IDENTITY_TOKEN_HEADERS);
+
+    exchangeInputs = [];
+    await connectIdentityWith(undefined);
+    expect(exchangeInputs).toHaveLength(1);
+    expect('headers' in exchangeInputs[0]!).toBe(false);
+
+    exchangeInputs = [];
+    await connectIdentityWith(false);
+    expect(exchangeInputs).toHaveLength(1);
+    expect('headers' in exchangeInputs[0]!).toBe(false);
+  });
+
+  it('a reauthorization of a flagged fixture row carries tokenHeaders; one switched off mid-session carries none and leaves it off', async () => {
+    const id = await connectIdentityWith(true);
+    const reauthorize = async (): Promise<{ sessionId: string; state: string }> => {
+      const re = await as(alice, `/api/providers/oauth/reauthorize/${id}`).send({});
+      expect(re.status).toBe(200);
+      return {
+        sessionId: re.body.sessionId as string,
+        state: new URL(re.body.authorizeUrl).searchParams.get('state')!,
+      };
+    };
+
+    // Flagged at exchange time: the headers go out, the switch is untouched.
+    exchangeInputs = [];
+    const first = await reauthorize();
+    const done = await as(alice, '/api/providers/oauth/complete').send({
+      sessionId: first.sessionId,
+      pasted: `c2#${first.state}`,
+    });
+    expect(done.status).toBe(200);
+    expect(exchangeInputs).toHaveLength(1);
+    expect(exchangeInputs[0]!.headers).toEqual(IDENTITY_TOKEN_HEADERS);
+    expect(done.body.imitateClientIdentity).toBe(true);
+
+    // Started while flagged, PATCHed to false, then completed: no headers, still off.
+    exchangeInputs = [];
+    const second = await reauthorize();
+    const off = await request(server)
+      .patch(`/api/providers/${id}`)
+      .set('x-test-user', alice)
+      .send({ imitateClientIdentity: false });
+    expect(off.status).toBe(200);
+    const done2 = await as(alice, '/api/providers/oauth/complete').send({
+      sessionId: second.sessionId,
+      pasted: `c3#${second.state}`,
+    });
+    expect(done2.status).toBe(200);
+    expect(exchangeInputs).toHaveLength(1);
+    expect('headers' in exchangeInputs[0]!).toBe(false);
+    expect(done2.body.imitateClientIdentity).toBe(false);
+    const row = await pool.query<{ imitate_client_identity: boolean }>(
+      'SELECT imitate_client_identity FROM provider WHERE id = $1',
+      [id],
+    );
+    expect(row.rows[0]!.imitate_client_identity).toBe(false);
   });
 });

@@ -396,7 +396,10 @@ export async function createBatchHarness(
       ProxyService,
       {
         provide: SubscriptionOauthService,
-        useValue: { resolveCredential: () => Promise.reject(new Error('oauth seam not stubbed')) },
+        useValue: {
+          resolveCredential: () => Promise.reject(new Error('oauth seam not stubbed')),
+          availableClientIdentity: () => null,
+        },
       },
       StreamDrainRegistry,
       {

@@ -399,6 +399,12 @@ export interface AppState {
      * opened with — the PATCH carries the field only when it changed. */
     autoPruneUnlisted: boolean;
     origAutoPruneUnlisted: boolean;
+    /** allow-preset-client-identity: the edit-only identity-imitation switch, the value the
+     * modal opened with (sent only when changed), and the imitated client's label (null =
+     * the provider's preset declares none, so no switch is shown). */
+    imitateClientIdentity: boolean;
+    origImitateClientIdentity: boolean;
+    clientIdentity: { label: string } | null;
   };
   /** Transient key-reveal — raw key/snippet live here ONLY, never persisted. */
   kr: { title: string; key: string; snippet: string; harness: Harness };
@@ -423,6 +429,10 @@ export interface AppState {
      * of the preset list (a reconnect works even for a since-disabled preset) and of
      * the "advanced" paste toggle. */
     reconnect: { providerId: string; name: string } | null;
+    /** allow-preset-client-identity: the connect wizard's identity step. Set when a preset
+     * that declares a client identity is picked; `optIn` is the (consented) switch, off until
+     * the user confirms. Null = the preset list is showing. */
+    identity: { preset: string; label: string; optIn: boolean } | null;
   };
 
   // Observe (analytics) slices — fetched from /api/analytics (#17). Each carries
@@ -691,6 +701,8 @@ function toProvider(p: ProviderDto): Provider {
     firstByteTimeoutMs: p.firstByteTimeoutMs,
     idleTimeoutMs: p.idleTimeoutMs,
     autoPruneUnlisted: p.autoPruneUnlisted ?? true,
+    imitateClientIdentity: p.imitateClientIdentity ?? false,
+    clientIdentity: p.clientIdentity ?? null,
     createdAt: p.createdAt,
     health: p.health,
   };
@@ -736,6 +748,9 @@ function emptyNp(): AppState['np'] {
     oauthPreset: null,
     autoPruneUnlisted: true,
     origAutoPruneUnlisted: true,
+    imitateClientIdentity: false,
+    origImitateClientIdentity: false,
+    clientIdentity: null,
   };
 }
 
@@ -1009,6 +1024,7 @@ function initialState(): AppState {
       error: null,
       advanced: false,
       reconnect: null,
+      identity: null,
     },
     kr: emptyKeyReveal(),
 
@@ -1291,7 +1307,8 @@ export interface AppStore {
   openEditProvider: (p: Provider) => void;
   /** Subscription-OAuth wizard (add-subscription-oauth). */
   loadOauthPresets: () => Promise<void>;
-  startOauthConnect: (preset: string) => Promise<void>;
+  /** `imitateClientIdentity` is the consented identity opt-in; it is sent only when true. */
+  startOauthConnect: (preset: string, imitateClientIdentity?: boolean) => Promise<void>;
   startOauthReauthorize: (p: Provider) => Promise<void>;
   completeOauthConnect: () => Promise<void>;
   cancelOauthConnect: () => void;
@@ -3890,6 +3907,11 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           if (form.autoPruneUnlisted !== form.origAutoPruneUnlisted) {
             patch.autoPruneUnlisted = form.autoPruneUnlisted;
           }
+          // Same rule for the identity switch (allow-preset-client-identity): on both the
+          // full patch and the OAuth name-only patch, only when changed.
+          if (form.imitateClientIdentity !== form.origImitateClientIdentity) {
+            patch.imitateClientIdentity = form.imitateClientIdentity;
+          }
           const typed = form.credential.trim();
           if (form.clearCredential) patch.credential = '';
           else if (typed) patch.credential = typed;
@@ -3939,22 +3961,30 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           idleTimeoutS: p.idleTimeoutMs === null ? '' : String(p.idleTimeoutMs / 1000),
           autoPruneUnlisted: p.autoPruneUnlisted,
           origAutoPruneUnlisted: p.autoPruneUnlisted,
+          imitateClientIdentity: p.imitateClientIdentity,
+          origImitateClientIdentity: p.imitateClientIdentity,
+          clientIdentity: p.clientIdentity,
         },
       });
       void loadTimeoutDefaults();
     },
 
     loadOauthPresets,
-    startOauthConnect: async (preset) => {
+    startOauthConnect: async (preset, imitateClientIdentity) => {
       if (state.ow.busy) return;
       clearFields(['f-ow-paste']);
       setState('ow', { busy: true, error: null });
       try {
         const name = state.np.name.trim();
-        const start = await client.oauthStart(preset, name === '' ? undefined : name);
+        const start = await client.oauthStart(
+          preset,
+          name === '' ? undefined : name,
+          imitateClientIdentity === true ? true : undefined,
+        );
         setState('ow', {
           busy: false,
           pasted: '',
+          identity: null,
           active: {
             preset,
             sessionId: start.sessionId,
@@ -3980,6 +4010,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         error: null,
         advanced: false,
         reconnect: { providerId: p.id, name: p.name },
+        identity: null,
       });
       try {
         const start = await client.oauthReauthorize(p.id);
@@ -4027,6 +4058,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
               error: null,
               advanced: false,
               reconnect: null,
+              identity: null,
             };
             s.modal = null;
           }),
@@ -4168,6 +4200,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           error: null,
           advanced: false,
           reconnect: null,
+          identity: null,
         });
         void loadOauthPresets();
       } else {
@@ -4201,6 +4234,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
             error: null,
             advanced: false,
             reconnect: null,
+            identity: null,
           };
           s.modal = null;
         }),

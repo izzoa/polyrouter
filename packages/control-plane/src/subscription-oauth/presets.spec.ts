@@ -1,5 +1,6 @@
 // add-subscription-oauth — preset invariants + token-failure classification.
 import { classifyTokenFailure } from './oauth-client';
+import { validateClientIdentity } from '../providers/client-identity';
 import { OAUTH_PRESETS, buildAuthorizeUrl, CLAUDE_PRESET, CHATGPT_PRESET } from './presets';
 
 describe('preset invariants', () => {
@@ -17,6 +18,22 @@ describe('preset invariants', () => {
     // preset must start `enabled: false` until its own runbook passes.
     expect(CLAUDE_PRESET.enabled).toBe(true);
     expect(CHATGPT_PRESET.enabled).toBe(true);
+  });
+
+  it('Claude and ChatGPT declare no client identity', () => {
+    expect(CLAUDE_PRESET.clientIdentity).toBeUndefined();
+    expect(CHATGPT_PRESET.clientIdentity).toBeUndefined();
+  });
+
+  it('every registered preset that declares a client identity declares a valid one', () => {
+    for (const p of OAUTH_PRESETS) {
+      if (p.clientIdentity !== undefined) {
+        expect({ id: p.id, problems: validateClientIdentity(p.clientIdentity) }).toEqual({
+          id: p.id,
+          problems: [],
+        });
+      }
+    }
   });
 
   it('builds a PKCE S256 authorize URL carrying state', () => {

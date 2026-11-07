@@ -115,6 +115,7 @@ async function buildApp(): Promise<{ app: INestApplication; server: App }> {
         provide: SubscriptionOauthService,
         useValue: {
           resolveCredential: () => Promise.reject(new Error('oauth seam not stubbed')),
+          availableClientIdentity: () => null,
         },
       },
       StreamDrainRegistry,

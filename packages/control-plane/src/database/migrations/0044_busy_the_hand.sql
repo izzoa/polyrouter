@@ -1,0 +1,1 @@
+ALTER TABLE "provider" ADD COLUMN "imitate_client_identity" boolean DEFAULT false NOT NULL;

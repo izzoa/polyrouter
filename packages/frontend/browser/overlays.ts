@@ -107,6 +107,9 @@ async function openInspector(page: Page, sel: string): Promise<void> {
   await page.waitForSelector(sel);
 }
 
+/** The identity-imitation consent dialog, named by its title (`Imitate <label>’s client identity?`). */
+export const CLIENT_IDENTITY_CONFIRM = '[role="dialog"][aria-label^="Imitate "]';
+
 export const MODAL_KINDS = [
   'newAgent',
   'newProvider',
@@ -163,6 +166,23 @@ export const SURFACES: readonly Surface[] = [
         .locator('input[type=radio]');
       await radios.nth(2).click();
       await page.waitForSelector('[aria-label="Confirm body capture"]');
+    },
+  },
+  {
+    // The identity-imitation consent (allow-preset-client-identity task 8.5), stacked over the
+    // edit-provider modal. Opened the way a user does: the fixture provider's real Edit, then
+    // its switch. The harness fixture is opt-in (`?identity=1`), so no other surface moves.
+    name: 'confirm:clientIdentity',
+    sel: CLIENT_IDENTITY_CONFIRM,
+    query: '?identity=1',
+    open: async (page) => {
+      await store(page, 'go', 'providers');
+      await page
+        .locator('main button.btn-ghost', { hasText: /^Edit$/ })
+        .first()
+        .click();
+      await page.locator('#f-np-imitate').click();
+      await page.waitForSelector(CLIENT_IDENTITY_CONFIRM);
     },
   },
   {

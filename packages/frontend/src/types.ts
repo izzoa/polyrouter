@@ -75,6 +75,11 @@ export interface Provider {
   /** add-auto-prune-unlisted-models: whether a sync deletes this provider's unreferenced
    * models once they have stayed unlisted for seven days. */
   autoPruneUnlisted: boolean;
+  /** allow-preset-client-identity: whether this provider sends its preset's declared client
+   * identity, and the imitated client's label when one is available (null = none, so the
+   * edit modal shows no switch). */
+  imitateClientIdentity: boolean;
+  clientIdentity: { label: string } | null;
   createdAt: string;
   /** add-provider-health-signals: the server-computed displayed health (the most
    * recently recorded of the check and live-traffic records). */

@@ -19,6 +19,13 @@ async function open(page: Page, surface: Pick<Surface, 'query'> = {}): Promise<v
   await page.waitForSelector('[data-pane="sidebar"]');
 }
 
+/** The identity consent's warning body for the harness fixture's client (design D10). */
+const CLIENT_IDENTITY_WARNING =
+  'polyrouter will send Fixture Client’s identity headers on this provider’s requests. ' +
+  'The provider sees these requests coming from this polyrouter instance, not only from you. ' +
+  'This likely violates the provider’s terms: the account can be suspended, and the provider ' +
+  'can block it at any time.';
+
 /** The layer registry, as the app sees it. */
 async function layers(page: Page): Promise<{ token: number; kind: string }[]> {
   return page.evaluate(() => {
@@ -232,6 +239,25 @@ for (const vp of [
     test('Escape is offered to exactly one layer per press', async ({ page }) => {
       // Desktop is now the DOCKED case: no trap, the same two-Escape order (D13).
       await modalAboveInspector(page, vp.inspector);
+    });
+
+    test('the identity consent is described by its warning, and focus lands on its commit', async ({
+      page,
+    }) => {
+      // allow-preset-client-identity D10: focus lands on the commit, so the warning must be the
+      // dialog's accessible DESCRIPTION, announced with its name, or the risk could be accepted
+      // unheard. Asserted from the accessibility tree, not from the `aria-describedby` attribute.
+      const s = SURFACES.find((x) => x.name === 'confirm:clientIdentity');
+      expect(s, 'the confirm:clientIdentity surface').toBeDefined();
+      await open(page, s);
+      await s!.open(page);
+      await page.waitForTimeout(200);
+      const dialog = page.locator(s!.sel);
+      await expect(dialog).toHaveAccessibleName('Imitate Fixture Client’s client identity?');
+      await expect(dialog).toHaveAccessibleDescription(CLIENT_IDENTITY_WARNING);
+      await expect(dialog.getByRole('button', { name: 'Turn on imitation' })).toBeFocused();
+      // One layer for the consent, over the provider modal's.
+      expect((await layers(page)).map((l) => l.kind)).toEqual(['dialog', 'dialog']);
     });
 
     test('no surface claims modal semantics without registering', async ({ page }) => {

@@ -56,11 +56,20 @@ const PRESET: OauthPreset = {
   redirectUri: 'https://idp.example/oauth/code/callback',
   tokenRequestEncoding: 'json',
   includeStateInExchange: true,
+  // allow-preset-client-identity (task 7.3): the fixture declares an identity so a
+  // flagged row's sweep refresh can be seen to carry its token headers.
+  clientIdentity: {
+    label: 'Fixture Client',
+    apiHeaders: { 'User-Agent': 'fixture-client/1.0' },
+    tokenHeaders: { 'User-Agent': 'fixture-auth/1.0' },
+  },
   enabled: true,
 };
 
 // Stub IdP, keyed by refresh token: every exchange is recorded; behavior per token.
 let exchanged: string[] = [];
+// Token headers each refresh carried, by refresh token (undefined = the key was absent).
+const exchangedHeaders = new Map<string, Readonly<Record<string, string>> | undefined>();
 const revoked = new Set<string>();
 const flaky = new Set<string>();
 
@@ -92,6 +101,7 @@ describe('OAuth proactive-refresh sweep (e2e)', () => {
   async function oauthRow(
     who: Principal,
     expiresInMs: number | null,
+    imitateClientIdentity = false,
   ): Promise<{ id: string; rt: string; envelope: string }> {
     const rt = `rt-${Date.now()}-${++n}`;
     const expiresAt = Date.now() + (expiresInMs ?? HOURS_240);
@@ -112,6 +122,7 @@ describe('OAuth proactive-refresh sweep (e2e)', () => {
       oauthPreset: PRESET.id,
       encryptedCredentials: envelope,
       credentialExpiresAt: expiresInMs === null ? null : new Date(expiresAt),
+      ...(imitateClientIdentity ? { imitateClientIdentity: true } : {}),
     });
     return { id: p.id, rt, envelope };
   }
@@ -142,17 +153,23 @@ describe('OAuth proactive-refresh sweep (e2e)', () => {
       imports: [DatabaseModule, DatabaseMaintenanceModule, RedisModule, SubscriptionOauthModule],
     })
       .overrideProvider(OAUTH_TOKEN_FETCH)
-      .useValue((input: { body: Record<string, string> }): Promise<TokenSet> => {
-        const rt = input.body['refresh_token']!;
-        exchanged.push(rt);
-        if (revoked.has(rt)) return Promise.reject(new TokenEndpointError('invalid_grant'));
-        if (flaky.has(rt)) return Promise.reject(new TokenEndpointError('transient'));
-        return Promise.resolve({
-          accessToken: `at-renewed-${rt}`,
-          refreshToken: `${rt}-next`,
-          expiresAt: Date.now() + HOURS_240,
-        });
-      })
+      .useValue(
+        (input: {
+          body: Record<string, string>;
+          headers?: Readonly<Record<string, string>>;
+        }): Promise<TokenSet> => {
+          const rt = input.body['refresh_token']!;
+          exchanged.push(rt);
+          exchangedHeaders.set(rt, 'headers' in input ? input.headers : undefined);
+          if (revoked.has(rt)) return Promise.reject(new TokenEndpointError('invalid_grant'));
+          if (flaky.has(rt)) return Promise.reject(new TokenEndpointError('transient'));
+          return Promise.resolve({
+            accessToken: `at-renewed-${rt}`,
+            refreshToken: `${rt}-next`,
+            expiresAt: Date.now() + HOURS_240,
+          });
+        },
+      )
       .overrideProvider(OAUTH_PRESET_LOOKUP)
       .useValue({
         find: (id: string) => (id === PRESET.id ? PRESET : undefined),
@@ -175,6 +192,7 @@ describe('OAuth proactive-refresh sweep (e2e)', () => {
 
   beforeEach(async () => {
     exchanged = [];
+    exchangedHeaders.clear();
     revoked.clear();
     flaky.clear();
     // Isolate from rows other suites or earlier tests left: verify everything that
@@ -210,6 +228,16 @@ describe('OAuth proactive-refresh sweep (e2e)', () => {
     );
     expect(parsed.kind === 'oauth' && parsed.cred.accessToken).toBe(`at-renewed-${p.rt}`);
     expect(await redis.pttl(`oauth:verified:${p.id}`)).toBeGreaterThan(23 * 60 * MIN);
+  });
+
+  it('a flagged fixture row sweep refresh carries tokenHeaders and an unflagged row carries none', async () => {
+    const flagged = await oauthRow(alice, 30 * MIN, true);
+    const plain = await oauthRow(alice, 30 * MIN, false);
+    await scheduler.sweepOnce(FAST);
+    expect(exchanged).toContain(flagged.rt);
+    expect(exchanged).toContain(plain.rt);
+    expect(exchangedHeaders.get(flagged.rt)).toEqual({ 'User-Agent': 'fixture-auth/1.0' });
+    expect(exchangedHeaders.get(plain.rt)).toBeUndefined();
   });
 
   it('a revoked 240h grant becomes reauthorize_required with no request ever made', async () => {

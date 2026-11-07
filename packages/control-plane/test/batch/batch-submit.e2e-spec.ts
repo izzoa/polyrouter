@@ -316,6 +316,7 @@ describe('batch submission — Phase B §3 (add-batch-inference)', () => {
           provide: SubscriptionOauthService,
           useValue: {
             resolveCredential: () => Promise.reject(new Error('oauth seam not stubbed')),
+            availableClientIdentity: () => null,
           },
         },
         StreamDrainRegistry,

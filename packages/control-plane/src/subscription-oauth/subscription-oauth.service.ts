@@ -39,6 +39,14 @@ import {
 } from '@polyrouter/shared/server';
 import { ProviderError, RedisBreakerStore, type AuthScheme } from '@polyrouter/data-plane';
 import { AdvisoryLockTimeoutError } from '../database/port';
+import {
+  clientIdentityFor,
+  clientIdentityView,
+  identityHeaders,
+  isValidClientIdentity,
+  type IdentityBinding,
+  type PresetClientIdentity,
+} from '../providers/client-identity';
 import { incarnationOf, reauthorizeRequiredCheck } from '../providers/provider-health';
 import type { Redis } from 'ioredis';
 import {
@@ -168,6 +176,12 @@ function tampered(): ProviderError {
   return new ProviderError('credential', 'stored credential is invalid');
 }
 
+/** A preset's declared client identity, only when it validates (else `null`). */
+function declaredIdentity(preset: OauthPreset): PresetClientIdentity | null {
+  const identity = preset.clientIdentity;
+  return identity !== undefined && isValidClientIdentity(identity) ? identity : null;
+}
+
 @Injectable()
 export class SubscriptionOauthService {
   private readonly sessions: ConnectSessionStore;
@@ -200,25 +214,70 @@ export class SubscriptionOauthService {
     return provider.oauthPreset === null ? undefined : this.presets.find(provider.oauthPreset);
   }
 
-  /** The enabled presets, as the dashboard's card list (id + display name only). */
-  listEnabledPresets(): Array<{ id: string; displayName: string }> {
+  /**
+   * The ONE preset lookup for client identity (allow-preset-client-identity, design D4):
+   * the bound preset's declaration and its single endpoint pin, or `undefined` for a
+   * row with no preset. `add-key-subscription-presets` extends THIS method to resolve a
+   * key preset (with the pin of the region the row matched); every consumer (adapter
+   * builder, safe view, PATCH validation, token client) goes through
+   * `availableClientIdentity`, so nothing else changes.
+   */
+  identityBindingFor(row: Pick<ProviderRow, 'oauthPreset'>): IdentityBinding | undefined {
+    const preset = this.presetFor(row);
+    if (preset === undefined) return undefined;
+    return {
+      identity: preset.clientIdentity,
+      pin: { baseUrl: preset.baseUrl, protocol: preset.protocol },
+    };
+  }
+
+  /** The declaration available to `row` (kind, valid declaration, pinned endpoint), or
+   * `null`. The row's switch is applied separately by `identityHeaders`. */
+  availableClientIdentity(
+    row: Pick<ProviderRow, 'kind' | 'baseUrl' | 'protocol' | 'oauthPreset'>,
+  ): PresetClientIdentity | null {
+    return clientIdentityFor(row, this.identityBindingFor(row));
+  }
+
+  /** The enabled presets, as the dashboard's card list: id, display name, and the
+   * identity LABEL only (never a header name or value) for a declaration that
+   * validates, in every deployment mode (design D8, D9). */
+  listEnabledPresets(): Array<{
+    id: string;
+    displayName: string;
+    clientIdentity: { label: string } | null;
+  }> {
     return this.presets
       .list()
       .filter((p) => p.enabled)
-      .map((p) => ({ id: p.id, displayName: p.displayName }));
+      .map((p) => ({
+        id: p.id,
+        displayName: p.displayName,
+        clientIdentity: clientIdentityView(declaredIdentity(p)),
+      }));
   }
 
   async start(
     principal: Principal,
     authSessionId: string,
-    input: { preset: string; name?: string },
+    input: { preset: string; name?: string; imitateClientIdentity?: boolean },
   ): Promise<StartResult> {
     const preset = this.presets.find(input.preset);
     if (!preset || !preset.enabled) {
       throw new UnprocessableEntityException('unknown or unavailable subscription preset');
     }
+    // An opt-in the preset cannot honour is a 422 BEFORE any session exists (nothing
+    // written): only a preset whose declaration validates can be imitated.
+    if (input.imitateClientIdentity === true && declaredIdentity(preset) === null) {
+      throw new UnprocessableEntityException(
+        'client identity imitation is not available for this provider',
+      );
+    }
     return this.mintSession(principal, authSessionId, preset, {
       ...(input.name !== undefined ? { name: input.name } : {}),
+      ...(input.imitateClientIdentity !== undefined
+        ? { imitateClientIdentity: input.imitateClientIdentity }
+        : {}),
     });
   }
 
@@ -240,7 +299,7 @@ export class SubscriptionOauthService {
     principal: Principal,
     authSessionId: string,
     preset: OauthPreset,
-    extra: { name?: string; providerId?: string },
+    extra: { name?: string; providerId?: string; imitateClientIdentity?: boolean },
   ): Promise<StartResult> {
     const { verifier, challenge } = mintPkce();
     const state = randomBytes(24).toString('base64url');
@@ -252,6 +311,11 @@ export class SubscriptionOauthService {
       authSessionId,
       ...(extra.providerId !== undefined ? { providerId: extra.providerId } : {}),
       ...(extra.name !== undefined ? { name: extra.name } : {}),
+      // New connections only: startReauthorize passes no flag, so a reauthorization
+      // session carries none and completing it never touches the row's switch (D6, D7).
+      ...(extra.imitateClientIdentity !== undefined
+        ? { imitateClientIdentity: extra.imitateClientIdentity }
+        : {}),
     };
     try {
       const sessionId = await this.sessions.create(session);
@@ -306,6 +370,24 @@ export class SubscriptionOauthService {
       throw err;
     }
 
+    // Token-endpoint identity (allow-preset-client-identity, design D6). A new connection
+    // reads the session's opt-in against the preset's still-valid declaration; a
+    // reauthorization reads the row's CURRENT switch through an owner-scoped read made
+    // immediately before the exchange (the session carries no flag), so a switch turned
+    // off during the session TTL is honoured. A missing row sends none; the locked
+    // re-verify below still rejects the completion as before.
+    let identity: Readonly<Record<string, string>> | undefined;
+    if (session.providerId === undefined) {
+      if (session.imitateClientIdentity === true) {
+        identity = declaredIdentity(preset)?.tokenHeaders;
+      }
+    } else {
+      const current = await this.db.providers.findById(principal, session.providerId);
+      if (current) {
+        identity = identityHeaders(current, this.availableClientIdentity(current), 'token');
+      }
+    }
+
     let tokens: TokenSet;
     try {
       tokens = await this.tokenFetch({
@@ -314,6 +396,7 @@ export class SubscriptionOauthService {
         mode: this.rt.mode,
         encoding: preset.tokenRequestEncoding,
         grant: 'exchange',
+        ...(identity !== undefined ? { headers: identity } : {}),
         body: {
           grant_type: 'authorization_code',
           code,
@@ -378,6 +461,8 @@ export class SubscriptionOauthService {
         oauthPreset: preset.id,
         credentialExpiresAt: new Date(tokens.expiresAt),
         credentialError: null,
+        // A session minted before the field existed reads as absent: off.
+        imitateClientIdentity: session.imitateClientIdentity === true,
       });
       await this.markVerified(inserted.id);
       return inserted;
@@ -671,6 +756,9 @@ export class SubscriptionOauthService {
     | { readonly kind: 'reauthorize_required' }
     | { readonly kind: 'transient' }
   > {
+    // The switch is read from the row re-read under the credential lock, so every refresh
+    // kind (lazy, forced, sweep, test-repair) shares one decision (design D6).
+    const identity = identityHeaders(fresh, this.availableClientIdentity(fresh), 'token');
     let tokens: TokenSet;
     try {
       tokens = await this.tokenFetch({
@@ -679,6 +767,7 @@ export class SubscriptionOauthService {
         mode: this.rt.mode,
         encoding: preset.tokenRequestEncoding,
         grant: 'refresh',
+        ...(identity !== undefined ? { headers: identity } : {}),
         body: { grant_type: 'refresh_token', refresh_token: cred.refreshToken },
       });
     } catch (err) {

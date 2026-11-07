@@ -25,10 +25,9 @@ Record: the authorize URL actually used, the callback page's behavior, and `expi
 ## 3. One proxied completion
 
 Route a tier at a Claude model on this provider and send one `/v1/messages` request with an
-agent key. Expected: a normal completion. **If the API rejects the request in a way that
-implies the request must imitate Claude Code beyond the documented headers (`Authorization:
-Bearer` + `anthropic-beta`), STOP — the no-spoofing rule applies: the preset stays disabled
-and the limitation gets documented instead.** Check that `/v1/models` works under the
+agent key. Expected: a normal completion. **If the API rejects the request because it requires a
+header beyond the documented ones (`Authorization: Bearer` + `anthropic-beta`), record the
+header the endpoint requires and pin it in the preset.** Check that `/v1/models` works under the
 OAuth token — it is both how the preset gets its models and what Test calls. No preset
 carries a model id any more (add-live-subscription-models: a bundled list goes stale the
 day the provider retires a model), so if the listing ever stops working under OAuth,

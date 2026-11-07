@@ -9,9 +9,11 @@
  * The Claude constants are ecosystem-known (Claude Code's public OAuth client), not a
  * documented contract — they are verify-at-implementation, and the preset ships
  * `enabled: false` until the live golden verification (tasks 7.2) passes. polyrouter
- * sends only the documented/ecosystem headers (Bearer + anthropic-beta) and never
- * imitates the first-party client beyond them (no-spoofing rule).
+ * sends only the documented/ecosystem headers (Bearer + anthropic-beta); this preset
+ * declares no client identity.
  */
+
+import type { PresetClientIdentity } from '../providers/client-identity';
 
 export interface OauthPreset {
   readonly id: string;
@@ -40,6 +42,10 @@ export interface OauthPreset {
   readonly includeStateInExchange: boolean;
   /** The `anthropic-beta` value OAuth tokens require (threaded to the adapter). */
   readonly oauthBeta?: string;
+  /** Fixed, bundled client-identity headers this preset may send, only while the
+   * provider's per-row switch is on (allow-preset-client-identity). Claude and ChatGPT
+   * declare none. Validated by `validateClientIdentity()`; never user input. */
+  readonly clientIdentity?: PresetClientIdentity;
   /** Enablement gate: flipped to true ONLY after the live golden verification passes
    * (an enabled-and-known-broken preset must not ship). */
   readonly enabled: boolean;
@@ -78,8 +84,7 @@ export const CLAUDE_PRESET: OauthPreset = {
  * verification (`scripts/verify-chatgpt-oauth.md`) passes. The Responses beta header
  * itself is pinned INSIDE the openai_responses provider adapter (protocol-intrinsic,
  * a bundled constant either way). polyrouter sends ONLY Bearer + `chatgpt-account-id`
- * + that beta header — never `originator`/session fingerprints or imitation
- * instructions (no-spoofing rule).
+ * + that beta header; this preset declares no client identity.
  */
 export const CHATGPT_PRESET: OauthPreset = {
   id: 'chatgpt',

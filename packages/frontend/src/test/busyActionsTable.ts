@@ -137,10 +137,16 @@ export const BUSY_ACTIONS: readonly BusyRow[] = [
     why: 'the provider editor’s Reconnect: the modal switches to the reconnect view at once',
   },
   {
-    key: 'components/Modals.tsx app.startOauthConnect',
+    key: 'components/Modals.tsx app.startOauthConnect#1',
     cls: 'busy',
     busyLabel: 'Connecting…',
-    why: 'a subscription preset card: it stays until the sign-in starts',
+    why: 'a subscription preset card that declares no identity: it stays until the sign-in starts',
+  },
+  {
+    key: 'components/Modals.tsx app.startOauthConnect#2',
+    cls: 'busy',
+    busyLabel: 'Connecting…',
+    why: 'the identity step’s Continue to sign-in (allow-preset-client-identity): it stays until the sign-in starts',
   },
   {
     key: 'components/Modals.tsx app.addProvider',

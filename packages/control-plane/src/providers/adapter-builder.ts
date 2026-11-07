@@ -9,6 +9,7 @@ import {
   type ProviderRow,
 } from '@polyrouter/shared/server';
 import { SubscriptionOauthService } from '../subscription-oauth/subscription-oauth.service';
+import { identityHeaders } from './client-identity';
 import { providerMaxTokensQuirks, type MaxTokensSpelling } from './providers.dto';
 
 export type AdapterBuildFailure = 'no_base_url' | 'address_rejected' | 'no_credential';
@@ -114,6 +115,12 @@ export class ProviderAdapterBuilder {
         throw err;
       }
     }
+    // Preset-declared client identity (allow-preset-client-identity, design D4): the ONE
+    // availability rule decides, the row's switch gates, and the result rides
+    // `extraHeaders` for EVERY credential path — independent of how the credential
+    // resolved (a key preset's plain api_key path included). The key is omitted, not
+    // set to undefined, when nothing is declared or the switch is off.
+    const identity = identityHeaders(provider, this.oauth.availableClientIdentity(provider), 'api');
     const common = {
       protocol: provider.protocol as ProviderProtocol,
       baseUrl: provider.baseUrl,
@@ -122,6 +129,7 @@ export class ProviderAdapterBuilder {
       ...(quirks !== undefined ? { quirks } : {}),
       defaultMaxOutputTokens: opts.defaultMaxOutputTokens,
       ...(opts.bounds ?? {}),
+      ...(identity !== undefined ? { extraHeaders: identity } : {}),
     };
     // Subscription providers resolve through the subscription-oauth seam: it unwraps
     // a plain paste, or refreshes an OAuth token (pre-request only — invariant 3)

@@ -12,8 +12,11 @@ import {
   SsrfError,
   assertUrlSafe,
   createGuardedDispatcher,
+  findUserAgent,
+  withUserAgent,
   type UrlGuardOptions,
 } from '@polyrouter/shared/server';
+import { mergeHeaderLayers } from '@polyrouter/data-plane';
 import { readCapped } from '../pricing/litellm-fetch';
 
 const TIMEOUT_MS = 15_000;
@@ -56,6 +59,10 @@ export interface ExchangeInput {
   /** Which grant this call is. Defaults to 'exchange' — the STRICTER parse
    * (refresh_token required), so a missed call site fails closed. */
   readonly grant?: 'exchange' | 'refresh';
+  /** Preset-declared token-endpoint identity headers (allow-preset-client-identity,
+   * design D6). Present only while the identity is available AND the row/session
+   * switch is on; merged under the protocol headers. */
+  readonly headers?: Readonly<Record<string, string>>;
 }
 
 /** Injectable for tests (stub IdP). */
@@ -75,14 +82,18 @@ export function buildTokenRequest(input: ExchangeInput): {
   const params = { ...input.body, client_id: input.clientId };
   const form = (input.encoding ?? 'json') === 'form';
   return {
-    headers: {
-      'Content-Type': form ? 'application/x-www-form-urlencoded' : 'application/json',
-      'Accept-Encoding': 'identity',
-      // add-honest-user-agent: replacement point 2 of the outbound User-Agent
-      // (the token endpoint). A preset-declared identity input arrives later
-      // (allow-preset-client-identity); until then it is always polyrouter's own.
-      'User-Agent': POLYROUTER_USER_AGENT,
-    },
+    // add-honest-user-agent: replacement point 2 of the outbound User-Agent (the token
+    // endpoint). allow-preset-client-identity: a preset-declared identity layer
+    // (`input.headers`) sits between the defaults and the protocol layer, so neither
+    // protocol header can be displaced; a declared User-Agent replaces polyrouter's own
+    // exactly once, and with no identity the UA is polyrouter's.
+    headers: withUserAgent(
+      mergeHeaderLayers({}, input.headers ?? {}, {
+        'Content-Type': form ? 'application/x-www-form-urlencoded' : 'application/json',
+        'Accept-Encoding': 'identity',
+      }),
+      findUserAgent(input.headers) ?? POLYROUTER_USER_AGENT,
+    ),
     body: form ? new URLSearchParams(params).toString() : JSON.stringify(params),
   };
 }
@@ -112,9 +123,7 @@ export function parseTokenSet(text: string, now: number, grant: 'exchange' | 're
     ...(refreshToken !== undefined ? { refreshToken } : {}),
     expiresAt: now + seconds * 1000,
     // id_token surfaces from the EXCHANGE only — a refresh response's is ignored.
-    ...(grant === 'exchange' && typeof idToken === 'string' && idToken !== ''
-      ? { idToken }
-      : {}),
+    ...(grant === 'exchange' && typeof idToken === 'string' && idToken !== '' ? { idToken } : {}),
   };
 }
 
@@ -171,12 +180,11 @@ export async function fetchTokenSet(input: ExchangeInput): Promise<TokenSet> {
       if (err instanceof TypeError && err.cause instanceof SsrfError) throw err.cause;
       throw new TokenEndpointError('transient');
     }
-    const text = await readCapped(
-      res.body as ReadableStream<Uint8Array> | null,
-      MAX_BYTES,
-    ).catch(() => {
-      throw new TokenEndpointError('transient');
-    });
+    const text = await readCapped(res.body as ReadableStream<Uint8Array> | null, MAX_BYTES).catch(
+      () => {
+        throw new TokenEndpointError('transient');
+      },
+    );
     if (res.status >= 200 && res.status < 300) {
       return parseTokenSet(text, Date.now(), input.grant ?? 'exchange');
     }

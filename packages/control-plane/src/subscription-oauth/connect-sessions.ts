@@ -25,6 +25,10 @@ export interface ConnectSession {
   /** Set for a reauthorization session — completion updates this row in place. */
   readonly providerId?: string;
   readonly name?: string;
+  /** The identity opt-in chosen at connect start (allow-preset-client-identity, design D7).
+   * Recorded for a NEW connection only: a reauthorization session never carries it, and a
+   * session minted before this field existed reads as absent, which is off. */
+  readonly imitateClientIdentity?: boolean;
 }
 
 export class OauthSessionUnavailableError extends Error {

@@ -292,6 +292,10 @@ export const providers = pgTable(
     // tier entry or rule references. Defaults ON, for every existing row too (a constant
     // default is a metadata-only ADD COLUMN in PostgreSQL 16).
     autoPruneUnlisted: boolean('auto_prune_unlisted').default(true).notNull(),
+    // allow-preset-client-identity: the per-provider switch for sending a bundled preset's
+    // declared client-identity headers. OFF by default (a constant default is a metadata-only
+    // ADD COLUMN in PostgreSQL 16); it only takes effect where the preset declares an identity.
+    imitateClientIdentity: boolean('imitate_client_identity').default(false).notNull(),
     createdAt: createdAt(),
   },
   (t) => [

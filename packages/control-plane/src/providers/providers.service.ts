@@ -75,6 +75,7 @@ import {
   type BuiltAdapterConfig,
 } from './adapter-builder';
 import { SubscriptionOauthService } from '../subscription-oauth/subscription-oauth.service';
+import { clientIdentityView } from './client-identity';
 
 export type ProviderAdapterFactory = typeof createProviderAdapter;
 export const PROVIDER_ADAPTER_FACTORY = 'polyrouter:provider-adapter-factory';
@@ -129,6 +130,11 @@ export interface SafeProvider {
   idleTimeoutMs: number | null;
   /** add-auto-prune-unlisted-models: sync deletes unreferenced models unlisted 7+ days. */
   autoPruneUnlisted: boolean;
+  /** allow-preset-client-identity: the per-provider switch (off by default). */
+  imitateClientIdentity: boolean;
+  /** The imitated client's label while imitation is AVAILABLE for this row (kind,
+   * valid declaration, pinned endpoint), else null. Never carries header names/values. */
+  clientIdentity: { label: string } | null;
   createdAt: Date;
   /** add-provider-health-signals: the DISPLAYED health — whichever of the check
    * and traffic records was recorded last (computed here, never re-derived by the
@@ -278,7 +284,7 @@ function fixedMessage(kind: string): string {
  * than failing the build (fix-4xx-error-taxonomy). */
 export const toSafeProviderMessage = fixedMessage;
 
-export function toSafe(p: ProviderRow): SafeProvider {
+export function toSafe(p: ProviderRow, clientIdentity: { label: string } | null): SafeProvider {
   return {
     id: p.id,
     name: p.name,
@@ -294,6 +300,8 @@ export function toSafe(p: ProviderRow): SafeProvider {
     firstByteTimeoutMs: p.firstByteTimeoutMs,
     idleTimeoutMs: p.idleTimeoutMs,
     autoPruneUnlisted: p.autoPruneUnlisted,
+    imitateClientIdentity: p.imitateClientIdentity,
+    clientIdentity,
     createdAt: p.createdAt,
     health: toSafeHealth(displayedProviderHealth(p)),
     lastErrorKind: p.lastErrorKind,
@@ -524,13 +532,18 @@ export class ProvidersService {
   }
 
   async list(principal: Principal): Promise<SafeProvider[]> {
-    return (await this.db.providers.list(principal)).map(toSafe);
+    return (await this.db.providers.list(principal)).map((row) => this.safe(row));
   }
 
   async get(principal: Principal, id: string): Promise<SafeProvider> {
     const row = await this.db.providers.findById(principal, id);
     if (!row) throw new NotFoundException();
-    return toSafe(row);
+    return this.safe(row);
+  }
+
+  /** The safe view with the identity label derived through the one availability lookup. */
+  private safe(row: ProviderRow): SafeProvider {
+    return toSafe(row, clientIdentityView(this.oauth.availableClientIdentity(row)));
   }
 
   async create(principal: Principal, dto: CreateProviderDto): Promise<SafeProvider> {
@@ -556,7 +569,7 @@ export class ProvidersService {
       // Omit to take the schema default (on).
       ...(dto.autoPruneUnlisted !== undefined ? { autoPruneUnlisted: dto.autoPruneUnlisted } : {}),
     };
-    return toSafe(await this.db.providers.insert(principal, values));
+    return this.safe(await this.db.providers.insert(principal, values));
   }
 
   async update(principal: Principal, id: string, dto: UpdateProviderDto): Promise<SafeProvider> {
@@ -598,6 +611,26 @@ export class ProvidersService {
       }
     }
 
+    // allow-preset-client-identity (design D7): `true` only when imitation is AVAILABLE for
+    // the row as it will be after this PATCH. Goes through the one lookup (never
+    // clientIdentityFor/presetFor directly) so a later key-preset registry is covered
+    // without editing this method. A credential-supplying PATCH drops the preset binding
+    // (the conversion below), so it is judged with `oauthPreset: null`.
+    if (dto.imitateClientIdentity === true) {
+      const patchedRow: ProviderRow = {
+        ...existing,
+        kind: nextKind,
+        baseUrl: normalized,
+        protocol: dto.protocol ?? existing.protocol,
+        ...(dto.credential !== undefined ? { oauthPreset: null } : {}),
+      };
+      if (this.oauth.availableClientIdentity(patchedRow) === null) {
+        throw new UnprocessableEntityException(
+          'client identity imitation is not available for this provider',
+        );
+      }
+    }
+
     const patch: ProviderPatch = {
       baseUrl: normalized,
       ...(dto.name !== undefined ? { name: dto.name } : {}),
@@ -612,6 +645,9 @@ export class ProvidersService {
       // Omitted preserves the stored value (an explicit null was already rejected at the DTO).
       ...(dto.maxTokensSpelling !== undefined ? { maxTokensSpelling: dto.maxTokensSpelling } : {}),
       ...(dto.autoPruneUnlisted !== undefined ? { autoPruneUnlisted: dto.autoPruneUnlisted } : {}),
+      ...(dto.imitateClientIdentity !== undefined
+        ? { imitateClientIdentity: dto.imitateClientIdentity }
+        : {}),
       // Present-but-empty clears; omitted (undefined) preserves the envelope. New
       // plain values are WRAPPED in the typed envelope (forgery-proof by construction).
       ...(dto.credential !== undefined
@@ -621,7 +657,14 @@ export class ProvidersService {
                 ? null
                 : encryptSecret(serializePlainCredential(dto.credential), this.key),
             ...(isOauthConnected
-              ? { oauthPreset: null, credentialExpiresAt: null, credentialError: null }
+              ? {
+                  oauthPreset: null,
+                  credentialExpiresAt: null,
+                  credentialError: null,
+                  // The identity switch lives and dies with the preset binding. It is
+                  // written AFTER the dto spread, so a same-PATCH `true` cannot survive.
+                  imitateClientIdentity: false,
+                }
               : {}),
           }
         : {}),
@@ -661,7 +704,7 @@ export class ProvidersService {
       normalized !== existing.baseUrl ||
       (dto.protocol !== undefined && dto.protocol !== existing.protocol);
     if (endpointChanged) await this.db.models.clearListedPricingForProvider(principal, id);
-    return toSafe(row);
+    return this.safe(row);
   }
 
   async remove(principal: Principal, id: string): Promise<{ deleted: boolean }> {

@@ -37,16 +37,20 @@ const runtime = (mode: 'selfhosted' | 'cloud'): ProvidersRuntime => ({ key: KEY,
  * stub subscription-oauth seam (plain unwrap only — these unit tests mint no OAuth
  * envelopes) so the specs stay focused on provider CRUD behavior. */
 import type { SubscriptionOauthService } from '../subscription-oauth/subscription-oauth.service';
+import type { PresetClientIdentity } from './client-identity';
 function mkProvidersService(
   port: PersistencePort,
   f: ProviderAdapterFactory,
   rt: ProvidersRuntime,
+  /** allow-preset-client-identity: the availability lookup this unit stubs (default: none). */
+  availableClientIdentity: (row: ProviderRow) => PresetClientIdentity | null = () => null,
 ): ProvidersService {
   const facilities = {
     withAdvisoryLock: (_k: number, fn: (tx: PersistencePort) => Promise<unknown>) => fn(port),
   } as unknown as PersistenceFacilities;
   const oauth = {
     presetFor: () => undefined,
+    availableClientIdentity,
     resolveCredential: (_p: Principal, row: ProviderRow) =>
       Promise.resolve({
         credential: resolvePlainCredentialValue(
@@ -102,6 +106,7 @@ function makePort(): FakePort {
     firstByteTimeoutMs: values.firstByteTimeoutMs ?? null,
     idleTimeoutMs: values.idleTimeoutMs ?? null,
     autoPruneUnlisted: values.autoPruneUnlisted ?? true,
+    imitateClientIdentity: values.imitateClientIdentity ?? false,
     createdAt: new Date(),
   });
   const upsert = jest.fn(
@@ -1355,5 +1360,178 @@ describe('listModels — batchCapable follows the MODEL on an aggregator', () =>
     const all = await svc.listModels(principal, {});
     expect(all.map((m) => m.id).sort()).toEqual(['m-no', 'm-unknown', 'm-yes']);
     expect(all.find((m) => m.id === 'm-unknown')).not.toHaveProperty('supportsTools');
+  });
+});
+
+describe('ProvidersService — identity-imitation switch (allow-preset-client-identity)', () => {
+  const FIXTURE: PresetClientIdentity = {
+    label: 'Fixture Client',
+    apiHeaders: { 'User-Agent': 'fixture-client/1.0' },
+    tokenHeaders: { 'User-Agent': 'fixture-auth/1.0' },
+  };
+  const PIN = 'https://1.1.1.1/pin';
+
+  /** A row bound to the fixture preset, availability decided by a pin check like the real
+   * rule: kind=subscription, a preset binding and the pinned endpoint. */
+  function setup() {
+    const made = makePort();
+    const available = jest.fn((row: ProviderRow): PresetClientIdentity | null =>
+      row.kind === 'subscription' && row.oauthPreset === 'stub-identity' && row.baseUrl === PIN
+        ? FIXTURE
+        : null,
+    );
+    const svc = mkProvidersService(made.port, factory(), runtime('selfhosted'), available);
+    const seed = (over: Partial<ProviderRow>): ProviderRow => {
+      const row = {
+        id: `seed-${String(made.rows.size + 1)}`,
+        ownerUserId: 'u1',
+        orgId: null,
+        name: 'seeded',
+        kind: 'subscription',
+        protocol: 'openai_compatible',
+        baseUrl: PIN,
+        encryptedCredentials: null,
+        status: 'ok',
+        maxTokensSpelling: 'auto',
+        oauthPreset: 'stub-identity',
+        credentialExpiresAt: null,
+        credentialError: null,
+        lastErrorKind: null,
+        statusSource: 'test',
+        statusChangedAt: null,
+        statusRev: null,
+        trafficState: null,
+        trafficErrorKind: null,
+        trafficAt: null,
+        trafficSeq: null,
+        trafficRev: null,
+        healthRev: 0,
+        firstByteTimeoutMs: null,
+        idleTimeoutMs: null,
+        autoPruneUnlisted: true,
+        imitateClientIdentity: false,
+        createdAt: new Date(),
+        ...over,
+      } as ProviderRow;
+      made.rows.set(row.id, row);
+      return row;
+    };
+    return { ...made, svc, available, seed };
+  }
+
+  it('defaults to off; the safe view carries {label} only (no other key) while available', async () => {
+    const { svc, seed } = setup();
+    const row = seed({});
+    const view = await svc.get(principal, row.id);
+    expect(view.imitateClientIdentity).toBe(false);
+    expect(view.clientIdentity).toEqual({ label: 'Fixture Client' });
+    expect(Object.keys(view.clientIdentity!)).toEqual(['label']);
+    expect(JSON.stringify(view)).not.toContain('fixture-client/1.0');
+    const created = await svc.create(principal, {
+      ...baseCreate,
+      kind: 'custom',
+      baseUrl: 'https://1.1.1.1/v1',
+      credential: 'k',
+    });
+    expect(created.imitateClientIdentity).toBe(false);
+    expect(created.clientIdentity).toBeNull();
+    expect((await svc.list(principal)).map((p) => p.clientIdentity)).toContainEqual({
+      label: 'Fixture Client',
+    });
+  });
+
+  it('the safe view is null for Claude (no declaration) and a plain row, flag or not', async () => {
+    const { svc, seed } = setup();
+    const claude = seed({ oauthPreset: 'claude', imitateClientIdentity: true });
+    const plain = seed({ oauthPreset: null, kind: 'api_key' });
+    expect((await svc.get(principal, claude.id)).clientIdentity).toBeNull();
+    expect((await svc.get(principal, plain.id)).clientIdentity).toBeNull();
+    // The stored switch is still echoed, so a stale `true` is visible rather than hidden.
+    expect((await svc.get(principal, claude.id)).imitateClientIdentity).toBe(true);
+  });
+
+  it('true succeeds when available, persists, and does not reset health', async () => {
+    const { svc, seed, rows } = setup();
+    const row = seed({});
+    const updated = await svc.update(principal, row.id, { imitateClientIdentity: true });
+    expect(updated.imitateClientIdentity).toBe(true);
+    expect(rows.get(row.id)!.imitateClientIdentity).toBe(true);
+    // Health untouched: status/source/health revision are exactly as seeded.
+    expect(rows.get(row.id)).toMatchObject({ status: 'ok', statusSource: 'test', healthRev: 0 });
+  });
+
+  it('the flag write calls update, not updateResettingHealth', async () => {
+    const { svc, seed, port } = setup();
+    const row = seed({});
+    const upd = jest.spyOn(port.providers, 'update');
+    const reset = jest.spyOn(port.providers, 'updateResettingHealth');
+    await svc.update(principal, row.id, { imitateClientIdentity: true });
+    expect(upd).toHaveBeenCalledTimes(1);
+    expect(reset).not.toHaveBeenCalled();
+  });
+
+  it('true on Claude, a plain subscription row, or an api_key row is a 422; false succeeds', async () => {
+    const { svc, seed, rows } = setup();
+    const claude = seed({ oauthPreset: 'claude' });
+    const plainSub = seed({ oauthPreset: null });
+    const apiKey = seed({ kind: 'api_key', oauthPreset: null });
+    for (const r of [claude, plainSub, apiKey]) {
+      await expect(
+        svc.update(principal, r.id, { imitateClientIdentity: true }),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(rows.get(r.id)!.imitateClientIdentity).toBe(false);
+      await expect(
+        svc.update(principal, r.id, { imitateClientIdentity: false }),
+      ).resolves.toMatchObject({ imitateClientIdentity: false });
+    }
+  });
+
+  it('omitting the field preserves it', async () => {
+    const { svc, seed } = setup();
+    const row = seed({ imitateClientIdentity: true });
+    const updated = await svc.update(principal, row.id, { name: 'renamed' });
+    expect(updated.imitateClientIdentity).toBe(true);
+  });
+
+  it('a credential conversion clears the switch', async () => {
+    const { svc, seed, rows } = setup();
+    const row = seed({ imitateClientIdentity: true });
+    const updated = await svc.update(principal, row.id, { credential: 'pasted-key' });
+    expect(updated.imitateClientIdentity).toBe(false);
+    expect(updated.oauthPreset).toBeNull();
+    expect(rows.get(row.id)!.imitateClientIdentity).toBe(false);
+  });
+
+  it('true together with a credential is judged on the converted row (oauthPreset null) -> 422', async () => {
+    const { svc, seed, available, rows } = setup();
+    const row = seed({});
+    await expect(
+      svc.update(principal, row.id, { imitateClientIdentity: true, credential: 'pasted-key' }),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    const arg = available.mock.calls.find((c) => c[0].oauthPreset === null)?.[0];
+    expect(arg).toBeDefined();
+    expect(rows.get(row.id)!.oauthPreset).toBe('stub-identity');
+  });
+
+  it('the 422 check is called with the patched row (the normalized new baseUrl)', async () => {
+    const { svc, seed, available } = setup();
+    // A non-OAuth subscription row may change endpoint; the check sees the NEW url.
+    const row = seed({ oauthPreset: null, baseUrl: 'https://1.1.1.1/v1' });
+    await expect(
+      svc.update(principal, row.id, {
+        imitateClientIdentity: true,
+        baseUrl: 'https://1.1.1.1/v2',
+      }),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    const last = available.mock.calls[available.mock.calls.length - 1]![0];
+    expect(last.baseUrl).toBe('https://1.1.1.1/v2');
+    expect(last.kind).toBe('subscription');
+    // Not consulted when the field is absent or false.
+    available.mockClear();
+    await svc.update(principal, row.id, { name: 'x' });
+    await svc.update(principal, row.id, { imitateClientIdentity: false });
+    const patchedChecks = available.mock.calls.length;
+    // toSafe derives the view through the same lookup (one call per returned row); no 422 probe.
+    expect(patchedChecks).toBe(2);
   });
 });

@@ -38,6 +38,7 @@ export type { ProviderErrorKind, SanitizedMessage, CaptureInput, CaptureContext 
 export { createGuardedHttpClient, readSseChunks, joinUrl, openRequest } from './http';
 export type { HttpBody, HttpClient, HttpResponse, HttpInit, GuardedClientOptions } from './http';
 export { createHttpProviderAdapter, parseModelList } from './http-adapter';
+export { mergeHeaderLayers } from './header-layers';
 export type { AdapterDeps, HttpAdapterSpec } from './http-adapter';
 export type { BatchFactory, BatchTransport } from './batch/transport';
 export { JsonStreamError, bytesOf, readJsonLines, scanTopLevelObject } from './batch/json-stream';

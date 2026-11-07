@@ -10,11 +10,9 @@ enabled-and-known-broken preset must never ship. Re-run on suspicion of upstream
 Needs: a ChatGPT Plus or Pro account, a running polyrouter dev stack (`npm run dev` +
 `docker compose -f docker-compose.dev.yml up -d`), ~10 minutes.
 
-**The no-spoofing rule governs every step:** polyrouter sends ONLY
-`Authorization: Bearer` + `chatgpt-account-id` + `OpenAI-Beta: responses=experimental`.
-**If acceptance turns out to require client-fingerprint headers (`originator`, session
-ids) or imitation `instructions` content — STOP.** The preset stays disabled and the
-limitation gets documented; polyrouter never forces acceptance by impersonation.
+polyrouter sends `Authorization: Bearer` + `chatgpt-account-id` +
+`OpenAI-Beta: responses=experimental`. **If acceptance turns out to require another header,
+record any header the endpoint requires and pin it in the preset.**
 
 ## 1. Temporarily enable the preset
 
@@ -58,8 +56,8 @@ Verify/record against the pinned constants:
   files need the verified name);
 - tool calling round-trips (`function_call`/`function_call_output` with `call_id`).
 
-If the backend rejects OAuth-authenticated requests in a way that implies required
-impersonation — see the STOP rule above.
+If the backend rejects OAuth-authenticated requests because a header is missing, record
+any header the endpoint requires and pin it in the preset.
 
 ## 4. One forced refresh
 
@@ -90,7 +88,7 @@ All steps passed: connect + nested account-id claim, buffered + streamed proxied
 completions (`/v1/chat/completions`, plain and `stream:true`), live tool calling
 (`function_call` lifecycle), bundled sync, and a real forced refresh with the account
 id retained. **Only the three documented headers were needed** — no `originator`, no
-session fingerprints, no imitation instructions (the no-spoofing rule holds).
+session fingerprints, no imitation instructions.
 
 ### Findings pinned back into the code during this run
 

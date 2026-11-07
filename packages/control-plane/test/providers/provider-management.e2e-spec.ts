@@ -35,6 +35,8 @@ import {
   type ProviderAdapterFactory,
 } from '../../src/providers/providers.service';
 import { ProvidersModule } from '../../src/providers/providers.module';
+import { OAUTH_PRESET_LOOKUP } from '../../src/subscription-oauth/subscription-oauth.service';
+import { CLAUDE_PRESET, type OauthPreset } from '../../src/subscription-oauth/presets';
 import { uniqueEmail } from '../auth/auth-harness';
 import { COMPOSE_HINT } from '../tenancy/harness';
 import '../../src/providers/providers.config';
@@ -74,6 +76,22 @@ const CUSTOM = {
   kind: 'custom',
   protocol: 'openai_compatible',
   baseUrl: 'https://1.1.1.1/v1',
+};
+
+// allow-preset-client-identity (design D11): a registry fixture that declares an identity,
+// pinned to a literal public IP so a credential-supplying PATCH still passes the SSRF gate.
+const STUB_IDENTITY_PRESET: OauthPreset = {
+  ...CLAUDE_PRESET,
+  id: 'stub-identity',
+  displayName: 'Stub identity',
+  baseUrl: 'https://1.1.1.1/',
+  protocol: 'openai_compatible',
+  clientIdentity: {
+    label: 'Fixture Client',
+    apiHeaders: { 'User-Agent': 'fixture-client/1.0', 'X-Fixture-Client': 'polyrouter-test' },
+    tokenHeaders: { 'User-Agent': 'fixture-auth/1.0' },
+  },
+  enabled: true,
 };
 
 describe('provider management', () => {
@@ -128,6 +146,16 @@ describe('provider management', () => {
     })
       .overrideProvider(PROVIDER_ADAPTER_FACTORY)
       .useValue(fakeFactory)
+      .overrideProvider(OAUTH_PRESET_LOOKUP)
+      .useValue({
+        find: (id: string) =>
+          id === STUB_IDENTITY_PRESET.id
+            ? STUB_IDENTITY_PRESET
+            : id === CLAUDE_PRESET.id
+              ? CLAUDE_PRESET
+              : undefined,
+        list: () => [STUB_IDENTITY_PRESET, CLAUDE_PRESET],
+      })
       .compile();
     app = moduleRef.createNestApplication<NestExpressApplication>();
     configureApp(app as NestExpressApplication, { NODE_ENV: 'test' }, 'http://localhost:3000');
@@ -175,6 +203,7 @@ describe('provider management', () => {
     const oauth = {
       presetFor: () => undefined,
       resolveCredential: () => Promise.reject(new Error('not used in this test')),
+      availableClientIdentity: () => null,
     } as unknown as import('../../src/subscription-oauth/subscription-oauth.service').SubscriptionOauthService;
     return new ProvidersService(port, facilities, f, rt, oauth);
   }
@@ -821,25 +850,211 @@ describe('provider management', () => {
     for (const seen of stubUserAgents) expect(seen).toEqual([POLYROUTER_USER_AGENT]);
   });
 
-  it('refuses a userAgent field on create and update with a 400 and stores nothing', async () => {
-    const created = await asAlice().send({ ...CUSTOM, userAgent: 'evil/1.0' });
-    expect(created.status).toBe(400);
-    expect(JSON.stringify(created.body)).toContain('userAgent');
-    const none = await pool.query('SELECT 1 FROM provider WHERE owner_user_id = $1', [alice]);
-    expect(none.rowCount).toBe(0);
+  // add-honest-user-agent + allow-preset-client-identity: no API field names a header or its
+  // value. `userAgent`, `clientIdentity` and `extraHeaders` are each refused on create and
+  // update with a 400, and nothing is stored.
+  it('refuses userAgent, clientIdentity and extraHeaders on create and update with a 400 and stores nothing', async () => {
+    const forbidden: Array<[string, unknown]> = [
+      ['userAgent', 'evil/1.0'],
+      ['clientIdentity', { label: 'evil', apiHeaders: { 'User-Agent': 'evil/1.0' } }],
+      ['extraHeaders', { 'User-Agent': 'evil/1.0' }],
+    ];
+    for (const [field, value] of forbidden) {
+      const created = await asAlice().send({ ...CUSTOM, [field]: value });
+      expect(created.status).toBe(400);
+      expect(JSON.stringify(created.body)).toContain(field);
+      const none = await pool.query('SELECT 1 FROM provider WHERE owner_user_id = $1', [alice]);
+      expect(none.rowCount).toBe(0);
+    }
 
     const ok = await asAlice().send(CUSTOM);
     expect(ok.status).toBe(201);
     const id = ok.body.id as string;
-    const before = await pool.query('SELECT * FROM provider WHERE id = $1', [id]);
-    const patched = await request(server)
-      .patch(`/api/providers/${id}`)
-      .set('x-test-user', alice)
-      .send({ userAgent: 'evil/1.0' });
-    expect(patched.status).toBe(400);
-    const after = await pool.query('SELECT * FROM provider WHERE id = $1', [id]);
-    expect(after.rows[0]).toEqual(before.rows[0]);
-    expect(JSON.stringify(after.rows[0])).not.toContain('evil/1.0');
+    for (const [field, value] of forbidden) {
+      const before = await pool.query('SELECT * FROM provider WHERE id = $1', [id]);
+      const patched = await request(server)
+        .patch(`/api/providers/${id}`)
+        .set('x-test-user', alice)
+        .send({ [field]: value });
+      expect(patched.status).toBe(400);
+      expect(JSON.stringify(patched.body)).toContain(field);
+      const after = await pool.query('SELECT * FROM provider WHERE id = $1', [id]);
+      expect(after.rows[0]).toEqual(before.rows[0]);
+      expect(JSON.stringify(after.rows[0])).not.toContain('evil/1.0');
+    }
+  });
+
+  // ---- allow-preset-client-identity: the identity-imitation switch ----
+  describe('identity-imitation switch (allow-preset-client-identity)', () => {
+    const patch = (id: string, body: Record<string, unknown>, as = alice): request.Test =>
+      request(server).patch(`/api/providers/${id}`).set('x-test-user', as).send(body);
+    const getOne = (id: string, as = alice): request.Test =>
+      request(server).get(`/api/providers/${id}`).set('x-test-user', as);
+
+    /** A subscription row bound to a registry preset, inserted straight through the port. */
+    async function seedPresetRow(
+      presetId: string,
+      over: { baseUrl: string; protocol: 'openai_compatible' | 'anthropic_compatible' },
+      owner = alice,
+    ): Promise<string> {
+      const port = app.get<PersistencePort>(PERSISTENCE_PORT);
+      const row = await port.providers.insert(userPrincipal(owner), {
+        name: `seed-${presetId}`,
+        kind: 'subscription',
+        protocol: over.protocol,
+        baseUrl: over.baseUrl,
+        oauthPreset: presetId,
+        status: 'ok',
+        statusSource: 'test',
+      });
+      return row.id;
+    }
+    const seedIdentity = (owner = alice): Promise<string> =>
+      seedPresetRow(
+        'stub-identity',
+        { baseUrl: STUB_IDENTITY_PRESET.baseUrl, protocol: 'openai_compatible' },
+        owner,
+      );
+
+    it('defaults to off, and a created or listed provider shows the switch and no identity', async () => {
+      const created = await asAlice().send(CUSTOM);
+      expect(created.status).toBe(201);
+      expect(created.body.imitateClientIdentity).toBe(false);
+      expect(created.body.clientIdentity).toBeNull();
+      const id = await seedIdentity();
+      const read = await getOne(id);
+      expect(read.body.imitateClientIdentity).toBe(false);
+      expect(read.body.clientIdentity).toEqual({ label: 'Fixture Client' });
+      // The header names and values never reach the wire view.
+      expect(JSON.stringify(read.body)).not.toMatch(/fixture-client|X-Fixture-Client|fixture-auth/);
+      const col = await pool.query('SELECT imitate_client_identity FROM provider WHERE id = $1', [
+        id,
+      ]);
+      expect(col.rows[0].imitate_client_identity).toBe(false);
+    });
+
+    it('true then false round-trips; omitting the field preserves it; health is unchanged', async () => {
+      const id = await seedIdentity();
+      const before = await getOne(id);
+      const dbBefore = await pool.query(
+        'SELECT status, status_source, status_changed_at, health_rev, traffic_state FROM provider WHERE id = $1',
+        [id],
+      );
+
+      const on = await patch(id, { imitateClientIdentity: true });
+      expect(on.status).toBe(200);
+      expect(on.body.imitateClientIdentity).toBe(true);
+      expect(on.body.clientIdentity).toEqual({ label: 'Fixture Client' });
+      expect(on.body.health).toEqual(before.body.health);
+      expect(
+        (
+          await pool.query(
+            'SELECT status, status_source, status_changed_at, health_rev, traffic_state FROM provider WHERE id = $1',
+            [id],
+          )
+        ).rows[0],
+      ).toEqual(dbBefore.rows[0]);
+
+      const renamed = await patch(id, { name: 'renamed' });
+      expect(renamed.status).toBe(200);
+      expect(renamed.body.imitateClientIdentity).toBe(true);
+
+      const off = await patch(id, { imitateClientIdentity: false });
+      expect(off.status).toBe(200);
+      expect(off.body.imitateClientIdentity).toBe(false);
+      expect((await getOne(id)).body.imitateClientIdentity).toBe(false);
+    });
+
+    it('null is a 400 and the provider is unchanged', async () => {
+      const id = await seedIdentity();
+      await patch(id, { imitateClientIdentity: true });
+      const res = await patch(id, { imitateClientIdentity: null });
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(res.body)).toContain('imitateClientIdentity');
+      expect((await getOne(id)).body.imitateClientIdentity).toBe(true);
+    });
+
+    it('true on a Claude-preset, a pasted-credential subscription or an api_key provider is a 422; false succeeds', async () => {
+      const claude = await seedPresetRow('claude', {
+        baseUrl: CLAUDE_PRESET.baseUrl,
+        protocol: 'anthropic_compatible',
+      });
+      const pasted = await (async () => {
+        const port = app.get<PersistencePort>(PERSISTENCE_PORT);
+        return (
+          await port.providers.insert(userPrincipal(alice), {
+            name: 'pasted-sub',
+            kind: 'subscription',
+            protocol: 'openai_compatible',
+            baseUrl: STUB_IDENTITY_PRESET.baseUrl,
+          })
+        ).id;
+      })();
+      const apiKey = await asAlice().send({
+        name: 'k',
+        kind: 'api_key',
+        protocol: 'openai_compatible',
+        baseUrl: 'https://1.1.1.1/v1',
+        credential: 'sk-test',
+      });
+      expect(apiKey.status).toBe(201);
+      for (const id of [claude, pasted, apiKey.body.id as string]) {
+        const res = await patch(id, { imitateClientIdentity: true });
+        expect(res.status).toBe(422);
+        const col = await pool.query('SELECT imitate_client_identity FROM provider WHERE id = $1', [
+          id,
+        ]);
+        expect(col.rows[0].imitate_client_identity).toBe(false);
+        expect((await patch(id, { imitateClientIdentity: false })).status).toBe(200);
+      }
+    });
+
+    it('create rejects the field with a 400 and creates nothing', async () => {
+      const res = await asAlice().send({ ...CUSTOM, imitateClientIdentity: true });
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(res.body)).toContain('imitateClientIdentity');
+      const none = await pool.query('SELECT 1 FROM provider WHERE owner_user_id = $1', [alice]);
+      expect(none.rowCount).toBe(0);
+    });
+
+    it('a credential-supplying PATCH drops the preset binding and clears the switch', async () => {
+      const id = await seedIdentity();
+      expect((await patch(id, { imitateClientIdentity: true })).status).toBe(200);
+      const converted = await patch(id, { credential: 'pasted-key' });
+      expect(converted.status).toBe(200);
+      expect(converted.body.oauthPreset).toBeNull();
+      expect(converted.body.imitateClientIdentity).toBe(false);
+      expect(converted.body.clientIdentity).toBeNull();
+      const col = await pool.query(
+        'SELECT imitate_client_identity, oauth_preset FROM provider WHERE id = $1',
+        [id],
+      );
+      expect(col.rows[0]).toEqual({ imitate_client_identity: false, oauth_preset: null });
+    });
+
+    it('a PATCH carrying true and a credential together is a 422 and changes nothing', async () => {
+      const id = await seedIdentity();
+      const res = await patch(id, { imitateClientIdentity: true, credential: 'pasted-key' });
+      expect(res.status).toBe(422);
+      const col = await pool.query(
+        'SELECT imitate_client_identity, oauth_preset FROM provider WHERE id = $1',
+        [id],
+      );
+      expect(col.rows[0]).toEqual({
+        imitate_client_identity: false,
+        oauth_preset: 'stub-identity',
+      });
+    });
+
+    it("another tenant's PATCH is a 404 and changes nothing", async () => {
+      const id = await seedIdentity(alice);
+      const res = await patch(id, { imitateClientIdentity: true }, bob);
+      expect(res.status).toBe(404);
+      const col = await pool.query('SELECT imitate_client_identity FROM provider WHERE id = $1', [
+        id,
+      ]);
+      expect(col.rows[0].imitate_client_identity).toBe(false);
+    });
   });
 
   // ---- add-live-subscription-models: unlisted models (task 6.1) ----

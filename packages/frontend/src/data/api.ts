@@ -132,6 +132,12 @@ export interface ProviderDto {
    * The server always sends it; optional here so older test doubles still type-check, and
    * read as on (the server default) when absent. */
   autoPruneUnlisted?: boolean;
+  /** allow-preset-client-identity: the per-provider identity-imitation switch (off by
+   * default) and, when the provider's preset declares an identity that is available for it,
+   * the imitated client's label (never header names or values). Optional here, like
+   * `autoPruneUnlisted`, so older test doubles still type-check; absent reads as off / none. */
+  imitateClientIdentity?: boolean;
+  clientIdentity?: ClientIdentityView | null;
   createdAt: string;
   health: ProviderHealthDto;
   /** The two raw records (non-secret) behind `health`. */
@@ -152,10 +158,18 @@ export interface TimeoutDefaults {
   idleTimeoutMs: number;
 }
 
+/** The client a preset declares an identity for: its label only, never header names or
+ * values (allow-preset-client-identity). */
+export interface ClientIdentityView {
+  label: string;
+}
+
 /** An enabled subscription-OAuth preset (server-driven card list). */
 export interface OauthPresetDto {
   id: string;
   displayName: string;
+  /** The client identity the preset declares, or null/absent when it declares none. */
+  clientIdentity?: ClientIdentityView | null;
 }
 
 export interface OauthStartResult {
@@ -188,6 +202,8 @@ export interface UpdateProviderInput {
   idleTimeoutMs?: number | null;
   /** Omitted preserves the stored value; the server rejects an explicit null. */
   autoPruneUnlisted?: boolean;
+  /** allow-preset-client-identity: sent only when the switch changed. */
+  imitateClientIdentity?: boolean;
 }
 
 /** Provenance of a model's effective display price. `listed` is the display-only
@@ -1102,7 +1118,13 @@ export interface ApiClient {
   createProvider(input: CreateProviderInput): Promise<ProviderDto>;
   updateProvider(id: string, patch: UpdateProviderInput): Promise<ProviderDto>;
   listOauthPresets(): Promise<OauthPresetDto[]>;
-  oauthStart(preset: string, name?: string): Promise<OauthStartResult>;
+  /** `imitateClientIdentity` is passed only as `true` (the consented opt-in); otherwise
+   * the field is omitted from the body. */
+  oauthStart(
+    preset: string,
+    name?: string,
+    imitateClientIdentity?: boolean,
+  ): Promise<OauthStartResult>;
   /** `pasted` is credential material — sent once, never stored client-side. */
   oauthComplete(sessionId: string, pasted: string): Promise<ProviderDto>;
   oauthReauthorize(providerId: string): Promise<OauthStartResult>;
@@ -1299,10 +1321,14 @@ export const realClient: ApiClient = {
   updateProvider: (id, patch) =>
     http<ProviderDto>(`${API_BASE}/providers/${encodeURIComponent(id)}`, jsonInit('PATCH', patch)),
   listOauthPresets: () => http<OauthPresetDto[]>(`${API_BASE}/providers/oauth/presets`),
-  oauthStart: (preset, name) =>
+  oauthStart: (preset, name, imitateClientIdentity) =>
     http<OauthStartResult>(
       `${API_BASE}/providers/oauth/start`,
-      jsonInit('POST', name !== undefined ? { preset, name } : { preset }),
+      jsonInit('POST', {
+        preset,
+        ...(name !== undefined ? { name } : {}),
+        ...(imitateClientIdentity === true ? { imitateClientIdentity: true } : {}),
+      }),
     ),
   oauthComplete: (sessionId, pasted) =>
     http<ProviderDto>(

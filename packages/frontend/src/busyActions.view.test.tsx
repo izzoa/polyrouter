@@ -367,7 +367,7 @@ const SCENARIOS: Record<string, Scenario> = {
     find: (h) => byLabel(within(h, '.modal-card'), 'Create & mint key'),
     settled: 'gone',
   },
-  'components/Modals.tsx app.startOauthConnect': {
+  'components/Modals.tsx app.startOauthConnect#1': {
     page: 'providers',
     prepare: async (h) => {
       await openModal(h, 'newProvider');
@@ -376,6 +376,22 @@ const SCENARIOS: Record<string, Scenario> = {
       await flush();
     },
     find: (h) => byLabel(within(h, '.modal-card'), 'ChatGPT'),
+    settled: 'gone',
+  },
+  'components/Modals.tsx app.startOauthConnect#2': {
+    page: 'providers',
+    prepare: async (h) => {
+      await openModal(h, 'newProvider');
+      h.store.setState('np', 'kind', 'sub');
+      h.store.setState('ow', 'presets', [
+        { id: 'stub-identity', displayName: 'Fixture Plan', clientIdentity: { label: 'Fixture' } },
+      ]);
+      await flush();
+      // A declaring preset opens its identity step first; the step's Continue is the button.
+      byLabel(within(h, '.modal-card'), 'Fixture Plan')?.click();
+      await flush();
+    },
+    find: (h) => byLabel(within(h, '.modal-card'), 'Continue to sign-in'),
     settled: 'gone',
   },
   'components/Modals.tsx app.addProvider': {

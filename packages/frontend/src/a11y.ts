@@ -430,7 +430,14 @@ export function useModalSurface(
      * the call site's choice, not something this helper should guess. */
     label?: string;
     labelledBy?: string;
+    /** The id of the element holding the text that describes the dialog, announced with its
+     * name when focus moves in (allow-preset-client-identity D10). Optional: most dialogs are
+     * fully described by their name. */
+    describedBy?: string;
     onDismiss: () => void;
+    /** Overrides the restore target captured on open, for a trigger that may not hold focus
+     * when the dialog opens (a checkbox clicked in Safari). See {@link layerFocus}. */
+    restoreTo?: () => HTMLElement | null | undefined;
   },
 ): {
   z: () => { backdrop: number; surface: number };
@@ -442,6 +449,7 @@ export function useModalSurface(
     kind: 'dialog',
     root: () => el,
     onDismiss: opts.onDismiss,
+    restoreTo: opts.restoreTo,
   });
   // GETTERS, not a static object. The attributes track `when()` exactly, so a surface that
   // is only conditionally modal — the nav is an ordinary in-flow pane above the narrow
@@ -461,6 +469,9 @@ export function useModalSurface(
       },
       get 'aria-labelledby'() {
         return opts.when() ? opts.labelledBy : undefined;
+      },
+      get 'aria-describedby'() {
+        return opts.when() ? opts.describedBy : undefined;
       },
       get tabindex() {
         return opts.when() ? -1 : undefined;

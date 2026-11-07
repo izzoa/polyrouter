@@ -43,6 +43,7 @@ import {
 } from './errors';
 import type { ProviderErrorKind } from './errors';
 import type { BatchFactory, BatchTransport } from './batch/transport';
+import { mergeHeaderLayers } from './header-layers';
 import {
   createGuardedHttpClient,
   joinUrl,
@@ -282,13 +283,14 @@ export function createHttpProviderAdapter(
   const userAgent = findUserAgent(config.extraHeaders) ?? POLYROUTER_USER_AGENT;
   const headers = (json: boolean, sse: boolean): Record<string, string> =>
     withUserAgent(
-      {
-        ...attribution, // spread first (lowest); safety is by distinct names, not precedence
-        ...(config.extraHeaders ?? {}),
+      // allow-preset-client-identity (design D5): defaults, then the identity seam (replaces a
+      // same-name default case-insensitively), then the protocol's own headers, which an
+      // identity header can never displace or sit beside (a case-variant clash is dropped).
+      mergeHeaderLayers(attribution, config.extraHeaders ?? {}, {
         ...spec.authHeaders(config.credential),
         ...(json ? { 'Content-Type': 'application/json' } : {}),
         ...(sse ? { Accept: 'text/event-stream' } : {}),
-      },
+      }),
       userAgent,
     );
 

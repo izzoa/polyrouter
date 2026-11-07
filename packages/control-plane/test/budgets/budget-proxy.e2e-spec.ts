@@ -191,6 +191,7 @@ describe('budget block enforcement — proxy path (#16)', () => {
           provide: SubscriptionOauthService,
           useValue: {
             resolveCredential: () => Promise.reject(new Error('oauth seam not stubbed')),
+            availableClientIdentity: () => null,
           },
         },
         StreamDrainRegistry,

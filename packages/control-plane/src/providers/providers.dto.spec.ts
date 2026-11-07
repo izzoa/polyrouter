@@ -29,7 +29,9 @@ const validCreate = {
 
 describe('resolveMaxTokensSpelling', () => {
   it('passes an explicit value through unchanged', () => {
-    expect(resolveMaxTokensSpelling('local', 'max_completion_tokens')).toBe('max_completion_tokens');
+    expect(resolveMaxTokensSpelling('local', 'max_completion_tokens')).toBe(
+      'max_completion_tokens',
+    );
     expect(resolveMaxTokensSpelling('api_key', 'max_tokens')).toBe('max_tokens');
   });
 
@@ -60,9 +62,9 @@ describe('providerMaxTokensQuirks', () => {
 describe('maxTokensSpelling DTO validation (add-max-tokens-spelling)', () => {
   it('accepts each enum value and an omitted field on create', async () => {
     for (const v of ['auto', 'max_completion_tokens', 'max_tokens']) {
-      expect(await propsWithErrors(CreateProviderDto, { ...validCreate, maxTokensSpelling: v })).not.toContain(
-        'maxTokensSpelling',
-      );
+      expect(
+        await propsWithErrors(CreateProviderDto, { ...validCreate, maxTokensSpelling: v }),
+      ).not.toContain('maxTokensSpelling');
     }
     expect(await propsWithErrors(CreateProviderDto, { ...validCreate })).not.toContain(
       'maxTokensSpelling',
@@ -80,9 +82,9 @@ describe('maxTokensSpelling DTO validation (add-max-tokens-spelling)', () => {
 
   it('on update, an omitted field is fine but an explicit null is rejected', async () => {
     expect(await propsWithErrors(UpdateProviderDto, {})).not.toContain('maxTokensSpelling');
-    expect(await propsWithErrors(UpdateProviderDto, { maxTokensSpelling: 'max_tokens' })).not.toContain(
-      'maxTokensSpelling',
-    );
+    expect(
+      await propsWithErrors(UpdateProviderDto, { maxTokensSpelling: 'max_tokens' }),
+    ).not.toContain('maxTokensSpelling');
     expect(await propsWithErrors(UpdateProviderDto, { maxTokensSpelling: null })).toContain(
       'maxTokensSpelling',
     );
@@ -115,6 +117,44 @@ describe('autoPruneUnlisted DTO validation (add-auto-prune-unlisted-models)', ()
       expect(await propsWithErrors(UpdateProviderDto, { autoPruneUnlisted: v })).toContain(
         'autoPruneUnlisted',
       );
+    }
+  });
+});
+
+describe('imitateClientIdentity DTO validation (allow-preset-client-identity)', () => {
+  it('UpdateProviderDto accepts true, false and an omitted field', async () => {
+    for (const v of [true, false]) {
+      expect(await propsWithErrors(UpdateProviderDto, { imitateClientIdentity: v })).toEqual([]);
+    }
+    expect(await propsWithErrors(UpdateProviderDto, {})).toEqual([]);
+  });
+
+  it('UpdateProviderDto rejects null and non-booleans (null must not reach a NOT NULL column)', async () => {
+    for (const v of [null, 'true', 1, 'yes', {}]) {
+      expect(await propsWithErrors(UpdateProviderDto, { imitateClientIdentity: v })).toContain(
+        'imitateClientIdentity',
+      );
+    }
+  });
+
+  it('CreateProviderDto rejects the field, even a valid boolean', async () => {
+    for (const v of [true, false]) {
+      expect(
+        await propsWithErrors(CreateProviderDto, { ...validCreate, imitateClientIdentity: v }),
+      ).toContain('imitateClientIdentity');
+    }
+  });
+
+  it('create and update reject clientIdentity, extraHeaders and userAgent (no API field supplies identity values)', async () => {
+    const bodies: Array<Record<string, unknown>> = [
+      { clientIdentity: { label: 'x' } },
+      { extraHeaders: { 'User-Agent': 'x' } },
+      { userAgent: 'x' },
+    ];
+    for (const body of bodies) {
+      const prop = Object.keys(body)[0]!;
+      expect(await propsWithErrors(CreateProviderDto, { ...validCreate, ...body })).toContain(prop);
+      expect(await propsWithErrors(UpdateProviderDto, body)).toContain(prop);
     }
   });
 });

@@ -1,6 +1,6 @@
 // add-chatgpt-responses — the Responses provider adapter: OAuth-only construction,
-// EXACTLY three identity-bearing headers (full-set equality doubles as the absence
-// assertion for x-api-key / originator / session fingerprints), factory selection —
+// nothing but the protocol's own headers when no extra headers are configured (full-set
+// equality doubles as the absence assertion for x-api-key and any foreign header), factory selection —
 // and the VERIFIED-LIVE quirks: the wire is streaming-only, so chat() is
 // stream-and-collect. add-live-subscription-models: listModels() reads the
 // backend's own catalog and testConnection() is that listing — no model id anywhere.
@@ -86,8 +86,8 @@ describe('Responses provider adapter (add-chatgpt-responses)', () => {
     expect(call.url).toBe('https://chatgpt.example/backend-api/codex/responses');
     expect(call.init.method).toBe('POST');
     const h = call.init.headers;
-    // Full-set equality IS the absence assertion: nothing else identity-bearing —
-    // no x-api-key, no originator, no session ids, no anthropic-* — can be present.
+    // Full-set equality IS the absence assertion: with no extra headers configured, nothing
+    // but the protocol's own headers — no x-api-key, no anthropic-* — can be present.
     // (Accept is the SSE content negotiation of the streaming-only wire.)
     // `User-Agent` is polyrouter's own transport default (add-honest-user-agent): it names
     // no other client, so it is not an identity header and never a first-party UA
@@ -160,7 +160,7 @@ describe('Responses provider adapter (add-chatgpt-responses)', () => {
     expect(createResponsesProviderAdapter(config).protocol).toBe('openai_responses');
   });
 
-  it('listModels() GETs the backend catalog with client_version and exactly the identity headers', async () => {
+  it('listModels() GETs the backend catalog with client_version and exactly the protocol headers', async () => {
     const { client, calls } = recordingClient(() => jsonResponse(CATALOG));
     const adapter = createResponsesProviderAdapter(config, { httpClient: client });
     const models = await adapter.listModels();
@@ -171,8 +171,8 @@ describe('Responses provider adapter (add-chatgpt-responses)', () => {
     expect(call.url).toBe(
       `https://chatgpt.example/backend-api/codex/models?client_version=${CHATGPT_CATALOG_CLIENT_VERSION}`,
     );
-    // Same identity set as chat (verified live): no originator, no first-party UA, no
-    // session ids. polyrouter's own User-Agent is a transport default, not identity.
+    // Same protocol-own set as chat (verified live), with no extra headers configured.
+    // polyrouter's own User-Agent is a transport default.
     const h = call.init.headers;
     const identity = Object.keys(h).filter(
       (k) => !['Accept', 'Content-Type', 'User-Agent'].includes(k),

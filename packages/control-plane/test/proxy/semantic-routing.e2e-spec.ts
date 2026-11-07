@@ -286,7 +286,10 @@ async function buildApp(): Promise<{ app: INestApplication; server: App }> {
       ProxyService,
       {
         provide: SubscriptionOauthService,
-        useValue: { resolveCredential: () => Promise.reject(new Error('oauth seam not stubbed')) },
+        useValue: {
+          resolveCredential: () => Promise.reject(new Error('oauth seam not stubbed')),
+          availableClientIdentity: () => null,
+        },
       },
       AutoLayersService,
       StreamDrainRegistry,

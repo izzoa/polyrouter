@@ -99,6 +99,18 @@ const PRESET: OauthPreset = {
   enabled: true,
 };
 
+// allow-preset-client-identity (task 5.3): a registry fixture that declares an identity.
+const IDENTITY_PRESET: OauthPreset = {
+  ...PRESET,
+  id: 'stub-identity-401',
+  displayName: 'Stub identity',
+  clientIdentity: {
+    label: 'Fixture Client',
+    apiHeaders: { 'User-Agent': 'fixture-client/1.0', 'X-Fixture-Client': 'polyrouter-test' },
+    tokenHeaders: { 'User-Agent': 'fixture-auth/1.0' },
+  },
+};
+
 @Injectable()
 class TestPrincipalGuard implements CanActivate {
   canActivate(ctx: ExecutionContext): boolean {
@@ -115,8 +127,13 @@ class TestPrincipalGuard implements CanActivate {
 
 // Stub identity provider + the one access token the "upstream" accepts.
 let exchanges = 0;
+// Each token-endpoint call's `headers` (undefined = the key was absent), in call order
+// (allow-preset-client-identity, task 7.3).
+let tokenHeaders: Array<Readonly<Record<string, string>> | undefined> = [];
 let tokenQueue: Array<() => Promise<TokenSet>> = [];
 let validToken = 'at-new';
+// Every adapter config the proxy built (the PROXY_ADAPTER_FACTORY override sees it).
+let factoryConfigs: ProviderConfig[] = [];
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -141,19 +158,22 @@ describe('401-triggered forced refresh (add-provider-health-signals)', () => {
   async function oauthProvider(
     token: string,
     expiresInMs: number,
+    opts: { preset?: OauthPreset; imitate?: boolean } = {},
   ): Promise<{ id: string; model: string }> {
+    const rowPreset = opts.preset ?? PRESET;
     const tag = `${Date.now()}-${++n}`;
     const expiresAt = Date.now() + expiresInMs;
     const p = await port.providers.insert(principal, {
       name: `sub-${tag}`,
       kind: 'subscription',
       protocol: 'anthropic_compatible',
-      baseUrl: PRESET.baseUrl,
-      oauthPreset: PRESET.id,
+      baseUrl: rowPreset.baseUrl,
+      oauthPreset: rowPreset.id,
+      ...(opts.imitate !== undefined ? { imitateClientIdentity: opts.imitate } : {}),
       credentialExpiresAt: new Date(expiresAt),
       encryptedCredentials: encryptSecret(
         serializeOauthCredential({
-          preset: PRESET.id,
+          preset: rowPreset.id,
           accessToken: token,
           refreshToken: 'rt-1',
           expiresAt,
@@ -211,8 +231,9 @@ describe('401-triggered forced refresh (add-provider-health-signals)', () => {
       throw new Error(`${COMPOSE_HINT}\n(${(error as Error).message})`);
     }
     // The "upstream": accepts only the currently-valid access token.
-    const factory = (cfg: ProviderConfig): ProviderAdapter =>
-      ({
+    const factory = (cfg: ProviderConfig): ProviderAdapter => {
+      factoryConfigs.push(cfg);
+      return {
         protocol: 'anthropic_compatible',
         chat: () =>
           cfg.credential === validToken
@@ -229,7 +250,8 @@ describe('401-triggered forced refresh (add-provider-health-signals)', () => {
         },
         listModels: () => Promise.resolve([]),
         testConnection: () => Promise.resolve({ ok: true, models: 0 }),
-      }) as unknown as ProviderAdapter;
+      } as unknown as ProviderAdapter;
+    };
 
     const moduleRef = await Test.createTestingModule({
       imports: [
@@ -277,15 +299,17 @@ describe('401-triggered forced refresh (add-provider-health-signals)', () => {
       ],
     })
       .overrideProvider(OAUTH_TOKEN_FETCH)
-      .useValue(() => {
+      .useValue((input: { headers?: Readonly<Record<string, string>> }) => {
         exchanges += 1;
+        tokenHeaders.push('headers' in input ? input.headers : undefined);
         const next = tokenQueue.shift();
         return next ? next() : Promise.reject(new TokenEndpointError('transient'));
       })
       .overrideProvider(OAUTH_PRESET_LOOKUP)
       .useValue({
-        find: (id: string) => (id === PRESET.id ? PRESET : undefined),
-        list: () => [PRESET],
+        find: (id: string) =>
+          id === PRESET.id ? PRESET : id === IDENTITY_PRESET.id ? IDENTITY_PRESET : undefined,
+        list: () => [PRESET, IDENTITY_PRESET],
       })
       .compile();
     app = moduleRef.createNestApplication<NestExpressApplication>();
@@ -314,8 +338,10 @@ describe('401-triggered forced refresh (add-provider-health-signals)', () => {
 
   beforeEach(async () => {
     exchanges = 0;
+    tokenHeaders = [];
     tokenQueue = [];
     validToken = 'at-new';
+    factoryConfigs = [];
     const stale = [
       ...(await redis.keys('oauth:forced:*')),
       ...(await redis.keys('oauth:backoff:*')),
@@ -414,5 +440,55 @@ describe('401-triggered forced refresh (add-provider-health-signals)', () => {
     await chat(control.model);
     await sleep(200);
     expect(exchanges).toBe(0);
+  });
+
+  it("a flagged identity row's proxied chat config carries extraHeaders; an unflagged row's does not (allow-preset-client-identity)", async () => {
+    const flagged = await oauthProvider(validToken, HOURS_240, {
+      preset: IDENTITY_PRESET,
+      imitate: true,
+    });
+    const unflagged = await oauthProvider(validToken, HOURS_240, {
+      preset: IDENTITY_PRESET,
+      imitate: false,
+    });
+    const claude = await oauthProvider(validToken, HOURS_240, { imitate: true });
+    const ok = await chat(flagged.model);
+    expect(ok.status).toBe(200);
+    expect(factoryConfigs).toHaveLength(1);
+    expect(factoryConfigs[0]!.extraHeaders).toEqual(IDENTITY_PRESET.clientIdentity!.apiHeaders);
+    factoryConfigs = [];
+    expect((await chat(unflagged.model)).status).toBe(200);
+    expect(factoryConfigs).toHaveLength(1);
+    expect('extraHeaders' in factoryConfigs[0]!).toBe(false);
+    // A preset that declares nothing never sends one, whatever its stored switch.
+    factoryConfigs = [];
+    expect((await chat(claude.model)).status).toBe(200);
+    expect(factoryConfigs).toHaveLength(1);
+    expect('extraHeaders' in factoryConfigs[0]!).toBe(false);
+  });
+
+  it("the forced 401 refresh of a flagged identity row carries tokenHeaders; an unflagged row's carries none (allow-preset-client-identity)", async () => {
+    const flagged = await oauthProvider('at-old', HOURS_240, {
+      preset: IDENTITY_PRESET,
+      imitate: true,
+    });
+    tokenQueue = [tokenSet('at-new')];
+    expect((await chat(flagged.model)).status).not.toBe(200);
+    await until(() => exchanges >= 1);
+    expect(exchanges).toBe(1);
+    expect(tokenHeaders).toEqual([IDENTITY_PRESET.clientIdentity!.tokenHeaders]);
+
+    // The unflagged row of the same preset: the same trigger, no identity.
+    exchanges = 0;
+    tokenHeaders = [];
+    const unflagged = await oauthProvider('at-old', HOURS_240, {
+      preset: IDENTITY_PRESET,
+      imitate: false,
+    });
+    tokenQueue = [tokenSet('at-new')];
+    expect((await chat(unflagged.model)).status).not.toBe(200);
+    await until(() => exchanges >= 1);
+    expect(exchanges).toBe(1);
+    expect(tokenHeaders).toEqual([undefined]);
   });
 });

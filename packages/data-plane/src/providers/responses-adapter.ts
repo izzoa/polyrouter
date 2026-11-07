@@ -1,10 +1,9 @@
 /**
  * OpenAI-Responses provider adapter (add-chatgpt-responses): the ChatGPT backend's
- * Responses API, reached only through a subscription-OAuth preset. OAuth-ONLY, and
- * exactly THREE identity-bearing headers — Bearer + `chatgpt-account-id` + the
- * ecosystem-established Responses beta — never `x-api-key`, never client
- * fingerprints (`originator`, a first-party user agent, session ids), never
- * imitation `instructions` (the sharpened no-spoofing rule).
+ * Responses API, reached only through a subscription-OAuth preset. OAuth-ONLY, never
+ * `x-api-key`. The adapter itself sets three headers — Bearer + `chatgpt-account-id` +
+ * the ecosystem-established Responses beta; anything further on a request is a
+ * preset-declared header carried by `ProviderConfig.extraHeaders`.
  *
  * VERIFIED LIVE (2026-07-18): the backend accepts ONLY streaming requests
  * ("Stream must be set to true") — so `chat()` is implemented as
@@ -46,8 +45,7 @@ import { createHttpProviderAdapter, type AdapterDeps } from './http-adapter';
 const RESPONSES_BETA = 'responses=experimental';
 const CHAT_PATH = '/backend-api/codex/responses';
 /** The catalog's REQUIRED compatibility parameter (verified live 2026-09-24) — the
- * current Codex CLI release. Not identity: no user agent, `originator`, or session
- * rides with it. Bump when a new model family needs a newer value to be listed
+ * current Codex CLI release. A catalog compatibility parameter, not a header. Bump when a new model family needs a newer value to be listed
  * (scripts/verify-chatgpt-oauth.md); a stale value only withholds the newest models. */
 export const CHATGPT_CATALOG_CLIENT_VERSION = '0.156.1';
 const MODELS_PATH = `/backend-api/codex/models?client_version=${CHATGPT_CATALOG_CLIENT_VERSION}`;
@@ -272,7 +270,7 @@ export function createResponsesProviderAdapter(
   deps: AdapterDeps = {},
 ): ProviderAdapter {
   // OAuth-only, fully configured — anything else is a typed, breaker-NEUTRAL
-  // credential/config failure (never a header-less or fingerprint-less guess).
+  // credential/config failure (never a header-less guess).
   if (config.authScheme !== 'oauth_bearer') {
     throw new ProviderError('credential', 'openai_responses requires an OAuth credential');
   }

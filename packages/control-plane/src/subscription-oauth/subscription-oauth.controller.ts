@@ -24,6 +24,7 @@ import type { Redis } from 'ioredis';
 import type { Request } from 'express';
 import { AuthRateLimiter, type RateRule } from '../auth/rate-limit';
 import { CurrentPrincipal } from '../auth/principal.decorator';
+import { clientIdentityView } from '../providers/client-identity';
 import { toSafe, type SafeProvider } from '../providers/providers.service';
 import { OauthCompleteDto, OauthStartDto } from './subscription-oauth.dto';
 import { SubscriptionOauthService, type StartResult } from './subscription-oauth.service';
@@ -69,7 +70,11 @@ export class SubscriptionOauthController {
   }
 
   @Get('oauth/presets')
-  listPresets(): Array<{ id: string; displayName: string }> {
+  listPresets(): Array<{
+    id: string;
+    displayName: string;
+    clientIdentity: { label: string } | null;
+  }> {
     return this.svc.listEnabledPresets();
   }
 
@@ -85,6 +90,9 @@ export class SubscriptionOauthController {
     return this.svc.start(principal, authSessionKeyFrom(req), {
       preset: dto.preset,
       ...(dto.name !== undefined ? { name: dto.name } : {}),
+      ...(dto.imitateClientIdentity !== undefined
+        ? { imitateClientIdentity: dto.imitateClientIdentity }
+        : {}),
     });
   }
 
@@ -101,7 +109,7 @@ export class SubscriptionOauthController {
       sessionId: dto.sessionId,
       pasted: dto.pasted,
     });
-    return toSafe(row);
+    return toSafe(row, clientIdentityView(this.svc.availableClientIdentity(row)));
   }
 
   // Path lives under `oauth/` so the per-IP throttle rule prefix covers it too

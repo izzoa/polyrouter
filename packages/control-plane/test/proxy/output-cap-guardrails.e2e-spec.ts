@@ -176,6 +176,7 @@ describe('output-cap guardrails e2e', () => {
           useValue: {
             resolveCredential: () =>
               Promise.resolve({ credential: 'sub-token', authScheme: 'api_key' }),
+            availableClientIdentity: () => null,
           },
         },
         StreamDrainRegistry,

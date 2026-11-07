@@ -483,9 +483,9 @@ Honest caveats:
   provider can change them at any time. Each preset ships enabled only after its own live
   verification — both passed on 2026-07-18 (`scripts/verify-claude-oauth.md`,
   `scripts/verify-chatgpt-oauth.md` record the runs and the pinned constants);
-  failures surface as a clear provider error, and polyrouter **never impersonates the
-  first-party client** beyond the documented headers — no client-fingerprint headers and no
-  imitation system prompts, even if that means a preset stays disabled.
+  failures surface as a clear provider error. A subscription preset may declare a client
+  identity; it is sent only after you turn on that provider's identity-imitation switch
+  (off by default), and doing so likely violates the provider's terms.
 - **Upgrading existing Claude and ChatGPT connections.** From this release their traffic
   announces `User-Agent: polyrouter/<version>` instead of the HTTP library's name. An
   upstream could single that out; if one rejects it, the rejection shows as the provider

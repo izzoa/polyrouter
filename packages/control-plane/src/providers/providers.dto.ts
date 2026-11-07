@@ -162,6 +162,15 @@ export class UpdateProviderDto {
   @ValidateIf((_, v) => v !== undefined)
   @IsBoolean()
   autoPruneUnlisted?: boolean;
+
+  /** allow-preset-client-identity: the per-provider identity-imitation switch. UPDATE only
+   * (create builds non-preset rows, so `forbidNonWhitelisted` rejects it there). Omitted
+   * preserves; an explicit `null` is a 400 (same idiom as `autoPruneUnlisted`, no
+   * `IsOptional`). `true` is a 422 in the service unless imitation is available. This
+   * boolean is the ONLY identity input the API accepts: no header names or values. */
+  @ValidateIf((_, v) => v !== undefined)
+  @IsBoolean()
+  imitateClientIdentity?: boolean;
 }
 
 const asBool = ({ value }: { value: unknown }): unknown =>

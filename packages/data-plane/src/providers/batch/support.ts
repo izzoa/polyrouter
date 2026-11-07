@@ -4,6 +4,7 @@ import type { CallContext } from '../adapter';
 import { BatchUpstreamNotFoundError } from '../batch';
 import { ProviderError, classifyResponse, type ProviderErrorKind } from '../errors';
 import { errMeta, rethrowTyped } from '../http-adapter';
+import { mergeHeaderLayers } from '../header-layers';
 import { openRequest, type HttpBody, type HttpResponse } from '../http';
 import type { BatchTransport } from './transport';
 
@@ -82,11 +83,12 @@ export async function batchCall(
       url,
       {
         method: init.method,
-        headers: {
-          ...t.headers(init.body !== undefined),
+        // The transport's headers (auth, identity, extras) are the `extra` layer so a
+        // case-variant clash with a batch protocol header is dropped, never sent twice.
+        headers: mergeHeaderLayers({}, t.headers(init.body !== undefined), {
           ...(init.contentType !== undefined ? { 'Content-Type': init.contentType } : {}),
           ...(init.idempotencyKey !== undefined ? { 'Idempotency-Key': init.idempotencyKey } : {}),
-        },
+        }),
         ...(init.body !== undefined ? { body: init.body } : {}),
       },
       t.firstByteTimeoutMs,

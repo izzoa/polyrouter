@@ -142,6 +142,34 @@ describe('tenant isolation across owned resources', () => {
     }
   });
 
+  // allow-preset-client-identity: the identity-imitation switch is an owner-scoped write like
+  // every other provider column; another tenant's PATCH affects nothing and sees nothing.
+  it('another tenant cannot flip a provider’s identity-imitation switch', async () => {
+    const bobs = await harness.port.providers.insert(bob.principal, {
+      ...providerValues,
+      kind: 'subscription',
+      oauthPreset: 'stub-identity',
+    });
+    expect(bobs.imitateClientIdentity).toBe(false);
+    expect(
+      await harness.port.providers.update(alice.principal, bobs.id, {
+        imitateClientIdentity: true,
+      }),
+    ).toBeNull();
+    expect(
+      (await harness.port.providers.findById(bob.principal, bobs.id))?.imitateClientIdentity,
+    ).toBe(false);
+    // The owner's own write lands.
+    expect(
+      (
+        await harness.port.providers.update(bob.principal, bobs.id, {
+          imitateClientIdentity: true,
+        })
+      )?.imitateClientIdentity,
+    ).toBe(true);
+    expect(await harness.port.providers.remove(bob.principal, bobs.id)).toBe(true);
+  });
+
   it('list() only returns the principal’s rows', async () => {
     const a = await harness.port.providers.insert(alice.principal, providerValues);
     const b = await harness.port.providers.insert(bob.principal, providerValues);

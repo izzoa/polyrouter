@@ -64,6 +64,20 @@ const RESPONSES_PRESET: OauthPreset = {
   enabled: true,
 };
 
+// allow-preset-client-identity (design D11): a registry fixture that declares an identity.
+const STUB_IDENTITY_PRESET: OauthPreset = {
+  ...PRESET,
+  id: 'stub-identity',
+  displayName: 'Stub identity',
+  baseUrl: 'https://identity.example/',
+  protocol: 'openai_compatible',
+  clientIdentity: {
+    label: 'Fixture Client',
+    apiHeaders: { 'User-Agent': 'fixture-client/1.0', 'X-Fixture-Client': 'polyrouter-test' },
+    tokenHeaders: { 'User-Agent': 'fixture-auth/1.0' },
+  },
+};
+
 const b64 = (obj: unknown): string => Buffer.from(JSON.stringify(obj)).toString('base64url');
 const idTokenWith = (accountId: string): string =>
   `${b64({ alg: 'RS256' })}.${b64({ 'https://api.openai.com/auth': { chatgpt_account_id: accountId } })}.sig`;
@@ -87,10 +101,15 @@ function providerRow(over: Partial<ProviderRow> = {}): ProviderRow {
   } as ProviderRow;
 }
 
-function oauthEnvelope(expiresAt: number, access = 'at-1', refresh = 'rt-1'): string {
+function oauthEnvelope(
+  expiresAt: number,
+  access = 'at-1',
+  refresh = 'rt-1',
+  preset = 'claude',
+): string {
   return encryptSecret(
     serializeOauthCredential({
-      preset: 'claude',
+      preset,
       accessToken: access,
       refreshToken: refresh,
       expiresAt,
@@ -126,6 +145,7 @@ interface RecordedFetchInput {
   readonly body: Record<string, string>;
   readonly encoding?: 'json' | 'form';
   readonly grant?: 'exchange' | 'refresh';
+  readonly headers?: Readonly<Record<string, string>>;
 }
 
 interface Harness {
@@ -259,8 +279,14 @@ async function harness(): Promise<Harness> {
         provide: OAUTH_PRESET_LOOKUP,
         useValue: {
           find: (id: string) =>
-            id === 'claude' ? PRESET : id === 'chatgpt' ? RESPONSES_PRESET : undefined,
-          list: () => [PRESET, RESPONSES_PRESET],
+            id === 'claude'
+              ? PRESET
+              : id === 'chatgpt'
+                ? RESPONSES_PRESET
+                : id === 'stub-identity'
+                  ? STUB_IDENTITY_PRESET
+                  : undefined,
+          list: () => [PRESET, RESPONSES_PRESET, STUB_IDENTITY_PRESET],
         },
       },
     ],
@@ -890,5 +916,345 @@ describe('forceRefresh / requestForcedRefresh / claimTestRepair (add-provider-he
 describe('production token-fetch binding (add-honest-user-agent)', () => {
   it('defaultTokenFetch IS fetchTokenSet, so every grant path (exchange, refresh, forced refresh, sweep) sends buildTokenRequest headers', () => {
     expect(defaultTokenFetch).toBe(fetchTokenSet);
+  });
+});
+
+describe('availableClientIdentity / identityBindingFor (allow-preset-client-identity)', () => {
+  const identityRow = (over: Partial<ProviderRow> = {}): ProviderRow =>
+    providerRow({
+      id: 'prov-i1',
+      protocol: 'openai_compatible',
+      baseUrl: 'https://identity.example/',
+      oauthPreset: 'stub-identity',
+      ...over,
+    });
+
+  it('is available for a row matching the declaring preset pin', async () => {
+    const h = await harness();
+    const row = identityRow();
+    expect(h.svc.availableClientIdentity(row)).toBe(STUB_IDENTITY_PRESET.clientIdentity);
+    expect(h.svc.identityBindingFor(row)).toEqual({
+      identity: STUB_IDENTITY_PRESET.clientIdentity,
+      pin: { baseUrl: 'https://identity.example/', protocol: 'openai_compatible' },
+    });
+  });
+
+  it('is null for a Claude-preset row (the preset declares none)', async () => {
+    const h = await harness();
+    expect(h.svc.availableClientIdentity(providerRow())).toBeNull();
+    expect(h.svc.availableClientIdentity(responsesRow())).toBeNull();
+  });
+
+  it('is null for a stub-identity row whose baseUrl differs from the pin', async () => {
+    const h = await harness();
+    expect(
+      h.svc.availableClientIdentity(identityRow({ baseUrl: 'https://elsewhere.example/' })),
+    ).toBeNull();
+  });
+
+  it('is null for a row with no preset, and for a non-subscription row', async () => {
+    const h = await harness();
+    expect(h.svc.availableClientIdentity(identityRow({ oauthPreset: null }))).toBeNull();
+    expect(h.svc.identityBindingFor(identityRow({ oauthPreset: null }))).toBeUndefined();
+    expect(h.svc.availableClientIdentity(identityRow({ kind: 'api_key' }))).toBeNull();
+  });
+});
+
+describe('connect-start identity opt-in (allow-preset-client-identity)', () => {
+  const sessionKeys = (h: Harness): string[] =>
+    [...h.redisStore.keys()].filter((k) => k.startsWith('oauth:sess:'));
+  const storedSession = (h: Harness, sessionId: string): Record<string, unknown> =>
+    JSON.parse(h.redisStore.get(`oauth:sess:${sessionId}`)!) as Record<string, unknown>;
+  const stateOf = (started: { authorizeUrl: string }): string =>
+    new URL(started.authorizeUrl).searchParams.get('state')!;
+
+  it('true on Claude (declares no identity) is a 422 and creates no session', async () => {
+    const h = await harness();
+    const create = jest.spyOn(h.svc['sessions'], 'create');
+    await expect(
+      h.svc.start(principal, 'auth-sess-1', { preset: 'claude', imitateClientIdentity: true }),
+    ).rejects.toMatchObject({ status: 422 });
+    await expect(
+      h.svc.start(principal, 'auth-sess-1', { preset: 'chatgpt', imitateClientIdentity: true }),
+    ).rejects.toMatchObject({ status: 422 });
+    expect(create).not.toHaveBeenCalled();
+    expect(sessionKeys(h)).toEqual([]);
+  });
+
+  it('true on an identity-declaring preset mints a session that records the opt-in', async () => {
+    const h = await harness();
+    const started = await h.svc.start(principal, 'auth-sess-1', {
+      preset: 'stub-identity',
+      imitateClientIdentity: true,
+    });
+    expect(storedSession(h, started.sessionId)['imitateClientIdentity']).toBe(true);
+  });
+
+  it('false on Claude is accepted (the opt-out needs no declaration)', async () => {
+    const h = await harness();
+    const started = await h.svc.start(principal, 'auth-sess-1', {
+      preset: 'claude',
+      imitateClientIdentity: false,
+    });
+    expect(storedSession(h, started.sessionId)['imitateClientIdentity']).toBe(false);
+  });
+
+  it('an opted-in session inserts the row with the switch on', async () => {
+    const h = await harness();
+    const started = await h.svc.start(principal, 'auth-sess-1', {
+      preset: 'stub-identity',
+      imitateClientIdentity: true,
+    });
+    const row = await h.svc.complete(principal, 'auth-sess-1', {
+      sessionId: started.sessionId,
+      pasted: `code-1#${stateOf(started)}`,
+    });
+    expect(row.imitateClientIdentity).toBe(true);
+    expect(h.rows.get(row.id)!.imitateClientIdentity).toBe(true);
+  });
+
+  it('a session without the field (how a pre-deploy session reads) inserts it off', async () => {
+    const h = await harness();
+    const started = await h.svc.start(principal, 'auth-sess-1', { preset: 'stub-identity' });
+    expect('imitateClientIdentity' in storedSession(h, started.sessionId)).toBe(false);
+    const row = await h.svc.complete(principal, 'auth-sess-1', {
+      sessionId: started.sessionId,
+      pasted: `code-1#${stateOf(started)}`,
+    });
+    expect(row.imitateClientIdentity).toBe(false);
+  });
+
+  it.each([true, false])(
+    'a reauthorization session carries no flag and completing it leaves the switch as it was (%s)',
+    async (was) => {
+      const h = await harness();
+      const row = providerRow({
+        id: 'prov-i9',
+        protocol: 'openai_compatible',
+        baseUrl: 'https://identity.example/',
+        oauthPreset: 'stub-identity',
+        imitateClientIdentity: was,
+        encryptedCredentials: oauthEnvelope(Date.now() + 3_600_000),
+      });
+      h.rows.set(row.id, row);
+      const started = await h.svc.startReauthorize(principal, 'auth-sess-1', row.id);
+      expect('imitateClientIdentity' in storedSession(h, started.sessionId)).toBe(false);
+      await h.svc.complete(principal, 'auth-sess-1', {
+        sessionId: started.sessionId,
+        pasted: `code-2#${stateOf(started)}`,
+      });
+      expect(h.rows.get(row.id)!.imitateClientIdentity).toBe(was);
+    },
+  );
+});
+
+describe('listEnabledPresets (allow-preset-client-identity)', () => {
+  it('names the declaring preset by its label alone; Claude and ChatGPT are null', async () => {
+    const h = await harness();
+    const byId = new Map(h.svc.listEnabledPresets().map((p) => [p.id, p]));
+    expect(byId.get('stub-identity')!.clientIdentity).toEqual({
+      label: STUB_IDENTITY_PRESET.clientIdentity!.label,
+    });
+    expect(Object.keys(byId.get('stub-identity')!.clientIdentity!)).toEqual(['label']);
+    expect(byId.get('claude')!.clientIdentity).toBeNull();
+    expect(byId.get('chatgpt')!.clientIdentity).toBeNull();
+    // Nothing in the listing carries a header name or value.
+    const text = JSON.stringify([...byId.values()]);
+    expect(text).not.toMatch(/fixture-client|fixture-auth|X-Fixture|User-Agent/i);
+  });
+
+  it('is null for a declaration that does not validate', async () => {
+    const h = await harness();
+    const bad: OauthPreset = {
+      ...STUB_IDENTITY_PRESET,
+      clientIdentity: { label: 'Bad', apiHeaders: { Authorization: 'x' } },
+    };
+    jest.spyOn(h.svc['presets'], 'list').mockReturnValue([bad]);
+    expect(h.svc.listEnabledPresets()[0]!.clientIdentity).toBeNull();
+  });
+});
+
+describe('token-endpoint identity threading (allow-preset-client-identity, design D6)', () => {
+  const TOKEN_HEADERS = STUB_IDENTITY_PRESET.clientIdentity!.tokenHeaders;
+  const identityRow = (over: Partial<ProviderRow> = {}): ProviderRow =>
+    providerRow({
+      id: 'prov-t1',
+      protocol: 'openai_compatible',
+      baseUrl: 'https://identity.example/',
+      oauthPreset: 'stub-identity',
+      encryptedCredentials: oauthEnvelope(Date.now() + 3_600_000, 'at-1', 'rt-1', 'stub-identity'),
+      ...over,
+    });
+  const stateOf = (started: { authorizeUrl: string }): string =>
+    new URL(started.authorizeUrl).searchParams.get('state')!;
+  const lastInput = (h: Harness): RecordedFetchInput => h.fetchInputs[h.fetchInputs.length - 1]!;
+
+  describe('the new-connection exchange', () => {
+    it.each([
+      [true, TOKEN_HEADERS],
+      [false, undefined],
+    ])('opted in = %s sends tokenHeaders only when opted in', async (optIn, expected) => {
+      const h = await harness();
+      const started = await h.svc.start(principal, 'auth-sess-1', {
+        preset: 'stub-identity',
+        imitateClientIdentity: optIn,
+      });
+      await h.svc.complete(principal, 'auth-sess-1', {
+        sessionId: started.sessionId,
+        pasted: `code-1#${stateOf(started)}`,
+      });
+      expect(h.fetchInputs).toHaveLength(1);
+      expect(lastInput(h).grant).toBe('exchange');
+      expect(lastInput(h).headers).toEqual(expected);
+      expect('headers' in lastInput(h)).toBe(expected !== undefined);
+    });
+
+    it('a session without the field (pre-deploy) sends none', async () => {
+      const h = await harness();
+      const started = await h.svc.start(principal, 'auth-sess-1', { preset: 'stub-identity' });
+      await h.svc.complete(principal, 'auth-sess-1', {
+        sessionId: started.sessionId,
+        pasted: `code-1#${stateOf(started)}`,
+      });
+      expect('headers' in lastInput(h)).toBe(false);
+    });
+
+    it('Claude opted out sends none', async () => {
+      const h = await harness();
+      const started = await h.svc.start(principal, 'auth-sess-1', {
+        preset: 'claude',
+        imitateClientIdentity: false,
+      });
+      await h.svc.complete(principal, 'auth-sess-1', {
+        sessionId: started.sessionId,
+        pasted: `code-1#${stateOf(started)}`,
+      });
+      expect('headers' in lastInput(h)).toBe(false);
+    });
+  });
+
+  describe('the reauthorization exchange reads the row at exchange time', () => {
+    it.each([
+      [true, TOKEN_HEADERS],
+      [false, undefined],
+    ])('row flagged = %s', async (flag, expected) => {
+      const h = await harness();
+      const row = identityRow({ imitateClientIdentity: flag });
+      h.rows.set(row.id, row);
+      const started = await h.svc.startReauthorize(principal, 'auth-sess-1', row.id);
+      await h.svc.complete(principal, 'auth-sess-1', {
+        sessionId: started.sessionId,
+        pasted: `code-2#${stateOf(started)}`,
+      });
+      expect(lastInput(h).headers).toEqual(expected);
+      expect('headers' in lastInput(h)).toBe(expected !== undefined);
+    });
+
+    it('started while flagged, the switch then turned off, then completed: no headers, switch stays off', async () => {
+      const h = await harness();
+      const row = identityRow({ imitateClientIdentity: true });
+      h.rows.set(row.id, row);
+      const started = await h.svc.startReauthorize(principal, 'auth-sess-1', row.id);
+      h.rows.set(row.id, { ...h.rows.get(row.id)!, imitateClientIdentity: false });
+      await h.svc.complete(principal, 'auth-sess-1', {
+        sessionId: started.sessionId,
+        pasted: `code-2#${stateOf(started)}`,
+      });
+      expect('headers' in lastInput(h)).toBe(false);
+      expect(h.rows.get(row.id)!.imitateClientIdentity).toBe(false);
+    });
+
+    it('a row deleted before the exchange sends none and the completion still fails as before', async () => {
+      const h = await harness();
+      const row = identityRow({ imitateClientIdentity: true });
+      h.rows.set(row.id, row);
+      const started = await h.svc.startReauthorize(principal, 'auth-sess-1', row.id);
+      h.rows.delete(row.id);
+      await expect(
+        h.svc.complete(principal, 'auth-sess-1', {
+          sessionId: started.sessionId,
+          pasted: `code-2#${stateOf(started)}`,
+        }),
+      ).rejects.toBeDefined();
+      for (const input of h.fetchInputs) expect('headers' in input).toBe(false);
+    });
+
+    it('a Claude row never sends identity even with the stored switch forced on', async () => {
+      const h = await harness();
+      const row = providerRow({
+        encryptedCredentials: oauthEnvelope(Date.now() + 3_600_000),
+        imitateClientIdentity: true,
+      });
+      h.rows.set(row.id, row);
+      const started = await h.svc.startReauthorize(principal, 'auth-sess-1', row.id);
+      await h.svc.complete(principal, 'auth-sess-1', {
+        sessionId: started.sessionId,
+        pasted: `code-2#${stateOf(started)}`,
+      });
+      expect('headers' in lastInput(h)).toBe(false);
+    });
+  });
+
+  describe('every refresh path goes through the locked row', () => {
+    const HOURS_240 = 240 * 60 * 60 * 1000;
+    type Path = 'lazy' | 'forced' | 'test-repair';
+    const run = async (h: Harness, path: Path, row: ProviderRow): Promise<void> => {
+      h.rows.set(row.id, row);
+      if (path === 'lazy') {
+        await h.svc.resolveCredential(principal, row);
+      } else {
+        await h.svc.forceRefresh(
+          principal,
+          row.id,
+          row.encryptedCredentials!,
+          path === 'forced' ? '401' : 'test',
+        );
+      }
+    };
+    const envelopeFor = (path: Path): string =>
+      oauthEnvelope(
+        path === 'lazy' ? Date.now() + 60_000 : Date.now() + HOURS_240,
+        'at-1',
+        'rt-1',
+        'stub-identity',
+      );
+
+    for (const path of ['lazy', 'forced', 'test-repair'] as const) {
+      it(`${path}: flagged row sends tokenHeaders`, async () => {
+        const h = await harness();
+        await run(
+          h,
+          path,
+          identityRow({ imitateClientIdentity: true, encryptedCredentials: envelopeFor(path) }),
+        );
+        expect(h.fetchInputs).toHaveLength(1);
+        expect(lastInput(h).grant).toBe('refresh');
+        expect(lastInput(h).headers).toEqual(TOKEN_HEADERS);
+      });
+
+      it(`${path}: unflagged row sends none`, async () => {
+        const h = await harness();
+        await run(
+          h,
+          path,
+          identityRow({ imitateClientIdentity: false, encryptedCredentials: envelopeFor(path) }),
+        );
+        expect(h.fetchInputs).toHaveLength(1);
+        expect('headers' in lastInput(h)).toBe(false);
+      });
+    }
+
+    it('lazy: a Claude row with the stored switch forced on still sends none', async () => {
+      const h = await harness();
+      await run(
+        h,
+        'lazy',
+        providerRow({
+          imitateClientIdentity: true,
+          encryptedCredentials: oauthEnvelope(Date.now() + 60_000),
+        }),
+      );
+      expect('headers' in lastInput(h)).toBe(false);
+    });
   });
 });

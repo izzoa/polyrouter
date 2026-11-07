@@ -13,6 +13,7 @@ import type {
   NormalizedStreamEvent,
 } from '../proxy/translate';
 import type { BatchAdapter } from './batch';
+import type { PlanErrorDialect } from './plan-errors';
 
 export type ProviderKind = 'api_key' | 'subscription' | 'custom' | 'local';
 // 'openai_responses' (add-chatgpt-responses) is UPSTREAM/preset-only — no client speaks
@@ -59,6 +60,11 @@ export interface ProviderConfig {
    * preset data threaded by the adapter builder, never user input; chat and streaming are
    * unaffected, and the guarded transport still SSRF-checks it at connect time. */
   readonly modelsUrl?: string;
+  /** A subscription preset's plan-error dialect (classify-plan-quota-errors): when set, a
+   * recognized plan code or message in a non-2xx chat, stream-open or listing response takes
+   * its plan kind before the generic status map. TRUSTED bundled preset data threaded by the
+   * adapter builder, never user input and never derived from the host. */
+  readonly errorDialect?: PlanErrorDialect;
   /** Anthropic requires max_tokens; used when the IR omits maxOutputTokens. */
   readonly defaultMaxOutputTokens?: number;
   /** Abort if no response headers / first stream event arrive in time. */

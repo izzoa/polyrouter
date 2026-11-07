@@ -10,7 +10,9 @@ import {
   rowCostParts,
   isTerminalSkip,
   routeTraceCaption,
+  PAUSE_LABEL,
   SKIP_LABEL,
+  terminalSkipReason,
   SNAPSHOT_CAPTION_BATCH,
   SNAPSHOT_CAPTION_SYNC,
   successRate,
@@ -691,6 +693,66 @@ describe('toRouteTrace / isTerminalSkip — the structural fallback trail (add-f
       { index: 0, providerId: 'p1', model: 'a', kind: 'unavailable', dispatched: false },
     ];
     expect(isTerminalSkip({ ...ROW, status: 'error', attemptFailures: unmarkedSkip })).toBe(false);
+  });
+
+  it('a plan-paused entry reads the pause label from its recorded skipReason, a circuit entry the circuit label', () => {
+    const pausedEntry: AttemptFailureEntry = {
+      index: 0,
+      providerId: 'p1',
+      model: 'kimi-k2',
+      kind: 'quota_exhausted',
+      dispatched: false,
+      terminal: true,
+      skipReason: 'plan_cooldown',
+    };
+    const [paused] = attemptsOf(
+      toRouteTrace({ ...ROW, status: 'error', attemptFailures: [pausedEntry] }),
+    );
+    expect(paused).toMatchObject({
+      emphasis: 'skipped',
+      label: 'skipped — plan paused (provider not contacted)',
+      text: 'kimi-k2 · skipped — plan paused (provider not contacted)',
+    });
+    expect(PAUSE_LABEL).toBe('skipped — plan paused (provider not contacted)');
+    // The label is chosen from the recorded reason, never from the kind: the same kind with no
+    // skip reason is the circuit-open label.
+    const { skipReason: _omit, ...circuitEntry } = pausedEntry;
+    expect(
+      attemptsOf(toRouteTrace({ ...ROW, status: 'error', attemptFailures: [circuitEntry] }))[0]
+        ?.label,
+    ).toBe(SKIP_LABEL);
+    // A DISPATCHED failure is never relabelled, whatever its kind.
+    const dispatched: AttemptFailureEntry = { ...pausedEntry, dispatched: true, status: 429 };
+    expect(
+      attemptsOf(toRouteTrace({ ...ROW, status: 'error', attemptFailures: [dispatched] }))[0]
+        ?.label,
+    ).toBe('quota_exhausted · HTTP 429');
+  });
+
+  it('terminalSkipReason is the terminal skip’s recorded reason, null otherwise', () => {
+    const base = { index: 0, providerId: 'p1', model: 'a', kind: 'quota_exhausted' } as const;
+    const rowOf = (e: AttemptFailureEntry) => ({ ...ROW, attemptFailures: [e] });
+    const withReason: AttemptFailureEntry = {
+      ...base,
+      dispatched: false,
+      terminal: true,
+      skipReason: 'plan_cooldown',
+    };
+    const v = toInspectorView({ ...rowOf(withReason), status: 'error' });
+    expect(v.terminalSkipped).toBe(true);
+    expect(v.terminalSkipReason).toBe('plan_cooldown');
+    expect(terminalSkipReason(rowOf(withReason))).toBe('plan_cooldown');
+    // A circuit skip, an unmarked skip, a dispatched terminal and a null column: no reason.
+    expect(terminalSkipReason(rowOf({ ...base, dispatched: false, terminal: true }))).toBeNull();
+    expect(
+      terminalSkipReason(rowOf({ ...base, dispatched: false, skipReason: 'plan_cooldown' })),
+    ).toBeNull();
+    expect(
+      terminalSkipReason(
+        rowOf({ ...base, dispatched: true, terminal: true, skipReason: 'plan_cooldown' }),
+      ),
+    ).toBeNull();
+    expect(terminalSkipReason(ROW)).toBeNull();
   });
 
   it('rides toInspectorView', () => {

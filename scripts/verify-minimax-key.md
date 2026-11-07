@@ -101,3 +101,30 @@ the failure here.
 | ------ | ---- | ------------------ | ------------- | ------------- | ------ | ------------------- | --------- | ----------- | ----------------------------- |
 | intl   | —    | —                  | —             | —             | —      | —                   | —         | **not run** | Ships disabled until verified |
 | cn     | —    | —                  | —             | —             | —      | —                   | —         | **not run** | Host is [U]; ships disabled   |
+
+## 9. Error-shape evidence (classify-plan-quota-errors)
+
+MiniMax's plan-error codes (`2056`, `2067`, `2057`, `2061`, `2068`, ...) come from
+`https://platform.minimax.io/docs/api-reference/errorcode`, which gives **no HTTP status per
+code and no envelope for the OpenAI-compatible path** **[U]**. The reader in
+`packages/data-plane/src/providers/plan-errors.ts` (`MINIMAX_CODES`) takes the first of
+`error.code` and `base_resp.status_code`. If a plan error occurs **naturally** during any step
+above, record it here. Never exhaust a plan on purpose, never paste a key: this section is for
+what you happened to see, nothing else.
+
+Record, per error:
+
+- **HTTP status.** In particular, whether a plan error arrives as **HTTP 200 with a
+  `base_resp` body**. That case is a follow-up (a 2xx error is not handled by this change).
+- **Envelope keys**, for example `error.code`, `error.message`, `base_resp.status_code`,
+  `base_resp.status_msg`, with the message redacted except its documented template. Which
+  field actually carried the code decides how the reader is narrowed.
+- **`Retry-After`:** present or absent, and if present its form (delta seconds or HTTP-date).
+- The numeric code, and whether it matches the documented table.
+
+| Region | Date | HTTP status | Code and the field that carried it | Envelope keys | `Retry-After` | Notes             |
+| ------ | ---- | ----------- | ---------------------------------- | ------------- | ------------- | ----------------- |
+| intl   | —    | —           | —                                  | —             | —             | none recorded yet |
+| cn     | —    | —           | —                                  | —             | —             | none recorded yet |
+
+Never exhaust a plan on purpose, never paste a key. Share only what the table asks for.

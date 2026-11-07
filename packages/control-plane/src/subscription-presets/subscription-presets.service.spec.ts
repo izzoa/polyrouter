@@ -284,6 +284,25 @@ describe('SubscriptionPresetsService.listAvailable', () => {
     );
   });
 
+  it('never exposes the plan-error dialect', () => {
+    const h = harness(
+      registryOf(
+        withRegions(MINIMAX_M_PLAN_PRESET, { intl: ON }),
+        withRegions(KIMI_CODE_PRESET, { intl: ON, cn: ON }),
+        withRegions(ZAI_CODING_PLAN_PRESET, { intl: ON }),
+      ),
+    );
+    // The fixture really declares dialects, so the absence below is not vacuous.
+    expect(KIMI_CODE_PRESET.regions[0]!.errorDialect).toBe('kimi');
+    const json = JSON.stringify(h.svc.listAvailable());
+    expect(json).not.toMatch(/errorDialect|dialect|zai"|minimax"/i);
+    for (const preset of h.svc.listAvailable()) {
+      for (const region of preset.regions) {
+        expect(Object.keys(region).sort()).toEqual(['host', 'id', 'imitationRequired', 'label']);
+      }
+    }
+  });
+
   it('flags acknowledgement for a high preset and for an imitation-required region', () => {
     const h = harness(
       registryOf(

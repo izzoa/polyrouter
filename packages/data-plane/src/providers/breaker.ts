@@ -17,6 +17,18 @@ import {
 } from './errors';
 import type { ProviderErrorKind } from './errors';
 import { PROBE_RECORD_TTL_HEADROOM_MS } from './probe-patience';
+import {
+  DEFAULT_PLAN_COOLDOWN_CONFIG,
+  InMemoryPlanCooldownStore,
+  isPlanCooldownKind,
+  planDefaultMs,
+} from './plan-cooldown';
+import type {
+  PlanCooldown,
+  PlanCooldownConfig,
+  PlanCooldownInput,
+  PlanCooldownStore,
+} from './plan-cooldown';
 
 export type BreakerState = 'closed' | 'open' | 'half_open';
 export type BreakerOutcome = 'success' | 'trip' | 'neutral';
@@ -491,6 +503,14 @@ export interface CircuitBreakerOptions {
   readonly fallback?: BreakerStore;
   readonly now?: () => number;
   readonly onError?: (err: unknown) => void;
+  /** The plan cooldown store this breaker HOSTS (classify-plan-quota-errors, design D7): the
+   * walkers already hold the breaker, so a pause rides it with no new constructor argument.
+   * Defaults to an in-memory store. The breaker keeps NO cooldown fallback of its own: a
+   * `FailoverPlanCooldownStore` owns degradation. */
+  readonly planCooldowns?: PlanCooldownStore;
+  /** The default pause per kind (when no reset is stated). The clamps live in the store's own
+   * config; this only chooses a default, so tests can shrink the durations. */
+  readonly planCooldownConfig?: PlanCooldownConfig;
 }
 
 export class CircuitBreaker {
@@ -498,6 +518,8 @@ export class CircuitBreaker {
   private readonly fallback: BreakerStore;
   private readonly now: () => number;
   private readonly onError: (err: unknown) => void;
+  private readonly planCooldowns: PlanCooldownStore;
+  private readonly planCfg: PlanCooldownConfig;
 
   constructor(
     private readonly primary: BreakerStore,
@@ -507,6 +529,52 @@ export class CircuitBreaker {
     this.fallback = opts.fallback ?? new InMemoryBreakerStore();
     this.now = opts.now ?? (() => Date.now());
     this.onError = opts.onError ?? (() => undefined);
+    this.planCooldowns = opts.planCooldowns ?? new InMemoryPlanCooldownStore(this.now);
+    this.planCfg = opts.planCooldownConfig ?? DEFAULT_PLAN_COOLDOWN_CONFIG;
+  }
+
+  /** The active plan pause for a provider, or null. NEVER throws and never touches a breaker
+   * record, generation or lease: a store fault reads as "no pause" and is metered. */
+  async planCooldownFor(providerId: string): Promise<PlanCooldown | null> {
+    try {
+      return await this.planCooldowns.check(providerId);
+    } catch (err) {
+      this.reportPlanStoreError(err);
+      return null;
+    }
+  }
+
+  /**
+   * Record a pause for a plan failure that an upstream actually ANSWERED. NEVER throws and
+   * never touches a breaker record. A no-op unless the kind is one of the three pausing kinds
+   * AND `err.status` is set: a skip's error never carries a status, so this is a second,
+   * structural barrier against a skip extending its own pause (design D8).
+   */
+  async recordPlanCooldown(providerId: string, err: ProviderError): Promise<void> {
+    if (!isPlanCooldownKind(err.kind) || err.status === undefined) return;
+    try {
+      await this.planCooldowns.record(providerId, this.planInputFor(err.kind, err));
+    } catch (e) {
+      this.reportPlanStoreError(e);
+    }
+  }
+
+  private planInputFor(
+    kind: Extract<ProviderErrorKind, 'quota_exhausted' | 'risk_control' | 'plan_inactive'>,
+    err: ProviderError,
+  ): PlanCooldownInput {
+    const reset = err.planReset;
+    if (reset?.resetAt !== undefined) return { kind, abs: reset.resetAt };
+    if (reset?.retryAfterMs !== undefined) return { kind, rel: reset.retryAfterMs };
+    return { kind, default: planDefaultMs(kind, reset?.window, this.planCfg) };
+  }
+
+  private reportPlanStoreError(err: unknown): void {
+    try {
+      this.onError(err);
+    } catch {
+      /* the meter must never break the call path */
+    }
   }
 
   /** Per-call config for a (possibly widened) lease: the lease and the record
@@ -652,6 +720,14 @@ export class CircuitBreaker {
 export function outcomeForKind(kind: ProviderErrorKind): BreakerOutcome {
   if (
     kind === 'credential' ||
+    // classify-plan-quota-errors: an account state (an exhausted window, a risk-control
+    // throttle, an inactive plan) is not upstream health. A trip would re-probe the window
+    // every cooldown (the defect this fixes); a success would close a half-open probe for a
+    // provider that refuses every request. The plan cooldown, not the breaker, stops traffic.
+    // `plan_entitlement` is per-model, like `permission`, so it falls through to `success`.
+    kind === 'quota_exhausted' ||
+    kind === 'risk_control' ||
+    kind === 'plan_inactive' ||
     kind === 'upstream_rejected' ||
     // fix-bad-request-dead-end: an over-cap body proves the provider sent BYTES, not
     // that it is working. A health success here would close a half-open probe for a

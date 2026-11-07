@@ -23,6 +23,11 @@ export interface AttemptFailureEntry {
   readonly status?: number;
   /** False ONLY for a circuit-open skip — the member was never sent upstream. */
   readonly dispatched: boolean;
+  /** Why a never-dispatched member was skipped, when the reason is not a circuit
+   * (classify-plan-quota-errors): `plan_cooldown` = the provider is paused after a
+   * recognized plan-quota failure. A fixed enum, never free text. Absent on circuit
+   * skips and on every dispatched entry, so every stored row reads unchanged. */
+  readonly skipReason?: 'plan_cooldown';
   /** The provider's retained classification values for THIS attempt
    * (fix-bad-request-dead-end), admitted through the marker gates. An allowlisted
    * identifier is not free text: the recorded decision that superseded members

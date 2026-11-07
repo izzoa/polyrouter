@@ -306,6 +306,10 @@ export interface InspectorView {
   /** True when the recorded terminal-marked attempt was a never-dispatched
    * breaker skip — read from the data, never inferred from kinds. */
   terminalSkipped: boolean;
+  /** Why that terminal skip happened, read from the recorded `skipReason`: `plan_cooldown` when
+   * the member's provider plan was paused (classify-plan-quota-errors), null for a circuit-open
+   * skip (no reason recorded) and for any row without a terminal skip. */
+  terminalSkipReason: 'plan_cooldown' | null;
 }
 
 /** One token row of the price receipt (design D8 item 2). Its two groups each render as one
@@ -420,6 +424,10 @@ export type RouteTraceNode =
 
 /** The full contract string for a never-dispatched (circuit-open) member. */
 export const SKIP_LABEL = 'skipped — circuit open (provider not contacted)';
+/** The full contract string for a member skipped because its provider's plan was paused
+ * (classify-plan-quota-errors). Chosen from the recorded `skipReason`, never inferred from the
+ * kind. */
+export const PAUSE_LABEL = 'skipped — plan paused (provider not contacted)';
 /** The superseded cascade cheap call's label. */
 export const SUPERSEDED_LABEL = 'cheap attempt superseded';
 /** The trace caption for a recovered request that predates per-attempt capture. */
@@ -436,7 +444,9 @@ const joinDot = (parts: readonly (string | null)[]): string =>
 function attemptNode(a: AttemptFailureEntry): RouteTraceAttemptNode {
   const skipped = a.dispatched === false;
   const label = skipped
-    ? SKIP_LABEL
+    ? a.skipReason === 'plan_cooldown'
+      ? PAUSE_LABEL
+      : SKIP_LABEL
     : `${a.kind}${a.status !== undefined && a.status !== null ? ` · HTTP ${String(a.status)}` : ''}`;
   const markers = normalizeMarkers(a.markers ?? null);
   const leg = a.leg === undefined ? null : LEG_TAG[a.leg];
@@ -599,6 +609,15 @@ export function routeTraceCaption(
  * `bad_request` stop must not present as terminal). */
 export function isTerminalSkip(r: RequestRow): boolean {
   return (r.attemptFailures ?? []).some((a) => a.terminal === true && a.dispatched === false);
+}
+
+/** Why the recorded terminal skip happened: the terminal-marked, never-dispatched entry's own
+ * `skipReason`. Null when there is no terminal skip or it carries no reason (circuit open). */
+export function terminalSkipReason(r: RequestRow): 'plan_cooldown' | null {
+  const terminal = (r.attemptFailures ?? []).find(
+    (a) => a.terminal === true && a.dispatched === false,
+  );
+  return terminal?.skipReason === 'plan_cooldown' ? 'plan_cooldown' : null;
 }
 
 /** Trim; empty string → null (a junk empty value must not summon the card). */
@@ -780,6 +799,7 @@ export function toInspectorView(r: RequestRow): InspectorView {
     trace: buildRouteTrace(r, attemptParts),
     traceCaption: routeTraceCaption(r),
     terminalSkipped: isTerminalSkip(r),
+    terminalSkipReason: terminalSkipReason(r),
   };
 }
 

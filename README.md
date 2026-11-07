@@ -231,8 +231,10 @@ violates those providers' ToS. polyrouter supports the provider kind but flags t
 The coding plans (OpenCode Go, MiniMax M Plan, Kimi Code, Z.ai GLM Coding Plan) are
 connected with an API key, but that key carries its plan's own terms: Z.ai forbids proxy and
 aggregate use, and Kimi forbids automation and altering its client identity. polyrouter
-states each plan's risk before you connect. Pay-per-token API keys and local models don't
-carry subscription terms risk.
+states each plan's risk before you connect, and when a MiniMax, Kimi Code or Z.ai plan runs
+out of allowance it pauses that provider until the reset time, skips it in routing and falls
+back, without tripping the circuit breaker; OpenCode Go keeps the generic error mapping (see [Plan limits and pauses](./docs/self-hosting.md#plan-limits-and-pauses)).
+Pay-per-token API keys and local models don't carry subscription terms risk.
 
 ## License
 

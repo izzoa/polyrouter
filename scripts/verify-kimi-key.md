@@ -117,3 +117,34 @@ Moonshot allow-list answer (date, reply, `X-Msh-Platform` required?): **not reco
 | ------ | ---- | ------------- | ------ | ------------------- | --------- | --------- | ------------------ | ----------- | ----------------------------- |
 | intl   | —    | —             | —      | —                   | —         | —         | —                  | **not run** | Ships disabled until verified |
 | cn     | —    | —             | —      | —                   | —         | —         | —                  | **not run** | Ships disabled until verified |
+
+## 9. Error-shape evidence (classify-plan-quota-errors)
+
+Kimi's plan errors are matched on the **prefix of the structured message**, gated by status,
+from `https://www.kimi.com/code/docs/en/kimi-code/error-reference.html`
+(`packages/data-plane/src/providers/plan-errors.ts`, `KIMI_MESSAGES`). The apostrophe in those
+messages is a typographic or ASCII apostrophe depending on the day; polyrouter folds both. If a
+plan error occurs **naturally** during any step above, record it here. Never exhaust a plan on
+purpose, never paste a key: this section is for what you happened to see, nothing else.
+
+Record, per error:
+
+- **HTTP status.**
+- **Envelope keys**, for example `error.type` and `error.message`, with the message redacted
+  except its documented template (the "You've reached your ... usage limit" wording). Note the
+  **apostrophe codepoint** (U+0027 or U+2019) if you can see it.
+- **`Retry-After`:** present or absent, and if present its form.
+- **User-Agent gate.** If a **429 "The engine is currently overloaded"** or a **403 "only
+  available for Coding Agents"** arrived while polyrouter's **honest** `User-Agent` was sent,
+  record whether it **went away with a different allow-listed client** (the imitation pass in
+  step 7). If it did, the 429 is a UA refusal that polyrouter currently labels "unavailable"
+  (design Risks); that is a follow-up, not reclassified here.
+- **Membership 403.** Any "We're unable to verify your membership benefits" 403, and whether it
+  **cleared on retry**. It stays `permission` in this change.
+
+| Region | Date | HTTP status | Envelope keys | `Retry-After` | Apostrophe codepoint | UA-gate 429/403 (honest UA) | Cleared with another client | Membership 403 cleared on retry | Notes             |
+| ------ | ---- | ----------- | ------------- | ------------- | -------------------- | --------------------------- | --------------------------- | ------------------------------- | ----------------- |
+| intl   | —    | —           | —             | —             | —                    | —                           | —                           | —                               | none recorded yet |
+| cn     | —    | —           | —             | —             | —                    | —                           | —                           | —                               | none recorded yet |
+
+Never exhaust a plan on purpose, never paste a key. Share only what the table asks for.

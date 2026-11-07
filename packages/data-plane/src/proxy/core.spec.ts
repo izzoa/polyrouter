@@ -26,6 +26,7 @@ import {
   CircuitBreaker,
   DEFAULT_BREAKER_CONFIG,
   InMemoryBreakerStore,
+  InMemoryPlanCooldownStore,
   PROVIDER_ERROR_KINDS,
   ProviderCircuitOpenError,
   ProviderError,
@@ -35,6 +36,9 @@ import {
   createOpenaiProviderAdapter,
   type HttpClient,
   type HttpResponse,
+  type PlanCooldown,
+  type PlanCooldownInput,
+  type PlanCooldownStore,
   type ProviderAdapter,
   type ProviderConfig,
 } from '../providers';
@@ -1839,3 +1843,264 @@ describe('locally synthesized failures stay uncertain; provider answers are reje
     );
   });
 });
+
+// --- plan cooldown skip (classify-plan-quota-errors, design D8) ---
+
+/** A cooldown store that counts every call, over the real in-memory contract. */
+class SpyPlanStore implements PlanCooldownStore {
+  readonly inner: InMemoryPlanCooldownStore;
+  readonly calls = { check: 0, checkMany: 0, record: 0, lift: 0 };
+  readonly recorded: PlanCooldownInput[] = [];
+  constructor(now: () => number = () => Date.now()) {
+    this.inner = new InMemoryPlanCooldownStore(now);
+  }
+  check(id: string): Promise<PlanCooldown | null> {
+    this.calls.check += 1;
+    return this.inner.check(id);
+  }
+  checkMany(ids: readonly string[]): Promise<ReadonlyMap<string, PlanCooldown | null>> {
+    this.calls.checkMany += 1;
+    return this.inner.checkMany(ids);
+  }
+  record(id: string, input: PlanCooldownInput): Promise<PlanCooldown> {
+    this.calls.record += 1;
+    this.recorded.push(input);
+    return this.inner.record(id, input);
+  }
+  lift(id: string): Promise<void> {
+    this.calls.lift += 1;
+    return this.inner.lift(id);
+  }
+}
+
+const quota429 = (): ProviderError =>
+  new ProviderError('quota_exhausted', 'Usage limit reached', {
+    status: 429,
+    planReset: { window: 'short' },
+  });
+
+describe.each(['buffered', 'stream'] as const)(
+  'the plan cooldown skip on the %s chain walker',
+  (mode) => {
+    interface Probe {
+      readonly attempt: ChainAttempt;
+      readonly built: () => number;
+      readonly served: () => number;
+    }
+    /** A member that serves, or fails with `fault`, counting builds and calls. */
+    const member = (
+      providerId: string,
+      fault: ProviderError | null,
+      flag: boolean,
+      model = providerId,
+    ): Probe => {
+      let built = 0;
+      let served = 0;
+      const ok: NormalizedResponse = {
+        id: 'r',
+        model,
+        content: [{ type: 'text', text: 'ok' }],
+        stopReason: 'stop',
+      };
+      const attempt: ChainAttempt = {
+        providerId,
+        externalModelId: model,
+        ...(flag ? { planCooldown: true as const } : {}),
+        buildAdapter: () => {
+          built += 1;
+          return Promise.resolve({
+            protocol: 'openai_compatible',
+            chat: () => {
+              if (fault) return Promise.reject(fault);
+              served += 1;
+              return Promise.resolve(ok);
+            },
+            chatStream: async function* () {
+              if (fault) throw fault;
+              served += 1;
+              yield START;
+              yield TEXT;
+              yield STOP;
+              yield END;
+            },
+            listModels: () => Promise.resolve([]),
+            testConnection: () => Promise.resolve({ ok: true, models: 0 }),
+          } as unknown as ProviderAdapter);
+        },
+      };
+      return { attempt, built: () => built, served: () => served };
+    };
+
+    interface Walk {
+      readonly ok: boolean;
+      readonly servedIndex?: number;
+      readonly error?: ProviderError;
+      readonly failures: readonly AttemptFailure[];
+      readonly terminalBilling?: AttemptBilling | undefined;
+    }
+    async function walk(breaker: CircuitBreaker, attempts: readonly ChainAttempt[]): Promise<Walk> {
+      const client = getAdapter('openai');
+      const req = { model: 'x', messages: [], params: {} };
+      if (mode === 'buffered') {
+        const r = await runBufferedChain(
+          breaker,
+          attempts,
+          client,
+          req,
+          { created: 1 },
+          new AbortController().signal,
+        );
+        return r.ok
+          ? { ok: true, servedIndex: r.servedIndex, failures: r.failures }
+          : { ok: false, error: r.error, failures: r.failures, terminalBilling: r.terminalBilling };
+      }
+      const r = await openStreamChain(breaker, attempts, client, req, OPTS);
+      if (r.kind === 'stream') {
+        await collect(r.frames);
+        return { ok: true, servedIndex: r.servedIndex, failures: r.failures };
+      }
+      return {
+        ok: false,
+        error: r.error,
+        failures: r.failures,
+        terminalBilling: r.terminalBilling,
+      };
+    }
+
+    const breakerOn = (store: PlanCooldownStore, now?: () => number): CircuitBreaker =>
+      new CircuitBreaker(new InMemoryBreakerStore(), {
+        planCooldowns: store,
+        ...(now ? { now } : {}),
+      });
+
+    it('records an answered quota failure and serves the next member', async () => {
+      const store = new SpyPlanStore();
+      const z = member('z', quota429(), true);
+      const pay = member('pay', null, false);
+      const w = await walk(breakerOn(store), [z.attempt, pay.attempt]);
+      expect(w.ok).toBe(true);
+      expect(w.servedIndex).toBe(1);
+      expect(w.failures[0]!.error.kind).toBe('quota_exhausted');
+      expect(w.failures[0]!.skip).toBeUndefined();
+      expect(w.failures[0]!.dispatched).toBe(true);
+      expect(store.calls.record).toBe(1);
+      expect((await store.inner.check('z'))?.kind).toBe('quota_exhausted');
+    });
+
+    it('skips a paused member with no build and no breaker decide', async () => {
+      const store = new SpyPlanStore();
+      await store.inner.record('z', { kind: 'quota_exhausted', default: 15 * 60_000 });
+      const breaker = breakerOn(store);
+      const decide = jest.spyOn(breaker, 'before');
+      const z = member('z', quota429(), true);
+      const pay = member('pay', null, false);
+      const w = await walk(breaker, [z.attempt, pay.attempt]);
+      expect(w.ok).toBe(true);
+      expect(w.servedIndex).toBe(1);
+      expect(z.built()).toBe(0);
+      expect(decide.mock.calls.map((c) => c[0])).toEqual(['pay']);
+      expect(w.failures).toHaveLength(1);
+      expect(w.failures[0]).toMatchObject({
+        index: 0,
+        dispatched: false,
+        skip: 'plan_cooldown',
+        billing: 'not_sent',
+      });
+      expect(w.failures[0]!.error.kind).toBe('quota_exhausted');
+      expect(w.failures[0]!.error.status).toBeUndefined();
+    });
+
+    it('skips the second member of one provider right after the first fails', async () => {
+      const store = new SpyPlanStore();
+      const a = member('z', quota429(), true, 'glm-a');
+      const b = member('z', null, true, 'glm-b');
+      const pay = member('pay', null, false);
+      const w = await walk(breakerOn(store), [a.attempt, b.attempt, pay.attempt]);
+      expect(w.servedIndex).toBe(2);
+      expect(b.built()).toBe(0);
+      expect(w.failures.map((f) => f.skip)).toEqual([undefined, 'plan_cooldown']);
+      expect(store.calls.record).toBe(1);
+    });
+
+    it('an all-paused chain returns the cooldown kind not_sent and never waits', async () => {
+      jest.useFakeTimers();
+      try {
+        const store = new SpyPlanStore();
+        await store.inner.record('z', { kind: 'plan_inactive', default: 60 * 60_000 });
+        await store.inner.record('y', { kind: 'risk_control', default: 30 * 60_000 });
+        const z = member('z', null, true);
+        const y = member('y', null, true);
+        const w = await walk(breakerOn(store), [z.attempt, y.attempt]);
+        expect(w.ok).toBe(false);
+        expect(w.error!.kind).toBe('risk_control'); // the last skip's kind
+        expect(w.error!.status).toBeUndefined();
+        expect(w.failures.map((f) => f.billing)).toEqual(['not_sent', 'not_sent']);
+        expect(walkUnbilled(w.failures.map((f) => f.billing ?? 'uncertain'))).toBe(true);
+        expect(jest.getTimerCount()).toBe(0);
+        expect(z.built() + y.built()).toBe(0);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('a skip never writes: traffic on a paused provider never extends the end', async () => {
+      let now = 1_000_000;
+      const store = new SpyPlanStore(() => now);
+      const first = await store.inner.record('z', {
+        kind: 'quota_exhausted',
+        default: 15 * 60_000,
+      });
+      expect(store.calls.record).toBe(0); // the seed went through the inner store
+      const breaker = breakerOn(store, () => now);
+      const pay = member('pay', null, false);
+      // Ten requests, some after `until - default` (the window where a re-record would extend).
+      for (let i = 0; i < 10; i += 1) {
+        now = 1_000_000 + Math.floor((i / 9) * (first.until - 1_000_000 - 1_000));
+        const z = member('z', quota429(), true);
+        const w = await walk(breaker, [z.attempt, pay.attempt]);
+        expect(w.failures[0]!.skip).toBe('plan_cooldown');
+        expect(z.built()).toBe(0);
+      }
+      expect(store.calls.record).toBe(0);
+      expect(store.recorded).toHaveLength(0);
+      expect((await store.inner.check('z'))?.until).toBe(first.until);
+    });
+
+    it('an attempt without the flag makes zero cooldown-store calls', async () => {
+      const store = new SpyPlanStore();
+      await store.inner.record('z', { kind: 'quota_exhausted', default: 15 * 60_000 });
+      const before = { ...store.calls };
+      const z = member('z', quota429(), false);
+      const pay = member('pay', null, false);
+      const w = await walk(breakerOn(store), [z.attempt, pay.attempt]);
+      // The unflagged member is dispatched despite the stored pause, and its failure records nothing.
+      expect(z.built()).toBe(1);
+      expect(w.failures[0]!.dispatched).toBe(true);
+      expect(store.calls).toEqual(before);
+    });
+
+    it('a status-less plan-kind failure from a dispatched member records nothing', async () => {
+      const store = new SpyPlanStore();
+      const z = member('z', new ProviderError('quota_exhausted', 'no status'), true);
+      const pay = member('pay', null, false);
+      const w = await walk(breakerOn(store), [z.attempt, pay.attempt]);
+      expect(w.servedIndex).toBe(1);
+      expect(store.calls.record).toBe(0);
+    });
+
+    it('a plan failure leaves the breaker closed however often it settles', async () => {
+      const store = new SpyPlanStore();
+      const breaker = new CircuitBreaker(new InMemoryBreakerStore(), {
+        planCooldowns: store,
+        config: { ...DEFAULT_BREAKER_CONFIG, threshold: 1 },
+      });
+      const pay = member('pay', null, false);
+      for (let i = 0; i < 4; i += 1) {
+        await store.inner.lift('z');
+        const z = member('z', quota429(), true);
+        await walk(breaker, [z.attempt, pay.attempt]);
+        expect(z.built()).toBe(1); // never skipped by the breaker
+      }
+    });
+  },
+);

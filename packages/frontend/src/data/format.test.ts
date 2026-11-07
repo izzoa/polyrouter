@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fmtUsd, fmtWhen } from './format';
+import { fmtUntil, fmtUsd, fmtWhen } from './format';
 
 describe('fmtUsd — per-1M price display', () => {
   it('kills float64 noise from the ×1e6 listed-price derivation', () => {
@@ -44,5 +44,32 @@ describe('fmtWhen — relative time (hoisted from the agents table)', () => {
   it('missing or unparseable reads as "never"', () => {
     expect(fmtWhen(null, NOW)).toBe('never');
     expect(fmtWhen('not a date', NOW)).toBe('never');
+  });
+});
+
+describe('fmtUntil — a future end as an absolute clock time (classify-plan-quota-errors)', () => {
+  const NOW = Date.parse('2026-11-06T12:00:00Z');
+
+  it('an end on the same calendar day is the clock time and the zone', () => {
+    expect(fmtUntil('2026-11-06T18:00:00Z', NOW, 'UTC')).toBe('18:00 UTC');
+  });
+
+  it('an end on another day adds the month and day', () => {
+    expect(fmtUntil('2026-11-09T18:00:00Z', NOW, 'UTC')).toBe('Nov 9, 18:00 UTC');
+  });
+
+  it('midnight reads 00:00, never 24:00', () => {
+    expect(fmtUntil('2026-11-07T00:00:00Z', NOW, 'UTC')).toBe('Nov 7, 00:00 UTC');
+  });
+
+  it('"same day" is the viewer zone calendar day, not UTC', () => {
+    // 23:30 UTC on the 6th is already the 7th in Tokyo (UTC+9): not the same day as 12:00 UTC.
+    expect(fmtUntil('2026-11-06T23:30:00Z', NOW, 'Asia/Tokyo')).toMatch(/^Nov 7, 08:30 /);
+  });
+
+  it('is null for a past instant, the present instant and an invalid value', () => {
+    expect(fmtUntil('2026-11-06T11:59:59Z', NOW, 'UTC')).toBeNull();
+    expect(fmtUntil('2026-11-06T12:00:00Z', NOW, 'UTC')).toBeNull();
+    expect(fmtUntil('not a date', NOW, 'UTC')).toBeNull();
   });
 });

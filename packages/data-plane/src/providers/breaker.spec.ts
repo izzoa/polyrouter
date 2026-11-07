@@ -178,6 +178,67 @@ describe('withBreaker — health follows whether the provider responded', () => 
     expect((await breaker.before(PID)).decision).toBe('skip');
   });
 
+  // classify-plan-quota-errors: an account state (an exhausted window, a risk-control
+  // throttle, an inactive plan) is not upstream health. It must settle NEUTRAL: tripping
+  // would re-probe the exhausted window every cooldown, and a success would erase real
+  // failures or close a half-open probe for a provider that refuses every request.
+  // Specs "A recognized plan-quota 429 falls back without counting toward the breaker" and
+  // "A risk-control throttle and an inactive plan settle neutral".
+  describe.each(['quota_exhausted', 'risk_control', 'plan_inactive'] as const)(
+    'plan kind %s is breaker-neutral',
+    (kind) => {
+      const planFail = (breaker: CircuitBreaker): Promise<void> =>
+        withBreaker(breaker, PID, () => Promise.reject(new ProviderError(kind, 'plan'))).then(
+          () => undefined,
+          () => undefined,
+        );
+
+      it('never opens the breaker, however many settle, on a clean record', async () => {
+        const breaker = clockedBreaker(new InMemoryBreakerStore(), { t: 0 });
+        for (let i = 0; i < cfg.threshold * 3; i++) await planFail(breaker);
+        expect((await breaker.before(PID)).decision).toBe('allow');
+      });
+
+      it('keeps the accumulated failure count: neither increments nor resets it', async () => {
+        const breaker = clockedBreaker(new InMemoryBreakerStore(), { t: 0 });
+        await tripN(breaker, cfg.threshold - 1); // one short of opening
+        for (let i = 0; i < cfg.threshold * 2; i++) await planFail(breaker); // > threshold
+        expect((await breaker.before(PID)).decision).toBe('allow'); // not opened by them
+        // ...nor was the count erased: the very next genuine failure still opens it
+        await tripN(breaker, 1);
+        expect((await breaker.before(PID)).decision).toBe('skip');
+      });
+
+      it('leaves a half-open probe record unchanged: neither closed nor re-opened', async () => {
+        const clock = { t: 0 };
+        const breaker = clockedBreaker(new InMemoryBreakerStore(), clock);
+        await tripN(breaker, cfg.threshold); // open
+        clock.t = 1000; // cooldown elapsed: the next call is the probe
+        await planFail(breaker);
+        // not closed: traffic is still held back by the probe lease
+        expect((await breaker.before(PID)).decision).toBe('skip');
+        // not re-opened: a re-open would restart the cooldown at t=1000 and still skip at
+        // 1000+probeLeaseMs; the untouched half-open record admits a fresh probe instead.
+        clock.t = 1000 + cfg.probeLeaseMs;
+        const next = await breaker.before(PID);
+        expect(next.decision).toBe('allow');
+        expect(next.token.isProbe).toBe(true);
+      });
+    },
+  );
+
+  it('plan_entitlement settles a health success: it closes a half-open probe', async () => {
+    const clock = { t: 0 };
+    const breaker = clockedBreaker(new InMemoryBreakerStore(), clock);
+    await tripN(breaker, cfg.threshold);
+    clock.t = 1000;
+    await withBreaker(breaker, PID, () =>
+      Promise.reject(new ProviderError('plan_entitlement', 'model not in plan')),
+    ).catch(() => undefined);
+    expect((await breaker.before(PID)).decision).toBe('allow');
+    expect((await breaker.before(PID)).token.isProbe).toBe(false);
+  });
+
   it.each(['permission', 'policy_block', 'content_policy'] as const)(
     'a %s during a half-open probe closes the breaker (the provider answered)',
     async (kind) => {
@@ -186,9 +247,9 @@ describe('withBreaker — health follows whether the provider responded', () => 
       const breaker = clockedBreaker(store, clock);
       await tripN(breaker, cfg.threshold);
       clock.t = 1000;
-      await withBreaker(breaker, PID, () => Promise.reject(new ProviderError(kind, 'refused'))).catch(
-        () => undefined,
-      );
+      await withBreaker(breaker, PID, () =>
+        Promise.reject(new ProviderError(kind, 'refused')),
+      ).catch(() => undefined);
       expect((await breaker.before(PID)).decision).toBe('allow');
       expect((await breaker.before(PID)).token.isProbe).toBe(false);
     },

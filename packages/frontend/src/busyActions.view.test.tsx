@@ -502,6 +502,21 @@ const SCENARIOS: Record<string, Scenario> = {
     find: (h) => byLabel(h.host, 'Sync models'),
     settled: 'rest',
   },
+  'pages/Providers.tsx app.resumeProviderPlan': {
+    page: 'providers',
+    // A paused provider shows its pause; the lift clears it, so Resume now is gone once the
+    // request settles and the list reloads.
+    opts: {
+      providers: [
+        {
+          ...PROVIDER,
+          planCooldown: { kind: 'quota_exhausted', until: FUTURE, untilSource: 'default' },
+        },
+      ],
+    },
+    find: (h) => byLabel(h.host, 'Resume now'),
+    settled: 'gone',
+  },
   'pages/Requests.tsx app.loadRequests#4': {
     page: 'requests',
     prepare: async (h) => {

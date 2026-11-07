@@ -56,6 +56,7 @@ import {
   type BuiltAdapterConfig,
 } from '../providers/adapter-builder';
 import { attemptHealthHook, type AttemptHealthState } from './attempt-health';
+import { keyPresetForRow } from '../subscription-presets/key-presets';
 import {
   loadPriceContext,
   toEffectiveCapabilities,
@@ -1725,6 +1726,13 @@ export class ProxyService {
         firstEventTimeoutMs: bounds.streamEventTimeoutMs,
         probeFirstEventTimeoutMs: patience.firstEventTimeoutMs,
         probeLeaseMs: patience.leaseMs,
+        // classify-plan-quota-errors: the plan-cooldown pause applies only to a row whose built
+        // config carries a plan-error dialect — read from the row already loaded, no I/O, so a
+        // provider without a dialect pays nothing (invariant 9). A plain import of the bundled
+        // registry: no ProxyService constructor argument (the inference-proxy harness hand-wires).
+        ...(keyPresetForRow(provider)?.region.errorDialect !== undefined
+          ? { planCooldown: true as const }
+          : {}),
       });
     }
     return { attempts, meta };
@@ -2113,12 +2121,21 @@ function classificationTrail(p: Prepared): string {
   return parts.join('; ');
 }
 
+/** The trail token of one failure: a plan-cooldown skip is `paused`
+ * (classify-plan-quota-errors), a circuit skip `skip`, a dispatched failure its kind. */
+function trailToken(f: AttemptFailure): string {
+  if (f.skip === 'plan_cooldown') return 'paused';
+  return f.dispatched === false ? 'skip' : f.error.kind;
+}
+
 /** The routing reason plus a sanitized fallback trail (kind@model — no raw
  * messages) so #11 records why earlier chain members failed (§7.4). A member
  * skipped by an open circuit breaker — never dispatched upstream — records
  * `skip@model` (add-fallback-attempt-detail): a pseudo-token deliberately
  * outside the provider-error taxonomy, so a never-contacted member cannot
- * impersonate an upstream failure. Absent `dispatched` reads as dispatched. */
+ * impersonate an upstream failure. A member skipped by a plan cooldown records
+ * `paused@model` (classify-plan-quota-errors), a second such pseudo-token. Absent
+ * `dispatched` reads as dispatched. */
 export function reasonWithTrail(
   reason: string,
   failures: readonly AttemptFailure[],
@@ -2126,10 +2143,7 @@ export function reasonWithTrail(
 ): string {
   if (failures.length === 0) return reason;
   const trail = failures
-    .map(
-      (f) =>
-        `${f.dispatched === false ? 'skip' : f.error.kind}@${meta[f.index]?.model.externalModelId ?? '?'}`,
-    )
+    .map((f) => `${trailToken(f)}@${meta[f.index]?.model.externalModelId ?? '?'}`)
     .join(', ');
   return `${reason}; fell back after: ${trail}`;
 }
@@ -2173,6 +2187,7 @@ export function attemptTrailEntries(
         // request's trail explains every refusal, not just the terminal one.
         ...(f.error.markers !== undefined ? { markers: f.error.markers } : {}),
         dispatched: f.dispatched !== false,
+        ...(f.skip === 'plan_cooldown' ? { skipReason: f.skip } : {}),
         ...(leg !== undefined ? { leg } : {}),
         ...(last && terminalError !== null && f.error === terminalError ? { terminal: true } : {}),
       });

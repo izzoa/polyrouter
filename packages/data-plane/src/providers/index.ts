@@ -34,7 +34,49 @@ export {
   VALIDATION_WITHHELD,
   POLICY_WITHHELD,
 } from './errors';
-export type { ProviderErrorKind, SanitizedMessage, CaptureInput, CaptureContext } from './errors';
+export type {
+  ProviderErrorKind,
+  SanitizedMessage,
+  CaptureInput,
+  CaptureContext,
+  ClassifyMeta,
+} from './errors';
+export {
+  KIMI_MESSAGES,
+  MINIMAX_CODES,
+  ZAI_CODES,
+  ZAI_FLUSH_TIME_ZONE,
+  classifyPlanError,
+  parseRetryAfter,
+  parseZaiResetTime,
+} from './plan-errors';
+export type {
+  KimiPlanErrorEntry,
+  PlanClassification,
+  PlanErrorDialect,
+  PlanErrorEntry,
+  PlanHeaders,
+  PlanReset,
+  PlanWindow,
+} from './plan-errors';
+export {
+  DEFAULT_PLAN_COOLDOWN_CONFIG,
+  FailoverPlanCooldownStore,
+  InMemoryPlanCooldownStore,
+  PLAN_COOLDOWN_KINDS,
+  RedisPlanCooldownStore,
+  computeUntil,
+  isPlanCooldownKind,
+  planDefaultMs,
+} from './plan-cooldown';
+export type {
+  PlanCooldown,
+  PlanCooldownConfig,
+  PlanCooldownInput,
+  PlanCooldownKind,
+  PlanCooldownSource,
+  PlanCooldownStore,
+} from './plan-cooldown';
 export { createGuardedHttpClient, readSseChunks, joinUrl, openRequest } from './http';
 export type { HttpBody, HttpClient, HttpResponse, HttpInit, GuardedClientOptions } from './http';
 export { createHttpProviderAdapter, parseModelList } from './http-adapter';

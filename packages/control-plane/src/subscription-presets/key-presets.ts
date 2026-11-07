@@ -27,6 +27,7 @@
  */
 
 import type { ProviderRow } from '@polyrouter/shared/server';
+import type { PlanErrorDialect } from '@polyrouter/data-plane';
 import type { PresetClientIdentity } from '../providers/client-identity';
 
 /** The injection token the connect and list paths read the registry through (design D6),
@@ -58,6 +59,18 @@ export interface KeyPresetRegion {
   /** True when the region passed only with the identity-imitation switch on (design D12).
    * Such a region is enabled, its preset is `high`, and its copy says so. */
   readonly imitationRequired: boolean;
+  /**
+   * The plan-error dialect the adapter classifies this region's errors with
+   * (classify-plan-quota-errors; design D2). Trusted routing data, never user input and
+   * never part of the available-presets DTO. Declared per REGION and only once that
+   * region's own error reference was recorded as matching the dialect's table
+   * (apply-log task 1.3): the international MiniMax, Kimi and Z.ai regions, and Kimi's
+   * China host (same English strings and statuses as the international reference).
+   * Z.ai China (Chinese messages, unverified reset format) and MiniMax China (separate
+   * docs, no live evidence) declare none and keep the generic status map. OpenCode Go has
+   * none: no error shape is documented.
+   */
+  readonly errorDialect?: PlanErrorDialect;
 }
 
 /** An advisory key hint (design D9): a caution, never a server-side rejection. */
@@ -163,6 +176,7 @@ export const MINIMAX_M_PLAN_PRESET: KeyPreset = {
       protocol: 'openai_compatible',
       enabled: false,
       imitationRequired: false,
+      errorDialect: 'minimax',
     },
     {
       id: 'cn',
@@ -199,6 +213,7 @@ export const KIMI_CODE_PRESET: KeyPreset = {
       protocol: 'openai_compatible',
       enabled: false,
       imitationRequired: false,
+      errorDialect: 'kimi',
     },
     {
       id: 'cn',
@@ -207,6 +222,7 @@ export const KIMI_CODE_PRESET: KeyPreset = {
       protocol: 'openai_compatible',
       enabled: false,
       imitationRequired: false,
+      errorDialect: 'kimi',
     },
   ],
   keyHint: {
@@ -243,6 +259,7 @@ export const ZAI_CODING_PLAN_PRESET: KeyPreset = {
       protocol: 'openai_compatible',
       enabled: false,
       imitationRequired: false,
+      errorDialect: 'zai',
     },
     {
       id: 'cn',

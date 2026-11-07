@@ -1,4 +1,12 @@
-import { createSignal, createUniqueId, For, onCleanup, onMount, Show } from 'solid-js';
+import {
+  createEffect,
+  createSignal,
+  createUniqueId,
+  For,
+  onCleanup,
+  onMount,
+  Show,
+} from 'solid-js';
 import type { EffectivePrice, ModelPricingInput } from '../data/api';
 import { fmtUsd } from '../data/format';
 import { unlistedText } from '../data/unlisted';
@@ -6,7 +14,8 @@ import { FROM_DIALOG, isPriceEditableKind, providerKindLabel } from '../state/ap
 import { isNonRoutableVariant } from '@polyrouter/shared';
 import { useApp } from '../state/context';
 import type { Model, Provider } from '../types';
-import { providerHealthView, type HealthTone } from '../data/providerHealth';
+import { activePause, providerHealthView, type HealthTone } from '../data/providerHealth';
+import { ConsentConfirm } from '../components/ConsentConfirm';
 import { StackedLabel } from '../components/StackedLabel';
 import { Notice } from '../components/Notice';
 import { pageTitle } from '../components/Topbar';
@@ -15,9 +24,18 @@ import { FigureText } from '../components/FigureText';
 import { priceLabelParts, type FigurePart, type PriceLabel } from '../data/figures';
 import { createLocalFields, FieldNote } from '../components/Field';
 
+/** setTimeout's delay limit: a longer one overflows and fires at once. */
+const MAX_TIMER_MS = 2 ** 31 - 1;
+
 /** The status DOT's fill, by the health line's tone (add-provider-health-signals). */
 function toneDotColor(tone: HealthTone): string {
-  return tone === 'green' ? 'var(--green)' : tone === 'red' ? 'var(--red)' : 'var(--text3)';
+  return tone === 'green'
+    ? 'var(--green)'
+    : tone === 'red'
+      ? 'var(--red)'
+      : tone === 'amber'
+        ? 'var(--amber)'
+        : 'var(--text3)';
 }
 
 /** The status LABEL's text colour. Split from the dot because the fill green is only
@@ -27,7 +45,9 @@ function toneTextColor(tone: HealthTone): string {
     ? 'var(--green-text)'
     : tone === 'red'
       ? 'var(--red-text)'
-      : 'var(--text3)';
+      : tone === 'amber'
+        ? 'var(--amber-text)'
+        : 'var(--text3)';
 }
 
 /** The effective display price — resolved server-side (billing resolver, then the
@@ -265,8 +285,51 @@ function ProviderCard(props: { p: Provider }) {
 
   // add-provider-health-signals: ONE status line, rendered from the server's
   // displayed health (never re-derived here), stated in text — never colour alone.
+  //
+  // classify-plan-quota-errors (design D11): while the card shows an unexpired plan pause, ONE
+  // timer fires at its end and bumps `now`, which the view reads, so the line returns to the
+  // displayed health at that instant with no list reload. `until` is read inside the effect, so
+  // a reload that moves the end re-arms it; cleanup clears it. The end is clamped to 7 days by
+  // the store, far below the timer's 2^31-1 ms limit.
+  const [now, setNow] = createSignal(Date.now());
+  const clock = (): number => Math.max(Date.now(), now());
+  createEffect(() => {
+    const until = Date.parse(props.p.planCooldown?.until ?? '');
+    if (Number.isNaN(until)) return;
+    const wait = until - Date.now();
+    // A delay past the timer's 2^31-1 ms limit would fire at once. The store clamps an end to
+    // 7 days, so this never holds in practice; if it did, the line would simply stay until the
+    // next list load.
+    if (wait <= 0 || wait > MAX_TIMER_MS) return;
+    // `max`: a timer may fire a tick early, and the pause must be over when the line says so.
+    const timer = setTimeout(() => setNow(Math.max(Date.now(), until)), wait);
+    onCleanup(() => clearTimeout(timer));
+  });
   const view = () =>
-    providerHealthView(props.p, Date.now(), state.reconnectChecking.includes(props.p.id));
+    providerHealthView(props.p, clock(), state.reconnectChecking.includes(props.p.id));
+  const pause = () => activePause(props.p, clock());
+  // Resume now (the pause's one action) and its in-place failure. A risk-control pause asks first,
+  // in the consent confirmation; the others lift at once.
+  const resuming = createBusy();
+  const [resumeFailure, setResumeFailure] = createSignal<string | null>(null);
+  const [confirmResume, setConfirmResume] = createSignal(false);
+  const startResume = (): void => {
+    setResumeFailure(null);
+    void resuming.run(() =>
+      app.resumeProviderPlan(props.p.id).then((reason) => {
+        setResumeFailure(reason);
+        if (reason !== null) return;
+        // Success reloaded the list, which clears the pause: the dialog and the button go with
+        // it. Focus goes to the page title once they have, never the body (a removed row's
+        // does, D8).
+        setConfirmResume(false);
+        queueMicrotask(() => {
+          const active = document.activeElement;
+          if (active === null || active === document.body) pageTitle()?.focus();
+        });
+      }),
+    );
+  };
   const reconnect = (): void => void app.startOauthReauthorize(props.p);
   // add-key-subscription-presets: the key preset this row came from, from the loaded offered
   // list. Absent (a since-disabled preset, or a failed load) falls back to the generic wording.
@@ -339,6 +402,50 @@ function ProviderCard(props: { p: Provider }) {
         >
           {view().text}
         </Notice>
+      </Show>
+      <Show when={pause()}>
+        {(active) => (
+          <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px">
+            <button
+              type="button"
+              class="btn-cancel"
+              disabled={resuming.busy()}
+              aria-busy={resuming.busy() ? true : undefined}
+              onClick={() => {
+                if (active().kind === 'risk_control') setConfirmResume(true);
+                else startResume();
+              }}
+            >
+              <StackedLabel alt={resuming.busy()} rest="Resume now" altLabel="Resuming…" />
+            </button>
+            <Show when={!confirmResume() && resumeFailure()}>
+              {(reason) => (
+                <span role="alert" class="t-caption" style="color:var(--red-text)">
+                  {reason()}
+                </span>
+              )}
+            </Show>
+          </div>
+        )}
+      </Show>
+      <Show when={confirmResume() && pause()}>
+        {/* The risk-control pause asks first. A consent confirmation, never the destructive
+            dialog: its commit is the Primary, and Red Fill is reserved for a destructive
+            commit. It stays open on a failure, and closes when the list reload clears the
+            pause. */}
+        <ConsentConfirm
+          title={`Resume ${props.p.name}?`}
+          body="The provider throttled this account under its own risk-control policy. Sending requests again early may make the provider restrict the account further."
+          commitLabel="Resume provider"
+          busyLabel="Resuming…"
+          busy={resuming.busy()}
+          failure={resumeFailure()}
+          onCancel={() => {
+            setResumeFailure(null);
+            setConfirmResume(false);
+          }}
+          onConfirm={startResume}
+        />
       </Show>
       <div class="mono t-caption" style="color:var(--text3);word-break:break-all">
         {props.p.baseUrl ?? '—'}

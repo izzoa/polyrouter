@@ -3,8 +3,10 @@ import {
   Inject,
   Injectable,
   Logger,
+  Optional,
   ConflictException,
   NotFoundException,
+  ServiceUnavailableException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import {
@@ -57,6 +59,8 @@ import {
   type ProviderModelInfo,
   type ProviderListedPricing,
   type ProviderModelCapabilities,
+  type PlanCooldown,
+  type PlanCooldownStore,
   batchFactoryFor,
   type BatchSeamInput,
 } from '@polyrouter/data-plane';
@@ -74,6 +78,8 @@ import {
 } from './adapter-builder';
 import { SubscriptionOauthService } from '../subscription-oauth/subscription-oauth.service';
 import { clientIdentityView } from './client-identity';
+import { PLAN_COOLDOWN_STORE } from '../plan-cooldown/plan-cooldown.tokens';
+import { keyPresetForRow } from '../subscription-presets/key-presets';
 import { normalizeAndGateBaseUrl } from './base-url-gate';
 
 /** The fixed 422 for an endpoint edit on a key-preset row (add-key-subscription-presets). */
@@ -152,6 +158,10 @@ export interface SafeProvider {
   /** The imitated client's label while imitation is AVAILABLE for this row (kind,
    * valid declaration, pinned endpoint), else null. Never carries header names/values. */
   clientIdentity: { label: string } | null;
+  /** classify-plan-quota-errors: the active plan pause, or null. `until` is an ISO-8601
+   * string (every other instant on the wire is one). Read only for a row whose region
+   * declares a plan-error dialect; null for every other row, a new row and an OAuth row. */
+  planCooldown: SafePlanCooldown | null;
   createdAt: Date;
   /** add-provider-health-signals: the DISPLAYED health — whichever of the check
    * and traffic records was recorded last (computed here, never re-derived by the
@@ -167,6 +177,18 @@ export interface SafeProvider {
   trafficErrorKind: string | null;
   trafficErrorMessage: string | null;
   trafficAt: Date | null;
+}
+
+/** The wire view of one active plan cooldown. Never holds a message, credential or request. */
+export interface SafePlanCooldown {
+  kind: PlanCooldown['kind'];
+  until: string;
+  untilSource: PlanCooldown['source'];
+}
+
+export function toSafePlanCooldown(c: PlanCooldown | null | undefined): SafePlanCooldown | null {
+  if (c === null || c === undefined) return null;
+  return { kind: c.kind, until: new Date(c.until).toISOString(), untilSource: c.source };
 }
 
 export interface SafeProviderHealth {
@@ -289,6 +311,13 @@ const FIXED_MESSAGE: Record<string, string> = {
   // must stay DISTINCT from every other label — the exhaustive surface test asserts
   // uniqueness, not merely presence, and this map degrades silently without it.
   oversized_response: 'provider response exceeded the size limit',
+  // classify-plan-quota-errors (design D4): operator labels for the four dialect-only
+  // plan kinds. Each must stay distinct from every other label (the exhaustive surface
+  // test asserts uniqueness).
+  quota_exhausted: 'plan usage limit reached',
+  risk_control: 'provider throttled the account (risk control)',
+  plan_entitlement: 'plan does not include this model',
+  plan_inactive: 'no active plan for this key',
 };
 
 function fixedMessage(kind: string): string {
@@ -301,7 +330,11 @@ function fixedMessage(kind: string): string {
  * than failing the build (fix-4xx-error-taxonomy). */
 export const toSafeProviderMessage = fixedMessage;
 
-export function toSafe(p: ProviderRow, clientIdentity: { label: string } | null): SafeProvider {
+export function toSafe(
+  p: ProviderRow,
+  clientIdentity: { label: string } | null,
+  planCooldown: SafePlanCooldown | null,
+): SafeProvider {
   return {
     id: p.id,
     name: p.name,
@@ -320,6 +353,7 @@ export function toSafe(p: ProviderRow, clientIdentity: { label: string } | null)
     autoPruneUnlisted: p.autoPruneUnlisted,
     imitateClientIdentity: p.imitateClientIdentity,
     clientIdentity,
+    planCooldown,
     createdAt: p.createdAt,
     health: toSafeHealth(displayedProviderHealth(p)),
     lastErrorKind: p.lastErrorKind,
@@ -537,6 +571,12 @@ export class ProvidersService {
     @Inject(PROVIDER_ADAPTER_FACTORY) private readonly factory: ProviderAdapterFactory,
     @Inject(PROVIDERS_RUNTIME) runtime: ProvidersRuntime,
     private readonly oauth: SubscriptionOauthService,
+    // classify-plan-quota-errors (design D7/D10): the shared plan-cooldown store, for the
+    // view and the lift. Optional so `new ProvidersService(port, facilities, f, rt, oauth)`
+    // in test harnesses still compiles; a missing store reads as "no pause".
+    @Optional()
+    @Inject(PLAN_COOLDOWN_STORE)
+    private readonly planCooldowns?: PlanCooldownStore,
   ) {
     this.key = runtime.key;
     this.mode = runtime.mode;
@@ -550,18 +590,66 @@ export class ProvidersService {
   }
 
   async list(principal: Principal): Promise<SafeProvider[]> {
-    return (await this.db.providers.list(principal)).map((row) => this.safe(row));
+    const rows = await this.db.providers.list(principal);
+    const pauses = await this.readPlanCooldowns(rows);
+    return rows.map((row) => this.safe(row, pauses.get(row.id) ?? null));
   }
 
   async get(principal: Principal, id: string): Promise<SafeProvider> {
     const row = await this.db.providers.findById(principal, id);
     if (!row) throw new NotFoundException();
-    return this.safe(row);
+    const pauses = await this.readPlanCooldowns([row]);
+    return this.safe(row, pauses.get(row.id) ?? null);
   }
 
-  /** The safe view with the identity label derived through the one availability lookup. */
-  private safe(row: ProviderRow): SafeProvider {
-    return toSafe(row, clientIdentityView(this.oauth.availableClientIdentity(row)));
+  /** The safe view with the identity label derived through the one availability lookup. The
+   * plan cooldown is a REQUIRED argument so the compiler finds every caller: a row that was
+   * just created (or connected through OAuth / a key preset) has no cooldown and passes null. */
+  private safe(row: ProviderRow, planCooldown: SafePlanCooldown | null): SafeProvider {
+    return toSafe(row, clientIdentityView(this.oauth.availableClientIdentity(row)), planCooldown);
+  }
+
+  /** The active pause of every row whose region declares a plan-error dialect, in ONE
+   * `checkMany`. Rows without a dialect, and a missing or still-throwing store, give no entry
+   * (the view never answers an error because of the store, design D10). Read on dashboard
+   * calls only, never on the proxy path. */
+  private async readPlanCooldowns(
+    rows: readonly ProviderRow[],
+  ): Promise<ReadonlyMap<string, SafePlanCooldown>> {
+    const out = new Map<string, SafePlanCooldown>();
+    const store = this.planCooldowns;
+    if (store === undefined) return out;
+    const ids = rows
+      .filter((r) => keyPresetForRow(r)?.region.errorDialect !== undefined)
+      .map((r) => r.id);
+    if (ids.length === 0) return out;
+    try {
+      const found = await store.checkMany(ids);
+      for (const [id, pause] of found) {
+        const view = toSafePlanCooldown(pause);
+        if (view !== null) out.set(id, view);
+      }
+    } catch {
+      /* the failover store absorbs a fault; anything that still throws reads as no pause */
+    }
+    return out;
+  }
+
+  /**
+   * Lift a provider's plan cooldown ("Resume now"). The owner-scoped lookup runs first (404 for
+   * another tenant's id; no key is touched), then the SHARED store's `lift`. It throws `503`
+   * when the shared store could not be reached, never reporting a lift that did not happen
+   * (design D10). Idempotent: an unpaused provider is a success.
+   */
+  async liftPlanCooldown(principal: Principal, id: string): Promise<void> {
+    const row = await this.db.providers.findById(principal, id);
+    if (!row) throw new NotFoundException();
+    if (this.planCooldowns === undefined) return;
+    try {
+      await this.planCooldowns.lift(row.id);
+    } catch {
+      throw new ServiceUnavailableException('could not reach the shared pause store');
+    }
   }
 
   async create(principal: Principal, dto: CreateProviderDto): Promise<SafeProvider> {
@@ -587,7 +675,8 @@ export class ProvidersService {
       // Omit to take the schema default (on).
       ...(dto.autoPruneUnlisted !== undefined ? { autoPruneUnlisted: dto.autoPruneUnlisted } : {}),
     };
-    return this.safe(await this.db.providers.insert(principal, values));
+    // A new row has no cooldown: null, with no store call.
+    return this.safe(await this.db.providers.insert(principal, values), null);
   }
 
   async update(principal: Principal, id: string, dto: UpdateProviderDto): Promise<SafeProvider> {
@@ -739,7 +828,21 @@ export class ProvidersService {
       normalized !== existing.baseUrl ||
       (dto.protocol !== undefined && dto.protocol !== existing.protocol);
     if (endpointChanged) await this.db.models.clearListedPricingForProvider(principal, id);
-    return this.safe(row);
+    // A new key may belong to another plan, and the health records already reset on the same
+    // edit, so the pause is lifted too (classify-plan-quota-errors, design D10). A lift fault is
+    // swallowed with a static line: the edit has succeeded, and the pause then ends by its own
+    // expiry or through Resume now.
+    if (incarnationChanges && this.planCooldowns !== undefined) {
+      try {
+        await this.planCooldowns.lift(id);
+      } catch {
+        this.logger.warn(
+          'plan cooldown lift failed after a credential edit; it will expire on its own',
+        );
+      }
+    }
+    const pauses = await this.readPlanCooldowns([row]);
+    return this.safe(row, pauses.get(row.id) ?? null);
   }
 
   async remove(principal: Principal, id: string): Promise<{ deleted: boolean }> {

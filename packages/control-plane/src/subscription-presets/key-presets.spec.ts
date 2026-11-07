@@ -291,6 +291,44 @@ describe('offeredRegions and listOfferedKeyPresets', () => {
   });
 });
 
+describe('region plan-error dialects (classify-plan-quota-errors, design D2)', () => {
+  // Declared per REGION, only where task 1.3 recorded the region's error reference as
+  // matching the dialect table (apply-log; flag F1).
+  it.each([
+    ['opencode-go', 'default', undefined],
+    ['minimax-m-plan', 'intl', 'minimax'],
+    ['minimax-m-plan', 'cn', undefined],
+    ['kimi-code', 'intl', 'kimi'],
+    ['kimi-code', 'cn', 'kimi'],
+    ['zai-coding-plan', 'intl', 'zai'],
+    ['zai-coding-plan', 'cn', undefined],
+  ] as const)('%s / %s declares %s', (presetId, regionId, dialect) => {
+    const region = findKeyPreset(presetId)?.regions.find((r) => r.id === regionId);
+    expect(region).toBeDefined();
+    expect(region?.errorDialect).toBe(dialect);
+  });
+
+  it('covers every shipped region, so a new region must decide', () => {
+    expect(allRegions).toHaveLength(7);
+  });
+
+  it('the dialect reaches a row only through the coherence gate', () => {
+    const region = ZAI_CODING_PLAN_PRESET.regions[0]!;
+    const row = (over: Partial<KeyPresetRow>): KeyPresetRow => ({
+      kind: 'subscription',
+      baseUrl: region.baseUrl,
+      protocol: region.protocol,
+      keyPreset: 'zai-coding-plan',
+      ...over,
+    });
+    expect(keyPresetForRow(row({}))?.region.errorDialect).toBe('zai');
+    // A drifted host, an unbound row and an api_key row never resolve a region at all.
+    expect(keyPresetForRow(row({ baseUrl: 'https://api.z.ai/api/paas/v4' }))).toBeNull();
+    expect(keyPresetForRow(row({ keyPreset: null }))).toBeNull();
+    expect(keyPresetForRow(row({ kind: 'api_key' }))).toBeNull();
+  });
+});
+
 describe('keyPresetForRow (the D6 coherence gate)', () => {
   const rowFor = (
     preset: KeyPreset,

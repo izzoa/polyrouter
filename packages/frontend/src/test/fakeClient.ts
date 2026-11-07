@@ -78,6 +78,7 @@ const NOW = '2026-07-15T00:00:00.000Z';
 /** A provider with no recorded health (add-provider-health-signals) — spread into
  * `ProviderDto` fixtures. */
 export const UNRECORDED_HEALTH = {
+  planCooldown: null,
   health: { state: 'unknown', kind: null, message: null, source: null, at: null },
   lastErrorKind: null,
   lastErrorMessage: null,
@@ -1136,6 +1137,28 @@ export class FakeApiClient implements ApiClient {
     for (const [k, v] of Object.entries(this.models)) if (k !== id) rest[k] = v;
     this.models = rest;
     return Promise.resolve({ deleted: true });
+  }
+
+  /** classify-plan-quota-errors: set to make the next lift fail (a 503 when the shared store
+   * is unreachable, a 404 for a gone id). Cleared once used. */
+  liftPlanCooldownRejects: ApiError | null = null;
+  /** When set, the next lift parks on it: resolve it to let the request settle (the busy-state
+   * tests hold the request in flight this way). */
+  liftPlanCooldownGate: Promise<void> | null = null;
+
+  async liftPlanCooldown(id: string): Promise<void> {
+    this.record('liftPlanCooldown', id);
+    const gate = this.liftPlanCooldownGate;
+    if (gate) await gate;
+    if (this.liftPlanCooldownRejects) {
+      const e = this.liftPlanCooldownRejects;
+      this.liftPlanCooldownRejects = null;
+      throw e;
+    }
+    const existing = this.providers.find((p) => p.id === id);
+    if (!existing) throw new ApiError(404, 'Not Found', 'provider not found');
+    // Mirror the backend: the lift deletes the record, and the next list shows no pause.
+    this.providers = this.providers.map((p) => (p.id === id ? { ...p, planCooldown: null } : p));
   }
 
   testProvider(id: string): Promise<ActionResult> {

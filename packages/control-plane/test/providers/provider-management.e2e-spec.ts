@@ -25,7 +25,7 @@ import {
   type PersistencePort,
   type Principal,
 } from '@polyrouter/shared/server';
-import { createProviderAdapter } from '@polyrouter/data-plane';
+import { createProviderAdapter, type PlanCooldownStore } from '@polyrouter/data-plane';
 import type { ConnectionResult, ProviderAdapter, ProviderModelInfo } from '@polyrouter/data-plane';
 import request from 'supertest';
 import type { App } from 'supertest/types';
@@ -38,6 +38,7 @@ import {
   type ProviderAdapterFactory,
 } from '../../src/providers/providers.service';
 import { ProvidersModule } from '../../src/providers/providers.module';
+import { PLAN_COOLDOWN_STORE } from '../../src/plan-cooldown/plan-cooldown.module';
 import { OAUTH_PRESET_LOOKUP } from '../../src/subscription-oauth/subscription-oauth.service';
 import { CLAUDE_PRESET, type OauthPreset } from '../../src/subscription-oauth/presets';
 import {
@@ -1370,6 +1371,108 @@ describe('provider management', () => {
       const res = await patch(id, { imitateClientIdentity: true, credential: 'zai-new' });
       expect(res.status).toBe(200);
       expect(res.body).toMatchObject({ imitateClientIdentity: true, keyPreset: 'zai-coding-plan' });
+    });
+  });
+
+  // ---- classify-plan-quota-errors 7.2: the plan cooldown on the provider view and the lift ----
+  describe('plan cooldown view and lift (classify-plan-quota-errors)', () => {
+    const MINUTE = 60_000;
+    const zaiRegion = ZAI_CODING_PLAN_PRESET.regions[0]!;
+    const asAliceReq = (t: request.Test): request.Test => t.set('x-test-user', alice);
+    const store = (): PlanCooldownStore => app.get<PlanCooldownStore>(PLAN_COOLDOWN_STORE);
+    const view = async (id: string): Promise<Record<string, unknown>> =>
+      (await asAliceReq(request(server).get(`/api/providers/${id}`))).body as Record<
+        string,
+        unknown
+      >;
+    async function seedZai(): Promise<string> {
+      const port = app.get<PersistencePort>(PERSISTENCE_PORT);
+      const { providers, base } = loadProvidersConfig();
+      const row = await port.providers.insert(userPrincipal(alice), {
+        name: 'seed-zai',
+        kind: 'subscription',
+        protocol: zaiRegion.protocol,
+        baseUrl: zaiRegion.baseUrl,
+        keyPreset: ZAI_CODING_PLAN_PRESET.id,
+        encryptedCredentials: encryptSecret(
+          serializePlainCredential('seed-key'),
+          resolveCredentialKey(providers, base),
+        ),
+        status: 'ok',
+        statusSource: 'test',
+      });
+      return row.id;
+    }
+
+    it('shows a recorded pause, DELETE lifts it with 204, and an unpaused provider also answers 204', async () => {
+      const id = await seedZai();
+      expect((await view(id))['planCooldown']).toBeNull();
+      // Recorded through the SAME injected store the service reads: if the @Optional()
+      // injection were missing, the view below could not show it.
+      const rec = await store().record(id, { kind: 'quota_exhausted', default: 15 * MINUTE });
+      expect((await view(id))['planCooldown']).toEqual({
+        kind: 'quota_exhausted',
+        until: new Date(rec.until).toISOString(),
+        untilSource: 'default',
+      });
+      const listed = await asAliceReq(request(server).get('/api/providers'));
+      expect(
+        (listed.body as Array<{ id: string; planCooldown: unknown }>).find((p) => p.id === id)
+          ?.planCooldown,
+      ).toMatchObject({ kind: 'quota_exhausted' });
+
+      const lifted = await asAliceReq(request(server).delete(`/api/providers/${id}/plan-cooldown`));
+      expect(lifted.status).toBe(204);
+      expect((await view(id))['planCooldown']).toBeNull();
+      expect(await store().check(id)).toBeNull();
+
+      const again = await asAliceReq(request(server).delete(`/api/providers/${id}/plan-cooldown`));
+      expect(again.status).toBe(204);
+      // An ordinary (dialect-free) provider is also a plain 204.
+      const custom = await asAlice().send(CUSTOM);
+      expect(
+        (
+          await asAliceReq(
+            request(server).delete(`/api/providers/${custom.body.id as string}/plan-cooldown`),
+          )
+        ).status,
+      ).toBe(204);
+      // And an unknown id is a 404.
+      expect(
+        (
+          await asAliceReq(
+            request(server).delete(
+              '/api/providers/00000000-0000-0000-0000-000000000000/plan-cooldown',
+            ),
+          )
+        ).status,
+      ).toBe(404);
+    });
+
+    it('a name-only edit keeps the pause; a credential edit lifts it', async () => {
+      const id = await seedZai();
+      await store().record(id, { kind: 'risk_control', default: 30 * MINUTE });
+      const renamed = await asAliceReq(
+        request(server).patch(`/api/providers/${id}`).send({ name: 'renamed' }),
+      );
+      expect(renamed.status).toBe(200);
+      expect(renamed.body.planCooldown).toMatchObject({ kind: 'risk_control' });
+      expect(await store().check(id)).not.toBeNull();
+
+      const rotated = await asAliceReq(
+        request(server).patch(`/api/providers/${id}`).send({ credential: 'zai-rotated' }),
+      );
+      expect(rotated.status).toBe(200);
+      expect(rotated.body.planCooldown).toBeNull();
+      expect(await store().check(id)).toBeNull();
+    });
+
+    it('a row without a dialect never shows a pause, even with a record under its id', async () => {
+      const custom = await asAlice().send(CUSTOM);
+      const id = custom.body.id as string;
+      await store().record(id, { kind: 'quota_exhausted', default: 15 * MINUTE });
+      expect((await view(id))['planCooldown']).toBeNull();
+      await store().lift(id);
     });
   });
 

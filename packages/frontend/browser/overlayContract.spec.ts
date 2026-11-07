@@ -260,6 +260,28 @@ for (const vp of [
       expect((await layers(page)).map((l) => l.kind)).toEqual(['dialog', 'dialog']);
     });
 
+    test('the plan Resume confirmation is described by its warning, and focus lands on its commit', async ({
+      page,
+    }) => {
+      // classify-plan-quota-errors D11: the consent structure, so initial focus is the Primary
+      // commit and the escalation warning must be the dialog's accessible DESCRIPTION.
+      const s = SURFACES.find((x) => x.name === 'confirm:planCooldownResume');
+      expect(s, 'the confirm:planCooldownResume surface').toBeDefined();
+      await open(page, s);
+      await s!.open(page);
+      await page.waitForTimeout(200);
+      const dialog = page.locator(s!.sel);
+      await expect(dialog).toHaveAccessibleName('Resume Kimi Code?');
+      await expect(dialog).toHaveAccessibleDescription(
+        /may make the provider restrict the account further/,
+      );
+      const commit = dialog.getByRole('button', { name: 'Resume provider' });
+      await expect(commit).toBeFocused();
+      await expect(commit).toHaveClass(/btn-primary/);
+      await expect(dialog.locator('.btn-destructive')).toHaveCount(0);
+      expect((await layers(page)).map((l) => l.kind)).toEqual(['dialog']);
+    });
+
     test('no surface claims modal semantics without registering', async ({ page }) => {
       // One test opens EVERY surface in turn, so its budget grows with the matrix: the two
       // tuning drawers (split-auto-routing-readout-setup) took it past the 30s default.

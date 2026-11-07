@@ -29,6 +29,7 @@ import {
   type BreakerStateListener,
   type CircuitBreaker,
   type ProviderAdapter,
+  type ProviderErrorKind,
 } from '../providers';
 import { terminalErrorFrame } from './stream-error';
 import type { BoundedBlockCollector } from './body-capture';
@@ -527,6 +528,12 @@ export interface ChainAttempt {
    * attempt, so two members of the same provider each see their own outcome and
    * the hook can close over what that attempt's own build resolved. */
   readonly onSettle?: BreakerSettleListener;
+  /** Opt in to the plan-cooldown pause (classify-plan-quota-errors): set by the
+   * control plane ONLY for a row whose built config carries a plan-error
+   * dialect. The walkers then read the pause before admission and record one
+   * after a dispatched plan failure. Absent = zero cooldown-store calls, so a
+   * provider without a dialect pays nothing (invariant 9). */
+  readonly planCooldown?: true;
 }
 
 /** Whether a provider could have billed one chain attempt (zero-cost-unbilled-
@@ -570,6 +577,10 @@ export interface AttemptFailure {
    * (`chainBillingEvidence`), so a failure built without it can only keep today's
    * billed behavior. */
   readonly billing?: AttemptBilling;
+  /** Set ONLY for a member skipped by a plan cooldown (classify-plan-quota-
+   * errors): never dispatched, never admitted by the breaker. The error's kind
+   * is the pause's kind and carries no status, so a skip can never record. */
+  readonly skip?: 'plan_cooldown';
 }
 
 /** The billing evidence of ONE chain error result: every pushed failure's class,
@@ -590,6 +601,19 @@ function attemptRequest(request: NormalizedRequest, attempt: ChainAttempt): Norm
   const base = { ...request, model: attempt.externalModelId };
   if (attempt.maxOutputTokens === undefined) return base;
   return { ...base, params: { ...base.params, maxOutputTokens: attempt.maxOutputTokens } };
+}
+
+/** The failure a plan-cooldown skip pushes (design D8): never thrown, never
+ * admitted by the breaker, no status/message/markers (so `recordPlanCooldown`
+ * can never mistake it for an upstream answer), billed `not_sent`. */
+function planPauseFailure(index: number, kind: ProviderErrorKind): AttemptFailure {
+  return {
+    index,
+    error: new ProviderError(kind, 'provider paused by a plan cooldown'),
+    dispatched: false,
+    billing: 'not_sent',
+    skip: 'plan_cooldown',
+  };
 }
 
 export type BufferedChainResult =
@@ -681,6 +705,18 @@ export async function runBufferedChain(
       };
     const attempt = attempts[i]!;
     const req = attemptRequest(request, attempt);
+    // Plan cooldown (classify-plan-quota-errors): read BEFORE the try and before
+    // breaker admission, so a skip never consumes a probe, settles nothing and
+    // can never reach the recording catch below. Push and continue, never throw.
+    if (attempt.planCooldown) {
+      const pause = await breaker.planCooldownFor(attempt.providerId);
+      if (pause) {
+        const skipped = planPauseFailure(i, pause.kind);
+        failures.push(skipped);
+        lastError = skipped.error;
+        continue;
+      }
+    }
     try {
       // build INSIDE the breaker callback: an open circuit skips before setup,
       // and a probe admission widens the adapter bounds (probe patience). The
@@ -716,6 +752,7 @@ export async function runBufferedChain(
       // (zero-cost-unbilled-errors): a non-retryable stop never enters `failures`, so
       // it rides the result as `terminalBilling`.
       const billing = attemptBilling(err, mapped);
+      if (attempt.planCooldown) await breaker.recordPlanCooldown(attempt.providerId, mapped);
       if (!fallbackEligible(err))
         return {
           ok: false,
@@ -770,6 +807,16 @@ export async function openStreamChain(
       };
     const attempt = attempts[i]!;
     const req = attemptRequest(request, attempt);
+    // Plan cooldown: same pre-admission skip as the buffered walker.
+    if (attempt.planCooldown) {
+      const pause = await breaker.planCooldownFor(attempt.providerId);
+      if (pause) {
+        const skipped = planPauseFailure(i, pause.kind);
+        failures.push(skipped);
+        lastError = skipped.error;
+        continue;
+      }
+    }
     // THIS member's MUTABLE watchdog bound (fix-long-call-timeouts + probe
     // patience): a per-provider override must reach the streaming watchdog even
     // mid-chain, and a probe admission widens the SAME object synchronously —
@@ -821,6 +868,7 @@ export async function openStreamChain(
     // Billing evidence from the RAW error, before it is flattened (zero-cost-
     // unbilled-errors) — see the buffered walker.
     const billing = attemptBilling(result.error, mapped);
+    if (attempt.planCooldown) await breaker.recordPlanCooldown(attempt.providerId, mapped);
     // Pre-commit failure: a caller abort is `unavailable` after adapter normalization,
     // so consult the pure client signal at the failure boundary (A-3).
     if (!fallbackEligible(result.error))

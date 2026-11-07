@@ -70,6 +70,20 @@ export class ProvidersController {
     return this.svc.remove(principal, id);
   }
 
+  /** "Resume now" (classify-plan-quota-errors, design D10): lifts the provider's plan cooldown.
+   * `204` when the shared record was deleted or was already absent; `404` for another tenant's
+   * id (the owner-scoped lookup runs first); `503` when the shared store could not be reached,
+   * never a `204` for a lift that did not happen. A two-segment path, so it cannot collide with
+   * `@Get(':id')`. */
+  @Delete(':id/plan-cooldown')
+  @HttpCode(204)
+  async liftPlanCooldown(
+    @CurrentPrincipal() principal: Principal,
+    @Param('id') id: string,
+  ): Promise<void> {
+    await this.svc.liftPlanCooldown(principal, id);
+  }
+
   @Post(':id/test-connection')
   @HttpCode(200)
   testConnection(

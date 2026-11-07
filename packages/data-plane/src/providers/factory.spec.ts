@@ -180,6 +180,22 @@ describe('batch seam attachment by family (add-batch-inference task 2.10)', () =
     ).toBeUndefined();
   });
 
+  // classify-plan-quota-errors design D12: only a subscription row carries a plan-error
+  // dialect, and a subscription gets no batch factory, so a plan kind can never reach a
+  // batch submit through a dialect row (the BATCH_KIND_OF mapping is the type-level guard).
+  it('a subscription config carrying errorDialect gets no batch factory', () => {
+    for (const errorDialect of ['zai', 'minimax', 'kimi'] as const) {
+      const cfg = {
+        ...claudeSubscription,
+        protocol: 'openai_compatible' as const,
+        baseUrl: 'https://api.openai.com/v1',
+        errorDialect,
+      };
+      expect(batchFactoryFor(cfg)).toBeUndefined();
+      expect(createProviderAdapter(cfg).batch).toBeUndefined();
+    }
+  });
+
   it('still SERVICES a subscription job, so narrowing submission cannot strand one', () => {
     // The seam the poller, cancel, settlement and results need. Without this split a job
     // accepted before the upgrade could never terminate: it would hold its budget

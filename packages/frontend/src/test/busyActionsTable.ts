@@ -264,6 +264,12 @@ export const BUSY_ACTIONS: readonly BusyRow[] = [
     why: 'Sync models, on a provider card',
   },
   {
+    key: 'pages/Providers.tsx app.resumeProviderPlan',
+    cls: 'busy',
+    busyLabel: 'Resuming…',
+    why: 'Resume now, on a plan-paused provider card (classify-plan-quota-errors). A risk-control pause asks first: the consent dialog’s commit drives this same busy state, and is walked in planCooldown.view.test.tsx',
+  },
+  {
     key: 'pages/Providers.tsx app.removeUnlistedModel#1',
     cls: 'destructive',
     why: 'Remove on an unlisted model: the store counts its impact, then opens the shared confirmation, whose commit is busy',

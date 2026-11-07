@@ -1,6 +1,10 @@
 import { resolveModelPrice } from '@polyrouter/shared/server';
 import { batchFactoryFor } from '@polyrouter/data-plane';
-import { UnprocessableEntityException } from '@nestjs/common';
+import {
+  NotFoundException,
+  ServiceUnavailableException,
+  UnprocessableEntityException,
+} from '@nestjs/common';
 import type {
   ModelInsertInput,
   ModelPriceRow,
@@ -20,10 +24,20 @@ import {
   resolvePlainCredentialValue,
   serializePlainCredential,
 } from '@polyrouter/shared/server';
-import { KIMI_CODE_PRESET } from '../subscription-presets/key-presets';
 import {
+  KIMI_CODE_PRESET,
+  OPENCODE_GO_PRESET,
+  ZAI_CODING_PLAN_PRESET,
+} from '../subscription-presets/key-presets';
+import * as baseUrlGate from './base-url-gate';
+import {
+  FailoverPlanCooldownStore,
+  InMemoryPlanCooldownStore,
   MAX_PARSED_MODELS,
   ProviderError,
+  type PlanCooldown,
+  type PlanCooldownInput,
+  type PlanCooldownStore,
   type ConnectionResult,
   type ProviderAdapter,
   type ProviderModelInfo,
@@ -51,6 +65,8 @@ function mkProvidersService(
   rt: ProvidersRuntime,
   /** allow-preset-client-identity: the availability lookup this unit stubs (default: none). */
   availableClientIdentity: (row: ProviderRow) => PresetClientIdentity | null = () => null,
+  /** classify-plan-quota-errors: the injected plan-cooldown store (default: none). */
+  planCooldowns?: PlanCooldownStore,
 ): ProvidersService {
   const facilities = {
     withAdvisoryLock: (_k: number, fn: (tx: PersistencePort) => Promise<unknown>) => fn(port),
@@ -66,7 +82,7 @@ function mkProvidersService(
         authScheme: 'api_key' as const,
       }),
   } as unknown as SubscriptionOauthService;
-  return new ProvidersService(port, facilities, f, rt, oauth);
+  return new ProvidersService(port, facilities, f, rt, oauth, planCooldowns);
 }
 
 interface FakePort {
@@ -1770,5 +1786,277 @@ describe('ProvidersService — key-preset pinned edits (add-key-subscription-pre
     });
     await svc.update(principal, created.id, { baseUrl: 'https://8.8.8.8/v1' });
     expect(made.rows.get(created.id)!.baseUrl).toBe('https://8.8.8.8/v1');
+  });
+});
+
+// classify-plan-quota-errors tasks 7.1: the provider view carries the plan cooldown, and an
+// incarnation change lifts it.
+describe('ProvidersService — plan cooldown view and lift (classify-plan-quota-errors 7.1)', () => {
+  /** A real in-memory store whose every call is counted. */
+  class SpyStore implements PlanCooldownStore {
+    readonly inner = new InMemoryPlanCooldownStore();
+    readonly calls = { check: 0, checkMany: 0, record: 0, lift: 0 };
+    liftError: Error | null = null;
+    checkManyError: Error | null = null;
+    check(id: string): Promise<PlanCooldown | null> {
+      this.calls.check += 1;
+      return this.inner.check(id);
+    }
+    checkMany(ids: readonly string[]): Promise<ReadonlyMap<string, PlanCooldown | null>> {
+      this.calls.checkMany += 1;
+      if (this.checkManyError) return Promise.reject(this.checkManyError);
+      return this.inner.checkMany(ids);
+    }
+    record(id: string, input: PlanCooldownInput): Promise<PlanCooldown> {
+      this.calls.record += 1;
+      return this.inner.record(id, input);
+    }
+    lift(id: string): Promise<void> {
+      this.calls.lift += 1;
+      if (this.liftError) return Promise.reject(this.liftError);
+      return this.inner.lift(id);
+    }
+    total(): number {
+      return this.calls.check + this.calls.checkMany + this.calls.record + this.calls.lift;
+    }
+  }
+
+  const zai = ZAI_CODING_PLAN_PRESET.regions[0]!; // declares the `zai` dialect
+  const opencode = OPENCODE_GO_PRESET.regions[0]!; // declares none
+
+  beforeEach(() => {
+    // The pinned hosts are real names; keep the SSRF gate off DNS (it has its own suite).
+    jest
+      .spyOn(baseUrlGate, 'normalizeAndGateBaseUrl')
+      .mockImplementation((_mode, _kind, url) => Promise.resolve(new URL(url).href));
+  });
+
+  async function setup(opts: { withStore?: boolean; adapter?: Partial<ProviderAdapter> } = {}) {
+    const made = makePort();
+    const store = new SpyStore();
+    const svc = mkProvidersService(
+      made.port,
+      factory(opts.adapter),
+      runtime('selfhosted'),
+      () => null,
+      opts.withStore === false ? undefined : store,
+    );
+    const mkRow = (
+      region: { baseUrl: string; protocol: 'openai_compatible' },
+      presetId: string,
+      name = 'preset',
+    ): Promise<ProviderRow> =>
+      made.port.providers.insert(principal, {
+        name,
+        kind: 'subscription',
+        protocol: region.protocol,
+        baseUrl: region.baseUrl,
+        keyPreset: presetId,
+        encryptedCredentials: encryptSecret(serializePlainCredential('old-key'), KEY),
+      });
+    const dialectRow = await mkRow(zai, ZAI_CODING_PLAN_PRESET.id);
+    return { ...made, store, svc, mkRow, dialectRow };
+  }
+  const MINUTE = 60_000;
+
+  it('shows a provider-sourced and a default-sourced pause, with until as an ISO string', async () => {
+    const { svc, store, dialectRow, mkRow } = await setup();
+    const second = await mkRow(zai, ZAI_CODING_PLAN_PRESET.id, 'second');
+    const a = await store.inner.record(dialectRow.id, {
+      kind: 'quota_exhausted',
+      abs: Date.now() + 90 * MINUTE,
+    });
+    const b = await store.inner.record(second.id, { kind: 'risk_control', default: 30 * MINUTE });
+
+    const list = await svc.list(principal);
+    const byId = new Map(list.map((p) => [p.id, p]));
+    expect(byId.get(dialectRow.id)!.planCooldown).toEqual({
+      kind: 'quota_exhausted',
+      until: new Date(a.until).toISOString(),
+      untilSource: 'provider',
+    });
+    expect(byId.get(second.id)!.planCooldown).toEqual({
+      kind: 'risk_control',
+      until: new Date(b.until).toISOString(),
+      untilSource: 'default',
+    });
+    expect(typeof byId.get(second.id)!.planCooldown!.until).toBe('string');
+    expect((await svc.get(principal, dialectRow.id)).planCooldown).toMatchObject({
+      kind: 'quota_exhausted',
+      untilSource: 'provider',
+    });
+    // The list read every dialect row in ONE batch.
+    expect(store.calls.checkMany).toBe(2); // one for list(), one for get()
+    expect(store.calls.check).toBe(0);
+  });
+
+  it('rows without a dialect read null without a store call', async () => {
+    const { svc, store, mkRow } = await setup();
+    const plain = await mkRow(opencode, OPENCODE_GO_PRESET.id, 'opencode');
+    const unbound = await svc.create(principal, {
+      name: 'custom',
+      kind: 'custom',
+      protocol: 'openai_compatible',
+      baseUrl: 'https://example.invalid/v1',
+    } as never);
+    // Remove the dialect row so neither list nor get has anything to ask about.
+    await svc.remove(principal, (await svc.list(principal)).find((p) => p.name === 'preset')!.id);
+    const before = store.total();
+    const list = await svc.list(principal);
+    expect(list.map((p) => p.planCooldown)).toEqual([null, null]);
+    expect((await svc.get(principal, plain.id)).planCooldown).toBeNull();
+    expect((await svc.get(principal, unbound.id)).planCooldown).toBeNull();
+    expect(store.total()).toBe(before);
+  });
+
+  it('a throwing store gives null, never an error', async () => {
+    const { svc, store, dialectRow } = await setup();
+    await store.inner.record(dialectRow.id, { kind: 'plan_inactive', default: 60 * MINUTE });
+    store.checkManyError = new Error('redis down');
+    expect((await svc.get(principal, dialectRow.id)).planCooldown).toBeNull();
+    expect((await svc.list(principal))[0]!.planCooldown).toBeNull();
+    expect(
+      (await svc.update(principal, dialectRow.id, { name: 'still ok' })).planCooldown,
+    ).toBeNull();
+  });
+
+  it('a missing store gives null everywhere', async () => {
+    const { svc, dialectRow } = await setup({ withStore: false });
+    expect((await svc.get(principal, dialectRow.id)).planCooldown).toBeNull();
+    expect((await svc.list(principal))[0]!.planCooldown).toBeNull();
+    await expect(svc.update(principal, dialectRow.id, { credential: 'k2' })).resolves.toBeDefined();
+    await expect(svc.liftPlanCooldown(principal, dialectRow.id)).resolves.toBeUndefined();
+  });
+
+  it('a credential patch lifts the pause, and its response carries none', async () => {
+    const { svc, store, dialectRow } = await setup();
+    await store.inner.record(dialectRow.id, { kind: 'quota_exhausted', default: 15 * MINUTE });
+    const view = await svc.update(principal, dialectRow.id, { credential: 'new-key' });
+    expect(store.calls.lift).toBe(1);
+    expect(view.planCooldown).toBeNull();
+    expect(await store.inner.check(dialectRow.id)).toBeNull();
+  });
+
+  it('a name-only patch keeps the pause and its response still carries it', async () => {
+    const { svc, store, dialectRow } = await setup();
+    const rec = await store.inner.record(dialectRow.id, {
+      kind: 'quota_exhausted',
+      default: 15 * MINUTE,
+    });
+    const view = await svc.update(principal, dialectRow.id, { name: 'renamed' });
+    expect(store.calls.lift).toBe(0);
+    expect(view.planCooldown).toEqual({
+      kind: 'quota_exhausted',
+      until: new Date(rec.until).toISOString(),
+      untilSource: 'default',
+    });
+    expect(await store.inner.check(dialectRow.id)).not.toBeNull();
+  });
+
+  it('a credential patch whose lift throws still returns the updated provider', async () => {
+    const { svc, store, dialectRow, rows } = await setup();
+    await store.inner.record(dialectRow.id, { kind: 'quota_exhausted', default: 15 * MINUTE });
+    store.liftError = new Error('redis down');
+    const view = await svc.update(principal, dialectRow.id, {
+      name: 'edited',
+      credential: 'new-key',
+    });
+    expect(view.name).toBe('edited');
+    expect(rows.get(dialectRow.id)!.name).toBe('edited');
+    expect(store.calls.lift).toBe(1);
+  });
+
+  it('create returns planCooldown null with zero store calls', async () => {
+    const { svc, store } = await setup();
+    const before = store.total();
+    const created = await svc.create(principal, {
+      name: 'fresh',
+      kind: 'api_key',
+      protocol: 'openai_compatible',
+      baseUrl: 'https://api.openai.com/v1',
+      credential: 'sk-x',
+    } as never);
+    expect(created.planCooldown).toBeNull();
+    expect(store.total()).toBe(before);
+  });
+
+  it('liftPlanCooldown lifts the shared record and is idempotent', async () => {
+    const { svc, store, dialectRow } = await setup();
+    await store.inner.record(dialectRow.id, { kind: 'risk_control', default: 30 * MINUTE });
+    await svc.liftPlanCooldown(principal, dialectRow.id);
+    expect(await store.inner.check(dialectRow.id)).toBeNull();
+    await expect(svc.liftPlanCooldown(principal, dialectRow.id)).resolves.toBeUndefined();
+  });
+
+  it('liftPlanCooldown on an unknown id is a 404 and touches no key', async () => {
+    const { svc, store } = await setup();
+    await expect(svc.liftPlanCooldown(principal, 'nope')).rejects.toBeInstanceOf(NotFoundException);
+    expect(store.calls.lift).toBe(0);
+  });
+
+  it('a rejecting shared lift is a 503, never a silent success', async () => {
+    const { svc, store, dialectRow } = await setup();
+    store.liftError = new Error('redis down');
+    await expect(svc.liftPlanCooldown(principal, dialectRow.id)).rejects.toBeInstanceOf(
+      ServiceUnavailableException,
+    );
+  });
+
+  it('with the real failover store, a rejected shared lift is a 503 and still clears the fallback record', async () => {
+    const primary: PlanCooldownStore = {
+      check: () => Promise.reject(new Error('redis down')),
+      checkMany: () => Promise.reject(new Error('redis down')),
+      record: () => Promise.reject(new Error('redis down')),
+      lift: () => Promise.reject(new Error('redis down')),
+    };
+    const fallback = new InMemoryPlanCooldownStore();
+    const onError = jest.fn();
+    const failover = new FailoverPlanCooldownStore(primary, fallback, onError);
+    const made = makePort();
+    const svc = mkProvidersService(
+      made.port,
+      factory(),
+      runtime('selfhosted'),
+      () => null,
+      failover,
+    );
+    const row = await made.port.providers.insert(principal, {
+      name: 'preset',
+      kind: 'subscription',
+      protocol: zai.protocol,
+      baseUrl: zai.baseUrl,
+      keyPreset: ZAI_CODING_PLAN_PRESET.id,
+      encryptedCredentials: encryptSecret(serializePlainCredential('k'), KEY),
+    });
+    // Routing on this instance recorded the pause in the fallback while Redis was down.
+    await failover.record(row.id, { kind: 'quota_exhausted', default: 15 * MINUTE });
+    expect((await svc.get(principal, row.id)).planCooldown).toMatchObject({
+      kind: 'quota_exhausted',
+    });
+
+    await expect(svc.liftPlanCooldown(principal, row.id)).rejects.toBeInstanceOf(
+      ServiceUnavailableException,
+    );
+    expect(await fallback.check(row.id)).toBeNull(); // this instance's record is gone
+  });
+
+  // Design D12: Test and sync are how the operator checks a paused provider.
+  it('Test and sync on a paused provider still call the adapter and never touch the store', async () => {
+    const testConnection = jest.fn(() =>
+      Promise.resolve({ ok: true, models: 1 } as ConnectionResult),
+    );
+    const listModels = jest.fn(() => Promise.resolve([{ id: 'glm-5' }] as ProviderModelInfo[]));
+    const { svc, store, dialectRow } = await setup({ adapter: { testConnection, listModels } });
+    await store.inner.record(dialectRow.id, { kind: 'quota_exhausted', default: 15 * MINUTE });
+    const before = { ...store.calls };
+
+    const tested = await svc.testConnection(principal, dialectRow.id);
+    const synced = await svc.syncModels(principal, dialectRow.id);
+
+    expect(tested.ok).toBe(true);
+    expect(synced.ok).toBe(true);
+    expect(testConnection).toHaveBeenCalledTimes(1);
+    expect(listModels).toHaveBeenCalledTimes(1);
+    expect(store.calls).toEqual(before);
   });
 });

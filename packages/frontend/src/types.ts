@@ -7,6 +7,7 @@ import type {
   EventType,
   Mode,
   ModelDto,
+  PlanCooldownDto,
   ProviderHealthDto,
   SmtpSecure,
 } from './data/api';
@@ -83,6 +84,9 @@ export interface Provider {
    * edit modal shows no switch). */
   imitateClientIdentity: boolean;
   clientIdentity: { label: string } | null;
+  /** classify-plan-quota-errors: the active plan pause (the kind, the end as an ISO-8601
+   * instant, and who chose it), or null. */
+  planCooldown: PlanCooldownDto | null;
   createdAt: string;
   /** add-provider-health-signals: the server-computed displayed health (the most
    * recently recorded of the check and live-traffic records). */

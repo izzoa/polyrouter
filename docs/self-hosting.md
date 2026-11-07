@@ -545,6 +545,67 @@ ids, the models come from the provider's own listing, and Test is that listing.
   credential)** stays available for anything else.
 - **The compliance note above applies**: pair a plan with a pay-per-token fallback.
 
+#### Plan limits and pauses
+
+A coding plan answers with its own error when it runs out of allowance, and polyrouter reads
+that error instead of treating it as a generic rate limit. This applies to the key presets only:
+the classification keys on the provider's documented error codes or message templates, on the
+preset's pinned host, and never on a URL you typed. There are four kinds:
+
+| Kind                                                  | What the provider said                                                     | What polyrouter does                                      |
+| ----------------------------------------------------- | -------------------------------------------------------------------------- | --------------------------------------------------------- |
+| Plan usage limit reached (`quota_exhausted`)          | The 5-hour, weekly, monthly or credit allowance is used up                 | Pauses that provider                                      |
+| Provider throttled the account (`risk_control`)       | A fair-use, concurrency or risk-control limit that usually needs an appeal | Pauses that provider                                      |
+| No active plan for this key (`plan_inactive`)         | The plan expired or was cancelled, or the key is not a plan key            | Pauses that provider                                      |
+| Plan does not include this model (`plan_entitlement`) | The plan's tier excludes the requested model                               | Falls back, no pause: other models on the plan still work |
+
+- **A pause skips the provider, then the request moves on.** While a provider is paused, every
+  chain that lists it skips it without contacting it and tries the next member, exactly as a
+  fallback does. If every member is paused, the request fails at once with `429
+plan_quota_exhausted` or `429 plan_risk_control` (HTTP 429, as `rate_limited` was), or
+  `502 plan_inactive`. Clients that branch on the status see no change; clients that read the
+  `code` see the new, more specific one. polyrouter never waits out a pause.
+- **A recognised exhaustion no longer raises `provider_down`.** These failures do not count
+  toward the circuit breaker, so a plan that is simply out of allowance does not trip the
+  breaker or send a provider-down notification. A genuine outage (a 5xx, a timeout, a refused
+  connection) still does.
+- **How long.** If the provider states when the allowance resets, polyrouter pauses until then
+  (Z.ai states it in the message; a `Retry-After` is honoured as well). Otherwise it uses a
+  default: 15 minutes for a short window (5 hours), 60 minutes for a long one (weekly, monthly,
+  credit), 30 minutes for a risk-control throttle, 60 minutes for an inactive plan. Every pause
+  is held between 1 minute and 7 days, so a malformed time can neither cause a retry storm nor
+  park a provider for weeks. The pause is shared through Redis, so every polyrouter instance
+  agrees on it, and it never outlives its end time.
+- **The card says so.** A paused provider's card shows one amber line that leads with the account
+  condition and the time, for example `Plan usage limit reached — resets at 18:00 UTC`, or
+  `… polyrouter retries at 18:00 UTC` when polyrouter chose the time. The line returns to the
+  provider's health at that time without a reload. The Request inspector's route trace marks a
+  skipped member `skipped — plan paused (provider not contacted)`.
+- **Resume now** lifts a pause at once, from the card. For a risk-control pause it asks first:
+  sending again early may make the provider restrict your account further, so the dialog
+  explains that and commits with **Resume provider**. Test and Sync models still call a paused
+  provider, which is how you check it. If the shared store is unreachable the lift answers 503
+  and says so, rather than reporting a resume that did not happen.
+- **Rotating the key lifts the pause**, because a new key may belong to another plan. Deleting a
+  provider does not need to: its pause expires within 7 days and the id is never reused.
+- **What is classified.** Z.ai, MiniMax and Kimi Code in their international regions, and Kimi
+  Code's China region (its error reference uses the same English messages). **OpenCode Go
+  has none** until a real error response is captured. **The Z.ai and MiniMax China regions
+  have none either**: their error references are in Chinese or on separate documentation, so
+  their shapes are unverified; their errors keep the generic mapping (a 429 is a plain
+  `rate_limited`), as does an "Other subscription" row, a drifted base URL and any OAuth row.
+- **Kimi's membership 403 stays a plain permission failure.** "We're unable to verify your
+  membership benefits at this time" is documented as transient (it says to wait and retry), so
+  it is not read as a plan problem.
+- **Kimi's "engine is currently overloaded" 429 reads as unavailable**, because Kimi documents it
+  as unrelated to your quota. There is one open question: community reports say Kimi also sends
+  an overload answer, or a 403 "only available for Coding Agents", to a User-Agent that is not
+  on its allow-list, and polyrouter's honest `polyrouter/<version>` User-Agent may be one of
+  them. The runbook (`scripts/verify-kimi-key.md`, "Error-shape evidence") records whether that
+  happens, and if it does the label will change in a later release. This is not decided here.
+- **Not covered yet:** a notification when a plan pauses, `Retry-After` handling for providers
+  without a preset, and showing how much of a plan's allowance is left.
+
 ### Model lists stay current
 
 polyrouter **re-lists every provider's models about once a day** in the background — API-key,

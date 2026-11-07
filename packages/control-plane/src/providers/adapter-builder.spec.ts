@@ -19,6 +19,7 @@ import {
 } from '@polyrouter/data-plane';
 import {
   KIMI_CODE_PRESET,
+  MINIMAX_M_PLAN_PRESET,
   OPENCODE_GO_PRESET,
   ZAI_CODING_PLAN_PRESET,
 } from '../subscription-presets/key-presets';
@@ -581,6 +582,150 @@ describe('ProviderAdapterBuilder key-preset client identity', () => {
         expect(uas(raw).join()).not.toContain('polyrouter/');
         expect(raw.join('\n')).not.toMatch(/KimiCLI\//);
       }
+    });
+  });
+});
+
+// classify-plan-quota-errors task 6.2: the region's plan-error dialect reaches the config only
+// through the coherence gate, so only a row still equal to a region pin that declares one.
+describe('ProviderAdapterBuilder key-preset plan-error dialect', () => {
+  const keyRow = (preset: string, baseUrl: string, over: Partial<ProviderRow> = {}): ProviderRow =>
+    row({
+      kind: 'subscription',
+      protocol: 'openai_compatible',
+      baseUrl,
+      keyPreset: preset,
+      ...over,
+    });
+  const plainKey = (): ReturnType<SubscriptionOauthService['resolveCredential']> =>
+    Promise.resolve({
+      credential: 'sk-plain-key',
+      authScheme: 'api_key' as const,
+      envelope: 'stored-cipher',
+    });
+  const noGate = { ...opts, assertAddress: false };
+  const dialectOf = async (r: ProviderRow): Promise<string | undefined> => {
+    const cfg = await builder(plainKey).buildConfig(principal, r, noGate);
+    return cfg.errorDialect;
+  };
+
+  it.each([
+    ['Z.ai international', ZAI_CODING_PLAN_PRESET, 'intl', 'zai'],
+    ['MiniMax international', MINIMAX_M_PLAN_PRESET, 'intl', 'minimax'],
+    ['Kimi international', KIMI_CODE_PRESET, 'intl', 'kimi'],
+    ['Kimi China', KIMI_CODE_PRESET, 'cn', 'kimi'],
+  ] as const)('%s carries its dialect', async (_n, preset, regionId, dialect) => {
+    const region = preset.regions.find((r) => r.id === regionId)!;
+    expect(await dialectOf(keyRow(preset.id, region.baseUrl))).toBe(dialect);
+  });
+
+  it.each([
+    [
+      'a Z.ai China row (no evidence recorded)',
+      ZAI_CODING_PLAN_PRESET.regions[1]!.baseUrl,
+      'zai-coding-plan',
+      {},
+    ],
+    [
+      'a MiniMax China row (no evidence recorded)',
+      MINIMAX_M_PLAN_PRESET.regions[1]!.baseUrl,
+      'minimax-m-plan',
+      {},
+    ],
+    ['an OpenCode Go row', OPENCODE_GO_PRESET.regions[0]!.baseUrl, 'opencode-go', {}],
+    ['a drifted base_url', 'https://api.z.ai/api/coding/paas/v4/', 'zai-coding-plan', {}],
+    [
+      'an "Other subscription" row on api.z.ai',
+      ZAI_CODING_PLAN_PRESET.regions[0]!.baseUrl,
+      null,
+      {},
+    ],
+    [
+      'an api_key row on the pay-as-you-go path',
+      'https://api.z.ai/api/paas/v4',
+      null,
+      { kind: 'api_key' as const },
+    ],
+    [
+      'an api_key row on the coding host',
+      ZAI_CODING_PLAN_PRESET.regions[0]!.baseUrl,
+      'zai-coding-plan',
+      { kind: 'api_key' as const },
+    ],
+  ])('%s carries none', async (_n, baseUrl, preset, over) => {
+    const cfg = await builder(plainKey).buildConfig(
+      principal,
+      keyRow(preset as string, baseUrl, { keyPreset: preset, ...over }),
+      noGate,
+    );
+    expect('errorDialect' in cfg).toBe(false);
+  });
+
+  it('an OAuth preset row carries none', async () => {
+    const r = row({
+      kind: 'subscription',
+      protocol: 'anthropic_compatible',
+      baseUrl: 'https://api.anthropic.com',
+      oauthPreset: 'claude-code',
+      keyPreset: null,
+    });
+    const cfg = await builder(() =>
+      Promise.resolve({
+        credential: 'tok',
+        authScheme: 'oauth_bearer' as const,
+        envelope: 'stored-cipher',
+      }),
+    ).buildConfig(principal, r, noGate);
+    expect('errorDialect' in cfg).toBe(false);
+  });
+
+  describe('Test (the model listing) with the dialect', () => {
+    const refusing =
+      (status: number, message: string): HttpClient =>
+      (): Promise<HttpResponse> => {
+        const text = JSON.stringify({ error: { message } });
+        return Promise.resolve({
+          status,
+          ok: false,
+          headers: { get: () => null },
+          body: null,
+          text: () => Promise.resolve(text),
+          json: () => Promise.resolve(JSON.parse(text) as unknown),
+        });
+      };
+    const testKimi = async (status: number, message: string) => {
+      const region = KIMI_CODE_PRESET.regions[0]!;
+      const cfg = await builder(plainKey).buildConfig(
+        principal,
+        keyRow(KIMI_CODE_PRESET.id, region.baseUrl),
+        noGate,
+      );
+      return createOpenaiProviderAdapter(cfg, {
+        httpClient: refusing(status, message),
+      }).testConnection();
+    };
+
+    it('a recognized 403 tier text is plan_entitlement, not permission', async () => {
+      const r = await testKimi(403, 'Your current subscription does not have access to kimi-k3.');
+      expect(r).toMatchObject({ ok: false, kind: 'plan_entitlement' });
+    });
+
+    it('an unrecognised 403 still gives permission', async () => {
+      const r = await testKimi(403, 'Forbidden for some other reason');
+      expect(r).toMatchObject({ ok: false, kind: 'permission' });
+    });
+
+    it('the documented membership 403 stays permission (design D1)', async () => {
+      const r = await testKimi(
+        403,
+        'We’re unable to verify your membership benefits at this time. Please ensure your membership is active.',
+      );
+      expect(r).toMatchObject({ ok: false, kind: 'permission' });
+    });
+
+    it('a 401 is still auth', async () => {
+      const r = await testKimi(401, 'Your current subscription does not have access to x');
+      expect(r).toMatchObject({ ok: false, kind: 'auth' });
     });
   });
 });

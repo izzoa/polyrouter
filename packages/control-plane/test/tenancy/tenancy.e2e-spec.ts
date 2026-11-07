@@ -15,6 +15,7 @@ import {
   PERSISTENCE_PORT,
   userPrincipal,
 } from '@polyrouter/shared/server';
+import type { PlanCooldownStore } from '@polyrouter/data-plane';
 import type {
   AgentInsertInput,
   BatchJobInsertInput,
@@ -38,6 +39,7 @@ import {
   OPENCODE_GO_PRESET,
   type KeyPresetRegistry,
 } from '../../src/subscription-presets/key-presets';
+import { PLAN_COOLDOWN_STORE } from '../../src/plan-cooldown/plan-cooldown.module';
 import { SubscriptionPresetsModule } from '../../src/subscription-presets/subscription-presets.module';
 import { DRIZZLE, PG_POOL } from '../../src/database/database.internal';
 import { DatabaseModule } from '../../src/database/database.module';
@@ -786,5 +788,38 @@ describe('key-preset connect is tenant-isolated (add-key-subscription-presets, t
     expect(
       await harness.port.providers.findById(alice.principal, bobConnect.body.id as string),
     ).toBeNull();
+  });
+
+  // classify-plan-quota-errors task 7.2: the lift is owner-scoped BEFORE it touches a key.
+  it('tenant B cannot read or lift tenant A’s plan cooldown, and it survives the attempt', async () => {
+    const created = await request(server)
+      .post('/api/providers/key-presets/connect')
+      .set('x-test-user', alice.userId)
+      .send({ preset: 'opencode-go', credential: 'sk-tenancy-cooldown' });
+    expect(created.status).toBe(200);
+    const id = created.body.id as string;
+    const store = app.get<PlanCooldownStore>(PLAN_COOLDOWN_STORE);
+    await store.record(id, { kind: 'quota_exhausted', default: 15 * 60_000 });
+
+    const asB = (t: request.Test): request.Test => t.set('x-test-user', bob.userId);
+    expect((await asB(request(server).get(`/api/providers/${id}`))).status).toBe(404);
+    expect((await asB(request(server).delete(`/api/providers/${id}/plan-cooldown`))).status).toBe(
+      404,
+    );
+    const listB = await asB(request(server).get('/api/providers'));
+    expect(listB.status).toBe(200);
+    expect((listB.body as Array<{ id: string }>).map((p) => p.id)).not.toContain(id);
+    // A's cooldown (a key in Redis) is still there after B's attempts.
+    expect(await store.check(id)).toMatchObject({ kind: 'quota_exhausted' });
+
+    // The owner's own lift works.
+    expect(
+      (
+        await request(server)
+          .delete(`/api/providers/${id}/plan-cooldown`)
+          .set('x-test-user', alice.userId)
+      ).status,
+    ).toBe(204);
+    expect(await store.check(id)).toBeNull();
   });
 });

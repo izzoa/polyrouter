@@ -109,7 +109,8 @@ export class SubscriptionOauthController {
       sessionId: dto.sessionId,
       pasted: dto.pasted,
     });
-    return toSafe(row, clientIdentityView(this.svc.availableClientIdentity(row)));
+    // An OAuth row carries no plan-error dialect, so it has no cooldown (null, no store call).
+    return toSafe(row, clientIdentityView(this.svc.availableClientIdentity(row)), null);
   }
 
   // Path lives under `oauth/` so the per-IP throttle rule prefix covers it too

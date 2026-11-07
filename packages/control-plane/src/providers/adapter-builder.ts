@@ -126,7 +126,12 @@ export class ProviderAdapterBuilder {
     // read from the BUNDLED constants through the coherence gate, so a drifted `base_url`, an
     // unknown marker or a non-subscription row gets none, and no preset value can reach a host
     // the preset does not pin. A plain import — no constructor argument.
-    const modelsUrl = keyPresetForRow(provider)?.region.modelsUrl;
+    const presetMatch = keyPresetForRow(provider);
+    const modelsUrl = presetMatch?.region.modelsUrl;
+    // The region's plan-error dialect (classify-plan-quota-errors, design D2): the SAME gate and
+    // the same plain import, so it reaches only a row still equal to a region pin that declares
+    // one — never a host match, an OAuth row, a drifted or unbound row.
+    const errorDialect = presetMatch?.region.errorDialect;
     const common = {
       protocol: provider.protocol as ProviderProtocol,
       baseUrl: provider.baseUrl,
@@ -137,6 +142,7 @@ export class ProviderAdapterBuilder {
       ...(opts.bounds ?? {}),
       ...(identity !== undefined ? { extraHeaders: identity } : {}),
       ...(modelsUrl !== undefined ? { modelsUrl } : {}),
+      ...(errorDialect !== undefined ? { errorDialect } : {}),
     };
     // Subscription providers resolve through the subscription-oauth seam: it unwraps
     // a plain paste, or refreshes an OAuth token (pre-request only — invariant 3)

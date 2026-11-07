@@ -1,5 +1,10 @@
 import { ATTEMPT_FAILURES_MAX } from '@polyrouter/shared';
-import { ProviderError, type AttemptFailure } from '@polyrouter/data-plane';
+import {
+  ProviderError,
+  chainBillingEvidence,
+  walkUnbilled,
+  type AttemptFailure,
+} from '@polyrouter/data-plane';
 import {
   attemptTrailEntries,
   cheapCancelOutcome,
@@ -14,6 +19,17 @@ const fail = (index: number, error: ProviderError, dispatched?: boolean): Attemp
   index,
   error,
   ...(dispatched !== undefined ? { dispatched } : {}),
+});
+
+const pausedFail = (
+  index: number,
+  kind: ConstructorParameters<typeof ProviderError>[0],
+): AttemptFailure => ({
+  index,
+  error: new ProviderError(kind, 'provider paused by a plan cooldown'),
+  dispatched: false,
+  billing: 'not_sent',
+  skip: 'plan_cooldown',
 });
 
 const metaOf = (...models: string[]) =>
@@ -43,6 +59,19 @@ describe('reasonWithTrail (add-fallback-attempt-detail)', () => {
   it('leaves a trail-free reason untouched', () => {
     expect(reasonWithTrail('r', [], meta)).toBe('r');
   });
+
+  // classify-plan-quota-errors: a plan-cooldown skip is a second pseudo-token, `paused@model`,
+  // outside the taxonomy, distinct from a circuit skip and from a dispatched kind.
+  it('renders paused@, skip@ and kind@ together', () => {
+    const failures = [
+      fail(0, err('quota_exhausted', 429)), // dispatched, recognized plan failure
+      pausedFail(1, 'quota_exhausted'), // plan-cooldown skip
+      fail(2, err('unavailable'), false), // circuit-open skip
+    ];
+    expect(reasonWithTrail('r', failures, meta)).toBe(
+      'r; fell back after: quota_exhausted@a, paused@b, skip@c',
+    );
+  });
 });
 
 describe('attemptTrailEntries (add-fallback-attempt-detail)', () => {
@@ -63,6 +92,39 @@ describe('attemptTrailEntries (add-fallback-attempt-detail)', () => {
       },
       { index: 1, providerId: 'prov-b', model: 'b', kind: 'unavailable', dispatched: false },
     ]);
+  });
+
+  it('copies skipReason for a plan-cooldown skip and leaves it absent on circuit skips and dispatched entries', () => {
+    const meta = metaOf('a', 'b', 'c');
+    const entries = attemptTrailEntries(
+      [
+        {
+          failures: [
+            fail(0, err('quota_exhausted', 429)),
+            pausedFail(1, 'quota_exhausted'),
+            fail(2, err('unavailable'), false),
+          ],
+          meta,
+        },
+      ],
+      null,
+    );
+    expect(entries[0]).not.toHaveProperty('skipReason');
+    expect(entries[1]).toMatchObject({
+      kind: 'quota_exhausted',
+      dispatched: false,
+      skipReason: 'plan_cooldown',
+    });
+    expect(entries[1]).not.toHaveProperty('status');
+    expect(entries[2]).toMatchObject({ dispatched: false });
+    expect(entries[2]).not.toHaveProperty('skipReason');
+  });
+
+  it('an all-paused chain carries not-billed evidence for every entry', () => {
+    const failures = [pausedFail(0, 'quota_exhausted'), pausedFail(1, 'plan_inactive')];
+    const evidence = chainBillingEvidence({ failures });
+    expect(evidence).toEqual(['not_sent', 'not_sent']);
+    expect(walkUnbilled(evidence)).toBe(true);
   });
 
   it('marks terminal by IDENTITY on the final leg tail (whole-chain exhaustion)', () => {
@@ -120,6 +182,7 @@ describe('attemptTrailEntries (add-fallback-attempt-detail)', () => {
       'kind',
       'status',
       'dispatched',
+      'skipReason',
       'leg',
       'terminal',
     ]);

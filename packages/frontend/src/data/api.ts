@@ -111,6 +111,17 @@ export interface ProviderHealthDto {
   at: string | null;
 }
 
+/** classify-plan-quota-errors: why a plan provider is paused, and until when. The server
+ * reads the shared cooldown store into every provider view; `until` is an ISO-8601 instant.
+ * `untilSource` says whether the PROVIDER stated the end or polyrouter chose it. */
+export type PlanCooldownKind = 'quota_exhausted' | 'risk_control' | 'plan_inactive';
+export type PlanCooldownSource = 'provider' | 'default';
+export interface PlanCooldownDto {
+  kind: PlanCooldownKind;
+  until: string;
+  untilSource: PlanCooldownSource;
+}
+
 export interface ProviderDto {
   id: string;
   name: string;
@@ -143,6 +154,8 @@ export interface ProviderDto {
    * `autoPruneUnlisted`, so older test doubles still type-check; absent reads as off / none. */
   imitateClientIdentity?: boolean;
   clientIdentity?: ClientIdentityView | null;
+  /** classify-plan-quota-errors: the active plan pause, or null. Always sent by the server. */
+  planCooldown: PlanCooldownDto | null;
   createdAt: string;
   health: ProviderHealthDto;
   /** The two raw records (non-secret) behind `health`. */
@@ -1171,6 +1184,9 @@ export interface ApiClient {
   /** `credential` is key material — sent once, never stored client-side. */
   keyPresetConnect(body: KeyPresetConnectInput): Promise<ProviderDto>;
   deleteProvider(id: string): Promise<{ deleted: boolean }>;
+  /** Lift a plan pause now (`DELETE /providers/:id/plan-cooldown`, 204). Rejects on 404 and on
+   * 503 (the shared store is unreachable, so the pause may still hold). */
+  liftPlanCooldown(id: string): Promise<void>;
   testProvider(id: string): Promise<ActionResult>;
   syncModels(id: string): Promise<ActionResult>;
   listModels(providerId?: string): Promise<ModelDto[]>;
@@ -1387,6 +1403,10 @@ export const realClient: ApiClient = {
     http<ProviderDto>(`${API_BASE}/providers/key-presets/connect`, jsonInit('POST', body)),
   deleteProvider: (id) =>
     http<{ deleted: boolean }>(`${API_BASE}/providers/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+  liftPlanCooldown: (id) =>
+    http<void>(`${API_BASE}/providers/${encodeURIComponent(id)}/plan-cooldown`, {
       method: 'DELETE',
     }),
   testProvider: (id) =>

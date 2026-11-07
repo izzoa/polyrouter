@@ -37,6 +37,7 @@ export class KeyPresetsController {
     // A new row's switch is off, but a preset that declares an identity still names its
     // `clientIdentity`, so the SPA (which adds this response without a reload) can show the
     // Edit switch (design D7 step 6).
-    return toSafe(row, clientIdentityView(this.oauth.availableClientIdentity(row)));
+    // A new row has no plan cooldown (null, no store call).
+    return toSafe(row, clientIdentityView(this.oauth.availableClientIdentity(row)), null);
   }
 }

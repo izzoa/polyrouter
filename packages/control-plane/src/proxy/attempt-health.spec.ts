@@ -213,4 +213,27 @@ describe('attemptHealthHook (add-provider-health-signals)', () => {
       expect.objectContaining({ envelope: 'plain-key-cipher' }),
     );
   });
+
+  // classify-plan-quota-errors, provider-management "A plan failure never changes the traffic
+  // health record". The breaker never opens for these kinds (data-plane breaker.spec: neutral
+  // for the first three, a per-model success for plan_entitlement), so the settle carries
+  // justOpened=false and the hook, which writes only on an open or a kind-less success,
+  // records nothing however often they settle and whatever the displayed state.
+  it.each([
+    ['quota_exhausted', 'neutral'],
+    ['risk_control', 'neutral'],
+    ['plan_inactive', 'neutral'],
+    ['plan_entitlement', 'success'],
+  ] as const)('a %s settle writes no traffic health record', (kind, outcome) => {
+    const { d, setHealth } = deps();
+    for (const provider of [
+      row({ status: 'ok', statusRev: 1 }),
+      row({ status: 'error', statusRev: 1 }),
+    ]) {
+      for (let i = 0; i < 6; i += 1) {
+        attemptHealthHook(d, principal, provider, used('c'))(settle({ outcome, kind, seq: i }));
+      }
+    }
+    expect(setHealth).not.toHaveBeenCalled();
+  });
 });

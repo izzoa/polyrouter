@@ -443,8 +443,18 @@ export function Inspector() {
                             upstream failure. */}
                         <Show when={view().terminalSkipped}>
                           <div class="t-caption" style="color:var(--text3)">
-                            The last chain member was never contacted — its provider's circuit was
-                            open when this request walked the chain.
+                            <Show
+                              when={view().terminalSkipReason === 'plan_cooldown'}
+                              fallback={
+                                <>
+                                  The last chain member was never contacted — its provider's circuit
+                                  was open when this request walked the chain.
+                                </>
+                              }
+                            >
+                              The last chain member was never contacted — its provider's plan was
+                              paused when this request walked the chain.
+                            </Show>
                           </div>
                         </Show>
                       </div>

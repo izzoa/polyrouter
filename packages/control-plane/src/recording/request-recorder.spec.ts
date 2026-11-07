@@ -133,6 +133,55 @@ describe('RequestRecorder', () => {
     expect(d.attemptFailures).toEqual(attemptFailures);
   });
 
+  // classify-plan-quota-errors task 6.4: a plan-cooldown skip's reason rides the same trail
+  // gate as every other entry, and a plan kind's own message persists verbatim.
+  it('keeps skipReason on fallback and error rows and discards it on success and cancelled', () => {
+    const { recorder, enqueue } = makeRecorder();
+    const attemptFailures = [
+      {
+        index: 0,
+        providerId: 'p1',
+        model: 'a',
+        kind: 'quota_exhausted',
+        dispatched: false,
+        skipReason: 'plan_cooldown' as const,
+        terminal: true,
+      },
+    ];
+    for (const status of ['success', 'cancelled'] as const) {
+      recorder.record(ctx({ attemptFailures }), { status, outputChars: 0 });
+    }
+    for (const call of enqueue.mock.calls) {
+      expect((call[0] as RequestLogDraft).attemptFailures).toBeUndefined();
+    }
+    enqueue.mockClear();
+    for (const status of ['fallback', 'error'] as const) {
+      recorder.record(ctx({ attemptFailures }), {
+        status,
+        outputChars: 0,
+        ...(status === 'error' ? { error: { kind: 'quota_exhausted' } } : {}),
+      });
+    }
+    for (const call of enqueue.mock.calls) {
+      expect((call[0] as RequestLogDraft).attemptFailures).toEqual(attemptFailures);
+    }
+  });
+
+  it.each(['quota_exhausted', 'risk_control', 'plan_inactive', 'plan_entitlement'])(
+    'persists a %s message verbatim (it was scrubbed and capped at the adapter)',
+    (kind) => {
+      const { recorder, enqueue } = makeRecorder();
+      const providerMessage = 'Usage limit reached for 5 hours. Your limit will reset at 18:00';
+      recorder.record(ctx(), {
+        status: 'error',
+        outputChars: 0,
+        error: { kind, status: 429, providerMessage, markers: ['1308'] },
+      });
+      const d = enqueue.mock.calls[0]![0] as RequestLogDraft;
+      expect(d.error).toEqual({ kind, status: 429, providerMessage, markers: ['1308'] });
+    },
+  );
+
   // fix-bad-request-dead-end: the trail follows the WALK, the five error-detail
   // columns follow the TERMINAL status. Two rules, not one — a request the chain
   // RECOVERED has no terminal error but very much has a trail, and it is the only

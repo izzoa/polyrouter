@@ -230,3 +230,112 @@ describe('adapter config — absolute model-listing URL (add-key-subscription-pr
     expect(calls.map((c) => c.url)).toEqual([anthropicOverride, `${anthropicOverride}?after_id=a`]);
   });
 });
+
+// classify-plan-quota-errors task 3.3: the dialect is threaded into the three non-2xx sites
+// (buffered chat, stream open, listing) and nowhere else.
+describe('adapter config — plan-error dialect (classify-plan-quota-errors)', () => {
+  const zaiConfig = { ...config, errorDialect: 'zai' as const };
+  const RESET = '2026-11-06T18:00:00+08:00';
+  const ZAI_1308 = JSON.stringify({
+    error: {
+      code: '1308',
+      message: `Usage limit reached for 5 hours. Your limit will reset at ${RESET}`,
+    },
+  });
+  const ZAI_1309 = JSON.stringify({
+    error: { code: '1309', message: 'Your GLM Coding Plan package has expired.' },
+  });
+  const refuse = (text: string, headers: Record<string, string> = {}) =>
+    recordingClient(() => errorResponse(429, text, headers));
+
+  const drain = async (adapter: ReturnType<typeof createOpenaiProviderAdapter>): Promise<void> => {
+    for await (const ev of adapter.chatStream(request)) void ev;
+  };
+
+  it('buffered chat, stream open and listing each map a zai 1308 429 to quota_exhausted with a parsed reset', async () => {
+    const { client } = refuse(ZAI_1308);
+    const adapter = createOpenaiProviderAdapter(zaiConfig, { httpClient: client });
+    const expected = {
+      kind: 'quota_exhausted',
+      status: 429,
+      planReset: { resetAt: Date.parse(RESET), window: 'short' },
+    };
+    await expect(adapter.chat(request)).rejects.toMatchObject(expected);
+    await expect(drain(adapter)).rejects.toMatchObject(expected);
+    await expect(adapter.listModels()).rejects.toMatchObject(expected);
+  });
+
+  it('the same responses without a dialect are rate_limit', async () => {
+    const { client } = refuse(ZAI_1308);
+    const adapter = createOpenaiProviderAdapter(config, { httpClient: client });
+    for (const run of [
+      () => adapter.chat(request),
+      () => drain(adapter),
+      () => adapter.listModels(),
+    ]) {
+      const err = await run().catch((e: unknown) => e);
+      expect(err).toMatchObject({ kind: 'rate_limit' });
+      expect((err as { planReset?: unknown }).planReset).toBeUndefined();
+    }
+  });
+
+  it('Retry-After: 120 gives a relative retryAfterMs and no resetAt, at any time', async () => {
+    const body = JSON.stringify({ error: { code: '1313', message: 'Fair Usage Policy' } });
+    const { client } = refuse(body, { 'Retry-After': '120' });
+    const adapter = createOpenaiProviderAdapter(zaiConfig, { httpClient: client });
+    jest.useFakeTimers();
+    try {
+      const seen: unknown[] = [];
+      for (const at of ['2020-01-01T00:00:00Z', '2032-03-04T05:06:07Z']) {
+        jest.setSystemTime(new Date(at));
+        const err = await adapter.chat(request).catch((e: unknown) => e);
+        expect(err).toMatchObject({ kind: 'risk_control', planReset: { retryAfterMs: 120_000 } });
+        seen.push((err as { planReset: unknown }).planReset);
+      }
+      expect(seen[0]).toEqual(seen[1]);
+      expect(seen[0]).not.toHaveProperty('resetAt');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('never reads Retry-After for an adapter without a dialect', async () => {
+    const { client } = refuse(JSON.stringify({ error: { code: '1313' } }), {
+      'Retry-After': '120',
+    });
+    const adapter = createOpenaiProviderAdapter(config, { httpClient: client });
+    const err = await adapter.chat(request).catch((e: unknown) => e);
+    expect(err).toMatchObject({ kind: 'rate_limit' });
+    expect((err as { planReset?: unknown }).planReset).toBeUndefined();
+  });
+
+  it('an in-band SSE error event that carries a plan code keeps today stream classification', async () => {
+    const sse =
+      'data: ' +
+      JSON.stringify({
+        error: { type: 'rate_limit_error', code: '1308', message: 'Usage limit' },
+      }) +
+      '\n\ndata: [DONE]\n\n';
+    const { client } = recordingClient(() => sseResponse(sse));
+    const adapter = createOpenaiProviderAdapter(zaiConfig, { httpClient: client });
+    const events: { type: string; diagnostic?: { kind?: string } }[] = [];
+    for await (const ev of adapter.chatStream(request)) events.push(ev);
+    const errEvent = events.find((e) => e.type === 'error');
+    expect(errEvent).toBeDefined();
+    expect(errEvent!.diagnostic?.kind).toBe('rate_limit');
+  });
+
+  it('testConnection reports plan_inactive for a listing refused with 1309', async () => {
+    const { client } = refuse(ZAI_1309);
+    const adapter = createOpenaiProviderAdapter(zaiConfig, { httpClient: client });
+    const result = await adapter.testConnection();
+    expect(result).toMatchObject({ ok: false, kind: 'plan_inactive' });
+  });
+
+  it('a 401 from the listing stays auth under the dialect', async () => {
+    const { client } = recordingClient(() => errorResponse(401, ZAI_1309));
+    const adapter = createOpenaiProviderAdapter(zaiConfig, { httpClient: client });
+    expect(await adapter.testConnection()).toMatchObject({ ok: false, kind: 'auth' });
+    await expect(adapter.chat(request)).rejects.toMatchObject({ kind: 'auth' });
+  });
+});

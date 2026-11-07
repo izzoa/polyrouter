@@ -928,6 +928,75 @@ if (params.get('identity') === '1') {
   ];
 }
 
+// Plan-pause fixture (classify-plan-quota-errors task 9.3), opt-in via `?pause=1` so the default
+// harness stays byte-identical for every other suite. One key-preset subscription provider paused
+// for `risk_control`, so its card carries the pause line and Resume now, and the
+// `confirm:planCooldownResume` surface can be opened from it. The end is far ahead, so no expiry
+// timer fires during a sweep.
+if (params.get('pause') === '1') {
+  client.providers = [
+    {
+      id: 'p-paused',
+      name: 'Kimi Code',
+      kind: 'subscription',
+      protocol: 'openai_compatible',
+      baseUrl: 'https://api.kimi.com/coding/v1',
+      status: 'ok',
+      maxTokensSpelling: 'auto',
+      hasCredential: true,
+      oauthPreset: null,
+      keyPreset: 'kimi-code',
+      credentialExpiresAt: null,
+      credentialError: null,
+      firstByteTimeoutMs: null,
+      idleTimeoutMs: null,
+      autoPruneUnlisted: true,
+      imitateClientIdentity: false,
+      clientIdentity: null,
+      createdAt: '2026-11-01T09:00:00.000Z',
+      ...UNRECORDED_HEALTH,
+      planCooldown: {
+        kind: 'risk_control',
+        until: new Date(Date.now() + 5 * 3_600_000).toISOString(),
+        untilSource: 'default',
+      },
+    },
+  ];
+}
+
+// Paused-member trace fixture (classify-plan-quota-errors task 9.4), opt-in via `?trace=paused`: a
+// request whose terminal member was skipped because its provider's plan was paused, so the route
+// trace draws the pause label and the ERROR card names the pause. The default and `?trace=cascade`
+// harnesses are untouched.
+if (params.get('trace') === 'paused') {
+  const head = client.requestRows[0]!;
+  client.requestRows = [
+    {
+      ...head,
+      id: 'trace-paused',
+      createdAt: new Date(Date.parse(head.createdAt) + 7000).toISOString(),
+      status: 'error',
+      errorKind: 'quota_exhausted',
+      errorStatus: null,
+      errorMessage: null,
+      errorRequestId: null,
+      errorMarkers: null,
+      attemptFailures: [
+        {
+          index: 0,
+          providerId: 'prov-0',
+          model: 'kimi-for-coding',
+          kind: 'quota_exhausted',
+          dispatched: false,
+          terminal: true,
+          skipReason: 'plan_cooldown',
+        },
+      ],
+    },
+    ...client.requestRows,
+  ];
+}
+
 const store = createAppStore(client);
 const host = document.getElementById('root');
 if (!host) throw new Error('harness root missing');

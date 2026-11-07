@@ -21,7 +21,7 @@ import { join } from 'node:path';
 import { render } from 'solid-js/web';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { App } from './App';
-import { SKIP_LABEL, TRACE_NOT_RECORDED } from './data/analytics';
+import { PAUSE_LABEL, SKIP_LABEL, TRACE_NOT_RECORDED } from './data/analytics';
 import type { RequestRow, TierDto, TierEntryDto } from './data/api';
 import { createAppStore, type AppStore } from './state/appState';
 import { AppProvider } from './state/context';
@@ -794,5 +794,61 @@ describe('the route trace states every outcome in text and never animates (tasks
       expect(cs.animationName === '' || cs.animationName === 'none').toBe(true);
       expect(el.getAttribute('style') ?? '').not.toMatch(/animation|transition/);
     }
+  });
+});
+
+describe('a plan-paused member is drawn as paused, not as circuit open (classify-plan-quota-errors)', () => {
+  const skipped = (id: string, at0: string, skipReason?: 'plan_cooldown'): RequestRow => ({
+    ...BASE,
+    ...plain,
+    id,
+    createdAt: at0,
+    status: 'error',
+    providerId: 'p1',
+    providerLabel: 'Provider A',
+    errorKind: 'quota_exhausted',
+    attemptFailures: [
+      {
+        index: 0,
+        providerId: 'p1',
+        model: 'kimi-k2',
+        kind: 'quota_exhausted',
+        dispatched: false,
+        terminal: true,
+        ...(skipReason !== undefined ? { skipReason } : {}),
+      },
+    ],
+  });
+  const PAUSED = skipped('rt-paused', at(0), 'plan_cooldown');
+  const CIRCUIT = skipped('rt-circuit', at(1));
+
+  it('the node reads the pause label from the recorded skip reason, and the circuit node its own', async () => {
+    h = await mount([PAUSED, CIRCUIT]);
+    const paused = await openRow(PAUSED.id);
+    const node = items(paused).find((li) => li.classList.contains('rt-node--skipped'))!;
+    expect(node.textContent).toBe(`kimi-k2 · ${PAUSE_LABEL}`);
+    expect(PAUSE_LABEL).toBe('skipped — plan paused (provider not contacted)');
+    expect(paused.textContent).not.toMatch(/circuit open/);
+
+    const circuit = await openRow(CIRCUIT.id);
+    const other = items(circuit).find((li) => li.classList.contains('rt-node--skipped'))!;
+    expect(other.textContent).toBe(`kimi-k2 · ${SKIP_LABEL}`);
+  });
+
+  it('the never-contacted sentence names the plan pause for a paused terminal entry, never the circuit', async () => {
+    h = await mount([PAUSED, CIRCUIT]);
+    const paused = await openRow(PAUSED.id);
+    const card = paused.querySelector<HTMLElement>('[data-testid="inspector-error"]')!;
+    expect(card.textContent).toMatch(
+      /The last chain member was never contacted — its provider's plan was paused/,
+    );
+    expect(card.textContent).not.toMatch(/circuit/);
+
+    const circuit = await openRow(CIRCUIT.id);
+    const circuitCard = circuit.querySelector<HTMLElement>('[data-testid="inspector-error"]')!;
+    expect(circuitCard.textContent).toMatch(
+      /The last chain member was never contacted — its provider's circuit was open/,
+    );
+    expect(circuitCard.textContent).not.toMatch(/plan was paused/);
   });
 });

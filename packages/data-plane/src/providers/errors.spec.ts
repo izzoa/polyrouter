@@ -167,6 +167,16 @@ describe('provider error classification', () => {
     // upstream provider health.
     expect(shouldFallback('credential')).toBe(true);
     expect(breakerImpact('credential')).toBe(false);
+    // classify-plan-quota-errors: the four plan kinds are fallback-eligible and never trip.
+    for (const k of [
+      'quota_exhausted',
+      'risk_control',
+      'plan_entitlement',
+      'plan_inactive',
+    ] as const) {
+      expect(shouldFallback(k)).toBe(true);
+      expect(breakerImpact(k)).toBe(false);
+    }
   });
 
   // Exhaustive by construction: driven by the canonical array, so a kind added later
@@ -264,11 +274,19 @@ describe('breaker outcome for credential failures', () => {
     const by = (o: string) =>
       [...PROVIDER_ERROR_KINDS.filter((k) => outcomeForKind(k) === o)].sort();
     expect(by('trip')).toEqual(['auth', 'insufficient_funds', 'rate_limit', 'unavailable']);
-    expect(by('neutral')).toEqual(['credential', 'oversized_response', 'upstream_rejected']);
+    expect(by('neutral')).toEqual([
+      'credential',
+      'oversized_response',
+      'plan_inactive',
+      'quota_exhausted',
+      'risk_control',
+      'upstream_rejected',
+    ]);
     expect(by('success')).toEqual([
       'bad_request',
       'content_policy',
       'permission',
+      'plan_entitlement',
       'policy_block',
       'unknown_model',
     ]);
@@ -335,6 +353,58 @@ describe('message policy for the new kinds', () => {
 
   it('operational kinds still persist verbatim (unchanged)', () => {
     expect(capture('unavailable', '{"error":{"message":"upstream down"}}')).toBe('upstream down');
+  });
+
+  // classify-plan-quota-errors task 2.4: a plan kind is produced only when the provider's
+  // own documented code matched, so its message is an operational account notice and
+  // persists verbatim (it carries the reset time). Scrub and the 300-char cap still run.
+  const PLAN_KINDS = [
+    'quota_exhausted',
+    'risk_control',
+    'plan_entitlement',
+    'plan_inactive',
+  ] as const;
+
+  it.each(PLAN_KINDS)('%s persists its provider message verbatim', (kind) => {
+    const msg = 'Usage limit reached for 5 hours. Your limit will reset at 2026-11-07T10:00:00Z';
+    expect(capture(kind, JSON.stringify({ error: { code: '1308', message: msg } }))).toBe(msg);
+  });
+
+  it.each(PLAN_KINDS)('%s redacts a configured credential and an sk- token', (kind) => {
+    const body = JSON.stringify({
+      error: {
+        code: '1309',
+        message:
+          'Plan expired for key sk-live-SECRET (also sk-proj-abc12345678def). Renew at https://z.ai/subscribe',
+      },
+    });
+    const out = capture(kind, body);
+    expect(out).not.toBeNull();
+    expect(out).not.toContain('sk-live-SECRET');
+    expect(out).not.toContain('abc12345678def');
+    expect(out).toContain('Renew at https://z.ai/subscribe');
+  });
+
+  it.each(PLAN_KINDS)('%s caps the message at 300 characters after the scrub', (kind) => {
+    const body = JSON.stringify({
+      error: {
+        message: `${'plan notice '.repeat(24)}sk-live-SECRET tail ${'more words '.repeat(10)}`,
+      },
+    });
+    const out = capture(kind, body);
+    expect(out).not.toBeNull();
+    expect(out).toHaveLength(300);
+    // The credential straddles the cap boundary: scrub-before-cap leaves no fragment of it.
+    expect(out).not.toContain('sk-live');
+    expect(out).not.toContain('SECRET');
+  });
+
+  it('the withheld kinds stay withheld next to the plan kinds', () => {
+    const body = '{"error":{"code":"1311","message":"anything at all"}}';
+    expect(capture('permission', body)).toBe(PERMISSION_WITHHELD);
+    expect(capture('insufficient_funds', body)).toBe(FUNDS_WITHHELD);
+    expect(capture('upstream_rejected', body)).toBe(VALIDATION_WITHHELD);
+    expect(capture('content_policy', body)).toBe(POLICY_WITHHELD);
   });
 
   it('the marker predicate is the ONE signal, and reads nested metadata', () => {
@@ -486,5 +556,170 @@ describe('marker retention — gate 1 (named source) and classification independ
     );
     expect(err.providerMessage).toBe(VALIDATION_WITHHELD);
     expect(err.markers).toEqual(['context_length_exceeded']);
+  });
+});
+
+// classify-plan-quota-errors task 3.2: the dialect decides the kind BEFORE the generic map,
+// and only when one is passed.
+describe('classifyResponse with a plan-error dialect', () => {
+  const ZAI_1308 = JSON.stringify({
+    error: {
+      code: '1308',
+      message:
+        'Usage limit reached for 5 hours. Your limit will reset at 2026-11-06T18:00:00+08:00',
+    },
+  });
+  const KIMI_5H = JSON.stringify({
+    error: { message: "You've reached your 5-hour usage limit. Your quota will reset." },
+  });
+
+  it('without a dialect, a Z.ai 1308 body and a Kimi 5-hour body under 429 are still rate_limit', () => {
+    for (const text of [ZAI_1308, KIMI_5H]) {
+      const err = classifyResponse(429, text, {}, []);
+      expect(err.kind).toBe('rate_limit');
+      expect(err.planReset).toBeUndefined();
+    }
+  });
+
+  it('with zai, 1308 is quota_exhausted, keeps the 1308 marker and the message verbatim', () => {
+    const err = classifyResponse(429, ZAI_1308, {}, [], 'zai');
+    expect(err.kind).toBe('quota_exhausted');
+    expect(err.status).toBe(429);
+    expect(err.markers).toEqual(['1308']);
+    expect(err.providerMessage).toBe(
+      'Usage limit reached for 5 hours. Your limit will reset at 2026-11-06T18:00:00+08:00',
+    );
+    expect(err.planReset).toEqual({
+      resetAt: Date.parse('2026-11-06T18:00:00+08:00'),
+      window: 'short',
+    });
+    // The curated message is fixed text, never provider text.
+    expect(err.message).not.toContain('Usage limit reached');
+    expect(shouldFallback(err.kind)).toBe(true);
+    expect(breakerImpact(err.kind)).toBe(false);
+  });
+
+  it('with kimi, the 5-hour text is quota_exhausted with a short window hint and no reset', () => {
+    const err = classifyResponse(429, KIMI_5H, {}, [], 'kimi');
+    expect(err.kind).toBe('quota_exhausted');
+    expect(err.planReset).toEqual({ window: 'short' });
+  });
+
+  it('1302 with a dialect still gives rate_limit, with the generic curated message', () => {
+    const err = classifyResponse(
+      429,
+      JSON.stringify({ error: { code: '1302', message: 'Rate limit reached for requests' } }),
+      {},
+      [],
+      'zai',
+    );
+    expect(err.kind).toBe('rate_limit');
+    expect(err.message).toBe('provider rate limited (429)');
+    expect(breakerImpact(err.kind)).toBe(true);
+  });
+
+  it('an unrecognised body under a dialect is the generic map, unchanged', () => {
+    for (const text of [
+      '',
+      'not json',
+      JSON.stringify({ error: { code: '9999', message: 'x' } }),
+    ]) {
+      const withDialect = classifyResponse(429, text, {}, [], 'zai');
+      const without = classifyResponse(429, text, {}, []);
+      expect(withDialect.kind).toBe('rate_limit');
+      expect(withDialect.message).toBe(without.message);
+      expect(withDialect.markers).toEqual(without.markers);
+      expect(withDialect.planReset).toBeUndefined();
+    }
+  });
+
+  it('a 401 stays auth under every dialect, even carrying a plan code', () => {
+    const cases: readonly ['zai' | 'minimax' | 'kimi', string][] = [
+      ['zai', JSON.stringify({ error: { code: '1309', message: 'plan expired' } })],
+      ['minimax', JSON.stringify({ error: { code: 2057, message: 'not token plan token' } })],
+      ['minimax', JSON.stringify({ base_resp: { status_code: 2057 } })],
+      ['kimi', JSON.stringify({ error: { message: "You've reached your 5-hour usage limit" } })],
+    ];
+    for (const [dialect, text] of cases) {
+      const err = classifyResponse(401, text, {}, [], dialect);
+      expect(err.kind).toBe('auth');
+      expect(err.planReset).toBeUndefined();
+      expect(breakerImpact(err.kind)).toBe(true);
+    }
+  });
+
+  it('threads Retry-After through meta as a relative duration, never converted on a clock', () => {
+    const text = JSON.stringify({ error: { code: 2056 } });
+    jest.useFakeTimers();
+    try {
+      jest.setSystemTime(new Date('2020-01-01T00:00:00Z'));
+      const a = classifyResponse(429, text, { retryAfter: '120' }, [], 'minimax');
+      jest.setSystemTime(new Date('2031-01-01T00:00:00Z'));
+      const b = classifyResponse(429, text, { retryAfter: '120' }, [], 'minimax');
+      expect(a.planReset).toEqual({ retryAfterMs: 120_000, window: 'short' });
+      expect(b.planReset).toEqual(a.planReset);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('ignores Retry-After when no dialect is set (the generic map never reads it)', () => {
+    const err = classifyResponse(429, '', { retryAfter: '120' }, []);
+    expect(err.kind).toBe('rate_limit');
+    expect(err.planReset).toBeUndefined();
+  });
+
+  it('other plan kinds: risk_control, plan_inactive and plan_entitlement keep marker and message', () => {
+    const risk = classifyResponse(
+      429,
+      JSON.stringify({ error: { code: '1313', message: 'Fair Usage Policy' } }),
+      {},
+      [],
+      'zai',
+    );
+    expect(risk.kind).toBe('risk_control');
+    const inactive = classifyResponse(
+      429,
+      JSON.stringify({ error: { code: '1309', message: 'package has expired' } }),
+      {},
+      [],
+      'zai',
+    );
+    expect(inactive.kind).toBe('plan_inactive');
+    expect(inactive.providerMessage).toBe('package has expired');
+    const tier = classifyResponse(
+      403,
+      JSON.stringify({
+        error: { message: 'Your current subscription does not have access to k3' },
+      }),
+      {},
+      [],
+      'kimi',
+    );
+    expect(tier.kind).toBe('plan_entitlement');
+    expect(tier.status).toBe(403);
+    // The membership 403 stays the generic permission, with its message withheld.
+    const member = classifyResponse(
+      403,
+      JSON.stringify({
+        error: { message: "We're unable to verify your membership benefits at this time." },
+      }),
+      {},
+      [],
+      'kimi',
+    );
+    expect(member.kind).toBe('permission');
+    expect(member.providerMessage).toBe(PERMISSION_WITHHELD);
+  });
+
+  it('a retired MiniMax model (2069) is unknown_model under the dialect', () => {
+    const err = classifyResponse(
+      429,
+      JSON.stringify({ error: { code: 2069, message: 'model is no longer available' } }),
+      {},
+      [],
+      'minimax',
+    );
+    expect(err.kind).toBe('unknown_model');
   });
 });

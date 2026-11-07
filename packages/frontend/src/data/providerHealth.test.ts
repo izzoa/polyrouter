@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import type { ProviderHealthDto } from './api';
-import { providerHealthView } from './providerHealth';
+import type { PlanCooldownDto, ProviderHealthDto } from './api';
+import { activePause, providerHealthView } from './providerHealth';
+import { fmtUntil } from './format';
 
 const NOW = Date.parse('2026-09-24T12:00:00Z');
 const minutesAgo = (m: number): string => new Date(NOW - m * 60_000).toISOString();
@@ -111,5 +112,99 @@ describe('providerHealthView (add-provider-health-signals)', () => {
       text: 'Not tested yet',
       banner: false,
     });
+  });
+});
+
+describe('providerHealthView — a plan pause (classify-plan-quota-errors)', () => {
+  const inMinutes = (m: number): string => new Date(NOW + m * 60_000).toISOString();
+  const paused = (
+    c: Partial<PlanCooldownDto>,
+    health: Partial<ProviderHealthDto> = {},
+  ): ReturnType<typeof card> & { planCooldown: PlanCooldownDto } => ({
+    ...card(health),
+    planCooldown: {
+      kind: 'quota_exhausted',
+      until: inMinutes(360),
+      untilSource: 'provider',
+      ...c,
+    },
+  });
+  const view = (p: ReturnType<typeof paused>) => providerHealthView(p, NOW, false, 'UTC');
+
+  it.each([
+    ['quota_exhausted', /^Plan usage limit reached/],
+    ['risk_control', /^Provider throttled the account \(fair-use policy\)/],
+    ['plan_inactive', /^No active plan for this key/],
+  ] as const)('%s leads with the account condition, in amber', (kind, lead) => {
+    const v = view(paused({ kind }));
+    expect(v.text).toMatch(lead);
+    expect(v).toMatchObject({ tone: 'amber', banner: false });
+  });
+
+  it('plan_inactive names both causes: an expired plan, or a key that is not a plan key', () => {
+    expect(view(paused({ kind: 'plan_inactive' })).text).toMatch(/expired, or not a plan key/);
+  });
+
+  it('a provider-stated end reads "resets at", never "polyrouter retries"', () => {
+    const v = view(paused({ untilSource: 'provider' }));
+    expect(v.text).toMatch(/ — resets at /);
+    expect(v.text).not.toMatch(/polyrouter retries/);
+  });
+
+  it('a polyrouter-chosen end reads "polyrouter retries at", never as the provider reset', () => {
+    const v = view(paused({ untilSource: 'default' }));
+    expect(v.text).toMatch(/ — polyrouter retries at /);
+    expect(v.text).not.toMatch(/resets/);
+  });
+
+  it('the end is exactly fmtUntil output for the future instant, never "just now"', () => {
+    const c = paused({ until: inMinutes(60 * 24 * 3) }); // on another day
+    const end = fmtUntil(c.planCooldown.until, NOW, 'UTC');
+    expect(end).toMatch(/^Sep \d+, \d\d:\d\d UTC$/);
+    expect(view(c).text).toBe(`Plan usage limit reached — resets at ${String(end)}`);
+    expect(view(c).text).not.toMatch(/just now|ago/);
+  });
+
+  it('a pause outranks an error and an ok health while it holds', () => {
+    const failing = view(
+      paused(
+        {},
+        {
+          state: 'failing',
+          kind: 'rate_limit',
+          message: 'x',
+          source: 'traffic',
+          at: minutesAgo(1),
+        },
+      ),
+    );
+    expect(failing.tone).toBe('amber');
+    expect(failing.text).not.toMatch(/Last check failed|^x/);
+    const ok = view(paused({}, { state: 'ok', source: 'test', at: minutesAgo(1) }));
+    expect(ok.text).not.toMatch(/Healthy/);
+  });
+
+  it('an expired pause falls back to the displayed health', () => {
+    const expired = paused(
+      { until: inMinutes(-1) },
+      { state: 'ok', source: 'test', at: minutesAgo(5) },
+    );
+    expect(view(expired)).toEqual({ tone: 'green', text: 'Healthy · Test 5m ago', banner: false });
+    expect(activePause(expired, NOW)).toBeNull();
+    expect(activePause(paused({ until: 'not a date' }), NOW)).toBeNull();
+    expect(activePause({ planCooldown: null }, NOW)).toBeNull();
+    expect(activePause({}, NOW)).toBeNull();
+  });
+
+  it('a pause line is never red and never "Healthy", in every kind and source', () => {
+    for (const kind of ['quota_exhausted', 'risk_control', 'plan_inactive'] as const) {
+      for (const untilSource of ['provider', 'default'] as const) {
+        const v = view(
+          paused({ kind, untilSource }, { state: 'ok', source: 'test', at: minutesAgo(1) }),
+        );
+        expect(v.tone).not.toBe('red');
+        expect(v.text).not.toMatch(/Healthy/);
+      }
+    }
   });
 });

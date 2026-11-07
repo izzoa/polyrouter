@@ -37,7 +37,13 @@ export type BatchEndpoint = (typeof BATCH_ENDPOINTS)[number];
 
 /** Why a job failed, fixed vocabulary: the provider-error taxonomy for a rejected
  * submit (mirrors `PROVIDER_ERROR_KINDS` in the data plane, which cannot be
- * imported here), plus the batch-only kinds. */
+ * imported here), plus the batch-only kinds. Its compile-time link to the data-plane
+ * list is `BATCH_KIND_OF` (`control-plane/src/batch/batch-error-kind.ts`), a total
+ * `Record<ProviderErrorKind, BatchJobErrorKind>`: a new provider kind without a batch
+ * mapping is a build error, not a CHECK violation at runtime. The four plan kinds
+ * (classify-plan-quota-errors) are deliberately NOT listed here: batch is unreachable
+ * for a dialect row, and `BATCH_KIND_OF` maps them to `upstream_rejected`, so no
+ * migration is needed. */
 export const BATCH_JOB_ERROR_KINDS = [
   // provider-error taxonomy — a rejected create classifies like any provider call
   'auth',

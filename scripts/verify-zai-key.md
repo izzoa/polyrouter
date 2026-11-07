@@ -118,3 +118,31 @@ Z.ai written-permission status (date, reply): **not recorded yet**.
 | ------ | ---- | ------------- | ------ | ------------------- | --------- | --------- | ------------------ | ----------- | ----------- | ----------------------------- |
 | intl   | —    | —             | —      | —                   | —         | —         | —                  | —           | **not run** | Ships disabled until verified |
 | cn     | —    | —             | —      | —                   | —         | —         | —                  | —           | **not run** | Ships disabled until verified |
+
+## 9. Error-shape evidence (classify-plan-quota-errors)
+
+Z.ai's plan-error codes (`1308`, `1310`, `1313`, `1309`, `1311`, ...) and the `{next_flush_time}`
+format come from `https://docs.z.ai/api-reference/api-code` and are **[U]** until a captured
+response confirms them (`packages/data-plane/src/providers/plan-errors.ts`, `ZAI_CODES`,
+`ZAI_FLUSH_TIME_ZONE`). If a plan error occurs **naturally** during any step above, record it
+here. Never exhaust a plan on purpose, never paste a key: this section is for what you happened
+to see, nothing else.
+
+Record, per error:
+
+- **HTTP status.**
+- **Envelope keys**, for example `error.code` (string or number) and `error.message`, with the
+  message redacted except its documented template (the "reset at {next_flush_time}" wording
+  and the plan-window words). No key, no account or user ids.
+- **`Retry-After`:** present or absent, and if present its form (delta seconds or HTTP-date).
+- **`{next_flush_time}` format and zone:** the literal shape of the time (ISO-8601 with an
+  offset, `Z`, or a zone-less `YYYY-MM-DD HH:mm:ss`) and which zone it is in. A zone-less time
+  is ignored until `ZAI_FLUSH_TIME_ZONE` is set from this evidence (design D5).
+- Whether a listed model failed with `1311` (plan lacks the model), and which.
+
+| Region | Date | HTTP status | `error.code` | Envelope keys | `Retry-After` | `{next_flush_time}` format and zone | Notes             |
+| ------ | ---- | ----------- | ------------ | ------------- | ------------- | ----------------------------------- | ----------------- |
+| intl   | —    | —           | —            | —             | —             | —                                   | none recorded yet |
+| cn     | —    | —           | —            | —             | —             | —                                   | none recorded yet |
+
+Never exhaust a plan on purpose, never paste a key. Share only what the table asks for.

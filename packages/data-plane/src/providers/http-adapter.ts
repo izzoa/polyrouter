@@ -112,6 +112,14 @@ export function errMeta(res: HttpResponse): { requestId?: string } {
   return id !== undefined ? { requestId: id } : {};
 }
 
+/** The response header a plan-error dialect reads (classify-plan-quota-errors). Called only
+ * when the adapter has a dialect, so a provider without one never reads it. The value is
+ * length-bounded here and validated by the dialect; it is never copied into error text. */
+export function planMeta(res: HttpResponse): { retryAfter?: string } {
+  const v = res.headers.get('retry-after');
+  return v !== null && v.length > 0 && v.length <= 64 ? { retryAfter: v } : {};
+}
+
 /**
  * Adapter-stage sanitizer (add-request-error-detail): consume each error event's
  * RAW `diagnostic.wire` through the sanitizing factory — the credential lives
@@ -299,6 +307,20 @@ export function createHttpProviderAdapter(
       userAgent,
     );
 
+  // The ONE place a non-2xx response becomes a typed error for chat, stream-open and listing
+  // (classify-plan-quota-errors). `Retry-After` is read only when the preset declared a
+  // dialect; in-band stream events never come through here (`sanitizeStreamErrors` stays
+  // dialect-free).
+  const dialect = config.errorDialect;
+  const refusal = async (res: HttpResponse): Promise<ProviderError> =>
+    classifyResponse(
+      res.status,
+      await res.text(),
+      { ...errMeta(res), ...(dialect !== undefined ? planMeta(res) : {}) },
+      [config.credential],
+      dialect,
+    );
+
   async function chat(request: NormalizedRequest, ctx?: CallContext): Promise<NormalizedResponse> {
     try {
       const body = JSON.stringify(spec.translate.requestOut({ ...request, stream: false }));
@@ -313,7 +335,7 @@ export function createHttpProviderAdapter(
       );
       try {
         if (!res.ok) {
-          throw classifyResponse(res.status, await res.text(), errMeta(res), [config.credential]);
+          throw await refusal(res);
         }
         return spec.translate.responseIn(await res.json());
       } finally {
@@ -344,7 +366,7 @@ export function createHttpProviderAdapter(
     const { res, dispose } = opened;
     try {
       if (!res.ok) {
-        throw classifyResponse(res.status, await res.text(), errMeta(res), [config.credential]);
+        throw await refusal(res);
       }
       // Adapter-stage error-detail sanitization (add-request-error-detail): THIS
       // layer holds the credential, so raw wire fields must not leave it.
@@ -391,7 +413,7 @@ export function createHttpProviderAdapter(
         );
         try {
           if (!res.ok) {
-            throw classifyResponse(res.status, await res.text(), errMeta(res), [config.credential]);
+            throw await refusal(res);
           }
           const json = await res.json();
           for (const m of spec.parseModels(json)) {

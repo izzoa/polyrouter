@@ -110,6 +110,9 @@ async function openInspector(page: Page, sel: string): Promise<void> {
 /** The identity-imitation consent dialog, named by its title (`Imitate <label>’s client identity?`). */
 export const CLIENT_IDENTITY_CONFIRM = '[role="dialog"][aria-label^="Imitate "]';
 
+/** The plan-pause Resume confirmation, named by its title (`Resume <provider>?`). */
+export const PLAN_RESUME_CONFIRM = '[role="dialog"][aria-label^="Resume "]';
+
 export const MODAL_KINDS = [
   'newAgent',
   'newProvider',
@@ -183,6 +186,19 @@ export const SURFACES: readonly Surface[] = [
         .click();
       await page.locator('#f-np-imitate').click();
       await page.waitForSelector(CLIENT_IDENTITY_CONFIRM);
+    },
+  },
+  {
+    // The risk-control Resume confirmation (classify-plan-quota-errors task 9.3), opened the way a
+    // user does: the paused fixture provider's real Resume now. The harness fixture is opt-in
+    // (`?pause=1`), so no other surface moves.
+    name: 'confirm:planCooldownResume',
+    sel: PLAN_RESUME_CONFIRM,
+    query: '?pause=1',
+    open: async (page) => {
+      await store(page, 'go', 'providers');
+      await page.locator('main button.btn-cancel', { hasText: 'Resume now' }).first().click();
+      await page.waitForSelector(PLAN_RESUME_CONFIRM);
     },
   },
   {

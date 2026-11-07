@@ -183,6 +183,35 @@ const PROVIDER_MAP: Record<ProviderErrorKind, Mapped> = {
     type: 'invalid_request_error',
     code: 'model_not_found',
   },
+  // classify-plan-quota-errors (design D4): produced only by a preset's error dialect. Each
+  // takes the `type` of the existing kind it shares a status and a meaning with, so an SDK
+  // that branches on `type` treats a plan 429 as retryable-later exactly as `rate_limited`.
+  // The Anthropic envelope renders no `code`, so each message is DISTINCT from every other
+  // kind sharing its status (`error-taxonomy-surface.spec.ts` asserts it over every kind).
+  quota_exhausted: {
+    status: 429,
+    message: 'upstream plan usage limit reached',
+    type: 'rate_limit_error',
+    code: 'plan_quota_exhausted',
+  },
+  risk_control: {
+    status: 429,
+    message: 'upstream plan throttled the account',
+    type: 'rate_limit_error',
+    code: 'plan_risk_control',
+  },
+  plan_entitlement: {
+    status: 403,
+    message: 'upstream plan does not include this model',
+    type: 'permission_error',
+    code: 'plan_entitlement',
+  },
+  plan_inactive: {
+    status: 502,
+    message: 'upstream plan is not active for this key',
+    type: 'api_error',
+    code: 'plan_inactive',
+  },
 };
 
 const of = (m: Mapped): ProxyError => new ProxyError(m.status, m.message, m.type, m.code);

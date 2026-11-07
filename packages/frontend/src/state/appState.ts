@@ -726,6 +726,7 @@ function toProvider(p: ProviderDto): Provider {
     autoPruneUnlisted: p.autoPruneUnlisted ?? true,
     imitateClientIdentity: p.imitateClientIdentity ?? false,
     clientIdentity: p.clientIdentity ?? null,
+    planCooldown: p.planCooldown,
     createdAt: p.createdAt,
     health: p.health,
   };
@@ -1378,6 +1379,12 @@ export interface AppStore {
   connectKeyPreset: () => Promise<void>;
   testProviderById: (id: string) => Promise<void>;
   syncProvider: (id: string) => Promise<void>;
+  /** Resume now (classify-plan-quota-errors): lift a plan pause, then reload the provider list so
+   * the card shows the provider's displayed health. Resolves to `null` on success, or to the
+   * failure's reason in words (the card and the risk-control dialog report it in place, so
+   * nothing is toasted). A `503` means the shared pause store was unreachable: the pause may
+   * still hold. */
+  resumeProviderPlan: (id: string) => Promise<string | null>;
   deleteProvider: (id: string, call?: DestructiveCall) => Promise<void>;
   loadModels: (providerId: string) => Promise<void>;
   setModelPrice: (providerId: string, modelId: string, body: ModelPricingInput) => Promise<void>;
@@ -4237,6 +4244,17 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       }
     },
     testProviderById,
+    resumeProviderPlan: async (id) => {
+      try {
+        await client.liftPlanCooldown(id);
+      } catch (e) {
+        return isApiError(e) && e.status === 503
+          ? 'Couldn’t reach the shared pause store, so the pause may still hold. Try again.'
+          : err(e);
+      }
+      await loadProviders();
+      return null;
+    },
     syncProvider: async (id) => {
       try {
         const result = await client.syncModels(id);

@@ -88,6 +88,9 @@ const TEXT_SIZED: Record<string, readonly Axis[]> = {
   // The identity consent (allow-preset-client-identity task 8.5): the same `.confirm-card`, its
   // warning four lines of copy, so only the wrap height moves with the face.
   'confirm:clientIdentity': ['h'],
+  // The risk-control Resume confirmation (classify-plan-quota-errors task 9.3): the same
+  // `.confirm-card`, a two-sentence warning, so only the wrap height moves with the face.
+  'confirm:planCooldownResume': ['h'],
   // The shared destructive confirmation (adopt-red-destructive-actions task 6.1) sits on the
   // same `.confirm-card`, which shrinks to its content up to 440px. Its one-line title and
   // one-line body never reach 440 at desktop, so the WIDTH is text-sized and `x` follows it
@@ -235,6 +238,12 @@ const BASELINE: Record<string, [number, number, number, number]> = {
   // (HeadlessChrome 151); x, y and the width are CSS-pinned, the height is the warning copy's
   // and takes the unmeasured default allowance until the runner's capture on the first push.
   'confirm:clientIdentity': [500, 270, 440, 170],
+  // ADDED 2026-11-06 (classify-plan-quota-errors task 9.3): the risk-control Resume confirmation,
+  // opened from the `?pause=1` fixture provider's Resume now. Not a pre-change capture: the
+  // surface is new. The macOS `@capture` value on this change's tree (HeadlessChrome 151); x, y
+  // and the width are CSS-pinned (the same `.confirm-card`), the height is the warning copy's and
+  // takes the unmeasured default allowance until the runner's capture on the first push.
+  'confirm:planCooldownResume': [500, 270, 440, 154],
   // ADDED 2026-11-03 (adopt-red-destructive-actions task 6.1): the shared destructive
   // confirmation, opened from the harness's first agent's Delete (`Delete agent
   // "claude-code-production-worker"?`). Not a pre-change capture: the surface is new. The macOS

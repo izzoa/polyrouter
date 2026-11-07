@@ -35,6 +35,7 @@ import {
 } from '../proxy/proxy-errors';
 import { SubscriptionOauthService } from '../subscription-oauth/subscription-oauth.service';
 import { computeCeiling } from './batch-ceiling';
+import { BATCH_KIND_OF } from './batch-error-kind';
 import { batchBudgetBlocked, batchError, protocolForEndpoint } from './batch-errors';
 import {
   BatchIngressError,
@@ -251,7 +252,7 @@ export class BatchService {
     } catch (err) {
       // The upstream ANSWERED with a rejection: definitive — fail the row, release.
       if (err instanceof ProviderError && err.status !== undefined) {
-        await this.db.batchJobs.fail(principal, jobId, err.kind);
+        await this.db.batchJobs.fail(principal, jobId, BATCH_KIND_OF[err.kind]);
         if (reserved) {
           await this.budgets.releaseForBatch(
             principal,

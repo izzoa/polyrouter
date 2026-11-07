@@ -53,6 +53,23 @@
  *                     identity-provider outage. Fallback-eligible (the chain moves on)
  *                     but breaker-NEUTRAL — credential state and IdP availability are
  *                     not upstream provider health.
+ * - `quota_exhausted` A preset's usage window or credit is used up (classify-plan-quota-errors).
+ *                     Produced ONLY by a preset's error dialect, never by the generic
+ *                     status map (a bare 429 stays `rate_limit`). Fallback-eligible and
+ *                     breaker-NEUTRAL: an account state is not upstream health, and a
+ *                     trip would re-probe an exhausted window every breaker cooldown.
+ *                     The provider is paused by the plan cooldown instead.
+ *                     (fallback, NEUTRAL, verbatim; dialect-only)
+ * - `risk_control`    A fair-use / risk-control throttle (Z.ai 1313, Kimi's concurrent
+ *                     request limit). Retrying early may escalate an account restriction,
+ *                     so it pauses the provider. (fallback, NEUTRAL, verbatim; dialect-only)
+ * - `plan_entitlement` The plan does not include this model or context size. Per-model,
+ *                     like `permission`: the provider keeps serving the models the plan
+ *                     does include, so it settles a health success and pauses nothing.
+ *                     (fallback, success, verbatim; dialect-only)
+ * - `plan_inactive`   The plan has expired, or the key is not a plan key (Z.ai 1309,
+ *                     MiniMax 2057). Every request with that key fails until a human acts.
+ *                     (fallback, NEUTRAL, verbatim; dialect-only)
  */
 export const PROVIDER_ERROR_KINDS = [
   'auth',
@@ -67,6 +84,10 @@ export const PROVIDER_ERROR_KINDS = [
   'upstream_rejected',
   'oversized_response',
   'credential',
+  'quota_exhausted',
+  'risk_control',
+  'plan_entitlement',
+  'plan_inactive',
 ] as const;
 
 export type ProviderErrorKind = (typeof PROVIDER_ERROR_KINDS)[number];
@@ -74,6 +95,8 @@ export type ProviderErrorKind = (typeof PROVIDER_ERROR_KINDS)[number];
 // The SanitizedMessage brand lives in translate/ir (dependency-neutral) so it
 // flows unbroken factory → IR diagnostic → core → persistence, no casts.
 import type { SanitizedMessage } from '../proxy/translate/ir';
+import { classifyPlanError } from './plan-errors';
+import type { PlanErrorDialect, PlanReset } from './plan-errors';
 
 export type { SanitizedMessage };
 
@@ -87,6 +110,15 @@ export interface ProviderErrorMeta {
    * admitted through the three gates. Persisted alongside the kind so a WITHHELD
    * message is still diagnosable; never client-facing, never free text. */
   readonly markers?: readonly string[];
+  /** When the plan is usable again, as a preset's error dialect read it
+   * (classify-plan-quota-errors). Absent on every error the generic map produced. */
+  readonly planReset?: PlanReset;
+}
+
+/** `classifyResponse`'s meta: the error meta plus the one response header a dialect reads. */
+export interface ClassifyMeta extends ProviderErrorMeta {
+  /** The raw `Retry-After` value; the adapter passes it only when a dialect is set. */
+  readonly retryAfter?: string;
 }
 
 export class ProviderError extends Error {
@@ -95,6 +127,7 @@ export class ProviderError extends Error {
   readonly requestId?: string;
   readonly providerMessage?: SanitizedMessage;
   readonly markers?: readonly string[];
+  readonly planReset?: PlanReset;
   constructor(kind: ProviderErrorKind, message: string, meta: ProviderErrorMeta = {}) {
     super(message);
     this.name = 'ProviderError';
@@ -103,6 +136,7 @@ export class ProviderError extends Error {
     if (meta.requestId !== undefined) this.requestId = meta.requestId;
     if (meta.providerMessage !== undefined) this.providerMessage = meta.providerMessage;
     if (meta.markers !== undefined && meta.markers.length > 0) this.markers = meta.markers;
+    if (meta.planReset !== undefined) this.planReset = meta.planReset;
   }
 }
 
@@ -173,15 +207,52 @@ function isModelNotFound(bodyText: string): boolean {
   return MODEL_NOT_FOUND.test(bodyText) && NOT_FOUND_HINT.test(bodyText);
 }
 
+/** The curated message of a kind a dialect produced (never provider text). */
+function curatedForPlan(kind: ProviderErrorKind, status: number): string {
+  const s = String(status);
+  switch (kind) {
+    case 'quota_exhausted':
+      return `provider plan usage limit reached (${s})`;
+    case 'risk_control':
+      return `provider throttled the account (${s})`;
+    case 'plan_inactive':
+      return `provider plan is not active for this key (${s})`;
+    case 'plan_entitlement':
+      return `provider plan does not include this model (${s})`;
+    case 'rate_limit':
+      return `provider rate limited (${s})`;
+    case 'unknown_model':
+      return `model not found (${s})`;
+    default:
+      return `provider unavailable (${s})`;
+  }
+}
+
+/**
+ * `dialect` (classify-plan-quota-errors) is a subscription preset's trusted plan-error
+ * dialect. When it recognizes the envelope it decides the kind and curated message BEFORE the
+ * generic map below, and the typed error carries `planReset`. A 401 and anything it does not
+ * recognize take the generic map unchanged; marker retention and message capture run exactly
+ * as without a dialect.
+ */
 export function classifyResponse(
   status: number,
   bodyText: string,
-  meta: ProviderErrorMeta = {},
+  meta: ClassifyMeta = {},
   secrets: readonly string[] = [],
+  dialect?: PlanErrorDialect,
 ): ProviderError {
   const snippet = bodyText.slice(0, 200);
   const envelope = parseErrorEnvelope(bodyText);
+  const { retryAfter, ...errorMeta } = meta;
+  const plan =
+    dialect !== undefined
+      ? classifyPlanError(dialect, status, envelope, {
+          ...(retryAfter !== undefined ? { retryAfter } : {}),
+        })
+      : null;
   const [kind, curated] = ((): [ProviderErrorKind, string] => {
+    if (plan !== null) return [plan.kind, curatedForPlan(plan.kind, status)];
     // 401 and 403 do NOT share a kind. Every provider protocol polyrouter targets
     // separates them — an invalid or revoked credential is 401, while 403 is a
     // permission decision about a resource (region, model, org policy). Reading a
@@ -233,11 +304,21 @@ export function classifyResponse(
   // Retention is uniform across kinds (the gates are kind-independent) and NEVER
   // alters the classification above — `kind` is already decided at this point.
   const markers = retainMarkers(walkEnvelope(envelope).retention, secrets);
+  const planReset: PlanReset | null =
+    plan !== null &&
+    (plan.resetAt !== undefined || plan.retryAfterMs !== undefined || plan.window !== undefined)
+      ? {
+          ...(plan.resetAt !== undefined ? { resetAt: plan.resetAt } : {}),
+          ...(plan.retryAfterMs !== undefined ? { retryAfterMs: plan.retryAfterMs } : {}),
+          ...(plan.window !== undefined ? { window: plan.window } : {}),
+        }
+      : null;
   return new ProviderError(kind, curated, {
-    ...meta,
+    ...errorMeta,
     status,
     ...(providerMessage !== null ? { providerMessage } : {}),
     ...(markers.length > 0 ? { markers } : {}),
+    ...(planReset !== null ? { planReset } : {}),
   });
 }
 

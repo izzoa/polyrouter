@@ -15,6 +15,11 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.28.1] — 2026-11-07
+
+[Release](https://github.com/izzoa/polyrouter/releases/tag/v0.28.1) ·
+[Compare](https://github.com/izzoa/polyrouter/compare/v0.28.0...v0.28.1)
+
 ### Fixed
 
 - **Tool schemas with `null` keywords no longer make strict OpenAI-compatible providers reject the request.** A client that sends a null-valued standard keyword in a tool schema (Warp sends `"required": null` on its `finish` and `transfer_control_to_user` tools) got HTTP 400 from backends such as XiaomiMiMo, then fell back. The router now removes those nulls before forwarding, in every protocol and the batch path. Your request body is not modified, and if every tool's schema held only such nulls, the structural router no longer counts them as schema demand.
@@ -1185,7 +1190,8 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.28.0...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.28.1...HEAD
+[0.28.1]: https://github.com/izzoa/polyrouter/releases/tag/v0.28.1
 [0.28.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.28.0
 [0.27.1]: https://github.com/izzoa/polyrouter/releases/tag/v0.27.1
 [0.27.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.27.0

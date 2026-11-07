@@ -1,5 +1,107 @@
 # @polyrouter/data-plane
 
+## 0.16.0
+
+### Minor Changes
+
+- 4572a60: Connect OpenCode Go, MiniMax M Plan, Kimi Code and Z.ai GLM Coding Plan with an API key
+
+  Four coding plans now have presets on **Add provider** → **Subscription**: pick the plan, a region where
+  there are several, paste the plan key, and Connect. The endpoint and protocol are pinned by the preset, so
+  there is no URL to type. Each card states that plan's terms risk in words with a link to its terms, and
+  Z.ai (whose terms forbid proxy use) needs an explicit acknowledgement. A key that does not look like the
+  plan's key shows a caution that it may be a pay-as-you-go key, but never blocks. Edit shows the pinned
+  endpoint read-only and lets you rename the provider or rotate its key. Kimi Code and Z.ai also declare an
+  optional "Claude Code" identity behind the existing identity-imitation switch, off by default.
+
+  **A region is offered only after its live verification passes**, so no card is offered until a region passes its live
+  verification, i.e. until each runbook has been run with a real key. "Other subscription" is unchanged.
+
+  Adds a database migration (one nullable column on the provider row, no backfill).
+
+- 89ddc64: Subscription provider cards show how much of the plan is used, in one neutral line, with a Refresh usage button for key plans
+
+  **New on the Providers page.**
+
+  - **The usage line.** A subscription card shows each window's used percent and its reset time
+    (`5h 62% · resets 14:10 UTC · weekly 31% · resets Nov 9, 18:00 UTC · as of 13:02 UTC`). The
+    `as of` time is that of the oldest figure shown. A figure the provider did not send reads
+    `unknown`, never `0%`, and a window past its reset reads `reset · awaiting new data`. When a plan
+    is billing extra usage (Claude usage credits, ChatGPT credits, the OpenCode Go balance) the line
+    leads with a phrase saying so. It states nothing about health, and it is hidden while the card
+    shows a plan pause or a reconnect notice.
+  - **Where it comes from.** Claude, ChatGPT and OpenCode Go usage is read from the replies
+    polyrouter already receives, with no extra call to the provider. A provider that sends nothing
+    shows no line. Each model bucket ChatGPT reports sits under a "model limits" disclosure.
+  - **Refresh usage.** MiniMax M Plan, Kimi Code and Z.ai GLM Coding Plan (and OpenCode Go) cards
+    get a **Refresh usage** button that reads the plan's own usage endpoint once, with polyrouter's
+    own User-Agent and no model call. It runs at most once every five minutes per provider across
+    all instances, says when it is next available, and reports a failure beside the button without
+    changing the line. Every usage endpoint ships off until its live verification passes, so no
+    card offers the button until a region passes.
+  - **The view and the endpoint.** The provider view gains `planUsage` (windows with their own
+    observation times, and the billing state) and `planUsageRefresh` (`{ availableAt }`), and there
+    is one new endpoint, `POST /api/providers/:id/plan-usage/refresh`, scoped to the owner and
+    silent about health. Re-sending a key or reconnecting a provider discards its usage snapshot.
+
+  Display only: usage raises no alert, changes no routing and is polled by nothing. No database
+  migration.
+
+- 7ca948f: Subscription presets may declare a client identity, sent only when you turn on a per-provider "identity imitation" switch
+
+  A subscription preset can now declare the client identity its provider expects (extra request headers on
+  model calls and, where it needs them, on the OAuth token endpoint). Nothing is sent by default: each
+  provider has an **identity imitation** switch that is **off** until you turn it on, from the provider's
+  edit dialog or at the identity step of the connect wizard. Turning it on shows a warning and asks you to
+  confirm, because presenting your traffic as another client likely violates the provider's terms. The
+  switch is available in any deployment mode, a calling agent's own headers are never forwarded, and
+  polyrouter's honest `User-Agent: polyrouter/<version>` stays unless the declared identity replaces it.
+
+  **Claude and ChatGPT are unchanged.** Their presets declare no identity, so the switch is not offered and
+  their traffic is exactly what it was.
+
+  Adds a database migration (one column on the provider row, default off).
+
+- 8331361: A coding plan that runs out of allowance pauses its provider instead of tripping the breaker
+
+  For the Z.ai, MiniMax M Plan and Kimi Code key presets (their international hosts, plus Kimi Code's China host), polyrouter now reads the provider's own
+  quota, risk-control, inactive-plan and entitlement errors and acts on them. An exhausted plan, a throttled account
+  or an inactive key pauses that provider until the reset time the provider stated (or a default, between 1 minute
+  and 7 days), chains skip it without contacting it and fall back, and the pause is shared through Redis so every
+  instance agrees. These failures no longer count toward the circuit breaker, so a plan that is simply out of
+  allowance no longer raises `provider_down`.
+
+  **Client-visible change:** a recognised plan exhaustion now answers with the code `plan_quota_exhausted`, and a
+  risk-control throttle with `plan_risk_control`, where both used to be `rate_limited`. The HTTP status is still
+  429, so clients that branch on the status are unaffected. An inactive plan answers 502 `plan_inactive`, and a plan
+  that does not include the model 403 `plan_entitlement`.
+
+  The provider's card shows one amber line with the reason and the time, and a **Resume now** button that lifts the
+  pause (a risk-control pause asks first, because sending again early may make the provider restrict the account).
+  The Request inspector's route trace marks a skipped member as plan paused. OpenCode Go and the Z.ai and MiniMax China hosts keep the generic error mapping until a real exhaustion response is captured. No database migration.
+
+### Patch Changes
+
+- bcdd3ad: polyrouter now identifies itself as `User-Agent: polyrouter/<version>` on every upstream call, instead of the HTTP library's default
+
+  Every request polyrouter makes itself carries exactly one `User-Agent`, `polyrouter/<release version>`:
+  chat (buffered and streaming), model listing, test-connection, model sync and batch calls to your
+  providers, the OAuth token-endpoint calls (exchange, refresh and the scheduled sweep), the pricing
+  catalog refresh and Apprise delivery. A calling agent's own `User-Agent` is never forwarded, and the
+  value is not configurable.
+
+  **Upgrade note for existing Claude and ChatGPT OAuth connections.** From this release their traffic
+  announces `polyrouter/<version>` instead of the HTTP library's name. An upstream could single that
+  out; if one rejects it, the rejection shows as the provider error on the connection's card.
+
+  No API, routing behavior or stored data changed.
+
+- Updated dependencies [bcdd3ad]
+- Updated dependencies [4572a60]
+- Updated dependencies [7ca948f]
+- Updated dependencies [8331361]
+  - @polyrouter/shared@0.22.0
+
 ## 0.15.1
 
 ### Patch Changes

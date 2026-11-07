@@ -15,6 +15,11 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.28.0] — 2026-11-07
+
+[Release](https://github.com/izzoa/polyrouter/releases/tag/v0.28.0) ·
+[Compare](https://github.com/izzoa/polyrouter/compare/v0.27.1...v0.28.0)
+
 ### Added
 
 - **Subscription cards can show how much of the plan is used, and a Refresh usage button for key plans.** One neutral line gives each window's used percent and reset time, says when a plan is billing extra usage (Claude usage credits, ChatGPT credits, the OpenCode Go balance), states a missing figure as `unknown` rather than `0%`, and ends with `as of <time>`, the oldest figure it shows. Claude, ChatGPT and OpenCode Go read it from replies polyrouter already receives, at no extra upstream call; the MiniMax, Kimi Code and Z.ai (and OpenCode Go) cards add **Refresh usage**, an attended read of the plan's own usage endpoint, shared across instances so it runs at most once every five minutes per provider. It is display only: no alert, no routing change and no background polling, and every usage endpoint stays off until its live check passes. The provider view gains `planUsage` and `planUsageRefresh`, and there is one new endpoint, `POST /api/providers/:id/plan-usage/refresh`.
@@ -35,6 +40,12 @@ heading is started.
 
 - **On a touch screen wider than a phone, the inspector's Close button and the other icon-only controls are now 44px wide.** Under a coarse pointer above 768px the drawer's Close button, the Routing page's delete `×` and the tier chain's drag handle kept their narrow width (about 29, 15 and 14px) and only gained their 44px height; they now get the same 44px width the phone layout gives them, so Close no longer sits beside the 44px Previous / Next as the one small target.
 - **The Settings body-capture card no longer claims "metadata only" before it knows.** While its status was loading, or when the read failed, the card said bodies are never persisted and showed a green Metadata-only badge, even on an instance that captures them; it now claims nothing until the status loads.
+
+### Upgrade notes
+
+- Two migrations run on boot (`0044`, `0045`): the `provider` table gains `imitate_client_identity` (default off) and `key_preset` (null for every existing row), plus two check constraints. No data is rewritten, and no new environment variable is required.
+- Every upstream call now carries `User-Agent: polyrouter/<version>`; existing Claude and ChatGPT connections keep working and send it too.
+- The four key-plan cards (OpenCode Go, MiniMax M Plan, Kimi Code, Z.ai) ship with every region disabled until its live verification passes, so a fresh install lists none of them yet.
 
 ## [0.27.1] — 2026-11-01
 
@@ -1170,7 +1181,8 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.27.1...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.28.0...HEAD
+[0.28.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.28.0
 [0.27.1]: https://github.com/izzoa/polyrouter/releases/tag/v0.27.1
 [0.27.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.27.0
 [0.26.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.26.0

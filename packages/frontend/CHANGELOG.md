@@ -1,5 +1,278 @@
 # @polyrouter/frontend
 
+## 0.28.0
+
+### Minor Changes
+
+- f3ad8d4: On a wide screen the request inspector docks beside the Requests list and steps from request to request, and the Requests and Batches tables drop columns by priority before they stack
+
+  **Visual change.** At 1440px and wider, the Requests page no longer covers the list when you open
+  a request.
+
+  - **The docked inspector.** At 1440px and wider, a request opened on the Requests page shows its
+    inspector as a 480px panel at the right edge, with no dimmed backdrop and no shadow. The page,
+    top bar included, makes room for it, so nothing is covered. The list, its filters and Load more
+    stay usable beside the panel. Escape or Close closes it, and focus returns to that request's
+    row. Opening a row leaves focus on the row; activating it again moves focus into the panel.
+  - **The compact list.** While the panel is open, the request list shows time, model, status and
+    cost on one line. An escalated or batch request keeps its mark in the status cell. A running
+    request or a live batch job keeps every field on a second line.
+  - **Previous and Next.** The inspector gains Previous and Next controls at every width: 24px, and
+    44px on a touch screen or a phone. At the first or last loaded request the control stays
+    focusable and reads as unavailable. While docked, ArrowUp and ArrowDown on a request row step
+    too. Stepping skips rows that can't open, never wraps, never loads another page, never takes the
+    "N new" offer and never fetches a payload.
+  - **Step announcements.** Each step is announced once to screen readers in one line: time, model,
+    status and cost. A held arrow key is announced once, where it stops. Opening, closing and list
+    refreshes are not announced.
+  - **A stable selection.** The inspector keeps showing the request you opened through a refresh, a
+    filter change or newer rows arriving, and focus stays on the row you were on.
+  - **Column priorities.** As space narrows, the Requests table moves provider, tier and decided-by
+    to a second line under the model, then tokens and latency; the Batches table moves provider,
+    tier and results-until, then progress and wall time. Both become stacked records only below
+    640px of table width, so a 730–768px window keeps a table. The agent stays the group heading
+    above its rows in every form.
+  - **Touch targets.** On a touch screen wider than a phone, the inspector's Close button, the
+    Routing page's delete `×` and the tier chain's drag handle are now 44px wide, like Previous and
+    Next, instead of keeping only their 44px height.
+  - **Unchanged.** Below 1440px the inspector stays the 440px modal drawer, and the sheet on a phone.
+    The Overview card's inspector and the routing tuning drawers never dock.
+
+  No API, routing behavior or stored data changed.
+
+- 4572a60: Connect OpenCode Go, MiniMax M Plan, Kimi Code and Z.ai GLM Coding Plan with an API key
+
+  Four coding plans now have presets on **Add provider** → **Subscription**: pick the plan, a region where
+  there are several, paste the plan key, and Connect. The endpoint and protocol are pinned by the preset, so
+  there is no URL to type. Each card states that plan's terms risk in words with a link to its terms, and
+  Z.ai (whose terms forbid proxy use) needs an explicit acknowledgement. A key that does not look like the
+  plan's key shows a caution that it may be a pay-as-you-go key, but never blocks. Edit shows the pinned
+  endpoint read-only and lets you rename the provider or rotate its key. Kimi Code and Z.ai also declare an
+  optional "Claude Code" identity behind the existing identity-imitation switch, off by default.
+
+  **A region is offered only after its live verification passes**, so no card is offered until a region passes its live
+  verification, i.e. until each runbook has been run with a real key. "Other subscription" is unchanged.
+
+  Adds a database migration (one nullable column on the provider row, no backfill).
+
+- 4625d01: The request inspector draws each request's recorded route as a trace, and its price snapshot states when it was taken
+
+  **Visual change.** The inspector's chip row, its Fallback trail box and its Timing box are replaced
+  by one route trace, and Usage & cost is replaced by a price snapshot. Both show only what was
+  recorded with the request.
+
+  - **The route trace** reads top to bottom: the agent (or `(no agent)`, never a raw id), the
+    router's decision (`router · <layer>`, in a neutral chip), each attempt the request made, in the
+    order it made them, and one outcome with its latency. Only a served request lights its branch,
+    and it is the inspector's one indigo.
+  - **Attempts are stated in words.** A failed attempt names its model and its failure, with the
+    HTTP status when one was recorded. A provider that was never contacted reads
+    `skipped — circuit open (provider not contacted)`. In a cascade, each attempt carries its leg
+    (`cheap leg` or `escalation`), and a superseded cheap call reads, for example,
+    `cheap attempt superseded · q=0.42 · $0.0031`. Chain members that were never walked are not
+    drawn, and the trace never reads today's routing setup.
+  - **Outcomes.** A served request reads `served · 1.24s`. A failed, cancelled or unrecognised one
+    ends unlit, in words: `failed · 2.10s`, `cancelled by client · 800ms`, or the recorded status
+    as it is. A recovered request recorded before attempts were kept says
+    `attempt history was not recorded for this request`.
+  - **The price snapshot** says when the price was taken: `Recorded with the request — later price
+changes never apply.`, or `Batch rate, recorded at submission.` for a batch item. It replaces a
+    footnote that said prices were snapshotted at request time. It has no caption when the request
+    is unpriced.
+  - **Receipt rows.** Input and output read count × unit price, and a cache row appears when its
+    count or its price was recorded. A source row names the price's origin
+    (`native family · estimate` or `provider-listed · estimate` for an estimated price). The
+    attempts row appears only when earlier attempts cost money. The total is exact, and reads as the
+    request table's cost cell does: `$0 · not billed`, `unpriced`, `$0 free`, `<$0.0001` or the
+    amount. A free or priced total carries `· est.` when a price in it was estimated, and estimated
+    token counts carry `· est. usage` on the counts, never on the total.
+  - **Layout.** The error card moves to the top of the inspector, and the served tier has its own row
+    under Decision. The decision layer and routing reason rows stay.
+  - **No motion.** The trace never animates, including when you move between requests.
+
+  No API, routing behavior or stored data changed.
+
+- 89ddc64: Subscription provider cards show how much of the plan is used, in one neutral line, with a Refresh usage button for key plans
+
+  **New on the Providers page.**
+
+  - **The usage line.** A subscription card shows each window's used percent and its reset time
+    (`5h 62% · resets 14:10 UTC · weekly 31% · resets Nov 9, 18:00 UTC · as of 13:02 UTC`). The
+    `as of` time is that of the oldest figure shown. A figure the provider did not send reads
+    `unknown`, never `0%`, and a window past its reset reads `reset · awaiting new data`. When a plan
+    is billing extra usage (Claude usage credits, ChatGPT credits, the OpenCode Go balance) the line
+    leads with a phrase saying so. It states nothing about health, and it is hidden while the card
+    shows a plan pause or a reconnect notice.
+  - **Where it comes from.** Claude, ChatGPT and OpenCode Go usage is read from the replies
+    polyrouter already receives, with no extra call to the provider. A provider that sends nothing
+    shows no line. Each model bucket ChatGPT reports sits under a "model limits" disclosure.
+  - **Refresh usage.** MiniMax M Plan, Kimi Code and Z.ai GLM Coding Plan (and OpenCode Go) cards
+    get a **Refresh usage** button that reads the plan's own usage endpoint once, with polyrouter's
+    own User-Agent and no model call. It runs at most once every five minutes per provider across
+    all instances, says when it is next available, and reports a failure beside the button without
+    changing the line. Every usage endpoint ships off until its live verification passes, so no
+    card offers the button until a region passes.
+  - **The view and the endpoint.** The provider view gains `planUsage` (windows with their own
+    observation times, and the billing state) and `planUsageRefresh` (`{ availableAt }`), and there
+    is one new endpoint, `POST /api/providers/:id/plan-usage/refresh`, scoped to the owner and
+    silent about health. Re-sending a key or reconnecting a provider discards its usage snapshot.
+
+  Display only: usage raises no alert, changes no routing and is polled by nothing. No database
+  migration.
+
+- 2812190: The dashboard adopts one set of design tokens, and a first visit follows the OS theme
+
+  **Visual change (breaking for anyone who relied on the old look).** Every page renders
+  differently at desktop width, and a first-time visitor whose operating system is set to dark now
+  gets the dark theme. The theme is resolved before the first paint, so there is no flash. A theme
+  you chose yourself is still remembered and wins.
+
+  - **Contrast.** Indigo text is a deeper indigo that clears 4.5:1 in both themes, and the primary
+    button darkens on hover and press in both. Fields, filter chips and the off switch draw a
+    visible edge. Meaningful glyphs (copy, chevrons, close) are darker.
+  - **One size system.** Controls are 24 or 32px tall (44px on touch and on a phone), and controls
+    in one row share a height. Text uses five sizes, set in `rem`, so the browser's font-size
+    setting scales the dashboard. Spacing uses a 4px scale and corners use four radii.
+  - **The switch** is 36 × 20px (32 × 18px small): dark when on, grey when off. It is never indigo.
+  - **Indigo is spent once per view:** one primary button and one highlighted data series. The
+    breakdown bars on Overview and Costs, switches and running dots are now grey.
+  - **One selected look** for the current page, a chosen segment or filter, a selected option card
+    and the open request row: a light indigo wash, a deeper indigo label and a 1px edge.
+  - **Buttons** show hover, pressed, focus and disabled states. A button that starts a request shows
+    that it is working (for example `Testing…` and `Syncing…` on a provider card) and keeps its
+    width while it waits.
+  - **Fields** show help text, and each form reports a problem next to the field it concerns.
+  - **Tables** share one row and head style. Figures use tabular digits; long model ids, provider
+    names and emails are cut with an ellipsis, with the full text on hover.
+  - **Notices** share one layout in four tones. A confirmation toast stays 4 seconds and a failure
+    toast 8 seconds, announced as an alert; hovering or focusing a toast holds it.
+  - **Overview and Costs** state their headline figures in one readout strip, with the spend as the
+    one large figure.
+  - **The sidebar** groups its pages under Observe, Configure and Admin. Batches moves under
+    Observe, after Costs, and Routing leads Configure.
+  - **The Live lamp** blinks once when new data arrives instead of pulsing all the time.
+  - **Native widgets** (checkboxes, radios, scrollbars, text selection) follow the theme.
+  - **Table reflow.** The tables switch to stacked records at re-measured widths: the requests table
+    below about a 1240px window (was about 1220px).
+
+  **Fixed.** The Settings body-capture card no longer claims "metadata only" before it knows: while
+  its status was loading, or when the read failed, it said bodies are never persisted and showed a
+  green Metadata-only badge, even on an instance that captures them. It now claims nothing until the
+  status loads.
+
+  No API, routing behavior or stored data changed. The theme setting keeps its storage key.
+
+- dce4050: Figures name their state in words: estimates read `· est.` or `· est. usage` instead of `~`, and unpriced, free, below-precision and stale figures say what they are
+
+  **Visual change.** Every slot that holds a figure now has one rendering per state, the same on
+  every page, and the state is named in words; colour only repeats them.
+
+  - **Estimates by axis.** A cost priced from an estimated price carries `· est.`. Token counts the
+    provider did not report carry `· est. usage`, on the request table's tokens cell and in the
+    inspector, never on the cost. The `~`, `~est` and `~estimated` markers are gone, and Overview
+    and Costs name estimated usage in words (`12 requests with estimated usage`).
+  - **Unpriced, free and tiny amounts.** An unpriced request reads `unpriced`, never `$0.0000` or
+    `— unpriced`. A free request or model price reads `$0 free`, with only `free` in green. An
+    amount below display precision reads `<$0.01` or `<$0.0001`, never zero. Spend on Overview
+    and Costs adds `· 4 unpriced` when the range holds unpriced requests, and Overview names the
+    estimate-priced part of its spend (`includes $0.0042 estimate-priced`).
+  - **Loading, empty and failed.** Loading figures show a skeleton, with `Loading <what>` for
+    screen readers, instead of a dash or a zero. A share with nothing to divide reads
+    `not applicable`, and an empty range's success rate says `No requests in this range`. A failed
+    read on Overview, Costs, Requests, the Pipeline, Agents' activity or a Limits card says
+    `<What> couldn’t be loaded.` with Retry, removes the figures instead of showing them as
+    current, and Retry keeps focus on the panel it reloads.
+  - **Limits.** Progress that is out of date, or whose refresh failed, reads `as of 14:02 · stale`.
+    An ended period reads `expired · awaiting refresh`, and an overage reads `$1.50 over budget` in
+    red.
+  - **Batches.** The reserved ceiling reads `≤ $3.00`, rounded up so the bound stays true, above
+    `reserved, not spent`. The bundled Geist fonts gain the `≤` glyph, so it never falls back to
+    an operating-system font.
+  - **Durations and token counts** read `412ms`, `1.24s` or `2m 05s`, and `12.4k` or `1.2M`,
+    everywhere.
+
+  No API, routing behavior or stored data changed.
+
+- 08f4467: Destructive actions are red: a red-outlined trigger and a red commit in a dashboard dialog, replacing the amber button and the browser's native prompts
+
+  **Visual change.** The buttons that delete, remove, purge, disable or cancel are a red-outlined
+  ghost: red text on a red border, a red wash when hovered, and a thicker red border when pressed.
+  Amber, a status colour, is no longer used on any button.
+
+  - **One confirmation dialog.** Deleting an agent, provider, budget, notification channel or user,
+    disabling a user, removing a model the provider no longer lists, purging stored bodies and
+    cancelling a batch all ask in the same dashboard dialog, never the browser's native prompt. Its
+    title names the action and the resource, its body states the consequence, Cancel comes first
+    and holds focus, and the commit is a red button named for the verb (`Delete agent`, never `OK`).
+  - **Busy and failure in place.** While the request runs, the commit reads `Deleting…` (or the
+    action's own word) and the dialog cannot be dismissed. A failure is reported inside the dialog,
+    which stays open so you can retry or cancel; nothing is removed from the page.
+  - **The inspector's payload Delete asks first.** It used to delete a request's stored bodies at
+    once, from a red link.
+  - **Turning body capture off** asks keep-or-purge in the same dialog: Keep until retention turns
+    capture off and keeps the stored bodies until they expire; Purge now also deletes them.
+  - **Forward-looking copy.** The dialogs say what will happen to new requests (for example, `New
+requests with its key will be refused.`) rather than promising an instant cut-off.
+  - Enabling body capture still asks for consent with the primary button, and recoverable actions
+    (Rotate key, Enable, Revoke an invitation, Revert to bundled) keep the neutral ghost.
+
+  No API, routing behavior or stored data changed.
+
+- 7ca948f: Subscription presets may declare a client identity, sent only when you turn on a per-provider "identity imitation" switch
+
+  A subscription preset can now declare the client identity its provider expects (extra request headers on
+  model calls and, where it needs them, on the OAuth token endpoint). Nothing is sent by default: each
+  provider has an **identity imitation** switch that is **off** until you turn it on, from the provider's
+  edit dialog or at the identity step of the connect wizard. Turning it on shows a warning and asks you to
+  confirm, because presenting your traffic as another client likely violates the provider's terms. The
+  switch is available in any deployment mode, a calling agent's own headers are never forwarded, and
+  polyrouter's honest `User-Agent: polyrouter/<version>` stays unless the declared identity replaces it.
+
+  **Claude and ChatGPT are unchanged.** Their presets declare no identity, so the switch is not offered and
+  their traffic is exactly what it was.
+
+  Adds a database migration (one column on the provider row, default off).
+
+- 8331361: A coding plan that runs out of allowance pauses its provider instead of tripping the breaker
+
+  For the Z.ai, MiniMax M Plan and Kimi Code key presets (their international hosts, plus Kimi Code's China host), polyrouter now reads the provider's own
+  quota, risk-control, inactive-plan and entitlement errors and acts on them. An exhausted plan, a throttled account
+  or an inactive key pauses that provider until the reset time the provider stated (or a default, between 1 minute
+  and 7 days), chains skip it without contacting it and fall back, and the pause is shared through Redis so every
+  instance agrees. These failures no longer count toward the circuit breaker, so a plan that is simply out of
+  allowance no longer raises `provider_down`.
+
+  **Client-visible change:** a recognised plan exhaustion now answers with the code `plan_quota_exhausted`, and a
+  risk-control throttle with `plan_risk_control`, where both used to be `rate_limited`. The HTTP status is still
+  429, so clients that branch on the status are unaffected. An inactive plan answers 502 `plan_inactive`, and a plan
+  that does not include the model 403 `plan_entitlement`.
+
+  The provider's card shows one amber line with the reason and the time, and a **Resume now** button that lifts the
+  pause (a risk-control pause asks first, because sending again early may make the provider restrict the account).
+  The Request inspector's route trace marks a skipped member as plan paused. OpenCode Go and the Z.ai and MiniMax China hosts keep the generic error mapping until a real exhaustion response is captured. No database migration.
+
+### Patch Changes
+
+- bcdd3ad: polyrouter now identifies itself as `User-Agent: polyrouter/<version>` on every upstream call, instead of the HTTP library's default
+
+  Every request polyrouter makes itself carries exactly one `User-Agent`, `polyrouter/<release version>`:
+  chat (buffered and streaming), model listing, test-connection, model sync and batch calls to your
+  providers, the OAuth token-endpoint calls (exchange, refresh and the scheduled sweep), the pricing
+  catalog refresh and Apprise delivery. A calling agent's own `User-Agent` is never forwarded, and the
+  value is not configurable.
+
+  **Upgrade note for existing Claude and ChatGPT OAuth connections.** From this release their traffic
+  announces `polyrouter/<version>` instead of the HTTP library's name. An upstream could single that
+  out; if one rejects it, the rejection shows as the provider error on the connection's card.
+
+  No API, routing behavior or stored data changed.
+
+- Updated dependencies [bcdd3ad]
+- Updated dependencies [4572a60]
+- Updated dependencies [7ca948f]
+- Updated dependencies [8331361]
+  - @polyrouter/shared@0.22.0
+
 ## 0.27.1
 
 ### Patch Changes

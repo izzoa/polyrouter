@@ -1,4 +1,5 @@
 // add-key-subscription-presets — registry invariants and the coherence gate.
+import { PLAN_USAGE_PARSER_IDS } from '@polyrouter/data-plane';
 import { isValidClientIdentity, validateClientIdentity } from '../providers/client-identity';
 import { OAUTH_PRESETS } from '../subscription-oauth/presets';
 import {
@@ -395,5 +396,101 @@ describe('keyPresetForRow (the D6 coherence gate)', () => {
     expect(
       keyPresetForRow(rowFor(KIMI_CODE_PRESET, kimiRegion, { keyPreset: 'zai-coding-plan' })),
     ).toBeNull();
+  });
+});
+
+describe('region plan-usage sources (add-subscription-quota-display, design D1/D7)', () => {
+  const probes = allRegions.flatMap(({ preset, region }) =>
+    region.usageProbe === undefined ? [] : [{ preset, region, probe: region.usageProbe }],
+  );
+
+  // The D7 table, pinned: a probe exists exactly where the research verified a host.
+  it.each([
+    ['opencode-go', 'default', 'opencode_go', 'https://opencode.ai/zen/go/v1/usage'],
+    ['minimax-m-plan', 'intl', undefined, 'https://api.minimax.io/v1/token_plan/remains'],
+    ['minimax-m-plan', 'cn', undefined, undefined],
+    ['kimi-code', 'intl', undefined, 'https://api.kimi.ai/coding/v1/usages'],
+    ['kimi-code', 'cn', undefined, 'https://api.kimi.com/coding/v1/usages'],
+    ['zai-coding-plan', 'intl', undefined, 'https://api.z.ai/api/monitor/usage/quota/limit'],
+    ['zai-coding-plan', 'cn', undefined, 'https://open.bigmodel.cn/api/monitor/usage/quota/limit'],
+  ] as const)('%s / %s declares dialect %s and probe %s', (presetId, regionId, dialect, url) => {
+    const region = findKeyPreset(presetId)?.regions.find((r) => r.id === regionId);
+    expect(region).toBeDefined();
+    expect(region?.usageDialect).toBe(dialect);
+    expect(region?.usageProbe?.url).toBe(url);
+  });
+
+  it('covers every shipped region, so a new region must decide', () => {
+    expect(allRegions).toHaveLength(7);
+    expect(probes).toHaveLength(6);
+  });
+
+  it('every probe URL is https, canonical, and same-origin with its region baseUrl', () => {
+    for (const { preset, region, probe } of probes) {
+      const parsed = new URL(probe.url);
+      const where = { preset: preset.id, region: region.id, url: probe.url };
+      expect({ ...where, protocol: parsed.protocol }).toEqual({ ...where, protocol: 'https:' });
+      expect({ ...where, href: parsed.href }).toEqual({ ...where, href: probe.url });
+      expect({ ...where, origin: parsed.origin }).toEqual({
+        ...where,
+        origin: new URL(region.baseUrl).origin,
+      });
+      // No credentials, query or fragment ride a bundled constant.
+      expect(parsed.username + parsed.password + parsed.search + parsed.hash).toBe('');
+    }
+  });
+
+  it('every probe ships disabled (the enablement gate): none may be flipped before its runbook', () => {
+    for (const { preset, region, probe } of probes) {
+      expect({ preset: preset.id, region: region.id, enabled: probe.enabled }).toEqual({
+        preset: preset.id,
+        region: region.id,
+        enabled: false,
+      });
+    }
+  });
+
+  it('every probe sends a Bearer key, and names a parser the data plane owns', () => {
+    for (const { probe } of probes) {
+      expect(probe.auth).toBe('bearer');
+      expect(PLAN_USAGE_PARSER_IDS).toContain(probe.parser);
+    }
+  });
+
+  it('no probe reaches a Kimi /me, a /wham, an /api/oauth/ or a /backend-api/accounts path', () => {
+    for (const { probe } of probes) {
+      const path = new URL(probe.url).pathname;
+      expect(path).not.toMatch(/\/me(\/|$)/);
+      expect(path).not.toContain('/wham');
+      expect(path).not.toContain('/api/oauth/');
+      expect(path).not.toContain('/backend-api/accounts');
+    }
+  });
+
+  it('a probe never sits on a pay-as-you-go path, and no probe URL is a region baseUrl or listing', () => {
+    for (const { region, probe } of probes) {
+      expect(probe.url).not.toContain('/paas/v4/');
+      expect(probe.url).not.toBe(region.baseUrl);
+      expect(probe.url).not.toBe(region.modelsUrl);
+    }
+  });
+
+  it('only OpenCode Go declares a passive usage dialect', () => {
+    const dialects = allRegions
+      .filter(({ region }) => region.usageDialect !== undefined)
+      .map(({ preset, region }) => `${preset.id}/${region.id}:${String(region.usageDialect)}`);
+    expect(dialects).toEqual(['opencode-go/default:opencode_go']);
+  });
+
+  it('each parser matches its host: no Kimi parser on a Z.ai URL and so on', () => {
+    for (const { preset, probe } of probes) {
+      const expected: Record<string, string> = {
+        'opencode-go': 'opencode_go_usage',
+        'minimax-m-plan': 'minimax_remains',
+        'kimi-code': 'kimi_usages',
+        'zai-coding-plan': 'zai_quota_limit',
+      };
+      expect(probe.parser).toBe(expected[preset.id]);
+    }
   });
 });

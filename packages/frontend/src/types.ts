@@ -8,6 +8,8 @@ import type {
   Mode,
   ModelDto,
   PlanCooldownDto,
+  PlanUsageDto,
+  PlanUsageRefreshDto,
   ProviderHealthDto,
   SmtpSecure,
 } from './data/api';
@@ -87,6 +89,10 @@ export interface Provider {
   /** classify-plan-quota-errors: the active plan pause (the kind, the end as an ISO-8601
    * instant, and who chose it), or null. */
   planCooldown: PlanCooldownDto | null;
+  /** add-subscription-quota-display: the plan's usage snapshot (null: nothing observed, or no
+   * source) and whether a Refresh usage is on offer with its cooldown end (null: no endpoint). */
+  planUsage: PlanUsageDto | null;
+  planUsageRefresh: PlanUsageRefreshDto | null;
   createdAt: string;
   /** add-provider-health-signals: the server-computed displayed health (the most
    * recently recorded of the check and live-traffic records). */

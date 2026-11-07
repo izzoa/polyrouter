@@ -77,6 +77,66 @@ export type {
   PlanCooldownSource,
   PlanCooldownStore,
 } from './plan-cooldown';
+export {
+  MAX_TAP_LINE_BYTES,
+  PLAN_USAGE_DIALECTS,
+  parseAnthropicUnified,
+  parseCodex,
+  parsePlanUsageHeaders,
+  readOpencodeBillingFromJson,
+  tapUsageFrames,
+} from './plan-usage';
+export type {
+  PlanUsageBilling,
+  PlanUsageDialect,
+  PlanUsageObservation,
+  PlanUsageReset,
+  PlanUsageSpan,
+  PlanUsageWindow,
+  UsageHeaders,
+} from './plan-usage';
+export {
+  CLAIM_REFRESH_LUA,
+  CLEAR_LUA,
+  EXTEND_REFRESH_LUA,
+  FailoverPlanUsageStore,
+  InMemoryPlanUsageStore,
+  MERGE_LUA,
+  PLAN_USAGE_LIMITS,
+  PlanUsageRecorder,
+  READ_MANY_LUA,
+  RedisPlanUsageStore,
+  mergeSnapshot,
+  parseSnapshot,
+  sanitizeObservation,
+  snapshotExpiresAt,
+} from './plan-usage-store';
+export type {
+  FailoverPlanUsageOptions,
+  PlanUsageMergeResult,
+  PlanUsageRead,
+  PlanUsageRecorderOptions,
+  PlanUsageRefreshClaim,
+  PlanUsageSnapshot,
+  PlanUsageSource,
+  PlanUsageStore,
+  StoredPlanUsageBilling,
+  StoredPlanUsageWindow,
+} from './plan-usage-store';
+export {
+  PLAN_USAGE_PARSER_IDS,
+  USAGE_MESSAGES,
+  USAGE_READ_MAX_BYTES,
+  USAGE_READ_TIMEOUT_MS,
+  parsePlanUsageBody,
+  readPlanUsage,
+} from './plan-usage-read';
+export type {
+  PlanUsageParserId,
+  PlanUsageProbe,
+  PlanUsageReadDeps,
+  PlanUsageReadResult,
+} from './plan-usage-read';
 export { createGuardedHttpClient, readSseChunks, joinUrl, openRequest } from './http';
 export type { HttpBody, HttpClient, HttpResponse, HttpInit, GuardedClientOptions } from './http';
 export { createHttpProviderAdapter, parseModelList } from './http-adapter';

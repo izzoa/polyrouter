@@ -122,6 +122,39 @@ export interface PlanCooldownDto {
   untilSource: PlanCooldownSource;
 }
 
+/** add-subscription-quota-display: a subscription plan's usage as the server holds it. Numbers,
+ * enums and ISO-8601 instants only; never header or body text. `resetAt` and a null
+ * `usedPercent` are the provider's silence, read as `unknown`, never as a zero. */
+export type PlanUsageSpanDto = '5h' | 'daily' | 'weekly' | 'monthly' | 'annual';
+export type PlanUsageBillingDto = 'plan' | 'extra_usage' | 'extra_usage_possible';
+export interface PlanUsageWindowDto {
+  key: string;
+  group: 'account' | 'model';
+  span: PlanUsageSpanDto | null;
+  minutes: number | null;
+  scope: string | null;
+  usedPercent: number | null;
+  resetAt: string | null;
+  observedAt: string;
+  source: 'traffic' | 'refresh';
+}
+export interface PlanUsageDto {
+  windows: PlanUsageWindowDto[];
+  billing: { state: PlanUsageBillingDto; observedAt: string } | null;
+}
+/** `availableAt` is the shared refresh cooldown's end; null means a refresh is allowed now. */
+export interface PlanUsageRefreshDto {
+  availableAt: string | null;
+}
+/** `POST /providers/:id/plan-usage/refresh`: a failed read still answers 200 with `ok: false`,
+ * its kind and a fixed message, and a view whose `planUsage` is unchanged. */
+export interface PlanUsageRefreshResultDto {
+  ok: boolean;
+  kind?: string;
+  message?: string;
+  provider: ProviderDto;
+}
+
 export interface ProviderDto {
   id: string;
   name: string;
@@ -156,6 +189,11 @@ export interface ProviderDto {
   clientIdentity?: ClientIdentityView | null;
   /** classify-plan-quota-errors: the active plan pause, or null. Always sent by the server. */
   planCooldown: PlanCooldownDto | null;
+  /** add-subscription-quota-display: the plan's usage snapshot and whether a refresh is on offer
+   * (null: no usage endpoint). Optional here, like `keyPreset`, so older test doubles still
+   * type-check; absent reads as null. */
+  planUsage?: PlanUsageDto | null;
+  planUsageRefresh?: PlanUsageRefreshDto | null;
   createdAt: string;
   health: ProviderHealthDto;
   /** The two raw records (non-secret) behind `health`. */
@@ -1187,6 +1225,10 @@ export interface ApiClient {
   /** Lift a plan pause now (`DELETE /providers/:id/plan-cooldown`, 204). Rejects on 404 and on
    * 503 (the shared store is unreachable, so the pause may still hold). */
   liftPlanCooldown(id: string): Promise<void>;
+  /** Refresh plan usage now (`POST /providers/:id/plan-usage/refresh`). A failed read resolves
+   * with `ok: false`; the owner-scope, no-endpoint, cooldown and store refusals (404, 422, 429,
+   * 503) reject. */
+  refreshPlanUsage(id: string): Promise<PlanUsageRefreshResultDto>;
   testProvider(id: string): Promise<ActionResult>;
   syncModels(id: string): Promise<ActionResult>;
   listModels(providerId?: string): Promise<ModelDto[]>;
@@ -1409,6 +1451,11 @@ export const realClient: ApiClient = {
     http<void>(`${API_BASE}/providers/${encodeURIComponent(id)}/plan-cooldown`, {
       method: 'DELETE',
     }),
+  refreshPlanUsage: (id) =>
+    http<PlanUsageRefreshResultDto>(
+      `${API_BASE}/providers/${encodeURIComponent(id)}/plan-usage/refresh`,
+      jsonInit('POST', {}),
+    ),
   testProvider: (id) =>
     http<ActionResult>(
       `${API_BASE}/providers/${encodeURIComponent(id)}/test-connection`,

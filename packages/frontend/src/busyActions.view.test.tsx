@@ -517,6 +517,20 @@ const SCENARIOS: Record<string, Scenario> = {
     find: (h) => byLabel(h.host, 'Resume now'),
     settled: 'gone',
   },
+  'pages/Providers.tsx app.refreshPlanUsage': {
+    page: 'providers',
+    // A refresh that is refused (the shared store is down) starts no cooldown, so the button is
+    // back at rest once the request settles. A read that went through leaves it disabled for the
+    // cooldown instead: Providers.planUsageRefresh.view.test.tsx walks that path.
+    opts: {
+      providers: [{ ...PROVIDER, planUsageRefresh: { availableAt: null } }],
+    },
+    prepare: (h) => {
+      h.fake.planUsageRefreshRejects = new ApiError(503, 'Service Unavailable', 'store down');
+    },
+    find: (h) => byLabel(h.host, 'Refresh usage'),
+    settled: 'rest',
+  },
   'pages/Requests.tsx app.loadRequests#4': {
     page: 'requests',
     prepare: async (h) => {

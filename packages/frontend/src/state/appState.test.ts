@@ -3104,6 +3104,33 @@ describe('key-subscription connect (add-key-subscription-presets task 9.2)', () 
     expect(JSON.stringify(s.state)).not.toContain(KEY);
   });
 
+  it('reloads the provider list after a connect, so the card gains its usage half', async () => {
+    const { fake, s } = await open([preset()]);
+    // The list (unlike the connect response) carries the usage half of a refreshable row.
+    const list = fake.listProviders.bind(fake);
+    vi.spyOn(fake, 'listProviders').mockImplementation(async () =>
+      (await list()).map((p) => ({ ...p, planUsageRefresh: { availableAt: null } })),
+    );
+    s.chooseKeyPreset('zai-coding-plan');
+    s.setState('kp', { region: 'intl', key: KEY, ack: true });
+    const before = fake.callLog.filter((c) => c.method === 'listProviders').length;
+    await s.connectKeyPreset();
+    expect(fake.callLog.filter((c) => c.method === 'listProviders').length).toBe(before + 1);
+    expect(s.state.providers).toHaveLength(1);
+    expect(s.state.providers[0]!.planUsageRefresh).toEqual({ availableAt: null });
+  });
+
+  it('a failed reload after a connect leaves the connected card in place and no error toast', async () => {
+    const { fake, s } = await open([preset()]);
+    vi.spyOn(fake, 'listProviders').mockRejectedValue(new ApiError(500, 'Error', 'boom'));
+    s.chooseKeyPreset('zai-coding-plan');
+    s.setState('kp', { region: 'intl', key: KEY, ack: true });
+    await s.connectKeyPreset();
+    expect(s.state.providers).toHaveLength(1);
+    expect(s.state.kp.error).toBeNull();
+    expect(s.state.modal).toBeNull();
+  });
+
   it('clears the key on a failure, keeping the form for another try', async () => {
     const { fake, s } = await open([preset()]);
     fake.keyPresetConnectRejects = new ApiError(422, 'Unprocessable', 'refused');

@@ -14,6 +14,7 @@ import type {
 } from '../proxy/translate';
 import type { BatchAdapter } from './batch';
 import type { PlanErrorDialect } from './plan-errors';
+import type { PlanUsageDialect, PlanUsageObservation } from './plan-usage';
 
 export type ProviderKind = 'api_key' | 'subscription' | 'custom' | 'local';
 // 'openai_responses' (add-chatgpt-responses) is UPSTREAM/preset-only — no client speaks
@@ -30,6 +31,11 @@ export interface CallContext {
    * upstream body-byte arrival (keepalive comments included). Inert once its
    * attempt settles — a stale callback never re-arms a later attempt. */
   readonly onBytes?: () => void;
+  /** Per-attempt plan-usage callback (add-subscription-quota-display, design D2): a sibling of
+   * `onBytes`. Invoked only when the adapter's config also carries a `usageDialect`, with the
+   * numbers-and-enums observation parsed from a response the call already holds. The adapter
+   * contains every throw from it, so it can never alter the call. */
+  readonly onPlanUsage?: (obs: PlanUsageObservation) => void;
 }
 
 /** How the credential authenticates (add-subscription-oauth). `api_key` (default) is
@@ -65,6 +71,12 @@ export interface ProviderConfig {
    * its plan kind before the generic status map. TRUSTED bundled preset data threaded by the
    * adapter builder, never user input and never derived from the host. */
   readonly errorDialect?: PlanErrorDialect;
+  /** A subscription preset's plan-usage dialect (add-subscription-quota-display): when set AND a
+   * call carries `onPlanUsage`, the adapter parses that dialect's usage from the response it
+   * already holds. TRUSTED bundled preset data threaded by the adapter builder, never user input
+   * and never derived from the host. A provider without one is never parsed, not even for a
+   * header read (invariant 9). */
+  readonly usageDialect?: PlanUsageDialect;
   /** Anthropic requires max_tokens; used when the IR omits maxOutputTokens. */
   readonly defaultMaxOutputTokens?: number;
   /** Abort if no response headers / first stream event arrive in time. */

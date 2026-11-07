@@ -162,6 +162,7 @@ describe('request-logging e2e', () => {
                   })
                 : Promise.reject(new Error('oauth seam not stubbed')),
             availableClientIdentity: () => null,
+            identityBindingFor: () => undefined,
           },
         },
         StreamDrainRegistry,

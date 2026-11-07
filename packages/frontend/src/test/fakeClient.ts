@@ -31,6 +31,7 @@ import type {
   LoginConfig,
   ModelDto,
   ModelPricingInput,
+  PlanUsageRefreshResultDto,
   ProviderDto,
   ProxyTestBody,
   AutoPerformance,
@@ -1159,6 +1160,39 @@ export class FakeApiClient implements ApiClient {
     if (!existing) throw new ApiError(404, 'Not Found', 'provider not found');
     // Mirror the backend: the lift deletes the record, and the next list shows no pause.
     this.providers = this.providers.map((p) => (p.id === id ? { ...p, planCooldown: null } : p));
+  }
+
+  /** Refresh usage (add-subscription-quota-display). `planUsageRefreshRejects` makes the next call
+   * reject (a 429, 503, 422 or 404, cleared once used); `planUsageRefreshGate` parks it until
+   * resolved; `planUsageRefreshResult` builds the answer from the stored provider (default: a
+   * success that starts the 5-minute cooldown and leaves the usage as it was, like the server's
+   * failed read does). The answer's provider replaces the stored one, so a later list agrees. */
+  planUsageRefreshRejects: ApiError | null = null;
+  planUsageRefreshGate: Promise<void> | null = null;
+  planUsageRefreshResult: ((p: ProviderDto) => PlanUsageRefreshResultDto) | null = null;
+
+  async refreshPlanUsage(id: string): Promise<PlanUsageRefreshResultDto> {
+    this.record('refreshPlanUsage', id);
+    const gate = this.planUsageRefreshGate;
+    if (gate) await gate;
+    if (this.planUsageRefreshRejects) {
+      const e = this.planUsageRefreshRejects;
+      this.planUsageRefreshRejects = null;
+      throw e;
+    }
+    const existing = this.providers.find((p) => p.id === id);
+    if (!existing) throw new ApiError(404, 'Not Found', 'provider not found');
+    const answer = this.planUsageRefreshResult
+      ? this.planUsageRefreshResult(existing)
+      : {
+          ok: true,
+          provider: {
+            ...existing,
+            planUsageRefresh: { availableAt: new Date(Date.now() + 300_000).toISOString() },
+          },
+        };
+    this.providers = this.providers.map((p) => (p.id === id ? answer.provider : p));
+    return answer;
   }
 
   testProvider(id: string): Promise<ActionResult> {

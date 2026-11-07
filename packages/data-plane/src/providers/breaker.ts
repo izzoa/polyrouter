@@ -29,6 +29,8 @@ import type {
   PlanCooldownInput,
   PlanCooldownStore,
 } from './plan-cooldown';
+import type { PlanUsageObservation } from './plan-usage';
+import { InMemoryPlanUsageStore, PlanUsageRecorder } from './plan-usage-store';
 
 export type BreakerState = 'closed' | 'open' | 'half_open';
 export type BreakerOutcome = 'success' | 'trip' | 'neutral';
@@ -511,6 +513,12 @@ export interface CircuitBreakerOptions {
   /** The default pause per kind (when no reset is stated). The clamps live in the store's own
    * config; this only chooses a default, so tests can shrink the durations. */
   readonly planCooldownConfig?: PlanCooldownConfig;
+  /** The plan-usage recorder this breaker HOSTS (add-subscription-quota-display, design D6), as
+   * it hosts the plan cooldown store: the walkers and `ProxyService` already hold the breaker, so
+   * usage capture rides it with no new constructor argument (the inference-proxy harness wires
+   * `ProxyService` by hand). Defaults to a recorder over an in-memory store. The breaker neither
+   * reads nor writes any breaker record for usage. */
+  readonly planUsage?: PlanUsageRecorder;
 }
 
 export class CircuitBreaker {
@@ -520,6 +528,7 @@ export class CircuitBreaker {
   private readonly onError: (err: unknown) => void;
   private readonly planCooldowns: PlanCooldownStore;
   private readonly planCfg: PlanCooldownConfig;
+  private readonly planUsage: PlanUsageRecorder;
 
   constructor(
     private readonly primary: BreakerStore,
@@ -531,6 +540,31 @@ export class CircuitBreaker {
     this.onError = opts.onError ?? (() => undefined);
     this.planCooldowns = opts.planCooldowns ?? new InMemoryPlanCooldownStore(this.now);
     this.planCfg = opts.planCooldownConfig ?? DEFAULT_PLAN_COOLDOWN_CONFIG;
+    this.planUsage =
+      opts.planUsage ??
+      new PlanUsageRecorder(new InMemoryPlanUsageStore(this.now), { now: this.now });
+  }
+
+  /** Offer a parsed plan-usage observation made at snapshot generation `gen`. Synchronous and
+   * NEVER throws; the recorder coalesces, so an unchanged observation makes no store call.
+   * Touches no breaker record, generation or lease (display data only). */
+  observePlanUsage(providerId: string, obs: PlanUsageObservation, gen: number): void {
+    try {
+      this.planUsage.offer(providerId, obs, gen);
+    } catch {
+      /* capture can never break a request */
+    }
+  }
+
+  /** This instance's cached snapshot generation for a provider (0 when unknown): read
+   * synchronously, with no I/O, before the row load an observation will be made against. NEVER
+   * throws. */
+  planUsageGeneration(providerId: string): number {
+    try {
+      return this.planUsage.generationOf(providerId);
+    } catch {
+      return 0;
+    }
   }
 
   /** The active plan pause for a provider, or null. NEVER throws and never touches a breaker

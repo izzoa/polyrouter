@@ -9,6 +9,8 @@ import {
   type ProviderRow,
 } from '@polyrouter/shared/server';
 import type { SubscriptionOauthService } from '../subscription-oauth/subscription-oauth.service';
+import { SubscriptionOauthService as SubscriptionOauthServiceClass } from '../subscription-oauth/subscription-oauth.service';
+import { CHATGPT_PRESET, CLAUDE_PRESET, OAUTH_PRESETS } from '../subscription-oauth/presets';
 import type { PresetClientIdentity } from './client-identity';
 import {
   createGuardedHttpClient,
@@ -56,11 +58,23 @@ function builder(
     Promise.reject(new Error('oauth seam not expected')),
   mode: 'selfhosted' | 'cloud' = 'cloud',
   availableClientIdentity: () => PresetClientIdentity | null = () => null,
+  identityBindingFor: SubscriptionOauthService['identityBindingFor'] = () => undefined,
 ): ProviderAdapterBuilder {
   return new ProviderAdapterBuilder({ key: KEY, mode }, {
     resolveCredential,
     availableClientIdentity,
+    identityBindingFor,
   } as unknown as SubscriptionOauthService);
+}
+
+/** The REAL `identityBindingFor` over the bundled registries (it reads nothing else). */
+function realBindingFor(): SubscriptionOauthService['identityBindingFor'] {
+  const svc = Object.create(SubscriptionOauthServiceClass.prototype) as SubscriptionOauthService;
+  (svc as unknown as { presets: unknown }).presets = {
+    find: (id: string) => OAUTH_PRESETS.find((p) => p.id === id),
+    list: () => OAUTH_PRESETS,
+  };
+  return (r) => svc.identityBindingFor(r);
 }
 
 const opts = { defaultMaxOutputTokens: 4096 };
@@ -727,5 +741,130 @@ describe('ProviderAdapterBuilder key-preset plan-error dialect', () => {
       const r = await testKimi(401, 'Your current subscription does not have access to x');
       expect(r).toMatchObject({ ok: false, kind: 'auth' });
     });
+  });
+});
+
+// add-subscription-quota-display (task 5.3): the plan-usage dialect reaches the adapter config
+// only through `planUsageSourcesFor` over the single preset lookup.
+describe('ProviderAdapterBuilder plan-usage dialect', () => {
+  const noGate = { ...opts, assertAddress: false };
+  const tokenResolve = (): ReturnType<SubscriptionOauthService['resolveCredential']> =>
+    Promise.resolve({
+      credential: 'tok-ACCESS',
+      authScheme: 'oauth_bearer' as const,
+      envelope: 'stored-cipher',
+    });
+  const keyResolve = (): ReturnType<SubscriptionOauthService['resolveCredential']> =>
+    Promise.resolve({
+      credential: 'sk-plain-key',
+      authScheme: 'api_key' as const,
+      envelope: 'stored-cipher',
+    });
+  const real = (resolve: SubscriptionOauthService['resolveCredential']) =>
+    builder(resolve, 'cloud', () => null, realBindingFor());
+
+  const oauthRowOf = (preset: typeof CLAUDE_PRESET, over: Partial<ProviderRow> = {}) =>
+    row({
+      kind: 'subscription',
+      protocol: preset.protocol,
+      baseUrl: preset.baseUrl,
+      oauthPreset: preset.id,
+      keyPreset: null,
+      ...over,
+    });
+  const goRow = (over: Partial<ProviderRow> = {}) =>
+    row({
+      kind: 'subscription',
+      protocol: 'openai_compatible',
+      baseUrl: OPENCODE_GO_PRESET.regions[0]!.baseUrl,
+      oauthPreset: null,
+      keyPreset: OPENCODE_GO_PRESET.id,
+      ...over,
+    });
+
+  it('a coherent Claude row and ChatGPT row carry their dialect (the subscription return)', async () => {
+    const claude = await real(tokenResolve).buildConfig(
+      principal,
+      oauthRowOf(CLAUDE_PRESET),
+      noGate,
+    );
+    expect(claude.usageDialect).toBe('anthropic_unified');
+    const chatgpt = await real(tokenResolve).buildConfig(
+      principal,
+      oauthRowOf(CHATGPT_PRESET),
+      noGate,
+    );
+    expect(chatgpt.usageDialect).toBe('codex');
+  });
+
+  it('a coherent OpenCode Go row carries opencode_go, on the subscription return', async () => {
+    const cfg = await real(keyResolve).buildConfig(principal, goRow(), noGate);
+    expect(cfg.usageDialect).toBe('opencode_go');
+  });
+
+  it('a row with no usage dialect carries none: Kimi (a probe only), an api_key row, a custom row', async () => {
+    const kimi = KIMI_CODE_PRESET.regions[0]!;
+    const kimiCfg = await real(keyResolve).buildConfig(
+      principal,
+      row({
+        kind: 'subscription',
+        protocol: 'openai_compatible',
+        baseUrl: kimi.baseUrl,
+        keyPreset: KIMI_CODE_PRESET.id,
+      }),
+      noGate,
+    );
+    expect('usageDialect' in kimiCfg).toBe(false);
+    for (const kind of ['api_key', 'custom']) {
+      const cfg = await real(keyResolve).buildConfig(principal, row({ kind }), noGate);
+      expect('usageDialect' in cfg).toBe(false);
+    }
+  });
+
+  it('a drifted row does not carry the dialect (OAuth base_url or protocol, key-preset base_url)', async () => {
+    const drifted: ProviderRow[] = [
+      oauthRowOf(CLAUDE_PRESET, { baseUrl: 'https://proxy.example/' }),
+      oauthRowOf(CLAUDE_PRESET, { protocol: 'openai_compatible' }),
+      oauthRowOf(CHATGPT_PRESET, { baseUrl: 'https://chatgpt.com/other/' }),
+      goRow({ baseUrl: `${OPENCODE_GO_PRESET.regions[0]!.baseUrl}/` }),
+      goRow({ protocol: 'anthropic_compatible' }),
+      goRow({ kind: 'api_key' }),
+      goRow({ keyPreset: null }),
+    ];
+    for (const r of drifted) {
+      const cfg = await real(tokenResolve).buildConfig(principal, r, noGate);
+      expect({ id: r.baseUrl, has: 'usageDialect' in cfg }).toEqual({ id: r.baseUrl, has: false });
+    }
+  });
+
+  it('the dialect never comes from the host: a preset host without the marker carries none', async () => {
+    const cfg = await real(keyResolve).buildConfig(
+      principal,
+      row({
+        kind: 'subscription',
+        protocol: 'openai_compatible',
+        baseUrl: OPENCODE_GO_PRESET.regions[0]!.baseUrl,
+        keyPreset: null,
+        oauthPreset: null,
+      }),
+      noGate,
+    );
+    expect('usageDialect' in cfg).toBe(false);
+  });
+
+  it('the dialect is decided by the lookup alone: a stub binding with a dialect yields it, never the row', async () => {
+    const stub = builder(
+      keyResolve,
+      'cloud',
+      () => null,
+      () => ({
+        identity: undefined,
+        pin: { baseUrl: 'https://api.openai.com/v1', protocol: 'openai_compatible' },
+        usage: { dialect: 'codex' as const },
+      }),
+    );
+    // The row is api_key: the single pin test (kind subscription) refuses it.
+    const cfg = await stub.buildConfig(principal, row(), noGate);
+    expect('usageDialect' in cfg).toBe(false);
   });
 });

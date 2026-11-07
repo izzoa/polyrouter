@@ -25,6 +25,15 @@ describe('preset invariants', () => {
     expect(CHATGPT_PRESET.clientIdentity).toBeUndefined();
   });
 
+  it('Claude declares the anthropic_unified usage dialect and ChatGPT the codex one (task 5.1)', () => {
+    expect(CLAUDE_PRESET.usageDialect).toBe('anthropic_unified');
+    expect(CHATGPT_PRESET.usageDialect).toBe('codex');
+    // Passive only: an OAuth preset never declares a usage endpoint.
+    for (const p of OAUTH_PRESETS) {
+      expect('usageProbe' in p).toBe(false);
+    }
+  });
+
   it('every registered preset that declares a client identity declares a valid one', () => {
     for (const p of OAUTH_PRESETS) {
       if (p.clientIdentity !== undefined) {

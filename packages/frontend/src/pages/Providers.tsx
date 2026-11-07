@@ -1,5 +1,6 @@
 import {
   createEffect,
+  createMemo,
   createSignal,
   createUniqueId,
   For,
@@ -8,7 +9,8 @@ import {
   Show,
 } from 'solid-js';
 import type { EffectivePrice, ModelPricingInput } from '../data/api';
-import { fmtUsd } from '../data/format';
+import { fmtUntil, fmtUsd } from '../data/format';
+import { MAX_USAGE_TICK_MS, nextTickAt, planUsageView } from '../data/planUsage';
 import { unlistedText } from '../data/unlisted';
 import { FROM_DIALOG, isPriceEditableKind, providerKindLabel } from '../state/appState';
 import { isNonRoutableVariant } from '@polyrouter/shared';
@@ -308,6 +310,57 @@ function ProviderCard(props: { p: Provider }) {
   const view = () =>
     providerHealthView(props.p, clock(), state.reconnectChecking.includes(props.p.id));
   const pause = () => activePause(props.p, clock());
+
+  // add-subscription-quota-display (design D10): the plan-usage line, and the Refresh usage button's
+  // cooldown, change by themselves at one instant: the earliest future window reset, or the end
+  // of the refresh cooldown. ONE timer is armed for it, for at most 24 hours: a reset can be a
+  // month away, beyond setTimeout's 2^31-1 ms limit, where the browser fires at once. When it
+  // fires, `now` moves, this effect re-runs and arms the next one, so a far reset costs a bounded
+  // number of timers and still flips at its own instant. The reset and the end are read inside the
+  // effect, so a reload that moves one re-arms it; cleanup clears it.
+  createEffect(() => {
+    const next = nextTickAt(props.p, clock());
+    if (next === null) return;
+    const wait = Math.min(next - Date.now(), MAX_USAGE_TICK_MS);
+    if (wait <= 0) return;
+    const target = Math.min(next, Date.now() + wait);
+    // `max`: a timer may fire a tick early, and a reset must have passed when the line says so.
+    const timer = setTimeout(() => setNow(Math.max(Date.now(), target)), wait);
+    onCleanup(() => clearTimeout(timer));
+  });
+  // The usage line states no health, so it never contradicts the status line: it is hidden while
+  // that line says a plan pause or the reconnect banner (dashboard-core).
+  const usage = createMemo(() =>
+    view().banner || pause() !== null ? null : planUsageView(props.p, clock()),
+  );
+  // The `as of` a success states: the line's own, even while the line is hidden.
+  const asOfText = (): string | null => planUsageView(props.p, clock())?.asOf ?? null;
+  const refreshEnd = (): string | null => {
+    const at = props.p.planUsageRefresh?.availableAt ?? null;
+    return at === null ? null : fmtUntil(at, clock());
+  };
+  const refreshing = createBusy();
+  // The last press's outcome, in words next to the button: done, or why not.
+  const [refreshed, setRefreshed] = createSignal(false);
+  const [refreshFailure, setRefreshFailure] = createSignal<string | null>(null);
+  const uid = createUniqueId();
+  const cooldownId = `${uid}-refresh-cooldown`;
+  const readsId = `${uid}-refresh-reads`;
+  let refreshStatus: HTMLElement | undefined;
+  let refreshAlert: HTMLElement | undefined;
+  const startRefresh = (): void => {
+    setRefreshed(false);
+    setRefreshFailure(null);
+    void refreshing.run(() =>
+      app.refreshPlanUsage(props.p.id).then((outcome) => {
+        setRefreshed(outcome.ok);
+        setRefreshFailure(outcome.ok ? null : outcome.reason);
+        // The button stays disabled for the cooldown, so focus would fall to the page: it goes to
+        // the outcome text instead, which is focusable for this (tabindex -1).
+        (outcome.ok ? refreshStatus : refreshAlert)?.focus({ preventScroll: true });
+      }),
+    );
+  };
   // Resume now (the pause's one action) and its in-place failure. A risk-control pause asks first,
   // in the consent confirmation; the others lift at once.
   const resuming = createBusy();
@@ -457,6 +510,103 @@ function ProviderCard(props: { p: Provider }) {
       <Show when={props.p.oauthPreset !== null && !view().banner}>
         <div data-token-line class="t-caption" style="color:var(--text3)">
           Signed in · renews automatically{expiresLabel(props.p.credentialExpiresAt)}
+        </div>
+      </Show>
+
+      <Show when={usage() !== null || props.p.planUsageRefresh !== null}>
+        {/* add-subscription-quota-display: ONE neutral usage line, in the token line's caption
+            tone, never green, red or amber; the billing phrase alone is Ink 2. The model buckets
+            sit in a native disclosure. Refresh usage is a ghost button on the same row, wrapping
+            under the line at narrow widths. */}
+        <div
+          data-usage
+          class="rs-wrap"
+          style="display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px"
+        >
+          <Show when={usage()}>
+            {(u) => (
+              <div style="flex:1 1 auto;min-width:0">
+                <div
+                  data-usage-line
+                  class="t-caption"
+                  style="color:var(--text3);overflow-wrap:anywhere"
+                >
+                  <Show when={u().billingPhrase}>
+                    {(phrase) => (
+                      <>
+                        <span data-usage-billing style="color:var(--text2)">
+                          {phrase()}
+                        </span>
+                        {' · '}
+                      </>
+                    )}
+                  </Show>
+                  {u().body}
+                </div>
+                <Show when={u().buckets.length > 0}>
+                  <details data-usage-buckets class="t-caption" style="color:var(--text3)">
+                    <summary>{`model limits (${String(u().buckets.length)})`}</summary>
+                    <ul style="margin:4px 0 0;padding-left:16px">
+                      <For each={u().buckets}>{(b) => <li>{b.text}</li>}</For>
+                    </ul>
+                  </details>
+                </Show>
+              </div>
+            )}
+          </Show>
+          <Show when={props.p.planUsageRefresh !== null}>
+            <div style="display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;min-width:0;max-width:100%">
+              {/* `max-width:100%`: a provider card can be narrower than the label at a phone's
+                  width (two columns of 108px at 320), so the label wraps rather than overflowing. */}
+              <button
+                type="button"
+                class="btn-ghost"
+                style="max-width:100%"
+                disabled={refreshing.busy() || refreshEnd() !== null}
+                aria-busy={refreshing.busy() ? true : undefined}
+                aria-describedby={refreshEnd() !== null ? `${readsId} ${cooldownId}` : readsId}
+                onClick={startRefresh}
+              >
+                <StackedLabel alt={refreshing.busy()} rest="Refresh usage" altLabel="Refreshing…" />
+              </button>
+              <span id={readsId} class="sr-only">
+                Reads usage from the provider’s usage endpoint. Makes no model call.
+              </span>
+              <span class="t-caption" style="color:var(--text3)">
+                <Show when={refreshEnd()}>
+                  {(end) => <span id={cooldownId}>{`next refresh ${end()}`}</span>}
+                </Show>
+                {/* A polite status region that stays in the document, so a screen reader
+                    announces its text when it changes. Focusable from script only. */}
+                <span
+                  ref={(el) => {
+                    refreshStatus = el;
+                  }}
+                  role="status"
+                  tabindex="-1"
+                  data-usage-refresh-status
+                >
+                  <Show when={refreshed()}>
+                    {`Usage refreshed${asOfText() === null ? '' : ` · as of ${asOfText() ?? ''}`}`}
+                  </Show>
+                </span>
+                <Show when={refreshFailure()}>
+                  {(reason) => (
+                    <span
+                      ref={(el) => {
+                        refreshAlert = el;
+                      }}
+                      role="alert"
+                      tabindex="-1"
+                      data-usage-refresh-failure
+                    >
+                      {`Couldn’t refresh usage. ${reason()}`}
+                    </span>
+                  )}
+                </Show>
+              </span>
+            </div>
+          </Show>
         </div>
       </Show>
 

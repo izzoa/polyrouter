@@ -158,6 +158,13 @@ Next: [connect a real agent](./docs/connect-an-agent.md) (OpenAI SDK, Anthropic 
   channel never blocks a request.
 - **Dashboard.** Costs, per-agent usage, provider health, routing config, and a decision
   inspector showing why each request went where it did.
+- **Plan usage on subscription cards.** A Claude, ChatGPT, OpenCode Go, MiniMax, Kimi Code or
+  Z.ai card can show one neutral line of how much of the plan is used, when each window resets,
+  and when the plan is billing extra usage. It reads what replies already carry, so it costs
+  nothing; key plans add a **Refresh usage** button you press yourself, at most once every five
+  minutes. It is display only: no alert, no routing change, no background polling. Each usage
+  endpoint stays off until it has been checked against the live provider.
+  → [Plan usage](./docs/self-hosting.md#plan-usage-on-the-card)
 
 ## Security
 

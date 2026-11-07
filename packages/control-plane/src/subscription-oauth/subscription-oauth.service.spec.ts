@@ -26,7 +26,7 @@ import {
   SubscriptionOauthService,
 } from './subscription-oauth.service';
 import { TokenEndpointError, fetchTokenSet, type TokenSet } from './oauth-client';
-import type { OauthPreset } from './presets';
+import { CHATGPT_PRESET, CLAUDE_PRESET, type OauthPreset } from './presets';
 import {
   KIMI_CODE_PRESET,
   MINIMAX_M_PLAN_PRESET,
@@ -1018,6 +1018,8 @@ describe('key-preset identity binding (add-key-subscription-presets task 7.2)', 
       expect(h.svc.identityBindingFor(keyRow(preset, region))).toEqual({
         identity: preset.clientIdentity,
         pin: { baseUrl: region.baseUrl, protocol: region.protocol },
+        // add-subscription-quota-display: the binding also carries the region's usage source.
+        usage: { probe: region.usageProbe },
       });
     }
   });
@@ -1062,8 +1064,9 @@ describe('key-preset identity binding (add-key-subscription-presets task 7.2)', 
       for (const region of preset.regions) {
         const row = keyRow(preset, region);
         expect(h.svc.availableClientIdentity(row)).toBeNull();
-        // The gate matched, so a binding exists, but it carries no declaration.
-        expect(h.svc.identityBindingFor(row)).toEqual({
+        // The gate matched, so a binding exists, but it carries no identity declaration.
+        // (It does carry the region's usage source, where one is declared.)
+        expect(h.svc.identityBindingFor(row)).toMatchObject({
           identity: undefined,
           pin: { baseUrl: region.baseUrl, protocol: region.protocol },
         });
@@ -1194,6 +1197,19 @@ describe('listEnabledPresets (allow-preset-client-identity)', () => {
     // Nothing in the listing carries a header name or value.
     const text = JSON.stringify([...byId.values()]);
     expect(text).not.toMatch(/fixture-client|fixture-auth|X-Fixture|User-Agent/i);
+  });
+
+  it('never exposes the plan-usage dialect (add-subscription-quota-display)', async () => {
+    const h = await harness();
+    // The fixtures really declare one, so the absence below is not vacuous.
+    expect(CLAUDE_PRESET.usageDialect).toBe('anthropic_unified');
+    expect(CHATGPT_PRESET.usageDialect).toBe('codex');
+    const list = h.svc.listEnabledPresets();
+    expect(list.map((p) => p.id)).toEqual(expect.arrayContaining(['claude', 'chatgpt']));
+    for (const entry of list) {
+      expect(Object.keys(entry).sort()).toEqual(['clientIdentity', 'displayName', 'id']);
+    }
+    expect(JSON.stringify(list)).not.toMatch(/usage|anthropic_unified|codex/i);
   });
 
   it('is null for a declaration that does not validate', async () => {

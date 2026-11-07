@@ -594,8 +594,10 @@ This is where the Route Trace and Price Receipt live, opened from a request row.
 
 | State | Rendering | Notes |
 |---|---|---|
-| **Stale** (data kept after a failed refresh, or older than 45s) | The figure stays in Ink, with a caption `as of 14:02 · stale` in amber text (UTC, after the period's `Resets … UTC`), plus **Retry** | Only on surfaces that keep their data, such as Limits. The snapshot time never advances on a failed refresh. Surfaces whose contract says "absent, never stale" use Failed instead. |
+| **Stale** (data kept after a failed refresh, or older than 45s) | The figure stays in Ink, with a caption `as of 14:02 · stale` in amber text (UTC, after the period's `Resets … UTC`), plus **Retry** | Only on polled surfaces that keep their data, such as Limits. The snapshot time never advances on a failed refresh. Surfaces whose contract says "absent, never stale" use Failed instead. The plan-usage line is not one of them: it is an observation and states its own time (Observation, below). |
 | **Expired** | `expired · awaiting refresh` | The previous period's balance after the UTC rollover |
+| **Observation** (plan usage) | `as of 13:02 UTC` in Ink 3, ending the line, with the date when it is not today | The time of the **oldest** figure the line shows, so the line never claims newer data than it has. Absolute, never relative, so it needs no ticking clock. Never stale: no amber caption and no Retry, even after a failed Refresh usage, which keeps the line and its time and reports the failure beside the button. |
+| **Reset** (plan usage) | `<label> reset · awaiting new data` in Ink 3 | A usage window whose reset has passed, shown at the instant it passes and in place of its old percent. Mirrors Expired, but names a reset rather than a refresh: passive sources have no refresh to await, only the next response. |
 | **Newer rows exist** | A `12 new` button in Deep Ink | Loads them on request. It never resets paging silently. |
 | **Unverified** | One notice per surface, in amber text: `Routing may have changed and the refresh failed.`, plus **Retry**. Actions that depend on it are disabled. | One notice, never one per cell. |
 

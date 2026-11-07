@@ -9,6 +9,7 @@
  * can never become available to any send site.
  */
 
+import type { PlanUsageDialect, PlanUsageProbe } from '@polyrouter/data-plane';
 import type { ProviderRow } from '@polyrouter/shared/server';
 import type { OauthPreset } from '../subscription-oauth/presets';
 
@@ -124,10 +125,21 @@ export function isValidClientIdentity(identity: PresetClientIdentity): boolean {
  */
 export interface IdentityBinding {
   readonly identity: PresetClientIdentity | undefined;
+  /** The preset's plan-usage declaration (add-subscription-quota-display, design D1): an OAuth
+   * preset's `usageDialect`, or the matched key-preset region's `usageDialect` and `usageProbe`.
+   * Read only through `planUsageSourcesFor`, behind `bindingMatches`. */
+  readonly usage?: PlanUsageDeclaration;
   readonly pin: {
     readonly baseUrl: string;
     readonly protocol: OauthPreset['protocol'];
   };
+}
+
+/** What a preset declares about its plan-usage sources: a passive reply dialect, a usage
+ * endpoint, or both. */
+export interface PlanUsageDeclaration {
+  readonly dialect?: PlanUsageDialect;
+  readonly probe?: PlanUsageProbe;
 }
 
 /** The row columns the availability rule and the switch read. */
@@ -157,14 +169,26 @@ export function clientIdentityFor(
   row: IdentityRow,
   binding: IdentityBinding | undefined,
 ): PresetClientIdentity | null {
-  if (row.kind !== 'subscription') return null;
-  const identity = binding?.identity;
+  if (binding === undefined || !bindingMatches(row, binding)) return null;
+  const identity = binding.identity;
   if (identity === undefined) return null;
   if (!declarationIsValid(identity)) return null;
-  if (row.baseUrl !== binding!.pin.baseUrl || row.protocol !== binding!.pin.protocol) {
-    return null;
-  }
   return identity;
+}
+
+/**
+ * The pin test, factored out of `clientIdentityFor` so that identity and plan usage can never
+ * disagree about which rows are coherent (add-subscription-quota-display, design D1): the row is
+ * a `subscription` provider and still sits on the binding's pinned endpoint and protocol. A row
+ * with no binding never matches. Pure and independent of what the binding declares.
+ */
+export function bindingMatches(
+  row: Pick<ProviderRow, 'kind' | 'baseUrl' | 'protocol'>,
+  binding: IdentityBinding | undefined,
+): boolean {
+  if (binding === undefined) return false;
+  if (row.kind !== 'subscription') return false;
+  return row.baseUrl === binding.pin.baseUrl && row.protocol === binding.pin.protocol;
 }
 
 /**

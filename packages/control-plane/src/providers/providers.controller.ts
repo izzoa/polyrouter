@@ -8,13 +8,21 @@ import {
   Param,
   Patch,
   Post,
+  Res,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { loadConfig } from '@polyrouter/shared';
 import type { Principal } from '@polyrouter/shared/server';
 import { CurrentPrincipal } from '../auth/principal.decorator';
 import { resolveProxyBounds, type ProxyRawConfig } from '../proxy/proxy.config';
 import { CreateProviderDto, UpdateProviderDto } from './providers.dto';
-import { ProvidersService, type ActionResult, type SafeProvider } from './providers.service';
+import {
+  PlanUsageCooldownException,
+  ProvidersService,
+  type ActionResult,
+  type PlanUsageRefreshResult,
+  type SafeProvider,
+} from './providers.service';
 
 /** `/api/providers` — session-guarded (global guard), tenant-scoped through the
  * service. Credentials are encrypted at rest and never returned; action results
@@ -82,6 +90,30 @@ export class ProvidersController {
     @Param('id') id: string,
   ): Promise<void> {
     await this.svc.liftPlanCooldown(principal, id);
+  }
+
+  /** "Refresh usage" (add-subscription-quota-display, design D8): an attended, owner-scoped read
+   * of a key plan's usage endpoint, once per shared cooldown. `200` carries `ok` (true, or false
+   * with a kind and a fixed message) and the provider view; `404` another tenant's id (checked
+   * first), `422` no enabled usage endpoint, `429` + `Retry-After` while the cooldown holds, `503`
+   * when the shared store is unreachable. Writes no health record, breaker state or plan cooldown.
+   * `no-store`: the answer is account usage. */
+  @Post(':id/plan-usage/refresh')
+  @HttpCode(200)
+  @Header('Cache-Control', 'no-store')
+  async refreshPlanUsage(
+    @CurrentPrincipal() principal: Principal,
+    @Param('id') id: string,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<PlanUsageRefreshResult> {
+    try {
+      return await this.svc.refreshPlanUsage(principal, id);
+    } catch (err) {
+      if (err instanceof PlanUsageCooldownException) {
+        res.setHeader('Retry-After', String(err.retryAfterSeconds));
+      }
+      throw err;
+    }
   }
 
   @Post(':id/test-connection')

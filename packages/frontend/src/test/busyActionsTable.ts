@@ -270,6 +270,12 @@ export const BUSY_ACTIONS: readonly BusyRow[] = [
     why: 'Resume now, on a plan-paused provider card (classify-plan-quota-errors). A risk-control pause asks first: the consent dialog’s commit drives this same busy state, and is walked in planCooldown.view.test.tsx',
   },
   {
+    key: 'pages/Providers.tsx app.refreshPlanUsage',
+    cls: 'busy',
+    busyLabel: 'Refreshing…',
+    why: 'Refresh usage, on a key-plan provider card (add-subscription-quota-display). After a read the button stays disabled for the shared cooldown and says when it returns, so its scenario walks the refused path, which leaves it at rest; the success path is walked in Providers.planUsageRefresh.view.test.tsx',
+  },
+  {
     key: 'pages/Providers.tsx app.removeUnlistedModel#1',
     cls: 'destructive',
     why: 'Remove on an unlisted model: the store counts its impact, then opens the shared confirmation, whose commit is busy',

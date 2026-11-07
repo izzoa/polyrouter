@@ -59,6 +59,7 @@ import {
   PROXY_RUNTIME,
   loadProxyRuntime,
 } from '../../src/proxy/proxy.config';
+import { PlanUsageModule } from '../../src/plan-usage/plan-usage.module';
 import { PROXY_BREAKER_PROVIDER } from '../../src/proxy/proxy.module';
 import { ROUTING_CONFIG, loadRoutingConfig } from '../../src/proxy/routing.config';
 import {
@@ -185,6 +186,7 @@ async function bootApp(opts: {
           resolveCredential: () =>
             Promise.resolve({ credential: 'sub-token', authScheme: 'api_key' }),
           availableClientIdentity: () => null,
+          identityBindingFor: () => undefined,
         },
       },
       StreamDrainRegistry,
@@ -293,10 +295,10 @@ describe('plan cooldown e2e (classify-plan-quota-errors)', () => {
       throw new Error(`${COMPOSE_HINT}\n(${(error as Error).message})`);
     }
 
-    // The production wiring: the real PROXY_BREAKER factory over the real PlanCooldownModule.
+    // The production wiring: the real PROXY_BREAKER factory over the real PlanCooldownModule and PlanUsageModule.
     real = await bootApp({
       breaker: PROXY_BREAKER_PROVIDER,
-      extraImports: [PlanCooldownModule, ProvidersModule],
+      extraImports: [PlanCooldownModule, PlanUsageModule, ProvidersModule],
     });
     // Short windows over the same Redis, built from the same pieces.
     short = await bootApp({

@@ -27,7 +27,7 @@
  */
 
 import type { ProviderRow } from '@polyrouter/shared/server';
-import type { PlanErrorDialect } from '@polyrouter/data-plane';
+import type { PlanErrorDialect, PlanUsageDialect, PlanUsageProbe } from '@polyrouter/data-plane';
 import type { PresetClientIdentity } from '../providers/client-identity';
 
 /** The injection token the connect and list paths read the registry through (design D6),
@@ -71,6 +71,21 @@ export interface KeyPresetRegion {
    * none: no error shape is documented.
    */
   readonly errorDialect?: PlanErrorDialect;
+  /**
+   * The plan-usage wire format this region's chat replies carry
+   * (add-subscription-quota-display, design D1): only OpenCode Go, whose final usage event
+   * carries `usage.opencode.billing_source`. Trusted routing data, never user input and never
+   * part of the available-presets DTO; it reaches an adapter only through `planUsageSourcesFor`.
+   */
+  readonly usageDialect?: PlanUsageDialect;
+  /**
+   * The region's plan-usage endpoint (design D7): a fixed, same-origin `https` constant read
+   * only on the user's explicit Refresh usage. EVERY probe ships `enabled: false` until its own
+   * live runbook (`scripts/verify-plan-usage.md`) has passed with the user's own key, exactly as
+   * the region flags above. Flipping a probe on is the user's call, never an agent's. A region
+   * with no verified host (MiniMax China) declares none.
+   */
+  readonly usageProbe?: PlanUsageProbe;
 }
 
 /** An advisory key hint (design D9): a caution, never a server-side rejection. */
@@ -148,6 +163,13 @@ export const OPENCODE_GO_PRESET: KeyPreset = {
       modelsUrl: 'https://opencode.ai/inference/go/v1/models',
       enabled: false,
       imitationRequired: false,
+      usageDialect: 'opencode_go',
+      usageProbe: {
+        url: 'https://opencode.ai/zen/go/v1/usage',
+        auth: 'bearer',
+        parser: 'opencode_go_usage',
+        enabled: false,
+      },
     },
   ],
   keyHint: null,
@@ -177,6 +199,12 @@ export const MINIMAX_M_PLAN_PRESET: KeyPreset = {
       enabled: false,
       imitationRequired: false,
       errorDialect: 'minimax',
+      usageProbe: {
+        url: 'https://api.minimax.io/v1/token_plan/remains',
+        auth: 'bearer',
+        parser: 'minimax_remains',
+        enabled: false,
+      },
     },
     {
       id: 'cn',
@@ -214,6 +242,12 @@ export const KIMI_CODE_PRESET: KeyPreset = {
       enabled: false,
       imitationRequired: false,
       errorDialect: 'kimi',
+      usageProbe: {
+        url: 'https://api.kimi.ai/coding/v1/usages',
+        auth: 'bearer',
+        parser: 'kimi_usages',
+        enabled: false,
+      },
     },
     {
       id: 'cn',
@@ -223,6 +257,12 @@ export const KIMI_CODE_PRESET: KeyPreset = {
       enabled: false,
       imitationRequired: false,
       errorDialect: 'kimi',
+      usageProbe: {
+        url: 'https://api.kimi.com/coding/v1/usages',
+        auth: 'bearer',
+        parser: 'kimi_usages',
+        enabled: false,
+      },
     },
   ],
   keyHint: {
@@ -260,6 +300,12 @@ export const ZAI_CODING_PLAN_PRESET: KeyPreset = {
       enabled: false,
       imitationRequired: false,
       errorDialect: 'zai',
+      usageProbe: {
+        url: 'https://api.z.ai/api/monitor/usage/quota/limit',
+        auth: 'bearer',
+        parser: 'zai_quota_limit',
+        enabled: false,
+      },
     },
     {
       id: 'cn',
@@ -268,6 +314,12 @@ export const ZAI_CODING_PLAN_PRESET: KeyPreset = {
       protocol: 'openai_compatible',
       enabled: false,
       imitationRequired: false,
+      usageProbe: {
+        url: 'https://open.bigmodel.cn/api/monitor/usage/quota/limit',
+        auth: 'bearer',
+        parser: 'zai_quota_limit',
+        enabled: false,
+      },
     },
   ],
   keyHint: {

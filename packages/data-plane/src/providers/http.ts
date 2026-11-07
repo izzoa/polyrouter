@@ -41,7 +41,13 @@ export interface HttpInit {
 export interface HttpResponse {
   readonly status: number;
   readonly ok: boolean;
-  readonly headers: { get(name: string): string | null };
+  /** `forEach` is optional so a test fake needs only `get`; the real transport's undici
+   * `Headers` always has it (add-subscription-quota-display, design D2: the Codex parser
+   * discovers `x-<limit>-primary-used-percent` families by name). */
+  readonly headers: {
+    get(name: string): string | null;
+    forEach?(callback: (value: string, name: string) => void): void;
+  };
   readonly body: ReadableStream<Uint8Array> | null;
   text(): Promise<string>;
   json(): Promise<unknown>;

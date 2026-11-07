@@ -147,6 +147,7 @@ async function bootApp(
         useValue: {
           resolveCredential: () => Promise.reject(new Error('oauth seam not stubbed')),
           availableClientIdentity: () => null,
+          identityBindingFor: () => undefined,
         },
       },
       StreamDrainRegistry,

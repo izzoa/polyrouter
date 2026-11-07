@@ -303,6 +303,30 @@ describe('SubscriptionPresetsService.listAvailable', () => {
     }
   });
 
+  it('never exposes the plan-usage dialect or probe (add-subscription-quota-display)', () => {
+    const h = harness(
+      registryOf(
+        withRegions(OPENCODE_GO_PRESET, { default: ON }),
+        withRegions(MINIMAX_M_PLAN_PRESET, { intl: ON }),
+        withRegions(KIMI_CODE_PRESET, { intl: ON, cn: ON }),
+        withRegions(ZAI_CODING_PLAN_PRESET, { intl: ON, cn: ON }),
+      ),
+    );
+    // The fixture really declares both, so the absence below is not vacuous.
+    expect(OPENCODE_GO_PRESET.regions[0]!.usageDialect).toBe('opencode_go');
+    expect(KIMI_CODE_PRESET.regions[0]!.usageProbe).toBeDefined();
+    const list = h.svc.listAvailable();
+    const json = JSON.stringify(list);
+    expect(json).not.toMatch(
+      /usageDialect|usageProbe|"probe"|"dialect"|opencode_go|zen\/go|token_plan|quota\/limit|\/usages/i,
+    );
+    for (const preset of list) {
+      for (const region of preset.regions) {
+        expect(Object.keys(region).sort()).toEqual(['host', 'id', 'imitationRequired', 'label']);
+      }
+    }
+  });
+
   it('flags acknowledgement for a high preset and for an imitation-required region', () => {
     const h = harness(
       registryOf(

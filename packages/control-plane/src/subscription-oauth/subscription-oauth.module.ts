@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { DatabaseModule } from '../database/database.module';
+import { PlanUsageModule } from '../plan-usage/plan-usage.module';
 import { RedisModule } from '../redis/redis.module';
 import { loadProvidersConfig, resolveCredentialKey } from '../providers/providers.config';
 import { SubscriptionOauthController } from './subscription-oauth.controller';
@@ -18,7 +19,7 @@ import {
  * are overridable in tests (stub IdP / stub presets); the runtime reuses the
  * provider-credential key + mode resolution. */
 @Module({
-  imports: [DatabaseModule, RedisModule],
+  imports: [DatabaseModule, RedisModule, PlanUsageModule],
   controllers: [SubscriptionOauthController],
   providers: [
     SubscriptionOauthService,

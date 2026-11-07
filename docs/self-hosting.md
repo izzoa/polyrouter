@@ -603,8 +603,80 @@ plan_quota_exhausted` or `429 plan_risk_control` (HTTP 429, as `rate_limited` wa
   on its allow-list, and polyrouter's honest `polyrouter/<version>` User-Agent may be one of
   them. The runbook (`scripts/verify-kimi-key.md`, "Error-shape evidence") records whether that
   happens, and if it does the label will change in a later release. This is not decided here.
-- **Not covered yet:** a notification when a plan pauses, `Retry-After` handling for providers
-  without a preset, and showing how much of a plan's allowance is left.
+- **Not covered yet:** a notification when a plan pauses and `Retry-After` handling for providers
+  without a preset. How much of a plan's allowance is left is shown on the card, as described
+  next.
+
+#### Plan usage on the card
+
+A subscription card can show one neutral usage line, for example `5h 2% · resets 14:00 · weekly
+74% · resets Mon 09:00 · as of 13:41 UTC`. It is display only: it never changes routing, the
+fallback order, the circuit breaker, a plan pause, health, cost, budgets or notifications, it is
+never forwarded to your agents (the quota headers are read here and not passed on), and missing
+or stale data blocks nothing. polyrouter stores only parsed numbers and enums, never a header or
+a response body, in Redis (the snapshot expires within 32 days). A Redis flush shows `unknown`
+until the next response or refresh. A figure that is not known reads `unknown`, never `0%`.
+
+Where the numbers come from:
+
+| Plan                         | Source                                                                                                         | Refresh usage |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------- | ------------- |
+| Claude Pro/Max               | The `anthropic-ratelimit-unified-*` headers on replies polyrouter already gets                                 | No            |
+| ChatGPT Plus/Pro             | The `x-codex-*` headers on replies polyrouter already gets                                                     | No            |
+| OpenCode Go                  | `usage.opencode.billing_source` on replies (the billing state only), and `https://opencode.ai/zen/go/v1/usage` | Yes           |
+| MiniMax M Plan (intl)        | `https://api.minimax.io/v1/token_plan/remains`                                                                 | Yes           |
+| Kimi Code (intl)             | `https://api.kimi.ai/coding/v1/usages`                                                                         | Yes           |
+| Kimi Code (China)            | `https://api.kimi.com/coding/v1/usages`                                                                        | Yes           |
+| Z.ai GLM Coding Plan (intl)  | `https://api.z.ai/api/monitor/usage/quota/limit`                                                               | Yes           |
+| Z.ai GLM Coding Plan (China) | `https://open.bigmodel.cn/api/monitor/usage/quota/limit`                                                       | Yes           |
+
+The MiniMax China region has no usage endpoint, so it shows nothing. An "Other subscription" row,
+a pay-as-you-go row on a preset's host and a row whose endpoint no longer matches its preset show
+no usage line and offer no refresh.
+
+- **Passive capture costs nothing.** Claude, ChatGPT and OpenCode Go usage is read from the
+  replies of requests you already send, from **Test** and from a manual **Sync models**. The
+  scheduled daily model-list refresh captures nothing. Each instance writes a provider's snapshot
+  only when a whole-percent figure, a reset minute or the billing state changes, or at most once a
+  minute while traffic continues, so a steady stream makes no extra Redis call.
+- **There is no Refresh usage for Claude or ChatGPT.** Their usage comes only from their own
+  traffic, Test and sync. polyrouter never calls Anthropic's `/api/oauth/usage` or ChatGPT's
+  `/wham/` endpoints.
+- **Refresh usage is attended and rate limited.** For the key plans above it is a button on the
+  card; nothing calls a usage endpoint on a schedule, from traffic, from the OAuth sweep or from
+  the catalog refresh. A press claims a **5-minute cooldown shared through Redis** before it calls,
+  so two presses (even on two instances) make one read, a failed read still uses the cooldown, and
+  a usage endpoint's own `Retry-After` extends it (to at most one hour). If Redis is unreachable
+  the refresh is refused (503) rather than sent unthrottled. The read is a plain `GET` of the
+  endpoint in the table with your key and `User-Agent: polyrouter/<version>`: it never sends the
+  imitation identity, whatever the provider's switch says.
+- **Each region's endpoint ships disabled.** A usage endpoint is switched on only after its
+  section of `scripts/verify-plan-usage.md` (9.3 OpenCode Go, 9.4 MiniMax, 9.5 Kimi, 9.6 Z.ai;
+  9.7 enables the verified probes) has passed against a real plan key. The per-preset
+  `verify-*-key.md` runbooks remain the connect-time checks.
+  Until then that region's card offers no Refresh usage and a refresh request for it answers 422
+  without a call. Claude and ChatGPT usage needs no such check: it only reads replies.
+- **Numbers are account-wide.** A plan's allowance is per account and shared with every other tool
+  you use on it, so the line shows what the provider reports for the account, never polyrouter's
+  share. Two providers on one account each keep their own snapshot and cooldown.
+- **"Now billing extra usage."** When a reply says the plan has spilled into paid overflow
+  (Claude usage credits, OpenCode Go's balance) the line says so; for ChatGPT, where this is an
+  inference from a full window and credits on the account, it says credits _may_ be in use. That
+  spend is not metered by your cash budgets.
+- **Rotating a key or reconnecting starts from unknown.** Changing the credential, or reconnecting
+  an OAuth provider, discards its snapshot (the new credential may belong to another account) and
+  ignores any read still in flight from the old one. The refresh cooldown is kept, so re-sending
+  the same key never skips it.
+- **Kimi's terms and its 403.** Kimi Code forbids reverse-proxy sharing and non-interactive
+  automation, and Moonshot has not answered whether a third-party reader of the usage endpoint is
+  acceptable (kimi-code#2937). The 5-minute cooldown is the conservative reading, and the read is
+  user-clicked only. Kimi can also answer **403 when a plan is used up**, so an exhausted Kimi plan
+  may show the credential-style status line beside a full usage line (the plan-limit
+  classification above reads Kimi quota texts on a 429 only), and a refused Kimi usage read is
+  worded as ambiguous: the plan may be used up or the key may lack access.
+- **Z.ai's terms.** Z.ai's terms forbid aggregate and proxy use without a separate written
+  agreement. The usage read is a single account-level `GET` that you press, but the high-risk
+  acknowledgement that Connect asks for still applies.
 
 ### Model lists stay current
 

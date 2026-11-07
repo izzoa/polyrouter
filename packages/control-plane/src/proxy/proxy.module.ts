@@ -6,6 +6,7 @@ import {
   RedisBreakerStore,
   createProviderAdapter,
   type PlanCooldownStore,
+  type PlanUsageRecorder,
 } from '@polyrouter/data-plane';
 import { REDIS_CLIENT } from '@polyrouter/shared/server';
 import type { Redis } from 'ioredis';
@@ -22,6 +23,7 @@ import { SemanticModule } from '../semantic/semantic.module';
 import { RedisModule } from '../redis/redis.module';
 import { boundedBreakerRedis } from '../redis/bounded-breaker-redis';
 import { PLAN_COOLDOWN_STORE, PlanCooldownModule } from '../plan-cooldown/plan-cooldown.module';
+import { PLAN_USAGE_RECORDER, PlanUsageModule } from '../plan-usage/plan-usage.module';
 import { InflightModule } from '../inflight/inflight.module';
 import { ChatCompletionsController } from './chat-completions.controller';
 import { MessagesController } from './messages.controller';
@@ -56,17 +58,21 @@ import { CascadeRouter } from './cascade/cascade-router';
  */
 export const PROXY_BREAKER_PROVIDER: Provider = {
   provide: PROXY_BREAKER,
-  inject: [REDIS_CLIENT, ProxyMetrics, PLAN_COOLDOWN_STORE],
+  inject: [REDIS_CLIENT, ProxyMetrics, PLAN_COOLDOWN_STORE, PLAN_USAGE_RECORDER],
   useFactory: (
     redis: Redis,
     metrics: ProxyMetrics,
     planCooldowns: PlanCooldownStore,
+    planUsage: PlanUsageRecorder,
   ): CircuitBreaker =>
     new CircuitBreaker(new RedisBreakerStore(boundedBreakerRedis(redis)), {
       fallback: new InMemoryBreakerStore(),
       // The shared plan-cooldown store (classify-plan-quota-errors): the SAME instance
       // the provider view and the lift read; it owns its own degradation (design D6a).
       planCooldowns,
+      // The shared plan-usage recorder (add-subscription-quota-display, design D6): the SAME
+      // instance every consumer of PLAN_USAGE_STORE shares; the breaker only hosts it.
+      planUsage,
       // Surface a Redis breaker-store fault instead of silently degrading to the
       // per-instance fallback (A-10): meter every fault + throttled WARN.
       onError: breakerStoreErrorHandler(metrics, new Logger('ProxyBreaker')),
@@ -87,6 +93,7 @@ export const PROXY_BREAKER_PROVIDER: Provider = {
     BodyCaptureModule,
     RedisModule,
     PlanCooldownModule,
+    PlanUsageModule,
     InflightModule,
     ProducersModule,
     BudgetsModule,

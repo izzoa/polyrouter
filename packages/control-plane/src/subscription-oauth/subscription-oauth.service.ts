@@ -234,14 +234,24 @@ export class SubscriptionOauthService {
       return {
         identity: preset.clientIdentity,
         pin: { baseUrl: preset.baseUrl, protocol: preset.protocol },
+        ...(preset.usageDialect !== undefined ? { usage: { dialect: preset.usageDialect } } : {}),
       };
     }
     if (row.keyPreset === null || row.keyPreset === undefined) return undefined;
     const matched = keyPresetForRow({ ...row, keyPreset: row.keyPreset });
     if (matched === null) return undefined;
+    const { usageDialect, usageProbe } = matched.region;
     return {
       identity: matched.preset.clientIdentity,
       pin: { baseUrl: matched.region.baseUrl, protocol: matched.region.protocol },
+      ...(usageDialect !== undefined || usageProbe !== undefined
+        ? {
+            usage: {
+              ...(usageDialect !== undefined ? { dialect: usageDialect } : {}),
+              ...(usageProbe !== undefined ? { probe: usageProbe } : {}),
+            },
+          }
+        : {}),
     };
   }
 

@@ -51,3 +51,47 @@ export function fmtUntil(iso: string, now: number = Date.now(), timeZone?: strin
   const date = new Intl.DateTimeFormat('en-US', { ...zone, month: 'short', day: 'numeric' });
   return `${date.format(t)}, ${time}`;
 }
+
+/** An OBSERVATION time (add-subscription-quota-display, design D10): the absolute clock time of
+ * a past instant in the viewer's zone with the zone's short name, "13:02 UTC", plus the month and
+ * day when it is not on the viewer's current calendar day, "Nov 8, 13:02 UTC". It is never
+ * relative ("3 min ago"), so a line that ends with it needs no ticking clock. `null` for an
+ * unparseable instant. `timeZone` exists so tests can pin the output; omitted, it is the viewer's. */
+export function fmtAsOf(iso: string, now: number = Date.now(), timeZone?: string): string | null {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return null;
+  const zone = timeZone === undefined ? {} : { timeZone };
+  const day = new Intl.DateTimeFormat('en-US', {
+    ...zone,
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+  });
+  const clock = new Intl.DateTimeFormat('en-US', {
+    ...zone,
+    hourCycle: 'h23',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZoneName: 'short',
+  });
+  const time = clock.format(t);
+  if (day.format(t) === day.format(now)) return time;
+  const date = new Intl.DateTimeFormat('en-US', { ...zone, month: 'short', day: 'numeric' });
+  return `${date.format(t)}, ${time}`;
+}
+
+/** A plan-usage RESET (design D10): `fmtUntil`'s output, plus the year when the instant is not in
+ * the viewer's current year, "Jan 5, 2027, 18:00 UTC". A usage reset can be a month or a year
+ * away, where `fmtUntil` (built for a 7-day clamp) would read as this year's. `null`, like
+ * `fmtUntil`, for an unparseable or an already-passed instant. `fmtUntil` itself is unchanged. */
+export function fmtReset(iso: string, now: number = Date.now(), timeZone?: string): string | null {
+  const base = fmtUntil(iso, now, timeZone);
+  if (base === null) return null;
+  const t = Date.parse(iso);
+  const zone = timeZone === undefined ? {} : { timeZone };
+  const year = new Intl.DateTimeFormat('en-US', { ...zone, year: 'numeric' });
+  if (year.format(t) === year.format(now)) return base;
+  // A different year is a different day, so `base` is "Mon D, HH:MM TZ": the year goes after the day.
+  const m = /^([A-Za-z]+ \d+), (.+)$/.exec(base);
+  return m === null ? base : `${m[1] ?? ''}, ${year.format(t)}, ${m[2] ?? ''}`;
+}

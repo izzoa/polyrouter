@@ -216,6 +216,7 @@ describe('provider management', () => {
       presetFor: () => undefined,
       resolveCredential: () => Promise.reject(new Error('not used in this test')),
       availableClientIdentity: () => null,
+      identityBindingFor: () => undefined,
     } as unknown as import('../../src/subscription-oauth/subscription-oauth.service').SubscriptionOauthService;
     return new ProvidersService(port, facilities, f, rt, oauth);
   }

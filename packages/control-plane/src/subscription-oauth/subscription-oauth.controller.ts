@@ -15,16 +15,22 @@ import {
   HttpCode,
   HttpException,
   Inject,
+  Logger,
+  Optional,
   Param,
   Post,
   Req,
 } from '@nestjs/common';
+import type { PlanUsageRecorder, PlanUsageStore } from '@polyrouter/data-plane';
 import { REDIS_CLIENT, type Principal } from '@polyrouter/shared/server';
 import type { Redis } from 'ioredis';
 import type { Request } from 'express';
 import { AuthRateLimiter, type RateRule } from '../auth/rate-limit';
 import { CurrentPrincipal } from '../auth/principal.decorator';
 import { clientIdentityView } from '../providers/client-identity';
+import { clearPlanUsageSnapshot } from '../plan-usage/plan-usage-clear';
+import { PLAN_USAGE_RECORDER, PLAN_USAGE_STORE } from '../plan-usage/plan-usage.tokens';
+import { planUsageSourcesFor } from '../plan-usage/plan-usage-sources';
 import { toSafe, type SafeProvider } from '../providers/providers.service';
 import { OauthCompleteDto, OauthStartDto } from './subscription-oauth.dto';
 import { SubscriptionOauthService, type StartResult } from './subscription-oauth.service';
@@ -53,10 +59,19 @@ export function authSessionKeyFrom(req: Request): string {
 @Controller('api/providers')
 export class SubscriptionOauthController {
   private readonly principalLimiter: AuthRateLimiter;
+  private readonly logger = new Logger(SubscriptionOauthController.name);
 
   constructor(
     private readonly svc: SubscriptionOauthService,
     @Inject(REDIS_CLIENT) redis: Redis,
+    // add-subscription-quota-display (design D8): a completed (re)connect discards the row's
+    // plan-usage snapshot. Optional so hand-wired harnesses still compile.
+    @Optional()
+    @Inject(PLAN_USAGE_STORE)
+    private readonly planUsageStore?: PlanUsageStore,
+    @Optional()
+    @Inject(PLAN_USAGE_RECORDER)
+    private readonly planUsageRecorder?: PlanUsageRecorder,
   ) {
     this.principalLimiter = new AuthRateLimiter(redis, () => undefined);
   }
@@ -109,7 +124,19 @@ export class SubscriptionOauthController {
       sessionId: dto.sessionId,
       pasted: dto.pasted,
     });
-    // An OAuth row carries no plan-error dialect, so it has no cooldown (null, no store call).
+    // A reconnect may bring another account, so the row's plan-usage snapshot is discarded and its
+    // generation raised: awaited (the complete's write has committed by now), bounded, logged, and
+    // never failing the reply (design D8). A token refresh never gets here.
+    if (planUsageSourcesFor(row, this.svc.identityBindingFor(row)) !== null) {
+      await clearPlanUsageSnapshot(
+        this.planUsageStore,
+        this.planUsageRecorder,
+        row.id,
+        this.logger,
+      );
+    }
+    // An OAuth row carries no plan-error dialect, so it has no cooldown (null, no store call), and
+    // the reply keeps toSafe's null plan usage (the page reloads its list after a reconnect).
     return toSafe(row, clientIdentityView(this.svc.availableClientIdentity(row)), null);
   }
 

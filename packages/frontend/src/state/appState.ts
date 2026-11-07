@@ -708,6 +708,9 @@ function toAgent(a: AgentDto): Agent {
   };
 }
 
+/** What a Refresh usage press came to: done, or the reason it was not, in words. */
+export type PlanUsageRefreshOutcome = { ok: true } | { ok: false; reason: string };
+
 function toProvider(p: ProviderDto): Provider {
   return {
     id: p.id,
@@ -727,6 +730,8 @@ function toProvider(p: ProviderDto): Provider {
     imitateClientIdentity: p.imitateClientIdentity ?? false,
     clientIdentity: p.clientIdentity ?? null,
     planCooldown: p.planCooldown,
+    planUsage: p.planUsage ?? null,
+    planUsageRefresh: p.planUsageRefresh ?? null,
     createdAt: p.createdAt,
     health: p.health,
   };
@@ -1385,6 +1390,13 @@ export interface AppStore {
    * nothing is toasted). A `503` means the shared pause store was unreachable: the pause may
    * still hold. */
   resumeProviderPlan: (id: string) => Promise<string | null>;
+  /** Refresh usage (add-subscription-quota-display): one attended read of the provider's usage
+   * endpoint. A success or a failed read merges the response's provider into the store BY ID, in
+   * place (never swapped, no list reload), so the card keeps its element, its focus and an open
+   * model-limits disclosure. Resolves to `{ ok: true }`, or to the reason as a sentence (a `429` also
+   * reloads the list once, to learn the cooldown's end). Nothing is toasted: the card reports the
+   * outcome next to its button. */
+  refreshPlanUsage: (id: string) => Promise<PlanUsageRefreshOutcome>;
   deleteProvider: (id: string, call?: DestructiveCall) => Promise<void>;
   loadModels: (providerId: string) => Promise<void>;
   setModelPrice: (providerId: string, modelId: string, body: ModelPricingInput) => Promise<void>;
@@ -4238,6 +4250,10 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
             ? `${dto.name} connected — turn on identity imitation in its Edit dialog before it works`
             : `${dto.name} connected — sync models to start routing`,
         );
+        // The connect response has no plan-usage half, so a card built from it alone would have
+        // no Refresh usage until the next load. Reconcile from the list (it never throws: a
+        // failed reload leaves the connected card in place).
+        await loadProviders();
       } catch (e) {
         // The key is credential material — cleared after every submit attempt.
         setState('kp', { busy: false, key: '', error: err(e) });
@@ -4254,6 +4270,36 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       }
       await loadProviders();
       return null;
+    },
+    refreshPlanUsage: async (id) => {
+      try {
+        const result = await client.refreshPlanUsage(id);
+        // In place, by id: the same object keeps its identity, so `<For>` does not re-create the
+        // card and an open <details> and the focus survive. No list reload follows.
+        setState('providers', (p) => p.id === id, reconcile(toProvider(result.provider)));
+        return result.ok
+          ? { ok: true }
+          : { ok: false, reason: result.message ?? 'The usage endpoint did not answer.' };
+      } catch (e) {
+        if (isApiError(e) && e.status === 429) {
+          // The cooldown holds (another tab, or another instance, refreshed a moment ago): the
+          // list carries its end, which the button states.
+          await loadProviders();
+          return { ok: false, reason: 'Usage was refreshed a moment ago.' };
+        }
+        if (isApiError(e) && e.status === 503) {
+          return { ok: false, reason: 'The shared usage store could not be reached.' };
+        }
+        if (isApiError(e) && e.status === 422) {
+          await loadProviders();
+          return { ok: false, reason: 'This provider has no usage endpoint to read.' };
+        }
+        if (isApiError(e) && e.status === 404) {
+          await loadProviders();
+          return { ok: false, reason: 'This provider no longer exists.' };
+        }
+        return { ok: false, reason: err(e) };
+      }
     },
     syncProvider: async (id) => {
       try {

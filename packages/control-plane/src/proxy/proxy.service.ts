@@ -57,6 +57,8 @@ import {
 } from '../providers/adapter-builder';
 import { attemptHealthHook, type AttemptHealthState } from './attempt-health';
 import { keyPresetForRow } from '../subscription-presets/key-presets';
+import { planUsageHook } from '../plan-usage/plan-usage-hook';
+import { planUsageSourcesFor } from '../plan-usage/plan-usage-sources';
 import {
   loadPriceContext,
   toEffectiveCapabilities,
@@ -1660,6 +1662,10 @@ export class ProxyService {
     const attempts: ChainAttempt[] = [];
     const meta: AttemptMeta[] = [];
     for (const t of decision.chain) {
+      // add-subscription-quota-display (design D5): the snapshot generation is read BEFORE the
+      // row load, synchronously and with no I/O, so a row loaded after it is at least as new as
+      // the generation, and an observation made with an older credential carries an older one.
+      const usageGen = this.breaker.planUsageGeneration(t.providerId);
       const provider = await this.db.providers.findById(principal, t.providerId);
       const model = models.find((m) => m.id === t.modelId);
       if (!provider || !model) continue;
@@ -1732,6 +1738,13 @@ export class ProxyService {
         // registry: no ProxyService constructor argument (the inference-proxy harness hand-wires).
         ...(keyPresetForRow(provider)?.region.errorDialect !== undefined
           ? { planCooldown: true as const }
+          : {}),
+        // add-subscription-quota-display (design D2/D6): passive plan-usage capture applies only
+        // to a row whose ONE gate yields a dialect — read from the row already loaded, with no
+        // I/O — so a provider without a source pays nothing (invariant 9).
+        ...(planUsageSourcesFor(provider, this.oauth.identityBindingFor(provider))?.dialect !==
+        undefined
+          ? { onPlanUsage: planUsageHook(this.breaker, t.providerId, usageGen) }
           : {}),
       });
     }

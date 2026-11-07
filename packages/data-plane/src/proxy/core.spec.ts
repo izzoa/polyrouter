@@ -2104,3 +2104,127 @@ describe.each(['buffered', 'stream'] as const)(
     });
   },
 );
+
+// add-subscription-quota-display (task 3.3): the per-attempt plan-usage callback rides the context
+// both walkers build. Each attempt gets only its own; a skip never reaches an adapter.
+describe.each(['buffered', 'stream'] as const)(
+  'ChainAttempt.onPlanUsage on the %s chain walker',
+  (mode) => {
+    type Ctx = Parameters<ProviderAdapter['chat']>[1];
+    interface Probe {
+      readonly attempt: ChainAttempt;
+      readonly ctxs: () => readonly Ctx[];
+      readonly built: () => number;
+    }
+    const member = (
+      providerId: string,
+      fault: ProviderError | null,
+      onPlanUsage?: ChainAttempt['onPlanUsage'],
+      extra: Partial<ChainAttempt> = {},
+    ): Probe => {
+      const seen: Ctx[] = [];
+      let built = 0;
+      const ok: NormalizedResponse = {
+        id: 'r',
+        model: providerId,
+        content: [{ type: 'text', text: 'ok' }],
+        stopReason: 'stop',
+      };
+      const attempt: ChainAttempt = {
+        providerId,
+        externalModelId: providerId,
+        ...(onPlanUsage !== undefined ? { onPlanUsage } : {}),
+        ...extra,
+        buildAdapter: () => {
+          built += 1;
+          return Promise.resolve({
+            protocol: 'openai_compatible',
+            chat: (_req: unknown, ctx: Ctx) => {
+              seen.push(ctx);
+              return fault ? Promise.reject(fault) : Promise.resolve(ok);
+            },
+            chatStream: async function* (_req: unknown, ctx: Ctx) {
+              seen.push(ctx);
+              if (fault) throw fault;
+              yield START;
+              yield TEXT;
+              yield STOP;
+              yield END;
+            },
+            listModels: () => Promise.resolve([]),
+            testConnection: () => Promise.resolve({ ok: true, models: 0 }),
+          } as unknown as ProviderAdapter);
+        },
+      };
+      return { attempt, ctxs: () => seen, built: () => built };
+    };
+
+    async function walk(breaker: CircuitBreaker, attempts: readonly ChainAttempt[]): Promise<void> {
+      const client = getAdapter('openai');
+      const req = { model: 'x', messages: [], params: {} };
+      if (mode === 'buffered') {
+        await runBufferedChain(
+          breaker,
+          attempts,
+          client,
+          req,
+          { created: 1 },
+          new AbortController().signal,
+        );
+        return;
+      }
+      const r = await openStreamChain(breaker, attempts, client, req, OPTS);
+      if (r.kind === 'stream') await collect(r.frames);
+    }
+
+    it('gives each attempt only its own callback down a fallback chain', async () => {
+      const cbA = jest.fn();
+      const cbB = jest.fn();
+      const a = member('a', new ProviderError('rate_limit', 'slow'), cbA);
+      const b = member('b', null, cbB);
+      await walk(new CircuitBreaker(new InMemoryBreakerStore()), [a.attempt, b.attempt]);
+      expect(a.ctxs()).toHaveLength(1);
+      expect(b.ctxs()).toHaveLength(1);
+      expect(a.ctxs()[0]!.onPlanUsage).toBe(cbA);
+      expect(b.ctxs()[0]!.onPlanUsage).toBe(cbB);
+      expect(cbA).not.toHaveBeenCalled();
+      expect(cbB).not.toHaveBeenCalled();
+    });
+
+    it('a circuit-open skip invokes none and builds nothing', async () => {
+      const breaker = new CircuitBreaker(new InMemoryBreakerStore(), {
+        config: { threshold: 1, cooldownMs: 60_000, probeLeaseMs: 200, stateTtlMs: 60_000 },
+      });
+      await walk(breaker, [member('p1', new ProviderError('unavailable', 'down')).attempt]);
+      const cb = jest.fn();
+      const open = member('p1', null, cb);
+      const next = member('p2', null);
+      await walk(breaker, [open.attempt, next.attempt]);
+      expect(open.built()).toBe(0);
+      expect(open.ctxs()).toEqual([]);
+      expect(cb).not.toHaveBeenCalled();
+      expect(next.ctxs()).toHaveLength(1);
+    });
+
+    it('a plan-cooldown skip invokes none and builds nothing', async () => {
+      const store = new InMemoryPlanCooldownStore();
+      await store.record('z', { kind: 'quota_exhausted', default: 15 * 60_000 });
+      const breaker = new CircuitBreaker(new InMemoryBreakerStore(), { planCooldowns: store });
+      const cb = jest.fn();
+      const z = member('z', null, cb, { planCooldown: true });
+      const next = member('p2', null);
+      await walk(breaker, [z.attempt, next.attempt]);
+      expect(z.built()).toBe(0);
+      expect(z.ctxs()).toEqual([]);
+      expect(cb).not.toHaveBeenCalled();
+      expect(next.ctxs()).toHaveLength(1);
+    });
+
+    it('an attempt without the field passes exactly the context it passed before', async () => {
+      const a = member('a', null);
+      await walk(new CircuitBreaker(new InMemoryBreakerStore()), [a.attempt]);
+      const ctx = a.ctxs()[0]!;
+      expect(Object.keys(ctx as object).sort()).toEqual(['onBytes', 'signal']);
+    });
+  },
+);

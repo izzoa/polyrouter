@@ -45,6 +45,12 @@ import type { ProviderErrorKind } from './errors';
 import type { BatchFactory, BatchTransport } from './batch/transport';
 import { mergeHeaderLayers } from './header-layers';
 import {
+  parsePlanUsageHeaders,
+  readOpencodeBillingFromJson,
+  tapUsageFrames,
+  type PlanUsageObservation,
+} from './plan-usage';
+import {
   createGuardedHttpClient,
   joinUrl,
   openRequest,
@@ -312,14 +318,46 @@ export function createHttpProviderAdapter(
   // dialect; in-band stream events never come through here (`sanitizeStreamErrors` stays
   // dialect-free).
   const dialect = config.errorDialect;
-  const refusal = async (res: HttpResponse): Promise<ProviderError> =>
-    classifyResponse(
+
+  // Plan usage (add-subscription-quota-display, design D2): a per-attempt, contained read of the
+  // quota metadata a response already carries. It runs only when the preset declared a usage
+  // dialect AND the call carries a callback, so a provider without a source pays nothing, not
+  // even a header read (invariant 9). Both the parse and the callback sit in one try/catch, so
+  // neither can change the call's result, events or error. `opencode_go` is body-borne: the
+  // header parse yields null for it, and its readers run beside translation (chat / chatStream).
+  const usageDialect = config.usageDialect;
+  const deliverUsage = (obs: PlanUsageObservation, ctx: CallContext | undefined): void => {
+    try {
+      ctx?.onPlanUsage?.(obs);
+    } catch {
+      // Contained: a throwing callback never reaches the call.
+    }
+  };
+  const reportUsage = (res: HttpResponse, ctx: CallContext | undefined): void => {
+    if (usageDialect === undefined || ctx?.onPlanUsage === undefined) return;
+    try {
+      const obs = parsePlanUsageHeaders(usageDialect, res, Date.now());
+      if (obs !== null) deliverUsage(obs, ctx);
+    } catch {
+      // Contained: a parser fault never reaches the call.
+    }
+  };
+
+  const refusal = async (
+    res: HttpResponse,
+    ctx: CallContext | undefined,
+  ): Promise<ProviderError> => {
+    // BEFORE classification, beside errMeta/planMeta: an error response (a 429 carrying window
+    // headers) still reports, and the thrown kind is unchanged by the dialect.
+    reportUsage(res, ctx);
+    return classifyResponse(
       res.status,
       await res.text(),
       { ...errMeta(res), ...(dialect !== undefined ? planMeta(res) : {}) },
       [config.credential],
       dialect,
     );
+  };
 
   async function chat(request: NormalizedRequest, ctx?: CallContext): Promise<NormalizedResponse> {
     try {
@@ -335,9 +373,20 @@ export function createHttpProviderAdapter(
       );
       try {
         if (!res.ok) {
-          throw await refusal(res);
+          throw await refusal(res, ctx);
         }
-        return spec.translate.responseIn(await res.json());
+        reportUsage(res, ctx);
+        const json = await res.json();
+        if (usageDialect === 'opencode_go' && ctx?.onPlanUsage !== undefined) {
+          // Body-borne: read from the JSON already parsed, before responseIn (no extra parse).
+          try {
+            const obs = readOpencodeBillingFromJson(json);
+            if (obs !== null) deliverUsage(obs, ctx);
+          } catch {
+            // Contained.
+          }
+        }
+        return spec.translate.responseIn(json);
       } finally {
         dispose();
       }
@@ -366,12 +415,23 @@ export function createHttpProviderAdapter(
     const { res, dispose } = opened;
     try {
       if (!res.ok) {
-        throw await refusal(res);
+        throw await refusal(res, ctx);
       }
+      // The stream is open: its header-borne observation arrives BEFORE the first event.
+      reportUsage(res, ctx);
+      const chunks = readSseChunks(res, ctx?.onBytes);
+      // `opencode_go` only: a pass-through tap that yields every chunk unchanged and in order (scanning its
+      // complete lines first), and
+      // reports the final usage frame's billing source once (design D4). Translate sees the
+      // identical bytes either way.
+      const tapped =
+        usageDialect === 'opencode_go' && ctx?.onPlanUsage !== undefined
+          ? tapUsageFrames(chunks, (obs) => deliverUsage(obs, ctx))
+          : chunks;
       // Adapter-stage error-detail sanitization (add-request-error-detail): THIS
       // layer holds the credential, so raw wire fields must not leave it.
       yield* sanitizeStreamErrors(
-        spec.translate.streamParse(readSseChunks(res, ctx?.onBytes)),
+        spec.translate.streamParse(tapped),
         [config.credential],
         errMeta(res).requestId,
       );
@@ -413,8 +473,9 @@ export function createHttpProviderAdapter(
         );
         try {
           if (!res.ok) {
-            throw await refusal(res);
+            throw await refusal(res, ctx);
           }
+          reportUsage(res, ctx);
           const json = await res.json();
           for (const m of spec.parseModels(json)) {
             if (all.length >= MAX_PARSED_MODELS) return partial(); // total cap across pages

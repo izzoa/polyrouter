@@ -28,6 +28,7 @@ import {
   type BreakerSettleListener,
   type BreakerStateListener,
   type CircuitBreaker,
+  type PlanUsageObservation,
   type ProviderAdapter,
   type ProviderErrorKind,
 } from '../providers';
@@ -534,6 +535,12 @@ export interface ChainAttempt {
    * after a dispatched plan failure. Absent = zero cooldown-store calls, so a
    * provider without a dialect pays nothing (invariant 9). */
   readonly planCooldown?: true;
+  /** THIS attempt's plan-usage callback (add-subscription-quota-display): set by the control
+   * plane ONLY for a row whose built config carries a usage dialect, and spread into the call
+   * context both walkers build. Per attempt, so a fallback chain gives each member only its
+   * own callback; a circuit-open or plan-cooldown skip never reaches the adapter, so invokes
+   * none. Absent = the context is exactly what it was before. */
+  readonly onPlanUsage?: (obs: PlanUsageObservation) => void;
 }
 
 /** Whether a provider could have billed one chain attempt (zero-cost-unbilled-
@@ -727,7 +734,11 @@ export async function runBufferedChain(
         attempt.providerId,
         async (admission) => {
           const adapter = await attempt.buildAdapter(admission);
-          return adapter.chat(req, { signal, onBytes: admission.renewOnActivity });
+          return adapter.chat(req, {
+            signal,
+            onBytes: admission.renewOnActivity,
+            ...(attempt.onPlanUsage !== undefined ? { onPlanUsage: attempt.onPlanUsage } : {}),
+          });
         },
         ctx.onOpen,
         ctx.onBreakerState,
@@ -906,5 +917,9 @@ async function* buildThenStream(
   admission?: BreakerAdmission,
 ): AsyncGenerator<NormalizedStreamEvent> {
   const adapter = await attempt.buildAdapter(admission);
-  yield* adapter.chatStream(request, { signal, onBytes });
+  yield* adapter.chatStream(request, {
+    signal,
+    onBytes,
+    ...(attempt.onPlanUsage !== undefined ? { onPlanUsage: attempt.onPlanUsage } : {}),
+  });
 }

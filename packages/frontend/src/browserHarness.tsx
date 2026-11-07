@@ -964,6 +964,107 @@ if (params.get('pause') === '1') {
   ];
 }
 
+// Plan-usage fixture (add-subscription-quota-display task 7.4), opt-in via `?usage=1` so the
+// default harness stays byte-identical for every other suite. Adversarial on purpose: a Claude plan
+// whose line carries five windows, a scoped one, the billing phrase and a bucket with a 26-character
+// name; a Kimi Code key plan with an unlabelled summary window and a Refresh usage button at rest;
+// and a second key plan whose refresh is cooling down, so its text beside the button is on screen.
+// Every reset is far ahead, so no timer fires during a sweep.
+if (params.get('usage') === '1') {
+  const hour = 3_600_000;
+  const at = (ms: number): string => new Date(Date.now() + ms).toISOString();
+  const seen = at(-5 * 60_000);
+  const win = (
+    key: string,
+    span: '5h' | 'daily' | 'weekly' | 'monthly' | 'annual' | null,
+    usedPercent: number,
+    resetMs: number,
+    over: Record<string, unknown> = {},
+  ) => ({
+    key,
+    group: 'account' as const,
+    span,
+    minutes: null,
+    scope: null,
+    usedPercent,
+    resetAt: at(resetMs),
+    observedAt: seen,
+    source: 'traffic' as const,
+    ...over,
+  });
+  const base = {
+    kind: 'subscription',
+    status: 'ok',
+    maxTokensSpelling: 'auto',
+    hasCredential: true,
+    credentialError: null,
+    firstByteTimeoutMs: null,
+    idleTimeoutMs: null,
+    autoPruneUnlisted: true,
+    imitateClientIdentity: false,
+    clientIdentity: null,
+    createdAt: '2026-11-01T09:00:00.000Z',
+    ...UNRECORDED_HEALTH,
+  } as const;
+  client.providers = [
+    {
+      ...base,
+      id: 'p-usage-claude',
+      name: 'Claude Max',
+      protocol: 'anthropic',
+      baseUrl: 'https://api.anthropic.com',
+      oauthPreset: 'claude',
+      credentialExpiresAt: at(8 * hour),
+      planUsage: {
+        windows: [
+          win('account:5h', '5h', 100, 2 * hour),
+          win('account:daily', 'daily', 64, 10 * hour),
+          win('account:weekly', 'weekly', 31, 72 * hour),
+          win('account:weekly:Fable', 'weekly', 12, 72 * hour, { scope: 'Fable' }),
+          win('account:monthly', 'monthly', 8, 400 * 24 * hour),
+          win('model:gpt_5_2_codex_sonic', null, 80, 5 * hour, {
+            group: 'model',
+            scope: 'gpt-5.2-codex-sonic-ex',
+          }),
+          win('model:other', null, 3, 9 * hour, { group: 'model', scope: 'other' }),
+        ],
+        billing: { state: 'extra_usage', observedAt: seen },
+      },
+      planUsageRefresh: null,
+    },
+    {
+      ...base,
+      id: 'p-usage-kimi',
+      name: 'Kimi Code',
+      protocol: 'openai_compatible',
+      baseUrl: 'https://api.kimi.com/coding/v1',
+      oauthPreset: null,
+      keyPreset: 'kimi-code',
+      credentialExpiresAt: null,
+      planUsage: {
+        windows: [
+          win('account:m300', null, 40, 3 * hour, { minutes: 300 }),
+          win('account:unsized', null, 22, 40 * 24 * hour),
+        ],
+        billing: null,
+      },
+      planUsageRefresh: { availableAt: null },
+    },
+    {
+      ...base,
+      id: 'p-usage-cooling',
+      name: 'Z.ai GLM Coding Plan',
+      protocol: 'openai_compatible',
+      baseUrl: 'https://api.z.ai/api/coding/paas/v4',
+      oauthPreset: null,
+      keyPreset: 'zai-coding-plan',
+      credentialExpiresAt: null,
+      planUsage: { windows: [win('account:5h', '5h', 55, 4 * hour)], billing: null },
+      planUsageRefresh: { availableAt: at(4 * 60_000) },
+    },
+  ];
+}
+
 // Paused-member trace fixture (classify-plan-quota-errors task 9.4), opt-in via `?trace=paused`: a
 // request whose terminal member was skipped because its provider's plan was paused, so the route
 // trace draws the pause label and the ERROR card names the pause. The default and `?trace=cascade`

@@ -134,6 +134,7 @@ describe('long-call timeouts e2e (fix-long-call-timeouts)', () => {
           useValue: {
             resolveCredential: () => Promise.reject(new Error('oauth seam not stubbed')),
             availableClientIdentity: () => null,
+            identityBindingFor: () => undefined,
           },
         },
         StreamDrainRegistry,

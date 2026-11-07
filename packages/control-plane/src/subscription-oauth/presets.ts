@@ -13,6 +13,7 @@
  * declares no client identity.
  */
 
+import type { PlanUsageDialect } from '@polyrouter/data-plane';
 import type { PresetClientIdentity } from '../providers/client-identity';
 
 export interface OauthPreset {
@@ -46,6 +47,11 @@ export interface OauthPreset {
    * provider's per-row switch is on (allow-preset-client-identity). Claude and ChatGPT
    * declare none. Validated by `validateClientIdentity()`; never user input. */
   readonly clientIdentity?: PresetClientIdentity;
+  /** The wire format of the plan-usage metadata this preset's replies carry
+   * (add-subscription-quota-display, design D1). Trusted routing data, never user input and never
+   * part of the available-presets DTO. It reaches an adapter only through `planUsageSourcesFor`,
+   * i.e. only for a row still pinned to this preset's endpoint. */
+  readonly usageDialect?: PlanUsageDialect;
   /** Enablement gate: flipped to true ONLY after the live golden verification passes
    * (an enabled-and-known-broken preset must not ship). */
   readonly enabled: boolean;
@@ -70,6 +76,8 @@ export const CLAUDE_PRESET: OauthPreset = {
   tokenRequestEncoding: 'json',
   includeStateInExchange: true, // verified live 2026-07-18: the exchange succeeds with it
   oauthBeta: 'oauth-2025-04-20',
+  // Passive only: the `anthropic-ratelimit-unified-*` header family, read off ordinary replies.
+  usageDialect: 'anthropic_unified',
   // VERIFIED LIVE 2026-07-18 (scripts/verify-claude-oauth.md): connect + paste,
   // OAuth /v1/models (10 models), and a real forced refresh all pass. The proxied
   // completion returned the account's own usage-window 429 (surfaced typed) — an
@@ -104,6 +112,8 @@ export const CHATGPT_PRESET: OauthPreset = {
   // Verified live 2026-07-18: auth.openai.com 400s (`unknown_parameter: state`) on a
   // state-bearing exchange body — the param must be OMITTED for this preset.
   includeStateInExchange: false,
+  // Passive only: the `x-codex-*` rate-limit header family, read off ordinary replies.
+  usageDialect: 'codex',
   // No bundled model list and no probe model (add-live-subscription-models): the
   // Responses adapter lists the backend's own catalog (verified live 2026-09-24) and
   // Test is that listing. The July bundle's probe model `gpt-5.4-mini` was retired

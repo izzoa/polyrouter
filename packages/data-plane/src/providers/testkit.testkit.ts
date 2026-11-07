@@ -34,7 +34,12 @@ function makeResponse(
   return {
     status,
     ok: status >= 200 && status < 300,
-    headers: { get: (n) => h.get(n.toLowerCase()) ?? null },
+    headers: {
+      get: (n) => h.get(n.toLowerCase()) ?? null,
+      forEach: (cb) => {
+        for (const [k, v] of h) cb(v, k);
+      },
+    },
     body,
     text: () => Promise.resolve(text ?? ''),
     json: () => Promise.resolve(JSON.parse(text ?? '{}') as unknown),

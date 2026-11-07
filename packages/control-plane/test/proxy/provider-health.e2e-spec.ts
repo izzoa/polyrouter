@@ -235,6 +235,7 @@ describe('provider health from live traffic (add-provider-health-signals)', () =
           useValue: {
             resolveCredential: () => Promise.reject(new Error('oauth seam not stubbed')),
             availableClientIdentity: () => null,
+            identityBindingFor: () => undefined,
             requestForcedRefresh: () => Promise.resolve('skipped'),
           },
         },

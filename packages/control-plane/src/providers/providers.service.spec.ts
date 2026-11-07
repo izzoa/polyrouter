@@ -1,6 +1,7 @@
 import { resolveModelPrice } from '@polyrouter/shared/server';
 import { batchFactoryFor } from '@polyrouter/data-plane';
 import {
+  Logger,
   NotFoundException,
   ServiceUnavailableException,
   UnprocessableEntityException,
@@ -29,12 +30,29 @@ import {
   OPENCODE_GO_PRESET,
   ZAI_CODING_PLAN_PRESET,
 } from '../subscription-presets/key-presets';
+import { CHATGPT_PRESET, CLAUDE_PRESET, OAUTH_PRESETS } from '../subscription-oauth/presets';
+import type { OauthPreset } from '../subscription-oauth/presets';
+import { SubscriptionOauthService as RealSubscriptionOauthService } from '../subscription-oauth/subscription-oauth.service';
+import { PlanUsageCooldownException } from './providers.service';
+import { planUsageHook, recorderSink } from '../plan-usage/plan-usage-hook';
 import * as baseUrlGate from './base-url-gate';
 import {
   FailoverPlanCooldownStore,
+  FailoverPlanUsageStore,
   InMemoryPlanCooldownStore,
+  InMemoryPlanUsageStore,
   MAX_PARSED_MODELS,
+  PlanUsageRecorder,
   ProviderError,
+  type CallContext,
+  type PlanUsageMergeResult,
+  type PlanUsageObservation,
+  type PlanUsageRead,
+  type PlanUsageReadResult,
+  type PlanUsageRefreshClaim,
+  type PlanUsageSource,
+  type PlanUsageStore,
+  type ProviderConfig,
   type PlanCooldown,
   type PlanCooldownInput,
   type PlanCooldownStore,
@@ -74,6 +92,7 @@ function mkProvidersService(
   const oauth = {
     presetFor: () => undefined,
     availableClientIdentity,
+    identityBindingFor: () => undefined,
     resolveCredential: (_p: Principal, row: ProviderRow) =>
       Promise.resolve({
         credential: resolvePlainCredentialValue(
@@ -1583,6 +1602,7 @@ describe('ProvidersService — Test on a key-preset row never enters the OAuth r
     const oauth = {
       presetFor: () => undefined,
       availableClientIdentity: () => null,
+      identityBindingFor: () => undefined,
       resolveCredential,
       claimTestRepair,
       forceRefresh,
@@ -1742,6 +1762,7 @@ describe('ProvidersService — key-preset pinned edits (add-key-subscription-pre
     const oauth = {
       presetFor: () => undefined,
       availableClientIdentity: () => null,
+      identityBindingFor: () => undefined,
     } as unknown as SubscriptionOauthService;
     const svc = new ProvidersService(
       made.port,
@@ -2058,5 +2079,763 @@ describe('ProvidersService — plan cooldown view and lift (classify-plan-quota-
     expect(testConnection).toHaveBeenCalledTimes(1);
     expect(listModels).toHaveBeenCalledTimes(1);
     expect(store.calls).toEqual(before);
+  });
+});
+
+describe('ProvidersService — plan usage (add-subscription-quota-display 6.2-6.5)', () => {
+  type StoreOp = 'readMany' | 'claimRefresh' | 'merge' | 'extendRefresh' | 'clear';
+
+  /** A real in-memory store whose every call is counted, with injectable faults and hooks. */
+  class SpyUsageStore implements PlanUsageStore {
+    readonly inner = new InMemoryPlanUsageStore();
+    readonly calls: Record<StoreOp, number> = {
+      readMany: 0,
+      claimRefresh: 0,
+      merge: 0,
+      extendRefresh: 0,
+      clear: 0,
+    };
+    readonly readManyIds: Array<readonly string[]> = [];
+    readonly readManyCooldownIds: Array<readonly string[]> = [];
+    readonly merges: Array<{ id: string; gen: number; source: PlanUsageSource }> = [];
+    fail: Partial<Record<StoreOp, Error>> = {};
+    afterClaim: (() => Promise<void>) | null = null;
+    private maybeFail(op: StoreOp): Promise<never> | null {
+      this.calls[op] += 1;
+      const err = this.fail[op];
+      return err === undefined ? null : Promise.reject(err);
+    }
+    merge(
+      id: string,
+      obs: PlanUsageObservation,
+      gen: number,
+      source: PlanUsageSource,
+    ): Promise<PlanUsageMergeResult> {
+      const failed = this.maybeFail('merge');
+      if (failed) return failed;
+      this.merges.push({ id, gen, source });
+      return this.inner.merge(id, obs, gen, source);
+    }
+    readMany(
+      ids: readonly string[],
+      withCooldown?: readonly string[],
+    ): Promise<ReadonlyMap<string, PlanUsageRead>> {
+      const failed = this.maybeFail('readMany');
+      if (failed) return failed;
+      this.readManyIds.push([...ids]);
+      this.readManyCooldownIds.push([...(withCooldown ?? [])]);
+      return this.inner.readMany(ids, withCooldown);
+    }
+    async claimRefresh(id: string): Promise<PlanUsageRefreshClaim> {
+      const failed = this.maybeFail('claimRefresh');
+      if (failed) return failed;
+      const claim = await this.inner.claimRefresh(id);
+      if (claim.claimed && this.afterClaim !== null) await this.afterClaim();
+      return claim;
+    }
+    extendRefresh(id: string, ms: number): Promise<void> {
+      const failed = this.maybeFail('extendRefresh');
+      if (failed) return failed;
+      return this.inner.extendRefresh(id, ms);
+    }
+    clear(id: string): Promise<number> {
+      const failed = this.maybeFail('clear');
+      if (failed) return failed;
+      return this.inner.clear(id);
+    }
+    total(): number {
+      return Object.values(this.calls).reduce((a, b) => a + b, 0);
+    }
+  }
+
+  const realOauth = Object.create(
+    RealSubscriptionOauthService.prototype,
+  ) as RealSubscriptionOauthService;
+  (realOauth as unknown as { presets: unknown }).presets = {
+    find: (id: string): OauthPreset | undefined => OAUTH_PRESETS.find((p) => p.id === id),
+    list: (): readonly OauthPreset[] => OAUTH_PRESETS,
+  };
+
+  const kimi = KIMI_CODE_PRESET.regions[0]!;
+  const go = OPENCODE_GO_PRESET.regions[0]!;
+  const FUTURE = { inMs: 3_600_000 };
+  const OBS: PlanUsageObservation = {
+    windows: [
+      {
+        key: 'account:5h',
+        group: 'account',
+        span: '5h',
+        minutes: 300,
+        scope: null,
+        usedPercent: 42,
+        reset: FUTURE,
+      },
+    ],
+    billing: 'plan',
+  };
+  const BILLING_ONLY: PlanUsageObservation = { windows: [], billing: 'extra_usage' };
+
+  beforeEach(() => {
+    jest
+      .spyOn(baseUrlGate, 'normalizeAndGateBaseUrl')
+      .mockImplementation((_mode, _kind, url) => Promise.resolve(new URL(url).href));
+  });
+
+  interface SetupOpts {
+    /** Turn every key-preset usage probe ON (they ship disabled; a unit may exercise the path). */
+    enableProbes?: boolean;
+    withStore?: boolean;
+    reader?: jest.Mock<Promise<PlanUsageReadResult>, [ProviderConfig, unknown]>;
+    /** Wrap the store the service sees (a failover over a failing primary, etc.). */
+    wrapStore?: (store: SpyUsageStore) => PlanUsageStore;
+  }
+
+  function setup(opts: SetupOpts = {}) {
+    const made = makePort();
+    const spy = new SpyUsageStore();
+    const store: PlanUsageStore = opts.wrapStore ? opts.wrapStore(spy) : spy;
+    const recorder = new PlanUsageRecorder(store);
+    const offered: Array<{ id: string; gen: number }> = [];
+    const offer = recorder.offer.bind(recorder);
+    jest.spyOn(recorder, 'offer').mockImplementation((id, obs, gen) => {
+      offered.push({ id, gen });
+      offer(id, obs, gen);
+    });
+    const reader =
+      opts.reader ??
+      jest.fn((_c: ProviderConfig, _p: unknown) =>
+        Promise.resolve<PlanUsageReadResult>({ ok: true, observation: OBS }),
+      );
+    const seen: Array<{ config: ProviderConfig }> = [];
+    const adapterCalls: Array<{ op: 'test' | 'list'; ctx: CallContext | undefined }> = [];
+    let fire: PlanUsageObservation | null = OBS;
+    const f = ((config: ProviderConfig) => {
+      seen.push({ config });
+      return {
+        protocol: config.protocol,
+        chat: jest.fn(),
+        chatStream: jest.fn(),
+        listModels: jest.fn((ctx?: CallContext) => {
+          adapterCalls.push({ op: 'list', ctx });
+          if (fire !== null) ctx?.onPlanUsage?.(fire);
+          return Promise.resolve([] as ProviderModelInfo[]);
+        }),
+        testConnection: jest.fn((ctx?: CallContext) => {
+          adapterCalls.push({ op: 'test', ctx });
+          if (fire !== null) ctx?.onPlanUsage?.(fire);
+          return Promise.resolve({ ok: true, models: 0 } as ConnectionResult);
+        }),
+      } as unknown as ProviderAdapter;
+    }) as unknown as ProviderAdapterFactory;
+    const oauth = {
+      presetFor: () => undefined,
+      availableClientIdentity: () => null,
+      identityBindingFor: (row: ProviderRow) => {
+        const real = realOauth.identityBindingFor(row);
+        if (opts.enableProbes === true && real?.usage?.probe !== undefined) {
+          return {
+            ...real,
+            usage: { ...real.usage, probe: { ...real.usage.probe, enabled: true } },
+          };
+        }
+        return real;
+      },
+      resolveCredential: (_p: Principal, row: ProviderRow) =>
+        Promise.resolve({
+          credential: resolvePlainCredentialValue(
+            decryptSecret(row.encryptedCredentials as string, KEY),
+          ),
+          authScheme: 'api_key' as const,
+        }),
+    } as unknown as SubscriptionOauthService;
+    const facilities = {
+      withAdvisoryLock: (_k: number, fn: (tx: PersistencePort) => Promise<unknown>) =>
+        fn(made.port),
+    } as unknown as PersistenceFacilities;
+    const svc = new ProvidersService(
+      made.port,
+      facilities,
+      f,
+      runtime('selfhosted'),
+      oauth,
+      undefined,
+      opts.withStore === false ? undefined : store,
+      opts.withStore === false ? undefined : recorder,
+      reader as unknown as ConstructorParameters<typeof ProvidersService>[8],
+    );
+    const insert = (
+      name: string,
+      region: { baseUrl: string; protocol: ProviderRow['protocol'] },
+      over: Partial<ProviderInsertInput> = {},
+    ): Promise<ProviderRow> =>
+      made.port.providers.insert(principal, {
+        name,
+        kind: 'subscription',
+        protocol: region.protocol,
+        baseUrl: region.baseUrl,
+        encryptedCredentials: encryptSecret(serializePlainCredential('old-key'), KEY),
+        ...over,
+      });
+    const kimiRow = (name = 'kimi') => insert(name, kimi, { keyPreset: KIMI_CODE_PRESET.id });
+    const goRow = (name = 'go') => insert(name, go, { keyPreset: OPENCODE_GO_PRESET.id });
+    const claudeRow = (name = 'claude') =>
+      insert(name, CLAUDE_PRESET, { oauthPreset: CLAUDE_PRESET.id });
+    const chatgptRow = (name = 'chatgpt') =>
+      insert(name, CHATGPT_PRESET, { oauthPreset: CHATGPT_PRESET.id });
+    const plainRow = (name = 'plain') =>
+      made.port.providers.insert(principal, {
+        name,
+        kind: 'api_key',
+        protocol: 'openai_compatible',
+        baseUrl: 'https://api.example.test/v1',
+        encryptedCredentials: encryptSecret(serializePlainCredential('k'), KEY),
+      });
+    return {
+      ...made,
+      spy,
+      store,
+      recorder,
+      offered,
+      reader,
+      seen,
+      adapterCalls,
+      svc,
+      kimiRow,
+      goRow,
+      claudeRow,
+      chatgptRow,
+      plainRow,
+      insert,
+      silence: () => {
+        fire = null;
+      },
+    };
+  }
+
+  // ---------------------------------------------------------------- 6.2 capture on Test and sync
+
+  describe('capture on Test and manual sync (6.2)', () => {
+    it('Test and manual sync offer through the recorder; the catalog refresh never does', async () => {
+      const t = setup();
+      const claude = await t.claudeRow();
+      await t.svc.testConnection(principal, claude.id);
+      expect(t.offered.map((o) => o.id)).toEqual([claude.id]);
+      await t.svc.syncModels(principal, claude.id);
+      expect(t.offered.map((o) => o.id)).toEqual([claude.id, claude.id]);
+      await t.svc.refreshCatalog(principal, claude.id);
+      // refreshCatalog is the unattended job: no callback reaches the adapter, nothing is offered.
+      expect(t.offered).toHaveLength(2);
+      const catalogCall = t.adapterCalls.filter((c) => c.op === 'list').at(-1)!;
+      expect(catalogCall.ctx?.onPlanUsage).toBeUndefined();
+      const manualCall = t.adapterCalls.filter((c) => c.op === 'list').at(-2)!;
+      expect(manualCall.ctx?.onPlanUsage).toBeInstanceOf(Function);
+    });
+
+    it('the catalog refresh still passes its abort signal', async () => {
+      const t = setup();
+      const claude = await t.claudeRow();
+      const ac = new AbortController();
+      await t.svc.refreshCatalog(principal, claude.id, ac.signal);
+      const call = t.adapterCalls.at(-1)!;
+      expect(call.ctx?.signal).toBe(ac.signal);
+      expect(call.ctx?.onPlanUsage).toBeUndefined();
+    });
+
+    it('carries the generation read BEFORE the row load, for Test and for sync', async () => {
+      const t = setup();
+      const claude = await t.claudeRow();
+      t.recorder.noteCleared(claude.id, 4);
+      // A clear lands while the row loads: 4 -> 9. The earlier value must be used.
+      const load = t.port.providers.findById.bind(t.port.providers);
+      jest.spyOn(t.port.providers, 'findById').mockImplementation(async (p, id) => {
+        t.recorder.noteCleared(claude.id, 9);
+        return load(p, id);
+      });
+      await t.svc.testConnection(principal, claude.id);
+      expect(t.offered).toEqual([{ id: claude.id, gen: 4 }]);
+      t.recorder.noteCleared(claude.id, 4);
+      await t.svc.syncModels(principal, claude.id);
+      expect(t.offered.at(-1)).toEqual({ id: claude.id, gen: 4 });
+    });
+
+    it('rows without a usage dialect get no callback at all', async () => {
+      const t = setup();
+      const plain = await t.plainRow();
+      const kimiRow = await t.kimiRow(); // a usage ENDPOINT but no passive dialect
+      await t.svc.testConnection(principal, plain.id);
+      await t.svc.syncModels(principal, kimiRow.id);
+      expect(t.offered).toEqual([]);
+      for (const c of t.adapterCalls) expect(c.ctx?.onPlanUsage).toBeUndefined();
+    });
+
+    it('builds the adapter config with a dialect only for a coherent row', async () => {
+      const t = setup();
+      const claude = await t.claudeRow();
+      const drifted = await t.insert(
+        'drifted',
+        { baseUrl: 'https://proxy.example.test/', protocol: 'anthropic_compatible' },
+        { oauthPreset: CLAUDE_PRESET.id },
+      );
+      await t.svc.testConnection(principal, claude.id);
+      await t.svc.testConnection(principal, drifted.id);
+      expect(t.seen[0]!.config.usageDialect).toBe('anthropic_unified');
+      expect(t.seen[1]!.config.usageDialect).toBeUndefined();
+    });
+  });
+
+  // ---------------------------------------------------------------- 6.3 the view
+
+  describe('the provider view (6.3)', () => {
+    it('toSafe-created rows carry null for both fields with no store call', async () => {
+      const t = setup();
+      const created = await t.svc.create(principal, {
+        ...baseCreate,
+        name: 'new',
+        kind: 'custom',
+        baseUrl: 'https://1.1.1.1/v1',
+      } as never);
+      expect(created.planUsage).toBeNull();
+      expect(created.planUsageRefresh).toBeNull();
+      expect(t.spy.total()).toBe(0);
+    });
+
+    it('one readMany per list, carrying only the rows with a source', async () => {
+      const t = setup({ enableProbes: true });
+      const sourced = [
+        await t.claudeRow(),
+        await t.chatgptRow(),
+        await t.goRow(),
+        await t.kimiRow(),
+      ];
+      for (let i = 0; i < 16; i += 1) await t.plainRow(`plain-${String(i)}`);
+      expect(t.spy.calls.readMany).toBe(0);
+      const list = await t.svc.list(principal);
+      expect(list).toHaveLength(20);
+      expect(t.spy.calls.readMany).toBe(1);
+      expect([...t.spy.readManyIds[0]!].sort()).toEqual(sourced.map((r) => r.id).sort());
+      // The cooldown is asked for only on rows with an ENABLED endpoint (Go and Kimi here).
+      expect([...t.spy.readManyCooldownIds[0]!].sort()).toEqual(
+        [sourced[2]!.id, sourced[3]!.id].sort(),
+      );
+      expect(t.spy.total()).toBe(1);
+    });
+
+    it('makes no store call when no row has a source', async () => {
+      const t = setup();
+      await t.plainRow();
+      await t.plainRow('two');
+      const list = await t.svc.list(principal);
+      expect(list.every((p) => p.planUsage === null && p.planUsageRefresh === null)).toBe(true);
+      expect(t.spy.total()).toBe(0);
+    });
+
+    it('a Claude provider carries its windows with ISO instants, source and billing; no refresh', async () => {
+      const t = setup();
+      const claude = await t.claudeRow();
+      await t.store.merge(claude.id, OBS, 0, 'traffic');
+      const view = await t.svc.get(principal, claude.id);
+      expect(view.planUsageRefresh).toBeNull();
+      expect(view.planUsage).not.toBeNull();
+      const w = view.planUsage!.windows[0]!;
+      expect(w).toMatchObject({ span: '5h', usedPercent: 42, source: 'traffic' });
+      expect(new Date(w.resetAt!).toISOString()).toBe(w.resetAt);
+      expect(new Date(w.observedAt).toISOString()).toBe(w.observedAt);
+      expect(view.planUsage!.billing!.state).toBe('plan');
+      expect(new Date(view.planUsage!.billing!.observedAt).toISOString()).toBe(
+        view.planUsage!.billing!.observedAt,
+      );
+    });
+
+    it('an enabled refreshable row with no snapshot offers refresh now (availableAt null)', async () => {
+      const t = setup({ enableProbes: true });
+      const row = await t.kimiRow();
+      const view = await t.svc.get(principal, row.id);
+      expect(view.planUsage).toBeNull();
+      expect(view.planUsageRefresh).toEqual({ availableAt: null });
+    });
+
+    it('a shipped (disabled) usage endpoint offers no refresh and keeps the view', async () => {
+      const t = setup(); // probes stay disabled
+      const row = await t.kimiRow();
+      const view = await t.svc.get(principal, row.id);
+      expect(view.planUsageRefresh).toBeNull();
+    });
+
+    it('availableAt comes from the cooldown', async () => {
+      const t = setup({ enableProbes: true });
+      const row = await t.kimiRow();
+      const claim = await t.store.claimRefresh(row.id);
+      const view = await t.svc.get(principal, row.id);
+      expect(view.planUsageRefresh).toEqual({
+        availableAt: new Date(claim.availableAt).toISOString(),
+      });
+    });
+
+    it('a throwing store keeps the list answering, with refresh still offered on enabled rows', async () => {
+      const t = setup({ enableProbes: true });
+      const claude = await t.claudeRow();
+      const row = await t.kimiRow();
+      t.spy.fail.readMany = new Error('redis down');
+      const list = await t.svc.list(principal);
+      const byId = new Map(list.map((p) => [p.id, p]));
+      expect(byId.get(claude.id)!.planUsage).toBeNull();
+      expect(byId.get(row.id)!.planUsage).toBeNull();
+      expect(byId.get(row.id)!.planUsageRefresh).toEqual({ availableAt: null });
+    });
+
+    it('a missing store reads as no usage', async () => {
+      const t = setup({ withStore: false });
+      const claude = await t.claudeRow();
+      expect((await t.svc.get(principal, claude.id)).planUsage).toBeNull();
+    });
+
+    it('a drifted key-preset row and an "Other subscription" row carry nothing', async () => {
+      const t = setup({ enableProbes: true });
+      const drifted = await t.insert(
+        'drifted',
+        { baseUrl: 'https://evil.example.test/', protocol: kimi.protocol },
+        { keyPreset: KIMI_CODE_PRESET.id },
+      );
+      const other = await t.insert('other', kimi, {});
+      const list = await t.svc.list(principal);
+      for (const row of [drifted, other]) {
+        const v = list.find((p) => p.id === row.id)!;
+        expect(v.planUsage).toBeNull();
+        expect(v.planUsageRefresh).toBeNull();
+      }
+      expect(t.spy.calls.readMany).toBe(0);
+    });
+
+    it('never exposes a dialect, endpoint url or auth style', async () => {
+      const t = setup({ enableProbes: true });
+      const row = await t.kimiRow();
+      await t.store.merge(row.id, OBS, 0, 'refresh');
+      const json = JSON.stringify(await t.svc.get(principal, row.id));
+      expect(json).not.toMatch(/dialect|usages|parser|bearer|probe/i);
+    });
+  });
+
+  // ---------------------------------------------------------------- 6.4 refresh
+
+  describe('refresh endpoint (6.4)', () => {
+    const noneSent = (t: ReturnType<typeof setup>): void => {
+      expect(t.reader).not.toHaveBeenCalled();
+    };
+
+    it('404 for an unknown id is checked first, whatever the store does, and sends nothing', async () => {
+      const t = setup({ enableProbes: true });
+      t.spy.fail.claimRefresh = new Error('down');
+      await expect(t.svc.refreshPlanUsage(principal, 'nope')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(t.spy.calls.claimRefresh).toBe(0);
+      noneSent(t);
+    });
+
+    it('422 for a provider with no enabled usage endpoint, with no claim and no read', async () => {
+      const t = setup(); // disabled probes
+      const row = await t.kimiRow();
+      const plain = await t.plainRow();
+      const claude = await t.claudeRow();
+      for (const r of [row, plain, claude]) {
+        await expect(t.svc.refreshPlanUsage(principal, r.id)).rejects.toBeInstanceOf(
+          UnprocessableEntityException,
+        );
+      }
+      expect(t.spy.calls.claimRefresh).toBe(0);
+      noneSent(t);
+    });
+
+    it('429 with the retry-after seconds and availableAt while the cooldown holds', async () => {
+      const t = setup({ enableProbes: true });
+      const row = await t.kimiRow();
+      await t.svc.refreshPlanUsage(principal, row.id);
+      expect(t.reader).toHaveBeenCalledTimes(1);
+      const err = await t.svc.refreshPlanUsage(principal, row.id).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(PlanUsageCooldownException);
+      const cooldown = err as PlanUsageCooldownException;
+      expect(cooldown.getStatus()).toBe(429);
+      expect(cooldown.retryAfterSeconds).toBeGreaterThan(0);
+      expect(cooldown.retryAfterSeconds).toBeLessThanOrEqual(300);
+      expect(cooldown.getResponse()).toMatchObject({ statusCode: 429 });
+      expect(t.reader).toHaveBeenCalledTimes(1);
+    });
+
+    it('Retry-After comes from the store-measured remainder, never from this instance clock', async () => {
+      const t = setup({ enableProbes: true });
+      const row = await t.kimiRow();
+      // A store clock a day away from this instance: `availableAt - Date.now()` would be ~1 day.
+      const skewed = Date.now() + 24 * 60 * 60_000;
+      jest.spyOn(t.spy.inner, 'claimRefresh').mockResolvedValueOnce({
+        claimed: false,
+        availableAt: skewed,
+        gen: 0,
+        retryAfterMs: 300_000,
+      });
+      const err = await t.svc.refreshPlanUsage(principal, row.id).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(PlanUsageCooldownException);
+      expect((err as PlanUsageCooldownException).retryAfterSeconds).toBe(300);
+      expect((err as PlanUsageCooldownException).getResponse()).toMatchObject({
+        availableAt: new Date(skewed).toISOString(),
+      });
+      expect(t.reader).not.toHaveBeenCalled();
+    });
+
+    it('503 when the store cannot be reached or is missing, with no read', async () => {
+      const t = setup({ enableProbes: true });
+      const row = await t.kimiRow();
+      t.spy.fail.claimRefresh = new Error('down');
+      await expect(t.svc.refreshPlanUsage(principal, row.id)).rejects.toBeInstanceOf(
+        ServiceUnavailableException,
+      );
+      const bare = setup({ enableProbes: true, withStore: false });
+      const bareRow = await bare.kimiRow();
+      await expect(bare.svc.refreshPlanUsage(principal, bareRow.id)).rejects.toBeInstanceOf(
+        ServiceUnavailableException,
+      );
+      noneSent(t);
+      noneSent(bare);
+    });
+
+    it('re-loads the row after the claim and builds the config from that row', async () => {
+      const t = setup({ enableProbes: true });
+      const row = await t.kimiRow();
+      // A key rotation lands between the claim and the re-load.
+      t.spy.afterClaim = async () => {
+        t.rows.set(row.id, {
+          ...t.rows.get(row.id)!,
+          encryptedCredentials: encryptSecret(serializePlainCredential('rotated-key'), KEY),
+        });
+        await Promise.resolve();
+      };
+      await t.svc.refreshPlanUsage(principal, row.id);
+      expect(t.reader.mock.calls[0]![0].credential).toBe('rotated-key');
+    });
+
+    it('a row deleted between the claim and the re-load answers 404 with no read', async () => {
+      const t = setup({ enableProbes: true });
+      const row = await t.kimiRow();
+      t.spy.afterClaim = async () => {
+        t.rows.delete(row.id);
+        await Promise.resolve();
+      };
+      await expect(t.svc.refreshPlanUsage(principal, row.id)).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      noneSent(t);
+    });
+
+    it('success merges source refresh at the generation the claim returned, and answers the view', async () => {
+      const t = setup({ enableProbes: true });
+      const row = await t.kimiRow();
+      await t.spy.inner.clear(row.id); // generation 1
+      const out = await t.svc.refreshPlanUsage(principal, row.id);
+      expect(out.ok).toBe(true);
+      expect(t.spy.merges).toEqual([{ id: row.id, gen: 1, source: 'refresh' }]);
+      expect(out.provider.planUsage!.windows[0]).toMatchObject({
+        usedPercent: 42,
+        source: 'refresh',
+      });
+      const waitMs = new Date(out.provider.planUsageRefresh!.availableAt!).getTime() - Date.now();
+      expect(waitMs).toBeGreaterThan(290_000);
+      expect(waitMs).toBeLessThanOrEqual(300_000);
+    });
+
+    it('drops the merge when a key rotation raises the generation while the read is in flight', async () => {
+      const t = setup({ enableProbes: true });
+      const row = await t.kimiRow();
+      t.reader.mockImplementationOnce(async () => {
+        await t.spy.inner.clear(row.id); // the rotation's clear lands mid-read
+        return { ok: true, observation: OBS };
+      });
+      const out = await t.svc.refreshPlanUsage(principal, row.id);
+      expect(out.ok).toBe(false);
+      expect(out.provider.planUsage).toBeNull();
+      expect((await t.spy.inner.readMany([row.id])).get(row.id)!.snapshot).toBeNull();
+    });
+
+    it('a read failure keeps the snapshot and the cooldown, with the failure kind and message', async () => {
+      const t = setup({ enableProbes: true });
+      const row = await t.kimiRow();
+      await t.store.merge(row.id, OBS, 0, 'traffic');
+      t.reader.mockResolvedValueOnce({
+        ok: false,
+        kind: 'auth',
+        message: 'The provider rejected the credential for its usage endpoint.',
+      });
+      const out = await t.svc.refreshPlanUsage(principal, row.id);
+      expect(out).toMatchObject({ ok: false, kind: 'auth' });
+      expect(out.message).toMatch(/rejected the credential/);
+      expect(out.provider.planUsage!.windows[0]!.usedPercent).toBe(42);
+      expect(out.provider.planUsageRefresh!.availableAt).not.toBeNull();
+      await expect(t.svc.refreshPlanUsage(principal, row.id)).rejects.toBeInstanceOf(
+        PlanUsageCooldownException,
+      );
+    });
+
+    it('an upstream 429 extends the cooldown by its Retry-After', async () => {
+      const t = setup({ enableProbes: true });
+      const row = await t.kimiRow();
+      t.reader.mockResolvedValueOnce({
+        ok: false,
+        kind: 'rate_limit',
+        message: 'The usage endpoint is rate limiting reads.',
+        retryAfterMs: 900_000,
+      });
+      const out = await t.svc.refreshPlanUsage(principal, row.id);
+      expect(t.spy.calls.extendRefresh).toBe(1);
+      const waitMs = new Date(out.provider.planUsageRefresh!.availableAt!).getTime() - Date.now();
+      expect(waitMs).toBeGreaterThan(890_000);
+      expect(waitMs).toBeLessThanOrEqual(900_000);
+    });
+
+    it('a cooldown-extension fault is logged and never replaces the outcome', async () => {
+      const t = setup({ enableProbes: true });
+      const row = await t.kimiRow();
+      t.spy.fail.extendRefresh = new Error('down');
+      t.reader.mockResolvedValueOnce({
+        ok: false,
+        kind: 'rate_limit',
+        message: 'm',
+        retryAfterMs: 900_000,
+      });
+      const out = await t.svc.refreshPlanUsage(principal, row.id);
+      expect(out).toMatchObject({ ok: false, kind: 'rate_limit' });
+    });
+
+    it('a missing credential and a throwing reader both read as a failed refresh, never a 500', async () => {
+      const t = setup({ enableProbes: true });
+      const keyless = await t.kimiRow('keyless');
+      t.rows.set(keyless.id, { ...t.rows.get(keyless.id)!, encryptedCredentials: null });
+      const out = await t.svc.refreshPlanUsage(principal, keyless.id);
+      expect(out).toMatchObject({ ok: false, kind: 'credential' });
+      noneSent(t);
+      const row = await t.kimiRow('two');
+      t.reader.mockRejectedValueOnce(new Error('boom'));
+      expect(await t.svc.refreshPlanUsage(principal, row.id)).toMatchObject({ ok: false });
+    });
+
+    it('never touches health, breaker or plan-cooldown paths', async () => {
+      const t = setup({ enableProbes: true });
+      const row = await t.kimiRow();
+      const setHealth = jest.spyOn(t.port.providers, 'setHealth');
+      const reset = jest.spyOn(t.port.providers, 'updateResettingHealth');
+      await t.svc.refreshPlanUsage(principal, row.id);
+      t.reader.mockResolvedValueOnce({ ok: false, kind: 'unavailable', message: 'm' });
+      await t.svc.refreshPlanUsage(principal, row.id).catch(() => undefined);
+      expect(setHealth).not.toHaveBeenCalled();
+      expect(reset).not.toHaveBeenCalled();
+      expect(t.rows.get(row.id)!.status).toBe('unknown');
+      expect(t.rows.get(row.id)!.trafficState).toBeNull();
+    });
+  });
+
+  // ---------------------------------------------------------------- 6.5 clearing
+
+  describe('a credential change clears the snapshot and raises its generation (6.5)', () => {
+    it('a credential patch clears; a name-only patch does not', async () => {
+      const t = setup();
+      const row = await t.goRow();
+      await t.store.merge(row.id, BILLING_ONLY, 0, 'traffic');
+      await t.svc.update(principal, row.id, { name: 'renamed' });
+      expect(t.spy.calls.clear).toBe(0);
+      expect((await t.spy.inner.readMany([row.id])).get(row.id)!.snapshot).not.toBeNull();
+      await t.svc.update(principal, row.id, { credential: 'new-key' });
+      expect(t.spy.calls.clear).toBe(1);
+      expect((await t.spy.inner.readMany([row.id])).get(row.id)!.snapshot).toBeNull();
+      expect(t.spy.inner.generation(row.id)).toBe(1);
+    });
+
+    it('an explicit empty credential also clears', async () => {
+      const t = setup();
+      const row = await t.goRow();
+      await t.store.merge(row.id, BILLING_ONLY, 0, 'traffic');
+      await t.svc.update(principal, row.id, { credential: '' });
+      expect(t.spy.calls.clear).toBe(1);
+    });
+
+    it('a credential patch, even with the identical key, keeps the cooldown', async () => {
+      const t = setup({ enableProbes: true });
+      const row = await t.kimiRow();
+      const claim = await t.store.claimRefresh(row.id);
+      await t.svc.update(principal, row.id, { credential: 'old-key' });
+      expect(t.spy.calls.clear).toBe(1);
+      const view = await t.svc.get(principal, row.id);
+      expect(view.planUsageRefresh).toEqual({
+        availableAt: new Date(claim.availableAt).toISOString(),
+      });
+      await expect(t.svc.refreshPlanUsage(principal, row.id)).rejects.toBeInstanceOf(
+        PlanUsageCooldownException,
+      );
+    });
+
+    it('a row with no usage source never costs a clear', async () => {
+      const t = setup();
+      const plain = await t.plainRow();
+      await t.svc.update(principal, plain.id, { credential: 'other' });
+      expect(t.spy.calls.clear).toBe(0);
+    });
+
+    it('teaches the recorder the new generation, so the next observation is written at once', async () => {
+      const t = setup();
+      const row = await t.goRow();
+      await t.svc.update(principal, row.id, { credential: 'new-key' });
+      expect(t.recorder.generationOf(row.id)).toBe(1);
+    });
+
+    it('a clear failure does not fail the edit, and is retried once off the request', async () => {
+      const scheduled: Array<() => void> = [];
+      const logs: string[] = [];
+      const t = setup({
+        wrapStore: () => {
+          const failing = new SpyUsageStore();
+          failing.fail.clear = new Error('redis down');
+          // The service sees a failover whose PRIMARY clear fails; the retry is scheduled once.
+          return new FailoverPlanUsageStore(failing, new InMemoryPlanUsageStore(), undefined, {
+            schedule: (fn) => void scheduled.push(fn),
+            log: (m) => void logs.push(m),
+            clearRetryMs: 5,
+          });
+        },
+      });
+      const row = await t.goRow();
+      const view = await t.svc.update(principal, row.id, { credential: 'new-key' });
+      expect(view.name).toBe('go');
+      expect(scheduled).toHaveLength(1);
+      scheduled[0]!();
+      await new Promise((r) => setImmediate(r));
+      expect(logs).toEqual(['plan usage: clearing a provider snapshot failed after one retry']);
+    });
+
+    it('a store that throws outright is logged, never failing the edit', async () => {
+      const t = setup();
+      const row = await t.goRow();
+      t.spy.fail.clear = new Error('boom');
+      const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      await expect(t.svc.update(principal, row.id, { credential: 'k2' })).resolves.toBeDefined();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('plan usage: clearing'));
+    });
+
+    it('an OpenCode Go stream that captured the pre-clear generation records nothing after the clear', async () => {
+      const t = setup();
+      const row = await t.goRow();
+      // The attempt was built (and its hook captured the generation) BEFORE the rotation.
+      const gen = t.recorder.generationOf(row.id);
+      const hook = planUsageHook(recorderSink(t.recorder), row.id, gen);
+      await t.svc.update(principal, row.id, { credential: 'rotated' });
+      hook(BILLING_ONLY); // the stream's end-of-stream billing arrives after the clear
+      await new Promise((r) => setImmediate(r));
+      expect((await t.spy.inner.readMany([row.id])).get(row.id)!.snapshot).toBeNull();
+      // The next attempt built after the clear carries the new generation and IS recorded.
+      planUsageHook(
+        recorderSink(t.recorder),
+        row.id,
+        t.recorder.generationOf(row.id),
+      )(BILLING_ONLY);
+      await new Promise((r) => setImmediate(r));
+      expect((await t.spy.inner.readMany([row.id])).get(row.id)!.snapshot?.billing?.state).toBe(
+        'extra_usage',
+      );
+    });
   });
 });

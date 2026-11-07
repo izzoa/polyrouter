@@ -7,6 +7,7 @@ import { Toggle } from './components/Toggle';
 import { createAppStore, type AppStore } from './state/appState';
 import { AppProvider } from './state/context';
 import { buildRequestRows, FakeApiClient } from './test/fakeClient';
+import { iso, mkProvider, usageOf, window5h } from './test/planUsageHarness';
 
 const flush = async (): Promise<void> => {
   for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 0));
@@ -409,6 +410,96 @@ describe('Dashboard a11y semantics', () => {
       const current = host.querySelector<HTMLButtonElement>('button.nav-item[aria-current="page"]');
       expect(current).not.toBeNull();
       expect(current?.textContent).toContain('Overview');
+    } finally {
+      dispose();
+    }
+  });
+});
+
+describe('Plan usage a11y (add-subscription-quota-display task 7.4)', () => {
+  const mountProviders = async (providers: ReturnType<typeof mkProvider>[]) => {
+    globalThis.history.replaceState(null, '', '/#/providers');
+    const store = createAppStore(new FakeApiClient({ providers }));
+    const mounted = mountApp(store);
+    await flush();
+    return mounted;
+  };
+  const buckets = () =>
+    usageOf([
+      window5h(),
+      window5h({ key: 'model:sonic', group: 'model', scope: 'sonic', usedPercent: 80 }),
+    ]);
+
+  it('Refresh usage is a native button named by its label, with a described purpose', async () => {
+    const { host, dispose } = await mountProviders([
+      mkProvider({ planUsage: buckets(), planUsageRefresh: { availableAt: null } }),
+    ]);
+    try {
+      const button = host.querySelector<HTMLButtonElement>('[data-usage] button');
+      expect(button?.tagName).toBe('BUTTON');
+      expect(button?.getAttribute('type')).toBe('button');
+      expect(button?.textContent).toContain('Refresh usage');
+      expect(button?.disabled).toBe(false);
+      const ids = (button?.getAttribute('aria-describedby') ?? '').split(' ').filter(Boolean);
+      expect(ids).toHaveLength(1);
+      const note = host.querySelector(`[id="${ids[0] ?? ''}"]`);
+      expect(note?.textContent).toMatch(/usage endpoint/);
+      expect(note?.textContent).toMatch(/no model call/i);
+      // Exposed to assistive tech, hidden from sight.
+      expect(note?.className).toBe('sr-only');
+      expect(note?.getAttribute('aria-hidden')).toBeNull();
+    } finally {
+      dispose();
+    }
+  });
+
+  it('a cooling button is natively disabled and described by its availability text', async () => {
+    const { host, dispose } = await mountProviders([
+      mkProvider({
+        planUsage: buckets(),
+        planUsageRefresh: { availableAt: iso(Date.now() + 5 * 60_000) },
+      }),
+    ]);
+    try {
+      const button = host.querySelector<HTMLButtonElement>('[data-usage] button');
+      expect(button?.disabled).toBe(true);
+      const words = (button?.getAttribute('aria-describedby') ?? '')
+        .split(' ')
+        .filter(Boolean)
+        .map((id) => host.querySelector(`[id="${id}"]`)?.textContent ?? '');
+      expect(words.some((w) => /^next refresh /.test(w))).toBe(true);
+    } finally {
+      dispose();
+    }
+  });
+
+  it('its outcome regions are a polite status and an alert, both reachable by script focus only', async () => {
+    const { host, dispose } = await mountProviders([
+      mkProvider({ planUsage: buckets(), planUsageRefresh: { availableAt: null } }),
+    ]);
+    try {
+      const status = host.querySelector<HTMLElement>('[data-usage-refresh-status]');
+      expect(status?.getAttribute('role')).toBe('status');
+      expect(status?.getAttribute('tabindex')).toBe('-1');
+      // The alert exists only for a failure, so nothing is announced at rest.
+      expect(host.querySelector('[role="alert"][data-usage-refresh-failure]')).toBeNull();
+    } finally {
+      dispose();
+    }
+  });
+
+  it('the model buckets are a native disclosure: a details element with a summary', async () => {
+    const { host, dispose } = await mountProviders([
+      mkProvider({ planUsage: buckets(), planUsageRefresh: null }),
+    ]);
+    try {
+      const details = host.querySelector<HTMLDetailsElement>('details[data-usage-buckets]');
+      expect(details?.tagName).toBe('DETAILS');
+      expect(details?.querySelector(':scope > summary')?.textContent).toBe('model limits (1)');
+      // No ARIA re-implementation of what the element already is.
+      expect(details?.getAttribute('role')).toBeNull();
+      expect(details?.querySelector('[aria-expanded]')).toBeNull();
+      expect(details?.open).toBe(false);
     } finally {
       dispose();
     }

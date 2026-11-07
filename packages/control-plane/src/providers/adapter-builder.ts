@@ -8,6 +8,7 @@ import {
   type Principal,
   type ProviderRow,
 } from '@polyrouter/shared/server';
+import { planUsageSourcesFor } from '../plan-usage/plan-usage-sources';
 import { SubscriptionOauthService } from '../subscription-oauth/subscription-oauth.service';
 import { keyPresetForRow } from '../subscription-presets/key-presets';
 import { identityHeaders } from './client-identity';
@@ -132,6 +133,13 @@ export class ProviderAdapterBuilder {
     // the same plain import, so it reaches only a row still equal to a region pin that declares
     // one — never a host match, an OAuth row, a drifted or unbound row.
     const errorDialect = presetMatch?.region.errorDialect;
+    // The plan-usage dialect (add-subscription-quota-display, design D1): through the ONE gate,
+    // `planUsageSourcesFor` over the single preset lookup, so it reaches only a row still on its
+    // preset's pinned endpoint and never comes from the host or the request.
+    const usageDialect = planUsageSourcesFor(
+      provider,
+      this.oauth.identityBindingFor(provider),
+    )?.dialect;
     const common = {
       protocol: provider.protocol as ProviderProtocol,
       baseUrl: provider.baseUrl,
@@ -143,6 +151,7 @@ export class ProviderAdapterBuilder {
       ...(identity !== undefined ? { extraHeaders: identity } : {}),
       ...(modelsUrl !== undefined ? { modelsUrl } : {}),
       ...(errorDialect !== undefined ? { errorDialect } : {}),
+      ...(usageDialect !== undefined ? { usageDialect } : {}),
     };
     // Subscription providers resolve through the subscription-oauth seam: it unwraps
     // a plain paste, or refreshes an OAuth token (pre-request only — invariant 3)

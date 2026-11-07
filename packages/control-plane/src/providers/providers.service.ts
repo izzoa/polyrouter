@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
+  HttpException,
   Inject,
   Injectable,
   Logger,
@@ -59,8 +60,13 @@ import {
   type ProviderModelInfo,
   type ProviderListedPricing,
   type ProviderModelCapabilities,
+  type CallContext,
   type PlanCooldown,
   type PlanCooldownStore,
+  type PlanUsageProbe,
+  type PlanUsageRecorder,
+  type PlanUsageStore,
+  readPlanUsage as defaultReadPlanUsage,
   batchFactoryFor,
   type BatchSeamInput,
 } from '@polyrouter/data-plane';
@@ -79,6 +85,19 @@ import {
 import { SubscriptionOauthService } from '../subscription-oauth/subscription-oauth.service';
 import { clientIdentityView } from './client-identity';
 import { PLAN_COOLDOWN_STORE } from '../plan-cooldown/plan-cooldown.tokens';
+import {
+  PLAN_USAGE_READER,
+  PLAN_USAGE_RECORDER,
+  PLAN_USAGE_STORE,
+} from '../plan-usage/plan-usage.tokens';
+import { clearPlanUsageSnapshot } from '../plan-usage/plan-usage-clear';
+import { planUsageHook, recorderSink } from '../plan-usage/plan-usage-hook';
+import { planUsageSourcesFor } from '../plan-usage/plan-usage-sources';
+import {
+  toSafePlanUsage,
+  type SafePlanUsage,
+  type SafePlanUsageRefresh,
+} from '../plan-usage/plan-usage-view';
 import { keyPresetForRow } from '../subscription-presets/key-presets';
 import { normalizeAndGateBaseUrl } from './base-url-gate';
 
@@ -162,6 +181,13 @@ export interface SafeProvider {
    * string (every other instant on the wire is one). Read only for a row whose region
    * declares a plan-error dialect; null for every other row, a new row and an OAuth row. */
   planCooldown: SafePlanCooldown | null;
+  /** add-subscription-quota-display: the plan-usage snapshot (numbers, enums and ISO instants),
+   * or null. Read only for a row whose preset declares a usage source and that still matches
+   * its pin; null for every other row, a new row and an OAuth `complete` response. */
+  planUsage: SafePlanUsage | null;
+  /** `{ availableAt }` while the row has an ENABLED usage endpoint (`availableAt` null = a
+   * refresh is allowed now), else null. Never carries the endpoint, its dialect or auth. */
+  planUsageRefresh: SafePlanUsageRefresh | null;
   createdAt: Date;
   /** add-provider-health-signals: the DISPLAYED health — whichever of the check
    * and traffic records was recorded last (computed here, never re-derived by the
@@ -288,6 +314,36 @@ export interface ActionResult {
   pruned?: number;
 }
 
+/** The outcome of an attended "Refresh usage" (add-subscription-quota-display, design D8). A
+ * failed read still answers 200 with `ok: false`, the failure's kind and a FIXED message, and a
+ * view whose `planUsage` is unchanged. */
+export interface PlanUsageRefreshResult {
+  ok: boolean;
+  kind?: string;
+  message?: string;
+  provider: SafeProvider;
+}
+
+/** `429` for a refresh while its shared cooldown holds. The controller turns `retryAfterSeconds`
+ * into the `Retry-After` header; the body carries `availableAt` for the card. */
+export class PlanUsageCooldownException extends HttpException {
+  constructor(
+    readonly retryAfterSeconds: number,
+    availableAt: string,
+  ) {
+    super({ statusCode: 429, message: 'plan usage was refreshed recently', availableAt }, 429);
+  }
+}
+
+export type PlanUsageReader = typeof defaultReadPlanUsage;
+
+/** Fixed texts for a refresh that failed before or after the read (never an upstream string). */
+const REFRESH_MESSAGES = {
+  noCredential: 'No credential is stored for this provider, so its usage cannot be read.',
+  buildFailed: 'The usage read could not be set up for this provider.',
+  superseded: 'The credential changed while usage was being read; refresh again.',
+} as const;
+
 const FIXED_MESSAGE: Record<string, string> = {
   auth: 'authentication failed',
   // add-subscription-oauth: a credential-resolution failure (revoked OAuth grant /
@@ -330,10 +386,19 @@ function fixedMessage(kind: string): string {
  * than failing the build (fix-4xx-error-taxonomy). */
 export const toSafeProviderMessage = fixedMessage;
 
+/** The plan-usage half of the view (add-subscription-quota-display). */
+export interface PlanUsageView {
+  readonly planUsage: SafePlanUsage | null;
+  readonly planUsageRefresh: SafePlanUsageRefresh | null;
+}
+
+const NO_PLAN_USAGE: PlanUsageView = { planUsage: null, planUsageRefresh: null };
+
 export function toSafe(
   p: ProviderRow,
   clientIdentity: { label: string } | null,
   planCooldown: SafePlanCooldown | null,
+  usage: PlanUsageView = NO_PLAN_USAGE,
 ): SafeProvider {
   return {
     id: p.id,
@@ -354,6 +419,8 @@ export function toSafe(
     imitateClientIdentity: p.imitateClientIdentity,
     clientIdentity,
     planCooldown,
+    planUsage: usage.planUsage,
+    planUsageRefresh: usage.planUsageRefresh,
     createdAt: p.createdAt,
     health: toSafeHealth(displayedProviderHealth(p)),
     lastErrorKind: p.lastErrorKind,
@@ -577,6 +644,19 @@ export class ProvidersService {
     @Optional()
     @Inject(PLAN_COOLDOWN_STORE)
     private readonly planCooldowns?: PlanCooldownStore,
+    // add-subscription-quota-display (design D6/D8): the shared plan-usage store, its recorder
+    // (Test and manual sync offer through it, and a clear teaches it the new generation) and the
+    // usage-endpoint reader. All optional for the same reason: hand-wired harnesses still
+    // compile, and a missing store reads as "no usage" and refuses a refresh with a 503.
+    @Optional()
+    @Inject(PLAN_USAGE_STORE)
+    private readonly planUsageStore?: PlanUsageStore,
+    @Optional()
+    @Inject(PLAN_USAGE_RECORDER)
+    private readonly planUsageRecorder?: PlanUsageRecorder,
+    @Optional()
+    @Inject(PLAN_USAGE_READER)
+    private readonly planUsageReader?: PlanUsageReader,
   ) {
     this.key = runtime.key;
     this.mode = runtime.mode;
@@ -592,21 +672,90 @@ export class ProvidersService {
   async list(principal: Principal): Promise<SafeProvider[]> {
     const rows = await this.db.providers.list(principal);
     const pauses = await this.readPlanCooldowns(rows);
-    return rows.map((row) => this.safe(row, pauses.get(row.id) ?? null));
+    const usage = await this.readPlanUsageViews(rows);
+    return rows.map((row) => this.safe(row, pauses.get(row.id) ?? null, usage.get(row.id)));
   }
 
   async get(principal: Principal, id: string): Promise<SafeProvider> {
     const row = await this.db.providers.findById(principal, id);
     if (!row) throw new NotFoundException();
     const pauses = await this.readPlanCooldowns([row]);
-    return this.safe(row, pauses.get(row.id) ?? null);
+    const usage = await this.readPlanUsageViews([row]);
+    return this.safe(row, pauses.get(row.id) ?? null, usage.get(row.id));
   }
 
   /** The safe view with the identity label derived through the one availability lookup. The
    * plan cooldown is a REQUIRED argument so the compiler finds every caller: a row that was
-   * just created (or connected through OAuth / a key preset) has no cooldown and passes null. */
-  private safe(row: ProviderRow, planCooldown: SafePlanCooldown | null): SafeProvider {
-    return toSafe(row, clientIdentityView(this.oauth.availableClientIdentity(row)), planCooldown);
+   * just created (or connected through OAuth / a key preset) has no cooldown and passes null.
+   * `usage` is absent for a row with no plan-usage source (and for a new row): both fields null. */
+  private safe(
+    row: ProviderRow,
+    planCooldown: SafePlanCooldown | null,
+    usage?: PlanUsageView,
+  ): SafeProvider {
+    return toSafe(
+      row,
+      clientIdentityView(this.oauth.availableClientIdentity(row)),
+      planCooldown,
+      usage,
+    );
+  }
+
+  /** The plan-usage half of every row's view, in ONE batched store read over the rows that have
+   * a source (design D8). Rows without a source get no entry and cost no store call; a store
+   * fault (or a missing store) never fails the read: the failover store answers from this
+   * instance's own record, and anything that still throws reads as no snapshot. A row with an
+   * ENABLED usage endpoint always offers its refresh, `availableAt` null until a cooldown holds.
+   * Read on dashboard calls only, never on the proxy path. */
+  private async readPlanUsageViews(
+    rows: readonly ProviderRow[],
+  ): Promise<ReadonlyMap<string, PlanUsageView>> {
+    const out = new Map<string, PlanUsageView>();
+    const ids: string[] = [];
+    const refreshable = new Set<string>();
+    for (const row of rows) {
+      const sources = planUsageSourcesFor(row, this.oauth.identityBindingFor(row));
+      if (sources === null) continue;
+      ids.push(row.id);
+      if (sources.probe?.enabled === true) refreshable.add(row.id);
+    }
+    if (ids.length === 0) return out;
+    let found: Awaited<ReturnType<PlanUsageStore['readMany']>> | undefined;
+    const store = this.planUsageStore;
+    if (store !== undefined) {
+      try {
+        found = await store.readMany(ids, [...refreshable]);
+      } catch {
+        /* the failover store absorbs a fault; anything that still throws reads as no snapshot */
+      }
+    }
+    for (const id of ids) {
+      const read = found?.get(id);
+      const ends = read?.cooldownEndsAt ?? null;
+      out.set(id, {
+        planUsage: toSafePlanUsage(read?.snapshot),
+        planUsageRefresh: refreshable.has(id)
+          ? { availableAt: ends === null ? null : new Date(ends).toISOString() }
+          : null,
+      });
+    }
+    return out;
+  }
+
+  /** `{ onPlanUsage }` for an ATTENDED call (Test, manual sync) on `row`, or undefined when the
+   * row's gate yields no passive dialect or no recorder is wired. `gen` was read BEFORE the row
+   * load (design D5). */
+  private usageContext(row: ProviderRow, gen: number): CallContext | undefined {
+    if (this.planUsageRecorder === undefined) return undefined;
+    const dialect = planUsageSourcesFor(row, this.oauth.identityBindingFor(row))?.dialect;
+    if (dialect === undefined) return undefined;
+    return { onPlanUsage: planUsageHook(recorderSink(this.planUsageRecorder), row.id, gen) };
+  }
+
+  /** The snapshot generation this instance knows for a provider, read synchronously before a
+   * row load; 0 when unknown (or no recorder). */
+  private usageGeneration(id: string): number {
+    return this.planUsageRecorder?.generationOf(id) ?? 0;
   }
 
   /** The active pause of every row whose region declares a plan-error dialect, in ONE
@@ -650,6 +799,110 @@ export class ProvidersService {
     } catch {
       throw new ServiceUnavailableException('could not reach the shared pause store');
     }
+  }
+
+  /**
+   * "Refresh usage": an attended, owner-scoped read of a key plan's usage endpoint, at most once
+   * per shared cooldown (add-subscription-quota-display, design D8). The order is the contract:
+   *  1. `findById`, else 404 (invariant 5) — checked FIRST, whatever the store's state;
+   *  2. the row's ENABLED usage endpoint, else 422;
+   *  3. claim the shared cooldown (`SET NX`): held -> 429 with `Retry-After`, store unreachable ->
+   *     503. No call is ever sent on a refusal. The claim returns the snapshot generation;
+   *  4. RE-LOAD the row AFTER the claim (a vanished row is 404) and build the config from it, so
+   *     a refresh that read a since-replaced key carries an older generation and its merge drops;
+   *  5. read through the injected reader; 6. merge `source: 'refresh'` at the claimed generation,
+   *     or extend the cooldown on a 429's `Retry-After`;
+   *  7. answer with the outcome and the `get` view.
+   * It writes no check record, traffic record, breaker state or plan cooldown: it is not a Test.
+   */
+  async refreshPlanUsage(principal: Principal, id: string): Promise<PlanUsageRefreshResult> {
+    const row = await this.db.providers.findById(principal, id);
+    if (!row) throw new NotFoundException();
+    if (this.enabledProbe(row) === null) {
+      throw new UnprocessableEntityException('this provider has no usage endpoint to refresh');
+    }
+    const store = this.planUsageStore;
+    if (store === undefined) {
+      throw new ServiceUnavailableException('could not reach the shared usage store');
+    }
+    let claim: Awaited<ReturnType<PlanUsageStore['claimRefresh']>>;
+    try {
+      claim = await store.claimRefresh(id);
+    } catch {
+      throw new ServiceUnavailableException('could not reach the shared usage store');
+    }
+    if (!claim.claimed) {
+      const waitMs = Math.max(0, claim.retryAfterMs);
+      throw new PlanUsageCooldownException(
+        Math.max(1, Math.ceil(waitMs / 1000)),
+        new Date(claim.availableAt).toISOString(),
+      );
+    }
+    // The cooldown is claimed from here on: every outcome below keeps it (a failing endpoint is
+    // not called again within the cooldown).
+    const fresh = await this.db.providers.findById(principal, id);
+    if (!fresh) throw new NotFoundException();
+    const probe = this.enabledProbe(fresh);
+    if (probe === null) {
+      throw new UnprocessableEntityException('this provider has no usage endpoint to refresh');
+    }
+    const outcome = await this.readAndMerge(principal, fresh, probe, claim.gen);
+    return { ...outcome, provider: await this.get(principal, id) };
+  }
+
+  /** The row's usage probe when the ONE gate yields one AND it is enabled, else null. */
+  private enabledProbe(row: ProviderRow): PlanUsageProbe | null {
+    const probe = planUsageSourcesFor(row, this.oauth.identityBindingFor(row))?.probe;
+    return probe !== undefined && probe.enabled ? probe : null;
+  }
+
+  private async readAndMerge(
+    principal: Principal,
+    row: ProviderRow,
+    probe: PlanUsageProbe,
+    gen: number,
+  ): Promise<{ ok: boolean; kind?: string; message?: string }> {
+    let config: BuiltAdapterConfig['config'];
+    try {
+      // For a key-preset row this resolves a plain credential and makes no call.
+      config = (await this.buildAdapterConfig(principal, row)).config;
+    } catch (err) {
+      if (err instanceof UnprocessableEntityException) {
+        return { ok: false, kind: 'credential', message: REFRESH_MESSAGES.noCredential };
+      }
+      return { ok: false, kind: 'unavailable', message: REFRESH_MESSAGES.buildFailed };
+    }
+    const reader = this.planUsageReader ?? defaultReadPlanUsage;
+    let result: Awaited<ReturnType<PlanUsageReader>>;
+    try {
+      result = await reader(config, probe);
+    } catch {
+      return { ok: false, kind: 'unavailable', message: REFRESH_MESSAGES.buildFailed };
+    }
+    const store = this.planUsageStore;
+    if (!result.ok) {
+      // A 429's own back-off is honoured: extend-only, never shorter than the 5-minute claim.
+      if (result.retryAfterMs !== undefined && store !== undefined) {
+        try {
+          await store.extendRefresh(row.id, result.retryAfterMs);
+        } catch {
+          this.logger.warn('plan usage: extending a refresh cooldown failed; the claim stands');
+        }
+      }
+      return { ok: false, kind: result.kind, message: result.message };
+    }
+    try {
+      const merged = await store?.merge(row.id, result.observation, gen, 'refresh');
+      if (merged !== undefined && !merged.applied) {
+        // A key rotation (or reconnect) landed while the read was in flight: its data belongs to
+        // the replaced credential and was dropped by the generation barrier.
+        return { ok: false, kind: 'unavailable', message: REFRESH_MESSAGES.superseded };
+      }
+    } catch {
+      this.logger.warn('plan usage: storing a refreshed snapshot failed');
+      return { ok: false, kind: 'unavailable', message: REFRESH_MESSAGES.buildFailed };
+    }
+    return { ok: true };
   }
 
   async create(principal: Principal, dto: CreateProviderDto): Promise<SafeProvider> {
@@ -814,6 +1067,19 @@ export class ProvidersService {
         ? await this.facilities.withAdvisoryLock(credentialLockKey(id), (tx) => write(tx))
         : await write(this.db);
     if (!row) throw new NotFoundException();
+    // A new credential may belong to another plan or account, so the plan-usage snapshot is
+    // discarded and its generation raised (add-subscription-quota-display, design D8) — AFTER the
+    // write has committed, so an observation made with the replaced key carries an older
+    // generation and is dropped. Only a row that had a usage source has anything to clear, and the
+    // refresh cooldown is deliberately kept (re-sending the same key must not skip it). A clear
+    // fault is logged and never fails the edit; a token refresh never gets here.
+    if (
+      incarnationChanges &&
+      dto.credential !== undefined &&
+      planUsageSourcesFor(existing, this.oauth.identityBindingFor(existing)) !== null
+    ) {
+      await clearPlanUsageSnapshot(this.planUsageStore, this.planUsageRecorder, id, this.logger);
+    }
     // A model-own price left over from a custom/local kind would display for a now
     // catalog-priced provider (the resolver already ignores it — E5.4); clear it for
     // GET /api/models consistency when the kind leaves custom/local.
@@ -842,7 +1108,8 @@ export class ProvidersService {
       }
     }
     const pauses = await this.readPlanCooldowns([row]);
-    return this.safe(row, pauses.get(row.id) ?? null);
+    const usage = await this.readPlanUsageViews([row]);
+    return this.safe(row, pauses.get(row.id) ?? null, usage.get(row.id));
   }
 
   async remove(principal: Principal, id: string): Promise<{ deleted: boolean }> {
@@ -853,6 +1120,9 @@ export class ProvidersService {
   }
 
   async testConnection(principal: Principal, id: string): Promise<ActionResult> {
+    // The snapshot generation is read BEFORE the row load (design D5), so an observation this
+    // Test makes with a credential replaced mid-flight is dropped by the merge.
+    const usageGen = this.usageGeneration(id);
     const provider = await this.requireProvider(principal, id);
     let built: BuiltAdapter;
     try {
@@ -870,7 +1140,7 @@ export class ProvidersService {
       await this.recordCheck(principal, id, sanitized, 'test', incarnationOf(provider));
       return sanitized;
     }
-    let result = await this.probe(built.adapter);
+    let result = await this.probe(built.adapter, this.usageContext(provider, usageGen));
     let probedWith = built.incarnation;
     // add-provider-health-signals: a 401 on an OAuth provider gets ONE rate-limited
     // repair — a forced refresh keyed on the credential the probe used, then ONE
@@ -895,7 +1165,7 @@ export class ProvidersService {
           try {
             const rebuilt = await this.buildAdapter(principal, fresh);
             probedWith = rebuilt.incarnation;
-            result = await this.probe(rebuilt.adapter);
+            result = await this.probe(rebuilt.adapter, this.usageContext(fresh, usageGen));
           } catch (err) {
             if (err instanceof UnprocessableEntityException) throw err;
             const kind = err instanceof ProviderError ? err.kind : 'unavailable';
@@ -916,9 +1186,9 @@ export class ProvidersService {
    * `testConnection()` — the model LISTING for every provider, subscription presets
    * included (add-live-subscription-models), so it names no model and an upstream
    * retirement can never fail it. */
-  private async probe(adapter: ProviderAdapter): Promise<ConnectionResult> {
+  private async probe(adapter: ProviderAdapter, ctx?: CallContext): Promise<ConnectionResult> {
     try {
-      return await adapter.testConnection();
+      return await adapter.testConnection(ctx);
     } catch (err) {
       const kind = err instanceof ProviderError ? err.kind : 'unavailable';
       return { ok: false, kind, message: fixedMessage(kind) };
@@ -957,9 +1227,18 @@ export class ProvidersService {
   async syncModels(
     principal: Principal,
     id: string,
-    opts: { readonly recordHealth?: boolean; readonly signal?: AbortSignal } = {},
+    opts: {
+      readonly recordHealth?: boolean;
+      /** Capture plan usage from the listing's headers (default true). The scheduled catalog
+       * refresh passes false: only traffic and attended actions capture. */
+      readonly capturePlanUsage?: boolean;
+      readonly signal?: AbortSignal;
+    } = {},
   ): Promise<ActionResult> {
     const recordHealth = opts.recordHealth ?? true;
+    const capturePlanUsage = opts.capturePlanUsage ?? true;
+    // Read BEFORE the row load (design D5).
+    const usageGen = this.usageGeneration(id);
     // Read LIVE each time (a call, so no stale narrowing): the abort can land at any
     // point — during the listing, or while the rows are being written.
     const aborted = (): boolean => opts.signal?.aborted === true;
@@ -973,8 +1252,13 @@ export class ProvidersService {
     try {
       const built = await this.buildAdapter(principal, provider);
       listedWith = built.incarnation;
+      const usageCtx = capturePlanUsage ? this.usageContext(provider, usageGen) : undefined;
+      const listCtx: CallContext = {
+        ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+        ...(usageCtx ?? {}),
+      };
       models = await built.adapter.listModels(
-        opts.signal !== undefined ? { signal: opts.signal } : undefined,
+        Object.keys(listCtx).length > 0 ? listCtx : undefined,
       );
       // A caller that stopped (the scheduled refresh on shutdown) writes nothing.
       if (aborted()) throw new CallCancelledError();
@@ -1117,6 +1401,7 @@ export class ProvidersService {
   refreshCatalog(principal: Principal, id: string, signal?: AbortSignal): Promise<ActionResult> {
     return this.syncModels(principal, id, {
       recordHealth: false,
+      capturePlanUsage: false,
       ...(signal !== undefined ? { signal } : {}),
     });
   }

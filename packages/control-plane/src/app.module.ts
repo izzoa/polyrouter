@@ -30,6 +30,7 @@ import { ProxyModule } from './proxy/proxy.module';
 import { RecordingModule } from './recording/recording.module';
 import { RedisModule } from './redis/redis.module';
 import { RoutingConfigModule } from './routing-config/routing-config.module';
+import { SubscriptionPresetsModule } from './subscription-presets/subscription-presets.module';
 
 @Module({
   imports: [
@@ -38,6 +39,7 @@ import { RoutingConfigModule } from './routing-config/routing-config.module';
     AuthModule,
     DataPlaneModule,
     ProvidersModule,
+    SubscriptionPresetsModule,
     VariantClassificationModule,
     PricingModule,
     RoutingConfigModule,

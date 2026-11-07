@@ -123,6 +123,11 @@ export interface ProviderDto {
   hasCredential: boolean;
   /** Subscription-OAuth display/state metadata (non-secret; add-subscription-oauth). */
   oauthPreset: string | null;
+  /** add-key-subscription-presets: the key preset this row was connected from (a non-secret
+   * marker, never the key), or null. Separate from `oauthPreset` on purpose: a key-preset
+   * row is never OAuth-connected, so it has no token line and no Reconnect. Optional here,
+   * like `autoPruneUnlisted`, so older test doubles still type-check; absent reads as null. */
+  keyPreset?: string | null;
   credentialExpiresAt: string | null;
   credentialError: string | null;
   /** Upstream patience overrides (fix-long-call-timeouts); null = inherit. */
@@ -170,6 +175,39 @@ export interface OauthPresetDto {
   displayName: string;
   /** The client identity the preset declares, or null/absent when it declares none. */
   clientIdentity?: ClientIdentityView | null;
+}
+
+/** One region of an offered key preset: display data only, the host and never a full URL. */
+export interface KeyPresetRegionDto {
+  id: string;
+  label: string;
+  host: string;
+  /** The provider currently refuses polyrouter's own identity: imitation must be on in Edit. */
+  imitationRequired: boolean;
+}
+
+/** An enabled key-subscription preset (server-driven card list; add-key-subscription-presets).
+ * Non-secret display data: no credential, no endpoint URL, no identity value. */
+export interface KeyPresetDto {
+  id: string;
+  displayName: string;
+  regions: KeyPresetRegionDto[];
+  /** A soft prefix hint, advisory only: a caution, never a rejection. */
+  keyHint: { prefix: string | null; note: string } | null;
+  /** The EFFECTIVE level (`high` whenever an offered region needs imitation). */
+  termsRisk: 'low' | 'medium' | 'high';
+  riskCopy: string;
+  termsUrl: string;
+  requiresAcknowledgement: boolean;
+}
+
+/** The key-preset connect body. `credential` is key material: sent once, never stored. */
+export interface KeyPresetConnectInput {
+  preset: string;
+  region: string;
+  name?: string;
+  credential: string;
+  acknowledgeTermsRisk?: boolean;
 }
 
 export interface OauthStartResult {
@@ -1128,6 +1166,10 @@ export interface ApiClient {
   /** `pasted` is credential material — sent once, never stored client-side. */
   oauthComplete(sessionId: string, pasted: string): Promise<ProviderDto>;
   oauthReauthorize(providerId: string): Promise<OauthStartResult>;
+  /** The enabled key presets (add-key-subscription-presets). */
+  listKeyPresets(): Promise<KeyPresetDto[]>;
+  /** `credential` is key material — sent once, never stored client-side. */
+  keyPresetConnect(body: KeyPresetConnectInput): Promise<ProviderDto>;
   deleteProvider(id: string): Promise<{ deleted: boolean }>;
   testProvider(id: string): Promise<ActionResult>;
   syncModels(id: string): Promise<ActionResult>;
@@ -1340,6 +1382,9 @@ export const realClient: ApiClient = {
       `${API_BASE}/providers/oauth/reauthorize/${encodeURIComponent(providerId)}`,
       jsonInit('POST', {}),
     ),
+  listKeyPresets: () => http<KeyPresetDto[]>(`${API_BASE}/providers/key-presets/available`),
+  keyPresetConnect: (body) =>
+    http<ProviderDto>(`${API_BASE}/providers/key-presets/connect`, jsonInit('POST', body)),
   deleteProvider: (id) =>
     http<{ deleted: boolean }>(`${API_BASE}/providers/${encodeURIComponent(id)}`, {
       method: 'DELETE',

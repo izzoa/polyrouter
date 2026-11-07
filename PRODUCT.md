@@ -24,11 +24,13 @@ crowd out the one-person path.
 
 polyrouter is a self-hostable LLM router and gateway. It sits between a user's AI agents and
 their LLM providers.
+
 - Agents use one endpoint and one key.
 - polyrouter picks the model, falls back when a provider fails, and enforces budgets.
 - It records each request's cost, token counts and latency.
 
 Success means the operator can do four things:
+
 - Point any agent at a single base URL and stop managing provider keys per tool.
 - Trust that a named model always works.
 - Know what every request cost, and why it went where it did.
@@ -65,8 +67,9 @@ neighboring products by mechanism, not by a feature list:
    - BYOK API keys.
    - Custom OpenAI- or Anthropic-compatible endpoints.
    - Local models over loopback. This is allowed only in self-host mode.
-   - Flat-rate consumer subscriptions (ChatGPT Plus, Claude Max). These carry a visible
-     terms-of-service risk warning.
+   - Flat-rate consumer subscriptions (ChatGPT Plus, Claude Max) and coding plans
+     connected with an API key (OpenCode Go, MiniMax M Plan, Kimi Code, Z.ai GLM Coding
+     Plan). These carry a visible terms-of-service risk warning, worded per plan.
 4. **Connect agents.** The operator creates an agent key (`poly_…`, shown once) and points
    the client's base URL and key at the instance. Clients include SDKs, `curl`, and
    terminal agents such as OpenClaw and Hermes. Guide: `docs/connect-an-agent.md`.
@@ -89,6 +92,7 @@ Both stream. Cross-protocol requests are translated. A batch API is served at
 `/v1/batches`.
 
 **Routing.**
+
 - Explicit model ids.
 - Tiers via the `x-polyrouter-tier` header.
 - Fallback chains.
@@ -99,6 +103,7 @@ Both stream. Cross-protocol requests are translated. A batch API is served at
 - Strong and cheap band targets, and self-calibration.
 
 **Spend.**
+
 - Budgets cover a day, week or month, either globally or per agent.
 - A budget either blocks requests or only alerts.
 - Budgets are enforced with atomic Redis counters across instances.
@@ -106,6 +111,7 @@ Both stream. Cross-protocol requests are translated. A batch API is served at
 
 **Non-negotiable invariants.** The 12 invariants in `CLAUDE.md` bind every design and
 product decision, including:
+
 - Explicit routing is the reliable core.
 - Cost is immutable.
 - Data is metadata-only.
@@ -119,6 +125,7 @@ product decision, including:
 spend basis (cash/notional).
 
 **Open decisions.**
+
 - **Hosted polyrouter (planned, undecided).** A hosted offering is planned, and `MODE=cloud`
   already exists in code, but its pricing, tenancy model and launch are undecided. The role
   of polyrouter.app, which the README links, is also undecided. Until this is decided,
@@ -179,6 +186,7 @@ must publish their modified source.
 
 **Required standard: WCAG 2.2 AA** for the dashboard. Current practice already meets parts
 of it:
+
 - Hit targets of at least 24px at every width (2.5.8).
 - Hit targets of 44px on coarse pointers and narrow viewports.
 - Keyboard-operable controls and overlays with focus return.

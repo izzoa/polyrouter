@@ -268,6 +268,9 @@ function ProviderCard(props: { p: Provider }) {
   const view = () =>
     providerHealthView(props.p, Date.now(), state.reconnectChecking.includes(props.p.id));
   const reconnect = (): void => void app.startOauthReauthorize(props.p);
+  // add-key-subscription-presets: the key preset this row came from, from the loaded offered
+  // list. Absent (a since-disabled preset, or a failed load) falls back to the generic wording.
+  const keyPresetOf = () => state.kp.presets.find((x) => x.id === props.p.keyPreset);
 
   /** Delete asks first, in the shared destructive confirmation (adopt-red-destructive-actions
    * D6 / D7). The card, and with it this trigger, goes on success (and the card list with
@@ -361,7 +364,21 @@ function ProviderCard(props: { p: Provider }) {
             onClick: () => app.openModal('newProvider'),
           }}
         >
-          Reusing a flat-rate subscription may violate the provider’s ToS.
+          <Show
+            when={keyPresetOf()}
+            fallback={
+              <>
+                Reusing a flat-rate subscription may violate the provider’s ToS.
+                {props.p.keyPreset !== null ? ` (Preset: ${props.p.keyPreset}.)` : ''}
+              </>
+            }
+          >
+            {(preset) => (
+              <>
+                {preset().displayName}: {preset().termsRisk} terms risk. {preset().riskCopy}
+              </>
+            )}
+          </Show>
         </Notice>
       </Show>
 
@@ -575,6 +592,8 @@ export function Providers() {
   // becomes visible again — never only at login.
   onMount(() => {
     void app.loadProviders();
+    // The preset list names each key-preset card's terms risk.
+    void app.loadKeyPresets();
     const onVisible = (): void => {
       if (document.visibilityState === 'visible') void app.loadProviders();
     };

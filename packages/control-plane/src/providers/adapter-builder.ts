@@ -9,6 +9,7 @@ import {
   type ProviderRow,
 } from '@polyrouter/shared/server';
 import { SubscriptionOauthService } from '../subscription-oauth/subscription-oauth.service';
+import { keyPresetForRow } from '../subscription-presets/key-presets';
 import { identityHeaders } from './client-identity';
 import { providerMaxTokensQuirks, type MaxTokensSpelling } from './providers.dto';
 
@@ -121,6 +122,11 @@ export class ProviderAdapterBuilder {
     // resolved (a key preset's plain api_key path included). The key is omitted, not
     // set to undefined, when nothing is declared or the switch is off.
     const identity = identityHeaders(provider, this.oauth.availableClientIdentity(provider), 'api');
+    // A key preset's trusted absolute listing URL (add-key-subscription-presets, design D6):
+    // read from the BUNDLED constants through the coherence gate, so a drifted `base_url`, an
+    // unknown marker or a non-subscription row gets none, and no preset value can reach a host
+    // the preset does not pin. A plain import — no constructor argument.
+    const modelsUrl = keyPresetForRow(provider)?.region.modelsUrl;
     const common = {
       protocol: provider.protocol as ProviderProtocol,
       baseUrl: provider.baseUrl,
@@ -130,6 +136,7 @@ export class ProviderAdapterBuilder {
       defaultMaxOutputTokens: opts.defaultMaxOutputTokens,
       ...(opts.bounds ?? {}),
       ...(identity !== undefined ? { extraHeaders: identity } : {}),
+      ...(modelsUrl !== undefined ? { modelsUrl } : {}),
     };
     // Subscription providers resolve through the subscription-oauth seam: it unwraps
     // a plain paste, or refreshes an OAuth token (pre-request only — invariant 3)

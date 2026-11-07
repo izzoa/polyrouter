@@ -265,6 +265,15 @@ export const providers = pgTable(
     oauthPreset: text('oauth_preset'),
     credentialExpiresAt: timestamp('credential_expires_at', { withTimezone: true }),
     credentialError: text('credential_error'),
+    // add-key-subscription-presets: the NON-SECRET marker naming the bundled API-key preset
+    // (OpenCode Go, MiniMax M Plan, Kimi Code, Z.ai GLM Coding Plan) a row was connected
+    // from. Deliberately SEPARATE from `oauth_preset`, which means "OAuth-connected" at
+    // more than a dozen sites (refresh sweep, 401 forced refresh, Test repair, reconnect,
+    // token line): reusing it would put a key row into an OAuth lifecycle at every site
+    // missed (design D2). Set only by the key-preset connect path; the generic create and
+    // update DTOs never accept it. No CHECK on its VALUES — registry ids may change across
+    // releases and a value CHECK would turn a rename into a failing migration.
+    keyPreset: text('key_preset'),
     // Provider health (add-provider-health-signals). TWO non-secret records, each
     // with one ordering authority, so a stale observation can never overwrite a
     // newer one. The CHECK record is `status` plus its reason/source/time — written
@@ -311,6 +320,13 @@ export const providers = pgTable(
     check(
       'provider_idle_timeout_range',
       sql`${t.idleTimeoutMs} IS NULL OR (${t.idleTimeoutMs} >= 1000 AND ${t.idleTimeoutMs} <= 3600000)`,
+    ),
+    // add-key-subscription-presets: a row is OAuth-connected OR key-preset-connected,
+    // never both; and only a subscription row can carry a key preset.
+    check('provider_key_preset_exclusive', sql`${t.keyPreset} IS NULL OR ${t.oauthPreset} IS NULL`),
+    check(
+      'provider_key_preset_subscription',
+      sql`${t.keyPreset} IS NULL OR ${t.kind} = 'subscription'`,
     ),
   ],
 );

@@ -27,6 +27,14 @@ import {
 } from './subscription-oauth.service';
 import { TokenEndpointError, fetchTokenSet, type TokenSet } from './oauth-client';
 import type { OauthPreset } from './presets';
+import {
+  KIMI_CODE_PRESET,
+  MINIMAX_M_PLAN_PRESET,
+  OPENCODE_GO_PRESET,
+  ZAI_CODING_PLAN_PRESET,
+  type KeyPreset,
+  type KeyPresetRegion,
+} from '../subscription-presets/key-presets';
 
 const KEY = 'b'.repeat(64);
 const principal: Principal = userPrincipal('u1');
@@ -332,6 +340,26 @@ describe('SubscriptionOauthService.resolveCredential', () => {
       authScheme: 'api_key',
       envelope: row.encryptedCredentials,
     });
+  });
+
+  // add-key-subscription-presets (task 4.3): a key-preset row is the same plain paste, marked
+  // `key_preset`; the REAL service resolves it as an `api_key` credential with no IdP call.
+  it('a key-preset row resolves its plain key as api_key with no IdP call', async () => {
+    const h = await harness();
+    const row = providerRow({
+      oauthPreset: null,
+      keyPreset: 'kimi-code',
+      protocol: 'openai_compatible',
+      baseUrl: 'https://api.kimi.com/coding/v1/',
+      encryptedCredentials: encryptSecret(serializePlainCredential('sk-kimi-paste'), KEY),
+    });
+    h.rows.set(row.id, row);
+    expect(await h.svc.resolveCredential(principal, row)).toEqual({
+      credential: 'sk-kimi-paste',
+      authScheme: 'api_key',
+      envelope: row.encryptedCredentials,
+    });
+    expect(h.fetches).toHaveLength(0);
   });
 
   it('near-expiry: refreshes once, persists rotated tokens + expiry, clears error', async () => {
@@ -957,6 +985,111 @@ describe('availableClientIdentity / identityBindingFor (allow-preset-client-iden
     expect(h.svc.availableClientIdentity(identityRow({ oauthPreset: null }))).toBeNull();
     expect(h.svc.identityBindingFor(identityRow({ oauthPreset: null }))).toBeUndefined();
     expect(h.svc.availableClientIdentity(identityRow({ kind: 'api_key' }))).toBeNull();
+  });
+});
+
+describe('key-preset identity binding (add-key-subscription-presets task 7.2)', () => {
+  // The REAL service: `identityBindingFor` resolves a key-preset row through the plain
+  // `keyPresetForRow` gate over the bundled constants (every region ships disabled; the
+  // gate ignores `enabled`).
+  const keyRow = (
+    preset: KeyPreset,
+    region: KeyPresetRegion,
+    over: Partial<ProviderRow> = {},
+  ): ProviderRow =>
+    providerRow({
+      id: `prov-k-${preset.id}-${region.id}`,
+      kind: 'subscription',
+      protocol: region.protocol,
+      baseUrl: region.baseUrl,
+      oauthPreset: null,
+      keyPreset: preset.id,
+      ...over,
+    });
+  const declaring = [KIMI_CODE_PRESET, ZAI_CODING_PLAN_PRESET];
+  const declaringRegions = declaring.flatMap((preset) =>
+    preset.regions.map((region) => ({ preset, region })),
+  );
+
+  it('returns each Kimi and Z.ai region its own declaration and pin', async () => {
+    const h = await harness();
+    expect(declaringRegions).toHaveLength(4);
+    for (const { preset, region } of declaringRegions) {
+      expect(h.svc.identityBindingFor(keyRow(preset, region))).toEqual({
+        identity: preset.clientIdentity,
+        pin: { baseUrl: region.baseUrl, protocol: region.protocol },
+      });
+    }
+  });
+
+  it('makes the Claude Code declaration available on either region pin', async () => {
+    const h = await harness();
+    for (const { preset, region } of declaringRegions) {
+      const available = h.svc.availableClientIdentity(keyRow(preset, region));
+      expect(available).toBe(preset.clientIdentity);
+      expect(available?.label).toBe('Claude Code');
+    }
+  });
+
+  it('is null for a drifted base_url or protocol (and has no binding at all)', async () => {
+    const h = await harness();
+    for (const { preset, region } of declaringRegions) {
+      for (const drift of [
+        { baseUrl: `${region.baseUrl}/` },
+        { baseUrl: 'https://evil.example/coding/v1' },
+        { baseUrl: null },
+        { protocol: 'anthropic_compatible' },
+      ] as Array<Partial<ProviderRow>>) {
+        const row = keyRow(preset, region, drift);
+        expect(h.svc.availableClientIdentity(row)).toBeNull();
+        expect(h.svc.identityBindingFor(row)).toBeUndefined();
+      }
+    }
+  });
+
+  it('is null for a non-subscription kind', async () => {
+    const h = await harness();
+    for (const { preset, region } of declaringRegions) {
+      for (const kind of ['api_key', 'custom', 'local']) {
+        expect(h.svc.availableClientIdentity(keyRow(preset, region, { kind }))).toBeNull();
+      }
+    }
+  });
+
+  it('is null for an OpenCode Go or MiniMax row: the preset declares none', async () => {
+    const h = await harness();
+    for (const preset of [OPENCODE_GO_PRESET, MINIMAX_M_PLAN_PRESET]) {
+      for (const region of preset.regions) {
+        const row = keyRow(preset, region);
+        expect(h.svc.availableClientIdentity(row)).toBeNull();
+        // The gate matched, so a binding exists, but it carries no declaration.
+        expect(h.svc.identityBindingFor(row)).toEqual({
+          identity: undefined,
+          pin: { baseUrl: region.baseUrl, protocol: region.protocol },
+        });
+      }
+    }
+  });
+
+  it('is null for a row with no marker, an unknown marker, or an OAuth preset id as the marker', async () => {
+    const h = await harness();
+    const region = KIMI_CODE_PRESET.regions[0]!;
+    for (const keyPreset of [null, 'not-a-preset', 'claude', 'stub-identity']) {
+      const row = keyRow(KIMI_CODE_PRESET, region, { keyPreset });
+      expect(h.svc.availableClientIdentity(row)).toBeNull();
+      expect(h.svc.identityBindingFor(row)).toBeUndefined();
+    }
+  });
+
+  it('the oauthPreset branch is unchanged and wins for an OAuth row', async () => {
+    const h = await harness();
+    expect(h.svc.identityBindingFor(providerRow())?.pin).toEqual({
+      baseUrl: 'https://api.anthropic.com',
+      protocol: 'anthropic_compatible',
+    });
+    // A key-preset row never resolves an OAuth preset.
+    const region = KIMI_CODE_PRESET.regions[0]!;
+    expect(h.svc.presetFor(keyRow(KIMI_CODE_PRESET, region))).toBeUndefined();
   });
 });
 

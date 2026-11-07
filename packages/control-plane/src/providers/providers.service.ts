@@ -10,8 +10,6 @@ import {
 import {
   PERSISTENCE_FACILITIES,
   PERSISTENCE_PORT,
-  SsrfError,
-  assertUrlSafe,
   credentialLockKey,
   deriveModelKey,
   deriveNativeFamilyKey,
@@ -76,6 +74,21 @@ import {
 } from './adapter-builder';
 import { SubscriptionOauthService } from '../subscription-oauth/subscription-oauth.service';
 import { clientIdentityView } from './client-identity';
+import { normalizeAndGateBaseUrl } from './base-url-gate';
+
+/** The fixed 422 for an endpoint edit on a key-preset row (add-key-subscription-presets). */
+export const KEY_PRESET_PINNED_MESSAGE =
+  'this provider is pinned by its preset — delete it and reconnect to change its endpoint';
+
+/** `new URL(x).href`, or the raw string when it does not parse (so it never equals a stored,
+ * canonical base_url). */
+function canonicalHref(raw: string): string {
+  try {
+    return new URL(raw).href;
+  } catch {
+    return raw;
+  }
+}
 
 export type ProviderAdapterFactory = typeof createProviderAdapter;
 export const PROVIDER_ADAPTER_FACTORY = 'polyrouter:provider-adapter-factory';
@@ -123,6 +136,10 @@ export interface SafeProvider {
   // Subscription-OAuth display/state metadata (add-subscription-oauth) — NON-SECRET;
   // never token material. `credentialError` is the durable 'reauthorize_required' state.
   oauthPreset: string | null;
+  /** add-key-subscription-presets: the key-preset marker (display only — NON-SECRET). Server-
+   * set at connect and never accepted on create/update; the coherence gate
+   * (`keyPresetForRow`) decides whether it still binds a preset to this row. */
+  keyPreset: string | null;
   credentialExpiresAt: Date | null;
   credentialError: string | null;
   /** Upstream patience overrides (fix-long-call-timeouts); null = inherit. */
@@ -295,6 +312,7 @@ export function toSafe(p: ProviderRow, clientIdentity: { label: string } | null)
     maxTokensSpelling: p.maxTokensSpelling as MaxTokensSpelling,
     hasCredential: p.encryptedCredentials !== null,
     oauthPreset: p.oauthPreset,
+    keyPreset: p.keyPreset,
     credentialExpiresAt: p.credentialExpiresAt,
     credentialError: p.credentialError,
     firstByteTimeoutMs: p.firstByteTimeoutMs,
@@ -575,6 +593,23 @@ export class ProvidersService {
   async update(principal: Principal, id: string, dto: UpdateProviderDto): Promise<SafeProvider> {
     const existing = await this.db.providers.findById(principal, id);
     if (!existing) throw new NotFoundException();
+
+    // Key-preset pin (add-key-subscription-presets, design D7): while `key_preset` is set,
+    // the pinned endpoint, protocol and kind never change — delete and reconnect instead.
+    // Judged on the CANONICAL `new URL().href` form of a supplied base_url (case and
+    // default-port respellings of the pin are not drift; a trailing-slash variant IS drift
+    // and gets the 422, because `keyPresetForRow` matches base_url exactly) and BEFORE the
+    // SSRF gate, so a drifted PATCH gets the one fixed message and never costs a DNS lookup. Name, timeouts, max-tokens spelling and
+    // auto-prune stay editable, and a supplied credential rotates or clears the key as plain
+    // and keeps the marker. The OAuth conversion below never runs for such a row: the
+    // `provider_key_preset_exclusive` CHECK means `oauthPreset` is null here.
+    if (existing.keyPreset !== null) {
+      const drifts =
+        (dto.baseUrl !== undefined && canonicalHref(dto.baseUrl) !== existing.baseUrl) ||
+        (dto.protocol !== undefined && dto.protocol !== existing.protocol) ||
+        (dto.kind !== undefined && dto.kind !== existing.kind);
+      if (drifts) throw new UnprocessableEntityException(KEY_PRESET_PINNED_MESSAGE);
+    }
 
     const nextKind = (dto.kind ?? existing.kind) as ProviderKind;
     const nextBaseUrl = dto.baseUrl ?? existing.baseUrl;
@@ -1195,33 +1230,9 @@ export class ProvidersService {
     }
   }
 
-  /** Reject userinfo/query/fragment, SSRF-gate the address with the per-kind
-   * context, reject local outside self-host, and return the normalized URL. */
-  private async normalizeAndGateBaseUrl(kind: ProviderKind, baseUrl: string): Promise<string> {
-    let url: URL;
-    try {
-      url = new URL(baseUrl);
-    } catch {
-      throw new UnprocessableEntityException('invalid base_url');
-    }
-    if (url.username !== '' || url.password !== '') {
-      throw new UnprocessableEntityException('base_url must not contain embedded credentials');
-    }
-    if (url.search !== '' || url.hash !== '') {
-      throw new UnprocessableEntityException('base_url must not contain a query or fragment');
-    }
-    if (kind === 'local' && this.mode !== 'selfhosted') {
-      throw new UnprocessableEntityException('local providers require MODE=selfhosted');
-    }
-    try {
-      await assertUrlSafe(url.href, { context: { mode: this.mode, providerKind: kind } });
-    } catch (err) {
-      if (err instanceof SsrfError) {
-        throw new UnprocessableEntityException('base_url failed SSRF validation');
-      }
-      throw err;
-    }
-    return url.href;
+  /** The shared gate (`base-url-gate.ts`), bound to this instance's deployment mode. */
+  private normalizeAndGateBaseUrl(kind: ProviderKind, baseUrl: string): Promise<string> {
+    return normalizeAndGateBaseUrl(this.mode, kind, baseUrl);
   }
 
   private sanitizeConnection(result: ConnectionResult): ActionResult {

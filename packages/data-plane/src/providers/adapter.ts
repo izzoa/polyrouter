@@ -54,6 +54,11 @@ export interface ProviderConfig {
    * TRUSTED envelope data threaded by credential resolution, never user input.
    * Emitted as the `chatgpt-account-id` header; required for `openai_responses`. */
   readonly oauthAccountId?: string;
+  /** An absolute model-listing URL that replaces `baseUrl` + the protocol's models path for
+   * `listModels()` / `testConnection()` only (add-key-subscription-presets). TRUSTED bundled
+   * preset data threaded by the adapter builder, never user input; chat and streaming are
+   * unaffected, and the guarded transport still SSRF-checks it at connect time. */
+  readonly modelsUrl?: string;
   /** Anthropic requires max_tokens; used when the IR omits maxOutputTokens. */
   readonly defaultMaxOutputTokens?: number;
   /** Abort if no response headers / first stream event arrive in time. */

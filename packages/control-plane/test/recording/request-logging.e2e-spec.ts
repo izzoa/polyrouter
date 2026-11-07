@@ -10,14 +10,18 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import { loadConfig } from '@polyrouter/shared';
 import {
   PERSISTENCE_PORT,
+  encryptSecret,
+  serializePlainCredential,
   userPrincipal,
   type PersistencePort,
   type Principal,
+  type ProviderRow,
 } from '@polyrouter/shared/server';
 import {
   CircuitBreaker,
   InMemoryBreakerStore,
   createProviderAdapter,
+  type ProviderConfig,
 } from '@polyrouter/data-plane';
 import { startStubUpstream } from '../proxy/stub-upstream';
 import request from 'supertest';
@@ -64,8 +68,31 @@ import '../../src/database/database.config';
 import '../../src/auth/auth.config';
 import '../../src/pricing/pricing.config';
 import { SubscriptionOauthService } from '../../src/subscription-oauth/subscription-oauth.service';
+import { BUDGET_READER, type BudgetReader } from '../../src/database/budget.reader';
+import {
+  KIMI_CODE_PRESET,
+  OPENCODE_GO_PRESET,
+  ZAI_CODING_PLAN_PRESET,
+  keyPresetForRow,
+} from '../../src/subscription-presets/key-presets';
 
 const HMAC = 'a'.repeat(64);
+
+// add-key-subscription-presets (task 8.2): the adapter factory every `subscription` provider is
+// built through. A key-preset row is pinned to a real provider host, so the factory records the
+// config the proxy built (proving the pinned endpoint was dispatched) and then serves it from
+// the loopback stub: no request ever leaves the machine. Every other provider is built for real.
+const subscriptionConfigs: ProviderConfig[] = [];
+let stubUrl = '';
+const stubAdapterFactory: typeof createProviderAdapter = (config, deps) => {
+  if (config.kind !== 'subscription') return createProviderAdapter(config, deps);
+  subscriptionConfigs.push(config);
+  return createProviderAdapter(
+    { ...config, baseUrl: stubUrl, kind: 'local', mode: 'selfhosted', credential: '' },
+    deps,
+  );
+};
+const PLAIN_KEY = 'sk-keypreset-e2e';
 
 describe('request-logging e2e', () => {
   let app: INestApplication;
@@ -94,6 +121,7 @@ describe('request-logging e2e', () => {
     // bound is 1.5s, not tighter, so a loaded machine cannot time out an ordinary call.
     process.env['PROXY_FIRST_EVENT_TIMEOUT_MS'] = '1500';
     stub = await startStubUpstream();
+    stubUrl = stub.url;
 
     const databaseUrl = loadConfig<{ DATABASE_URL: string }>().DATABASE_URL;
     pool = new Pool({ connectionString: databaseUrl, max: 2 });
@@ -123,7 +151,16 @@ describe('request-logging e2e', () => {
           // no OAuth envelopes, so a call here is a wiring bug worth failing loudly.
           provide: SubscriptionOauthService,
           useValue: {
-            resolveCredential: () => Promise.reject(new Error('oauth seam not stubbed')),
+            // Only a key-preset row (a plain pasted key) resolves here; anything else is a
+            // wiring bug worth failing loudly.
+            resolveCredential: (_principal: Principal, row: ProviderRow) =>
+              row.keyPreset !== null
+                ? Promise.resolve({
+                    credential: PLAIN_KEY,
+                    authScheme: 'api_key' as const,
+                    envelope: row.encryptedCredentials,
+                  })
+                : Promise.reject(new Error('oauth seam not stubbed')),
             availableClientIdentity: () => null,
           },
         },
@@ -148,7 +185,7 @@ describe('request-logging e2e', () => {
           useValue: { checkBlocked: () => Promise.resolve(null), notifyBlocked: () => undefined },
         }, // #16 budgets: allow-all (enforcement asserted in the budgets e2e) // #15b notifications not asserted here
         { provide: PROXY_RUNTIME, useFactory: loadProxyRuntime },
-        { provide: PROXY_ADAPTER_FACTORY, useValue: createProviderAdapter },
+        { provide: PROXY_ADAPTER_FACTORY, useValue: stubAdapterFactory },
         { provide: PROXY_BREAKER, useValue: new CircuitBreaker(new InMemoryBreakerStore()) },
         { provide: ROUTING_CONFIG, useFactory: loadRoutingConfig },
         {
@@ -1322,6 +1359,174 @@ describe('request-logging e2e', () => {
         outputPriceSnapshot: 6,
         priceVersionId: recorded.priceVersionId,
       });
+    });
+  });
+
+  // add-key-subscription-presets (task 8.2): a key preset adds no host mapping, so its cost is
+  // whatever the EXISTING host-to-family map and catalog say, snapshotted immutably under
+  // provider_kind='subscription'. Real requests through the real proxy, builder, recorder and
+  // writer; the adapter factory above serves them from the stub, so nothing reaches a provider.
+  // (The builder gates each pinned host with a DNS-only SSRF resolve, as the connect suite does.)
+  describe('key-preset cost (add-key-subscription-presets)', () => {
+    const PRICED = 'zai:glm-kp-priced';
+    const range = (): { from: Date; to: Date } => ({
+      from: new Date(0),
+      to: new Date(Date.now() + 3_600_000),
+    });
+    type KeyRow = Awaited<ReturnType<PersistencePort['requestLogs']['list']>>[number];
+
+    async function seedKeyPresetRoute(
+      tierKey: string,
+      preset: typeof ZAI_CODING_PLAN_PRESET,
+      externalModelId: string,
+    ): Promise<ProviderRow> {
+      const region = preset.regions[0]!;
+      const row = await port.providers.insert(principal, {
+        name: `${preset.id}-${tierKey}`,
+        kind: 'subscription',
+        protocol: region.protocol,
+        baseUrl: region.baseUrl,
+        keyPreset: preset.id,
+        encryptedCredentials: encryptSecret(serializePlainCredential(PLAIN_KEY), 'c'.repeat(64)),
+      });
+      // The fixture is a genuine key-preset row: the coherence gate matches it.
+      expect(keyPresetForRow(row)?.preset.id).toBe(preset.id);
+      const model = await port.models.createForProvider(principal, row.id, { externalModelId });
+      const tier = await port.tiers.insert(principal, { key: tierKey });
+      await port.routingEntries.replaceForTier(principal, tier.id, [model!.id]);
+      return row;
+    }
+    const send = (tierKey: string) =>
+      request(server)
+        .post('/v1/chat/completions')
+        .set('Authorization', `Bearer ${key}`)
+        .send({ model: tierKey, messages: [{ role: 'user', content: 'hi' }] });
+    const logFor = async (tierKey: string): Promise<KeyRow> => {
+      await writer.flush();
+      const rows = (await port.requestLogs.list(principal)).filter(
+        (r) => r.tierAssigned === tierKey,
+      );
+      expect(rows).toHaveLength(1);
+      return rows[0]!;
+    };
+    const spend = async (): Promise<{
+      cash: number;
+      notionalMicros: number;
+      cashMicros: number;
+      subscription: number;
+    }> => {
+      const summary = await port.analytics.summary(principal, range());
+      const reader = app.get<BudgetReader>(BUDGET_READER);
+      const r = range();
+      return {
+        cash: summary.spend,
+        subscription: summary.subscriptionSpend,
+        cashMicros: (await reader.spendMicrosFor(userId, null, r.from, r.to, 'cash')).micros,
+        notionalMicros: (await reader.spendMicrosFor(userId, null, r.from, r.to, 'notional'))
+          .micros,
+      };
+    };
+
+    beforeAll(async () => {
+      // The catalog is GLOBAL: clear first so an aborted earlier run cannot hijack the key.
+      await pool.query(`DELETE FROM model_price WHERE model_key = $1`, [PRICED]);
+      await pricing.override(PRICED, { inputPricePer1m: 100, outputPricePer1m: 300 }, new Date());
+    });
+    afterAll(async () => {
+      await pool.query(`DELETE FROM model_price WHERE model_key = $1`, [PRICED]);
+    });
+    beforeEach(() => {
+      subscriptionConfigs.length = 0;
+    });
+
+    it('a Z.ai key-preset request records snapshotted catalog prices as notional subscription cost, immutably', async () => {
+      await seedKeyPresetRoute('kp-zai-priced', ZAI_CODING_PLAN_PRESET, 'glm-kp-priced');
+      const before = await spend();
+      const res = await send('kp-zai-priced');
+      expect(res.status).toBe(200);
+      // The proxy dispatched the PINNED coding endpoint (the factory then served it locally),
+      // with no preset-declared identity (the switch is off) and no listing override.
+      expect(subscriptionConfigs.map((c) => c.baseUrl)).toEqual([
+        ZAI_CODING_PLAN_PRESET.regions[0]!.baseUrl,
+      ]);
+      expect('extraHeaders' in subscriptionConfigs[0]!).toBe(false);
+
+      const row = await logFor('kp-zai-priced');
+      expect(row).toMatchObject({
+        status: 'success',
+        providerKind: 'subscription',
+        priceSource: 'manual',
+        inputPriceSnapshot: 100,
+        outputPriceSnapshot: 300,
+      });
+      // The stub reports 3 prompt and 2 completion tokens: (3 x 100 + 2 x 300) / 1e6.
+      expect(row.cost).toBeCloseTo(0.0009, 9);
+
+      // Notional, never cash: out of the analytics spend and a cash budget, in the subscription
+      // component and a notional budget.
+      const after = await spend();
+      expect(after.cash - before.cash).toBeCloseTo(0, 9);
+      expect(after.cashMicros - before.cashMicros).toBe(0);
+      expect(after.subscription - before.subscription).toBeCloseTo(0.0009, 9);
+      expect(after.notionalMicros - before.notionalMicros).toBe(900);
+
+      // A later catalog change leaves the recorded row untouched.
+      await pricing.override(PRICED, { inputPricePer1m: 999, outputPricePer1m: 999 }, new Date());
+      const again = await port.requestLogs.findById(principal, row.id);
+      expect(again!.cost).toBe(row.cost);
+      expect(again!.inputPriceSnapshot).toBe(100);
+      expect(again!.outputPriceSnapshot).toBe(300);
+      expect(again!.priceSource).toBe('manual');
+      expect(again!.providerKind).toBe('subscription');
+      await pricing.override(PRICED, { inputPricePer1m: 100, outputPricePer1m: 300 }, new Date());
+    });
+
+    it('a Z.ai key-preset model with no zai: catalog row records unknown cost and borrows nothing', async () => {
+      await seedKeyPresetRoute('kp-zai-unpriced', ZAI_CODING_PLAN_PRESET, 'glm-kp-unpriced');
+      const before = await spend();
+      expect((await send('kp-zai-unpriced')).status).toBe(200);
+      const row = await logFor('kp-zai-unpriced');
+      // The existing unknown signal: no cost, no provenance, no snapshot (resolveModelPrice null).
+      expect(row).toMatchObject({
+        status: 'success',
+        providerKind: 'subscription',
+        cost: null,
+        priceSource: null,
+        inputPriceSnapshot: null,
+        outputPriceSnapshot: null,
+      });
+      expect(row.inputTokens).toBeGreaterThan(0);
+      const after = await spend();
+      expect(after.subscription - before.subscription).toBeCloseTo(0, 9);
+      expect(after.notionalMicros - before.notionalMicros).toBe(0);
+    });
+
+    it('an OpenCode Go request records unknown cost, and no other host family lends a price', async () => {
+      // The decoy is the point: a `zai:` row for the SAME model id exists, and the opencode.ai
+      // host maps to no family, so nothing may be borrowed from it.
+      const row = await seedKeyPresetRoute('kp-ocg', OPENCODE_GO_PRESET, 'glm-kp-priced');
+      expect(row.baseUrl).toBe('https://opencode.ai/inference/go/openai/v1');
+      expect((await send('kp-ocg')).status).toBe(200);
+      expect(subscriptionConfigs.map((c) => c.baseUrl)).toEqual([row.baseUrl]);
+      // The preset's listing override rode the same build, and no identity (it declares none).
+      expect(subscriptionConfigs[0]!.modelsUrl).toBe('https://opencode.ai/inference/go/v1/models');
+      expect('extraHeaders' in subscriptionConfigs[0]!).toBe(false);
+      const log = await logFor('kp-ocg');
+      expect(log).toMatchObject({
+        status: 'success',
+        providerKind: 'subscription',
+        cost: null,
+        priceSource: null,
+        inputPriceSnapshot: null,
+        outputPriceSnapshot: null,
+      });
+    });
+
+    it('a Kimi key-preset request (an unmapped host) records unknown cost too', async () => {
+      await seedKeyPresetRoute('kp-kimi', KIMI_CODE_PRESET, 'glm-kp-priced');
+      expect((await send('kp-kimi')).status).toBe(200);
+      const log = await logFor('kp-kimi');
+      expect(log).toMatchObject({ providerKind: 'subscription', cost: null, priceSource: null });
     });
   });
 

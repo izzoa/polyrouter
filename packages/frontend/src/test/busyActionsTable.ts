@@ -121,6 +121,12 @@ export const BUSY_ACTIONS: readonly BusyRow[] = [
     why: 'the subscription sign-in Connect',
   },
   {
+    key: 'components/Modals.tsx app.connectKeyPreset',
+    cls: 'busy',
+    busyLabel: 'Connecting…',
+    why: 'the key-preset form’s Connect (add-key-subscription-presets): it stays until the connect settles',
+  },
+  {
     key: 'components/Modals.tsx app.createAgent',
     cls: 'busy',
     busyLabel: 'Minting…',
@@ -268,6 +274,11 @@ export const BUSY_ACTIONS: readonly BusyRow[] = [
     why: 'Remove on an unlisted batch twin: the store counts its impact, then opens the shared confirmation, whose commit is busy',
   },
   { key: 'pages/Providers.tsx app.loadProviders#1', cls: 'not-a-button', why: 'the mount load' },
+  {
+    key: 'pages/Providers.tsx app.loadKeyPresets',
+    cls: 'not-a-button',
+    why: 'the mount load of the offered key presets, which name each card’s terms risk',
+  },
   {
     key: 'pages/Providers.tsx app.loadProviders#2',
     cls: 'not-a-button',

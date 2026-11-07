@@ -357,6 +357,33 @@ const SCENARIOS: Record<string, Scenario> = {
     find: (h) => byLabel(within(h, '.modal-card'), 'Connect'),
     settled: 'gone',
   },
+  'components/Modals.tsx app.connectKeyPreset': {
+    page: 'providers',
+    prepare: async (h) => {
+      await openModal(h, 'newProvider');
+      h.store.setState('np', 'kind', 'sub');
+      h.store.setState('kp', 'presets', [
+        {
+          id: 'opencode-go',
+          displayName: 'OpenCode Go',
+          regions: [
+            { id: 'default', label: 'OpenCode Go', host: 'opencode.ai', imitationRequired: false },
+          ],
+          keyHint: null,
+          termsRisk: 'low',
+          riskCopy: 'Open to other coding agents.',
+          termsUrl: 'https://opencode.ai/v2/docs/console/go/',
+          requiresAcknowledgement: false,
+        },
+      ]);
+      await flush();
+      h.store.chooseKeyPreset('opencode-go');
+      h.store.setState('kp', 'key', 'plan-key');
+      await flush();
+    },
+    find: (h) => byLabel(within(h, '.modal-card'), 'Connect'),
+    settled: 'gone',
+  },
   'components/Modals.tsx app.createAgent': {
     page: 'agents',
     prepare: async (h) => {

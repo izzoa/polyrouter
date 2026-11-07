@@ -24,6 +24,8 @@ export const FIELD_IDS = [
   'f-np-firstbyte',
   'f-np-idle',
   'f-ow-paste',
+  'f-kp-key',
+  'f-kp-region',
   'f-bf-name',
   'f-bf-amount',
   'f-cf-name',
@@ -43,7 +45,7 @@ export type FieldId = (typeof FIELD_IDS)[number];
 
 /** The fields that live in a modal, cleared whenever a modal opens or closes. */
 export const MODAL_FIELD_IDS: readonly FieldId[] = FIELD_IDS.filter((id) =>
-  /^f-(na|np|ow|bf|cf)-/.test(id),
+  /^f-(na|np|ow|kp|bf|cf)-/.test(id),
 );
 
 /** A comma- or space-separated list, trimmed, empties dropped (the SMTP recipients and the
@@ -150,7 +152,11 @@ export const EMAIL_FORMAT = 'enter a full email address, like name@example.com';
  * read by the modal (which fields to show) and by the name's check (whether it applies). */
 export function onSubscriptionConnect(s: AppState): boolean {
   return (
-    s.np.kind === 'sub' && s.np.editingId === null && !s.ow.advanced && s.ow.presets.length > 0
+    s.np.kind === 'sub' &&
+    s.np.editingId === null &&
+    !s.ow.advanced &&
+    // A listed key preset (add-key-subscription-presets) opens the same path as an OAuth one.
+    s.ow.presets.length + s.kp.presets.length > 0
   );
 }
 
@@ -163,6 +169,14 @@ export const FIELD_CHECKS: Record<FieldId, (s: AppState) => string | null> = {
   'f-np-firstbyte': (s) => timeoutProblem(s.np.firstByteTimeoutS, 'First-byte patience'),
   'f-np-idle': (s) => timeoutProblem(s.np.idleTimeoutS, 'Idle patience'),
   'f-ow-paste': (s) => pasteProblem(s.ow.pasted),
+  'f-kp-key': (s) => (s.kp.key.trim() === '' ? 'Paste your plan key to connect' : null),
+  // Required only where the preset lists several regions; a sole region is the choice.
+  'f-kp-region': (s) => {
+    const preset = s.kp.presets.find((p) => p.id === s.kp.preset);
+    return preset !== undefined && preset.regions.length > 1 && s.kp.region === ''
+      ? 'Choose a region'
+      : null;
+  },
   'f-bf-name': (s) => (s.bf.name.trim() === '' ? 'Name is required' : null),
   'f-bf-amount': (s) => {
     const amount = Number(s.bf.amount);

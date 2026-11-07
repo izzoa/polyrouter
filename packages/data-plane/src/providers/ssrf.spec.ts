@@ -1,5 +1,6 @@
 import { SsrfError } from '@polyrouter/shared/server';
 import { createGuardedHttpClient } from './http';
+import { createOpenaiProviderAdapter } from './openai-adapter';
 
 const GET = { method: 'GET', headers: {} };
 
@@ -30,5 +31,47 @@ describe('guarded HTTP client — SSRF at connect time', () => {
     await expect(client('http://169.254.169.254/latest/meta-data', GET)).rejects.toBeInstanceOf(
       SsrfError,
     );
+  });
+});
+
+describe('adapter model-listing URL override — SSRF at connect time (add-key-subscription-presets)', () => {
+  it('an override that resolves to a blocked address fails typed and the credential never leaves the process', async () => {
+    const connects: string[] = [];
+    // The guarded client resolves through this seam; a private answer must stop the call
+    // before any socket is opened (an open would need the dispatcher, never reached).
+    const resolve = (host: string): Promise<string[]> => {
+      connects.push(host);
+      return Promise.resolve(['10.0.0.1']);
+    };
+    const guarded = createGuardedHttpClient({
+      mode: 'cloud',
+      providerKind: 'subscription',
+      resolve,
+    });
+    const sent: string[] = [];
+    const client: typeof guarded = (url, init) => {
+      sent.push(url);
+      return guarded(url, init);
+    };
+    const adapter = createOpenaiProviderAdapter(
+      {
+        protocol: 'openai_compatible',
+        baseUrl: 'https://public.example/openai/v1',
+        modelsUrl: 'https://internal-listing.example/v1/models',
+        credential: 'sk-never-leaves',
+        kind: 'subscription',
+        mode: 'cloud',
+      },
+      { httpClient: client },
+    );
+    await expect(adapter.listModels()).rejects.toBeInstanceOf(SsrfError);
+    const probe = await adapter.testConnection();
+    expect(probe).toMatchObject({ ok: false, kind: 'unavailable' });
+    expect(sent).toEqual([
+      'https://internal-listing.example/v1/models',
+      'https://internal-listing.example/v1/models',
+    ]);
+    // Only the override host was ever resolved, and it was refused: no byte was sent anywhere.
+    expect(new Set(connects)).toEqual(new Set(['internal-listing.example']));
   });
 });

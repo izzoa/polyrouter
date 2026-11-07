@@ -66,6 +66,7 @@ import {
   type CreateProviderInput,
   type UpdateProviderInput,
   type ModelPricingInput,
+  type KeyPresetDto,
   type OauthPresetDto,
   type ProviderDto,
   type AutoPerformance,
@@ -395,6 +396,10 @@ export interface AppState {
      * patch (credential rotate/clear still follows the SO-1 rules) and the modal
      * renders those fields read-only. */
     oauthPreset: string | null;
+    /** add-key-subscription-presets: set when editing a key-preset row. Endpoint, kind and
+     * protocol are pinned server-side, so the modal renders them read-only and the PATCH
+     * carries only the fields that changed. */
+    keyPreset: string | null;
     /** add-auto-prune-unlisted-models: the edit-only toggle, and the value the modal
      * opened with — the PATCH carries the field only when it changed. */
     autoPruneUnlisted: boolean;
@@ -433,6 +438,23 @@ export interface AppState {
      * that declares a client identity is picked; `optIn` is the (consented) switch, off until
      * the user confirms. Null = the preset list is showing. */
     identity: { preset: string; label: string; optIn: boolean } | null;
+  };
+
+  /** Key-subscription connect form (add-key-subscription-presets). `presets` is the server's
+   * offered list (empty = the failure fallback, cards hidden). `preset` is the chosen card, or
+   * null while the card list shows. `key` is CREDENTIAL MATERIAL: cleared after every submit
+   * attempt and with the modal, never persisted. The whole slice is in-memory only. */
+  kp: {
+    presets: KeyPresetDto[];
+    preset: string | null;
+    /** The chosen region id; '' until picked (a sole region is pre-selected on choosing). */
+    region: string;
+    name: string;
+    key: string;
+    /** The terms-risk acknowledgement; starts unchecked. */
+    ack: boolean;
+    busy: boolean;
+    error: string | null;
   };
 
   // Observe (analytics) slices — fetched from /api/analytics (#17). Each carries
@@ -603,7 +625,7 @@ export const PROVIDER_KINDS: ProviderKindDef[] = [
   {
     id: 'sub',
     name: 'Subscription',
-    desc: 'Reuse ChatGPT Plus / Claude Max quota (check ToS)',
+    desc: 'Reuse a flat-rate plan: ChatGPT, Claude or a coding plan (check ToS)',
     field: 'Session credential',
     ph: 'paste from provider',
   },
@@ -696,6 +718,7 @@ function toProvider(p: ProviderDto): Provider {
     status: asStatus(p.status),
     hasCredential: p.hasCredential,
     oauthPreset: p.oauthPreset,
+    keyPreset: p.keyPreset ?? null,
     credentialExpiresAt: p.credentialExpiresAt,
     credentialError: p.credentialError,
     firstByteTimeoutMs: p.firstByteTimeoutMs,
@@ -746,12 +769,33 @@ function emptyNp(): AppState['np'] {
     clearCredential: false,
     origKind: 'api',
     oauthPreset: null,
+    keyPreset: null,
     autoPruneUnlisted: true,
     origAutoPruneUnlisted: true,
     imitateClientIdentity: false,
     origImitateClientIdentity: false,
     clientIdentity: null,
   };
+}
+
+/**
+ * The PATCH for a key-preset row's Edit (add-key-subscription-presets task 9.4): only the
+ * fields that changed. Endpoint, kind and protocol never ride along (they are pinned
+ * server-side); name and the two patience overrides are sent only when they differ from the
+ * row the dialog opened on. The credential, the prune toggle and the identity switch are
+ * added by the caller under their own changed-only rules.
+ */
+function keyPresetPatch(form: AppState['np'], original: Provider | undefined): UpdateProviderInput {
+  const patch: UpdateProviderInput = {};
+  const name = form.name.trim();
+  if (original === undefined || name !== original.name) patch.name = name;
+  const firstByte = parseTimeoutS(form.firstByteTimeoutS, 'First-byte patience') ?? null;
+  if (original === undefined || firstByte !== original.firstByteTimeoutMs) {
+    patch.firstByteTimeoutMs = firstByte;
+  }
+  const idle = parseTimeoutS(form.idleTimeoutS, 'Idle patience') ?? null;
+  if (original === undefined || idle !== original.idleTimeoutMs) patch.idleTimeoutMs = idle;
+  return patch;
 }
 
 /** Parse a patience field (SECONDS text) → ms; '' = absent; invalid/out-of-range
@@ -781,6 +825,20 @@ function buildProviderInput(form: ProviderForm): CreateProviderInput {
   };
   const credential = form.credential.trim();
   return credential ? { ...base, credential } : base;
+}
+
+/** A fresh key-preset connect form: nothing chosen, no key. `presets` is the loaded list. */
+function emptyKp(presets: KeyPresetDto[]): AppState['kp'] {
+  return {
+    presets,
+    preset: null,
+    region: '',
+    name: '',
+    key: '',
+    ack: false,
+    busy: false,
+    error: null,
+  };
 }
 
 function emptyKeyReveal(): AppState['kr'] {
@@ -1027,6 +1085,7 @@ function initialState(): AppState {
       identity: null,
     },
     kr: emptyKeyReveal(),
+    kp: emptyKp([]),
 
     analyticsSummary: null,
     analyticsSummaryLoading: false,
@@ -1312,6 +1371,11 @@ export interface AppStore {
   startOauthReauthorize: (p: Provider) => Promise<void>;
   completeOauthConnect: () => Promise<void>;
   cancelOauthConnect: () => void;
+  /** Key-subscription connect form (add-key-subscription-presets). */
+  loadKeyPresets: () => Promise<void>;
+  chooseKeyPreset: (id: string) => void;
+  cancelKeyPreset: () => void;
+  connectKeyPreset: () => Promise<void>;
   testProviderById: (id: string) => Promise<void>;
   syncProvider: (id: string) => Promise<void>;
   deleteProvider: (id: string, call?: DestructiveCall) => Promise<void>;
@@ -1628,6 +1692,15 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       setState('ow', 'presets', presets);
     } catch {
       setState('ow', 'presets', []); // no enabled presets ≡ cards hidden
+    }
+  };
+
+  const loadKeyPresets = async (): Promise<void> => {
+    try {
+      const presets = await client.listKeyPresets();
+      setState('kp', 'presets', presets);
+    } catch {
+      setState('kp', 'presets', []); // no offered presets ≡ cards hidden
     }
   };
 
@@ -3775,6 +3848,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       setState(
         produce((s) => {
           s.kr = emptyKeyReveal();
+          s.kp = emptyKp([]);
           s.ob.key = '';
           s.ob.snippet = '';
           s.ob.providerId = null;
@@ -3879,30 +3953,36 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           // An OAuth-connected row's endpoint/kind/protocol are preset-pinned (the
           // server 422s any drift, and a Responses row's protocol isn't even in the
           // public enum) — submit a NAME-ONLY patch for those rows.
+          const original = state.providers.find((p) => p.id === editingId);
           const patch: UpdateProviderInput =
-            form.oauthPreset !== null
-              ? {
-                  // OAuth rows pin endpoint/kind/protocol server-side; name AND the
-                  // patience overrides are freely editable (fix-long-call-timeouts
-                  // impl-Med-2 — silently discarding a rendered field is a lie).
-                  name: form.name.trim(),
-                  firstByteTimeoutMs:
-                    parseTimeoutS(form.firstByteTimeoutS, 'First-byte patience') ?? null,
-                  idleTimeoutMs: parseTimeoutS(form.idleTimeoutS, 'Idle patience') ?? null,
-                }
-              : {
-                  name: form.name.trim(),
-                  kind: UI_TO_API_KIND[form.kind],
-                  // The connect-only protocol is not in the public enum — omit it
-                  // (unchangeable anyway) so a rename still works on such a row.
-                  ...(form.protocol !== 'openai_responses' ? { protocol: form.protocol } : {}),
-                  baseUrl: form.baseUrl.trim(),
-                  // Patience: blank = clear to inherit (explicit null), value = set
-                  // (fix-long-call-timeouts).
-                  firstByteTimeoutMs:
-                    parseTimeoutS(form.firstByteTimeoutS, 'First-byte patience') ?? null,
-                  idleTimeoutMs: parseTimeoutS(form.idleTimeoutS, 'Idle patience') ?? null,
-                };
+            form.keyPreset !== null
+              ? // A key-preset row pins endpoint/kind/protocol server-side, and a rename or key
+                // rotation must never read as drift: the PATCH carries ONLY the fields the user
+                // changed (add-key-subscription-presets task 9.4).
+                keyPresetPatch(form, original)
+              : form.oauthPreset !== null
+                ? {
+                    // OAuth rows pin endpoint/kind/protocol server-side; name AND the
+                    // patience overrides are freely editable (fix-long-call-timeouts
+                    // impl-Med-2 — silently discarding a rendered field is a lie).
+                    name: form.name.trim(),
+                    firstByteTimeoutMs:
+                      parseTimeoutS(form.firstByteTimeoutS, 'First-byte patience') ?? null,
+                    idleTimeoutMs: parseTimeoutS(form.idleTimeoutS, 'Idle patience') ?? null,
+                  }
+                : {
+                    name: form.name.trim(),
+                    kind: UI_TO_API_KIND[form.kind],
+                    // The connect-only protocol is not in the public enum — omit it
+                    // (unchangeable anyway) so a rename still works on such a row.
+                    ...(form.protocol !== 'openai_responses' ? { protocol: form.protocol } : {}),
+                    baseUrl: form.baseUrl.trim(),
+                    // Patience: blank = clear to inherit (explicit null), value = set
+                    // (fix-long-call-timeouts).
+                    firstByteTimeoutMs:
+                      parseTimeoutS(form.firstByteTimeoutS, 'First-byte patience') ?? null,
+                    idleTimeoutMs: parseTimeoutS(form.idleTimeoutS, 'Idle patience') ?? null,
+                  };
           // Sent only when changed, so an unrelated edit never rewrites the switch.
           if (form.autoPruneUnlisted !== form.origAutoPruneUnlisted) {
             patch.autoPruneUnlisted = form.autoPruneUnlisted;
@@ -3956,6 +4036,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           clearCredential: false,
           origKind: apiKindToUi(p.kind),
           oauthPreset: p.oauthPreset,
+          keyPreset: p.keyPreset,
           firstByteTimeoutS:
             p.firstByteTimeoutMs === null ? '' : String(p.firstByteTimeoutMs / 1000),
           idleTimeoutS: p.idleTimeoutMs === null ? '' : String(p.idleTimeoutMs / 1000),
@@ -4089,6 +4170,72 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       clearFields(['f-ow-paste']);
       setState('ow', { active: null, pasted: '', error: null });
     },
+    loadKeyPresets,
+    chooseKeyPreset: (id) => {
+      if (state.kp.busy) return;
+      clearFields(['f-kp-key', 'f-kp-region']);
+      const preset = state.kp.presets.find((p) => p.id === id);
+      if (preset === undefined) return;
+      // A sole region is the choice; with several the user picks (the region check).
+      const sole = preset.regions.length === 1 ? (preset.regions[0]?.id ?? '') : '';
+      setState('kp', {
+        preset: id,
+        region: sole,
+        name: '',
+        key: '',
+        ack: false,
+        error: null,
+      });
+    },
+    cancelKeyPreset: () => {
+      if (state.kp.busy) return;
+      clearFields(['f-kp-key', 'f-kp-region']);
+      setState('kp', { preset: null, region: '', name: '', key: '', ack: false, error: null });
+    },
+    connectKeyPreset: async () => {
+      const kp = state.kp;
+      if (kp.busy || kp.preset === null) return;
+      const preset = kp.presets.find((p) => p.id === kp.preset);
+      if (preset === undefined) return;
+      if (preset.requiresAcknowledgement && !kp.ack) return; // Connect is unavailable until ticked
+      if (!submitFields(['f-kp-region', 'f-kp-key'])) {
+        // The key is cleared on EVERY attempt, including this client-side rejection: the
+        // field shows its invalid state empty.
+        setState('kp', { key: '', error: null });
+        return;
+      }
+      // The region id always goes on the wire: the chosen one, or the sole listed one.
+      const region = preset.regions.length === 1 ? (preset.regions[0]?.id ?? '') : kp.region;
+      const imitationRequired = preset.regions.find((r) => r.id === region)?.imitationRequired;
+      const name = kp.name.trim();
+      const credential = kp.key.trim();
+      setState('kp', { busy: true, error: null });
+      try {
+        const dto = await client.keyPresetConnect({
+          preset: preset.id,
+          region,
+          ...(name !== '' ? { name } : {}),
+          credential,
+          ...(preset.requiresAcknowledgement ? { acknowledgeTermsRisk: true } : {}),
+        });
+        setState(
+          produce((s) => {
+            s.providers = [...s.providers, toProvider(dto)];
+            s.kp = emptyKp(s.kp.presets);
+            s.np = emptyNp();
+            s.modal = null;
+          }),
+        );
+        say(
+          imitationRequired === true
+            ? `${dto.name} connected — turn on identity imitation in its Edit dialog before it works`
+            : `${dto.name} connected — sync models to start routing`,
+        );
+      } catch (e) {
+        // The key is credential material — cleared after every submit attempt.
+        setState('kp', { busy: false, key: '', error: err(e) });
+      }
+    },
     testProviderById,
     syncProvider: async (id) => {
       try {
@@ -4202,7 +4349,9 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           reconnect: null,
           identity: null,
         });
+        setState('kp', emptyKp(state.kp.presets));
         void loadOauthPresets();
+        void loadKeyPresets();
       } else {
         setState('modal', modal);
       }
@@ -4214,7 +4363,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         (state.modal === 'newLimit' && state.bf.busy) ||
         (state.modal === 'channel' && state.cf.busy) ||
         ((state.modal === 'newProvider' || state.modal === 'editProvider') &&
-          (state.np.busy || state.ow.busy))
+          (state.np.busy || state.ow.busy || state.kp.busy))
       ) {
         return;
       }
@@ -4222,6 +4371,8 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       setState(
         produce((s) => {
           s.kr = emptyKeyReveal();
+          // The pasted key is credential material and never survives the modal.
+          s.kp = emptyKp(s.kp.presets);
           s.np.busy = false;
           s.np.error = null;
           // Abandon any open connect wizard (its server session simply expires); the

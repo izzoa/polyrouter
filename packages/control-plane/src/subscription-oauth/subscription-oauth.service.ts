@@ -64,6 +64,7 @@ import {
 } from './oauth-client';
 import { PasteParseError, parsePastedRedirect } from './paste';
 import { OAUTH_PRESETS, buildAuthorizeUrl, findPreset, type OauthPreset } from './presets';
+import { keyPresetForRow } from '../subscription-presets/key-presets';
 
 export const SUBSCRIPTION_OAUTH_RUNTIME = 'polyrouter:subscription-oauth-runtime';
 export const OAUTH_TOKEN_FETCH = 'polyrouter:oauth-token-fetch';
@@ -217,24 +218,38 @@ export class SubscriptionOauthService {
   /**
    * The ONE preset lookup for client identity (allow-preset-client-identity, design D4):
    * the bound preset's declaration and its single endpoint pin, or `undefined` for a
-   * row with no preset. `add-key-subscription-presets` extends THIS method to resolve a
-   * key preset (with the pin of the region the row matched); every consumer (adapter
-   * builder, safe view, PATCH validation, token client) goes through
-   * `availableClientIdentity`, so nothing else changes.
+   * row with no preset. An OAuth-connected row resolves through `oauthPreset`; a key-preset
+   * row (add-key-subscription-presets, design D10) resolves through the D6 coherence gate
+   * `keyPresetForRow`, with the pin of the REGION the row matched, so a drifted key-preset
+   * row gets no binding at all. Every consumer (adapter builder, safe view, PATCH
+   * validation, token client) goes through `availableClientIdentity`, so nothing else
+   * changes.
    */
-  identityBindingFor(row: Pick<ProviderRow, 'oauthPreset'>): IdentityBinding | undefined {
+  identityBindingFor(
+    row: Pick<ProviderRow, 'kind' | 'baseUrl' | 'protocol' | 'oauthPreset'> &
+      Partial<Pick<ProviderRow, 'keyPreset'>>,
+  ): IdentityBinding | undefined {
     const preset = this.presetFor(row);
-    if (preset === undefined) return undefined;
+    if (preset !== undefined) {
+      return {
+        identity: preset.clientIdentity,
+        pin: { baseUrl: preset.baseUrl, protocol: preset.protocol },
+      };
+    }
+    if (row.keyPreset === null || row.keyPreset === undefined) return undefined;
+    const matched = keyPresetForRow({ ...row, keyPreset: row.keyPreset });
+    if (matched === null) return undefined;
     return {
-      identity: preset.clientIdentity,
-      pin: { baseUrl: preset.baseUrl, protocol: preset.protocol },
+      identity: matched.preset.clientIdentity,
+      pin: { baseUrl: matched.region.baseUrl, protocol: matched.region.protocol },
     };
   }
 
   /** The declaration available to `row` (kind, valid declaration, pinned endpoint), or
    * `null`. The row's switch is applied separately by `identityHeaders`. */
   availableClientIdentity(
-    row: Pick<ProviderRow, 'kind' | 'baseUrl' | 'protocol' | 'oauthPreset'>,
+    row: Pick<ProviderRow, 'kind' | 'baseUrl' | 'protocol' | 'oauthPreset'> &
+      Partial<Pick<ProviderRow, 'keyPreset'>>,
   ): PresetClientIdentity | null {
     return clientIdentityFor(row, this.identityBindingFor(row));
   }

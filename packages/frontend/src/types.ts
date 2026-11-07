@@ -67,6 +67,9 @@ export interface Provider {
   /** Subscription-OAuth state (non-secret): the connected preset, the token's display
    * expiry, and the durable 'reauthorize_required' condition. */
   oauthPreset: string | null;
+  /** add-key-subscription-presets: the key preset this row was connected from (a non-secret
+   * marker), or null. Never set together with `oauthPreset`. */
+  keyPreset: string | null;
   credentialExpiresAt: string | null;
   credentialError: string | null;
   /** Upstream patience overrides (fix-long-call-timeouts); null = inherit. */

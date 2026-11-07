@@ -5,6 +5,7 @@ import {
   type AttemptHealthDeps,
   type AttemptHealthState,
 } from './attempt-health';
+import { KIMI_CODE_PRESET } from '../subscription-presets/key-presets';
 
 const principal: Principal = { kind: 'user', userId: 'u1' };
 
@@ -185,5 +186,31 @@ describe('attemptHealthHook (add-provider-health-signals)', () => {
     )(settle({ outcome: 'trip', kind: 'rate_limit' }));
     attemptHealthHook(d, principal, row(), {})(settle({ outcome: 'trip', kind: 'auth' }));
     expect(refresh).not.toHaveBeenCalled();
+  });
+
+  // add-key-subscription-presets (task 4.3): a key-preset row has `oauth_preset` NULL, so a
+  // 401 on it is a plain upstream auth failure — never a forced OAuth refresh.
+  it('a 401 on a key-preset row triggers no forced refresh, though it still records traffic health', () => {
+    const { d, refresh, setHealth } = deps();
+    const region = KIMI_CODE_PRESET.regions[0]!;
+    const keyRow = row({
+      oauthPreset: null,
+      keyPreset: KIMI_CODE_PRESET.id,
+      protocol: region.protocol,
+      baseUrl: region.baseUrl,
+    });
+    attemptHealthHook(
+      d,
+      principal,
+      keyRow,
+      used('plain-key-cipher'),
+    )(settle({ outcome: 'trip', kind: 'auth', justOpened: true, seq: 9 }));
+    expect(refresh).not.toHaveBeenCalled();
+    expect(setHealth).toHaveBeenCalledWith(
+      principal,
+      'p1',
+      { record: 'traffic', state: 'failing', kind: 'auth', seq: 9 },
+      expect.objectContaining({ envelope: 'plain-key-cipher' }),
+    );
   });
 });

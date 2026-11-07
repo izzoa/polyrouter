@@ -13,6 +13,7 @@ import {
   encryptSecret,
   parseCredentialEnvelope,
   serializeOauthCredential,
+  serializePlainCredential,
   userPrincipal,
   type PersistenceMaintenance,
   type PersistencePort,
@@ -35,6 +36,7 @@ import {
 } from '../../src/subscription-oauth/oauth-refresh.scheduler';
 import { TokenEndpointError, type TokenSet } from '../../src/subscription-oauth/oauth-client';
 import type { OauthPreset } from '../../src/subscription-oauth/presets';
+import { KIMI_CODE_PRESET } from '../../src/subscription-presets/key-presets';
 import { COMPOSE_HINT } from '../tenancy/harness';
 import '../../src/database/database.config';
 import '../../src/providers/providers.config';
@@ -319,6 +321,40 @@ describe('OAuth proactive-refresh sweep (e2e)', () => {
     expect(exchanged.filter((rt) => mine.has(rt))).toHaveLength(FAST.livenessBudget);
     await scheduler.sweepOnce(FAST);
     expect(exchanged.filter((rt) => mine.has(rt))).toHaveLength(30);
+  });
+
+  // add-key-subscription-presets (task 4.3): a key-preset row is a plain pasted credential
+  // under `kind = 'subscription'` with `oauth_preset` NULL, so the OAuth sweep never lists it.
+  it('a key-preset row is never listed by the sweep and never exchanges a token', async () => {
+    const region = KIMI_CODE_PRESET.regions[0]!;
+    const keyRow = await port.providers.insert(alice, {
+      name: 'key-preset',
+      kind: 'subscription',
+      protocol: region.protocol,
+      baseUrl: region.baseUrl,
+      keyPreset: KIMI_CODE_PRESET.id,
+      encryptedCredentials: encryptSecret(serializePlainCredential('sk-plain-key'), KEY),
+      // Even an (impossible for a plain key) near-expiry stamp must not make it due.
+      credentialExpiresAt: new Date(Date.now() + 10 * MIN),
+    });
+    const oauth = await oauthRow(alice, 30 * MIN);
+
+    const maintenance = app.get<PersistenceMaintenance>(PERSISTENCE_MAINTENANCE);
+    const listed: string[] = [];
+    let afterId: string | null = null;
+    for (;;) {
+      const page = await maintenance.providers.listOauthConnected({ afterId, limit: 50 });
+      listed.push(...page.map((r) => r.id));
+      if (page.length < 50) break;
+      afterId = page[page.length - 1]!.id;
+    }
+    expect(listed).toContain(oauth.id);
+    expect(listed).not.toContain(keyRow.id);
+
+    const before = await stored(keyRow.id);
+    await scheduler.sweepOnce(FAST);
+    expect(exchanged).toContain(oauth.rt); // the sweep did run
+    expect(await stored(keyRow.id)).toEqual(before); // and left the key row untouched
   });
 
   it('never calls a model API — only the token endpoint', async () => {

@@ -1,4 +1,5 @@
 import { createOpenaiProviderAdapter } from './openai-adapter';
+import { createAnthropicProviderAdapter } from './anthropic-adapter';
 import type { NormalizedRequest } from '../proxy/translate';
 import {
   recordingClient,
@@ -154,5 +155,78 @@ describe('OpenAI provider adapter — max-tokens spelling (add-max-tokens-spelli
     expect(body.max_tokens).toBe(100);
     expect(body.max_completion_tokens).toBeUndefined();
     expect(body.stream).toBe(true);
+  });
+});
+
+describe('adapter config — absolute model-listing URL (add-key-subscription-presets)', () => {
+  const OVERRIDE = 'https://opencode.ai/inference/go/v1/models';
+  const overridden = {
+    ...config,
+    baseUrl: 'https://opencode.ai/inference/go/openai/v1',
+    modelsUrl: OVERRIDE,
+  };
+
+  it('listModels and testConnection request the override with the normal Bearer header; chat keeps base_url', async () => {
+    const { client, calls } = recordingClient((url) =>
+      url.endsWith('/chat/completions')
+        ? jsonResponse(OAI_RESPONSE)
+        : jsonResponse({ object: 'list', data: [{ id: 'm1' }, { id: 'm2' }] }),
+    );
+    const adapter = createOpenaiProviderAdapter(overridden, { httpClient: client });
+    const models = await adapter.listModels();
+    expect(models.map((m) => m.id)).toEqual(['m1', 'm2']);
+    const probe = await adapter.testConnection();
+    expect(probe).toEqual({ ok: true, models: 2 });
+    await adapter.chat(request);
+
+    expect(calls.map((c) => c.url)).toEqual([
+      OVERRIDE,
+      OVERRIDE,
+      'https://opencode.ai/inference/go/openai/v1/chat/completions',
+    ]);
+    for (const call of calls) {
+      expect(call.init.headers['Authorization']).toBe('Bearer sk-secret-123');
+    }
+    expect(calls[0]!.init.method).toBe('GET');
+  });
+
+  it('without an override the URLs are unchanged', async () => {
+    const { client, calls } = recordingClient((url) =>
+      url.endsWith('/chat/completions')
+        ? jsonResponse(OAI_RESPONSE)
+        : jsonResponse({ object: 'list', data: [{ id: 'm1' }] }),
+    );
+    const adapter = createOpenaiProviderAdapter(config, { httpClient: client });
+    await adapter.listModels();
+    await adapter.testConnection();
+    await adapter.chat(request);
+    expect(calls.map((c) => c.url)).toEqual([
+      'https://api.openai.example/v1/models',
+      'https://api.openai.example/v1/models',
+      'https://api.openai.example/v1/chat/completions',
+    ]);
+  });
+
+  it('pagination still follows the cursor against the override', async () => {
+    const anthropicOverride = 'https://models.example/listing/v1/models';
+    const { client, calls } = recordingClient((url) =>
+      url.includes('after_id=')
+        ? jsonResponse({ data: [{ id: 'b', display_name: 'B' }], has_more: false })
+        : jsonResponse({ data: [{ id: 'a', display_name: 'A' }], has_more: true, last_id: 'a' }),
+    );
+    const adapter = createAnthropicProviderAdapter(
+      {
+        protocol: 'anthropic_compatible',
+        baseUrl: 'https://api.anthropic.example',
+        credential: 'sk-ant-secret',
+        kind: 'api_key',
+        mode: 'cloud',
+        modelsUrl: anthropicOverride,
+      },
+      { httpClient: client },
+    );
+    const models = await adapter.listModels();
+    expect(models.map((m) => m.id)).toEqual(['a', 'b']);
+    expect(calls.map((c) => c.url)).toEqual([anthropicOverride, `${anthropicOverride}?after_id=a`]);
   });
 });

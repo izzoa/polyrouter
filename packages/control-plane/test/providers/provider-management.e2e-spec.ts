@@ -17,7 +17,10 @@ import { loadConfig } from '@polyrouter/shared';
 import {
   PERSISTENCE_PORT,
   POLYROUTER_USER_AGENT,
+  decryptSecret,
   encryptSecret,
+  parseCredentialEnvelope,
+  serializePlainCredential,
   userPrincipal,
   type PersistencePort,
   type Principal,
@@ -37,9 +40,17 @@ import {
 import { ProvidersModule } from '../../src/providers/providers.module';
 import { OAUTH_PRESET_LOOKUP } from '../../src/subscription-oauth/subscription-oauth.service';
 import { CLAUDE_PRESET, type OauthPreset } from '../../src/subscription-oauth/presets';
+import {
+  KIMI_CODE_PRESET,
+  MINIMAX_M_PLAN_PRESET,
+  OPENCODE_GO_PRESET,
+  ZAI_CODING_PLAN_PRESET,
+  type KeyPreset,
+  type KeyPresetRegion,
+} from '../../src/subscription-presets/key-presets';
 import { uniqueEmail } from '../auth/auth-harness';
 import { COMPOSE_HINT } from '../tenancy/harness';
-import '../../src/providers/providers.config';
+import { loadProvidersConfig, resolveCredentialKey } from '../../src/providers/providers.config';
 import '../../src/database/database.config';
 
 const databaseUrl = loadConfig<{ DATABASE_URL: string }>().DATABASE_URL;
@@ -884,6 +895,175 @@ describe('provider management', () => {
     }
   });
 
+  // add-key-subscription-presets 4.1: the preset marker is server-set at connect and never
+  // accepted from a client. Whitelist + forbid rejects it on create and update before any write.
+  it('refuses keyPreset on create and update with a 400 before any write; ordinary rows list it null', async () => {
+    const created = await asAlice().send({ ...CUSTOM, keyPreset: 'zai-coding-plan' });
+    expect(created.status).toBe(400);
+    expect(JSON.stringify(created.body)).toContain('keyPreset');
+    const none = await pool.query('SELECT 1 FROM provider WHERE owner_user_id = $1', [alice]);
+    expect(none.rowCount).toBe(0);
+
+    const ok = await asAlice().send(CUSTOM);
+    expect(ok.status).toBe(201);
+    expect(ok.body.keyPreset).toBeNull();
+    const id = ok.body.id as string;
+    const before = await pool.query('SELECT * FROM provider WHERE id = $1', [id]);
+    const patched = await request(server)
+      .patch(`/api/providers/${id}`)
+      .set('x-test-user', alice)
+      .send({ keyPreset: 'zai-coding-plan' });
+    expect(patched.status).toBe(400);
+    expect(JSON.stringify(patched.body)).toContain('keyPreset');
+    const after = await pool.query('SELECT * FROM provider WHERE id = $1', [id]);
+    expect(after.rows[0]).toEqual(before.rows[0]);
+    expect(after.rows[0].key_preset).toBeNull();
+
+    const list = await request(server).get('/api/providers').set('x-test-user', alice);
+    expect(list.status).toBe(200);
+    for (const row of list.body as Array<{ keyPreset: unknown }>) {
+      expect(row.keyPreset).toBeNull();
+    }
+  });
+
+  // ---- add-key-subscription-presets 6.2: a key-preset row's endpoint is pinned ----
+  describe('key-preset pinned edits (add-key-subscription-presets)', () => {
+    // A literal public IP, so name/key edits pass the SSRF gate with no DNS. The pin rule
+    // compares against the ROW's own stored endpoint, so any stored endpoint exercises it.
+    const PIN = 'https://1.1.1.1/coding/v1';
+    const credentialKey = (): string => {
+      const { providers, base } = loadProvidersConfig();
+      return resolveCredentialKey(providers, base);
+    };
+    const patch = (id: string, body: Record<string, unknown>): request.Test =>
+      request(server).patch(`/api/providers/${id}`).set('x-test-user', alice).send(body);
+    const dbRow = async (id: string): Promise<Record<string, unknown>> =>
+      (await pool.query('SELECT * FROM provider WHERE id = $1', [id])).rows[0] as Record<
+        string,
+        unknown
+      >;
+    const storedKey = async (id: string): Promise<string | null> => {
+      const env = (await dbRow(id))['encrypted_credentials'] as string | null;
+      if (env === null) return null;
+      const parsed = parseCredentialEnvelope(decryptSecret(env, credentialKey()));
+      if (parsed.kind !== 'plain') throw new Error('expected a plain credential');
+      return parsed.value;
+    };
+
+    /** A healthy, traffic-recorded key-preset row (Kimi pin shape) with imitation on, so the
+     * health reset and the untouched switch are both observable. */
+    async function seed(): Promise<string> {
+      const port = app.get<PersistencePort>(PERSISTENCE_PORT);
+      const row = await port.providers.insert(userPrincipal(alice), {
+        name: 'Kimi Code',
+        kind: 'subscription',
+        protocol: 'openai_compatible',
+        baseUrl: PIN,
+        keyPreset: 'kimi-code',
+        encryptedCredentials: encryptSecret(serializePlainCredential('old-key'), credentialKey()),
+        imitateClientIdentity: true,
+      });
+      await pool.query(
+        `UPDATE provider SET status='ok', status_source='test', status_rev=1,
+           status_changed_at=now(), traffic_state='ok', traffic_at=now(), traffic_seq=99,
+           traffic_rev=2, health_rev=2 WHERE id=$1`,
+        [row.id],
+      );
+      return row.id;
+    }
+
+    it.each([
+      ['base_url', { baseUrl: 'https://8.8.8.8/coding/v1' }],
+      ['protocol', { protocol: 'anthropic_compatible' }],
+      ['kind', { kind: 'custom' }],
+      ['base_url alongside a name edit', { name: 'x', baseUrl: 'https://8.8.8.8/coding/v1' }],
+    ])('drift on %s is a fixed 422 and the row is unchanged', async (_n, body) => {
+      const id = await seed();
+      const before = await dbRow(id);
+      const res = await patch(id, body);
+      expect(res.status).toBe(422);
+      expect(JSON.stringify(res.body)).toContain(
+        'this provider is pinned by its preset — delete it and reconnect to change its endpoint',
+      );
+      expect(await dbRow(id)).toEqual(before);
+    });
+
+    it('re-sending the pinned endpoint is not drift', async () => {
+      const id = await seed();
+      const res = await patch(id, { baseUrl: PIN, protocol: 'openai_compatible', name: 'same' });
+      expect(res.status).toBe(200);
+      expect(res.body.name).toBe('same');
+    });
+
+    it('a name plus key rotation keeps keyPreset, endpoint and switch, and resets health with source edit', async () => {
+      const id = await seed();
+      const before = await dbRow(id);
+      const res = await patch(id, { name: 'My Kimi', credential: 'new-key' });
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({
+        name: 'My Kimi',
+        keyPreset: 'kimi-code',
+        baseUrl: PIN,
+        hasCredential: true,
+        imitateClientIdentity: true,
+      });
+      expect(JSON.stringify(res.body)).not.toContain('new-key');
+      const after = await dbRow(id);
+      expect(after).toMatchObject({
+        key_preset: 'kimi-code',
+        oauth_preset: null,
+        base_url: PIN,
+        imitate_client_identity: true,
+        status: 'unknown',
+        status_source: 'edit',
+        traffic_state: null,
+        traffic_seq: null,
+      });
+      expect(Number(after['health_rev'])).toBeGreaterThan(Number(before['health_rev']));
+      expect(after['encrypted_credentials']).not.toBe(before['encrypted_credentials']);
+      expect(await storedKey(id)).toBe('new-key');
+    });
+
+    it('an explicit empty credential clears the key and keeps the marker; the next Test is the missing-credential 422', async () => {
+      const id = await seed();
+      const res = await patch(id, { credential: '' });
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({
+        hasCredential: false,
+        keyPreset: 'kimi-code',
+        baseUrl: PIN,
+      });
+      expect(await storedKey(id)).toBeNull();
+      expect((await dbRow(id))['key_preset']).toBe('kimi-code');
+      const test = await request(server)
+        .post(`/api/providers/${id}/test-connection`)
+        .set('x-test-user', alice);
+      expect(test.status).toBe(422);
+      expect(JSON.stringify(test.body)).toContain('provider has no credential');
+    });
+
+    it('timeout, max-tokens and auto-prune edits succeed and keep the pin', async () => {
+      const id = await seed();
+      const res = await patch(id, {
+        firstByteTimeoutMs: 60_000,
+        idleTimeoutMs: 90_000,
+        maxTokensSpelling: 'max_tokens',
+        autoPruneUnlisted: false,
+      });
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({
+        firstByteTimeoutMs: 60_000,
+        idleTimeoutMs: 90_000,
+        maxTokensSpelling: 'max_tokens',
+        autoPruneUnlisted: false,
+        keyPreset: 'kimi-code',
+        baseUrl: PIN,
+      });
+      // None of these changes the incarnation, so health is kept.
+      expect((await dbRow(id))['status']).toBe('ok');
+    });
+  });
+
   // ---- allow-preset-client-identity: the identity-imitation switch ----
   describe('identity-imitation switch (allow-preset-client-identity)', () => {
     const patch = (id: string, body: Record<string, unknown>, as = alice): request.Test =>
@@ -1054,6 +1234,142 @@ describe('provider management', () => {
         id,
       ]);
       expect(col.rows[0].imitate_client_identity).toBe(false);
+    });
+  });
+
+  // ---- add-key-subscription-presets 7.2: identity imitation on a key-preset row ----
+  describe('key-preset identity imitation (add-key-subscription-presets)', () => {
+    // REAL service and the BUNDLED pins: the availability rule reaches a key preset through
+    // `identityBindingFor` -> `keyPresetForRow`. A PATCH on a pinned row only RESOLVES its
+    // hostname (DNS) through the SSRF gate; nothing here dials a provider.
+    const patch = (id: string, body: Record<string, unknown>): request.Test =>
+      request(server).patch(`/api/providers/${id}`).set('x-test-user', alice).send(body);
+    const dbRow = async (id: string): Promise<Record<string, unknown>> =>
+      (await pool.query('SELECT * FROM provider WHERE id = $1', [id])).rows[0] as Record<
+        string,
+        unknown
+      >;
+
+    async function seedKeyRow(
+      preset: KeyPreset,
+      region: KeyPresetRegion,
+      over: { baseUrl?: string } = {},
+    ): Promise<string> {
+      const port = app.get<PersistencePort>(PERSISTENCE_PORT);
+      const { providers, base } = loadProvidersConfig();
+      const row = await port.providers.insert(userPrincipal(alice), {
+        name: `seed-${preset.id}-${region.id}`,
+        kind: 'subscription',
+        protocol: region.protocol,
+        baseUrl: over.baseUrl ?? region.baseUrl,
+        keyPreset: preset.id,
+        encryptedCredentials: encryptSecret(
+          serializePlainCredential('seed-key'),
+          resolveCredentialKey(providers, base),
+        ),
+        status: 'ok',
+        statusSource: 'test',
+      });
+      return row.id;
+    }
+    const declaring = [KIMI_CODE_PRESET, ZAI_CODING_PLAN_PRESET].flatMap((preset) =>
+      preset.regions.map((region) => ({ preset, region })),
+    );
+    const nonDeclaring = [OPENCODE_GO_PRESET, MINIMAX_M_PLAN_PRESET].flatMap((preset) =>
+      preset.regions.map((region) => ({ preset, region })),
+    );
+
+    it.each(declaring.map(({ preset, region }) => [`${preset.id}/${region.id}`, preset, region]))(
+      'PATCH { imitateClientIdentity: true } succeeds on a %s row and shows only the label',
+      async (_name, preset, region) => {
+        const id = await seedKeyRow(preset as KeyPreset, region as KeyPresetRegion);
+        const read = await request(server).get(`/api/providers/${id}`).set('x-test-user', alice);
+        expect(read.body.imitateClientIdentity).toBe(false);
+        expect(read.body.clientIdentity).toEqual({ label: 'Claude Code' });
+        const on = await patch(id, { imitateClientIdentity: true });
+        expect(on.status).toBe(200);
+        expect(on.body).toMatchObject({
+          imitateClientIdentity: true,
+          clientIdentity: { label: 'Claude Code' },
+          keyPreset: (preset as KeyPreset).id,
+        });
+        // No header name or value ever reaches the wire view.
+        expect(JSON.stringify(on.body)).not.toMatch(/claude-code\/|claude-cli|User-Agent/i);
+        expect((await dbRow(id))['imitate_client_identity']).toBe(true);
+        expect((await patch(id, { imitateClientIdentity: false })).status).toBe(200);
+      },
+    );
+
+    it.each(
+      nonDeclaring.map(({ preset, region }) => [`${preset.id}/${region.id}`, preset, region]),
+    )(
+      'true on a %s row is a 422 (the preset declares none); false succeeds',
+      async (_name, preset, region) => {
+        const id = await seedKeyRow(preset as KeyPreset, region as KeyPresetRegion);
+        expect(
+          (await request(server).get(`/api/providers/${id}`).set('x-test-user', alice)).body
+            .clientIdentity,
+        ).toBeNull();
+        const res = await patch(id, { imitateClientIdentity: true });
+        expect(res.status).toBe(422);
+        expect((await dbRow(id))['imitate_client_identity']).toBe(false);
+        expect((await patch(id, { imitateClientIdentity: false })).status).toBe(200);
+      },
+    );
+
+    it('true on a drifted Kimi row (stored endpoint no longer a region pin) is a 422', async () => {
+      const region = KIMI_CODE_PRESET.regions[0]!;
+      // Literal public IP: passes the SSRF gate with no DNS, and is no region's pin.
+      const id = await seedKeyRow(KIMI_CODE_PRESET, region, {
+        baseUrl: 'https://1.1.1.1/coding/v1',
+      });
+      const read = await request(server).get(`/api/providers/${id}`).set('x-test-user', alice);
+      expect(read.body.clientIdentity).toBeNull();
+      const res = await patch(id, { imitateClientIdentity: true });
+      expect(res.status).toBe(422);
+      expect((await dbRow(id))['imitate_client_identity']).toBe(false);
+    });
+
+    it('a key rotation and then an explicit credential clear each keep the switch on and the preset set', async () => {
+      const region = KIMI_CODE_PRESET.regions[0]!;
+      const id = await seedKeyRow(KIMI_CODE_PRESET, region);
+      expect((await patch(id, { imitateClientIdentity: true })).status).toBe(200);
+
+      const rotated = await patch(id, { credential: 'sk-kimi-rotated' });
+      expect(rotated.status).toBe(200);
+      expect(rotated.body).toMatchObject({
+        imitateClientIdentity: true,
+        keyPreset: 'kimi-code',
+        hasCredential: true,
+        clientIdentity: { label: 'Claude Code' },
+      });
+      expect(await dbRow(id)).toMatchObject({
+        imitate_client_identity: true,
+        key_preset: 'kimi-code',
+        oauth_preset: null,
+      });
+
+      const cleared = await patch(id, { credential: '' });
+      expect(cleared.status).toBe(200);
+      expect(cleared.body).toMatchObject({
+        imitateClientIdentity: true,
+        keyPreset: 'kimi-code',
+        hasCredential: false,
+      });
+      expect(await dbRow(id)).toMatchObject({
+        imitate_client_identity: true,
+        key_preset: 'kimi-code',
+        encrypted_credentials: null,
+      });
+    });
+
+    it('true together with a credential on a key-preset row is judged against the kept binding and succeeds', async () => {
+      // The OAuth conversion (which drops the binding) never runs for a key-preset row, so the
+      // sibling rule "true with a credential is a 422" does not apply: the binding is kept.
+      const id = await seedKeyRow(ZAI_CODING_PLAN_PRESET, ZAI_CODING_PLAN_PRESET.regions[0]!);
+      const res = await patch(id, { imitateClientIdentity: true, credential: 'zai-new' });
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ imitateClientIdentity: true, keyPreset: 'zai-coding-plan' });
     });
   });
 

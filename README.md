@@ -228,7 +228,11 @@ invariants, and [`STYLESEED.md`](./STYLESEED.md) for UI rules.
 
 Using flat-rate consumer subscriptions (ChatGPT Plus, Claude Max) programmatically likely
 violates those providers' ToS. polyrouter supports the provider kind but flags the risk.
-BYOK API keys and local models carry no such risk.
+The coding plans (OpenCode Go, MiniMax M Plan, Kimi Code, Z.ai GLM Coding Plan) are
+connected with an API key, but that key carries its plan's own terms: Z.ai forbids proxy and
+aggregate use, and Kimi forbids automation and altering its client identity. polyrouter
+states each plan's risk before you connect. Pay-per-token API keys and local models don't
+carry subscription terms risk.
 
 ## License
 

@@ -1,8 +1,27 @@
 // add-batch-inference task 2.5: the ONE adapter builder — credential decrypt,
 // OAuth resolution, SSRF gate, quirks, bounds — with fixed, secret-free failures.
-import { encryptSecret, userPrincipal, type ProviderRow } from '@polyrouter/shared/server';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
+import {
+  POLYROUTER_USER_AGENT,
+  encryptSecret,
+  userPrincipal,
+  type ProviderRow,
+} from '@polyrouter/shared/server';
 import type { SubscriptionOauthService } from '../subscription-oauth/subscription-oauth.service';
 import type { PresetClientIdentity } from './client-identity';
+import {
+  createGuardedHttpClient,
+  createOpenaiProviderAdapter,
+  type HttpClient,
+  type HttpInit,
+  type HttpResponse,
+} from '@polyrouter/data-plane';
+import {
+  KIMI_CODE_PRESET,
+  OPENCODE_GO_PRESET,
+  ZAI_CODING_PLAN_PRESET,
+} from '../subscription-presets/key-presets';
 import { AdapterBuildError, ProviderAdapterBuilder } from './adapter-builder';
 
 const KEY = 'ab'.repeat(32); // 32 bytes of hex — the encryption key format
@@ -21,6 +40,7 @@ function row(over: Partial<ProviderRow> = {}): ProviderRow {
     status: 'ok',
     maxTokensSpelling: 'auto',
     oauthPreset: null,
+    keyPreset: null,
     credentialExpiresAt: null,
     credentialError: null,
     firstByteTimeoutMs: null,
@@ -336,5 +356,231 @@ describe('ProviderAdapterBuilder client identity', () => {
       opts,
     );
     expect(cfg.extraHeaders).toEqual(FIXTURE.apiHeaders);
+  });
+});
+
+// add-key-subscription-presets (task 4.2): the listing override rides ONLY through the
+// coherence gate over the bundled constants. The builder takes no preset argument.
+describe('ProviderAdapterBuilder key-preset listing override', () => {
+  const OPENCODE = OPENCODE_GO_PRESET.regions[0]!;
+  const kimi = KIMI_CODE_PRESET.regions[0]!;
+  const keyRow = (over: Partial<ProviderRow> = {}): ProviderRow =>
+    row({
+      kind: 'subscription',
+      protocol: 'openai_compatible',
+      baseUrl: OPENCODE.baseUrl,
+      keyPreset: OPENCODE_GO_PRESET.id,
+      ...over,
+    });
+  // The plain pasted key resolves as `api_key` through the (stubbed) subscription seam.
+  const plainKey = (): ReturnType<SubscriptionOauthService['resolveCredential']> =>
+    Promise.resolve({
+      credential: 'sk-plain-key',
+      authScheme: 'api_key' as const,
+      envelope: 'stored-cipher',
+    });
+  const noGate = { ...opts, assertAddress: false };
+
+  it('an OpenCode Go row gets the trusted listing URL, and the plain key is an api_key credential', async () => {
+    const cfg = await builder(plainKey).buildConfig(principal, keyRow(), noGate);
+    expect(cfg.modelsUrl).toBe('https://opencode.ai/inference/go/v1/models');
+    expect(cfg.baseUrl).toBe(OPENCODE.baseUrl);
+    expect(cfg.authScheme).toBe('api_key');
+    expect(cfg.credential).toBe('sk-plain-key');
+  });
+
+  it.each([
+    ['a drifted base_url', { baseUrl: 'https://opencode.ai/inference/go/openai/v1/' }],
+    ['a drifted protocol', { protocol: 'anthropic_compatible' as const }],
+    ['an unknown marker', { keyPreset: 'no-such-preset' }],
+    ['a non-subscription row', { kind: 'api_key' as const }],
+    ['no marker', { keyPreset: null }],
+  ])('%s gets no override', async (_name, over) => {
+    const cfg = await builder(plainKey).buildConfig(principal, keyRow(over), noGate);
+    expect('modelsUrl' in cfg).toBe(false);
+  });
+
+  it('a Kimi row gets none (the preset declares no listing override)', async () => {
+    const cfg = await builder(plainKey).buildConfig(
+      principal,
+      keyRow({ baseUrl: kimi.baseUrl, keyPreset: KIMI_CODE_PRESET.id }),
+      noGate,
+    );
+    expect('modelsUrl' in cfg).toBe(false);
+    const zai = ZAI_CODING_PLAN_PRESET.regions[0]!;
+    const z = await builder(plainKey).buildConfig(
+      principal,
+      keyRow({ baseUrl: zai.baseUrl, keyPreset: ZAI_CODING_PLAN_PRESET.id }),
+      noGate,
+    );
+    expect('modelsUrl' in z).toBe(false);
+  });
+
+  it('a key-preset row stored with max_tokens_spelling max_tokens sends max_tokens on the wire', async () => {
+    const bodies: string[] = [];
+    const client: HttpClient = (_url: string, init: HttpInit): Promise<HttpResponse> => {
+      bodies.push(typeof init.body === 'string' ? init.body : '');
+      const text = JSON.stringify({
+        id: 'c1',
+        object: 'chat.completion',
+        created: 1,
+        model: 'm',
+        choices: [
+          { index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' },
+        ],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      });
+      return Promise.resolve({
+        status: 200,
+        ok: true,
+        headers: { get: () => null },
+        body: null,
+        text: () => Promise.resolve(text),
+        json: () => Promise.resolve(JSON.parse(text) as unknown),
+      });
+    };
+    const cfg = await builder(plainKey).buildConfig(
+      principal,
+      keyRow({ maxTokensSpelling: 'max_tokens' }),
+      noGate,
+    );
+    const adapter = createOpenaiProviderAdapter(cfg, { httpClient: client });
+    await adapter.chat({
+      model: 'm',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      params: { maxOutputTokens: 64 },
+    });
+    const body = JSON.parse(bodies[0]!) as Record<string, unknown>;
+    expect(body['max_tokens']).toBe(64);
+    expect('max_completion_tokens' in body).toBe(false);
+  });
+});
+
+// add-key-subscription-presets (task 7.2): a key-preset row's identity reaches the adapter only
+// through the (stubbed) availability seam and only while the row's switch is on. Drift and
+// the non-declaring presets are decided by the REAL service in subscription-oauth.service.spec.ts,
+// not here (the stub decides this file's cases).
+describe('ProviderAdapterBuilder key-preset client identity', () => {
+  const kimiRegion = KIMI_CODE_PRESET.regions[0]!;
+  const KIMI_IDENTITY = KIMI_CODE_PRESET.clientIdentity!;
+  const kimiRow = (imitate: boolean): ProviderRow =>
+    row({
+      kind: 'subscription',
+      protocol: 'openai_compatible',
+      baseUrl: kimiRegion.baseUrl,
+      keyPreset: KIMI_CODE_PRESET.id,
+      imitateClientIdentity: imitate,
+    });
+  const plainKey = (): ReturnType<SubscriptionOauthService['resolveCredential']> =>
+    Promise.resolve({
+      credential: 'sk-kimi-plain',
+      authScheme: 'api_key' as const,
+      envelope: 'stored-cipher',
+    });
+  const noGate = { ...opts, assertAddress: false };
+
+  it('with the switch off a Kimi row gets no extraHeaders', async () => {
+    const cfg = await builder(plainKey, 'cloud', () => KIMI_IDENTITY).buildConfig(
+      principal,
+      kimiRow(false),
+      noGate,
+    );
+    expect('extraHeaders' in cfg).toBe(false);
+  });
+
+  it('with the switch on a Kimi row gets exactly the declared headers', async () => {
+    const cfg = await builder(plainKey, 'cloud', () => KIMI_IDENTITY).buildConfig(
+      principal,
+      kimiRow(true),
+      noGate,
+    );
+    expect(cfg.extraHeaders).toEqual(KIMI_IDENTITY.apiHeaders);
+    expect(cfg.authScheme).toBe('api_key');
+  });
+
+  describe('on the wire (real loopback transport, raw headers)', () => {
+    let server: http.Server;
+    let port: number;
+    let raws: string[][] = [];
+    const uas = (raw: string[]): string[] => {
+      const out: string[] = [];
+      for (let i = 0; i < raw.length; i += 2) {
+        if (raw[i]?.toLowerCase() === 'user-agent') out.push(raw[i + 1] ?? '');
+      }
+      return out;
+    };
+
+    beforeAll(async () => {
+      server = http.createServer((req, res) => {
+        raws.push([...req.rawHeaders]);
+        req.resume();
+        req.on('end', () => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(
+            req.url?.endsWith('/models')
+              ? JSON.stringify({ data: [{ id: 'm' }] })
+              : JSON.stringify({
+                  id: 'c',
+                  object: 'chat.completion',
+                  choices: [
+                    {
+                      index: 0,
+                      message: { role: 'assistant', content: 'x' },
+                      finish_reason: 'stop',
+                    },
+                  ],
+                }),
+          );
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      port = (server.address() as AddressInfo).port;
+    });
+    beforeEach(() => {
+      raws = [];
+    });
+    afterAll(async () => {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    });
+
+    /** The builder's config for a Kimi row, re-pointed at the loopback server: only the
+     * destination changes, so the headers are exactly the ones the builder decided. */
+    const wireAdapter = async (imitate: boolean) => {
+      const cfg = await builder(plainKey, 'cloud', () => KIMI_IDENTITY).buildConfig(
+        principal,
+        kimiRow(imitate),
+        noGate,
+      );
+      const origin = `http://127.0.0.1:${String(port)}`;
+      return createOpenaiProviderAdapter(
+        { ...cfg, baseUrl: `${origin}/v1`, kind: 'local', mode: 'selfhosted' },
+        { httpClient: createGuardedHttpClient({ mode: 'selfhosted', providerKind: 'local' }) },
+      );
+    };
+    const chatRequest = {
+      model: 'm',
+      messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'hi' }] }],
+      params: {},
+    };
+
+    it('switch off: exactly one User-Agent, polyrouter’s own, on chat and listing', async () => {
+      const adapter = await wireAdapter(false);
+      await adapter.chat(chatRequest);
+      await adapter.listModels();
+      expect(raws).toHaveLength(2);
+      for (const raw of raws) expect(uas(raw)).toEqual([POLYROUTER_USER_AGENT]);
+    });
+
+    it('switch on: exactly one User-Agent, the declared one, on chat and listing; never both', async () => {
+      const adapter = await wireAdapter(true);
+      await adapter.chat(chatRequest);
+      await adapter.listModels();
+      expect(raws).toHaveLength(2);
+      for (const raw of raws) {
+        expect(uas(raw)).toEqual([KIMI_IDENTITY.apiHeaders['User-Agent']]);
+        expect(uas(raw).join()).not.toContain('polyrouter/');
+        expect(raw.join('\n')).not.toMatch(/KimiCLI\//);
+      }
+    });
   });
 });

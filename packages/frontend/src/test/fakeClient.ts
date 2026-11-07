@@ -1066,6 +1066,53 @@ export class FakeApiClient implements ApiClient {
     return Promise.resolve(provider);
   }
 
+  /** Key-subscription presets (add-key-subscription-presets). Empty by default: every region
+   * ships disabled, so no other suite sees a key-preset card; a test sets the list it needs. */
+  keyPresets: import('../data/api').KeyPresetDto[] = [];
+  /** Set to make the next key-preset connect fail. */
+  keyPresetConnectRejects: ApiError | null = null;
+
+  listKeyPresets(): Promise<import('../data/api').KeyPresetDto[]> {
+    this.record('listKeyPresets');
+    return Promise.resolve(this.keyPresets);
+  }
+
+  keyPresetConnect(body: import('../data/api').KeyPresetConnectInput): Promise<ProviderDto> {
+    this.record('keyPresetConnect', body);
+    if (this.keyPresetConnectRejects) {
+      const e = this.keyPresetConnectRejects;
+      this.keyPresetConnectRejects = null;
+      return Promise.reject(e);
+    }
+    const preset = this.keyPresets.find((p) => p.id === body.preset);
+    const region = preset?.regions.find((r) => r.id === body.region);
+    // Mirror the backend: the row is pinned to the region's endpoint, carries the marker,
+    // starts with imitation off, and is never OAuth-connected.
+    const provider: ProviderDto = {
+      id: this.nextId('prov'),
+      name: body.name ?? preset?.displayName ?? body.preset,
+      kind: 'subscription',
+      protocol: 'openai_compatible',
+      baseUrl: `https://${region?.host ?? 'unknown.invalid'}/v1`,
+      status: 'unknown',
+      maxTokensSpelling: 'auto',
+      hasCredential: true,
+      oauthPreset: null,
+      keyPreset: body.preset,
+      firstByteTimeoutMs: null,
+      idleTimeoutMs: null,
+      credentialExpiresAt: null,
+      credentialError: null,
+      autoPruneUnlisted: true,
+      imitateClientIdentity: false,
+      clientIdentity: null,
+      createdAt: NOW,
+      ...UNRECORDED_HEALTH,
+    };
+    this.providers = [...this.providers, provider];
+    return Promise.resolve(provider);
+  }
+
   /** Set to make the next reauthorize start fail (add-provider-health-signals). */
   oauthReauthorizeRejects: ApiError | null = null;
 

@@ -1,6 +1,20 @@
 import 'reflect-metadata';
+import {
+  Injectable,
+  UnauthorizedException,
+  type CanActivate,
+  type ExecutionContext,
+  type INestApplication,
+} from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Test as NestTest } from '@nestjs/testing';
-import { PERSISTENCE_MAINTENANCE, PERSISTENCE_PORT } from '@polyrouter/shared/server';
+import request from 'supertest';
+import {
+  PERSISTENCE_MAINTENANCE,
+  PERSISTENCE_PORT,
+  userPrincipal,
+} from '@polyrouter/shared/server';
 import type {
   AgentInsertInput,
   BatchJobInsertInput,
@@ -12,6 +26,19 @@ import type {
   TierInsertInput,
 } from '@polyrouter/shared/server';
 import { AppModule } from '../../src/app.module';
+import { configureApp } from '../../src/app.setup';
+import type { AuthedRequest } from '../../src/auth/principal.decorator';
+import { ProvidersModule } from '../../src/providers/providers.module';
+import {
+  PROVIDER_ADAPTER_FACTORY,
+  type ProviderAdapterFactory,
+} from '../../src/providers/providers.service';
+import {
+  KEY_PRESET_LOOKUP,
+  OPENCODE_GO_PRESET,
+  type KeyPresetRegistry,
+} from '../../src/subscription-presets/key-presets';
+import { SubscriptionPresetsModule } from '../../src/subscription-presets/subscription-presets.module';
 import { DRIZZLE, PG_POOL } from '../../src/database/database.internal';
 import { DatabaseModule } from '../../src/database/database.module';
 import { DatabaseMaintenanceModule } from '../../src/database/maintenance.module';
@@ -644,5 +671,120 @@ describe('the maintenance token is a real module boundary (add-batch-inference, 
     expect(seen.size).toBeGreaterThan(10);
     expect(seen.has(DatabaseMaintenanceModule)).toBe(true); // the walk reached it via a scheduler/bootstrap module
     expect(offenders).toEqual([]);
+  });
+});
+
+// add-key-subscription-presets (task 5.4): the connect endpoint creates an ordinary
+// owner-scoped provider row, so another tenant's by-id access is indistinguishable from a
+// nonexistent id, over HTTP and at the port.
+@Injectable()
+class TestPrincipalGuard implements CanActivate {
+  canActivate(ctx: ExecutionContext): boolean {
+    const req = ctx.switchToHttp().getRequest<AuthedRequest>();
+    const u = req.headers['x-test-user'];
+    if (typeof u === 'string' && u.length > 0) {
+      req.principal = userPrincipal(u);
+      return true;
+    }
+    throw new UnauthorizedException();
+  }
+}
+
+describe('key-preset connect is tenant-isolated (add-key-subscription-presets, task 5.4)', () => {
+  let app: INestApplication;
+  let server: Parameters<typeof request>[0];
+  let factoryCalls = 0;
+
+  beforeAll(async () => {
+    process.env['NODE_ENV'] = 'test';
+    process.env['MODE'] = 'selfhosted';
+    process.env['BIND_ADDRESS'] = '127.0.0.1';
+    // Enabled only through the lookup override, with the bundled pin (never a shipped flag).
+    const registry: KeyPresetRegistry = {
+      find: (id) => (id === OPENCODE_GO_PRESET.id ? enabledGo : undefined),
+      list: () => [enabledGo],
+    };
+    const enabledGo = {
+      ...OPENCODE_GO_PRESET,
+      regions: OPENCODE_GO_PRESET.regions.map((r) => ({ ...r, enabled: true })),
+    };
+    const moduleRef = await NestTest.createTestingModule({
+      imports: [ProvidersModule, SubscriptionPresetsModule],
+      providers: [{ provide: APP_GUARD, useClass: TestPrincipalGuard }],
+    })
+      .overrideProvider(PROVIDER_ADAPTER_FACTORY)
+      .useValue((() => {
+        factoryCalls += 1;
+        throw new Error('a cross-tenant action must never build an adapter');
+      }) as unknown as ProviderAdapterFactory)
+      .overrideProvider(KEY_PRESET_LOOKUP)
+      .useValue(registry)
+      .compile();
+    app = moduleRef.createNestApplication<NestExpressApplication>();
+    configureApp(app as NestExpressApplication, { NODE_ENV: 'test' }, 'http://localhost:3000');
+    await app.init();
+    server = app.getHttpServer() as Parameters<typeof request>[0];
+  }, 60_000);
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  it('tenant B cannot see, read, test, sync, update or delete tenant A’s key-preset row', async () => {
+    const created = await request(server)
+      .post('/api/providers/key-presets/connect')
+      .set('x-test-user', alice.userId)
+      .send({ preset: 'opencode-go', credential: 'sk-tenancy-a' });
+    expect(created.status).toBe(200);
+    const id = created.body.id as string;
+    expect(created.body.keyPreset).toBe('opencode-go');
+    const before = await harness.port.providers.findById(alice.principal, id);
+    expect(before?.ownerUserId).toBe(alice.userId);
+
+    // Tenant B: the list excludes it, and every by-id action is a plain 404.
+    const asB = (t: request.Test): request.Test => t.set('x-test-user', bob.userId);
+    const list = await asB(request(server).get('/api/providers'));
+    expect((list.body as Array<{ id: string }>).map((p) => p.id)).not.toContain(id);
+    // Built lazily and awaited one at a time: supertest closes the server after each call.
+    const attempts: Array<() => request.Test> = [
+      () => request(server).get(`/api/providers/${id}`),
+      () => request(server).patch(`/api/providers/${id}`).send({ name: 'hijacked' }),
+      () => request(server).patch(`/api/providers/${id}`).send({ credential: 'stolen' }),
+      () => request(server).delete(`/api/providers/${id}`),
+      () => request(server).post(`/api/providers/${id}/test-connection`),
+      () => request(server).post(`/api/providers/${id}/sync-models`),
+    ];
+    for (const attempt of attempts) expect((await asB(attempt())).status).toBe(404);
+    expect(factoryCalls).toBe(0);
+
+    // Port level: invisible to B, untouched for A.
+    expect(await harness.port.providers.findById(bob.principal, id)).toBeNull();
+    expect(await harness.port.providers.update(bob.principal, id, { name: 'hijacked' })).toBeNull();
+    expect(await harness.port.providers.remove(bob.principal, id)).toBe(false);
+    const intact = await harness.port.providers.findById(alice.principal, id);
+    expect(intact).toMatchObject({ name: 'OpenCode Go', keyPreset: 'opencode-go' });
+    expect(intact?.encryptedCredentials).toBe(before?.encryptedCredentials);
+
+    // The owner still reads it; the connect cannot be pointed at another tenant.
+    expect(
+      (await request(server).get(`/api/providers/${id}`).set('x-test-user', alice.userId)).status,
+    ).toBe(200);
+    const forged = await request(server)
+      .post('/api/providers/key-presets/connect')
+      .set('x-test-user', bob.userId)
+      .send({ preset: 'opencode-go', credential: 'k', ownerUserId: alice.userId });
+    expect(forged.status).toBe(400);
+    const bobConnect = await request(server)
+      .post('/api/providers/key-presets/connect')
+      .set('x-test-user', bob.userId)
+      .send({ preset: 'opencode-go', credential: 'sk-tenancy-b' });
+    expect(bobConnect.status).toBe(200);
+    expect(
+      (await harness.port.providers.findById(bob.principal, bobConnect.body.id as string))
+        ?.ownerUserId,
+    ).toBe(bob.userId);
+    expect(
+      await harness.port.providers.findById(alice.principal, bobConnect.body.id as string),
+    ).toBeNull();
   });
 });

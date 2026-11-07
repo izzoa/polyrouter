@@ -272,7 +272,12 @@ export function createHttpProviderAdapter(
       bodyTimeoutMs: dispatcher.bodyTimeoutMs,
     });
   const chatUrl = joinUrl(config.baseUrl, spec.chatPath);
-  const modelsUrl = spec.modelsPath !== undefined ? joinUrl(config.baseUrl, spec.modelsPath) : null;
+  // A preset's trusted absolute listing URL (add-key-subscription-presets) replaces the joined
+  // one, and only when the spec declares a models surface at all.
+  const modelsUrl =
+    spec.modelsPath !== undefined
+      ? (config.modelsUrl ?? joinUrl(config.baseUrl, spec.modelsPath))
+      : null;
   // Computed once — base_url is fixed per adapter (add-openrouter-attribution).
   const attribution = openRouterAttributionHeaders(config.baseUrl);
 

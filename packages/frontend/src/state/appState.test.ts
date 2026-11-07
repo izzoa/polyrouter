@@ -7,6 +7,7 @@ import {
   type BudgetDto,
   type CalibrationEvent,
   type ChannelDto,
+  type KeyPresetDto,
   type ModelDto,
   type ProviderDto,
   type SemanticLearningStatus,
@@ -24,6 +25,7 @@ import {
 } from '../test/fakeClient';
 import type { ProviderForm } from '../types';
 import { FROM_DIALOG, PROVIDER_KINDS, createAppStore, type AppStore } from './appState';
+import { onSubscriptionConnect as onSubscriptionConnectFor } from './fieldChecks';
 
 describe('setup-guide dismissal', () => {
   it('dismisses, persists per browser, and honors the stored flag on the next boot', () => {
@@ -3047,5 +3049,166 @@ describe('destructive methods report to the shared dialog (adopt-red-destructive
         'The provider no longer lists it. Any tier entries using it are dropped, and rules targeting it lose their target.',
       );
     });
+  });
+});
+
+describe('key-subscription connect (add-key-subscription-presets task 9.2)', () => {
+  const KEY = 'fixture-secret-key-0123456789';
+  const preset = (over: Partial<KeyPresetDto> = {}): KeyPresetDto => ({
+    id: 'zai-coding-plan',
+    displayName: 'Z.ai GLM Coding Plan',
+    regions: [
+      { id: 'intl', label: 'International', host: 'api.z.ai', imitationRequired: false },
+      { id: 'cn', label: 'China', host: 'open.bigmodel.cn', imitationRequired: false },
+    ],
+    keyHint: null,
+    termsRisk: 'high',
+    riskCopy: 'copy',
+    termsUrl: 'https://docs.z.ai/legal-agreement/subscription-terms',
+    requiresAcknowledgement: true,
+    ...over,
+  });
+  async function open(presets: KeyPresetDto[], opts: { oauth?: boolean } = {}) {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    fake.keyPresets = presets;
+    if (opts.oauth === false) fake.oauthPresets = [];
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    s.openModal('newProvider');
+    await tick(); // the preset lists settle
+    s.setState('np', 'kind', 'sub');
+    return { fake, s };
+  }
+  const connects = (fake: FakeApiClient): Record<string, unknown>[] =>
+    fake.callLog.filter((c) => c.method === 'keyPresetConnect').map((c) => c.args[0] as never);
+
+  it('loads the list beside the OAuth presets, and an empty list is the failure fallback', async () => {
+    const { s } = await open([preset()]);
+    expect(s.state.kp.presets.map((p) => p.id)).toEqual(['zai-coding-plan']);
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    vi.spyOn(fake, 'listKeyPresets').mockRejectedValue(new ApiError(500, 'Error', 'boom'));
+    const failing = createAppStore(fake);
+    await failing.bootstrap();
+    failing.openModal('newProvider');
+    await tick();
+    expect(failing.state.kp.presets).toEqual([]);
+  });
+
+  it('clears the key on success', async () => {
+    const { s } = await open([preset()]);
+    s.chooseKeyPreset('zai-coding-plan');
+    s.setState('kp', { region: 'intl', key: KEY, ack: true });
+    await s.connectKeyPreset();
+    expect(s.state.kp.key).toBe('');
+    expect(s.state.modal).toBeNull();
+    expect(JSON.stringify(s.state)).not.toContain(KEY);
+  });
+
+  it('clears the key on a failure, keeping the form for another try', async () => {
+    const { fake, s } = await open([preset()]);
+    fake.keyPresetConnectRejects = new ApiError(422, 'Unprocessable', 'refused');
+    s.chooseKeyPreset('zai-coding-plan');
+    s.setState('kp', { region: 'intl', key: KEY, ack: true });
+    await s.connectKeyPreset();
+    expect(s.state.kp.key).toBe('');
+    expect(s.state.kp.error).toBe('refused');
+    expect(s.state.kp.preset).toBe('zai-coding-plan');
+    expect(s.state.modal).toBe('newProvider');
+    expect(JSON.stringify(s.state)).not.toContain(KEY);
+  });
+
+  it('clears the key on a client-side rejection, without a request', async () => {
+    const { fake, s } = await open([preset()]);
+    s.chooseKeyPreset('zai-coding-plan');
+    // A several-region preset with no region chosen is rejected on the field.
+    s.setState('kp', { key: KEY, ack: true });
+    await s.connectKeyPreset();
+    expect(s.state.fieldErrors['f-kp-region']).toBe('Choose a region');
+    expect(s.state.kp.key).toBe('');
+    expect(connects(fake)).toHaveLength(0);
+  });
+
+  it('does not connect a high-risk preset until acknowledged', async () => {
+    const { fake, s } = await open([preset()]);
+    s.chooseKeyPreset('zai-coding-plan');
+    s.setState('kp', { region: 'intl', key: KEY });
+    await s.connectKeyPreset();
+    expect(connects(fake)).toHaveLength(0);
+    expect(s.state.kp.key).toBe(KEY); // nothing was attempted, so nothing was cleared
+  });
+
+  it('shows the connect path with key presets only', async () => {
+    const { s } = await open([preset()], { oauth: false });
+    expect(s.state.ow.presets).toEqual([]);
+    expect(onSubscriptionConnectFor(s.state)).toBe(true);
+    const none = await open([], { oauth: false });
+    expect(onSubscriptionConnectFor(none.s.state)).toBe(false);
+  });
+
+  it('never persists the slice: no browser storage write carries the key', async () => {
+    const writes: string[] = [];
+    // Records every write and drops it: the store tolerates storage that refuses writes.
+    const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation((k, v) => {
+      writes.push(`${k}=${v}`);
+    });
+    const { s } = await open([preset()]);
+    s.chooseKeyPreset('zai-coding-plan');
+    s.setState('kp', { region: 'intl', key: KEY, ack: true });
+    await s.connectKeyPreset();
+    expect(writes.join('\n')).not.toContain(KEY);
+    expect(writes.join('\n')).not.toContain('zai-coding-plan');
+    spy.mockRestore();
+  });
+
+  it('a single listed region is the choice: its id is sent with no region check', async () => {
+    const one = preset({
+      regions: [{ id: 'intl', label: 'International', host: 'api.z.ai', imitationRequired: false }],
+    });
+    const { fake, s } = await open([one]);
+    s.chooseKeyPreset('zai-coding-plan');
+    expect(s.state.kp.region).toBe('intl');
+    s.setState('kp', { key: KEY, ack: true });
+    await s.connectKeyPreset();
+    expect(s.state.fieldErrors['f-kp-region']).toBeUndefined();
+    expect(connects(fake)).toEqual([
+      {
+        preset: 'zai-coding-plan',
+        region: 'intl',
+        credential: KEY,
+        acknowledgeTermsRisk: true,
+      },
+    ]);
+    expect(s.state.toast?.text).toContain('connected — sync models to start routing');
+  });
+
+  it('an imitation-required connect says to turn imitation on in Edit', async () => {
+    const needs = preset({
+      regions: [{ id: 'intl', label: 'International', host: 'api.z.ai', imitationRequired: true }],
+    });
+    const { s } = await open([needs]);
+    s.chooseKeyPreset('zai-coding-plan');
+    s.setState('kp', { key: KEY, ack: true });
+    await s.connectKeyPreset();
+    expect(s.state.toast?.text).toContain('turn on identity imitation in its Edit dialog');
+    expect(s.state.toast?.text).not.toContain('sync models');
+  });
+
+  it('sends only a trimmed, non-empty name and the acknowledgement only where required', async () => {
+    const low = preset({ termsRisk: 'low', requiresAcknowledgement: false });
+    const { fake, s } = await open([low]);
+    s.chooseKeyPreset('zai-coding-plan');
+    s.setState('kp', { region: 'cn', key: `  ${KEY}  `, name: '   ' });
+    await s.connectKeyPreset();
+    expect(connects(fake)).toEqual([{ preset: 'zai-coding-plan', region: 'cn', credential: KEY }]);
+  });
+
+  it('closing the modal discards the form and its key', async () => {
+    const { s } = await open([preset()]);
+    s.chooseKeyPreset('zai-coding-plan');
+    s.setState('kp', { region: 'intl', key: KEY });
+    s.closeModal();
+    expect(s.state.kp.key).toBe('');
+    expect(s.state.kp.preset).toBeNull();
+    expect(s.state.kp.presets).toHaveLength(1); // the offered list stays loaded
   });
 });

@@ -442,7 +442,7 @@ informational summary at the target, with the page link on its own line.
 - **One app replica only:** boot migrations take no advisory lock — do not `--scale app`. The dashboard's live event stream also fans out **in-process** for this reason; multi-instance fanout (Redis pub/sub) is a documented graduation, not a supported topology today.
 - **Reverse proxies must not buffer `/api/events`.** The dashboard receives live updates over Server-Sent Events on that one path. polyrouter already sends `X-Accel-Buffering: no` and `Cache-Control: no-cache, no-transform` and heartbeats every 25s (under the usual ~60s idle-reap), but if you front it with nginx/Traefik/Cloudflare you may need to disable response buffering and raise the read timeout for it (nginx: `proxy_buffering off;`). If the stream is blocked the dashboard says **Polling** instead of **Live** and keeps working on its normal refresh — you lose push, never function.
 - **Verify an install:** `scripts/selfhost-smoke.sh` runs the end-to-end smoke pass (health, admin bootstrap, live-stream drain, metadata-only persistence) against a throwaway stack.
-- **Compliance note:** using flat-rate consumer _subscriptions_ (ChatGPT Plus, Claude Max) programmatically likely violates those providers' ToS — polyrouter supports the provider kind but surfaces the risk; BYOK API keys and local models don't carry it.
+- **Compliance note:** using flat-rate consumer _subscriptions_ (ChatGPT Plus, Claude Max) programmatically likely violates those providers' ToS — polyrouter supports the provider kind but surfaces the risk. Coding-plan API keys (OpenCode Go, MiniMax M Plan, Kimi Code, Z.ai GLM Coding Plan) carry their plan's own terms risk, stated per plan when you connect ([below](#subscriptions-api-key-presets)); pay-per-token API keys and local models don't carry subscription terms risk.
 
 ### Subscriptions (OAuth)
 
@@ -502,6 +502,48 @@ Honest caveats:
   fallback provider.
 - **Key rotation:** changing `PROVIDER_CREDENTIAL_KEY` invalidates stored credentials;
   OAuth-connected providers will then ask to be reconnected.
+
+### Subscriptions (API-key presets)
+
+Four coding plans connect with a **static API key** instead of a sign-in: **OpenCode Go**,
+**MiniMax M Plan**, **Kimi Code** and **Z.ai GLM Coding Plan**. On **Add provider** →
+**Subscription**, each is a card beside the OAuth cards. Pick one, choose a region where
+there are several (Kimi and Z.ai have international and China hosts, MiniMax an
+international host), paste the key, and press **Connect**. The endpoint and protocol are
+pinned by the preset, so there is no URL to type or mistype, and the key is stored
+**encrypted at rest** and never shown again. Then **Sync models**: the preset carries no model
+ids, the models come from the provider's own listing, and Test is that listing.
+
+- **Terms risk is stated per plan.** Each card shows its level (low, medium or high), a
+  plain summary of the provider's terms and a link to them. OpenCode Go and MiniMax allow
+  other clients. Kimi Code is meant for interactive use and forbids reverse-proxy sharing,
+  non-interactive automation and altering its client identity. **Z.ai is high risk:** its
+  terms forbid aggregate and proxy use unless you hold a separate written agreement, so
+  Connect needs you to tick an acknowledgement (the server enforces it too).
+- **A key-type warning, never a block.** A key that does not match the plan's expected
+  prefix shows a caution that it may be a pay-as-you-go key, which bills your account balance
+  instead of the plan. You can still connect.
+- **Locked endpoint, editable everything else.** Edit shows the endpoint, kind and
+  protocol read-only. You can rename, rotate or clear the key, and change timeouts and
+  auto-prune. To change region, delete the provider and connect again.
+- **Honest User-Agent by default.** Every call announces `User-Agent: polyrouter/<version>`.
+  Kimi Code and Z.ai also declare an optional **Claude Code** identity that is sent only when
+  you turn on that provider's **identity imitation** switch in Edit (off by default; it
+  warns and asks you to confirm, and likely violates the provider's terms). If a region only works with imitation, its card says so
+  and the preset is rated high risk.
+- **Cost.** Subscription rows are counted as notional spend, never cash. Z.ai (international)
+  and MiniMax (international) map to the bundled price catalog, so a model the catalog prices
+  records a catalog-based notional cost; any other model falls back to a marked listed-price
+  estimate, or to unknown cost. OpenCode Go, Kimi and the China hosts have no catalog
+  mapping, so their cost is recorded as unknown and flagged, never guessed (unless the
+  provider's own listing carried a price, in which case a marked estimate is recorded).
+- **Presets ship only after live verification.** Each region is offered only once its
+  runbook has passed against a real plan key (`scripts/verify-opencode-go-key.md`,
+  `scripts/verify-minimax-key.md`, `scripts/verify-kimi-key.md`,
+  `scripts/verify-zai-key.md`). A region that has not passed is not listed, so no card
+  is offered until a region passes; **Other subscription (paste a
+  credential)** stays available for anything else.
+- **The compliance note above applies**: pair a plan with a pay-per-token fallback.
 
 ### Model lists stay current
 

@@ -399,3 +399,190 @@ describe('request_log.billed migration (database-schema, zero-cost-unbilled-erro
     expect(checks.rowCount).toBe(1); // exactly one, not re-added
   }, 60_000);
 });
+
+/** add-key-subscription-presets: the additive `provider.key_preset` column and its two
+ * CHECKs. Runs the REAL migration chain against a scratch database in two steps —
+ * everything BEFORE the key_preset migration, a seed of every provider shape, then the
+ * rest — so "existing rows read NULL and nothing else moved" is proven against rows that
+ * genuinely predate the column. */
+describe('provider.key_preset migration (database-schema, add-key-subscription-presets)', () => {
+  const databaseUrl = loadConfig<{ DATABASE_URL: string }>().DATABASE_URL;
+  const dbName = `polyrouter_mig_kp_${Math.random().toString(36).slice(2, 8)}`;
+  let admin: Pool;
+  let pool: Pool;
+  let partialDir: string;
+  const OWNER = 'u-mig-kp';
+
+  /** The migrations folder truncated just before the key_preset migration. */
+  function partialFolder(): string {
+    const full = resolveMigrationsFolder();
+    const journal = JSON.parse(readFileSync(join(full, 'meta', '_journal.json'), 'utf8')) as {
+      entries: { tag: string }[];
+    };
+    const at = journal.entries.findIndex((e) =>
+      readFileSync(join(full, `${e.tag}.sql`), 'utf8').includes('ADD COLUMN "key_preset"'),
+    );
+    if (at < 0) throw new Error('key_preset migration not found in the journal');
+    const dir = mkdtempSync(join(tmpdir(), 'polyrouter-mig-kp-'));
+    mkdirSync(join(dir, 'meta'));
+    writeFileSync(
+      join(dir, 'meta', '_journal.json'),
+      JSON.stringify({ ...journal, entries: journal.entries.slice(0, at) }),
+    );
+    for (const e of journal.entries.slice(0, at)) {
+      writeFileSync(join(dir, `${e.tag}.sql`), readFileSync(join(full, `${e.tag}.sql`)));
+    }
+    return dir;
+  }
+
+  const columnsOf = async (): Promise<string[]> =>
+    (
+      await pool.query<{ column_name: string }>(
+        `SELECT column_name FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = 'provider' ORDER BY column_name`,
+      )
+    ).rows.map((r) => r.column_name);
+  const providerRows = async (): Promise<Record<string, unknown>[]> =>
+    (await pool.query(`SELECT * FROM provider ORDER BY id`)).rows;
+  const appliedCount = async (): Promise<number> =>
+    (await pool.query<{ n: number }>(`SELECT count(*)::int AS n FROM drizzle.__drizzle_migrations`))
+      .rows[0]!.n;
+  const insertProvider = (
+    id: string,
+    kind: string,
+    protocol: string,
+    oauthPreset: string | null,
+    keyPreset?: string,
+  ): Promise<unknown> =>
+    keyPreset === undefined
+      ? pool.query(
+          `INSERT INTO provider (id, owner_user_id, name, kind, protocol, oauth_preset)
+           VALUES ($1, $2, $1, $3, $4, $5)`,
+          [id, OWNER, kind, protocol, oauthPreset],
+        )
+      : pool.query(
+          `INSERT INTO provider (id, owner_user_id, name, kind, protocol, oauth_preset, key_preset)
+           VALUES ($1, $2, $1, $3, $4, $5, $6)`,
+          [id, OWNER, kind, protocol, oauthPreset, keyPreset],
+        );
+
+  beforeAll(async () => {
+    admin = new Pool({ connectionString: adminUrl(databaseUrl), max: 1 });
+    try {
+      await admin.query(`CREATE DATABASE ${dbName}`);
+    } catch (error) {
+      throw new Error(`${COMPOSE_HINT}\n(${(error as Error).message})`);
+    }
+    pool = new Pool({ connectionString: adminUrl(databaseUrl, dbName), max: 2 });
+    partialDir = partialFolder();
+  }, 60_000);
+
+  afterAll(async () => {
+    await pool?.end();
+    await admin?.query(`DROP DATABASE IF EXISTS ${dbName} WITH (FORCE)`);
+    await admin?.end();
+    if (partialDir !== undefined) rmSync(partialDir, { recursive: true, force: true });
+  });
+
+  it('adds a nullable column and leaves every pre-existing row and column untouched', async () => {
+    await migrate(drizzle(pool), { migrationsFolder: partialDir });
+    expect(await columnsOf()).not.toContain('key_preset'); // the "before" world
+
+    await pool.query(
+      `INSERT INTO "user" (id, name, email) VALUES ($1, 'mig', 'mig-kp@example.test')`,
+      [OWNER],
+    );
+    // Every provider shape that exists before this change.
+    await insertProvider('P-api', 'api_key', 'openai_compatible', null);
+    await insertProvider('P-custom', 'custom', 'openai_compatible', null);
+    await insertProvider('P-local', 'local', 'openai_compatible', null);
+    await insertProvider('P-pasted', 'subscription', 'openai_compatible', null);
+    await insertProvider('P-oauth', 'subscription', 'anthropic_compatible', 'claude');
+
+    const colsBefore = await columnsOf();
+    const rowsBefore = await providerRows();
+    expect(rowsBefore).toHaveLength(5);
+
+    await migrate(drizzle(pool), { migrationsFolder: resolveMigrationsFolder() });
+
+    // The column: text, nullable, no default (so no row is rewritten).
+    const col = await pool.query(
+      `SELECT data_type, is_nullable, column_default FROM information_schema.columns
+       WHERE table_name = 'provider' AND column_name = 'key_preset'`,
+    );
+    expect(col.rows).toEqual([{ data_type: 'text', is_nullable: 'YES', column_default: null }]);
+    expect(await columnsOf()).toEqual([...colsBefore, 'key_preset'].sort());
+
+    // Every pre-existing row reads NULL and EVERY other value is untouched.
+    const rowsAfter = await providerRows();
+    expect(rowsAfter).toHaveLength(5);
+    for (const r of rowsAfter) expect(r['key_preset']).toBeNull();
+    expect(rowsAfter.map(({ key_preset: _keyPreset, ...rest }) => rest)).toEqual(rowsBefore);
+    expect(rowsAfter.find((r) => r['id'] === 'P-oauth')).toMatchObject({ oauth_preset: 'claude' });
+  }, 120_000);
+
+  it('the database rejects both markers on one row, and a marker on a non-subscription row', async () => {
+    const reject = (p: Promise<unknown>, constraint: string) =>
+      expect(p).rejects.toMatchObject({ code: '23514', constraint });
+
+    // Both markers on a subscription row: only the exclusivity CHECK is violated.
+    await reject(
+      insertProvider('R-both', 'subscription', 'openai_compatible', 'claude', 'kimi-code'),
+      'provider_key_preset_exclusive',
+    );
+    // A key preset on any non-subscription kind: only the kind CHECK is violated.
+    for (const kind of ['api_key', 'custom', 'local']) {
+      await reject(
+        insertProvider(`R-${kind}`, kind, 'openai_compatible', null, 'kimi-code'),
+        'provider_key_preset_subscription',
+      );
+    }
+    expect((await pool.query(`SELECT 1 FROM provider WHERE id LIKE 'R-%'`)).rowCount).toBe(0);
+
+    // The coherent shapes land: a key-preset subscription row, and the existing
+    // OAuth-only and unmarked shapes.
+    await insertProvider('K-key', 'subscription', 'openai_compatible', null, 'kimi-code');
+    await insertProvider('K-oauth', 'subscription', 'anthropic_compatible', 'claude');
+    const landed = await pool.query<{ id: string; key_preset: string | null }>(
+      `SELECT id, key_preset FROM provider WHERE id LIKE 'K-%' ORDER BY id`,
+    );
+    expect(landed.rows).toEqual([
+      { id: 'K-key', key_preset: 'kimi-code' },
+      { id: 'K-oauth', key_preset: null },
+    ]);
+
+    // An UPDATE cannot reach an incoherent state either.
+    await reject(
+      pool.query(`UPDATE provider SET oauth_preset = 'claude' WHERE id = 'K-key'`),
+      'provider_key_preset_exclusive',
+    );
+    await reject(
+      pool.query(`UPDATE provider SET kind = 'api_key' WHERE id = 'K-key'`),
+      'provider_key_preset_subscription',
+    );
+    await reject(
+      pool.query(`UPDATE provider SET key_preset = 'kimi-code' WHERE id = 'P-api'`),
+      'provider_key_preset_subscription',
+    );
+  }, 60_000);
+
+  it('a second boot-time migration run is a no-op: no error, nothing reapplied, schema unchanged', async () => {
+    const applied = await appliedCount();
+    const cols = await columnsOf();
+    const rowsBefore = await providerRows();
+    await runMigrations(drizzle(pool));
+    await runMigrations(drizzle(pool));
+    expect(await appliedCount()).toBe(applied);
+    expect(await columnsOf()).toEqual(cols);
+    expect(await providerRows()).toEqual(rowsBefore);
+    const checks = await pool.query<{ conname: string }>(
+      `SELECT conname FROM pg_constraint
+       WHERE conname IN ('provider_key_preset_exclusive', 'provider_key_preset_subscription')
+       ORDER BY conname`,
+    );
+    expect(checks.rows.map((r) => r.conname)).toEqual([
+      'provider_key_preset_exclusive',
+      'provider_key_preset_subscription',
+    ]); // exactly one each, not re-added
+  }, 60_000);
+});

@@ -14,7 +14,13 @@ import type {
   ProviderHealthPatch,
   ProviderIncarnation,
 } from '@polyrouter/shared/server';
-import { decryptSecret, resolvePlainCredentialValue } from '@polyrouter/shared/server';
+import {
+  decryptSecret,
+  encryptSecret,
+  resolvePlainCredentialValue,
+  serializePlainCredential,
+} from '@polyrouter/shared/server';
+import { KIMI_CODE_PRESET } from '../subscription-presets/key-presets';
 import {
   MAX_PARSED_MODELS,
   ProviderError,
@@ -23,6 +29,7 @@ import {
   type ProviderModelInfo,
 } from '@polyrouter/data-plane';
 import {
+  KEY_PRESET_PINNED_MESSAGE,
   ProvidersService,
   UNLISTED_PRUNE_AFTER_MS,
   type ProviderAdapterFactory,
@@ -91,6 +98,7 @@ function makePort(): FakePort {
     status: values.status ?? 'unknown',
     maxTokensSpelling: values.maxTokensSpelling ?? 'auto',
     oauthPreset: values.oauthPreset ?? null,
+    keyPreset: values.keyPreset ?? null,
     credentialExpiresAt: values.credentialExpiresAt ?? null,
     credentialError: values.credentialError ?? null,
     lastErrorKind: values.lastErrorKind ?? null,
@@ -244,6 +252,8 @@ function makePort(): FakePort {
       reconcileListing,
       pruneUnlisted,
       listForPrincipal: () => Promise.resolve([]),
+      clearListedPricingForProvider: () => Promise.resolve(),
+      clearPricingForProvider: () => Promise.resolve(),
     },
   } as unknown as PersistencePort;
   return { port, rows, upsert, reconcileListing, pruneUnlisted };
@@ -1394,6 +1404,7 @@ describe('ProvidersService — identity-imitation switch (allow-preset-client-id
         status: 'ok',
         maxTokensSpelling: 'auto',
         oauthPreset: 'stub-identity',
+        keyPreset: null,
         credentialExpiresAt: null,
         credentialError: null,
         lastErrorKind: null,
@@ -1533,5 +1544,231 @@ describe('ProvidersService — identity-imitation switch (allow-preset-client-id
     const patchedChecks = available.mock.calls.length;
     // toSafe derives the view through the same lookup (one call per returned row); no 422 probe.
     expect(patchedChecks).toBe(2);
+  });
+});
+
+// add-key-subscription-presets (task 4.3): a key-preset row is a plain pasted credential, so
+// a Test that returns 401 reports `auth` as-is — no repair claim, no forced refresh, and so
+// no token-endpoint call — and records the check with kind `auth`.
+describe('ProvidersService — Test on a key-preset row never enters the OAuth repair', () => {
+  it('a 401 makes no repair claim and no token-endpoint call and records kind auth', async () => {
+    const made = makePort();
+    const claimTestRepair = jest.fn(() => Promise.resolve(true));
+    const forceRefresh = jest.fn(() => Promise.resolve('refreshed' as const));
+    const resolveCredential = jest.fn((_p: Principal, row: ProviderRow) =>
+      Promise.resolve({
+        credential: resolvePlainCredentialValue(
+          decryptSecret(row.encryptedCredentials as string, KEY),
+        ),
+        authScheme: 'api_key' as const,
+        envelope: row.encryptedCredentials,
+      }),
+    );
+    const oauth = {
+      presetFor: () => undefined,
+      availableClientIdentity: () => null,
+      resolveCredential,
+      claimTestRepair,
+      forceRefresh,
+      requestForcedRefresh: forceRefresh,
+    } as unknown as SubscriptionOauthService;
+    const facilities = {
+      withAdvisoryLock: (_k: number, fn: (tx: PersistencePort) => Promise<unknown>) =>
+        fn(made.port),
+    } as unknown as PersistenceFacilities;
+    const testConnection = jest.fn(() =>
+      Promise.resolve({ ok: false, kind: 'auth', message: 'rejected' } as ConnectionResult),
+    );
+    const svc = new ProvidersService(
+      made.port,
+      facilities,
+      factory({ testConnection }),
+      runtime('selfhosted'),
+      oauth,
+    );
+    const region = KIMI_CODE_PRESET.regions[0]!;
+    const row = await made.port.providers.insert(principal, {
+      name: 'key-preset',
+      kind: 'subscription',
+      protocol: region.protocol,
+      baseUrl: region.baseUrl,
+      keyPreset: KIMI_CODE_PRESET.id,
+      encryptedCredentials: encryptSecret('sk-plain-key', KEY),
+      status: 'unknown',
+    });
+
+    const result = await svc.testConnection(principal, row.id);
+
+    expect(result).toMatchObject({ ok: false, kind: 'auth' });
+    expect(testConnection).toHaveBeenCalledTimes(1); // one probe, never a re-probe
+    expect(claimTestRepair).not.toHaveBeenCalled();
+    expect(forceRefresh).not.toHaveBeenCalled();
+    // The plain key resolves as an api_key credential (no bearer/OAuth scheme).
+    expect(resolveCredential).toHaveBeenCalledTimes(1);
+    const stored = made.rows.get(row.id)!;
+    expect(stored.status).toBe('error');
+    expect(stored.lastErrorKind).toBe('auth');
+    expect(stored.statusSource).toBe('test');
+    expect(stored.keyPreset).toBe(KIMI_CODE_PRESET.id);
+  });
+});
+
+describe('ProvidersService — key-preset pinned edits (add-key-subscription-presets 6.1)', () => {
+  const PIN = 'https://1.1.1.1/v1';
+
+  /** A key-preset row on a literal public IP, so the SSRF gate needs no DNS. The pin guard
+   * compares against the ROW's own endpoint, so any stored endpoint exercises it. */
+  async function setup() {
+    const made = makePort();
+    const svc = mkProvidersService(made.port, factory(), runtime('selfhosted'));
+    const row = await made.port.providers.insert(principal, {
+      name: 'preset',
+      kind: 'subscription',
+      protocol: 'openai_compatible',
+      baseUrl: PIN,
+      keyPreset: KIMI_CODE_PRESET.id,
+      encryptedCredentials: encryptSecret(serializePlainCredential('old-key'), KEY),
+      imitateClientIdentity: false,
+    });
+    const reset = jest.spyOn(made.port.providers, 'updateResettingHealth');
+    const plain = jest.spyOn(made.port.providers, 'update');
+    return { ...made, svc, row, reset, plain };
+  }
+  const key = (row: ProviderRow): string =>
+    resolvePlainCredentialValue(decryptSecret(row.encryptedCredentials as string, KEY));
+
+  it.each([
+    ['a different base_url', { baseUrl: 'https://8.8.8.8/v1' }],
+    ['a trailing-slash respelling of the pin', { baseUrl: `${PIN}/` }],
+    ['a different protocol', { protocol: 'anthropic_compatible' as const }],
+    ['a different kind', { kind: 'custom' as const }],
+    ['a drifted base_url together with a name edit', { name: 'x', baseUrl: 'https://8.8.8.8/v1' }],
+    [
+      'a drifted base_url together with a key rotation',
+      { credential: 'k2', baseUrl: 'https://8.8.8.8/v1' },
+    ],
+  ])('rejects %s with the fixed 422 and writes nothing', async (_n, dto) => {
+    const { svc, row, reset, plain, rows } = await setup();
+    const before = rows.get(row.id)!;
+    await expect(svc.update(principal, row.id, dto)).rejects.toThrow(KEY_PRESET_PINNED_MESSAGE);
+    await expect(svc.update(principal, row.id, dto)).rejects.toBeInstanceOf(
+      UnprocessableEntityException,
+    );
+    expect(reset).not.toHaveBeenCalled();
+    expect(plain).not.toHaveBeenCalled();
+    expect(rows.get(row.id)).toBe(before);
+  });
+
+  it('a drifted URL gets the pinned message, not the SSRF one, even when the new host is private', async () => {
+    const { svc, row } = await setup();
+    await expect(svc.update(principal, row.id, { baseUrl: 'http://10.0.0.1/v1' })).rejects.toThrow(
+      KEY_PRESET_PINNED_MESSAGE,
+    );
+  });
+
+  it('repeating the same endpoint (in any canonical spelling) is not drift', async () => {
+    const { svc, row, rows } = await setup();
+    await svc.update(principal, row.id, {
+      baseUrl: 'HTTPS://1.1.1.1/v1',
+      protocol: 'openai_compatible',
+      kind: 'subscription',
+      name: 'same',
+    });
+    expect(rows.get(row.id)!.name).toBe('same');
+  });
+
+  it('name, timeouts, max-tokens spelling and auto-prune edits succeed and keep the marker', async () => {
+    const { svc, row, rows, reset, plain } = await setup();
+    const view = await svc.update(principal, row.id, {
+      name: 'renamed',
+      firstByteTimeoutMs: 5000,
+      idleTimeoutMs: 6000,
+      maxTokensSpelling: 'max_tokens',
+      autoPruneUnlisted: false,
+    });
+    const stored = rows.get(row.id)!;
+    expect(stored).toMatchObject({
+      name: 'renamed',
+      firstByteTimeoutMs: 5000,
+      idleTimeoutMs: 6000,
+      maxTokensSpelling: 'max_tokens',
+      autoPruneUnlisted: false,
+      keyPreset: KIMI_CODE_PRESET.id,
+      baseUrl: PIN,
+    });
+    expect(view.keyPreset).toBe(KIMI_CODE_PRESET.id);
+    expect(plain).toHaveBeenCalledTimes(1); // no incarnation change, no health reset
+    expect(reset).not.toHaveBeenCalled();
+  });
+
+  it('a supplied key rotates as a plain credential, keeps the marker and switch, and resets health as an edit', async () => {
+    const { svc, row, rows, reset } = await setup();
+    await svc.update(principal, row.id, { credential: 'new-key', name: 'rotated' });
+    const stored = rows.get(row.id)!;
+    expect(key(stored)).toBe('new-key');
+    expect(stored.encryptedCredentials).not.toBe(row.encryptedCredentials);
+    expect(stored).toMatchObject({
+      keyPreset: KIMI_CODE_PRESET.id,
+      oauthPreset: null,
+      name: 'rotated',
+      baseUrl: PIN,
+      imitateClientIdentity: false,
+      statusSource: 'edit',
+    });
+    expect(reset).toHaveBeenCalledWith(principal, row.id, expect.anything(), 'edit');
+  });
+
+  it('a rotated key never takes the OAuth conversion branch or its advisory lock', async () => {
+    const made = makePort();
+    const lock = jest.fn((_k: number, fn: (tx: PersistencePort) => Promise<unknown>) =>
+      fn(made.port),
+    );
+    const oauth = {
+      presetFor: () => undefined,
+      availableClientIdentity: () => null,
+    } as unknown as SubscriptionOauthService;
+    const svc = new ProvidersService(
+      made.port,
+      { withAdvisoryLock: lock } as unknown as PersistenceFacilities,
+      factory(),
+      runtime('selfhosted'),
+      oauth,
+    );
+    const row = await made.port.providers.insert(principal, {
+      name: 'preset',
+      kind: 'subscription',
+      protocol: 'openai_compatible',
+      baseUrl: PIN,
+      keyPreset: KIMI_CODE_PRESET.id,
+      encryptedCredentials: encryptSecret(serializePlainCredential('old-key'), KEY),
+      imitateClientIdentity: true,
+    });
+    await svc.update(principal, row.id, { credential: 'new-key' });
+    expect(lock).not.toHaveBeenCalled();
+    const stored = made.rows.get(row.id)!;
+    // The OAuth conversion would have forced the switch false and cleared expiry metadata.
+    expect(stored.imitateClientIdentity).toBe(true);
+    expect(stored.keyPreset).toBe(KIMI_CODE_PRESET.id);
+  });
+
+  it('an explicit empty credential clears the key and keeps the marker', async () => {
+    const { svc, row, rows } = await setup();
+    const view = await svc.update(principal, row.id, { credential: '' });
+    expect(rows.get(row.id)!.encryptedCredentials).toBeNull();
+    expect(rows.get(row.id)!.keyPreset).toBe(KIMI_CODE_PRESET.id);
+    expect(view.hasCredential).toBe(false);
+    expect(view.keyPreset).toBe(KIMI_CODE_PRESET.id);
+  });
+
+  it('does not constrain an ordinary row (the guard keys on the marker)', async () => {
+    const made = makePort();
+    const svc = mkProvidersService(made.port, factory(), runtime('selfhosted'));
+    const created = await svc.create(principal, {
+      ...baseCreate,
+      kind: 'custom',
+      baseUrl: 'https://1.1.1.1/v1',
+    });
+    await svc.update(principal, created.id, { baseUrl: 'https://8.8.8.8/v1' });
+    expect(made.rows.get(created.id)!.baseUrl).toBe('https://8.8.8.8/v1');
   });
 });

@@ -377,6 +377,7 @@ const SCENARIOS: Record<string, Scenario> = {
           termsUrl: 'https://opencode.ai/v2/docs/console/go/',
           requiresAcknowledgement: false,
           declaresIdentity: false,
+          clientIdentityLabel: null,
         },
       ]);
       await flush();

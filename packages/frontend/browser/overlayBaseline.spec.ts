@@ -220,7 +220,9 @@ const BASELINE: Record<string, [number, number, number, number]> = {
   // ADDED 2026-11-09 by redesign-subscription-picker (a recorded desktop change): the provider
   // modal's picker mode, opened on Z.ai, captured on macOS. The ubuntu capture is pending (it
   // needs a CI run), so `y`/`h` carry the unmeasured default slack.
-  'modal:subscriptionPicker': [320, 90, 800, 720],
+  // RE-PINNED 2026-11-09 by add-key-preset-identity-optin (was [320, 90, 800, 720]): the Z.ai
+  // detail's identity section now holds the imitation switch, 36px taller; still centred.
+  'modal:subscriptionPicker': [320, 72, 800, 756],
   // RE-PINNED 2026-11-02 (was [480, 174, 480, 552]).
   'modal:newLimit': [480, 170, 480, 561],
   // RE-PINNED 2026-09-18 (was [480, 166, 480, 568]), same cause and same evidence as above.

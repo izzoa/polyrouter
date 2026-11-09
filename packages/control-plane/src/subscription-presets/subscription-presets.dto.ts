@@ -19,8 +19,9 @@ const NO_CONTROL_CHARS = /^[^\u0000-\u001f\u007f-\uffff]*$/;
 
 /**
  * The key-preset connect body (add-key-subscription-presets, design D7 step 1). Under the
- * global whitelist + forbid pipe these five fields are the ONLY accepted input: no
- * `baseUrl`, `protocol`, `kind`, `keyPreset` or identity switch can ride along, so a
+ * global whitelist + forbid pipe these six fields are the ONLY accepted input: no
+ * `baseUrl`, `protocol`, `kind`, `keyPreset` or identity value can ride along (the identity
+ * opt-in is a boolean, add-key-preset-identity-optin), so a
  * request can never redirect a preset's endpoint or forge its marker. `credential` is
  * CREDENTIAL MATERIAL — validated for shape here, encrypted by the service, and never
  * logged or echoed.
@@ -54,4 +55,12 @@ export class KeyPresetConnectDto {
   @ValidateIf((_, v) => v !== undefined)
   @IsBoolean()
   acknowledgeTermsRisk?: boolean;
+
+  /** The identity-imitation opt-in (add-key-preset-identity-optin, design D1): the same field
+   * and validation as the OAuth connect start. Absent means off; an explicit `null` is a 400;
+   * `true` is a 422 unless the preset declares a client identity. A boolean only — no field
+   * can name a header or its value. */
+  @ValidateIf((_, v) => v !== undefined)
+  @IsBoolean()
+  imitateClientIdentity?: boolean;
 }

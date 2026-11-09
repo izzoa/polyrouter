@@ -38,6 +38,7 @@ const ZAI: KeyPresetDto = {
   termsUrl: 'https://docs.z.ai/legal-agreement/subscription-terms',
   requiresAcknowledgement: true,
   declaresIdentity: true,
+  clientIdentityLabel: 'Claude Code',
 };
 const KIMI_ONE_REGION: KeyPresetDto = {
   id: 'kimi-code',
@@ -49,6 +50,7 @@ const KIMI_ONE_REGION: KeyPresetDto = {
   termsUrl: 'https://www.kimi.com/code/docs/en/kimi-code/community-guidelines.html',
   requiresAcknowledgement: false,
   declaresIdentity: true,
+  clientIdentityLabel: 'Claude Code',
 };
 const KIMI_IMITATION: KeyPresetDto = {
   ...KIMI_ONE_REGION,
@@ -66,6 +68,7 @@ const OPENCODE: KeyPresetDto = {
   termsUrl: 'https://opencode.ai/v2/docs/console/go/',
   requiresAcknowledgement: false,
   declaresIdentity: false,
+  clientIdentityLabel: null,
 };
 
 const mkProvider = (over: Partial<ProviderDto> = {}): ProviderDto => ({
@@ -405,17 +408,88 @@ describe('an imitation-required region says so before and after connecting', () 
   });
 });
 
-describe('the identity note', () => {
-  it('appears only for a preset that declares an identity, and names no imitated value', async () => {
+describe('a declaring key preset offers identity imitation before connect (add-key-preset-identity-optin)', () => {
+  const SWITCH = '#f-kp-imitate';
+  const CONSENT = '[role="dialog"][aria-label^="Imitate "]';
+  const box = (h: Harness): HTMLInputElement | null => h.host.querySelector(SWITCH);
+  const consent = (): HTMLElement | null => document.querySelector<HTMLElement>(CONSENT);
+  const sent = (h: Harness): Record<string, unknown>[] => connects(h.fake);
+
+  it('shows the switch, off, for Kimi and Z.ai only, and names no header value', async () => {
+    const h = await mount({ presets: SHIPPED_KEY_PRESETS.map((p) => ({ ...p })) });
+    await openConnect(h);
+    for (const id of ['kimi-code', 'zai-coding-plan']) {
+      await choosePlan(h, id);
+      expect(box(h), id).not.toBeNull();
+      expect(box(h)!.checked).toBe(false);
+      expect(labelText(h.host.querySelector(`label[for="f-kp-imitate"]`)!)).toContain(
+        'Imitate Claude Code’s client identity',
+      );
+      const detail = h.host.querySelector('.sp-detail')?.textContent ?? '';
+      expect(detail).toContain('polyrouter/<version>');
+      expect(detail).toContain('Edit dialog');
+      expect(detail).not.toMatch(/claude-c(li|ode)\//);
+    }
+    for (const id of ['opencode-go', 'minimax-m-plan']) {
+      await choosePlan(h, id);
+      expect(box(h), id).toBeNull();
+      expect(h.host.querySelector('.sp-detail')?.textContent ?? '').not.toContain(
+        'identity imitation',
+      );
+    }
+  });
+
+  it('asks first: Cancel leaves it off with focus back on the switch', async () => {
+    const h = await mount({ presets: SHIPPED_KEY_PRESETS.map((p) => ({ ...p })) });
+    await openConnect(h);
+    await choosePlan(h, 'kimi-code');
+    await tick(box(h)!, true);
+    expect(consent(), 'the confirmation opens').not.toBeNull();
+    expect(box(h)!.checked).toBe(false);
+    expect(h.store.state.kp.imitate).toBe(false);
+    buttonNamed(consent()!, 'Cancel')!.click();
+    await flush();
+    expect(consent()).toBeNull();
+    expect(box(h)!.checked).toBe(false);
+    expect(document.activeElement).toBe(box(h));
+  });
+
+  it('confirming turns it on, and Connect sends the opt-in; off sends no field', async () => {
+    const h = await mount({ presets: SHIPPED_KEY_PRESETS.map((p) => ({ ...p })) });
+    await openConnect(h);
+    await choosePlan(h, 'kimi-code');
+    await tick(box(h)!, true);
+    buttonNamed(consent()!, 'Turn on imitation')!.click();
+    await flush();
+    expect(box(h)!.checked).toBe(true);
+    // One primary action stays in the footer: the switch is a form control.
+    expect(h.host.querySelectorAll('.modal-card .btn-primary')).toHaveLength(1);
+    await type(field<HTMLInputElement>(h, 'f-kp-key')!, 'sk-kimi-fixture');
+    buttonNamed(h.host, 'Connect Kimi Code')!.click();
+    await flush();
+    expect(sent(h)[0]).toMatchObject({ preset: 'kimi-code', imitateClientIdentity: true });
+    expect(h.store.state.providers.at(-1)?.imitateClientIdentity).toBe(true);
+
+    await openConnect(h);
+    await choosePlan(h, 'kimi-code');
+    expect(box(h)!.checked, 'a new connect starts off').toBe(false);
+    await type(field<HTMLInputElement>(h, 'f-kp-key')!, 'sk-kimi-fixture-2');
+    buttonNamed(h.host, 'Connect Kimi Code')!.click();
+    await flush();
+    expect(sent(h)[1]).not.toHaveProperty('imitateClientIdentity');
+  });
+
+  it('a plan swap clears the opt-in', async () => {
     const h = await mount({ presets: SHIPPED_KEY_PRESETS.map((p) => ({ ...p })) });
     await openConnect(h);
     await choosePlan(h, 'zai-coding-plan');
-    const detail = (): string => h.host.querySelector('.sp-detail')?.textContent ?? '';
-    expect(detail()).toContain('This plan also offers identity imitation');
-    expect(detail()).toContain('polyrouter/<version>');
-    expect(detail()).not.toMatch(/claude-c(li|ode)\//);
-    await choosePlan(h, 'opencode-go');
-    expect(detail()).not.toContain('identity imitation');
+    await tick(box(h)!, true);
+    buttonNamed(consent()!, 'Turn on imitation')!.click();
+    await flush();
+    expect(box(h)!.checked).toBe(true);
+    await choosePlan(h, 'kimi-code');
+    expect(box(h)!.checked).toBe(false);
+    expect(h.store.state.kp.imitate).toBe(false);
   });
 });
 

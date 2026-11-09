@@ -3164,6 +3164,46 @@ describe('the subscription picker (redesign-subscription-picker group 3)', () =>
     expect(s.state.kp.preset).toBeNull();
   });
 
+  it('sends the identity opt-in only when on, and only for a declaring preset (add-key-preset-identity-optin)', async () => {
+    const { fake, s } = await open();
+    const sent = (): Record<string, unknown>[] =>
+      fake.callLog.filter((c) => c.method === 'keyPresetConnect').map((c) => c.args[0] as never);
+    s.choosePlan('kimi-code');
+    s.setState('kp', { key: KEY, imitate: true });
+    await s.connectKeyPreset();
+    expect(sent()[0]).toMatchObject({ preset: 'kimi-code', imitateClientIdentity: true });
+    expect(s.state.kp.imitate).toBe(false); // the form reset after the connect
+
+    s.openModal('newProvider');
+    await tick();
+    s.choosePlan('kimi-code');
+    s.setState('kp', { key: KEY });
+    await s.connectKeyPreset();
+    expect(sent()[1]).not.toHaveProperty('imitateClientIdentity');
+
+    s.openModal('newProvider');
+    await tick();
+    s.choosePlan('opencode-go');
+    s.setState('kp', { key: KEY, imitate: true }); // a stray flag on a non-declaring preset
+    await s.connectKeyPreset();
+    expect(sent()[2]).not.toHaveProperty('imitateClientIdentity');
+  });
+
+  it('clears the identity opt-in on a plan swap, a reset and Other subscription', async () => {
+    const { s } = await open();
+    s.choosePlan('zai-coding-plan');
+    s.setState('kp', 'imitate', true);
+    s.choosePlan('kimi-code');
+    expect(s.state.kp.imitate).toBe(false);
+    s.setState('kp', 'imitate', true);
+    s.resetPlanPicker();
+    expect(s.state.kp.imitate).toBe(false);
+    s.choosePlan('kimi-code');
+    s.setState('kp', 'imitate', true);
+    s.openOtherSubscription();
+    expect(s.state.kp.imitate).toBe(false);
+  });
+
   it('Other subscription and leaving the picker discard a pasted key (task 3.2)', async () => {
     const { s } = await open();
     s.choosePlan('kimi-code');
@@ -3199,6 +3239,7 @@ describe('key-subscription connect (add-key-subscription-presets task 9.2)', () 
     termsUrl: 'https://docs.z.ai/legal-agreement/subscription-terms',
     requiresAcknowledgement: true,
     declaresIdentity: true,
+    clientIdentityLabel: 'Claude Code',
     ...over,
   });
   async function open(presets: KeyPresetDto[], opts: { oauth?: boolean } = {}) {

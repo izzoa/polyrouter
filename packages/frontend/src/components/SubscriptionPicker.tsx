@@ -99,7 +99,7 @@ function PlanEntry(props: {
 /** A key preset's detail: terms risk first, then the region, name, key, acknowledgement and
  * identity note. The connect action is the picker footer's one primary. The key never leaves
  * `state.kp.key` except to the connect call, and the store clears it after every attempt. */
-function KeyPresetDetail(props: { preset: KeyPresetDto }) {
+function KeyPresetDetail(props: { preset: KeyPresetDto; onAskConsent: () => void }) {
   const app = useApp();
   const { state, setState } = app;
   const f = useFields();
@@ -225,16 +225,24 @@ function KeyPresetDetail(props: { preset: KeyPresetDto }) {
           I have read the terms and accept the risk to my {props.preset.displayName} account.
         </label>
       </Show>
-      <Show when={props.preset.declaresIdentity}>
-        <div class="sp-group-tight">
-          <div class="field-label">Identity</div>
-          <div class="t-dense" style="color:var(--text2)">
-            polyrouter sends its own{' '}
-            <span class="mono">User-Agent: polyrouter/&lt;version&gt;</span>. This plan also offers
-            identity imitation, a per-provider switch that stays off unless you turn it on after
-            connecting.
+      <Show when={props.preset.clientIdentityLabel} keyed>
+        {(label) => (
+          <div class="sp-group-tight" data-key-identity>
+            <div class="field-label">Identity</div>
+            <div class="t-dense" style="color:var(--text2)">
+              polyrouter sends its own{' '}
+              <span class="mono">User-Agent: polyrouter/&lt;version&gt;</span> unless you turn on
+              identity imitation. You can also change this later in the provider’s Edit dialog.
+            </div>
+            <IdentitySwitch
+              id="f-kp-imitate"
+              label={label}
+              checked={state.kp.imitate}
+              onAsk={props.onAskConsent}
+              onOff={() => setState('kp', 'imitate', false)}
+            />
           </div>
-        </div>
+        )}
       </Show>
       <Show when={state.kp.error}>
         <div role="alert" class="t-caption" style="color:var(--red-text)">
@@ -345,6 +353,9 @@ function OauthDetail(props: {
 export function SubscriptionPicker(props: {
   connecting: BusyMap;
   onAskConsent: () => void;
+  /** Opens the identity-imitation consent for the chosen key preset
+   * (add-key-preset-identity-optin D3); confirming sets `kp.imitate`. */
+  onAskKeyConsent: () => void;
   onChangeKind: () => void;
 }) {
   const app = useApp();
@@ -523,7 +534,7 @@ export function SubscriptionPicker(props: {
             </Show>
           </div>
           <Show when={chosenKey()} keyed>
-            {(p) => <KeyPresetDetail preset={p} />}
+            {(p) => <KeyPresetDetail preset={p} onAskConsent={props.onAskKeyConsent} />}
           </Show>
           <Show when={chosenOauth()} keyed>
             {(p) => (

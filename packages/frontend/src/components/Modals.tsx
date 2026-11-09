@@ -66,7 +66,7 @@ export function Modals() {
   // allow-preset-client-identity: which identity switch the consent confirmation was opened
   // from (the edit modal's or the connect wizard's identity step), or none. Local: it lives and
   // dies with the modal, and the confirmation only ever sets form state.
-  const [consent, setConsent] = createSignal<'edit' | 'connect' | null>(null);
+  const [consent, setConsent] = createSignal<'edit' | 'connect' | 'key' | null>(null);
   // redesign-subscription-picker D4: "Change kind" suspends the picker and shows the standard
   // card with Subscription still selected; choosing any kind clears it.
   const [kindOpen, setKindOpen] = createSignal(false);
@@ -273,6 +273,7 @@ export function Modals() {
                   <SubscriptionPicker
                     connecting={connecting}
                     onAskConsent={() => setConsent('connect')}
+                    onAskKeyConsent={() => setConsent('key')}
                     onChangeKind={() => {
                       app.resetPlanPicker();
                       setKindOpen(true);
@@ -1234,13 +1235,24 @@ export function Modals() {
               {(from) => (
                 <IdentityConsent
                   label={
-                    (from === 'edit' ? state.np.clientIdentity?.label : state.ow.identity?.label) ??
-                    ''
+                    (from === 'edit'
+                      ? state.np.clientIdentity?.label
+                      : from === 'key'
+                        ? state.kp.presets.find((p) => p.id === state.kp.preset)
+                            ?.clientIdentityLabel
+                        : state.ow.identity?.label) ?? ''
                   }
-                  switchId={from === 'edit' ? 'f-np-imitate' : 'f-ow-imitate'}
+                  switchId={
+                    from === 'edit'
+                      ? 'f-np-imitate'
+                      : from === 'key'
+                        ? 'f-kp-imitate'
+                        : 'f-ow-imitate'
+                  }
                   onCancel={() => setConsent(null)}
                   onConfirm={() => {
                     if (from === 'edit') setState('np', 'imitateClientIdentity', true);
+                    else if (from === 'key') setState('kp', 'imitate', true);
                     else setState('ow', 'identity', (i) => (i ? { ...i, optIn: true } : i));
                     setConsent(null);
                   }}

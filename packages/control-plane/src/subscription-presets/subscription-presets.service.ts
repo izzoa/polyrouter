@@ -51,9 +51,12 @@ export interface KeyPresetDto {
   termsUrl: string;
   requiresAcknowledgement: boolean;
   /** Whether the preset declares an optional client identity (redesign-subscription-picker
-   * D3): a boolean only, so the picker can say the identity-imitation switch exists. Never the
-   * identity's label, header name or value — the switch itself lives in Edit. */
+   * D3): a boolean only, never a header name or value. */
   declaresIdentity: boolean;
+  /** The declared identity's display label ("Claude Code"), or null
+   * (add-key-preset-identity-optin D3): the consent copy names the imitated client. A label is
+   * display data, never a header name or value. */
+  clientIdentityLabel: string | null;
 }
 
 /** Whether connecting this preset needs `acknowledgeTermsRisk: true` — a `high` preset, or
@@ -79,6 +82,7 @@ function toDto(preset: KeyPreset, offered: readonly KeyPresetRegion[]): KeyPrese
     termsUrl: preset.termsUrl,
     requiresAcknowledgement: ack,
     declaresIdentity: preset.clientIdentity !== undefined,
+    clientIdentityLabel: preset.clientIdentity?.label ?? null,
   };
 }
 
@@ -135,6 +139,15 @@ export class SubscriptionPresetsService {
       region = named;
     }
 
+    // The identity opt-in (add-key-preset-identity-optin, design D1): an opt-in the preset
+    // cannot honour is a 422 BEFORE any write, exactly as on the OAuth connect start, and
+    // before the acknowledgement so the error names the identity problem.
+    if (dto.imitateClientIdentity === true && preset.clientIdentity === undefined) {
+      throw new UnprocessableEntityException(
+        'client identity imitation is not available for this provider',
+      );
+    }
+
     // The high-risk acknowledgement (design D8): enforced here, never only in the UI, and
     // never stored.
     if (requiresAck(preset, offered) && dto.acknowledgeTermsRisk !== true) {
@@ -156,6 +169,7 @@ export class SubscriptionPresetsService {
       protocol: region.protocol,
       baseUrl,
       keyPreset: preset.id,
+      imitateClientIdentity: dto.imitateClientIdentity === true,
       // WRAPPED as a plain typed credential: a pasted `polycred:v1:` lookalike can never
       // forge an OAuth envelope (add-subscription-oauth).
       encryptedCredentials: encryptSecret(serializePlainCredential(dto.credential), this.key),

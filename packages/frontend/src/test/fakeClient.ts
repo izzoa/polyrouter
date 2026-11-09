@@ -608,6 +608,7 @@ export const SHIPPED_KEY_PRESETS: readonly import('../data/api').KeyPresetDto[] 
     termsUrl: 'https://opencode.ai/v2/docs/console/go/',
     requiresAcknowledgement: false,
     declaresIdentity: false,
+    clientIdentityLabel: null,
   },
   {
     id: 'minimax-m-plan',
@@ -625,6 +626,7 @@ export const SHIPPED_KEY_PRESETS: readonly import('../data/api').KeyPresetDto[] 
     termsUrl: 'https://platform.minimax.io/docs/m-plan/faq',
     requiresAcknowledgement: false,
     declaresIdentity: false,
+    clientIdentityLabel: null,
   },
   {
     id: 'kimi-code',
@@ -646,6 +648,7 @@ export const SHIPPED_KEY_PRESETS: readonly import('../data/api').KeyPresetDto[] 
     termsUrl: 'https://www.kimi.com/code/docs/en/kimi-code/community-guidelines.html',
     requiresAcknowledgement: false,
     declaresIdentity: true,
+    clientIdentityLabel: 'Claude Code',
   },
   {
     id: 'zai-coding-plan',
@@ -670,6 +673,7 @@ export const SHIPPED_KEY_PRESETS: readonly import('../data/api').KeyPresetDto[] 
     termsUrl: 'https://docs.z.ai/legal-agreement/subscription-terms',
     requiresAcknowledgement: true,
     declaresIdentity: true,
+    clientIdentityLabel: 'Claude Code',
   },
 ];
 
@@ -1176,7 +1180,8 @@ export class FakeApiClient implements ApiClient {
     const preset = this.keyPresets.find((p) => p.id === body.preset);
     const region = preset?.regions.find((r) => r.id === body.region);
     // Mirror the backend: the row is pinned to the region's endpoint, carries the marker,
-    // starts with imitation off, and is never OAuth-connected.
+    // takes the identity opt-in (add-key-preset-identity-optin; off when absent), names a
+    // declaring preset's identity label, and is never OAuth-connected.
     const provider: ProviderDto = {
       id: this.nextId('prov'),
       name: body.name ?? preset?.displayName ?? body.preset,
@@ -1193,8 +1198,11 @@ export class FakeApiClient implements ApiClient {
       credentialExpiresAt: null,
       credentialError: null,
       autoPruneUnlisted: true,
-      imitateClientIdentity: false,
-      clientIdentity: null,
+      imitateClientIdentity: body.imitateClientIdentity === true,
+      clientIdentity:
+        preset?.clientIdentityLabel !== null && preset?.clientIdentityLabel !== undefined
+          ? { label: preset.clientIdentityLabel }
+          : null,
       createdAt: NOW,
       ...UNRECORDED_HEALTH,
     };

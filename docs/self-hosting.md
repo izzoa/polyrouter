@@ -531,8 +531,9 @@ ids, the models come from the provider's own listing, and Test is that listing.
   auto-prune. To change region, delete the provider and connect again.
 - **Honest User-Agent by default.** Every call announces `User-Agent: polyrouter/<version>`.
   Kimi Code and Z.ai also declare an optional **Claude Code** identity that is sent only when
-  you turn on that provider's **identity imitation** switch in Edit (off by default; it
-  warns and asks you to confirm, and likely violates the provider's terms). If a region only
+  you turn on that provider's **identity imitation** switch — in the plan's detail when you
+  connect it, or later in Edit (off by default either way; it warns and asks you to confirm,
+  and likely violates the provider's terms). If a region only
   works with imitation, its list entry and detail say so and the preset is rated high risk.
 - **Cost.** Subscription rows are counted as notional spend, never cash. Z.ai (international)
   and MiniMax (international) map to the bundled price catalog, so a model the catalog prices

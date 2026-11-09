@@ -254,6 +254,9 @@ export interface KeyPresetDto {
   /** Whether the preset declares an optional client identity (redesign-subscription-picker D3):
    * a boolean only, so the picker can say the identity-imitation switch exists in Edit. */
   declaresIdentity: boolean;
+  /** The declared identity's display label ("Claude Code"), or null
+   * (add-key-preset-identity-optin D3): the consent copy names the imitated client. */
+  clientIdentityLabel: string | null;
 }
 
 /** The key-preset connect body. `credential` is key material: sent once, never stored. */
@@ -263,6 +266,8 @@ export interface KeyPresetConnectInput {
   name?: string;
   credential: string;
   acknowledgeTermsRisk?: boolean;
+  /** The consented identity opt-in (add-key-preset-identity-optin); sent only when true. */
+  imitateClientIdentity?: boolean;
 }
 
 export interface OauthStartResult {

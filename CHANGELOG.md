@@ -15,6 +15,10 @@ heading is started.
 
 ## [Unreleased]
 
+### Changed
+
+- **Kimi Code and Z.ai offer the identity-imitation switch when you connect them, not only in Edit afterwards.** The plan's detail in Add provider → Subscription shows the same switch, off, behind the same confirmation, and Connect sends your choice, so the new provider's first Test already uses it. `POST /api/providers/key-presets/connect` accepts an optional `imitateClientIdentity` (as the OAuth sign-in start does; refused for a plan that declares no identity), and the key-preset list gains `clientIdentityLabel`. No migration and no new configuration.
+
 ## [0.29.0] — 2026-11-09
 
 [Release](https://github.com/izzoa/polyrouter/releases/tag/v0.29.0) ·

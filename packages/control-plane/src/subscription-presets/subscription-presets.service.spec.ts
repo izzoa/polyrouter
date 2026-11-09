@@ -188,10 +188,20 @@ describe('SubscriptionPresetsService.connect: success', () => {
       baseUrl: 'https://api.kimi.ai/coding/v1',
       keyPreset: 'kimi-code',
     });
-    // No identity switch, acknowledgement or token spelling rides along.
+    // No acknowledgement or token spelling rides along; the identity switch is written
+    // explicitly, off without the opt-in (add-key-preset-identity-optin).
     expect(Object.keys(v).sort()).toEqual(
-      ['baseUrl', 'encryptedCredentials', 'keyPreset', 'kind', 'name', 'protocol'].sort(),
+      [
+        'baseUrl',
+        'encryptedCredentials',
+        'imitateClientIdentity',
+        'keyPreset',
+        'kind',
+        'name',
+        'protocol',
+      ].sort(),
     );
+    expect(v.imitateClientIdentity).toBe(false);
     const stored = v.encryptedCredentials as string;
     expect(stored).not.toContain('sk-kimi-abc');
     expect(parseCredentialEnvelope(decryptSecret(stored, KEY))).toEqual({
@@ -268,6 +278,82 @@ describe('SubscriptionPresetsService.connect: success', () => {
   });
 });
 
+describe('SubscriptionPresetsService.connect: the identity opt-in (add-key-preset-identity-optin)', () => {
+  const reg = registryOf(
+    withRegions(KIMI_CODE_PRESET, { intl: ON }),
+    withRegions(OPENCODE_GO_PRESET, { default: ON }),
+    withRegions(MINIMAX_M_PLAN_PRESET, { intl: ON }),
+    withRegions(ZAI_CODING_PLAN_PRESET, { intl: ON }),
+  );
+
+  it('stores the opt-in for a preset that declares an identity', async () => {
+    const h = harness(reg);
+    await h.svc.connect(alice, dto({ preset: 'kimi-code', imitateClientIdentity: true }));
+    expect(h.insert.mock.calls[0]![1].imitateClientIdentity).toBe(true);
+    await h.svc.connect(
+      alice,
+      dto({ preset: 'zai-coding-plan', acknowledgeTermsRisk: true, imitateClientIdentity: true }),
+    );
+    expect(h.insert.mock.calls[1]![1].imitateClientIdentity).toBe(true);
+  });
+
+  it('stores the switch off when the opt-in is absent or false', async () => {
+    const h = harness(reg);
+    await h.svc.connect(alice, dto({ preset: 'kimi-code' }));
+    await h.svc.connect(alice, dto({ preset: 'kimi-code', imitateClientIdentity: false }));
+    expect(h.insert.mock.calls.map((c) => c[1].imitateClientIdentity)).toEqual([false, false]);
+  });
+
+  it.each(['opencode-go', 'minimax-m-plan'])(
+    'refuses the opt-in for %s, which declares no identity, before any write',
+    async (preset) => {
+      const h = harness(reg);
+      await expect(
+        h.svc.connect(alice, dto({ preset, imitateClientIdentity: true })),
+      ).rejects.toThrow('client identity imitation is not available for this provider');
+      expect(h.insert).not.toHaveBeenCalled();
+      expect(gate).not.toHaveBeenCalled();
+    },
+  );
+
+  it('names the identity problem before the acknowledgement', async () => {
+    const { clientIdentity: _dropped, ...zaiWithout } = withRegions(ZAI_CODING_PLAN_PRESET, {
+      intl: ON,
+    });
+    const zaiNoIdentity = registryOf(zaiWithout);
+    const h = harness(zaiNoIdentity);
+    await expect(
+      h.svc.connect(alice, dto({ preset: 'zai-coding-plan', imitateClientIdentity: true })),
+    ).rejects.toThrow('client identity imitation is not available for this provider');
+  });
+
+  it('the DTO pipe turns a null opt-in into a 400', async () => {
+    const pipe = new ValidationPipe({
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
+    });
+    await expect(
+      pipe.transform(
+        { preset: 'kimi-code', credential: 'k', imitateClientIdentity: null },
+        { type: 'body', metatype: KeyPresetConnectDto },
+      ),
+    ).rejects.toMatchObject({ status: 400 });
+    await expect(
+      pipe.transform(
+        { preset: 'kimi-code', credential: 'k', imitateClientIdentity: true },
+        { type: 'body', metatype: KeyPresetConnectDto },
+      ),
+    ).resolves.toMatchObject({ imitateClientIdentity: true });
+    await expect(
+      pipe.transform(
+        { preset: 'kimi-code', credential: 'k', userAgent: 'claude-code/1' },
+        { type: 'body', metatype: KeyPresetConnectDto },
+      ),
+    ).rejects.toMatchObject({ status: 400 });
+  });
+});
+
 describe('SubscriptionPresetsService.listAvailable', () => {
   it('lists only offered regions, host-only, with no URL beyond the terms link and no identity', () => {
     const h = harness(
@@ -285,9 +371,12 @@ describe('SubscriptionPresetsService.listAvailable', () => {
     const json = JSON.stringify(list);
     expect(json).not.toContain('inference/go/v1/models');
     expect(json).not.toContain('https://api.kimi.ai');
-    expect(json).not.toMatch(/clientIdentity|apiHeaders|User-Agent|claude-|label":"Claude/);
+    // No identity VALUE: the `clientIdentityLabel` display name is allowed (D3), header names
+    // and values are not.
+    expect(json).not.toMatch(/"clientIdentity"|apiHeaders|User-Agent|claude-c(?:ode|li)\//);
     expect(Object.keys(list[0]!).sort()).toEqual(
       [
+        'clientIdentityLabel',
         'declaresIdentity',
         'displayName',
         'id',
@@ -309,6 +398,16 @@ describe('SubscriptionPresetsService.listAvailable', () => {
       'minimax-m-plan': false,
       'kimi-code': true,
       'zai-coding-plan': true,
+    });
+    // add-key-preset-identity-optin D3: the label names the client for the consent copy.
+    const labels = Object.fromEntries(
+      h.svc.listAvailable().map((p) => [p.id, p.clientIdentityLabel]),
+    );
+    expect(labels).toEqual({
+      'opencode-go': null,
+      'minimax-m-plan': null,
+      'kimi-code': 'Claude Code',
+      'zai-coding-plan': 'Claude Code',
     });
     // The fixture really declares identity values, so their absence below is not vacuous.
     expect(KIMI_CODE_PRESET.clientIdentity?.apiHeaders['User-Agent']).toMatch(/^claude-code\//);
@@ -419,7 +518,8 @@ describe('KeyPresetConnectDto validation (global whitelist + forbid)', () => {
     ['protocol', { preset: 'p', credential: 'k', protocol: 'openai_compatible' }],
     ['kind', { preset: 'p', credential: 'k', kind: 'api_key' }],
     ['keyPreset', { preset: 'p', credential: 'k', keyPreset: 'zai-coding-plan' }],
-    ['imitateClientIdentity', { preset: 'p', credential: 'k', imitateClientIdentity: true }],
+    ['a null imitateClientIdentity', { preset: 'p', credential: 'k', imitateClientIdentity: null }],
+    ['a userAgent field', { preset: 'p', credential: 'k', userAgent: 'claude-code/1' }],
   ];
   it.each(bad)('rejects %s', async (_n, body) => {
     await expect(run(body)).rejects.toMatchObject({ status: 400 });

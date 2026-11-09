@@ -453,6 +453,9 @@ export interface AppState {
     key: string;
     /** The terms-risk acknowledgement; starts unchecked. */
     ack: boolean;
+    /** The identity-imitation opt-in (add-key-preset-identity-optin D2): off, set only by the
+     * consent confirmation, cleared with the rest of the form. */
+    imitate: boolean;
     busy: boolean;
     error: string | null;
   };
@@ -848,6 +851,7 @@ function emptyKp(presets: KeyPresetDto[]): AppState['kp'] {
     name: '',
     key: '',
     ack: false,
+    imitate: false,
     busy: false,
     error: null,
   };
@@ -1767,6 +1771,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       name: '',
       key: '',
       ack: false,
+      imitate: false,
       error: null,
     });
     setState('ow', { error: null, identity: null });
@@ -1787,7 +1792,15 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     }
     const first = ids[0];
     if (first === undefined) {
-      setState('kp', { preset: null, region: '', name: '', key: '', ack: false, error: null });
+      setState('kp', {
+        preset: null,
+        region: '',
+        name: '',
+        key: '',
+        ack: false,
+        imitate: false,
+        error: null,
+      });
       setState('sp', emptySp());
       return;
     }
@@ -4286,13 +4299,22 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         name: '',
         key: '',
         ack: false,
+        imitate: false,
         error: null,
       });
     },
     cancelKeyPreset: () => {
       if (state.kp.busy) return;
       clearFields(['f-kp-key', 'f-kp-region']);
-      setState('kp', { preset: null, region: '', name: '', key: '', ack: false, error: null });
+      setState('kp', {
+        preset: null,
+        region: '',
+        name: '',
+        key: '',
+        ack: false,
+        imitate: false,
+        error: null,
+      });
     },
     connectKeyPreset: async () => {
       const kp = state.kp;
@@ -4319,6 +4341,8 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           ...(name !== '' ? { name } : {}),
           credential,
           ...(preset.requiresAcknowledgement ? { acknowledgeTermsRisk: true } : {}),
+          // Sent only when on, and only for a preset that declares an identity: absent means off.
+          ...(kp.imitate && preset.declaresIdentity ? { imitateClientIdentity: true } : {}),
         });
         setState(
           produce((s) => {

@@ -231,8 +231,8 @@ describe('key-preset connect and list (e2e)', () => {
 
   it('a Kimi or Z.ai connect names the Claude Code identity label, with imitation off and no header value', async () => {
     // Design D7 step 6: the safe view carries the availability LABEL (so the SPA can show
-    // the Edit switch without a reload) and never a header name or value; a new row starts
-    // with the switch off and the connect accepts no field that turns it on.
+    // the Edit switch without a reload) and never a header name or value; a new row without
+    // the opt-in starts with the switch off.
     for (const body of [
       { preset: 'kimi-code', region: 'intl', credential: 'sk-kimi-id-1' },
       { preset: 'kimi-code', region: 'cn', credential: 'sk-kimi-id-2' },
@@ -252,6 +252,38 @@ describe('key-preset connect and list (e2e)', () => {
         /claude-code\/|claude-cli|User-Agent|apiHeaders/i,
       );
     }
+  });
+
+  it('an opted-in Kimi or Z.ai connect creates the provider with the switch on (add-key-preset-identity-optin)', async () => {
+    for (const body of [
+      {
+        preset: 'kimi-code',
+        region: 'intl',
+        credential: 'sk-kimi-opt-1',
+        imitateClientIdentity: true,
+      },
+      {
+        preset: 'zai-coding-plan',
+        region: 'intl',
+        credential: 'zai-opt-2',
+        acknowledgeTermsRisk: true,
+        imitateClientIdentity: true,
+      },
+    ]) {
+      const res = await connect(body);
+      expect(res.status).toBe(200);
+      expect(res.body.imitateClientIdentity).toBe(true);
+      expect(res.body.clientIdentity).toEqual({ label: 'Claude Code' });
+      expect((await row(res.body.id as string))['imitate_client_identity']).toBe(true);
+      expect(JSON.stringify(res.body)).not.toMatch(/claude-code\/|claude-cli|User-Agent/i);
+    }
+    const off = await connect({
+      preset: 'kimi-code',
+      region: 'intl',
+      credential: 'sk-kimi-opt-3',
+      imitateClientIdentity: false,
+    });
+    expect(off.body.imitateClientIdentity).toBe(false);
   });
 
   describe('invalid input writes nothing', () => {
@@ -281,9 +313,31 @@ describe('key-preset connect and list (e2e)', () => {
         { preset: 'opencode-go', credential: 'k', keyPreset: 'zai-coding-plan' },
         400,
       ],
+      // add-key-preset-identity-optin: the opt-in is a boolean the connect accepts, so a null
+      // is a 400 and an opt-in the preset cannot honour is a 422; header fields stay unknown.
       [
-        'an imitation switch',
+        'a null imitation opt-in',
+        { preset: 'opencode-go', credential: 'k', imitateClientIdentity: null },
+        400,
+      ],
+      [
+        'an imitation opt-in for a preset that declares no identity',
         { preset: 'opencode-go', credential: 'k', imitateClientIdentity: true },
+        422,
+      ],
+      [
+        'a clientIdentity field',
+        { preset: 'kimi-code', region: 'intl', credential: 'k', clientIdentity: { label: 'x' } },
+        400,
+      ],
+      [
+        'a userAgent field',
+        { preset: 'kimi-code', region: 'intl', credential: 'k', userAgent: 'claude-code/1' },
+        400,
+      ],
+      [
+        'an extraHeaders field',
+        { preset: 'kimi-code', region: 'intl', credential: 'k', extraHeaders: { a: 'b' } },
         400,
       ],
       ['an over-long name', { preset: 'opencode-go', credential: 'k', name: 'x'.repeat(81) }, 400],
@@ -473,6 +527,7 @@ describe('key-preset connect and list (e2e)', () => {
       for (const p of list) {
         expect(Object.keys(p).sort()).toEqual(
           [
+            'clientIdentityLabel',
             'declaresIdentity',
             'displayName',
             'id',
@@ -487,11 +542,19 @@ describe('key-preset connect and list (e2e)', () => {
       }
       const json = JSON.stringify(list);
       expect(json).not.toContain('inference/go/v1/models');
-      expect(json).not.toMatch(/clientIdentity|apiHeaders|User-Agent|credential/i);
-      // Kimi and Z.ai DO declare an identity in this registry (7.1): none of it is listed.
+      // The `clientIdentityLabel` display name is allowed (add-key-preset-identity-optin D3); an
+      // identity object, header name or value, or a credential is not.
+      expect(json).not.toMatch(
+        /"clientIdentity"|apiHeaders|User-Agent|credential|claude-c(?:ode|li)\//i,
+      );
+      // Kimi and Z.ai DO declare an identity in this registry (7.1): no header value of it is
+      // listed, only its display label, and only as `clientIdentityLabel`.
       expect(KIMI_CODE_PRESET.clientIdentity).toBeDefined();
       expect(ZAI_CODING_PLAN_PRESET.clientIdentity).toBeDefined();
-      expect(json).not.toMatch(/claude-code\/|claude-cli|Claude Code/);
+      expect(json).not.toMatch(/claude-code\/|claude-cli/);
+      expect(json.match(/Claude Code/g) ?? []).toHaveLength(
+        list.filter((p) => p['clientIdentityLabel'] === 'Claude Code').length,
+      );
       // The only URLs are the terms links.
       const urls = json.match(/https?:\/\/[^"\s]+/g) ?? [];
       const terms = KEY_PRESETS.map((p) => p.termsUrl);

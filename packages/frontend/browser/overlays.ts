@@ -160,6 +160,20 @@ export const SURFACES: readonly Surface[] = [
     },
   })),
   {
+    // redesign-subscription-picker: the provider modal's picker mode — the 800px card (92vw at
+    // most) with its plan list and the chosen plan's detail, the bottom sheet below `narrow`.
+    // Opened on Z.ai, the tallest detail: regions, key note, acknowledgement and identity note.
+    name: 'modal:subscriptionPicker',
+    sel: '.modal-card',
+    open: async (page) => {
+      await store(page, 'openModal', 'newProvider');
+      await store(page, 'setState', 'np', 'kind', 'sub');
+      await page.waitForSelector('.modal-card--picker .sp-entry[data-plan="zai-coding-plan"]');
+      await store(page, 'choosePlan', 'zai-coding-plan');
+      await page.waitForSelector('.modal-card--picker [data-key-preset-form]');
+    },
+  },
+  {
     name: 'confirm:bodyCapture',
     sel: '[aria-label="Confirm body capture"]',
     open: async (page) => {

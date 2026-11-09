@@ -796,8 +796,13 @@ test.describe('selecting moves nothing (1440x900, task 6.1)', () => {
   test('the provider-kind cards and the registration mode', async ({ page }) => {
     await open(page, '/browser-harness.html#/providers');
     await store(page, 'openModal', 'newProvider');
+    // Subscription opens the plan picker in place of the kind grid (redesign-subscription-
+    // picker), so the in-place selection is swept across the other three kinds.
     expect(
-      await sweep(page, '.modal-card .kind-card[aria-pressed]', { min: 4, relative: true }),
+      await sweep(page, '.modal-card .kind-card[aria-pressed]:not([data-kind="sub"])', {
+        min: 3,
+        relative: true,
+      }),
     ).toEqual([]);
     await store(page, 'closeModal');
     await store(page, 'go', 'setup');

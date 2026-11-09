@@ -590,6 +590,89 @@ interface DeferredCall<T> {
   input: T;
 }
 
+/** The key-preset list as the server returns it for the shipped registry
+ * (`GET /api/providers/key-presets/available`; redesign-subscription-picker task 1.4). Display
+ * data only, mirrored from `key-presets.ts`: no URL beyond the host and no identity value. */
+export const SHIPPED_KEY_PRESETS: readonly import('../data/api').KeyPresetDto[] = [
+  {
+    id: 'opencode-go',
+    displayName: 'OpenCode Go',
+    regions: [
+      { id: 'default', label: 'OpenCode Go', host: 'opencode.ai', imitationRequired: false },
+    ],
+    keyHint: null,
+    termsRisk: 'low',
+    riskCopy:
+      'OpenCode Go is open to other coding agents that send typical coding traffic. Check the ' +
+      'plan terms for usage limits before relying on it.',
+    termsUrl: 'https://opencode.ai/v2/docs/console/go/',
+    requiresAcknowledgement: false,
+    declaresIdentity: false,
+  },
+  {
+    id: 'minimax-m-plan',
+    displayName: 'MiniMax M Plan',
+    regions: [
+      { id: 'intl', label: 'International', host: 'api.minimax.io', imitationRequired: false },
+      { id: 'cn', label: 'China', host: 'api.minimaxi.com', imitationRequired: false },
+    ],
+    keyHint: null,
+    termsRisk: 'low',
+    riskCopy:
+      'MiniMax M Plan is for individual, interactive use with any tool that speaks its ' +
+      'protocols. Use a Coding Plan key: a pay-as-you-go key bills your balance instead of the ' +
+      'plan. MiniMax’s general terms may add limits beyond the plan docs.',
+    termsUrl: 'https://platform.minimax.io/docs/m-plan/faq',
+    requiresAcknowledgement: false,
+    declaresIdentity: false,
+  },
+  {
+    id: 'kimi-code',
+    displayName: 'Kimi Code',
+    regions: [
+      { id: 'intl', label: 'International', host: 'api.kimi.ai', imitationRequired: false },
+      { id: 'cn', label: 'China', host: 'api.kimi.com', imitationRequired: false },
+    ],
+    keyHint: {
+      prefix: 'sk-kimi-',
+      note: 'Kimi Code keys start with sk-kimi-. A key that does not may be a different Moonshot key.',
+    },
+    termsRisk: 'medium',
+    riskCopy:
+      'Kimi Code is meant for interactive use. Its guidelines forbid reverse-proxy sharing, ' +
+      'non-interactive automation and altering the client identity it sees, and they name ' +
+      'high-risk agents as harmful. A personal router may count as automation, so unattended ' +
+      'traffic (model refresh, fallbacks, auto routing) can put the account at risk.',
+    termsUrl: 'https://www.kimi.com/code/docs/en/kimi-code/community-guidelines.html',
+    requiresAcknowledgement: false,
+    declaresIdentity: true,
+  },
+  {
+    id: 'zai-coding-plan',
+    displayName: 'Z.ai GLM Coding Plan',
+    regions: [
+      { id: 'intl', label: 'International', host: 'api.z.ai', imitationRequired: false },
+      { id: 'cn', label: 'China', host: 'open.bigmodel.cn', imitationRequired: false },
+    ],
+    keyHint: {
+      prefix: null,
+      note:
+        'Use a Personal Coding Plan (or Team Plan) key. For keys created since 2026-10-16 the ' +
+        'key type, not the endpoint, decides billing, so a pay-as-you-go key bills your balance. ' +
+        'An older Compatible key bills plan quota only if the account has ever had a Coding Plan.',
+    },
+    termsRisk: 'high',
+    riskCopy:
+      'Z.ai’s subscription terms forbid aggregate and proxy use, and calling the model API ' +
+      'from your own applications, unless you hold a separate written agreement. Routing ' +
+      'through polyrouter is exactly that kind of use and may get the account restricted. ' +
+      'Connect only if you have Z.ai’s permission.',
+    termsUrl: 'https://docs.z.ai/legal-agreement/subscription-terms',
+    requiresAcknowledgement: true,
+    declaresIdentity: true,
+  },
+];
+
 export class FakeApiClient implements ApiClient {
   calls: string[] = [];
   callLog: { method: string; args: unknown[] }[] = [];
@@ -1068,9 +1151,13 @@ export class FakeApiClient implements ApiClient {
     return Promise.resolve(provider);
   }
 
-  /** Key-subscription presets (add-key-subscription-presets). Empty by default: every region
-   * ships disabled, so no other suite sees a key-preset card; a test sets the list it needs. */
-  keyPresets: import('../data/api').KeyPresetDto[] = [];
+  /** Key-subscription presets (add-key-subscription-presets). Defaults to the SHIPPED list
+   * (redesign-subscription-picker: every region ships enabled), so every suite starts from what
+   * a stock install shows; a test sets its own list where it needs a specific shape. */
+  keyPresets: import('../data/api').KeyPresetDto[] = SHIPPED_KEY_PRESETS.map((p) => ({
+    ...p,
+    regions: p.regions.map((r) => ({ ...r })),
+  }));
   /** Set to make the next key-preset connect fail. */
   keyPresetConnectRejects: ApiError | null = null;
 

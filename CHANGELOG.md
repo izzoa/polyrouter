@@ -15,6 +15,10 @@ heading is started.
 
 ## [Unreleased]
 
+### Changed
+
+- **Add provider → Subscription lists every plan in one list with a detail pane, and the four coding-plan presets are now listed and connectable on every install.** The dialog widens to show Claude, ChatGPT, OpenCode Go, MiniMax M Plan, Kimi Code and Z.ai GLM Coding Plan side by side with the chosen plan's terms risk, region, key and identity note; Sign in and Connect act from that detail, and on a phone the list and the detail are two steps. The coding plans have not had a live run yet: a wrong pinned detail shows as a typed error at Test or Sync, never as a request to another host. The key-preset list gains `declaresIdentity`; no migration and no new configuration.
+
 ## [0.28.1] — 2026-11-07
 
 [Release](https://github.com/izzoa/polyrouter/releases/tag/v0.28.1) ·

@@ -1,0 +1,12 @@
+---
+'@polyrouter/control-plane': minor
+'@polyrouter/frontend': minor
+---
+
+Add provider → Subscription lists every plan in one list with a detail pane, and the four coding-plan presets are listed and connectable on every install
+
+**Visual change.** Choosing the Subscription kind for a new provider widens the dialog to an 800px picker: every plan on the left — Claude Pro / Max and ChatGPT Plus / Pro under "Sign in with your account", OpenCode Go, MiniMax M Plan, Kimi Code and Z.ai GLM Coding Plan under "Coding-plan API key", each with its terms-risk level in words — and the chosen plan's detail on the right. A coding plan's detail holds its terms-risk notice and link, a region choice showing the pinned host (the first region is preselected), an optional name, the write-only key with its hint, Z.ai's acknowledgement, and a note when the plan offers identity imitation. A sign-in plan's detail holds the flat-plan caution and an optional name, and **Sign in** runs the existing sign-in steps inside the pane, so choosing Claude or ChatGPT in the list no longer starts the sign-in by itself. "Change kind" and "Other subscription (paste a credential)" leave the picker and discard a pasted key. Below a 660px dialog width (the phone sheet) the list and the detail are two steps.
+
+**The coding-plan presets ship enabled.** Every region of the four presets (seven in all, the China hosts included) is now offered: before, each stayed hidden until a live check with a real key passed, so no coding plan appeared on any install. These presets have not had a live run yet: their endpoints follow each provider's documentation, and if a pinned detail is wrong (a listing path, a token-cap field, a China host), Test or Sync models reports a typed provider error — nothing is ever sent to a host other than the pinned one. The `scripts/verify-*-key.md` runbooks remain as optional QA, and a region found broken is withdrawn in a release while rows already connected from it keep working. Plan usage endpoints (Refresh usage) stay off until their own check passes.
+
+`GET /api/providers/key-presets/available` now lists all four presets, and each entry gains `declaresIdentity` (a boolean: whether the plan offers the identity-imitation switch). Connecting is unchanged: the pinned endpoints, the encrypted key, the server-enforced Z.ai acknowledgement and the identity switch (off by default) all work as before. No migration and no new configuration.

@@ -73,6 +73,7 @@ export const CONTROL_PADDING: Readonly<Record<string, string>> = {
   '.filter-chip': '24px filter chip, 3 × 8',
   '.live-pill': '24px Live pill, 3 × 10',
   '.menu-item': '32px account-menu item, 7 × 12',
+  '.sp-entry': '32px subscription-plan entry (redesign-subscription-picker), 7 × 8',
   '.account-trigger':
     '32px account trigger: 4px around its 20px avatar, centred in the family height, × 10',
 };

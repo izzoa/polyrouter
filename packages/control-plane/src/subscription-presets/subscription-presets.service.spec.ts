@@ -40,12 +40,17 @@ const gate = normalizeAndGateBaseUrl as jest.MockedFunction<typeof normalizeAndG
 const KEY = 'd'.repeat(64);
 const alice = userPrincipal('u1');
 
-/** A copy of `preset` with region flags overridden (the shipped constants are all disabled). */
+/** A copy of `preset` whose regions start WITHDRAWN (`enabled: false`) and take the given
+ * overrides, so each fixture names exactly the regions it offers. The shipped constants are
+ * all enabled (redesign-subscription-picker); the shipped registry has its own test below. */
 function withRegions(
   preset: KeyPreset,
   flags: Readonly<Record<string, Partial<KeyPresetRegion>>>,
 ): KeyPreset {
-  return { ...preset, regions: preset.regions.map((r) => ({ ...r, ...(flags[r.id] ?? {}) })) };
+  return {
+    ...preset,
+    regions: preset.regions.map((r) => ({ ...r, enabled: false, ...(flags[r.id] ?? {}) })),
+  };
 }
 const registryOf = (...presets: KeyPreset[]): KeyPresetRegistry => ({
   find: (id) => presets.find((p) => p.id === id),
@@ -123,17 +128,28 @@ describe('SubscriptionPresetsService.connect: rejections write nothing and dial 
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it('the shipped registry (every region disabled) refuses every preset', async () => {
+  it('the shipped registry (every region enabled) lists and connects every region', async () => {
     const h = harness(defaultKeyPresetRegistry);
+    expect(h.svc.listAvailable().map((p) => [p.id, p.regions.map((r) => r.id)])).toEqual([
+      ['opencode-go', ['default']],
+      ['minimax-m-plan', ['intl', 'cn']],
+      ['kimi-code', ['intl', 'cn']],
+      ['zai-coding-plan', ['intl', 'cn']],
+    ]);
+    let n = 0;
     for (const p of KEY_PRESETS) {
       for (const r of p.regions) {
-        await expect(
-          h.svc.connect(alice, dto({ preset: p.id, region: r.id, acknowledgeTermsRisk: true })),
-        ).rejects.toBeInstanceOf(UnprocessableEntityException);
+        await h.svc.connect(alice, dto({ preset: p.id, region: r.id, acknowledgeTermsRisk: true }));
+        n += 1;
+        expect(h.insert.mock.calls[n - 1]![1].baseUrl).toBe(r.baseUrl);
       }
     }
-    expect(h.insert).not.toHaveBeenCalled();
-    expect(h.svc.listAvailable()).toEqual([]);
+    expect(n).toBe(7);
+    // The acknowledgement is still enforced on the shipped Z.ai preset.
+    await expect(
+      h.svc.connect(alice, dto({ preset: 'zai-coding-plan', region: 'intl' })),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    expect(h.insert).toHaveBeenCalledTimes(7);
   });
 
   it('an imitation-required region needs the acknowledgement, even on a low-risk preset', async () => {
@@ -269,9 +285,10 @@ describe('SubscriptionPresetsService.listAvailable', () => {
     const json = JSON.stringify(list);
     expect(json).not.toContain('inference/go/v1/models');
     expect(json).not.toContain('https://api.kimi.ai');
-    expect(json).not.toMatch(/clientIdentity|apiHeaders|User-Agent/);
+    expect(json).not.toMatch(/clientIdentity|apiHeaders|User-Agent|claude-|label":"Claude/);
     expect(Object.keys(list[0]!).sort()).toEqual(
       [
+        'declaresIdentity',
         'displayName',
         'id',
         'keyHint',
@@ -281,6 +298,23 @@ describe('SubscriptionPresetsService.listAvailable', () => {
         'termsRisk',
         'termsUrl',
       ].sort(),
+    );
+  });
+
+  it('says whether a preset declares an identity, as a boolean only (redesign-subscription-picker D3)', () => {
+    const h = harness(defaultKeyPresetRegistry);
+    const byId = Object.fromEntries(h.svc.listAvailable().map((p) => [p.id, p.declaresIdentity]));
+    expect(byId).toEqual({
+      'opencode-go': false,
+      'minimax-m-plan': false,
+      'kimi-code': true,
+      'zai-coding-plan': true,
+    });
+    // The fixture really declares identity values, so their absence below is not vacuous.
+    expect(KIMI_CODE_PRESET.clientIdentity?.apiHeaders['User-Agent']).toMatch(/^claude-code\//);
+    const json = JSON.stringify(h.svc.listAvailable());
+    expect(json).not.toMatch(
+      /claude-code\/|claude-cli\/|User-Agent|apiHeaders|"label":"Claude Code"/,
     );
   });
 

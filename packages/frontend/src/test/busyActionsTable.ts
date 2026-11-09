@@ -115,16 +115,16 @@ export const BUSY_ACTIONS: readonly BusyRow[] = [
 
   // Modals
   {
-    key: 'components/Modals.tsx app.completeOauthConnect',
+    key: 'components/OauthSteps.tsx app.completeOauthConnect',
     cls: 'busy',
     busyLabel: 'Connecting…',
-    why: 'the subscription sign-in Connect',
+    why: 'the subscription sign-in Connect (the paste-back step, shared by a connect and a reconnect)',
   },
   {
-    key: 'components/Modals.tsx app.connectKeyPreset',
+    key: 'components/SubscriptionPicker.tsx app.connectKeyPreset',
     cls: 'busy',
     busyLabel: 'Connecting…',
-    why: 'the key-preset form’s Connect (add-key-subscription-presets): it stays until the connect settles',
+    why: 'the picker footer’s Connect <plan> for a key preset (redesign-subscription-picker): it stays until the connect settles',
   },
   {
     key: 'components/Modals.tsx app.createAgent',
@@ -143,16 +143,16 @@ export const BUSY_ACTIONS: readonly BusyRow[] = [
     why: 'the provider editor’s Reconnect: the modal switches to the reconnect view at once',
   },
   {
-    key: 'components/Modals.tsx app.startOauthConnect#1',
-    cls: 'busy',
-    busyLabel: 'Connecting…',
-    why: 'a subscription preset card that declares no identity: it stays until the sign-in starts',
-  },
-  {
-    key: 'components/Modals.tsx app.startOauthConnect#2',
+    key: 'components/SubscriptionPicker.tsx app.startOauthConnect#1',
     cls: 'busy',
     busyLabel: 'Connecting…',
     why: 'the identity step’s Continue to sign-in (allow-preset-client-identity): it stays until the sign-in starts',
+  },
+  {
+    key: 'components/SubscriptionPicker.tsx app.startOauthConnect#2',
+    cls: 'busy',
+    busyLabel: 'Connecting…',
+    why: 'the picker footer’s Sign in for an OAuth plan that declares no identity: it stays until the sign-in starts',
   },
   {
     key: 'components/Modals.tsx app.addProvider',

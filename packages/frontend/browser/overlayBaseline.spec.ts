@@ -78,6 +78,8 @@ const TEXT_SIZED: Record<string, readonly Axis[]> = {
   'modal:newAgent': ['y', 'h'],
   'modal:newProvider': ['y', 'h'],
   'modal:editProvider': ['y', 'h'],
+  // redesign-subscription-picker: the same centred card at 800px, content-driven height.
+  'modal:subscriptionPicker': ['y', 'h'],
   'modal:newLimit': ['y', 'h'],
   'modal:channel': ['y', 'h'],
   'modal:keyReveal': ['y', 'h'],
@@ -215,6 +217,10 @@ const BASELINE: Record<string, [number, number, number, number]> = {
   // RE-PINNED 2026-11-02 (was [480, 82, 480, 736]): 10px taller.
   'modal:newProvider': [480, 77, 480, 746],
   'modal:editProvider': [480, 77, 480, 746],
+  // ADDED 2026-11-09 by redesign-subscription-picker (a recorded desktop change): the provider
+  // modal's picker mode, opened on Z.ai, captured on macOS. The ubuntu capture is pending (it
+  // needs a CI run), so `y`/`h` carry the unmeasured default slack.
+  'modal:subscriptionPicker': [320, 90, 800, 720],
   // RE-PINNED 2026-11-02 (was [480, 174, 480, 552]).
   'modal:newLimit': [480, 170, 480, 561],
   // RE-PINNED 2026-09-18 (was [480, 166, 480, 568]), same cause and same evidence as above.

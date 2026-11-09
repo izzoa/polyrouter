@@ -1,11 +1,12 @@
 /**
  * The key-subscription presets on the dashboard (add-key-subscription-presets, group 9;
- * dashboard-core "Key subscription presets are connected from cards beside the OAuth presets"
- * and "A key-preset provider shows its preset and pinned endpoint wherever it appears").
+ * redesign-subscription-picker group 4): dashboard-core "Subscription plans are chosen from one
+ * list with a detail pane" and "A key-preset provider shows its preset and pinned endpoint
+ * wherever it appears".
  *
- * The real App is mounted on the fake client. Every preset here is a FIXTURE in the server's
- * display shape: the shipped registry lists nothing until a region passes its live runbook, so
- * nothing in this file reflects a real provider's enabled state, and no key is a real key.
+ * The real App is mounted on the fake client. The fake client's default key-preset list is the
+ * SHIPPED one (every region ships enabled); the named fixtures below are shapes a test needs
+ * (one region, an imitation-required region). No key is a real key.
  */
 import { render } from 'solid-js/web';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -13,7 +14,12 @@ import { App } from './App';
 import { ApiError, type KeyPresetDto, type ProviderDto } from './data/api';
 import { createAppStore, type AppStore } from './state/appState';
 import { AppProvider } from './state/context';
-import { DEFAULT_SESSION, FakeApiClient, UNRECORDED_HEALTH } from './test/fakeClient';
+import {
+  DEFAULT_SESSION,
+  FakeApiClient,
+  SHIPPED_KEY_PRESETS,
+  UNRECORDED_HEALTH,
+} from './test/fakeClient';
 import { labelText } from './test/labelText';
 
 const NOW = '2026-11-06T12:00:00.000Z';
@@ -31,6 +37,7 @@ const ZAI: KeyPresetDto = {
   riskCopy: 'Z.ai’s terms forbid proxy use.',
   termsUrl: 'https://docs.z.ai/legal-agreement/subscription-terms',
   requiresAcknowledgement: true,
+  declaresIdentity: true,
 };
 const KIMI_ONE_REGION: KeyPresetDto = {
   id: 'kimi-code',
@@ -41,6 +48,7 @@ const KIMI_ONE_REGION: KeyPresetDto = {
   riskCopy: 'Kimi Code is meant for interactive use.',
   termsUrl: 'https://www.kimi.com/code/docs/en/kimi-code/community-guidelines.html',
   requiresAcknowledgement: false,
+  declaresIdentity: true,
 };
 const KIMI_IMITATION: KeyPresetDto = {
   ...KIMI_ONE_REGION,
@@ -57,6 +65,7 @@ const OPENCODE: KeyPresetDto = {
   riskCopy: 'OpenCode Go is open to other coding agents.',
   termsUrl: 'https://opencode.ai/v2/docs/console/go/',
   requiresAcknowledgement: false,
+  declaresIdentity: false,
 };
 
 const mkProvider = (over: Partial<ProviderDto> = {}): ProviderDto => ({
@@ -136,19 +145,13 @@ const type = async (el: HTMLInputElement, value: string): Promise<void> => {
   await flush();
 };
 
-const pick = async (el: HTMLSelectElement, value: string): Promise<void> => {
-  el.value = value;
-  el.dispatchEvent(new Event('change', { bubbles: true }));
-  await flush();
-};
-
 const tick = async (el: HTMLInputElement, on: boolean): Promise<void> => {
   el.checked = on;
   el.dispatchEvent(new Event('change', { bubbles: true }));
   await flush();
 };
 
-/** Open the new-provider modal on the subscription kind. */
+/** Open the new-provider modal on the subscription kind: the picker. */
 const openConnect = async (h: Harness): Promise<void> => {
   h.store.openModal('newProvider');
   await flush();
@@ -159,10 +162,20 @@ const openConnect = async (h: Harness): Promise<void> => {
   await flush();
 };
 
-const chooseCard = async (h: Harness, id: string): Promise<void> => {
-  h.host.querySelector<HTMLButtonElement>(`[data-key-preset="${id}"]`)!.click();
+/** A plan's entry in the picker's list. */
+const entry = (h: Harness, id: string): HTMLButtonElement | null =>
+  h.host.querySelector<HTMLButtonElement>(`button.sp-entry[data-plan="${id}"]`);
+
+const choosePlan = async (h: Harness, id: string): Promise<void> => {
+  entry(h, id)!.click();
   await flush();
 };
+
+/** A region option of the chosen preset's segmented control, by its label. */
+const regionOption = (h: Harness, label: string): HTMLButtonElement | undefined =>
+  [...h.host.querySelectorAll<HTMLButtonElement>('#f-kp-region .rs-seg')].find(
+    (b) => labelText(b) === label,
+  );
 
 const connects = (fake: FakeApiClient): Record<string, unknown>[] =>
   fake.callLog.filter((c) => c.method === 'keyPresetConnect').map((c) => c.args[0] as never);
@@ -180,20 +193,76 @@ const escape = (): void => {
 
 const modalText = (h: Harness): string => h.host.querySelector('.modal-card')?.textContent ?? '';
 
+describe('every subscription plan is listed from the first view', () => {
+  it('lists the sign-in plans and the four coding plans, the first chosen, with no verification wording', async () => {
+    const h = await mount({ presets: SHIPPED_KEY_PRESETS.map((p) => ({ ...p })) });
+    await openConnect(h);
+    const card = h.host.querySelector('.modal-card')!;
+    expect(card.classList.contains('modal-card--picker')).toBe(true);
+    expect(card.querySelector('#modal-title')?.textContent).toBe('Connect a subscription');
+    const groups = [...card.querySelectorAll<HTMLElement>('.sp-list [role="group"]')];
+    expect(groups.map((g) => g.querySelector('.sp-group-label')?.textContent)).toEqual([
+      'Sign in with your account',
+      'Coding-plan API key',
+    ]);
+    const names = (g: HTMLElement): string[] =>
+      [...g.querySelectorAll('.sp-entry-name')].map((n) => n.textContent ?? '');
+    expect(names(groups[0]!)).toEqual(['Claude Pro / Max', 'ChatGPT Plus / Pro', 'Fixture Plan']);
+    expect(names(groups[1]!)).toEqual([
+      'OpenCode Go',
+      'MiniMax M Plan',
+      'Kimi Code',
+      'Z.ai GLM Coding Plan',
+    ]);
+    // The first listed plan is chosen, so the detail is never empty.
+    expect(entry(h, 'claude')?.getAttribute('aria-current')).toBe('true');
+    expect(card.querySelectorAll('.sp-entry[aria-current="true"]')).toHaveLength(1);
+    expect(card.querySelector('#sp-detail-title')?.textContent).toBe('Claude Pro / Max');
+    // No verification status anywhere (user decision 2026-11-09).
+    expect(modalText(h)).not.toMatch(/verif|not available|unavailable/i);
+    expect(card.innerHTML).not.toContain('dashed');
+    expect(buttonNamed(h.host, 'Sign in')!.disabled).toBe(false);
+    expect(h.host.querySelector('button a')).toBeNull();
+    // The classic endpoint and credential fields are not shown on the picker.
+    expect(field(h, 'f-np-baseurl')).toBeNull();
+    expect(field(h, 'f-np-credential')).toBeNull();
+    expect(field(h, 'f-np-name')).toBeNull();
+  });
+
+  it('choosing another plan swaps only the detail, and the footer names its action', async () => {
+    const h = await mount({ presets: SHIPPED_KEY_PRESETS.map((p) => ({ ...p })) });
+    await openConnect(h);
+    await choosePlan(h, 'kimi-code');
+    expect(entry(h, 'kimi-code')?.getAttribute('aria-current')).toBe('true');
+    expect(entry(h, 'claude')?.getAttribute('aria-current')).toBeNull();
+    expect(h.host.querySelector('#sp-detail-title')?.textContent).toBe('Kimi Code');
+    expect(buttonNamed(h.host, 'Connect Kimi Code')).toBeDefined();
+    expect(buttonNamed(h.host, 'Sign in')).toBeUndefined();
+    expect(h.host.querySelectorAll('.modal-card .btn-primary')).toHaveLength(1);
+    // A half-filled key of the previous plan is discarded.
+    await type(field<HTMLInputElement>(h, 'f-kp-key')!, KEY);
+    await choosePlan(h, 'opencode-go');
+    expect(field<HTMLInputElement>(h, 'f-kp-key')!.value).toBe('');
+    expect(h.store.state.kp.key).toBe('');
+    expect(document.body.textContent).not.toContain(KEY);
+  });
+});
+
 describe('connecting a key preset end to end (Z.ai)', () => {
-  it('shows the card, region, key and acknowledgement, and connects through the endpoint', async () => {
+  it('shows the region, key and acknowledgement, and connects through the endpoint', async () => {
     const h = await mount({ presets: [ZAI] });
     await openConnect(h);
-    expect(h.host.querySelector('[data-key-preset="zai-coding-plan"]')).not.toBeNull();
-    await chooseCard(h, 'zai-coding-plan');
+    await choosePlan(h, 'zai-coding-plan');
 
-    // No free-text endpoint or protocol: the form replaced those fields.
+    // No free-text endpoint or protocol: the detail replaced those fields.
     expect(field(h, 'f-np-baseurl')).toBeNull();
     expect(field(h, 'f-np-protocol')).toBeNull();
     expect(field(h, 'f-np-credential')).toBeNull();
 
-    const connect = buttonNamed(h.host, 'Connect')!;
-    await pick(field<HTMLSelectElement>(h, 'f-kp-region')!, 'intl');
+    // The first region is preselected and its pinned host shown.
+    expect(regionOption(h, 'International')?.getAttribute('aria-pressed')).toBe('true');
+    expect(document.getElementById('f-kp-region-host')?.textContent).toContain('api.z.ai');
+    const connect = buttonNamed(h.host, 'Connect Z.ai GLM Coding Plan')!;
     await type(field<HTMLInputElement>(h, 'f-kp-key')!, KEY);
     // Unavailable until the acknowledgement is ticked.
     expect(connect.disabled).toBe(true);
@@ -222,7 +291,7 @@ describe('connecting a key preset end to end (Z.ai)', () => {
   it('cannot be dismissed while the connect is in flight', async () => {
     const h = await mount({ presets: [OPENCODE] });
     await openConnect(h);
-    await chooseCard(h, 'opencode-go');
+    await choosePlan(h, 'opencode-go');
     await type(field<HTMLInputElement>(h, 'f-kp-key')!, KEY);
     let release!: () => void;
     const held = new Promise<void>((r) => {
@@ -233,11 +302,13 @@ describe('connecting a key preset end to end (Z.ai)', () => {
       await held;
       return real(body);
     });
-    const connect = buttonNamed(h.host, 'Connect')!;
+    const connect = buttonNamed(h.host, 'Connect OpenCode Go')!;
     connect.click();
     await flush();
     expect(connect.disabled).toBe(true);
     expect(connect.getAttribute('aria-busy')).toBe('true');
+    // The plan cannot change while the connect is in flight.
+    expect(entry(h, 'opencode-go')?.getAttribute('aria-disabled')).toBe('true');
     escape();
     h.store.closeModal();
     await flush();
@@ -248,78 +319,85 @@ describe('connecting a key preset end to end (Z.ai)', () => {
   });
 });
 
-describe('each card states its own terms risk', () => {
-  it('names the level and copy in text with a new-tab terms link, beside the generic note', async () => {
+describe('each plan states its own terms risk', () => {
+  it('names the level in the list and the level and copy in the detail, with a new-tab terms link', async () => {
     const h = await mount({ presets: [ZAI, OPENCODE] });
     await openConnect(h);
-    const zai = h.host.querySelector('[role="group"][aria-label="Z.ai GLM Coding Plan"]')!;
-    expect(zai.textContent).toContain('High terms risk.');
-    expect(zai.textContent).toContain('Z.ai’s terms forbid proxy use.');
-    const link = zai.querySelector<HTMLAnchorElement>('a')!;
+    expect(entry(h, 'zai-coding-plan')?.textContent).toContain('High risk');
+    expect(entry(h, 'opencode-go')?.textContent).toContain('Low risk');
+    await choosePlan(h, 'zai-coding-plan');
+    const detail = h.host.querySelector('.sp-detail')!;
+    expect(detail.textContent).toContain('High terms risk');
+    expect(detail.textContent).toContain('Z.ai’s terms forbid proxy use.');
+    const link = [...detail.querySelectorAll<HTMLAnchorElement>('a')].find((a) =>
+      (a.textContent ?? '').includes('Read the plan’s terms'),
+    )!;
     expect(link.href).toBe(ZAI.termsUrl);
     expect(link.target).toBe('_blank');
     expect(link.rel).toContain('noreferrer');
     expect(link.textContent).toContain('opens in a new tab');
-    const og = h.host.querySelector('[role="group"][aria-label="OpenCode Go"]')!;
-    expect(og.textContent).toContain('Low terms risk.');
-    // The generic flat-rate note still covers the OAuth cards and "Other subscription".
-    expect(modalText(h)).toContain('may violate the provider’s ToS');
+    // An OAuth plan's detail carries the generic flat-plan caution.
+    await choosePlan(h, 'claude');
+    expect(h.host.querySelector('.sp-detail')?.textContent).toContain(
+      'may violate the provider’s ToS',
+    );
     expect(modalText(h)).toContain('Other subscription (paste a credential)');
-  });
-
-  it('carries no link nested inside a button', async () => {
-    const h = await mount({ presets: [ZAI] });
-    await openConnect(h);
-    expect(h.host.querySelector('button a')).toBeNull();
   });
 });
 
-describe('a preset listed with one region', () => {
-  it('shows no region choice and connects with that region id', async () => {
-    // Its second registry region is disabled, so the list carries only one.
+describe('regions', () => {
+  it('a one-region preset shows no region choice and connects with that region id', async () => {
     const h = await mount({ presets: [KIMI_ONE_REGION] });
     await openConnect(h);
-    await chooseCard(h, 'kimi-code');
+    await choosePlan(h, 'kimi-code');
     expect(field(h, 'f-kp-region')).toBeNull();
     await type(field<HTMLInputElement>(h, 'f-kp-key')!, 'sk-kimi-fixture');
-    buttonNamed(h.host, 'Connect')!.click();
+    buttonNamed(h.host, 'Connect Kimi Code')!.click();
     await flush();
     expect(connects(h.fake)).toEqual([
       { preset: 'kimi-code', region: 'intl', credential: 'sk-kimi-fixture' },
     ]);
   });
 
-  it('a several-region preset asks for the region, on the field', async () => {
-    const h = await mount({ presets: [ZAI] });
+  it('a several-region preset preselects the first, shows each host, and sends the chosen one', async () => {
+    const h = await mount({ presets: SHIPPED_KEY_PRESETS.map((p) => ({ ...p })) });
     await openConnect(h);
-    await chooseCard(h, 'zai-coding-plan');
-    await type(field<HTMLInputElement>(h, 'f-kp-key')!, KEY);
-    await tick(field<HTMLInputElement>(h, 'f-kp-ack')!, true);
-    buttonNamed(h.host, 'Connect')!.click();
-    await flush();
-    expect(connects(h.fake)).toHaveLength(0);
-    const region = field<HTMLSelectElement>(h, 'f-kp-region')!;
-    expect(region.getAttribute('aria-invalid')).toBe('true');
-    expect(document.getElementById(region.getAttribute('aria-describedby')!)?.textContent).toBe(
-      'Choose a region',
+    await choosePlan(h, 'kimi-code');
+    const group = field(h, 'f-kp-region')!;
+    expect(group.getAttribute('role')).toBe('group');
+    expect(document.getElementById(group.getAttribute('aria-labelledby')!)?.textContent).toBe(
+      'Region',
     );
-    expect(document.activeElement).toBe(region);
+    expect(regionOption(h, 'International')?.getAttribute('aria-pressed')).toBe('true');
+    expect(regionOption(h, 'China')?.getAttribute('aria-pressed')).toBe('false');
+    expect(document.getElementById('f-kp-region-host')?.textContent).toContain('api.kimi.ai');
+    regionOption(h, 'China')!.click();
+    await flush();
+    expect(regionOption(h, 'China')?.getAttribute('aria-pressed')).toBe('true');
+    expect(document.getElementById('f-kp-region-host')?.textContent).toContain('api.kimi.com');
+    expect(field<HTMLInputElement>(h, 'f-kp-name')!.placeholder).toBe('Kimi Code (China)');
+    await type(field<HTMLInputElement>(h, 'f-kp-key')!, 'sk-kimi-fixture');
+    buttonNamed(h.host, 'Connect Kimi Code')!.click();
+    await flush();
+    expect(connects(h.fake)).toEqual([
+      { preset: 'kimi-code', region: 'cn', credential: 'sk-kimi-fixture' },
+    ]);
   });
 });
 
 describe('an imitation-required region says so before and after connecting', () => {
-  it('shows the caution on the card and the form, and the toast points to Edit', async () => {
+  it('shows the caution in the list and the detail, and the toast points to Edit', async () => {
     const h = await mount({ presets: [KIMI_IMITATION] });
     await openConnect(h);
-    const card = h.host.querySelector('[role="group"][aria-label="Kimi Code"]')!;
-    expect(card.textContent).toContain('currently refuses polyrouter’s own identity');
-    expect(card.textContent).toContain('turned on in Edit');
-    await chooseCard(h, 'kimi-code');
+    const kimi = entry(h, 'kimi-code')!;
+    expect(kimi.textContent).toContain('refuses polyrouter’s own identity');
+    expect(kimi.textContent).toContain('identity imitation in Edit');
+    await choosePlan(h, 'kimi-code');
     expect(modalText(h)).toContain('Identity imitation required');
     expect(modalText(h)).toContain('turn on identity imitation in the provider’s Edit dialog');
     await type(field<HTMLInputElement>(h, 'f-kp-key')!, 'sk-kimi-fixture');
     await tick(field<HTMLInputElement>(h, 'f-kp-ack')!, true);
-    buttonNamed(h.host, 'Connect')!.click();
+    buttonNamed(h.host, 'Connect Kimi Code')!.click();
     await flush();
     expect(connects(h.fake)[0]).toMatchObject({ acknowledgeTermsRisk: true });
     expect(h.store.state.toast?.text).toContain('turn on identity imitation in its Edit dialog');
@@ -327,18 +405,32 @@ describe('an imitation-required region says so before and after connecting', () 
   });
 });
 
+describe('the identity note', () => {
+  it('appears only for a preset that declares an identity, and names no imitated value', async () => {
+    const h = await mount({ presets: SHIPPED_KEY_PRESETS.map((p) => ({ ...p })) });
+    await openConnect(h);
+    await choosePlan(h, 'zai-coding-plan');
+    const detail = (): string => h.host.querySelector('.sp-detail')?.textContent ?? '';
+    expect(detail()).toContain('This plan also offers identity imitation');
+    expect(detail()).toContain('polyrouter/<version>');
+    expect(detail()).not.toMatch(/claude-c(li|ode)\//);
+    await choosePlan(h, 'opencode-go');
+    expect(detail()).not.toContain('identity imitation');
+  });
+});
+
 describe('the key hint warns but never blocks', () => {
   it('shows a caution for a mismatched prefix while Connect stays enabled', async () => {
     const h = await mount({ presets: [KIMI_ONE_REGION] });
     await openConnect(h);
-    await chooseCard(h, 'kimi-code');
+    await choosePlan(h, 'kimi-code');
     expect(modalText(h)).not.toContain('pay-as-you-go');
     await type(field<HTMLInputElement>(h, 'f-kp-key')!, 'sk-other-fixture');
     const caution = document.getElementById('f-kp-key-caution')!;
     expect(caution.textContent).toContain('may be a pay-as-you-go key');
     expect(caution.textContent).toContain('bills your account balance');
     expect(field(h, 'f-kp-key')!.getAttribute('aria-describedby')).toContain('f-kp-key-caution');
-    expect(buttonNamed(h.host, 'Connect')!.disabled).toBe(false);
+    expect(buttonNamed(h.host, 'Connect Kimi Code')!.disabled).toBe(false);
     await type(field<HTMLInputElement>(h, 'f-kp-key')!, 'sk-kimi-fixture');
     expect(document.getElementById('f-kp-key-caution')).toBeNull();
   });
@@ -348,9 +440,9 @@ describe('the pasted key is never shown again', () => {
   it('is cleared and not echoed after a successful connect', async () => {
     const h = await mount({ presets: [OPENCODE] });
     await openConnect(h);
-    await chooseCard(h, 'opencode-go');
+    await choosePlan(h, 'opencode-go');
     await type(field<HTMLInputElement>(h, 'f-kp-key')!, KEY);
-    buttonNamed(h.host, 'Connect')!.click();
+    buttonNamed(h.host, 'Connect OpenCode Go')!.click();
     await flush();
     expect(h.store.state.kp.key).toBe('');
     expect(document.body.textContent).not.toContain(KEY);
@@ -362,9 +454,9 @@ describe('the pasted key is never shown again', () => {
     const h = await mount({ presets: [OPENCODE] });
     h.fake.keyPresetConnectRejects = new ApiError(422, 'Unprocessable', 'the key was refused');
     await openConnect(h);
-    await chooseCard(h, 'opencode-go');
+    await choosePlan(h, 'opencode-go');
     await type(field<HTMLInputElement>(h, 'f-kp-key')!, KEY);
-    buttonNamed(h.host, 'Connect')!.click();
+    buttonNamed(h.host, 'Connect OpenCode Go')!.click();
     await flush();
     expect(h.store.state.modal).toBe('newProvider');
     expect(field<HTMLInputElement>(h, 'f-kp-key')!.value).toBe('');
@@ -375,29 +467,66 @@ describe('the pasted key is never shown again', () => {
 });
 
 describe('the connect path appears whenever any preset is listed', () => {
-  it('shows key-preset cards with no OAuth preset, and keeps Other subscription', async () => {
+  it('shows the key plans with no OAuth preset, and keeps Other subscription', async () => {
     const h = await mount({ presets: [OPENCODE], oauth: false });
     await openConnect(h);
-    expect(h.host.querySelector('[data-key-preset="opencode-go"]')).not.toBeNull();
+    expect(entry(h, 'opencode-go')).not.toBeNull();
+    expect(h.host.querySelector('#sp-g-oauth')).toBeNull();
     expect(buttonNamed(h.host, 'Other subscription (paste a credential)')).toBeDefined();
-    // The classic fields are not shown until "Other subscription" is chosen.
     expect(field(h, 'f-np-baseurl')).toBeNull();
     buttonNamed(h.host, 'Other subscription (paste a credential)')!.click();
     await flush();
     expect(field(h, 'f-np-baseurl')).not.toBeNull();
+    expect(h.host.querySelector('.modal-card--picker')).toBeNull();
   });
 
-  it('shows no connect path with nothing listed at all', async () => {
+  it('shows the classic form with nothing listed at all', async () => {
     const h = await mount({ presets: [], oauth: false });
     await openConnect(h);
-    expect(h.host.querySelector('[data-key-preset]')).toBeNull();
+    expect(h.host.querySelector('.sp-entry')).toBeNull();
     expect(field(h, 'f-np-baseurl')).not.toBeNull();
+  });
+});
+
+describe('leaving the picker discards a pasted key', () => {
+  it('Other subscription opens the classic paste form, without the key', async () => {
+    const h = await mount({ presets: [OPENCODE] });
+    await openConnect(h);
+    await choosePlan(h, 'opencode-go');
+    await type(field<HTMLInputElement>(h, 'f-kp-key')!, KEY);
+    buttonNamed(h.host, 'Other subscription (paste a credential)')!.click();
+    await flush();
+    expect(field(h, 'f-np-credential')).not.toBeNull();
+    expect(h.store.state.kp.key).toBe('');
+    expect(document.body.textContent).not.toContain(KEY);
+    expect(modalText(h)).toContain('may violate the provider’s ToS');
+  });
+
+  it('Change kind shows the kind choice with Subscription selected; choosing it returns to the picker', async () => {
+    const h = await mount({ presets: [OPENCODE] });
+    await openConnect(h);
+    await choosePlan(h, 'opencode-go');
+    await type(field<HTMLInputElement>(h, 'f-kp-key')!, KEY);
+    buttonNamed(h.host, 'Change kind')!.click();
+    await flush();
+    expect(h.host.querySelector('.modal-card--picker')).toBeNull();
+    expect(h.store.state.kp.key).toBe('');
+    const sub = [...h.host.querySelectorAll<HTMLButtonElement>('.kind-card')].find((b) =>
+      (b.textContent ?? '').startsWith('Subscription'),
+    )!;
+    expect(sub.getAttribute('aria-pressed')).toBe('true');
+    expect(field(h, 'f-np-name')).not.toBeNull();
+    sub.click();
+    await flush();
+    expect(h.host.querySelector('.modal-card--picker')).not.toBeNull();
+    expect(h.host.querySelector('#sp-detail-title')?.textContent).not.toBe('');
+    expect(field<HTMLInputElement>(h, 'f-kp-key')?.value ?? '').toBe('');
   });
 
   it('drops a half-filled key form, and its key, when the kind changes', async () => {
     const h = await mount({ presets: [OPENCODE] });
     await openConnect(h);
-    await chooseCard(h, 'opencode-go');
+    await choosePlan(h, 'opencode-go');
     await type(field<HTMLInputElement>(h, 'f-kp-key')!, KEY);
     h.store.setState('np', 'kind', 'api');
     await flush();
@@ -406,12 +535,11 @@ describe('the connect path appears whenever any preset is listed', () => {
   });
 });
 
-describe('the connect form is keyboard- and screen-reader-accessible', () => {
-  it('labels every control with a real label, natively focusable, and lands focus on the first', async () => {
+describe('the picker is keyboard- and screen-reader-accessible', () => {
+  it('labels every control with a real label, and the plan entries expose the choice', async () => {
     const h = await mount({ presets: [ZAI] });
     await openConnect(h);
-    await chooseCard(h, 'zai-coding-plan');
-    await flush();
+    await choosePlan(h, 'zai-coding-plan');
     const form = h.host.querySelector('[data-key-preset-form]')!;
     const controls = [...form.querySelectorAll<HTMLElement>('input, select, button')];
     expect(controls.length).toBeGreaterThan(4);
@@ -426,14 +554,29 @@ describe('the connect form is keyboard- and screen-reader-accessible', () => {
     }
     expect((field(h, 'f-kp-key') as HTMLInputElement).type).toBe('password');
     expect((field(h, 'f-kp-ack') as HTMLInputElement).type).toBe('checkbox');
-    expect(document.activeElement?.id).toBe('f-kp-region');
+    for (const e of h.host.querySelectorAll<HTMLButtonElement>('.sp-entry')) {
+      expect(e.type).toBe('button');
+      expect(labelText(e)).not.toBe('');
+    }
+    expect(h.host.querySelector('.sp-detail')?.getAttribute('aria-labelledby')).toBe(
+      'sp-detail-title',
+    );
+  });
+
+  it('at a wide width, choosing keeps focus on the entry and shows no Back to plans', async () => {
+    const h = await mount({ presets: [ZAI, OPENCODE] });
+    await openConnect(h);
+    entry(h, 'opencode-go')!.focus();
+    await choosePlan(h, 'opencode-go');
+    expect(document.activeElement).toBe(entry(h, 'opencode-go'));
+    expect(buttonNamed(h.host, 'Back to plans')).toBeUndefined();
   });
 
   it('announces a missing key on the field it concerns', async () => {
     const h = await mount({ presets: [OPENCODE] });
     await openConnect(h);
-    await chooseCard(h, 'opencode-go');
-    buttonNamed(h.host, 'Connect')!.click();
+    await choosePlan(h, 'opencode-go');
+    buttonNamed(h.host, 'Connect OpenCode Go')!.click();
     await flush();
     const key = field<HTMLInputElement>(h, 'f-kp-key')!;
     expect(key.getAttribute('aria-invalid')).toBe('true');
@@ -443,15 +586,62 @@ describe('the connect form is keyboard- and screen-reader-accessible', () => {
     expect(document.activeElement).toBe(key);
     expect(connects(h.fake)).toHaveLength(0);
   });
+});
 
-  it('Back returns to the cards and moves focus to the card', async () => {
+describe('an OAuth plan signs in from its detail (design D9)', () => {
+  it('runs the paste-back steps in the detail, with the list inert until Back', async () => {
     const h = await mount({ presets: [OPENCODE] });
     await openConnect(h);
-    await chooseCard(h, 'opencode-go');
+    await choosePlan(h, 'chatgpt');
+    expect(h.fake.callLog.filter((c) => c.method === 'oauthStart')).toHaveLength(0);
+    buttonNamed(h.host, 'Sign in')!.click();
+    await flush();
+    expect(h.fake.callLog.filter((c) => c.method === 'oauthStart')).toHaveLength(1);
+    expect(h.host.querySelector('.sp-detail #f-ow-paste')).not.toBeNull();
+    // One primary: the paste step's Connect, not the footer's Sign in.
+    expect(buttonNamed(h.host, 'Sign in')).toBeUndefined();
+    expect(h.host.querySelectorAll('.modal-card .btn-primary')).toHaveLength(1);
+    const og = entry(h, 'opencode-go')!;
+    expect(og.getAttribute('aria-disabled')).toBe('true');
+    expect(buttonNamed(h.host, 'Change kind')?.getAttribute('aria-disabled')).toBe('true');
+    og.click();
+    await flush();
+    expect(h.store.state.sp.chosen).toBe('chatgpt');
     buttonNamed(h.host, 'Back')!.click();
     await flush();
-    expect(document.activeElement).toBe(h.host.querySelector('[data-key-preset="opencode-go"]'));
-    expect(h.store.state.kp.preset).toBeNull();
+    expect(og.getAttribute('aria-disabled')).toBeNull();
+    await choosePlan(h, 'opencode-go');
+    expect(h.store.state.sp.chosen).toBe('opencode-go');
+  });
+});
+
+describe('on a narrow card the list and the detail are two steps (design D7)', () => {
+  it('choosing moves focus to the detail heading; Back to plans returns it to the entry', async () => {
+    // The picker reads its card's width against PICKER_FIT; happy-dom lays nothing out.
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+      width: 390,
+      height: 700,
+      x: 0,
+      y: 0,
+      top: 0,
+      left: 0,
+      right: 390,
+      bottom: 700,
+      toJSON: () => ({}),
+    });
+    const h = await mount({ presets: [ZAI, OPENCODE] });
+    await openConnect(h);
+    const picker = h.host.querySelector<HTMLElement>('[data-subscription-picker]')!;
+    expect(picker.dataset['step']).toBe('list');
+    await choosePlan(h, 'opencode-go');
+    expect(picker.dataset['step']).toBe('detail');
+    expect(document.activeElement).toBe(h.host.querySelector('#sp-detail-title'));
+    const back = buttonNamed(h.host, 'Back to plans')!;
+    back.click();
+    await flush();
+    expect(picker.dataset['step']).toBe('list');
+    expect(document.activeElement).toBe(entry(h, 'opencode-go'));
+    rect.mockRestore();
   });
 });
 

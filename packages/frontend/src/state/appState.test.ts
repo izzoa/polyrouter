@@ -3052,6 +3052,138 @@ describe('destructive methods report to the shared dialog (adopt-red-destructive
   });
 });
 
+describe('the subscription picker (redesign-subscription-picker group 3)', () => {
+  const KEY = 'fixture-secret-key-0123456789';
+  async function open(opts: { oauth?: boolean; keys?: boolean } = {}) {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    if (opts.oauth === false) fake.oauthPresets = [];
+    if (opts.keys === false) fake.keyPresets = [];
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    s.openModal('newProvider');
+    await tick(); // both preset lists settle
+    s.setState('np', 'kind', 'sub');
+    return { fake, s };
+  }
+
+  it('chooses the first listed plan once the lists load, OAuth group first', async () => {
+    const { s } = await open();
+    expect(s.state.sp).toEqual({ chosen: 'claude', step: 'list', picked: false });
+    expect(s.state.kp.preset).toBeNull();
+    const keysOnly = await open({ oauth: false });
+    expect(keysOnly.s.state.sp.chosen).toBe('opencode-go');
+    expect(keysOnly.s.state.kp.preset).toBe('opencode-go');
+    expect(keysOnly.s.state.kp.region).toBe('default');
+    const none = await open({ oauth: false, keys: false });
+    expect(none.s.state.sp.chosen).toBeNull();
+  });
+
+  it('an automatic choice follows a late OAuth list; a user choice is kept', async () => {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION });
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((r) => (release = r));
+    const list = fake.listOauthPresets.bind(fake);
+    vi.spyOn(fake, 'listOauthPresets').mockImplementation(async () => {
+      await gate;
+      return list();
+    });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    s.openModal('newProvider');
+    await tick();
+    expect(s.state.sp.chosen).toBe('opencode-go'); // only the key list has loaded
+    release();
+    await tick();
+    expect(s.state.sp.chosen).toBe('claude');
+    expect(s.state.kp.preset).toBeNull();
+
+    s.choosePlan('kimi-code');
+    s.openModal('newProvider');
+    await tick();
+    expect(s.state.sp.chosen).toBe('claude'); // a fresh modal starts over
+  });
+
+  it('choosing swaps the detail, preselects the first region and discards the previous form', async () => {
+    const { s } = await open();
+    s.choosePlan('zai-coding-plan');
+    expect(s.state.sp).toEqual({ chosen: 'zai-coding-plan', step: 'detail', picked: true });
+    expect(s.state.kp).toMatchObject({ preset: 'zai-coding-plan', region: 'intl' });
+    s.setState('kp', { key: KEY, name: 'mine', ack: true, error: 'refused' });
+    s.choosePlan('kimi-code');
+    expect(s.state.kp).toMatchObject({
+      preset: 'kimi-code',
+      region: 'intl',
+      key: '',
+      name: '',
+      ack: false,
+      error: null,
+    });
+    s.setState('np', 'name', 'my claude');
+    s.choosePlan('claude');
+    expect(s.state.kp.preset).toBeNull();
+    expect(s.state.kp.key).toBe('');
+    s.choosePlan('chatgpt');
+    expect(s.state.np.name).toBe(''); // the OAuth detail's name is discarded too
+    expect(JSON.stringify(s.state)).not.toContain(KEY);
+  });
+
+  it('re-choosing the chosen plan keeps its form and only moves to the detail step', async () => {
+    const { s } = await open();
+    s.choosePlan('kimi-code');
+    s.setState('kp', { key: KEY });
+    s.backToPlans();
+    expect(s.state.sp.step).toBe('list');
+    s.choosePlan('kimi-code');
+    expect(s.state.sp.step).toBe('detail');
+    expect(s.state.kp.key).toBe(KEY);
+  });
+
+  it('ignores a choice while a sign-in session is active or a connect is in flight', async () => {
+    const { s } = await open();
+    s.choosePlan('claude');
+    await s.startOauthConnect('claude');
+    expect(s.state.ow.active).not.toBeNull();
+    s.choosePlan('kimi-code');
+    expect(s.state.sp.chosen).toBe('claude');
+    s.cancelOauthConnect();
+    s.choosePlan('kimi-code');
+    expect(s.state.sp.chosen).toBe('kimi-code');
+    s.setState('kp', 'busy', true);
+    s.choosePlan('opencode-go');
+    expect(s.state.sp.chosen).toBe('kimi-code');
+    s.choosePlan('not-listed');
+    expect(s.state.sp.chosen).toBe('kimi-code');
+  });
+
+  it('a since-unlisted choice falls back to the first listed plan on the next load', async () => {
+    const { fake, s } = await open();
+    s.choosePlan('zai-coding-plan');
+    fake.keyPresets = fake.keyPresets.filter((p) => p.id !== 'zai-coding-plan');
+    await s.loadKeyPresets();
+    expect(s.state.sp.chosen).toBe('claude');
+    expect(s.state.kp.preset).toBeNull();
+  });
+
+  it('Other subscription and leaving the picker discard a pasted key (task 3.2)', async () => {
+    const { s } = await open();
+    s.choosePlan('kimi-code');
+    s.setState('kp', { key: KEY });
+    s.openOtherSubscription();
+    expect(s.state.ow.advanced).toBe(true);
+    expect(s.state.kp.key).toBe('');
+    expect(s.state.kp.preset).toBeNull();
+    expect(s.state.sp.chosen).toBeNull();
+
+    const again = await open();
+    again.s.choosePlan('zai-coding-plan');
+    again.s.setState('kp', { key: KEY, ack: true });
+    again.s.resetPlanPicker();
+    expect(again.s.state.kp).toMatchObject({ preset: null, key: '', ack: false });
+    expect(again.s.state.sp).toEqual({ chosen: null, step: 'list', picked: false });
+    expect(JSON.stringify(again.s.state)).not.toContain(KEY);
+  });
+});
+
 describe('key-subscription connect (add-key-subscription-presets task 9.2)', () => {
   const KEY = 'fixture-secret-key-0123456789';
   const preset = (over: Partial<KeyPresetDto> = {}): KeyPresetDto => ({
@@ -3066,6 +3198,7 @@ describe('key-subscription connect (add-key-subscription-presets task 9.2)', () 
     riskCopy: 'copy',
     termsUrl: 'https://docs.z.ai/legal-agreement/subscription-terms',
     requiresAcknowledgement: true,
+    declaresIdentity: true,
     ...over,
   });
   async function open(presets: KeyPresetDto[], opts: { oauth?: boolean } = {}) {
@@ -3147,8 +3280,10 @@ describe('key-subscription connect (add-key-subscription-presets task 9.2)', () 
   it('clears the key on a client-side rejection, without a request', async () => {
     const { fake, s } = await open([preset()]);
     s.chooseKeyPreset('zai-coding-plan');
-    // A several-region preset with no region chosen is rejected on the field.
-    s.setState('kp', { key: KEY, ack: true });
+    // The first region is preselected (redesign-subscription-picker D8); a programmatically
+    // emptied region is still rejected on the field.
+    expect(s.state.kp.region).toBe('intl');
+    s.setState('kp', { region: '', key: KEY, ack: true });
     await s.connectKeyPreset();
     expect(s.state.fieldErrors['f-kp-region']).toBe('Choose a region');
     expect(s.state.kp.key).toBe('');

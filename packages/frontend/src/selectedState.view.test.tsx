@@ -361,7 +361,13 @@ describe('each surface exposes its selection in markup, on the class the rule dr
       expect(cards().length, 'the modal offers kinds').toBeGreaterThan(1);
       const first = cards().filter((b) => b.getAttribute('aria-pressed') === 'true');
       expect(first).toHaveLength(1);
-      const other = cards().find((b) => b.getAttribute('aria-pressed') === 'false') as HTMLElement;
+      // Subscription opens the plan picker instead of staying on the kind grid
+      // (redesign-subscription-picker), so the selection is exercised on another kind.
+      const other = cards().find(
+        (b) =>
+          b.getAttribute('aria-pressed') === 'false' &&
+          !(b.textContent ?? '').startsWith('Subscription'),
+      ) as HTMLElement;
       other.click();
       await flush();
       expect(other.getAttribute('aria-pressed')).toBe('true');

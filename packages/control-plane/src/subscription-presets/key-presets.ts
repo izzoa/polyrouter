@@ -9,11 +9,13 @@
  * D1): a key preset must be invisible to every OAuth `presets.find(...)` site. Ids are
  * unique ACROSS both registries (unit-tested) so one namespace names a preset.
  *
- * ENABLEMENT GATE. Every region ships `enabled: false` (and `imitationRequired: false`)
- * until its own live golden verification runbook (`scripts/verify-<preset>-key.md`) has
- * passed with the user's own key. An unverified region is present but disabled: not
- * listed, refused on connect. An unverified key prefix is not hinted. Flipping a flag is
- * the user's call after the runbook, never an agent's.
+ * WITHDRAWAL SWITCH (redesign-subscription-picker, design D1/D2). Every region ships
+ * `enabled: true` (and `imitationRequired: false`): the four presets are listed and
+ * connectable on every install. The live runbooks (`scripts/verify-<preset>-key.md`) are
+ * optional QA that settle the values still marked [U]. A region a run or a user report shows
+ * broken is WITHDRAWN by shipping it `enabled: false`: absent from the list, refused on
+ * connect, while rows already connected from it keep working (`keyPresetForRow` ignores the
+ * flag). An unverified key prefix is still not hinted.
  *
  * PIN-CHANGE MIGRATION RULE (design D6). A row's region is the region whose
  * `(baseUrl, protocol)` equals the row's, so a pinned value is part of every existing
@@ -54,7 +56,8 @@ export interface KeyPresetRegion {
   /** The OpenAI token-cap field this region honours, stored at connect; absent = `auto`.
    * Decided per region by the runbook's capped completion (design Risks). */
   readonly maxTokensSpelling?: 'max_tokens' | 'max_completion_tokens';
-  /** Enablement gate: true ONLY after this region's live verification passed. */
+  /** Withdrawal switch: true by default; false withdraws a region found broken (listing and
+   * new connects only — existing rows keep working). */
   readonly enabled: boolean;
   /** True when the region passed only with the identity-imitation switch on (design D12).
    * Such a region is enabled, its preset is `high`, and its copy says so. */
@@ -81,8 +84,9 @@ export interface KeyPresetRegion {
   /**
    * The region's plan-usage endpoint (design D7): a fixed, same-origin `https` constant read
    * only on the user's explicit Refresh usage. EVERY probe ships `enabled: false` until its own
-   * live runbook (`scripts/verify-plan-usage.md`) has passed with the user's own key, exactly as
-   * the region flags above. Flipping a probe on is the user's call, never an agent's. A region
+   * live runbook (`scripts/verify-plan-usage.md`) has passed with the user's own key. This gate
+   * is separate from the region flags above, which ship enabled (redesign-subscription-picker
+   * left usage probes gated). Flipping a probe on is the user's call, never an agent's. A region
    * with no verified host (MiniMax China) declares none.
    */
   readonly usageProbe?: PlanUsageProbe;
@@ -161,7 +165,7 @@ export const OPENCODE_GO_PRESET: KeyPreset = {
       baseUrl: 'https://opencode.ai/inference/go/openai/v1',
       protocol: 'openai_compatible',
       modelsUrl: 'https://opencode.ai/inference/go/v1/models',
-      enabled: false,
+      enabled: true,
       imitationRequired: false,
       usageDialect: 'opencode_go',
       usageProbe: {
@@ -181,11 +185,11 @@ export const OPENCODE_GO_PRESET: KeyPreset = {
 };
 
 /**
- * MiniMax M Plan. The international host is [V]; the China host is [U] and ships
- * disabled until its own runbook passes. The `sk-cp-` prefix is [U] and is HELD BACK
- * (`keyHint: null`): it is added only after the live verification confirms it. The rating
+ * MiniMax M Plan. The international host is [V]; the China host is [U] and ships enabled
+ * (redesign-subscription-picker) — a failed run withdraws it. The `sk-cp-` prefix is [U]
+ * and is HELD BACK (`keyHint: null`): it is added only after a live run confirms it. The rating
  * rests on the plan docs alone; MiniMax's general Terms of Service could not be parsed
- * [U], so the user re-reads them before enabling the preset (design D8).
+ * [U], so the risk copy says those general terms may add limits (design D8).
  */
 export const MINIMAX_M_PLAN_PRESET: KeyPreset = {
   id: 'minimax-m-plan',
@@ -196,7 +200,7 @@ export const MINIMAX_M_PLAN_PRESET: KeyPreset = {
       label: 'International',
       baseUrl: 'https://api.minimax.io/v1',
       protocol: 'openai_compatible',
-      enabled: false,
+      enabled: true,
       imitationRequired: false,
       errorDialect: 'minimax',
       usageProbe: {
@@ -211,7 +215,7 @@ export const MINIMAX_M_PLAN_PRESET: KeyPreset = {
       label: 'China',
       baseUrl: 'https://api.minimaxi.com/v1',
       protocol: 'openai_compatible',
-      enabled: false,
+      enabled: true,
       imitationRequired: false,
     },
   ],
@@ -239,7 +243,7 @@ export const KIMI_CODE_PRESET: KeyPreset = {
       label: 'International',
       baseUrl: 'https://api.kimi.ai/coding/v1',
       protocol: 'openai_compatible',
-      enabled: false,
+      enabled: true,
       imitationRequired: false,
       errorDialect: 'kimi',
       usageProbe: {
@@ -254,7 +258,7 @@ export const KIMI_CODE_PRESET: KeyPreset = {
       label: 'China',
       baseUrl: 'https://api.kimi.com/coding/v1',
       protocol: 'openai_compatible',
-      enabled: false,
+      enabled: true,
       imitationRequired: false,
       errorDialect: 'kimi',
       usageProbe: {
@@ -297,7 +301,7 @@ export const ZAI_CODING_PLAN_PRESET: KeyPreset = {
       label: 'International',
       baseUrl: 'https://api.z.ai/api/coding/paas/v4',
       protocol: 'openai_compatible',
-      enabled: false,
+      enabled: true,
       imitationRequired: false,
       errorDialect: 'zai',
       usageProbe: {
@@ -312,7 +316,7 @@ export const ZAI_CODING_PLAN_PRESET: KeyPreset = {
       label: 'China',
       baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
       protocol: 'openai_compatible',
-      enabled: false,
+      enabled: true,
       imitationRequired: false,
       usageProbe: {
         url: 'https://open.bigmodel.cn/api/monitor/usage/quota/limit',

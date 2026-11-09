@@ -457,6 +457,12 @@ export interface AppState {
     error: string | null;
   };
 
+  /** The subscription picker (redesign-subscription-picker, design D6): the chosen preset id
+   * (unique across the OAuth and key registries), the narrow-layout step, and whether the user
+   * made the choice (an automatic first-plan choice follows the lists as they load; a user's
+   * choice is kept). */
+  sp: { chosen: string | null; step: 'list' | 'detail'; picked: boolean };
+
   // Observe (analytics) slices — fetched from /api/analytics (#17). Each carries
   // loading + error; a per-shared-slice `generation` guard discards stale replies.
   analyticsSummary: AnalyticsSummary | null;
@@ -847,6 +853,11 @@ function emptyKp(presets: KeyPresetDto[]): AppState['kp'] {
   };
 }
 
+/** A fresh subscription-picker choice: nothing chosen yet, the list step showing. */
+function emptySp(): AppState['sp'] {
+  return { chosen: null, step: 'list', picked: false };
+}
+
 function emptyKeyReveal(): AppState['kr'] {
   return { title: '', key: '', snippet: '', harness: 'openai_sdk' };
 }
@@ -1003,6 +1014,14 @@ export const DOCK_WIDTH = 480;
 /** The query the inspector's modality follows — the same prelude the docked rules sit in. */
 export const DOCK_QUERY = `(min-width: ${String(DOCK_MIN_WIDTH)}px)`;
 
+/**
+ * The subscription picker's container fit (redesign-subscription-picker D5, STYLESEED.md
+ * `picker-fit`): below this card width the list and the detail are two steps. The stylesheet's
+ * `@container picker (width < …)` rule carries the same literal (responsive.test.ts checks the
+ * copies agree).
+ */
+export const PICKER_FIT = 660;
+
 /** The theme `index.html`'s pre-paint script already resolved before first paint
  * (adopt-design-tokens-v2 D9): the store starts from it rather than assuming light, so the
  * first render agrees with the first frame. Light when no script ran (the test harness). */
@@ -1092,6 +1111,7 @@ function initialState(): AppState {
     },
     kr: emptyKeyReveal(),
     kp: emptyKp([]),
+    sp: emptySp(),
 
     analyticsSummary: null,
     analyticsSummaryLoading: false,
@@ -1382,6 +1402,20 @@ export interface AppStore {
   chooseKeyPreset: (id: string) => void;
   cancelKeyPreset: () => void;
   connectKeyPreset: () => Promise<void>;
+  /** Subscription picker (redesign-subscription-picker). Choose a listed OAuth or key preset:
+   * the previous plan's half-filled name, key and acknowledgement are discarded. Ignored while a
+   * sign-in session is active or any connect is in flight (design D9). */
+  choosePlan: (id: string) => void;
+  /** Narrow layout: return from a plan's detail to the plan list. */
+  backToPlans: () => void;
+  /** "Other subscription (paste a credential)": leave the picker for the classic paste form,
+   * discarding any pasted key. */
+  openOtherSubscription: () => void;
+  /** Leave the picker (kind change, modal close): discard the key form and the choice. */
+  resetPlanPicker: () => void;
+  /** The picker is shown again (after a kind change or the classic form): keep a still-listed
+   * user choice, otherwise choose the first listed plan, so the detail is never empty. */
+  ensurePlanChoice: () => void;
   testProviderById: (id: string) => Promise<void>;
   syncProvider: (id: string) => Promise<void>;
   /** Resume now (classify-plan-quota-errors): lift a plan pause, then reload the provider list so
@@ -1712,6 +1746,53 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     } catch {
       setState('ow', 'presets', []); // no enabled presets ≡ cards hidden
     }
+    settlePlanChoice();
+  };
+
+  /** The listed preset ids, OAuth group first (the picker's order). */
+  const listedPlanIds = (): string[] => [
+    ...state.ow.presets.map((p) => p.id),
+    ...state.kp.presets.map((p) => p.id),
+  ];
+
+  /** Point the picker's detail at `id` without touching the narrow step: a key preset opens
+   * its connect form, an OAuth preset drops any key form. */
+  const showPlan = (id: string): void => {
+    clearFields(['f-kp-key', 'f-kp-region']);
+    const key = state.kp.presets.find((p) => p.id === id);
+    const first = key?.regions[0]?.id ?? '';
+    setState('kp', {
+      preset: key === undefined ? null : id,
+      region: key === undefined ? '' : first,
+      name: '',
+      key: '',
+      ack: false,
+      error: null,
+    });
+    setState('ow', { error: null, identity: null });
+    setState('sp', 'chosen', id);
+  };
+
+  /** After a preset list loads: keep a user's choice while it is still listed; otherwise choose
+   * the first listed plan, so the detail pane is never empty (design D6). An automatic choice is
+   * never moved away from a form the user has started typing into. */
+  const settlePlanChoice = (): void => {
+    if (state.modal !== 'newProvider' || state.np.editingId !== null) return;
+    if (state.ow.active !== null || state.ow.busy || state.kp.busy) return;
+    const ids = listedPlanIds();
+    const chosen = state.sp.chosen;
+    if (chosen !== null && ids.includes(chosen)) {
+      const typed = state.kp.key !== '' || state.kp.name !== '' || state.np.name.trim() !== '';
+      if (state.sp.picked || typed || ids[0] === chosen) return;
+    }
+    const first = ids[0];
+    if (first === undefined) {
+      setState('kp', { preset: null, region: '', name: '', key: '', ack: false, error: null });
+      setState('sp', emptySp());
+      return;
+    }
+    showPlan(first);
+    setState('sp', 'picked', false);
   };
 
   const loadKeyPresets = async (): Promise<void> => {
@@ -1721,6 +1802,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
     } catch {
       setState('kp', 'presets', []); // no offered presets ≡ cards hidden
     }
+    settlePlanChoice();
   };
 
   const loadModels = async (providerId: string): Promise<void> => {
@@ -4195,11 +4277,12 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       clearFields(['f-kp-key', 'f-kp-region']);
       const preset = state.kp.presets.find((p) => p.id === id);
       if (preset === undefined) return;
-      // A sole region is the choice; with several the user picks (the region check).
-      const sole = preset.regions.length === 1 ? (preset.regions[0]?.id ?? '') : '';
+      // The first listed region is preselected (a sole region is the only choice); the picker
+      // shows each region's host, so the choice is visible (redesign-subscription-picker D8).
+      const first = preset.regions[0]?.id ?? '';
       setState('kp', {
         preset: id,
-        region: sole,
+        region: first,
         name: '',
         key: '',
         ack: false,
@@ -4259,6 +4342,34 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         setState('kp', { busy: false, key: '', error: err(e) });
       }
     },
+    choosePlan: (id) => {
+      if (state.ow.active !== null || state.ow.busy || state.kp.busy) return;
+      if (!listedPlanIds().includes(id)) return;
+      if (state.sp.chosen !== id) {
+        // The previous plan's half-filled name, key and acknowledgement are discarded.
+        setState('np', 'name', '');
+        showPlan(id);
+      }
+      setState('sp', { step: 'detail', picked: true });
+    },
+    backToPlans: () => {
+      if (state.ow.busy || state.kp.busy) return;
+      setState('sp', 'step', 'list');
+    },
+    openOtherSubscription: () => {
+      if (state.ow.active !== null || state.ow.busy || state.kp.busy) return;
+      clearFields(['f-kp-key', 'f-kp-region']);
+      setState('kp', emptyKp(state.kp.presets));
+      setState('sp', emptySp());
+      setState('ow', { advanced: true, identity: null, error: null });
+    },
+    resetPlanPicker: () => {
+      if (state.kp.busy) return;
+      clearFields(['f-kp-key', 'f-kp-region']);
+      setState('kp', emptyKp(state.kp.presets));
+      setState('sp', emptySp());
+    },
+    ensurePlanChoice: () => settlePlanChoice(),
     testProviderById,
     resumeProviderPlan: async (id) => {
       try {
@@ -4414,6 +4525,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           identity: null,
         });
         setState('kp', emptyKp(state.kp.presets));
+        setState('sp', emptySp());
         void loadOauthPresets();
         void loadKeyPresets();
       } else {

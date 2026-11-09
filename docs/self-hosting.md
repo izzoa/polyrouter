@@ -507,15 +507,18 @@ Honest caveats:
 
 Four coding plans connect with a **static API key** instead of a sign-in: **OpenCode Go**,
 **MiniMax M Plan**, **Kimi Code** and **Z.ai GLM Coding Plan**. On **Add provider** →
-**Subscription**, each is a card beside the OAuth cards. Pick one, choose a region where
-there are several (Kimi and Z.ai have international and China hosts, MiniMax an
-international host), paste the key, and press **Connect**. The endpoint and protocol are
+**Subscription**, the dialog widens into one list of every plan — the sign-in plans (Claude,
+ChatGPT) under **Sign in with your account**, the four coding plans under **Coding-plan API
+key** — with the chosen plan's detail beside it. Choose a plan, keep or change the region
+(MiniMax, Kimi and Z.ai each have an international and a China host; the first is preselected
+and its host is shown), paste the key, and press **Connect** (the button names the plan). On a phone the list
+and the detail are two steps. The endpoint and protocol are
 pinned by the preset, so there is no URL to type or mistype, and the key is stored
 **encrypted at rest** and never shown again. Then **Sync models**: the preset carries no model
 ids, the models come from the provider's own listing, and Test is that listing.
 
-- **Terms risk is stated per plan.** Each card shows its level (low, medium or high), a
-  plain summary of the provider's terms and a link to them. OpenCode Go and MiniMax allow
+- **Terms risk is stated per plan.** The list names each plan's level (low, medium or high),
+  and its detail shows a plain summary of the provider's terms and a link to them. OpenCode Go and MiniMax allow
   other clients. Kimi Code is meant for interactive use and forbids reverse-proxy sharing,
   non-interactive automation and altering its client identity. **Z.ai is high risk:** its
   terms forbid aggregate and proxy use unless you hold a separate written agreement, so
@@ -529,19 +532,23 @@ ids, the models come from the provider's own listing, and Test is that listing.
 - **Honest User-Agent by default.** Every call announces `User-Agent: polyrouter/<version>`.
   Kimi Code and Z.ai also declare an optional **Claude Code** identity that is sent only when
   you turn on that provider's **identity imitation** switch in Edit (off by default; it
-  warns and asks you to confirm, and likely violates the provider's terms). If a region only works with imitation, its card says so
-  and the preset is rated high risk.
+  warns and asks you to confirm, and likely violates the provider's terms). If a region only
+  works with imitation, its list entry and detail say so and the preset is rated high risk.
 - **Cost.** Subscription rows are counted as notional spend, never cash. Z.ai (international)
   and MiniMax (international) map to the bundled price catalog, so a model the catalog prices
   records a catalog-based notional cost; any other model falls back to a marked listed-price
   estimate, or to unknown cost. OpenCode Go, Kimi and the China hosts have no catalog
   mapping, so their cost is recorded as unknown and flagged, never guessed (unless the
   provider's own listing carried a price, in which case a marked estimate is recorded).
-- **Presets ship only after live verification.** Each region is offered only once its
-  runbook has passed against a real plan key (`scripts/verify-opencode-go-key.md`,
-  `scripts/verify-minimax-key.md`, `scripts/verify-kimi-key.md`,
-  `scripts/verify-zai-key.md`). A region that has not passed is not listed, so no card
-  is offered until a region passes; **Other subscription (paste a
+- **Every plan is listed, and none has had a live run yet.** All four presets and their
+  regions are offered on every install. Their pinned endpoints follow each provider's
+  documentation, but some details (a listing path, a token-cap field, the China hosts) have not
+  been confirmed with a real key, so if one is wrong, **Test** or **Sync models** reports a
+  typed provider error naming the failure — nothing is ever sent to any host other than the
+  pinned one. The runbooks (`scripts/verify-opencode-go-key.md`,
+  `scripts/verify-minimax-key.md`, `scripts/verify-kimi-key.md`, `scripts/verify-zai-key.md`)
+  are optional QA for confirming them with your own key; a region found broken is withdrawn in
+  a release, and rows already connected from it keep working. **Other subscription (paste a
   credential)** stays available for anything else.
 - **The compliance note above applies**: pair a plan with a pay-per-token fallback.
 

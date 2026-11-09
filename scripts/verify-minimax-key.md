@@ -2,10 +2,10 @@
 
 The MiniMax M Plan preset's regions are **not all verified**
 (`packages/control-plane/src/subscription-presets/key-presets.ts`, `MINIMAX_M_PLAN_PRESET`):
-the international host is [V], the China host and the `sk-cp-` key prefix are [U]. Per the
-spec, each region ships **`enabled: false`** until its own run of this check passes with a
-real Coding Plan key — an enabled-and-known-broken preset must never ship. Re-run on
-suspicion of upstream drift.
+the international host is [V], the China host and the `sk-cp-` key prefix are [U]. This check
+is **optional QA** (redesign-subscription-picker): every region ships **enabled**, so a run is
+not a precondition to ship. Run it with your own key to settle the [U] values below, or when a
+user reports a failure. Re-run on suspicion of upstream drift.
 
 Needs: **your own MiniMax Coding Plan key**, a running polyrouter dev stack on **Node 24**
 (`export PATH="$HOME/.nvm/versions/node/v24.18.0/bin:$PATH"`,
@@ -21,9 +21,9 @@ hand (`read -s POLY_KEY`).
 ## Which [U] facts this settles
 
 - **MiniMax's general Terms of Service** (JS-rendered, unread [U]; design Open Questions).
-  Before any region is enabled, **re-read the ToS at the live site** and record, in the table
+  On your first run, **re-read the ToS at the live site** and record, in the table
   below, whether it adds a resale, proxy or automation clause that applies to a plan key used
-  through a personal router. If it does, MiniMax's level and copy change before enablement.
+  through a personal router. If it does, MiniMax's level and copy change in the next release.
 - The China host `https://api.minimaxi.com/v1` serves the same OpenAI path ([U]).
 - The `/models` listing path and shape under each host ([V per research body; re-verify]).
 - The key prefix `sk-cp-` ([U]): if confirmed by eye, add it to `keyHint` (prefix
@@ -34,12 +34,12 @@ hand (`read -s POLY_KEY`).
 - That a Coding Plan key is billed to the plan, **not your pay-as-you-go balance**: check your
   MiniMax balance before and after the completions in step 5.
 
-## 1. Temporarily enable the region
+## 1. Confirm the region is listed
 
-In `key-presets.ts`, flip the region you are testing (`intl` first, then `cn`) to
-`enabled: true` (local working copy only) and restart the dev stack. Check
-`GET /api/providers/key-presets/available` (or the dashboard) now lists **MiniMax M Plan**
-with that region.
+Start the dev stack and check that `GET /api/providers/key-presets/available` (or the
+dashboard's Add provider → Subscription list) lists **MiniMax M Plan** with the region under
+test. Every region ships enabled. If this one was withdrawn (`enabled: false` in
+`key-presets.ts`), flip it to `true` in your local working copy only and restart the stack.
 
 ## 2. Connect and confirm the key prefix
 
@@ -52,7 +52,7 @@ with that region.
 
 Press **Test**. Expected: success with a model count. Record the **listing shape** and count.
 A typed parse or HTTP error means the listing path is wrong for this host: record status and
-body shape (never the key) and keep the region disabled.
+body shape (never the key) and withdraw the region (`enabled: false`).
 
 ## 4. Sync
 
@@ -87,20 +87,20 @@ works. If only `max_tokens` works, set `maxTokensSpelling: 'max_tokens'` on the 
 ## 7. Honest-UA pass
 
 Polyrouter sends exactly one `User-Agent: polyrouter/<version>`; steps 3 to 6 were that pass.
-Record **pass** or the refusal. MiniMax declares no identity, so a refusal keeps the region
-disabled (never `imitationRequired`).
+Record **pass** or the refusal. MiniMax declares no identity, so a refusal withdraws the region (never `imitationRequired`).
 
-## 8. Result table and enablement
+## 8. Result table and outcome
 
 For each region that fully passes **and** after the ToS re-read: keep `enabled: true`, update
 drifted constants (`keyHint` prefix, `maxTokensSpelling`), record the date in the registry
-comment, add a row below, and commit. On any failure: revert to `enabled: false` and document
+comment, add a row below, and commit. On a failure: withdraw the region (ship it `enabled:
+false`; rows already connected from it keep working) or fix the drifted constant, and document
 the failure here.
 
-| Region | Date | ToS re-read result | `sk-cp-` seen | Listing shape | Models | `maxTokensSpelling` | Honest UA | Result      | Notes                         |
-| ------ | ---- | ------------------ | ------------- | ------------- | ------ | ------------------- | --------- | ----------- | ----------------------------- |
-| intl   | —    | —                  | —             | —             | —      | —                   | —         | **not run** | Ships disabled until verified |
-| cn     | —    | —                  | —             | —             | —      | —                   | —         | **not run** | Host is [U]; ships disabled   |
+| Region | Date | ToS re-read result | `sk-cp-` seen | Listing shape | Models | `maxTokensSpelling` | Honest UA | Result      | Notes                      |
+| ------ | ---- | ------------------ | ------------- | ------------- | ------ | ------------------- | --------- | ----------- | -------------------------- |
+| intl   | —    | —                  | —             | —             | —      | —                   | —         | **not run** | Ships enabled; not run yet |
+| cn     | —    | —                  | —             | —             | —      | —                   | —         | **not run** | Host is [U]; ships enabled |
 
 ## 9. Error-shape evidence (classify-plan-quota-errors)
 

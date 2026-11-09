@@ -2,9 +2,10 @@
 
 The OpenCode Go preset's endpoint, listing URL and response shape are **ecosystem-known, not
 documented contracts** (`packages/control-plane/src/subscription-presets/key-presets.ts`,
-`OPENCODE_GO_PRESET`). Per the spec, the region ships **`enabled: false`** until this check
-passes with a real OpenCode Go key — an enabled-and-known-broken preset must never ship.
-Re-run on suspicion of upstream drift.
+`OPENCODE_GO_PRESET`). This check is **optional QA** (redesign-subscription-picker): every
+region ships **enabled**, so a run is not a precondition to ship. Run it with your own key to
+settle the [U] values below, or when a user reports a failure. Re-run on suspicion of upstream
+drift.
 
 Needs: **your own OpenCode Go plan key** (a plain account key, no documented prefix), and a
 running polyrouter dev stack on **Node 24** (`export PATH="$HOME/.nvm/versions/node/v24.18.0/bin:$PATH"`,
@@ -22,18 +23,19 @@ hand (`read -s POLY_KEY`), never in the command line history or a file.
 - The listing override `https://opencode.ai/inference/go/v1/models` (a different path from
   the OpenAI base) answers, and **its response shape** parses with the existing OpenAI
   listing parser ([U], design D4 and D5). If it does not parse, Test and Sync fail with a
-  typed provider error and the region stays disabled; never a hard-coded model list.
+  typed provider error and the region is withdrawn; never a hard-coded model list.
 - Which token-cap spelling the endpoint honours (`maxTokensSpelling`, design Risks).
 - That polyrouter's honest `User-Agent: polyrouter/<version>` is accepted (OpenCode Go
   declares no imitation identity, so there is no imitation pass).
 - Whether a request needs an `x-opencode-session` header ([U]; a recorded follow-up, not
   sent by this change).
 
-## 1. Temporarily enable the region
+## 1. Confirm the region is listed
 
-In `key-presets.ts`, flip `OPENCODE_GO_PRESET.regions[0].enabled` to `true` (local working
-copy only) and restart the dev stack. Check `GET /api/providers/key-presets/available`
-(or the dashboard) now lists **OpenCode Go**.
+Start the dev stack and check that `GET /api/providers/key-presets/available` (or the
+dashboard's Add provider → Subscription list) lists **OpenCode Go**. Every region ships
+enabled. If this one was withdrawn (`enabled: false` in `key-presets.ts`), flip it to `true` in
+your local working copy only and restart the stack.
 
 ## 2. Connect
 
@@ -50,7 +52,7 @@ Go").
 Press **Test** on the row. Expected: success with a model count. Record the **listing shape**
 (a top-level `data` array of `{ id }` like OpenAI, or something else) and the count. A typed
 parse or HTTP error means the listing path or shape is wrong: record the status and body
-shape (never the key) and keep the region disabled.
+shape (never the key) and withdraw the region (`enabled: false`).
 
 ## 4. Sync
 
@@ -88,16 +90,16 @@ below the cap and `finish_reason` is `length`. Record which spelling(s) work. If
 
 The default is the only mode: polyrouter sends exactly one `User-Agent: polyrouter/<version>`.
 Steps 3 to 6 above were that pass. Record **pass** or the refusal (status, body shape). There
-is no imitation pass: OpenCode Go declares no identity, so a refusal here keeps the region
-disabled (never `imitationRequired`).
+is no imitation pass: OpenCode Go declares no identity, so a refusal here withdraws the region (never `imitationRequired`).
 
-## 8. Result table and enablement
+## 8. Result table and outcome
 
-On a fully passing run: keep `enabled: true` for the region, update any constants that
-drifted (`modelsUrl`, `maxTokensSpelling`), record the verification date in the registry
-comment, add a row below, and commit. On any failure: revert to `enabled: false` and
-document the failure here.
+On a fully passing run: keep `enabled: true` for the region, update any constants that drifted
+(`modelsUrl`, `maxTokensSpelling`), record the verification date in the registry comment, add a
+row below, and commit. On a failure: withdraw the region (ship it `enabled: false`; rows
+already connected from it keep working) or fix the drifted constant, and document the failure
+here.
 
-| Region  | Date | Listing shape | Models | `maxTokensSpelling` | Honest UA | Imitation | Result      | Notes                         |
-| ------- | ---- | ------------- | ------ | ------------------- | --------- | --------- | ----------- | ----------------------------- |
-| default | —    | —             | —      | —                   | —         | n/a       | **not run** | Ships disabled until verified |
+| Region  | Date | Listing shape | Models | `maxTokensSpelling` | Honest UA | Imitation | Result      | Notes                      |
+| ------- | ---- | ------------- | ------ | ------------------- | --------- | --------- | ----------- | -------------------------- |
+| default | —    | —             | —      | —                   | —         | n/a       | **not run** | Ships enabled; not run yet |

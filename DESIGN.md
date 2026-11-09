@@ -464,6 +464,7 @@ Below the locked `narrow` threshold (768px viewport), the nav collapses to a 56p
 - The Targets matrix reflows at 900px.
 - The Pipeline reflows at 820px (two-line rows) and again at 540px (phone records).
 - Layers cells stack at 480px.
+- The subscription picker shows its plan list and the chosen plan's detail as two steps below a 660px card.
 
 **Docked inspector.** On the Requests page, at viewports of 1440px and wider, the inspector docks as a 480px panel at the right edge (see Request Inspector), and the page grid gives up that width. The Overview card's inspector stays modal at every width. A request list shows its P1 columns while docked, so the table never falls into stacked records just because the inspector is open. The page and the docked panel count as one view for The Indigo Budget Rule.
 
@@ -719,6 +720,11 @@ Everything that marks "this is the current one" uses a single treatment: the act
 ### Overlays
 - **Drawer:** 440px wide and anchored right, on a 28% scrim, with a Hairline leading edge and the Drawer shadow. It slides in from 24px over 0.18s with ease-out. The head is 16px × 20px over a Soft Hairline rule, with a 15px/600 title. The body has 20px padding and a 16px gap. The tuning drawers (self-calibration, semantic learning) are always this drawer. Only the Request Inspector docks.
 - **Modal:** a 480px card (at most 92vw) with a 10px radius and the Pop shadow, on a 32% scrim. It has 24px padding, a 16px gap and a 15px/600 title.
+- **Subscription picker:** the provider modal's one wide mode. Choosing the Subscription kind for a new provider widens the same card to 800px (still at most 92vw) and drops its outer padding for three bands, each with its own padding over a Soft Hairline rule:
+  - a header (title, the "Add provider · Subscription" subtitle, a Change kind ghost);
+  - a body with a 272px plan list (32px entries in the Selected state) beside the chosen plan's detail;
+  - a footer holding Cancel and the one primary action.
+  Below the `picker-fit` container width (660px) the list and the detail become two steps, and below `narrow` it is the same full-width sheet as every modal.
 - **Narrow:** the drawer, all modals and confirmations become bottom sheets: the same DOM with 16px top corners, 20px × 16px padding plus the safe area, and a 56px strip of page left visible above.
 - **Toast:** an inverted 32px bar. The background is Ink and the text is the Canvas color, at 13px/500 with 8px × 16px padding and a 10px radius. It floats 24px from the bottom, centered, and spans the full width minus 12px each side below `narrow`.
   - It confirms a completed action (`Agent created`, `Copied`) with `role="status"`, and dismisses after 4s. The timer pauses while the toast is hovered or focused.

@@ -7,19 +7,18 @@ import {
   type BudgetWindow,
   type ChannelKind,
   type EventType,
-  type KeyPresetDto,
   type SmtpSecure,
 } from '../data/api';
 import { PROVIDER_KINDS } from '../state/appState';
 import { onSubscriptionConnect } from '../state/fieldChecks';
 import { useApp } from '../state/context';
 import type { Harness } from '../types';
-import { Icon } from './Icon';
 import { FieldNote, useFields } from './Field';
 import { IdentityConsent } from './IdentityConsent';
 import { IdentitySwitch } from './IdentitySwitch';
-import { Notice } from './Notice';
+import { OauthSteps } from './OauthSteps';
 import { StackedLabel } from './StackedLabel';
+import { FLAT_PLAN_TOS, SubscriptionPicker } from './SubscriptionPicker';
 import { createBusyMap } from './busy';
 
 /** Friendly labels for the event-subscription checkboxes (#20 channel modal). */
@@ -50,318 +49,6 @@ export function HarnessSelect(props: {
   );
 }
 
-/** The two sign-in steps of the OAuth connect wizard — open the link, paste what
- * you land on — shared by a new connect and a reconnect (add-provider-health-
- * signals). Rendered only while a connect session is active. */
-function OauthSteps(props: { backLabel: string; onBack: () => void }) {
-  const app = useApp();
-  const { state, setState } = app;
-  const f = useFields();
-  return (
-    <div style="display:flex;flex-direction:column;gap:8px">
-      <div class="t-dense" style="color:var(--text)">
-        1. Open the sign-in link and approve access.
-      </div>
-      <a
-        class="btn-ghost"
-        style="align-self:flex-start;text-decoration:none"
-        href={state.ow.active?.authorizeUrl ?? '#'}
-        target="_blank"
-        rel="noreferrer"
-      >
-        Open sign-in link <Icon name="externalLink" size={12} />
-        <span class="sr-only"> (opens in a new tab)</span>
-      </a>
-      <div class="t-dense" style="color:var(--text)">
-        2. Paste what you land on — the full redirect URL or the code#state string.
-      </div>
-      <label class="field-label" for="f-ow-paste" style="display:block">
-        Redirect URL or code
-      </label>
-      <input
-        class="input input--mono"
-        id="f-ow-paste"
-        value={state.ow.pasted}
-        placeholder="https://…/callback?code=…&state=… or code#state"
-        aria-invalid={f.invalid('f-ow-paste')}
-        aria-describedby={f.describedBy('f-ow-paste')}
-        onBlur={() => f.check('f-ow-paste')}
-        onInput={(e) => {
-          setState('ow', 'pasted', e.currentTarget.value);
-          f.edit('f-ow-paste');
-        }}
-      />
-      <FieldNote for="f-ow-paste" error={f.error('f-ow-paste')} alert />
-      <Show when={state.ow.error}>
-        <div role="alert" class="t-caption" style="color:var(--red-text)">
-          {state.ow.error}
-        </div>
-      </Show>
-      <div style="display:flex;gap:8px;justify-content:flex-end">
-        <button type="button" class="btn-cancel" disabled={state.ow.busy} onClick={props.onBack}>
-          {props.backLabel}
-        </button>
-        <button
-          type="button"
-          class="btn-primary"
-          disabled={state.ow.busy}
-          aria-busy={state.ow.busy ? true : undefined}
-          onClick={() => void app.completeOauthConnect()}
-        >
-          <StackedLabel alt={state.ow.busy} rest="Connect" altLabel="Connecting…" />
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/** The terms-risk level as words: the level is always stated in text, never by colour alone. */
-const RISK_WORDS: Record<KeyPresetDto['termsRisk'], string> = {
-  low: 'Low',
-  medium: 'Medium',
-  high: 'High',
-};
-
-/** The regions of a preset that need identity imitation (the provider currently refuses
- * polyrouter's own identity), by label. */
-function imitationRegions(preset: KeyPresetDto): string[] {
-  return preset.regions.filter((r) => r.imitationRequired).map((r) => r.label);
-}
-
-/** The link to a provider's terms. It opens a new tab, and says so to a screen reader. */
-function TermsLink(props: { url: string; label: string }) {
-  return (
-    <a
-      class="btn-ghost"
-      style="align-self:flex-start;text-decoration:none"
-      href={props.url}
-      target="_blank"
-      rel="noreferrer"
-    >
-      {props.label} <Icon name="externalLink" size={12} />
-      <span class="sr-only"> (opens in a new tab)</span>
-    </a>
-  );
-}
-
-/** One card per offered key-subscription preset (add-key-subscription-presets). The card names
- * the preset and states its terms risk and copy in text; choosing it opens the connect form.
- * The terms link sits under the card, not inside it: a link inside a button is not valid. */
-function KeyPresetCards() {
-  const app = useApp();
-  const { state } = app;
-  return (
-    <For each={state.kp.presets}>
-      {(preset) => (
-        <div
-          role="group"
-          aria-label={preset.displayName}
-          style="display:flex;flex-direction:column;gap:4px"
-        >
-          <button
-            type="button"
-            class="kind-card"
-            data-key-preset={preset.id}
-            onClick={() => {
-              app.chooseKeyPreset(preset.id);
-              // The card goes with the choice: land on the form's first field.
-              queueMicrotask(() =>
-                document
-                  .getElementById(preset.regions.length > 1 ? 'f-kp-region' : 'f-kp-key')
-                  ?.focus(),
-              );
-            }}
-          >
-            <span class="kind-card-name t-label">{preset.displayName}</span>
-            <span class="t-caption" style="display:block;color:var(--text3);margin-top:4px">
-              {RISK_WORDS[preset.termsRisk]} terms risk. {preset.riskCopy}
-            </span>
-            <span class="t-caption" style="display:block;color:var(--text3);margin-top:4px">
-              Paste your plan’s API key — it is stored encrypted and never shown again.
-            </span>
-            <Show when={imitationRegions(preset).length > 0}>
-              <span class="t-caption" style="display:block;color:var(--amber-text);margin-top:4px">
-                {preset.displayName} currently refuses polyrouter’s own identity
-                {preset.regions.length > 1 ? ` (${imitationRegions(preset).join(', ')})` : ''}.
-                Identity imitation must be turned on in Edit after connecting, or it will not work.
-              </span>
-            </Show>
-          </button>
-          <TermsLink url={preset.termsUrl} label="Plan terms" />
-        </div>
-      )}
-    </For>
-  );
-}
-
-/** The key-preset connect form: region (only where several are offered), an optional name, a
- * write-only key, and for a high-risk preset an unchecked acknowledgement that Connect needs.
- * The key never leaves `state.kp.key` except to the connect call, and the store clears it after
- * every submit attempt. */
-function KeyPresetForm(props: { preset: KeyPresetDto }) {
-  const app = useApp();
-  const { state, setState } = app;
-  const f = useFields();
-  const multi = () => props.preset.regions.length > 1;
-  const region = () =>
-    props.preset.regions.find(
-      (r) => r.id === (multi() ? state.kp.region : props.preset.regions[0]?.id),
-    );
-  const imitation = () => region()?.imitationRequired === true;
-  const defaultName = () =>
-    multi() && region() !== undefined
-      ? `${props.preset.displayName} (${region()?.label ?? ''})`
-      : props.preset.displayName;
-  // The hint is advisory: a caution when a hinted prefix is not matched, never a rejection.
-  const mismatch = () => {
-    const prefix = props.preset.keyHint?.prefix ?? null;
-    const key = state.kp.key.trim();
-    return prefix !== null && key !== '' && !key.startsWith(prefix) ? prefix : null;
-  };
-  const gated = () => props.preset.requiresAcknowledgement && !state.kp.ack;
-  const level = () => RISK_WORDS[props.preset.termsRisk];
-  const describedBy = (): string | undefined => {
-    const own = f.describedBy('f-kp-key', props.preset.keyHint !== null);
-    return mismatch() !== null ? [own, 'f-kp-key-caution'].filter(Boolean).join(' ') : own;
-  };
-  return (
-    <div data-key-preset-form style="display:flex;flex-direction:column;gap:12px">
-      <div class="field-label">Connect {props.preset.displayName}</div>
-      <Notice
-        tone={props.preset.termsRisk === 'low' ? 'info' : 'caution'}
-        title={`${level()} terms risk`}
-      >
-        {props.preset.riskCopy}
-      </Notice>
-      <TermsLink url={props.preset.termsUrl} label="Read the plan’s terms" />
-      <Show when={multi()}>
-        <div>
-          <label class="field-label" for="f-kp-region" style="display:block">
-            Region
-          </label>
-          <select
-            class="select"
-            id="f-kp-region"
-            value={state.kp.region}
-            aria-invalid={f.invalid('f-kp-region')}
-            aria-describedby={f.describedBy('f-kp-region')}
-            onChange={(e) => {
-              setState('kp', 'region', e.currentTarget.value);
-              f.edit('f-kp-region');
-            }}
-          >
-            <option value="">Choose a region…</option>
-            <For each={props.preset.regions}>
-              {(r) => (
-                <option value={r.id}>
-                  {r.label} ({r.host}){r.imitationRequired ? ' — needs identity imitation' : ''}
-                </option>
-              )}
-            </For>
-          </select>
-          <FieldNote for="f-kp-region" error={f.error('f-kp-region')} />
-        </div>
-      </Show>
-      <Show when={imitation()}>
-        <Notice tone="caution" title="Identity imitation required">
-          {props.preset.displayName} currently refuses polyrouter’s own identity. After connecting,
-          turn on identity imitation in the provider’s Edit dialog, or it will not work.
-        </Notice>
-      </Show>
-      <div>
-        <label class="field-label" for="f-kp-name" style="display:block">
-          Name (optional)
-        </label>
-        <input
-          class="input"
-          id="f-kp-name"
-          value={state.kp.name}
-          placeholder={defaultName()}
-          onInput={(e) => setState('kp', 'name', e.currentTarget.value)}
-        />
-      </div>
-      <div>
-        <label class="field-label" for="f-kp-key" style="display:block">
-          Plan key
-        </label>
-        <input
-          class="input input--mono"
-          id="f-kp-key"
-          type="password"
-          autocomplete="off"
-          spellcheck={false}
-          value={state.kp.key}
-          aria-invalid={f.invalid('f-kp-key')}
-          aria-describedby={describedBy()}
-          onBlur={() => f.check('f-kp-key')}
-          onInput={(e) => {
-            setState('kp', 'key', e.currentTarget.value);
-            f.edit('f-kp-key');
-          }}
-        />
-        <FieldNote for="f-kp-key" error={f.error('f-kp-key')} help={props.preset.keyHint?.note} />
-        <Show when={mismatch()} keyed>
-          {(prefix) => (
-            <div
-              id="f-kp-key-caution"
-              class="t-caption"
-              style="color:var(--amber-text);margin-top:4px"
-            >
-              This key does not start with {prefix}. It may be a pay-as-you-go key, which bills your
-              account balance instead of the plan. You can still connect.
-            </div>
-          )}
-        </Show>
-      </div>
-      <Show when={props.preset.requiresAcknowledgement}>
-        <label
-          for="f-kp-ack"
-          class="t-label"
-          style="display:flex;align-items:flex-start;gap:8px;min-height:24px;color:var(--text2)"
-        >
-          <input
-            type="checkbox"
-            id="f-kp-ack"
-            checked={state.kp.ack}
-            onChange={(e) => setState('kp', 'ack', e.currentTarget.checked)}
-          />
-          I have read the terms and accept the risk to my {props.preset.displayName} account.
-        </label>
-      </Show>
-      <Show when={state.kp.error}>
-        <div role="alert" class="t-caption" style="color:var(--red-text)">
-          {state.kp.error}
-        </div>
-      </Show>
-      <div style="display:flex;gap:8px;justify-content:flex-end">
-        <button
-          type="button"
-          class="btn-cancel"
-          disabled={state.kp.busy}
-          onClick={() => {
-            const back = props.preset.id;
-            app.cancelKeyPreset();
-            queueMicrotask(() =>
-              document.querySelector<HTMLElement>(`[data-key-preset="${back}"]`)?.focus(),
-            );
-          }}
-        >
-          Back
-        </button>
-        <button
-          type="button"
-          class="btn-primary"
-          disabled={state.kp.busy || gated()}
-          aria-busy={state.kp.busy ? true : undefined}
-          onClick={() => void app.connectKeyPreset()}
-        >
-          <StackedLabel alt={state.kp.busy} rest="Connect" altLabel="Connecting…" />
-        </button>
-      </div>
-    </div>
-  );
-}
-
 export function Modals() {
   const app = useApp();
   const { state, setState } = app;
@@ -380,16 +67,25 @@ export function Modals() {
   // from (the edit modal's or the connect wizard's identity step), or none. Local: it lives and
   // dies with the modal, and the confirmation only ever sets form state.
   const [consent, setConsent] = createSignal<'edit' | 'connect' | null>(null);
+  // redesign-subscription-picker D4: "Change kind" suspends the picker and shows the standard
+  // card with Subscription still selected; choosing any kind clears it.
+  const [kindOpen, setKindOpen] = createSignal(false);
   createEffect(
     on(
       () => state.modal,
-      () => setConsent(null),
+      () => {
+        setConsent(null);
+        setKindOpen(false);
+      },
     ),
   );
   const npKind = () => PROVIDER_KINDS.find((k) => k.id === state.np.kind);
   /** The OAuth connect path replaces the classic fields for a NEW subscription
    * provider whenever the server lists an enabled preset (add-subscription-oauth). */
   const subConnect = () => onSubscriptionConnect(state);
+  /** The picker mode of the provider card (redesign-subscription-picker D4). */
+  const pickerOn = () =>
+    state.modal === 'newProvider' && subConnect() && !kindOpen() && state.ow.reconnect === null;
   // The name is optional on the connect path (its check does not apply there), so a "Name is
   // required" shown on the classic path clears when the form moves onto it.
   createEffect(
@@ -403,7 +99,7 @@ export function Modals() {
     on(
       subConnect,
       (connect) => {
-        if (!connect) app.cancelKeyPreset();
+        if (!connect) app.resetPlanPicker();
       },
       { defer: true },
     ),
@@ -433,8 +129,6 @@ export function Modals() {
     const where = region?.label ?? host;
     return `Subscription — ${preset?.displayName ?? id}${where !== '' ? ` (${where})` : ''}`;
   };
-  /** The key chosen on the connect path, if it is still offered. */
-  const kpChosen = () => state.kp.presets.find((p) => p.id === state.kp.preset);
   const PROTOCOL_LABELS: Record<string, string> = {
     openai_compatible: 'OpenAI-compatible',
     anthropic_compatible: 'Anthropic-compatible',
@@ -482,6 +176,7 @@ export function Modals() {
             >
               <div
                 class="modal-card"
+                classList={{ 'modal-card--picker': pickerOn() }}
                 {...surface.props}
                 ref={(el: HTMLDivElement) => {
                   cardEl = el;
@@ -574,7 +269,21 @@ export function Modals() {
                   </div>
                 </Show>
 
-                <Show when={state.modal === 'newProvider' || state.modal === 'editProvider'}>
+                <Show when={pickerOn()}>
+                  <SubscriptionPicker
+                    connecting={connecting}
+                    onAskConsent={() => setConsent('connect')}
+                    onChangeKind={() => {
+                      app.resetPlanPicker();
+                      setKindOpen(true);
+                    }}
+                  />
+                </Show>
+                <Show
+                  when={
+                    (state.modal === 'newProvider' || state.modal === 'editProvider') && !pickerOn()
+                  }
+                >
                   <div class="modal-title" id="modal-title">
                     {state.ow.reconnect !== null
                       ? `Reconnect ${state.ow.reconnect.name}`
@@ -634,28 +343,25 @@ export function Modals() {
                     </div>
                   </Show>
                   <Show when={state.ow.reconnect === null}>
-                    {/* The key-preset form carries its own optional name. */}
-                    <Show when={!(subConnect() && kpChosen() !== undefined)}>
-                      <div>
-                        <label class="field-label" for="f-np-name" style="display:block">
-                          Name
-                        </label>
-                        <input
-                          class="input"
-                          id="f-np-name"
-                          value={state.np.name}
-                          placeholder="e.g. OpenAI, mylab-endpoint"
-                          aria-invalid={f.invalid('f-np-name')}
-                          aria-describedby={f.describedBy('f-np-name')}
-                          onBlur={() => f.check('f-np-name')}
-                          onInput={(e) => {
-                            setState('np', 'name', e.currentTarget.value);
-                            f.edit('f-np-name');
-                          }}
-                        />
-                        <FieldNote for="f-np-name" error={f.error('f-np-name')} />
-                      </div>
-                    </Show>
+                    <div>
+                      <label class="field-label" for="f-np-name" style="display:block">
+                        Name
+                      </label>
+                      <input
+                        class="input"
+                        id="f-np-name"
+                        value={state.np.name}
+                        placeholder="e.g. OpenAI, mylab-endpoint"
+                        aria-invalid={f.invalid('f-np-name')}
+                        aria-describedby={f.describedBy('f-np-name')}
+                        onBlur={() => f.check('f-np-name')}
+                        onInput={(e) => {
+                          setState('np', 'name', e.currentTarget.value);
+                          f.edit('f-np-name');
+                        }}
+                      />
+                      <FieldNote for="f-np-name" error={f.error('f-np-name')} />
+                    </div>
                     <Show
                       when={!pinned()}
                       fallback={
@@ -739,8 +445,12 @@ export function Modals() {
                               <button
                                 type="button"
                                 class="kind-card"
+                                data-kind={k.id}
                                 aria-pressed={state.np.kind === k.id}
-                                onClick={() => setState('np', 'kind', k.id)}
+                                onClick={() => {
+                                  setState('np', 'kind', k.id);
+                                  setKindOpen(false);
+                                }}
                               >
                                 <span class="t-label kind-card-name">{k.name}</span>
                                 <span
@@ -753,140 +463,6 @@ export function Modals() {
                             )}
                           </For>
                         </div>
-                      </div>
-                    </Show>
-                    <Show when={subConnect() ? kpChosen() : undefined}>
-                      {(chosen) => <KeyPresetForm preset={chosen()} />}
-                    </Show>
-                    <Show when={subConnect() && kpChosen() === undefined}>
-                      <Show
-                        when={state.ow.active}
-                        fallback={
-                          <Show
-                            when={state.ow.identity}
-                            keyed
-                            fallback={
-                              <div style="display:flex;flex-direction:column;gap:8px">
-                                <div class="field-label">Connect a subscription</div>
-                                <For each={state.ow.presets}>
-                                  {(pr) => (
-                                    <button
-                                      type="button"
-                                      class="kind-card"
-                                      data-preset={pr.id}
-                                      disabled={state.ow.busy}
-                                      aria-busy={connecting.busy(pr.id) ? true : undefined}
-                                      onClick={() => {
-                                        // A preset that declares a client identity opens the identity
-                                        // step first (allow-preset-client-identity); one that declares
-                                        // none connects on this click, exactly as before.
-                                        const identity = pr.clientIdentity ?? null;
-                                        if (identity) {
-                                          setState('ow', 'identity', {
-                                            preset: pr.id,
-                                            label: identity.label,
-                                            optIn: false,
-                                          });
-                                          return;
-                                        }
-                                        void connecting.run(pr.id, () =>
-                                          app.startOauthConnect(pr.id),
-                                        );
-                                      }}
-                                    >
-                                      <span class="t-label" style="display:block;color:var(--text)">
-                                        <StackedLabel
-                                          alt={connecting.busy(pr.id)}
-                                          rest={pr.displayName}
-                                          altLabel="Connecting…"
-                                        />
-                                      </span>
-                                      <span
-                                        class="t-caption"
-                                        style="display:block;color:var(--text3);margin-top:4px"
-                                      >
-                                        Sign in with your account — tokens are stored encrypted and
-                                        auto-refresh.
-                                      </span>
-                                    </button>
-                                  )}
-                                </For>
-                                <KeyPresetCards />
-                                <button
-                                  type="button"
-                                  class="btn-ghost"
-                                  style="align-self:flex-start"
-                                  onClick={() => setState('ow', 'advanced', true)}
-                                >
-                                  Other subscription (paste a credential)
-                                </button>
-                              </div>
-                            }
-                          >
-                            {(step) => (
-                              <div style="display:flex;flex-direction:column;gap:8px">
-                                <div class="field-label">
-                                  Connect{' '}
-                                  {state.ow.presets.find((x) => x.id === step.preset)
-                                    ?.displayName ?? step.preset}
-                                </div>
-                                <IdentitySwitch
-                                  id="f-ow-imitate"
-                                  label={step.label}
-                                  checked={step.optIn}
-                                  onAsk={() => setConsent('connect')}
-                                  onOff={() => setState('ow', 'identity', 'optIn', false)}
-                                />
-                                <div style="display:flex;gap:8px;justify-content:flex-end">
-                                  <button
-                                    type="button"
-                                    class="btn-cancel"
-                                    disabled={state.ow.busy}
-                                    onClick={() => {
-                                      const back = step.preset;
-                                      setState('ow', 'identity', null);
-                                      queueMicrotask(() =>
-                                        document
-                                          .querySelector<HTMLElement>(`[data-preset="${back}"]`)
-                                          ?.focus(),
-                                      );
-                                    }}
-                                  >
-                                    Back
-                                  </button>
-                                  <button
-                                    type="button"
-                                    class="btn-primary"
-                                    disabled={state.ow.busy}
-                                    aria-busy={connecting.busy(step.preset) ? true : undefined}
-                                    onClick={() =>
-                                      void connecting.run(step.preset, () =>
-                                        app.startOauthConnect(step.preset, step.optIn),
-                                      )
-                                    }
-                                  >
-                                    <StackedLabel
-                                      alt={connecting.busy(step.preset)}
-                                      rest="Continue to sign-in"
-                                      altLabel="Connecting…"
-                                    />
-                                  </button>
-                                </div>
-                              </div>
-                            )}
-                          </Show>
-                        }
-                      >
-                        <OauthSteps backLabel="Back" onBack={() => app.cancelOauthConnect()} />
-                      </Show>
-                      <Show when={!state.ow.active && state.ow.error}>
-                        <div class="t-caption" style="color:var(--red-text)">
-                          {state.ow.error}
-                        </div>
-                      </Show>
-                      <div class="t-caption" style="color:var(--amber-text)">
-                        Reusing a flat-rate subscription programmatically may violate the provider’s
-                        ToS — pair it with a pay-per-token fallback.
                       </div>
                     </Show>
                     <Show when={!subConnect()}>
@@ -995,8 +571,7 @@ export function Modals() {
                       </Show>
                       <Show when={state.np.kind === 'sub'}>
                         <div class="t-caption" style="color:var(--amber-text)">
-                          Reusing a flat-rate subscription programmatically may violate the
-                          provider’s ToS — pair it with a pay-per-token fallback.
+                          {FLAT_PLAN_TOS}
                         </div>
                       </Show>
                       {/* allow-preset-client-identity: only where the provider's preset declares an

@@ -237,8 +237,9 @@ export interface KeyPresetRegionDto {
   imitationRequired: boolean;
 }
 
-/** An enabled key-subscription preset (server-driven card list; add-key-subscription-presets).
- * Non-secret display data: no credential, no endpoint URL, no identity value. */
+/** A listed key-subscription preset (server-driven plan list; add-key-subscription-presets,
+ * redesign-subscription-picker). Non-secret display data: no credential, no endpoint URL, no
+ * identity value. */
 export interface KeyPresetDto {
   id: string;
   displayName: string;
@@ -250,6 +251,9 @@ export interface KeyPresetDto {
   riskCopy: string;
   termsUrl: string;
   requiresAcknowledgement: boolean;
+  /** Whether the preset declares an optional client identity (redesign-subscription-picker D3):
+   * a boolean only, so the picker can say the identity-imitation switch exists in Edit. */
+  declaresIdentity: boolean;
 }
 
 /** The key-preset connect body. `credential` is key material: sent once, never stored. */

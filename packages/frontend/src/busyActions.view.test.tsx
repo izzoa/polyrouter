@@ -337,7 +337,7 @@ const SCENARIOS: Record<string, Scenario> = {
     find: () => byLabel(dialogNamed('Delete agent "claude-code"?'), 'Delete agent'),
     settled: 'gone',
   },
-  'components/Modals.tsx app.completeOauthConnect': {
+  'components/OauthSteps.tsx app.completeOauthConnect': {
     page: 'providers',
     prepare: async (h) => {
       await openModal(h, 'newProvider');
@@ -352,12 +352,14 @@ const SCENARIOS: Record<string, Scenario> = {
         },
         pasted: 'https://localhost/callback?code=abc&state=xyz',
       });
+      // The picker shows the paste-back step in the chosen plan's detail.
+      h.store.setState('sp', { chosen: 'chatgpt', step: 'detail', picked: true });
       await flush();
     },
     find: (h) => byLabel(within(h, '.modal-card'), 'Connect'),
     settled: 'gone',
   },
-  'components/Modals.tsx app.connectKeyPreset': {
+  'components/SubscriptionPicker.tsx app.connectKeyPreset': {
     page: 'providers',
     prepare: async (h) => {
       await openModal(h, 'newProvider');
@@ -374,14 +376,15 @@ const SCENARIOS: Record<string, Scenario> = {
           riskCopy: 'Open to other coding agents.',
           termsUrl: 'https://opencode.ai/v2/docs/console/go/',
           requiresAcknowledgement: false,
+          declaresIdentity: false,
         },
       ]);
       await flush();
-      h.store.chooseKeyPreset('opencode-go');
+      h.store.choosePlan('opencode-go');
       h.store.setState('kp', 'key', 'plan-key');
       await flush();
     },
-    find: (h) => byLabel(within(h, '.modal-card'), 'Connect'),
+    find: (h) => byLabel(within(h, '.modal-card'), 'Connect OpenCode Go'),
     settled: 'gone',
   },
   'components/Modals.tsx app.createAgent': {
@@ -394,18 +397,7 @@ const SCENARIOS: Record<string, Scenario> = {
     find: (h) => byLabel(within(h, '.modal-card'), 'Create & mint key'),
     settled: 'gone',
   },
-  'components/Modals.tsx app.startOauthConnect#1': {
-    page: 'providers',
-    prepare: async (h) => {
-      await openModal(h, 'newProvider');
-      h.store.setState('np', 'kind', 'sub');
-      h.store.setState('ow', 'presets', [{ id: 'chatgpt', displayName: 'ChatGPT' }]);
-      await flush();
-    },
-    find: (h) => byLabel(within(h, '.modal-card'), 'ChatGPT'),
-    settled: 'gone',
-  },
-  'components/Modals.tsx app.startOauthConnect#2': {
+  'components/SubscriptionPicker.tsx app.startOauthConnect#1': {
     page: 'providers',
     prepare: async (h) => {
       await openModal(h, 'newProvider');
@@ -413,12 +405,25 @@ const SCENARIOS: Record<string, Scenario> = {
       h.store.setState('ow', 'presets', [
         { id: 'stub-identity', displayName: 'Fixture Plan', clientIdentity: { label: 'Fixture' } },
       ]);
+      h.store.setState('sp', { chosen: 'stub-identity', step: 'detail', picked: true });
       await flush();
       // A declaring preset opens its identity step first; the step's Continue is the button.
-      byLabel(within(h, '.modal-card'), 'Fixture Plan')?.click();
+      byLabel(within(h, '.modal-card'), 'Sign in')?.click();
       await flush();
     },
     find: (h) => byLabel(within(h, '.modal-card'), 'Continue to sign-in'),
+    settled: 'gone',
+  },
+  'components/SubscriptionPicker.tsx app.startOauthConnect#2': {
+    page: 'providers',
+    prepare: async (h) => {
+      await openModal(h, 'newProvider');
+      h.store.setState('np', 'kind', 'sub');
+      h.store.setState('ow', 'presets', [{ id: 'chatgpt', displayName: 'ChatGPT' }]);
+      h.store.setState('sp', { chosen: 'chatgpt', step: 'detail', picked: true });
+      await flush();
+    },
+    find: (h) => byLabel(within(h, '.modal-card'), 'Sign in'),
     settled: 'gone',
   },
   'components/Modals.tsx app.addProvider': {

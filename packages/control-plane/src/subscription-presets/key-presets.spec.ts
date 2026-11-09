@@ -25,7 +25,7 @@ const allRegions = KEY_PRESETS.flatMap((preset) =>
 );
 
 /** A copy of `preset` with its region flags overridden, to exercise the helpers on a
- * registry the shipped (all-disabled) constants cannot show. */
+ * registry the shipped (all-enabled) constants cannot show: a withdrawn region. */
 function withRegions(
   preset: KeyPreset,
   flags: Readonly<Record<string, Partial<KeyPresetRegion>>>,
@@ -170,13 +170,13 @@ describe('key-preset registry invariants', () => {
     expect(zai?.note).toContain('key type');
   });
 
-  it('every region ships disabled and not imitation-required (the enablement gate)', () => {
-    // A region flips to enabled only after its own live runbook passes with the user's key.
+  it('every region ships enabled and not imitation-required (redesign-subscription-picker)', () => {
+    // The runbooks are optional QA; a region found broken is withdrawn by shipping it false.
     for (const { preset, region } of allRegions) {
       expect({ preset: preset.id, region: region.id, enabled: region.enabled }).toEqual({
         preset: preset.id,
         region: region.id,
-        enabled: false,
+        enabled: true,
       });
       expect(region.imitationRequired).toBe(false);
     }
@@ -256,8 +256,12 @@ describe('model-API identity declarations (task 7.1)', () => {
 
 describe('offeredRegions and listOfferedKeyPresets', () => {
   it('offeredRegions returns enabled regions only, an enabled imitation-required one included', () => {
-    expect(offeredRegions(KIMI_CODE_PRESET)).toEqual([]);
-    const kimi = withRegions(KIMI_CODE_PRESET, { intl: { enabled: true } });
+    const withdrawn = withRegions(KIMI_CODE_PRESET, {
+      intl: { enabled: false },
+      cn: { enabled: false },
+    });
+    expect(offeredRegions(withdrawn)).toEqual([]);
+    const kimi = withRegions(KIMI_CODE_PRESET, { cn: { enabled: false } });
     expect(offeredRegions(kimi).map((r) => r.id)).toEqual(['intl']);
     const both = withRegions(KIMI_CODE_PRESET, {
       intl: { enabled: true, imitationRequired: true },
@@ -267,19 +271,22 @@ describe('offeredRegions and listOfferedKeyPresets', () => {
     expect(offeredRegions(both)[0]!.imitationRequired).toBe(true);
   });
 
-  it('the shipped registry lists nothing: every region is disabled', () => {
-    expect(listOfferedKeyPresets(defaultKeyPresetRegistry)).toEqual([]);
+  it('the shipped registry lists all four presets with seven regions, in registry order', () => {
+    const listed = listOfferedKeyPresets(defaultKeyPresetRegistry);
+    expect(listed.map((p) => [p.id, p.regions.map((r) => r.id)])).toEqual([
+      ['opencode-go', ['default']],
+      ['minimax-m-plan', ['intl', 'cn']],
+      ['kimi-code', ['intl', 'cn']],
+      ['zai-coding-plan', ['intl', 'cn']],
+    ]);
   });
 
-  it('omits disabled presets and regions, and a preset with no offered region', () => {
+  it('omits withdrawn presets and regions, and a preset with no offered region', () => {
     const registry = registryOf(
-      withRegions(OPENCODE_GO_PRESET, { default: { enabled: true } }),
-      withRegions(MINIMAX_M_PLAN_PRESET, { intl: { enabled: true } }), // cn stays disabled
-      KIMI_CODE_PRESET, // nothing offered
-      withRegions(ZAI_CODING_PLAN_PRESET, {
-        intl: { enabled: true },
-        cn: { enabled: true },
-      }),
+      OPENCODE_GO_PRESET,
+      withRegions(MINIMAX_M_PLAN_PRESET, { cn: { enabled: false } }), // cn withdrawn
+      withRegions(KIMI_CODE_PRESET, { intl: { enabled: false }, cn: { enabled: false } }),
+      ZAI_CODING_PLAN_PRESET,
     );
     const listed = listOfferedKeyPresets(registry);
     expect(listed.map((p) => [p.id, p.regions.map((r) => r.id)])).toEqual([
@@ -343,13 +350,17 @@ describe('keyPresetForRow (the D6 coherence gate)', () => {
     ...over,
   });
 
-  it('matches every pin, a disabled region included (it ignores enabled)', () => {
+  it('matches every pin, a withdrawn region included (it ignores enabled)', () => {
     for (const { preset, region } of allRegions) {
-      expect(region.enabled).toBe(false);
       const match = keyPresetForRow(rowFor(preset, region));
       expect(match?.preset).toBe(preset);
       expect(match?.region).toBe(region);
     }
+    // A withdrawn region's row still resolves: the gate reads the bundled pins, not the flag.
+    const withdrawn = withRegions(KIMI_CODE_PRESET, { cn: { enabled: false } });
+    const cn = withdrawn.regions[1]!;
+    expect(cn.enabled).toBe(false);
+    expect(keyPresetForRow(rowFor(withdrawn, cn))?.region.id).toBe('cn');
   });
 
   it('resolves the region by pin, not by preset alone', () => {

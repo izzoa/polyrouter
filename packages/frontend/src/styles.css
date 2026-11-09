@@ -1725,6 +1725,248 @@ button:disabled[aria-busy='true'] {
   text-wrap: balance;
 }
 
+/* The subscription picker (redesign-subscription-picker D4/D5; DESIGN.md Overlays › Modal):
+   a mode of the same modal card. It widens to 800px and drops its outer padding for three
+   bands — header, body and footer — each with its own padding over a Soft Hairline rule. The
+   card is the `rs-picker` query container: below `picker-fit` (STYLESEED.md; PICKER_FIT in
+   appState.ts) the list and the detail are two steps. Two classes outrank the narrow sheet's
+   `.modal-card` padding, so the bands keep theirs on a phone too. */
+.modal-card.modal-card--picker {
+  width: 800px;
+  max-width: 92vw;
+  padding: 0;
+  gap: 0;
+  container-type: inline-size;
+  container-name: rs-picker;
+}
+.sp {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.sp-head,
+.sp-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 24px;
+}
+.sp-head {
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border2);
+}
+.sp-head-titles {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.sp-foot {
+  justify-content: flex-end;
+  border-top: 1px solid var(--border2);
+  /* The footer holds the one primary action: it stays in reach while the sheet scrolls or the
+     on-screen keyboard shrinks the visible height. */
+  position: sticky;
+  bottom: 0;
+  background: var(--panel);
+}
+.rs-picker-body {
+  display: grid;
+  grid-template-columns: 272px minmax(0, 1fr);
+}
+.sp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px 12px;
+  border-right: 1px solid var(--border2);
+}
+.sp-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sp-group-label {
+  padding: 0 8px 4px;
+  font:
+    500 0.6875rem/1rem 'Geist',
+    sans-serif;
+  color: var(--text3);
+}
+/* A plan in the list: a 40px row on the 6px control radius. The chosen one takes the one
+   Selected treatment (wash, Deep Ink label and edge); a locked list is `aria-disabled`, still
+   focusable and announced. Its ring is drawn inset: the entry sits flush in its column. */
+.sp-entry {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  box-sizing: border-box;
+  /* A 32px height-family row, as the nav item: (32 − 2px border − 16px line) ÷ 2. */
+  padding: 7px 8px;
+  text-align: left;
+  font: inherit;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.sp-entry:hover {
+  background: var(--hover);
+}
+.sp-entry:active {
+  background: var(--chip);
+}
+.sp-entry:focus-visible {
+  outline-offset: -2px;
+}
+.sp-entry[aria-current='true'] {
+  background: var(--accent-bg);
+  border-color: var(--accent-deep);
+  color: var(--accent-deep);
+}
+/* Locked while a sign-in session or a connect is in flight (design D9): temporarily
+   unavailable, so the 60% treatment of DESIGN.md Buttons › Disabled — still focusable and
+   announced (`aria-disabled`, never native `disabled`), with no hover answer. The two ghost
+   exits lock with the list. */
+.sp-entry[aria-disabled='true'],
+.sp .btn-ghost[aria-disabled='true'] {
+  opacity: 0.6;
+  cursor: default;
+}
+.sp-entry[aria-disabled='true']:hover,
+.sp .btn-ghost[aria-disabled='true']:hover {
+  background: transparent;
+}
+.sp-entry[aria-disabled='true'][aria-current='true']:hover {
+  background: var(--accent-bg);
+}
+.sp .btn-ghost[aria-disabled='true']:hover {
+  border-color: var(--border);
+  color: var(--text2);
+}
+.sp-entry-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.sp-entry-name {
+  font:
+    500 0.8125rem/1rem 'Geist',
+    sans-serif;
+}
+.sp-entry-caption {
+  font:
+    400 0.6875rem/1rem 'Geist',
+    sans-serif;
+  color: var(--text3);
+  white-space: nowrap;
+}
+.sp-entry[aria-current='true'] .sp-entry-caption {
+  color: var(--text2);
+}
+.sp-entry-note {
+  font:
+    400 0.6875rem/1rem 'Geist',
+    sans-serif;
+  color: var(--amber-text);
+}
+.sp-other {
+  padding: 12px 8px 0;
+  border-top: 1px solid var(--border2);
+}
+.sp-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  padding: 20px 24px;
+}
+.sp-detail-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.sp-detail-title {
+  margin: 0;
+  font:
+    600 0.9375rem/1.25rem 'Geist',
+    sans-serif;
+  letter-spacing: -0.01em;
+}
+.sp-detail-head .chip {
+  color: var(--text2);
+}
+.sp-back {
+  align-self: flex-start;
+}
+.sp-detail-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.sp-group-tight {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.sp-group-snug {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+/* The region choice: the shared segmented control (`Segmented`), its track kept to its
+   options' width, with the pinned host under it. */
+.sp-region {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+}
+.rs-picker-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.sp-ack {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-height: 24px;
+  color: var(--text2);
+}
+.sp-step-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+/* Below the picker's fit the list and the detail are two steps, chosen by `data-step`; the
+   Name / Plan key pair stacks; the bands take the narrow 16px inset. On the list step the
+   footer keeps only Cancel — the primary belongs to the detail it acts on. */
+@container rs-picker (width < 660px) {
+  .rs-picker-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .sp-list {
+    padding: 16px;
+    border-right: 0;
+  }
+  .sp-detail,
+  .sp-head,
+  .sp-foot {
+    padding: 16px;
+  }
+  .sp[data-step='list'] .sp-detail,
+  .sp[data-step='detail'] .sp-list,
+  .sp[data-step='list'] .sp-foot .btn-primary {
+    display: none;
+  }
+  .rs-picker-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 /* The toast bar (adopt-design-tokens-v2 D13; DESIGN.md Overlays › Toast): an inverted bar on
    the 32px family — a border-box `min-height` with the 8px × 16px padding around its 16px
    line, so one line is exactly 32px and a long message grows rather than clips — 24px from
@@ -2381,7 +2623,8 @@ button:disabled[aria-busy='true'] {
 .rs-nav-toggle,
 .account-trigger,
 .filter-chip,
-.kind-card {
+.kind-card,
+.sp-entry {
   min-height: 24px;
 }
 
@@ -2438,7 +2681,8 @@ button:disabled[aria-busy='true'] {
 .nav-item,
 .seg-track,
 .account-trigger,
-.menu-item {
+.menu-item,
+.sp-entry {
   min-height: 32px;
 }
 /* A select's own line box is `normal` in Chromium whatever the author sets, so its height
@@ -2637,6 +2881,11 @@ button:disabled[aria-busy='true'] {
      flex would change how they lay out their own content. */
   .input,
   .select {
+    min-height: 44px;
+  }
+  /* A subscription plan keeps its column layout (name line over an optional note): the
+     comfort target only, never the centring flex above. */
+  .sp-entry {
     min-height: 44px;
   }
   /* Input text is 16px in the comfort context (DESIGN.md Inputs / Fields; adopt-design-tokens-v2
@@ -2844,6 +3093,18 @@ button:disabled[aria-busy='true'] {
     overflow-y: auto;
     overscroll-behavior: contain;
     padding: 20px 16px calc(20px + var(--safe-area-bottom));
+  }
+
+  /* The subscription picker is the same sheet: full width, with no outer padding — its bands
+     pad themselves, and its footer carries the safe-area inset for its last row. Two classes,
+     as on its desktop rule, which would otherwise keep it 800px / 92vw wide. */
+  .modal-card.modal-card--picker {
+    width: auto;
+    max-width: none;
+    padding: 0;
+  }
+  .modal-card--picker .sp-foot {
+    padding-bottom: calc(16px + var(--safe-area-bottom));
   }
 
   /* The backdrop stops centring its card, or the sheet would be pinned mid-screen. */

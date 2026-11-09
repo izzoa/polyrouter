@@ -1,11 +1,11 @@
 # Live verification — Z.ai GLM Coding Plan key preset (add-key-subscription-presets)
 
 The Z.ai preset's `/models` listing path is [U] and whether its plan endpoint needs a client
-identity at all is [U]
-(`packages/control-plane/src/subscription-presets/key-presets.ts`, `ZAI_CODING_PLAN_PRESET`).
-Per the spec, each region ships **`enabled: false`** until its own run of this check passes
-with a real plan key — an enabled-and-known-broken preset must never ship. Re-run on
-suspicion of upstream drift.
+identity at all is [U] (`packages/control-plane/src/subscription-presets/key-presets.ts`,
+`ZAI_CODING_PLAN_PRESET`). This check is **optional QA** (redesign-subscription-picker): every
+region ships **enabled**, so a run is not a precondition to ship. Run it with your own key to
+settle the [U] values below, or when a user reports a failure. Re-run on suspicion of upstream
+drift.
 
 Needs: **your own Z.ai Personal Coding Plan (or Team Plan) key**, a running polyrouter dev
 stack on **Node 24** (`export PATH="$HOME/.nvm/versions/node/v24.18.0/bin:$PATH"`,
@@ -21,8 +21,8 @@ hand (`read -s POLY_KEY`).
 calling the model API from your own applications, unless you hold a separate written
 agreement. Routing through polyrouter is that kind of use. Connect needs the
 acknowledgement checkbox (the server refuses without `acknowledgeTermsRisk: true`). Run this
-only if you accept that risk or have Z.ai's written permission; whether to enable the preset
-afterwards is your call, not the technical gate's.
+only if you accept that risk or have Z.ai's written permission; whether to keep using the
+preset afterwards is your call.
 
 **Wrong key type bills money.** For keys created on or after 2026-10-16 the key type, not the
 endpoint, decides billing. Use a Coding Plan key and check your pay-as-you-go balance does not
@@ -45,11 +45,12 @@ drop during step 5.
 - Cost: on `api.z.ai` the request log shows **notional** cost priced at the `zai` family's API
   rates; on `open.bigmodel.cn` the cost is null and flagged.
 
-## 1. Temporarily enable the region
+## 1. Confirm the region is listed
 
-In `key-presets.ts`, flip the region under test (`intl` first, then `cn`) to
-`enabled: true` (local working copy only) and restart the dev stack. Check
-`GET /api/providers/key-presets/available` (or the dashboard) lists **Z.ai GLM Coding Plan**.
+Start the dev stack and check that `GET /api/providers/key-presets/available` (or the
+dashboard's Add provider → Subscription list) lists **Z.ai GLM Coding Plan** with the region
+under test. Every region ships enabled. If this one was withdrawn (`enabled: false` in
+`key-presets.ts`), flip it to `true` in your local working copy only and restart the stack.
 
 ## 2. Connect and confirm the key
 
@@ -103,21 +104,22 @@ client, or by PATCHing the row's `maxTokensSpelling` in Edit). The honoured spel
 3. Decide: honest passes, then `imitationRequired: false`. Only imitation passes, then set the
    region's `imitationRequired: true` and update `riskCopy` to say Z.ai currently refuses
    polyrouter's identity and imitation must be turned on in Edit (the preset is already
-   `high`; design D12). Neither passes: keep the region disabled.
+   `high`; design D12). Neither passes: withdraw the region (`enabled: false`).
 
-## 8. Result table and enablement
+## 8. Result table and outcome
 
 For each region that passes: keep `enabled: true`, update drifted constants (listing path,
 `maxTokensSpelling`, key-type note, identity string or version), record the date in the
-registry comment, add a row below, and commit. On any failure: revert to `enabled: false` and
+registry comment, add a row below, and commit. On a failure: withdraw the region (ship it
+`enabled: false`; rows already connected from it keep working) or fix the drifted constant, and
 document the failure here.
 
 Z.ai written-permission status (date, reply): **not recorded yet**.
 
-| Region | Date | Listing shape | Models | `maxTokensSpelling` | Honest UA | Imitation | Imitation-required | `1311` seen | Result      | Notes                         |
-| ------ | ---- | ------------- | ------ | ------------------- | --------- | --------- | ------------------ | ----------- | ----------- | ----------------------------- |
-| intl   | —    | —             | —      | —                   | —         | —         | —                  | —           | **not run** | Ships disabled until verified |
-| cn     | —    | —             | —      | —                   | —         | —         | —                  | —           | **not run** | Ships disabled until verified |
+| Region | Date | Listing shape | Models | `maxTokensSpelling` | Honest UA | Imitation | Imitation-required | `1311` seen | Result      | Notes                      |
+| ------ | ---- | ------------- | ------ | ------------------- | --------- | --------- | ------------------ | ----------- | ----------- | -------------------------- |
+| intl   | —    | —             | —      | —                   | —         | —         | —                  | —           | **not run** | Ships enabled; not run yet |
+| cn     | —    | —             | —      | —                   | —         | —         | —                  | —           | **not run** | Ships enabled; not run yet |
 
 ## 9. Error-shape evidence (classify-plan-quota-errors)
 

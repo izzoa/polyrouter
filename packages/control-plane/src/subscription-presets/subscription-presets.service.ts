@@ -50,6 +50,10 @@ export interface KeyPresetDto {
   riskCopy: string;
   termsUrl: string;
   requiresAcknowledgement: boolean;
+  /** Whether the preset declares an optional client identity (redesign-subscription-picker
+   * D3): a boolean only, so the picker can say the identity-imitation switch exists. Never the
+   * identity's label, header name or value — the switch itself lives in Edit. */
+  declaresIdentity: boolean;
 }
 
 /** Whether connecting this preset needs `acknowledgeTermsRisk: true` — a `high` preset, or
@@ -74,6 +78,7 @@ function toDto(preset: KeyPreset, offered: readonly KeyPresetRegion[]): KeyPrese
     riskCopy: preset.riskCopy,
     termsUrl: preset.termsUrl,
     requiresAcknowledgement: ack,
+    declaresIdentity: preset.clientIdentity !== undefined,
   };
 }
 

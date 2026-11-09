@@ -267,6 +267,110 @@ test.describe('the on-screen keyboard', () => {
   });
 });
 
+/** redesign-subscription-picker task 5.4: the picker's two layouts and its reachable primary.
+ * Below `picker-fit` (a 390px sheet) the list and the detail are two steps; at 900 and 1280
+ * they sit side by side. The footer holds the one primary action, and it stays inside the
+ * visible viewport when the on-screen keyboard shrinks it. */
+test.describe('the subscription picker', () => {
+  async function openPicker(page: Page): Promise<void> {
+    await open(page);
+    await page.evaluate(() => {
+      const s = (globalThis as unknown as { __harnessStore: Record<string, unknown> })
+        .__harnessStore;
+      (s['openModal'] as (k: string) => void)('newProvider');
+      (s['setState'] as (...a: unknown[]) => void)('np', 'kind', 'sub');
+    });
+    await page.waitForSelector('.modal-card--picker .sp-entry[data-plan="kimi-code"]');
+    await page.waitForTimeout(250);
+  }
+  const shown = (page: Page, sel: string): Promise<boolean> =>
+    page.locator(sel).first().isVisible();
+
+  for (const width of [1280, 900]) {
+    test(`at ${width}px the list and the detail sit side by side`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 900 });
+      await openPicker(page);
+      const list = await boxOf(page, '.sp-list');
+      const detail = await boxOf(page, '.sp-detail');
+      expect(list[0] + list[2], 'the detail starts where the list ends').toBeLessThanOrEqual(
+        detail[0] + 1,
+      );
+      expect(Math.abs(list[1] - detail[1])).toBeLessThanOrEqual(1);
+      expect(await shown(page, '.sp-foot .btn-primary')).toBe(true);
+      expect(await page.locator('text=Back to plans').count()).toBe(0);
+    });
+  }
+
+  for (const vp of NARROW) {
+    test(`at ${vp.width}x${vp.height} the list and the detail are two steps`, async ({ page }) => {
+      await page.setViewportSize(vp);
+      await openPicker(page);
+      expect(await shown(page, '.sp-list')).toBe(true);
+      expect(await shown(page, '.sp-detail')).toBe(false);
+      // On the list step the footer keeps only Cancel.
+      expect(await shown(page, '.sp-foot .btn-primary')).toBe(false);
+      await page.locator('.sp-entry[data-plan="kimi-code"]').click();
+      await page.waitForTimeout(150);
+      expect(await shown(page, '.sp-list')).toBe(false);
+      expect(await shown(page, '.sp-detail')).toBe(true);
+      expect(await page.evaluate(() => document.activeElement?.id)).toBe('sp-detail-title');
+      const sheet = await boxOf(page, '.modal-card');
+      expect(sheet[0], 'the picker sheet is full width').toBe(0);
+      expect(sheet[2]).toBe(vp.width);
+      await page.locator('button', { hasText: 'Back to plans' }).click();
+      await page.waitForTimeout(150);
+      expect(await shown(page, '.sp-list')).toBe(true);
+      expect(
+        await page.evaluate(() => (document.activeElement as HTMLElement | null)?.dataset['plan']),
+      ).toBe('kimi-code');
+    });
+  }
+
+  test('the primary stays inside the visible viewport with the keyboard open', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.addInitScript(() => {
+      const listeners = new Set<() => void>();
+      const w = window as unknown as { __kbd: number; __setKbd: (n: number) => void };
+      w.__kbd = 0;
+      w.__setKbd = (n) => {
+        w.__kbd = n;
+        listeners.forEach((f) => {
+          f();
+        });
+      };
+      Object.defineProperty(window, 'visualViewport', {
+        configurable: true,
+        value: {
+          get width() {
+            return window.innerWidth;
+          },
+          get height() {
+            return window.innerHeight - w.__kbd;
+          },
+          offsetLeft: 0,
+          offsetTop: 0,
+          scale: 1,
+          addEventListener: (_t: string, fn: () => void) => listeners.add(fn),
+          removeEventListener: (_t: string, fn: () => void) => listeners.delete(fn),
+        },
+      });
+    });
+    await openPicker(page);
+    await page.locator('.sp-entry[data-plan="zai-coding-plan"]').click();
+    await page.locator('#f-kp-key').focus();
+    await page.evaluate(() => {
+      (window as unknown as { __setKbd: (n: number) => void }).__setKbd(300);
+    });
+    await page.waitForTimeout(250);
+    const inView = await page.evaluate(() => {
+      const b = document.querySelector('.sp-foot .btn-primary')?.getBoundingClientRect();
+      const vv = window.visualViewport;
+      return b && vv ? b.top >= vv.offsetTop && b.bottom <= vv.offsetTop + vv.height : null;
+    });
+    expect(inView, 'the Connect action went under the keyboard').toBe(true);
+  });
+});
+
 test.describe('safe-area insets', () => {
   test.use({ viewport: { width: 390, height: 844 } });
 

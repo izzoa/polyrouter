@@ -14,7 +14,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { DOCK_MIN_WIDTH, DOCK_QUERY, DOCK_WIDTH } from './state/appState';
+import { DOCK_MIN_WIDTH, DOCK_QUERY, DOCK_WIDTH, PICKER_FIT } from './state/appState';
 
 const SRC = dirname(fileURLToPath(import.meta.url));
 const raw = readFileSync(join(SRC, 'styles.css'), 'utf8');
@@ -101,6 +101,29 @@ describe('responsive query layer', () => {
     // together.
     const lock = readFileSync(join(SRC, '../../../STYLESEED.md'), 'utf8');
     expect(lock).toMatch(/\| `input-text-comfort` \| \*\*16px\*\* \(`1rem`\) \|/);
+  });
+});
+
+describe('the subscription picker reads one fit (redesign-subscription-picker D5)', () => {
+  // The script constant that decides the narrow focus moves, the `@container` literal that
+  // decides the two-step layout, and the lock row: three copies of one measured value.
+  it('PICKER_FIT, the container query and the lock row agree', () => {
+    const lock = readFileSync(join(SRC, '..', '..', '..', 'STYLESEED.md'), 'utf8');
+    const row = /\|\s*`picker-fit`\s*\|\s*\*\*(\d+)px\*\*/.exec(lock);
+    expect(Number(row?.[1])).toBe(PICKER_FIT);
+    const queries = [...css.matchAll(/@container rs-picker \(width < (\d+)px\)/g)].map((m) =>
+      Number(m[1]),
+    );
+    expect(queries).toEqual([PICKER_FIT]);
+  });
+
+  it('keeps the picker geometry that changes at the fit in classes, never inline', () => {
+    const src = readFileSync(join(SRC, 'components', 'SubscriptionPicker.tsx'), 'utf8');
+    for (const cls of ['rs-picker-body', 'rs-picker-fields', 'sp-list', 'sp-detail']) {
+      expect(src, cls).toContain(cls);
+    }
+    expect(src).not.toMatch(/style="[^"]*grid-template/);
+    expect(src).not.toMatch(/style="[^"]*(?:^|;)\s*(?:width|padding):/);
   });
 });
 
@@ -428,6 +451,7 @@ describe('table query containers', () => {
       'rs-targets',
       'rs-pipeline',
       'rs-layers',
+      'rs-picker',
     ]) {
       expect(css).toContain(`container-name: ${name}`);
     }
@@ -456,6 +480,7 @@ describe('table query containers', () => {
       ['pipeline-fit` (two-line)', 'rs-pipeline'],
       ['pipeline-fit` (phone)', 'rs-pipeline'],
       ['layers-fit', 'rs-layers'],
+      ['picker-fit', 'rs-picker'],
     ] as const;
     const locked = ROWS.map(([token, container]) => {
       const esc = token.replace(/[()]/g, '\\$&');

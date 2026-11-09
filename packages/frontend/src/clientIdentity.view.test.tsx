@@ -322,21 +322,33 @@ describe('an unchanged switch is not sent', () => {
 });
 
 describe('the connect wizard offers the opt-in for a declaring preset', () => {
+  // redesign-subscription-picker: a plan is chosen in the picker's list (which starts
+  // nothing), and Sign in in its detail starts the connect — or opens the identity step for a
+  // declaring preset.
   const openWizard = async (h: Harness): Promise<void> => {
     h.store.openModal('newProvider');
     h.store.setState('np', 'kind', 'sub');
     await flush();
   };
-  const card = (h: Harness, name: string): HTMLButtonElement | undefined =>
-    [...h.host.querySelectorAll<HTMLButtonElement>('button.kind-card')].find((b) =>
+  const entry = (h: Harness, name: string): HTMLButtonElement | undefined =>
+    [...h.host.querySelectorAll<HTMLButtonElement>('button.sp-entry')].find((b) =>
       labelText(b).startsWith(name),
     );
+  const choose = async (h: Harness, name: string): Promise<void> => {
+    entry(h, name)!.click();
+    await flush();
+  };
+  const signIn = async (h: Harness): Promise<void> => {
+    buttonNamed(h.host, 'Sign in')!.click();
+    await flush();
+  };
 
-  it('a declaring preset opens the identity step instead of connecting on the click', async () => {
+  it('a declaring preset opens the identity step instead of connecting on Sign in', async () => {
     const h = await mount(mkProvider());
     await openWizard(h);
-    card(h, 'Fixture Plan')!.click();
-    await flush();
+    await choose(h, 'Fixture Plan');
+    expect(starts(h.fake)).toHaveLength(0);
+    await signIn(h);
     expect(starts(h.fake)).toHaveLength(0);
     expect(box(h.host, WIZARD_SWITCH)).not.toBeNull();
     expect(box(h.host, WIZARD_SWITCH)!.checked).toBe(false);
@@ -347,8 +359,8 @@ describe('the connect wizard offers the opt-in for a declaring preset', () => {
   it('sends the opt-in only after consent', async () => {
     const h = await mount(mkProvider());
     await openWizard(h);
-    card(h, 'Fixture Plan')!.click();
-    await flush();
+    await choose(h, 'Fixture Plan');
+    await signIn(h);
     await check(box(h.host, WIZARD_SWITCH)!, true);
     expect(consent(h.host)).not.toBeNull();
     expect(box(h.host, WIZARD_SWITCH)!.checked).toBe(false);
@@ -360,15 +372,16 @@ describe('the connect wizard offers the opt-in for a declaring preset', () => {
     buttonNamed(h.host, 'Continue to sign-in')!.click();
     await flush();
     expect(starts(h.fake)).toEqual([['stub-identity', undefined, true]]);
-    // The sign-in steps follow.
+    // The sign-in steps follow, in the same detail pane.
     expect(h.store.state.ow.active?.preset).toBe('stub-identity');
+    expect(h.host.querySelector('.sp-detail #f-ow-paste')).not.toBeNull();
   });
 
   it('Cancel leaves the opt-in off, so continuing sends a start without it', async () => {
     const h = await mount(mkProvider());
     await openWizard(h);
-    card(h, 'Fixture Plan')!.click();
-    await flush();
+    await choose(h, 'Fixture Plan');
+    await signIn(h);
     await check(box(h.host, WIZARD_SWITCH)!, true);
     buttonNamed(consent(h.host)!, 'Cancel')!.click();
     await flush();
@@ -378,25 +391,27 @@ describe('the connect wizard offers the opt-in for a declaring preset', () => {
     expect(starts(h.fake)).toEqual([['stub-identity', undefined]]);
   });
 
-  it('Back returns to the preset list without connecting', async () => {
+  it('Back returns to the plan detail without connecting', async () => {
     const h = await mount(mkProvider());
     await openWizard(h);
-    card(h, 'Fixture Plan')!.click();
-    await flush();
+    await choose(h, 'Fixture Plan');
+    await signIn(h);
     buttonNamed(h.host, 'Back')!.click();
     await flush();
     expect(box(h.host, WIZARD_SWITCH)).toBeNull();
-    expect(card(h, 'Fixture Plan')).toBeDefined();
+    expect(entry(h, 'Fixture Plan')?.getAttribute('aria-current')).toBe('true');
+    expect(buttonNamed(h.host, 'Sign in')).toBeDefined();
     expect(starts(h.fake)).toHaveLength(0);
   });
 
   it.each(['Claude Pro / Max', 'ChatGPT Plus / Pro'])(
-    '%s connects on the card click, with no identity step and no opt-in field',
+    '%s connects on Sign in in its detail, with no identity step and no opt-in field',
     async (name) => {
       const h = await mount(mkProvider());
       await openWizard(h);
-      card(h, name)!.click();
-      await flush();
+      await choose(h, name);
+      expect(starts(h.fake), 'choosing it in the list alone starts nothing').toHaveLength(0);
+      await signIn(h);
       expect(box(h.host, WIZARD_SWITCH)).toBeNull();
       expect(starts(h.fake)).toHaveLength(1);
       expect(starts(h.fake)[0]).toHaveLength(2); // preset and name only

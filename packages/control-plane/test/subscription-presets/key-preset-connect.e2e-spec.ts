@@ -1,9 +1,10 @@
 // add-key-subscription-presets e2e (tasks 5.2/5.3): the list + connect endpoints over real
-// HTTP + Postgres. Presets are enabled ONLY through `.overrideProvider(KEY_PRESET_LOOKUP)`
-// (as oauth-connect.e2e does for OAUTH_PRESET_LOOKUP) with a registry built from the BUNDLED
-// pins, so `keyPresetForRow` still matches the rows these tests create. No shipped
-// `enabled` flag is flipped, and nothing here calls a provider: the adapter factory is a
-// spy that must stay at zero. The pinned URLs go through the real SSRF gate, which only
+// HTTP + Postgres. Most blocks shape the offered regions through
+// `.overrideProvider(KEY_PRESET_LOOKUP)` (as oauth-connect.e2e does for OAUTH_PRESET_LOOKUP)
+// with a registry built from the BUNDLED pins, so `keyPresetForRow` still matches the rows
+// these tests create. The last block (redesign-subscription-picker task 1.4) boots the SHIPPED
+// registry with no override. Nothing here calls a provider: the adapter factory is a spy that
+// must stay at zero. The pinned URLs go through the real SSRF gate, which only
 // RESOLVES their hostnames (DNS), never connects.
 import {
   Injectable,
@@ -65,12 +66,17 @@ class TestPrincipalGuard implements CanActivate {
   }
 }
 
-/** A copy of `preset` with its regions' flags overridden (the pins stay the bundled ones). */
+/** A copy of `preset` whose regions start WITHDRAWN (`enabled: false`) and take the given
+ * overrides, so each fixture names exactly the regions it offers (the pins stay the bundled
+ * ones). The shipped constants are all enabled; the last block tests them as shipped. */
 function withRegions(
   preset: KeyPreset,
   flags: Readonly<Record<string, Partial<KeyPresetRegion>>>,
 ): KeyPreset {
-  return { ...preset, regions: preset.regions.map((r) => ({ ...r, ...(flags[r.id] ?? {}) })) };
+  return {
+    ...preset,
+    regions: preset.regions.map((r) => ({ ...r, enabled: false, ...(flags[r.id] ?? {}) })),
+  };
 }
 const ON = { enabled: true };
 
@@ -373,6 +379,25 @@ describe('key-preset connect and list (e2e)', () => {
     expect(await providerCount()).toBe(0);
   });
 
+  it('withdrawing a region hides it and refuses new connects; an existing row keeps working (redesign-subscription-picker 1.4)', async () => {
+    const before = await connect({ preset: 'kimi-code', region: 'cn', credential: 'k' });
+    expect(before.status).toBe(200);
+    const id = before.body.id as string;
+    current = [withRegions(KIMI_CODE_PRESET, { intl: ON })]; // cn withdrawn after the connect
+    const list = await available();
+    expect(list.body[0].regions.map((r: { id: string }) => r.id)).toEqual(['intl']);
+    const refused = await connect({ preset: 'kimi-code', region: 'cn', credential: 'k' });
+    expect(refused.status).toBe(422);
+    expect(await providerCount()).toBe(1);
+    const still = await request(server).get(`/api/providers/${id}`).set('x-test-user', alice);
+    expect(still.status).toBe(200);
+    expect(still.body).toMatchObject({
+      keyPreset: 'kimi-code',
+      baseUrl: 'https://api.kimi.com/coding/v1',
+      hasCredential: true,
+    });
+  });
+
   it('a two-region preset with one offered region: listed with one, connect without region pins it, no label', async () => {
     const list = await available();
     const minimax = (list.body as Array<{ id: string; regions: unknown[] }>).find(
@@ -448,6 +473,7 @@ describe('key-preset connect and list (e2e)', () => {
       for (const p of list) {
         expect(Object.keys(p).sort()).toEqual(
           [
+            'declaresIdentity',
             'displayName',
             'id',
             'keyHint',
@@ -600,5 +626,112 @@ describe('key-preset endpoints require a session (real SessionGuard)', () => {
     );
     expect(after).toBe(before);
     expect(factoryCalls).toBe(0);
+  });
+});
+
+// redesign-subscription-picker task 1.4: the SHIPPED registry, with no override. Every
+// region ships enabled, so the four presets are listed and connectable on a stock install;
+// the acknowledgement is still enforced; and withdrawing a region (shipping it disabled)
+// hides it and refuses new connects while a row already connected from it keeps working.
+describe('the shipped key-preset registry (no override)', () => {
+  let app: INestApplication;
+  let server: App;
+  let pool: Pool;
+  let carol: string;
+
+  beforeAll(async () => {
+    process.env['NODE_ENV'] = 'test';
+    process.env['MODE'] = 'selfhosted';
+    process.env['BIND_ADDRESS'] = '127.0.0.1';
+    process.env['PROVIDER_CREDENTIAL_KEY'] = KEY;
+    pool = new Pool({ connectionString: databaseUrl, max: 2 });
+    try {
+      await pool.query('SELECT 1');
+    } catch (error) {
+      throw new Error(`${COMPOSE_HINT}\n(${(error as Error).message})`);
+    }
+    const moduleRef = await Test.createTestingModule({
+      imports: [ProvidersModule, SubscriptionPresetsModule],
+      providers: [{ provide: APP_GUARD, useClass: TestPrincipalGuard }],
+    })
+      .overrideProvider(PROVIDER_ADAPTER_FACTORY)
+      .useValue(spyFactory)
+      .compile();
+    app = moduleRef.createNestApplication<NestExpressApplication>();
+    configureApp(app as NestExpressApplication, { NODE_ENV: 'test' }, 'http://localhost:3000');
+    await app.init();
+    server = app.getHttpServer();
+    carol = (
+      await pool.query<{ id: string }>(
+        `INSERT INTO "user" (id, name, email, email_verified) VALUES (gen_random_uuid(), 'u', $1, false) RETURNING id`,
+        [uniqueEmail('kp-shipped')],
+      )
+    ).rows[0]!.id;
+    factoryCalls = 0;
+  }, 60_000);
+
+  afterAll(async () => {
+    await pool.query('DELETE FROM "user" WHERE id = $1', [carol]);
+    await app.close();
+    await pool.end();
+  });
+
+  afterEach(() => {
+    expect(factoryCalls).toBe(0);
+  });
+
+  const count = async (): Promise<number> =>
+    Number(
+      (
+        await pool.query<{ n: string }>(
+          'SELECT count(*) AS n FROM provider WHERE owner_user_id = $1',
+          [carol],
+        )
+      ).rows[0]!.n,
+    );
+
+  it('lists the four presets with their seven regions and declaresIdentity', async () => {
+    const res = await request(server)
+      .get('/api/providers/key-presets/available')
+      .set('x-test-user', carol);
+    expect(res.status).toBe(200);
+    const body = res.body as Array<{
+      id: string;
+      declaresIdentity: boolean;
+      regions: Array<{ id: string; host: string }>;
+    }>;
+    expect(body.map((p) => [p.id, p.regions.map((r) => r.host), p.declaresIdentity])).toEqual([
+      ['opencode-go', ['opencode.ai'], false],
+      ['minimax-m-plan', ['api.minimax.io', 'api.minimaxi.com'], false],
+      ['kimi-code', ['api.kimi.ai', 'api.kimi.com'], true],
+      ['zai-coding-plan', ['api.z.ai', 'open.bigmodel.cn'], true],
+    ]);
+    expect(JSON.stringify(res.body)).not.toMatch(/claude-code\/|claude-cli\/|User-Agent/);
+  });
+
+  it('connects a China region of the shipped registry to its pinned endpoint', async () => {
+    const res = await request(server)
+      .post('/api/providers/key-presets/connect')
+      .set('x-test-user', carol)
+      .send({ preset: 'kimi-code', region: 'cn', credential: 'sk-kimi-shipped-1' });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      name: 'Kimi Code (China)',
+      kind: 'subscription',
+      baseUrl: 'https://api.kimi.com/coding/v1',
+      keyPreset: 'kimi-code',
+      imitateClientIdentity: false,
+    });
+    expect(JSON.stringify(res.body)).not.toContain('sk-kimi-shipped-1');
+  });
+
+  it('still refuses a Z.ai connect without the acknowledgement, writing nothing', async () => {
+    const before = await count();
+    const res = await request(server)
+      .post('/api/providers/key-presets/connect')
+      .set('x-test-user', carol)
+      .send({ preset: 'zai-coding-plan', region: 'intl', credential: 'k' });
+    expect(res.status).toBe(422);
+    expect(await count()).toBe(before);
   });
 });

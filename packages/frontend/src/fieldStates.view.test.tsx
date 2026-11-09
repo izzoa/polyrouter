@@ -211,6 +211,8 @@ const SURFACES = {
         },
         pasted: '',
       });
+      // The picker shows the paste-back step in the chosen plan's detail.
+      h.store.setState('sp', { chosen: 'chatgpt', step: 'detail', picked: true });
       await flush();
     },
     submit: 'Connect',
@@ -666,7 +668,8 @@ describe('help and messages are wired to exactly one field (task 8.2)', () => {
 
 /** On the subscription connect path the provider's name is optional — a blank name lets the
  * server name it — so its "Name is required" check does not apply there, on blur or after the
- * form moves onto the path (add-subscription-oauth; review fix). */
+ * form moves onto the path (add-subscription-oauth; review fix). The picker
+ * (redesign-subscription-picker) carries that optional name in the chosen plan's detail. */
 describe('the subscription connect path never marks its optional name invalid', () => {
   const toConnectPath = async (h: Harness): Promise<void> => {
     h.store.setState('np', 'kind', 'sub');
@@ -678,8 +681,8 @@ describe('the subscription connect path never marks its optional name invalid', 
     const h = await mount('providers');
     await openModal(h, 'newProvider');
     await toConnectPath(h);
-    const name = document.getElementById('f-np-name') as HTMLInputElement | null;
-    expect(name, 'the optional name field is shown on the connect path').not.toBeNull();
+    const name = document.getElementById('f-sp-name') as HTMLInputElement | null;
+    expect(name, 'the optional name field is shown in the chosen plan’s detail').not.toBeNull();
     await type(name!, '');
     await leave(name!);
     expect(name!.getAttribute('aria-invalid')).toBeNull();
@@ -695,8 +698,9 @@ describe('the subscription connect path never marks its optional name invalid', 
     await leave(name);
     expect(name.getAttribute('aria-invalid'), 'the classic form requires a name').toBe('true');
     await toConnectPath(h);
-    const after = document.getElementById('f-np-name') as HTMLInputElement;
+    const after = document.getElementById('f-sp-name') as HTMLInputElement;
     expect(after.getAttribute('aria-invalid')).toBeNull();
     expect(document.getElementById('f-np-name-error')).toBeNull();
+    expect(h.store.state.fieldErrors['f-np-name']).toBeUndefined();
   });
 });

@@ -260,6 +260,18 @@ describe('Overview states its headline figures in one readout strip (task 12.1)'
           ?.style.color,
       ).toBe('var(--text3)');
       expect(cells[3]!.sub).toBe('No requests in this range');
+      // The reason sits on the success-rate row itself, after its figure (redesign-readout-strip
+      // D5), and the range states no subscription line or share.
+      const success = panels[0]!.querySelector<HTMLElement>(
+        '.readout-row[data-readout="success"]',
+      )!;
+      expect([...success.children].map((c) => c.textContent?.trim())).toEqual([
+        'Success rate',
+        'not applicable',
+        'No requests in this range',
+      ]);
+      expect(panels[0]!.querySelector('.readout-secondary')).toBeNull();
+      expect(cells[1]!.sub).toBe('');
       // No estimated-usage caption at zero, where DS-1 pinned `0 flagged ~estimated`.
       expect(cells[0]!.sub).toBe('');
       expect(panels[0]!.querySelector('.readout-qualifier')).toBeNull();
@@ -361,6 +373,72 @@ describe('Overview states its headline figures in one readout strip (task 12.1)'
       expect(strip(usage.host).cells[0]!.sub).toBe('1 request with estimated usage');
     } finally {
       usage.dispose();
+    }
+  });
+
+  // redesign-readout-strip 2.1: Overview states the value served on subscription beside spend,
+  // in Costs' words, and the requests row its subscription share (design D2, D3).
+  it('Overview states the subscription value beside spend', async () => {
+    const { host, dispose } = await openPage('Overview', {
+      spend: 0,
+      cashSpend: 0,
+      subscriptionSpend: 3.12,
+      requests: 41,
+      successCount: 40,
+      subscriptionPricedRequests: 41,
+      cashPricedRequests: 0,
+      estimatedCount: 1,
+    });
+    try {
+      const { cells, panels } = strip(host);
+      expect(cells[0]!.figure).toBe('$0.00');
+      const focal = panels[0]!.querySelector<HTMLElement>('[data-readout="spend"]')!;
+      expect(focal.querySelector('.readout-secondary')?.textContent).toBe(
+        '$3.12 served on subscription, at API rates · excluded from spend',
+      );
+      // The secondary line is not the qualification: that still states estimated usage.
+      expect(cells[0]!.sub).toBe('1 request with estimated usage');
+      expect(cells[1]!.sub).toBe('all on subscription plans');
+      // No word beside the figure calls it billed or cash.
+      expect(focal.textContent).not.toMatch(/billed|cash/i);
+      // Still the one Display figure: the subscription value is Body text, not a second.
+      expect(sizedRoots(host, '26px').map((e) => e.textContent?.trim())).toEqual(['$0.00']);
+    } finally {
+      dispose();
+    }
+  });
+
+  it('A range without subscription traffic reads as before on Overview', async () => {
+    const { host, dispose } = await openPage('Overview', {
+      subscriptionSpend: 0,
+      subscriptionPricedRequests: 0,
+    });
+    try {
+      const { cells, panels } = strip(host);
+      expect(panels[0]!.querySelector('.readout-secondary')).toBeNull();
+      expect(panels[0]!.textContent).not.toMatch(/served on subscription|subscription plans/);
+      expect(cells[1]!.sub).toBe('');
+      expect(cells.map((c) => c.figure)).toEqual(['$12.50', '30', '169.5k', '80.0%']);
+    } finally {
+      dispose();
+    }
+  });
+
+  it('The requests row states a partial subscription share', async () => {
+    const { host, dispose } = await openPage('Overview', {
+      requests: 41,
+      successCount: 40,
+      subscriptionPricedRequests: 12,
+      cashPricedRequests: 29,
+      subscriptionSpend: 1.5,
+    });
+    try {
+      const { cells } = strip(host);
+      expect(cells[1]!.sub).toBe('12 on subscription plans');
+      // Only the subscription share: no count of the rest (FD3).
+      expect(cells[1]!.sub).not.toMatch(/billed|29/);
+    } finally {
+      dispose();
     }
   });
 

@@ -168,7 +168,7 @@ export function Overview(props: { live: boolean }) {
     failureShown,
   });
 
-  /** The readout strip's four cells in the state they are in. */
+  /** The readout strip's focal cell and its three rows in the state they are in. */
   const readout = (): { focal: ReadoutFocalCell; cells: ReadoutCell[] } => {
     const st = stripState();
     const s = state.analyticsSummary;
@@ -181,14 +181,9 @@ export function Overview(props: { live: boolean }) {
       return {
         focal: { id: 'spend', label, figure: slot('spend', 'display'), sub: '' },
         cells: [
-          { id: 'requests', label: 'Requests', figure: slot('requests', 'title'), sub: ' ' },
-          { id: 'tokens', label: 'Tokens', figure: slot('tokens', 'title'), sub: ' ' },
-          {
-            id: 'success',
-            label: 'Success rate',
-            figure: slot('success rate', 'title'),
-            sub: ' ',
-          },
+          { id: 'requests', label: 'Requests', figure: slot('requests', 'title') },
+          { id: 'tokens', label: 'Tokens', figure: slot('tokens', 'title') },
+          { id: 'success', label: 'Success rate', figure: slot('success rate', 'title') },
         ],
       };
     }
@@ -204,16 +199,33 @@ export function Overview(props: { live: boolean }) {
       estimatePricedText(microsOfUsd(s.nativeFamilySpend)),
       estimatedUsageText(s.estimatedCount),
     ].filter((t): t is string => t !== null);
+    // Spend is money owed, so prepaid traffic is stated BESIDE it, never inside it
+    // (dashboard-analytics "Spend means money owed"; redesign-readout-strip D2), in Costs'
+    // words, and only when the range holds some: never `$0.00 served on subscription`.
+    const subscription = microsOfUsd(s.subscriptionSpend);
+    // The requests row states only its subscription share (D3): the rest is cash, free,
+    // unpriced and not-billed rows, not one class, so no "N billed" count.
+    const onPlans = s.subscriptionPricedRequests;
+    const requestsSub =
+      onPlans === 0
+        ? undefined
+        : onPlans === reqs
+          ? 'all on subscription plans'
+          : `${onPlans.toLocaleString()} on subscription plans`;
     return {
       focal: {
         id: 'spend',
         label,
         figure: money(microsOfUsd(s.spend), 'cents'),
         qualifier: unpriced.length > 0 ? <FigureText parts={unpriced} /> : undefined,
+        secondary:
+          subscription > 0
+            ? `${money(subscription, 'cents')} served on subscription, at API rates · excluded from spend`
+            : undefined,
         sub: disclosures.join(' · '),
       },
       cells: [
-        { id: 'requests', label: 'Requests', figure: reqs.toLocaleString(), sub: ' ' },
+        { id: 'requests', label: 'Requests', figure: reqs.toLocaleString(), sub: requestsSub },
         {
           id: 'tokens',
           label: 'Tokens',
@@ -283,9 +295,10 @@ export function Overview(props: { live: boolean }) {
         </Notice>
       </Show>
 
-      {/* The headline figures as one readout strip (adopt-design-tokens-v2 task 12.1, D10):
-          spend is the view's one Display figure; requests, tokens and success rate are Title
-          cells. Every sub-line is the one its tile carried. */}
+      {/* The headline figures as one readout strip (adopt-design-tokens-v2 task 12.1, D10;
+          redesign-readout-strip): spend is the view's one Display figure, with the value
+          served on subscription under it; requests, tokens and success rate are Title rows
+          beside it. */}
       <ReadoutStrip
         focal={strip().focal}
         cells={strip().cells}

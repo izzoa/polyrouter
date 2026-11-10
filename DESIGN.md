@@ -780,10 +780,11 @@ An empty surface teaches its next action. It is one sentence saying what will ap
 - **Zoom:** every surface works at 200% browser zoom and reflows down to 320px wide.
 
 ### Readout strip
-This is how a page states its headline figures (Overview, Costs). It replaces a row of identical number cards: **one** panel divided into cells by Soft Hairline rules.
-- **Each cell:** a 12px Ink 3 label, the figure, then an 11px Ink 3 sub-line that states the figure's state or comparison, e.g. `last 7 days · 3 not billed`.
-- **The focal cell:** exactly one cell holds the view's focal figure in Display (26px). On Overview and Costs that is the headline spend for the range.
-- **The other cells:** the label and the figure on one line, the figure at Title size (15px/600).
+This is how a page states its headline figures (Overview, Costs). It replaces a row of identical number cards: **one** panel holding a focal cell and, beside it, the other figures as rows, ruled apart by Soft Hairlines.
+- **The focal cell:** it holds the view's one focal figure in Display (26px). On Overview and Costs that is the headline spend for the range. Its 12px Ink 3 label sits above the figure, and its 11px Ink 3 qualification below. A secondary figure, when there is one, gets its own line between them at Body (13px) in Ink 2, e.g. Overview's `$3.12 served on subscription, at API rates · excluded from spend`.
+- **The rows:** every other figure is one row: the 12px Ink 3 label, the figure at Title size (15px/600), then its 11px Ink 3 qualification, e.g. `all on subscription plans`. The rows share their label and figure columns, so every figure starts at one x, and the widest label or figure sets the column for all of them.
+- **Level sides:** the rows divide the panel's height between them, so the focal cell and the rows column end level and neither leaves a blank band under a short figure. A Soft Hairline rules the rows column from the focal cell, and each row from the one above. With no other figures, the focal cell fills the panel alone, with no column and no rule.
+- **Narrow:** below the narrow threshold the rows stack under the focal cell, ruled from it by a top hairline. Each row keeps its label, figure and qualification, and a long qualification wraps in its own column.
 - **No hero template:** no accent fill and no icon chips. The focal figure is plain Ink. Its prominence comes from size, never from color.
 
 ### Live lamp

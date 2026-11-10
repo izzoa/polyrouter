@@ -91,9 +91,9 @@ export function Costs(props: { live: boolean }) {
    * is the view's one Display figure, still qualified as both ledgers and excluding
    * subscription, with its estimated-usage count and — when the range holds any — the spend
    * that predates subscription tracking. Subscription value and the estimate-priced portion
-   * each get their own cell, ABSENT rather than "$0" when the range holds none, and each says
+   * each get their own row, ABSENT rather than "$0" when the range holds none, and each says
    * how it relates to the headline. On first load only Spend loads, as a skeleton; the two
-   * conditional cells stay absent until the summary says they are non-zero, and a failed read
+   * conditional rows stay absent until the summary says they are non-zero, and a failed read
    * removes every figure (adopt-figure-states D11). */
   const readout = (): { focal: ReadoutFocalCell; cells: ReadoutCell[] } => {
     const st = stripState();

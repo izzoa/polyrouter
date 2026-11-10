@@ -21,6 +21,7 @@ heading is started.
 
 ### Changed
 
+- **Overview states the value served on subscription beside spend, and its headline strip ends level.** When the range holds subscription traffic, a line under the spend figure reads `$3.12 served on subscription, at API rates · excluded from spend` (Costs' words), and the Requests row states its share (`all on subscription plans` / `12 on subscription plans`); with none, neither appears. The other figures on Overview and Costs now sit as rows beside spend with their figures on one column, so the strip has no blank band; Costs keeps every figure and word.
 - **Kimi Code and Z.ai offer the identity-imitation switch when you connect them, not only in Edit afterwards.** The plan's detail in Add provider → Subscription shows the same switch, off, behind the same confirmation, and Connect sends your choice, so the new provider's first Test already uses it. `POST /api/providers/key-presets/connect` accepts an optional `imitateClientIdentity` (as the OAuth sign-in start does; refused for a plan that declares no identity), and the key-preset list gains `clientIdentityLabel`. No migration and no new configuration.
 
 ### Upgrade notes

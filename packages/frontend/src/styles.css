@@ -396,38 +396,58 @@ textarea[aria-invalid='true']:focus {
   margin-bottom: 8px;
 }
 
-/* The readout strip (DESIGN.md Readout strip; adopt-design-tokens-v2 task 12.1): ONE panel
-   whose cells sit side by side, ruled apart by the Soft Hairline — never a filled band. Each
-   cell is a `.card`, so it takes the card padding at every width (16px, 12px below narrow)
-   without a density step of its own. The focal cell gets the larger share: its sub-line is
-   the longest qualification (Costs states two ledgers and a count). Below narrow the cells
-   stack, focal first (the narrow block). */
+/* The readout strip (DESIGN.md Readout strip; adopt-design-tokens-v2 task 12.1,
+   redesign-readout-strip D1): ONE panel holding the focal cell and one rows column, ruled apart
+   by the Soft Hairline — never a filled band. The focal cell is a `.card`, so it takes the card
+   padding at every width (16px, 12px below narrow), and its content is centred in its height.
+   The rows column is one grid; each row is a subgrid of its three tracks (label, figure,
+   qualification), so the widest label sets the label track and every figure starts at one
+   column. The panel stretches both sides to the taller one and `1fr` rows divide the column's
+   height, so neither side leaves a blank band. Below narrow the rows stack under the focal cell
+   (the narrow block). */
 .rs-readout {
   display: flex;
 }
 .readout-cell {
-  flex: 1 1 0;
+  flex: 2 1 0;
   min-width: 0;
   display: flex;
   flex-direction: column;
+  justify-content: center;
   gap: 4px;
 }
-.readout-cell--focal {
-  flex-grow: 2;
-}
-.readout-cell + .readout-cell {
+.readout-rows {
+  flex: 3 1 0;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: max-content max-content minmax(0, 1fr);
+  grid-auto-rows: 1fr;
+  column-gap: 16px;
   border-left: 1px solid var(--border2);
 }
-/* A Title cell: its label and figure on one line, sharing a baseline. */
-.readout-head {
-  display: flex;
-  flex-wrap: wrap;
+/* A row: its label, figure and qualification on one baseline, centred in the row's share. The
+   sides take the card's padding so the rows line up with the focal cell's content. */
+.readout-row {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: subgrid;
   align-items: baseline;
-  column-gap: 8px;
+  align-content: center;
+  min-width: 0;
+  padding: 8px 16px;
+}
+.readout-row + .readout-row {
+  border-top: 1px solid var(--border2);
 }
 .readout-label,
 .readout-sub {
   color: var(--text3);
+}
+/* The focal cell's secondary figure (redesign-readout-strip D2): Body size in Ink 2, under the
+   figure line, distinct from the Ink 3 qualification below it. */
+.readout-secondary {
+  color: var(--text2);
+  font-variant-numeric: tabular-nums;
 }
 /* A figure: tabular Geist, never truncated or broken (figures never truncate). */
 .readout-figure {
@@ -2828,13 +2848,27 @@ button:disabled[aria-busy='true'] {
     grid-template-columns: repeat(2, 1fr);
   }
 
-  /* The readout strip's cells stack, focal first, each ruled from the one above (task 12.1). */
+  /* The readout strip's rows stack under the focal cell, ruled from it by a top rule instead
+     of the left one (redesign-readout-strip D4). Each row keeps its label and figure on the
+     shared tracks, so the figures still start at one x, and its qualification takes the full
+     line beneath them: at phone width a third track beside `Served on subscription $48.12` had
+     no room left, and the qualification spilled past the panel. */
   .rs-readout {
     flex-direction: column;
   }
-  .readout-cell + .readout-cell {
+  .readout-rows {
+    grid-template-columns: max-content minmax(0, 1fr);
+    /* Stacked, there is no side to end level with: each row takes its own height, so a row
+       without a qualification is not padded to a two-line row's. */
+    grid-auto-rows: auto;
     border-left: none;
     border-top: 1px solid var(--border2);
+  }
+  .readout-row {
+    padding: 8px 12px;
+  }
+  .readout-row > .readout-sub {
+    grid-column: 1 / -1;
   }
 
   /* A `1fr` track's minimum is its content's min-content width, so a child wider than the

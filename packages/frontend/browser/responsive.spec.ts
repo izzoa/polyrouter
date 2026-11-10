@@ -615,69 +615,98 @@ test.describe('coarse pointer above the narrow threshold', () => {
   });
 });
 
-/** The readout strip's cells as laid out: id, box, and the figure's computed size. */
-async function readoutCells(page: Page): Promise<
-  {
-    id: string | null;
-    left: number;
-    right: number;
-    top: number;
-    bottom: number;
-    figure: string;
-    ruleLeft: string;
-    ruleTop: string;
-  }[]
-> {
-  return page.evaluate(() =>
-    [...document.querySelectorAll<HTMLElement>('[data-readout-strip] [data-readout]')].map((c) => {
-      const r = c.getBoundingClientRect();
-      const fig = c.querySelector('.readout-figure');
-      const cs = getComputedStyle(c);
+/** One box of the readout strip as laid out: its edges and its rules. */
+interface ReadoutBox {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+  ruleLeft: string;
+  ruleTop: string;
+}
+
+/** The readout strip as laid out (redesign-readout-strip D1): the focal cell, then each row,
+ * with its id, box, its figure's computed size and left edge, and its rules; plus the rows
+ * column's own box and rules (`null` when the strip has no rows). */
+async function readoutCells(page: Page): Promise<{
+  cells: (ReadoutBox & { id: string | null; figure: string; figureLeft: number })[];
+  rows: ReadoutBox | null;
+}> {
+  return page.evaluate(() => {
+    const box = (e: HTMLElement) => {
+      const r = e.getBoundingClientRect();
+      const cs = getComputedStyle(e);
       return {
-        id: c.getAttribute('data-readout'),
         left: r.left,
         right: r.right,
         top: r.top,
         bottom: r.bottom,
-        figure: fig ? getComputedStyle(fig).fontSize : '',
         ruleLeft: `${cs.borderLeftWidth} ${cs.borderLeftStyle}`,
         ruleTop: `${cs.borderTopWidth} ${cs.borderTopStyle}`,
       };
-    }),
-  );
+    };
+    const rows = document.querySelector<HTMLElement>('[data-readout-strip] [data-readout-rows]');
+    return {
+      cells: [...document.querySelectorAll<HTMLElement>('[data-readout-strip] [data-readout]')].map(
+        (c) => {
+          const fig = c.querySelector<HTMLElement>('.readout-figure');
+          return {
+            id: c.getAttribute('data-readout'),
+            ...box(c),
+            figure: fig ? getComputedStyle(fig).fontSize : '',
+            figureLeft: fig ? fig.getBoundingClientRect().left : Number.NaN,
+          };
+        },
+      ),
+      rows: rows === null ? null : box(rows),
+    };
+  });
 }
 
 /** The readout strip (dashboard-analytics "Overview and Costs state their headline figures in
- * one readout strip", scenario "The strip reflows at narrow width"; adopt-design-tokens-v2
- * tasks 12.1 / 12.2). At 320 × 568 the cells stack, focal first, and nothing overflows; at
- * desktop they sit side by side in one panel, ruled apart by a Soft Hairline. Box edges are
- * compared with a 0.5px sub-pixel allowance: a stacking order and a containment, not a size. */
+ * one readout strip", scenarios "The strip reflows at narrow width" and "The two sides end
+ * level"; adopt-design-tokens-v2 tasks 12.1 / 12.2, redesign-readout-strip 3.2). At 320 × 568
+ * the rows stack under the focal cell and nothing overflows; at desktop the rows sit beside it
+ * in one panel, ruled from it by a Soft Hairline, with every figure starting at one x. Box
+ * edges are compared with a 0.5px sub-pixel allowance: an order, a containment and a level,
+ * not a size. */
 test.describe('the readout strip', () => {
   // Costs with `?costs=split`: subscription, estimate-priced and pre-snapshot spend at once, so
-  // the strip holds all three cells and its longest qualification.
+  // the strip holds both rows and its longest qualification.
   for (const [route, query, count] of [
     ['#/overview', '', 4],
     ['#/costs', '?costs=split', 3],
   ] as const) {
-    test(`${route}${query} at 320x568: the cells stack focal first, and nothing overflows`, async ({
+    test(`${route}${query} at 320x568: the rows stack under the focal cell, and nothing overflows`, async ({
       page,
     }) => {
       await page.setViewportSize({ width: 320, height: 568 });
       await open(page, route, query);
-      await page.waitForSelector('[data-readout-strip] [data-readout]');
-      const cells = await readoutCells(page);
-      expect(cells.length, 'every cell is present').toBe(count);
+      await page.waitForSelector('[data-readout-strip] [data-readout-rows]');
+      const { cells, rows } = await readoutCells(page);
+      expect(cells.length, 'every figure is present').toBe(count);
       expect(cells[0]!.id, 'the focal cell comes first').toBe('spend');
       expect(cells[0]!.figure, 'and holds the Display figure').toBe('26px');
-      for (let i = 1; i < cells.length; i++) {
+      expect(rows, 'the rows column renders').not.toBeNull();
+      expect(rows!.top, 'the rows sit below the focal cell').toBeGreaterThanOrEqual(
+        cells[0]!.bottom - 0.5,
+      );
+      expect(rows!.ruleTop, 'the rows are ruled from the focal cell above').toBe('1px solid');
+      expect(rows!.ruleLeft, 'with no left rule once stacked').toBe('0px none');
+      for (let i = 2; i < cells.length; i++) {
         expect(
           cells[i]!.top,
-          `${cells[i]!.id ?? ''} wraps below the cell before it`,
+          `${cells[i]!.id ?? ''} sits below the row before it`,
         ).toBeGreaterThanOrEqual(cells[i - 1]!.bottom - 0.5);
-        expect(cells[i]!.ruleTop, `${cells[i]!.id ?? ''} is ruled from the cell above`).toBe(
+        expect(cells[i]!.ruleTop, `${cells[i]!.id ?? ''} is ruled from the row above`).toBe(
           '1px solid',
         );
       }
+      for (const c of cells.slice(2))
+        expect(
+          Math.abs(c.figureLeft - cells[1]!.figureLeft),
+          `${c.id ?? ''}'s figure starts at the rows' one figure column`,
+        ).toBeLessThan(0.5);
       const box = await page.evaluate(() => {
         const s = document.querySelector('[data-readout-strip]')!.getBoundingClientRect();
         return {
@@ -702,25 +731,55 @@ test.describe('the readout strip', () => {
     });
   }
 
-  test('#/overview at 1440x900: one row of cells in one panel, ruled apart', async ({ page }) => {
+  test('#/overview at 1440x900: the rows stack beside the focal cell in one panel, figures on one column', async ({
+    page,
+  }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await open(page, '#/overview');
-    await page.waitForSelector('[data-readout-strip] [data-readout]');
-    const cells = await readoutCells(page);
+    await page.waitForSelector('[data-readout-strip] [data-readout-rows]');
+    const { cells, rows } = await readoutCells(page);
     expect(cells.map((c) => [c.id, c.figure])).toEqual([
       ['spend', '26px'],
       ['requests', '15px'],
       ['tokens', '15px'],
       ['success', '15px'],
     ]);
-    for (const c of cells)
-      expect(Math.abs(c.top - cells[0]!.top), `${c.id ?? ''} on the row`).toBeLessThan(0.5);
-    expect(cells.map((c) => c.ruleLeft)).toEqual([
-      '0px none',
-      '1px solid',
-      '1px solid',
-      '1px solid',
-    ]);
+    expect(rows!.left, 'the rows column sits beside the focal cell').toBeGreaterThanOrEqual(
+      cells[0]!.right - 0.5,
+    );
+    expect(rows!.ruleLeft, 'ruled from it by a Soft Hairline').toBe('1px solid');
+    expect(cells.map((c) => c.ruleTop)).toEqual(['0px none', '0px none', '1px solid', '1px solid']);
+    for (let i = 2; i < cells.length; i++)
+      expect(cells[i]!.top, `${cells[i]!.id ?? ''} stacks below`).toBeGreaterThanOrEqual(
+        cells[i - 1]!.bottom - 0.5,
+      );
+    for (const c of cells.slice(2))
+      expect(
+        Math.abs(c.figureLeft - cells[1]!.figureLeft),
+        `${c.id ?? ''}'s figure starts at one column`,
+      ).toBeLessThan(0.5);
+  });
+
+  // "The two sides end level": the focal cell at its tallest on Overview (label, figure, the
+  // subscription line and the estimated-usage line), beside three one-line rows.
+  test('#/overview?costs=split at 1280x800: the focal cell and the rows column end level', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await open(page, '#/overview', '?costs=split');
+    await page.waitForSelector('[data-readout-strip] .readout-secondary');
+    const { cells, rows } = await readoutCells(page);
+    const focal = cells[0]!;
+    expect(Math.abs(rows!.top - focal.top), 'the two sides start level').toBeLessThan(0.5);
+    expect(Math.abs(rows!.bottom - focal.bottom), 'the two sides end level').toBeLessThan(0.5);
+    // The rows divide the column's height: no blank band under the last row.
+    expect(Math.abs(cells[1]!.top - rows!.top), 'the first row starts the column').toBeLessThan(
+      1.5,
+    );
+    expect(Math.abs(cells.at(-1)!.bottom - rows!.bottom), 'the last row ends it').toBeLessThan(1.5);
+    const heights = cells.slice(1).map((c) => c.bottom - c.top);
+    for (const h of heights)
+      expect(Math.abs(h - heights[0]!), 'the rows share the height evenly').toBeLessThan(1.5);
   });
 });
 

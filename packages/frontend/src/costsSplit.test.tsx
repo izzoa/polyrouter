@@ -109,6 +109,67 @@ describe('Costs — subscription value sits beside spend, never inside it', () =
     }
   });
 
+  // redesign-readout-strip 2.2 (FD1): Costs takes the rows layout with its figures and wording
+  // unchanged. The two split figures are rows beside the spend cell, each absent at zero, and
+  // with neither there is no rows column at all.
+  it('lays the split figures out as rows beside spend, each absent when zero', async () => {
+    const rowsOf = (host: HTMLElement): string[][] =>
+      [...host.querySelectorAll('[data-readout-strip] [data-readout-rows] > .readout-row')].map(
+        (r) => [
+          r.getAttribute('data-readout') ?? '',
+          ...[...r.children].map((c) => c.textContent ?? ''),
+        ],
+      );
+    const focalSub = (host: HTMLElement): string =>
+      (host.querySelector('[data-readout="spend"] .readout-sub')?.textContent ?? '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    const both = await mountCosts({
+      spend: 2,
+      cashSpend: 2,
+      subscriptionSpend: 5,
+      nativeFamilySpend: 0.0042,
+    });
+    try {
+      expect(rowsOf(both.host)).toEqual([
+        ['subscription', 'Served on subscription', '$5.00', 'excluded from spend'],
+        ['estimate-priced', 'Estimate-priced', '$0.0042', 'included in spend'],
+      ]);
+      expect(focalSub(both.host)).toBe(
+        'both ledgers, excludes subscription · 3 requests with estimated usage',
+      );
+      // Costs keeps the value a row of its own: no Overview-style secondary line (D2).
+      expect(both.host.querySelector('.readout-secondary')).toBeNull();
+    } finally {
+      both.dispose();
+    }
+    const one = await mountCosts({
+      spend: 2,
+      cashSpend: 2,
+      subscriptionSpend: 0,
+      nativeFamilySpend: 0.0042,
+    });
+    try {
+      expect(rowsOf(one.host).map((r) => r[0])).toEqual(['estimate-priced']);
+    } finally {
+      one.dispose();
+    }
+    const none = await mountCosts({
+      spend: 2,
+      cashSpend: 2,
+      subscriptionSpend: 0,
+      nativeFamilySpend: 0,
+    });
+    try {
+      expect(none.host.querySelector('[data-readout-rows], .readout-row')).toBeNull();
+      expect(focalSub(none.host)).toBe(
+        'both ledgers, excludes subscription · 3 requests with estimated usage',
+      );
+    } finally {
+      none.dispose();
+    }
+  });
+
   it('hides the unclassified note once history has aged out', async () => {
     const h = await mountCosts({ spend: 3, cashSpend: 3, unknownSpend: 0 });
     try {

@@ -747,7 +747,12 @@ A notice is a status message inside a panel, or across the top of a page.
 | Caution | Amber Wash | Amber Text | `status` |
 | Failure | Red Wash | Red Text | `alert` |
 
-- **Page-level notices** sit at the top of the page content, for example `Agent "ci-bot" hit its block budget — requests are being refused until 00:00 UTC.` Dismiss them only when they are informational. A notice about something still true stays until it stops being true.
+- **Page-level notices** sit at the top of the page content, for example `Agent "ci-bot" hit its block budget — requests are being refused until 00:00 UTC.` A notice about a condition that ends once its cause is fixed has no dismiss: it stays until the condition ends (a blocking budget, Reconnect needed, Unverified, Couldn't load, a failure).
+- **Dismiss:** only a standing advisory carries one. A standing advisory states a property of the configuration that nothing in the dashboard can fix, for example a subscription provider's Terms risk.
+  - The dismiss is an icon-only `×` at the end of the title's row, apart from its one ghost action. The title wraps before it, and the body keeps the notice's full width.
+  - It is 24px, growing to the 44px comfort target, in Ink 3, and Ink on hover (never red, since dismissing is not a deletion).
+  - Its accessible name says what it dismisses: `Dismiss terms risk for <provider>`.
+  - A dismissal is remembered where the advisory lives. Terms risk's is remembered on the server, per provider.
 - **Live regions:** a polite region announces a notice once when it appears. Background list refreshes never announce.
 
 ### Confirm dialog

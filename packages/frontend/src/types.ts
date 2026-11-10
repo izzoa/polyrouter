@@ -96,6 +96,9 @@ export interface Provider {
   /** add-subscription-usage-history: whether the usage schedule reads this provider's usage
    * endpoint (on by default; meaningful only where `planUsageRefresh` is non-null). */
   checkPlanUsage: boolean;
+  /** add-dismissible-terms-risk: when the owner dismissed this subscription provider's Terms-risk
+   * notice (an ISO instant, stamped by the server), or null while the notice shows. */
+  termsRiskAcknowledgedAt: string | null;
   createdAt: string;
   /** add-provider-health-signals: the server-computed displayed health (the most
    * recently recorded of the check and live-traffic records). */

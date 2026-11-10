@@ -1514,6 +1514,118 @@ describe('provider management', () => {
     });
   });
 
+  // ---- add-dismissible-terms-risk 2.2 / 2.4: the terms-risk acknowledgment ----
+  describe('terms-risk acknowledgment (add-dismissible-terms-risk)', () => {
+    // REAL service. Generic rows on a literal public IP, so a PATCH only passes the SSRF gate;
+    // nothing here dials a provider.
+    const SUB = { ...CUSTOM, name: 'sub', kind: 'subscription', credential: 'sk-sub' };
+    const ack = (id: string, as = alice): request.Test =>
+      request(server).post(`/api/providers/${id}/terms-risk/acknowledge`).set('x-test-user', as);
+    const patch = (id: string, body: Record<string, unknown>): request.Test =>
+      request(server).patch(`/api/providers/${id}`).set('x-test-user', alice).send(body);
+    const getOne = (id: string): request.Test =>
+      request(server).get(`/api/providers/${id}`).set('x-test-user', alice);
+    const listed = async (id: string): Promise<Record<string, unknown>> => {
+      const res = await request(server).get('/api/providers').set('x-test-user', alice);
+      return (res.body as Array<Record<string, unknown>>).find((p) => p['id'] === id)!;
+    };
+    const row = async (id: string): Promise<Record<string, unknown>> =>
+      (await pool.query('SELECT * FROM provider WHERE id = $1', [id])).rows[0] as Record<
+        string,
+        unknown
+      >;
+
+    it('the first acknowledgment is recorded and changes nothing else', async () => {
+      const created = await asAlice().send(SUB);
+      expect(created.status).toBe(201);
+      const id = created.body.id as string;
+      expect(created.body.termsRiskAcknowledgedAt).toBeNull();
+      const before = await row(id);
+      const models = async (): Promise<number> =>
+        (
+          await pool.query<{ n: number }>(
+            'SELECT count(*)::int AS n FROM model WHERE provider_id = $1',
+            [id],
+          )
+        ).rows[0]!.n;
+      const modelsBefore = await models();
+
+      const t0 = Date.now();
+      const res = await ack(id);
+      expect(res.status).toBe(200);
+      expect(res.headers['cache-control']).toBe('no-store');
+      const at = res.body.termsRiskAcknowledgedAt as string;
+      expect(typeof at).toBe('string');
+      expect(Date.parse(at)).toBeGreaterThanOrEqual(t0 - 1000);
+      expect(res.body.id).toBe(id);
+      expect(res.body.hasCredential).toBe(true);
+      expect(JSON.stringify(res.body)).not.toContain('sk-sub');
+      // The same value on the list and on the by-id read.
+      expect((await getOne(id)).body.termsRiskAcknowledgedAt).toBe(at);
+      expect((await listed(id))['termsRiskAcknowledgedAt']).toBe(at);
+      // No other column moved: no health record, revision, switch or credential.
+      const after = await row(id);
+      expect(after['terms_risk_acknowledged_at']).toBeInstanceOf(Date);
+      const { terms_risk_acknowledged_at: _a, ...restAfter } = after;
+      const { terms_risk_acknowledged_at: _b, ...restBefore } = before;
+      expect(restAfter).toEqual(restBefore);
+      expect(await models()).toBe(modelsBefore);
+    });
+
+    it('a repeat acknowledgment keeps the first instant', async () => {
+      const id = (await asAlice().send(SUB)).body.id as string;
+      const first = (await ack(id)).body.termsRiskAcknowledgedAt as string;
+      await new Promise((r) => setTimeout(r, 15));
+      const again = await ack(id);
+      expect(again.status).toBe(200);
+      expect(again.body.termsRiskAcknowledgedAt).toBe(first);
+      expect((await getOne(id)).body.termsRiskAcknowledgedAt).toBe(first);
+    });
+
+    it('a provider that is not a subscription is refused with 422, and nothing is recorded', async () => {
+      for (const body of [
+        { ...CUSTOM, name: 'api', kind: 'api_key', credential: 'k' },
+        { ...CUSTOM, name: 'custom' },
+        { ...CUSTOM, name: 'local', kind: 'local', baseUrl: 'http://127.0.0.1:11434/v1' },
+      ]) {
+        const created = await asAlice().send(body);
+        expect(created.status).toBe(201);
+        const id = created.body.id as string;
+        const res = await ack(id);
+        expect(res.status).toBe(422);
+        expect((await row(id))['terms_risk_acknowledged_at']).toBeNull();
+      }
+    });
+
+    it('a missing id is 404', async () => {
+      const res = await ack('00000000-0000-0000-0000-000000000000');
+      expect(res.status).toBe(404);
+    });
+
+    it('a kind change clears the acknowledgment; a rename, a rotation and a timeout keep it', async () => {
+      const id = (await asAlice().send(SUB)).body.id as string;
+      const at = (await ack(id)).body.termsRiskAcknowledgedAt as string;
+
+      for (const body of [
+        { name: 'renamed' },
+        { credential: 'sk-rotated' },
+        { firstByteTimeoutMs: 90_000 },
+        { kind: 'subscription' },
+      ]) {
+        const res = await patch(id, body);
+        expect(res.status).toBe(200);
+        expect(res.body.termsRiskAcknowledgedAt).toBe(at);
+      }
+
+      const moved = await patch(id, { kind: 'api_key' });
+      expect(moved.status).toBe(200);
+      expect(moved.body.termsRiskAcknowledgedAt).toBeNull();
+      expect((await row(id))['terms_risk_acknowledged_at']).toBeNull();
+      const back = await patch(id, { kind: 'subscription' });
+      expect(back.body.termsRiskAcknowledgedAt).toBeNull();
+    });
+  });
+
   // ---- classify-plan-quota-errors 7.2: the plan cooldown on the provider view and the lift ----
   describe('plan cooldown view and lift (classify-plan-quota-errors)', () => {
     const MINUTE = 60_000;

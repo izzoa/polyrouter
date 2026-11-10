@@ -225,6 +225,10 @@ export interface ProviderDto {
    * every row). The server always sends it; optional here, like `autoPruneUnlisted`, so older
    * test doubles still type-check, and read as on (the server default) when absent. */
   checkPlanUsage?: boolean;
+  /** add-dismissible-terms-risk: the server-stamped acknowledgment of the terms risk, or null.
+   * The server always sends it; optional here, like `checkPlanUsage`, so older test doubles still
+   * type-check, and read as null (the notice shows) when absent. */
+  termsRiskAcknowledgedAt?: string | null;
   createdAt: string;
   health: ProviderHealthDto;
   /** The two raw records (non-secret) behind `health`. */
@@ -1272,6 +1276,9 @@ export interface ApiClient {
    * with `ok: false`; the owner-scope, no-endpoint, cooldown and store refusals (404, 422, 429,
    * 503) reject. */
   refreshPlanUsage(id: string): Promise<PlanUsageRefreshResultDto>;
+  /** add-dismissible-terms-risk: acknowledge a subscription provider's terms risk (the card
+   * notice's dismiss). Answers the provider view; 404 another tenant's id, 422 not a subscription. */
+  acknowledgeTermsRisk(id: string): Promise<ProviderDto>;
   /** The provider's usage history (`GET /providers/:id/plan-usage/history`). A read of stored
    * samples only: no upstream call, no cooldown. Rejects on 404 (another tenant's id). */
   planUsageHistory(id: string): Promise<PlanUsageHistoryDto>;
@@ -1497,6 +1504,11 @@ export const realClient: ApiClient = {
     http<void>(`${API_BASE}/providers/${encodeURIComponent(id)}/plan-cooldown`, {
       method: 'DELETE',
     }),
+  acknowledgeTermsRisk: (id) =>
+    http<ProviderDto>(
+      `${API_BASE}/providers/${encodeURIComponent(id)}/terms-risk/acknowledge`,
+      jsonInit('POST', {}),
+    ),
   refreshPlanUsage: (id) =>
     http<PlanUsageRefreshResultDto>(
       `${API_BASE}/providers/${encodeURIComponent(id)}/plan-usage/refresh`,

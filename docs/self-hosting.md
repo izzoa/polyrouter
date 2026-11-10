@@ -500,6 +500,10 @@ Honest caveats:
   streaming upstream (polyrouter buffers transparently for non-streaming clients).
 - **The ToS compliance note above applies** — pair a subscription with a pay-per-token
   fallback provider.
+- **The card's Terms risk notice can be dismissed once per provider.** Its `×` records the
+  acknowledgment on the server, so it stays gone on every browser; the add-provider dialog still
+  states the risk, and changing the provider's kind away from subscription and back shows it
+  again.
 - **Key rotation:** changing `PROVIDER_CREDENTIAL_KEY` invalidates stored credentials;
   OAuth-connected providers will then ask to be reconnected.
 
@@ -523,6 +527,9 @@ ids, the models come from the provider's own listing, and Test is that listing.
   non-interactive automation and altering its client identity. **Z.ai is high risk:** its
   terms forbid aggregate and proxy use unless you hold a separate written agreement, so
   Connect needs you to tick an acknowledgement (the server enforces it too).
+- **Dismissing the card's Terms risk notice.** After connecting, the provider's card repeats
+  the terms risk in a caution notice. Its `×` dismisses it for that provider; the server records
+  the acknowledgment, so it stays gone on every browser and device.
 - **A key-type warning, never a block.** A key that does not match the plan's expected
   prefix shows a caution that it may be a pay-as-you-go key, which bills your account balance
   instead of the plan. You can still connect.

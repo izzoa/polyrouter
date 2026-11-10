@@ -962,6 +962,8 @@ describe('key-preset connect is tenant-isolated (add-key-subscription-presets, t
       () => request(server).delete(`/api/providers/${id}`),
       () => request(server).post(`/api/providers/${id}/test-connection`),
       () => request(server).post(`/api/providers/${id}/sync-models`),
+      // add-dismissible-terms-risk 2.3: the acknowledgment is owner-scoped too.
+      () => request(server).post(`/api/providers/${id}/terms-risk/acknowledge`),
     ];
     for (const attempt of attempts) expect((await asB(attempt())).status).toBe(404);
     expect(factoryCalls).toBe(0);
@@ -995,6 +997,43 @@ describe('key-preset connect is tenant-isolated (add-key-subscription-presets, t
     expect(
       await harness.port.providers.findById(alice.principal, bobConnect.body.id as string),
     ).toBeNull();
+  });
+
+  // add-dismissible-terms-risk task 2.3 (provider-management "Another tenant cannot acknowledge
+  // a provider"): another tenant's acknowledge is a plain 404 and records nothing; the owner's
+  // own acknowledge lands (invariant 5).
+  it('another tenant cannot acknowledge a provider’s terms risk', async () => {
+    const created = await request(server)
+      .post('/api/providers/key-presets/connect')
+      .set('x-test-user', alice.userId)
+      .send({ preset: 'opencode-go', credential: 'sk-tenancy-tr' });
+    expect(created.status).toBe(200);
+    const id = created.body.id as string;
+    expect(created.body.termsRiskAcknowledgedAt).toBeNull();
+
+    const byBob = await request(server)
+      .post(`/api/providers/${id}/terms-risk/acknowledge`)
+      .set('x-test-user', bob.userId);
+    expect(byBob.status).toBe(404);
+    expect(JSON.stringify(byBob.body)).not.toContain(id);
+    expect(
+      (await harness.port.providers.findById(alice.principal, id))?.termsRiskAcknowledgedAt,
+    ).toBeNull();
+    // Port level: B's write affects nothing.
+    expect(
+      await harness.port.providers.update(bob.principal, id, {
+        termsRiskAcknowledgedAt: new Date(),
+      }),
+    ).toBeNull();
+    expect(
+      (await harness.port.providers.findById(alice.principal, id))?.termsRiskAcknowledgedAt,
+    ).toBeNull();
+
+    const byAlice = await request(server)
+      .post(`/api/providers/${id}/terms-risk/acknowledge`)
+      .set('x-test-user', alice.userId);
+    expect(byAlice.status).toBe(200);
+    expect(byAlice.body.termsRiskAcknowledgedAt).not.toBeNull();
   });
 
   // classify-plan-quota-errors task 7.2: the lift is owner-scoped BEFORE it touches a key.

@@ -3415,3 +3415,61 @@ describe('key-subscription connect (add-key-subscription-presets task 9.2)', () 
     expect(s.state.kp.presets).toHaveLength(1); // the offered list stays loaded
   });
 });
+
+describe('acknowledgeTermsRisk (add-dismissible-terms-risk task 4.1)', () => {
+  const SUB: ProviderDto = {
+    id: 'prov-sub',
+    name: 'claude',
+    kind: 'subscription',
+    protocol: 'anthropic_compatible',
+    baseUrl: 'https://api.anthropic.com/',
+    status: 'ok',
+    maxTokensSpelling: 'auto',
+    hasCredential: true,
+    oauthPreset: 'claude',
+    credentialExpiresAt: null,
+    credentialError: null,
+    firstByteTimeoutMs: null,
+    idleTimeoutMs: null,
+    termsRiskAcknowledgedAt: null,
+    createdAt: '2026-11-10T10:00:00.000Z',
+    ...UNRECORDED_HEALTH,
+  };
+  const OTHER: ProviderDto = { ...SUB, id: 'prov-other', name: 'chatgpt', oauthPreset: 'chatgpt' };
+
+  async function boot(): Promise<{ fake: FakeApiClient; s: AppStore }> {
+    const fake = new FakeApiClient({ session: DEFAULT_SESSION, providers: [SUB, OTHER] });
+    const s = createAppStore(fake);
+    await s.bootstrap();
+    await s.loadProviders();
+    return { fake, s };
+  }
+
+  it('success replaces the provider in place with the returned view, and toasts nothing', async () => {
+    const { fake, s } = await boot();
+    const before = s.state.providers.find((p) => p.id === 'prov-sub')!;
+    expect(before.termsRiskAcknowledgedAt).toBeNull();
+    expect(await s.acknowledgeTermsRisk('prov-sub')).toBe(true);
+    expect(fake.lastArgs('acknowledgeTermsRisk')).toEqual(['prov-sub']);
+    const after = s.state.providers.find((p) => p.id === 'prov-sub')!;
+    expect(after.termsRiskAcknowledgedAt).toBe(fake.acknowledgedAt);
+    // In place, by id: the same store object, so the card keeps its element.
+    expect(after).toBe(before);
+    // The other provider is untouched.
+    expect(
+      s.state.providers.find((p) => p.id === 'prov-other')!.termsRiskAcknowledgedAt,
+    ).toBeNull();
+    expect(s.state.toast).toBeNull();
+  });
+
+  it('failure shows the failure toast and leaves the provider as it was', async () => {
+    const { fake, s } = await boot();
+    fake.acknowledgeTermsRiskRejects = new ApiError(503, 'unavailable', 'down');
+    expect(await s.acknowledgeTermsRisk('prov-sub')).toBe(false);
+    expect(s.state.providers.find((p) => p.id === 'prov-sub')!.termsRiskAcknowledgedAt).toBeNull();
+    expect(s.state.toast).toEqual({
+      kind: 'failure',
+      text: 'Couldn’t dismiss the terms notice. Try again.',
+    });
+  });
+});

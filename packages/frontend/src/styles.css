@@ -2044,6 +2044,48 @@ button:disabled[aria-busy='true'] {
 .notice-action {
   flex: none;
 }
+/* A standing advisory's dismiss (add-dismissible-terms-risk, design D5): an icon-only `×` at the
+   end of the title's row (`.notice-head`), so the title wraps before it, the body runs the full
+   width below it, and nothing is positioned over the text — at a phone's two-column card (about
+   110px) as at desktop. 24px, the small member of the height family; negative margins on the
+   4px scale let it overhang the 20px title line without growing the row (24 − 4 − 4 = 16 ≤ 20),
+   and keep its box clear of the body.
+   Ink 3 at rest and Ink on hover, never red: dismissing is not a deletion. The shared
+   `:focus-visible` ring. Below `narrow` and under a coarse pointer it is the 44px comfort target
+   (the floor lists), and those blocks restate its margins so the box reaches into the notice's
+   12px padding to its corner. */
+.notice-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.notice-head > .notice-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.notice-dismiss {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin: -4px -4px -4px 0;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text3);
+  cursor: pointer;
+}
+.notice-dismiss:hover {
+  color: var(--text);
+}
+.notice-dismiss:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 /* The action's label never sits on a wash (DESIGN.md): the ghost takes the Panel fill at rest
    and on hover; pressed keeps the ghost's own pressed tone. */
 .notice .notice-action:not(:active) {
@@ -2641,6 +2683,7 @@ button:disabled[aria-busy='true'] {
 .link-accent,
 .drawer-close,
 .rs-inspector-step,
+.notice-dismiss,
 .mp-option,
 .rs-seg,
 .input,
@@ -2911,6 +2954,7 @@ button:disabled[aria-busy='true'] {
   .link-accent,
   .drawer-close,
   .rs-inspector-step,
+  .notice-dismiss,
   .rs-seg,
   .rs-nav-toggle {
     min-height: 44px;
@@ -2976,9 +3020,16 @@ button:disabled[aria-busy='true'] {
   .icon-x,
   .drag-handle,
   .drawer-close,
-  .rs-inspector-step {
+  .rs-inspector-step,
+  .notice-dismiss {
     min-width: 44px;
     justify-content: center;
+  }
+  /* At 44 × 44 the notice's dismiss reaches the notice's top and right edges (its 12px padding)
+     and ends 4px under the 20px title line: a 28px row, and the body below never sits under it
+     (add-dismissible-terms-risk). */
+  .notice-dismiss {
+    margin: -12px -12px -4px 0;
   }
 
   /* The rail's nav items were 35px wide inside a 56px rail because the <nav> keeps an
@@ -3324,6 +3375,7 @@ button:disabled[aria-busy='true'] {
   .link-accent,
   .drawer-close,
   .rs-inspector-step,
+  .notice-dismiss,
   .rs-seg,
   .rs-nav-toggle,
   .input,
@@ -3342,9 +3394,14 @@ button:disabled[aria-busy='true'] {
   .rs-inspector-step,
   .drawer-close,
   .icon-x,
-  .drag-handle {
+  .drag-handle,
+  .notice-dismiss {
     min-width: 44px;
     justify-content: center;
+  }
+  /* The notice's dismiss at 44 × 44, as below narrow. */
+  .notice-dismiss {
+    margin: -12px -12px -4px 0;
   }
   /* Input text is 16px under a coarse pointer at any width, as below narrow (task 8.1). */
   .input,

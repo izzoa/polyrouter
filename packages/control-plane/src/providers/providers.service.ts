@@ -194,6 +194,10 @@ export interface SafeProvider {
   /** add-subscription-usage-history: the per-provider usage-schedule switch (on by default). It
    * only takes effect where the preset declares a usage endpoint. */
   checkPlanUsage: boolean;
+  /** add-dismissible-terms-risk: when the owner acknowledged this subscription provider's terms
+   * risk (dismissed its card notice), or null. Server-stamped, first instant kept; cleared by a
+   * kind change (design D3, D4). */
+  termsRiskAcknowledgedAt: Date | null;
   /** The imitated client's label while imitation is AVAILABLE for this row (kind,
    * valid declaration, pinned endpoint), else null. Never carries header names/values. */
   clientIdentity: { label: string } | null;
@@ -450,6 +454,7 @@ export function toSafe(
     autoPruneUnlisted: p.autoPruneUnlisted,
     imitateClientIdentity: p.imitateClientIdentity,
     checkPlanUsage: p.checkPlanUsage,
+    termsRiskAcknowledgedAt: p.termsRiskAcknowledgedAt,
     clientIdentity,
     planCooldown,
     planUsage: usage.planUsage,
@@ -818,6 +823,33 @@ export class ProvidersService {
   }
 
   /**
+   * Acknowledge a subscription provider's terms risk: the card notice's dismiss
+   * (add-dismissible-terms-risk, design D3). The order is the contract:
+   *  1. `findById`, else 404 (invariant 5): another tenant's id is never touched;
+   *  2. a provider that is not a subscription has no terms risk to acknowledge: 422;
+   *  3. an acknowledged row keeps its first instant, and nothing is written;
+   *  4. otherwise ONE owner-scoped `update` stamps the server's clock.
+   * It writes nothing else: no health record (not `updateResettingHealth`), breaker state,
+   * plan cooldown, model or routing entry. Answers with the `get` view.
+   */
+  async acknowledgeTermsRisk(principal: Principal, id: string): Promise<SafeProvider> {
+    const row = await this.db.providers.findById(principal, id);
+    if (!row) throw new NotFoundException();
+    if (row.kind !== 'subscription') {
+      throw new UnprocessableEntityException(
+        'only a subscription provider has a terms risk to acknowledge',
+      );
+    }
+    if (row.termsRiskAcknowledgedAt === null) {
+      const updated = await this.db.providers.update(principal, id, {
+        termsRiskAcknowledgedAt: new Date(),
+      });
+      if (!updated) throw new NotFoundException();
+    }
+    return this.get(principal, id);
+  }
+
+  /**
    * Lift a provider's plan cooldown ("Resume now"). The owner-scoped lookup runs first (404 for
    * another tenant's id; no key is touched), then the SHARED store's `lift`. It throws `503`
    * when the shared store could not be reached, never reporting a lift that did not happen
@@ -1176,6 +1208,10 @@ export class ProvidersService {
         ? { imitateClientIdentity: dto.imitateClientIdentity }
         : {}),
       ...(dto.checkPlanUsage !== undefined ? { checkPlanUsage: dto.checkPlanUsage } : {}),
+      // add-dismissible-terms-risk (design D4): an acknowledgment belongs to the subscription it
+      // was made for, so a kind change clears it in this same write. A rename, a credential
+      // rotation or clear, a timeout change and a reconnect keep the kind, so they keep it.
+      ...(nextKind !== existing.kind ? { termsRiskAcknowledgedAt: null } : {}),
       // Present-but-empty clears; omitted (undefined) preserves the envelope. New
       // plain values are WRAPPED in the typed envelope (forgery-proof by construction).
       ...(dto.credential !== undefined

@@ -537,6 +537,20 @@ const SCENARIOS: Record<string, Scenario> = {
     find: (h) => byLabel(h.host, 'Refresh usage'),
     settled: 'rest',
   },
+  'pages/Providers.tsx app.acknowledgeTermsRisk': {
+    page: 'providers',
+    // An unacknowledged subscription card shows the Terms-risk notice; the acknowledgment
+    // removes it, so the × is gone once the request settles.
+    opts: {
+      providers: [{ ...PROVIDER, kind: 'subscription', oauthPreset: 'chatgpt' }],
+    },
+    find: (h) =>
+      h.host.querySelector<HTMLButtonElement>(
+        'button.notice-dismiss[aria-label="Dismiss terms risk for homelab-vllm"]',
+      ),
+    settled: 'gone',
+    glyph: true,
+  },
   'pages/Requests.tsx app.loadRequests#4': {
     page: 'requests',
     prepare: async (h) => {

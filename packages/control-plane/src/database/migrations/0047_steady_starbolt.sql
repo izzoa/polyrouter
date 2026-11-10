@@ -1,0 +1,1 @@
+ALTER TABLE "provider" ADD COLUMN "terms_risk_acknowledged_at" timestamp with time zone;

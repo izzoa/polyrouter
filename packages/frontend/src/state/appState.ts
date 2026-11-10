@@ -749,6 +749,7 @@ function toProvider(p: ProviderDto): Provider {
     planUsage: p.planUsage ?? null,
     planUsageRefresh: p.planUsageRefresh ?? null,
     checkPlanUsage: p.checkPlanUsage ?? true,
+    termsRiskAcknowledgedAt: p.termsRiskAcknowledgedAt ?? null,
     createdAt: p.createdAt,
     health: p.health,
   };
@@ -1439,6 +1440,12 @@ export interface AppStore {
    * nothing is toasted). A `503` means the shared pause store was unreachable: the pause may
    * still hold. */
   resumeProviderPlan: (id: string) => Promise<string | null>;
+  /** Dismiss a subscription provider's Terms-risk notice (add-dismissible-terms-risk, design D6):
+   * the server records the acknowledgment, and the answer's provider is merged into the store BY
+   * ID, in place, so the card keeps its element and its other focus targets. Resolves `true` on
+   * success; on failure it shows the failure toast and resolves `false`, leaving the provider as
+   * it was (the notice stays). */
+  acknowledgeTermsRisk: (id: string) => Promise<boolean>;
   /** Refresh usage (add-subscription-quota-display): one attended read of the provider's usage
    * endpoint. A success or a failed read merges the response's provider into the store BY ID, in
    * place (never swapped, no list reload), so the card keeps its element, its focus and an open
@@ -4428,6 +4435,16 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
       }
       await loadProviders();
       return null;
+    },
+    acknowledgeTermsRisk: async (id) => {
+      try {
+        const provider = await client.acknowledgeTermsRisk(id);
+        setState('providers', (p) => p.id === id, reconcile(toProvider(provider)));
+        return true;
+      } catch {
+        sayFailure('Couldn’t dismiss the terms notice. Try again.');
+        return false;
+      }
     },
     refreshPlanUsage: async (id) => {
       try {

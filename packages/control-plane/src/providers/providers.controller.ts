@@ -117,6 +117,20 @@ export class ProvidersController {
     }
   }
 
+  /** Acknowledge a subscription provider's terms risk (add-dismissible-terms-risk, design D1):
+   * the card notice's dismiss. No body; the server stamps the instant and keeps the first one.
+   * `200` with the provider view; `404` for another tenant's or a missing id (checked first);
+   * `422` for a provider that is not a subscription. Writes nothing but the acknowledgment. */
+  @Post(':id/terms-risk/acknowledge')
+  @HttpCode(200)
+  @Header('Cache-Control', 'no-store')
+  acknowledgeTermsRisk(
+    @CurrentPrincipal() principal: Principal,
+    @Param('id') id: string,
+  ): Promise<SafeProvider> {
+    return this.svc.acknowledgeTermsRisk(principal, id);
+  }
+
   /** The plan-usage history (add-subscription-usage-history, design D5): each window's samples
    * over its current span, oldest first. `404` for another tenant's id (the owner-scoped lookup
    * runs first); an empty `windows` list without samples. Calls no usage endpoint, claims no

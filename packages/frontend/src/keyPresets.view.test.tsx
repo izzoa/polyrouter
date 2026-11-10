@@ -332,6 +332,10 @@ describe('each plan states its own terms risk', () => {
     const detail = h.host.querySelector('.sp-detail')!;
     expect(detail.textContent).toContain('High terms risk');
     expect(detail.textContent).toContain('Z.ai’s terms forbid proxy use.');
+    // add-dismissible-terms-risk 4.3 ("The connect dialog still states the risk"): the picker's
+    // terms notice is part of a one-time flow and carries no dismiss.
+    expect(detail.querySelector('.notice')).not.toBeNull();
+    expect(detail.querySelector('.notice-dismiss')).toBeNull();
     const link = [...detail.querySelectorAll<HTMLAnchorElement>('a')].find((a) =>
       (a.textContent ?? '').includes('Read the plan’s terms'),
     )!;
@@ -398,6 +402,8 @@ describe('an imitation-required region says so before and after connecting', () 
     await choosePlan(h, 'kimi-code');
     expect(modalText(h)).toContain('Identity imitation required');
     expect(modalText(h)).toContain('turn on identity imitation in the provider’s Edit dialog');
+    // add-dismissible-terms-risk 4.3: no notice in the connect dialog carries a dismiss.
+    expect(h.host.querySelector('.sp-detail .notice-dismiss')).toBeNull();
     await type(field<HTMLInputElement>(h, 'f-kp-key')!, 'sk-kimi-fixture');
     await tick(field<HTMLInputElement>(h, 'f-kp-ack')!, true);
     buttonNamed(h.host, 'Connect Kimi Code')!.click();

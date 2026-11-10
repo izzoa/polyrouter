@@ -279,6 +279,18 @@ function ProviderCard(props: { p: Provider }) {
   // button is busy on its own, so one can be tested while another syncs.
   const testing = createBusy();
   const syncing = createBusy();
+  // add-dismissible-terms-risk (design D6): the Terms-risk notice's dismiss, busy while the
+  // acknowledgment is in flight. A success unmounts the notice, so focus goes to Test, the card's
+  // next control; a failure keeps the notice and the toast says so.
+  const dismissing = createBusy();
+  let testButton: HTMLButtonElement | undefined;
+  const dismissTermsRisk = (): void => {
+    void dismissing.run(() =>
+      app.acknowledgeTermsRisk(props.p.id).then((ok) => {
+        if (ok) queueMicrotask(() => testButton?.focus());
+      }),
+    );
+  };
 
   const toggleModels = (): void => {
     const next = !open();
@@ -621,15 +633,24 @@ function ProviderCard(props: { p: Provider }) {
         <PlanUsageGraphs provider={props.p} reads={historyReads()} now={clock()} />
       </Show>
 
-      <Show when={props.p.kind === 'subscription'}>
-        {/* Caution (D15; CLAUDE.md compliance note): the terms risk holds for as long as the
-            provider is a subscription, so the notice has no dismiss. */}
+      <Show when={props.p.kind === 'subscription' && props.p.termsRiskAcknowledgedAt === null}>
+        {/* Caution (D15; CLAUDE.md compliance note). The terms risk holds for as long as the
+            provider is a subscription: a standing advisory, not a condition that ends, so it
+            carries the one dismiss (add-dismissible-terms-risk). The server records the
+            acknowledgment per provider; once it has, the card shows nothing in its place, and the
+            connect dialog still states the risk. */}
         <Notice
           tone="caution"
           title="Terms risk"
           action={{
             label: 'Add a pay-per-token fallback',
             onClick: () => app.openModal('newProvider'),
+          }}
+          dismiss={{
+            label: `Dismiss terms risk for ${props.p.name}`,
+            busyLabel: `Dismissing terms risk for ${props.p.name}…`,
+            busy: dismissing.busy(),
+            onDismiss: dismissTermsRisk,
           }}
         >
           <Show
@@ -652,6 +673,9 @@ function ProviderCard(props: { p: Provider }) {
 
       <div style="display:flex;gap:8px;margin-top:4px;flex-wrap:wrap">
         <button
+          ref={(el) => {
+            testButton = el;
+          }}
           type="button"
           class="btn-ghost"
           disabled={testing.busy()}

@@ -1119,6 +1119,7 @@ export class FakeApiClient implements ApiClient {
       idleTimeoutMs: input.idleTimeoutMs ?? null,
       autoPruneUnlisted: true,
       checkPlanUsage: true,
+      termsRiskAcknowledgedAt: null,
       createdAt: NOW,
       ...UNRECORDED_HEALTH,
     };
@@ -1326,6 +1327,41 @@ export class FakeApiClient implements ApiClient {
     if (!existing) throw new ApiError(404, 'Not Found', 'provider not found');
     // Mirror the backend: the lift deletes the record, and the next list shows no pause.
     this.providers = this.providers.map((p) => (p.id === id ? { ...p, planCooldown: null } : p));
+  }
+
+  /** add-dismissible-terms-risk: set to make the next acknowledgment fail (cleared once used). */
+  acknowledgeTermsRiskRejects: ApiError | null = null;
+  /** When set, the next acknowledgment parks on it: resolve it to let the request settle. */
+  acknowledgeTermsRiskGate: Promise<void> | null = null;
+  /** The instant the fake server stamps on a first acknowledgment. */
+  acknowledgedAt = '2026-11-10T12:00:00.000Z';
+
+  /** Mirrors the backend: 404 for a gone id, 422 for a provider that is not a subscription, the
+   * first instant kept on a repeat. The stored provider is replaced, so a later list agrees. */
+  async acknowledgeTermsRisk(id: string): Promise<ProviderDto> {
+    this.record('acknowledgeTermsRisk', id);
+    const gate = this.acknowledgeTermsRiskGate;
+    if (gate) await gate;
+    if (this.acknowledgeTermsRiskRejects) {
+      const e = this.acknowledgeTermsRiskRejects;
+      this.acknowledgeTermsRiskRejects = null;
+      throw e;
+    }
+    const existing = this.providers.find((p) => p.id === id);
+    if (!existing) throw new ApiError(404, 'Not Found', 'provider not found');
+    if (existing.kind !== 'subscription') {
+      throw new ApiError(
+        422,
+        'Unprocessable Entity',
+        'only a subscription provider has a terms risk to acknowledge',
+      );
+    }
+    const next: ProviderDto = {
+      ...existing,
+      termsRiskAcknowledgedAt: existing.termsRiskAcknowledgedAt ?? this.acknowledgedAt,
+    };
+    this.providers = this.providers.map((p) => (p.id === id ? next : p));
+    return next;
   }
 
   /** Refresh usage (add-subscription-quota-display). `planUsageRefreshRejects` makes the next call

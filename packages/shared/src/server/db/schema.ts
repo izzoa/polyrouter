@@ -312,6 +312,12 @@ export const providers = pgTable(
     // way. ON by default, for every existing row too (a constant default is a metadata-only ADD
     // COLUMN in PostgreSQL 16). Holds no secret.
     checkPlanUsage: boolean('check_plan_usage').default(true).notNull(),
+    // add-dismissible-terms-risk (design D2): when the owner acknowledged a subscription
+    // provider's terms risk by dismissing its card notice. Stamped by the server, first instant
+    // kept; NULL until then and again after a kind change (D4). Nullable with no default, so the
+    // ADD COLUMN is metadata-only in PostgreSQL 16 and every existing row reads NULL. Display
+    // metadata only; holds no secret.
+    termsRiskAcknowledgedAt: timestamp('terms_risk_acknowledged_at', { withTimezone: true }),
     createdAt: createdAt(),
   },
   (t) => [

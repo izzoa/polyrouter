@@ -4,7 +4,9 @@
  *
  * The banners D15 migrates are walked in the real App on a fake client, each in the state that
  * raises it. Every one is a `Notice`: a status-word title in the Section role, its sentence
- * kept verbatim as the body, at most one ghost action, and no dismiss. The role follows the
+ * kept verbatim as the body, at most one ghost action, and no dismiss — except the one standing
+ * advisory, the subscription Terms risk, which alone carries the `×` (add-dismissible-terms-risk;
+ * every anatomy below states its dismiss, so a notice that gains one fails here). The role follows the
  * tone: `alert` for the failure tone, `status` for info, success and caution — including the
  * four load failures, which take Info so this change agrees with adopt-figure-states' neutral
  * notice.
@@ -128,6 +130,8 @@ interface Anatomy {
   titleRole: boolean;
   body: string;
   actions: string[];
+  /** The dismiss control's accessible name, or null when the notice has none. */
+  dismiss: string | null;
 }
 /** What a notice is made of: its tone class, role, title (and that the title takes the
  * Section role), body, and the labels of its buttons. */
@@ -140,12 +144,18 @@ function anatomy(n: HTMLElement): Anatomy {
     title: title?.textContent ?? '',
     titleRole: title?.classList.contains('t-section') ?? false,
     body: n.querySelector('.notice-body')?.textContent ?? '',
-    actions: [...n.querySelectorAll('button')].map((b) => labelText(b)),
+    actions: [...n.querySelectorAll('button:not(.notice-dismiss)')].map((b) => labelText(b)),
+    dismiss: (() => {
+      const all = n.querySelectorAll('.notice-dismiss');
+      expect(all.length, 'at most one dismiss').toBeLessThanOrEqual(1);
+      return all[0]?.getAttribute('aria-label') ?? null;
+    })(),
   };
 }
-/** Each button in a notice is a ghost button — and there is at most one. */
+/** Each action in a notice is a ghost button — and there is at most one. The dismiss `×` is not
+ * an action (add-dismissible-terms-risk). */
 function expectGhostAction(n: HTMLElement): void {
-  const buttons = [...n.querySelectorAll<HTMLButtonElement>('button')];
+  const buttons = [...n.querySelectorAll<HTMLButtonElement>('button:not(.notice-dismiss)')];
   expect(buttons.length, 'at most one action').toBeLessThanOrEqual(1);
   for (const b of buttons) expect(b.classList.contains('btn-ghost'), 'a ghost action').toBe(true);
 }
@@ -182,6 +192,7 @@ describe('the Notice component maps tone to fill, title colour and role (D15)', 
         titleRole: true,
         body: 'One sentence.',
         actions: ['Act'],
+        dismiss: null,
       });
       expect(n.querySelector('.notice-body')?.classList.contains('t-body')).toBe(true);
       expectGhostAction(n);
@@ -213,6 +224,127 @@ describe('the Notice component maps tone to fill, title colour and role (D15)', 
     }
     // The action's label never sits on a wash: a Panel fill except while pressed.
     expect(rule('.notice .notice-action:not(:active)')).toBe('background: var(--panel);');
+  });
+
+  it('a notice without a dismiss renders no dismiss control (task 3.1)', () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    dispose = render(
+      () => (
+        <Notice tone="caution" title="Unverified">
+          Routing may have changed.
+        </Notice>
+      ),
+      host,
+    );
+    const n = host.querySelector<HTMLElement>('.notice')!;
+    expect(n.querySelector('.notice-dismiss')).toBeNull();
+    expect(n.classList.contains('notice--dismissible')).toBe(false);
+  });
+
+  it('a standing advisory renders one labelled, keyboard-reachable dismiss apart from its action (task 3.1)', () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    let dismissed = 0;
+    let acted = 0;
+    dispose = render(
+      () => (
+        <Notice
+          tone="caution"
+          title="Terms risk"
+          action={{ label: 'Add a pay-per-token fallback', onClick: () => (acted += 1) }}
+          dismiss={{ label: 'Dismiss terms risk for claude', onDismiss: () => (dismissed += 1) }}
+        >
+          Reusing a flat-rate subscription may violate the provider’s ToS.
+        </Notice>
+      ),
+      host,
+    );
+    const n = host.querySelector<HTMLElement>('.notice')!;
+    expect(n.classList.contains('notice--dismissible')).toBe(true);
+    const anat = anatomy(n);
+    expect(anat.actions).toEqual(['Add a pay-per-token fallback']);
+    expect(anat.dismiss).toBe('Dismiss terms risk for claude');
+    expectGhostAction(n);
+    const x = n.querySelector<HTMLButtonElement>('.notice-dismiss')!;
+    // A native button in the tab order, named for what it dismisses, holding only a decorative mark.
+    expect(x.tagName).toBe('BUTTON');
+    expect(x.type).toBe('button');
+    expect(x.tabIndex).toBe(0);
+    expect(x.disabled).toBe(false);
+    expect(x.hasAttribute('aria-busy')).toBe(false);
+    expect(x.getAttribute('title')).toBe('Dismiss terms risk for claude');
+    expect(x.textContent?.trim()).toBe('');
+    expect(x.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true');
+    expect(x.classList.contains('btn-ghost')).toBe(false);
+    x.focus();
+    expect(document.activeElement).toBe(x);
+    x.click();
+    expect(dismissed).toBe(1);
+    expect(acted).toBe(0);
+  });
+
+  it('a busy dismiss is natively disabled and aria-busy (task 3.1)', () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    dispose = render(
+      () => (
+        <Notice
+          tone="caution"
+          title="Terms risk"
+          dismiss={{
+            label: 'Dismiss terms risk for claude',
+            busy: true,
+            onDismiss: () => undefined,
+          }}
+        >
+          One sentence.
+        </Notice>
+      ),
+      host,
+    );
+    const x = host.querySelector<HTMLButtonElement>('.notice-dismiss')!;
+    expect(x.disabled).toBe(true);
+    expect(x.getAttribute('aria-busy')).toBe('true');
+  });
+
+  it('the stylesheet puts the dismiss in the title row, never over the text, at both sizes (task 3.1)', () => {
+    const rules = (sel: string): string[] => {
+      const out: string[] = [];
+      const esc = sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp(`(?:^|\\s)${esc} \\{([^}]*)\\}`, 'g');
+      for (let m = re.exec(css); m !== null; m = re.exec(css)) {
+        out.push(m[1]!.replace(/\s+/g, ' ').trim());
+      }
+      return out;
+    };
+    // A flex row: the title takes the room, the × keeps its own; no absolute positioning.
+    expect(rules('.notice-head')[0]).toMatch(/display: flex;/);
+    expect(rules('.notice-head > .notice-title')[0]).toMatch(/flex: 1 1 auto;/);
+    const [base] = rules('.notice-dismiss');
+    const comfort = rules('.notice-dismiss').find((d) => d.startsWith('margin: -12px'));
+    expect(base).toMatch(/flex: none;/);
+    expect(base).toMatch(/width: 24px; height: 24px;/);
+    expect(base).not.toMatch(/position: absolute/);
+    expect(base).not.toMatch(/outline: none/);
+    expect(base).toMatch(/color: var\(--text3\);/);
+    // Desktop: a 24px box overhangs the 20px title line by 4px each way (on the 4px scale), so
+    // the row stays 20px.
+    expect(base).toMatch(/margin: -4px -4px -4px 0;/);
+    // Comfort context, in both the narrow and the coarse-pointer block: the 44px box reaches the
+    // 12px padding's corner and ends 4px under the line: 44 - 12 - 4 = 28px of row, and the body
+    // starts below it.
+    expect(comfort).toBe('margin: -12px -12px -4px 0;');
+    expect(
+      rules('.notice-dismiss').filter((d) => d === 'margin: -12px -12px -4px 0;'),
+    ).toHaveLength(2);
+    // It is on the comfort-target floor lists (min-height and min-width 44px).
+    const floorLists = css.match(/[^{}]*\{[^}]*min-(?:height|width): 44px;[^}]*\}/g) ?? [];
+    expect(floorLists.filter((r) => /\.notice-dismiss[,\s]/.test(r)).length).toBeGreaterThanOrEqual(
+      4,
+    );
+    // Hover goes to Ink, never red: dismissing is not a deletion.
+    expect(rules('.notice-dismiss:hover')[0]).toBe('color: var(--text);');
   });
 
   it('a busy-capable action is natively disabled and stacks both labels while busy', () => {
@@ -283,6 +415,7 @@ describe('the migrated banners are notices, each with its role and its sentence 
         titleRole: true,
         body: c.body,
         actions: ['Retry'],
+        dismiss: null,
       });
       expectGhostAction(n);
       dispose?.();
@@ -303,6 +436,7 @@ describe('the migrated banners are notices, each with its role and its sentence 
       titleRole: true,
       body: 'Agent activity couldn’t be loaded. Routing is unaffected.',
       actions: ['Retry'],
+      dismiss: null,
     });
     expectGhostAction(inStrip[0]!);
     // The page's own notice is a separate one, for the polled analytics read.
@@ -323,6 +457,7 @@ describe('the migrated banners are notices, each with its role and its sentence 
       titleRole: true,
       body: 'Routing may have changed — the refresh failed, so the Strong and Cheap columns wait until it succeeds.',
       actions: ['Retry'],
+      dismiss: null,
     });
     expectGhostAction(n);
     expect(n.id).toBe('auto-targets-unverified');
@@ -364,6 +499,7 @@ describe('the migrated banners are notices, each with its role and its sentence 
       titleRole: true,
       body: '',
       actions: ['Reconnect'],
+      dismiss: null,
     });
     // The health text is kept verbatim as the body, and it is still the card's one status line.
     expect(a.body).toMatch(/Sign-in expired/);
@@ -371,7 +507,7 @@ describe('the migrated banners are notices, each with its role and its sentence 
     expectGhostAction(n);
   });
 
-  it('the subscription terms notice: Caution, Terms risk, Add a pay-per-token fallback', async () => {
+  it('the subscription terms notice: Caution, Terms risk, Add a pay-per-token fallback, and the one dismiss', async () => {
     const h = await mount('providers', {
       providers: [{ ...PROVIDER, kind: 'subscription', oauthPreset: 'chatgpt' }],
     });
@@ -383,9 +519,10 @@ describe('the migrated banners are notices, each with its role and its sentence 
       titleRole: true,
       body: 'Reusing a flat-rate subscription may violate the provider’s ToS.',
       actions: ['Add a pay-per-token fallback'],
+      dismiss: 'Dismiss terms risk for homelab-vllm',
     });
     expectGhostAction(n);
-    n.querySelector<HTMLButtonElement>('button')!.click();
+    n.querySelector<HTMLButtonElement>('button.btn-ghost')!.click();
     await flush();
     expect(h.store.state.modal, 'the action still opens the provider form').toBe('newProvider');
   });
@@ -404,6 +541,7 @@ describe('the migrated banners are notices, each with its role and its sentence 
       titleRole: true,
       body: 'upstream down',
       actions: [],
+      dismiss: null,
     });
   });
 });

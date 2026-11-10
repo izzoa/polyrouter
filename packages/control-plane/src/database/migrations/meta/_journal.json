@@ -330,6 +330,13 @@
       "when": 1794261412364,
       "tag": "0046_happy_norrin_radd",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1794340676714,
+      "tag": "0047_steady_starbolt",
+      "breakpoints": true
     }
   ]
 }

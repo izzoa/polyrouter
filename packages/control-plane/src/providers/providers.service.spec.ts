@@ -152,6 +152,7 @@ function makePort(): FakePort {
     autoPruneUnlisted: values.autoPruneUnlisted ?? true,
     imitateClientIdentity: values.imitateClientIdentity ?? false,
     checkPlanUsage: values.checkPlanUsage ?? true,
+    termsRiskAcknowledgedAt: values.termsRiskAcknowledgedAt ?? null,
     createdAt: new Date(),
   });
   const upsert = jest.fn(
@@ -3083,5 +3084,81 @@ describe('ProvidersService — plan usage (add-subscription-quota-display 6.2-6.
         'extra_usage',
       );
     });
+  });
+});
+
+describe('ProvidersService — terms-risk acknowledgment (add-dismissible-terms-risk 2.1-2.4)', () => {
+  async function setup() {
+    const made = makePort();
+    const svc = mkProvidersService(made.port, factory(), runtime('selfhosted'));
+    const sub = await svc.create(principal, {
+      ...baseCreate,
+      kind: 'subscription',
+      baseUrl: 'https://1.1.1.1/v1',
+      credential: 'k',
+    });
+    return { ...made, svc, sub };
+  }
+
+  it('the view carries termsRiskAcknowledgedAt, null until acknowledged (2.1)', async () => {
+    const { svc, sub } = await setup();
+    expect(sub.termsRiskAcknowledgedAt).toBeNull();
+    expect((await svc.get(principal, sub.id)).termsRiskAcknowledgedAt).toBeNull();
+    expect((await svc.list(principal))[0]!.termsRiskAcknowledgedAt).toBeNull();
+  });
+
+  it('records the first instant, keeps it on a repeat, and writes nothing else (2.2)', async () => {
+    const { svc, sub, rows } = await setup();
+    const before = { ...rows.get(sub.id)! };
+    const t0 = Date.now();
+    const first = await svc.acknowledgeTermsRisk(principal, sub.id);
+    expect(first.termsRiskAcknowledgedAt).toBeInstanceOf(Date);
+    const at = first.termsRiskAcknowledgedAt!.getTime();
+    expect(at).toBeGreaterThanOrEqual(t0);
+    // Only the acknowledgment changed: no health record, revision or other column.
+    const { termsRiskAcknowledgedAt: _a, ...restAfter } = rows.get(sub.id)!;
+    const { termsRiskAcknowledgedAt: _b, ...restBefore } = before;
+    expect(restAfter).toEqual(restBefore);
+
+    const update = jest.spyOn((svc as unknown as { db: PersistencePort }).db.providers, 'update');
+    const again = await svc.acknowledgeTermsRisk(principal, sub.id);
+    expect(again.termsRiskAcknowledgedAt!.getTime()).toBe(at);
+    expect(update).not.toHaveBeenCalled();
+    expect((await svc.get(principal, sub.id)).termsRiskAcknowledgedAt!.getTime()).toBe(at);
+  });
+
+  it('a missing id is 404, and a provider that is not a subscription is 422 (2.2)', async () => {
+    const { svc, rows } = await setup();
+    await expect(svc.acknowledgeTermsRisk(principal, 'nope')).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+    for (const [kind, baseUrl] of [
+      ['api_key', 'https://1.1.1.1/v1'],
+      ['custom', 'https://1.1.1.1/v1'],
+      ['local', 'http://127.0.0.1:11434'],
+    ] as const) {
+      const p = await svc.create(principal, { ...baseCreate, kind, baseUrl, credential: 'k' });
+      await expect(svc.acknowledgeTermsRisk(principal, p.id)).rejects.toBeInstanceOf(
+        UnprocessableEntityException,
+      );
+      expect(rows.get(p.id)!.termsRiskAcknowledgedAt).toBeNull();
+    }
+  });
+
+  it('a kind change clears it in the same write; a rename, a rotation and a timeout keep it (2.4)', async () => {
+    const { svc, sub, rows } = await setup();
+    const at = (await svc.acknowledgeTermsRisk(principal, sub.id)).termsRiskAcknowledgedAt;
+    expect(at).not.toBeNull();
+
+    await svc.update(principal, sub.id, { name: 'renamed' });
+    await svc.update(principal, sub.id, { credential: 'rotated' });
+    await svc.update(principal, sub.id, { firstByteTimeoutMs: 90_000 });
+    await svc.update(principal, sub.id, { kind: 'subscription' }); // the same kind is no change
+    expect(rows.get(sub.id)!.termsRiskAcknowledgedAt).toEqual(at);
+
+    const moved = await svc.update(principal, sub.id, { kind: 'api_key' });
+    expect(moved.termsRiskAcknowledgedAt).toBeNull();
+    const back = await svc.update(principal, sub.id, { kind: 'subscription' });
+    expect(back.termsRiskAcknowledgedAt).toBeNull();
   });
 });

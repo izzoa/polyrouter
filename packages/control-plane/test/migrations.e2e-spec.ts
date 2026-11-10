@@ -512,8 +512,9 @@ describe('provider.key_preset migration (database-schema, add-key-subscription-p
     );
     expect(col.rows).toEqual([{ data_type: 'text', is_nullable: 'YES', column_default: null }]);
     // Later migrations add their own provider columns (add-subscription-usage-history:
-    // `check_plan_usage`); they are not this migration's to judge.
-    const LATER = ['check_plan_usage'];
+    // `check_plan_usage`; add-dismissible-terms-risk: `terms_risk_acknowledged_at`); they are not
+    // this migration's to judge.
+    const LATER = ['check_plan_usage', 'terms_risk_acknowledged_at'];
     expect((await columnsOf()).filter((c) => !LATER.includes(c))).toEqual(
       [...colsBefore, 'key_preset'].sort(),
     );
@@ -524,7 +525,12 @@ describe('provider.key_preset migration (database-schema, add-key-subscription-p
     for (const r of rowsAfter) expect(r['key_preset']).toBeNull();
     expect(
       rowsAfter.map(
-        ({ key_preset: _keyPreset, check_plan_usage: _checkPlanUsage, ...rest }) => rest,
+        ({
+          key_preset: _keyPreset,
+          check_plan_usage: _checkPlanUsage,
+          terms_risk_acknowledged_at: _termsRisk,
+          ...rest
+        }) => rest,
       ),
     ).toEqual(rowsBefore);
     expect(rowsAfter.find((r) => r['id'] === 'P-oauth')).toMatchObject({ oauth_preset: 'claude' });
@@ -718,11 +724,18 @@ describe('plan_usage_sample + provider.check_plan_usage migration (database-sche
        WHERE table_name = 'provider' AND column_name = 'check_plan_usage'`,
     );
     expect(col.rows).toEqual([{ data_type: 'boolean', is_nullable: 'NO', column_default: 'true' }]);
-    expect(await providerColumns()).toEqual([...colsBefore, 'check_plan_usage'].sort());
+    // Later migrations add their own provider columns (add-dismissible-terms-risk:
+    // `terms_risk_acknowledged_at`); they are not this migration's to judge.
+    const LATER = ['terms_risk_acknowledged_at'];
+    expect((await providerColumns()).filter((c) => !LATER.includes(c))).toEqual(
+      [...colsBefore, 'check_plan_usage'].sort(),
+    );
     const rowsAfter = await providerRows();
     expect(rowsAfter).toHaveLength(shapes.length);
     for (const r of rowsAfter) expect(r['check_plan_usage']).toBe(true);
-    expect(rowsAfter.map(({ check_plan_usage: _c, ...rest }) => rest)).toEqual(rowsBefore);
+    expect(
+      rowsAfter.map(({ check_plan_usage: _c, terms_risk_acknowledged_at: _t, ...rest }) => rest),
+    ).toEqual(rowsBefore);
 
     // The table exists, empty, with exactly the documented columns.
     expect(await tableExists('plan_usage_sample')).toBe(true);
@@ -820,5 +833,145 @@ describe('plan_usage_sample + provider.check_plan_usage migration (database-sche
       'plan_usage_sample_pkey',
       'plan_usage_sample_provider_observed_idx',
     ]);
+  }, 60_000);
+});
+
+/** add-dismissible-terms-risk (migration 0047): the nullable `provider.terms_risk_acknowledged_at`
+ * column (database-schema "The terms-risk acknowledgment is an additive, nullable provider
+ * column"). Same two-step shape: everything BEFORE the migration, a seed of every provider shape,
+ * then the rest. */
+describe('provider.terms_risk_acknowledged_at migration (database-schema, add-dismissible-terms-risk)', () => {
+  const databaseUrl = loadConfig<{ DATABASE_URL: string }>().DATABASE_URL;
+  const dbName = `polyrouter_mig_tr_${Math.random().toString(36).slice(2, 8)}`;
+  let admin: Pool;
+  let pool: Pool;
+  let partialDir: string;
+  const OWNER = 'u-mig-tr';
+  const COLUMN = 'terms_risk_acknowledged_at';
+
+  /** The migrations folder truncated just before the terms_risk_acknowledged_at migration. */
+  function partialFolder(): string {
+    const full = resolveMigrationsFolder();
+    const journal = JSON.parse(readFileSync(join(full, 'meta', '_journal.json'), 'utf8')) as {
+      entries: { tag: string }[];
+    };
+    const at = journal.entries.findIndex((e) =>
+      readFileSync(join(full, `${e.tag}.sql`), 'utf8').includes(`ADD COLUMN "${COLUMN}"`),
+    );
+    if (at < 0) throw new Error(`${COLUMN} migration not found in the journal`);
+    const dir = mkdtempSync(join(tmpdir(), 'polyrouter-mig-tr-'));
+    mkdirSync(join(dir, 'meta'));
+    writeFileSync(
+      join(dir, 'meta', '_journal.json'),
+      JSON.stringify({ ...journal, entries: journal.entries.slice(0, at) }),
+    );
+    for (const e of journal.entries.slice(0, at)) {
+      writeFileSync(join(dir, `${e.tag}.sql`), readFileSync(join(full, `${e.tag}.sql`)));
+    }
+    return dir;
+  }
+
+  const providerColumns = async (): Promise<string[]> =>
+    (
+      await pool.query<{ column_name: string }>(
+        `SELECT column_name FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = 'provider' ORDER BY column_name`,
+      )
+    ).rows.map((r) => r.column_name);
+  const providerRows = async (): Promise<Record<string, unknown>[]> =>
+    (await pool.query(`SELECT * FROM provider ORDER BY id`)).rows;
+  const appliedCount = async (): Promise<number> =>
+    (await pool.query<{ n: number }>(`SELECT count(*)::int AS n FROM drizzle.__drizzle_migrations`))
+      .rows[0]!.n;
+
+  beforeAll(async () => {
+    admin = new Pool({ connectionString: adminUrl(databaseUrl), max: 1 });
+    try {
+      await admin.query(`CREATE DATABASE ${dbName}`);
+    } catch (error) {
+      throw new Error(`${COMPOSE_HINT}\n(${(error as Error).message})`);
+    }
+    pool = new Pool({ connectionString: adminUrl(databaseUrl, dbName), max: 2 });
+    partialDir = partialFolder();
+  }, 60_000);
+
+  afterAll(async () => {
+    await pool?.end();
+    await admin?.query(`DROP DATABASE IF EXISTS ${dbName} WITH (FORCE)`);
+    await admin?.end();
+    if (partialDir !== undefined) rmSync(partialDir, { recursive: true, force: true });
+  });
+
+  it('existing providers start unacknowledged: a nullable column, no row or other value touched', async () => {
+    await migrate(drizzle(pool), { migrationsFolder: partialDir });
+    expect(await providerColumns()).not.toContain(COLUMN); // the "before" world
+
+    await pool.query(
+      `INSERT INTO "user" (id, name, email) VALUES ($1, 'mig', 'mig-tr@example.test')`,
+      [OWNER],
+    );
+    // Every provider shape that exists before this change.
+    const shapes: Array<[string, string, string, string | null, string | null]> = [
+      ['P-api', 'api_key', 'openai_compatible', null, null],
+      ['P-custom', 'custom', 'openai_compatible', null, null],
+      ['P-local', 'local', 'openai_compatible', null, null],
+      ['P-pasted', 'subscription', 'openai_compatible', null, null],
+      ['P-claude', 'subscription', 'anthropic_compatible', 'claude', null],
+      ['P-chatgpt', 'subscription', 'openai_responses', 'chatgpt', null],
+      ['P-zai', 'subscription', 'openai_compatible', null, 'zai-coding'],
+    ];
+    for (const [id, kind, protocol, oauthPreset, keyPreset] of shapes) {
+      await pool.query(
+        `INSERT INTO provider (id, owner_user_id, name, kind, protocol, oauth_preset, key_preset,
+                               check_plan_usage)
+         VALUES ($1, $2, $1, $3, $4, $5, $6, $7)`,
+        [id, OWNER, kind, protocol, oauthPreset, keyPreset, id !== 'P-claude'],
+      );
+    }
+    const colsBefore = await providerColumns();
+    const rowsBefore = await providerRows();
+    expect(rowsBefore).toHaveLength(shapes.length);
+
+    await migrate(drizzle(pool), { migrationsFolder: resolveMigrationsFolder() });
+
+    // The column: timestamptz, nullable, no default (so no row is rewritten).
+    const col = await pool.query(
+      `SELECT data_type, is_nullable, column_default FROM information_schema.columns
+       WHERE table_name = 'provider' AND column_name = $1`,
+      [COLUMN],
+    );
+    expect(col.rows).toEqual([
+      { data_type: 'timestamp with time zone', is_nullable: 'YES', column_default: null },
+    ]);
+    expect(await providerColumns()).toEqual([...colsBefore, COLUMN].sort());
+    const rowsAfter = await providerRows();
+    expect(rowsAfter).toHaveLength(shapes.length);
+    for (const r of rowsAfter) expect(r[COLUMN]).toBeNull();
+    expect(rowsAfter.map(({ [COLUMN]: _t, ...rest }) => rest)).toEqual(rowsBefore);
+  }, 120_000);
+
+  it('deleting a provider deletes its acknowledgment; a later provider starts at NULL', async () => {
+    await pool.query(`UPDATE provider SET ${COLUMN} = now() WHERE id = 'P-zai'`);
+    await pool.query(`DELETE FROM provider WHERE id = 'P-zai'`);
+    await pool.query(
+      `INSERT INTO provider (id, owner_user_id, name, kind, protocol, key_preset)
+       VALUES ('P-zai-2', $1, 'P-zai-2', 'subscription', 'openai_compatible', 'zai-coding')`,
+      [OWNER],
+    );
+    const rows = await pool.query<{ id: string; at: Date | null }>(
+      `SELECT id, ${COLUMN} AS at FROM provider WHERE id LIKE 'P-zai%' ORDER BY id`,
+    );
+    expect(rows.rows).toEqual([{ id: 'P-zai-2', at: null }]);
+  }, 60_000);
+
+  it('a second boot-time migration run is a no-op: no error, nothing reapplied, schema unchanged', async () => {
+    const applied = await appliedCount();
+    const cols = await providerColumns();
+    const rowsBefore = await providerRows();
+    await runMigrations(drizzle(pool));
+    await runMigrations(drizzle(pool));
+    expect(await appliedCount()).toBe(applied);
+    expect(await providerColumns()).toEqual(cols);
+    expect(await providerRows()).toEqual(rowsBefore);
   }, 60_000);
 });

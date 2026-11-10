@@ -276,6 +276,12 @@ export const BUSY_ACTIONS: readonly BusyRow[] = [
     why: 'Refresh usage, on a key-plan provider card (add-subscription-quota-display). After a read the button stays disabled for the shared cooldown and says when it returns, so its scenario walks the refused path, which leaves it at rest; the success path is walked in Providers.planUsageRefresh.view.test.tsx',
   },
   {
+    key: 'pages/Providers.tsx app.acknowledgeTermsRisk',
+    cls: 'busy',
+    busyLabel: 'Dismissing terms risk',
+    why: 'the Terms-risk notice’s × glyph (add-dismissible-terms-risk): the progressive label is its accessible name; a success removes the notice, and focus goes to the card’s Test',
+  },
+  {
     key: 'pages/Providers.tsx app.removeUnlistedModel#1',
     cls: 'destructive',
     why: 'Remove on an unlisted model: the store counts its impact, then opens the shared confirmation, whose commit is busy',

@@ -372,8 +372,12 @@ describe('key-preset connect and list (e2e)', () => {
       baseUrl: 'https://api.z.ai/api/coding/paas/v4',
       keyPreset: 'zai-coding-plan',
     });
-    // The acknowledgement is never stored.
-    expect(JSON.stringify(await row(ok.body.id as string))).not.toMatch(/acknowledg/i);
+    // The acknowledgement is never stored. Connecting does not acknowledge the card's
+    // Terms-risk notice either (add-dismissible-terms-risk D2): the provider's own
+    // `terms_risk_acknowledged_at` column, the only column named for one, stays NULL.
+    const { terms_risk_acknowledged_at: cardAck, ...rest } = await row(ok.body.id as string);
+    expect(cardAck).toBeNull();
+    expect(JSON.stringify(rest)).not.toMatch(/acknowledg/i);
   });
 
   it('lower-risk presets connect without the acknowledgement field', async () => {

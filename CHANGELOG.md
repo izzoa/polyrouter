@@ -15,6 +15,11 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.30.0] — 2026-11-09
+
+[Release](https://github.com/izzoa/polyrouter/releases/tag/v0.30.0) ·
+[Compare](https://github.com/izzoa/polyrouter/compare/v0.29.0...v0.30.0)
+
 ### Added
 
 - **Subscription cards graph each plan's usage over its window, read about every 15 minutes even with no traffic.** Under the usage line, each limit window (5-hour, weekly, …) gets a small 0–100% chart over its span with the reset marked; a window with no reading yet shows an empty track labelled `no reading yet`, never a line at 0%. One instance at a time reads every subscription plan's usage endpoint about every 15 minutes, sharing the 5-minute cooldown with Refresh usage, and keeps a 35-day history. Claude Pro / Max and ChatGPT Plus / Pro gain usage endpoints and a Refresh usage button: they are undocumented account endpoints read with polyrouter's own User-Agent, and both providers restrict automated use of a consumer plan, so Edit gains **Check plan usage on a schedule** (on by default) to stop the unattended reads for one provider. Every usage endpoint now ships enabled; a broken one is withdrawn. Usage stays display only. New: `GET /api/providers/:id/plan-usage/history`, and `checkPlanUsage` on the provider view and `PATCH /api/providers/:id`.
@@ -1213,7 +1218,8 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.29.0...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.30.0...HEAD
+[0.30.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.30.0
 [0.29.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.29.0
 [0.28.1]: https://github.com/izzoa/polyrouter/releases/tag/v0.28.1
 [0.28.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.28.0

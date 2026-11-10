@@ -1,5 +1,26 @@
 # @polyrouter/frontend
 
+## 0.30.0
+
+### Minor Changes
+
+- 079902c: Kimi Code and Z.ai offer the identity-imitation switch when you connect them
+
+  The coding-plan detail in Add provider → Subscription now shows the identity-imitation switch for a plan that declares a client identity (Kimi Code and Z.ai GLM Coding Plan), off by default and behind the same confirmation as Edit. Connect sends the choice, so the new provider starts with the switch as you set it and its first Test already uses it; the switch stays available in Edit. `POST /api/providers/key-presets/connect` accepts an optional boolean `imitateClientIdentity`, exactly as the OAuth sign-in start does: absent means off, `null` is refused with 400, and `true` for a plan that declares no identity (OpenCode Go, MiniMax M Plan) is refused with 422 and writes nothing. The key-preset list gains `clientIdentityLabel`, the declared client's display name, for the confirmation. No migration and no new configuration.
+
+- c242e54: Subscription cards graph each plan's usage, read about every 15 minutes
+
+  Every subscription plan with a usage endpoint is now read on a schedule, about every 15 minutes, by one instance at a time, so a card shows usage without any traffic. Claude Pro / Max and ChatGPT Plus / Pro gain usage endpoints (`https://api.anthropic.com/api/oauth/usage` and `https://chatgpt.com/backend-api/wham/usage`, read with polyrouter's own User-Agent; only the numbers are kept) and a Refresh usage button, and every usage endpoint now ships enabled, with the live runbook as optional QA. A scheduled read and Refresh usage share the 5-minute cooldown. Each tick records one sample per window in a new owner-scoped table, `plan_usage_sample`, kept 35 days, and under the usage line each window gets a 0–100% chart over its span with the reset marked; a window with no reading shows an empty track labelled "no reading yet", never 0%. Edit gains "Check plan usage on a schedule" (on by default) to stop the unattended reads for one provider. New: `GET /api/providers/:id/plan-usage/history`, and `checkPlanUsage` on the provider view and `PATCH /api/providers/:id`. Migration 0046 adds the table and the `provider.check_plan_usage` column (default true); usage stays display data only.
+
+### Patch Changes
+
+- 283e959: Overview states the value served on subscription beside spend, and the readout strip ends level
+
+  On Overview, when the range holds subscription-backed traffic, a line under the spend figure reads `$3.12 served on subscription, at API rates · excluded from spend`, the same words Costs uses, and the Requests row states its subscription share (`all on subscription plans` or `12 on subscription plans`). With no subscription traffic, neither appears. Spend still means money owed. The readout strip on Overview and Costs now holds the spend cell and, beside it, the other figures as rows (label, figure, qualification) with their figures on one column, so the two sides end level with no blank band under a short figure; at phone width the rows stack under spend. Costs keeps every figure and word. Display only: no API, migration or configuration change.
+
+- Updated dependencies [c242e54]
+  - @polyrouter/shared@0.23.0
+
 ## 0.29.0
 
 ### Minor Changes

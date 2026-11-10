@@ -4,7 +4,7 @@ import type { JSX } from 'solid-js';
  * the placeholder stands for something that is not text (`styles.css`, "The shared figure
  * skeleton"). */
 export type FigureSkeletonSize =
-  'count' | 'cell' | 'line' | 'short' | 'note' | 'display' | 'title' | 'bar';
+  'count' | 'cell' | 'line' | 'short' | 'note' | 'display' | 'title' | 'bar' | 'chart';
 
 /**
  * A figure's loading placeholder (adopt-figure-states design D5; DESIGN.md Figures and their

@@ -21,6 +21,7 @@ import {
   encryptSecret,
   parseModelVariant,
   serializePlainCredential,
+  userPrincipal,
   variantForProvider,
   type ModelInsertInput,
   type ModelPatch,
@@ -65,6 +66,7 @@ import {
   type PlanCooldownStore,
   type PlanUsageProbe,
   type PlanUsageRecorder,
+  type PlanUsageSnapshot,
   type PlanUsageStore,
   readPlanUsage as defaultReadPlanUsage,
   batchFactoryFor,
@@ -91,8 +93,19 @@ import {
   PLAN_USAGE_STORE,
 } from '../plan-usage/plan-usage.tokens';
 import { clearPlanUsageSnapshot } from '../plan-usage/plan-usage-clear';
+import {
+  HISTORY_LOOKBACK_MS,
+  buildPlanUsageHistory,
+  historySinceByWindow,
+  snapshotWindowMetas,
+  type PlanUsageHistory,
+} from '../plan-usage/plan-usage-history';
 import { planUsageHook, recorderSink } from '../plan-usage/plan-usage-hook';
 import { planUsageSourcesFor } from '../plan-usage/plan-usage-sources';
+import {
+  PlanUsageStoreUnavailableError,
+  type UnattendedUsageOutcome,
+} from '../plan-usage/plan-usage-unattended';
 import {
   toSafePlanUsage,
   type SafePlanUsage,
@@ -100,6 +113,10 @@ import {
 } from '../plan-usage/plan-usage-view';
 import { keyPresetForRow } from '../subscription-presets/key-presets';
 import { normalizeAndGateBaseUrl } from './base-url-gate';
+
+/** The unattended-read outcome and its store fault, owned by the plan-usage folder and re-exported
+ * here for the service's callers (add-subscription-usage-history). */
+export { PlanUsageStoreUnavailableError, type UnattendedUsageOutcome };
 
 /** The fixed 422 for an endpoint edit on a key-preset row (add-key-subscription-presets). */
 export const KEY_PRESET_PINNED_MESSAGE =
@@ -174,6 +191,9 @@ export interface SafeProvider {
   autoPruneUnlisted: boolean;
   /** allow-preset-client-identity: the per-provider switch (off by default). */
   imitateClientIdentity: boolean;
+  /** add-subscription-usage-history: the per-provider usage-schedule switch (on by default). It
+   * only takes effect where the preset declares a usage endpoint. */
+  checkPlanUsage: boolean;
   /** The imitated client's label while imitation is AVAILABLE for this row (kind,
    * valid declaration, pinned endpoint), else null. Never carries header names/values. */
   clientIdentity: { label: string } | null;
@@ -337,6 +357,18 @@ export class PlanUsageCooldownException extends HttpException {
 
 export type PlanUsageReader = typeof defaultReadPlanUsage;
 
+/** The non-secret row columns the usage-schedule gates read (a listing row or a full row). */
+export type PlanUsageGateRow = Pick<
+  ProviderRow,
+  | 'kind'
+  | 'baseUrl'
+  | 'protocol'
+  | 'oauthPreset'
+  | 'keyPreset'
+  | 'checkPlanUsage'
+  | 'credentialError'
+>;
+
 /** Fixed texts for a refresh that failed before or after the read (never an upstream string). */
 const REFRESH_MESSAGES = {
   noCredential: 'No credential is stored for this provider, so its usage cannot be read.',
@@ -417,6 +449,7 @@ export function toSafe(
     idleTimeoutMs: p.idleTimeoutMs,
     autoPruneUnlisted: p.autoPruneUnlisted,
     imitateClientIdentity: p.imitateClientIdentity,
+    checkPlanUsage: p.checkPlanUsage,
     clientIdentity,
     planCooldown,
     planUsage: usage.planUsage,
@@ -851,9 +884,72 @@ export class ProvidersService {
   }
 
   /** The row's usage probe when the ONE gate yields one AND it is enabled, else null. */
-  private enabledProbe(row: ProviderRow): PlanUsageProbe | null {
+  private enabledProbe(
+    row: Pick<ProviderRow, 'kind' | 'baseUrl' | 'protocol' | 'oauthPreset' | 'keyPreset'>,
+  ): PlanUsageProbe | null {
     const probe = planUsageSourcesFor(row, this.oauth.identityBindingFor(row))?.probe;
     return probe !== undefined && probe.enabled ? probe : null;
+  }
+
+  /** Whether the usage schedule may READ this row (add-subscription-usage-history, design D1):
+   * its schedule switch is on, it needs no reconnect, and the ONE gate yields an ENABLED usage
+   * endpoint (so a drifted row, an API-key row, an "Other subscription" row and a withdrawn
+   * endpoint are all out). A pure read of the row and the bundled registries. */
+  canScheduleUsageRead(row: PlanUsageGateRow): boolean {
+    return row.checkPlanUsage && row.credentialError === null && this.enabledProbe(row) !== null;
+  }
+
+  /** Whether the usage schedule may SAMPLE this row's snapshot into the history (design D4): its
+   * switch is on and the ONE gate yields any usage source (passive or endpoint). */
+  canSampleUsage(row: PlanUsageGateRow): boolean {
+    return (
+      row.checkPlanUsage && planUsageSourcesFor(row, this.oauth.identityBindingFor(row)) !== null
+    );
+  }
+
+  /**
+   * ONE unattended usage read for the usage schedule (add-subscription-usage-history, design D1):
+   * the system variant of Refresh usage, under the row's OWN owner (the principal comes from the
+   * maintenance listing's row, never from a request).
+   *  1. re-read the row owner-scoped; a vanished row is skipped;
+   *  2. skip it unless `canScheduleUsageRead` (switch on, no reconnect, an enabled endpoint);
+   *  3. claim the SAME shared cooldown Refresh usage claims, so a click and a tick never both call
+   *     within it: held -> skipped without a call; store unreachable ->
+   *     `PlanUsageStoreUnavailableError` (nothing sent, the tick ends);
+   *  4. re-load the row after the claim and `readAndMerge` exactly as Refresh does: an OAuth token
+   *     resolves through the coalesced refresh (`resolveCredential`), a 429 `Retry-After` extends
+   *     the cooldown, and a success merges `source: 'refresh'` at the claimed generation.
+   * Like Refresh, it writes no check record, traffic record, breaker state, plan cooldown or
+   * notification; a failed read changes no snapshot.
+   */
+  async readUsageUnattended(row: {
+    readonly id: string;
+    readonly ownerUserId: string;
+  }): Promise<UnattendedUsageOutcome> {
+    const principal = userPrincipal(row.ownerUserId);
+    const current = await this.db.providers.findById(principal, row.id);
+    if (!current) return { status: 'skipped', reason: 'missing' };
+    if (!this.canScheduleUsageRead(current)) return { status: 'skipped', reason: 'ineligible' };
+    const store = this.planUsageStore;
+    if (store === undefined) throw new PlanUsageStoreUnavailableError();
+    let claim: Awaited<ReturnType<PlanUsageStore['claimRefresh']>>;
+    try {
+      claim = await store.claimRefresh(row.id);
+    } catch {
+      throw new PlanUsageStoreUnavailableError();
+    }
+    if (!claim.claimed) return { status: 'skipped', reason: 'cooldown' };
+    // The cooldown is claimed from here on, whatever happens below (as for Refresh usage).
+    const fresh = await this.db.providers.findById(principal, row.id);
+    if (!fresh) return { status: 'skipped', reason: 'missing' };
+    const probe = this.canScheduleUsageRead(fresh) ? this.enabledProbe(fresh) : null;
+    if (probe === null) return { status: 'skipped', reason: 'ineligible' };
+    const outcome = await this.readAndMerge(principal, fresh, probe, claim.gen);
+    return {
+      status: 'read',
+      ok: outcome.ok,
+      ...(outcome.kind !== undefined ? { kind: outcome.kind } : {}),
+    };
   }
 
   private async readAndMerge(
@@ -903,6 +999,39 @@ export class ProvidersService {
       return { ok: false, kind: 'unavailable', message: REFRESH_MESSAGES.buildFailed };
     }
     return { ok: true };
+  }
+
+  /**
+   * The owner's plan-usage history (add-subscription-usage-history, design D5). The owner-scoped
+   * lookup runs first (`404` for another tenant's id). Window metadata comes from the provider's
+   * CURRENT snapshot (one store read, no cooldown asked for and none claimed); each window's
+   * samples cover its current span, oldest first. It calls no usage endpoint and no model API, and
+   * a store fault reads as "no snapshot" (windows then derive from their keys).
+   */
+  async planUsageHistory(principal: Principal, id: string): Promise<PlanUsageHistory> {
+    const row = await this.db.providers.findById(principal, id);
+    if (!row) throw new NotFoundException();
+    const now = Date.now();
+    let snapshot: PlanUsageSnapshot | null = null;
+    const store = this.planUsageStore;
+    if (
+      store !== undefined &&
+      planUsageSourcesFor(row, this.oauth.identityBindingFor(row)) !== null
+    ) {
+      try {
+        snapshot = (await store.readMany([row.id])).get(row.id)?.snapshot ?? null;
+      } catch {
+        /* the failover store absorbs a fault; anything that still throws reads as no snapshot */
+      }
+    }
+    const metas = snapshotWindowMetas(snapshot);
+    const samples = await this.db.planUsageSamples.listPlanUsageSamples(
+      principal,
+      row.id,
+      historySinceByWindow(metas, now),
+      new Date(now - HISTORY_LOOKBACK_MS),
+    );
+    return buildPlanUsageHistory(metas, samples, now);
   }
 
   async create(principal: Principal, dto: CreateProviderDto): Promise<SafeProvider> {
@@ -1008,6 +1137,27 @@ export class ProvidersService {
       }
     }
 
+    // add-subscription-usage-history (design D7): the usage-schedule switch is accepted only where
+    // the row, as it will be after this PATCH, still declares a usage endpoint through the ONE
+    // gate (a withdrawn endpoint included, so the owner's choice survives a withdrawal). Anything
+    // else (an API-key row, an "Other subscription" row, a drifted row) is a 422, for true and
+    // false alike. A credential-supplying PATCH drops an OAuth preset binding, as above.
+    if (dto.checkPlanUsage !== undefined) {
+      const patchedRow: ProviderRow = {
+        ...existing,
+        kind: nextKind,
+        baseUrl: normalized,
+        protocol: dto.protocol ?? existing.protocol,
+        ...(dto.credential !== undefined && isOauthConnected ? { oauthPreset: null } : {}),
+      };
+      const sources = planUsageSourcesFor(patchedRow, this.oauth.identityBindingFor(patchedRow));
+      if (sources?.probe === undefined) {
+        throw new UnprocessableEntityException(
+          'this provider has no usage endpoint to check on a schedule',
+        );
+      }
+    }
+
     const patch: ProviderPatch = {
       baseUrl: normalized,
       ...(dto.name !== undefined ? { name: dto.name } : {}),
@@ -1025,6 +1175,7 @@ export class ProvidersService {
       ...(dto.imitateClientIdentity !== undefined
         ? { imitateClientIdentity: dto.imitateClientIdentity }
         : {}),
+      ...(dto.checkPlanUsage !== undefined ? { checkPlanUsage: dto.checkPlanUsage } : {}),
       // Present-but-empty clears; omitted (undefined) preserves the envelope. New
       // plain values are WRAPPED in the typed envelope (forgery-proof by construction).
       ...(dto.credential !== undefined

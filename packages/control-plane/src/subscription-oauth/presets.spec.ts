@@ -28,9 +28,38 @@ describe('preset invariants', () => {
   it('Claude declares the anthropic_unified usage dialect and ChatGPT the codex one (task 5.1)', () => {
     expect(CLAUDE_PRESET.usageDialect).toBe('anthropic_unified');
     expect(CHATGPT_PRESET.usageDialect).toBe('codex');
-    // Passive only: an OAuth preset never declares a usage endpoint.
+  });
+
+  it('Claude and ChatGPT declare their usage endpoints, enabled (add-subscription-usage-history, task 2.2)', () => {
+    expect(CLAUDE_PRESET.usageProbe).toEqual({
+      url: 'https://api.anthropic.com/api/oauth/usage',
+      auth: 'bearer',
+      parser: 'claude_oauth_usage',
+      enabled: true,
+      extraHeaders: ['anthropic-beta'],
+    });
+    expect(CHATGPT_PRESET.usageProbe).toEqual({
+      url: 'https://chatgpt.com/backend-api/wham/usage',
+      auth: 'bearer',
+      parser: 'chatgpt_wham_usage',
+      enabled: true,
+      extraHeaders: ['chatgpt-account-id'],
+    });
+  });
+
+  it('every OAuth usage endpoint is https, canonical, plain and same-origin with its pinned base_url', () => {
     for (const p of OAUTH_PRESETS) {
-      expect('usageProbe' in p).toBe(false);
+      const probe = p.usageProbe;
+      if (probe === undefined) continue;
+      const parsed = new URL(probe.url);
+      expect({ id: p.id, protocol: parsed.protocol }).toEqual({ id: p.id, protocol: 'https:' });
+      expect({ id: p.id, href: parsed.href }).toEqual({ id: p.id, href: probe.url });
+      expect({ id: p.id, origin: parsed.origin }).toEqual({
+        id: p.id,
+        origin: new URL(p.baseUrl).origin,
+      });
+      // No credentials, query (Claude's plain form only) or fragment ride the constant.
+      expect(parsed.username + parsed.password + parsed.search + parsed.hash).toBe('');
     }
   });
 

@@ -231,10 +231,20 @@ export class SubscriptionOauthService {
   ): IdentityBinding | undefined {
     const preset = this.presetFor(row);
     if (preset !== undefined) {
+      const { usageDialect, usageProbe } = preset;
       return {
         identity: preset.clientIdentity,
         pin: { baseUrl: preset.baseUrl, protocol: preset.protocol },
-        ...(preset.usageDialect !== undefined ? { usage: { dialect: preset.usageDialect } } : {}),
+        // add-subscription-usage-history (design D2): an OAuth preset's usage endpoint rides the
+        // same declaration as a key region's, behind the same pin test.
+        ...(usageDialect !== undefined || usageProbe !== undefined
+          ? {
+              usage: {
+                ...(usageDialect !== undefined ? { dialect: usageDialect } : {}),
+                ...(usageProbe !== undefined ? { probe: usageProbe } : {}),
+              },
+            }
+          : {}),
       };
     }
     if (row.keyPreset === null || row.keyPreset === undefined) return undefined;

@@ -82,12 +82,13 @@ export interface KeyPresetRegion {
    */
   readonly usageDialect?: PlanUsageDialect;
   /**
-   * The region's plan-usage endpoint (design D7): a fixed, same-origin `https` constant read
-   * only on the user's explicit Refresh usage. EVERY probe ships `enabled: false` until its own
-   * live runbook (`scripts/verify-plan-usage.md`) has passed with the user's own key. This gate
-   * is separate from the region flags above, which ship enabled (redesign-subscription-picker
-   * left usage probes gated). Flipping a probe on is the user's call, never an agent's. A region
-   * with no verified host (MiniMax China) declares none.
+   * The region's plan-usage endpoint (design D7): a fixed, same-origin `https` constant read by
+   * Refresh usage and by the 15-minute usage schedule (add-subscription-usage-history). EVERY
+   * probe ships `enabled: true` (design D3, the same decision as redesign-subscription-picker
+   * option 1): `false` WITHDRAWS an endpoint a run or a user report shows broken, so its rows
+   * offer no Refresh usage and the schedule skips them. The live runbook
+   * (`scripts/verify-plan-usage.md`) is optional QA. A region with no verified host (MiniMax
+   * China) declares none.
    */
   readonly usageProbe?: PlanUsageProbe;
 }
@@ -172,7 +173,7 @@ export const OPENCODE_GO_PRESET: KeyPreset = {
         url: 'https://opencode.ai/zen/go/v1/usage',
         auth: 'bearer',
         parser: 'opencode_go_usage',
-        enabled: false,
+        enabled: true,
       },
     },
   ],
@@ -207,7 +208,7 @@ export const MINIMAX_M_PLAN_PRESET: KeyPreset = {
         url: 'https://api.minimax.io/v1/token_plan/remains',
         auth: 'bearer',
         parser: 'minimax_remains',
-        enabled: false,
+        enabled: true,
       },
     },
     {
@@ -250,7 +251,7 @@ export const KIMI_CODE_PRESET: KeyPreset = {
         url: 'https://api.kimi.ai/coding/v1/usages',
         auth: 'bearer',
         parser: 'kimi_usages',
-        enabled: false,
+        enabled: true,
       },
     },
     {
@@ -265,7 +266,7 @@ export const KIMI_CODE_PRESET: KeyPreset = {
         url: 'https://api.kimi.com/coding/v1/usages',
         auth: 'bearer',
         parser: 'kimi_usages',
-        enabled: false,
+        enabled: true,
       },
     },
   ],
@@ -308,7 +309,7 @@ export const ZAI_CODING_PLAN_PRESET: KeyPreset = {
         url: 'https://api.z.ai/api/monitor/usage/quota/limit',
         auth: 'bearer',
         parser: 'zai_quota_limit',
-        enabled: false,
+        enabled: true,
       },
     },
     {
@@ -322,7 +323,7 @@ export const ZAI_CODING_PLAN_PRESET: KeyPreset = {
         url: 'https://open.bigmodel.cn/api/monitor/usage/quota/limit',
         auth: 'bearer',
         parser: 'zai_quota_limit',
-        enabled: false,
+        enabled: true,
       },
     },
   ],

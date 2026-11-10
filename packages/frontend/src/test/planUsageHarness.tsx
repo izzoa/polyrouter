@@ -86,9 +86,15 @@ export interface Harness {
   fake: FakeApiClient;
 }
 
-export async function mount(provider: ProviderDto): Promise<Harness> {
+/** `setup` runs on the fake before the App mounts, so a test can seed what the card reads on its
+ * own mount (the usage history, a gate, a rejection). */
+export async function mount(
+  provider: ProviderDto,
+  setup?: (fake: FakeApiClient) => void,
+): Promise<Harness> {
   globalThis.history.replaceState(null, '', '/#/providers');
   const fake = new FakeApiClient({ session: DEFAULT_SESSION, providers: [provider] });
+  setup?.(fake);
   const store = createAppStore(fake);
   const host = document.createElement('div');
   document.body.appendChild(host);

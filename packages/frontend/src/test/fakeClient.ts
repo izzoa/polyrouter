@@ -31,6 +31,8 @@ import type {
   LoginConfig,
   ModelDto,
   ModelPricingInput,
+  PlanUsageHistoryDto,
+  PlanUsageHistorySampleDto,
   PlanUsageRefreshResultDto,
   ProviderDto,
   ProxyTestBody,
@@ -550,6 +552,72 @@ export interface FakeOptions {
   autoPerf?: AutoPerformance;
   /** When set, every analytics read rejects (exercise the error/retry states). */
   analyticsFailure?: ApiError | null;
+  /** add-subscription-usage-history: each provider's usage history, by provider id. A provider
+   * missing here answers `{ windows: [] }` (no sample yet). */
+  planUsageHistories?: Record<string, PlanUsageHistoryDto>;
+}
+
+/** The 5-hour window's readings, oldest first: the fifth one's percent was unknown (null). */
+const FIVE_HOUR_PERCENTS: readonly (number | null)[] = [
+  4, 6, 9, 12, 15, 18, 22, 27, 31, 35, 38, 41,
+].map((p, i) => (i === 4 ? null : p));
+const WEEKLY_PERCENTS: readonly number[] = [
+  2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 16, 18, 19, 21, 22, 24,
+];
+/**
+ * A ChatGPT plan's usage history (add-subscription-usage-history), as the history endpoint answers
+ * it at `now`: its 5-hour window (`account:5h`, resetting in 2 hours, sampled every 15 minutes
+ * since the span began, with ONE reading whose percent was unknown) and its weekly window
+ * (`account:weekly`, resetting in 3 days, sampled every 6 hours). The keys are the snapshot's own
+ * window keys, so a card whose `planUsage` carries those windows matches them.
+ */
+export function chatgptPlanUsageHistory(now: number): PlanUsageHistoryDto {
+  const minute = 60_000;
+  const hour = 60 * minute;
+  const iso = (ms: number): string => new Date(ms).toISOString();
+  const series = (
+    from: number,
+    step: number,
+    resetAt: number,
+    percents: readonly (number | null)[],
+  ): PlanUsageHistorySampleDto[] =>
+    percents.map((usedPercent, i) => ({
+      at: iso(from + (i + 1) * step),
+      usedPercent,
+      resetAt: iso(resetAt),
+    }));
+  const reset5h = now + 2 * hour;
+  const from5h = reset5h - 5 * hour;
+  const resetWeekly = now + 3 * 24 * hour;
+  const fromWeekly = resetWeekly - 7 * 24 * hour;
+  return {
+    windows: [
+      {
+        key: 'account:5h',
+        group: 'account',
+        span: '5h',
+        minutes: 300,
+        scope: null,
+        label: '5h',
+        from: iso(from5h),
+        resetAt: iso(reset5h),
+        // Three hours of 15-minute samples up to `now`; the fifth reading's percent was unknown.
+        samples: series(from5h, 15 * minute, reset5h, FIVE_HOUR_PERCENTS),
+      },
+      {
+        key: 'account:weekly',
+        group: 'account',
+        span: 'weekly',
+        minutes: 10080,
+        scope: null,
+        label: 'weekly',
+        from: iso(fromWeekly),
+        resetAt: iso(resetWeekly),
+        // Four days of 6-hour samples up to `now`.
+        samples: series(fromWeekly, 6 * hour, resetWeekly, WEEKLY_PERCENTS),
+      },
+    ],
+  };
 }
 
 function okResult(synced?: number): ActionResult {
@@ -749,6 +817,7 @@ export class FakeApiClient implements ApiClient {
   batchesFailure: ApiError | null;
   inflightResult: InflightSnapshot;
   analyticsFailure: ApiError | null;
+  planUsageHistories: Record<string, PlanUsageHistoryDto>;
   bodyCaptureState: BodyCaptureStatus;
   storedBodies: Map<string, RequestBodyContent[]>;
 
@@ -819,6 +888,7 @@ export class FakeApiClient implements ApiClient {
     this.batchJobs = opts.batchJobs ?? [];
     this.batchesFailure = opts.batchesFailure ?? null;
     this.analyticsFailure = opts.analyticsFailure ?? null;
+    this.planUsageHistories = opts.planUsageHistories ?? {};
     this.bodyCaptureState = opts.bodyCaptureStatus ?? {
       mode: 'off',
       retentionDays: 30,
@@ -1048,6 +1118,7 @@ export class FakeApiClient implements ApiClient {
       firstByteTimeoutMs: input.firstByteTimeoutMs ?? null,
       idleTimeoutMs: input.idleTimeoutMs ?? null,
       autoPruneUnlisted: true,
+      checkPlanUsage: true,
       createdAt: NOW,
       ...UNRECORDED_HEALTH,
     };
@@ -1288,6 +1359,29 @@ export class FakeApiClient implements ApiClient {
         };
     this.providers = this.providers.map((p) => (p.id === id ? answer.provider : p));
     return answer;
+  }
+
+  /** The usage history (add-subscription-usage-history). `planUsageHistoryRejects` makes the next
+   * read reject (cleared once used); `planUsageHistoryGate` parks it until resolved. A provider
+   * with no entry in `planUsageHistories` answers `{ windows: [] }`, the server's answer before
+   * the first sample. The answer is a copy, so a test that edits the seed between reads sees its
+   * edit on the next read and never mutates one already handed out. */
+  planUsageHistoryRejects: ApiError | null = null;
+  planUsageHistoryGate: Promise<void> | null = null;
+
+  async planUsageHistory(id: string): Promise<PlanUsageHistoryDto> {
+    this.record('planUsageHistory', id);
+    const gate = this.planUsageHistoryGate;
+    if (gate) await gate;
+    if (this.planUsageHistoryRejects) {
+      const e = this.planUsageHistoryRejects;
+      this.planUsageHistoryRejects = null;
+      throw e;
+    }
+    if (!this.providers.some((p) => p.id === id)) {
+      throw new ApiError(404, 'Not Found', 'provider not found');
+    }
+    return structuredClone(this.planUsageHistories[id] ?? { windows: [] });
   }
 
   testProvider(id: string): Promise<ActionResult> {

@@ -55,6 +55,7 @@ import { createBodyCaptureAccessor } from './body-capture.queries';
 import type { Db } from './database.internal';
 import { Pool } from 'pg';
 import { createBudgetProgressAccessor } from './budget-progress.queries';
+import { createPlanUsageSampleAccessor } from './plan-usage-samples.queries';
 import {
   buildFindById,
   buildInsertValues,
@@ -1616,6 +1617,7 @@ export function buildPersistencePort(db: Db): PersistencePort {
     semanticLearningEvents: createSemanticLearningEventsAccessor(db),
     pricing: createPricingCatalog(db),
     batchJobs: createBatchJobAccessor(db),
+    planUsageSamples: createPlanUsageSampleAccessor(db),
     users: {
       async count() {
         const rows = await db.select({ value: sql<number>`count(*)::int` }).from(users);

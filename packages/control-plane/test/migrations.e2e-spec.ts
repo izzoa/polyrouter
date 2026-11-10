@@ -511,13 +511,22 @@ describe('provider.key_preset migration (database-schema, add-key-subscription-p
        WHERE table_name = 'provider' AND column_name = 'key_preset'`,
     );
     expect(col.rows).toEqual([{ data_type: 'text', is_nullable: 'YES', column_default: null }]);
-    expect(await columnsOf()).toEqual([...colsBefore, 'key_preset'].sort());
+    // Later migrations add their own provider columns (add-subscription-usage-history:
+    // `check_plan_usage`); they are not this migration's to judge.
+    const LATER = ['check_plan_usage'];
+    expect((await columnsOf()).filter((c) => !LATER.includes(c))).toEqual(
+      [...colsBefore, 'key_preset'].sort(),
+    );
 
     // Every pre-existing row reads NULL and EVERY other value is untouched.
     const rowsAfter = await providerRows();
     expect(rowsAfter).toHaveLength(5);
     for (const r of rowsAfter) expect(r['key_preset']).toBeNull();
-    expect(rowsAfter.map(({ key_preset: _keyPreset, ...rest }) => rest)).toEqual(rowsBefore);
+    expect(
+      rowsAfter.map(
+        ({ key_preset: _keyPreset, check_plan_usage: _checkPlanUsage, ...rest }) => rest,
+      ),
+    ).toEqual(rowsBefore);
     expect(rowsAfter.find((r) => r['id'] === 'P-oauth')).toMatchObject({ oauth_preset: 'claude' });
   }, 120_000);
 
@@ -584,5 +593,232 @@ describe('provider.key_preset migration (database-schema, add-key-subscription-p
       'provider_key_preset_exclusive',
       'provider_key_preset_subscription',
     ]); // exactly one each, not re-added
+  }, 60_000);
+});
+
+/** add-subscription-usage-history (migration 0046): the additive `plan_usage_sample` table and
+ * the defaulted `provider.check_plan_usage` column. Same two-step shape as the key_preset suite:
+ * everything BEFORE the migration, a seed of every provider shape, then the rest. */
+describe('plan_usage_sample + provider.check_plan_usage migration (database-schema, add-subscription-usage-history)', () => {
+  const databaseUrl = loadConfig<{ DATABASE_URL: string }>().DATABASE_URL;
+  const dbName = `polyrouter_mig_pu_${Math.random().toString(36).slice(2, 8)}`;
+  let admin: Pool;
+  let pool: Pool;
+  let partialDir: string;
+  const OWNER = 'u-mig-pu';
+
+  /** The migrations folder truncated just before the check_plan_usage migration. */
+  function partialFolder(): string {
+    const full = resolveMigrationsFolder();
+    const journal = JSON.parse(readFileSync(join(full, 'meta', '_journal.json'), 'utf8')) as {
+      entries: { tag: string }[];
+    };
+    const at = journal.entries.findIndex((e) =>
+      readFileSync(join(full, `${e.tag}.sql`), 'utf8').includes('ADD COLUMN "check_plan_usage"'),
+    );
+    if (at < 0) throw new Error('check_plan_usage migration not found in the journal');
+    const dir = mkdtempSync(join(tmpdir(), 'polyrouter-mig-pu-'));
+    mkdirSync(join(dir, 'meta'));
+    writeFileSync(
+      join(dir, 'meta', '_journal.json'),
+      JSON.stringify({ ...journal, entries: journal.entries.slice(0, at) }),
+    );
+    for (const e of journal.entries.slice(0, at)) {
+      writeFileSync(join(dir, `${e.tag}.sql`), readFileSync(join(full, `${e.tag}.sql`)));
+    }
+    return dir;
+  }
+
+  const providerColumns = async (): Promise<string[]> =>
+    (
+      await pool.query<{ column_name: string }>(
+        `SELECT column_name FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = 'provider' ORDER BY column_name`,
+      )
+    ).rows.map((r) => r.column_name);
+  const tableExists = async (name: string): Promise<boolean> =>
+    (
+      await pool.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM information_schema.tables
+         WHERE table_schema = 'public' AND table_name = $1`,
+        [name],
+      )
+    ).rows[0]!.n === 1;
+  const providerRows = async (): Promise<Record<string, unknown>[]> =>
+    (await pool.query(`SELECT * FROM provider ORDER BY id`)).rows;
+  const appliedCount = async (): Promise<number> =>
+    (await pool.query<{ n: number }>(`SELECT count(*)::int AS n FROM drizzle.__drizzle_migrations`))
+      .rows[0]!.n;
+  const insertSample = (
+    providerId: string,
+    usedPercent: number | null,
+    observedAt: string,
+    windowKey = 'account:5h',
+  ): Promise<unknown> =>
+    pool.query(
+      `INSERT INTO plan_usage_sample (id, provider_id, window_key, used_percent, reset_at, observed_at)
+       VALUES (gen_random_uuid()::text, $1, $2, $3, NULL, $4)`,
+      [providerId, windowKey, usedPercent, observedAt],
+    );
+
+  beforeAll(async () => {
+    admin = new Pool({ connectionString: adminUrl(databaseUrl), max: 1 });
+    try {
+      await admin.query(`CREATE DATABASE ${dbName}`);
+    } catch (error) {
+      throw new Error(`${COMPOSE_HINT}\n(${(error as Error).message})`);
+    }
+    pool = new Pool({ connectionString: adminUrl(databaseUrl, dbName), max: 2 });
+    partialDir = partialFolder();
+  }, 60_000);
+
+  afterAll(async () => {
+    await pool?.end();
+    await admin?.query(`DROP DATABASE IF EXISTS ${dbName} WITH (FORCE)`);
+    await admin?.end();
+    if (partialDir !== undefined) rmSync(partialDir, { recursive: true, force: true });
+  });
+
+  it('creates an empty table and a defaulted column without touching a pre-existing row', async () => {
+    await migrate(drizzle(pool), { migrationsFolder: partialDir });
+    expect(await tableExists('plan_usage_sample')).toBe(false); // the "before" world
+    expect(await providerColumns()).not.toContain('check_plan_usage');
+
+    await pool.query(
+      `INSERT INTO "user" (id, name, email) VALUES ($1, 'mig', 'mig-pu@example.test')`,
+      [OWNER],
+    );
+    // Every provider shape that exists before this change.
+    const shapes: Array<[string, string, string, string | null, string | null]> = [
+      ['P-api', 'api_key', 'openai_compatible', null, null],
+      ['P-custom', 'custom', 'openai_compatible', null, null],
+      ['P-local', 'local', 'openai_compatible', null, null],
+      ['P-pasted', 'subscription', 'openai_compatible', null, null],
+      ['P-claude', 'subscription', 'anthropic_compatible', 'claude', null],
+      ['P-chatgpt', 'subscription', 'openai_responses', 'chatgpt', null],
+      ['P-kimi', 'subscription', 'openai_compatible', null, 'kimi-code'],
+    ];
+    for (const [id, kind, protocol, oauthPreset, keyPreset] of shapes) {
+      await pool.query(
+        `INSERT INTO provider (id, owner_user_id, name, kind, protocol, oauth_preset, key_preset,
+                               imitate_client_identity)
+         VALUES ($1, $2, $1, $3, $4, $5, $6, $7)`,
+        [id, OWNER, kind, protocol, oauthPreset, keyPreset, keyPreset !== null],
+      );
+    }
+    const colsBefore = await providerColumns();
+    const rowsBefore = await providerRows();
+    expect(rowsBefore).toHaveLength(shapes.length);
+
+    await migrate(drizzle(pool), { migrationsFolder: resolveMigrationsFolder() });
+
+    // The column: boolean, NOT NULL, default true; every existing row reads true.
+    const col = await pool.query(
+      `SELECT data_type, is_nullable, column_default FROM information_schema.columns
+       WHERE table_name = 'provider' AND column_name = 'check_plan_usage'`,
+    );
+    expect(col.rows).toEqual([{ data_type: 'boolean', is_nullable: 'NO', column_default: 'true' }]);
+    expect(await providerColumns()).toEqual([...colsBefore, 'check_plan_usage'].sort());
+    const rowsAfter = await providerRows();
+    expect(rowsAfter).toHaveLength(shapes.length);
+    for (const r of rowsAfter) expect(r['check_plan_usage']).toBe(true);
+    expect(rowsAfter.map(({ check_plan_usage: _c, ...rest }) => rest)).toEqual(rowsBefore);
+
+    // The table exists, empty, with exactly the documented columns.
+    expect(await tableExists('plan_usage_sample')).toBe(true);
+    expect(
+      (await pool.query<{ n: number }>(`SELECT count(*)::int AS n FROM plan_usage_sample`)).rows[0]!
+        .n,
+    ).toBe(0);
+    const sampleCols = await pool.query<{
+      column_name: string;
+      data_type: string;
+      is_nullable: string;
+    }>(
+      `SELECT column_name, data_type, is_nullable FROM information_schema.columns
+       WHERE table_name = 'plan_usage_sample' ORDER BY column_name`,
+    );
+    expect(sampleCols.rows).toEqual([
+      { column_name: 'id', data_type: 'text', is_nullable: 'NO' },
+      { column_name: 'observed_at', data_type: 'timestamp with time zone', is_nullable: 'NO' },
+      { column_name: 'provider_id', data_type: 'text', is_nullable: 'NO' },
+      { column_name: 'reset_at', data_type: 'timestamp with time zone', is_nullable: 'YES' },
+      { column_name: 'used_percent', data_type: 'numeric', is_nullable: 'YES' },
+      { column_name: 'window_key', data_type: 'text', is_nullable: 'NO' },
+    ]);
+  }, 120_000);
+
+  it('the database refuses an out-of-range percent, skips a duplicate on conflict, and cascades a delete', async () => {
+    const reject = (p: Promise<unknown>, code: string, constraint: string) =>
+      expect(p).rejects.toMatchObject({ code, constraint });
+    const at = '2026-11-09T10:05:00.000Z';
+
+    await reject(
+      insertSample('P-claude', 101, at),
+      '23514',
+      'plan_usage_sample_used_percent_range',
+    );
+    await reject(insertSample('P-claude', -1, at), '23514', 'plan_usage_sample_used_percent_range');
+    await insertSample('P-claude', 0, at);
+    await insertSample('P-claude', 100, '2026-11-09T10:20:00.000Z');
+    await insertSample('P-claude', null, '2026-11-09T10:35:00.000Z'); // unknown stays null
+
+    // The same (provider, window, observation) twice: a plain insert is a unique violation, and
+    // the sampler's conflict clause skips it without error.
+    await reject(insertSample('P-claude', 5, at), '23505', 'plan_usage_sample_observation_uniq');
+    const skipped = await pool.query(
+      `INSERT INTO plan_usage_sample (id, provider_id, window_key, used_percent, observed_at)
+       VALUES (gen_random_uuid()::text, 'P-claude', 'account:5h', 5, $1)
+       ON CONFLICT (provider_id, window_key, observed_at) DO NOTHING`,
+      [at],
+    );
+    expect(skipped.rowCount).toBe(0);
+    // Another window at the same instant is its own sample.
+    await insertSample('P-claude', 7, at, 'account:weekly');
+    const kept = await pool.query<{ window_key: string; used_percent: string | null }>(
+      `SELECT window_key, used_percent FROM plan_usage_sample WHERE provider_id = 'P-claude'
+       ORDER BY observed_at, window_key`,
+    );
+    expect(kept.rows).toEqual([
+      { window_key: 'account:5h', used_percent: '0.00' },
+      { window_key: 'account:weekly', used_percent: '7.00' },
+      { window_key: 'account:5h', used_percent: '100.00' },
+      { window_key: 'account:5h', used_percent: null },
+    ]);
+
+    // A sample of a provider that does not exist is refused by the foreign key.
+    await reject(
+      insertSample('P-missing', 5, at),
+      '23503',
+      'plan_usage_sample_provider_id_provider_id_fk',
+    );
+
+    // Deleting the provider deletes its samples in the same statement.
+    await insertSample('P-kimi', 40, at);
+    await pool.query(`DELETE FROM provider WHERE id = 'P-claude'`);
+    const left = await pool.query<{ provider_id: string }>(
+      `SELECT provider_id FROM plan_usage_sample ORDER BY provider_id`,
+    );
+    expect(left.rows).toEqual([{ provider_id: 'P-kimi' }]);
+  }, 60_000);
+
+  it('a second boot-time migration run is a no-op: no error, nothing reapplied, schema unchanged', async () => {
+    const applied = await appliedCount();
+    const cols = await providerColumns();
+    const rowsBefore = await providerRows();
+    await runMigrations(drizzle(pool));
+    await runMigrations(drizzle(pool));
+    expect(await appliedCount()).toBe(applied);
+    expect(await providerColumns()).toEqual(cols);
+    expect(await providerRows()).toEqual(rowsBefore);
+    const indexes = await pool.query<{ indexname: string }>(
+      `SELECT indexname FROM pg_indexes WHERE tablename = 'plan_usage_sample' ORDER BY indexname`,
+    );
+    expect(indexes.rows.map((r) => r.indexname)).toEqual([
+      'plan_usage_sample_observation_uniq',
+      'plan_usage_sample_observed_idx',
+      'plan_usage_sample_pkey',
+      'plan_usage_sample_provider_observed_idx',
+    ]);
   }, 60_000);
 });

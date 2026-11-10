@@ -93,6 +93,9 @@ export interface Provider {
    * source) and whether a Refresh usage is on offer with its cooldown end (null: no endpoint). */
   planUsage: PlanUsageDto | null;
   planUsageRefresh: PlanUsageRefreshDto | null;
+  /** add-subscription-usage-history: whether the usage schedule reads this provider's usage
+   * endpoint (on by default; meaningful only where `planUsageRefresh` is non-null). */
+  checkPlanUsage: boolean;
   createdAt: string;
   /** add-provider-health-signals: the server-computed displayed health (the most
    * recently recorded of the check and live-traffic records). */

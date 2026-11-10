@@ -14,6 +14,7 @@ import { BudgetsModule } from './budgets/budgets.module';
 import { BudgetSchedulerModule } from './budgets/budget-scheduler.module';
 import { OauthRefreshSchedulerModule } from './subscription-oauth/oauth-refresh-scheduler.module';
 import { ModelCatalogSchedulerModule } from './providers/model-catalog-scheduler.module';
+import { PlanUsageSchedulerModule } from './plan-usage/plan-usage-scheduler.module';
 import { CalibrationModule } from './calibration/calibration.module';
 import { SemanticLearningModule } from './semantic/semantic-learning.module';
 import { LearningContributionModule } from './semantic/learning-contribution.module';
@@ -54,6 +55,7 @@ import { SubscriptionPresetsModule } from './subscription-presets/subscription-p
     BudgetSchedulerModule,
     OauthRefreshSchedulerModule,
     ModelCatalogSchedulerModule,
+    PlanUsageSchedulerModule,
     CalibrationModule,
     SemanticLearningModule,
     LearningContributionModule,

@@ -1030,7 +1030,9 @@ if (params.get('usage') === '1') {
         ],
         billing: { state: 'extra_usage', observedAt: seen },
       },
-      planUsageRefresh: null,
+      // add-subscription-usage-history: the Claude preset now declares a usage endpoint, so its
+      // card offers Refresh usage and carries its graphs.
+      planUsageRefresh: { availableAt: null },
     },
     {
       ...base,
@@ -1063,6 +1065,75 @@ if (params.get('usage') === '1') {
       planUsageRefresh: { availableAt: at(4 * 60_000) },
     },
   ];
+  // add-subscription-usage-history: each card's graphs. Claude's 5h and weekly windows and one
+  // model bucket have samples (the 5h one with an unknown reading, a gap); its other windows read
+  // `no reading yet`. Kimi's 5-hour window has a lone reading between unknown ones (a dot). The
+  // cooling Z.ai card has no sample at all, so it shows its window as the empty track.
+  const series = (
+    resetMs: number,
+    lengthMs: number,
+    stepMs: number,
+    percents: readonly (number | null)[],
+  ) => {
+    const from = Date.now() + resetMs - lengthMs;
+    return {
+      from: new Date(from).toISOString(),
+      resetAt: at(resetMs),
+      samples: percents.map((usedPercent, i) => ({
+        at: new Date(from + (i + 1) * stepMs).toISOString(),
+        usedPercent,
+        resetAt: at(resetMs),
+      })),
+    };
+  };
+  const rising = (n: number, to: number): (number | null)[] =>
+    Array.from({ length: n }, (_, i) => Math.round(((i + 1) / n) * to));
+  client.planUsageHistories = {
+    'p-usage-claude': {
+      windows: [
+        {
+          key: 'account:5h',
+          group: 'account',
+          span: '5h',
+          minutes: 300,
+          scope: null,
+          label: '5h',
+          ...series(2 * hour, 5 * hour, 15 * 60_000, [...rising(5, 60), null, ...rising(6, 100)]),
+        },
+        {
+          key: 'account:weekly',
+          group: 'account',
+          span: 'weekly',
+          minutes: 10_080,
+          scope: null,
+          label: 'weekly',
+          ...series(72 * hour, 168 * hour, 6 * hour, rising(16, 31)),
+        },
+        {
+          key: 'model:gpt_5_2_codex_sonic',
+          group: 'model',
+          span: null,
+          minutes: null,
+          scope: 'gpt-5.2-codex-sonic-ex',
+          label: 'gpt-5.2-codex-sonic-ex',
+          ...series(5 * hour, 168 * hour, 12 * hour, rising(10, 80)),
+        },
+      ],
+    },
+    'p-usage-kimi': {
+      windows: [
+        {
+          key: 'account:m300',
+          group: 'account',
+          span: null,
+          minutes: 300,
+          scope: null,
+          label: '5h window',
+          ...series(3 * hour, 5 * hour, 15 * 60_000, [12, 18, 25, null, 33, null, 40, null]),
+        },
+      ],
+    },
+  };
 }
 
 // Paused-member trace fixture (classify-plan-quota-errors task 9.4), opt-in via `?trace=paused`: a

@@ -166,11 +166,15 @@ async function* views(page: Page): AsyncGenerator<string> {
     ['costs', '#/costs'],
     ['agents', '#/agents'],
     ['providers (with a provider card)', '?targets=1#/providers'],
+    // add-subscription-usage-history: one Ink 2 graph per window on every card spends no indigo.
+    ['providers (plan usage graphs)', '?usage=1#/providers'],
     ['limits (with budget cards)', '?budget=progress#/limits'],
     ['settings', '#/settings'],
     ['users', '#/users'],
   ] as const) {
     await open(page, `/browser-harness.html${url}`);
+    // The usage graphs land after their own history read: audit them drawn, not loading.
+    if (url.startsWith('?usage=1')) await page.waitForSelector('figure[data-usage-graph] canvas');
     yield name;
   }
   await open(page, '/browser-harness.html?chain=1#/routing');

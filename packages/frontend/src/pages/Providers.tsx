@@ -25,6 +25,7 @@ import { createBusy } from '../components/busy';
 import { FigureText } from '../components/FigureText';
 import { priceLabelParts, type FigurePart, type PriceLabel } from '../data/figures';
 import { createLocalFields, FieldNote } from '../components/Field';
+import { PlanUsageGraphs } from '../components/PlanUsageGraphs';
 
 /** setTimeout's delay limit: a longer one overflows and fires at once. */
 const MAX_TIMER_MS = 2 ** 31 - 1;
@@ -330,9 +331,11 @@ function ProviderCard(props: { p: Provider }) {
   });
   // The usage line states no health, so it never contradicts the status line: it is hidden while
   // that line says a plan pause or the reconnect banner (dashboard-core).
-  const usage = createMemo(() =>
-    view().banner || pause() !== null ? null : planUsageView(props.p, clock()),
-  );
+  const usageHidden = (): boolean => view().banner || pause() !== null;
+  const usage = createMemo(() => (usageHidden() ? null : planUsageView(props.p, clock())));
+  // add-subscription-usage-history: the usage graphs read the history once when they mount, and
+  // again each time this moves, after a Refresh usage succeeds.
+  const [historyReads, setHistoryReads] = createSignal(0);
   // The `as of` a success states: the line's own, even while the line is hidden.
   const asOfText = (): string | null => planUsageView(props.p, clock())?.asOf ?? null;
   const refreshEnd = (): string | null => {
@@ -355,6 +358,7 @@ function ProviderCard(props: { p: Provider }) {
       app.refreshPlanUsage(props.p.id).then((outcome) => {
         setRefreshed(outcome.ok);
         setRefreshFailure(outcome.ok ? null : outcome.reason);
+        if (outcome.ok) setHistoryReads((n) => n + 1);
         // The button stays disabled for the cooldown, so focus would fall to the page: it goes to
         // the outcome text instead, which is focusable for this (tabindex -1).
         (outcome.ok ? refreshStatus : refreshAlert)?.focus({ preventScroll: true });
@@ -608,6 +612,13 @@ function ProviderCard(props: { p: Provider }) {
             </div>
           </Show>
         </div>
+      </Show>
+
+      <Show when={props.p.planUsageRefresh !== null && !usageHidden()}>
+        {/* add-subscription-usage-history (design D6): one compact graph per window, under the
+            line, where a usage endpoint exists. Like the line, the graphs state no health, so they
+            are hidden while the status line says a plan pause or the reconnect banner. */}
+        <PlanUsageGraphs provider={props.p} reads={historyReads()} now={clock()} />
       </Show>
 
       <Show when={props.p.kind === 'subscription'}>

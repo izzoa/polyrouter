@@ -146,6 +146,33 @@ export interface PlanUsageDto {
 export interface PlanUsageRefreshDto {
   availableAt: string | null;
 }
+/** add-subscription-usage-history: one observation of a window, as the history stores it. A null
+ * `usedPercent` is a reading whose percent was unknown: a gap in the graph, never a zero. */
+export interface PlanUsageHistorySampleDto {
+  at: string;
+  usedPercent: number | null;
+  resetAt: string | null;
+}
+/** One window's samples over its CURRENT span (`from` until now), oldest first. `key` is the
+ * snapshot window's own `key` (`PlanUsageWindowDto.key`); `label` follows the usage line's label
+ * rules, or is the key itself for a window the snapshot no longer carries. */
+export interface PlanUsageHistoryWindowDto {
+  key: string;
+  group: 'account' | 'model';
+  span: PlanUsageSpanDto | null;
+  minutes: number | null;
+  scope: string | null;
+  label: string;
+  from: string;
+  resetAt: string | null;
+  samples: PlanUsageHistorySampleDto[];
+}
+/** `GET /providers/:id/plan-usage/history`: only windows with at least one sample in their span,
+ * in the usage line's order (`{ windows: [] }` before the first sample). It calls nothing
+ * upstream. */
+export interface PlanUsageHistoryDto {
+  windows: PlanUsageHistoryWindowDto[];
+}
 /** `POST /providers/:id/plan-usage/refresh`: a failed read still answers 200 with `ok: false`,
  * its kind and a fixed message, and a view whose `planUsage` is unchanged. */
 export interface PlanUsageRefreshResultDto {
@@ -194,6 +221,10 @@ export interface ProviderDto {
    * type-check; absent reads as null. */
   planUsage?: PlanUsageDto | null;
   planUsageRefresh?: PlanUsageRefreshDto | null;
+  /** add-subscription-usage-history: the per-provider usage-schedule switch (on by default for
+   * every row). The server always sends it; optional here, like `autoPruneUnlisted`, so older
+   * test doubles still type-check, and read as on (the server default) when absent. */
+  checkPlanUsage?: boolean;
   createdAt: string;
   health: ProviderHealthDto;
   /** The two raw records (non-secret) behind `health`. */
@@ -302,6 +333,9 @@ export interface UpdateProviderInput {
   autoPruneUnlisted?: boolean;
   /** allow-preset-client-identity: sent only when the switch changed. */
   imitateClientIdentity?: boolean;
+  /** add-subscription-usage-history: sent only when the switch changed, and only for a provider
+   * with a usage endpoint (the server answers 422 otherwise, and 400 for an explicit null). */
+  checkPlanUsage?: boolean;
 }
 
 /** Provenance of a model's effective display price. `listed` is the display-only
@@ -1238,6 +1272,9 @@ export interface ApiClient {
    * with `ok: false`; the owner-scope, no-endpoint, cooldown and store refusals (404, 422, 429,
    * 503) reject. */
   refreshPlanUsage(id: string): Promise<PlanUsageRefreshResultDto>;
+  /** The provider's usage history (`GET /providers/:id/plan-usage/history`). A read of stored
+   * samples only: no upstream call, no cooldown. Rejects on 404 (another tenant's id). */
+  planUsageHistory(id: string): Promise<PlanUsageHistoryDto>;
   testProvider(id: string): Promise<ActionResult>;
   syncModels(id: string): Promise<ActionResult>;
   listModels(providerId?: string): Promise<ModelDto[]>;
@@ -1465,6 +1502,8 @@ export const realClient: ApiClient = {
       `${API_BASE}/providers/${encodeURIComponent(id)}/plan-usage/refresh`,
       jsonInit('POST', {}),
     ),
+  planUsageHistory: (id) =>
+    http<PlanUsageHistoryDto>(`${API_BASE}/providers/${encodeURIComponent(id)}/plan-usage/history`),
   testProvider: (id) =>
     http<ActionResult>(
       `${API_BASE}/providers/${encodeURIComponent(id)}/test-connection`,

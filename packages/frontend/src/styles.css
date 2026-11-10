@@ -513,6 +513,12 @@ textarea[aria-invalid='true']:focus {
   width: 100%;
   height: 12px;
 }
+/* A compact chart's placeholder: its plot's width and height (`PLAN_USAGE_GRAPH_HEIGHT`). */
+.fig-skel-chart {
+  display: block;
+  width: 100%;
+  height: 64px;
+}
 
 .section-title {
   font:
@@ -2888,6 +2894,13 @@ button:disabled[aria-busy='true'] {
   .sp-entry {
     min-height: 44px;
   }
+  /* The usage graphs' model-limit disclosure (add-subscription-usage-history): the comfort
+     target by on-scale padding and a floor, never the centring flex above, so the summary keeps
+     its native marker. */
+  .pu-graph-buckets > summary {
+    padding: 12px 0;
+    min-height: 44px;
+  }
   /* Input text is 16px in the comfort context (DESIGN.md Inputs / Fields; adopt-design-tokens-v2
      task 8.1): below 16px a mobile browser zooms the page on focus. The ONLY font-size these
      blocks set, and only on entry fields (`responsive.test.ts`, `styles.typeScale.test.ts`).
@@ -3281,6 +3294,10 @@ button:disabled[aria-busy='true'] {
   .rs-nav-toggle,
   .input,
   .select {
+    min-height: 44px;
+  }
+  .pu-graph-buckets > summary {
+    padding: 12px 0;
     min-height: 44px;
   }
   /* Icon-only controls need their inline axis floored too under a coarse pointer, at any
@@ -4800,6 +4817,76 @@ button:disabled[aria-busy='true'] {
   .tm-picker {
     max-width: min(220px, 100%);
   }
+}
+
+/* The provider card's usage graphs (add-subscription-usage-history, design D6): one compact
+   figure per window under the usage line. The caption is the card's caption tone (Ink 3), the
+   window's name Ink 2 and a known percent Ink, a state word (`unknown`, `no reading yet`) staying
+   Ink 3. The reset's dashed swatch labels the chart's dashed reference line (DESIGN.md: a dashed
+   line is a reference, labelled directly). Nothing here is indigo (the Indigo Budget): the line is
+   Ink 2, drawn by Chart.tsx. Widths are fluid, so a 2-column phone card reflows the plot. */
+.pu-graphs {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.pu-graph {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  margin: 0;
+}
+.pu-graph-caption {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  font:
+    400 0.6875rem/1rem 'Geist',
+    sans-serif;
+  color: var(--text3);
+  overflow-wrap: anywhere;
+}
+.pu-graph-name {
+  color: var(--text2);
+  font-weight: 500;
+}
+.pu-graph-figure {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.pu-graph-figure[data-known='false'] {
+  color: var(--text3);
+}
+.pu-graph-reset[data-reference]::before {
+  content: '';
+  display: inline-block;
+  width: 12px;
+  border-top: 1px dashed var(--text3);
+  margin-right: 4px;
+  vertical-align: middle;
+}
+.pu-graph-plot {
+  min-width: 0;
+  width: 100%;
+  overflow: hidden;
+}
+.pu-graph-buckets {
+  font:
+    400 0.6875rem/1rem 'Geist',
+    sans-serif;
+  color: var(--text3);
+}
+/* 16px line + 4px each side: the 24px target floor without a class-wide min-height. */
+.pu-graph-buckets > summary {
+  padding: 4px 0;
+}
+.pu-graph-bucket-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 8px;
 }
 
 /* Reduced-motion guard (dashboard-core spec): collapse ALL motion — including future

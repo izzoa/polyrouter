@@ -171,6 +171,13 @@ export class UpdateProviderDto {
   @ValidateIf((_, v) => v !== undefined)
   @IsBoolean()
   imitateClientIdentity?: boolean;
+
+  /** add-subscription-usage-history (design D7): the per-provider usage-schedule switch. Omitted
+   * preserves; an explicit `null` is a 400 (same idiom as `imitateClientIdentity`). Accepted only
+   * on a provider whose preset declares a usage endpoint (else the service answers 422). */
+  @ValidateIf((_, v) => v !== undefined)
+  @IsBoolean()
+  checkPlanUsage?: boolean;
 }
 
 const asBool = ({ value }: { value: unknown }): unknown =>

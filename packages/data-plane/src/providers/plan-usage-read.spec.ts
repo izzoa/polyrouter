@@ -8,6 +8,12 @@
 //    `KimiModels.swift` @b3b4d56 (`usage`, `limits[].window/detail`, `usages.*.used_ratio`).
 //  - zai_quota_limit: CodexBar `zai.js` and oh-my-pi `zai.ts` (`{code,success,data:{limits[]}}`).
 //  - opencode_go_usage: anomalyco/opencode `packages/core/src/usage-limits.ts:156-188` @e42f6d1.
+//  - claude_oauth_usage (add-subscription-usage-history): the Claude Code 2.1.319 zod schema and
+//    Claude-Code-Usage-Monitor#202 (`five_hour`, `seven_day`, `seven_day_sonnet`,
+//    `seven_day_opus`, `extra_usage`); `utilization` 0-100, ISO `resets_at` with microseconds.
+//  - chatgpt_wham_usage (add-subscription-usage-history): openai/codex `backend-client/src/
+//    types.rs` and the generated OpenAPI models (`rate_limit.{primary,secondary}_window`, plus the
+//    `email` / `user_id` / `account_id` fields that must never be kept).
 import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as path from 'node:path';
@@ -17,6 +23,7 @@ import type { ProviderConfig } from './adapter';
 import { ProviderError } from './errors';
 import type { HttpClient, HttpResponse } from './http';
 import {
+  PLAN_USAGE_ANTHROPIC_BETA,
   PLAN_USAGE_PARSER_IDS,
   USAGE_MESSAGES,
   parsePlanUsageBody,
@@ -120,11 +127,49 @@ const opencodeBody = (): unknown => ({
   },
 });
 
+/** Claude's reset form: ISO 8601 with microseconds and a `+00:00` offset. */
+const CLAUDE_RESET = '2026-11-06T14:19:59.826592+00:00';
+const claudeBody = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+  five_hour: { utilization: 33.0, resets_at: CLAUDE_RESET },
+  seven_day: { utilization: 13.0, resets_at: iso(NOW + 3 * DAY) },
+  seven_day_oauth_apps: null,
+  seven_day_opus: null,
+  seven_day_sonnet: { utilization: 1.0, resets_at: iso(NOW + 3 * DAY) },
+  extra_usage: { is_enabled: false, monthly_limit: null, used_credits: null, utilization: null },
+  ...over,
+});
+const PERSONAL = {
+  email: 'person-7c1@example.test',
+  user_id: 'user-9f3a2b7c',
+  account_id: 'acct-4e5d6f70',
+};
+const chatgptWin = (usedPercent: unknown, seconds: unknown, resetAtSec: unknown) => ({
+  used_percent: usedPercent,
+  limit_window_seconds: seconds,
+  reset_after_seconds: 3_600,
+  reset_at: resetAtSec,
+});
+const chatgptBody = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+  plan_type: 'pro',
+  rate_limit: {
+    allowed: true,
+    limit_reached: false,
+    primary_window: chatgptWin(12, 18_000, Math.round((NOW + 2 * HOUR) / 1000)),
+    secondary_window: chatgptWin(34, 604_800, Math.round((NOW + 3 * DAY) / 1000)),
+  },
+  credits: { has_credits: true, unlimited: false, balance: '12.50' },
+  rate_limit_reset_credits: { available_count: 2 },
+  ...PERSONAL,
+  ...over,
+});
+
 const FIXTURE: Record<PlanUsageParserId, () => unknown> = {
   minimax_remains: () => minimaxBody(),
   kimi_usages: kimiBody,
   zai_quota_limit: () => zaiBody(),
   opencode_go_usage: opencodeBody,
+  claude_oauth_usage: () => claudeBody(),
+  chatgpt_wham_usage: () => chatgptBody(),
 };
 
 describe('the request: exact headers, GET only, nothing else', () => {
@@ -694,6 +739,261 @@ describe('opencode_go_usage', () => {
   });
 });
 
+describe('claude_oauth_usage (add-subscription-usage-history)', () => {
+  it('utilization 1.0 reads 1%, never 100%, and a null seven_day_opus is dropped (the spec example)', () => {
+    const o = ok(
+      body('claude_oauth_usage', {
+        five_hour: { utilization: 1.0, resets_at: CLAUDE_RESET },
+        seven_day_opus: null,
+      }),
+    );
+    expect(o.windows).toEqual([
+      {
+        key: 'account:5h',
+        group: 'account',
+        span: '5h',
+        minutes: 300,
+        scope: null,
+        usedPercent: 1,
+        reset: { atMs: Date.parse('2026-11-06T14:19:59.826Z') },
+      },
+    ]);
+    expect(win(o, 'account:weekly:Opus')).toBeUndefined();
+  });
+
+  it('reads the four windows it knows, with their scopes, and nothing else', () => {
+    const o = ok(body('claude_oauth_usage', claudeBody()));
+    expect(o.windows.map((w) => [w.key, w.span, w.scope, w.usedPercent])).toEqual([
+      ['account:5h', '5h', null, 33],
+      ['account:weekly', 'weekly', null, 13],
+      ['account:weekly:Sonnet', 'weekly', 'Sonnet', 1],
+    ]);
+    // The same keys as the passive header parser for the same windows, so they merge.
+    expect(win(o, 'account:weekly')!.reset).toEqual({ atMs: NOW + 3 * DAY });
+    expect(o.billing).toBeNull();
+    // An Opus window, when present, is its own scoped window.
+    const opus = ok(
+      body(
+        'claude_oauth_usage',
+        claudeBody({ seven_day_opus: { utilization: 70, resets_at: iso(NOW + DAY) } }),
+      ),
+    );
+    expect(win(opus, 'account:weekly:Opus')).toMatchObject({ scope: 'Opus', usedPercent: 70 });
+  });
+
+  it('extra_usage enabled with used credits sets the billing state, and no amount is kept', () => {
+    const o = ok(
+      body(
+        'claude_oauth_usage',
+        claudeBody({
+          extra_usage: {
+            is_enabled: true,
+            monthly_limit: 50_017,
+            used_credits: 12_345,
+            utilization: 24.68,
+            currency: 'EUR',
+          },
+        }),
+      ),
+    );
+    expect(o.billing).toBe('extra_usage');
+    const text = JSON.stringify(o);
+    for (const amount of ['50017', '12345', '24.68', 'EUR']) expect(text).not.toContain(amount);
+    // Disabled, or enabled with no used credits: the body says nothing about billing.
+    for (const extra of [
+      { is_enabled: false, used_credits: 12_345 },
+      { is_enabled: true, used_credits: null },
+      { is_enabled: 'true', used_credits: 5 },
+      null,
+    ]) {
+      expect(ok(body('claude_oauth_usage', claudeBody({ extra_usage: extra }))).billing).toBeNull();
+    }
+  });
+
+  it('an unknown shape reads as unknown, never 0%', () => {
+    for (const json of [
+      {},
+      { five_hour: null, seven_day: null },
+      { five_hour: { utilization: null, resets_at: null } },
+      { five_hour: { utilization: 'lots', resets_at: 'tomorrow' } },
+      { limits: [{ kind: 'session', percent: 40 }] },
+    ]) {
+      expect(body('claude_oauth_usage', json)).toEqual({
+        ok: false,
+        kind: 'unavailable',
+        message: USAGE_MESSAGES.unrecognised,
+      });
+    }
+    // A window with only a reset keeps an unknown percent.
+    const o = ok(
+      body('claude_oauth_usage', { five_hour: { utilization: null, resets_at: CLAUDE_RESET } }),
+    );
+    expect(win(o, 'account:5h')!.usedPercent).toBeNull();
+  });
+});
+
+describe('chatgpt_wham_usage (add-subscription-usage-history)', () => {
+  it('reads windows by length, clamps 112 to 100, and drops the account fields (the spec example)', () => {
+    const r = body(
+      'chatgpt_wham_usage',
+      chatgptBody({
+        rate_limit: {
+          primary_window: chatgptWin(112, 18_000, Math.round((NOW + 2 * HOUR) / 1000)),
+          secondary_window: chatgptWin(40, 604_800, Math.round((NOW + 3 * DAY) / 1000)),
+        },
+      }),
+    );
+    const o = ok(r);
+    expect(o.windows.map((w) => [w.key, w.span, w.minutes, w.usedPercent, w.reset])).toEqual([
+      ['account:5h', '5h', 300, 100, { atMs: NOW + 2 * HOUR }],
+      ['account:weekly', 'weekly', 10_080, 40, { atMs: NOW + 3 * DAY }],
+    ]);
+    const text = JSON.stringify(r);
+    for (const value of Object.values(PERSONAL)) expect(text).not.toContain(value);
+    expect(text).not.toMatch(/pro|12\.50|available_count/);
+    expect(o.billing).toBeNull();
+  });
+
+  it('a lone weekly window in the primary slot reads weekly, never 5h', () => {
+    const o = ok(
+      body(
+        'chatgpt_wham_usage',
+        chatgptBody({
+          rate_limit: {
+            primary_window: chatgptWin(7, 604_800, Math.round((NOW + 3 * DAY) / 1000)),
+            secondary_window: null,
+          },
+        }),
+      ),
+    );
+    expect(o.windows.map((w) => w.key)).toEqual(['account:weekly']);
+  });
+
+  it('reset_after_seconds is the fallback reset; an unsized window keeps its minutes', () => {
+    const o = ok(
+      body('chatgpt_wham_usage', {
+        rate_limit: {
+          primary_window: {
+            used_percent: 5,
+            limit_window_seconds: 5_400,
+            reset_after_seconds: 600,
+          },
+        },
+      }),
+    );
+    expect(o.windows).toEqual([
+      {
+        key: 'account:m90',
+        group: 'account',
+        span: null,
+        minutes: 90,
+        scope: null,
+        usedPercent: 5,
+        reset: { inMs: 600_000 },
+      },
+    ]);
+  });
+
+  it('an unknown shape reads as unknown, and no window is "no plan usage", never 0%', () => {
+    for (const json of [{}, { rate_limit: null }, { rate_limit: 'x' }, PERSONAL]) {
+      expect(body('chatgpt_wham_usage', json)).toMatchObject({
+        ok: false,
+        message: USAGE_MESSAGES.unrecognised,
+      });
+    }
+    expect(
+      body('chatgpt_wham_usage', {
+        rate_limit: { primary_window: null, secondary_window: { used_percent: null } },
+      }),
+    ).toEqual({ ok: false, kind: 'plan_inactive', message: USAGE_MESSAGES.noPlanUsage });
+  });
+});
+
+describe('extra headers: a closed allowlist, values from constants and the row (add-subscription-usage-history)', () => {
+  const CLAUDE_URL = 'https://api.anthropic.com/api/oauth/usage';
+  const CHATGPT_URL = 'https://chatgpt.com/backend-api/wham/usage';
+
+  it('a Claude read carries exactly Bearer, Accept, polyrouter UA and the fixed oauth beta, on the plain path', async () => {
+    const { client, calls } = recordingClient(() => jsonResponse(claudeBody()));
+    ok(
+      await read(
+        'claude_oauth_usage',
+        client,
+        { url: CLAUDE_URL, extraHeaders: ['anthropic-beta'] },
+        config({
+          oauthBeta: 'some-other-beta',
+          extraHeaders: { 'User-Agent': 'claude-cli/2.1.319 (external, cli)', 'X-App': 'cli' },
+        }),
+      ),
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe(CLAUDE_URL);
+    expect(calls[0]!.url).not.toContain('?');
+    expect(calls[0]!.init.headers).toEqual({
+      Authorization: `Bearer ${SECRET}`,
+      Accept: 'application/json',
+      'anthropic-beta': PLAN_USAGE_ANTHROPIC_BETA,
+      'User-Agent': POLYROUTER_USER_AGENT,
+    });
+    expect(PLAN_USAGE_ANTHROPIC_BETA).toBe('oauth-2025-04-20');
+  });
+
+  it('a ChatGPT read carries exactly Bearer, Accept, polyrouter UA and the row account id', async () => {
+    const { client, calls } = recordingClient(() => jsonResponse(chatgptBody()));
+    ok(
+      await read(
+        'chatgpt_wham_usage',
+        client,
+        { url: CHATGPT_URL, extraHeaders: ['chatgpt-account-id'] },
+        config({ oauthAccountId: 'acct-row-1', extraHeaders: { originator: 'codex_cli_rs' } }),
+      ),
+    );
+    expect(calls[0]!.url).toBe(CHATGPT_URL);
+    const headers = calls[0]!.init.headers;
+    expect(headers).toEqual({
+      Authorization: `Bearer ${SECRET}`,
+      Accept: 'application/json',
+      'chatgpt-account-id': 'acct-row-1',
+      'User-Agent': POLYROUTER_USER_AGENT,
+    });
+    const names = Object.keys(headers).map((k) => k.toLowerCase());
+    expect(names).not.toContain('originator');
+    expect(names).not.toContain('x-openai-codex-luna-reserve');
+    expect(names).not.toContain('openai-beta');
+  });
+
+  it('a missing or header-unsafe account id sends nothing', async () => {
+    for (const oauthAccountId of [undefined, '', 'acct\r\nX-Evil: 1', 'a'.repeat(129)]) {
+      const { client, calls } = recordingClient(() => jsonResponse(chatgptBody()));
+      const r = await read(
+        'chatgpt_wham_usage',
+        client,
+        { url: CHATGPT_URL, extraHeaders: ['chatgpt-account-id'] },
+        config(oauthAccountId === undefined ? {} : { oauthAccountId }),
+      );
+      expect(r).toEqual({ ok: false, kind: 'credential', message: USAGE_MESSAGES.noAccountId });
+      expect(calls).toHaveLength(0);
+    }
+  });
+
+  it('a probe that names no extra header sends none, whatever the config carries', async () => {
+    const { client, calls } = recordingClient(() => jsonResponse(chatgptBody()));
+    ok(
+      await read(
+        'chatgpt_wham_usage',
+        client,
+        {},
+        config({ oauthAccountId: 'acct-row-1', oauthBeta: 'oauth-2025-04-20' }),
+      ),
+    );
+    expect(Object.keys(calls[0]!.init.headers).sort()).toEqual([
+      'Accept',
+      'Authorization',
+      'User-Agent',
+    ]);
+  });
+});
+
 describe('every parser', () => {
   it('discards an implausible reset and keeps the window with an unknown reset', () => {
     const FAR = NOW + 900 * DAY;
@@ -719,6 +1019,17 @@ describe('every parser', () => {
           rolling: { percent: 10, resetsAt: iso(FAR) },
           weekly: { percent: 10, resetsAt: iso(NOW + 30 * DAY) },
           monthly: { percent: 10, resetsAt: iso(NOW - 2 * DAY) },
+        },
+      },
+      claude_oauth_usage: {
+        five_hour: { utilization: 10, resets_at: iso(FAR) },
+        seven_day: { utilization: 10, resets_at: iso(NOW - 2 * DAY) },
+      },
+      chatgpt_wham_usage: {
+        rate_limit: {
+          primary_window: chatgptWin(10, 18_000, Math.round(FAR / 1000)),
+          // Milliseconds in a seconds field land far beyond the bound.
+          secondary_window: chatgptWin(10, 604_800, NOW),
         },
       },
     };

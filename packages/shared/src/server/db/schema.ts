@@ -7,6 +7,7 @@ import {
   index,
   integer,
   jsonb,
+  numeric,
   pgTable,
   text,
   timestamp,
@@ -305,6 +306,12 @@ export const providers = pgTable(
     // declared client-identity headers. OFF by default (a constant default is a metadata-only
     // ADD COLUMN in PostgreSQL 16); it only takes effect where the preset declares an identity.
     imitateClientIdentity: boolean('imitate_client_identity').default(false).notNull(),
+    // add-subscription-usage-history: the per-provider usage-schedule switch (design D7). While
+    // true, the 15-minute usage schedule reads this provider's usage endpoint (where its preset
+    // declares one) and samples its readings into `plan_usage_sample`; Refresh usage works either
+    // way. ON by default, for every existing row too (a constant default is a metadata-only ADD
+    // COLUMN in PostgreSQL 16). Holds no secret.
+    checkPlanUsage: boolean('check_plan_usage').default(true).notNull(),
     createdAt: createdAt(),
   },
   (t) => [
@@ -327,6 +334,40 @@ export const providers = pgTable(
     check(
       'provider_key_preset_subscription',
       sql`${t.keyPreset} IS NULL OR ${t.kind} = 'subscription'`,
+    ),
+  ],
+);
+
+/** add-subscription-usage-history (design D4): a bounded history of plan-usage readings, one row
+ * per provider window per OBSERVATION, sampled from the merged Redis snapshot after each usage
+ * schedule tick (passive traffic readings and scheduled reads alike). Owned THROUGH its provider:
+ * every read joins the parent and applies the ownership predicate, and a provider delete cascades.
+ * Numbers and instants only (invariant 8): `window_key` is the snapshot window's own key
+ * (`account:5h`, `account:weekly:Fable`, `model:<id>`), never a header or body string, and no
+ * credential, account id or personal data is stored. `used_percent` is null when the reading was
+ * unknown, never 0. The unique key makes a re-sample of an unchanged observation a no-op
+ * (`ON CONFLICT DO NOTHING`); samples older than 35 days are pruned by the schedule. */
+export const planUsageSamples = pgTable(
+  'plan_usage_sample',
+  {
+    id: id(),
+    providerId: text('provider_id')
+      .notNull()
+      .references(() => providers.id, { onDelete: 'cascade' }),
+    windowKey: text('window_key').notNull(),
+    usedPercent: numeric('used_percent', { precision: 5, scale: 2, mode: 'number' }),
+    resetAt: timestamp('reset_at', { withTimezone: true }),
+    observedAt: timestamp('observed_at', { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    uniqueIndex('plan_usage_sample_observation_uniq').on(t.providerId, t.windowKey, t.observedAt),
+    // The owner-scoped history read: one provider's samples by observation time.
+    index('plan_usage_sample_provider_observed_idx').on(t.providerId, t.observedAt),
+    // The retention prune deletes by age across every provider.
+    index('plan_usage_sample_observed_idx').on(t.observedAt),
+    check(
+      'plan_usage_sample_used_percent_range',
+      sql`${t.usedPercent} IS NULL OR (${t.usedPercent} >= 0 AND ${t.usedPercent} <= 100)`,
     ),
   ],
 );
@@ -1374,6 +1415,7 @@ export type AccountRow = typeof accounts.$inferSelect;
 export type AgentRow = typeof agents.$inferSelect;
 export type ProviderRow = typeof providers.$inferSelect;
 export type ModelRow = typeof models.$inferSelect;
+export type PlanUsageSampleRow = typeof planUsageSamples.$inferSelect;
 export type TierRow = typeof tiers.$inferSelect;
 export type RoutingEntryRow = typeof routingEntries.$inferSelect;
 export type RoutingRuleRow = typeof routingRules.$inferSelect;

@@ -124,6 +124,8 @@ export type {
   StoredPlanUsageWindow,
 } from './plan-usage-store';
 export {
+  PLAN_USAGE_ANTHROPIC_BETA,
+  PLAN_USAGE_EXTRA_HEADERS,
   PLAN_USAGE_PARSER_IDS,
   USAGE_MESSAGES,
   USAGE_READ_MAX_BYTES,
@@ -132,6 +134,7 @@ export {
   readPlanUsage,
 } from './plan-usage-read';
 export type {
+  PlanUsageExtraHeader,
   PlanUsageParserId,
   PlanUsageProbe,
   PlanUsageReadDeps,

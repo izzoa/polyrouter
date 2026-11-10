@@ -1375,6 +1375,145 @@ describe('provider management', () => {
     });
   });
 
+  // ---- add-subscription-usage-history 5.1: the usage-schedule switch and the Claude refresh ----
+  describe('usage-schedule switch (add-subscription-usage-history)', () => {
+    // REAL service, the bundled Claude preset and Kimi pins. A PATCH on a pinned row only
+    // RESOLVES its hostname (DNS) through the SSRF gate; nothing here dials a provider or a usage
+    // endpoint (the refresh field is read from the shared store only).
+    const patch = (id: string, body: Record<string, unknown>, as = alice): request.Test =>
+      request(server).patch(`/api/providers/${id}`).set('x-test-user', as).send(body);
+    const getOne = (id: string, as = alice): request.Test =>
+      request(server).get(`/api/providers/${id}`).set('x-test-user', as);
+    const column = async (id: string): Promise<boolean> =>
+      (
+        await pool.query<{ check_plan_usage: boolean }>(
+          'SELECT check_plan_usage FROM provider WHERE id = $1',
+          [id],
+        )
+      ).rows[0]!.check_plan_usage;
+    const insert = async (
+      values: Parameters<PersistencePort['providers']['insert']>[1],
+      owner = alice,
+    ): Promise<string> =>
+      (
+        await app
+          .get<PersistencePort>(PERSISTENCE_PORT)
+          .providers.insert(userPrincipal(owner), values)
+      ).id;
+    const claudeRow = (owner = alice): Promise<string> =>
+      insert(
+        {
+          name: 'claude-sub',
+          kind: 'subscription',
+          protocol: CLAUDE_PRESET.protocol,
+          baseUrl: CLAUDE_PRESET.baseUrl,
+          oauthPreset: CLAUDE_PRESET.id,
+        },
+        owner,
+      );
+    const kimiRow = (): Promise<string> => {
+      const region = KIMI_CODE_PRESET.regions[0]!;
+      return insert({
+        name: 'kimi-sub',
+        kind: 'subscription',
+        protocol: region.protocol,
+        baseUrl: region.baseUrl,
+        keyPreset: KIMI_CODE_PRESET.id,
+        encryptedCredentials: encryptSecret(
+          serializePlainCredential('kimi-key'),
+          resolveCredentialKey(loadProvidersConfig().providers, loadProvidersConfig().base),
+        ),
+      });
+    };
+
+    it('defaults to on, and the Claude view now offers Refresh usage', async () => {
+      const id = await claudeRow();
+      const read = await getOne(id);
+      expect(read.status).toBe(200);
+      expect(read.body.checkPlanUsage).toBe(true);
+      expect(read.body.planUsageRefresh).toEqual({ availableAt: null });
+      expect(await column(id)).toBe(true);
+      // An ordinary created row carries the switch too, inert, and offers no refresh.
+      const created = await asAlice().send(CUSTOM);
+      expect(created.body.checkPlanUsage).toBe(true);
+      expect(created.body.planUsageRefresh).toBeNull();
+    });
+
+    it('false then true round-trips on a Claude and a Kimi row; omitting it preserves it', async () => {
+      for (const id of [await claudeRow(), await kimiRow()]) {
+        const off = await patch(id, { checkPlanUsage: false });
+        expect(off.status).toBe(200);
+        expect(off.body.checkPlanUsage).toBe(false);
+        expect(await column(id)).toBe(false);
+        // Refresh usage is still offered while the schedule is off.
+        expect(off.body.planUsageRefresh).toEqual({ availableAt: null });
+        const renamed = await patch(id, { name: 'renamed' });
+        expect(renamed.status).toBe(200);
+        expect(renamed.body.checkPlanUsage).toBe(false);
+        const on = await patch(id, { checkPlanUsage: true });
+        expect(on.body.checkPlanUsage).toBe(true);
+        expect(await column(id)).toBe(true);
+      }
+    });
+
+    it('null is a 400 and nothing changes', async () => {
+      const id = await claudeRow();
+      await patch(id, { checkPlanUsage: false });
+      const res = await patch(id, { checkPlanUsage: null });
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(res.body)).toContain('checkPlanUsage');
+      expect(await column(id)).toBe(false);
+    });
+
+    it('an API-key row, a pasted-credential subscription and a drifted row refuse it with a 422', async () => {
+      const apiKey = await asAlice().send({
+        name: 'k',
+        kind: 'api_key',
+        protocol: 'openai_compatible',
+        baseUrl: 'https://1.1.1.1/v1',
+        credential: 'sk-test',
+      });
+      expect(apiKey.status).toBe(201);
+      const pasted = await insert({
+        name: 'pasted-sub',
+        kind: 'subscription',
+        protocol: CLAUDE_PRESET.protocol,
+        baseUrl: CLAUDE_PRESET.baseUrl,
+      });
+      const drifted = await insert({
+        name: 'drifted',
+        kind: 'subscription',
+        protocol: 'anthropic_compatible',
+        baseUrl: 'https://1.1.1.1/',
+        oauthPreset: CLAUDE_PRESET.id,
+      });
+      for (const id of [apiKey.body.id as string, pasted, drifted]) {
+        for (const value of [false, true]) {
+          const res = await patch(id, { checkPlanUsage: value });
+          expect(res.status).toBe(422);
+        }
+        expect(await column(id)).toBe(true);
+        expect((await getOne(id)).body.planUsageRefresh).toBeNull();
+      }
+    });
+
+    it('create rejects the field with a 400 and creates nothing', async () => {
+      const res = await asAlice().send({ ...CUSTOM, checkPlanUsage: false });
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(res.body)).toContain('checkPlanUsage');
+      const none = await pool.query('SELECT 1 FROM provider WHERE owner_user_id = $1', [alice]);
+      expect(none.rowCount).toBe(0);
+    });
+
+    it("another tenant's PATCH is a 404 and changes nothing", async () => {
+      const id = await claudeRow(alice);
+      const res = await patch(id, { checkPlanUsage: false }, bob);
+      expect(res.status).toBe(404);
+      expect(await column(id)).toBe(true);
+      expect((await getOne(id, bob)).status).toBe(404);
+    });
+  });
+
   // ---- classify-plan-quota-errors 7.2: the plan cooldown on the provider view and the lift ----
   describe('plan cooldown view and lift (classify-plan-quota-errors)', () => {
     const MINUTE = 60_000;

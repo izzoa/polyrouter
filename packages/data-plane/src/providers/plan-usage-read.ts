@@ -15,9 +15,10 @@
  *  - Every failure is a typed result with a FIXED message. No header, body text or credential is
  *    ever copied into a result (invariant 8): parsers read known field names and keep numbers.
  *
- * Sources, read 2026-11-06 (Plans/Subscription-quota-research.md, `## active`). Each endpoint
- * ships DISABLED until its live runbook passes (tasks 9.x); the shapes below are the reference
- * clients' [V code] and carry [U] items the runbook resolves:
+ * Sources, read 2026-11-06 (Plans/Subscription-quota-research.md, `## active`). Every endpoint
+ * ships ENABLED (add-subscription-usage-history, design D3); one found broken is withdrawn by its
+ * preset. The shapes below are the reference clients' [V code] and carry [U] items the optional
+ * runbook (`scripts/verify-plan-usage.md`) resolves:
  *  - `minimax_remains`: MiniMax M Plan FAQ "How can I check M Plan usage?" and MiniMax-AI/cli
  *    (`src/utils/quota.ts`, `types/api.ts:352-368`, fixture `test/fixtures/quota-response.json`,
  *    @38aba5f). `*_remaining_percent` and `*_status` [V in the CLI], their presence on an API-key
@@ -29,6 +30,14 @@
  *    and oh-my-pi `zai.ts`. The unit enum is undocumented: only 3 (hours) and 6 (weeks) are read.
  *  - `opencode_go_usage`: anomalyco/opencode `packages/core/src/usage-limits.ts:156-188`
  *    (PR #58694, merged 2026-10-24).
+ *  - `claude_oauth_usage` (add-subscription-usage-history): `GET /api/oauth/usage`, the PLAIN path
+ *    only, per the Claude Code 2.1.319 zod schema [V]. `utilization` is ALREADY 0-100 (unlike the
+ *    0-1 header fraction): a tool that guessed `<=1 -> x100` read 1% as 100% (hermes-agent#58226),
+ *    so it is never re-scaled. `resets_at` is ISO 8601 with microseconds and an offset.
+ *  - `chatgpt_wham_usage` (add-subscription-usage-history): `GET /backend-api/wham/usage`, per
+ *    openai/codex `backend-client/src/types.rs` and the generated OpenAPI models [V]. The body
+ *    carries `email`, `user_id` and `account_id`: only `rate_limit.{primary,secondary}_window`
+ *    numbers are read, so none of them can reach a snapshot, sample, log line or response.
  */
 import { SsrfError, POLYROUTER_USER_AGENT, withUserAgent } from '@polyrouter/shared/server';
 import type { ProviderConfig } from './adapter';
@@ -45,33 +54,65 @@ import {
   dedupeByKey,
   parseDecimal,
   plausibleResetAt,
+  plausibleResetIn,
   windowLengthMs,
+  type PlanUsageBilling,
   type PlanUsageObservation,
   type PlanUsageReset,
   type PlanUsageSpan,
   type PlanUsageWindow,
 } from './plan-usage';
 
-/** The closed set of usage-endpoint parsers (design D7). */
+/** The closed set of usage-endpoint parsers (design D7; add-subscription-usage-history D2). */
 export type PlanUsageParserId =
-  'minimax_remains' | 'kimi_usages' | 'zai_quota_limit' | 'opencode_go_usage';
+  | 'minimax_remains'
+  | 'kimi_usages'
+  | 'zai_quota_limit'
+  | 'opencode_go_usage'
+  | 'claude_oauth_usage'
+  | 'chatgpt_wham_usage';
 
 export const PLAN_USAGE_PARSER_IDS: readonly PlanUsageParserId[] = [
   'minimax_remains',
   'kimi_usages',
   'zai_quota_limit',
   'opencode_go_usage',
+  'claude_oauth_usage',
+  'chatgpt_wham_usage',
 ];
 
-/** A key-preset region's usage endpoint: a bundled same-origin constant (design D7). */
+/**
+ * The closed allowlist of extra headers a usage read may carry (add-subscription-usage-history,
+ * design D2). A probe NAMES them; their VALUES never come from the probe or from user input:
+ *  - `anthropic-beta` is the fixed `PLAN_USAGE_ANTHROPIC_BETA` the Claude OAuth usage endpoint
+ *    requires;
+ *  - `chatgpt-account-id` is the row's own account id (`config.oauthAccountId`, extracted from
+ *    the sign-in by `account-claim`), re-checked here for a header-safe charset.
+ * No other header can be named, so a probe can never smuggle an identity or a client header.
+ */
+export type PlanUsageExtraHeader = 'anthropic-beta' | 'chatgpt-account-id';
+
+export const PLAN_USAGE_EXTRA_HEADERS: readonly PlanUsageExtraHeader[] = [
+  'anthropic-beta',
+  'chatgpt-account-id',
+];
+
+/** The OAuth beta the Claude usage endpoint requires (research: "currently requires the beta
+ * header"). A bundled constant, never the preset's or the caller's value. */
+export const PLAN_USAGE_ANTHROPIC_BETA = 'oauth-2025-04-20';
+
+/** A preset's usage endpoint: a bundled same-origin constant (design D7). */
 export interface PlanUsageProbe {
   readonly url: string;
   /** `bearer` sends `Authorization: Bearer <key>`; `raw` sends `Authorization: <key>`. */
   readonly auth: 'bearer' | 'raw';
   readonly parser: PlanUsageParserId;
-  /** Ships `false` until the region's live runbook passes. The caller gates on it; the read
-   * itself performs no gate, so a parser is testable against fixtures. */
+  /** Ships `true` (add-subscription-usage-history, design D3); `false` WITHDRAWS an endpoint
+   * found broken. The caller gates on it; the read itself performs no gate, so a parser is
+   * testable against fixtures. */
   readonly enabled: boolean;
+  /** The extra headers this endpoint needs, from the closed allowlist above. */
+  readonly extraHeaders?: readonly PlanUsageExtraHeader[];
 }
 
 export type PlanUsageReadResult =
@@ -125,6 +166,7 @@ export const USAGE_MESSAGES = {
   apiError: 'The usage endpoint reported an error.',
   timedOut: 'The usage endpoint did not answer in time.',
   oversized: 'The usage endpoint returned an oversized response.',
+  noAccountId: 'The sign-in carries no account id, so its usage cannot be read.',
   redirected: 'The usage endpoint redirected, which is refused.',
   addressRefused: 'The usage endpoint address was refused.',
   unreachable: 'The usage endpoint could not be reached.',
@@ -212,9 +254,11 @@ function windowOf(
   return { key, group: 'account', span, minutes, scope: null, usedPercent, reset };
 }
 
-/** The result of a parser: windows, or a typed failure. */
+/** The result of a parser: windows (and, for an endpoint that states it, a billing state), or a
+ * typed failure. */
 type Parsed =
-  { readonly windows: readonly PlanUsageWindow[] } | Extract<PlanUsageReadResult, { ok: false }>;
+  | { readonly windows: readonly PlanUsageWindow[]; readonly billing?: PlanUsageBilling | null }
+  | Extract<PlanUsageReadResult, { ok: false }>;
 
 // ---------------------------------------------------------------------------------------------
 // minimax_remains
@@ -458,6 +502,110 @@ function parseOpencodeGoUsage(json: unknown, now: number): Parsed {
   return { windows };
 }
 
+// ---------------------------------------------------------------------------------------------
+// claude_oauth_usage
+// ---------------------------------------------------------------------------------------------
+
+/** The ONLY windows read from Claude's usage body. The keys match the passive header parser's
+ * where the window is the same (`account:5h`, `account:weekly`), so a refresh and traffic merge
+ * into one window. `seven_day_oauth_apps`, `cinder_cove`, `wattle_ember` and `limits[]` are never
+ * read. */
+const CLAUDE_USAGE_WINDOWS: readonly {
+  readonly field: string;
+  readonly key: string;
+  readonly span: PlanUsageSpan;
+  readonly scope: string | null;
+}[] = [
+  { field: 'five_hour', key: 'account:5h', span: '5h', scope: null },
+  { field: 'seven_day', key: 'account:weekly', span: 'weekly', scope: null },
+  { field: 'seven_day_sonnet', key: 'account:weekly:Sonnet', span: 'weekly', scope: 'Sonnet' },
+  { field: 'seven_day_opus', key: 'account:weekly:Opus', span: 'weekly', scope: 'Opus' },
+];
+
+/**
+ * Claude Pro/Max `GET /api/oauth/usage`. Each window is `{ utilization, resets_at }` or null;
+ * `utilization` is a percentage from 0 to 100 and is NEVER multiplied (hermes-agent#58226). A null
+ * window is dropped, as is one with neither a percent nor a reset. `extra_usage` with
+ * `is_enabled: true` and a non-null `used_credits` states usage credits are billing (its amounts,
+ * currency and limit are never read); otherwise the body says nothing about billing.
+ */
+function parseClaudeOauthUsage(json: unknown, now: number): Parsed {
+  if (!isRecord(json)) return fail('unavailable', USAGE_MESSAGES.unrecognised);
+  const windows: PlanUsageWindow[] = [];
+  for (const w of CLAUDE_USAGE_WINDOWS) {
+    const entry = json[w.field];
+    if (!isRecord(entry)) continue;
+    const minutes = SPAN_MINUTES[w.span];
+    const utilization = numOf(entry['utilization']);
+    const usedPercent = utilization === null ? null : clampPercent(utilization);
+    const reset = resetFromIso(entry['resets_at'], w.span, minutes, now);
+    if (usedPercent === null && reset === null) continue;
+    windows.push({
+      key: w.key,
+      group: 'account',
+      span: w.span,
+      minutes,
+      scope: w.scope,
+      usedPercent,
+      reset,
+    });
+  }
+  if (windows.length === 0) return fail('unavailable', USAGE_MESSAGES.unrecognised);
+  const extra = json['extra_usage'];
+  const billing: PlanUsageBilling | null =
+    isRecord(extra) && extra['is_enabled'] === true && numOf(extra['used_credits']) !== null
+      ? 'extra_usage'
+      : null;
+  return { windows, billing };
+}
+
+// ---------------------------------------------------------------------------------------------
+// chatgpt_wham_usage
+// ---------------------------------------------------------------------------------------------
+
+/** One `rate_limit.*_window`, labelled by its LENGTH (the +-5% match), never by its slot, as the
+ * passive `codex` parser does: a Pro account's lone weekly window in the primary slot reads
+ * weekly. `limit_window_seconds` becomes minutes rounded UP, as Codex maps it; `reset_at` is epoch
+ * SECONDS, with `reset_after_seconds` as the relative fallback. */
+function chatgptWindow(raw: unknown, now: number): PlanUsageWindow | null {
+  if (!isRecord(raw)) return null;
+  const seconds = numOf(raw['limit_window_seconds']);
+  const rounded = seconds === null ? null : Math.ceil(seconds / 60);
+  const minutes = rounded !== null && rounded > 0 && rounded <= 366 * 1440 ? rounded : null;
+  const span = minutes === null ? null : bucketOf(minutes);
+  const used = numOf(raw['used_percent']);
+  const usedPercent = used === null ? null : clampPercent(used);
+  const at = numOf(raw['reset_at']);
+  let reset: PlanUsageReset | null =
+    at === null ? null : plausibleResetAt(Math.round(at) * 1000, span, minutes, now);
+  if (at === null) {
+    const after = numOf(raw['reset_after_seconds']);
+    if (after !== null) reset = plausibleResetIn(Math.round(after) * 1000, span, minutes);
+  }
+  if (usedPercent === null && reset === null) return null;
+  return windowOf(accountKey(span, minutes), span, minutes, usedPercent, reset);
+}
+
+/**
+ * ChatGPT Plus/Pro `GET /backend-api/wham/usage`. Reads exactly `rate_limit.primary_window` and
+ * `rate_limit.secondary_window`; `used_percent` over 100 is clamped. Nothing else in the body is
+ * read: not `email`, `user_id`, `account_id`, `plan_type`, `credits`, `spend_control`,
+ * `additional_rate_limits` or `rate_limit_reset_credits`. Billing is never inferred from it.
+ */
+function parseChatgptWhamUsage(json: unknown, now: number): Parsed {
+  if (!isRecord(json)) return fail('unavailable', USAGE_MESSAGES.unrecognised);
+  const limit = json['rate_limit'];
+  if (!isRecord(limit)) return fail('unavailable', USAGE_MESSAGES.unrecognised);
+  const windows = dedupeByKey(
+    [
+      chatgptWindow(limit['primary_window'], now),
+      chatgptWindow(limit['secondary_window'], now),
+    ].filter((w): w is PlanUsageWindow => w !== null),
+  );
+  if (windows.length === 0) return fail('plan_inactive', USAGE_MESSAGES.noPlanUsage);
+  return { windows };
+}
+
 /** Parse a usage endpoint's JSON body. Pure and total: it never throws on hostile input. */
 export function parsePlanUsageBody(
   parser: PlanUsageParserId,
@@ -479,13 +627,50 @@ export function parsePlanUsageBody(
       case 'opencode_go_usage':
         parsed = parseOpencodeGoUsage(json, now);
         break;
+      case 'claude_oauth_usage':
+        parsed = parseClaudeOauthUsage(json, now);
+        break;
+      case 'chatgpt_wham_usage':
+        parsed = parseChatgptWhamUsage(json, now);
+        break;
     }
   } catch {
     return fail('unavailable', USAGE_MESSAGES.unreadable);
   }
   if ('ok' in parsed) return parsed;
-  // A refresh never changes billing: an endpoint read says nothing about it.
-  return { ok: true, observation: { windows: parsed.windows, billing: null } };
+  // Only an endpoint that states billing (Claude's `extra_usage`) carries one; every other read
+  // says nothing about it.
+  return { ok: true, observation: { windows: parsed.windows, billing: parsed.billing ?? null } };
+}
+
+/** The header-safe account-id charset (`account-claim.ts` extracts it the same way). */
+const ACCOUNT_ID = /^[A-Za-z0-9._-]{1,128}$/;
+
+/** The values of a probe's declared extra headers, or a typed failure when one cannot be filled
+ * (nothing is then sent). Values come only from bundled constants and the row's own config. */
+function extraHeaderValues(
+  probe: PlanUsageProbe,
+  config: ProviderConfig,
+):
+  | { readonly headers: Record<string, string> }
+  | { readonly failure: Extract<PlanUsageReadResult, { ok: false }> } {
+  const headers: Record<string, string> = {};
+  for (const name of probe.extraHeaders ?? []) {
+    switch (name) {
+      case 'anthropic-beta':
+        headers['anthropic-beta'] = PLAN_USAGE_ANTHROPIC_BETA;
+        break;
+      case 'chatgpt-account-id': {
+        const id = config.oauthAccountId;
+        if (id === undefined || !ACCOUNT_ID.test(id)) {
+          return { failure: fail('credential', USAGE_MESSAGES.noAccountId) };
+        }
+        headers['chatgpt-account-id'] = id;
+        break;
+      }
+    }
+  }
+  return { headers };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -549,11 +734,15 @@ export async function readPlanUsage(
     });
 
   // Built from scratch (design D7, FD3): never `config.extraHeaders`, so a declared imitation
-  // identity cannot ride a usage read. The User-Agent is set through the shared helper.
+  // identity cannot ride a usage read. The User-Agent is set through the shared helper. The only
+  // other headers are the probe's declared extras, from a closed allowlist.
+  const extra = extraHeaderValues(probe, config);
+  if ('failure' in extra) return extra.failure;
   const headers = withUserAgent(
     {
       Authorization: probe.auth === 'raw' ? config.credential : `Bearer ${config.credential}`,
       Accept: 'application/json',
+      ...extra.headers,
     },
     POLYROUTER_USER_AGENT,
   );

@@ -68,6 +68,7 @@ import {
   type ModelPricingInput,
   type KeyPresetDto,
   type OauthPresetDto,
+  type PlanUsageHistoryDto,
   type ProviderDto,
   type AutoPerformance,
   type CalibrationEvent,
@@ -410,6 +411,12 @@ export interface AppState {
     imitateClientIdentity: boolean;
     origImitateClientIdentity: boolean;
     clientIdentity: { label: string } | null;
+    /** add-subscription-usage-history: the edit-only usage-schedule switch, the value the modal
+     * opened with (sent only when changed), and whether the provider has a usage endpoint at all
+     * (`planUsageRefresh` non-null): without one, no switch is shown. */
+    checkPlanUsage: boolean;
+    origCheckPlanUsage: boolean;
+    planUsageSource: boolean;
   };
   /** Transient key-reveal — raw key/snippet live here ONLY, never persisted. */
   kr: { title: string; key: string; snippet: string; harness: Harness };
@@ -741,6 +748,7 @@ function toProvider(p: ProviderDto): Provider {
     planCooldown: p.planCooldown,
     planUsage: p.planUsage ?? null,
     planUsageRefresh: p.planUsageRefresh ?? null,
+    checkPlanUsage: p.checkPlanUsage ?? true,
     createdAt: p.createdAt,
     health: p.health,
   };
@@ -790,6 +798,9 @@ function emptyNp(): AppState['np'] {
     imitateClientIdentity: false,
     origImitateClientIdentity: false,
     clientIdentity: null,
+    checkPlanUsage: true,
+    origCheckPlanUsage: true,
+    planUsageSource: false,
   };
 }
 
@@ -1435,6 +1446,10 @@ export interface AppStore {
    * reloads the list once, to learn the cooldown's end). Nothing is toasted: the card reports the
    * outcome next to its button. */
   refreshPlanUsage: (id: string) => Promise<PlanUsageRefreshOutcome>;
+  /** The provider's usage history (add-subscription-usage-history), for its card's graphs. A plain
+   * read the card holds itself (once per mount, and again after a Refresh usage succeeds), so it
+   * never enters the shared store; it rejects on any failure, which the card states in place. */
+  loadPlanUsageHistory: (id: string) => Promise<PlanUsageHistoryDto>;
   deleteProvider: (id: string, call?: DestructiveCall) => Promise<void>;
   loadModels: (providerId: string) => Promise<void>;
   setModelPrice: (providerId: string, modelId: string, body: ModelPricingInput) => Promise<void>;
@@ -4106,6 +4121,11 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           if (form.imitateClientIdentity !== form.origImitateClientIdentity) {
             patch.imitateClientIdentity = form.imitateClientIdentity;
           }
+          // Same rule for the usage-schedule switch (add-subscription-usage-history), which only a
+          // provider with a usage endpoint shows: on every patch shape, only when changed.
+          if (form.planUsageSource && form.checkPlanUsage !== form.origCheckPlanUsage) {
+            patch.checkPlanUsage = form.checkPlanUsage;
+          }
           const typed = form.credential.trim();
           if (form.clearCredential) patch.credential = '';
           else if (typed) patch.credential = typed;
@@ -4159,6 +4179,9 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
           imitateClientIdentity: p.imitateClientIdentity,
           origImitateClientIdentity: p.imitateClientIdentity,
           clientIdentity: p.clientIdentity,
+          checkPlanUsage: p.checkPlanUsage,
+          origCheckPlanUsage: p.checkPlanUsage,
+          planUsageSource: p.planUsageRefresh !== null,
         },
       });
       void loadTimeoutDefaults();
@@ -4436,6 +4459,7 @@ export function createAppStore(client: ApiClient = realClient): AppStore {
         return { ok: false, reason: err(e) };
       }
     },
+    loadPlanUsageHistory: (id) => client.planUsageHistory(id),
     syncProvider: async (id) => {
       try {
         const result = await client.syncModels(id);

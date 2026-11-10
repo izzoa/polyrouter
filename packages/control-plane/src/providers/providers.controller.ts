@@ -16,6 +16,7 @@ import type { Principal } from '@polyrouter/shared/server';
 import { CurrentPrincipal } from '../auth/principal.decorator';
 import { resolveProxyBounds, type ProxyRawConfig } from '../proxy/proxy.config';
 import { CreateProviderDto, UpdateProviderDto } from './providers.dto';
+import type { PlanUsageHistory } from '../plan-usage/plan-usage-history';
 import {
   PlanUsageCooldownException,
   ProvidersService,
@@ -114,6 +115,19 @@ export class ProvidersController {
       }
       throw err;
     }
+  }
+
+  /** The plan-usage history (add-subscription-usage-history, design D5): each window's samples
+   * over its current span, oldest first. `404` for another tenant's id (the owner-scoped lookup
+   * runs first); an empty `windows` list without samples. Calls no usage endpoint, claims no
+   * cooldown. `no-store`: the answer is account usage. */
+  @Get(':id/plan-usage/history')
+  @Header('Cache-Control', 'no-store')
+  planUsageHistory(
+    @CurrentPrincipal() principal: Principal,
+    @Param('id') id: string,
+  ): Promise<PlanUsageHistory> {
+    return this.svc.planUsageHistory(principal, id);
   }
 
   @Post(':id/test-connection')

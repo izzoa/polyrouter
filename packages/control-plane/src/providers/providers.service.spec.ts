@@ -33,7 +33,7 @@ import {
 import { CHATGPT_PRESET, CLAUDE_PRESET, OAUTH_PRESETS } from '../subscription-oauth/presets';
 import type { OauthPreset } from '../subscription-oauth/presets';
 import { SubscriptionOauthService as RealSubscriptionOauthService } from '../subscription-oauth/subscription-oauth.service';
-import { PlanUsageCooldownException } from './providers.service';
+import { PlanUsageCooldownException, PlanUsageStoreUnavailableError } from './providers.service';
 import { planUsageHook, recorderSink } from '../plan-usage/plan-usage-hook';
 import * as baseUrlGate from './base-url-gate';
 import {
@@ -64,6 +64,7 @@ import {
   KEY_PRESET_PINNED_MESSAGE,
   ProvidersService,
   UNLISTED_PRUNE_AFTER_MS,
+  type PlanUsageGateRow,
   type ProviderAdapterFactory,
   type ProvidersRuntime,
 } from './providers.service';
@@ -150,6 +151,7 @@ function makePort(): FakePort {
     idleTimeoutMs: values.idleTimeoutMs ?? null,
     autoPruneUnlisted: values.autoPruneUnlisted ?? true,
     imitateClientIdentity: values.imitateClientIdentity ?? false,
+    checkPlanUsage: values.checkPlanUsage ?? true,
     createdAt: new Date(),
   });
   const upsert = jest.fn(
@@ -2182,12 +2184,20 @@ describe('ProvidersService — plan usage (add-subscription-quota-display 6.2-6.
   });
 
   interface SetupOpts {
-    /** Turn every key-preset usage probe ON (they ship disabled; a unit may exercise the path). */
+    /** Force every usage probe ON (they ship enabled since add-subscription-usage-history; kept so
+     * a test states the precondition it relies on). */
     enableProbes?: boolean;
+    /** Force every usage probe OFF: a WITHDRAWN endpoint (add-subscription-usage-history, D3). */
+    withdrawProbes?: boolean;
     withStore?: boolean;
     reader?: jest.Mock<Promise<PlanUsageReadResult>, [ProviderConfig, unknown]>;
     /** Wrap the store the service sees (a failover over a failing primary, etc.). */
     wrapStore?: (store: SpyUsageStore) => PlanUsageStore;
+    /** Replace the OAuth credential seam (the coalesced refresh lives behind it). */
+    resolveCredential?: (
+      p: Principal,
+      row: ProviderRow,
+    ) => Promise<{ credential: string; authScheme: 'api_key' | 'oauth_bearer' }>;
   }
 
   function setup(opts: SetupOpts = {}) {
@@ -2232,21 +2242,25 @@ describe('ProvidersService — plan usage (add-subscription-quota-display 6.2-6.
       availableClientIdentity: () => null,
       identityBindingFor: (row: ProviderRow) => {
         const real = realOauth.identityBindingFor(row);
-        if (opts.enableProbes === true && real?.usage?.probe !== undefined) {
+        const forced =
+          opts.withdrawProbes === true ? false : opts.enableProbes === true ? true : undefined;
+        if (forced !== undefined && real?.usage?.probe !== undefined) {
           return {
             ...real,
-            usage: { ...real.usage, probe: { ...real.usage.probe, enabled: true } },
+            usage: { ...real.usage, probe: { ...real.usage.probe, enabled: forced } },
           };
         }
         return real;
       },
-      resolveCredential: (_p: Principal, row: ProviderRow) =>
-        Promise.resolve({
-          credential: resolvePlainCredentialValue(
-            decryptSecret(row.encryptedCredentials as string, KEY),
-          ),
-          authScheme: 'api_key' as const,
-        }),
+      resolveCredential:
+        opts.resolveCredential ??
+        ((_p: Principal, row: ProviderRow) =>
+          Promise.resolve({
+            credential: resolvePlainCredentialValue(
+              decryptSecret(row.encryptedCredentials as string, KEY),
+            ),
+            authScheme: 'api_key' as const,
+          })),
     } as unknown as SubscriptionOauthService;
     const facilities = {
       withAdvisoryLock: (_k: number, fn: (tx: PersistencePort) => Promise<unknown>) =>
@@ -2413,10 +2427,9 @@ describe('ProvidersService — plan usage (add-subscription-quota-display 6.2-6.
       expect(list).toHaveLength(20);
       expect(t.spy.calls.readMany).toBe(1);
       expect([...t.spy.readManyIds[0]!].sort()).toEqual(sourced.map((r) => r.id).sort());
-      // The cooldown is asked for only on rows with an ENABLED endpoint (Go and Kimi here).
-      expect([...t.spy.readManyCooldownIds[0]!].sort()).toEqual(
-        [sourced[2]!.id, sourced[3]!.id].sort(),
-      );
+      // The cooldown is asked for only on rows with an ENABLED endpoint: every sourced row here,
+      // Claude and ChatGPT included since add-subscription-usage-history.
+      expect([...t.spy.readManyCooldownIds[0]!].sort()).toEqual(sourced.map((r) => r.id).sort());
       expect(t.spy.total()).toBe(1);
     });
 
@@ -2429,12 +2442,13 @@ describe('ProvidersService — plan usage (add-subscription-quota-display 6.2-6.
       expect(t.spy.total()).toBe(0);
     });
 
-    it('a Claude provider carries its windows with ISO instants, source and billing; no refresh', async () => {
+    it('a Claude provider carries its windows with ISO instants, source and billing, and offers refresh', async () => {
       const t = setup();
       const claude = await t.claudeRow();
       await t.store.merge(claude.id, OBS, 0, 'traffic');
       const view = await t.svc.get(principal, claude.id);
-      expect(view.planUsageRefresh).toBeNull();
+      // add-subscription-usage-history: the Claude preset now declares a usage endpoint.
+      expect(view.planUsageRefresh).toEqual({ availableAt: null });
       expect(view.planUsage).not.toBeNull();
       const w = view.planUsage!.windows[0]!;
       expect(w).toMatchObject({ span: '5h', usedPercent: 42, source: 'traffic' });
@@ -2454,11 +2468,22 @@ describe('ProvidersService — plan usage (add-subscription-quota-display 6.2-6.
       expect(view.planUsageRefresh).toEqual({ availableAt: null });
     });
 
-    it('a shipped (disabled) usage endpoint offers no refresh and keeps the view', async () => {
-      const t = setup(); // probes stay disabled
+    it('a shipped usage endpoint offers refresh now, Claude and ChatGPT included (add-subscription-usage-history)', async () => {
+      const t = setup(); // the shipped flags
+      for (const row of [await t.kimiRow(), await t.claudeRow(), await t.chatgptRow()]) {
+        expect((await t.svc.get(principal, row.id)).planUsageRefresh).toEqual({
+          availableAt: null,
+        });
+      }
+    });
+
+    it('a withdrawn usage endpoint offers no refresh and keeps the view', async () => {
+      const t = setup({ withdrawProbes: true });
       const row = await t.kimiRow();
+      await t.store.merge(row.id, OBS, 0, 'refresh');
       const view = await t.svc.get(principal, row.id);
       expect(view.planUsageRefresh).toBeNull();
+      expect(view.planUsage!.windows[0]!.usedPercent).toBe(42);
     });
 
     it('availableAt comes from the cooldown', async () => {
@@ -2533,7 +2558,7 @@ describe('ProvidersService — plan usage (add-subscription-quota-display 6.2-6.
     });
 
     it('422 for a provider with no enabled usage endpoint, with no claim and no read', async () => {
-      const t = setup(); // disabled probes
+      const t = setup({ withdrawProbes: true }); // withdrawn endpoints
       const row = await t.kimiRow();
       const plain = await t.plainRow();
       const claude = await t.claudeRow();
@@ -2727,6 +2752,227 @@ describe('ProvidersService — plan usage (add-subscription-quota-display 6.2-6.
       expect(reset).not.toHaveBeenCalled();
       expect(t.rows.get(row.id)!.status).toBe('unknown');
       expect(t.rows.get(row.id)!.trafficState).toBeNull();
+    });
+  });
+
+  // ---------------------------------------------------------------- the unattended read
+
+  describe('readUsageUnattended (add-subscription-usage-history, task 3.1)', () => {
+    const owner = (row: ProviderRow) => ({ id: row.id, ownerUserId: row.ownerUserId });
+    /** Every health-bearing column of a row, so "no health was written" is one comparison. */
+    const healthOf = (row: ProviderRow | undefined) => ({
+      status: row?.status,
+      lastErrorKind: row?.lastErrorKind,
+      statusSource: row?.statusSource,
+      statusChangedAt: row?.statusChangedAt,
+      statusRev: row?.statusRev,
+      trafficState: row?.trafficState,
+      trafficErrorKind: row?.trafficErrorKind,
+      trafficAt: row?.trafficAt,
+      healthRev: row?.healthRev,
+      credentialError: row?.credentialError,
+    });
+
+    it('a success claims the shared cooldown, reads once and merges source refresh', async () => {
+      const t = setup();
+      const row = await t.kimiRow();
+      await expect(t.svc.readUsageUnattended(owner(row))).resolves.toEqual({
+        status: 'read',
+        ok: true,
+      });
+      expect(t.spy.calls.claimRefresh).toBe(1);
+      expect(t.reader).toHaveBeenCalledTimes(1);
+      expect(t.spy.merges).toEqual([{ id: row.id, gen: 0, source: 'refresh' }]);
+      // The same claim a click makes: Refresh usage is now refused until the cooldown ends.
+      await expect(t.svc.refreshPlanUsage(principal, row.id)).rejects.toBeInstanceOf(
+        PlanUsageCooldownException,
+      );
+      expect(t.reader).toHaveBeenCalledTimes(1);
+    });
+
+    it('a held cooldown (a click, or another instance) sends nothing', async () => {
+      const t = setup();
+      const row = await t.kimiRow();
+      await t.svc.refreshPlanUsage(principal, row.id); // the click
+      expect(t.reader).toHaveBeenCalledTimes(1);
+      await expect(t.svc.readUsageUnattended(owner(row))).resolves.toEqual({
+        status: 'skipped',
+        reason: 'cooldown',
+      });
+      expect(t.reader).toHaveBeenCalledTimes(1);
+      expect(t.spy.merges).toHaveLength(1);
+    });
+
+    it('a 429 Retry-After extends the shared cooldown, and changes no snapshot', async () => {
+      const reader = jest.fn((_c: ProviderConfig, _p: unknown) =>
+        Promise.resolve<PlanUsageReadResult>({
+          ok: false,
+          kind: 'rate_limit',
+          message: 'The usage endpoint is rate limiting reads.',
+          retryAfterMs: 15 * 60_000,
+        }),
+      );
+      const t = setup({ reader });
+      const row = await t.kimiRow();
+      const before = Date.now();
+      await expect(t.svc.readUsageUnattended(owner(row))).resolves.toEqual({
+        status: 'read',
+        ok: false,
+        kind: 'rate_limit',
+      });
+      expect(t.spy.calls.extendRefresh).toBe(1);
+      expect(t.spy.merges).toEqual([]);
+      const ends = (await t.store.readMany([row.id], [row.id])).get(row.id)!.cooldownEndsAt!;
+      expect(ends - before).toBeGreaterThanOrEqual(15 * 60_000 - 1_000);
+      expect(ends - before).toBeLessThanOrEqual(15 * 60_000 + 1_000);
+    });
+
+    it('a 401 changes no snapshot and no health record, and touches no other provider', async () => {
+      const reader = jest.fn((config: ProviderConfig, _p: unknown) =>
+        Promise.resolve<PlanUsageReadResult>(
+          config.credential === 'bad-key'
+            ? {
+                ok: false,
+                kind: 'auth',
+                message: 'The provider rejected the credential for its usage endpoint.',
+              }
+            : { ok: true, observation: OBS },
+        ),
+      );
+      const t = setup({ reader });
+      const bad = await t.kimiRow('bad');
+      t.rows.set(bad.id, {
+        ...t.rows.get(bad.id)!,
+        encryptedCredentials: encryptSecret(serializePlainCredential('bad-key'), KEY),
+      });
+      const good = await t.goRow('good');
+      await t.store.merge(bad.id, OBS, 0, 'traffic');
+      const snapBefore = (await t.store.readMany([bad.id])).get(bad.id)!.snapshot;
+      const healthBefore = healthOf(t.rows.get(bad.id));
+      await expect(t.svc.readUsageUnattended(owner(bad))).resolves.toEqual({
+        status: 'read',
+        ok: false,
+        kind: 'auth',
+      });
+      expect((await t.store.readMany([bad.id])).get(bad.id)!.snapshot).toEqual(snapBefore);
+      expect(healthOf(t.rows.get(bad.id))).toEqual(healthBefore);
+      // The next provider still reads.
+      await expect(t.svc.readUsageUnattended(owner(good))).resolves.toMatchObject({ ok: true });
+      expect(healthOf(t.rows.get(good.id))).toEqual(healthOf(good));
+    });
+
+    it('an OAuth token resolves through the credential seam once per read, and the read uses it', async () => {
+      let resolved = 0;
+      const t = setup({
+        // The coalesced refresh lives behind `resolveCredential`: an expired token is refreshed
+        // there and the new one returned (the e2e drives the real one).
+        resolveCredential: () => {
+          resolved += 1;
+          return Promise.resolve({ credential: 'at-refreshed', authScheme: 'oauth_bearer' });
+        },
+      });
+      const claude = await t.claudeRow();
+      await expect(t.svc.readUsageUnattended(owner(claude))).resolves.toMatchObject({ ok: true });
+      expect(resolved).toBe(1);
+      expect(t.reader).toHaveBeenCalledTimes(1);
+      expect(t.reader.mock.calls[0]![0].credential).toBe('at-refreshed');
+      expect(t.reader.mock.calls[0]![1]).toBe(CLAUDE_PRESET.usageProbe);
+    });
+
+    it('a credential that cannot resolve sends nothing and is reported, never thrown', async () => {
+      const t = setup({
+        resolveCredential: () =>
+          Promise.reject(new ProviderError('credential', 'needs reauthorization')),
+      });
+      const chatgpt = await t.chatgptRow();
+      await expect(t.svc.readUsageUnattended(owner(chatgpt))).resolves.toMatchObject({
+        status: 'read',
+        ok: false,
+      });
+      expect(t.reader).not.toHaveBeenCalled();
+    });
+
+    it('skips an ineligible row before any claim: switch off, reconnect needed, no endpoint, drifted', async () => {
+      const t = setup();
+      const off = await t.kimiRow('off');
+      t.rows.set(off.id, { ...t.rows.get(off.id)!, checkPlanUsage: false });
+      const reconnect = await t.claudeRow('reconnect');
+      t.rows.set(reconnect.id, {
+        ...t.rows.get(reconnect.id)!,
+        credentialError: 'reauthorize_required',
+      });
+      const plain = await t.plainRow();
+      const other = await t.insert('other', kimi, {});
+      const drifted = await t.insert(
+        'drifted',
+        { baseUrl: 'https://proxy.example.test/', protocol: 'anthropic_compatible' },
+        { oauthPreset: CLAUDE_PRESET.id },
+      );
+      for (const row of [off, reconnect, plain, other, drifted]) {
+        await expect(t.svc.readUsageUnattended(owner(row))).resolves.toEqual({
+          status: 'skipped',
+          reason: 'ineligible',
+        });
+      }
+      await expect(t.svc.readUsageUnattended({ id: 'gone', ownerUserId: 'u1' })).resolves.toEqual({
+        status: 'skipped',
+        reason: 'missing',
+      });
+      expect(t.spy.calls.claimRefresh).toBe(0);
+      expect(t.reader).not.toHaveBeenCalled();
+    });
+
+    it('a withdrawn endpoint is neither scheduled nor claimed', async () => {
+      const t = setup({ withdrawProbes: true });
+      const row = await t.kimiRow();
+      await expect(t.svc.readUsageUnattended(owner(row))).resolves.toEqual({
+        status: 'skipped',
+        reason: 'ineligible',
+      });
+      expect(t.svc.canScheduleUsageRead(row)).toBe(false);
+      // Its snapshot may still be sampled (a passive source or an old reading).
+      expect(t.svc.canSampleUsage(row)).toBe(true);
+      expect(t.spy.calls.claimRefresh).toBe(0);
+    });
+
+    it('an unreachable store ends the read with a typed error and sends nothing', async () => {
+      const t = setup();
+      const row = await t.kimiRow();
+      t.spy.fail.claimRefresh = new Error('redis down');
+      await expect(t.svc.readUsageUnattended(owner(row))).rejects.toBeInstanceOf(
+        PlanUsageStoreUnavailableError,
+      );
+      const none = setup({ withStore: false });
+      const r2 = await none.kimiRow();
+      await expect(none.svc.readUsageUnattended(owner(r2))).rejects.toBeInstanceOf(
+        PlanUsageStoreUnavailableError,
+      );
+      expect(t.reader).not.toHaveBeenCalled();
+      expect(none.reader).not.toHaveBeenCalled();
+    });
+
+    it('the gates: read needs the switch, no reconnect and an enabled endpoint; sample needs the switch and a source', () => {
+      const t = setup();
+      const gate = (over: Partial<ProviderRow>): PlanUsageGateRow => ({
+        kind: 'subscription',
+        baseUrl: CLAUDE_PRESET.baseUrl,
+        protocol: CLAUDE_PRESET.protocol,
+        oauthPreset: CLAUDE_PRESET.id,
+        keyPreset: null,
+        checkPlanUsage: true,
+        credentialError: null,
+        ...over,
+      });
+      expect(t.svc.canScheduleUsageRead(gate({}))).toBe(true);
+      expect(t.svc.canSampleUsage(gate({}))).toBe(true);
+      expect(t.svc.canScheduleUsageRead(gate({ checkPlanUsage: false }))).toBe(false);
+      expect(t.svc.canSampleUsage(gate({ checkPlanUsage: false }))).toBe(false);
+      expect(t.svc.canScheduleUsageRead(gate({ credentialError: 'reauthorize_required' }))).toBe(
+        false,
+      );
+      expect(t.svc.canScheduleUsageRead(gate({ kind: 'api_key' }))).toBe(false);
+      expect(t.svc.canSampleUsage(gate({ kind: 'api_key' }))).toBe(false);
+      expect(t.svc.canScheduleUsageRead(gate({ oauthPreset: null }))).toBe(false); // pasted
     });
   });
 

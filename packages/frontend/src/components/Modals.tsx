@@ -702,6 +702,37 @@ export function Modals() {
                           </div>
                         </div>
                       </Show>
+                      {/* add-subscription-usage-history (design D7): edit only, and only where the
+                    provider has a usage endpoint (`planUsageRefresh`). The same native checkbox as
+                    the settings around it, committed by Save; the PATCH carries it only when
+                    changed. Refresh usage works either way. */}
+                      <Show when={state.np.editingId !== null && state.np.planUsageSource}>
+                        <div>
+                          <label
+                            for="f-np-plan-usage"
+                            class="t-label"
+                            style="display:flex;align-items:center;gap:8px;min-height:24px;color:var(--text2)"
+                          >
+                            <input
+                              type="checkbox"
+                              id="f-np-plan-usage"
+                              checked={state.np.checkPlanUsage}
+                              aria-describedby="f-np-plan-usage-caption"
+                              onChange={(e) =>
+                                setState('np', 'checkPlanUsage', e.currentTarget.checked)
+                              }
+                            />
+                            Check plan usage on a schedule
+                          </label>
+                          <div
+                            id="f-np-plan-usage-caption"
+                            class="t-caption"
+                            style="color:var(--text3);margin-top:4px"
+                          >
+                            Reads this plan’s usage endpoint about every 15 minutes.
+                          </div>
+                        </div>
+                      </Show>
                       <div class="t-caption" style="color:var(--text3)">
                         Custom base URLs are SSRF-checked — private and metadata ranges are
                         rejected. Credentials are encrypted at rest.

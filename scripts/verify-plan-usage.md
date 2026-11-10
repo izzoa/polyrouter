@@ -1,16 +1,22 @@
-# Live verification — plan usage (add-subscription-quota-display)
+# Live verification — plan usage (add-subscription-quota-display, add-subscription-usage-history)
 
-**Ask the user before every live call. Use the user's own credentials, never CI.**
+**Optional QA.** Ask the user before every live call. Use the user's own credentials, never CI.
 
-Plan usage is read from two places, and both are [U] until a real account has been checked:
+Plan usage is read from two places, and both carry [U] items until a real account has been
+checked:
 
 - **Passive** (Claude, ChatGPT, OpenCode Go): header and body fields on replies polyrouter already
   receives. Nothing here adds a call.
-- **Active** (MiniMax, Kimi Code, Z.ai, OpenCode Go): one user-clicked read of the plan's own usage
-  endpoint. Every `usageProbe` in
-  `packages/control-plane/src/subscription-presets/key-presets.ts` ships **`enabled: false`**, and
-  an enabled-and-known-broken probe must never ship. A probe is switched on only by the user,
-  after its section below passes (step 9.7).
+- **Active** (MiniMax, Kimi Code, Z.ai, OpenCode Go, Claude, ChatGPT): a read of the plan's own
+  usage endpoint, on a Refresh usage press and on the usage schedule (about every 15 minutes, per
+  provider, while its "Check plan usage on a schedule" switch is on). Every `usageProbe` ships
+  **`enabled: true`** (add-subscription-usage-history, design D3): in
+  `packages/control-plane/src/subscription-presets/key-presets.ts` for the key plans and in
+  `packages/control-plane/src/subscription-oauth/presets.ts` for Claude and ChatGPT. This runbook
+  is **optional QA**: it settles the [U] items below and records whether each endpoint accepts
+  polyrouter's honest User-Agent. An endpoint a run (or a user report) shows **broken** is
+  **withdrawn** by shipping its probe `enabled: false` (step 9.9); nothing needs a run to be
+  switched on.
 
 Re-run a section on suspicion of upstream drift (Codex's header names were renamed twice in
 October 2025, and Claude Code's grew from 18 to about 30).
@@ -28,7 +34,8 @@ field, or into `read -s` in your own shell, only.
 
 1. **Record header NAMES only**, never values, for the response-header steps (9.1, 9.2).
 2. For the endpoint steps (9.3 to 9.6), record the **HTTP status**, the top-level JSON **key
-   names**, and the **nested key names the parser reads** (listed in each section).
+   names**, and the **nested key names the parser reads** (listed in each section). For the
+   Claude and ChatGPT endpoint steps (9.7, 9.8), record the card's outcome (below).
 3. Also record the **enum values the parser branches on**. They are not personal: Z.ai `unit`
    numbers and `type` strings, MiniMax `*_status`, OpenCode Go `status`, and a Kimi 403's error
    code.
@@ -39,8 +46,11 @@ field, or into `read -s` in your own shell, only.
    free-text body or error message.
 6. One read per region, never a retry loop. A 403 or 429 may be a refusal of your account; stop and
    record it. The honest `User-Agent: polyrouter/<version>` is the only identity ever sent to a
-   usage endpoint. If a region refuses it, that region's probe **stays disabled**; it is never
-   switched to the imitation identity.
+   usage endpoint. If a region refuses it, that region's probe is **withdrawn** (step 9.9); it is
+   never switched to the imitation identity.
+7. To keep a run to the reads you make yourself, turn the provider's **"Check plan usage on a
+   schedule"** switch off in Edit before the step, and back on after it. Refresh usage still reads
+   on a press while the switch is off.
 
 ### Printing names without values
 
@@ -188,8 +198,8 @@ whether the key needs Usage › Read or the workspace header. [U]
 
 **Pass:** the endpoint answers 200 with the `rolling`, `weekly` or `monthly` objects and a
 parseable `percent` and `resetsAt`. **Sets:** the `opencode_go_usage` fixture in
-`plan-usage-read.spec.ts` cites this run; a pass allows `usageProbe.enabled: true` on the OpenCode
-Go region, in step 9.7 only. A refusal keeps it disabled.
+`plan-usage-read.spec.ts` cites this run. A refusal of the honest User-Agent withdraws the
+OpenCode Go probe (step 9.9); a 403 explained by the key's permissions does not.
 
 ## 9.4 MiniMax (M Plan)
 
@@ -239,8 +249,8 @@ exhaustion 403 from a gate.
      plan is exhausted (Kimi has answered 403 for 5-hour and weekly exhaustion), a User-Agent gate,
      or a key or permission problem. For a 403, also record the error envelope's **key names** and
      its **code values**, never its free text. Conclude "UA gate" only if the body names the
-     User-Agent, or the 403 repeats while the dashboard shows the plan **not** exhausted. Either
-     way the probe stays disabled until the cause is known, and the docs never say Kimi refuses
+     User-Agent, or the 403 repeats while the dashboard shows the plan **not** exhausted. Only a
+     confirmed gate withdraws the probe (step 9.9), and the docs never say Kimi refuses
      polyrouter's User-Agent on a bare 403;
    - the envelope key names;
    - whether the `limits[].detail` counters (`limit`, `used`, `remaining`, `resetTime`) and the
@@ -254,8 +264,8 @@ exhaustion 403 from a gate.
 **Pass:** status 200 with at least one `limits[].detail` or the `usage` counters. **Sets:** the
 `kimi_usages` fixture cites this run, and the `usage` summary's label (weekly, monthly, or none)
 follows the hours you recorded; if it stays unclear it stays unlabelled (`plan window`). A 403 that
-has not been explained keeps that region's probe disabled. Record Moonshot's unanswered
-third-party question (kimi-code#2937) status here as well.
+has not been explained is recorded and left for a second run; it withdraws nothing on its own.
+Record Moonshot's unanswered third-party question (kimi-code#2937) status here as well.
 
 ## 9.6 Z.ai (GLM Coding Plan)
 
@@ -280,17 +290,67 @@ the probe's `auth` (`bearer`, or `raw` only if Bearer was refused), and confirms
 unit mapping in `ZAI_UNIT_MINUTES` (`plan-usage-read.ts`); the `zai_quota_limit` fixture cites this
 run.
 
-## 9.7 Enable the verified probes (a separate commit)
+## 9.7 Claude usage endpoint (`/api/oauth/usage`)
 
-Only after the matching section **passed**:
+Settles: whether `GET https://api.anthropic.com/api/oauth/usage` (the **plain** path, never a
+`?cedar_ember` or `skip_spend` variant) accepts polyrouter's honest User-Agent with only the Bearer
+token and `anthropic-beta: oauth-2025-04-20`, and whether its windows match the parser
+(`claude_oauth_usage`). [U] The endpoint shares a per-account rate limit with your own Claude
+Code sessions, so make **one** read.
 
-1. In `key-presets.ts`, set `usageProbe.enabled: true` on **exactly** the regions whose step passed.
-   A region that was not run, was refused, or has an unexplained 403 stays `false`.
+1. Connect the Claude preset (per `scripts/verify-claude-oauth.md` steps 1 and 2), and turn its
+   schedule switch off (rule 7).
+2. On the Claude card, press **Refresh usage once**. This is polyrouter's own read: the honest
+   User-Agent, the Bearer token, the beta header, and nothing else.
+3. Record the **outcome** only:
+   - **accepted**: the usage line shows windows. Record which labels appear (`5h`, `weekly`,
+     `weekly Sonnet`, `weekly Opus`) and whether each percent matches the Claude usage page to
+     within one point (a 1% window must never read 100%);
+   - **refused**: record the card's fixed message (it names the outcome, never the body):
+     "rejected the credential" (401), "was refused" (403; a missing `user:profile` scope is one
+     cause), "rate limiting reads" (429; record whether this followed your own Claude Code use),
+     or "nothing this version can read" (a 200 in a shape the parser does not know).
+
+**Pass:** the card shows at least the `5h` or `weekly` window with plausible percents. **Sets:**
+the `claude_oauth_usage` fixture cites this run. **If refused with 401 or 403 while the provider's
+Test passes:** the endpoint does not accept polyrouter's identity; withdraw the Claude probe
+(step 9.9). It is never switched to an imitated client.
+
+## 9.8 ChatGPT usage endpoint (`/backend-api/wham/usage`)
+
+Settles: whether `GET https://chatgpt.com/backend-api/wham/usage` accepts polyrouter's honest
+User-Agent with only the Bearer token and `chatgpt-account-id` (no `originator`, no
+`x-openai-codex-luna-reserve`), and whether its windows match the parser (`chatgpt_wham_usage`).
+[U] No other `/wham/` path is ever called; `/wham/rate-limit-reset-credits/consume` spends a
+banked reset.
+
+1. Connect the ChatGPT preset (per `scripts/verify-chatgpt-oauth.md`), and turn its schedule
+   switch off (rule 7).
+2. On the ChatGPT card, press **Refresh usage once**.
+3. Record the **outcome** only:
+   - **accepted**: record which labels the usage line shows (`5h`, `weekly`, or another length),
+     and whether each percent matches the Codex usage view to within one point;
+   - **refused**: record the card's fixed message, as in 9.7. A "carries no account id" message
+     means the sign-in has no account claim; reconnect, then repeat once.
+
+**Pass:** the card shows a window labelled by its length with a plausible percent. **Sets:** the
+`chatgpt_wham_usage` fixture cites this run. **If refused with 401 or 403 while the provider's
+Test passes:** withdraw the ChatGPT probe (step 9.9). OpenAI's Pro help page prohibits
+"automatically extracting data": record that the run was a single attended read.
+
+## 9.9 Withdraw a broken endpoint (a separate commit)
+
+Only when a section **showed an endpoint broken** (a refused honest User-Agent, a changed path, or a
+shape the parser cannot read), never for an account condition such as an exhausted plan:
+
+1. Set that probe's `enabled: false`: in `key-presets.ts` for a key region, in
+   `subscription-oauth/presets.ts` for Claude or ChatGPT. Its providers then offer no Refresh
+   usage, and the schedule skips them.
 2. Update the registry comment (source and date, as the other runbooks do) and
-   `docs/self-hosting.md` ("Plan usage on the card": the enablement table and the Kimi 403 and
-   Z.ai terms text).
-3. Run `npm test -w packages/control-plane -- key-presets`; the registry test pins exactly the
-   enabled set. Commit this on its own, so reverting it only switches the probes off.
+   `docs/self-hosting.md` (what is read, and the per-endpoint notes).
+3. Update the registry tests that pin every probe as enabled
+   (`npm test -w packages/control-plane -- key-presets presets plan-usage-sources`). Commit this on
+   its own, so reverting it only switches the endpoint back on.
 
 ## Which [U] items each step settles
 
@@ -318,6 +378,8 @@ Only after the matching section **passed**:
 | OpenCode Go: whether a Models › Request-only key may read `/usage` (403)         | 9.3                                                      |
 | OpenCode Go: whether `x-opencode-org-id` is needed for a workspace-bound key     | 9.3                                                      |
 | OpenCode Go: a buffered reply reports `usage.opencode`                           | 9.3 step 2                                               |
+| Claude: `/api/oauth/usage` accepts the honest UA with Bearer + the oauth beta    | 9.7                                                      |
+| ChatGPT: `/wham/usage` accepts the honest UA with Bearer + `chatgpt-account-id`  | 9.8                                                      |
 
 ## Results
 
@@ -333,4 +395,6 @@ Fill one row per run. Names, statuses, enum values and rounded numbers only.
 |      | 9.5 Kimi (China)      |        |                                                               |
 |      | 9.6 Z.ai (intl)       |        |                                                               |
 |      | 9.6 Z.ai (China)      |        |                                                               |
-|      | 9.7 enablement commit |        |                                                               |
+|      | 9.7 Claude endpoint   |        |                                                               |
+|      | 9.8 ChatGPT endpoint  |        |                                                               |
+|      | 9.9 withdrawal commit |        |                                                               |

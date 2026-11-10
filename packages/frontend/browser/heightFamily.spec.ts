@@ -234,6 +234,13 @@ async function* pageStates(page: Page): AsyncGenerator<string> {
   yield 'accept invite';
   await open(page, '/browser-harness.html?targets=1#/providers');
   yield 'providers (with a provider card)';
+  // add-subscription-usage-history: the subscription cards with their usage graphs, the open
+  // model-limit graphs disclosure included (its summary and the graphs' Refresh usage row).
+  await open(page, '/browser-harness.html?usage=1#/providers');
+  await page.waitForSelector('figure[data-usage-graph] canvas');
+  await page.locator('details[data-usage-graph-buckets] > summary').click();
+  await page.waitForSelector('details[data-usage-graph-buckets] figure[data-usage-graph]');
+  yield 'providers (plan usage graphs)';
   await open(page, '/browser-harness.html?budget=progress#/limits');
   await expect(page.locator('.budget-card').first()).toBeVisible();
   yield 'limits (with budget cards)';

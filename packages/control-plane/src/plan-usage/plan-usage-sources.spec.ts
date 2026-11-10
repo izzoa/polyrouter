@@ -61,9 +61,15 @@ function keyRow(preset: KeyPreset, region: KeyPresetRegion, over: Partial<Row> =
 const sourcesOf = (row: Row) => planUsageSourcesFor(row, oauth.identityBindingFor(row));
 
 describe('planUsageSourcesFor (task 5.2)', () => {
-  it('a coherent Claude row, ChatGPT row and OpenCode Go row each yield their dialect', () => {
-    expect(sourcesOf(oauthRow(CLAUDE_PRESET))).toEqual({ dialect: 'anthropic_unified' });
-    expect(sourcesOf(oauthRow(CHATGPT_PRESET))).toEqual({ dialect: 'codex' });
+  it('a coherent Claude row, ChatGPT row and OpenCode Go row each yield their dialect and probe', () => {
+    expect(sourcesOf(oauthRow(CLAUDE_PRESET))).toEqual({
+      dialect: 'anthropic_unified',
+      probe: CLAUDE_PRESET.usageProbe,
+    });
+    expect(sourcesOf(oauthRow(CHATGPT_PRESET))).toEqual({
+      dialect: 'codex',
+      probe: CHATGPT_PRESET.usageProbe,
+    });
     const go = OPENCODE_GO_PRESET.regions[0]!;
     expect(sourcesOf(keyRow(OPENCODE_GO_PRESET, go))).toEqual({
       dialect: 'opencode_go',
@@ -243,5 +249,68 @@ describe('one table, both gates (task 5.2)', () => {
 
   it('the registry used is the bundled one (no host-injected lookup exists)', () => {
     expect(defaultKeyPresetRegistry.list()).toBe(KEY_PRESETS);
+  });
+});
+
+describe('every usage endpoint, across both registries (add-subscription-usage-history, task 2.2)', () => {
+  const all = [
+    ...OAUTH_PRESETS.flatMap((p) =>
+      p.usageProbe === undefined ? [] : [{ id: p.id, baseUrl: p.baseUrl, probe: p.usageProbe }],
+    ),
+    ...KEY_PRESETS.flatMap((p) =>
+      p.regions.flatMap((r) =>
+        r.usageProbe === undefined
+          ? []
+          : [{ id: `${p.id}/${r.id}`, baseUrl: r.baseUrl, probe: r.usageProbe }],
+      ),
+    ),
+  ];
+
+  it('is not vacuous: the six key-region endpoints plus Claude and ChatGPT', () => {
+    expect(all.map((e) => e.id)).toEqual(
+      expect.arrayContaining(['claude', 'chatgpt', 'kimi-code/intl', 'opencode-go/default']),
+    );
+    expect(all).toHaveLength(8);
+  });
+
+  it('is https, canonical, plain and same-origin with its preset pin, and ships enabled', () => {
+    for (const { id, baseUrl, probe } of all) {
+      const u = new URL(probe.url);
+      expect({ id, ok: u.protocol === 'https:' && u.href === probe.url }).toEqual({ id, ok: true });
+      expect({ id, origin: u.origin }).toEqual({ id, origin: new URL(baseUrl).origin });
+      expect({ id, extra: u.username + u.password + u.search + u.hash }).toEqual({ id, extra: '' });
+      expect({ id, enabled: probe.enabled }).toEqual({ id, enabled: true });
+    }
+  });
+
+  it('names exactly its documented extra headers: Claude the oauth beta, ChatGPT the account id', () => {
+    for (const { id, probe } of all) {
+      const expected =
+        id === 'claude'
+          ? ['anthropic-beta']
+          : id === 'chatgpt'
+            ? ['chatgpt-account-id']
+            : undefined;
+      expect({ id, extra: probe.extraHeaders }).toEqual({ id, extra: expected });
+    }
+  });
+
+  it('reaches no other /wham/ path and no personal-data endpoint', () => {
+    const urls = all.map((e) => e.probe.url);
+    expect(urls.filter((u) => u.includes('/wham/'))).toEqual([
+      'https://chatgpt.com/backend-api/wham/usage',
+    ]);
+    for (const u of urls) {
+      expect(u).not.toMatch(
+        /rate-limit-reset-credits|\/profiles\/me|\/wham\/accounts|\/api\/oauth\/profile|\/me$/,
+      );
+    }
+  });
+
+  it('a coherent OAuth row offers its probe through the one gate; a drifted one offers none', () => {
+    expect(sourcesOf(oauthRow(CLAUDE_PRESET))?.probe).toBe(CLAUDE_PRESET.usageProbe);
+    expect(sourcesOf(oauthRow(CHATGPT_PRESET))?.probe).toBe(CHATGPT_PRESET.usageProbe);
+    expect(sourcesOf(oauthRow(CLAUDE_PRESET, { baseUrl: 'https://proxy.example/' }))).toBeNull();
+    expect(sourcesOf(oauthRow(CHATGPT_PRESET, { kind: 'api_key' }))).toBeNull();
   });
 });

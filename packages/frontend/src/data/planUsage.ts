@@ -88,10 +88,17 @@ const ms = (iso: string | null): number | null => {
   return Number.isNaN(t) ? null : t;
 };
 
+/** The parts of a window its label is read from: a snapshot window, or a history window. */
+export type PlanUsageLabelParts = Pick<
+  PlanUsageWindowDto,
+  'key' | 'group' | 'span' | 'minutes' | 'scope'
+>;
+
 /** A named span is its label; an unnamed length is labelled by its minutes (`1h window`,
  * `90-min window`); a window with no length at all is a `plan window`. A scoped account window
- * names its scope (`weekly Fable`). */
-function windowLabel(w: PlanUsageWindowDto): string {
+ * names its scope (`weekly Fable`). Exported for the usage graphs (add-subscription-usage-history),
+ * which name each window exactly as the line does. */
+export function windowLabel(w: PlanUsageLabelParts): string {
   let base: string;
   if (w.span !== null) base = w.span;
   else if (w.minutes !== null && w.minutes > 0) {
@@ -104,7 +111,7 @@ function windowLabel(w: PlanUsageWindowDto): string {
 }
 
 /** A model bucket is named by its allowlisted scope (or the id the server derived). */
-function bucketLabel(w: PlanUsageWindowDto): string {
+export function bucketLabel(w: PlanUsageLabelParts): string {
   return w.scope ?? w.key.replace(/^model:/, '');
 }
 

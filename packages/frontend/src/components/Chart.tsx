@@ -29,10 +29,36 @@ export interface ChartProps {
    * a budget card). A view may show one focal measure; `indigoBudget.spec.ts` counts them. A
    * neutral chart (`accentFirst={false}`) names none. */
   measure?: string;
+  /** The single-series chart's neutral stroke while `accentFirst` is false: Ink (`--text`, the
+   * default) or Ink 2 (`--text2`, add-subscription-usage-history D6: a usage graph repeated on
+   * every card must not compete with the page's text). Multi-series charts keep Ink. */
+  neutralTone?: 'ink' | 'ink2';
+  /** A dashed vertical reference line at this x (epoch seconds), in Ink 3: DESIGN.md "a dashed
+   * line is a reference line", e.g. a usage window's reset. The caller labels it directly. */
+  referenceX?: number | null;
+  /** Draw a point for each value with no non-null neighbour, so a lone reading between gaps (or
+   * the only reading) is visible; the line itself still draws no points. Nulls are never drawn. */
+  isolatedPoints?: boolean;
+  /** Hide the x axis, for a compact chart whose caller states the range in words. */
+  hideXAxis?: boolean;
+  /** Fixed y tick positions (e.g. `[0, 50, 100]` on a percent axis), instead of uPlot's own. */
+  ySplits?: readonly number[];
+  /** The y axis gutter in CSS pixels (58 with `yFormat`, uPlot's own otherwise). */
+  yAxisSize?: number;
   xExtent?: [number, number];
   yExtent?: [number, number];
   yFormat?: (value: number) => string;
   utc?: boolean;
+}
+
+/** The indices of the values with no non-null neighbour: a lone reading the line cannot draw. */
+export function isolatedIndices(ys: ArrayLike<number | null | undefined>): number[] {
+  const out: number[] = [];
+  const absent = (i: number): boolean => i < 0 || i >= ys.length || ys[i] == null;
+  for (let i = 0; i < ys.length; i += 1) {
+    if (!absent(i) && absent(i - 1) && absent(i + 1)) out.push(i);
+  }
+  return out;
 }
 
 const DEFAULT_HEIGHT = 150;
@@ -65,11 +91,51 @@ export function Chart(props: ChartProps) {
       grid: { stroke: gridStroke, width: 1 },
       ticks: { stroke: gridStroke, width: 1 },
     };
+    // The single series' stroke: the accent, or the neutral tone the caller chose.
+    const firstStroke = accentFirst()
+      ? cssVar('--accent', '#4f5dff')
+      : props.neutralTone === 'ink2'
+        ? cssVar('--text2', '#55575e')
+        : cssVar('--text', '#17181a');
+    const firstPoints: uPlot.Series.Points =
+      props.isolatedPoints === true
+        ? {
+            show: false,
+            size: 5,
+            fill: firstStroke,
+            filter: (u: uPlot, seriesIdx: number) => {
+              const idx = isolatedIndices(u.data[seriesIdx] ?? []);
+              return idx.length > 0 ? idx : null;
+            },
+          }
+        : { show: false };
+    const referenceStroke = cssVar('--text3', '#6a6c73');
+    const drawReference = (u: uPlot): void => {
+      const at = props.referenceX;
+      if (at === null || at === undefined) return;
+      const { left, top, width, height: h } = u.bbox;
+      const pos = u.valToPos(at, 'x', true);
+      if (!Number.isFinite(pos) || pos < left - 1 || pos > left + width + 1) return;
+      // Clamped inside the plot so a reset at the span's end stays on screen.
+      const x = Math.min(Math.max(Math.round(pos) + 0.5, left + 0.5), left + width - 0.5);
+      const ratio = uPlot.pxRatio || 1;
+      const ctx = u.ctx;
+      ctx.save();
+      ctx.strokeStyle = referenceStroke;
+      ctx.lineWidth = ratio;
+      ctx.setLineDash([4 * ratio, 3 * ratio]);
+      ctx.beginPath();
+      ctx.moveTo(x, top);
+      ctx.lineTo(x, top + h);
+      ctx.stroke();
+      ctx.restore();
+    };
     const opts: uPlot.Options = {
       width: container.clientWidth || 540,
       height: height(),
       legend: { show: false },
       cursor: { show: false },
+      ...(props.referenceX !== undefined ? { hooks: { draw: [drawReference] } } : {}),
       ...(props.utc
         ? { tzDate: (ts: number) => uPlot.tzDate(new Date(ts * 1000), 'Etc/UTC') }
         : {}),
@@ -80,6 +146,7 @@ export function Chart(props: ChartProps) {
       axes: [
         {
           ...axis,
+          ...(props.hideXAxis === true ? { show: false } : {}),
           ...(props.utc
             ? {
                 space: 75,
@@ -100,6 +167,8 @@ export function Chart(props: ChartProps) {
                 values: (_u: uPlot, ticks: number[]) => ticks.map((v) => props.yFormat!(v)),
               }
             : {}),
+          ...(props.ySplits !== undefined ? { splits: () => [...props.ySplits!] } : {}),
+          ...(props.yAxisSize !== undefined ? { size: props.yAxisSize } : {}),
         },
       ],
       series:
@@ -124,10 +193,10 @@ export function Chart(props: ChartProps) {
               {},
               {
                 label: props.label ?? 'requests',
-                stroke: accentFirst() ? cssVar('--accent', '#4f5dff') : cssVar('--text', '#17181a'),
+                stroke: firstStroke,
                 ...(accentFirst() ? { fill: cssVar('--accent-bg', '#eff0ff') } : {}),
                 width: 2,
-                points: { show: false },
+                points: firstPoints,
               },
             ],
     };

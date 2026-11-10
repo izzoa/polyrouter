@@ -11,6 +11,10 @@ import {
   type ReservationMaintenance,
 } from '@polyrouter/shared/server';
 import type { Db } from './database.internal';
+import {
+  createPlanUsageSampleMaintenance,
+  listPlanUsageScheduled,
+} from './plan-usage-samples.queries';
 
 /** Instance-level model maintenance (add-model-variant-detection). NOT
  * principal-scoped by design: it re-derives each model's classification from
@@ -130,6 +134,9 @@ function createProviderMaintenance(db: Db): ProviderMaintenance {
         .orderBy(asc(providers.id))
         .limit(Math.max(0, limit));
     },
+    // add-subscription-usage-history (design D1): preset-bound subscription rows with the
+    // schedule switch on, credentialed and not awaiting reconnect; non-secret columns only.
+    listPlanUsageScheduled: (page) => listPlanUsageScheduled(db, page),
   };
 }
 
@@ -143,5 +150,6 @@ export function buildPersistenceMaintenance(db: Db): PersistenceMaintenance {
     batchJobs: createBatchJobMaintenance(db),
     reservations: createReservationMaintenance(db),
     providers: createProviderMaintenance(db),
+    planUsageSamples: createPlanUsageSampleMaintenance(db),
   };
 }

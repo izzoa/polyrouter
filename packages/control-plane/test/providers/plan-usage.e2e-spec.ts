@@ -5,9 +5,9 @@
 // the SSRF guard still DNS-resolves them at adapter build, so this suite needs outbound DNS (the
 // same posture as plan-cooldown.e2e-spec).
 //
-// Usage endpoints ship disabled. This suite flips them on through ONE test seam, a spy on
-// `SubscriptionOauthService.prototype.identityBindingFor`, so the refresh path can be exercised;
-// production constants are untouched. Two apps boot over the same Redis (A and B), each with the
+// Usage endpoints ship enabled (add-subscription-usage-history). This suite WITHDRAWS them where a
+// test needs a row without one, through ONE test seam, a spy on
+// `SubscriptionOauthService.prototype.identityBindingFor`; production constants are untouched. Two apps boot over the same Redis (A and B), each with the
 // production wiring (PROXY_BREAKER_PROVIDER + PlanCooldownModule + PlanUsageModule +
 // ProvidersModule).
 import {
@@ -468,7 +468,8 @@ describe('plan usage e2e (add-subscription-quota-display)', () => {
       throw new Error(`${COMPOSE_HINT}\n(${(error as Error).message})`);
     }
 
-    // The ONE test seam: flip a region's usage probe on (they ship disabled).
+    // The ONE test seam: withdraw every usage probe while `enableProbes` is false (they ship
+    // enabled since add-subscription-usage-history).
     // eslint-disable-next-line @typescript-eslint/unbound-method -- re-invoked below with `.call(this, …)`
     const original = SubscriptionOauthService.prototype.identityBindingFor;
     bindingSpy = jest
@@ -476,8 +477,8 @@ describe('plan usage e2e (add-subscription-quota-display)', () => {
       .mockImplementation(function (this: SubscriptionOauthService, row) {
         const binding = original.call(this, row);
         const probe = binding?.usage?.probe;
-        if (!enableProbes || binding === undefined || probe === undefined) return binding;
-        return { ...binding, usage: { ...binding.usage, probe: { ...probe, enabled: true } } };
+        if (enableProbes || binding === undefined || probe === undefined) return binding;
+        return { ...binding, usage: { ...binding.usage, probe: { ...probe, enabled: false } } };
       });
 
     a = await bootApp();
@@ -614,7 +615,11 @@ describe('plan usage e2e (add-subscription-quota-display)', () => {
     const list = await request(a.server).get('/api/providers').set('x-test-user', userA);
     expect(list.status).toBe(200);
     const row = (list.body as WireProvider[]).find((p) => p.id === claude.id)!;
-    expect(row.planUsageRefresh).toBeNull(); // an OAuth preset offers no refresh
+    // add-subscription-usage-history: the Claude preset now declares a usage endpoint, yet
+    // serving traffic calls no usage endpoint (only Refresh usage and the schedule do).
+    expect(row.planUsageRefresh).toEqual({ availableAt: null });
+    expect(readerCalls).toHaveLength(0);
+    expect(await redis.exists(`pur:${claude.id}`)).toBe(0);
     expect(row.planUsage!.windows).toHaveLength(1);
     expect(row.planUsage!.windows[0]).toMatchObject({
       span: '5h',

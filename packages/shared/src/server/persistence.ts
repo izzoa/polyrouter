@@ -1442,8 +1442,47 @@ export interface PersistencePort {
   pricing: PricingCatalog;
   /** Owner-scoped batch jobs (add-batch-inference). */
   batchJobs: BatchJobAccessor;
+  /** The owner-scoped read of a provider's plan-usage history (add-subscription-usage-history). */
+  planUsageSamples: PlanUsageSampleAccessor;
   /** Idempotent, race-safe `default`-tier provisioning (spec §5); #3 calls this at user creation. */
   ensureDefaultTier(principal: Principal): Promise<TierRow>;
+}
+
+/** One plan-usage sample as the usage schedule writes it (add-subscription-usage-history, design
+ * D4): a snapshot window's key, its used percent (null when unknown, never 0), its reset (null
+ * when unknown) and the instant the figure was observed. Numbers and instants only. */
+export interface PlanUsageSampleInput {
+  readonly providerId: string;
+  readonly windowKey: string;
+  readonly usedPercent: number | null;
+  readonly resetAt: Date | null;
+  readonly observedAt: Date;
+}
+
+/** One sample as its owner reads it back. */
+export interface PlanUsageSampleView {
+  readonly windowKey: string;
+  readonly usedPercent: number | null;
+  readonly resetAt: Date | null;
+  readonly observedAt: Date;
+}
+
+/** The owner-scoped history read (design D5). Samples are owned THROUGH their provider: the read
+ * joins the parent and applies the ownership predicate, so another tenant's provider id reads
+ * nothing (never an error that would reveal it exists). */
+export interface PlanUsageSampleAccessor {
+  /**
+   * The samples of `providerId`, oldest first: for each window key in `sinceByWindow`, those
+   * observed at or after its instant; and, when `otherwiseSince` is given, those of every OTHER
+   * window key observed at or after it. Empty for a provider the principal does not own, and
+   * when neither argument names anything.
+   */
+  listPlanUsageSamples(
+    principal: Principal,
+    providerId: string,
+    sinceByWindow: ReadonlyMap<string, Date>,
+    otherwiseSince?: Date,
+  ): Promise<PlanUsageSampleView[]>;
 }
 
 /** The batch poller's sweep (add-batch-inference D19): every non-terminal job
@@ -1495,8 +1534,43 @@ export interface CatalogRefreshRow {
   readonly ownerUserId: string;
 }
 
+/** One provider the usage schedule may read or sample (add-subscription-usage-history, design
+ * D1): the NON-SECRET columns the preset gate reads (`planUsageSourcesFor` over the one preset
+ * lookup), the schedule switch and the durable credential state. Never the credential. */
+export interface PlanUsageScheduleRow {
+  readonly id: string;
+  readonly ownerUserId: string;
+  readonly kind: string;
+  readonly protocol: string;
+  readonly baseUrl: string | null;
+  readonly oauthPreset: string | null;
+  readonly keyPreset: string | null;
+  readonly checkPlanUsage: boolean;
+  readonly credentialError: string | null;
+}
+
+/** The usage schedule's history writes (add-subscription-usage-history, design D4). System-owned
+ * rows: the sampler derives each provider id from the schedule's own listing, and the prune is a
+ * retention sweep across every provider. Neither reads anything back. */
+export interface PlanUsageSampleMaintenance {
+  /** Insert the samples, skipping one whose `(provider, window, observation)` is already
+   * recorded (`ON CONFLICT DO NOTHING`) and the samples of a provider deleted meanwhile. Resolves
+   * the number inserted. A percent outside 0-100 is refused by the database (it rejects). */
+  insertPlanUsageSamples(samples: readonly PlanUsageSampleInput[]): Promise<number>;
+  /** Delete at most `limit` samples observed before `before`; resolves the number deleted. */
+  prunePlanUsageSamples(before: Date, limit: number): Promise<number>;
+}
+
 export interface ProviderMaintenance {
   listOauthConnected(page: { afterId: string | null; limit: number }): Promise<OauthSweepRow[]>;
+  /** The usage schedule's listing (add-subscription-usage-history, design D1): subscription
+   * providers bound to a preset (an OAuth or a key preset), holding a credential, with the schedule
+   * switch on and no credential awaiting reconnect, across owners. List-only and id-paged; the
+   * caller applies the preset gate and each read runs under the row's own owner. */
+  listPlanUsageScheduled(page: {
+    afterId: string | null;
+    limit: number;
+  }): Promise<PlanUsageScheduleRow[]>;
   /** The model-catalog refresh's listing (add-live-subscription-models): EVERY
    * provider that can list its models — one holding a credential, or a `local` one
    * (which may run without) — across owners, excluding any whose credential needs
@@ -1517,6 +1591,8 @@ export interface PersistenceMaintenance {
   batchJobs: BatchJobMaintenance;
   reservations: ReservationMaintenance;
   providers: ProviderMaintenance;
+  /** The usage schedule's history writes (add-subscription-usage-history). */
+  planUsageSamples: PlanUsageSampleMaintenance;
 }
 
 /** Privileged facilities (needed by #3's first-admin transaction). Callbacks

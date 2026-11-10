@@ -451,14 +451,18 @@ describe('region plan-usage sources (add-subscription-quota-display, design D1/D
     }
   });
 
-  it('every probe ships disabled (the enablement gate): none may be flipped before its runbook', () => {
+  it('every probe ships enabled (add-subscription-usage-history, design D3): false withdraws one', () => {
     for (const { preset, region, probe } of probes) {
       expect({ preset: preset.id, region: region.id, enabled: probe.enabled }).toEqual({
         preset: preset.id,
         region: region.id,
-        enabled: false,
+        enabled: true,
       });
     }
+  });
+
+  it('no key-preset probe names an extra header (only the OAuth presets need one)', () => {
+    for (const { probe } of probes) expect(probe.extraHeaders).toBeUndefined();
   });
 
   it('every probe sends a Bearer key, and names a parser the data plane owns', () => {

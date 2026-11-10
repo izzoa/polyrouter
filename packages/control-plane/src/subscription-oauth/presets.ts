@@ -13,7 +13,7 @@
  * declares no client identity.
  */
 
-import type { PlanUsageDialect } from '@polyrouter/data-plane';
+import type { PlanUsageDialect, PlanUsageProbe } from '@polyrouter/data-plane';
 import type { PresetClientIdentity } from '../providers/client-identity';
 
 export interface OauthPreset {
@@ -52,6 +52,12 @@ export interface OauthPreset {
    * part of the available-presets DTO. It reaches an adapter only through `planUsageSourcesFor`,
    * i.e. only for a row still pinned to this preset's endpoint. */
   readonly usageDialect?: PlanUsageDialect;
+  /** The preset's plan-usage endpoint (add-subscription-usage-history, design D2): a fixed `https`
+   * constant on the origin of `baseUrl`, read by Refresh usage and the 15-minute usage schedule
+   * with polyrouter's own User-Agent, the row's OAuth Bearer token and only the extra headers it
+   * names from the data plane's closed allowlist. Trusted routing data, never user input and
+   * never part of the available-presets DTO; reached only through `planUsageSourcesFor`. */
+  readonly usageProbe?: PlanUsageProbe;
   /** Enablement gate: flipped to true ONLY after the live golden verification passes
    * (an enabled-and-known-broken preset must not ship). */
   readonly enabled: boolean;
@@ -76,8 +82,19 @@ export const CLAUDE_PRESET: OauthPreset = {
   tokenRequestEncoding: 'json',
   includeStateInExchange: true, // verified live 2026-07-18: the exchange succeeds with it
   oauthBeta: 'oauth-2025-04-20',
-  // Passive only: the `anthropic-ratelimit-unified-*` header family, read off ordinary replies.
+  // Passive: the `anthropic-ratelimit-unified-*` header family, read off ordinary replies.
   usageDialect: 'anthropic_unified',
+  // Active (add-subscription-usage-history): Claude Code's `/usage` endpoint, the PLAIN path only
+  // (never a `?cedar_ember` / `skip_spend` variant, which return grant inventories). Bearer + the
+  // OAuth beta the endpoint requires; never `/api/oauth/profile`. Ships enabled (design D3); its
+  // acceptance of polyrouter's honest User-Agent is optional QA (scripts/verify-plan-usage.md).
+  usageProbe: {
+    url: 'https://api.anthropic.com/api/oauth/usage',
+    auth: 'bearer',
+    parser: 'claude_oauth_usage',
+    enabled: true,
+    extraHeaders: ['anthropic-beta'],
+  },
   // VERIFIED LIVE 2026-07-18 (scripts/verify-claude-oauth.md): connect + paste,
   // OAuth /v1/models (10 models), and a real forced refresh all pass. The proxied
   // completion returned the account's own usage-window 429 (surfaced typed) — an
@@ -112,8 +129,19 @@ export const CHATGPT_PRESET: OauthPreset = {
   // Verified live 2026-07-18: auth.openai.com 400s (`unknown_parameter: state`) on a
   // state-bearing exchange body — the param must be OMITTED for this preset.
   includeStateInExchange: false,
-  // Passive only: the `x-codex-*` rate-limit header family, read off ordinary replies.
+  // Passive: the `x-codex-*` rate-limit header family, read off ordinary replies.
   usageDialect: 'codex',
+  // Active (add-subscription-usage-history): Codex's usage endpoint. Bearer + the row's own
+  // `chatgpt-account-id`; never `originator`, never `x-openai-codex-luna-reserve`, and never any
+  // other `/wham/` path (`/wham/rate-limit-reset-credits*` MUTATES; `/wham/profiles/me` and
+  // `/wham/accounts/…` are personal data). Ships enabled (design D3, FD2/FD3).
+  usageProbe: {
+    url: 'https://chatgpt.com/backend-api/wham/usage',
+    auth: 'bearer',
+    parser: 'chatgpt_wham_usage',
+    enabled: true,
+    extraHeaders: ['chatgpt-account-id'],
+  },
   // No bundled model list and no probe model (add-live-subscription-models): the
   // Responses adapter lists the backend's own catalog (verified live 2026-09-24) and
   // Test is that listing. The July bundle's probe model `gpt-5.4-mini` was retired

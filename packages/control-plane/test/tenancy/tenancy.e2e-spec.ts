@@ -590,6 +590,203 @@ describe('batch jobs are owner-scoped on every surface (add-batch-inference, tas
   });
 });
 
+/** add-subscription-usage-history (task 1.2): the plan-usage history's port methods against the
+ * real database. Samples are owned THROUGH their provider: the sampler's writes are system writes
+ * on the maintenance surface, and the history read is owner-scoped. */
+describe('plan-usage samples (add-subscription-usage-history, task 1.2)', () => {
+  const T = (iso: string): Date => new Date(iso);
+  const subscriptionRow = (over: Partial<ProviderInsertInput> = {}): ProviderInsertInput => ({
+    name: 'pu-kimi',
+    kind: 'subscription',
+    protocol: 'openai_compatible',
+    baseUrl: 'https://api.kimi.ai/coding/v1',
+    keyPreset: 'kimi-code',
+    encryptedCredentials: 'poly-enc-stub',
+    ...over,
+  });
+  const sample = (
+    providerId: string,
+    observedAt: string,
+    usedPercent: number | null,
+    windowKey = 'account:5h',
+  ) => ({
+    providerId,
+    windowKey,
+    usedPercent,
+    resetAt: usedPercent === null ? null : T('2026-11-09T15:00:00.000Z'),
+    observedAt: T(observedAt),
+  });
+  const countFor = async (providerId: string): Promise<number> =>
+    (
+      await harness.pool.query<{ n: number }>(
+        'SELECT count(*)::int AS n FROM plan_usage_sample WHERE provider_id = $1',
+        [providerId],
+      )
+    ).rows[0]!.n;
+
+  it('a duplicate observation is skipped, a 101 is refused, and a vanished provider costs only its own samples', async () => {
+    const m = harness.maintenance.planUsageSamples;
+    const p = await harness.port.providers.insert(alice.principal, subscriptionRow());
+    const first = [
+      sample(p.id, '2026-11-09T10:05:00.000Z', 12),
+      sample(p.id, '2026-11-09T10:20:00.000Z', 14),
+      sample(p.id, '2026-11-09T10:05:00.000Z', 3, 'account:weekly'),
+    ];
+    await expect(m.insertPlanUsageSamples(first)).resolves.toBe(3);
+    // The same three again plus one new observation: only the new one lands.
+    await expect(
+      m.insertPlanUsageSamples([...first, sample(p.id, '2026-11-09T10:35:00.000Z', null)]),
+    ).resolves.toBe(1);
+    expect(await countFor(p.id)).toBe(4);
+
+    // Out of range: the database refuses it (and the batch with it), and nothing lands.
+    await expect(
+      m.insertPlanUsageSamples([sample(p.id, '2026-11-09T10:50:00.000Z', 101)]),
+    ).rejects.toMatchObject({ cause: { code: '23514' } });
+    expect(await countFor(p.id)).toBe(4);
+
+    // A provider deleted between the listing and the write: its samples are skipped, the rest
+    // land.
+    await expect(
+      m.insertPlanUsageSamples([
+        sample('00000000-0000-4000-8000-000000000000', '2026-11-09T10:50:00.000Z', 5),
+        sample(p.id, '2026-11-09T10:50:00.000Z', 15),
+      ]),
+    ).resolves.toBe(1);
+    expect(await countFor(p.id)).toBe(5);
+  });
+
+  it('the owner reads per-window spans oldest first, with an unknown percent kept as null; another tenant reads nothing', async () => {
+    const m = harness.maintenance.planUsageSamples;
+    const p = await harness.port.providers.insert(alice.principal, subscriptionRow());
+    await m.insertPlanUsageSamples([
+      sample(p.id, '2026-11-09T10:20:00.000Z', 14),
+      sample(p.id, '2026-11-09T09:05:00.000Z', 9), // before the 5h span start below
+      sample(p.id, '2026-11-09T10:05:00.000Z', null),
+      sample(p.id, '2026-11-02T10:05:00.000Z', 30, 'account:weekly'), // older than the fallback
+      sample(p.id, '2026-11-08T10:05:00.000Z', 40, 'account:weekly'),
+      sample(p.id, '2026-11-09T10:10:00.000Z', 50, 'model:spark'),
+    ]);
+    const spans = new Map([
+      ['account:5h', T('2026-11-09T10:00:00.000Z')],
+      ['account:weekly', T('2026-11-05T00:00:00.000Z')],
+    ]);
+    const read = await harness.port.planUsageSamples.listPlanUsageSamples(
+      alice.principal,
+      p.id,
+      spans,
+    );
+    expect(read.map((r) => [r.windowKey, r.observedAt.toISOString(), r.usedPercent])).toEqual(
+      [
+        ['account:5h', '2026-11-09T10:05:00.000Z', null],
+        ['account:5h', '2026-11-09T10:20:00.000Z', 14],
+        ['account:weekly', '2026-11-08T10:05:00.000Z', 40],
+      ].sort((a, b) => (a[1]! < b[1]! ? -1 : 1)),
+    );
+    expect(typeof read.find((r) => r.usedPercent !== null)?.usedPercent).toBe('number');
+    expect(read.find((r) => r.usedPercent === 14)?.resetAt?.toISOString()).toBe(
+      '2026-11-09T15:00:00.000Z',
+    );
+    // The fallback adds every OTHER window from its own bound.
+    const withOthers = await harness.port.planUsageSamples.listPlanUsageSamples(
+      alice.principal,
+      p.id,
+      spans,
+      T('2026-11-09T00:00:00.000Z'),
+    );
+    expect(withOthers.map((r) => r.windowKey)).toContain('model:spark');
+    expect(withOthers.filter((r) => r.windowKey === 'account:weekly')).toHaveLength(1);
+
+    // Another tenant reads nothing, for any argument.
+    for (const since of [spans, new Map<string, Date>()]) {
+      await expect(
+        harness.port.planUsageSamples.listPlanUsageSamples(
+          bob.principal,
+          p.id,
+          since,
+          T('2000-01-01T00:00:00.000Z'),
+        ),
+      ).resolves.toEqual([]);
+    }
+  });
+
+  it('the prune deletes a bounded batch of expired samples only, and a provider delete cascades', async () => {
+    const m = harness.maintenance.planUsageSamples;
+    const p = await harness.port.providers.insert(alice.principal, subscriptionRow());
+    await m.insertPlanUsageSamples([
+      sample(p.id, '2000-01-01T00:00:00.000Z', 1),
+      sample(p.id, '2000-01-01T00:15:00.000Z', 2),
+      sample(p.id, '2000-01-01T00:30:00.000Z', 3),
+      sample(p.id, '2026-11-09T10:05:00.000Z', 4),
+    ]);
+    const before = T('2001-01-01T00:00:00.000Z');
+    // Other suites may have their own expired rows: the bound holds whatever exists.
+    await expect(m.prunePlanUsageSamples(before, 1)).resolves.toBe(1);
+    let deleted = 0;
+    for (let i = 0; i < 100_000; i += 1) {
+      const n = await m.prunePlanUsageSamples(before, 2);
+      expect(n).toBeLessThanOrEqual(2);
+      deleted += n;
+      if (n < 2) break;
+    }
+    expect(deleted).toBeGreaterThanOrEqual(2);
+    expect(await countFor(p.id)).toBe(1); // only the recent sample is left
+
+    await expect(harness.port.providers.remove(alice.principal, p.id)).resolves.toBe(true);
+    expect(await countFor(p.id)).toBe(0);
+  });
+
+  it('the schedule listing carries preset-bound, switched-on, credentialed rows across owners, and nothing secret', async () => {
+    const mine = new Map<string, string>();
+    const add = async (label: string, who: TestPrincipal, over: Partial<ProviderInsertInput>) =>
+      mine.set(
+        (await harness.port.providers.insert(who.principal, subscriptionRow(over))).id,
+        label,
+      );
+    await add('kimi', alice, {});
+    await add('bobs-claude', bob, {
+      protocol: 'anthropic_compatible',
+      baseUrl: 'https://api.anthropic.com/',
+      keyPreset: null,
+      oauthPreset: 'claude',
+    });
+    await add('switched-off', alice, { checkPlanUsage: false });
+    await add('reconnect', alice, { credentialError: 'reauthorize_required' });
+    await add('no-credential', alice, { encryptedCredentials: null });
+    await add('pasted', alice, { keyPreset: null });
+    await add('api-key', alice, { kind: 'api_key', keyPreset: null });
+
+    const seen: Array<{ id: string; ownerUserId: string }> = [];
+    let afterId: string | null = null;
+    for (;;) {
+      const page = await harness.maintenance.providers.listPlanUsageScheduled({
+        afterId,
+        limit: 100,
+      });
+      if (page.length === 0) break;
+      for (const row of page) {
+        expect(Object.keys(row).sort()).toEqual([
+          'baseUrl',
+          'checkPlanUsage',
+          'credentialError',
+          'id',
+          'keyPreset',
+          'kind',
+          'oauthPreset',
+          'ownerUserId',
+          'protocol',
+        ]);
+      }
+      seen.push(...page);
+      afterId = page[page.length - 1]!.id;
+    }
+    const labels = seen.filter((r) => mine.has(r.id)).map((r) => mine.get(r.id));
+    expect(labels.sort()).toEqual(['bobs-claude', 'kimi']);
+    expect(seen.find((r) => mine.get(r.id) === 'bobs-claude')?.ownerUserId).toBe(bob.userId);
+    expect(JSON.stringify(seen)).not.toContain('poly-enc');
+  });
+});
+
 describe('the maintenance token is a real module boundary (add-batch-inference, task 2.2)', () => {
   it('cannot be injected by a module that imports only DatabaseModule', async () => {
     const compile = NestTest.createTestingModule({
@@ -628,8 +825,18 @@ describe('the maintenance token is a real module boundary (add-batch-inference, 
       expect(typeof m.reservations.pendingMicrosFor).toBe('function');
       expect(typeof m.providers.listOauthConnected).toBe('function');
       expect(typeof m.providers.listCatalogRefreshable).toBe('function');
+      expect(typeof m.providers.listPlanUsageScheduled).toBe('function');
+      expect(typeof m.planUsageSamples.insertPlanUsageSamples).toBe('function');
+      expect(typeof m.planUsageSamples.prunePlanUsageSamples).toBe('function');
       // No member — at any depth — is a query builder or a raw handle.
-      for (const surface of [m, m.models, m.batchJobs, m.reservations, m.providers]) {
+      for (const surface of [
+        m,
+        m.models,
+        m.batchJobs,
+        m.reservations,
+        m.providers,
+        m.planUsageSamples,
+      ]) {
         const rec = surface as unknown as Record<string, unknown>;
         for (const forbidden of ['query', 'execute', 'select', 'transaction', 'insert', 'db']) {
           expect(rec[forbidden]).toBeUndefined();

@@ -15,6 +15,11 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.31.0] — 2026-11-10
+
+[Release](https://github.com/izzoa/polyrouter/releases/tag/v0.31.0) ·
+[Compare](https://github.com/izzoa/polyrouter/compare/v0.30.0...v0.31.0)
+
 ### Added
 
 - **A subscription provider's Terms risk notice can be dismissed, once per provider.** The notice on the card gains a `×`; the server records the acknowledgment for that provider, so it stays gone on every browser, and the card shows nothing in its place. The add-provider dialog still states each plan's terms risk, and changing a provider's kind away from subscription and back brings the notice back. Notices about conditions that end once fixed keep no dismiss. New: `POST /api/providers/:id/terms-risk/acknowledge` and `termsRiskAcknowledgedAt` on the provider view; migration 0047 adds `provider.terms_risk_acknowledged_at`.
@@ -23,6 +28,10 @@ heading is started.
 
 - **Tall dialogs scroll at desktop width.** A dialog taller than the window, such as Edit provider on a subscription plan, ran off the bottom of the screen with no way to reach Save; dialogs are now held to the window's height and scroll inside themselves, as they already did on a phone.
 - **The dashboard no longer scrolls off a blank page.** Scrolling over the top bar on Overview or Requests could lift the whole dashboard and leave the bottom of the window blank, because screen-reader-only text in the request tables made the page taller than the window; that text now stays inside the scrolling content, so the page itself never scrolls.
+
+### Upgrade notes
+
+- One migration runs on boot (`0047`): a nullable `provider.terms_risk_acknowledged_at` column. Every existing provider starts unacknowledged, so each subscription card keeps its Terms risk notice until you dismiss it. No data is rewritten and there is no new configuration. Pull `ghcr.io/izzoa/polyrouter:0.31.0` (or `:latest`) and restart.
 
 ## [0.30.0] — 2026-11-09
 
@@ -1227,7 +1236,8 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.30.0...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.31.0...HEAD
+[0.31.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.31.0
 [0.30.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.30.0
 [0.29.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.29.0
 [0.28.1]: https://github.com/izzoa/polyrouter/releases/tag/v0.28.1

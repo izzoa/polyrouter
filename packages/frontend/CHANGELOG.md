@@ -1,5 +1,26 @@
 # @polyrouter/frontend
 
+## 0.31.0
+
+### Minor Changes
+
+- 5557600: A subscription provider's Terms risk notice can be dismissed
+
+  The Terms risk notice on each subscription provider's card now has a `×`. Dismissing it records the acknowledgment on the server for that provider, so the notice stays gone on every browser and device, and the card shows nothing in its place; the add-provider dialog still states each plan's terms risk. Each provider is dismissed separately, and a provider whose kind is changed away from subscription and back shows the notice again. Notices about conditions that end once fixed (Reconnect needed, Unverified, Couldn't load, failures) still have no dismiss. New: `POST /api/providers/:id/terms-risk/acknowledge` (owner-scoped; 422 for a provider that is not a subscription) and `termsRiskAcknowledgedAt` on the provider view. Migration 0047 adds the nullable `provider.terms_risk_acknowledged_at` column; every existing provider starts unacknowledged.
+
+### Patch Changes
+
+- ea7a7bd: Tall dialogs scroll at desktop width
+
+  A dialog taller than the window, such as Edit provider on a subscription plan, ran off the bottom of the screen at desktop width with no way to scroll to Save. Dialogs are now held to the window's height and scroll inside themselves, as they already did on a phone.
+
+- 6b8fb2c: The dashboard no longer scrolls off a blank page
+
+  Scrolling over the top bar on Overview or Requests could lift the whole dashboard and leave the bottom of the window blank. Text that only screen readers hear, in the request tables' token cells, made the page taller than the window. That text now stays inside the scrolling content, so the page itself never scrolls.
+
+- Updated dependencies [5557600]
+  - @polyrouter/shared@0.24.0
+
 ## 0.30.0
 
 ### Minor Changes

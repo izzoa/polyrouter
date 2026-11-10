@@ -19,6 +19,10 @@ heading is started.
 
 - **A subscription provider's Terms risk notice can be dismissed, once per provider.** The notice on the card gains a `×`; the server records the acknowledgment for that provider, so it stays gone on every browser, and the card shows nothing in its place. The add-provider dialog still states each plan's terms risk, and changing a provider's kind away from subscription and back brings the notice back. Notices about conditions that end once fixed keep no dismiss. New: `POST /api/providers/:id/terms-risk/acknowledge` and `termsRiskAcknowledgedAt` on the provider view; migration 0047 adds `provider.terms_risk_acknowledged_at`.
 
+### Fixed
+
+- **Tall dialogs scroll at desktop width.** A dialog taller than the window, such as Edit provider on a subscription plan, ran off the bottom of the screen with no way to reach Save; dialogs are now held to the window's height and scroll inside themselves, as they already did on a phone.
+
 ## [0.30.0] — 2026-11-09
 
 [Release](https://github.com/izzoa/polyrouter/releases/tag/v0.30.0) ·

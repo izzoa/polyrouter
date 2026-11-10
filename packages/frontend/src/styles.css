@@ -1731,9 +1731,17 @@ button:disabled[aria-busy='true'] {
   max-width: 440px;
 }
 
+/* The card is held to the visible height less a 24px margin top and bottom, and scrolls inside
+   itself past that. Without it a form taller than the window — Edit provider on a subscription
+   plan: connection summary, timeouts, two switches — ran off the bottom of the fixed, centred
+   backdrop, and no scroll anywhere could reach Save. Below `narrow` the sheet restates both
+   (`overlaySheets.spec.ts`); `modalReach.spec.ts` measures desktop. */
 .modal-card {
   width: 480px;
   max-width: 92vw;
+  max-height: calc(var(--vv-height, 100dvh) - 48px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 10px;

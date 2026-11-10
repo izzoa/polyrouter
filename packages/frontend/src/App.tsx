@@ -81,10 +81,17 @@ function Shell(props: { live: boolean }) {
   //
   // Every in-flow child carries `data-pane` and must contain its own overflow — the
   // sidebar shipped without that, which is how its spill reached the shell at all.
+  //
+  // `position:relative` makes the shell the containing block of every absolutely
+  // positioned descendant that has no positioned ancestor of its own (the `.sr-only` text
+  // in a table cell, the collapsed rail's hidden labels). Without it such a box belongs to
+  // the initial containing block: `clip` does not clip it, and it stretches the DOCUMENT —
+  // the request tables made it ~1100px tall in a 640px window, and a wheel over the topbar
+  // then scrolled the whole app up off a blank page.
   return (
     <div
       data-shell="true"
-      style="display:flex;height:100vh;height:100dvh;overflow:hidden;overflow:clip;background:var(--bg);color:var(--text);font-family:'Geist',sans-serif"
+      style="display:flex;position:relative;height:100vh;height:100dvh;overflow:hidden;overflow:clip;background:var(--bg);color:var(--text);font-family:'Geist',sans-serif"
     >
       <Sidebar />
       {/* `inert` while the narrow-width nav overlay is open: `aria-modal` + the focus
@@ -102,8 +109,10 @@ function Shell(props: { live: boolean }) {
         <Topbar />
         {/* `overscroll-behavior-Y`, not the shorthand: the shorthand applies to both axes
             and would suppress the horizontal swipe-back/forward navigation gesture across
-            most of the app. Only vertical chaining needs containing. */}
-        <main style="flex:1;min-height:0;overflow-y:auto;overscroll-behavior-y:contain">
+            most of the app. Only vertical chaining needs containing. `position:relative`
+            keeps an absolutely positioned descendant (`.sr-only` text) inside the pane it
+            scrolls with, so a screen reader moving to it scrolls `<main>`, not the page. */}
+        <main style="flex:1;min-height:0;position:relative;overflow-y:auto;overscroll-behavior-y:contain">
           <Switch>
             <Match when={state.page === 'overview'}>
               <Overview live={props.live} />

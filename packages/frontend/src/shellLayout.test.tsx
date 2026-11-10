@@ -68,6 +68,11 @@ describe('app shell scroll containment', () => {
       // `clip` creates no scroll container at all. The `hidden` before it is the fallback.
       expect(style).toContain('overflow:hidden');
       expect(style).toContain('overflow:clip');
+      // `clip` clips only boxes whose containing block is the shell or inside it. Without a
+      // position, an absolutely positioned descendant with no positioned ancestor (the
+      // `.sr-only` text in a table cell) belongs to the initial containing block and
+      // stretches the document past the window (browser/documentScroll.spec.ts).
+      expect(style).toContain('position:relative');
     } finally {
       h.dispose();
     }
@@ -93,9 +98,7 @@ describe('app shell scroll containment', () => {
       // is reformatted. The contract — this axis contained, the shorthand not used — is
       // unchanged, and reading it off the CSSOM states it without depending on spacing.
       expect(sidebar?.style.overscrollBehaviorY).toBe('contain');
-      expect(sidebar?.style.overscrollBehavior, 'the shorthand would kill swipe-back').toBe(
-        '',
-      );
+      expect(sidebar?.style.overscrollBehavior, 'the shorthand would kill swipe-back').toBe('');
     } finally {
       h.dispose();
     }
@@ -109,6 +112,9 @@ describe('app shell scroll containment', () => {
       expect(['0', '0px']).toContain(main?.style.minHeight);
       expect(main?.getAttribute('style')).toContain('overscroll-behavior-y:contain');
       expect(main?.getAttribute('style')).not.toMatch(/[^-]overscroll-behavior:/);
+      // The containing block of the pane's own absolutely positioned text, so it scrolls
+      // with `<main>` and never with the page.
+      expect(main?.style.position).toBe('relative');
     } finally {
       h.dispose();
     }

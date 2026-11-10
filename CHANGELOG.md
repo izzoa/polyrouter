@@ -22,6 +22,7 @@ heading is started.
 ### Fixed
 
 - **Tall dialogs scroll at desktop width.** A dialog taller than the window, such as Edit provider on a subscription plan, ran off the bottom of the screen with no way to reach Save; dialogs are now held to the window's height and scroll inside themselves, as they already did on a phone.
+- **The dashboard no longer scrolls off a blank page.** Scrolling over the top bar on Overview or Requests could lift the whole dashboard and leave the bottom of the window blank, because screen-reader-only text in the request tables made the page taller than the window; that text now stays inside the scrolling content, so the page itself never scrolls.
 
 ## [0.30.0] — 2026-11-09
 

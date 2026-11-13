@@ -15,6 +15,11 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.32.0] — 2026-11-13
+
+[Release](https://github.com/izzoa/polyrouter/releases/tag/v0.32.0) ·
+[Compare](https://github.com/izzoa/polyrouter/compare/v0.31.0...v0.32.0)
+
 ### Changed
 
 - **The Route Trace names a cascade request's legs and why it escalated.** A cascade request's trace now shows a `cheap leg` row and, when it escalated, an `escalation` row with the recorded cause (`quality gate` or `cheap leg did not serve`); an escalation whose cheap leg left no record says `attempts not recorded`, a kept cheap answer states `quality gate passed · q=<score>`, and the Decision section no longer prints the quality signal of an escalation the cheap leg caused, which is a placeholder zero or the score of an answer whose replay failed.
@@ -1240,7 +1245,8 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.31.0...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.32.0...HEAD
+[0.32.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.32.0
 [0.31.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.31.0
 [0.30.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.30.0
 [0.29.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.29.0

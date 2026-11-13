@@ -590,16 +590,30 @@ describe('the inspector draws the recorded route as a trace (task 4.1)', () => {
   });
 
   it('a cascade walk keeps its legs, with the superseded call between them', async () => {
+    // add-route-trace-cascade-legs: each leg is a row on the spine, and no attempt node
+    // carries a leg tag. The superseded call sits under the cheap leg, before the escalation.
     const drawer = await open('cascade');
     expect(texts(drawer)).toEqual([
       'billing-bot',
       'router · cascade',
-      'cheap-a · timeout · cheap leg',
+      'cheap leg',
+      'cheap-a · timeout',
       'cheap attempt superseded · q=0.42 · $0.0031',
-      'strong-a · server_error · HTTP 503 · escalation',
+      'escalation · quality gate',
+      'strong-a · server_error · HTTP 503',
       'Provider S · model-strong · served · 1.24s',
     ]);
-    const superseded = items(drawer)[3]!;
+    expect(items(drawer).map((li) => li.dataset['kind'])).toEqual([
+      'source',
+      'decision',
+      'leg',
+      'attempt',
+      'superseded',
+      'leg',
+      'attempt',
+      'outcome',
+    ]);
+    const superseded = items(drawer)[4]!;
     expect(superseded.dataset['kind']).toBe('superseded');
     for (const f of superseded.querySelectorAll('.figure')) expect(family(f)).toMatch(/^Geist,/);
   });
@@ -850,5 +864,171 @@ describe('a plan-paused member is drawn as paused, not as circuit open (classify
       /The last chain member was never contacted — its provider's circuit was open/,
     );
     expect(circuitCard.textContent).not.toMatch(/plan was paused/);
+  });
+});
+
+/* ---- add-route-trace-cascade-legs (tasks 3.1, 3.4) ----------------------------------- */
+
+/** The maintainer's row (2026-11-12): the cheap leg did not serve and left no record, the
+ * heavy tier served cleanly (`success`), and the proxy wrote a placeholder 0 as the score. */
+const UNRECORDED: RequestRow = {
+  ...BASE,
+  ...plain,
+  id: 'rt-unrecorded',
+  createdAt: at(5),
+  decisionLayer: 'cascade',
+  routingReason:
+    'cascade: escalated cheap→heavy; esc[capability_deferred ~z-ai/glm-latest(vision)] (q=0.00)',
+  tierAssigned: 'heavy',
+  escalated: true,
+  escalationSource: 'cheap_error',
+  qualitySignal: 0,
+  agentLabel: 'Lobechat',
+  providerLabel: 'XiaomiMiMo',
+  modelLabel: 'mimo-v2.6-pro',
+  durationMs: 38_890,
+};
+/** A cascade request whose cheap answer the quality gate passed and the cascade kept. */
+const KEPT: RequestRow = {
+  ...BASE,
+  ...plain,
+  id: 'rt-kept',
+  createdAt: at(6),
+  decisionLayer: 'cascade',
+  routingReason: 'cascade: cheap served (q=0.87)',
+  qualitySignal: 0.87,
+  providerLabel: 'Groq',
+  modelLabel: 'llama-cheap',
+};
+
+describe('a cascade request is grouped under leg rows on screen (add-route-trace-cascade-legs 3.1)', () => {
+  it("the maintainer's row reads five items: its legs, the recorded cause, and what was not recorded", async () => {
+    h = await mount([UNRECORDED, KEPT, ...Object.values(ROWS)]);
+    const drawer = await openRow(UNRECORDED.id);
+    expect(texts(drawer)).toEqual([
+      'Lobechat',
+      'router · cascade',
+      'cheap leg · attempts not recorded',
+      'escalation · cheap leg did not serve',
+      'XiaomiMiMo · mimo-v2.6-pro · served · 38.89s',
+    ]);
+    // Nothing names a cheap model, the deferred member, the tier or the placeholder score: the
+    // verbatim reason row still carries them.
+    expect(trace(drawer).textContent).not.toMatch(/glm|heavy|q=|0\.00/);
+    expect(decisionRow(drawer, 'routing reason')?.textContent).toBe(UNRECORDED.routingReason);
+  });
+
+  it('a leg row is a neutral router decision on the spine: no branch, never lit, never red', async () => {
+    h = await mount([UNRECORDED, KEPT, ...Object.values(ROWS)]);
+    for (const id of [UNRECORDED.id, KEPT.id, ROWS.cascade.id]) {
+      const drawer = await openRow(id);
+      const legs = items(drawer).filter((li) => li.dataset['kind'] === 'leg');
+      expect(legs.length, `${id}: a cheap leg row at least`).toBeGreaterThanOrEqual(1);
+      for (const leg of legs) {
+        expect(leg.classList.contains('rt-node--neutral')).toBe(true);
+        expect(leg.classList.contains('rt-node--lit')).toBe(false);
+        expect(leg.querySelector('.rt-branch'), 'a leg row sits on the spine').toBeNull();
+        expect(leg.querySelector('.rt-spine')).not.toBeNull();
+        expect(leg.querySelector('.rt-dot')).not.toBeNull();
+        expect(leg.querySelector('.rt-failure')).toBeNull();
+        expect(leg.querySelector('.chip')).toBeNull();
+        expect(leg.dataset['series']).toBeUndefined();
+        // The leg word is its own span, at the Label weight in Ink.
+        const word = leg.querySelector<HTMLElement>('.rt-leg');
+        expect(word?.textContent).toMatch(/^(cheap leg|escalation)$/);
+        // The leg word is the text block's only element: its detail stays bare text in the
+        // row's Ink 2, never a Caption-size Ink 3 meta span (design D1).
+        expect(leg.querySelector('.rt-text')!.children).toHaveLength(1);
+        // The node mark sits ON the spine (left 0), as the source and decision marks do, never
+        // at a branch's end (left 12px).
+        expect(getComputedStyle(leg.querySelector('.rt-dot')!).left).toBe('0px');
+        // Nothing but the decoration is hidden: the leg word and its detail are announced.
+        for (const hidden of leg.querySelectorAll('[aria-hidden="true"]'))
+          expect(hidden.matches('.rt-spine, .rt-branch, .rt-dot')).toBe(true);
+      }
+      // The served branch is still the trace's only accent root.
+      const focal = [...drawer.querySelectorAll<HTMLElement>('[data-series="focal"]')];
+      expect(focal.map((f) => f.dataset['kind'])).toEqual(['outcome']);
+    }
+    expect(rule('.rt-leg')).toBe('font-weight: 500; color: var(--text);');
+  });
+
+  it('a kept cheap answer states its passing verdict on a second line, never in the accent', async () => {
+    h = await mount([UNRECORDED, KEPT, ...Object.values(ROWS)]);
+    const drawer = await openRow(KEPT.id);
+    expect(texts(drawer)).toEqual([
+      'billing-bot',
+      'router · cascade',
+      'cheap leg',
+      'Groq · llama-cheap · served · 1.24s · quality gate passed · q=0.87',
+    ]);
+    const outcome = items(drawer).at(-1)!;
+    const kept = outcome.querySelector<HTMLElement>('[data-testid="rt-kept"]');
+    expect(kept?.textContent).toBe('quality gate passed · q=0.87');
+    // The separator before it is visually hidden, so the first line ends on the latency, and it
+    // is announced, so the node reads as one sentence; nothing but the decoration is hidden.
+    const sep = kept!.previousElementSibling as HTMLElement;
+    expect(sep.className).toBe('sr-only');
+    expect(sep.textContent).toBe(' · ');
+    for (const hidden of outcome.querySelectorAll('[aria-hidden="true"]'))
+      expect(hidden.matches('.rt-spine, .rt-branch, .rt-dot')).toBe(true);
+    // A branch node's mark sits at the branch's end, unlike a leg row's.
+    expect(getComputedStyle(outcome.querySelector('.rt-dot')!).left).toBe('12px');
+    // The caption-size Ink 3 meta treatment, on its own line, inside the text block: never on a
+    // stroke or a node mark, which hold the only accent.
+    expect(kept!.classList.contains('rt-meta')).toBe(true);
+    expect(kept!.classList.contains('rt-sub')).toBe(true);
+    expect(kept!.closest('.rt-text')).not.toBeNull();
+    expect(kept!.getAttribute('style')).toBeNull();
+    expect(rule('.rt-meta')).toBe('font-size: 0.6875rem; color: var(--text3);');
+    expect(rule('.rt-sub')).toBe('display: block; margin-top: 4px;');
+    // The score is a tabular figure, and the latency stays the node's one time.
+    expect(kept!.querySelector('.figure')?.textContent).toBe('q=0.87');
+    expect(outcome.querySelectorAll('[data-testid="rt-latency"]')).toHaveLength(1);
+    // Only a kept answer carries the line.
+    for (const id of [UNRECORDED.id, ROWS.cascade.id, ROWS.success.id]) {
+      const other = await openRow(id);
+      expect(other.querySelector('[data-testid="rt-kept"]'), id).toBeNull();
+    }
+  });
+
+  it('every leg row and the kept line keep the decoration hidden and the trace free of controls', async () => {
+    h = await mount([UNRECORDED, KEPT, ...Object.values(ROWS)]);
+    for (const id of [UNRECORDED.id, KEPT.id]) {
+      const drawer = await openRow(id);
+      expect(drawer.querySelectorAll('ol')).toHaveLength(1);
+      expect(trace(drawer).querySelectorAll('.chip')).toHaveLength(1);
+      for (const li of items(drawer)) {
+        for (const m of li.querySelectorAll<HTMLElement>('.rt-spine, .rt-branch, .rt-dot')) {
+          expect(m.getAttribute('aria-hidden')).toBe('true');
+          expect(m.textContent).toBe('');
+        }
+        expect(li.querySelector('svg')).toBeNull();
+      }
+      expect(
+        trace(drawer).querySelectorAll('button, a, input, select, textarea, [tabindex]'),
+      ).toHaveLength(0);
+    }
+  });
+});
+
+describe('the Decision section prints no quality signal on a cheap-leg escalation (add-route-trace-cascade-legs 3.4)', () => {
+  it('a cheap-leg escalation draws no quality signal row, while its escalated row and reason stay', async () => {
+    h = await mount([UNRECORDED, KEPT, ...Object.values(ROWS)]);
+    const drawer = await openRow(UNRECORDED.id);
+    expect(decisionRow(drawer, 'quality signal')).toBeNull();
+    const box = drawer.querySelector('[data-testid="inspector-decision"]')!;
+    expect(box.textContent).not.toContain('quality signal');
+    expect(decisionRow(drawer, 'escalated')?.textContent?.trim()).toBe('yes');
+    expect(decisionRow(drawer, 'routing reason')?.textContent).toContain('(q=0.00)');
+    expect(decisionRow(drawer, 'tier')?.textContent).toBe('heavy');
+  });
+
+  it('a quality-gate escalation and a kept answer still print their measured signal', async () => {
+    h = await mount([UNRECORDED, KEPT, ...Object.values(ROWS)]);
+    const gated = await openRow(ROWS.cascade.id);
+    expect(decisionRow(gated, 'quality signal')?.textContent).toBe('0.42');
+    const kept = await openRow(KEPT.id);
+    expect(decisionRow(kept, 'quality signal')?.textContent).toBe('0.87');
   });
 });

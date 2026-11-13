@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   AGENT_UNATTRIBUTED,
+  ATTEMPTS_NOT_RECORDED,
   breakdownToSpend,
+  CAUSE_CHEAP_DID_NOT_SERVE,
+  CAUSE_QUALITY_GATE,
+  CHEAP_LEG,
+  ESCALATION_LEG,
+  escalationCause,
+  QUALITY_GATE_PASSED,
   escalationRate,
   fallbackRate,
   filterToRequestParams,
@@ -23,6 +30,7 @@ import {
   TRACE_NOT_RECORDED,
   USAGE_ESTIMATED_NOTE,
   type RouteTraceAttemptNode,
+  type RouteTraceLegNode,
   type RouteTraceNode,
   type RouteTraceOutcomeNode,
   type RouteTraceSupersededNode,
@@ -636,17 +644,16 @@ describe('toRouteTrace / isTerminalSkip — the structural fallback trail (add-f
         model: 'gpt-x',
         label: 'unavailable · HTTP 529',
         markers: null,
-        leg: null,
         text: 'gpt-x · unavailable · HTTP 529',
       },
       {
+        // No leg tag: the leg row above the node states the leg (add-route-trace-cascade-legs).
         kind: 'attempt',
         emphasis: 'failed',
         model: 'strong-y',
         label: 'rate_limit',
         markers: null,
-        leg: 'escalation',
-        text: 'strong-y · rate_limit · escalation',
+        text: 'strong-y · rate_limit',
       },
       {
         kind: 'attempt',
@@ -654,7 +661,6 @@ describe('toRouteTrace / isTerminalSkip — the structural fallback trail (add-f
         model: 'grok-z',
         label: 'skipped — circuit open (provider not contacted)',
         markers: null,
-        leg: null,
         text: 'grok-z · skipped — circuit open (provider not contacted)',
       },
     ]);
@@ -1148,16 +1154,22 @@ describe('toRouteTrace — the recorded route as a trace (add-route-trace-inspec
     };
     const attempts = attemptsOf(toRouteTrace(r));
     expect(attempts.map((a) => a.model)).toEqual(['cheap-1', 'cheap-2', 'strong-1']);
-    expect(attempts.map((a) => a.leg)).toEqual(['cheap leg', 'cheap leg', 'escalation']);
-    expect(attempts.map((a) => a.text)).toEqual([
-      'cheap-1 · unavailable · cheap leg',
-      'cheap-2 · timeout · cheap leg',
-      'strong-1 · rate_limit · HTTP 429 · escalation',
+    // Each leg is stated once, by its leg row, and no attempt node carries a leg tag
+    // (add-route-trace-cascade-legs design D5).
+    expect(traceTexts(r)).toEqual([
+      'openclaw',
+      'router · cascade',
+      'cheap leg',
+      'cheap-1 · unavailable',
+      'cheap-2 · timeout',
+      'escalation · cheap leg did not serve',
+      'strong-1 · rate_limit · HTTP 429',
+      'OpenAI · GPT · served · 1.20s',
     ]);
-    // A primary (non-cascade) chain records no leg, so it carries no tag.
-    expect(
-      attemptsOf(toRouteTrace({ ...ROW, attemptFailures: [entry({ model: 'a' })] }))[0]!.leg,
-    ).toBe(null);
+    for (const a of attempts) expect(a.text).not.toMatch(/cheap leg|escalation/);
+    // A primary (non-cascade) chain records no leg, so it draws no leg row.
+    const primary = toRouteTrace({ ...ROW, attemptFailures: [entry({ model: 'a' })] });
+    expect(primary.map((n) => n.kind)).toEqual(['source', 'decision', 'attempt', 'outcome']);
   });
 
   it('an error row with detail keeps its ERROR card AND its trace, which still ends in its outcome', () => {
@@ -1195,6 +1207,7 @@ describe('the route trace lights only a served outcome (add-route-trace-inspecto
         model: 'M',
         result: 'served',
         latency: '1.24s',
+        keptQuality: null,
         text: 'P · M · served · 1.24s',
       });
       // Exactly one outcome node, and it is the only lit node.
@@ -1268,6 +1281,7 @@ describe('the route trace lights only a served outcome (add-route-trace-inspecto
       model: 'GPT',
       result: 'cancelled by client',
       latency: '800ms',
+      keptQuality: null,
       text: 'OpenAI · GPT · cancelled by client · 800ms',
     });
   });
@@ -1344,6 +1358,8 @@ describe('the route trace lights only a served outcome (add-route-trace-inspecto
       durationMs: wall,
     };
     const trace = toRouteTrace(item);
+    // Not a cascade request: source, decision and outcome only, with no leg row.
+    expect(trace.map((n) => n.kind)).toEqual(['source', 'decision', 'outcome']);
     expect(trace[1]!.text).toBe('router · explicit');
     expect(outcomeOf(trace)).toMatchObject({ result: 'served', latency: '3h 1m' });
     expect(outcomeOf(trace).latency).toBe(fmtElapsed(wall));
@@ -1388,7 +1404,9 @@ describe('the superseded cascade call, drawn only from what was recorded (add-ro
     expect(trace.map((n) => n.text)).toEqual([
       'openclaw',
       'router · cascade',
+      'cheap leg',
       'cheap attempt superseded · q=0.42 · $0.0031',
+      'escalation · quality gate',
       'Anthropic · Strong · served · 1.20s',
     ]);
     const node = supersededOf(trace)!;
@@ -1431,19 +1449,26 @@ describe('the superseded cascade call, drawn only from what was recorded (add-ro
         entry({ index: 0, model: 'strong-1', status: 429, leg: 'escalation' }),
       ],
     };
+    // add-route-trace-cascade-legs: the superseded call sits under the `cheap leg` row, after
+    // the cheap-leg nodes and before the `escalation` row.
     expect(toRouteTrace(r).map((n) => n.kind)).toEqual([
       'source',
       'decision',
+      'leg',
       'attempt',
       'attempt',
       'superseded',
+      'leg',
       'attempt',
       'outcome',
     ]);
-    expect(traceTexts(r).slice(3, 6)).toEqual([
-      'cheap-2 · unavailable · cheap leg',
+    expect(traceTexts(r).slice(2, 8)).toEqual([
+      'cheap leg',
+      'cheap-1 · unavailable',
+      'cheap-2 · unavailable',
       'cheap attempt superseded · q=0.42 · $0.0031',
-      'strong-1 · rate_limit · HTTP 429 · escalation',
+      'escalation · quality gate',
+      'strong-1 · rate_limit · HTTP 429',
     ]);
   });
 
@@ -1457,7 +1482,13 @@ describe('the superseded cascade call, drawn only from what was recorded (add-ro
     };
     const trace = toRouteTrace(r);
     expect(supersededOf(trace)).toBeUndefined();
-    expect(attemptsOf(trace).map((a) => a.leg)).toEqual(['cheap leg']);
+    // The failure sits under the `cheap leg` row, and the escalation row states the cause.
+    expect(trace.map((n) => n.text).slice(2)).toEqual([
+      'cheap leg',
+      'cheap-1 · unavailable',
+      'escalation · cheap leg did not serve',
+      'Anthropic · Strong · served · 1.20s',
+    ]);
     expect(trace.some((n) => /q=/.test(n.text))).toBe(false);
     // A cheap_error escalation whose superseded call did cost money (a passing verdict whose
     // replay failed) draws the node from that cost, still with no `q=`.
@@ -1530,6 +1561,22 @@ describe('the superseded cascade call, drawn only from what was recorded (add-ro
                   escalated && (escalationSource === 'quality_gate' || attemptCostMicros > 0);
                 expect(node !== undefined, JSON.stringify(r.attemptFailures)).toBe(expected);
                 checked += 1;
+                // add-route-trace-cascade-legs design D2 and D6, on every matrix row (each is a
+                // cascade request): the `cheap leg` row follows the decision chip; the escalation
+                // row is drawn exactly when the row escalated or recorded an escalation-leg entry;
+                // and the cheap row says `attempts not recorded` exactly when that escalation row
+                // is drawn with no cheap-leg entry and no superseded node under it.
+                const legNodes = v.trace.filter((n): n is RouteTraceLegNode => n.kind === 'leg');
+                expect(v.trace[2]).toBe(legNodes[0]);
+                expect(legNodes[0]?.leg).toBe('cheap leg');
+                const escalationRow =
+                  escalated || (attemptFailures ?? []).some((a) => a.leg === 'escalation');
+                expect(legNodes.some((n) => n.leg === 'escalation')).toBe(escalationRow);
+                const cheapRecorded =
+                  (attemptFailures ?? []).some((a) => a.leg === 'cheap') || node !== undefined;
+                expect(legNodes[0]?.detail ?? null).toBe(
+                  escalationRow && !cheapRecorded ? ATTEMPTS_NOT_RECORDED : null,
+                );
                 if (node === undefined) continue;
                 drawn += 1;
                 if (attemptCostMicros > 0) {
@@ -1544,14 +1591,541 @@ describe('the superseded cascade call, drawn only from what was recorded (add-ro
                 expect(node.quality !== null).toBe(
                   escalationSource === 'quality_gate' && qualitySignal !== null,
                 );
-                // Never after an escalation-leg entry, never before a cheap-leg one.
+                // Never after an escalation-leg entry, never before a cheap-leg one. Attempt
+                // nodes carry no leg tag (add-route-trace-cascade-legs design D5), so each
+                // node's leg is its stored entry's: they are drawn in stored order.
                 const at = v.trace.indexOf(node);
-                const legs = attemptsOf(v.trace).map((a) => [v.trace.indexOf(a), a.leg] as const);
-                for (const [i, leg] of legs)
-                  expect(leg === 'cheap leg' ? i < at : i > at).toBe(true);
+                const legs = attemptsOf(v.trace).map(
+                  (a, k) => [v.trace.indexOf(a), attemptFailures![k]!.leg] as const,
+                );
+                for (const [i, leg] of legs) expect(leg === 'cheap' ? i < at : i > at).toBe(true);
+                // And under the `cheap leg` row, before the `escalation` row.
+                const legRows = v.trace.flatMap((n, i) =>
+                  n.kind === 'leg' ? [[i, n.leg] as const] : [],
+                );
+                expect(legRows[0]).toEqual([2, 'cheap leg']);
+                expect(at).toBeGreaterThan(2);
+                const escalationAt = legRows.find(([, leg]) => leg === 'escalation')?.[0];
+                expect(escalationAt).toBeGreaterThan(at);
               }
     expect(checked).toBe((3 + 1) * 3 * 3 * 5 * 4);
     expect(drawn).toBeGreaterThan(0);
+  });
+});
+
+/* ---- add-route-trace-cascade-legs (tasks 2.1–2.5) ----------------------------------- */
+
+/** A cascade request its cheap leg served cleanly, with no recorded quality score. */
+const CASCADE: RequestRow = {
+  ...ROW,
+  decisionLayer: 'cascade',
+  status: 'success',
+  escalated: false,
+  escalationSource: null,
+  qualitySignal: null,
+  attemptCostMicros: 0,
+  modelId: 'cheap-model',
+  modelLabel: 'Cheap',
+  providerLabel: 'Groq',
+};
+/** The maintainer's row (2026-11-12): the cheap leg did not serve, the heavy tier served
+ * cleanly, so the row is `success`, the recorder kept no trail, and the proxy wrote a
+ * placeholder 0 as the score. */
+const UNRECORDED_ESCALATION: RequestRow = {
+  ...CASCADE,
+  escalated: true,
+  escalationSource: 'cheap_error',
+  qualitySignal: 0,
+  attemptFailures: null,
+  modelId: 'mimo-v2.6-pro',
+  modelLabel: 'mimo-v2.6-pro',
+  providerLabel: 'XiaomiMiMo',
+  agentLabel: 'Lobechat',
+  tierAssigned: 'heavy',
+  durationMs: 38_890,
+  routingReason:
+    'cascade: escalated cheap→heavy; esc[capability_deferred ~z-ai/glm-latest(vision)] (q=0.00)',
+};
+
+/** dashboard-analytics "The route trace groups a cascade request under leg rows" and "The
+ * cheap leg row says when its attempts were not recorded" (task 2.1). */
+describe('a cascade request is grouped under leg rows (add-route-trace-cascade-legs 2.1)', () => {
+  it('exports the leg-row contract strings DESIGN.md quotes', () => {
+    expect([
+      CHEAP_LEG,
+      ESCALATION_LEG,
+      ATTEMPTS_NOT_RECORDED,
+      CAUSE_QUALITY_GATE,
+      CAUSE_CHEAP_DID_NOT_SERVE,
+      QUALITY_GATE_PASSED,
+    ]).toEqual([
+      'cheap leg',
+      'escalation',
+      'attempts not recorded',
+      'quality gate',
+      'cheap leg did not serve',
+      'quality gate passed',
+    ]);
+  });
+
+  /** Each situation's full node-kind and text sequence, as drawn. */
+  const cases: [string, RequestRow, string[]][] = [
+    [
+      'served by its cheap leg',
+      CASCADE,
+      ['openclaw', 'router · cascade', 'cheap leg', 'Groq · Cheap · served · 1.20s'],
+    ],
+    [
+      'cheap-served after cheap-leg failures',
+      {
+        ...CASCADE,
+        status: 'fallback',
+        attemptFailures: [
+          entry({ index: 0, model: 'cheap-1', kind: 'unavailable', status: 503, leg: 'cheap' }),
+        ],
+      },
+      [
+        'openclaw',
+        'router · cascade',
+        'cheap leg',
+        'cheap-1 · unavailable · HTTP 503',
+        'Groq · Cheap · served · 1.20s',
+      ],
+    ],
+    [
+      'escalated by the quality gate, cheap call priced',
+      {
+        ...CASCADE,
+        escalated: true,
+        escalationSource: 'quality_gate',
+        qualitySignal: 0.42,
+        attemptCostMicros: 3_100,
+        priceSource: 'bundled',
+        modelLabel: 'Strong',
+        providerLabel: 'Anthropic',
+      },
+      [
+        'openclaw',
+        'router · cascade',
+        'cheap leg',
+        'cheap attempt superseded · q=0.42 · $0.0031',
+        'escalation · quality gate',
+        'Anthropic · Strong · served · 1.20s',
+      ],
+    ],
+    [
+      'escalated by the quality gate, cheap call free',
+      {
+        ...CASCADE,
+        escalated: true,
+        escalationSource: 'quality_gate',
+        qualitySignal: 0.42,
+        modelLabel: 'Strong',
+        providerLabel: 'Anthropic',
+      },
+      [
+        'openclaw',
+        'router · cascade',
+        'cheap leg',
+        'cheap attempt superseded · q=0.42',
+        'escalation · quality gate',
+        'Anthropic · Strong · served · 1.20s',
+      ],
+    ],
+    [
+      "the maintainer's row: cheap leg did not serve, nothing recorded",
+      UNRECORDED_ESCALATION,
+      [
+        'Lobechat',
+        'router · cascade',
+        'cheap leg · attempts not recorded',
+        'escalation · cheap leg did not serve',
+        'XiaomiMiMo · mimo-v2.6-pro · served · 38.89s',
+      ],
+    ],
+    [
+      'cheap_error fallback with cheap and escalation entries',
+      {
+        ...UNRECORDED_ESCALATION,
+        status: 'fallback',
+        attemptFailures: [
+          entry({ index: 0, model: 'cheap-1', kind: 'timeout', leg: 'cheap' }),
+          entry({ index: 0, model: 'strong-1', status: 429, leg: 'escalation' }),
+        ],
+      },
+      [
+        'Lobechat',
+        'router · cascade',
+        'cheap leg',
+        'cheap-1 · timeout',
+        'escalation · cheap leg did not serve',
+        'strong-1 · rate_limit · HTTP 429',
+        'XiaomiMiMo · mimo-v2.6-pro · served · 38.89s',
+      ],
+    ],
+    [
+      'cheap_error fallback with escalation entries only',
+      {
+        ...UNRECORDED_ESCALATION,
+        status: 'fallback',
+        attemptFailures: [entry({ index: 0, model: 'strong-1', status: 429, leg: 'escalation' })],
+      },
+      [
+        'Lobechat',
+        'router · cascade',
+        'cheap leg · attempts not recorded',
+        'escalation · cheap leg did not serve',
+        'strong-1 · rate_limit · HTTP 429',
+        'XiaomiMiMo · mimo-v2.6-pro · served · 38.89s',
+      ],
+    ],
+    [
+      'cheap_error with an attempt cost (a passing verdict whose replay failed)',
+      { ...UNRECORDED_ESCALATION, attemptCostMicros: 3_100, priceSource: 'bundled' },
+      [
+        'Lobechat',
+        'router · cascade',
+        'cheap leg',
+        'cheap attempt superseded · $0.0031',
+        'escalation · cheap leg did not serve',
+        'XiaomiMiMo · mimo-v2.6-pro · served · 38.89s',
+      ],
+    ],
+    [
+      'legacy escalation with an attempt cost',
+      {
+        ...UNRECORDED_ESCALATION,
+        escalationSource: null,
+        attemptCostMicros: 3_100,
+        priceSource: 'bundled',
+      },
+      [
+        'Lobechat',
+        'router · cascade',
+        'cheap leg',
+        'cheap attempt superseded · $0.0031',
+        'escalation',
+        'XiaomiMiMo · mimo-v2.6-pro · served · 38.89s',
+      ],
+    ],
+    [
+      'legacy escalation with nothing recorded',
+      { ...UNRECORDED_ESCALATION, escalationSource: null },
+      [
+        'Lobechat',
+        'router · cascade',
+        'cheap leg · attempts not recorded',
+        'escalation',
+        'XiaomiMiMo · mimo-v2.6-pro · served · 38.89s',
+      ],
+    ],
+    [
+      'escalated, every member failed',
+      {
+        ...UNRECORDED_ESCALATION,
+        status: 'error',
+        durationMs: 2_100,
+        attemptFailures: [
+          entry({
+            index: 0,
+            providerId: 'p1',
+            model: 'cheap-1',
+            kind: 'unavailable',
+            leg: 'cheap',
+          }),
+          entry({
+            index: 0,
+            providerId: 'p1',
+            model: 'strong-1',
+            status: 503,
+            kind: 'unavailable',
+            leg: 'escalation',
+            terminal: true,
+          }),
+        ],
+      },
+      [
+        'Lobechat',
+        'router · cascade',
+        'cheap leg',
+        'cheap-1 · unavailable',
+        'escalation · cheap leg did not serve',
+        'strong-1 · unavailable · HTTP 503',
+        'XiaomiMiMo · failed · 2.10s',
+      ],
+    ],
+    [
+      'cancelled during the cheap leg',
+      { ...CASCADE, status: 'cancelled', durationMs: 800 },
+      ['openclaw', 'router · cascade', 'cheap leg', 'Groq · Cheap · cancelled by client · 800ms'],
+    ],
+    [
+      'cancelled after escalation',
+      { ...UNRECORDED_ESCALATION, status: 'cancelled', durationMs: 800 },
+      [
+        'Lobechat',
+        'router · cascade',
+        'cheap leg · attempts not recorded',
+        'escalation · cheap leg did not serve',
+        'XiaomiMiMo · mimo-v2.6-pro · cancelled by client · 800ms',
+      ],
+    ],
+    [
+      'a cheap failure that was not retried',
+      {
+        ...CASCADE,
+        status: 'error',
+        attemptFailures: [entry({ index: 0, providerId: 'p9', model: 'cheap-1', leg: 'cheap' })],
+      },
+      [
+        'openclaw',
+        'router · cascade',
+        'cheap leg',
+        'cheap-1 · rate_limit',
+        'Groq · Cheap · failed · 1.20s',
+      ],
+    ],
+    [
+      'another layer whose entries record a leg (not produced today)',
+      {
+        ...ROW,
+        decisionLayer: 'default',
+        status: 'fallback',
+        attemptFailures: [entry({ index: 0, model: 'cheap-1', leg: 'cheap' })],
+      },
+      [
+        'openclaw',
+        'router · default',
+        'cheap leg',
+        'cheap-1 · rate_limit',
+        'OpenAI · GPT · served · 1.20s',
+      ],
+    ],
+    [
+      // Design D2, both data halves: a recorded escalation-leg entry makes this a cascade
+      // request AND draws its escalation row, even though the row is not flagged escalated.
+      'an escalation-leg entry on another layer, not flagged escalated (not produced today)',
+      {
+        ...ROW,
+        decisionLayer: 'default',
+        status: 'fallback',
+        escalated: false,
+        attemptFailures: [entry({ index: 0, model: 'strong-1', status: 429, leg: 'escalation' })],
+      },
+      [
+        'openclaw',
+        'router · default',
+        'cheap leg · attempts not recorded',
+        'escalation',
+        'strong-1 · rate_limit · HTTP 429',
+        'OpenAI · GPT · served · 1.20s',
+      ],
+    ],
+  ];
+
+  it.each(cases)('%s', (_name, r, texts) => {
+    const trace = toRouteTrace(r);
+    expect(trace.map((n) => n.text)).toEqual(texts);
+    expect(toInspectorView(r).trace).toEqual(trace);
+    // Leg rows are neutral router decisions, never lit, never a failure, never skipped.
+    for (const n of trace)
+      if (n.kind === 'leg') {
+        expect(n.emphasis).toBe('neutral');
+        expect(n.text).toBe(n.detail === null ? n.leg : `${n.leg} · ${n.detail}`);
+      }
+    // Exactly one cheap leg row, which follows the decision chip; at most one escalation row.
+    const legs = trace.filter((n): n is RouteTraceLegNode => n.kind === 'leg');
+    expect(legs[0]).toMatchObject({ leg: 'cheap leg' });
+    expect(trace[2]).toBe(legs[0]);
+    expect(legs.filter((n) => n.leg === 'cheap leg')).toHaveLength(1);
+    expect(legs.filter((n) => n.leg === 'escalation').length).toBeLessThanOrEqual(1);
+    // No attempt node carries a leg tag.
+    for (const a of attemptsOf(trace)) expect(a.text).not.toMatch(/cheap leg|escalation/);
+  });
+
+  it('a request that is not a cascade request draws exactly what it drew before: no leg row', () => {
+    const recorded = [entry({ model: 'a', status: 429 })];
+    for (const decisionLayer of [
+      'explicit',
+      'default',
+      'header',
+      'workload',
+      'structural',
+      'semantic',
+    ])
+      for (const attemptFailures of [null, recorded])
+        // A settled batch item, and a row flagged escalated without a cascade layer or a
+        // recorded leg (not produced today): neither is a cascade request (design D2).
+        for (const extra of [
+          {},
+          { batchId: 'batch_01', priceMode: 'batch' as const },
+          { escalated: true },
+        ]) {
+          const r: RequestRow = {
+            ...ROW,
+            ...extra,
+            decisionLayer,
+            status: attemptFailures === null ? 'success' : 'fallback',
+            attemptFailures,
+          };
+          const trace = toRouteTrace(r);
+          expect(trace.map((n) => n.kind)).toEqual(
+            attemptFailures === null
+              ? ['source', 'decision', 'outcome']
+              : ['source', 'decision', 'attempt', 'outcome'],
+          );
+          expect(trace.map((n) => n.text).join(' ')).not.toMatch(/cheap leg|escalation/);
+        }
+  });
+
+  it('`attempts not recorded` appears only when the row kept nothing for an escalated cheap leg', () => {
+    const detailOf = (r: RequestRow): string | null => {
+      const cheap = toRouteTrace(r).find(
+        (n): n is RouteTraceLegNode => n.kind === 'leg' && n.leg === 'cheap leg',
+      );
+      return cheap?.detail ?? null;
+    };
+    expect(detailOf(UNRECORDED_ESCALATION)).toBe(ATTEMPTS_NOT_RECORDED);
+    // A recorded cheap-leg attempt, or a superseded node, means something was recorded.
+    expect(
+      detailOf({
+        ...UNRECORDED_ESCALATION,
+        status: 'fallback',
+        attemptFailures: [entry({ model: 'cheap-1', leg: 'cheap' })],
+      }),
+    ).toBeNull();
+    expect(detailOf({ ...UNRECORDED_ESCALATION, escalationSource: 'quality_gate' })).toBeNull();
+    // A cascade request that did not escalate reads `cheap leg` alone, whatever it recorded.
+    expect(detailOf(CASCADE)).toBeNull();
+    expect(detailOf({ ...CASCADE, status: 'cancelled' })).toBeNull();
+    // No node for a cheap call the row has no record of: nothing names a cheap model.
+    const texts = traceTexts(UNRECORDED_ESCALATION).join(' ');
+    expect(texts).not.toMatch(/Groq|Cheap|cheap-model|glm/);
+  });
+});
+
+/** dashboard-analytics "An escalated cascade request states its escalation and the recorded
+ * cause" (task 2.2). */
+describe('the escalation row states the recorded cause (add-route-trace-cascade-legs 2.2)', () => {
+  const causeRow = (r: RequestRow): string | undefined =>
+    toRouteTrace(r).find((n) => n.kind === 'leg' && n.leg === 'escalation')?.text;
+
+  it('maps each recorded source to its words, never blank', () => {
+    expect(escalationCause('quality_gate')).toBe('quality gate');
+    expect(escalationCause('cheap_error')).toBe('cheap leg did not serve');
+    expect(escalationCause(null)).toBeNull();
+    expect(escalationCause('manual_override')).toBe('manual_override');
+    expect(escalationCause('  ')).toBeNull();
+    expect(causeRow({ ...UNRECORDED_ESCALATION, escalationSource: 'quality_gate' })).toBe(
+      'escalation · quality gate',
+    );
+    expect(causeRow(UNRECORDED_ESCALATION)).toBe('escalation · cheap leg did not serve');
+    expect(causeRow({ ...UNRECORDED_ESCALATION, escalationSource: null })).toBe('escalation');
+    // A value the dashboard has no case for (the column's CHECK admits none today) renders
+    // verbatim in the same neutral row.
+    const odd: RequestRow = {
+      ...UNRECORDED_ESCALATION,
+      escalationSource: 'manual_override' as unknown as RequestRow['escalationSource'],
+    };
+    expect(causeRow(odd)).toBe('escalation · manual_override');
+  });
+
+  it('reads the cause from the recorded field, never from the routing reason', () => {
+    const legacy: RequestRow = {
+      ...UNRECORDED_ESCALATION,
+      escalationSource: null,
+      routingReason: 'cascade: escalated cheap→heavy; (q=0.00); structural:ambiguous score=0.45',
+    };
+    expect(causeRow(legacy)).toBe('escalation');
+    const texts = traceTexts(legacy).join(' ');
+    expect(texts).not.toMatch(/heavy|q=|structural|0\.45|cheap→/);
+  });
+
+  it('no `cheap_error` trace carries a `q=` figure, whatever signal the row recorded', () => {
+    for (const qualitySignal of [null, 0, 0.42, 0.91])
+      for (const attemptCostMicros of [0, 3_100])
+        for (const status of ['success', 'fallback', 'error', 'cancelled'] as const) {
+          const r: RequestRow = {
+            ...UNRECORDED_ESCALATION,
+            qualitySignal,
+            attemptCostMicros,
+            status,
+          };
+          expect(traceTexts(r).join(' ')).not.toContain('q=');
+        }
+  });
+});
+
+/** dashboard-analytics "A kept cheap answer states that the quality gate passed" (task 2.4). */
+describe('a kept cheap answer states its passing verdict, as the Auto-performance view counts `qualityPassed` (add-route-trace-cascade-legs 2.4)', () => {
+  it('a cascade row that did not escalate, was served and recorded a signal reads the verdict', () => {
+    for (const status of ['success', 'fallback'] as const) {
+      const r: RequestRow = { ...CASCADE, status, qualitySignal: 0.87 };
+      const outcome = outcomeOf(toRouteTrace(r));
+      expect(outcome).toMatchObject({ emphasis: 'lit', keptQuality: 'q=0.87' });
+      // After the latency in the node's text.
+      expect(outcome.text).toBe('Groq · Cheap · served · 1.20s · quality gate passed · q=0.87');
+    }
+    // Two decimals, as the superseded node's `q=`.
+    expect(outcomeOf(toRouteTrace({ ...CASCADE, qualitySignal: 1 })).keptQuality).toBe('q=1.00');
+  });
+
+  it('a kept answer with no recorded score states no verdict and no zero', () => {
+    const outcome = outcomeOf(toRouteTrace(CASCADE));
+    expect(outcome.keptQuality).toBeNull();
+    expect(outcome.text).toBe('Groq · Cheap · served · 1.20s');
+    expect(outcome.text).not.toMatch(/q=|passed|0\.00/);
+  });
+
+  it('only a kept cheap answer carries the verdict', () => {
+    const none: RequestRow[] = [
+      // escalated, with a gate score or a placeholder
+      { ...CASCADE, escalated: true, escalationSource: 'quality_gate', qualitySignal: 0.42 },
+      UNRECORDED_ESCALATION,
+      // a cascade row that failed or was cancelled in its cheap leg, with a passing score
+      { ...CASCADE, status: 'error', qualitySignal: 0.87 },
+      { ...CASCADE, status: 'cancelled', qualitySignal: 0.87 },
+      // any other layer (ROW records 0.8 on a structural row)
+      ROW,
+      { ...ROW, decisionLayer: 'semantic', qualitySignal: 0.9 },
+    ];
+    for (const r of none) {
+      const trace = toRouteTrace(r);
+      expect(outcomeOf(trace).keptQuality).toBeNull();
+      expect(trace.map((n) => n.text).join(' ')).not.toContain('quality gate passed');
+    }
+  });
+});
+
+/** dashboard-analytics "The Decision section prints a quality signal only when the gate
+ * measured one" (task 2.5). */
+describe('the Decision section hides the quality signal of a cheap-leg escalation (add-route-trace-cascade-legs 2.5)', () => {
+  it('a `cheap_error` escalation shows no signal, whatever it recorded', () => {
+    expect(toInspectorView(UNRECORDED_ESCALATION).qualitySignal).toBeNull();
+    expect(
+      toInspectorView({ ...UNRECORDED_ESCALATION, qualitySignal: 0.91 }).qualitySignal,
+    ).toBeNull();
+    // The escalated row and the verbatim reason, `(q=0.00)` included, still render.
+    const v = toInspectorView(UNRECORDED_ESCALATION);
+    expect(v.escalated).toBe(true);
+    expect(v.routingReason).toContain('(q=0.00)');
+  });
+
+  it('a measured signal still renders, and a legacy escalation renders what it recorded', () => {
+    expect(
+      toInspectorView({
+        ...CASCADE,
+        escalated: true,
+        escalationSource: 'quality_gate',
+        qualitySignal: 0.42,
+      }).qualitySignal,
+    ).toBe(0.42);
+    expect(toInspectorView({ ...CASCADE, qualitySignal: 0.87 }).qualitySignal).toBe(0.87);
+    expect(
+      toInspectorView({ ...UNRECORDED_ESCALATION, escalationSource: null, qualitySignal: 0 })
+        .qualitySignal,
+    ).toBe(0);
+    expect(toInspectorView(CASCADE).qualitySignal).toBeNull();
   });
 });
 

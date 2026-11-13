@@ -2910,13 +2910,16 @@ test.describe('the route trace in the inspector (add-route-trace-inspector 4.6)'
       const drawer = await page.locator('.drawer').boundingBox();
       expect(drawer?.width, 'the inspector box is unchanged').toBe(vp.drawer);
       const rows = await traceRows(page);
-      // Not vacuous: every node kind the fixture records is drawn.
+      // Not vacuous: every node kind the fixture records is drawn, the cascade's two leg rows
+      // included (add-route-trace-cascade-legs task 4.1).
       expect(rows.map((r) => r.kind)).toEqual([
         'source',
         'decision',
+        'leg',
         'attempt',
         'attempt',
         'superseded',
+        'leg',
         'attempt',
         'outcome',
       ]);
@@ -2987,6 +2990,113 @@ test.describe('the route trace in the inspector (add-route-trace-inspector 4.6)'
       expect(wrapped.length, `no trace label wrapped at ${String(vp.width)}px`).toBeGreaterThan(0);
       expect(wrapped).toContain('source');
       expect(wrapped).toContain('outcome');
+    });
+  }
+
+  // add-route-trace-cascade-legs (task 4.1): the `?trace=cascade` fixture's second row is an
+  // escalation whose cheap leg did not serve and left no record. Its two leg-row details are
+  // contract strings short enough to sit on ONE line of the sheet's 248px label column, so the
+  // rows read at a glance even at the narrowest presentation. EXACT: a line is 16px.
+  test('the leg rows of an unrecorded escalation fit one line of the 320px sheet', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 320, height: 568 });
+    await open(page, '#/requests', '?trace=cascade');
+    await page.locator('button.req-row').nth(1).click();
+    await page.waitForSelector('.drawer ol.rt > li[data-kind="leg"]');
+    await page.waitForTimeout(250);
+    const rows = await traceRows(page);
+    expect(rows.map((r) => r.kind)).toEqual(['source', 'decision', 'leg', 'leg', 'outcome']);
+    const legs = await page.evaluate(() =>
+      [...document.querySelectorAll<HTMLElement>('.drawer ol.rt > li[data-kind="leg"]')].map(
+        (li) => {
+          const text = [...li.children].find((c) => c.getAttribute('aria-hidden') !== 'true');
+          if (!text) throw new Error('a leg row has no text block');
+          // The block is as wide as its column whatever it holds; a Range over its contents
+          // measures the words themselves.
+          const range = document.createRange();
+          range.selectNodeContents(text);
+          return {
+            text: (text.textContent ?? '').replace(/\s+/g, ' ').trim(),
+            height: text.getBoundingClientRect().height,
+            column: text.getBoundingClientRect().width,
+            words: range.getBoundingClientRect().width,
+          };
+        },
+      ),
+    );
+    expect(legs.map((l) => l.text)).toEqual([
+      'cheap leg · attempts not recorded',
+      'escalation · cheap leg did not serve',
+    ]);
+    for (const l of legs) {
+      expect(l.column, 'the sheet leaves a 248px label column').toBeCloseTo(248, 0);
+      expect(l.height, `"${l.text}" takes one 16px line`).toBeLessThanOrEqual(16 + 0.5);
+      expect(l.words, `"${l.text}" fits the label column`).toBeLessThanOrEqual(l.column + 0.5);
+    }
+    for (const [i, r] of rows.entries()) {
+      expect(r.textLeft - r.li.left, `node ${String(i)} (${r.kind}): text offset`).toBe(32);
+      expect(r.li.height, `node ${String(i)} (${r.kind}): row height`).toBeGreaterThanOrEqual(32);
+    }
+  });
+
+  // add-route-trace-cascade-legs (design D7): the fixture's third row is a kept cheap answer.
+  // Its verdict is the served node's second line: one 16px line, 4px below the label, inside
+  // the label column and the node's padding, in every presentation. The node's mark stays on
+  // its first line, and nothing leaves the inspector box.
+  for (const vp of [
+    { name: 'the 480px docked panel at 1440x900', width: 1440, height: 900 },
+    { name: 'the 440px drawer at 1025x768', width: 1025, height: 768 },
+    { name: 'the sheet at 320x568', width: 320, height: 568 },
+  ] as const) {
+    test(`a kept cheap answer's verdict is one line under the served label, in ${vp.name}`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width: vp.width, height: vp.height });
+      await open(page, '#/requests', '?trace=cascade');
+      await page.locator('button.req-row').nth(2).click();
+      await page.waitForSelector('.drawer [data-testid="rt-kept"]');
+      await page.waitForTimeout(250);
+      const m = await page.evaluate(() => {
+        const drawer = document.querySelector<HTMLElement>('.drawer')!.getBoundingClientRect();
+        const li = document.querySelector<HTMLElement>('.drawer ol.rt > li[data-kind="outcome"]')!;
+        const kept = li.querySelector<HTMLElement>('[data-testid="rt-kept"]')!;
+        const dot = li.querySelector<HTMLElement>('.rt-dot')!;
+        const text = kept.parentElement!.getBoundingClientRect();
+        const l = li.getBoundingClientRect();
+        const k = kept.getBoundingClientRect();
+        const escapes = [...document.querySelectorAll<HTMLElement>('.drawer *')].filter((el) => {
+          const r = el.getBoundingClientRect();
+          if (r.width === 0 && r.height === 0) return false;
+          return r.left < drawer.left - 0.5 || r.right > drawer.right + 0.5;
+        }).length;
+        return {
+          text: (kept.textContent ?? '').trim(),
+          keptHeight: k.height,
+          keptLeft: k.left - text.left,
+          // The text block is the label's whole 16px lines, the 4px gap, then the verdict: so
+          // what is above the verdict, less the gap, is a whole number of lines.
+          labelLines: (text.height - k.height - 4) / 16,
+          keptAtBottom: text.bottom - k.bottom,
+          bottomPad: l.bottom - k.bottom,
+          dotTop: dot.getBoundingClientRect().top - l.top,
+          liHeight: l.height,
+          escapes,
+        };
+      });
+      expect(m.text).toBe('quality gate passed · q=0.87');
+      expect(m.keptHeight, 'the verdict is one 16px line').toBeCloseTo(16, 0);
+      expect(m.keptLeft, 'the verdict starts at the label column').toBeCloseTo(0, 0);
+      expect(
+        m.labelLines,
+        'the label is whole lines, 4px above the verdict',
+      ).toBeGreaterThanOrEqual(1);
+      expect(Math.abs(m.labelLines - Math.round(m.labelLines))).toBeLessThan(0.05);
+      expect(m.keptAtBottom, 'the verdict is the last line of the text block').toBeCloseTo(0, 0);
+      expect(m.bottomPad, "the node's bottom padding").toBeCloseTo(8, 0);
+      expect(m.dotTop, 'the mark stays on the first line').toBeCloseTo(12, 0);
+      expect(m.liHeight).toBeGreaterThanOrEqual(52);
+      expect(m.escapes, 'content escaping the inspector').toBe(0);
     });
   }
 });

@@ -785,6 +785,52 @@ if (params.get('trace') === 'cascade') {
         },
       ],
     },
+    // add-route-trace-cascade-legs (task 3.5): the second and third rows, so the first row stays
+    // the longest route. An escalation whose cheap leg did not serve and left no record (the
+    // strong tier served cleanly, so the row is `success` with no trail), whose two leg-row
+    // details must fit one line of a 320px sheet; and a kept cheap answer whose passing verdict
+    // rides the served node's second line.
+    {
+      ...head,
+      id: 'trace-cascade-unrecorded',
+      createdAt: new Date(Date.parse(head.createdAt) + 6000).toISOString(),
+      agentLabel: 'Lobechat',
+      providerLabel: 'XiaomiMiMo',
+      status: 'success',
+      decisionLayer: 'cascade',
+      routingReason:
+        'cascade: escalated cheap→heavy; esc[capability_deferred ~z-ai/glm-latest(vision)] (q=0.00)',
+      tierAssigned: 'heavy',
+      escalated: true,
+      escalationSource: 'cheap_error',
+      qualitySignal: 0,
+      attemptCostMicros: 0,
+      errorKind: null,
+      errorStatus: null,
+      errorMessage: null,
+      errorRequestId: null,
+      errorMarkers: null,
+      attemptFailures: null,
+    },
+    {
+      ...head,
+      id: 'trace-cascade-kept',
+      createdAt: new Date(Date.parse(head.createdAt) + 5000).toISOString(),
+      status: 'success',
+      decisionLayer: 'cascade',
+      routingReason: 'cascade: cheap served (q=0.87)',
+      tierAssigned: 'default',
+      escalated: false,
+      escalationSource: null,
+      qualitySignal: 0.87,
+      attemptCostMicros: 0,
+      errorKind: null,
+      errorStatus: null,
+      errorMessage: null,
+      errorRequestId: null,
+      errorMarkers: null,
+      attemptFailures: null,
+    },
     ...client.requestRows,
   ];
 }

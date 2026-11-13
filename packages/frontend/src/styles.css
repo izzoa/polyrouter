@@ -1425,7 +1425,9 @@ button:disabled[aria-busy='true'] {
  * the row's left edge. The 32px graph gutter holds the decoration, three `aria-hidden` spans
  * drawn here and never as glyphs: the spine at 4px (`.rt-spine`, the walk, always neutral), the
  * branch out to an attempt, the superseded call or the outcome (`.rt-branch`), and the 8px node
- * mark (`.rt-dot`) — on the spine for the source and the decision, at 16px at a branch's end.
+ * mark (`.rt-dot`) — on the spine for the source, the decision and a cascade's leg rows
+ * (add-route-trace-cascade-legs: the spine is the router, a branch is a provider call), at 16px
+ * at a branch's end.
  * Marks are centred on the first text line (16px down), so a two-line label keeps its node on
  * its first line. Every node states its outcome in its text; strokes and marks only repeat it.
  *
@@ -1534,10 +1536,24 @@ button:disabled[aria-busy='true'] {
 .rt-failure {
   color: var(--red-text);
 }
-/* Markers and the cascade leg tag: Caption size, Ink 3. */
+/* Markers, and a node's second line (a kept cheap answer's verdict): Caption size, Ink 3. */
 .rt-meta {
   font-size: 0.6875rem;
   color: var(--text3);
+}
+/* A cascade leg row's word, `cheap leg` / `escalation` (add-route-trace-cascade-legs design D1,
+   D9): the Label weight in Ink, so the legs can be found by eye among the same-shaped rings on
+   the spine. Its detail stays the row's Ink 2. Neither the accent nor the failure red. */
+.rt-leg {
+  font-weight: 500;
+  color: var(--text);
+}
+/* A node's second line (design D7, D9): a kept cheap answer's `quality gate passed · q=0.87`,
+   used with `.rt-meta`, on its own line 4px below the first. The node grows to 52px, on the
+   4px scale; its mark stays centred on the first line. */
+.rt-sub {
+  display: block;
+  margin-top: 4px;
 }
 /* A figure whose estimate marker must stay on it when its line wraps (an attempt cost; a
    receipt row's count group and price group, design D8 item 2). */

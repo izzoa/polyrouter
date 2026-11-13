@@ -346,6 +346,97 @@ describe('Dashboard a11y semantics', () => {
     }
   });
 
+  it("an escalated cascade request's leg rows are read in walk order, as text (add-route-trace-cascade-legs 3.3)", async () => {
+    // dashboard-analytics "The route trace states every outcome in text", scenario "Leg rows are
+    // read in walk order": the `cheap leg` row before the cheap leg's nodes, the `escalation`
+    // row with its recorded cause before the escalation leg's, each a list item of text.
+    const base = buildRequestRows(1)[0]!;
+    const row = {
+      ...base,
+      status: 'fallback' as const,
+      agentLabel: 'billing-bot',
+      decisionLayer: 'cascade',
+      escalated: true,
+      escalationSource: 'cheap_error' as const,
+      qualitySignal: 0,
+      attemptCostMicros: 0,
+      batchId: null,
+      priceMode: null,
+      providerLabel: 'Provider S',
+      modelLabel: 'model-strong',
+      durationMs: 1_240,
+      errorKind: null,
+      errorStatus: null,
+      errorMessage: null,
+      errorRequestId: null,
+      errorMarkers: null,
+      attemptFailures: [
+        {
+          index: 0,
+          providerId: 'p1',
+          model: 'cheap-a',
+          kind: 'timeout',
+          dispatched: true,
+          leg: 'cheap' as const,
+        },
+        {
+          index: 0,
+          providerId: 'p2',
+          model: 'strong-a',
+          kind: 'rate_limit',
+          status: 429,
+          dispatched: true,
+          leg: 'escalation' as const,
+        },
+      ],
+    };
+    const store = createAppStore(new FakeApiClient({ requestRows: [row] }));
+    const { host, dispose } = mountApp(store);
+    try {
+      await flush();
+      store.go('requests');
+      await flush();
+      store.select(row.id);
+      await flush();
+      const drawer = host.querySelector<HTMLElement>('#inspector-drawer');
+      expect(drawer).not.toBeNull();
+      const lists = drawer!.querySelectorAll('ol');
+      expect(lists).toHaveLength(1);
+      const lis = [...lists[0]!.querySelectorAll<HTMLElement>(':scope > li')];
+      expect(lis.map((li) => li.textContent)).toEqual([
+        'billing-bot',
+        'router · cascade',
+        'cheap leg',
+        'cheap-a · timeout',
+        'escalation · cheap leg did not serve',
+        'strong-a · rate_limit · HTTP 429',
+        'Provider S · model-strong · served · 1.24s',
+      ]);
+      // The leg and the cause are text in the item, never carried by position or mark alone.
+      // `shown` skips aria-hidden subtrees at ANY depth, so a hidden word nested in the text
+      // block would make it differ from the item's text.
+      const shownText = (n: Node): string => {
+        if (n instanceof HTMLElement && n.getAttribute('aria-hidden') === 'true') return '';
+        if (n.nodeType === Node.TEXT_NODE) return n.textContent ?? '';
+        return [...n.childNodes].map(shownText).join('');
+      };
+      for (const li of lis) {
+        for (const m of li.querySelectorAll<HTMLElement>('.rt-spine, .rt-branch, .rt-dot'))
+          expect(m.getAttribute('aria-hidden')).toBe('true');
+        for (const hidden of li.querySelectorAll('[aria-hidden="true"]'))
+          expect(hidden.matches('.rt-spine, .rt-branch, .rt-dot')).toBe(true);
+        expect(shownText(li)).toBe(li.textContent);
+      }
+      expect(
+        lists[0]!.querySelectorAll(
+          'button, a, input, select, textarea, [tabindex], [role="button"]',
+        ),
+      ).toHaveLength(0);
+    } finally {
+      dispose();
+    }
+  });
+
   it('a modal above the drawer owns Tab — the suspended drawer never steals focus', async () => {
     const store = createAppStore(new FakeApiClient());
     const { host, dispose } = mountApp(store);

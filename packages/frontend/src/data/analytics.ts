@@ -228,6 +228,9 @@ export interface InspectorView {
    * name (type- and CHECK-impossible) is never rendered. */
   matchedHeader: string | null;
   escalated: boolean;
+  /** The Decision section's `quality signal` row; null hides it. Null on a `cheap_error`
+   * escalation, whose recorded signal is not a gate verdict on the escalation
+   * (add-route-trace-cascade-legs design D8), and when no signal was recorded. */
   qualitySignal: number | null;
   /** L2 provenance (add-semantic-dashboard D4): the active classification source
    * (`learned`/`bundled`) and the verdict band when Layer 2 evaluated this
@@ -346,7 +349,8 @@ export interface ErrorView {
  * node also states its outcome in its text, so the emphasis only repeats the words. */
 export type RouteTraceEmphasis = 'lit' | 'neutral' | 'failed' | 'skipped';
 
-/** A cascade attempt's leg tag. A primary (non-cascade) chain records no leg. */
+/** A cascade leg's word, stated once by its leg row (add-route-trace-cascade-legs design D1,
+ * D5). A primary (non-cascade) chain draws no leg row. */
 export type RouteTraceLeg = 'cheap leg' | 'escalation';
 
 /** Every node carries `text`, its whole reading as plain text, in the order the node's
@@ -368,8 +372,22 @@ export interface RouteTraceDecisionNode extends RouteTraceNodeBase {
   readonly layer: string;
 }
 
+/** A cascade leg row (add-route-trace-cascade-legs design D1): a router decision on the
+ * spine, like the source and the decision chip, never a branch. It states its leg once, so the
+ * attempt nodes under it carry no leg tag (design D5). */
+export interface RouteTraceLegNode extends RouteTraceNodeBase {
+  readonly kind: 'leg';
+  readonly emphasis: 'neutral';
+  readonly leg: RouteTraceLeg;
+  /** The row's one detail after ` · `: `ATTEMPTS_NOT_RECORDED` on a cheap leg row whose leg the
+   * row kept nothing about (design D6), the recorded escalation cause on an escalation row
+   * (design D4); null when there is none. */
+  readonly detail: string | null;
+}
+
 /** One recorded `attempt_failures` entry (add-fallback-attempt-detail), in stored order. It
- * names the member's model, never its provider (design D10). */
+ * names the member's model, never its provider (design D10), and carries no leg tag: the leg
+ * row above it states the leg (add-route-trace-cascade-legs design D5). */
 export interface RouteTraceAttemptNode extends RouteTraceNodeBase {
   readonly kind: 'attempt';
   /** `skipped` for a never-dispatched member, `failed` for a dispatched failure. */
@@ -382,7 +400,6 @@ export interface RouteTraceAttemptNode extends RouteTraceNodeBase {
    * request's trail explains every refusal and not just its kind. Null when the entry
    * carries none (including entries predating capture). */
   readonly markers: readonly string[] | null;
-  readonly leg: RouteTraceLeg | null;
 }
 
 /** The superseded cascade cheap call, drawn only from the recorded rollups (design D4):
@@ -413,11 +430,16 @@ export interface RouteTraceOutcomeNode extends RouteTraceNodeBase {
   readonly result: string;
   /** The latency in the request table's format (`requestLatency`). */
   readonly latency: string;
+  /** A kept cheap answer's gate score, `q=<score>` at two decimals (add-route-trace-cascade-legs
+   * design D7): the node then also reads `QUALITY_GATE_PASSED`, on a second line after the
+   * latency. Null on every other outcome, and on a kept answer that recorded no score. */
+  readonly keptQuality: string | null;
 }
 
 export type RouteTraceNode =
   | RouteTraceSourceNode
   | RouteTraceDecisionNode
+  | RouteTraceLegNode
   | RouteTraceAttemptNode
   | RouteTraceSupersededNode
   | RouteTraceOutcomeNode;
@@ -433,10 +455,22 @@ export const SUPERSEDED_LABEL = 'cheap attempt superseded';
 /** The trace caption for a recovered request that predates per-attempt capture. */
 export const TRACE_NOT_RECORDED = 'attempt history was not recorded for this request';
 
-const LEG_TAG: Readonly<Record<NonNullable<AttemptFailureEntry['leg']>, RouteTraceLeg>> = {
-  cheap: 'cheap leg',
-  escalation: 'escalation',
-};
+/* Leg-row contract strings (add-route-trace-cascade-legs design D1, D4, D6, D7). DESIGN.md's
+   Route Trace section quotes them exactly. */
+/** The cheap leg row's word. */
+export const CHEAP_LEG = 'cheap leg';
+/** The escalation row's word. */
+export const ESCALATION_LEG = 'escalation';
+/** The cheap leg row's detail when the row kept nothing the trace can draw for that leg. */
+export const ATTEMPTS_NOT_RECORDED = 'attempts not recorded';
+/** The escalation cause for `escalation_source = 'quality_gate'`. */
+export const CAUSE_QUALITY_GATE = 'quality gate';
+/** The escalation cause for `escalation_source = 'cheap_error'`: every other pre-commit
+ * escalation (a failed, timed-out or skipped cheap chain, or a replay failure after a passing
+ * verdict), so it says only what the value proves. */
+export const CAUSE_CHEAP_DID_NOT_SERVE = 'cheap leg did not serve';
+/** The kept cheap answer's verdict, before its `q=<score>`. */
+export const QUALITY_GATE_PASSED = 'quality gate passed';
 
 const joinDot = (parts: readonly (string | null)[]): string =>
   parts.filter((p): p is string => p !== null).join(' · ');
@@ -449,16 +483,62 @@ function attemptNode(a: AttemptFailureEntry): RouteTraceAttemptNode {
       : SKIP_LABEL
     : `${a.kind}${a.status !== undefined && a.status !== null ? ` · HTTP ${String(a.status)}` : ''}`;
   const markers = normalizeMarkers(a.markers ?? null);
-  const leg = a.leg === undefined ? null : LEG_TAG[a.leg];
   return {
     kind: 'attempt',
     emphasis: skipped ? 'skipped' : 'failed',
     model: a.model,
     label,
     markers,
-    leg,
-    text: joinDot([a.model, label, ...(markers ?? []), leg]),
+    text: joinDot([a.model, label, ...(markers ?? [])]),
   };
+}
+
+/** The escalation row's cause, in words, from the recorded `escalation_source` alone
+ * (add-route-trace-cascade-legs design D4): `quality gate`, `cheap leg did not serve`, any
+ * other recorded value verbatim, and null (no cause) when none is recorded or the value is
+ * blank. Never read from the routing reason. The parameter is a plain string because the view
+ * must not blank or error on a value the dashboard has no case for. */
+export function escalationCause(source: string | null): string | null {
+  if (source === null) return null;
+  switch (source) {
+    case 'quality_gate':
+      return CAUSE_QUALITY_GATE;
+    case 'cheap_error':
+      return CAUSE_CHEAP_DID_NOT_SERVE;
+    default:
+      return source.trim() === '' ? null : source;
+  }
+}
+
+/** Design D2: a cascade request draws leg rows. Keyed on the recorded data as well as the
+ * layer, so a recorded leg never loses its statement when the per-attempt tag is gone. */
+function isCascadeRequest(r: Pick<RequestRow, 'decisionLayer' | 'attemptFailures'>): boolean {
+  return (
+    r.decisionLayer === 'cascade' ||
+    (r.attemptFailures ?? []).some((a) => a.leg === 'cheap' || a.leg === 'escalation')
+  );
+}
+
+/** Design D2: a cascade request draws its escalation row when it escalated or recorded an
+ * escalation-leg attempt. */
+function drawsEscalationRow(r: Pick<RequestRow, 'escalated' | 'attemptFailures'>): boolean {
+  return r.escalated || (r.attemptFailures ?? []).some((a) => a.leg === 'escalation');
+}
+
+function legNode(leg: RouteTraceLeg, detail: string | null): RouteTraceLegNode {
+  return { kind: 'leg', emphasis: 'neutral', leg, detail, text: joinDot([leg, detail]) };
+}
+
+/** Design D7: the gate score of a cheap answer the cascade kept: a `cascade` row that did not
+ * escalate, was served (`success` / `fallback`) and recorded a signal. A failing verdict always
+ * escalates, so a kept answer's score can only have passed; a gate that failed open recorded
+ * none, and the node then states no verdict. Null on every other row. */
+function keptQuality(
+  r: Pick<RequestRow, 'decisionLayer' | 'escalated' | 'status' | 'qualitySignal'>,
+): string | null {
+  if (r.decisionLayer !== 'cascade' || r.escalated || r.qualitySignal === null) return null;
+  if (r.status !== 'success' && r.status !== 'fallback') return null;
+  return `q=${r.qualitySignal.toFixed(2)}`;
 }
 
 /** Design D4: drawn for an escalated row that records a `quality_gate` source or a non-zero
@@ -511,7 +591,9 @@ function unlitProvider(r: RequestRow): string | null {
 }
 
 /** Design D3: exactly one outcome node; lit only for `success` / `fallback`. An unlit
- * outcome names the recorded provider first when `unlitProvider` allows it. */
+ * outcome names the recorded provider first when `unlitProvider` allows it. A kept cheap
+ * answer also states its passing verdict after the latency (add-route-trace-cascade-legs
+ * design D7). */
 function outcomeNode(r: RequestRow): RouteTraceOutcomeNode {
   const latency = requestLatency(r);
   const recordedModel = r.modelLabel ?? r.modelId;
@@ -520,6 +602,7 @@ function outcomeNode(r: RequestRow): RouteTraceOutcomeNode {
     provider: string | null,
     model: string | null,
     result: string,
+    kept: string | null = null,
   ): RouteTraceOutcomeNode => ({
     kind: 'outcome',
     emphasis,
@@ -527,7 +610,14 @@ function outcomeNode(r: RequestRow): RouteTraceOutcomeNode {
     model,
     result,
     latency,
-    text: joinDot([provider, model, result, latency]),
+    keptQuality: kept,
+    text: joinDot([
+      provider,
+      model,
+      result,
+      latency,
+      ...(kept === null ? [] : [QUALITY_GATE_PASSED, kept]),
+    ]),
   });
   // `request_log.status` is free-form text at the database (`RequestStatus` is a known
   // status or any string), so an unrecognised value takes the default branch.
@@ -535,7 +625,7 @@ function outcomeNode(r: RequestRow): RouteTraceOutcomeNode {
   switch (status) {
     case 'success':
     case 'fallback':
-      return node('lit', r.providerLabel ?? r.providerId, recordedModel, 'served');
+      return node('lit', r.providerLabel ?? r.providerId, recordedModel, 'served', keptQuality(r));
     case 'error':
       // An exhausted chain's terminal member is already the last attempt node, so the
       // outcome does not name a model again; any other error names the recorded one.
@@ -574,23 +664,41 @@ function buildRouteTrace(r: RequestRow, attemptParts: readonly FigurePart[]): Ro
   // walk order, cheap leg first. With no cheap entry the split is at 0, so a primary chain
   // keeps its whole array in stored order and a superseded node follows the decision.
   const boundary = entries.findLastIndex((a) => a.leg === 'cheap') + 1;
+  const cheapEntries = entries.slice(0, boundary).map(attemptNode);
+  const laterEntries = entries.slice(boundary).map(attemptNode);
   const superseded = supersededNode(r, attemptParts);
   const layer = r.decisionLayer;
-  return [
+  const head: RouteTraceNode[] = [
     { kind: 'source', emphasis: 'neutral', text: agentRunLabel(r) },
     { kind: 'decision', emphasis: 'neutral', layer, text: `router · ${layer}` },
-    ...entries.slice(0, boundary).map(attemptNode),
-    ...(superseded === null ? [] : [superseded]),
-    ...entries.slice(boundary).map(attemptNode),
+  ];
+  const supersededNodes = superseded === null ? [] : [superseded];
+  if (!isCascadeRequest(r)) {
+    return [...head, ...cheapEntries, ...supersededNodes, ...laterEntries, outcomeNode(r)];
+  }
+  // add-route-trace-cascade-legs design D3: a `cheap leg` row, the cheap half and the
+  // superseded call under it, then the `escalation` row with its recorded cause and the
+  // remaining entries. A request that did not escalate draws no escalation row, and every
+  // entry sits under the cheap leg row.
+  const escalation = drawsEscalationRow(r);
+  // Design D6: say so when the row kept nothing the trace can draw for the cheap leg.
+  const cheapUnrecorded = escalation && cheapEntries.length === 0 && superseded === null;
+  return [
+    ...head,
+    legNode(CHEAP_LEG, cheapUnrecorded ? ATTEMPTS_NOT_RECORDED : null),
+    ...cheapEntries,
+    ...supersededNodes,
+    ...(escalation ? [legNode(ESCALATION_LEG, escalationCause(r.escalationSource))] : []),
+    ...laterEntries,
     outcomeNode(r),
   ];
 }
 
 /** The request's recorded route as an ordered node list (design D1): a source node, the
- * decision chip, one node per recorded attempt in stored walk order (with the superseded
- * cascade call between the legs), and one outcome node. Built from this row alone: never
- * from a chain member the request did not walk, from current routing configuration, or
- * from a commit time, which is not recorded. */
+ * decision chip, the leg rows a cascade request draws, one node per recorded attempt in stored
+ * walk order (with the superseded cascade call between the legs), and one outcome node. Built
+ * from this row alone: never from a chain member the request did not walk, from the routing
+ * reason, from current routing configuration, or from a commit time, which is not recorded. */
 export function toRouteTrace(r: RequestRow): RouteTraceNode[] {
   return buildRouteTrace(r, attemptCostParts(r));
 }
@@ -759,7 +867,11 @@ export function toInspectorView(r: RequestRow): InspectorView {
           ? r.routingHeaderName
           : `${r.routingHeaderName}: ${r.routingHeaderValue}`,
     escalated: r.escalated,
-    qualitySignal: r.qualitySignal,
+    // add-route-trace-cascade-legs design D8: on a `cheap_error` escalation the recorded signal
+    // is not the gate's verdict on the escalation (the proxy writes a placeholder 0, or a
+    // passing score whose replay failed), so the Decision section draws no row for it. The
+    // verbatim routing reason keeps its `(q=…)`.
+    qualitySignal: r.escalationSource === 'cheap_error' ? null : r.qualitySignal,
     semanticSource: r.semanticSource,
     semanticBand: r.semanticBand,
     workloadClass: r.workloadClass,

@@ -11,6 +11,7 @@ import {
 } from 'solid-js';
 import { useInspectorSurface } from '../a11y';
 import {
+  QUALITY_GATE_PASSED,
   SUPERSEDED_LABEL,
   toInspectorView,
   type ReceiptTokenRow,
@@ -62,8 +63,10 @@ function joined(parts: readonly (JSX.Element | null)[]): JSX.Element[] {
   return out;
 }
 
-/** A node branches off the spine (an attempt, the superseded call, the outcome); the source
- * and the decision sit on it (DESIGN.md Route Trace › Anatomy). */
+/** A node branches off the spine (an attempt, the superseded call, the outcome); the source,
+ * the decision and the cascade leg rows sit on it (DESIGN.md Route Trace › Anatomy;
+ * add-route-trace-cascade-legs design D1: the spine is the router, a branch is a provider
+ * call). */
 const BRANCHES: ReadonlySet<RouteTraceNode['kind']> = new Set(['attempt', 'superseded', 'outcome']);
 
 /** One node's text block (design D6, the Text column): it states the node's outcome in words,
@@ -82,6 +85,11 @@ function TraceNodeText(props: { node: RouteTraceNode }): JSX.Element {
           {n.text}
         </span>
       );
+    case 'leg':
+      // A cascade leg row (add-route-trace-cascade-legs design D1): the leg word at the Label
+      // weight in Ink, so the legs can be found among the same-shaped spine rings, then its one
+      // detail in the row's Ink 2. Neutral: never the accent, never the failure red.
+      return <>{joined([<span class="rt-leg">{n.leg}</span>, n.detail])}</>;
     case 'attempt':
       return (
         <>
@@ -91,7 +99,6 @@ function TraceNodeText(props: { node: RouteTraceNode }): JSX.Element {
             // Failure text); the skip label is not a failure and keeps the row's Ink 3.
             n.emphasis === 'failed' ? <span class="mono rt-failure">{n.label}</span> : n.label,
             ...(n.markers ?? []).map((m) => <span class="mono rt-meta">{m}</span>),
-            n.leg === null ? null : <span class="rt-meta">{n.leg}</span>,
           ])}
         </>
       );
@@ -120,6 +127,22 @@ function TraceNodeText(props: { node: RouteTraceNode }): JSX.Element {
               {n.latency}
             </span>,
           ])}
+          {/* A kept cheap answer's passing verdict (add-route-trace-cascade-legs design D7): a
+              second line in the Caption-size Ink 3 meta treatment, never the accent. */}
+          <Show when={n.keptQuality} keyed>
+            {(q) => (
+              <>
+                {/* The line break is visual only: read and copied, the node is one sentence,
+                    as its view-model `text` is. */}
+                <span class="sr-only">{SEP}</span>
+                <span class="rt-meta rt-sub" data-testid="rt-kept">
+                  {QUALITY_GATE_PASSED}
+                  {SEP}
+                  <span class="figure">{q}</span>
+                </span>
+              </>
+            )}
+          </Show>
         </>
       );
   }

@@ -15,6 +15,10 @@ heading is started.
 
 ## [Unreleased]
 
+### Changed
+
+- **The Route Trace names a cascade request's legs and why it escalated.** A cascade request's trace now shows a `cheap leg` row and, when it escalated, an `escalation` row with the recorded cause (`quality gate` or `cheap leg did not serve`); an escalation whose cheap leg left no record says `attempts not recorded`, a kept cheap answer states `quality gate passed · q=<score>`, and the Decision section no longer prints the quality signal of an escalation the cheap leg caused, which is a placeholder zero or the score of an answer whose replay failed.
+
 ## [0.31.0] — 2026-11-10
 
 [Release](https://github.com/izzoa/polyrouter/releases/tag/v0.31.0) ·

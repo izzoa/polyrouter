@@ -12,11 +12,13 @@ import {
   chainBillingEvidence,
   type AttemptBilling,
   type AttemptFailure,
+  type BufferedChainResult,
   type ChainAttempt,
 } from './core';
 import { walkUnbilled } from '../recording';
 import {
   getAdapter,
+  type NormalizedRequest,
   type NormalizedStreamEvent,
   type NormalizedResponse,
   type SanitizedMessage,
@@ -474,6 +476,298 @@ describe('runBufferedChain', () => {
     );
     expect(r.ok).toBe(false);
     if (r.ok) throw new Error('unreachable');
+    expect(r.callerAborted).toBe(true);
+  });
+});
+
+// keep-cheap-leg-attempt-trail (design D3): the walk records the member its OWN deadline
+// cut off — the cascade cheap leg's composite signal fired while the client was present —
+// before or after response headers, and nothing else: not a caller abort, not a member the
+// deadline beat to dispatch, not a provider answer that carried a status, and not an
+// unrelated failure the deadline merely overtook while the breaker settled.
+describe('runBufferedChain — a member cut off by the walk’s own deadline', () => {
+  const client = getAdapter('openai');
+  const REQ = { model: 'x', messages: [], params: {} };
+  const resp = (): NormalizedResponse => ({
+    id: 'r',
+    model: 'm',
+    content: [{ type: 'text', text: 'ok' }],
+    stopReason: 'stop',
+  });
+  type Chat = (signal: AbortSignal) => Promise<NormalizedResponse>;
+  /** A member whose `chat` receives the walk's signal, like a real adapter does. The
+   * optional hooks run during adapter build (before dispatch) and on breaker settlement. */
+  const member = (
+    providerId: string,
+    chat: Chat,
+    hooks: { onBuild?: () => void; onSettle?: () => void } = {},
+  ): ChainAttempt => ({
+    providerId,
+    externalModelId: `${providerId}-model`,
+    buildAdapter: () => {
+      hooks.onBuild?.();
+      return Promise.resolve({
+        protocol: 'openai_compatible',
+        chat: (_req: NormalizedRequest, opts: { signal: AbortSignal }) => chat(opts.signal),
+        chatStream: async function* () {
+          /* unused */
+        },
+        listModels: () => Promise.resolve([]),
+        testConnection: () => Promise.resolve({ ok: true, models: 0 }),
+      } as unknown as ProviderAdapter);
+    },
+    ...(hooks.onSettle !== undefined ? { onSettle: hooks.onSettle } : {}),
+  });
+  /** The adapter's in-flight behaviour while the deadline fires: it hangs until the walk's
+   * signal aborts, then rejects with what the http adapter throws for that phase. */
+  const hangThen =
+    (onAbort: () => Error, fire: AbortController): Chat =>
+    (signal) =>
+      new Promise((_resolve, reject) => {
+        // The adapter's own entry check (`http.ts`): an already-aborted call never leaves.
+        if (signal.aborted) {
+          reject(new CallCancelledError());
+          return;
+        }
+        signal.addEventListener('abort', () => reject(onAbort()), { once: true });
+        setTimeout(() => fire.abort(), 0); // the deadline fires while the call is in flight
+      });
+  const beforeHeaders = (): Error => new CallCancelledError();
+  const afterHeaders = (): Error =>
+    new ProviderError('unavailable', 'provider request failed: aborted');
+  const walk = (
+    attempts: readonly ChainAttempt[],
+    signal: AbortSignal,
+    isCallerAbort?: () => boolean,
+  ): Promise<BufferedChainResult> =>
+    runBufferedChain(
+      new CircuitBreaker(new InMemoryBreakerStore()),
+      attempts,
+      client,
+      REQ,
+      { created: 1, ...(isCallerAbort !== undefined ? { isCallerAbort } : {}) },
+      signal,
+    );
+  const failed = (r: BufferedChainResult): Extract<BufferedChainResult, { ok: false }> => {
+    if (r.ok) throw new Error('expected the walk to fail');
+    return r;
+  };
+
+  it('records a cut BEFORE response headers as a dispatched, uncertain deadline entry', async () => {
+    const deadline = new AbortController();
+    const r = failed(
+      await walk([member('p1', hangThen(beforeHeaders, deadline))], deadline.signal, () => false),
+    );
+    expect(r.failures).toHaveLength(1);
+    expect(r.failures[0]).toMatchObject({
+      index: 0,
+      dispatched: true,
+      billing: 'uncertain',
+      stop: 'deadline',
+    });
+    expect(r.failures[0]!.error.kind).toBe('unavailable');
+    expect(r.failures[0]!.error.status).toBeUndefined();
+    expect(r.error).toBe(r.failures[0]!.error);
+    expect(r.callerAborted).toBe(false); // still escalation-eligible
+    // The attempt's billing class rides its entry now, never twice (design D8).
+    expect(r.terminalBilling).toBeUndefined();
+  });
+
+  it('keeps the billing evidence of a before-headers cut exactly as it was (design D8)', async () => {
+    const deadline = new AbortController();
+    const r = failed(
+      await walk([member('p1', hangThen(beforeHeaders, deadline))], deadline.signal, () => false),
+    );
+    // Before this change: no entry, `terminalBilling: 'uncertain'` → the same evidence.
+    expect(chainBillingEvidence(r)).toEqual(['uncertain']);
+    expect(walkUnbilled(chainBillingEvidence(r))).toBe(false);
+  });
+
+  it('marks a cut AFTER response headers (an aborted body read) the same way', async () => {
+    const deadline = new AbortController();
+    const r = failed(
+      await walk([member('p1', hangThen(afterHeaders, deadline))], deadline.signal, () => false),
+    );
+    expect(r.failures).toHaveLength(1);
+    expect(r.failures[0]).toMatchObject({ index: 0, dispatched: true, stop: 'deadline' });
+    expect(r.failures[0]!.error.status).toBeUndefined();
+    expect(r.callerAborted).toBe(false);
+  });
+
+  it('marks only the member that was cut, after an earlier member’s quick 429', async () => {
+    const deadline = new AbortController();
+    const r = failed(
+      await walk(
+        [
+          member('p1', () =>
+            Promise.reject(new ProviderError('rate_limit', 'slow', { status: 429 })),
+          ),
+          member('p2', hangThen(beforeHeaders, deadline)),
+        ],
+        deadline.signal,
+        () => false,
+      ),
+    );
+    expect(r.failures.map((f) => [f.index, f.error.kind, f.stop])).toEqual([
+      [0, 'rate_limit', undefined],
+      [1, 'unavailable', 'deadline'],
+    ]);
+    expect(r.failures[0]).not.toHaveProperty('stop');
+  });
+
+  it.each([
+    ['before headers', beforeHeaders],
+    ['after headers', afterHeaders],
+  ])('never marks a CALLER abort (%s)', async (_phase, onAbort) => {
+    const gone = new AbortController();
+    const r = failed(
+      await walk([member('p1', hangThen(onAbort, gone))], gone.signal, () => gone.signal.aborted),
+    );
+    expect(r.failures.some((f) => f.stop !== undefined)).toBe(false);
+    expect(r.callerAborted).toBe(true);
+    if (onAbort === beforeHeaders) {
+      // As before this change: a caller cancel never enters the trail.
+      expect(r.failures).toHaveLength(0);
+      expect(r.terminalBilling).toBe('uncertain');
+    }
+  });
+
+  it('records nothing for a member the deadline beat to dispatch (fired during its build)', async () => {
+    const deadline = new AbortController();
+    let sentCalls = 0;
+    const r = failed(
+      await walk(
+        [
+          member('p1', () =>
+            Promise.reject(new ProviderError('rate_limit', 'slow', { status: 429 })),
+          ),
+          member(
+            'p2',
+            (signal) => {
+              sentCalls += 1;
+              // the adapter's entry check: the call never leaves
+              return signal.aborted
+                ? Promise.reject(new CallCancelledError())
+                : Promise.resolve(resp());
+            },
+            { onBuild: () => deadline.abort() },
+          ),
+        ],
+        deadline.signal,
+        () => false,
+      ),
+    );
+    expect(sentCalls).toBe(1); // reached the adapter's entry check, which refused
+    expect(r.failures).toHaveLength(1);
+    expect(r.failures[0]!.index).toBe(0);
+    expect(r.failures[0]).not.toHaveProperty('stop');
+    expect(r.terminalBilling).toBe('uncertain'); // the not-sent member's stop, as before
+    expect(r.callerAborted).toBe(false);
+  });
+
+  it('never marks a walk that has no caller-abort predicate', async () => {
+    const deadline = new AbortController();
+    const r = failed(
+      await walk([member('p1', hangThen(beforeHeaders, deadline))], deadline.signal),
+    );
+    expect(r.failures).toHaveLength(0);
+    expect(r.terminalBilling).toBe('uncertain');
+  });
+
+  it('keeps a provider answer that carries a status, even when the deadline fired first', async () => {
+    const deadline = new AbortController();
+    const r = failed(
+      await walk(
+        [
+          member('p1', () => {
+            deadline.abort();
+            return Promise.reject(
+              new ProviderError('unavailable', 'upstream 503', { status: 503 }),
+            );
+          }),
+        ],
+        deadline.signal,
+        () => false,
+      ),
+    );
+    expect(r.failures).toHaveLength(1);
+    expect(r.failures[0]!.error.status).toBe(503);
+    expect(r.failures[0]).not.toHaveProperty('stop');
+  });
+
+  it('never marks a local refusal (not sent), even when the deadline fired first', async () => {
+    const deadline = new AbortController();
+    const r = failed(
+      await walk(
+        [
+          member('p1', () => {
+            deadline.abort();
+            return Promise.reject(new ProviderError('credential', 'token refresh failed'));
+          }),
+        ],
+        deadline.signal,
+        () => false,
+      ),
+    );
+    expect(r.failures).toHaveLength(1);
+    expect(r.failures[0]!.billing).toBe('not_sent');
+    expect(r.failures[0]).not.toHaveProperty('stop');
+  });
+
+  // codex proposal review: `withBreaker` awaits its settlement before rethrowing, so a
+  // deadline can fire AFTER an unrelated failure and BEFORE the walker's catch reads the
+  // signal. The snapshot taken when the call rejected keeps that failure unmarked.
+  it.each([
+    [
+      'a status-less network failure',
+      (): Error => new ProviderError('unavailable', 'ECONNREFUSED'),
+    ],
+    ['an SSRF refusal', (): Error => new SsrfError('blocked_ip', 'resolves to a blocked address')],
+  ])('never relabels %s the deadline overtook during breaker settlement', async (_name, fault) => {
+    const deadline = new AbortController();
+    const r = failed(
+      await walk(
+        [member('p1', () => Promise.reject(fault()), { onSettle: () => deadline.abort() })],
+        deadline.signal,
+        () => false,
+      ),
+    );
+    expect(deadline.signal.aborted).toBe(true); // the deadline did fire, during settlement
+    expect(r.failures.some((f) => f.stop !== undefined)).toBe(false);
+  });
+
+  it('never marks a non-retryable stop other than a cancellation', async () => {
+    const deadline = new AbortController();
+    const r = failed(
+      await walk(
+        [
+          member('p1', () => {
+            deadline.abort();
+            return Promise.reject(new ProviderError('oversized_response', 'body exceeds'));
+          }),
+        ],
+        deadline.signal,
+        () => false,
+      ),
+    );
+    expect(r.failures).toHaveLength(0); // the terminal stop never enters the trail, as before
+    expect(r.error.kind).toBe('oversized_response');
+    expect(r.terminalBilling).toBe('uncertain');
+  });
+
+  it('never marks a walk whose signal is the caller’s own (the primary and escalation walks)', async () => {
+    const caller = new AbortController();
+    const r = failed(
+      await walk(
+        [
+          member('p1', hangThen(afterHeaders, caller)),
+          member('p2', hangThen(beforeHeaders, caller)),
+        ],
+        caller.signal,
+        () => caller.signal.aborted,
+      ),
+    );
+    expect(r.failures.some((f) => f.stop !== undefined)).toBe(false);
     expect(r.callerAborted).toBe(true);
   });
 });

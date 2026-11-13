@@ -253,6 +253,19 @@ describe('capacitySuffix — dispatched-only clamp recording', () => {
     expect(capacitySuffix('esc', ann, null, [fail(0)])).toBe('esc[output_cap_deferred x(8<100)]');
   });
 
+  // keep-cheap-leg-attempt-trail (design D7): a member the cheap deadline cut off was
+  // SENT with its clamp, so the clamp is recorded like any dispatched failure's — the
+  // walker now hands that member over as a failure (it used to vanish before headers).
+  it('a deadline-cut cheap member records its clamp; a circuit-skipped one still does not', () => {
+    const cut: AttemptFailure = { ...fail(1), dispatched: true, stop: 'deadline' };
+    expect(capacitySuffix('cheap', ann, null, [fail(0), cut])).toBe(
+      'cheap[output_cap_deferred x(8<100); output_cap_clamped 100→8 (x)]',
+    );
+    expect(capacitySuffix('cheap', ann, null, [fail(0), fail(1, false)])).toBe(
+      'cheap[output_cap_deferred x(8<100)]',
+    );
+  });
+
   it('no annotation (or nothing dispatched to note) → null', () => {
     expect(capacitySuffix(null, undefined, 0, [])).toBeNull();
     expect(capacitySuffix(null, { deferred: null, clampByIndex: new Map() }, 0, [])).toBeNull();

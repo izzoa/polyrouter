@@ -25,6 +25,9 @@ export interface StubRequestRecord {
   /** Settles when this request/response pair is torn down — the response ended
    * normally OR the proxy aborted the upstream call (stream-lifecycle e2e). */
   closed: Promise<void>;
+  /** Set by the `*stallhdr*` model once its 200 headers are on the wire
+   * (keep-cheap-leg-attempt-trail: proves the after-headers deadline case). */
+  headersFlushed?: boolean;
 }
 
 export interface StubUpstream {
@@ -584,7 +587,7 @@ export async function startStubUpstream(): Promise<StubUpstream> {
       const isChatPath = /\/(?:chat\/completions|messages)$/.test(pathOnlyOf(path));
       const model = body.model ?? '';
       const stream = body.stream === true;
-      requests.push({
+      const record: StubRequestRecord = {
         path,
         auth: req.headers.authorization,
         xApiKey:
@@ -596,7 +599,8 @@ export async function startStubUpstream(): Promise<StubUpstream> {
         ).length,
         ...(isChatPath && parsedBody !== undefined ? { body: parsedBody } : {}),
         closed: new Promise<void>((resolve) => res.once('close', resolve)),
-      });
+      };
+      requests.push(record);
       // --- OpenAI's FILE plane (add-batch-inference Phase C) -----------------
       // Mounted under `/oai` so one stub can serve all three upstream shapes.
       if (pathOnlyOf(path).startsWith('/oai/')) {
@@ -856,9 +860,19 @@ export async function startStubUpstream(): Promise<StubUpstream> {
         res.writeHead(418, { 'content-type': 'application/json' });
         return res.end(JSON.stringify({ error: { message: 'no coffee here' } }));
       }
-      // `*hang*` → headers then no body (tests the #14 cascade cheap-response deadline).
+      // `*hang*` → nothing on the wire (tests the #14 cascade cheap-response deadline).
+      // `writeHead` alone only BUFFERS the headers — Node sends them with the first body
+      // write — so the caller's deadline fires BEFORE response headers arrive.
       if (model.includes('hang')) {
         res.writeHead(200, { 'content-type': 'application/json' });
+        return; // never end — the caller's deadline aborts it
+      }
+      // `*stallhdr*` (keep-cheap-leg-attempt-trail) → 200 headers ON THE WIRE, then no
+      // body: the caller's deadline fires AFTER response headers, mid body read.
+      if (model.includes('stallhdr')) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.flushHeaders();
+        record.headersFlushed = true;
         return; // never end — the caller's deadline aborts it
       }
       // `*slowfail*` (add-stream-keepalive) → a PRE-HEADERS delay, then a 500: a

@@ -3040,6 +3040,52 @@ test.describe('the route trace in the inspector (add-route-trace-inspector 4.6)'
     }
   });
 
+  // keep-cheap-leg-attempt-trail (task 5.3): the fixture's fourth row keeps the cheap call the
+  // deadline cut off, on a long model id. Its node reads the cause in words, which wrap to at
+  // most two 16px lines in every presentation, and nothing leaves the inspector box.
+  for (const vp of [
+    { name: 'the 480px docked panel at 1440x900', width: 1440, height: 900 },
+    { name: 'the 440px drawer at 1025x768', width: 1025, height: 768 },
+    { name: 'the sheet at 320x568', width: 320, height: 568 },
+  ] as const) {
+    test(`a cheap call cut off by the deadline reads in at most two lines, in ${vp.name}`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width: vp.width, height: vp.height });
+      await open(page, '#/requests', '?trace=cascade');
+      await page.locator('button.req-row').nth(3).click();
+      await page.waitForSelector('.drawer ol.rt > li[data-kind="attempt"]');
+      await page.waitForTimeout(250);
+      const m = await page.evaluate(() => {
+        const drawer = document.querySelector<HTMLElement>('.drawer')!.getBoundingClientRect();
+        const li = document.querySelector<HTMLElement>('.drawer ol.rt > li[data-kind="attempt"]')!;
+        const failure = li.querySelector<HTMLElement>('.rt-failure')!;
+        // The failure words' own line boxes: a wrapped inline span reports one rect per line.
+        const lines = new Set(
+          [...failure.getClientRects()].map((r) => Math.round(r.top)).filter((t) => t > 0),
+        ).size;
+        const escapes = [...document.querySelectorAll<HTMLElement>('.drawer *')].filter((el) => {
+          const r = el.getBoundingClientRect();
+          if (r.width === 0 && r.height === 0) return false;
+          return r.left < drawer.left - 0.5 || r.right > drawer.right + 0.5;
+        }).length;
+        return {
+          text: (failure.textContent ?? '').trim(),
+          mono: failure.classList.contains('mono'),
+          lines,
+          textHeight: li.querySelector<HTMLElement>('.rt-text')!.getBoundingClientRect().height,
+          escapes,
+        };
+      });
+      expect(m.text).toBe('no reply by the cheap deadline');
+      expect(m.mono, 'the cause is words, not a Mono token').toBe(false);
+      expect(m.lines, 'the cause wraps to at most two lines').toBeLessThanOrEqual(2);
+      // The model id and the cause together: at most two 16px lines each.
+      expect(m.textHeight).toBeLessThanOrEqual(4 * 16 + 0.5);
+      expect(m.escapes, 'content escaping the inspector').toBe(0);
+    });
+  }
+
   // add-route-trace-cascade-legs (design D7): the fixture's third row is a kept cheap answer.
   // Its verdict is the served node's second line: one 16px line, 4px below the label, inside
   // the label column and the node's padding, in every presentation. The node's mark stays on

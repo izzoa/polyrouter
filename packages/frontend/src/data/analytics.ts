@@ -394,8 +394,14 @@ export interface RouteTraceAttemptNode extends RouteTraceNodeBase {
   readonly emphasis: 'failed' | 'skipped';
   readonly model: string;
   /** A dispatched failure's label, `<kind> · HTTP <status>` or the kind alone when no
-   * upstream status was recorded; `SKIP_LABEL` for a never-dispatched member. */
+   * upstream status was recorded; for a member the walk's own deadline cut off, the cause
+   * in words (`DEADLINE_LABEL_CHEAP` on the cheap leg, `DEADLINE_LABEL` off it) in place
+   * of the kind; `SKIP_LABEL` (or `PAUSE_LABEL`) for a never-dispatched member. */
   readonly label: string;
+  /** `deadline` when the label states the walk's deadline in words rather than a kind
+   * token (keep-cheap-leg-attempt-trail design D5), so the view sets it as prose, not
+   * Mono. Null on every other attempt. */
+  readonly stop: 'deadline' | null;
   /** THIS attempt's retained classification (fix-bad-request-dead-end), so a RECOVERED
    * request's trail explains every refusal and not just its kind. Null when the entry
    * carries none (including entries predating capture). */
@@ -450,6 +456,12 @@ export const SKIP_LABEL = 'skipped — circuit open (provider not contacted)';
  * (classify-plan-quota-errors). Chosen from the recorded `skipReason`, never inferred from the
  * kind. */
 export const PAUSE_LABEL = 'skipped — plan paused (provider not contacted)';
+/** A dispatched member the cascade cheap leg's own deadline cut off, read from the
+ * recorded `stopReason` (keep-cheap-leg-attempt-trail design D5), never inferred from the
+ * kind or a duration. It replaces the kind, which reads `unavailable` like an outage. */
+export const DEADLINE_LABEL_CHEAP = 'no reply by the cheap deadline';
+/** The same cause on any other leg, or on no leg (not produced today). */
+export const DEADLINE_LABEL = 'no reply by the deadline';
 /** The superseded cascade cheap call's label. */
 export const SUPERSEDED_LABEL = 'cheap attempt superseded';
 /** The trace caption for a recovered request that predates per-attempt capture. */
@@ -477,17 +489,25 @@ const joinDot = (parts: readonly (string | null)[]): string =>
 
 function attemptNode(a: AttemptFailureEntry): RouteTraceAttemptNode {
   const skipped = a.dispatched === false;
+  // A never-dispatched member reads its skip label whatever else it carries; only a
+  // dispatched member can have been cut off by the deadline.
+  const stop = !skipped && a.stopReason === 'deadline' ? 'deadline' : null;
   const label = skipped
     ? a.skipReason === 'plan_cooldown'
       ? PAUSE_LABEL
       : SKIP_LABEL
-    : `${a.kind}${a.status !== undefined && a.status !== null ? ` · HTTP ${String(a.status)}` : ''}`;
+    : stop !== null
+      ? a.leg === 'cheap'
+        ? DEADLINE_LABEL_CHEAP
+        : DEADLINE_LABEL
+      : `${a.kind}${a.status !== undefined && a.status !== null ? ` · HTTP ${String(a.status)}` : ''}`;
   const markers = normalizeMarkers(a.markers ?? null);
   return {
     kind: 'attempt',
     emphasis: skipped ? 'skipped' : 'failed',
     model: a.model,
     label,
+    stop,
     markers,
     text: joinDot([a.model, label, ...(markers ?? [])]),
   };

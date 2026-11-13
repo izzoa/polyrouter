@@ -786,10 +786,10 @@ if (params.get('trace') === 'cascade') {
       ],
     },
     // add-route-trace-cascade-legs (task 3.5): the second and third rows, so the first row stays
-    // the longest route. An escalation whose cheap leg did not serve and left no record (the
-    // strong tier served cleanly, so the row is `success` with no trail), whose two leg-row
-    // details must fit one line of a 320px sheet; and a kept cheap answer whose passing verdict
-    // rides the served node's second line.
+    // the longest route. An escalation whose cheap leg did not serve and left no record — a row
+    // recorded before keep-cheap-leg-attempt-trail, which now keeps the cheap leg's trail on a
+    // served escalation — whose two leg-row details must fit one line of a 320px sheet; and a
+    // kept cheap answer whose passing verdict rides the served node's second line.
     {
       ...head,
       id: 'trace-cascade-unrecorded',
@@ -830,6 +830,40 @@ if (params.get('trace') === 'cascade') {
       errorRequestId: null,
       errorMarkers: null,
       attemptFailures: null,
+    },
+    // keep-cheap-leg-attempt-trail (task 5.3): the fourth row is the same escalation as it
+    // now records — the cheap call the cheap deadline cut off, on a long model id, and the
+    // heavy tier served cleanly, so the row is still `success`.
+    {
+      ...head,
+      id: 'trace-cascade-deadline',
+      createdAt: new Date(Date.parse(head.createdAt) + 4000).toISOString(),
+      agentLabel: 'Lobechat',
+      providerLabel: 'XiaomiMiMo',
+      status: 'success',
+      decisionLayer: 'cascade',
+      routingReason: 'cascade: escalated cheap→heavy (q=0.00)',
+      tierAssigned: 'heavy',
+      escalated: true,
+      escalationSource: 'cheap_error',
+      qualitySignal: 0,
+      attemptCostMicros: 0,
+      errorKind: null,
+      errorStatus: null,
+      errorMessage: null,
+      errorRequestId: null,
+      errorMarkers: null,
+      attemptFailures: [
+        {
+          index: 0,
+          providerId: 'prov-0',
+          model: 'meta-llama/llama-3.3-70b-instruct-turbo-free',
+          kind: 'unavailable',
+          dispatched: true,
+          leg: 'cheap',
+          stopReason: 'deadline',
+        },
+      ],
     },
     ...client.requestRows,
   ];

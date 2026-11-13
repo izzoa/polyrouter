@@ -1032,3 +1032,62 @@ describe('the Decision section prints no quality signal on a cheap-leg escalatio
     expect(decisionRow(kept, 'quality signal')?.textContent).toBe('0.87');
   });
 });
+
+/** keep-cheap-leg-attempt-trail: the maintainer's row as it now records — the cheap call the
+ * deadline cut off is kept, and the heavy tier served cleanly, so the row is `success`. */
+const DEADLINE: RequestRow = {
+  ...UNRECORDED,
+  id: 'rt-deadline',
+  createdAt: at(7),
+  attemptFailures: [
+    {
+      index: 0,
+      providerId: 'p-cheap',
+      model: 'cheap-1',
+      kind: 'unavailable',
+      dispatched: true,
+      leg: 'cheap',
+      stopReason: 'deadline',
+    },
+  ],
+};
+
+describe('a cheap call cut off by the deadline reads as such on screen (keep-cheap-leg-attempt-trail 5.2)', () => {
+  it('draws the cut call under the cheap leg, its cause in words, with no ERROR card', async () => {
+    h = await mount([DEADLINE, UNRECORDED, ...Object.values(ROWS)]);
+    const drawer = await openRow(DEADLINE.id);
+    expect(texts(drawer)).toEqual([
+      'Lobechat',
+      'router · cascade',
+      'cheap leg',
+      'cheap-1 · no reply by the cheap deadline',
+      'escalation · cheap leg did not serve',
+      'XiaomiMiMo · mimo-v2.6-pro · served · 38.89s',
+    ]);
+    expect(trace(drawer).textContent).not.toContain('unavailable');
+    expect(trace(drawer).textContent).not.toContain('attempts not recorded');
+    expect(drawer.querySelector('[data-testid="inspector-error"]')).toBeNull();
+  });
+
+  it('sets the deadline words in the failure red as prose; the model stays Mono', async () => {
+    h = await mount([DEADLINE, UNRECORDED, ...Object.values(ROWS)]);
+    const drawer = await openRow(DEADLINE.id);
+    const attempt = items(drawer).find((li) => li.dataset['kind'] === 'attempt');
+    expect(attempt, 'one attempt node').toBeDefined();
+    const failure = attempt!.querySelector<HTMLElement>('.rt-failure')!;
+    expect(failure.textContent).toBe('no reply by the cheap deadline');
+    expect(failure.classList.contains('mono')).toBe(false);
+    const model = attempt!.querySelector<HTMLElement>('.rt-model')!;
+    expect(model.classList.contains('mono')).toBe(true);
+    expect(family(failure)).not.toBe(family(model));
+    // A kind is still a Mono token: the same row recorded before this change, with the cut
+    // call's plain kind, keeps its failure text in Mono.
+    const { stopReason: _drop, ...plainEntry } = DEADLINE.attemptFailures![0]!;
+    h.dispose();
+    h = await mount([{ ...DEADLINE, attemptFailures: [plainEntry] }, ...Object.values(ROWS)]);
+    const before = await openRow(DEADLINE.id);
+    const kind = before.querySelector<HTMLElement>('li[data-kind="attempt"] .rt-failure')!;
+    expect(kind.textContent).toBe('unavailable');
+    expect(kind.classList.contains('mono')).toBe(true);
+  });
+});

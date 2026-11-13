@@ -1,9 +1,12 @@
 /**
- * Per-attempt failure metadata recorded on `status='error'` request-log rows
- * (add-fallback-attempt-detail): one ordered entry per PRE-COMMIT walked-and-
- * failed or circuit-skipped chain member, aggregated across every executed leg
- * (cascade: cheap leg first, then escalation; indices are leg-relative with
- * `leg` as the discriminator). Structure only — the shape deliberately admits
+ * Per-attempt failure metadata recorded on request-log rows (add-fallback-attempt-
+ * detail): kept on `error` and `fallback` rows and on an escalated cascade row that
+ * settles `success` (keep-cheap-leg-attempt-trail); null on a `success` row that did
+ * not escalate and on every `cancelled` row. One ordered entry per PRE-COMMIT
+ * walked-and-failed, circuit- or plan-skipped, or deadline-cut chain member,
+ * aggregated across every executed leg (cascade: cheap leg first, then
+ * escalation; indices are leg-relative with `leg` as the discriminator).
+ * Structure only — the shape deliberately admits
  * NO free-text field (kinds are taxonomy values; provider/model identifiers
  * already appear in the routing reason, and retained markers are allowlisted
  * identifiers), preserving the recorded decision that superseded members
@@ -28,6 +31,13 @@ export interface AttemptFailureEntry {
    * recognized plan-quota failure. A fixed enum, never free text. Absent on circuit
    * skips and on every dispatched entry, so every stored row reads unchanged. */
   readonly skipReason?: 'plan_cooldown';
+  /** Why a DISPATCHED member stopped, when the walk itself stopped it rather than
+   * the provider (keep-cheap-leg-attempt-trail): `deadline` = the walk's own
+   * deadline (today only the cascade cheap leg carries one) cut this member off
+   * while the client was still connected, before or after its response headers.
+   * `kind` stays `unavailable` with no `status`; this says why. A fixed enum, never
+   * free text. Absent on every other entry, so every stored row reads unchanged. */
+  readonly stopReason?: 'deadline';
   /** The provider's retained classification values for THIS attempt
    * (fix-bad-request-dead-end), admitted through the marker gates. An allowlisted
    * identifier is not free text: the recorded decision that superseded members

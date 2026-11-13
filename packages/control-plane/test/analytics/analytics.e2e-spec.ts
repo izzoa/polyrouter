@@ -626,16 +626,66 @@ describe('analytics API (#17)', () => {
         expect(row.errorKind).toBeNull();
         expect(row.errorMessage).toBeNull();
         expect(row.errorMarkers).toBeNull();
-        // fix-bad-request-dead-end: the trail follows the WALK, so it is null only on
-        // `success`/`cancelled` — a `fallback` row keeps it, and the listing must not
-        // contradict the recorder for exactly the rows the widened walk produces.
-        if (row.status !== 'fallback') expect(row.attemptFailures).toBeNull();
+        // fix-bad-request-dead-end: the trail follows the WALK, so a `fallback` row keeps
+        // it, and (keep-cheap-leg-attempt-trail) so does an ESCALATED `success` row, whose
+        // status reads the escalation leg alone. It is null only on a `success` that did
+        // not escalate and on `cancelled` — the listing must not contradict the recorder.
+        if (row.status === 'cancelled' || (row.status === 'success' && row.escalated !== true))
+          expect(row.attemptFailures).toBeNull();
         // non-evaluated rows carry all-null telemetry
         expect(row.structuralBand).toBeNull();
         expect(row.structuralScore).toBeNull();
         expect(row.structuralBandSource).toBeNull();
       }
     }
+  });
+
+  // keep-cheap-leg-attempt-trail: an escalated `success` row's cheap-leg trail rides the
+  // listing verbatim, and `stopReason` is present only on the entry that recorded it.
+  it('requests: an escalated success row lists its cheap-leg trail, stopReason and all', async () => {
+    const c = await mkUser();
+    const trail = [
+      {
+        index: 0,
+        providerId: 'p1',
+        model: 'cheap-a',
+        kind: 'rate_limit',
+        status: 429,
+        dispatched: true,
+        leg: 'cheap',
+      },
+      {
+        index: 1,
+        providerId: 'p2',
+        model: 'cheap-b',
+        kind: 'unavailable',
+        dispatched: true,
+        stopReason: 'deadline',
+        leg: 'cheap',
+      },
+    ];
+    const escalatedId = await seedLog(c, {
+      layer: 'cascade',
+      cost: 1,
+      at: DAY1,
+      status: 'success',
+      escalated: true,
+      escalationSource: 'cheap_error',
+      attemptFailures: trail,
+    });
+    const plainId = await seedLog(c, { cost: 1, at: DAY1, status: 'success' });
+    const res = await q('requests', c, { ...RANGE });
+    expect(res.status).toBe(200);
+    const byId = new Map(
+      (res.body.rows as { id: string; attemptFailures: unknown }[]).map((r) => [r.id, r]),
+    );
+    const escalated = byId.get(escalatedId)!;
+    expect(escalated).toMatchObject({ status: 'success', escalated: true });
+    expect(escalated.attemptFailures).toEqual(trail); // verbatim, in order
+    const [first, second] = escalated.attemptFailures as Record<string, unknown>[];
+    expect(first).not.toHaveProperty('stopReason');
+    expect(second).toHaveProperty('stopReason', 'deadline');
+    expect(byId.get(plainId)!.attemptFailures).toBeNull(); // a success that did not escalate
   });
 
   it('requests: semantic telemetry rides the safe view; layer=semantic filters; unknown layer is 400 (add-semantic-routing)', async () => {

@@ -170,10 +170,32 @@ describe('attemptTrailEntries (add-fallback-attempt-detail)', () => {
     expect(entries.map((e) => e.terminal === true)).toEqual([false, false, true]);
   });
 
+  // keep-cheap-leg-attempt-trail: the fixture now carries EVERY entry variant (markers, a
+  // plan pause, a deadline cut, both legs, the terminal), and the test also asserts every
+  // allowed key appeared — so a new key cannot slip past an allowlist the fixture never
+  // exercises.
   it('contains no free-text field anywhere in the structure', () => {
+    const escTerminal = err('unavailable', 500);
     const entries = attemptTrailEntries(
-      [{ failures: [fail(0, err('unavailable', 500))], meta: metaOf('a') }],
-      null,
+      [
+        {
+          failures: [
+            fail(
+              0,
+              new ProviderError('bad_request', 'context too long', {
+                status: 400,
+                markers: ['context_length_exceeded'],
+              }),
+            ),
+            pausedFail(1, 'quota_exhausted'),
+            { index: 2, error: err('unavailable'), dispatched: true, stop: 'deadline' },
+          ],
+          meta: metaOf('a', 'b', 'c'),
+          leg: 'cheap',
+        },
+        { failures: [fail(0, escTerminal)], meta: metaOf('d'), leg: 'escalation' },
+      ],
+      escTerminal,
     );
     const allowed = new Set([
       'index',
@@ -183,10 +205,42 @@ describe('attemptTrailEntries (add-fallback-attempt-detail)', () => {
       'status',
       'dispatched',
       'skipReason',
+      'stopReason',
+      'markers',
       'leg',
       'terminal',
     ]);
-    for (const e of entries) for (const k of Object.keys(e)) expect(allowed.has(k)).toBe(true);
+    const seen = new Set(entries.flatMap((e) => Object.keys(e)));
+    for (const k of seen) expect(allowed.has(k)).toBe(true);
+    expect([...allowed].filter((k) => !seen.has(k))).toEqual([]);
+  });
+
+  it('maps a deadline-cut member to stopReason: deadline, and no other entry carries it', () => {
+    const entries = attemptTrailEntries(
+      [
+        {
+          failures: [
+            fail(0, err('rate_limit', 429)),
+            { index: 1, error: err('unavailable'), dispatched: true, stop: 'deadline' },
+          ],
+          meta: metaOf('cheap-a', 'cheap-b'),
+          leg: 'cheap',
+        },
+        { failures: [], meta: metaOf('strong-a'), leg: 'escalation' },
+      ],
+      null,
+    );
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).not.toHaveProperty('stopReason');
+    expect(entries[1]).toEqual({
+      index: 1,
+      providerId: 'prov-cheap-b',
+      model: 'cheap-b',
+      kind: 'unavailable',
+      dispatched: true,
+      stopReason: 'deadline',
+      leg: 'cheap',
+    });
   });
 
   it('bounds the list at ATTEMPT_FAILURES_MAX', () => {

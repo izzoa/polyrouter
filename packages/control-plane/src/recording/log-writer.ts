@@ -132,7 +132,7 @@ export interface RequestLogDraft {
   /** Per-attempt failure metadata (add-fallback-attempt-detail) — present on
    * `status='error'` AND `status='fallback'` drafts (fix-bad-request-dead-end: the
    * trail follows the WALK, not the terminal outcome; the recorder enforces that
-   * split). Structure only: the entry shape admits no free-text field. */
+   * split), and on an escalated `success` draft (keep-cheap-leg-attempt-trail). Structure only: the entry shape admits no free-text field. */
   readonly attemptFailures?: readonly AttemptFailureEntry[];
   /** The originating request's span context (#21 `recording.write` link);
    * absent when tracing is off. Never persisted. */

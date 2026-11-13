@@ -588,6 +588,11 @@ export interface AttemptFailure {
    * errors): never dispatched, never admitted by the breaker. The error's kind
    * is the pause's kind and carries no status, so a skip can never record. */
   readonly skip?: 'plan_cooldown';
+  /** Set ONLY for a DISPATCHED member the walk's OWN deadline cut off while the
+   * caller was still present (keep-cheap-leg-attempt-trail design D3): today only
+   * the cascade cheap leg's walk carries a deadline of its own. The error stays the
+   * mapped `unavailable`; this records why the member stopped. */
+  readonly stop?: 'deadline';
 }
 
 /** The billing evidence of ONE chain error result: every pushed failure's class,
@@ -663,6 +668,11 @@ export type StreamChainResult =
       readonly failures: readonly AttemptFailure[];
     });
 
+/** A cancelled call: the adapter's `CallCancelledError`, or a raw `AbortError`. */
+function isCancellation(err: unknown): boolean {
+  return err instanceof CallCancelledError || (err instanceof Error && err.name === 'AbortError');
+}
+
 /** Decide on the RAW error whether to walk to the next member. A client
  * cancellation (gone) stops, as do the taxonomy's TWO non-retryable kinds — a
  * `bad_request` (the caller's fault; every member would reject it identically) and
@@ -671,8 +681,7 @@ export type StreamChainResult =
  * retryable ProviderError continue. "Non-retryable" is NOT a synonym for "the
  * caller's fault" (fix-4xx-error-taxonomy). */
 export function fallbackEligible(err: unknown): boolean {
-  if (err instanceof CallCancelledError) return false;
-  if (err instanceof Error && err.name === 'AbortError') return false;
+  if (isCancellation(err)) return false;
   if (err instanceof ProviderCircuitOpenError) return true;
   if (err instanceof ProviderError) return shouldFallback(err.kind);
   return false; // unknown → don't retry
@@ -724,6 +733,13 @@ export async function runBufferedChain(
         continue;
       }
     }
+    // keep-cheap-leg-attempt-trail (design D3): whether THIS member was handed to its
+    // adapter, and whether the walk's signal had fired when that call rejected. Both
+    // are captured inside the breaker callback: `withBreaker` awaits its own
+    // settlement before rethrowing, and a deadline that fires during that await must
+    // not relabel an unrelated failure as a deadline cut.
+    let sent = false;
+    let abortedAtReject = false;
     try {
       // build INSIDE the breaker callback: an open circuit skips before setup,
       // and a probe admission widens the adapter bounds (probe patience). The
@@ -734,11 +750,19 @@ export async function runBufferedChain(
         attempt.providerId,
         async (admission) => {
           const adapter = await attempt.buildAdapter(admission);
-          return adapter.chat(req, {
-            signal,
-            onBytes: admission.renewOnActivity,
-            ...(attempt.onPlanUsage !== undefined ? { onPlanUsage: attempt.onPlanUsage } : {}),
-          });
+          // A signal that fired during admission or build means the member was never
+          // sent: the adapter's own entry check throws before any request leaves.
+          sent = !signal.aborted;
+          try {
+            return await adapter.chat(req, {
+              signal,
+              onBytes: admission.renewOnActivity,
+              ...(attempt.onPlanUsage !== undefined ? { onPlanUsage: attempt.onPlanUsage } : {}),
+            });
+          } catch (callErr) {
+            abortedAtReject = signal.aborted;
+            throw callErr;
+          }
         },
         ctx.onOpen,
         ctx.onBreakerState,
@@ -764,7 +788,22 @@ export async function runBufferedChain(
       // it rides the result as `terminalBilling`.
       const billing = attemptBilling(err, mapped);
       if (attempt.planCooldown) await breaker.recordPlanCooldown(attempt.providerId, mapped);
-      if (!fallbackEligible(err))
+      // keep-cheap-leg-attempt-trail (design D3): the walk's OWN deadline cut this
+      // member off. Only a walk whose signal is not the caller's alone can say so —
+      // `isCallerAbort` strictly false (a walk without the predicate never marks) —
+      // and only for an in-flight call the abort ended (`uncertain`: a status means
+      // the provider answered first; `not_sent` is a local refusal).
+      const deadlineCut =
+        sent && abortedAtReject && billing === 'uncertain' && ctx.isCallerAbort?.() === false;
+      if (!fallbackEligible(err)) {
+        // A cut BEFORE response headers surfaces as a cancellation, which never walks
+        // on. It enters the trail as the attempt it was, so its billing class rides
+        // the entry and the result carries no `terminalBilling` (design D8). Any other
+        // non-retryable stop keeps its terminal handling.
+        if (deadlineCut && isCancellation(err)) {
+          failures.push({ index: i, error: mapped, dispatched: true, billing, stop: 'deadline' });
+          return { ok: false, error: mapped, failures, callerAborted: false };
+        }
         return {
           ok: false,
           error: mapped,
@@ -772,11 +811,15 @@ export async function runBufferedChain(
           callerAborted: ctx.isCallerAbort?.() === true,
           terminalBilling: billing,
         };
+      }
       failures.push({
         index: i,
         error: mapped,
         dispatched: !(err instanceof ProviderCircuitOpenError),
         billing,
+        // A cut AFTER headers (an aborted body drain or SSE read) is already a
+        // retryable `unavailable`; the marker says the walk, not the provider, ended it.
+        ...(deadlineCut ? { stop: 'deadline' as const } : {}),
       });
       lastError = mapped;
     }

@@ -6,6 +6,8 @@ import {
   CAUSE_CHEAP_DID_NOT_SERVE,
   CAUSE_QUALITY_GATE,
   CHEAP_LEG,
+  DEADLINE_LABEL,
+  DEADLINE_LABEL_CHEAP,
   ESCALATION_LEG,
   escalationCause,
   QUALITY_GATE_PASSED,
@@ -643,6 +645,7 @@ describe('toRouteTrace / isTerminalSkip — the structural fallback trail (add-f
         emphasis: 'failed',
         model: 'gpt-x',
         label: 'unavailable · HTTP 529',
+        stop: null,
         markers: null,
         text: 'gpt-x · unavailable · HTTP 529',
       },
@@ -652,6 +655,7 @@ describe('toRouteTrace / isTerminalSkip — the structural fallback trail (add-f
         emphasis: 'failed',
         model: 'strong-y',
         label: 'rate_limit',
+        stop: null,
         markers: null,
         text: 'strong-y · rate_limit',
       },
@@ -660,6 +664,7 @@ describe('toRouteTrace / isTerminalSkip — the structural fallback trail (add-f
         emphasis: 'skipped',
         model: 'grok-z',
         label: 'skipped — circuit open (provider not contacted)',
+        stop: null,
         markers: null,
         text: 'grok-z · skipped — circuit open (provider not contacted)',
       },
@@ -2465,5 +2470,125 @@ describe("the receipt total reads the request's cost state (add-route-trace-insp
                 checked += 1;
               }
     expect(checked).toBeGreaterThan(100);
+  });
+});
+
+/* ---- keep-cheap-leg-attempt-trail (task 5.1) ---------------------------------------- */
+
+describe('a cheap call cut off by the deadline reads as such (keep-cheap-leg-attempt-trail)', () => {
+  /** The maintainer's row as it now records: the cheap call the deadline cut off is kept,
+   * and the heavy tier served cleanly, so the row is still `success`. */
+  const DEADLINE_ESCALATION: RequestRow = {
+    ...UNRECORDED_ESCALATION,
+    attemptFailures: [
+      entry({
+        index: 0,
+        model: 'cheap-1',
+        kind: 'unavailable',
+        leg: 'cheap',
+        stopReason: 'deadline',
+      }),
+    ],
+  };
+  const nodeOf = (e: AttemptFailureEntry): RouteTraceAttemptNode => {
+    const [node] = attemptsOf(toRouteTrace({ ...ROW, status: 'error', attemptFailures: [e] }));
+    if (node === undefined) throw new Error('expected one attempt node');
+    return node;
+  };
+
+  it('exports the contract strings DESIGN.md quotes', () => {
+    expect([DEADLINE_LABEL_CHEAP, DEADLINE_LABEL]).toEqual([
+      'no reply by the cheap deadline',
+      'no reply by the deadline',
+    ]);
+  });
+
+  it('a cheap-leg cut reads the cheap deadline in words, as a failure', () => {
+    expect(
+      nodeOf(
+        entry({ model: 'cheap-1', kind: 'unavailable', leg: 'cheap', stopReason: 'deadline' }),
+      ),
+    ).toEqual({
+      kind: 'attempt',
+      emphasis: 'failed',
+      model: 'cheap-1',
+      label: 'no reply by the cheap deadline',
+      stop: 'deadline',
+      markers: null,
+      text: 'cheap-1 · no reply by the cheap deadline',
+    });
+  });
+
+  it.each([
+    ['the escalation leg', { leg: 'escalation' as const }],
+    ['no leg', {}],
+  ])('a cut on %s reads the plain deadline words, never blank', (_where, leg) => {
+    const node = nodeOf(entry({ model: 'm', kind: 'unavailable', stopReason: 'deadline', ...leg }));
+    expect(node.label).toBe(DEADLINE_LABEL);
+    expect(node.stop).toBe('deadline');
+    expect(node.text).toBe('m · no reply by the deadline');
+  });
+
+  it('a plain unavailable failure without the stop reason reads as before', () => {
+    const node = nodeOf(entry({ model: 'm', kind: 'unavailable', leg: 'cheap' }));
+    expect(node.label).toBe('unavailable');
+    expect(node.stop).toBeNull();
+  });
+
+  it('a never-dispatched member reads its skip label whatever else it carries', () => {
+    const circuit = nodeOf(
+      entry({ model: 'm', kind: 'unavailable', dispatched: false, stopReason: 'deadline' }),
+    );
+    expect([circuit.label, circuit.emphasis, circuit.stop]).toEqual([SKIP_LABEL, 'skipped', null]);
+    const paused = nodeOf(
+      entry({
+        model: 'm',
+        kind: 'quota_exhausted',
+        dispatched: false,
+        skipReason: 'plan_cooldown',
+        stopReason: 'deadline',
+      }),
+    );
+    expect([paused.label, paused.stop]).toEqual([PAUSE_LABEL, null]);
+  });
+
+  it('the escalated success row draws the cut call under the cheap leg, never “unavailable”', () => {
+    const texts = traceTexts(DEADLINE_ESCALATION);
+    expect(texts).toEqual([
+      'Lobechat',
+      'router · cascade',
+      'cheap leg',
+      'cheap-1 · no reply by the cheap deadline',
+      'escalation · cheap leg did not serve',
+      'XiaomiMiMo · mimo-v2.6-pro · served · 38.89s',
+    ]);
+    expect(texts.join(' ')).not.toContain(ATTEMPTS_NOT_RECORDED);
+    expect(texts.join(' ')).not.toContain('unavailable');
+    expect(toErrorView(DEADLINE_ESCALATION)).toBeNull(); // a served row has no ERROR card
+  });
+
+  it('an escalated success keeps a cheap refusal under the cheap leg, with no ERROR card', () => {
+    const row: RequestRow = {
+      ...UNRECORDED_ESCALATION,
+      attemptFailures: [
+        entry({
+          index: 0,
+          model: 'cheap-1',
+          kind: 'bad_request',
+          status: 400,
+          markers: ['context_length_exceeded'],
+          leg: 'cheap',
+        }),
+      ],
+    };
+    expect(traceTexts(row)).toEqual([
+      'Lobechat',
+      'router · cascade',
+      'cheap leg',
+      'cheap-1 · bad_request · HTTP 400 · context_length_exceeded',
+      'escalation · cheap leg did not serve',
+      'XiaomiMiMo · mimo-v2.6-pro · served · 38.89s',
+    ]);
+    expect(toErrorView(row)).toBeNull();
   });
 });

@@ -723,9 +723,10 @@ export const requestLogs = pgTable(
     // non-error rows and for rows predating capture — never backfilled.
     errorMarkers: jsonb('error_markers').$type<string[]>(),
     // Per-attempt failure metadata (add-fallback-attempt-detail): the pre-commit
-    // walked failure/skip trail across every executed leg, set ONLY on
-    // status='error' rows; null for non-error rows and rows predating the
-    // column (unknown-not-wrong, never backfilled). Structure only — the entry
+    // walked failure/skip trail across every executed leg, set on `error` and
+    // `fallback` rows and on an escalated `success` row (keep-cheap-leg-attempt-
+    // trail); null on a `success` that did not escalate, on `cancelled` rows, and
+    // on rows predating the column (unknown-not-wrong, never backfilled). Structure only — the entry
     // shape admits no free-text field (invariant 8).
     attemptFailures: jsonb('attempt_failures').$type<AttemptFailureEntry[]>(),
     escalated: boolean('escalated').default(false).notNull(),

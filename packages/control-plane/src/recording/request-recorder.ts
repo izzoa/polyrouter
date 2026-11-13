@@ -119,8 +119,9 @@ export interface RecordingContext {
   /** Per-attempt failure metadata (add-fallback-attempt-detail): the pre-commit
    * walked failure/skip trail across every executed leg, composed by the proxy's
    * context builders (leg-qualified for cascade legs, terminal marker set by
-   * error identity). Persisted ONLY on `status='error'` rows — the recorder
-   * gates centrally below, exactly as it gates the terminal error detail. */
+   * error identity). Persisted on `error` and `fallback` rows and on an escalated
+   * `success` row (keep-cheap-leg-attempt-trail), never on a `cancelled` one — the
+   * recorder gates centrally below, separately from the terminal error detail. */
   readonly attemptFailures?: readonly AttemptFailureEntry[];
   /** The L2-ambiguous request's IN-MEMORY embedding + its decision-time learning
    * gate (add-semantic-learning D1/D3). Set ONLY by the proxy's `servedFrom()`
@@ -290,8 +291,15 @@ export class RequestRecorder {
         // DID, which it very much does. Gating the trail on `status === 'error'` would
         // discard the evidence for exactly the failures the widened `bad_request`
         // eligibility now works around — the walk's own success would erase the record
-        // of why it was needed. `success` (no member failed) and `cancelled` keep null.
-        ...((outcome.status === 'error' || outcome.status === 'fallback') &&
+        // of why it was needed. An ESCALATED `success` keeps it too
+        // (keep-cheap-leg-attempt-trail design D1): its status reads the escalation leg
+        // alone, so a cheap leg that failed before the strong tier served cleanly is
+        // `success`, and the trail is the only record of that leg. A `success` that did
+        // not escalate (no member failed) and every `cancelled` row keep null — a cancel's
+        // in-flight member is never in memory, so its trail would end one member early.
+        ...((outcome.status === 'error' ||
+          outcome.status === 'fallback' ||
+          (outcome.status === 'success' && outcome.escalated === true)) &&
         ctx.attemptFailures !== undefined &&
         ctx.attemptFailures.length > 0
           ? { attemptFailures: ctx.attemptFailures }

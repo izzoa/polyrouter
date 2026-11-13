@@ -203,6 +203,68 @@ describe('RequestRecorder', () => {
     expect(d.attemptFailures).toEqual(attemptFailures);
   });
 
+  // keep-cheap-leg-attempt-trail (design D1): an escalated row's status reads the
+  // escalation leg alone, so a cheap leg that failed before the strong tier served
+  // cleanly settles `success` — and its trail is the only record of that leg.
+  describe('an escalated row keeps its cheap leg’s trail whichever leg served', () => {
+    const cheapTrail = [
+      {
+        index: 0,
+        providerId: 'p1',
+        model: 'cheap-a',
+        kind: 'unavailable',
+        dispatched: true,
+        stopReason: 'deadline' as const,
+        leg: 'cheap' as const,
+      },
+    ];
+
+    it('keeps the trail on an escalated success, with no terminal error detail', () => {
+      const { recorder, enqueue } = makeRecorder();
+      recorder.record(ctx({ attemptFailures: cheapTrail }), {
+        status: 'success',
+        outputChars: 0,
+        escalated: true,
+        escalationSource: 'cheap_error',
+        // a caller that wrongly supplies error detail on a success row is still gated
+        error: { kind: 'unavailable' },
+      });
+      const d = enqueue.mock.calls[0]![0] as RequestLogDraft;
+      expect(d.attemptFailures).toEqual(cheapTrail);
+      expect(d.error).toBeUndefined();
+    });
+
+    it('records no trail on an escalated success whose trail is empty', () => {
+      const { recorder, enqueue } = makeRecorder();
+      recorder.record(ctx({ attemptFailures: [] }), {
+        status: 'success',
+        outputChars: 0,
+        escalated: true,
+        escalationSource: 'quality_gate',
+      });
+      expect((enqueue.mock.calls[0]![0] as RequestLogDraft).attemptFailures).toBeUndefined();
+    });
+
+    it('discards it on an escalated cancel and on a success that did not escalate', () => {
+      const { recorder, enqueue } = makeRecorder();
+      recorder.record(ctx({ attemptFailures: cheapTrail }), {
+        status: 'cancelled',
+        outputChars: 0,
+        escalated: true,
+        escalationSource: 'cheap_error',
+      });
+      recorder.record(ctx({ attemptFailures: cheapTrail }), {
+        status: 'success',
+        outputChars: 0,
+        escalated: false,
+      });
+      expect(enqueue.mock.calls).toHaveLength(2);
+      for (const call of enqueue.mock.calls) {
+        expect((call[0] as RequestLogDraft).attemptFailures).toBeUndefined();
+      }
+    });
+  });
+
   it('a recovered row still carries NO terminal error detail — the two gates are separate', () => {
     const { recorder, enqueue } = makeRecorder();
     recorder.record(

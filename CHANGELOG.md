@@ -15,6 +15,10 @@ heading is started.
 
 ## [Unreleased]
 
+### Changed
+
+- **An escalated request keeps its cheap leg's attempts, including a call the cheap deadline cut off.** A cascade request whose strong tier served cleanly after its cheap leg failed now keeps that leg's attempts (it is still recorded `success`), and a cheap call cut off by the cheap deadline is recorded and reads `no reply by the cheap deadline` in the Route Trace; in the request listing, `attemptFailures` can now be non-null on an escalated `success` row and an entry can carry `stopReason`. Rows recorded earlier are not backfilled.
+
 ## [0.32.0] — 2026-11-13
 
 [Release](https://github.com/izzoa/polyrouter/releases/tag/v0.32.0) ·

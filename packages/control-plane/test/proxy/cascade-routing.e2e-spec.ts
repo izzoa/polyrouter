@@ -7,7 +7,7 @@ import { APP_FILTER } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import { loadConfig } from '@polyrouter/shared';
+import { loadConfig, type AttemptFailureEntry } from '@polyrouter/shared';
 import {
   PERSISTENCE_PORT,
   POLYROUTER_USER_AGENT,
@@ -246,6 +246,7 @@ describe('cascade routing e2e', () => {
       cheapGood: 'gpt-4o-mini',
       cheapBad: 'oai-empty',
       cheapHang: 'oai-hang',
+      cheapStallHdr: 'oai-stallhdr',
       strongDown: 'oai-srvfail',
       strongMid: 'oai-miderror',
       cheapBadReq: 'oai-badreq',
@@ -289,6 +290,9 @@ describe('cascade routing e2e', () => {
     ]);
     await port.routingEntries.replaceForTier(principal, await tier('cheap-hang'), [
       modelId['cheapHang']!,
+    ]);
+    await port.routingEntries.replaceForTier(principal, await tier('cheap-stallhdr'), [
+      modelId['cheapStallHdr']!,
     ]);
     await port.routingEntries.replaceForTier(principal, await tier('strong-down'), [
       modelId['strongDown']!,
@@ -358,6 +362,11 @@ describe('cascade routing e2e', () => {
     structuralScore: number | null;
     structuralBandSource: string | null;
     errorKind: string | null;
+    errorStatus: number | null;
+    errorMessage: string | null;
+    errorRequestId: string | null;
+    errorMarkers: string[] | null;
+    attemptFailures: AttemptFailureEntry[] | null;
     routingReason: string;
     workloadClass: string | null;
     workloadScore: number | null;
@@ -561,8 +570,68 @@ describe('cascade routing e2e', () => {
     // a timeout escalation is cheap_error even though quality_signal reads 0.
     expect(row.escalationSource).toBe('cheap_error');
     expect(row.qualitySignal).toBe(0); // the unchanged legacy semantics
+    // keep-cheap-leg-attempt-trail: the cut is BEFORE response headers (the stub never
+    // puts them on the wire), and the strong tier served cleanly — the row is `success`
+    // and still keeps the cheap call the deadline cut off.
+    expectDeadlineCutRow(row);
     await setBand('auto_low', 'cheap-bad');
   });
+
+  // keep-cheap-leg-attempt-trail: the after-headers case — the stub flushes its 200
+  // headers, then stalls mid body, so the deadline aborts the buffered body read.
+  it('records the cheap call cut AFTER its headers the same way', async () => {
+    await setBand('auto_low', 'cheap-stallhdr');
+    try {
+      const before = stub.requests.length;
+      const res = await send('sysStallHdr');
+      expect(res.status).toBe(200);
+      const cheapCall = stub.requests
+        .slice(before)
+        .find((r) => (r.body as { model?: string } | undefined)?.model === 'oai-stallhdr');
+      expect(cheapCall?.headersFlushed).toBe(true); // the headers were on the wire
+      const row = await log();
+      expect(row.modelId).toBe(modelId['strong']);
+      expectDeadlineCutRow(row);
+    } finally {
+      await setBand('auto_low', 'cheap-bad');
+    }
+  });
+
+  // keep-cheap-leg-attempt-trail (codex proposal review): the STREAMED path walks the
+  // cheap leg buffered too, but records the row in `escalateStream`'s outcome callback
+  // after the drain — a separate recording site.
+  it('records the cheap call the deadline cut off on a STREAMED escalation too', async () => {
+    await setBand('auto_low', 'cheap-hang');
+    try {
+      const res = await send('sysHangStream', true);
+      expect(res.status).toBe(200);
+      expect(res.text).toContain('data:');
+      const row = await log();
+      expect(row.modelId).toBe(modelId['strong']);
+      expect(row.escalationSource).toBe('cheap_error');
+      expectDeadlineCutRow(row);
+    } finally {
+      await setBand('auto_low', 'cheap-bad');
+    }
+  });
+
+  /** The row a cheap deadline cut leaves when the strong tier then serves cleanly. */
+  function expectDeadlineCutRow(row: Awaited<ReturnType<typeof log>>): void {
+    expect(row.status).toBe('success'); // status reads the escalation leg alone
+    expect(row.escalated).toBe(true);
+    expect(row.attemptFailures).toHaveLength(1);
+    const [entry] = row.attemptFailures!;
+    expect(entry).toMatchObject({
+      leg: 'cheap',
+      index: 0,
+      kind: 'unavailable',
+      dispatched: true,
+      stopReason: 'deadline',
+    });
+    expect(entry).not.toHaveProperty('status');
+    expect(entry).not.toHaveProperty('terminal');
+    expect(row.errorKind).toBeNull(); // a served row carries no terminal error detail
+  }
 
   it('cancelled and post-commit rows carry the verdict too (add-auto-decision-telemetry)', async () => {
     // The streamed escalation to strong-mid commits then fails post-commit: the
@@ -708,6 +777,26 @@ describe('cascade routing e2e', () => {
     // the provenance rule is unchanged and exhaustive: a bad_request is now a
     // RETRYABLE cheap-chain failure, so it records `cheap_error` — no new value.
     expect(row.escalationSource).toBe('cheap_error');
+    // keep-cheap-leg-attempt-trail: the strong tier served cleanly, so the row is
+    // `success` — and it keeps the cheap refusal, the only record of that leg.
+    expect(row.status).toBe('success');
+    expect(row.attemptFailures).toHaveLength(1);
+    expect(row.attemptFailures![0]).toMatchObject({
+      leg: 'cheap',
+      kind: 'bad_request',
+      status: 400,
+      dispatched: true,
+      markers: ['context_length_exceeded'],
+    });
+    expect(row.attemptFailures![0]).not.toHaveProperty('stopReason');
+    expect(row.attemptFailures![0]).not.toHaveProperty('terminal');
+    expect([
+      row.errorKind,
+      row.errorStatus,
+      row.errorMessage,
+      row.errorRequestId,
+      row.errorMarkers,
+    ]).toEqual([null, null, null, null, null]);
     await setBand('auto_low', 'cheap-bad');
   });
 

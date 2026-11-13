@@ -1887,7 +1887,8 @@ export class ProxyService {
     failures: readonly AttemptFailure[],
     /** The leg-qualified per-attempt trail (add-fallback-attempt-detail),
      * composed at the call site so escalation rows aggregate BOTH executed
-     * legs (cheap first) — the recorder persists it only on error rows. */
+     * legs (cheap first) — the recorder persists it on `error`, `fallback` and
+     * escalated `success` rows, never on `cancelled` (keep-cheap-leg-attempt-trail). */
     attemptTrail: readonly AttemptFailureEntry[],
     /** The plan's reason scope (add-workload-scoped-bands) — appended LAST, after
      * the quality marker, fall-back trail, capacity notes, and the trail. */
@@ -2201,6 +2202,9 @@ export function attemptTrailEntries(
         ...(f.error.markers !== undefined ? { markers: f.error.markers } : {}),
         dispatched: f.dispatched !== false,
         ...(f.skip === 'plan_cooldown' ? { skipReason: f.skip } : {}),
+        // keep-cheap-leg-attempt-trail (design D4): the walk's own deadline cut this
+        // dispatched member off; `leg` says which walk.
+        ...(f.stop === 'deadline' ? { stopReason: f.stop } : {}),
         ...(leg !== undefined ? { leg } : {}),
         ...(last && terminalError !== null && f.error === terminalError ? { terminal: true } : {}),
       });
@@ -2284,7 +2288,9 @@ export function planWalkedChain(
 /** The recorded capacity suffix for one EXECUTED walked chain: the plan-time
  * deferrals plus the clamps of attempts actually dispatched — the served
  * member and non-circuit-skip failures. A tail member skipped by an open
- * circuit (or never reached) records NO clamp; a non-retryable TERMINAL
+ * circuit (or never reached) records NO clamp. A member the walk's own deadline
+ * cut off is a dispatched failure and records its clamp
+ * (keep-cheap-leg-attempt-trail design D7). Any other non-retryable TERMINAL
  * failure after a clamped dispatch is the accepted under-record (the walker
  * surfaces no terminal index — never an over-record). */
 export function capacitySuffix(

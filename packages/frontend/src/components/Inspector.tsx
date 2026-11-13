@@ -96,8 +96,14 @@ function TraceNodeText(props: { node: RouteTraceNode }): JSX.Element {
           {joined([
             <span class="mono rt-model">{n.model}</span>,
             // A dispatched failure's label is the one red text in the trace (design D6,
-            // Failure text); the skip label is not a failure and keeps the row's Ink 3.
-            n.emphasis === 'failed' ? <span class="mono rt-failure">{n.label}</span> : n.label,
+            // Failure text); the skip label is not a failure and keeps the row's Ink 3. A
+            // kind is a machine token, so it is Mono; a deadline cut states its cause in
+            // words, so it is prose (keep-cheap-leg-attempt-trail design D5).
+            n.emphasis === 'failed' ? (
+              <span class={n.stop === null ? 'mono rt-failure' : 'rt-failure'}>{n.label}</span>
+            ) : (
+              n.label
+            ),
             ...(n.markers ?? []).map((m) => <span class="mono rt-meta">{m}</span>),
           ])}
         </>

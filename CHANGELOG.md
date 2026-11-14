@@ -15,9 +15,20 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.34.0] — 2026-11-14
+
+[Release](https://github.com/izzoa/polyrouter/releases/tag/v0.34.0) ·
+[Compare](https://github.com/izzoa/polyrouter/compare/v0.33.0...v0.34.0)
+
 ### Added
 
-- **A streamed request records when its model committed, and the Route Trace states it.** A new `committedMs` field (migration 0049, column `request_log.committed_ms`, not backfilled) records the milliseconds from the request's start to the proxy's commit to the member that served it, that member's first successful upstream event. The Route Trace draws it as `committed at 412ms` on a served request and on one that failed or was cancelled after commit. A new Prometheus histogram, `polyrouter_stream_commit_seconds{protocol, decision_layer}`, observes the same value. It stays null on buffered requests, a replayed cheap answer, a stream that never committed and batch items. Routing, status, cost and billing are unchanged.
+- **A streamed request records when its model committed, and the Route Trace states it.** A new `committedMs` field (migration 0049, column `request_log.committed_ms`, not backfilled) records, on a streamed request whose model committed upstream, the milliseconds from the request's start to the proxy's commit to the member that served it, that member's first successful upstream event. The Route Trace draws it as `committed at 412ms` on a served request and on one that failed or was cancelled after commit. A new Prometheus histogram, `polyrouter_stream_commit_seconds{protocol, decision_layer}`, observes the same value. It stays null on buffered requests, a replayed cheap answer, a stream that never committed and batch items. Routing, status, cost and billing are unchanged.
+
+### Upgrade notes
+
+- One migration runs on boot (`0049`): a nullable `request_log.committed_ms` integer column. Existing rows are not backfilled; they keep `committedMs: null` and their Route Trace reads as before. There is no new configuration. Pull `ghcr.io/izzoa/polyrouter:0.34.0` (or `:latest`) and restart.
+- If you read the request listing programmatically: `committedMs` is new, an integer no greater than `durationMs`, or null. It is set on streamed rows whose model committed, whatever their status, a stream that failed or lost its client after commit included.
+- If you scrape `/metrics`: `polyrouter_stream_commit_seconds{protocol, decision_layer}` is a new histogram on the same buckets as the duration histograms. It has no provider or model label, because on a fallback or an escalation the wait includes other members' time.
 
 ## [0.33.0] — 2026-11-14
 
@@ -1268,7 +1279,8 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.33.0...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.34.0...HEAD
+[0.34.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.34.0
 [0.33.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.33.0
 [0.32.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.32.0
 [0.31.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.31.0

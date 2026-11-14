@@ -379,6 +379,7 @@ describe('cascade routing e2e', () => {
     inputPriceSnapshot: number | null;
     durationMs: number;
     routeLegs: RouteLeg[] | null;
+    committedMs: number | null;
   }> {
     const logs = await port.requestLogs.list(principal);
     return logs[logs.length - 1]!;
@@ -824,6 +825,12 @@ describe('cascade routing e2e', () => {
       leg({ leg: 'escalation', end: 'served', servedIndex: 0 }),
     ]);
     expectLegTimes(row);
+    // record-commit-time: the strong stream's commit, from the request's start — so it
+    // includes the whole buffered cheap leg — and never past the row's duration.
+    expect(row.committedMs).not.toBeNull();
+    expect(Number.isInteger(row.committedMs)).toBe(true);
+    expect(row.committedMs!).toBeGreaterThanOrEqual(row.routeLegs![0]!.endedMs);
+    expect(row.committedMs!).toBeLessThanOrEqual(row.durationMs);
   });
 
   // fix-bad-request-dead-end INVERTS A-21 for `bad_request`. The strong tier is
@@ -1001,6 +1008,8 @@ describe('cascade routing e2e', () => {
     // record-route-legs: a kept cheap answer replayed as the client stream is `served`.
     expect(row.routeLegs).toEqual([leg({ leg: 'cheap', end: 'served', servedIndex: 0 })]);
     expectLegTimes(row);
+    // record-commit-time: a replay is no upstream commit — the row records none.
+    expect(row.committedMs).toBeNull();
     await setBand('auto_low', 'cheap-bad');
   });
 

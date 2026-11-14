@@ -49,6 +49,19 @@ export class ProxyMetrics {
     buckets: LLM_DURATION_BUCKETS,
     registers: [this.registry],
   });
+  /** record-commit-time design D8: how long a streamed request waited for its model —
+   * from the request's start to the commit (the served member's first successful
+   * upstream event), the same value its row records as `committed_ms`. Request-level
+   * labels like the duration histogram, never provider/model: on a fallback or an
+   * escalation the wait includes other members' time, which a provider label would
+   * charge to the provider that committed. */
+  private readonly streamCommit = new Histogram({
+    name: 'polyrouter_stream_commit_seconds',
+    help: 'Time from request start to the model commit (first successful upstream event) of a streamed request',
+    labelNames: ['protocol', 'decision_layer'] as const,
+    buckets: LLM_DURATION_BUCKETS,
+    registers: [this.registry],
+  });
   private readonly tokens = new Counter({
     name: 'polyrouter_tokens_total',
     help: 'Tokens by provider/model/direction (includes superseded cascade attempts)',
@@ -156,6 +169,14 @@ export class ProxyMetrics {
         durationSeconds,
       );
     });
+  }
+
+  /** One observation per recorder-finalized request that records a commit time, with
+   * that recorded value (record-commit-time design D8). Never for a row without one. */
+  recordStreamCommit(protocol: string, decisionLayer: string, seconds: number): void {
+    this.safe(() =>
+      this.streamCommit.observe({ protocol, decision_layer: decisionLayer }, seconds),
+    );
   }
 
   recordTokens(provider: string, model: string, input: number, output: number): void {

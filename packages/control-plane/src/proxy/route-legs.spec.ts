@@ -27,6 +27,7 @@ import type { RecordOutcome, RecordingContext } from '../recording/request-recor
 import {
   ProxyService,
   escalationSourceOf,
+  commitOffsetMs,
   legEndedMs,
   routeLegsOf,
   type CapacityAnnotations,
@@ -37,8 +38,13 @@ import {
 type Behaviour =
   /** answers (buffered) or streams a clean answer */
   | 'ok'
+  /** streams a clean answer, calling `beforeFirstEvent` just before its first event
+   * (record-commit-time: the exact-offset tests drive the clock from there) */
+  | 'okArm'
   /** a retryable 503 before any answer */
   | 'retryable'
+  /** a retryable 503 after 40 ms (record-commit-time: time the next member must include) */
+  | 'slowRetryable'
   /** a non-retryable 451 legal denial */
   | 'policy'
   /** a throw no adapter classified: the walker maps it to `unavailable` and stops */
@@ -79,10 +85,16 @@ const untilAborted = (signal: AbortSignal | undefined): Promise<void> =>
     else signal.addEventListener('abort', () => resolve(), { once: true });
   });
 
+/** Called by an `okArm` member right before it yields its first event. */
+let beforeFirstEvent: (() => void) | undefined;
+
 function adapterFor(model: string, b: Behaviour, client: AbortController): ProviderAdapter {
   const fault = async (signal: AbortSignal | undefined): Promise<never> => {
     switch (b) {
       case 'retryable':
+        throw new ProviderError('unavailable', 'overloaded', { status: 503 });
+      case 'slowRetryable':
+        await new Promise((r) => setTimeout(r, 40));
         throw new ProviderError('unavailable', 'overloaded', { status: 503 });
       case 'policy':
         throw new ProviderError('policy_block', 'legal denial', { status: 451 });
@@ -110,7 +122,8 @@ function adapterFor(model: string, b: Behaviour, client: AbortController): Provi
     chat: (_req: unknown, ctx?: { signal?: AbortSignal }) =>
       b === 'ok' ? Promise.resolve(answer(model)) : fault(ctx?.signal),
     chatStream: async function* (_req: unknown, ctx?: { signal?: AbortSignal }) {
-      if (b === 'ok' || b === 'commitThenFail') {
+      if (b === 'ok' || b === 'okArm' || b === 'commitThenFail') {
+        if (b === 'okArm') beforeFirstEvent?.();
         yield START;
         yield TEXT;
         if (b === 'commitThenFail') throw new ProviderError('unavailable', 'mid-stream');
@@ -675,6 +688,163 @@ describe('route record — a streamed leg ends at commit, whatever the stream do
     expect(records).toHaveLength(1);
     expect(records[0]!.ctx.routeLegs?.map(shape)).toEqual([served('primary', 0)]);
     expect(records[0]!.outcome.status).toBe('cancelled');
+    // record-commit-time: the commit happened before the client left, so the cancelled
+    // row keeps its commit time.
+    expect(records[0]!.ctx.committedMs).toEqual(expect.any(Number));
+  });
+});
+
+// record-commit-time task 4.1 (design D2): only the two streamed sites whose walk
+// committed set the commit time, from the request's start; every other settle site
+// leaves it absent, so the row records null.
+describe('commit time — set only where a streamed walk committed', () => {
+  const commit = (rec: Recorded): number => {
+    const ms = rec.ctx.committedMs;
+    if (ms === undefined) throw new Error('expected a commit time');
+    expect(Number.isInteger(ms)).toBe(true);
+    expect(ms).toBeGreaterThanOrEqual(0);
+    return ms;
+  };
+
+  it('a committed primary stream records its offset, no later than its leg’s end', async () => {
+    const rec = await run('streamed', { primary: ['ok'] });
+    expect(rec.outcome.status).toBe('success');
+    expect(commit(rec)).toBeLessThanOrEqual(rec.ctx.routeLegs![0]!.endedMs);
+  });
+
+  it('a fallback stream’s offset includes the member that failed before it', async () => {
+    const rec = await run('streamed', { primary: ['slowRetryable', 'ok'] });
+    expect(rec.outcome.status).toBe('fallback');
+    expect(commit(rec)).toBeGreaterThanOrEqual(40);
+  });
+
+  it('a stream that fails after commit keeps its commit time on the error row', async () => {
+    const rec = await run('streamed', { primary: ['commitThenFail'] });
+    expect(rec.outcome.status).toBe('error');
+    commit(rec);
+  });
+
+  it('a committed escalation’s offset is measured from the start, after its cheap leg', async () => {
+    const rec = await run('streamed', { cheap: ['slowRetryable'], escalation: ['ok'] });
+    expect(rec.outcome.escalated).toBe(true);
+    const cheapEnd = rec.ctx.routeLegs!.find((l) => l.leg === 'cheap')!.endedMs;
+    expect(cheapEnd).toBeGreaterThanOrEqual(40);
+    expect(commit(rec)).toBeGreaterThanOrEqual(cheapEnd);
+  });
+
+  it.each<[string, 'buffered' | 'streamed', Scenario]>([
+    ['a buffered serve', 'buffered', { primary: ['ok'] }],
+    ['a buffered fallback', 'buffered', { primary: ['retryable', 'ok'] }],
+    ['a stream that never committed', 'streamed', { primary: ['policy'] }],
+    ['a stream whose members all failed', 'streamed', { primary: ['retryable', 'retryable'] }],
+    [
+      'a stream whose client left before the walk',
+      'streamed',
+      { primary: ['ok'], leftBeforeStart: true },
+    ],
+    ['a kept cheap answer replayed as a stream', 'streamed', { cheap: ['ok'] }],
+    ['a buffered escalation', 'buffered', { cheap: ['retryable'], escalation: ['ok'] }],
+    [
+      'a streamed escalation that never committed',
+      'streamed',
+      { cheap: ['retryable'], escalation: ['policy'] },
+    ],
+  ])('%s records no commit time', async (_name, mode, scenario) => {
+    const rec = await run(mode, scenario);
+    expect(rec.ctx).not.toHaveProperty('committedMs');
+  });
+
+  // codex review (record-commit-time, Medium): proxy-http's `aborted` branch can win
+  // while a committed stream promise is still resolving; it then calls `.return()` on the
+  // frames WITHOUT pulling one. The commit time must already be on the context, so the
+  // `cancelled` row keeps it — an implementation that attached it at the first pulled
+  // frame would lose it here.
+  it('a committed stream released before any frame is pulled keeps its commit time', async () => {
+    const client = new AbortController();
+    const records: Recorded[] = [];
+    const svc = Object.create(ProxyService.prototype) as ProxyService;
+    Object.assign(svc, {
+      breaker: new CircuitBreaker(new InMemoryBreakerStore()),
+      recorder: {
+        record: (ctx: RecordingContext, outcome: RecordOutcome) => {
+          records.push({ ctx, outcome });
+          return ctx.requestId;
+        },
+      },
+      producers: { providerDown: () => undefined, onRequestFailed: () => Promise.resolve() },
+      metrics: { breakerOpened: () => undefined, breakerStateObserved: () => undefined },
+      rt: { firstEventTimeoutMs: 30_000 },
+    });
+    const primary = chain('primary', ['ok'], client);
+    const p = {
+      client: getAdapter('openai'),
+      requestId: 'req-1',
+      protocol: 'openai',
+      routed: { model: 'x', messages: [], params: {} },
+      learningGate: DISABLED_LEARNING_GATE,
+      learningEvidence: null,
+      created: 1,
+      attempts: primary.attempts,
+      meta: primary.meta,
+      decision: {
+        tierKey: null,
+        decisionLayer: 'explicit',
+        routingReason: 'r',
+        matchedHeader: null,
+      },
+      startedAt: Date.now(),
+      requestChars: 1,
+      principal: userPrincipal('u1'),
+      agentId: null,
+    };
+    const frames = (await (svc as unknown as Record<'streamServed', Flow>).streamServed.call(
+      svc,
+      p,
+      client.signal,
+    )) as AsyncGenerator<string>;
+    client.abort(); // the client left as the stream promise resolved…
+    await frames.return(undefined); // …so proxy-http releases it without pulling a frame
+    for (let i = 0; i < 50 && records.length === 0; i += 1)
+      await new Promise((r) => setImmediate(r));
+    expect(records).toHaveLength(1);
+    expect(records[0]!.outcome.status).toBe('cancelled');
+    commit(records[0]!);
+  });
+
+  // codex implementation review (record-commit-time, Low): pin the EXACT offset. The clock
+  // stands still until the member is about to send its first event; from then on every read
+  // advances it by 1s, so only the commit gate's own read — the first one after the event —
+  // gives 412. A recorder that used the walker's return (`legEndedMs`) or any later read
+  // records 1,412 or more.
+  it.each<[string, Scenario]>([
+    ['a primary stream', { primary: ['okArm'] }],
+    ['an escalation stream', { cheap: ['retryable'], escalation: ['okArm'] }],
+  ])('%s records the gate’s own clock read, exactly', async (_name, scenario) => {
+    const t0 = Date.now();
+    let clock = t0;
+    let advancing = false;
+    const spy = jest.spyOn(Date, 'now').mockImplementation(() => {
+      const v = clock;
+      if (advancing) clock += 1_000;
+      return v;
+    });
+    beforeFirstEvent = () => {
+      clock = t0 + 412;
+      advancing = true;
+    };
+    try {
+      const rec = await run('streamed', scenario);
+      expect(rec.ctx.committedMs).toBe(412);
+    } finally {
+      spy.mockRestore();
+      beforeFirstEvent = undefined;
+    }
+  });
+
+  it('commitOffsetMs is a non-negative integer from the request start', () => {
+    expect(commitOffsetMs(1_000_412, 1_000_000)).toBe(412);
+    expect(commitOffsetMs(1_000_412.6, 1_000_000)).toBe(413);
+    expect(commitOffsetMs(999_000, 1_000_000)).toBe(0); // a backward clock step clamps to 0
   });
 });
 

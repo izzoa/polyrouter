@@ -740,6 +740,15 @@ export const requestLogs = pgTable(
     // backfilled). No default, CHECK or index: the writer sanitizes it so it can never
     // fail an insert. Structure only (invariant 8).
     routeLegs: jsonb('route_legs').$type<RouteLeg[]>(),
+    // The commit time (record-commit-time design D3/D4): whole milliseconds from the
+    // request's start (the origin of `duration_ms`) to the instant the proxy committed
+    // to the member that served the row — its first successful upstream event, read at
+    // the commit gate (invariant 3), never a keepalive, the early response commit or a
+    // leg's `endedMs`. Clamped to `duration_ms`. Set on every row whose streamed walk
+    // committed, whatever its status; null on buffered rows, a replayed cheap answer, a
+    // stream that never committed, batch rows and rows predating the column (never
+    // backfilled). No default, CHECK or index: the writer keeps it a non-negative integer.
+    committedMs: integer('committed_ms'),
     escalated: boolean('escalated').default(false).notNull(),
     qualitySignal: doublePrecision('quality_signal'),
     /** WHY the cascade escalated (add-auto-threshold-calibration):

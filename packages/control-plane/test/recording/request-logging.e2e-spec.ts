@@ -340,6 +340,8 @@ describe('request-logging e2e', () => {
       { leg: 'primary', end: 'served', servedIndex: 0, endedMs: expect.any(Number) as number },
     ]);
     expectEndedWithin(row.routeLegs![0]!.endedMs, row.durationMs);
+    // record-commit-time: a buffered request has no upstream commit.
+    expect(row.committedMs).toBeNull();
     expect(JSON.stringify(row)).not.toContain('hi'); // no prompt/response body
     expect(row.attemptFailures).toBeNull(); // add-fallback-attempt-detail: success rows carry none
     expect(row.billed).toBe(true); // zero-cost-unbilled-errors: a served row is always billed
@@ -1198,6 +1200,8 @@ describe('request-logging e2e', () => {
           },
         ]);
         expectEndedWithin(row.routeLegs![0]!.endedMs, row.durationMs);
+        // record-commit-time: a walk that stopped before any commit records none.
+        expect(row.committedMs).toBeNull();
         expect(row.modelId).toBe(limited.modelId);
         expect(row.providerId).toBe(limited.providerId);
         // A non-retryable stop's terminal error never enters the trail: member 0 alone.
@@ -1408,6 +1412,9 @@ describe('request-logging e2e', () => {
       expect(row.routeLegs).toEqual([
         { leg: 'primary', end: 'served', servedIndex: 0, endedMs: expect.any(Number) as number },
       ]);
+      // record-commit-time: the stream committed before it failed — the error row keeps it.
+      expect(row.committedMs).not.toBeNull();
+      expectEndedWithin(row.committedMs!, row.durationMs);
     });
 
     it('a client cancel AFTER the first token stays billed', async () => {
@@ -1440,6 +1447,37 @@ describe('request-logging e2e', () => {
         { leg: 'primary', end: 'served', servedIndex: 0, endedMs: expect.any(Number) as number },
       ]);
       expectEndedWithin(row.routeLegs![0]!.endedMs, row.durationMs);
+      // record-commit-time: the commit preceded the hang-up — the cancelled row keeps it.
+      expect(row.committedMs).not.toBeNull();
+      expectEndedWithin(row.committedMs!, row.durationMs);
+    });
+
+    // record-commit-time (request-logging "A streamed row records when its model
+    // committed"): the commit time is measured from the request's start, so a member
+    // that answers its headers 1s late commits no earlier than that, and a fallback
+    // stream's commit includes the 700ms the failed member before it took.
+    it('a streamed success records its commit time, no earlier than the upstream’s first event', async () => {
+      const slow = await member('oai-zc-slowhead');
+      const tierKey = await tierOf([slow]);
+      const res = await chat(tierKey, true);
+      expect(res.status).toBe(200);
+      const row = await rowOf(tierKey);
+      expect(row.status).toBe('success');
+      expect(row.committedMs).not.toBeNull();
+      expect(row.committedMs!).toBeGreaterThanOrEqual(1_000);
+      expectEndedWithin(row.committedMs!, row.durationMs);
+    });
+
+    it('a fallback stream’s commit time includes the member that failed before it', async () => {
+      const failing = await member('oai-zc-slowfail');
+      const ok = await member('oai-zc-commit-ok');
+      const tierKey = await tierOf([failing, ok]);
+      const res = await chat(tierKey, true);
+      expect(res.status).toBe(200);
+      const row = await rowOf(tierKey);
+      expect(row.status).toBe('fallback');
+      expect(row.committedMs!).toBeGreaterThanOrEqual(700);
+      expectEndedWithin(row.committedMs!, row.durationMs);
     });
 
     it('a not-billed row is immutable: a later catalog price change leaves $0 and its snapshot', async () => {
@@ -1498,6 +1536,8 @@ describe('request-logging e2e', () => {
       expect(recorded.inputTokens).toBeGreaterThan(0);
       // record-route-legs: a context no chain walk built carries no route record.
       expect(recorded.routeLegs).toBeNull();
+      // record-commit-time: nor a commit time.
+      expect(recorded.committedMs).toBeNull();
 
       await pricing.override(modelKey, { inputPricePer1m: 999, outputPricePer1m: 999 }, new Date());
       const again = await port.requestLogs.findById(principal, recorded.id);

@@ -107,6 +107,9 @@ interface LogSeed {
   /** The route record (record-route-legs), stored verbatim. Omitted = NULL: a row no
    * walk produced, or one predating the column — every older seed stays one. */
   routeLegs?: unknown[];
+  /** The commit time (record-commit-time), stored verbatim. Omitted = NULL: a row that
+   * never committed a stream, or one predating the column — every older seed stays one. */
+  committedMs?: number | null;
 }
 
 describe('analytics API (#17)', () => {
@@ -151,8 +154,8 @@ describe('analytics API (#17)', () => {
          semantic_band, semantic_score, semantic_source, semantic_revision, provider_kind,
          attempt_failures, workload_class, workload_score, workload_source, workload_revision,
          batch_id, price_mode, escalation_source, structural_epoch, billed,
-         price_version_id, structural_scope, route_legs)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,'test',$8,$9,$10,$11,1,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43)`,
+         price_version_id, structural_scope, route_legs, committed_ms)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'test',$8,$9,$10,$11,1,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44)`,
       [
         id,
         owner,
@@ -197,6 +200,7 @@ describe('analytics API (#17)', () => {
         s.priceVersionId ?? null,
         s.structuralScope ?? null,
         s.routeLegs !== undefined ? JSON.stringify(s.routeLegs) : null,
+        s.committedMs ?? null,
       ],
     );
     return id;
@@ -752,6 +756,7 @@ describe('analytics API (#17)', () => {
       status: 'cancelled',
       attemptFailures: trail,
       routeLegs: committedLegs,
+      committedMs: 38, // record-commit-time: it committed before the client left
     });
     // A cancelled row recorded before cancelled rows kept their trail and before the
     // column existed: both read null, never backfilled.
@@ -779,9 +784,17 @@ describe('analytics API (#17)', () => {
     expect(committed['routeLegs']).toEqual(committedLegs);
     expect(committed['attemptFailures']).toEqual(trail);
 
+    // record-commit-time (analytics-api "A failed or cancelled row lists the member that
+    // stopped its walk"): a walk that never committed lists `committedMs: null`; the
+    // cancel after commit lists its recorded value verbatim.
+    expect(stopped).toHaveProperty('committedMs', null);
+    expect(cancelled).toHaveProperty('committedMs', null);
+    expect(committed).toHaveProperty('committedMs', 38);
+
     const legacy = byId.get(legacyId)!;
     expect(legacy).toHaveProperty('routeLegs', null);
     expect(legacy).toHaveProperty('attemptFailures', null);
+    expect(legacy).toHaveProperty('committedMs', null);
 
     // The status filter counts them as `cancelled`, trail and all.
     const filtered = await q('requests', c, { ...RANGE, status: 'cancelled' });
@@ -2337,6 +2350,8 @@ describe('analytics API (#17)', () => {
       expect(sync.priceMode).toBeNull();
       // record-route-legs: no chain walk produced a batch item, so none carries a route.
       for (const r of rows) expect(r).toHaveProperty('routeLegs', null);
+      // record-commit-time: nor a commit time — a batch item never streamed.
+      for (const r of rows) expect(r).toHaveProperty('committedMs', null);
     });
 
     it('partitions the listing by mode and narrows it to one owned job', async () => {
@@ -3154,8 +3169,9 @@ describe('analytics API (#17)', () => {
   });
 
   describe('route-trace fields on the listing (add-route-trace-inspector)', () => {
-    /** The nine fields the listing is contracted to expose (analytics-api "The request
-     * listing exposes the route-trace fields"; `routeLegs` added by record-route-legs).
+    /** The ten fields the listing is contracted to expose (analytics-api "The request
+     * listing exposes the route-trace fields"; `routeLegs` added by record-route-legs,
+     * `committedMs` by record-commit-time).
      * Each is already spread from the row; these cases pin them so a projection that
      * narrows the safe view fails here. */
     const ROUTE_TRACE_FIELDS = [
@@ -3168,6 +3184,7 @@ describe('analytics API (#17)', () => {
       'structuralScope',
       'structuralEpoch',
       'routeLegs',
+      'committedMs',
     ] as const;
     /** The escalated row's route record: the cheap answer judged bad, then served. */
     const ESCALATED_LEGS = [
@@ -3263,6 +3280,9 @@ describe('analytics API (#17)', () => {
         structuralScore: 0.4,
         structuralBandSource: 'threshold',
         routeLegs: ESCALATED_LEGS,
+        // record-commit-time: its escalation streamed and committed just before the
+        // leg's recorded end.
+        committedMs: 2_428,
         at: DAY1,
       });
       // A legacy, explicitly routed, unpriced row: every nullable route-trace column is
@@ -3339,7 +3359,7 @@ describe('analytics API (#17)', () => {
       );
     };
 
-    it('the listing carries the nine route-trace fields verbatim, nulls included, and no ownership columns', async () => {
+    it('the listing carries the ten route-trace fields verbatim, nulls included, and no ownership columns', async () => {
       const rows = await rowsById(T);
       expect(rows.size).toBe(5);
       const escalated = rows.get(id['escalated']!)!;
@@ -3354,9 +3374,10 @@ describe('analytics API (#17)', () => {
         structuralScope: 'tenant',
         structuralEpoch: 3,
         routeLegs: ESCALATED_LEGS, // verbatim, in execution order (record-route-legs)
+        committedMs: 2_428, // verbatim (record-commit-time)
       });
       // The null-column row: every nullable field is present AND null, never omitted —
-      // `routeLegs` included: a row predating the column is never backfilled.
+      // `routeLegs` and `committedMs` included: a row predating a column is never backfilled.
       const legacy = rows.get(id['legacy']!)!;
       expect(legacy).toMatchObject({ decisionLayer: 'explicit', cost: null, escalated: false });
       for (const f of NULLABLE_FIELDS) expect(legacy).toHaveProperty(f, null);

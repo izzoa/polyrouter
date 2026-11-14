@@ -1479,3 +1479,111 @@ describe('the inspector draws the route record (record-route-legs 7.3)', () => {
     }
   });
 });
+
+/* ---- record-commit-time task 7.3: the commit line on screen ----------------------------- */
+
+/** A served stream whose served member was clamped and whose commit was recorded at 412ms. */
+const COMMITTED_CLAMPED: RequestRow = {
+  ...BASE,
+  ...plain,
+  id: 'ct-committed-clamped',
+  createdAt: at(20),
+  providerLabel: 'Provider A',
+  modelLabel: 'gpt-a',
+  durationMs: 1_240,
+  committedMs: 412,
+  routeLegs: [
+    {
+      leg: 'primary',
+      end: 'served',
+      endedMs: 413,
+      servedIndex: 0,
+      ask: 100_000,
+      clamps: [{ index: 0, model: 'gpt-a', to: 4_096 }],
+    },
+  ],
+};
+/** A stream that committed at 412ms and then failed: the unlit outcome carries the line. */
+const COMMITTED_FAILED: RequestRow = {
+  ...BASE,
+  ...plain,
+  id: 'ct-committed-failed',
+  createdAt: at(21),
+  status: 'error',
+  providerLabel: 'Provider A',
+  modelLabel: 'gpt-a',
+  durationMs: 1_200,
+  committedMs: 412,
+  errorKind: 'unavailable',
+  routeLegs: [{ leg: 'primary', end: 'served', endedMs: 413, servedIndex: 0 }],
+};
+/** A stream whose client left after it committed at 412ms: the unlit outcome carries the line. */
+const COMMITTED_CANCELLED: RequestRow = {
+  ...COMMITTED_FAILED,
+  id: 'ct-committed-cancelled',
+  createdAt: at(22),
+  status: 'cancelled',
+  durationMs: 800,
+  errorKind: null,
+};
+const COMMITTED = [COMMITTED_CLAMPED, COMMITTED_FAILED, COMMITTED_CANCELLED];
+
+describe('the commit line on screen (record-commit-time 7.3)', () => {
+  it('a clamped stream states its cap, then its commit, each on its own line, never the accent', async () => {
+    h = await mount([...COMMITTED, ...Object.values(ROWS)]);
+    const drawer = await openRow(COMMITTED_CLAMPED.id);
+    const outcome = items(drawer).at(-1)!;
+    expect(outcome.textContent).toBe(
+      'Provider A · gpt-a · served · 1.24s · output capped at 4,096 of 100,000 asked · committed at 412ms',
+    );
+    const clamp = outcome.querySelector<HTMLElement>('[data-testid="rt-clamp"]')!;
+    const commit = outcome.querySelector<HTMLElement>('[data-testid="rt-commit"]')!;
+    expect(commit.textContent).toBe('committed at 412ms');
+    expect(before(clamp, commit)).toBe(true);
+    expect(commit.className).toBe('rt-meta rt-sub');
+    expect(commit.getAttribute('style')).toBeNull();
+    expect((commit.previousElementSibling as HTMLElement).className).toBe('sr-only');
+    expect(commit.querySelector('.figure')?.textContent).toBe('412ms');
+    expect(commit.closest('.rt-failure, .rt-nowrap')).toBeNull();
+    // The latency is still the node's first figure, and the lit branch its one accent root.
+    expect(outcome.querySelector('.figure')?.textContent).toBe('1.24s');
+    expect(outcome.querySelectorAll('[data-testid="rt-latency"]')).toHaveLength(1);
+    expect([...drawer.querySelectorAll<HTMLElement>('[data-series="focal"]')]).toEqual([outcome]);
+  });
+
+  it('a stream that failed after commit carries the line on its unlit outcome, with no cap', async () => {
+    h = await mount([...COMMITTED, ...Object.values(ROWS)]);
+    const drawer = await openRow(COMMITTED_FAILED.id);
+    const outcome = items(drawer).at(-1)!;
+    expect(outcome.classList.contains('rt-node--neutral')).toBe(true);
+    expect(outcome.textContent).toBe('Provider A · gpt-a · failed · 1.20s · committed at 412ms');
+    expect(outcome.querySelectorAll('[data-testid="rt-commit"]')).toHaveLength(1);
+    expect(outcome.querySelector('[data-testid="rt-clamp"]')).toBeNull();
+    expect(drawer.querySelectorAll('[data-series="focal"]')).toHaveLength(0);
+  });
+
+  // codex implementation review (record-commit-time, Low): the cancel after commit, rendered.
+  it('a stream whose client left after commit carries the line on its unlit outcome, with no cap', async () => {
+    h = await mount([...COMMITTED, ...Object.values(ROWS)]);
+    const drawer = await openRow(COMMITTED_CANCELLED.id);
+    const outcome = items(drawer).at(-1)!;
+    expect(outcome.classList.contains('rt-node--neutral')).toBe(true);
+    expect(outcome.textContent).toBe(
+      'Provider A · gpt-a · cancelled by client · 800ms · committed at 412ms',
+    );
+    const commit = outcome.querySelector<HTMLElement>('[data-testid="rt-commit"]')!;
+    expect(commit.className).toBe('rt-meta rt-sub');
+    expect(outcome.querySelectorAll('[data-testid="rt-commit"]')).toHaveLength(1);
+    expect(outcome.querySelector('[data-testid="rt-clamp"]')).toBeNull();
+    expect(drawer.querySelectorAll('[data-series="focal"]')).toHaveLength(0);
+  });
+
+  it('a row with no recorded commit time draws no commit line', async () => {
+    h = await mount([...COMMITTED, ...Object.values(ROWS)]);
+    for (const row of Object.values(ROWS)) {
+      const drawer = await openRow(row.id);
+      expect(drawer.querySelector('[data-testid="rt-commit"]'), row.id).toBeNull();
+      expect(trace(drawer).textContent).not.toMatch(/commit/);
+    }
+  });
+});

@@ -7,6 +7,7 @@ import {
   runBuffered,
   runBufferedChain,
   openStreamChain,
+  replayBufferedStream,
   fallbackEligible,
   attemptBilling,
   chainBillingEvidence,
@@ -15,6 +16,7 @@ import {
   type BufferedChainResult,
   type ChainAttempt,
   type StreamChainResult,
+  type UpstreamCommittedStream,
 } from './core';
 import { walkUnbilled } from '../recording';
 import {
@@ -1347,8 +1349,8 @@ describe('openStreamChain', () => {
     let secondBuilt = false;
     const committed = [
       streamAttempt('p1', async function* () {
-        yield START;
-        yield TEXT; // <- committed here
+        yield START; // <- committed here (the first successful event)
+        yield TEXT;
         yield {
           type: 'error',
           error: { type: 'invalid_request_error', message: 'too long' },
@@ -3125,3 +3127,162 @@ describe.each(['buffered', 'stream'] as const)(
     });
   },
 );
+
+// record-commit-time design D1: the commit instant is read ONCE, at the gate, when the
+// served member's first successful event passes the `done`/`error` checks — never when
+// the attempt was armed, at upstream liveness bytes, or at a replayed buffered answer.
+// `Date.now` is driven by hand so each instant is exact; timers stay real.
+describe('the commit instant is read at the gate (record-commit-time D1)', () => {
+  const client = getAdapter('openai');
+  const req: NormalizedRequest = { model: 'x', messages: [], params: {} };
+  const newBreaker = (): CircuitBreaker => new CircuitBreaker(new InMemoryBreakerStore());
+  let clock = 0;
+  /** When set, every clock read after it advances the clock by 1s — so a value equal to the
+   * instant set before the event proves the gate's read is the FIRST read after that event. */
+  let advancing = false;
+  let nowSpy: jest.SpyInstance<number, []>;
+  beforeEach(() => {
+    clock = 1_000;
+    advancing = false;
+    nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => {
+      const v = clock;
+      if (advancing) clock += 1_000;
+      return v;
+    });
+  });
+  afterEach(() => nowSpy.mockRestore());
+
+  const attempt = (
+    providerId: string,
+    gen: (opts: { onBytes?: () => void }) => AsyncGenerator<NormalizedStreamEvent>,
+  ): ChainAttempt => ({
+    providerId,
+    externalModelId: providerId,
+    buildAdapter: () =>
+      Promise.resolve({
+        protocol: 'openai_compatible',
+        chat: () => Promise.reject(new Error('unused')),
+        chatStream: (_r: NormalizedRequest, o: { onBytes?: () => void }) => gen(o),
+        listModels: () => Promise.resolve([]),
+        testConnection: () => Promise.resolve({ ok: true, models: 0 }),
+      } as unknown as ProviderAdapter),
+  });
+
+  it('is the clock when the first successful event arrives, not when the attempt was armed', async () => {
+    const r = await openStreamChain(
+      newBreaker(),
+      [
+        attempt('p1', async function* () {
+          clock = 4_200; // the upstream answers 3.2s after the walk began…
+          advancing = true; // …and every later clock read moves on by 1s
+          yield START;
+          clock = 9_000; // later events never move it
+          yield TEXT;
+          yield STOP;
+          yield END;
+        }),
+      ],
+      client,
+      req,
+      OPTS,
+    );
+    if (r.kind !== 'stream') throw new Error('expected a committed stream');
+    expect(r.committedAt).toBe(4_200);
+    await collect(r.frames);
+    expect(r.committedAt).toBe(4_200);
+  });
+
+  it('upstream liveness bytes before the first event do not move it', async () => {
+    const r = await openStreamChain(
+      newBreaker(),
+      [
+        attempt('p1', async function* ({ onBytes }) {
+          clock = 2_000;
+          onBytes?.(); // an SSE comment / ping: liveness, not an event
+          clock = 3_000;
+          yield START;
+          yield STOP;
+          yield END;
+        }),
+      ],
+      client,
+      req,
+      OPTS,
+    );
+    if (r.kind !== 'stream') throw new Error('expected a committed stream');
+    expect(r.committedAt).toBe(3_000);
+  });
+
+  it('an error first event does not commit: the next member’s instant is recorded', async () => {
+    const r = await openStreamChain(
+      newBreaker(),
+      [
+        attempt('p1', async function* () {
+          clock = 1_500;
+          yield {
+            type: 'error',
+            error: { type: 'error', message: 'busy' },
+            diagnostic: { kind: 'unavailable' },
+          } as NormalizedStreamEvent;
+        }),
+        attempt('p2', async function* () {
+          clock = 2_400;
+          yield START;
+          yield STOP;
+          yield END;
+        }),
+      ],
+      client,
+      req,
+      OPTS,
+    );
+    if (r.kind !== 'stream') throw new Error('expected a committed stream');
+    expect(r.servedIndex).toBe(1);
+    expect(r.committedAt).toBe(2_400);
+  });
+
+  it('a stream that ends before any event commits nothing and carries no instant', async () => {
+    const r = await openStream(
+      providerFrom(async function* () {
+        clock = 5_000; // no event at all
+      }),
+      client,
+      req,
+      OPTS,
+    );
+    expect(r.kind).toBe('error');
+    expect(r).not.toHaveProperty('committedAt');
+  });
+
+  it('the single-provider helper passes the instant through', async () => {
+    const r = await openStream(
+      providerFrom(async function* () {
+        clock = 1_412;
+        yield START;
+        yield STOP;
+        yield END;
+      }),
+      client,
+      req,
+      OPTS,
+    );
+    if (r.kind !== 'stream') throw new Error('expected a committed stream');
+    expect(r.committedAt).toBe(1_412);
+  });
+
+  it('a replayed buffered answer carries no commit instant', async () => {
+    const response: NormalizedResponse = {
+      id: 'r1',
+      model: 'gpt-4o',
+      content: [{ type: 'text', text: 'ok' }],
+      stopReason: 'stop',
+    };
+    const replay = await replayBufferedStream(client, response, { created: 1 });
+    if (replay.kind !== 'stream') throw new Error('expected a replay stream');
+    expect(replay).not.toHaveProperty('committedAt');
+    // @ts-expect-error a replay is no upstream commit: its type cannot carry one
+    const upstream: UpstreamCommittedStream = replay;
+    expect(upstream.kind).toBe('stream');
+    await collect(replay.frames);
+  });
+});

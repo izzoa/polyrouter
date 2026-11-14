@@ -271,6 +271,38 @@ describe('/metrics e2e', () => {
     expect(text).not.toContain(userId);
   });
 
+  // record-commit-time (observability "A commit-time histogram shows how long streamed
+  // requests waited for their model"): a committed stream observes once under its
+  // request-level labels; a buffered request observes nothing.
+  it('observes a committed stream in the commit-time histogram, and a buffered request not at all', async () => {
+    const countOf = async (): Promise<number> => {
+      const text = (await request(server).get('/metrics')).text;
+      const m = text.match(
+        /polyrouter_stream_commit_seconds_count\{protocol="openai",decision_layer="explicit"\} (\d+)/,
+      );
+      return m === null ? 0 : Number(m[1]);
+    };
+    const before = await countOf();
+    expect((await send(chat())).status).toBe(200); // buffered: no upstream commit
+    await writer.flush();
+    expect(await countOf()).toBe(before);
+
+    const streamed = await send(chat({ stream: true }));
+    expect(streamed.status).toBe(200);
+    expect(streamed.text).toContain('[DONE]');
+    await new Promise((r) => setTimeout(r, 40)); // stream settle microtask
+    expect(await countOf()).toBe(before + 1);
+
+    // Only the two request-level labels: never a provider, model, tenant or request id.
+    const text = (await request(server).get('/metrics')).text;
+    const series = text.split('\n').filter((l) => l.startsWith('polyrouter_stream_commit_seconds'));
+    expect(series.length).toBeGreaterThan(0);
+    for (const line of series) {
+      expect(line).not.toMatch(/provider=|model=/);
+      expect(line).not.toContain(userId);
+    }
+  });
+
   it('exposes breaker opens + last-observed state after a trip', async () => {
     // DEFAULT threshold is 5 consecutive failures → open on the 5th; the 6th
     // admission observes the open state (short-circuit).

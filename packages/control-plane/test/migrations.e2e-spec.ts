@@ -315,7 +315,7 @@ describe('request_log.billed migration (database-schema, zero-cost-unbilled-erro
     );
     expect(col.rows).toEqual([{ data_type: 'boolean', is_nullable: 'YES', column_default: null }]);
     // Columns a LATER migration adds to request_log (the folder is migrated in full).
-    const LATER = ['route_legs'];
+    const LATER = ['route_legs', 'committed_ms'];
     expect((await columnsOf('request_log')).filter((c) => !LATER.includes(c))).toEqual(
       [...logColsBefore, 'billed'].sort(),
     );
@@ -325,9 +325,11 @@ describe('request_log.billed migration (database-schema, zero-cost-unbilled-erro
     const logAfter = await rowsOf('request_log');
     expect(logAfter).toHaveLength(4);
     for (const r of logAfter) expect(r['billed']).toBeNull();
-    expect(logAfter.map(({ billed: _billed, route_legs: _legs, ...rest }) => rest)).toEqual(
-      logBefore,
-    );
+    expect(
+      logAfter.map(
+        ({ billed: _billed, route_legs: _legs, committed_ms: _committed, ...rest }) => rest,
+      ),
+    ).toEqual(logBefore);
     const phantom = logAfter.find((r) => r['id'] === 'L-err-est')!;
     expect(phantom).toMatchObject({
       cost: 0.10808,
@@ -1093,7 +1095,11 @@ describe('request_log.route_legs migration (database-schema, record-route-legs)'
       [COLUMN],
     );
     expect(col.rows).toEqual([{ data_type: 'jsonb', is_nullable: 'YES', column_default: null }]);
-    expect(await columnsOf('request_log')).toEqual([...logColsBefore, COLUMN].sort());
+    // Columns a LATER migration adds to request_log (the folder is migrated in full).
+    const LATER = ['committed_ms'];
+    expect((await columnsOf('request_log')).filter((c) => !LATER.includes(c))).toEqual(
+      [...logColsBefore, COLUMN].sort(),
+    );
 
     // No CHECK reads it and no index carries it (design D1: the writer keeps its shape).
     const checks = await pool.query<{ def: string }>(
@@ -1111,7 +1117,9 @@ describe('request_log.route_legs migration (database-schema, record-route-legs)'
     // every other value is untouched.
     const logAfter = await rowsOf('request_log');
     for (const r of logAfter) expect(r[COLUMN]).toBeNull();
-    expect(logAfter.map(({ [COLUMN]: _legs, ...rest }) => rest)).toEqual(logBefore);
+    expect(logAfter.map(({ [COLUMN]: _legs, committed_ms: _committed, ...rest }) => rest)).toEqual(
+      logBefore,
+    );
 
     // request_attempt, the spend ledger, is unchanged: same columns, same row.
     expect(await columnsOf('request_attempt')).toEqual(attemptColsBefore);
@@ -1128,6 +1136,186 @@ describe('request_log.route_legs migration (database-schema, record-route-legs)'
     );
     const fresh = await pool.query(`SELECT route_legs FROM request_log WHERE id = 'L-new'`);
     expect(fresh.rows[0]!.route_legs).toEqual(legs);
+  }, 120_000);
+
+  it('a second boot-time migration run is a no-op: no error, nothing reapplied, schema unchanged', async () => {
+    const applied = await appliedCount();
+    const cols = await columnsOf('request_log');
+    const rowsBefore = await rowsOf('request_log');
+    await runMigrations(drizzle(pool));
+    await runMigrations(drizzle(pool));
+    expect(await appliedCount()).toBe(applied);
+    expect(await columnsOf('request_log')).toEqual(cols);
+    expect(await rowsOf('request_log')).toEqual(rowsBefore);
+  }, 60_000);
+});
+
+describe('request_log.committed_ms migration (database-schema, record-commit-time)', () => {
+  const databaseUrl = loadConfig<{ DATABASE_URL: string }>().DATABASE_URL;
+  const dbName = `polyrouter_mig_cm_${Math.random().toString(36).slice(2, 8)}`;
+  let admin: Pool;
+  let pool: Pool;
+  let partialDir: string;
+  const OWNER = 'u-mig-cm';
+  const COLUMN = 'committed_ms';
+
+  /** The migrations folder truncated just before the committed_ms migration. */
+  function partialFolder(): string {
+    const full = resolveMigrationsFolder();
+    const journal = JSON.parse(readFileSync(join(full, 'meta', '_journal.json'), 'utf8')) as {
+      entries: { tag: string }[];
+    };
+    const at = journal.entries.findIndex((e) =>
+      readFileSync(join(full, `${e.tag}.sql`), 'utf8').includes(`ADD COLUMN "${COLUMN}"`),
+    );
+    if (at < 0) throw new Error(`${COLUMN} migration not found in the journal`);
+    const dir = mkdtempSync(join(tmpdir(), 'polyrouter-mig-cm-'));
+    mkdirSync(join(dir, 'meta'));
+    writeFileSync(
+      join(dir, 'meta', '_journal.json'),
+      JSON.stringify({ ...journal, entries: journal.entries.slice(0, at) }),
+    );
+    for (const e of journal.entries.slice(0, at)) {
+      writeFileSync(join(dir, `${e.tag}.sql`), readFileSync(join(full, `${e.tag}.sql`)));
+    }
+    return dir;
+  }
+
+  const columnsOf = async (table: string): Promise<string[]> =>
+    (
+      await pool.query<{ column_name: string }>(
+        `SELECT column_name FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = $1 ORDER BY column_name`,
+        [table],
+      )
+    ).rows.map((r) => r.column_name);
+  const rowsOf = async (table: string): Promise<Record<string, unknown>[]> =>
+    (await pool.query(`SELECT * FROM ${table} ORDER BY id`)).rows;
+  const appliedCount = async (): Promise<number> =>
+    (await pool.query<{ n: number }>(`SELECT count(*)::int AS n FROM drizzle.__drizzle_migrations`))
+      .rows[0]!.n;
+
+  beforeAll(async () => {
+    admin = new Pool({ connectionString: adminUrl(databaseUrl), max: 1 });
+    try {
+      await admin.query(`CREATE DATABASE ${dbName}`);
+    } catch (error) {
+      throw new Error(`${COMPOSE_HINT}\n(${(error as Error).message})`);
+    }
+    pool = new Pool({ connectionString: adminUrl(databaseUrl, dbName), max: 2 });
+    partialDir = partialFolder();
+  }, 60_000);
+
+  afterAll(async () => {
+    await pool?.end();
+    await admin?.query(`DROP DATABASE IF EXISTS ${dbName} WITH (FORCE)`);
+    await admin?.end();
+    if (partialDir !== undefined) rmSync(partialDir, { recursive: true, force: true });
+  });
+
+  it('existing request rows read null: a nullable integer column, no row or other value touched', async () => {
+    await migrate(drizzle(pool), { migrationsFolder: partialDir });
+    expect(await columnsOf('request_log')).not.toContain(COLUMN); // the "before" world
+
+    await pool.query(
+      `INSERT INTO "user" (id, name, email) VALUES ($1, 'mig', 'mig-committed-ms@example.test')`,
+      [OWNER],
+    );
+    // Legacy rows of every status, including a streamed row whose route record holds a
+    // served leg's `endedMs` (its commit instant, approximately): nothing may be copied
+    // from it (design D4 — never backfilled).
+    const legacy = (
+      id: string,
+      status: string,
+      legs: unknown[] | null,
+      trail: unknown[] | null,
+    ): Promise<unknown> =>
+      pool.query(
+        `INSERT INTO request_log
+           (id, owner_user_id, decision_layer, routing_reason, input_tokens, output_tokens,
+            usage_estimated, cost, billed, duration_ms, status, escalated, attempt_failures,
+            route_legs)
+         VALUES ($1, $2, 'default', 'default tier', 100, 4, false, 0.0004, true, 1240, $3,
+                 false, $4, $5)`,
+        [
+          id,
+          OWNER,
+          status,
+          trail === null ? null : JSON.stringify(trail),
+          legs === null ? null : JSON.stringify(legs),
+        ],
+      );
+    await legacy(
+      'L-ok',
+      'success',
+      [{ leg: 'primary', end: 'served', endedMs: 412, servedIndex: 0 }],
+      null,
+    );
+    await legacy(
+      'L-err',
+      'error',
+      [{ leg: 'primary', end: 'exhausted', endedMs: 900 }],
+      [{ index: 0, providerId: 'p', model: 'm', kind: 'unavailable', dispatched: true }],
+    );
+    await legacy('L-cancel', 'cancelled', null, null);
+    await pool.query(
+      `INSERT INTO request_attempt
+         (id, request_log_id, owner_user_id, attempt_index, input_tokens, output_tokens,
+          cost, status, usage_estimated)
+       VALUES ('A-1', 'L-ok', $1, 0, 10, 4, 0.0003, 'success', false)`,
+      [OWNER],
+    );
+
+    const logColsBefore = await columnsOf('request_log');
+    const attemptColsBefore = await columnsOf('request_attempt');
+    const logBefore = await rowsOf('request_log');
+    const attemptBefore = await rowsOf('request_attempt');
+    expect(logBefore).toHaveLength(3);
+
+    await migrate(drizzle(pool), { migrationsFolder: resolveMigrationsFolder() });
+
+    // integer, nullable, no default: no row is rewritten, and an older writer that never
+    // names the column stores NULL.
+    const col = await pool.query(
+      `SELECT data_type, is_nullable, column_default FROM information_schema.columns
+       WHERE table_name = 'request_log' AND column_name = $1`,
+      [COLUMN],
+    );
+    expect(col.rows).toEqual([{ data_type: 'integer', is_nullable: 'YES', column_default: null }]);
+    expect(await columnsOf('request_log')).toEqual([...logColsBefore, COLUMN].sort());
+
+    // No CHECK reads it and no index carries it (design D3: the writer keeps its shape).
+    const checks = await pool.query<{ def: string }>(
+      `SELECT pg_get_constraintdef(c.oid) AS def FROM pg_constraint c
+       JOIN pg_class t ON t.oid = c.conrelid
+       WHERE t.relname = 'request_log' AND c.contype = 'c'`,
+    );
+    expect(checks.rows.filter((r) => r.def.includes(COLUMN))).toEqual([]);
+    const indexes = await pool.query<{ indexdef: string }>(
+      `SELECT indexdef FROM pg_indexes WHERE tablename = 'request_log'`,
+    );
+    expect(indexes.rows.filter((r) => r.indexdef.includes(COLUMN))).toEqual([]);
+
+    // Every legacy row reads NULL — the served leg's endedMs is NOT copied in — and
+    // every other value is untouched.
+    const logAfter = await rowsOf('request_log');
+    for (const r of logAfter) expect(r[COLUMN]).toBeNull();
+    expect(logAfter.map(({ [COLUMN]: _committed, ...rest }) => rest)).toEqual(logBefore);
+
+    // request_attempt, the spend ledger, is unchanged: same columns, same row.
+    expect(await columnsOf('request_attempt')).toEqual(attemptColsBefore);
+    expect(await rowsOf('request_attempt')).toEqual(attemptBefore);
+
+    // A row written by this version stores its commit time verbatim.
+    await pool.query(
+      `INSERT INTO request_log
+         (id, owner_user_id, decision_layer, routing_reason, input_tokens, output_tokens,
+          usage_estimated, cost, billed, duration_ms, status, committed_ms)
+       VALUES ('L-new', $1, 'default', 'default tier', 1, 1, false, 0, true, 1240, 'success', 412)`,
+      [OWNER],
+    );
+    const fresh = await pool.query(`SELECT committed_ms FROM request_log WHERE id = 'L-new'`);
+    expect(fresh.rows[0]!.committed_ms).toBe(412);
   }, 120_000);
 
   it('a second boot-time migration run is a no-op: no error, nothing reapplied, schema unchanged', async () => {

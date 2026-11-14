@@ -128,6 +128,8 @@ describe('batch poller + settlement — Phase B §4 (add-batch-inference)', () =
       // Every settled item — failed ones included — is written BILLED, explicitly
       // (zero-cost-unbilled-errors): a new row's marker is never NULL.
       expect(r.billed).toBe(true);
+      // record-commit-time: a batch item never streamed, so it records no commit time.
+      expect(r.committedMs).toBeNull();
       expect(r.decisionLayer).toBe('explicit');
       expect(r.routingReason).toMatch(/ batch$/);
       expect(r.agentId).toBe(t.agentId);

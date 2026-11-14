@@ -2,7 +2,7 @@ import type { RouteLeg } from '@polyrouter/shared';
 import { userPrincipal } from '@polyrouter/shared/server';
 import type { LogWriter, RequestLogDraft } from './log-writer';
 import { ProxyMetrics } from '../observability/proxy-metrics';
-import { RequestRecorder, type RecordingContext } from './request-recorder';
+import { RequestRecorder, normalizeCommittedMs, type RecordingContext } from './request-recorder';
 
 function makeRecorder(enqueue = jest.fn()): { recorder: RequestRecorder; enqueue: jest.Mock } {
   const writer = { enqueue } as unknown as LogWriter;
@@ -521,6 +521,116 @@ describe('RequestRecorder', () => {
       expect(escalation!.endedMs).toBe(d.durationMs);
       expect(escalation!.endedMs).toBeLessThan(60_000);
       expect(escalation).toMatchObject({ leg: 'escalation', end: 'served', servedIndex: 0 });
+    });
+  });
+
+  // record-commit-time task 4.2 (design D3): the recorder normalizes the commit time ONCE
+  // — rounded, clamped to [0, duration_ms], non-finite dropped — and drafts that value on
+  // every status its committed walk settles.
+  describe('the commit time (record-commit-time)', () => {
+    const draftOf = (enqueue: jest.Mock): RequestLogDraft =>
+      enqueue.mock.calls[0]![0] as RequestLogDraft;
+
+    it.each(['success', 'fallback', 'error', 'cancelled'] as const)(
+      'drafts the commit time on a %s row',
+      (status) => {
+        const { recorder, enqueue } = makeRecorder();
+        recorder.record(ctx({ committedMs: 7 }), { status, outputChars: 0 });
+        expect(draftOf(enqueue).committedMs).toBe(7);
+      },
+    );
+
+    it('a context without one (buffered, never committed, batch-style) drafts none', () => {
+      const { recorder, enqueue } = makeRecorder();
+      recorder.record(ctx(), { status: 'success', outputChars: 0 });
+      const d = draftOf(enqueue);
+      expect(d.committedMs).toBeUndefined();
+      expect('committedMs' in d).toBe(false);
+    });
+
+    it('clamps a commit time past the row’s duration_ms (a backward clock step) to it', () => {
+      const { recorder, enqueue } = makeRecorder();
+      // startedAt 20ms ago: a commit 60s after the start can only come from a clock that
+      // stepped backwards between the commit's read and the row's.
+      recorder.record(ctx({ committedMs: 60_000 }), { status: 'success', outputChars: 0 });
+      const d = draftOf(enqueue);
+      expect(d.committedMs).toBe(d.durationMs);
+      expect(d.committedMs).toBeLessThan(60_000);
+    });
+
+    it('rounds a fractional value to whole milliseconds and floors a negative one at 0', () => {
+      const { recorder, enqueue } = makeRecorder();
+      recorder.record(ctx({ committedMs: 4.6 }), { status: 'success', outputChars: 0 });
+      recorder.record(ctx({ committedMs: -3 }), { status: 'success', outputChars: 0 });
+      expect((enqueue.mock.calls[0]![0] as RequestLogDraft).committedMs).toBe(5);
+      expect((enqueue.mock.calls[1]![0] as RequestLogDraft).committedMs).toBe(0);
+    });
+
+    it.each([Number.NaN, Number.POSITIVE_INFINITY])('drops a non-finite value (%p)', (v) => {
+      const { recorder, enqueue } = makeRecorder();
+      recorder.record(ctx({ committedMs: v }), { status: 'success', outputChars: 0 });
+      expect('committedMs' in draftOf(enqueue)).toBe(false);
+    });
+
+    // record-commit-time task 5.1 (design D8): the histogram reads the SAME normalized
+    // value the draft carries, observes once per row that has one, and never otherwise.
+    describe('the commit-time histogram', () => {
+      const observed = async (metrics: ProxyMetrics): Promise<{ count: number; sum: number }> => {
+        const text = await metrics.metricsText();
+        const pick = (suffix: string): number => {
+          const line = text
+            .split('\n')
+            .find((l) => l.startsWith(`polyrouter_stream_commit_seconds_${suffix}{`));
+          return line === undefined ? 0 : Number(line.split(' ').pop());
+        };
+        return { count: pick('count'), sum: pick('sum') };
+      };
+      const withMetrics = (): {
+        recorder: RequestRecorder;
+        enqueue: jest.Mock;
+        metrics: ProxyMetrics;
+      } => {
+        const enqueue = jest.fn();
+        const metrics = new ProxyMetrics();
+        const recorder = new RequestRecorder({ enqueue } as unknown as LogWriter, metrics);
+        return { recorder, enqueue, metrics };
+      };
+
+      it.each(['success', 'error'] as const)(
+        'observes the drafted value once on a %s row',
+        async (status) => {
+          const { recorder, enqueue, metrics } = withMetrics();
+          recorder.record(ctx({ committedMs: 7 }), { status, outputChars: 0 });
+          const d = draftOf(enqueue);
+          expect(await observed(metrics)).toEqual({ count: 1, sum: d.committedMs! / 1000 });
+        },
+      );
+
+      it('observes the clamped value, the one the row records', async () => {
+        const { recorder, enqueue, metrics } = withMetrics();
+        recorder.record(ctx({ committedMs: 60_000 }), { status: 'success', outputChars: 0 });
+        const d = draftOf(enqueue);
+        expect(d.committedMs).toBeLessThan(60_000);
+        expect(await observed(metrics)).toEqual({ count: 1, sum: d.committedMs! / 1000 });
+      });
+
+      it('observes nothing for a row without one, or with a dropped non-finite value', async () => {
+        const { recorder, enqueue, metrics } = withMetrics();
+        recorder.record(ctx(), { status: 'success', outputChars: 0 });
+        recorder.record(ctx({ committedMs: Number.NaN }), { status: 'success', outputChars: 0 });
+        for (const call of enqueue.mock.calls) {
+          expect('committedMs' in (call[0] as RequestLogDraft)).toBe(false);
+        }
+        expect(await observed(metrics)).toEqual({ count: 0, sum: 0 });
+      });
+    });
+
+    it('normalizeCommittedMs is the one rule', () => {
+      expect(normalizeCommittedMs(undefined, 100)).toBeUndefined();
+      expect(normalizeCommittedMs(Number.NaN, 100)).toBeUndefined();
+      expect(normalizeCommittedMs(412.4, 1_240)).toBe(412);
+      expect(normalizeCommittedMs(5_000, 1_240)).toBe(1_240);
+      expect(normalizeCommittedMs(-1, 1_240)).toBe(0);
     });
   });
 

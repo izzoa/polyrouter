@@ -344,6 +344,13 @@
       "when": 1794602703524,
       "tag": "0048_productive_scarlet_witch",
       "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1794662087796,
+      "tag": "0049_loud_red_wolf",
+      "breakpoints": true
     }
   ]
 }

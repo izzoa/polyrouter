@@ -395,6 +395,9 @@ export function buildRequestRows(n: number): RequestRow[] {
       // The route record (record-route-legs): null on every default row, so the default corpus
       // draws what it drew before the column; the tests that need a record build it.
       routeLegs: null,
+      // The commit time (record-commit-time): null on every default row, so the default corpus
+      // draws no commit line; the tests that need one set it.
+      committedMs: null,
     });
   }
   return rows;

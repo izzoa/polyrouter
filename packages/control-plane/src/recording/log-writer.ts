@@ -154,6 +154,11 @@ export interface RequestLogDraft {
    * settled the row. The writer REBUILDS it through `routeLegsColumn` before the
    * insert, so a malformed record is narrowed or nulled and never fails the batch. */
   readonly routeLegs?: readonly RouteLeg[];
+  /** The commit time (record-commit-time) — whole ms from the request's start to the
+   * served member's model commit, already normalized and clamped to `durationMs` by the
+   * recorder. Present only on a row whose streamed walk committed. The writer maps it
+   * through `committedMsColumn`, so a malformed value is nulled and never fails the batch. */
+  readonly committedMs?: number;
   /** The originating request's span context (#21 `recording.write` link);
    * absent when tracing is off. Never persisted. */
   readonly spanContext?: SpanContext;
@@ -401,6 +406,24 @@ export function routeLegsColumn(value: unknown): RouteLeg[] | null {
   } catch {
     return null; // a hostile getter or proxy object: the row still inserts, without a record
   }
+}
+
+/** The largest value a Postgres `integer` column holds. */
+const PG_INTEGER_MAX = 2_147_483_647;
+
+/**
+ * The `committed_ms` column value for a draft's commit time (record-commit-time design
+ * D3): a finite, non-negative integer within the `integer` range, otherwise null. The
+ * recorder already normalizes the value it drafts (and observes in the histogram), so
+ * that value always passes; this is defence in depth that can never fail an insert.
+ */
+export function committedMsColumn(value: unknown): number | null {
+  return typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= 0 &&
+    value <= PG_INTEGER_MAX
+    ? value
+    : null;
 }
 
 /** Reject after `ms` if `op` hasn't settled. The underlying DB call keeps running
@@ -722,6 +745,7 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
       workloadRevision: d.workloadRevision ?? null,
       attemptFailures: d.attemptFailures !== undefined ? [...d.attemptFailures] : null,
       routeLegs: routeLegsColumn(d.routeLegs),
+      committedMs: committedMsColumn(d.committedMs),
       ...errorColumns(d),
     };
   }

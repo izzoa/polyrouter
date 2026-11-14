@@ -9,6 +9,7 @@ import type { PricingService } from '../pricing/pricing.service';
 import {
   LogWriter,
   routeLegsColumn,
+  committedMsColumn,
   type LogWriterConfig,
   type RequestAttemptDraft,
   type RequestLogDraft,
@@ -962,5 +963,31 @@ describe('routeLegsColumn — the writer rebuilds the route record', () => {
       log.mockRestore();
       error.mockRestore();
     }
+  });
+});
+
+// record-commit-time task 4.2 (design D3): the writer's defence-in-depth sanitizer — a
+// finite non-negative integer within the Postgres `integer` range passes, anything else
+// is nulled, and it never throws (an insert can never fail on telemetry).
+describe('committedMsColumn — the writer keeps the commit time an integer', () => {
+  it.each([0, 412, 2_147_483_647])('keeps %p', (v) => {
+    expect(committedMsColumn(v)).toBe(v);
+  });
+
+  it.each([-1, Number.NaN, Number.POSITIVE_INFINITY, 1.5, '412', null, undefined, 2 ** 31, {}])(
+    'nulls %p',
+    (v) => {
+      expect(committedMsColumn(v)).toBeNull();
+    },
+  );
+
+  it('maps a draft’s commit time onto the row, and null when the draft has none', async () => {
+    const { writer, insertMany } = makeWriter({});
+    writer.enqueue(draft({ committedMs: 412 }));
+    writer.enqueue(draft({ id: randomUUID() }));
+    writer.enqueue(draft({ id: randomUUID(), committedMs: -5 }));
+    await writer.flush();
+    const [, rows] = insertMany.mock.calls[0] as [Principal, { committedMs: number | null }[]];
+    expect(rows.map((r) => r.committedMs)).toEqual([412, null, null]);
   });
 });

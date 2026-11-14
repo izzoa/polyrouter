@@ -3146,7 +3146,7 @@ test.describe('the route trace in the inspector (add-route-trace-inspector 4.6)'
     });
   }
 
-  // record-route-legs (task 7.4; design Risks "Trace length"): the fixture's fifth to seventh rows
+  // record-route-legs (task 7.4; design Risks "Trace length"): the fixture's fifth to eighth rows
   // carry a route record: an escalation with a deferral on each leg and two clamps, a cascade
   // whose cheap leg a `policy_block` stopped, and an escalation cancelled while its member was in
   // flight. In every presentation, each node's label wraps to at most two 16px lines, a clamp line
@@ -3163,7 +3163,7 @@ test.describe('the route trace in the inspector (add-route-trace-inspector 4.6)'
         'llama-3.1-8b-instant · no reply by the cheap deadline · output capped at 4,096',
         'escalation · cheap deadline · at 30.02s',
         'deferred · gpt-4o-mini · lacks vision',
-        'XiaomiMiMo · claude-sonnet-4-5-20250929 · served · 38.89s · output capped at 16,384 of 100,000 asked',
+        'XiaomiMiMo · claude-sonnet-4-5-20250929 · served · 38.89s · output capped at 16,384 of 100,000 asked · committed at 38.09s',
       ],
       time: 'at 30.02s',
     },
@@ -3191,6 +3191,17 @@ test.describe('the route trace in the inspector (add-route-trace-inspector 4.6)'
         'cancelled by client · 4.20s',
       ],
       time: 'at 2.45s',
+    },
+    // record-commit-time (task 7.5): a stream that committed and then failed — the unlit
+    // outcome's commit line is one 16px line too.
+    {
+      nth: 7,
+      texts: [
+        'Lobechat',
+        'router · explicit',
+        'XiaomiMiMo · claude-sonnet-4-5-20250929 · failed · 1.20s · committed at 412ms',
+      ],
+      time: null,
     },
   ] as const;
   for (const vp of [

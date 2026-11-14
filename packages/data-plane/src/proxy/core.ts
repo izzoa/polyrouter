@@ -93,13 +93,20 @@ interface CommittedStream {
   readonly outcome: Promise<StreamOutcome>;
 }
 
+/** A stream an UPSTREAM committed (record-commit-time design D1): the shared shape plus
+ * `committedAt`, the wall-clock instant (epoch ms, `Date.now()`) its first successful
+ * event passed the commit gate — invariant 3's model commit. A replayed buffered answer
+ * (`replayBufferedStream`) is a plain `CommittedStream` and can never carry one: no
+ * upstream committed there. */
+export type UpstreamCommittedStream = CommittedStream & { readonly committedAt: number };
+
 /** Single-attempt result — the error is the RAW thrown value (or a classified
  * ProviderError for first-event/no-output cases) so the chain can decide
  * fallback-eligibility before mapping for the client. */
-type AttemptResult = { readonly kind: 'error'; readonly error: unknown } | CommittedStream;
+type AttemptResult = { readonly kind: 'error'; readonly error: unknown } | UpstreamCommittedStream;
 
 export type OpenStreamResult =
-  { readonly kind: 'error'; readonly error: ProviderError } | CommittedStream;
+  { readonly kind: 'error'; readonly error: ProviderError } | UpstreamCommittedStream;
 
 const MID_STREAM_MESSAGE = 'the upstream model failed mid-stream';
 
@@ -311,6 +318,11 @@ export async function openAttemptStream(
     await cleanup();
     return { kind: 'error', error: fromErrorEvent(first.value) };
   }
+  // The model commit (invariant 3; record-commit-time design D1): the first successful
+  // event just passed the gate. Read the clock HERE, before any accumulation or frame
+  // work and before control returns to the walker — never at a keepalive, at response
+  // headers, at upstream liveness bytes, or when the client's first frame is written.
+  const committedAt = Date.now();
 
   const acc: Accumulator = {
     usage: {},
@@ -355,7 +367,7 @@ export async function openAttemptStream(
   // A consumer `return()` before the generator settles is the client going away — a
   // caller abort, not a provider fault (A-3).
   const frames = wrapWithSettle(inner, cleanup, () => settle('error', true));
-  return { kind: 'stream', frames, outcome };
+  return { kind: 'stream', frames, outcome, committedAt };
 }
 
 /** Wrap the frame generator so a consumer `return()`/`throw()` — including one
@@ -699,7 +711,7 @@ export type StreamChainResult =
       /** See `BufferedChainResult.stopped`. */
       readonly stopped?: WalkStopper;
     }
-  | (CommittedStream & {
+  | (UpstreamCommittedStream & {
       readonly servedIndex: number;
       readonly failures: readonly AttemptFailure[];
     });
@@ -1070,6 +1082,8 @@ export async function openStreamChain(
         kind: 'stream',
         frames: result.frames,
         outcome: result.outcome,
+        // The served member's commit instant, read at its gate (record-commit-time D1).
+        committedAt: result.committedAt,
         servedIndex: i,
         failures,
       };

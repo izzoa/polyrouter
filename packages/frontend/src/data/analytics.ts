@@ -481,6 +481,12 @@ export interface RouteTraceOutcomeNode extends RouteTraceNodeBase {
    * of <ask> asked`, or `output capped at <to>` when the leg recorded no ask. Figures in the
    * integer grouping. Null on an unlit outcome, and whenever the record lists none. */
   readonly clamp: { readonly to: string; readonly ask: string | null } | null;
+  /** The recorded commit time in the latency format (record-commit-time design D5/D6): its own
+   * line, `committed at <time>`, after any clamp line and above any kept-answer line, on a lit
+   * outcome and on an unlit one whose stream committed before it failed or lost its client.
+   * Read only from the row's `committedMs`, never from the latency, keepalives, the early
+   * response commit or a leg's `endedMs`. Null when the row records none. */
+  readonly committed: string | null;
 }
 
 export type RouteTraceNode =
@@ -555,6 +561,10 @@ export const CAUSE_NOT_DELIVERED = 'cheap answer not delivered';
 export const CAUSE_CHEAP_STOPPED = 'cheap leg stopped';
 /** The word before the cheap leg's recorded end time on the escalation row: `· at <time>`. */
 export const ENDED_AT = 'at';
+/** The commit line's opening words (record-commit-time design D5): `committed at <time>`, the
+ * recorded instant the proxy committed to the member that served the stream. It names the commit,
+ * never a token: on some upstreams the commit event precedes the first text. */
+export const COMMITTED_AT = 'committed at';
 
 const joinDot = (parts: readonly (string | null)[]): string =>
   parts.filter((p): p is string => p !== null).join(' · ');
@@ -900,9 +910,17 @@ function servedClamp(final: RouteLeg | undefined): RouteTraceOutcomeNode['clamp'
  * member, when sent, is the leg's own last node. A final leg that ended `served` (a failure or
  * cancel after commit) names the recorded provider and model, the committed member's. Any other
  * end (`exhausted` above all) keeps the rule a row without a record reads. A lit outcome states
- * its served member's recorded clamp on its own line. */
+ * its served member's recorded clamp on its own line. Any outcome whose row records a commit time
+ * states it on its own line (record-commit-time). */
 function outcomeNode(r: RequestRow): RouteTraceOutcomeNode {
   const latency = requestLatency(r);
+  // record-commit-time D6: the recorded commit time, on every outcome that has one — a row with
+  // none (buffered, a replayed cheap answer, never committed, a batch item, or recorded before
+  // the column) draws no line and never a zero.
+  const commitTime =
+    typeof r.committedMs === 'number' && Number.isFinite(r.committedMs)
+      ? fmtLatency(r.committedMs)
+      : null;
   const recordedModel = r.modelLabel ?? r.modelId;
   const recordedProvider = r.providerLabel ?? r.providerId;
   const node = (
@@ -921,12 +939,14 @@ function outcomeNode(r: RequestRow): RouteTraceOutcomeNode {
     latency,
     keptQuality: kept,
     clamp,
+    committed: commitTime,
     text: joinDot([
       provider,
       model,
       result,
       latency,
       clamp === null ? null : clampText(clamp.to, clamp.ask),
+      commitTime === null ? null : `${COMMITTED_AT} ${commitTime}`,
       ...(kept === null ? [] : [QUALITY_GATE_PASSED, kept]),
     ]),
   });
@@ -1057,8 +1077,9 @@ function buildRouteTrace(r: RequestRow, attemptParts: readonly FigurePart[]): Ro
  * one node per recorded attempt in stored walk order (with the superseded cascade call between
  * the legs), the sent member its route record names as stopping a walk, and one outcome node.
  * Built from this row alone: never from a chain member the request did not walk (a recorded
- * deferral names one in words, on the spine), from the routing reason, from current routing
- * configuration, or from a commit time, which is not recorded. */
+ * deferral names one in words, on the spine), from the routing reason, or from current routing
+ * configuration. A commit time is drawn only from the recorded `committedMs` (record-commit-time),
+ * never derived from the latency or a leg's `endedMs`. */
 export function toRouteTrace(r: RequestRow): RouteTraceNode[] {
   return buildRouteTrace(r, attemptCostParts(r));
 }

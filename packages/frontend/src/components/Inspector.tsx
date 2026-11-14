@@ -12,6 +12,7 @@ import {
 import { useInspectorSurface } from '../a11y';
 import {
   ASKED,
+  COMMITTED_AT,
   DEFERRED,
   ENDED_AT,
   OUTPUT_CAP,
@@ -202,6 +203,20 @@ function TraceNodeText(props: { node: RouteTraceNode }): JSX.Element {
                       {fig(c.ask)} {ASKED}
                     </>
                   )}
+                </span>
+              </>
+            )}
+          </Show>
+          {/* The recorded commit time (record-commit-time design D6): its own line in the
+              Caption-size Ink 3 meta treatment, never the accent or red, after any clamp and
+              before any kept verdict, on a lit outcome or an unlit one whose stream committed
+              before it failed or lost its client. Read only from the recorded field. */}
+          <Show when={n.committed} keyed>
+            {(t) => (
+              <>
+                <span class="sr-only">{SEP}</span>
+                <span class="rt-meta rt-sub" data-testid="rt-commit">
+                  {COMMITTED_AT} {fig(t)}
                 </span>
               </>
             )}
@@ -566,8 +581,9 @@ export function Inspector() {
 
                 {/* The route trace (add-route-trace-inspector design D1–D6; DESIGN.md Route
                     Trace): the recorded walk as an ordered list, read from this row alone —
-                    never a member it did not walk, never today's routing config, and no commit
-                    marker (commit time is not recorded). Each node states its outcome in text;
+                    never a member it did not walk, never today's routing config, and a commit
+                    line only from the recorded commit time (record-commit-time). Each node
+                    states its outcome in text;
                     its spine, branch and node mark are `aria-hidden` decoration, drawn by the
                     `rt-*` rules and never animated. The served branch is the inspector's one
                     focal series (the Indigo Budget), so only its node is a focal root. */}

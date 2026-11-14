@@ -879,6 +879,10 @@ if (params.get('trace') === 'cascade') {
       agentLabel: 'Lobechat',
       providerLabel: 'XiaomiMiMo',
       status: 'success',
+      // record-commit-time (design D7): its streamed escalation committed at 38.09s, after the
+      // cheap leg's end and under the latency, so the served node carries a clamp line AND a
+      // commit line — the longest outcome the trace can draw.
+      committedMs: 38_090,
       decisionLayer: 'cascade',
       // A short reason: this row measures the trace. (A real reason's capacity note, such as
       // `cheap[output_cap_deferred gemma2-9b-it(8192<100000)]`, is one unbroken run the Decision
@@ -1021,6 +1025,34 @@ if (params.get('trace') === 'cascade') {
           clamps: [{ index: 0, model: 'claude-3-5-sonnet-latest', to: 8_192 }],
         },
       ],
+    },
+    // The eighth row (record-commit-time design D7): a stream that committed at 412ms and then
+    // failed, so its unlit outcome names the committed member on the long model id and carries
+    // the commit line.
+    {
+      ...head,
+      id: 'trace-committed-failed',
+      createdAt: new Date(Date.parse(head.createdAt) + 500).toISOString(),
+      agentLabel: 'Lobechat',
+      providerLabel: 'XiaomiMiMo',
+      modelLabel: LONG_MODEL,
+      status: 'error',
+      decisionLayer: 'explicit',
+      routingReason: `explicit ${LONG_MODEL}`,
+      tierAssigned: null,
+      escalated: false,
+      escalationSource: null,
+      qualitySignal: null,
+      attemptCostMicros: 0,
+      durationMs: 1_200,
+      errorKind: 'unavailable',
+      errorStatus: null,
+      errorMessage: null,
+      errorRequestId: null,
+      errorMarkers: null,
+      attemptFailures: null,
+      routeLegs: [{ leg: 'primary', end: 'served', endedMs: 413, servedIndex: 0 }],
+      committedMs: 412,
     },
     ...client.requestRows,
   ];

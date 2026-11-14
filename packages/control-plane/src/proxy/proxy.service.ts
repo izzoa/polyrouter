@@ -543,7 +543,13 @@ export class ProxyService {
       if (!result.callerAborted) this.notifyFailed(p.principal);
       throw providerErrorToProxy(result.error);
     }
-    const ctx = this.servedContext(p, result, endedMs);
+    // record-commit-time D2: set on the context built right after the walker returned —
+    // before any frame is pulled — so a client that leaves as the first event arrives
+    // (proxy-http's late-stream release) still settles a `cancelled` row that carries it.
+    const ctx: RecordingContext = {
+      ...this.servedContext(p, result, endedMs),
+      committedMs: commitOffsetMs(result.committedAt, p.startedAt),
+    };
     const fellBack = result.failures.length > 0;
     void result.outcome.then((o) => {
       this.recorder.record(ctx, {
@@ -1130,21 +1136,26 @@ export class ProxyService {
       if (!result.callerAborted) this.notifyFailed(p.principal); // client hang-up ≠ provider fault (A-3)
       throw providerErrorToProxy(result.error);
     }
-    const ctx = this.servedFrom(
-      p,
-      c.escalation.meta,
-      result.servedIndex,
-      withCapacity(
-        escalatedReason(c.escalation.meta, result.servedIndex),
-        cheapCapacity,
-        capacitySuffix('esc', p.capacity?.escalation, result.servedIndex, result.failures),
+    const ctx: RecordingContext = {
+      ...this.servedFrom(
+        p,
+        c.escalation.meta,
+        result.servedIndex,
+        withCapacity(
+          escalatedReason(c.escalation.meta, result.servedIndex),
+          cheapCapacity,
+          capacitySuffix('esc', p.capacity?.escalation, result.servedIndex, result.failures),
+        ),
+        score,
+        result.failures,
+        attemptTrailEntries(trailLegs, null),
+        c.scope,
+        routeLegs,
       ),
-      score,
-      result.failures,
-      attemptTrailEntries(trailLegs, null),
-      c.scope,
-      routeLegs,
-    );
+      // record-commit-time D2: the escalation leg's commit, from the request's start
+      // (so it includes the whole cheap leg), set before any frame is pulled.
+      committedMs: commitOffsetMs(result.committedAt, p.startedAt),
+    };
     const fellBack = result.failures.length > 0;
     void result.outcome.then((o) => {
       const requestId = this.recorder.record(ctx, {
@@ -2497,6 +2508,15 @@ export interface RouteLegFacts {
  * immediately after its walker returns. */
 export function legEndedMs(startedAt: number): number {
   return Math.max(0, Math.round(Date.now() - startedAt));
+}
+
+/** The commit time (record-commit-time design D2): integer ms from the request's start
+ * (`p.startedAt`, the origin of `duration_ms`) to the instant the served member's first
+ * successful upstream event passed the commit gate (`committedAt`, read in the data
+ * plane at that gate — never a keepalive, the early response commit, response headers
+ * or a leg's `endedMs`). Clamped to >= 0 here; the recorder clamps it to `duration_ms`. */
+export function commitOffsetMs(committedAt: number, startedAt: number): number {
+  return Math.max(0, Math.round(committedAt - startedAt));
 }
 
 /** The route record for a request's executed legs, in execution order

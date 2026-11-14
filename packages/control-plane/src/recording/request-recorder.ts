@@ -128,6 +128,14 @@ export interface RecordingContext {
    * builders (`routeLegsOf`). Persisted on EVERY status when non-empty, `cancelled`
    * included; absent on rows no walk produced (batch settlement). */
   readonly routeLegs?: readonly RouteLeg[];
+  /** The commit time (record-commit-time design D2/D3): ms from `startedAt` to the
+   * instant the served member's first successful upstream event passed the commit
+   * gate. Set ONLY by the two streamed sites whose walk committed (the primary stream
+   * and the streamed escalation) — never by a buffered builder, a pre-commit failure,
+   * the cascade replay or batch settlement, so every other row records null. The
+   * recorder normalizes it once (`normalizeCommittedMs`) for both the draft and the
+   * `polyrouter_stream_commit_seconds` histogram. */
+  readonly committedMs?: number;
   /** The L2-ambiguous request's IN-MEMORY embedding + its decision-time learning
    * gate (add-semantic-learning D1/D3). Set ONLY by the proxy's `servedFrom()`
    * (cascade-settle) — NEVER by any other context builder — and consumed ONLY by
@@ -234,6 +242,9 @@ export class RequestRecorder {
     });
     try {
       const durationMs = Math.max(0, Date.now() - ctx.startedAt);
+      // record-commit-time D3: ONE normalized value feeds both the draft and the
+      // histogram, so the row and the metric can never disagree.
+      const committedMs = normalizeCommittedMs(ctx.committedMs, durationMs);
       const usage = this.usageOf(ctx, outcome);
       // THE not-billed decision site (zero-cost-unbilled-errors D2): one place, every
       // path, like the error-detail and body-capture gates. A success/fallback row —
@@ -319,6 +330,9 @@ export class RequestRecorder {
         ...(ctx.routeLegs !== undefined && ctx.routeLegs.length > 0
           ? { routeLegs: clampEndedMs(ctx.routeLegs, durationMs) }
           : {}),
+        // The commit time rides EVERY status its committed walk settles (record-commit-
+        // time D2): a stream that failed or lost its client after commit keeps it.
+        ...(committedMs !== undefined ? { committedMs } : {}),
         ...spanContextOf(),
       };
       // THE capture decision site (add-body-capture): one place, every path.
@@ -351,6 +365,11 @@ export class RequestRecorder {
         outcome.status,
         durationMs / 1000,
       );
+      // record-commit-time D8: the SAME normalized value the draft carries, so the
+      // histogram and the row can never disagree; a row without one observes nothing.
+      if (committedMs !== undefined) {
+        this.metrics.recordStreamCommit(ctx.protocol, ctx.decisionLayer, committedMs / 1000);
+      }
       this.metrics.recordTokens(
         ctx.providerName,
         ctx.model.externalModelId,
@@ -467,6 +486,17 @@ function bodiesFor(ctx: RecordingContext, outcome: RecordOutcome): CapturedBodyD
  * across a backward wall-clock step between the two reads. */
 function clampEndedMs(legs: readonly RouteLeg[], durationMs: number): RouteLeg[] {
   return legs.map((l) => (l.endedMs > durationMs ? { ...l, endedMs: durationMs } : l));
+}
+
+/** The commit time a row records (record-commit-time design D3): rounded to whole ms
+ * and clamped to `[0, durationMs]` — the backward-clock-step guard `clampEndedMs`
+ * applies — or `undefined` when the context carries none or a non-finite value. */
+export function normalizeCommittedMs(
+  committedMs: number | undefined,
+  durationMs: number,
+): number | undefined {
+  if (committedMs === undefined || !Number.isFinite(committedMs)) return undefined;
+  return Math.min(Math.max(0, Math.round(committedMs)), durationMs);
 }
 
 function pricingOf(ctx: RecordingContext): DraftPricing {

@@ -17,6 +17,7 @@ import {
   DEADLINE_LABEL,
   DEADLINE_LABEL_CHEAP,
   DEFERRED,
+  COMMITTED_AT,
   ENDED_AT,
   ESCALATION_LEG,
   escalationCause,
@@ -147,6 +148,7 @@ const ROW: RequestRow = {
   errorMarkers: null,
   attemptFailures: null,
   routeLegs: null,
+  committedMs: null,
   hasBodies: false,
 };
 
@@ -1238,6 +1240,7 @@ describe('the route trace lights only a served outcome (add-route-trace-inspecto
         latency: '1.24s',
         keptQuality: null,
         clamp: null,
+        committed: null,
         text: 'P · M · served · 1.24s',
       });
       // Exactly one outcome node, and it is the only lit node.
@@ -1313,6 +1316,7 @@ describe('the route trace lights only a served outcome (add-route-trace-inspecto
       latency: '800ms',
       keptQuality: null,
       clamp: null,
+      committed: null,
       text: 'OpenAI · GPT · cancelled by client · 800ms',
     });
   });
@@ -2186,14 +2190,16 @@ describe('the trace caption (add-route-trace-inspector 3.3)', () => {
   });
 });
 
-/** dashboard-analytics "The route trace draws no commit marker until commit time is
- * recorded" (task 3.4). */
-describe('no commit marker (add-route-trace-inspector 3.4)', () => {
+/** dashboard-analytics "The route trace reads the commit time only from the recorded field"
+ * (record-commit-time task 7.2; it replaced add-route-trace-inspector 3.4's "no commit marker"):
+ * with `committedMs` null, nothing — not the latency, a keepalive, or a streamed leg's recorded
+ * `endedMs` (its commit instant, approximately) — becomes a commit line. */
+describe('the commit time is read only from the recorded field (record-commit-time)', () => {
   /** A time figure in either latency format: `412ms`, `1.24s`, `2m 05s`, `45s`, `12m`,
    * `3h 1m`. */
   const TIME = /\d+h \d+m|\d+m \d{2}s|\d+(?:\.\d+)?(?:ms|s|m)\b/g;
 
-  it('over every status, no node mentions a first token or a commit, and only the outcome and a recorded cheap end carry a time', () => {
+  it('with no recorded commit time, over every status no node mentions a first token or a commit, and only the outcome and a recorded cheap end carry a time', () => {
     const statuses: RequestStatus[] = ['success', 'fallback', 'error', 'cancelled', 'throttled'];
     const escalatedCascade: Partial<RequestRow> = {
       decisionLayer: 'cascade',
@@ -2290,6 +2296,115 @@ describe('no commit marker (add-route-trace-inspector 3.4)', () => {
         checked += 1;
       }
     expect(checked).toBe(statuses.length * shapes.length);
+  });
+
+  /** dashboard-analytics "The route trace states when a stream committed". */
+  const committedOf = (over: Partial<RequestRow>): RouteTraceOutcomeNode =>
+    outcomeOf(toRouteTrace({ ...ROW, ...over }));
+
+  it('a served stream states its recorded commit time on its own line, after the latency', () => {
+    const o = committedOf({ status: 'success', durationMs: 1_240, committedMs: 412 });
+    expect(o.emphasis).toBe('lit');
+    expect(o.latency).toBe('1.24s');
+    expect(o.committed).toBe('412ms');
+    expect(o.text.endsWith(`served · 1.24s · ${COMMITTED_AT} 412ms`)).toBe(true);
+    // The latency is still the node's first time.
+    expect(o.text.match(TIME)).toEqual(['1.24s', '412ms']);
+  });
+
+  it('a clamped stream states its cap above its commit', () => {
+    const o = committedOf({
+      status: 'success',
+      committedMs: 412,
+      routeLegs: [
+        {
+          leg: 'primary',
+          end: 'served',
+          endedMs: 413,
+          servedIndex: 0,
+          ask: 100_000,
+          clamps: [{ index: 0, model: 'gpt-4o', to: 4_096 }],
+        },
+      ],
+    });
+    expect(o.clamp).not.toBeNull();
+    expect(o.text).toContain(`${OUTPUT_CAPPED_AT} 4,096 of 100,000 asked · ${COMMITTED_AT} 412ms`);
+  });
+
+  it('a failure or cancel after commit states the commit on the unlit outcome, with no cap', () => {
+    const committedLeg = [
+      {
+        leg: 'primary' as const,
+        end: 'served' as const,
+        endedMs: 413,
+        servedIndex: 0,
+        ask: 100_000,
+        clamps: [{ index: 0, model: 'gpt-4o', to: 4_096 }],
+      },
+    ];
+    for (const [status, result] of [
+      ['error', 'failed'],
+      ['cancelled', 'cancelled by client'],
+    ] as const) {
+      const o = committedOf({
+        status,
+        durationMs: 1_200,
+        committedMs: 412,
+        routeLegs: committedLeg,
+      });
+      expect(o.emphasis).toBe('neutral');
+      expect(o.model).not.toBeNull(); // the committed member, as RT-3 names it
+      expect(o.clamp).toBeNull(); // an unlit outcome never carries a clamp
+      expect(o.committed).toBe('412ms');
+      expect(o.text.endsWith(`${result} · 1.20s · ${COMMITTED_AT} 412ms`)).toBe(true);
+    }
+  });
+
+  it('an escalated stream reads as one timeline', () => {
+    const r: RequestRow = {
+      ...ROW,
+      status: 'success',
+      decisionLayer: 'cascade',
+      escalated: true,
+      escalationSource: 'cheap_error',
+      durationMs: 45_100,
+      committedMs: 30_520,
+      routeLegs: [
+        { leg: 'cheap', end: 'deadline', endedMs: 30_020 },
+        { leg: 'escalation', end: 'served', endedMs: 30_521, servedIndex: 0 },
+      ],
+    };
+    const trace = toRouteTrace(r);
+    const escalation = trace.find((n) => n.kind === 'leg' && n.leg === 'escalation')!;
+    expect(escalation.text).toBe('escalation · cheap deadline · at 30.02s');
+    const o = outcomeOf(trace);
+    expect(o.text.endsWith(`served · 45.10s · ${COMMITTED_AT} 30.52s`)).toBe(true);
+  });
+
+  it('a row with no commit time draws none, and never a zero', () => {
+    const shapes: Partial<RequestRow>[] = [
+      { status: 'success' }, // buffered
+      {
+        status: 'success',
+        decisionLayer: 'cascade',
+        qualitySignal: 0.87,
+        routeLegs: [{ leg: 'cheap', end: 'served', endedMs: 640, servedIndex: 0 }],
+      }, // a kept cheap answer
+      { status: 'error' }, // failed before commit
+      { status: 'cancelled' }, // left before commit
+      { status: 'success', batchId: 'batch_01', priceMode: 'batch', durationMs: 7_412_300 },
+    ];
+    for (const shape of shapes) {
+      for (const committedMs of [null, undefined]) {
+        const o = committedOf({ ...shape, committedMs: committedMs as number | null });
+        expect(o.committed).toBeNull();
+        expect(o.text).not.toMatch(/commit|\b0ms\b/);
+      }
+    }
+  });
+
+  it('a recorded commit of 0ms is a measurement, not a gap: it is stated', () => {
+    expect(committedOf({ status: 'success', committedMs: 0 }).committed).toBe('0ms');
   });
 });
 
@@ -2763,6 +2878,24 @@ describe('the route record: contract strings (record-route-legs design D7)', () 
       CAUSE_CHEAP_STOPPED,
     ])
       expect(section, quoted).toContain(`\`${quoted}`);
+  });
+});
+
+/** record-commit-time design D5: the commit line's contract string, quoted by DESIGN.md's Route
+ * Trace section, which no longer reserves an unrecorded marker. */
+describe('the commit line: contract string (record-commit-time)', () => {
+  it('exports the string DESIGN.md quotes', () => {
+    expect(COMMITTED_AT).toBe('committed at');
+  });
+
+  it("DESIGN.md's Route Trace section quotes it, and reserves no unrecorded marker", () => {
+    const design = readFileSync(join(import.meta.dirname, '../../../../DESIGN.md'), 'utf8');
+    const section = /### Route Trace \(signature\)\n([\s\S]*?)\n### /.exec(design)?.[1] ?? '';
+    expect(section, 'the Route Trace section').not.toBe('');
+    expect(section).toContain(`\`${COMMITTED_AT} <t>\``);
+    expect(section).not.toContain('committed at first token');
+    expect(section).not.toContain('not recorded yet');
+    expect(design).not.toContain('First-token commit marker on the served node');
   });
 });
 

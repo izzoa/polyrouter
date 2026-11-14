@@ -969,6 +969,13 @@ export interface RequestRow {
    * and on every row recorded before the column; the route trace then draws what it drew
    * before. */
   routeLegs: RouteLeg[] | null;
+  /** The commit time (record-commit-time): whole milliseconds from the request's start to the
+   * instant the proxy committed to the member that served it — that member's first successful
+   * upstream event — verbatim from `request_log.committed_ms`, never past `durationMs`. Present on
+   * every row whose streamed walk committed, whatever its status (a stream that failed or lost its
+   * client after commit keeps it); null on buffered rows, a replayed cheap answer, a stream that
+   * never committed, batch items and every row recorded before the column. */
+  committedMs: number | null;
   /** add-body-capture: this request has stored bodies (content NEVER rides the
    * listing — the inspector fetches lazily via `requestBodies`). */
   hasBodies: boolean;

@@ -99,6 +99,37 @@ describe('ProxyMetrics (#21)', () => {
     );
   });
 
+  // record-commit-time design D8 / observability "A commit-time histogram shows how long
+  // streamed requests waited for their model".
+  it('exposes the commit-time histogram on request-level labels and LLM-scale buckets', async () => {
+    const m = new ProxyMetrics();
+    m.recordStreamCommit('openai', 'cascade', 30.52); // an escalated stream's commit
+    m.recordStreamCommit('openai', 'explicit', 0.412);
+    const text = await m.metricsText();
+    expect(text).toContain(
+      'polyrouter_stream_commit_seconds_bucket{le="30",protocol="openai",decision_layer="cascade"} 0',
+    );
+    expect(text).toContain(
+      'polyrouter_stream_commit_seconds_bucket{le="60",protocol="openai",decision_layer="cascade"} 1',
+    );
+    expect(text).toContain(
+      'polyrouter_stream_commit_seconds_count{protocol="openai",decision_layer="explicit"} 1',
+    );
+    expect(text).toContain(
+      'polyrouter_stream_commit_seconds_sum{protocol="openai",decision_layer="explicit"} 0.412',
+    );
+    // Only the two request-level labels: no provider, model, tenant or request id.
+    const series = text.split('\n').filter((l) => l.startsWith('polyrouter_stream_commit_seconds'));
+    expect(series.length).toBeGreaterThan(0);
+    for (const line of series) expect(line).not.toMatch(/provider=|model=|agent|request_id|owner/);
+  });
+
+  it('a commit-time observation that throws is swallowed', () => {
+    const m = new ProxyMetrics();
+    expect(() => m.recordStreamCommit('openai', 'explicit', -1)).not.toThrow();
+    expect(() => m.recordStreamCommit('openai', 'explicit', Number.NaN)).not.toThrow();
+  });
+
   it('two instances own independent registries (no cross-app collision)', async () => {
     const a = new ProxyMetrics();
     const b = new ProxyMetrics();

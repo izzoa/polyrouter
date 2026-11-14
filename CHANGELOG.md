@@ -15,6 +15,10 @@ heading is started.
 
 ## [Unreleased]
 
+### Added
+
+- **A streamed request records when its model committed, and the Route Trace states it.** A new `committedMs` field (migration 0049, column `request_log.committed_ms`, not backfilled) records the milliseconds from the request's start to the proxy's commit to the member that served it, that member's first successful upstream event. The Route Trace draws it as `committed at 412ms` on a served request and on one that failed or was cancelled after commit. A new Prometheus histogram, `polyrouter_stream_commit_seconds{protocol, decision_layer}`, observes the same value. It stays null on buffered requests, a replayed cheap answer, a stream that never committed and batch items. Routing, status, cost and billing are unchanged.
+
 ## [0.33.0] — 2026-11-14
 
 [Release](https://github.com/izzoa/polyrouter/releases/tag/v0.33.0) ·

@@ -510,6 +510,9 @@ describe('stream lifecycle e2e (drain / disconnect / backpressure)', () => {
     const call = a1.recorded.mock.calls[a1.recorded.mock.calls.length - 1]!;
     expect(call[1].status).toBe('cancelled');
     expect(a1.onRequestFailed.mock.calls.length).toBe(notifiedBefore); // no spike notify
+    // record-commit-time: the model committed before the client left — the cancelled
+    // row keeps its commit time.
+    expect((call[0] as { committedMs?: number }).committedMs).toEqual(expect.any(Number));
 
     // Threshold-1 breaker: any mis-recorded trip would have opened it.
     const followUp = await postChat(a1.port, key, 'gpt-4o');
@@ -611,6 +614,7 @@ describe('stream lifecycle e2e (drain / disconnect / backpressure)', () => {
     }, 30_000);
 
     it('a slow first event commits the response early (200 + comments), then streams the content', async () => {
+      k.recorded.mockClear();
       const c = await openStreamTracked(k.port, key, 'oai-slowhead'); // 1s pre-headers
       expect(c.res.statusCode).toBe(200);
       const body = await withTimeout(c.done, 10_000, 'slowhead stream');
@@ -618,6 +622,36 @@ describe('stream lifecycle e2e (drain / disconnect / backpressure)', () => {
       expect(count(beforeContent, ': keep-alive\n\n')).toBeGreaterThanOrEqual(2);
       expect(body).toContain('Hello');
       expect(body.endsWith('data: [DONE]\n\n')).toBe(true);
+      // record-commit-time (request-logging "The commit time is read at the commit, never
+      // inferred"): the preamble went out at 250ms, the model committed at its first
+      // event after the 1s pre-headers delay — the recorded commit is the latter.
+      const deadline = Date.now() + 5_000;
+      while (k.recorded.mock.calls.length === 0 && Date.now() < deadline) await sleep(25);
+      const [ctx, outcome] = k.recorded.mock.calls[0]! as [
+        { committedMs?: number },
+        { status: string },
+      ];
+      expect(outcome.status).toBe('success');
+      expect(ctx.committedMs).toBeGreaterThanOrEqual(1_000);
+    }, 30_000);
+
+    // record-commit-time (request-logging "A row with no upstream commit records no
+    // commit time"): a client that leaves after the preamble but before the first event
+    // aborts the walk's own signal, so the upstream is cancelled before it can commit —
+    // the `cancelled` row records no commit time. It runs before the slowfail case, whose
+    // 500 trips the threshold-1 breaker. The committed-then-released race (a stream that
+    // committed as the client left) is pinned at the service, where proxy-http's late
+    // `.return()` lands: proxy/route-legs.spec.ts.
+    it('a client that leaves before the first event records a cancel with no commit time', async () => {
+      k.recorded.mockClear();
+      const c = await openStreamTracked(k.port, key, 'oai-slowhead'); // the 250ms preamble
+      expect(c.res.statusCode).toBe(200); // headers are out; the 1s first event is not
+      c.destroy();
+      const deadline = Date.now() + 5_000;
+      while (k.recorded.mock.calls.length === 0 && Date.now() < deadline) await sleep(25);
+      const [ctx, outcome] = k.recorded.mock.calls[0]! as [unknown, { status: string }];
+      expect(outcome.status).toBe('cancelled');
+      expect(ctx).not.toHaveProperty('committedMs');
     }, 30_000);
 
     it('a pre-commit failure after the early commit arrives as one in-stream error, still recorded as the error', async () => {
@@ -634,6 +668,9 @@ describe('stream lifecycle e2e (drain / disconnect / backpressure)', () => {
       const deadline = Date.now() + 5_000;
       while (k.recorded.mock.calls.length === 0 && Date.now() < deadline) await sleep(25);
       expect(k.recorded.mock.calls.map((call) => call[1].status)).toEqual(['error']);
+      // record-commit-time: the preamble is no commit — a walk that failed before its
+      // first event records no commit time.
+      expect(k.recorded.mock.calls[0]![0]).not.toHaveProperty('committedMs');
     }, 30_000);
 
     it('a fast failure is still a clean HTTP error status', async () => {

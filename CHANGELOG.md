@@ -15,13 +15,24 @@ heading is started.
 
 ## [Unreleased]
 
+## [0.33.0] — 2026-11-14
+
+[Release](https://github.com/izzoa/polyrouter/releases/tag/v0.33.0) ·
+[Compare](https://github.com/izzoa/polyrouter/compare/v0.32.0...v0.33.0)
+
 ### Added
 
-- **Each request records how every leg of its route ended, and the Route Trace draws it.** A new `routeLegs` field (migration 0048, column `request_log.route_legs`, not backfilled) records per leg why and when it ended, the member that stopped it (including a client cancel's in-flight member), and the capability and output-cap deferrals and clamps; the trace draws deferral rows, clamp notes, the stopper and the escalation's cause and time, a cancelled request keeps its attempt trail (`attemptFailures` can now be non-null on a `cancelled` row), and three narrow routing-reason changes are noted in the release.
+- **Each request records how every leg of its route ended, and the Route Trace draws it.** A new `routeLegs` field (migration 0048, column `request_log.route_legs`, not backfilled) records per leg why and when it ended, the member that stopped it (including a client cancel's in-flight member), and the capability and output-cap deferrals and clamps; the trace draws deferral rows, clamp notes, the stopper and the escalation's cause and time, a cancelled request keeps its attempt trail (`attemptFailures` can now be non-null on a `cancelled` row), and the narrow routing-reason and status changes are listed under Upgrade notes.
 
 ### Changed
 
 - **An escalated request keeps its cheap leg's attempts, including a call the cheap deadline cut off.** A cascade request whose strong tier served cleanly after its cheap leg failed now keeps that leg's attempts (it is still recorded `success`), and a cheap call cut off by the cheap deadline is recorded and reads `no reply by the cheap deadline` in the Route Trace; in the request listing, `attemptFailures` can now be non-null on an escalated `success` row and an entry can carry `stopReason`. Rows recorded earlier are not backfilled.
+
+### Upgrade notes
+
+- One migration runs on boot (`0048`): a nullable `request_log.route_legs` jsonb column. Existing rows are not backfilled; they keep `routeLegs: null` and their Route Trace reads as before. There is no new configuration. Pull `ghcr.io/izzoa/polyrouter:0.33.0` (or `:latest`) and restart.
+- If you read the request listing or `routing_reason` programmatically: `routeLegs` is new (null on batch items and on rows recorded before this release); `attemptFailures` can now be non-null on an escalated `success` row and on a `cancelled` row, and a deadline-cut entry keeps `kind: 'unavailable'` but carries `stopReason: 'deadline'` (cuts before response headers are new entries, so filter on `stopReason` when counting outages). The reason text changes on four narrow paths: an output-cap clamp now appears in the capacity note on a sent member that stopped the walk (including one a client's cancel caught in flight) and on a cheap call the cheap deadline cut off before its headers; a cancelled row no longer lists the member the cancel cut off as `unavailable@<model>`; and a leg that dispatched no member no longer carries a deferral note.
+- Status changes only in two narrow races, because the walk now reads whether the client is still there when a call fails rather than after the circuit breaker records it: a client that leaves while a non-retryable failure (such as an HTTP 451 `policy_block`) is being settled now leaves an `error` row instead of `cancelled`, and one that leaves as the cheap deadline fires leaves a `cancelled` row marked escalated. Routing, cost and billing are unchanged.
 
 ## [0.32.0] — 2026-11-13
 
@@ -1253,7 +1264,8 @@ with a routing-decision inspector, encrypted credentials, HMAC agent keys,
 SSRF-guarded egress, central tenant isolation, and single-container packaging
 with Prometheus metrics + optional OpenTelemetry. AGPL-3.0-only.
 
-[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.32.0...HEAD
+[Unreleased]: https://github.com/izzoa/polyrouter/compare/v0.33.0...HEAD
+[0.33.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.33.0
 [0.32.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.32.0
 [0.31.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.31.0
 [0.30.0]: https://github.com/izzoa/polyrouter/releases/tag/v0.30.0
